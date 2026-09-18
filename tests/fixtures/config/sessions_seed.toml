@@ -1,0 +1,8 @@
+[sessions."session-existing-1"]
+mode = "interactive"
+purpose = "general-dev"
+
+[sessions."session-existing-2"]
+mode = "overnight"
+purpose = "refactor"
+tags = ["billing", "urgent"]

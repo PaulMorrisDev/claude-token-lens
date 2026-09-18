@@ -1,0 +1,14 @@
+billing = "subscription"
+tz = "Europe/London"
+min_sessions = 8
+min_turns = 150
+allow_titles = true
+pricing_path = "/custom/pricing.toml"
+
+[thresholds]
+ctx_floor = 20000
+cr_ratio = 0.2
+
+[recache]
+full_expiry_cr = 2000
+huge_ctx = 200000
