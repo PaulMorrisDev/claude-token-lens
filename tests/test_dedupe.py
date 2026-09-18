@@ -69,3 +69,59 @@ def test_late_out_of_order_duplicate_id_is_dropped_and_counted(tmp_path: Path):
     assert [t.turn_index for t in result.turns] == [1, 2]
     # The late duplicate must not have perturbed turn A's already-finalised state.
     assert result.turns[0].input_tokens == 100
+
+
+def test_preceding_tool_prefers_bash_then_powershell_over_first_tool(tmp_path: Path):
+    lines = [
+        # Turn A: Read called before Bash — Bash must still win the scan.
+        turn_line(
+            message_id="msg_A",
+            content=[
+                tool_use_block("Read", "tu1", {"file_path": "C:/x.txt"}),
+                tool_use_block("Bash", "tu2", {"command": "echo hi"}),
+            ],
+        ),
+        # Turn B: Edit called before PowerShell, no Bash — PowerShell wins.
+        turn_line(
+            message_id="msg_B",
+            content=[
+                tool_use_block("Edit", "tu3", {"file_path": "C:/y.txt"}),
+                tool_use_block("PowerShell", "tu4", {"command": "Get-ChildItem"}),
+            ],
+        ),
+        # Turn C: no shell tool at all — falls back to the first tool name.
+        turn_line(message_id="msg_C", content=[tool_use_block("Read", "tu5", {"file_path": "C:/z.txt"})]),
+        # Turn D: no tools at all.
+        turn_line(message_id="msg_D", content=[{"type": "text", "text": "ok"}]),
+    ]
+    path = tmp_path / "session.jsonl"
+    write_jsonl(path, lines)
+
+    result = parse_transcript(path, TranscriptMeta(path=str(path)))
+    assert len(result.turns) == 4
+    turn_a, turn_b, turn_c, turn_d = result.turns
+
+    # First turn in the transcript has no previous turn.
+    assert turn_a.preceding_tool == "n/a"
+    assert turn_a.preceding_cmd_prefix is None
+
+    assert turn_b.preceding_tool == "Bash"
+    assert turn_b.preceding_cmd_prefix == "echo hi"
+
+    assert turn_c.preceding_tool == "PowerShell"
+    assert turn_c.preceding_cmd_prefix == "Get-ChildItem"
+
+    assert turn_d.preceding_tool == "Read"
+    assert turn_d.preceding_cmd_prefix is None
+
+
+def test_preceding_tool_is_none_when_previous_turn_used_no_tools(tmp_path: Path):
+    lines = [
+        turn_line(message_id="msg_A", content=[{"type": "text", "text": "ok"}]),
+        turn_line(message_id="msg_B", content=[{"type": "text", "text": "ok"}]),
+    ]
+    path = tmp_path / "session.jsonl"
+    write_jsonl(path, lines)
+
+    result = parse_transcript(path, TranscriptMeta(path=str(path)))
+    assert result.turns[1].preceding_tool == "none"

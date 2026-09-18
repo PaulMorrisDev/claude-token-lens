@@ -7,16 +7,13 @@ then ``uuid``); every other line becomes an ``Event`` (via
 ``preceding_event_kinds``/``preceding_attachment_types``/
 ``preceding_primary``.
 
-Deviation from the plan, proposed here rather than silently made: the
-plan's WP1 brief describes ``preceding_tool`` as "Bash"/"PowerShell"/
-<first tool name>, which reads as a priority scan for Bash/PowerShell.
-``model.Turn.preceding_tool``'s own docstring comment documents it as a
-plain enumeration of possible *values*, not a scan order, and the fuller
-plan text ("preceding tool and command-prefix tables" in the RE-CACHE
-section) treats it as "whatever tool was used" for grouping. This module
-takes ``preceding_tool`` to be simply the previous turn's first tool name
-(Bash/PowerShell are just the common, RE-CACHE-relevant cases) — not a
-scan that prefers Bash/PowerShell over an earlier different tool.
+``preceding_tool`` (for a non-first turn) is "Bash" if the previous turn's
+``tool_names`` contains Bash, else "PowerShell" if it contains PowerShell,
+else the previous turn's first tool name, else "none" if it had no tools
+at all — a priority scan, not simply the previous turn's first tool name,
+so a shell call is surfaced even when it wasn't the first tool invoked in
+that turn. The first turn in a transcript has no previous turn, so its
+``preceding_tool`` is "n/a".
 
 Privacy: no raw JSONL line, message content, tool_result content, file
 path, or command is ever retained past the single line/block that
@@ -253,6 +250,10 @@ def _resolve_preceding_tool(previous_turn: Turn | None) -> tuple[str, str | None
         return "n/a", None
     if not previous_turn.tool_names:
         return "none", previous_turn.cmd_prefix
+    if "Bash" in previous_turn.tool_names:
+        return "Bash", previous_turn.cmd_prefix
+    if "PowerShell" in previous_turn.tool_names:
+        return "PowerShell", previous_turn.cmd_prefix
     return previous_turn.tool_names[0], previous_turn.cmd_prefix
 
 
