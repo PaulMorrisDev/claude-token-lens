@@ -22,6 +22,17 @@ Three layers:
   ``TranscriptMeta.agent_type``), and :func:`build_section` renders the
   roll-up as a report :class:`~claude_token_lens.model.Section`.
 
+A second, follow-up layer answers "was the cache I paid for actually
+used" rather than only "which fixed policy is cheaper": wasted-write
+tracking, 1h-premium-vs-5m-expiry-loss bucketing, a break-even share
+computed straight from the resolved rate card, a near-miss histogram at
+the two TTL boundaries, a TTL-addressable-vs-content-addressable split
+of re-cache turns, and a standalone :func:`cache_economy` summary. These
+are additional ``TtlTypeStats`` fields and additional tables in the same
+``ttl`` :class:`~claude_token_lens.model.Section` — the three-layer
+shape above (simulate/observed, dominant_ttl/fidelity, TtlStats/
+build_section) is unchanged.
+
 "Priced turns" throughout this module means ``Turn.turn_index > 0``:
 ``parse.py``'s ``_finalize_turn`` only assigns a positive, 1-based
 ``turn_index`` to a turn that is both non-synthetic and carried a
@@ -47,9 +58,11 @@ text, a path, or a command.
 
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 
-from .model import Column, Section, Table, TranscriptResult, Turn
+from .model import Column, CostBreakdown, Section, Table, TranscriptResult, Turn
 from .pricing import ModelRates, ResolvedRates, price_turn
 
 #: Plan Appendix A4's TTL simulation assumptions, printed verbatim in the
@@ -102,6 +115,26 @@ _GAP_BUCKETS: tuple[tuple[str, str, float, float], ...] = (
 #: zero, ``model_known=False`` — see ``pricing.price_turn``).
 RatesArg = ModelRates | ResolvedRates | None
 
+#: Near-miss histogram boundaries (seconds), asymmetric on purpose: a
+#: gap that lands at or just under the TTL boundary still hit the cache
+#: (``[240, 300]``/``[3540, 3600]``, inclusive both ends — the boundary
+#: value itself is still a hit, see ``simulate``'s ``gap_s <= policy_s``
+#: branch), while a gap that lands just over it forced a full rewrite
+#: (``(300, 360]``/``(3600, 3660]``, exclusive of the boundary).
+_NEAR_5M_HIT = (240.0, 300.0)
+_NEAR_5M_MISS = (300.0, 360.0)
+_NEAR_1H_HIT = (3540.0, 3600.0)
+_NEAR_1H_MISS = (3600.0, 3660.0)
+
+#: WP3 (RE-CACHE)'s own minimal re-cache detection rule, mirrored here
+#: only as a fallback for item 5 (TTL-addressable share) when
+#: ``Turn.recache_signature`` is unset — see ``_recache_classification``.
+#: These must stay in sync with WP3's real detector; this module never
+#: sets ``recache_signature`` itself, only reads it when present.
+_RECACHE_CTX_FLOOR = 20_000
+_RECACHE_CR_RATIO = 0.2
+_RECACHE_FULL_EXPIRY_CR = 2_000
+
 
 def _priced_turns(turns: list[Turn]) -> list[Turn]:
     """The subset of ``turns`` that are actually priced: synthetic and
@@ -125,6 +158,81 @@ def _percentile(values: list[float], pct: float) -> float | None:
     ordered = sorted(values)
     idx = min(len(ordered) - 1, max(0, round(pct / 100 * (len(ordered) - 1))))
     return ordered[idx]
+
+
+def _write_cost(turn: Turn, rates: RatesArg, ttl_seconds: int, tokens: int) -> float:
+    """The cache-write dollar cost of writing ``tokens`` tokens at a
+    single TTL bucket (``POLICY_5M`` or ``POLICY_1H``) for ``turn``, via
+    ``price_turn``'s simulation path (``write_split={ttl_seconds:
+    tokens}``, ``read_tokens=0`` — this call prices only the write side).
+    Used throughout the cache-utilisation metrics below wherever a
+    hypothetical or bucketed write needs its own dollar figure, so every
+    one of them is still "priced via price_turn" rather than a
+    hand-rolled rate lookup."""
+    if tokens <= 0:
+        return 0.0
+    return price_turn(turn, rates, write_split={ttl_seconds: tokens}, read_tokens=0).cache_write_cost
+
+
+def _cache_tokens_at_input_rate(
+    turn: Turn, rates: RatesArg, real: CostBreakdown | None = None
+) -> float:
+    """What ``turn``'s cache tokens (``cache_read_tokens +
+    cache_creation_tokens``) would have cost if there were no caching at
+    all and they were priced as plain input tokens instead — the
+    "uncached-equivalent" figure ``cache_economy`` and the cache-economy
+    table need.
+
+    Computed via two ``price_turn`` calls rather than reading
+    ``rates.input`` directly: a synthetic turn that folds the cache
+    tokens into ``input_tokens`` (zeroing the cache fields) is priced,
+    and the turn's own real ``input_cost`` is subtracted back out. Both
+    calls see the same ``ctx`` (only the token *bucket* changes, not the
+    prefix size) and the same geo, so any long-context or geo multiplier
+    ``price_turn`` applies is identical on both sides and cancels
+    exactly in the subtraction, leaving only the cache tokens' cost at
+    the (possibly multiplied) input rate — still entirely price_turn's
+    own rate resolution, never re-derived here.
+    """
+    if real is None:
+        real = price_turn(turn, rates)
+    synthetic = dataclasses.replace(
+        turn,
+        input_tokens=turn.input_tokens + turn.cache_read_tokens + turn.cache_creation_tokens,
+        cache_creation_tokens=0,
+        cache_read_tokens=0,
+        cc_5m=0,
+        cc_1h=0,
+    )
+    inflated = price_turn(synthetic, rates)
+    return inflated.input_cost - real.input_cost
+
+
+def _recache_classification(t: Turn) -> str | None:
+    """"full-expiry" | "prefix-invalidated" | ``None`` for one priced
+    turn, for item 5 (TTL-addressable share).
+
+    Prefers ``t.recache_signature`` (WP3's own classification) when set.
+    Falls back, turn by turn, to WP3's documented minimal rule when it
+    is ``None``: a re-cache turn is ``turn_index > 1`` (never the
+    transcript's first write) with ``ctx > 20_000`` and ``cache_read <
+    0.2 * ctx`` (most of a large prefix was NOT served from cache — the
+    signature of *some* re-cache event, TTL or content), sub-classified
+    as "full-expiry" when ``cache_read < 2_000`` (essentially nothing
+    survived: a clean TTL expiry) or otherwise "prefix-invalidated" (a
+    partial read: the cache content itself changed upstream of some
+    point, which no TTL policy can prevent). Falling back per turn
+    rather than only when every turn in a transcript is unsigned
+    produces the same result in every case this worktree can observe
+    (WP3 hasn't merged, so ``recache_signature`` is uniformly ``None``
+    across the whole corpus today) while staying correct turn-by-turn
+    once WP3 lands partially or its detector skips some turns.
+    """
+    if t.recache_signature is not None:
+        return t.recache_signature
+    if t.turn_index > 1 and t.ctx > _RECACHE_CTX_FLOOR and t.cache_read_tokens < _RECACHE_CR_RATIO * t.ctx:
+        return "full-expiry" if t.cache_read_tokens < _RECACHE_FULL_EXPIRY_CR else "prefix-invalidated"
+    return None
 
 
 @dataclass(slots=True)
@@ -267,6 +375,54 @@ def fidelity(turns: list[Turn], rates: RatesArg) -> float | None:
     return abs(sim.cost - obs.cost) / obs.cost
 
 
+def cache_economy(turns: list[Turn], rates: RatesArg) -> dict:
+    """Standalone cache-economy summary over an arbitrary turns list —
+    item 6 of the cache-utilisation follow-up. Not tied to
+    :class:`TtlStats`, so report assembly (WP10) can compute the same
+    "overall" line independently of the per-agent-type roll-up;
+    ``TtlStats.add`` also calls this and folds its numbers into each
+    agent type's running totals, so the two are guaranteed to agree.
+
+    Every priced turn's actual write/read cost comes from
+    ``price_turn``'s default (observed) path; ``uncached_equivalent_usd``
+    is what the same cache tokens would have cost priced as plain input
+    (see ``_cache_tokens_at_input_rate``) — i.e. what the transcript
+    would have cost with no caching at all. ``net_saving_usd`` is that
+    minus what was actually paid for writes and reads, and ``cache_roi``
+    is the saving as a multiple of what caching itself cost
+    (``net_saving_usd / write_usd``, ``0.0`` when nothing was ever
+    written).
+
+    Returns a dict with keys ``tokens_written``, ``tokens_read``,
+    ``write_usd``, ``read_usd``, ``uncached_equivalent_usd``,
+    ``net_saving_usd``, ``cache_roi``.
+    """
+    priced = _priced_turns(turns)
+    tokens_written = 0
+    tokens_read = 0
+    write_usd = 0.0
+    read_usd = 0.0
+    uncached_equivalent_usd = 0.0
+    for t in priced:
+        breakdown = price_turn(t, rates)
+        tokens_written += t.cc_5m + t.cc_1h
+        tokens_read += t.cache_read_tokens
+        write_usd += breakdown.cache_write_cost
+        read_usd += breakdown.cache_read_cost
+        uncached_equivalent_usd += _cache_tokens_at_input_rate(t, rates, breakdown)
+    net_saving_usd = uncached_equivalent_usd - (write_usd + read_usd)
+    cache_roi = net_saving_usd / write_usd if write_usd > 0 else 0.0
+    return {
+        "tokens_written": tokens_written,
+        "tokens_read": tokens_read,
+        "write_usd": write_usd,
+        "read_usd": read_usd,
+        "uncached_equivalent_usd": uncached_equivalent_usd,
+        "net_saving_usd": net_saving_usd,
+        "cache_roi": cache_roi,
+    }
+
+
 @dataclass(slots=True)
 class _RawAccumulator:
     """Mutable running totals for one agent-type key, across every
@@ -294,6 +450,60 @@ class _RawAccumulator:
     fidelity_weighted_sum: float = 0.0
     fidelity_weight: int = 0
 
+    # -- item 1: wasted writes -----------------------------------------
+    waste_writes: int = 0
+    waste_wasted_writes: int = 0
+    waste_tokens_written: int = 0
+    waste_tokens_wasted: int = 0
+    waste_usd_wasted: float = 0.0
+    waste_terminal_writes: int = 0
+    waste_terminal_tokens: int = 0
+    waste_terminal_usd: float = 0.0
+
+    # -- item 2: 1h premium waste vs 5m expiry loss ---------------------
+    premium_1h_not_needed_tokens: int = 0
+    premium_1h_not_needed_usd: float = 0.0
+    premium_1h_earned_tokens: int = 0
+    premium_1h_earned_usd: float = 0.0
+    premium_1h_expired_tokens: int = 0
+    premium_1h_expired_usd: float = 0.0
+    premium_5m_fine_tokens: int = 0
+    premium_5m_loss_tokens: int = 0
+    premium_5m_loss_usd: float = 0.0
+    premium_5m_would_expire_tokens: int = 0
+
+    # -- item 3: break-even share ---------------------------------------
+    #: The last non-``None`` resolved rate seen for this agent type
+    #: (``TtlStats.add``'s ``rates`` argument is already the transcript's
+    #: dominant-model rate — see that method's docstring), used to derive
+    #: ``premium_ratio`` in ``by_key``.
+    sample_rates: ModelRates | None = None
+    inwindow_weight: float = 0.0
+    inwindow_total_weight: float = 0.0
+
+    # -- item 4: near-miss histogram -------------------------------------
+    near_5m_hit: int = 0
+    near_5m_miss: int = 0
+    near_5m_miss_tokens: int = 0
+    near_5m_miss_usd: float = 0.0
+    near_1h_hit: int = 0
+    near_1h_miss: int = 0
+    near_1h_miss_tokens: int = 0
+    near_1h_miss_usd: float = 0.0
+
+    # -- item 5: TTL-addressable share -----------------------------------
+    addressable_full_expiry_tokens: int = 0
+    addressable_full_expiry_usd: float = 0.0
+    addressable_prefix_invalidated_tokens: int = 0
+    addressable_prefix_invalidated_usd: float = 0.0
+
+    # -- item 6: cache economy -------------------------------------------
+    economy_tokens_written: int = 0
+    economy_tokens_read: int = 0
+    economy_write_usd: float = 0.0
+    economy_read_usd: float = 0.0
+    economy_uncached_equivalent_usd: float = 0.0
+
 
 @dataclass(slots=True)
 class TtlTypeStats:
@@ -319,6 +529,99 @@ class TtlTypeStats:
     fidelity_pct: float | None
     #: bucket key (see ``_GAP_BUCKETS``) -> count.
     gap_buckets: dict[str, int]
+
+    # -- item 1: wasted writes -----------------------------------------
+    waste_writes: int = 0
+    waste_wasted_writes: int = 0
+    waste_tokens_written: int = 0
+    waste_tokens_wasted: int = 0
+    waste_usd_wasted: float = 0.0
+    waste_terminal_writes: int = 0
+    waste_terminal_tokens: int = 0
+    waste_terminal_usd: float = 0.0
+
+    # -- item 2: 1h premium waste vs 5m expiry loss ---------------------
+    premium_1h_not_needed_tokens: int = 0
+    premium_1h_not_needed_usd: float = 0.0
+    premium_1h_earned_tokens: int = 0
+    premium_1h_earned_usd: float = 0.0
+    premium_1h_expired_tokens: int = 0
+    premium_1h_expired_usd: float = 0.0
+    premium_5m_fine_tokens: int = 0
+    premium_5m_loss_tokens: int = 0
+    premium_5m_loss_usd: float = 0.0
+    premium_5m_would_expire_tokens: int = 0
+
+    # -- item 3: break-even share ---------------------------------------
+    premium_ratio: float = 0.0
+    in_window_share: float = 0.0
+
+    # -- item 4: near-miss histogram -------------------------------------
+    near_5m_hit: int = 0
+    near_5m_miss: int = 0
+    near_5m_miss_tokens: int = 0
+    near_5m_miss_usd: float = 0.0
+    near_1h_hit: int = 0
+    near_1h_miss: int = 0
+    near_1h_miss_tokens: int = 0
+    near_1h_miss_usd: float = 0.0
+
+    # -- item 5: TTL-addressable share -----------------------------------
+    addressable_full_expiry_tokens: int = 0
+    addressable_full_expiry_usd: float = 0.0
+    addressable_prefix_invalidated_tokens: int = 0
+    addressable_prefix_invalidated_usd: float = 0.0
+
+    # -- item 6: cache economy -------------------------------------------
+    economy_tokens_written: int = 0
+    economy_tokens_read: int = 0
+    economy_write_usd: float = 0.0
+    economy_read_usd: float = 0.0
+    economy_uncached_equivalent_usd: float = 0.0
+
+    @property
+    def waste_share_pct(self) -> float:
+        """Wasted tokens as a percentage of tokens written — excludes
+        every transcript's terminal write (see the class-level note on
+        ``waste_terminal_*``): ``0.0`` when nothing non-terminal was ever
+        written."""
+        if self.waste_tokens_written <= 0:
+            return 0.0
+        return 100.0 * self.waste_tokens_wasted / self.waste_tokens_written
+
+    @property
+    def margin_pts(self) -> float:
+        """``in_window_share`` minus ``premium_ratio``, in percentage
+        points (both are fractions internally; this is where the *100
+        scaling happens) — positive means the prefix-weighted share of
+        gaps that would actually benefit from a 1h TTL exceeds what the
+        1h premium costs."""
+        return (self.in_window_share - self.premium_ratio) * 100.0
+
+    @property
+    def verdict(self) -> str:
+        """One-word break-even verdict: "marginal" within 5 points either
+        way, else "1h pays" or "5m pays"."""
+        margin = self.margin_pts
+        if abs(margin) < 5.0:
+            return "marginal"
+        return "1h pays" if margin > 0 else "5m pays"
+
+    @property
+    def net_saving_usd(self) -> float:
+        """Item 6: what caching actually saved vs. pricing every cache
+        token as plain input — ``uncached_equivalent_usd`` minus what was
+        actually paid for writes and reads."""
+        return self.economy_uncached_equivalent_usd - (self.economy_write_usd + self.economy_read_usd)
+
+    @property
+    def cache_roi(self) -> float:
+        """Item 6: net saving as a multiple of what caching itself cost.
+        ``0.0`` when nothing was ever written (avoids a division by
+        zero; there is no ROI on a write that never happened)."""
+        if self.economy_write_usd <= 0:
+            return 0.0
+        return self.net_saving_usd / self.economy_write_usd
 
     @property
     def best_policy(self) -> str:
@@ -367,6 +670,52 @@ class TtlTypeStats:
         return f"experimental.cacheTtl in {self.key}.md (or subagentPromptCacheTtl for all subagents)"
 
 
+def _accumulate_waste(priced: list[Turn], rates: RatesArg, acc: _RawAccumulator) -> None:
+    """Item 1: for every priced turn's cache-write portion(s), was the
+    prefix it wrote ever actually read back before its TTL expired?
+
+    A turn with both ``cc_5m`` and ``cc_1h`` nonzero (a mixed write) is
+    two separate writes here, one per TTL bucket, each checked
+    independently against the same prefix size ``C_i`` (see the module
+    docstring's item 1). The transcript's last priced turn is always a
+    "terminal write" — nothing can come after it to prove the prefix was
+    reused, which says nothing about whether it *would* have been reused
+    in a later session — so it is tallied separately and never counted
+    towards ``waste_writes``/``waste_wasted_writes``.
+    """
+    n = len(priced)
+    for i, t in enumerate(priced):
+        c_i = t.cache_read_tokens + t.cache_creation_tokens
+        is_terminal = i == n - 1
+        for ttl_seconds, tokens in ((POLICY_5M, t.cc_5m), (POLICY_1H, t.cc_1h)):
+            if tokens <= 0:
+                continue
+            cost = _write_cost(t, rates, ttl_seconds, tokens)
+            if is_terminal:
+                acc.waste_terminal_writes += 1
+                acc.waste_terminal_tokens += tokens
+                acc.waste_terminal_usd += cost
+                continue
+            acc.waste_writes += 1
+            acc.waste_tokens_written += tokens
+            used = False
+            for j in range(i + 1, n):
+                gap = priced[j].gap_s
+                if gap is None or gap > ttl_seconds:
+                    # The chain from i to j is broken (or unknown, which
+                    # is treated the same as broken — see the module
+                    # docstring on unknown gaps): nothing past this point
+                    # can still be the same cache entry written at i.
+                    break
+                if priced[j].cache_read_tokens >= c_i:
+                    used = True
+                    break
+            if not used:
+                acc.waste_wasted_writes += 1
+                acc.waste_tokens_wasted += tokens
+                acc.waste_usd_wasted += cost
+
+
 class TtlStats:
     """Accumulates TTL break-even stats per agent type across many
     transcripts. Feed it with ``add(result, rates)`` for every top-level
@@ -376,6 +725,12 @@ class TtlStats:
 
     def __init__(self) -> None:
         self._raw: dict[str, _RawAccumulator] = {}
+        #: Every subagent-kind transcript's ``TranscriptMeta.mtime_ns``
+        #: seen by ``add`` — ``build_section``'s ``window_start`` caveat
+        #: note compares against ``min()`` of this list. Not keyed by
+        #: agent type: the caveat is about a *window*, not a specific
+        #: type.
+        self._subagent_mtimes_ns: list[int] = []
 
     def add(self, result: TranscriptResult, rates: RatesArg) -> None:
         """Fold one transcript's turns into its agent type's running
@@ -393,22 +748,99 @@ class TtlStats:
         acc = self._raw.setdefault(key, _RawAccumulator(key=key))
         acc.spawns += 1
 
+        if result.meta.kind != "top-level":
+            self._subagent_mtimes_ns.append(result.meta.mtime_ns)
+
+        resolved_rates = rates.rates if isinstance(rates, ResolvedRates) else rates
+        if resolved_rates is not None:
+            acc.sample_rates = resolved_rates
+
         priced = _priced_turns(result.turns)
         acc.priced_turns += len(priced)
+        n = len(priced)
         for i, t in enumerate(priced):
             acc.cc_5m_tokens += t.cc_5m
             acc.cc_1h_tokens += t.cc_1h
+            c_i = t.cache_read_tokens + t.cache_creation_tokens
+
             # i == 0 is the transcript's first priced turn: it has no
             # previous priced turn, so gap_s is always None there and
             # carries no gap-distribution information (see simulate's
             # i == 0 branch) — never counted as an "unknown gap" turn.
             if i > 0 and t.gap_s is not None:
-                acc.gap_values.append(t.gap_s)
-                acc.gap_buckets[_bucket_for(t.gap_s)] += 1
-                if t.gap_s > POLICY_5M:
+                gap = t.gap_s
+                acc.gap_values.append(gap)
+                acc.gap_buckets[_bucket_for(gap)] += 1
+                if gap > POLICY_5M:
                     acc.gaps_over_5m += 1
-                if t.gap_s > POLICY_1H:
+                if gap > POLICY_1H:
                     acc.gaps_over_1h += 1
+
+                # Item 3: break-even in-window share, weighted by the
+                # prefix size C of the turn that *follows* this gap.
+                acc.inwindow_total_weight += c_i
+                if POLICY_5M < gap <= POLICY_1H:
+                    acc.inwindow_weight += c_i
+
+                # Item 4: near-miss histogram at both TTL boundaries.
+                if _NEAR_5M_HIT[0] <= gap <= _NEAR_5M_HIT[1]:
+                    acc.near_5m_hit += 1
+                elif _NEAR_5M_MISS[0] < gap <= _NEAR_5M_MISS[1]:
+                    acc.near_5m_miss += 1
+                    acc.near_5m_miss_tokens += t.cache_creation_tokens
+                    acc.near_5m_miss_usd += price_turn(t, rates).cache_write_cost
+                if _NEAR_1H_HIT[0] <= gap <= _NEAR_1H_HIT[1]:
+                    acc.near_1h_hit += 1
+                elif _NEAR_1H_MISS[0] < gap <= _NEAR_1H_MISS[1]:
+                    acc.near_1h_miss += 1
+                    acc.near_1h_miss_tokens += t.cache_creation_tokens
+                    acc.near_1h_miss_usd += price_turn(t, rates).cache_write_cost
+
+            # Item 2: 1h premium waste vs 5m expiry loss, bucketed by the
+            # gap to the *next* priced turn (None when t is the last one
+            # — treated the same as "gap > 3600", i.e. the entry expired
+            # either way with nothing to show for the premium/the loss).
+            next_gap = priced[i + 1].gap_s if i + 1 < n else None
+            if t.cc_1h > 0:
+                if next_gap is not None and next_gap <= POLICY_5M:
+                    premium = _write_cost(t, rates, POLICY_1H, t.cc_1h) - _write_cost(
+                        t, rates, POLICY_5M, t.cc_1h
+                    )
+                    acc.premium_1h_not_needed_tokens += t.cc_1h
+                    acc.premium_1h_not_needed_usd += premium
+                elif next_gap is not None and next_gap <= POLICY_1H:
+                    acc.premium_1h_earned_tokens += t.cc_1h
+                    acc.premium_1h_earned_usd += _write_cost(t, rates, POLICY_5M, t.cc_1h)
+                else:
+                    premium = _write_cost(t, rates, POLICY_1H, t.cc_1h) - _write_cost(
+                        t, rates, POLICY_5M, t.cc_1h
+                    )
+                    acc.premium_1h_expired_tokens += t.cc_1h
+                    acc.premium_1h_expired_usd += premium
+            if t.cc_5m > 0:
+                if next_gap is not None and next_gap <= POLICY_5M:
+                    acc.premium_5m_fine_tokens += t.cc_5m
+                elif next_gap is not None and next_gap <= POLICY_1H:
+                    acc.premium_5m_loss_tokens += t.cc_5m
+                    acc.premium_5m_loss_usd += price_turn(priced[i + 1], rates).cache_write_cost
+                else:
+                    acc.premium_5m_would_expire_tokens += t.cc_5m
+
+            # Item 5: TTL-addressable (full-expiry) vs content-addressable
+            # (prefix-invalidated) re-cache tokens/USD.
+            classification = _recache_classification(t)
+            if classification in ("full-expiry", "prefix-invalidated"):
+                write_cost = price_turn(t, rates).cache_write_cost
+                if classification == "full-expiry":
+                    acc.addressable_full_expiry_tokens += t.cache_creation_tokens
+                    acc.addressable_full_expiry_usd += write_cost
+                else:
+                    acc.addressable_prefix_invalidated_tokens += t.cache_creation_tokens
+                    acc.addressable_prefix_invalidated_usd += write_cost
+
+        # Item 1: wasted writes (needs the whole priced list at once, to
+        # look ahead across possibly many turns — see _accumulate_waste).
+        _accumulate_waste(priced, rates, acc)
 
         obs = observed(result.turns, rates)
         sim_5m = simulate(result.turns, rates, POLICY_5M)
@@ -429,6 +861,15 @@ class TtlStats:
                 acc.fidelity_weighted_sum += fid * weight
                 acc.fidelity_weight += weight
 
+        # Item 6: cache economy, delegated to the standalone function so
+        # the two are guaranteed to agree (see cache_economy's docstring).
+        economy = cache_economy(result.turns, rates)
+        acc.economy_tokens_written += economy["tokens_written"]
+        acc.economy_tokens_read += economy["tokens_read"]
+        acc.economy_write_usd += economy["write_usd"]
+        acc.economy_read_usd += economy["read_usd"]
+        acc.economy_uncached_equivalent_usd += economy["uncached_equivalent_usd"]
+
     def by_key(self) -> dict[str, TtlTypeStats]:
         """The current roll-up, one :class:`TtlTypeStats` per agent type
         key that has had at least one transcript ``add``-ed."""
@@ -442,6 +883,22 @@ class TtlStats:
                 if acc.fidelity_weight > 0
                 else None
             )
+
+            # Item 3: premium_ratio from the resolved rate card, never
+            # hard-coded (see ASSUMPTIONS-adjacent module docstring note
+            # and _RawAccumulator.sample_rates).
+            rates = acc.sample_rates
+            premium_ratio = (
+                (rates.cache_write_1h - rates.cache_write_5m) / rates.cache_write_5m
+                if rates is not None and rates.cache_write_5m
+                else 0.0
+            )
+            in_window_share = (
+                acc.inwindow_weight / acc.inwindow_total_weight
+                if acc.inwindow_total_weight > 0
+                else 0.0
+            )
+
             out[key] = TtlTypeStats(
                 key=key,
                 spawns=acc.spawns,
@@ -458,8 +915,52 @@ class TtlStats:
                 unsimulatable=acc.unsimulatable,
                 fidelity_pct=fidelity_pct,
                 gap_buckets=dict(acc.gap_buckets),
+                waste_writes=acc.waste_writes,
+                waste_wasted_writes=acc.waste_wasted_writes,
+                waste_tokens_written=acc.waste_tokens_written,
+                waste_tokens_wasted=acc.waste_tokens_wasted,
+                waste_usd_wasted=acc.waste_usd_wasted,
+                waste_terminal_writes=acc.waste_terminal_writes,
+                waste_terminal_tokens=acc.waste_terminal_tokens,
+                waste_terminal_usd=acc.waste_terminal_usd,
+                premium_1h_not_needed_tokens=acc.premium_1h_not_needed_tokens,
+                premium_1h_not_needed_usd=acc.premium_1h_not_needed_usd,
+                premium_1h_earned_tokens=acc.premium_1h_earned_tokens,
+                premium_1h_earned_usd=acc.premium_1h_earned_usd,
+                premium_1h_expired_tokens=acc.premium_1h_expired_tokens,
+                premium_1h_expired_usd=acc.premium_1h_expired_usd,
+                premium_5m_fine_tokens=acc.premium_5m_fine_tokens,
+                premium_5m_loss_tokens=acc.premium_5m_loss_tokens,
+                premium_5m_loss_usd=acc.premium_5m_loss_usd,
+                premium_5m_would_expire_tokens=acc.premium_5m_would_expire_tokens,
+                premium_ratio=premium_ratio,
+                in_window_share=in_window_share,
+                near_5m_hit=acc.near_5m_hit,
+                near_5m_miss=acc.near_5m_miss,
+                near_5m_miss_tokens=acc.near_5m_miss_tokens,
+                near_5m_miss_usd=acc.near_5m_miss_usd,
+                near_1h_hit=acc.near_1h_hit,
+                near_1h_miss=acc.near_1h_miss,
+                near_1h_miss_tokens=acc.near_1h_miss_tokens,
+                near_1h_miss_usd=acc.near_1h_miss_usd,
+                addressable_full_expiry_tokens=acc.addressable_full_expiry_tokens,
+                addressable_full_expiry_usd=acc.addressable_full_expiry_usd,
+                addressable_prefix_invalidated_tokens=acc.addressable_prefix_invalidated_tokens,
+                addressable_prefix_invalidated_usd=acc.addressable_prefix_invalidated_usd,
+                economy_tokens_written=acc.economy_tokens_written,
+                economy_tokens_read=acc.economy_tokens_read,
+                economy_write_usd=acc.economy_write_usd,
+                economy_read_usd=acc.economy_read_usd,
+                economy_uncached_equivalent_usd=acc.economy_uncached_equivalent_usd,
             )
         return out
+
+    @property
+    def subagent_mtimes_ns(self) -> list[int]:
+        """Every subagent-kind transcript's ``TranscriptMeta.mtime_ns``
+        seen so far, for ``build_section``'s ``window_start`` discovery
+        caveat."""
+        return list(self._subagent_mtimes_ns)
 
 
 #: Quoted verbatim from the plan's Risk 1 (subscription users are not
@@ -470,12 +971,18 @@ _SUBSCRIPTION_1H_IGNORED_NOTE = (
 )
 
 
-def build_section(stats: TtlStats, billing_mode: str = "api") -> Section:
+def build_section(
+    stats: TtlStats, billing_mode: str = "api", window_start: datetime | None = None
+) -> Section:
     """Render a :class:`TtlStats` roll-up as the report's "Cache TTL
     break-even" section: the per-agent-type table, a per-agent gap
-    distribution table, and notes (a fidelity warning for any agent type
-    above 10%, plus — in ``billing_mode="subscription"`` — the
-    subscription-suppression note).
+    distribution table, the six cache-utilisation-monitoring tables
+    (wasted writes, 1h premium waste vs 5m expiry loss, break-even
+    share, near-miss histogram, TTL-addressable share, cache economy),
+    and notes (a fidelity warning for any agent type above 10%, plus —
+    in ``billing_mode="subscription"`` — the subscription-suppression
+    note, plus — when ``window_start`` is given and a subagent
+    transcript predates it — the subagent-window discovery caveat).
 
     ``billing_mode="subscription"`` suppresses every subagent (non
     "top-level") row's switch recommendation, per plan Appendix A5's
@@ -485,6 +992,20 @@ def build_section(stats: TtlStats, billing_mode: str = "api") -> Section:
     harness cannot deliver. The top-level row is never suppressed — the
     main conversation's TTL is a real, user-set lever
     (``promptCacheTtl``) in both billing modes.
+
+    ``window_start`` is the report window's start timestamp (a caller
+    building a date-bounded corpus, e.g. "last 30 days", knows this;
+    ``TtlStats`` itself doesn't). ``discovery.find_subagents`` has no
+    independent date filter of its own — it returns every subagent
+    transcript under a session, however old, once that session's own
+    (possibly much more recent) mtime lets the session itself into the
+    window. When any subagent transcript's own ``TranscriptMeta.mtime_ns``
+    predates ``window_start``, a note flags that a long-lived or resumed
+    top-level session can drag arbitrarily old subagent spawns into an
+    otherwise-recent window — the per-agent-type numbers above may mix
+    regimes as a result. Silent (no note at all) when ``window_start`` is
+    ``None``, so a caller that doesn't track a window pays nothing for
+    this check.
     """
     by_key = stats.by_key()
 
@@ -568,6 +1089,249 @@ def build_section(stats: TtlStats, billing_mode: str = "api") -> Section:
         rows=gap_rows,
     )
 
+    # -- Item 1: wasted writes -------------------------------------------
+    waste_columns = [
+        Column(key="agent_type", label="Agent type", kind="str"),
+        Column(key="writes", label="Writes", kind="int"),
+        Column(key="wasted_writes", label="Wasted writes", kind="int"),
+        Column(key="tokens_written", label="Tokens written", kind="tokens"),
+        Column(key="tokens_wasted", label="Tokens wasted", kind="tokens"),
+        Column(key="share", label="Waste share", kind="pct"),
+        Column(key="usd_wasted", label="USD wasted", kind="money"),
+        Column(key="terminal_writes", label="Terminal writes", kind="int"),
+    ]
+    waste_rows = [
+        [
+            key,
+            by_key[key].waste_writes,
+            by_key[key].waste_wasted_writes,
+            by_key[key].waste_tokens_written,
+            by_key[key].waste_tokens_wasted,
+            by_key[key].waste_share_pct,
+            by_key[key].waste_usd_wasted,
+            by_key[key].waste_terminal_writes,
+        ]
+        for key in sorted(by_key)
+    ]
+    waste_table = Table(
+        name="ttl_wasted_writes",
+        title="Cache write utilisation: wasted writes",
+        columns=waste_columns,
+        rows=waste_rows,
+        notes=[
+            "A write is \"used\" when a later turn in the same transcript reads back at"
+            " least as much as the prefix it wrote, before that write's TTL (5m or 1h;"
+            " a mixed write counts as two) ever lapsed. Terminal writes (a transcript's"
+            " last turn) are unavoidable and excluded from the waste share."
+        ],
+    )
+
+    # -- Item 2: 1h premium waste vs 5m expiry loss ----------------------
+    premium_columns = [
+        Column(key="agent_type", label="Agent type", kind="str"),
+        Column(key="h1_not_needed_tokens", label="1h: premium paid, not needed (tokens)", kind="tokens"),
+        Column(key="h1_not_needed_usd", label="1h: premium paid, not needed (USD)", kind="money"),
+        Column(key="h1_earned_tokens", label="1h: premium earned (tokens)", kind="tokens"),
+        Column(key="h1_earned_usd", label="1h: premium earned (USD saved)", kind="money"),
+        Column(key="h1_expired_tokens", label="1h: expired anyway (tokens)", kind="tokens"),
+        Column(key="h1_expired_usd", label="1h: expired anyway (USD)", kind="money"),
+        Column(key="m5_fine_tokens", label="5m: fine (tokens)", kind="tokens"),
+        Column(key="m5_loss_tokens", label="5m: expiry loss (tokens)", kind="tokens"),
+        Column(key="m5_loss_usd", label="5m: expiry loss (USD)", kind="money"),
+        Column(key="m5_would_expire_tokens", label="5m: would expire under 1h too (tokens)", kind="tokens"),
+    ]
+    premium_rows = [
+        [
+            key,
+            by_key[key].premium_1h_not_needed_tokens,
+            by_key[key].premium_1h_not_needed_usd,
+            by_key[key].premium_1h_earned_tokens,
+            by_key[key].premium_1h_earned_usd,
+            by_key[key].premium_1h_expired_tokens,
+            by_key[key].premium_1h_expired_usd,
+            by_key[key].premium_5m_fine_tokens,
+            by_key[key].premium_5m_loss_tokens,
+            by_key[key].premium_5m_loss_usd,
+            by_key[key].premium_5m_would_expire_tokens,
+        ]
+        for key in sorted(by_key)
+    ]
+    premium_table = Table(
+        name="ttl_premium_waste",
+        title="1h premium waste vs 5m expiry loss",
+        columns=premium_columns,
+        rows=premium_rows,
+    )
+
+    # -- Item 3: break-even share -----------------------------------------
+    break_even_columns = [
+        Column(key="agent_type", label="Agent type", kind="str"),
+        Column(key="premium_ratio", label="Write premium ratio", kind="pct"),
+        Column(key="in_window_share", label="Prefix-weighted 5-60min share", kind="pct"),
+        Column(key="margin_pts", label="Margin", kind="pct"),
+        Column(key="verdict", label="Verdict", kind="str"),
+    ]
+    break_even_rows = [
+        [
+            key,
+            by_key[key].premium_ratio * 100.0,
+            by_key[key].in_window_share * 100.0,
+            by_key[key].margin_pts,
+            by_key[key].verdict,
+        ]
+        for key in sorted(by_key)
+    ]
+    break_even_table = Table(
+        name="ttl_break_even_share",
+        title="Break-even share: 1h vs 5m",
+        columns=break_even_columns,
+        rows=break_even_rows,
+        notes=[
+            "A hit refreshes the TTL, so 1h pays only when the prefix-weighted share of"
+            " gaps landing between 5 and 60 minutes exceeds the write premium ratio."
+        ],
+    )
+
+    # -- Item 4: near-miss histogram ---------------------------------------
+    near_miss_columns = [
+        Column(key="agent_type", label="Agent type", kind="str"),
+        Column(key="near_5m_hit", label="5m near-miss, hit (240-300s)", kind="int"),
+        Column(key="near_5m_miss", label="5m near-miss, missed (300-360s)", kind="int"),
+        Column(key="near_5m_miss_tokens", label="5m just-missed rewrite tokens", kind="tokens"),
+        Column(key="near_5m_miss_usd", label="5m just-missed rewrite USD", kind="money"),
+        Column(key="near_1h_hit", label="1h near-miss, hit (3540-3600s)", kind="int"),
+        Column(key="near_1h_miss", label="1h near-miss, missed (3600-3660s)", kind="int"),
+        Column(key="near_1h_miss_tokens", label="1h just-missed rewrite tokens", kind="tokens"),
+        Column(key="near_1h_miss_usd", label="1h just-missed rewrite USD", kind="money"),
+    ]
+    near_miss_rows = [
+        [
+            key,
+            by_key[key].near_5m_hit,
+            by_key[key].near_5m_miss,
+            by_key[key].near_5m_miss_tokens,
+            by_key[key].near_5m_miss_usd,
+            by_key[key].near_1h_hit,
+            by_key[key].near_1h_miss,
+            by_key[key].near_1h_miss_tokens,
+            by_key[key].near_1h_miss_usd,
+        ]
+        for key in sorted(by_key)
+    ]
+    near_miss_table = Table(
+        name="ttl_near_miss",
+        title="Near-miss histogram at the TTL boundaries",
+        columns=near_miss_columns,
+        rows=near_miss_rows,
+        notes=["The statusline countdown targets these."],
+    )
+
+    # -- Item 5: TTL-addressable share -------------------------------------
+    addressable_columns = [
+        Column(key="agent_type", label="Agent type", kind="str"),
+        Column(key="full_expiry_tokens", label="Full-expiry tokens (TTL-addressable)", kind="tokens"),
+        Column(key="full_expiry_usd", label="Full-expiry USD", kind="money"),
+        Column(key="full_expiry_share", label="Full-expiry share", kind="pct"),
+        Column(
+            key="prefix_invalidated_tokens",
+            label="Prefix-invalidated tokens (content-addressable)",
+            kind="tokens",
+        ),
+        Column(key="prefix_invalidated_usd", label="Prefix-invalidated USD", kind="money"),
+        Column(key="prefix_invalidated_share", label="Prefix-invalidated share", kind="pct"),
+    ]
+    addressable_rows = []
+    for key in sorted(by_key):
+        row_stats = by_key[key]
+        total_tokens = (
+            row_stats.addressable_full_expiry_tokens + row_stats.addressable_prefix_invalidated_tokens
+        )
+        full_share = 100.0 * row_stats.addressable_full_expiry_tokens / total_tokens if total_tokens else 0.0
+        prefix_share = (
+            100.0 * row_stats.addressable_prefix_invalidated_tokens / total_tokens if total_tokens else 0.0
+        )
+        addressable_rows.append(
+            [
+                key,
+                row_stats.addressable_full_expiry_tokens,
+                row_stats.addressable_full_expiry_usd,
+                full_share,
+                row_stats.addressable_prefix_invalidated_tokens,
+                row_stats.addressable_prefix_invalidated_usd,
+                prefix_share,
+            ]
+        )
+    addressable_table = Table(
+        name="ttl_addressable_share",
+        title="TTL-addressable vs content-addressable re-cache",
+        columns=addressable_columns,
+        rows=addressable_rows,
+        notes=[
+            "Full-expiry re-cache is TTL-addressable: a longer TTL can prevent it."
+            " Prefix-invalidated re-cache is content-addressable: the cached content"
+            " itself changed, so no TTL policy can help. Uses Turn.recache_signature"
+            " when WP3 has set it, falling back turn-by-turn to WP3's own minimal rule"
+            " (turn_index > 1, ctx > 20k, cache_read < 0.2*ctx, full-expiry when"
+            " cache_read < 2,000) when it hasn't."
+        ],
+    )
+
+    # -- Item 6: cache economy ----------------------------------------------
+    economy_columns = [
+        Column(key="agent_type", label="Agent type", kind="str"),
+        Column(key="tokens_written", label="Tokens written", kind="tokens"),
+        Column(key="tokens_read", label="Tokens read", kind="tokens"),
+        Column(key="write_usd", label="Write USD", kind="money"),
+        Column(key="read_usd", label="Read USD", kind="money"),
+        Column(key="uncached_equivalent_usd", label="Uncached-equivalent USD", kind="money"),
+        Column(key="net_saving_usd", label="Net saving USD", kind="money"),
+        Column(key="cache_roi", label="Cache ROI", kind="float"),
+    ]
+    economy_rows = [
+        [
+            key,
+            by_key[key].economy_tokens_written,
+            by_key[key].economy_tokens_read,
+            by_key[key].economy_write_usd,
+            by_key[key].economy_read_usd,
+            by_key[key].economy_uncached_equivalent_usd,
+            by_key[key].net_saving_usd,
+            by_key[key].cache_roi,
+        ]
+        for key in sorted(by_key)
+    ]
+    if by_key:
+        overall_tokens_written = sum(s.economy_tokens_written for s in by_key.values())
+        overall_tokens_read = sum(s.economy_tokens_read for s in by_key.values())
+        overall_write_usd = sum(s.economy_write_usd for s in by_key.values())
+        overall_read_usd = sum(s.economy_read_usd for s in by_key.values())
+        overall_uncached_equivalent_usd = sum(s.economy_uncached_equivalent_usd for s in by_key.values())
+        overall_net_saving_usd = overall_uncached_equivalent_usd - (overall_write_usd + overall_read_usd)
+        overall_cache_roi = overall_net_saving_usd / overall_write_usd if overall_write_usd > 0 else 0.0
+        economy_rows.append(
+            [
+                "overall",
+                overall_tokens_written,
+                overall_tokens_read,
+                overall_write_usd,
+                overall_read_usd,
+                overall_uncached_equivalent_usd,
+                overall_net_saving_usd,
+                overall_cache_roi,
+            ]
+        )
+    economy_table = Table(
+        name="ttl_cache_economy",
+        title="Cache economy per agent type",
+        columns=economy_columns,
+        rows=economy_rows,
+        notes=[
+            "Uncached-equivalent USD prices every cache_read and cache_creation token"
+            " at the model's plain input rate — what the transcript would have cost"
+            " with no caching at all. Cache ROI = net saving USD / write USD."
+        ],
+    )
+
     notes: list[str] = []
     if fidelity_warnings:
         notes.append(
@@ -579,8 +1343,38 @@ def build_section(stats: TtlStats, billing_mode: str = "api") -> Section:
             + _SUBSCRIPTION_1H_IGNORED_NOTE
             + "."
         )
+    if window_start is not None:
+        stale = False
+        for mtime_ns in stats.subagent_mtimes_ns:
+            mtime = datetime.fromtimestamp(mtime_ns / 1_000_000_000, tz=timezone.utc)
+            if mtime < window_start:
+                stale = True
+                break
+        if stale:
+            notes.append(
+                "Subagent transcripts are pulled into a window by their parent"
+                " top-level session's mtime, not their own: find_subagents applies no"
+                " independent date filter, so a long-lived or resumed session can drag"
+                " much older subagent spawns into an otherwise-recent window. At least"
+                " one subagent transcript folded into this report predates the report"
+                " window's start."
+            )
 
-    return Section(key="ttl", title="Cache TTL break-even", tables=[table, gap_table], notes=notes)
+    return Section(
+        key="ttl",
+        title="Cache TTL break-even",
+        tables=[
+            table,
+            gap_table,
+            waste_table,
+            premium_table,
+            break_even_table,
+            near_miss_table,
+            addressable_table,
+            economy_table,
+        ],
+        notes=notes,
+    )
 
 
 __all__ = [
@@ -594,5 +1388,6 @@ __all__ = [
     "observed",
     "dominant_ttl",
     "fidelity",
+    "cache_economy",
     "build_section",
 ]
