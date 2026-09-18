@@ -1,4 +1,4 @@
-"""Subprocess tests for hooks/snapshot-config.py (WP7).
+"""Subprocess tests for src/claude_token_lens/hooks/snapshot-config.py (WP7).
 
 The hook is standalone stdlib and imports nothing from the package, so it
 is exercised the way it actually runs: as a separate ``python`` process
@@ -17,7 +17,13 @@ from pathlib import Path
 
 import pytest
 
-_HOOK_PATH = Path(__file__).resolve().parent.parent / "hooks" / "snapshot-config.py"
+_HOOK_PATH = (
+    Path(__file__).resolve().parent.parent
+    / "src"
+    / "claude_token_lens"
+    / "hooks"
+    / "snapshot-config.py"
+)
 
 _AGENT_WITH_CACHE_TTL = """---
 name: verification-runner

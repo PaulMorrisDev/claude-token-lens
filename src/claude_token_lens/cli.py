@@ -8,10 +8,10 @@ implementation. Nothing here reads a transcript yet.
 from __future__ import annotations
 
 import argparse
+import importlib.resources
 import importlib.util
 import os
 import sys
-from pathlib import Path
 
 from . import __version__
 from .pricing import PricingError, load_pricing
@@ -132,12 +132,16 @@ def _make_parser() -> argparse.ArgumentParser:
 
 
 def _load_snapshot_hook_module():
-    """Dynamically import ``hooks/snapshot-config.py`` by path. That script
-    is standalone stdlib and must never import from this package (see its
-    own docstring), so the dependency runs the other way: this CLI command
-    loads it, rather than it importing anything here.
+    """Dynamically import the packaged ``hooks/snapshot-config.py`` module
+    by path. That script is standalone stdlib and must never import from
+    this package (see its own docstring), so the dependency runs the other
+    way: this CLI command loads it, rather than it importing anything here.
     """
-    hook_path = Path(__file__).resolve().parents[2] / "hooks" / "snapshot-config.py"
+    hook_path = (
+        importlib.resources.files("claude_token_lens")
+        / "hooks"
+        / "snapshot-config.py"
+    )
     spec = importlib.util.spec_from_file_location(
         "_claude_token_lens_snapshot_hook", hook_path
     )
