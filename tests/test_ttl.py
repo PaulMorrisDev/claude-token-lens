@@ -26,6 +26,7 @@ from claude_token_lens.ttl import (
     POLICY_1H,
     POLICY_5M,
     TtlStats,
+    TtlThresholds,
     TtlTypeStats,
     build_section,
     cache_economy,
@@ -491,28 +492,28 @@ def test_fidelity_none_when_observed_cost_is_zero():
 def test_recommendation_blocked_by_usd_threshold_despite_large_pct_saving():
     # 9.40 vs 10.00: 6% cheaper (passes the 5% bar) but only $0.60 saved.
     s = _stats(cost_observed=10.0, cost_all_5m=10.0, cost_all_1h=9.40)
-    assert s.recommendation == "no material difference"
+    assert s.recommendation() == "no material difference"
 
 
 def test_recommendation_blocked_by_pct_threshold_despite_large_usd_saving():
     # 960 vs 1000: $40 saved but only 4% cheaper (fails the 5% bar).
     s = _stats(cost_observed=1000.0, cost_all_5m=1000.0, cost_all_1h=960.0)
-    assert s.recommendation == "no material difference"
+    assert s.recommendation() == "no material difference"
 
 
 def test_recommendation_switches_to_1h_when_both_thresholds_clear():
     s = _stats(cost_observed=100.0, cost_all_5m=100.0, cost_all_1h=90.0)
-    assert s.recommendation == "switch to 1h"
+    assert s.recommendation() == "switch to 1h"
 
 
 def test_recommendation_switches_to_5m_symmetrically():
     s = _stats(cost_observed=100.0, cost_all_5m=90.0, cost_all_1h=100.0)
-    assert s.recommendation == "switch to 5m"
+    assert s.recommendation() == "switch to 5m"
 
 
 def test_recommendation_no_material_difference_when_observed_cost_zero():
     s = _stats(cost_observed=0.0, cost_all_5m=0.0, cost_all_1h=0.0)
-    assert s.recommendation == "no material difference"
+    assert s.recommendation() == "no material difference"
 
 
 def test_lever_text_top_level_vs_subagent():
@@ -652,6 +653,7 @@ def test_build_section_table_shape_and_columns():
         "best_policy",
         "delta_usd",
         "delta_pct",
+        "saving_usd",
         "fidelity_pct",
         "unsimulatable",
         "unpriced_turns",
@@ -659,7 +661,7 @@ def test_build_section_table_shape_and_columns():
         "lever",
     ]
     money_columns = {c.key for c in by_agent_type.columns if c.kind == "money"}
-    assert money_columns == {"cost_observed", "cost_all_5m", "cost_all_1h", "delta_usd"}
+    assert money_columns == {"cost_observed", "cost_all_5m", "cost_all_1h", "delta_usd", "saving_usd"}
     pct_columns = {c.key for c in by_agent_type.columns if c.kind == "pct"}
     assert pct_columns == {"observed_5m_pct", "observed_1h_pct", "delta_pct", "fidelity_pct"}
 
@@ -1026,9 +1028,19 @@ def test_break_even_share_hand_computed_sonnet_5():
     well inside "marginal" — small hand-computed dollar amounts like
     this one are exactly what the $1.00 floor exists to catch.
 
-    break_even_share = premium_ratio * (Sigma W_i / Sigma_{all gaps} C_j)
-    = 0.6 * (3000 / (C2+C3)) = 0.6 * (3000/4000) = 0.45. in_window_share
-    (unchanged formula) = C2 / (C2+C3) = 3000/4000 = 0.75.
+    Fix item 6: the break-even denominator (Sigma_{all gaps} C_j) now
+    also includes turn 0's own prefix C1 = cache_read(0) +
+    cache_creation(500) = 500 -- not just the turns with a gap in front
+    of them -- so the denominator is C1+C2+C3 = 500+3000+1000 = 4500,
+    not just C2+C3 = 4000. Both share fields are now percentages
+    (0-100):
+
+    in_window_pct = 100 * C2 / (C1+C2+C3) = 100 * 3000/4500 = 66.667%.
+    break_even_pct = 100 * premium_ratio * (Sigma W_i / (C1+C2+C3))
+    = 100 * 0.6 * (3000/4500) = 40.0%.
+
+    margin > 0 (1h direction) and in_window_pct (66.667) >
+    break_even_pct (40.0) — the verdict identity holds.
     """
     t1 = _turn(cache_creation_tokens=500, cc_5m=500, cache_read_tokens=0, gap_s=None)
     t2 = _turn(
@@ -1040,12 +1052,224 @@ def test_break_even_share_hand_computed_sonnet_5():
     row = _row_for([t1, t2, t3])
 
     assert row.premium_ratio == pytest.approx(0.6)
-    assert row.in_window_share == pytest.approx(0.75)
+    assert row.in_window_pct == pytest.approx(100 * 3000 / 4500)
     assert row.premium_all_1h == pytest.approx(0.0045)
     assert row.expiry_loss_all_5m == pytest.approx(0.0075)
     assert row.margin == pytest.approx(0.003)
-    assert row.break_even_share == pytest.approx(0.45)
+    assert row.break_even_pct == pytest.approx(40.0)
     assert row.verdict == "marginal"
+    assert (row.margin > 0) == (row.in_window_pct > row.break_even_pct)
+
+
+def test_break_even_pct_identity_matches_margin_sign_in_5m_pays_direction():
+    """Fix item 6's required check, in the opposite direction from the
+    hand-computed test above: two writes, both followed by a short
+    (<=300s) gap, so nothing ever lands in the (300, 3600] window.
+    expiry_loss_all_5m is then 0 while premium_all_1h is positive (every
+    write still counts, unconditionally) -> margin < 0 (5m pays).
+
+    in_window_pct = 0 (the numerator, in-window weight, is 0).
+    break_even_pct = 100 * premium_ratio * (total_w / total_weight) =
+    100 * 0.6 * (2000/2000) = 60.0 (turn 2's own gap -- 100s, not
+    itself in-window -- still contributes its C to the *denominator*,
+    same as turn 0's C via the item-6 fix, since the denominator is
+    "every gap", not only the in-window ones).
+
+    margin < 0 and in_window_pct (0.0) < break_even_pct (60.0) -- the
+    identity holds in this direction too.
+    """
+    t1 = _turn(cache_creation_tokens=1000, cc_5m=1000, cache_read_tokens=0, gap_s=None)
+    t2 = _turn(
+        turn_index=2, message_id="msg_2", cache_creation_tokens=1000, cc_5m=1000, cache_read_tokens=0, gap_s=100
+    )
+    row = _row_for([t1, t2])
+
+    assert row.premium_ratio == pytest.approx(0.6)
+    assert row.expiry_loss_all_5m == pytest.approx(0.0)
+    assert row.premium_all_1h == pytest.approx(0.003)
+    assert row.margin == pytest.approx(-0.003)
+    assert row.in_window_pct == pytest.approx(0.0)
+    assert row.break_even_pct == pytest.approx(60.0)
+    assert (row.margin > 0) == (row.in_window_pct > row.break_even_pct)
+
+
+# -- Fix item 6: config-driven TtlThresholds ----------------------------
+
+
+def test_ttl_thresholds_defaults_match_the_pre_item_6_hardcoded_values():
+    """The consolidated dataclass's defaults must reproduce every one
+    of the five module constants it replaces, so a caller that never
+    passes ``thresholds`` sees unchanged behaviour."""
+    th = TtlThresholds()
+    assert th.dominance == pytest.approx(0.9)
+    assert th.fidelity_warn_pct == pytest.approx(10.0)
+    assert th.switch_pct == pytest.approx(0.95)
+    assert th.switch_usd == pytest.approx(1.00)
+    assert th.near_miss_window_s == pytest.approx(60.0)
+    assert th.ctx_floor == 20_000
+    assert th.cr_ratio == pytest.approx(0.2)
+    assert th.full_expiry_cr == 2_000
+
+
+def test_ttl_thresholds_from_config_reads_flat_dict():
+    th = TtlThresholds.from_config(
+        {
+            "dominance": 0.8,
+            "fidelity_warn_pct": 5.0,
+            "switch_pct": 0.9,
+            "switch_usd": 2.0,
+            "near_miss_window_s": 30.0,
+            "ctx_floor": 10_000,
+            "cr_ratio": 0.1,
+            "full_expiry_cr": 500,
+        }
+    )
+    assert th.dominance == pytest.approx(0.8)
+    assert th.fidelity_warn_pct == pytest.approx(5.0)
+    assert th.switch_pct == pytest.approx(0.9)
+    assert th.switch_usd == pytest.approx(2.0)
+    assert th.near_miss_window_s == pytest.approx(30.0)
+    assert th.ctx_floor == 10_000
+    assert th.cr_ratio == pytest.approx(0.1)
+    assert th.full_expiry_cr == 500
+
+
+def test_ttl_thresholds_from_config_reads_nested_thresholds_table():
+    config = {"thresholds": {"dominance": 0.75, "ctx_floor": 5_000}}
+    th = TtlThresholds.from_config(config)
+    assert th.dominance == pytest.approx(0.75)
+    assert th.ctx_floor == 5_000
+    # Untouched keys keep this class's own defaults.
+    assert th.switch_pct == pytest.approx(0.95)
+
+
+def test_ttl_thresholds_recache_trio_delegates_to_recache_thresholds():
+    """The RE-CACHE trio must resolve identically to
+    ``recache.RecacheThresholds.from_config`` on the same config, so the
+    two modules can never drift apart on these three numbers."""
+    config = {"thresholds": {"ctx_floor": 12_345, "cr_ratio": 0.33, "full_expiry_cr": 999}}
+    ttl_th = TtlThresholds.from_config(config)
+    recache_th = recache.RecacheThresholds.from_config(config)
+    assert ttl_th.ctx_floor == recache_th.ctx_floor == 12_345
+    assert ttl_th.cr_ratio == pytest.approx(recache_th.cr_ratio) == pytest.approx(0.33)
+    assert ttl_th.full_expiry_cr == recache_th.full_expiry_cr == 999
+
+
+def test_ttl_thresholds_from_config_none_gives_defaults():
+    assert TtlThresholds.from_config(None) == TtlThresholds()
+
+
+def test_ttl_thresholds_describe_mentions_every_field():
+    lines = " ".join(TtlThresholds().describe())
+    for needle in ("dominance", "fidelity_warn_pct", "switch_pct", "switch_usd", "near_miss_window_s", "ctx_floor"):
+        assert needle in lines
+
+
+def test_recommendation_honors_custom_switch_thresholds():
+    """The same 9.40-vs-10.00 case ``test_recommendation_blocked_by_usd_threshold_
+    despite_large_pct_saving`` shows blocked at the default $1.00 floor
+    (only $0.60 saved) now switches once a caller relaxes ``switch_usd``
+    below the actual saving."""
+    s = _stats(cost_observed=10.0, cost_all_5m=10.0, cost_all_1h=9.40)
+    assert s.recommendation() == "no material difference"
+    assert s.recommendation(TtlThresholds(switch_usd=0.5)) == "switch to 1h"
+
+
+def test_dominant_ttl_honors_custom_dominance_threshold():
+    """80/20 split: "mixed" at the default 90% dominance cutoff, "5m"
+    once a caller relaxes it to 75%."""
+    turns = [_turn(cc_5m=80, cc_1h=20)]
+    assert dominant_ttl(turns) == "mixed"
+    assert dominant_ttl(turns, TtlThresholds(dominance=0.75)) == "5m"
+
+
+def test_near_miss_window_s_customizes_the_boundary():
+    """A 390s gap falls outside the default 60s near-5m-miss window
+    ((300, 360]) but inside a 120s one ((300, 420])."""
+    t1 = _turn(cache_creation_tokens=0, cache_read_tokens=0, gap_s=None)
+    t2 = _turn(turn_index=2, message_id="msg_2", cache_creation_tokens=200, cc_5m=200, gap_s=390.0)
+
+    stats_default = TtlStats()
+    stats_default.add(TranscriptResult(meta=TranscriptMeta(kind="top-level"), turns=[t1, t2]), SONNET_RATES)
+    row_default = stats_default.by_key()["top-level"]
+    assert row_default.near_5m_miss == 0
+
+    stats_custom = TtlStats()
+    stats_custom.add(
+        TranscriptResult(meta=TranscriptMeta(kind="top-level"), turns=[t1, t2]),
+        SONNET_RATES,
+        TtlThresholds(near_miss_window_s=120.0),
+    )
+    row_custom = stats_custom.by_key()["top-level"]
+    assert row_custom.near_5m_miss == 1
+    assert row_custom.near_5m_miss_tokens == 200
+
+
+def test_recache_classification_fallback_honors_custom_ctx_floor():
+    """``ctx=15_000`` never qualifies under the default ``ctx_floor``
+    (20_000), so it never reaches the addressable-share tally; lowering
+    ``ctx_floor`` to 10_000 (via the same TtlThresholds passed to
+    ``TtlStats.add``) makes it qualify as "full-expiry" (cache_read=100
+    is below both the 20%-of-ctx bar and the 2_000-token full-expiry
+    bar)."""
+    t1 = _turn(cache_creation_tokens=1000, cc_5m=1000, cache_read_tokens=0, gap_s=None)
+    t2 = _turn(
+        turn_index=2,
+        message_id="msg_2",
+        ctx=15_000,
+        cache_read_tokens=100,
+        cache_creation_tokens=500,
+        cc_5m=500,
+        gap_s=200,
+    )
+
+    stats_default = TtlStats()
+    stats_default.add(TranscriptResult(meta=TranscriptMeta(kind="top-level"), turns=[t1, t2]), SONNET_RATES)
+    row_default = stats_default.by_key()["top-level"]
+    assert row_default.addressable_full_expiry_tokens == 0
+
+    stats_custom = TtlStats()
+    stats_custom.add(
+        TranscriptResult(meta=TranscriptMeta(kind="top-level"), turns=[t1, t2]),
+        SONNET_RATES,
+        TtlThresholds(ctx_floor=10_000),
+    )
+    row_custom = stats_custom.by_key()["top-level"]
+    assert row_custom.addressable_full_expiry_tokens == 500
+
+
+def test_build_section_fidelity_warning_uses_configured_threshold():
+    """Two turns engineered for a small, nonzero fidelity mismatch
+    (~2.59%: t2 reads back the whole of t1's prefix but its 50-token
+    incremental write is observed at the 1h rate even though the 5m
+    policy the transcript is dominant under would only ever write it at
+    the 5m rate — a real anomaly no fixed-policy simulation predicts).
+    A ``TtlThresholds`` set just above that value never warns; one set
+    just below it does, and names the configured percentage rather than
+    a hardcoded "10%"."""
+    t1 = _turn(cache_creation_tokens=1000, cc_5m=1000, cache_read_tokens=0, gap_s=None)
+    t2 = _turn(
+        turn_index=2, message_id="msg_2", cache_read_tokens=1000, cache_creation_tokens=50, cc_1h=50, gap_s=100.0
+    )
+    stats = TtlStats()
+    stats.add(TranscriptResult(meta=TranscriptMeta(kind="top-level"), turns=[t1, t2]), SONNET_RATES)
+    row = stats.by_key()["top-level"]
+    assert row.fidelity_pct == pytest.approx(2.5862068965517233)
+
+    strict = TtlThresholds(fidelity_warn_pct=row.fidelity_pct + 1.0)
+    section_default = build_section(stats, billing_mode="api", thresholds=strict)
+    assert not any("Simulation fidelity exceeds" in note for note in section_default.notes)
+
+    relaxed = TtlThresholds(fidelity_warn_pct=row.fidelity_pct - 1.0)
+    section_flagged = build_section(stats, billing_mode="api", thresholds=relaxed)
+    assert any(f"exceeds {relaxed.fidelity_warn_pct:.0f}%" in note for note in section_flagged.notes)
+
+
+def test_build_section_notes_include_thresholds_line():
+    stats = TtlStats()
+    stats.add(TranscriptResult(meta=TranscriptMeta(kind="top-level"), turns=_rewrite_every_time_turns()), SONNET_RATES)
+    section = build_section(stats, billing_mode="api")
+    assert any(note.startswith("Thresholds:") for note in section.notes)
 
 
 def _break_even_stats(premium_all_1h: float, expiry_loss_all_5m: float) -> TtlTypeStats:

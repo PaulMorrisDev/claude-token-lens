@@ -156,6 +156,19 @@ def test_is_recache_turn_false_when_cache_read_share_high():
     assert compaction.is_recache_turn(turn) is False
 
 
+def test_is_recache_turn_honors_a_custom_recache_thresholds():
+    """Fix item 6: ``ctx=15000`` never qualifies under the default
+    ``RecacheThresholds`` (ctx_floor=20_000), but does once a caller
+    passes a lower ``ctx_floor`` — same shared dataclass ``recache.py``
+    itself uses, not an independent copy of the two numbers."""
+    from claude_token_lens.model import Turn
+    from claude_token_lens.recache import RecacheThresholds
+
+    turn = Turn(ctx=15000, cache_read_tokens=1000)
+    assert compaction.is_recache_turn(turn) is False
+    assert compaction.is_recache_turn(turn, RecacheThresholds(ctx_floor=10_000)) is True
+
+
 # -- compaction_records_for_transcript --------------------------------------
 
 

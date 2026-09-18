@@ -65,6 +65,7 @@ from typing import Callable
 
 from .model import Column, CostBreakdown, Section, Table, TranscriptResult, Turn
 from .pricing import ModelRates, ResolvedRates, price_turn
+from .recache import RecacheThresholds
 
 #: Plan Appendix A4's TTL simulation assumptions, printed verbatim in the
 #: report's "## Assumptions" block (``ReportMeta.assumptions``), plus the
@@ -85,21 +86,114 @@ ASSUMPTIONS: list[str] = [
 POLICY_5M = 300
 POLICY_1H = 3600
 
-#: A side's share of cache-write tokens must be at least this fraction of
-#: the total for ``dominant_ttl`` to call it dominant (plan: "≥ 90% one
-#: side = that side").
-_DOMINANCE_THRESHOLD = 0.9
+@dataclass(slots=True)
+class TtlThresholds:
+    """Fix item 6: every tunable number this module's decisions depend
+    on, consolidated into one config-driven object (mirrors
+    :class:`~claude_token_lens.recache.RecacheThresholds`'s own
+    pattern) instead of five separate hardcoded module constants.
 
-#: ``build_section`` flags an agent type whose fidelity exceeds this
-#: percentage (plan: "flag agent types above 10%").
-_FIDELITY_WARN_PCT = 10.0
+    ``ctx_floor``/``cr_ratio``/``full_expiry_cr`` are WP3's RE-CACHE
+    trio, reused here (never re-tuned independently) only for this
+    module's own fallback re-cache classification when a turn's
+    ``recache_signature`` is unset — see ``_recache_classification``.
+    :meth:`from_config` builds them via
+    ``RecacheThresholds.from_config`` so the two modules can never
+    drift apart on these three numbers.
+    """
 
-#: A switch recommendation requires the candidate policy's cost to be
-#: below this fraction of the observed cost (plan: "> 5%" cheaper) *and*
-#: the absolute saving to exceed ``_SWITCH_USD_THRESHOLD`` (plan: "> 1.00
-#: USD") — both conditions, each independently blocking.
-_SWITCH_PCT_THRESHOLD = 0.95
-_SWITCH_USD_THRESHOLD = 1.00
+    #: A side's share of cache-write tokens must be at least this
+    #: fraction of the total for ``dominant_ttl`` to call it dominant
+    #: (plan: "≥ 90% one side = that side").
+    dominance: float = 0.9
+    #: ``build_section`` flags an agent type whose fidelity exceeds this
+    #: percentage (plan: "flag agent types above 10%").
+    fidelity_warn_pct: float = 10.0
+    #: A switch recommendation requires the candidate policy's cost to
+    #: be below this fraction of the observed cost (plan: "> 5%"
+    #: cheaper) *and* the absolute saving to exceed ``switch_usd``
+    #: (plan: "> 1.00 USD") — both conditions, each independently
+    #: blocking.
+    switch_pct: float = 0.95
+    switch_usd: float = 1.00
+    #: Near-miss histogram window (seconds) on the "just missed it"
+    #: side of each TTL boundary — the hit side uses the same width on
+    #: the boundary's other side (see ``_near_miss_bounds``).
+    near_miss_window_s: float = 60.0
+    #: RE-CACHE trio, reused from ``RecacheThresholds`` (see class
+    #: docstring) — WP3's own numbers, not independently tunable here.
+    ctx_floor: int = 20_000
+    cr_ratio: float = 0.2
+    full_expiry_cr: int = 2_000
+
+    @classmethod
+    def from_config(cls, config: dict | None) -> "TtlThresholds":
+        """Build thresholds from a config dict, keeping this class's
+        defaults for any key that's absent or of the wrong shape.
+
+        The RE-CACHE trio is delegated to
+        ``RecacheThresholds.from_config`` on the same ``config`` dict,
+        so a ``[thresholds]`` table shared between the two modules
+        (or WP3's own standalone one) resolves those three fields
+        identically in both places. The remaining, TTL-only keys are
+        read directly from either a flat dict of this class's field
+        names or a full ``config.toml``-shaped dict with a nested
+        ``thresholds`` table — whichever a caller happens to have
+        loaded, same convention as ``RecacheThresholds.from_config``.
+        """
+        recache_th = RecacheThresholds.from_config(config)
+
+        data = config or {}
+        if not isinstance(data, dict):
+            data = {}
+        nested = data.get("thresholds")
+        if isinstance(nested, dict):
+            data = nested
+
+        kwargs: dict = {
+            "ctx_floor": recache_th.ctx_floor,
+            "cr_ratio": recache_th.cr_ratio,
+            "full_expiry_cr": recache_th.full_expiry_cr,
+        }
+        if "dominance" in data:
+            kwargs["dominance"] = float(data["dominance"])
+        if "fidelity_warn_pct" in data:
+            kwargs["fidelity_warn_pct"] = float(data["fidelity_warn_pct"])
+        if "switch_pct" in data:
+            kwargs["switch_pct"] = float(data["switch_pct"])
+        if "switch_usd" in data:
+            kwargs["switch_usd"] = float(data["switch_usd"])
+        if "near_miss_window_s" in data:
+            kwargs["near_miss_window_s"] = float(data["near_miss_window_s"])
+        return cls(**kwargs)
+
+    def describe(self) -> list[str]:
+        """One sentence per threshold, for the report's thresholds
+        block (and this module's own table notes) — same convention as
+        ``RecacheThresholds.describe``."""
+        return [
+            f"dominance = {self.dominance:.2f}: dominant_ttl calls a side (5m or 1h) "
+            "dominant only once it reaches this share of cache-write tokens.",
+            f"fidelity_warn_pct = {self.fidelity_warn_pct:.1f}%: an agent type's row is "
+            "flagged when its simulation fidelity exceeds this.",
+            f"switch_pct = {self.switch_pct:.2f} and switch_usd = ${self.switch_usd:.2f}: "
+            "a policy switch is recommended only when the candidate policy costs less than "
+            "switch_pct of the observed cost AND saves more than switch_usd — both "
+            "conditions, independently blocking.",
+            f"near_miss_window_s = {self.near_miss_window_s:.0f}s: the near-miss "
+            "histogram's window on the \"just missed it\" side of each TTL boundary.",
+            f"ctx_floor = {self.ctx_floor:,} tokens, cr_ratio = {self.cr_ratio:.2f}, "
+            f"full_expiry_cr = {self.full_expiry_cr:,} tokens: WP3's RE-CACHE trio (see "
+            "RecacheThresholds), reused here only as this module's own fallback re-cache "
+            "classification when a turn's recache_signature is unset.",
+        ]
+
+
+#: Module-wide default thresholds, used by every function below whose
+#: caller doesn't supply its own ``TtlThresholds`` — keeps every
+#: existing call site (and the large majority of this module's own
+#: tests) working unchanged.
+_DEFAULT_THRESHOLDS = TtlThresholds()
 
 #: Gap buckets for the per-agent gap-distribution table: (key, label,
 #: lower bound inclusive, upper bound exclusive) in seconds.
@@ -142,25 +236,22 @@ def _as_lookup(rates: "RatesArg | RatesLookup") -> RatesLookup:
         return rates
     return lambda _model_id: rates
 
-#: Near-miss histogram boundaries (seconds), asymmetric on purpose: a
-#: gap that lands at or just under the TTL boundary still hit the cache
-#: (``[240, 300]``/``[3540, 3600]``, inclusive both ends — the boundary
-#: value itself is still a hit, see ``simulate``'s ``gap_s <= policy_s``
-#: branch), while a gap that lands just over it forced a full rewrite
-#: (``(300, 360]``/``(3600, 3660]``, exclusive of the boundary).
-_NEAR_5M_HIT = (240.0, 300.0)
-_NEAR_5M_MISS = (300.0, 360.0)
-_NEAR_1H_HIT = (3540.0, 3600.0)
-_NEAR_1H_MISS = (3600.0, 3660.0)
-
-#: WP3 (RE-CACHE)'s own minimal re-cache detection rule, mirrored here
-#: only as a fallback for item 5 (TTL-addressable share) when
-#: ``Turn.recache_signature`` is unset — see ``_recache_classification``.
-#: These must stay in sync with WP3's real detector; this module never
-#: sets ``recache_signature`` itself, only reads it when present.
-_RECACHE_CTX_FLOOR = 20_000
-_RECACHE_CR_RATIO = 0.2
-_RECACHE_FULL_EXPIRY_CR = 2_000
+def _near_miss_bounds(th: TtlThresholds) -> tuple[tuple[float, float], tuple[float, float], tuple[float, float], tuple[float, float]]:
+    """Fix item 6: the near-miss histogram boundaries (seconds),
+    parameterised on ``th.near_miss_window_s`` (default 60s) rather
+    than hardcoded — asymmetric on purpose: a gap that lands at or just
+    under the TTL boundary still hit the cache (inclusive both ends —
+    the boundary value itself is still a hit, see ``simulate``'s
+    ``gap_s <= policy_s`` branch), while a gap that lands just over it
+    forced a full rewrite (exclusive of the boundary). Returns
+    ``(near_5m_hit, near_5m_miss, near_1h_hit, near_1h_miss)``."""
+    w = th.near_miss_window_s
+    return (
+        (POLICY_5M - w, float(POLICY_5M)),
+        (float(POLICY_5M), POLICY_5M + w),
+        (POLICY_1H - w, float(POLICY_1H)),
+        (float(POLICY_1H), POLICY_1H + w),
+    )
 
 
 def _priced_turns(turns: list[Turn]) -> list[Turn]:
@@ -235,30 +326,36 @@ def _cache_tokens_at_input_rate(
     return inflated.input_cost - real.input_cost
 
 
-def _recache_classification(t: Turn) -> str | None:
+def _recache_classification(t: Turn, th: TtlThresholds | None = None) -> str | None:
     """"full-expiry" | "prefix-invalidated" | ``None`` for one priced
-    turn, for item 5 (TTL-addressable share).
+    turn, for item 5 (TTL-addressable share) and ``simulate``'s own
+    fallback branch.
 
     Prefers ``t.recache_signature`` (WP3's own classification) when set.
     Falls back, turn by turn, to WP3's documented minimal rule when it
     is ``None``: a re-cache turn is ``turn_index > 1`` (never the
-    transcript's first write) with ``ctx > 20_000`` and ``cache_read <
-    0.2 * ctx`` (most of a large prefix was NOT served from cache — the
-    signature of *some* re-cache event, TTL or content), sub-classified
-    as "full-expiry" when ``cache_read < 2_000`` (essentially nothing
-    survived: a clean TTL expiry) or otherwise "prefix-invalidated" (a
-    partial read: the cache content itself changed upstream of some
-    point, which no TTL policy can prevent). Falling back per turn
-    rather than only when every turn in a transcript is unsigned
-    produces the same result in every case this worktree can observe
-    (WP3 hasn't merged, so ``recache_signature`` is uniformly ``None``
-    across the whole corpus today) while staying correct turn-by-turn
-    once WP3 lands partially or its detector skips some turns.
+    transcript's first write) with ``ctx > th.ctx_floor`` and
+    ``cache_read < th.cr_ratio * ctx`` (most of a large prefix was NOT
+    served from cache — the signature of *some* re-cache event, TTL or
+    content), sub-classified as "full-expiry" when ``cache_read <
+    th.full_expiry_cr`` (essentially nothing survived: a clean TTL
+    expiry) or otherwise "prefix-invalidated" (a partial read: the
+    cache content itself changed upstream of some point, which no TTL
+    policy can prevent). Falling back per turn rather than only when
+    every turn in a transcript is unsigned produces the same result in
+    every case this worktree can observe (WP3 hasn't merged, so
+    ``recache_signature`` is uniformly ``None`` across the whole corpus
+    today) while staying correct turn-by-turn once WP3 lands partially
+    or its detector skips some turns.
+
+    ``th`` (fix item 6) defaults to :data:`_DEFAULT_THRESHOLDS` — WP3's
+    own documented defaults — when omitted.
     """
+    th = th or _DEFAULT_THRESHOLDS
     if t.recache_signature is not None:
         return t.recache_signature
-    if t.turn_index > 1 and t.ctx > _RECACHE_CTX_FLOOR and t.cache_read_tokens < _RECACHE_CR_RATIO * t.ctx:
-        return "full-expiry" if t.cache_read_tokens < _RECACHE_FULL_EXPIRY_CR else "prefix-invalidated"
+    if t.turn_index > 1 and t.ctx > th.ctx_floor and t.cache_read_tokens < th.cr_ratio * t.ctx:
+        return "full-expiry" if t.cache_read_tokens < th.full_expiry_cr else "prefix-invalidated"
     return None
 
 
@@ -282,11 +379,21 @@ class SimResult:
     unpriced_turns: int = 0
 
 
-def simulate(turns: list[Turn], rates: "RatesArg | RatesLookup", policy_s: int) -> SimResult:
+def simulate(
+    turns: list[Turn],
+    rates: "RatesArg | RatesLookup",
+    policy_s: int,
+    thresholds: TtlThresholds | None = None,
+) -> SimResult:
     """Replay ``turns`` under a single fixed TTL policy (plan Appendix
     A4): ``policy_s`` is ``POLICY_5M`` (300) or ``POLICY_1H`` (3600)
     seconds, though any positive int is accepted as a hypothetical
     policy.
+
+    ``thresholds`` (fix item 6) supplies the RE-CACHE trio and the
+    dominance cutoff this function's own fallback classification and
+    normalization rely on (see ``_recache_classification``,
+    ``normalize_ttl_split``); defaults to :data:`_DEFAULT_THRESHOLDS`.
 
     ``rates`` (fix item 2) is either a single already-resolved rate
     (applied to every turn regardless of its own model — the pre-item-2
@@ -324,8 +431,9 @@ def simulate(turns: list[Turn], rates: "RatesArg | RatesLookup", policy_s: int) 
     ``pricing.price_turn``, using the turn's own observed geo/model/ctx
     for everything else.
     """
+    th = thresholds or _DEFAULT_THRESHOLDS
     lookup = _as_lookup(rates)
-    turns = normalize_ttl_split(turns)
+    turns = normalize_ttl_split(turns, th)
     priced = _priced_turns(turns)
     prev_c = 0
     cost = 0.0
@@ -337,7 +445,7 @@ def simulate(turns: list[Turn], rates: "RatesArg | RatesLookup", policy_s: int) 
         c = t.cache_read_tokens + t.cache_creation_tokens
         if i == 0:
             read, write = 0, c
-        elif _recache_classification(t) == "prefix-invalidated":
+        elif _recache_classification(t, th) == "prefix-invalidated":
             read, write = t.cache_read_tokens, t.cache_creation_tokens
         elif t.gap_s is None:
             read, write = t.cache_read_tokens, t.cache_creation_tokens
@@ -367,7 +475,9 @@ def simulate(turns: list[Turn], rates: "RatesArg | RatesLookup", policy_s: int) 
     )
 
 
-def observed(turns: list[Turn], rates: "RatesArg | RatesLookup") -> SimResult:
+def observed(
+    turns: list[Turn], rates: "RatesArg | RatesLookup", thresholds: TtlThresholds | None = None
+) -> SimResult:
     """The real, as-billed cost: each priced turn through ``price_turn``'s
     default path (no ``write_split``/``read_tokens`` override, so it
     prices ``turn.cc_5m``/``turn.cc_1h``/``turn.cache_read_tokens`` as
@@ -377,10 +487,11 @@ def observed(turns: list[Turn], rates: "RatesArg | RatesLookup") -> SimResult:
     describes — there is only one code path either way.
 
     ``rates`` accepts the same single-rate-or-per-turn-lookup shape as
-    :func:`simulate` (fix item 2, see :func:`_as_lookup`).
+    :func:`simulate` (fix item 2, see :func:`_as_lookup`). ``thresholds``
+    (fix item 6) is forwarded to :func:`normalize_ttl_split`.
     """
     lookup = _as_lookup(rates)
-    turns = normalize_ttl_split(turns)
+    turns = normalize_ttl_split(turns, thresholds)
     priced = _priced_turns(turns)
     cost = 0.0
     write_tokens = 0
@@ -403,26 +514,28 @@ def observed(turns: list[Turn], rates: "RatesArg | RatesLookup") -> SimResult:
     )
 
 
-def dominant_ttl(turns: list[Turn]) -> str:
+def dominant_ttl(turns: list[Turn], thresholds: TtlThresholds | None = None) -> str:
     """Which TTL a transcript's priced turns actually observed, by
     cache-write token volume: "5m" or "1h" when one side is at least
-    ``_DOMINANCE_THRESHOLD`` (90%) of ``cc_5m + cc_1h``, "mixed" when
-    neither reaches that share, "none" when no cache-write tokens were
-    observed at all (nothing to be dominant over)."""
+    ``thresholds.dominance`` (default 90%) of ``cc_5m + cc_1h``, "mixed"
+    when neither reaches that share, "none" when no cache-write tokens
+    were observed at all (nothing to be dominant over). ``thresholds``
+    (fix item 6) defaults to :data:`_DEFAULT_THRESHOLDS`."""
+    th = thresholds or _DEFAULT_THRESHOLDS
     priced = _priced_turns(turns)
     total_5m = sum(t.cc_5m for t in priced)
     total_1h = sum(t.cc_1h for t in priced)
     total = total_5m + total_1h
     if total == 0:
         return "none"
-    if total_5m / total >= _DOMINANCE_THRESHOLD:
+    if total_5m / total >= th.dominance:
         return "5m"
-    if total_1h / total >= _DOMINANCE_THRESHOLD:
+    if total_1h / total >= th.dominance:
         return "1h"
     return "mixed"
 
 
-def normalize_ttl_split(turns: list[Turn]) -> list[Turn]:
+def normalize_ttl_split(turns: list[Turn], thresholds: TtlThresholds | None = None) -> list[Turn]:
     """Coordinator follow-up (WP12a diversity fixtures): a turn parsed
     from older, pre-5m/1h-split Claude Code JSONL carries
     ``ttl_split_unknown=True`` with ``cc_5m == cc_1h == 0`` even though
@@ -444,9 +557,10 @@ def normalize_ttl_split(turns: list[Turn]) -> list[Turn]:
     so the normalization happens exactly once per transcript, from the
     same whole-transcript view ``dominant_ttl`` needs, rather than
     requiring every internal ``cc_5m``/``cc_1h`` read-site downstream to
-    special-case it.
+    special-case it. ``thresholds`` (fix item 6) is forwarded to
+    :func:`dominant_ttl`.
     """
-    dominant = dominant_ttl(turns)
+    dominant = dominant_ttl(turns, thresholds)
     fallback_to_1h = dominant == "1h"
     normalized = []
     for t in turns:
@@ -460,7 +574,9 @@ def normalize_ttl_split(turns: list[Turn]) -> list[Turn]:
     return normalized
 
 
-def fidelity(turns: list[Turn], rates: "RatesArg | RatesLookup") -> float | None:
+def fidelity(
+    turns: list[Turn], rates: "RatesArg | RatesLookup", thresholds: TtlThresholds | None = None
+) -> float | None:
     """Self-check: simulate at the transcript's own ``dominant_ttl`` and
     compare to ``observed``. ``None`` when there is nothing meaningful to
     compare — ``dominant_ttl`` is "mixed"/"none", or observed cost is
@@ -469,19 +585,22 @@ def fidelity(turns: list[Turn], rates: "RatesArg | RatesLookup") -> float | None
 
     ``rates`` accepts the same single-rate-or-per-turn-lookup shape as
     :func:`simulate`/:func:`observed` (fix item 2) and is forwarded to
-    both unchanged."""
-    dominant = dominant_ttl(turns)
+    both unchanged. ``thresholds`` (fix item 6) is forwarded to
+    :func:`dominant_ttl`/:func:`observed`/:func:`simulate`."""
+    dominant = dominant_ttl(turns, thresholds)
     if dominant in ("mixed", "none"):
         return None
-    obs = observed(turns, rates)
+    obs = observed(turns, rates, thresholds)
     if obs.cost == 0:
         return None
     policy_s = POLICY_5M if dominant == "5m" else POLICY_1H
-    sim = simulate(turns, rates, policy_s)
+    sim = simulate(turns, rates, policy_s, thresholds)
     return abs(sim.cost - obs.cost) / obs.cost
 
 
-def cache_economy(turns: list[Turn], rates: "RatesArg | RatesLookup") -> dict:
+def cache_economy(
+    turns: list[Turn], rates: "RatesArg | RatesLookup", thresholds: TtlThresholds | None = None
+) -> dict:
     """Standalone cache-economy summary over an arbitrary turns list —
     item 6 of the cache-utilisation follow-up. Not tied to
     :class:`TtlStats`, so report assembly (WP10) can compute the same
@@ -501,14 +620,15 @@ def cache_economy(turns: list[Turn], rates: "RatesArg | RatesLookup") -> dict:
 
     ``rates`` accepts the same single-rate-or-per-turn-lookup shape as
     :func:`simulate`/:func:`observed` (fix item 2, see :func:`_as_lookup`)
-    — each turn is priced at its own resolved model's rate.
+    — each turn is priced at its own resolved model's rate. ``thresholds``
+    (fix item 6) is forwarded to :func:`normalize_ttl_split`.
 
     Returns a dict with keys ``tokens_written``, ``tokens_read``,
     ``write_usd``, ``read_usd``, ``uncached_equivalent_usd``,
     ``net_saving_usd``, ``cache_roi``, ``unpriced_turns``.
     """
     lookup = _as_lookup(rates)
-    turns = normalize_ttl_split(turns)
+    turns = normalize_ttl_split(turns, thresholds)
     priced = _priced_turns(turns)
     tokens_written = 0
     tokens_read = 0
@@ -693,7 +813,14 @@ class TtlTypeStats:
 
     # -- item 3: break-even share ---------------------------------------
     premium_ratio: float = 0.0
-    in_window_share: float = 0.0
+    #: Fix item 6: renamed from ``in_window_share`` and now stored as a
+    #: percentage (0-100), matching every other ``_pct`` field's
+    #: convention in this class — the old name/fraction was the one
+    #: percent-vs-fraction inconsistency in an otherwise all-percent
+    #: table. Weighted share of Σ_{all gaps} C_j (including turn 0's own
+    #: prefix — see ``TtlStats.add``) that falls in the (5m, 60m] gap
+    #: window.
+    in_window_pct: float = 0.0
     #: Σ_i W_i × (write_1h - write_5m) over every write, in USD: the
     #: total premium paid across the transcript if every write had used
     #: a 1h TTL instead of 5m.
@@ -702,10 +829,16 @@ class TtlTypeStats:
     #: total cost of re-writing the prefix each time a 5m TTL expired
     #: where a 1h one would have survived.
     expiry_loss_all_5m: float = 0.0
-    #: ``premium_ratio`` scaled by the incremental-to-prefix token ratio
-    #: (Σ W_i / Σ_{all gaps} C_j) — the break-even point for
-    #: ``in_window_share`` to clear before 1h pays for itself.
-    break_even_share: float = 0.0
+    #: Fix item 6: renamed from ``break_even_share`` and, like
+    #: ``in_window_pct``, now a percentage (0-100). ``premium_ratio``
+    #: scaled by the incremental-to-prefix token ratio (Σ W_i /
+    #: Σ_{all gaps} C_j, as a percentage) — the break-even point for
+    #: ``in_window_pct`` to clear before 1h pays for itself. The
+    #: identity ``margin > 0 <=> in_window_pct > break_even_pct`` holds
+    #: exactly (both sides are the same ratio scaled by the same
+    #: denominator and the same ``premium_ratio``/rate-per-token
+    #: factor) — see ``test_break_even_pct_identity_matches_margin_sign``.
+    break_even_pct: float = 0.0
 
     # -- item 4: near-miss histogram -------------------------------------
     near_5m_hit: int = 0
@@ -795,22 +928,40 @@ class TtlTypeStats:
 
     @property
     def delta_pct(self) -> float:
+        """Signed, like ``delta_usd``: positive means the best available
+        policy would have cost less than what was actually billed
+        (there was money on the table), negative means the observed
+        split already beat both fixed policies."""
         if self.cost_observed <= 0:
             return 0.0
         return 100.0 * self.delta_usd / self.cost_observed
 
     @property
-    def recommendation(self) -> str:
+    def saving_usd(self) -> float:
+        """Fix item 6: ``delta_usd`` clamped at 0 — "how much switching
+        to the best fixed policy would save", never a negative "saving"
+        when the observed split was already cheaper than either fixed
+        policy. ``delta_usd``/``delta_pct`` themselves keep their sign
+        (see their own docstrings) so a caller can still tell which
+        direction the gap runs; this is the "headline" figure for a
+        report that only wants to show real, positive opportunities."""
+        return max(0.0, self.delta_usd)
+
+    def recommendation(self, thresholds: "TtlThresholds | None" = None) -> str:
         """Plan Appendix A4's recommendation rule: switch only when the
-        candidate policy is both > 5% cheaper AND saves > $1.00 — each
-        threshold independently blocking. 1h is checked first (matching
-        the plan's own pseudocode order), then 5m; otherwise "no material
+        candidate policy is both > ``thresholds.switch_pct`` cheaper AND
+        saves > ``thresholds.switch_usd`` — each threshold independently
+        blocking (fix item 6: config-driven via ``TtlThresholds``,
+        defaulting to :data:`_DEFAULT_THRESHOLDS`, in place of two
+        hardcoded module constants). 1h is checked first (matching the
+        plan's own pseudocode order), then 5m; otherwise "no material
         difference"."""
+        th = thresholds or _DEFAULT_THRESHOLDS
         if self.cost_observed <= 0:
             return "no material difference"
         for policy_cost, label in ((self.cost_all_1h, "1h"), (self.cost_all_5m, "5m")):
             saving = self.cost_observed - policy_cost
-            if policy_cost < self.cost_observed * _SWITCH_PCT_THRESHOLD and saving > _SWITCH_USD_THRESHOLD:
+            if policy_cost < self.cost_observed * th.switch_pct and saving > th.switch_usd:
                 return f"switch to {label}"
         return "no material difference"
 
@@ -890,7 +1041,12 @@ class TtlStats:
         #: type.
         self._subagent_mtimes_ns: list[int] = []
 
-    def add(self, result: TranscriptResult, rates_lookup: "RatesArg | RatesLookup") -> None:
+    def add(
+        self,
+        result: TranscriptResult,
+        rates_lookup: "RatesArg | RatesLookup",
+        thresholds: TtlThresholds | None = None,
+    ) -> None:
         """Fold one transcript's turns into its agent type's running
         totals: "top-level" for a ``kind="top-level"`` transcript,
         otherwise ``result.meta.agent_type`` (falling back to "unknown"
@@ -906,7 +1062,16 @@ class TtlStats:
         resolved model's rate either way; a turn whose model the lookup
         can't resolve prices at zero and is counted in
         ``unpriced_turns``.
+
+        ``thresholds`` (fix item 6) defaults to :data:`_DEFAULT_THRESHOLDS`
+        and is forwarded to every threshold-driven call this method
+        makes (``normalize_ttl_split``, ``_recache_classification``,
+        ``observed``/``simulate``/``fidelity``, the near-miss bounds) —
+        pass the same instance here and to ``build_section`` so the
+        report's printed thresholds always match what was actually
+        accumulated.
         """
+        th = thresholds or _DEFAULT_THRESHOLDS
         lookup = _as_lookup(rates_lookup)
         key = "top-level" if result.meta.kind == "top-level" else (result.meta.agent_type or "unknown")
         acc = self._raw.setdefault(key, _RawAccumulator(key=key))
@@ -921,8 +1086,9 @@ class TtlStats:
         # this method's own direct cc_5m/cc_1h reads below and the
         # observed/simulate/fidelity/cache_economy calls further down
         # see the same corrected split.
-        turns = normalize_ttl_split(result.turns)
+        turns = normalize_ttl_split(result.turns, th)
         priced = _priced_turns(turns)
+        near_5m_hit, near_5m_miss, near_1h_hit, near_1h_miss = _near_miss_bounds(th)
         acc.priced_turns += len(priced)
         n = len(priced)
         for i, t in enumerate(priced):
@@ -946,6 +1112,14 @@ class TtlStats:
                 acc.premium_all_1h_usd += _write_cost(t, turn_rates, POLICY_1H, w_i) - _write_cost(
                     t, turn_rates, POLICY_5M, w_i
                 )
+
+            # Fix item 6: turn 0's own prefix belongs in the break-even
+            # denominator too — it's part of "every C_j the transcript
+            # ever held" (Σ_{all gaps} C_j in in_window_pct/
+            # break_even_pct's docstrings), even though it has no *gap*
+            # in front of it to classify in/out of the window.
+            if i == 0:
+                acc.inwindow_total_weight += c_i
 
             # i == 0 is the transcript's first priced turn: it has no
             # previous priced turn, so gap_s is always None there and
@@ -978,15 +1152,15 @@ class TtlStats:
                 # 5m write rate) rather than this turn's real observed
                 # cache_write_cost, so a near-miss at the 1h boundary
                 # isn't priced at the 1h premium rate it actually paid.
-                if _NEAR_5M_HIT[0] <= gap <= _NEAR_5M_HIT[1]:
+                if near_5m_hit[0] <= gap <= near_5m_hit[1]:
                     acc.near_5m_hit += 1
-                elif _NEAR_5M_MISS[0] < gap <= _NEAR_5M_MISS[1]:
+                elif near_5m_miss[0] < gap <= near_5m_miss[1]:
                     acc.near_5m_miss += 1
                     acc.near_5m_miss_tokens += t.cache_creation_tokens
                     acc.near_5m_miss_usd += _write_cost(t, turn_rates, POLICY_5M, c_i)
-                if _NEAR_1H_HIT[0] <= gap <= _NEAR_1H_HIT[1]:
+                if near_1h_hit[0] <= gap <= near_1h_hit[1]:
                     acc.near_1h_hit += 1
-                elif _NEAR_1H_MISS[0] < gap <= _NEAR_1H_MISS[1]:
+                elif near_1h_miss[0] < gap <= near_1h_miss[1]:
                     acc.near_1h_miss += 1
                     acc.near_1h_miss_tokens += t.cache_creation_tokens
                     acc.near_1h_miss_usd += _write_cost(t, turn_rates, POLICY_5M, c_i)
@@ -1052,7 +1226,7 @@ class TtlStats:
 
             # Item 5: TTL-addressable (full-expiry) vs content-addressable
             # (prefix-invalidated) re-cache tokens/USD.
-            classification = _recache_classification(t)
+            classification = _recache_classification(t, th)
             if classification in ("full-expiry", "prefix-invalidated"):
                 write_cost = price_turn(t, turn_rates).cache_write_cost
                 if classification == "full-expiry":
@@ -1066,9 +1240,9 @@ class TtlStats:
         # look ahead across possibly many turns — see _accumulate_waste).
         _accumulate_waste(priced, lookup, acc)
 
-        obs = observed(turns, lookup)
-        sim_5m = simulate(turns, lookup, POLICY_5M)
-        sim_1h = simulate(turns, lookup, POLICY_1H)
+        obs = observed(turns, lookup, th)
+        sim_5m = simulate(turns, lookup, POLICY_5M, th)
+        sim_1h = simulate(turns, lookup, POLICY_1H, th)
         acc.cost_observed += obs.cost
         acc.cost_all_5m += sim_5m.cost
         acc.cost_all_1h += sim_1h.cost
@@ -1078,7 +1252,7 @@ class TtlStats:
         # either would do.
         acc.unsimulatable += sim_5m.unsimulatable
 
-        fid = fidelity(turns, lookup)
+        fid = fidelity(turns, lookup, th)
         if fid is not None:
             weight = obs.write_tokens + obs.read_tokens
             if weight > 0:
@@ -1087,7 +1261,7 @@ class TtlStats:
 
         # Item 6: cache economy, delegated to the standalone function so
         # the two are guaranteed to agree (see cache_economy's docstring).
-        economy = cache_economy(turns, lookup)
+        economy = cache_economy(turns, lookup, th)
         acc.economy_tokens_written += economy["tokens_written"]
         acc.economy_tokens_read += economy["tokens_read"]
         acc.economy_write_usd += economy["write_usd"]
@@ -1125,14 +1299,19 @@ class TtlStats:
                 if rates is not None and rates.cache_write_5m
                 else 0.0
             )
-            in_window_share = (
-                acc.inwindow_weight / acc.inwindow_total_weight
+            # Fix item 6: both stored as percentages (0-100), and the
+            # denominator (acc.inwindow_total_weight) now includes turn
+            # 0's own prefix (see TtlStats.add) — "every C_j the
+            # transcript ever held", not only the ones with a gap in
+            # front of them to classify.
+            in_window_pct = (
+                100.0 * acc.inwindow_weight / acc.inwindow_total_weight
                 if acc.inwindow_total_weight > 0
                 else 0.0
             )
             total_w = acc.cc_5m_tokens + acc.cc_1h_tokens  # Σ W_i, every write
-            break_even_share = (
-                premium_ratio * (total_w / acc.inwindow_total_weight)
+            break_even_pct = (
+                100.0 * premium_ratio * (total_w / acc.inwindow_total_weight)
                 if acc.inwindow_total_weight > 0
                 else 0.0
             )
@@ -1173,10 +1352,10 @@ class TtlStats:
                 premium_5m_loss_usd=acc.premium_5m_loss_usd,
                 premium_5m_would_expire_tokens=acc.premium_5m_would_expire_tokens,
                 premium_ratio=premium_ratio,
-                in_window_share=in_window_share,
+                in_window_pct=in_window_pct,
                 premium_all_1h=acc.premium_all_1h_usd,
                 expiry_loss_all_5m=acc.expiry_loss_all_5m_usd,
-                break_even_share=break_even_share,
+                break_even_pct=break_even_pct,
                 near_5m_hit=acc.near_5m_hit,
                 near_5m_miss=acc.near_5m_miss,
                 near_5m_miss_tokens=acc.near_5m_miss_tokens,
@@ -1214,17 +1393,28 @@ _SUBSCRIPTION_1H_IGNORED_NOTE = (
 
 
 def build_section(
-    stats: TtlStats, billing_mode: str = "api", window_start: datetime | None = None
+    stats: TtlStats,
+    billing_mode: str = "api",
+    window_start: datetime | None = None,
+    thresholds: TtlThresholds | None = None,
 ) -> Section:
     """Render a :class:`TtlStats` roll-up as the report's "Cache TTL
     break-even" section: the per-agent-type table, a per-agent gap
     distribution table, the six cache-utilisation-monitoring tables
     (wasted writes, 1h premium waste vs 5m expiry loss, break-even
     share, near-miss histogram, TTL-addressable share, cache economy),
-    and notes (a fidelity warning for any agent type above 10%, plus —
-    in ``billing_mode="subscription"`` — the subscription-suppression
-    note, plus — when ``window_start`` is given and a subagent
-    transcript predates it — the subagent-window discovery caveat).
+    and notes (a fidelity warning for any agent type above the
+    configured threshold, plus — in ``billing_mode="subscription"`` —
+    the subscription-suppression note, plus — when ``window_start`` is
+    given and a subagent transcript predates it — the subagent-window
+    discovery caveat, plus the thresholds themselves, spelled out —
+    same convention as ``recache.build_section``'s own notes).
+
+    ``thresholds`` (fix item 6) should be the same :class:`TtlThresholds`
+    instance passed to every ``TtlStats.add`` call that produced
+    ``stats``, so the fidelity-warning cutoff and switch recommendation
+    printed here agree with the numbers actually accumulated. Defaults
+    to :data:`_DEFAULT_THRESHOLDS` when omitted.
 
     ``billing_mode="subscription"`` suppresses every subagent (non
     "top-level") row's switch recommendation, per plan Appendix A5's
@@ -1249,6 +1439,7 @@ def build_section(
     ``None``, so a caller that doesn't track a window pays nothing for
     this check.
     """
+    th = thresholds or _DEFAULT_THRESHOLDS
     by_key = stats.by_key()
 
     columns = [
@@ -1265,8 +1456,17 @@ def build_section(
         Column(key="cost_all_5m", label="Cost (all-5m)", kind="money"),
         Column(key="cost_all_1h", label="Cost (all-1h)", kind="money"),
         Column(key="best_policy", label="Best policy", kind="str"),
-        Column(key="delta_usd", label="Delta vs observed", kind="money"),
-        Column(key="delta_pct", label="Delta vs observed", kind="pct"),
+        Column(
+            key="delta_usd",
+            label="Delta vs best policy (USD, +wasted paying more than best)",
+            kind="money",
+        ),
+        Column(
+            key="delta_pct",
+            label="Delta vs best policy (%, +wasted paying more than best)",
+            kind="pct",
+        ),
+        Column(key="saving_usd", label="Saving if switched (USD, 0 floor)", kind="money"),
         Column(key="fidelity_pct", label="Fidelity", kind="pct"),
         Column(key="unsimulatable", label="Unsimulatable turns", kind="int"),
         Column(key="unpriced_turns", label="Unpriced turns (unknown model)", kind="int"),
@@ -1278,7 +1478,7 @@ def build_section(
     fidelity_warnings: list[str] = []
     for key in sorted(by_key):
         row_stats = by_key[key]
-        recommendation = row_stats.recommendation
+        recommendation = row_stats.recommendation(th)
         if (
             billing_mode == "subscription"
             and key != "top-level"
@@ -1302,6 +1502,7 @@ def build_section(
                 row_stats.best_policy,
                 row_stats.delta_usd,
                 row_stats.delta_pct,
+                row_stats.saving_usd,
                 row_stats.fidelity_pct,
                 row_stats.unsimulatable,
                 row_stats.unpriced_turns,
@@ -1309,7 +1510,7 @@ def build_section(
                 row_stats.lever,
             ]
         )
-        if row_stats.fidelity_pct is not None and row_stats.fidelity_pct > _FIDELITY_WARN_PCT:
+        if row_stats.fidelity_pct is not None and row_stats.fidelity_pct > th.fidelity_warn_pct:
             fidelity_warnings.append(key)
 
     table = Table(
@@ -1427,7 +1628,7 @@ def build_section(
             " tokens: W_i x (w1h - w5m).",
             "\"Earned\" and the 5m expiry loss both price the avoided (or incurred) re-write of"
             " the *next* turn's own prefix, C_{i+1} x w5m — the same basis as"
-            " expiry_loss_all_5m/break_even_share above, so summing m5_loss_usd across a"
+            " expiry_loss_all_5m/break_even_pct above, so summing m5_loss_usd across a"
             " transcript where every turn writes something reproduces expiry_loss_all_5m"
             " exactly.",
         ],
@@ -1439,8 +1640,8 @@ def build_section(
         Column(key="premium_all_1h", label="Premium if all 1h", kind="money"),
         Column(key="expiry_loss_all_5m", label="Expiry loss if all 5m", kind="money"),
         Column(key="margin", label="Margin", kind="money"),
-        Column(key="in_window_share", label="Prefix-weighted 5-60min share", kind="pct"),
-        Column(key="break_even_share", label="Break-even share", kind="pct"),
+        Column(key="in_window_pct", label="Prefix-weighted 5-60min share", kind="pct"),
+        Column(key="break_even_pct", label="Break-even share", kind="pct"),
         Column(key="verdict", label="Verdict", kind="str"),
     ]
     break_even_rows = [
@@ -1449,8 +1650,8 @@ def build_section(
             by_key[key].premium_all_1h,
             by_key[key].expiry_loss_all_5m,
             by_key[key].margin,
-            by_key[key].in_window_share * 100.0,
-            by_key[key].break_even_share * 100.0,
+            by_key[key].in_window_pct,
+            by_key[key].break_even_pct,
             by_key[key].verdict,
         ]
         for key in sorted(by_key)
@@ -1611,10 +1812,12 @@ def build_section(
         ],
     )
 
-    notes: list[str] = []
+    notes: list[str] = [f"Thresholds: {' '.join(th.describe())}"]
     if fidelity_warnings:
         notes.append(
-            "Simulation fidelity exceeds 10% for: " + ", ".join(fidelity_warnings) + "."
+            f"Simulation fidelity exceeds {th.fidelity_warn_pct:.0f}% for: "
+            + ", ".join(fidelity_warnings)
+            + "."
         )
     if billing_mode == "subscription":
         notes.append(
@@ -1660,6 +1863,7 @@ __all__ = [
     "ASSUMPTIONS",
     "POLICY_5M",
     "POLICY_1H",
+    "TtlThresholds",
     "SimResult",
     "TtlTypeStats",
     "TtlStats",

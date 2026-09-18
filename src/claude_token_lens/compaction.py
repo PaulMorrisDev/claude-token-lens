@@ -18,13 +18,16 @@ RE-CACHE detector (deviation, reported rather than made silently — see
 ``model.py``'s module docstring for this project's convention on that):
 the plan's WP6 brief asks for "whether that turn was a re-cache per WP3's
 rule re-implemented minimally here as ``ctx > 20k and cache_read <
-0.2*ctx``". WP3 (``recache.py``) does not exist yet in this worktree, so
-:func:`is_recache_turn` below is exactly that minimal rule and nothing
-more — no signature classification (full-expiry vs prefix-invalidated),
-no thresholds object, no override. **WP10 (report assembly) should
-replace every call site here with the shared ``recache.py`` detector once
-WP3 lands**, so this module's own notion of "re-cache" never drifts from
-the corpus-wide one.
+0.2*ctx``". WP3 (``recache.py``) has since landed, so :func:`is_recache_turn`
+below (fix item 6) now takes its ctx_floor/cr_ratio pair from
+``recache.RecacheThresholds`` instead of an independent hardcoded copy —
+one fewer place the two numbers could drift apart — but it still only
+implements that two-number minimal rule and nothing more: no signature
+classification (full-expiry vs prefix-invalidated), no override beyond
+the two shared numbers. **WP10 (report assembly) should replace every
+call site here with the shared ``recache.py`` detector once it's wired
+into report assembly**, so this module's own notion of "re-cache" never
+drifts from the corpus-wide one in the meantime.
 
 Correlating a compaction to "the following turn": ``Turn`` doesn't carry
 a back-reference to the ``Event`` objects that preceded it (only their
@@ -67,12 +70,7 @@ from typing import Iterable
 
 from .model import Column, Event, EventKind, Section, Table, TranscriptResult, Turn
 from .pricing import ModelRates, ResolvedRates, price_turn
-
-#: Minimal re-implementation of WP3's RE-CACHE floor/ratio (see the module
-#: docstring's deviation note) — not the full ``RecacheThresholds`` the
-#: plan describes for WP3, just the two numbers this module's brief names.
-RECACHE_CTX_FLOOR = 20_000
-RECACHE_CR_RATIO = 0.2
+from .recache import RecacheThresholds
 
 #: Tool names counted as "rediscovery" work in :func:`rediscovery`.
 _REDISCOVERY_TOOLS = frozenset({"Read", "Grep", "Glob"})
@@ -84,18 +82,24 @@ _REDISCOVERY_WINDOW = 10
 _PER_SESSION_TABLE_LIMIT = 20
 
 
-def is_recache_turn(turn: Turn) -> bool:
+def is_recache_turn(turn: Turn, thresholds: RecacheThresholds | None = None) -> bool:
     """Minimal RE-CACHE test: a large context whose cache-read share is
     small, i.e. the turn looks like it re-sent most of its prefix as a
     fresh write rather than reading it back from cache.
 
     See the module docstring's deviation note — this is deliberately not
-    WP3's full detector (no signature, no thresholds object), just the two
-    numbers ("ctx > 20k and cache_read < 0.2*ctx") the WP6 brief specifies.
+    WP3's full detector (no signature classification), just the two
+    numbers ("ctx > ctx_floor and cache_read < cr_ratio*ctx") the WP6
+    brief specifies. Fix item 6: those two numbers now come from
+    ``thresholds`` (a ``recache.RecacheThresholds``, defaulting to its
+    own defaults — ctx_floor=20_000, cr_ratio=0.2 — when omitted)
+    instead of a second, independently hardcoded copy of the same pair,
+    so this module and ``recache.py`` can never drift apart on them.
     """
-    if turn.ctx <= RECACHE_CTX_FLOOR:
+    th = thresholds or RecacheThresholds()
+    if turn.ctx <= th.ctx_floor:
         return False
-    return turn.cache_read_tokens < RECACHE_CR_RATIO * turn.ctx
+    return turn.cache_read_tokens < th.cr_ratio * turn.ctx
 
 
 def _parse_ts(ts_raw: str | None) -> datetime | None:
@@ -190,12 +194,17 @@ class CompactionRecord:
 
 
 def compaction_records_for_transcript(
-    tr: TranscriptResult, rates: ResolvedRates | ModelRates | None
+    tr: TranscriptResult,
+    rates: ResolvedRates | ModelRates | None,
+    thresholds: RecacheThresholds | None = None,
 ) -> list[CompactionRecord]:
     """The "per transcript list of compaction records" the WP6 brief
     asks for: one :class:`CompactionRecord` per ``COMPACT_BOUNDARY``
     event in ``tr.events``, correlated to the priced turn immediately
     following it (see the module docstring).
+
+    ``thresholds`` (fix item 6) is forwarded to :func:`is_recache_turn`
+    for the ``next_turn_is_recache`` field.
 
     ``rates`` prices that following turn's observed cache-write split
     (``price_turn``'s default path — ``turn.cc_5m``/``turn.cc_1h``, not a
@@ -249,7 +258,7 @@ def compaction_records_for_transcript(
             next_turn = priced_turns[turn_idx]
             next_cache_creation = next_turn.cache_creation_tokens
             next_write_cost = price_turn(next_turn, rates).cache_write_cost
-            next_is_recache = is_recache_turn(next_turn)
+            next_is_recache = is_recache_turn(next_turn, thresholds)
 
         records.append(
             CompactionRecord(
@@ -300,18 +309,22 @@ class CompactionStats:
         return stats
 
     def add_transcript(
-        self, tr: TranscriptResult, rates: ResolvedRates | ModelRates | None
+        self,
+        tr: TranscriptResult,
+        rates: ResolvedRates | ModelRates | None,
+        thresholds: RecacheThresholds | None = None,
     ) -> list[CompactionRecord]:
         """Fold one transcript's compactions (and overall cache_creation
         total) into the running aggregates. Returns this transcript's own
         record list (the "per transcript list" the brief names), which is
-        also appended to ``self.records``.
+        also appended to ``self.records``. ``thresholds`` (fix item 6) is
+        forwarded to :func:`compaction_records_for_transcript`.
         """
         session_id = tr.meta.session_id
         self._sessions_seen.add(session_id)
         self.total_cache_creation += sum(t.cache_creation_tokens for t in _priced_turns(tr))
 
-        records = compaction_records_for_transcript(tr, rates)
+        records = compaction_records_for_transcript(tr, rates, thresholds)
         if records:
             self._sessions_with_compaction.add(session_id)
             self._compactions_per_session[session_id] = (
@@ -580,8 +593,6 @@ def rediscovery(tr: TranscriptResult) -> list[RediscoveryWindow]:
 
 
 __all__ = [
-    "RECACHE_CTX_FLOOR",
-    "RECACHE_CR_RATIO",
     "is_recache_turn",
     "CompactionRecord",
     "compaction_records_for_transcript",
