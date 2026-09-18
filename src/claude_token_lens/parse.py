@@ -25,6 +25,13 @@ so a shell call is surfaced even when it wasn't the first tool invoked in
 that turn. The first turn in a transcript has no previous turn, so its
 ``preceding_tool`` is "n/a".
 
+Replay dedup: a rewind/resume can re-emit a whole block of lines verbatim
+(same ``uuid``) later in the same file. Every line (including assistant
+lines, which are also deduped separately by message id) is skipped and
+counted in ``Diagnostics.replayed_lines`` the second and later time its
+``uuid`` is seen; lines with no ``uuid`` (``queue-operation``,
+``bridge-session``) are never subject to this check.
+
 Privacy: no raw JSONL line, message content, tool_result content, file
 path, or command is ever retained past the single line/block that
 produces it. Only lengths, short prefixes (<=40 chars), names, and counts
@@ -378,6 +385,14 @@ def parse_transcript(path: str | Path, meta: TranscriptMeta) -> TranscriptResult
     events_since_current: list[Event] = []
     attachments_since_current: list[str] = []
     finalized_keys: set[str] = set()
+    #: Lines already processed once, by ``uuid`` — a rewind/resume can
+    #: replay a whole block of user/attachment/system (and, rarely,
+    #: assistant) lines verbatim with the same uuid; the replay is
+    #: skipped outright and counted, not reprocessed as new activity.
+    #: ``queue-operation``/``bridge-session`` lines carry no uuid, so they
+    #: fall through this check untouched (guarded by the ``isinstance``/
+    #: truthiness check below) rather than being treated as replays.
+    seen_uuids: set[str] = set()
 
     current: _PendingTurn | None = None
     current_key: str | None = None
@@ -386,6 +401,13 @@ def parse_transcript(path: str | Path, meta: TranscriptMeta) -> TranscriptResult
     priced_turn_count = 0
 
     for _line_no, d in jsonl.iter_lines(path, stats=line_stats):
+        uuid_val = d.get("uuid")
+        if isinstance(uuid_val, str) and uuid_val:
+            if uuid_val in seen_uuids:
+                diagnostics.replayed_lines += 1
+                continue
+            seen_uuids.add(uuid_val)
+
         line_type = d.get("type")
 
         if line_type == "assistant":

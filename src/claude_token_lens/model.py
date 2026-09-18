@@ -58,6 +58,9 @@ Independent-review follow-up fixes (post-WP1/WP2/WP7), all with defaults:
 - ``Diagnostics.trailing_events: int = 0`` — events observed after the
   last finalised turn in a transcript (nothing left to attach them to).
   See ``parse.py``'s two-buffer rewrite.
+- ``Diagnostics.replayed_lines: int = 0`` — non-blank lines skipped
+  because their ``uuid`` was already seen earlier in the same file
+  (transcripts replay whole blocks on rewind/resume).
 """
 
 from __future__ import annotations
@@ -221,6 +224,9 @@ class Diagnostics:
     #: Independent-review addition (see module docstring): events observed
     #: after the last finalised turn, attached to no turn.
     trailing_events: int = 0
+    #: Independent-review addition (see module docstring): lines skipped
+    #: because their ``uuid`` had already been seen earlier in this file.
+    replayed_lines: int = 0
 
 
 @dataclass(slots=True)

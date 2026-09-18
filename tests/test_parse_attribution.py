@@ -1,7 +1,5 @@
-"""Independent-review follow-up fix (task 1): the two-buffer rewrite of
-``parse_transcript``'s main loop so a non-assistant line attaches to the
-turn it chronologically PRECEDES, not the turn whose finalisation it
-happened to interrupt.
+"""Independent-review follow-up fixes: the two-buffer preceding-events
+attribution rewrite (task 1) and uuid-based replay dedup (task 2).
 
 Each test exercises the behaviour through a full ``parse_transcript``
 pass over a small synthetic fixture, not by calling private helpers
@@ -69,3 +67,51 @@ def test_first_turn_has_no_preceding_events_even_with_no_prior_lines(tmp_path: P
     assert len(result.turns) == 1
     assert result.turns[0].preceding_event_kinds == ()
     assert result.diagnostics.trailing_events == 0
+
+
+# -- Task 2: replayed non-assistant lines are deduped by uuid. ----------
+
+
+def test_replayed_lines_deduped_by_uuid_produce_one_event_each(tmp_path: Path):
+    human = user_str_line("do the thing", origin={"kind": "human"})
+    human["uuid"] = "dup-uuid-human"
+    attach = attachment_line("total_tokens_reminder")
+    attach["uuid"] = "dup-uuid-attachment"
+
+    lines = [
+        human,
+        attach,
+        turn_line(message_id="msg_1"),
+        # Rewind/resume replays the same two lines verbatim, same uuids.
+        dict(human),
+        dict(attach),
+        turn_line(message_id="msg_2"),
+    ]
+    path = tmp_path / "session.jsonl"
+    write_jsonl(path, lines)
+
+    result = parse_transcript(path, TranscriptMeta(path=str(path)))
+
+    assert result.diagnostics.replayed_lines == 2
+
+    human_events = [e for e in result.events if e.kind == EventKind.HUMAN_TEXT]
+    reminder_events = [e for e in result.events if e.kind == EventKind.REMINDER]
+    assert len(human_events) == 1
+    assert len(reminder_events) == 1
+
+
+def test_replayed_assistant_line_with_same_uuid_is_also_deduped(tmp_path: Path):
+    # A replayed assistant line (same uuid, same message.id) must be
+    # skipped by the uuid guard before it ever reaches the turn-merge
+    # logic - not merged in twice.
+    turn_a = turn_line(message_id="msg_A", input_tokens=100, output_tokens=10)
+    turn_b = turn_line(message_id="msg_B", input_tokens=50, output_tokens=5)
+    lines = [turn_a, turn_b, dict(turn_a)]
+    path = tmp_path / "session.jsonl"
+    write_jsonl(path, lines)
+
+    result = parse_transcript(path, TranscriptMeta(path=str(path)))
+
+    assert result.diagnostics.replayed_lines == 1
+    assert result.diagnostics.assistant_lines == 2
+    assert len(result.turns) == 2
