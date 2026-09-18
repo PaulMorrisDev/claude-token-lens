@@ -1,0 +1,8 @@
+{
+  "runId": "wf_minimal-000",
+  "agentCount": 1,
+  "phases": [
+    {"title": "Only phase", "detail": "placeholder detail"}
+  ],
+  "status": "killed"
+}
