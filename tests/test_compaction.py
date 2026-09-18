@@ -103,7 +103,11 @@ def _build_fixture_a(tmp_path: Path, session_id: str = "sess_A") -> tuple[Path, 
                 "trigger": "manual",
                 "preTokens": 50000,
                 "postTokens": 15000,
-                "cumulativeDroppedTokens": 35000,
+                # Real cumulativeDroppedTokens is a running total across the
+                # whole session (verified against a real corpus -- see
+                # compaction.py's docstring): 80000 from compaction #1 plus
+                # this compaction's own 35000 = 115000, not a fresh 35000.
+                "cumulativeDroppedTokens": 115000,
                 "durationMs": 900,
             },
         ),
@@ -230,6 +234,120 @@ def test_compaction_record_no_following_turn_leaves_next_fields_none(tmp_path, s
     assert records[0].next_turn_is_recache is None
 
 
+def test_compaction_record_dropped_tokens_is_delta_not_raw_cumulative(tmp_path, sonnet_rates):
+    """Fix 4: compactMetadata.cumulativeDroppedTokens is a running total for
+    the whole session (verified against a real corpus, see compaction.py's
+    module docstring), so a session with two compactions where the field
+    reads 80000 then 115000 must report per-compaction drops of 80000 and
+    35000 -- not 80000 and 115000 (which would double count the first
+    compaction's drop).
+    """
+    path, meta = _build_fixture_a(tmp_path)
+    result = parse_transcript(path, meta)
+    records = compaction.compaction_records_for_transcript(result, sonnet_rates)
+    assert [r.dropped_tokens for r in records] == [80000, 35000]
+
+
+def test_compaction_record_dropped_tokens_counter_reset_falls_back_to_raw(tmp_path, sonnet_rates):
+    """A cumulative counter that goes backwards (never seen on the real
+    corpus, but not something to crash or go negative on) is treated as a
+    fresh counter: the delta falls back to the raw value instead of
+    subtracting into a nonsensical negative number.
+    """
+    lines = [
+        turn_line(model="claude-sonnet-5", timestamp="2026-09-18T12:00:00.000Z"),
+        system_line(
+            "compact_boundary",
+            timestamp="2026-09-18T12:00:30.000Z",
+            compactMetadata={"trigger": "auto", "preTokens": 100000, "cumulativeDroppedTokens": 80000},
+        ),
+        turn_line(model="claude-sonnet-5", timestamp="2026-09-18T12:01:00.000Z"),
+        system_line(
+            "compact_boundary",
+            timestamp="2026-09-18T12:01:30.000Z",
+            compactMetadata={"trigger": "auto", "preTokens": 50000, "cumulativeDroppedTokens": 10000},
+        ),
+        turn_line(model="claude-sonnet-5", timestamp="2026-09-18T12:02:00.000Z"),
+    ]
+    path = tmp_path / "session.jsonl"
+    write_jsonl(path, lines)
+    result = parse_transcript(path, TranscriptMeta(path=str(path), session_id="sess_reset"))
+    records = compaction.compaction_records_for_transcript(result, sonnet_rates)
+    assert [r.dropped_tokens for r in records] == [80000, 10000]
+
+
+def test_compaction_record_dropped_tokens_none_when_field_absent(tmp_path, sonnet_rates):
+    lines = [
+        turn_line(model="claude-sonnet-5", timestamp="2026-09-18T12:00:00.000Z"),
+        system_line(
+            "compact_boundary",
+            timestamp="2026-09-18T12:00:30.000Z",
+            compactMetadata={"trigger": "auto", "preTokens": 1000, "postTokens": 100},
+        ),
+        turn_line(model="claude-sonnet-5", timestamp="2026-09-18T12:01:00.000Z"),
+    ]
+    path = tmp_path / "session.jsonl"
+    write_jsonl(path, lines)
+    result = parse_transcript(path, TranscriptMeta(path=str(path), session_id="sess_no_drop"))
+    records = compaction.compaction_records_for_transcript(result, sonnet_rates)
+    assert records[0].dropped_tokens is None
+
+
+def test_compaction_join_event_with_unparsable_timestamp_leaves_next_fields_none(tmp_path, sonnet_rates):
+    lines = [
+        turn_line(model="claude-sonnet-5", timestamp="2026-09-18T12:00:00.000Z"),
+        system_line(
+            "compact_boundary",
+            timestamp="not-a-timestamp",
+            compactMetadata={"trigger": "auto", "preTokens": 1000, "postTokens": 100},
+        ),
+        turn_line(model="claude-sonnet-5", timestamp="2026-09-18T12:01:00.000Z"),
+    ]
+    path = tmp_path / "session.jsonl"
+    write_jsonl(path, lines)
+    result = parse_transcript(path, TranscriptMeta(path=str(path), session_id="sess_bad_ts"))
+    records = compaction.compaction_records_for_transcript(result, sonnet_rates)
+    assert len(records) == 1
+    # Must not silently grab the pointer's current turn -- an event with no
+    # parsable timestamp of its own can't be correlated to anything.
+    assert records[0].next_turn_cache_creation is None
+    assert records[0].next_turn_write_cost is None
+    assert records[0].next_turn_is_recache is None
+
+
+def test_compaction_join_skips_turn_with_unparsable_timestamp(tmp_path, sonnet_rates):
+    """A priced turn with no parsable timestamp can't be confirmed as
+    before or after the compaction event, so it's skipped rather than
+    wrongly matched as "the turn right after this compaction" -- the turn
+    that follows it (with a real timestamp after the event) is the one
+    that should be correlated instead.
+    """
+    lines = [
+        turn_line(model="claude-sonnet-5", timestamp="2026-09-18T12:00:00.000Z"),
+        system_line(
+            "compact_boundary",
+            timestamp="2026-09-18T12:00:30.000Z",
+            compactMetadata={"trigger": "auto", "preTokens": 1000, "postTokens": 100},
+        ),
+        turn_line(
+            model="claude-sonnet-5",
+            timestamp="not-a-timestamp",
+            ephemeral_5m_input_tokens=999999,
+        ),
+        turn_line(
+            model="claude-sonnet-5",
+            timestamp="2026-09-18T12:01:00.000Z",
+            ephemeral_5m_input_tokens=42,
+        ),
+    ]
+    path = tmp_path / "session.jsonl"
+    write_jsonl(path, lines)
+    result = parse_transcript(path, TranscriptMeta(path=str(path), session_id="sess_bad_turn_ts"))
+    records = compaction.compaction_records_for_transcript(result, sonnet_rates)
+    assert len(records) == 1
+    assert records[0].next_turn_cache_creation == 42
+
+
 def test_compaction_records_empty_when_no_compact_boundary(tmp_path, sonnet_rates):
     lines = [turn_line(model="claude-sonnet-5")]
     path = tmp_path / "session.jsonl"
@@ -264,6 +382,14 @@ def test_compaction_stats_aggregates_over_fixture_a(tmp_path, sonnet_rates):
     assert stats.total_post_compaction_recache_cost == pytest.approx(
         25000 * _SONNET_5_CACHE_WRITE_1H / 1_000_000
     )
+    # Fix 4: the all-inclusive total counts BOTH records' next-turn write
+    # cost, regardless of the RE-CACHE flag -- strictly larger than the
+    # RE-CACHE-only total above whenever a non-recache turn also wrote to
+    # cache (turn 4 here: 300 tokens at the 5m rate).
+    assert stats.total_post_compaction_write_cost == pytest.approx(
+        25000 * _SONNET_5_CACHE_WRITE_1H / 1_000_000 + 300 * _SONNET_5_CACHE_WRITE_5M / 1_000_000
+    )
+    assert stats.total_post_compaction_write_cost > stats.total_post_compaction_recache_cost
 
 
 def test_compaction_stats_build_classmethod_matches_manual_fold(tmp_path, sonnet_rates):
@@ -328,6 +454,15 @@ def test_build_section_shape_and_notes(tmp_path, sonnet_rates):
         "compactions_per_session",
     ]
     assert any("WP10" in note for note in section.notes)
+
+    summary_table = section.tables[0]
+    summary_metrics = {row[0]: row[1] for row in summary_table.rows}
+    assert summary_metrics["Total post-compaction write cost (USD)"] == pytest.approx(
+        stats.total_post_compaction_write_cost
+    )
+    assert summary_metrics["Total post-compaction RE-CACHE-flagged write cost (USD)"] == pytest.approx(
+        stats.total_post_compaction_recache_cost
+    )
 
     trigger_table = section.tables[1]
     trigger_rows = {row[0]: row[1] for row in trigger_table.rows}

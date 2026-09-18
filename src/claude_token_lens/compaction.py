@@ -36,8 +36,11 @@ file order (chronological), so this is a single forward merge: for each
 ``COMPACT_BOUNDARY`` event, walk the priced-turn list forward until a
 turn's timestamp is at or after the event's, and skip turns already
 consumed by an earlier compaction. An event with no matching later turn
-(the transcript ends right after it) or an unparsable timestamp still
-produces a ``CompactionRecord`` — just with ``next_turn_*`` fields left
+(the transcript ends right after it), an event with an unparsable
+timestamp of its own, or turns with unparsable timestamps in between
+(skipped rather than matched — see
+``_correlate_compactions_to_turn_index``'s robustness note) still
+produce a ``CompactionRecord`` — just with ``next_turn_*`` fields left
 ``None``, rather than being dropped.
 
 ``CompactionStats`` aggregates across as many transcripts as
@@ -129,15 +132,31 @@ def _correlate_compactions_to_turn_index(
     correctly resolve to the *same* index: the pointer only advances past
     a turn once its timestamp is confirmed to be before the event being
     matched, never merely because it was returned for an earlier event.
+
+    Robustness (fix 4): an event with no parsable ``ts`` of its own can't
+    be correlated to anything and resolves to ``None`` outright, rather
+    than grabbing whatever turn the shared pointer currently sits on (the
+    previous behaviour — since the "no timestamp" break condition fired
+    immediately, it silently attributed an arbitrary, possibly much
+    earlier, turn as "the turn right after this compaction"). Likewise a
+    turn with no parsable ``ts`` is skipped (the pointer advances past it)
+    instead of being treated as a match, since its position relative to
+    the event can't be confirmed either way.
     """
     results: list[tuple[Event, int | None]] = []
     turn_idx = 0
     n = len(priced_turns)
     for event in _compaction_events(tr):
         event_dt = _parse_ts(event.ts)
+        if event_dt is None:
+            results.append((event, None))
+            continue
         while turn_idx < n:
             turn_dt = _parse_ts(priced_turns[turn_idx].ts)
-            if event_dt is None or turn_dt is None or turn_dt >= event_dt:
+            if turn_dt is None:
+                turn_idx += 1
+                continue
+            if turn_dt >= event_dt:
                 break
             turn_idx += 1
         results.append((event, turn_idx if turn_idx < n else None))
@@ -155,6 +174,10 @@ class CompactionRecord:
     trigger: str | None = None
     pre_tokens: int | None = None
     post_tokens: int | None = None
+    #: Tokens dropped BY THIS compaction alone — a delta computed from the
+    #: transcript's running ``compactMetadata.cumulativeDroppedTokens``
+    #: counter (see :func:`compaction_records_for_transcript`'s docstring),
+    #: never that raw cumulative-since-session-start value itself.
     dropped_tokens: int | None = None
     duration_ms: int | None = None
     #: post_tokens / pre_tokens; ``None`` when ``pre_tokens`` is missing
@@ -181,14 +204,42 @@ def compaction_records_for_transcript(
     all) leaves ``next_turn_write_cost`` at ``0.0`` — ``price_turn``'s own
     contract for an unpriced turn — rather than ``None``, so a caller
     summing this field never has to special-case it.
+
+    ``CompactionRecord.dropped_tokens`` is a **per-compaction delta**, not
+    ``Event.dropped_tokens`` copied straight through. Verified against a
+    real 30-day corpus (``C:\\Users\\...\\projects\\C--Dev-RevIXO``):
+    ``compactMetadata.cumulativeDroppedTokens`` is a running total *for the
+    whole session*, monotonically non-decreasing across that session's
+    compactions (e.g. observed values 555197 then 1017658 in one
+    transcript with two compactions — the second is the first plus that
+    compaction's own ~462k drop, not a fresh 1017658-token drop). Summing
+    the raw field across a multi-compaction session therefore massively
+    over-counts (this was the fix-4 bug: it inflated
+    ``dropped_share_of_cache_creation`` to ~99% on the same corpus where
+    the delta-based total lands far lower). This function subtracts each
+    session's previous cumulative value to recover the tokens dropped by
+    that one compaction; the first compaction in a transcript uses a
+    baseline of 0. A cumulative value that goes backwards (unexpected, but
+    seen only in synthetic/malformed data, never in the real corpus above)
+    is treated as a counter reset: the delta falls back to the raw value
+    and the running baseline restarts from it, rather than going negative.
     """
     priced_turns = _priced_turns(tr)
     session_id = tr.meta.session_id
     records: list[CompactionRecord] = []
+    prev_cumulative_dropped = 0
     for event, turn_idx in _correlate_compactions_to_turn_index(tr, priced_turns):
         ratio: float | None = None
         if event.pre_tokens:
             ratio = event.post_tokens / event.pre_tokens if event.post_tokens is not None else None
+
+        dropped_delta: int | None = None
+        if event.dropped_tokens is not None:
+            if event.dropped_tokens >= prev_cumulative_dropped:
+                dropped_delta = event.dropped_tokens - prev_cumulative_dropped
+            else:
+                dropped_delta = event.dropped_tokens
+            prev_cumulative_dropped = event.dropped_tokens
 
         next_cache_creation: int | None = None
         next_write_cost: float | None = None
@@ -206,7 +257,7 @@ def compaction_records_for_transcript(
                 trigger=event.trigger,
                 pre_tokens=event.pre_tokens,
                 post_tokens=event.post_tokens,
-                dropped_tokens=event.dropped_tokens,
+                dropped_tokens=dropped_delta,
                 duration_ms=event.duration_ms,
                 ratio=ratio,
                 next_turn_cache_creation=next_cache_creation,
@@ -335,6 +386,25 @@ class CompactionStats:
             if r.next_turn_is_recache and r.next_turn_write_cost is not None
         )
 
+    @property
+    def total_post_compaction_write_cost(self) -> float:
+        """Sum of ``next_turn_write_cost`` for EVERY compaction's
+        immediate next turn, regardless of the RE-CACHE flag.
+
+        ``total_post_compaction_recache_cost`` only counts turns that trip
+        the minimal RE-CACHE heuristic (:func:`is_recache_turn`) — on a
+        real 30-day corpus that heuristic fires for only a small fraction
+        of post-compaction turns (most turns still hit a warm cache even
+        right after a compaction), so that narrower total reads as a few
+        dollars while every post-compaction turn's actual cache-write
+        spend is an order of magnitude higher. This property is the
+        all-inclusive figure a "what does compaction cost in re-written
+        cache" report line should show.
+        """
+        return sum(
+            r.next_turn_write_cost for r in self.records if r.next_turn_write_cost is not None
+        )
+
     def per_session_summary(self) -> list[tuple[str, int, int, float]]:
         """``(session_id, compaction_count, dropped_tokens, post-compaction
         write cost)`` for every session with >=1 compaction, sorted by
@@ -381,7 +451,11 @@ def build_section(stats: CompactionStats) -> Section:
             ["Dropped tokens (total)", stats.dropped_total],
             ["Dropped tokens (share of cache_creation)", stats.dropped_share_of_cache_creation],
             ["Mean duration (ms)", stats.mean_duration_ms],
-            ["Total post-compaction re-cache cost (USD)", stats.total_post_compaction_recache_cost],
+            ["Total post-compaction write cost (USD)", stats.total_post_compaction_write_cost],
+            [
+                "Total post-compaction RE-CACHE-flagged write cost (USD)",
+                stats.total_post_compaction_recache_cost,
+            ],
         ],
     )
 
@@ -428,7 +502,15 @@ def build_section(stats: CompactionStats) -> Section:
         "tokens by every priced turn's cache_creation across the whole "
         "corpus, not just turns following a compaction, so it can exceed "
         "100% when compactions are large relative to ordinary cache "
-        "growth.",
+        "growth. \"Dropped tokens\" itself is a per-compaction delta "
+        "recovered from compactMetadata's running cumulativeDroppedTokens "
+        "counter, not that raw cumulative value summed across a session's "
+        "compactions (which would double- and triple-count).",
+        "\"Total post-compaction write cost\" sums the immediate next "
+        "turn's cache-write cost after every compaction; the "
+        "RE-CACHE-flagged variant below it only counts turns that trip "
+        "the minimal RE-CACHE heuristic and is typically far smaller, "
+        "since most post-compaction turns still hit a warm cache.",
     ]
     if not stats.records:
         notes.insert(0, "No compact_boundary events found in this window.")
