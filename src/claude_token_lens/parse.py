@@ -494,6 +494,14 @@ def parse_transcript(path: str | Path, meta: TranscriptMeta) -> TranscriptResult
 
         if line_type == "user":
             _accumulate_tool_results(d, tool_use_names, tool_result_chars, tool_result_calls)
+        elif line_type == "agent-setting":
+            value = d.get("agentSetting")
+            if isinstance(value, str) and value:
+                diagnostics.agent_settings[value] = diagnostics.agent_settings.get(value, 0) + 1
+        elif line_type == "mode":
+            value = d.get("mode")
+            if isinstance(value, str) and value:
+                diagnostics.modes[value] = diagnostics.modes.get(value, 0) + 1
 
         event = events_mod.classify_line(d)
         if event is None:
@@ -508,6 +516,11 @@ def parse_transcript(path: str | Path, meta: TranscriptMeta) -> TranscriptResult
         if event.kind == EventKind.UNKNOWN:
             diagnostics.ignored_line_types[line_type] = (
                 diagnostics.ignored_line_types.get(line_type, 0) + 1
+            )
+        if event.kind == EventKind.ATTACHMENT:
+            subkind = event.subkind or ""
+            diagnostics.attachment_catch_all[subkind] = (
+                diagnostics.attachment_catch_all.get(subkind, 0) + 1
             )
 
     if current is not None:

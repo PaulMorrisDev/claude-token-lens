@@ -1,7 +1,8 @@
 """Independent-review follow-up fixes: the two-buffer preceding-events
 attribution rewrite (task 1), uuid-based replay dedup (task 2), the
-cache_creation/TTL-split reconciliation (task 3), and absolute-path
-redaction inside ``cmd_prefix`` (task 6).
+cache_creation/TTL-split reconciliation (task 3), absolute-path
+redaction inside ``cmd_prefix`` (task 6), and the agent-setting/mode/
+attachment_catch_all diagnostics counters (task 8).
 
 Each test exercises the behaviour through a full ``parse_transcript``
 pass over a small synthetic fixture, not by calling private helpers
@@ -18,6 +19,7 @@ from claude_token_lens.parse import parse_transcript
 from helpers import (
     assert_privacy,
     attachment_line,
+    ignorable_line,
     tool_use_block,
     turn_line,
     user_str_line,
@@ -225,3 +227,44 @@ def test_preceding_cmd_prefix_inherits_redaction(tmp_path: Path):
 
     assert result.turns[1].preceding_cmd_prefix == "cd <path> && pytest"
     assert_privacy(result)
+
+
+# -- Task 8: agent-setting/mode values and attachment_catch_all counters. --
+
+
+def test_agent_setting_and_mode_lines_carry_values_in_diagnostics(tmp_path: Path):
+    lines = [
+        ignorable_line("agent-setting", agentSetting="fable-overseer"),
+        ignorable_line("mode", mode="plan"),
+        ignorable_line("mode", mode="plan"),
+        turn_line(message_id="msg_1"),
+    ]
+    path = tmp_path / "session.jsonl"
+    write_jsonl(path, lines)
+
+    result = parse_transcript(path, TranscriptMeta(path=str(path)))
+
+    assert result.diagnostics.agent_settings == {"fable-overseer": 1}
+    assert result.diagnostics.modes == {"plan": 2}
+    # Still ignored outright as Events (not attached to any turn), just
+    # with their value additionally counted.
+    assert result.diagnostics.ignored_line_types.get("agent-setting") == 1
+    assert result.diagnostics.ignored_line_types.get("mode") == 2
+
+
+def test_attachment_catch_all_counts_unclassified_attachment_types(tmp_path: Path):
+    lines = [
+        attachment_line("some_new_unclassified_type_x"),
+        attachment_line("some_new_unclassified_type_x"),
+        attachment_line("another_unclassified_type_y"),
+        turn_line(message_id="msg_1"),
+    ]
+    path = tmp_path / "session.jsonl"
+    write_jsonl(path, lines)
+
+    result = parse_transcript(path, TranscriptMeta(path=str(path)))
+
+    assert result.diagnostics.attachment_catch_all == {
+        "some_new_unclassified_type_x": 2,
+        "another_unclassified_type_y": 1,
+    }

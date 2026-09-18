@@ -64,6 +64,15 @@ Independent-review follow-up fixes (post-WP1/WP2/WP7), all with defaults:
 - ``TranscriptMeta.tool_use_id: str | None = None`` — a subagent's
   ``.meta.json`` ``toolUseId``, linking the subagent back to the parent
   turn that spawned it (topology/workstyle, plan Appendix A1).
+- ``Diagnostics.agent_settings: dict``, ``Diagnostics.modes: dict`` —
+  ``agent-setting``/``mode`` lines stay ignored as ``Event``s (too
+  harness-plumbing to attach to a turn) but their *value* is carried as a
+  counter instead of being dropped outright, since it's evidence for
+  archetype detection (which persona/mode a session ran under).
+- ``Diagnostics.attachment_catch_all: dict`` — attachment types that
+  fell into the generic ``ATTACHMENT`` kind, counted by type, so a new
+  attachment type shows up in Diagnostics the moment it's seen rather
+  than only via a manual scan of ``TranscriptResult.events``.
 """
 
 from __future__ import annotations
@@ -234,6 +243,18 @@ class Diagnostics:
     #: Independent-review addition (see module docstring): lines skipped
     #: because their ``uuid`` had already been seen earlier in this file.
     replayed_lines: int = 0
+    #: Independent-review addition: ``agent-setting`` lines are ignored as
+    #: events (see events.py) but their ``agentSetting`` value is useful
+    #: for archetype detection, so it's counted here instead of dropped
+    #: entirely: value -> occurrence count.
+    agent_settings: dict = field(default_factory=dict)
+    #: Independent-review addition: ``mode`` lines are ignored as events
+    #: but their value (normal/plan/auto) is counted here: value -> count.
+    modes: dict = field(default_factory=dict)
+    #: Independent-review addition: attachment types that fell into the
+    #: generic ATTACHMENT catch-all kind (A2's "any attachment type not
+    #: listed above" row), counted by type for next-release triage.
+    attachment_catch_all: dict = field(default_factory=dict)
 
 
 @dataclass(slots=True)
