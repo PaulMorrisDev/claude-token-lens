@@ -120,6 +120,11 @@ class _PendingTurn:
     web_fetch_requests: int = 0
     cc_5m: int = 0
     cc_1h: int = 0
+    #: Set when the raw ``cache_creation_input_tokens`` flat field didn't
+    #: equal ``cc_5m + cc_1h`` for this turn's usage, computed once at
+    #: ``_new_pending`` time (before any reconciliation) so a later
+    #: correction to ``cache_creation_tokens`` doesn't erase the signal.
+    ttl_sum_mismatch: bool = False
     inference_geo: str | None = None
     attribution_mcp_server: str | None = None
     attribution_mcp_tool: str | None = None
@@ -211,6 +216,19 @@ def _new_pending(d: dict, tool_use_names: dict[str, str]) -> _PendingTurn:
             pending.cc_5m = int(cache_creation.get("ephemeral_5m_input_tokens") or 0)
             pending.cc_1h = int(cache_creation.get("ephemeral_1h_input_tokens") or 0)
 
+        # Reconcile the flat cache_creation_input_tokens field against the
+        # 5m/1h split: some usage payloads under-report the flat field
+        # relative to its own ephemeral breakdown. The mismatch is always
+        # recorded (even when nothing needs correcting, e.g. the flat
+        # field is *larger* than the split); ctx (computed from
+        # cache_creation_tokens in _finalize_turn) picks up the corrected
+        # value automatically.
+        ttl_sum = pending.cc_5m + pending.cc_1h
+        if ttl_sum != pending.cache_creation_tokens:
+            pending.ttl_sum_mismatch = True
+        if pending.cache_creation_tokens < ttl_sum:
+            pending.cache_creation_tokens = ttl_sum
+
     _merge_content_blocks(pending, message.get("content"), tool_use_names)
     return pending
 
@@ -287,7 +305,7 @@ def _finalize_turn(
     ctx = pending.input_tokens + pending.cache_creation_tokens + pending.cache_read_tokens
 
     if pending.has_usage:
-        if (pending.cc_5m + pending.cc_1h) != pending.cache_creation_tokens:
+        if pending.ttl_sum_mismatch:
             diagnostics.ttl_sum_mismatch += 1
     else:
         diagnostics.turns_missing_usage += 1

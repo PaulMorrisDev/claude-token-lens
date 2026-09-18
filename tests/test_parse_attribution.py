@@ -1,5 +1,6 @@
 """Independent-review follow-up fixes: the two-buffer preceding-events
-attribution rewrite (task 1) and uuid-based replay dedup (task 2).
+attribution rewrite (task 1), uuid-based replay dedup (task 2), and the
+cache_creation/TTL-split reconciliation (task 3).
 
 Each test exercises the behaviour through a full ``parse_transcript``
 pass over a small synthetic fixture, not by calling private helpers
@@ -115,3 +116,48 @@ def test_replayed_assistant_line_with_same_uuid_is_also_deduped(tmp_path: Path):
     assert result.diagnostics.replayed_lines == 1
     assert result.diagnostics.assistant_lines == 2
     assert len(result.turns) == 2
+
+
+# -- Task 3: cache_creation_tokens reconciled against the 5m/1h split. --
+
+
+def test_cache_creation_reconciled_when_flat_field_undercounts_split(tmp_path: Path):
+    lines = [
+        turn_line(
+            message_id="msg_1",
+            input_tokens=100,
+            cache_creation_input_tokens=0,
+            ephemeral_1h_input_tokens=4260,
+            output_tokens=10,
+        ),
+    ]
+    path = tmp_path / "session.jsonl"
+    write_jsonl(path, lines)
+
+    result = parse_transcript(path, TranscriptMeta(path=str(path)))
+
+    turn = result.turns[0]
+    assert turn.cc_1h == 4260
+    assert turn.cc_5m == 0
+    assert turn.cache_creation_tokens == 4260
+    assert turn.ctx == turn.input_tokens + turn.cache_creation_tokens + turn.cache_read_tokens
+    assert turn.ctx == 100 + 4260
+    assert result.diagnostics.ttl_sum_mismatch == 1
+
+
+def test_cache_creation_matching_split_does_not_flag_mismatch(tmp_path: Path):
+    lines = [
+        turn_line(
+            message_id="msg_1",
+            cache_creation_input_tokens=500,
+            ephemeral_5m_input_tokens=500,
+            ephemeral_1h_input_tokens=0,
+        ),
+    ]
+    path = tmp_path / "session.jsonl"
+    write_jsonl(path, lines)
+
+    result = parse_transcript(path, TranscriptMeta(path=str(path)))
+
+    assert result.turns[0].cache_creation_tokens == 500
+    assert result.diagnostics.ttl_sum_mismatch == 0
