@@ -17,6 +17,13 @@ counters the module controls, not a place message text could leak
 through structurally. What this test guards is every *named, typed*
 ``str``/``str | None`` dataclass field, which is where an accidental
 "just pass the raw value through" bug would actually show up.
+
+Independent-review follow-up (task 6): every fixture below is also run
+through ``helpers.assert_privacy``, a second, shape-based scan (not
+length-based) that asserts no field matches a Windows drive path
+(``C:\\``), a POSIX ``/home/`` path, a Windows ``\\Users\\`` path, or a
+bare ``@`` — the concrete regressions a length cap alone wouldn't catch
+(e.g. a short absolute path under 64 chars).
 """
 
 from __future__ import annotations
@@ -28,6 +35,7 @@ from claude_token_lens.model import TranscriptMeta
 from claude_token_lens.parse import parse_transcript
 
 from helpers import (
+    assert_privacy,
     attachment_line,
     system_line,
     tool_use_block,
@@ -92,6 +100,11 @@ def _assert_no_violations(result) -> None:
     for i, event in enumerate(result.events):
         _walk(event, violations, f"events[{i}]")
     assert violations == []
+    # Independent-review follow-up (task 6): every fixture below also
+    # goes through the absolute-path/username regex scan, not just the
+    # length-based walk above. helpers.assert_privacy is the reusable
+    # form of this same scan for later packages.
+    assert_privacy(result)
 
 
 def test_privacy_long_human_prompt_is_never_stored(tmp_path: Path):

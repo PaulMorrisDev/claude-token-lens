@@ -1,6 +1,7 @@
 """Independent-review follow-up fixes: the two-buffer preceding-events
-attribution rewrite (task 1), uuid-based replay dedup (task 2), and the
-cache_creation/TTL-split reconciliation (task 3).
+attribution rewrite (task 1), uuid-based replay dedup (task 2), the
+cache_creation/TTL-split reconciliation (task 3), and absolute-path
+redaction inside ``cmd_prefix`` (task 6).
 
 Each test exercises the behaviour through a full ``parse_transcript``
 pass over a small synthetic fixture, not by calling private helpers
@@ -15,7 +16,9 @@ from claude_token_lens.model import EventKind, TranscriptMeta
 from claude_token_lens.parse import parse_transcript
 
 from helpers import (
+    assert_privacy,
     attachment_line,
+    tool_use_block,
     turn_line,
     user_str_line,
     write_jsonl,
@@ -161,3 +164,64 @@ def test_cache_creation_matching_split_does_not_flag_mismatch(tmp_path: Path):
 
     assert result.turns[0].cache_creation_tokens == 500
     assert result.diagnostics.ttl_sum_mismatch == 0
+
+
+# -- Task 6: absolute paths inside a command prefix are redacted. -------
+
+
+def test_cmd_prefix_redacts_windows_drive_path(tmp_path: Path):
+    lines = [
+        turn_line(
+            message_id="msg_1",
+            content=[
+                tool_use_block(
+                    "Bash", "tu1", {"command": "cd C:\\Users\\paulm\\secret_project && ls -la"}
+                )
+            ],
+        ),
+    ]
+    path = tmp_path / "session.jsonl"
+    write_jsonl(path, lines)
+
+    result = parse_transcript(path, TranscriptMeta(path=str(path)))
+
+    turn = result.turns[0]
+    assert turn.cmd_prefix == "cd <path> && ls -la"
+    assert_privacy(result)
+
+
+def test_cmd_prefix_redacts_posix_home_path(tmp_path: Path):
+    lines = [
+        turn_line(
+            message_id="msg_1",
+            content=[tool_use_block("Bash", "tu1", {"command": "cat /home/paulm/.ssh/id_rsa"})],
+        ),
+    ]
+    path = tmp_path / "session.jsonl"
+    write_jsonl(path, lines)
+
+    result = parse_transcript(path, TranscriptMeta(path=str(path)))
+
+    turn = result.turns[0]
+    assert turn.cmd_prefix == "cat <path>"
+    assert "id_rsa" not in turn.cmd_prefix
+    assert_privacy(result)
+
+
+def test_preceding_cmd_prefix_inherits_redaction(tmp_path: Path):
+    # preceding_cmd_prefix on the NEXT turn is read off the previous
+    # turn's already-redacted cmd_prefix, so it must never leak either.
+    lines = [
+        turn_line(
+            message_id="msg_1",
+            content=[tool_use_block("Bash", "tu1", {"command": "cd C:\\Users\\paulm\\proj && pytest"})],
+        ),
+        turn_line(message_id="msg_2"),
+    ]
+    path = tmp_path / "session.jsonl"
+    write_jsonl(path, lines)
+
+    result = parse_transcript(path, TranscriptMeta(path=str(path)))
+
+    assert result.turns[1].preceding_cmd_prefix == "cd <path> && pytest"
+    assert_privacy(result)

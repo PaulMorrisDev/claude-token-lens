@@ -35,11 +35,15 @@ counted in ``Diagnostics.replayed_lines`` the second and later time its
 Privacy: no raw JSONL line, message content, tool_result content, file
 path, or command is ever retained past the single line/block that
 produces it. Only lengths, short prefixes (<=40 chars), names, and counts
-survive into ``Turn``/``Event``/``Diagnostics``.
+survive into ``Turn``/``Event``/``Diagnostics``. Absolute-path-shaped
+tokens inside a Bash/PowerShell command are redacted to ``<path>`` before
+the 40-char truncation (see ``_redact_paths``), so a path near the cutoff
+can never leak a partial drive letter or username.
 """
 
 from __future__ import annotations
 
+import re
 import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -62,6 +66,32 @@ _EDIT_TOOL_PATH_KEYS = {
 }
 
 _CMD_PREFIX_MAX_CHARS = 40
+
+#: Absolute-path token shapes to redact out of a command prefix before it
+#: is truncated (privacy criterion: zero drive letters/usernames in
+#: exports). Matches a whole "word" starting with one of these shapes,
+#: stopping at the first whitespace or quote so the verb and flags around
+#: it survive. Order doesn't matter — each alternative is anchored to a
+#: distinct prefix shape.
+_ABS_PATH_TOKEN_RE = re.compile(
+    r"""
+    [A-Za-z]:[\\/][^\s"']*                       # C:\... or C:/...
+    | /(?:home|Users|tmp|var|mnt|etc)/[^\s"']*    # POSIX absolute homes/tmp
+    | ~[\\/][^\s"']*                              # ~/... or ~\...
+    | %[A-Z_]+%[^\s"']*                           # %USERPROFILE%\...
+    | \$HOME[^\s"']*                              # $HOME/...
+    """,
+    re.VERBOSE,
+)
+
+
+def _redact_paths(text: str) -> str:
+    """Replace every absolute-path-shaped token in ``text`` with
+    ``<path>``, keeping the surrounding verb/flags intact. Called before
+    truncation so a path near the 40-char cutoff can't leak a partial
+    drive letter or username fragment.
+    """
+    return _ABS_PATH_TOKEN_RE.sub("<path>", text)
 
 
 def _escape_newlines(text: str) -> str:
@@ -156,7 +186,8 @@ def _merge_content_blocks(pending: _PendingTurn, content, tool_use_names: dict[s
         if pending.cmd_prefix is None and name in _SHELL_TOOL_NAMES:
             command = tool_input.get("command")
             if isinstance(command, str) and command:
-                pending.cmd_prefix = _escape_newlines(command)[:_CMD_PREFIX_MAX_CHARS]
+                redacted = _redact_paths(_escape_newlines(command))
+                pending.cmd_prefix = redacted[:_CMD_PREFIX_MAX_CHARS]
         path_key = _EDIT_TOOL_PATH_KEYS.get(name)
         if path_key is not None:
             path_value = tool_input.get(path_key)

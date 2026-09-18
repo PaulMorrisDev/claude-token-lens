@@ -7,8 +7,10 @@ need realistic-shaped transcript lines without depending on the parser
 
 from __future__ import annotations
 
+import dataclasses
 import itertools
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -176,3 +178,89 @@ def ignorable_line(line_type: str, **overrides: Any) -> dict:
     """Build a line whose top-level ``type`` is one of the plan's
     "ignored outright but counted" values (e.g. ``bridge-session``)."""
     return _base_line(line_type, **overrides)
+
+
+# -- Independent-review follow-up: reusable privacy regex scan -----------
+#
+# Task 6's redaction fix (parse.py's ``_redact_paths``) removes absolute-
+# path-shaped tokens from ``cmd_prefix``/``preceding_cmd_prefix``, but
+# the privacy criterion is broader than that one field: no dataclass
+# field anywhere in a ``TranscriptResult`` should ever match a drive
+# letter, a POSIX home path, a Windows ``\Users\`` path, or a bare "@".
+# ``assert_privacy`` is the reusable scan for that, on top of
+# test_privacy.py's existing length-based walk.
+
+_PRIVACY_DRIVE_RE = re.compile(r"[A-Za-z]:\\")
+_PRIVACY_POSIX_HOME_RE = re.compile(r"/home/")
+_PRIVACY_WIN_USERS_RE = re.compile(r"\\Users\\")
+_PRIVACY_AT_RE = re.compile(r"@")
+
+#: Field names holding values that are allowed to contain the above
+#: shapes by design, not by accident.
+_PRIVACY_EXCLUDED_FIELDS = {
+    # TranscriptMeta.path is the transcript's own source file path,
+    # kept deliberately for provenance - never derived from message
+    # content, so it's out of scope for this leak scan (mirrors
+    # test_privacy.py's own _LONG_FIELD_ALLOWLIST treatment of "path").
+    "path",
+}
+
+#: Field names where a bare "@" is a legitimate identifier shape (a
+#: cloud-provider model id's Vertex "@YYYYMMDD" date suffix), not a
+#: username/email leak - excluded from the "@" check only.
+_PRIVACY_AT_SIGN_ALLOWED_FIELDS = {"model"}
+
+
+def assert_privacy(result) -> None:
+    """Recursively scan a ``TranscriptResult`` (``meta``, ``diagnostics``,
+    every ``Turn`` in ``turns``, every ``Event`` in ``events``) for string
+    fields shaped like an absolute path or username/email leak: a drive
+    letter (``C:\\``), a POSIX ``/home/`` path, a Windows ``\\Users\\``
+    path, or a bare ``@``. Raises via ``assert`` with every violation
+    listed, so a failure names exactly which field and value tripped it.
+
+    Dict-typed fields are intentionally not walked, matching
+    test_privacy.py's scope note: they're free-form small counters the
+    module controls, not a place message text/paths could leak through
+    structurally.
+    """
+    violations: list[str] = []
+
+    def _check(value: str, where: str, field_name: str) -> None:
+        if _PRIVACY_DRIVE_RE.search(value):
+            violations.append(f"{where} matches a Windows drive path: {value!r}")
+        if _PRIVACY_POSIX_HOME_RE.search(value):
+            violations.append(f"{where} matches a POSIX /home/ path: {value!r}")
+        if _PRIVACY_WIN_USERS_RE.search(value):
+            violations.append(f"{where} matches a \\Users\\ path: {value!r}")
+        if field_name not in _PRIVACY_AT_SIGN_ALLOWED_FIELDS and _PRIVACY_AT_RE.search(value):
+            violations.append(f"{where} contains '@': {value!r}")
+
+    def _walk(obj, where: str) -> None:
+        if not (dataclasses.is_dataclass(obj) and not isinstance(obj, type)):
+            return
+        for f in dataclasses.fields(obj):
+            if f.name in _PRIVACY_EXCLUDED_FIELDS:
+                continue
+            value = getattr(obj, f.name)
+            field_where = f"{where}.{f.name}"
+            if isinstance(value, str):
+                _check(value, field_where, f.name)
+            elif isinstance(value, (tuple, list)):
+                for i, item in enumerate(value):
+                    item_where = f"{field_where}[{i}]"
+                    if isinstance(item, str):
+                        _check(item, item_where, f.name)
+                    else:
+                        _walk(item, item_where)
+            elif dataclasses.is_dataclass(value):
+                _walk(value, field_where)
+
+    _walk(result.meta, "meta")
+    _walk(result.diagnostics, "diagnostics")
+    for i, turn in enumerate(result.turns):
+        _walk(turn, f"turns[{i}]")
+    for i, event in enumerate(result.events):
+        _walk(event, f"events[{i}]")
+
+    assert violations == [], violations
