@@ -1,0 +1,400 @@
+"""Tests for WP5: session mode/purpose classification and ``SessionRecord``
+construction/grouping (``src/claude_token_lens/classify.py``).
+
+The three fixture session directories under ``tests/fixtures/classify/``
+are hand-built, realistic-shaped JSONL (the same schema
+``tests/helpers.py`` produces) parsed through the real
+``discovery``/``parse`` pipeline, one per mode this WP's rules must
+reach: ``interactive_chat`` (four short human/assistant exchanges, no
+subagents), ``long_agentic`` (three spawned subagents, only two human
+prompts), and ``overnight`` (a five-hour span with a 90-minute human
+gap). ``classify_purpose``'s individual rules are exercised directly
+against hand-built ``SessionFeatures`` instead — they're pure functions
+of the feature bundle, so there's no need to round-trip through a parser
+fixture for each one.
+"""
+
+from __future__ import annotations
+
+import re
+from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+import pytest
+
+from claude_token_lens import classify, discovery
+from claude_token_lens.model import TranscriptMeta
+from claude_token_lens.parse import parse_transcript
+
+FIXTURES = Path(__file__).resolve().parent / "fixtures" / "classify"
+
+
+def _load_session(project_dir: Path, session_id: str):
+    """Parse one fixture session directory the way real code would:
+    ``discovery.find_subagents`` + ``parse.parse_transcript`` for the
+    top-level file and every subagent transcript.
+    """
+    top_path = project_dir / f"{session_id}.jsonl"
+    top_meta = TranscriptMeta(
+        path=str(top_path),
+        kind="top-level",
+        session_id=session_id,
+        project_slug=project_dir.name,
+    )
+    top = parse_transcript(top_path, top_meta)
+
+    subs = []
+    for jsonl_path, _raw_meta in discovery.find_subagents(project_dir, session_id):
+        meta_path = jsonl_path.with_name(jsonl_path.stem + ".meta.json")
+        sub_meta = discovery.load_meta(meta_path)
+        subs.append(parse_transcript(jsonl_path, sub_meta))
+    return top, subs
+
+
+def _tzdata_has(name: str) -> bool:
+    try:
+        ZoneInfo(name)
+        return True
+    except ZoneInfoNotFoundError:
+        return False
+
+
+# --------------------------------------------------------------------
+# Fixture-driven mode classification
+# --------------------------------------------------------------------
+
+
+def test_interactive_chat_classifies_as_interactive():
+    top, subs = _load_session(FIXTURES / "interactive_chat", "session-interactive-001")
+    features = classify.extract_features(top, subs, tz=None)
+
+    assert features.human_prompts == 4
+    assert features.subagent_count == 0
+    assert features.human_gap_median_s == pytest.approx(120.0)
+
+    mode, evidence = classify.classify_mode(features)
+    assert mode == "interactive"
+    assert "human_gap_median_s" in evidence
+    assert "subagent_count" in evidence
+
+
+def test_long_agentic_classifies_as_long_agentic():
+    top, subs = _load_session(FIXTURES / "long_agentic", "session-long-agentic-001")
+    features = classify.extract_features(top, subs, tz=None)
+
+    assert features.subagent_count == 3
+    assert features.human_prompts == 2
+
+    mode, evidence = classify.classify_mode(features)
+    assert mode == "long-agentic"
+    assert "subagent_count" in evidence
+    assert "human_prompts" in evidence
+
+    # A reasonable companion signal: three separate top-level turns each
+    # spawned exactly one Agent tool call.
+    purpose, purpose_evidence = classify.classify_purpose(features)
+    assert features.agent_tool_calls == 3
+    assert purpose == "agent-fanout"
+    assert "agent_tool_calls" in purpose_evidence
+
+
+def test_overnight_classifies_as_overnight():
+    top, subs = _load_session(FIXTURES / "overnight", "session-overnight-001")
+    features = classify.extract_features(top, subs, tz=None)
+
+    assert features.span_s == pytest.approx(5 * 3600)
+    assert features.human_gap_max_s == pytest.approx(90 * 60)
+
+    mode, evidence = classify.classify_mode(features)
+    assert mode == "overnight"
+    assert "span_s" in evidence
+    assert "human_gap_max_s" in evidence
+
+
+def test_mode_mixed_fallback_on_hand_built_features():
+    f = classify.SessionFeatures(
+        span_s=100.0,
+        human_gap_median_s=1000.0,
+        human_gap_max_s=1000.0,
+        subagent_count=5,
+        human_prompts=10,
+        assistant_turns=5,
+    )
+    mode, evidence = classify.classify_mode(f)
+    assert mode == "mixed"
+    assert "human_prompts" in evidence
+
+
+# --------------------------------------------------------------------
+# classify_session: rules vs. override
+# --------------------------------------------------------------------
+
+
+def test_classify_session_uses_rules_by_default():
+    top, subs = _load_session(FIXTURES / "interactive_chat", "session-interactive-001")
+    classification = classify.classify_session(top, subs, overrides={}, tz=None)
+    assert classification.mode == "interactive"
+    assert classification.mode_source == "rule"
+    assert classification.purpose_source == "rule"
+
+
+def test_classify_session_override_wins_for_both_fields():
+    top, subs = _load_session(FIXTURES / "interactive_chat", "session-interactive-001")
+    overrides = {"session-interactive-001": {"mode": "overnight", "purpose": "planning"}}
+    classification = classify.classify_session(top, subs, overrides=overrides, tz=None)
+    assert classification.mode == "overnight"
+    assert classification.mode_source == "override"
+    assert classification.purpose == "planning"
+    assert classification.purpose_source == "override"
+
+
+def test_classify_session_override_can_set_just_one_field():
+    top, subs = _load_session(FIXTURES / "interactive_chat", "session-interactive-001")
+    overrides = {"session-interactive-001": {"mode": "mixed"}}
+    classification = classify.classify_session(top, subs, overrides=overrides, tz=None)
+    assert classification.mode == "mixed"
+    assert classification.mode_source == "override"
+    # purpose has no override entry, so it still runs through the rules.
+    assert classification.purpose_source == "rule"
+
+
+def test_classify_session_ignores_overrides_for_other_sessions():
+    top, subs = _load_session(FIXTURES / "interactive_chat", "session-interactive-001")
+    overrides = {"some-other-session": {"mode": "overnight"}}
+    classification = classify.classify_session(top, subs, overrides=overrides, tz=None)
+    assert classification.mode == "interactive"
+    assert classification.mode_source == "rule"
+
+
+# --------------------------------------------------------------------
+# classify_purpose: each rule hit on a hand-built SessionFeatures
+# --------------------------------------------------------------------
+
+
+def test_purpose_local_llm_pipeline():
+    f = classify.SessionFeatures(local_llm_hits=3)
+    purpose, evidence = classify.classify_purpose(f)
+    assert purpose == "local-llm-pipeline"
+    assert evidence["local_llm_hits"] == 3
+
+
+def test_purpose_workflow_run_via_workflow_count():
+    f = classify.SessionFeatures(workflows=1)
+    purpose, _ = classify.classify_purpose(f)
+    assert purpose == "workflow-run"
+
+
+def test_purpose_workflow_run_via_workflow_tool_calls():
+    f = classify.SessionFeatures(workflow_tool_calls=1)
+    purpose, _ = classify.classify_purpose(f)
+    assert purpose == "workflow-run"
+
+
+def test_purpose_agent_fanout():
+    f = classify.SessionFeatures(agent_tool_calls=3)
+    purpose, evidence = classify.classify_purpose(f)
+    assert purpose == "agent-fanout"
+    assert evidence["agent_tool_calls"] == 3
+
+
+def test_purpose_review():
+    f = classify.SessionFeatures(review_markers=1, edit_turns=0)
+    purpose, evidence = classify.classify_purpose(f)
+    assert purpose == "review"
+    assert evidence["review_markers"] == 1
+
+
+def test_purpose_test_triage():
+    f = classify.SessionFeatures(test_tool_hits=3, edit_turns=1)
+    purpose, evidence = classify.classify_purpose(f)
+    assert purpose == "test-triage"
+    assert evidence["test_tool_hits"] == 3
+
+
+def test_purpose_planning():
+    f = classify.SessionFeatures(plan_mode_events=1, edit_turns=2)
+    purpose, evidence = classify.classify_purpose(f)
+    assert purpose == "planning"
+    assert evidence["plan_mode_events"] == 1
+
+
+def test_purpose_docs_or_light_edit():
+    f = classify.SessionFeatures(assistant_turns=5, edit_turns=3, read_turns=2, test_tool_hits=0)
+    purpose, evidence = classify.classify_purpose(f)
+    assert purpose == "docs-or-light-edit"
+    assert evidence["edit_turns"] == 3
+
+
+def test_purpose_refactor():
+    f = classify.SessionFeatures(edit_turns=10, test_tool_hits=1)
+    purpose, evidence = classify.classify_purpose(f)
+    assert purpose == "refactor"
+    assert evidence["edit_turns"] == 10
+
+
+def test_purpose_general_dev_fallback():
+    f = classify.SessionFeatures()
+    purpose, _ = classify.classify_purpose(f)
+    assert purpose == "general-dev"
+
+
+def test_purpose_thresholds_are_overridable():
+    f = classify.SessionFeatures(local_llm_hits=2)
+    # Default threshold is 3 - two hits doesn't qualify.
+    assert classify.classify_purpose(f)[0] != "local-llm-pipeline"
+    purpose, _ = classify.classify_purpose(f, thresholds={"local_llm_min_hits": 2})
+    assert purpose == "local-llm-pipeline"
+
+
+# --------------------------------------------------------------------
+# Timezone conversion (start_local_hour / end_local_hour)
+# --------------------------------------------------------------------
+
+
+def test_local_hour_unknown_zone_falls_back_to_system_local():
+    ts = "2026-09-18T12:00:00.000Z"
+    assert classify._local_hour(ts, "Definitely/Not-A-Real-Zone") == classify._local_hour(ts, None)
+
+
+def test_extract_features_converts_start_local_hour_to_named_timezone():
+    top, subs = _load_session(FIXTURES / "interactive_chat", "session-interactive-001")
+    # First top-level turn timestamp is 2026-09-18T12:00:05Z.
+    local_features = classify.extract_features(top, subs, tz=None)
+    named_features = classify.extract_features(top, subs, tz="America/New_York")
+
+    assert named_features.start_local_hour is not None
+    if _tzdata_has("America/New_York"):
+        # EDT is UTC-4 in September.
+        assert named_features.start_local_hour == 8
+    else:
+        # No system/tzdata zoneinfo source available on this machine
+        # (e.g. a bare Windows install without the tzdata package) -
+        # extract_features must degrade gracefully to the same value
+        # tz=None produces, never raise.
+        assert named_features.start_local_hour == local_features.start_local_hour
+
+
+# --------------------------------------------------------------------
+# build_session_record / group_sessions / build_section
+# --------------------------------------------------------------------
+
+#: Same shape-based leak scan ``tests/helpers.py``'s ``assert_privacy``
+#: applies to a ``TranscriptResult``'s dataclass fields, applied here to
+#: raw ``Table.rows`` cell values instead (``assert_privacy`` only
+#: recurses into dataclass instances nested in a list/tuple, and a
+#: ``Table.rows`` entry is a plain list of scalars, not a dataclass, so
+#: it needs its own walk).
+_PRIVACY_DRIVE_RE = re.compile(r"[A-Za-z]:\\")
+_PRIVACY_POSIX_HOME_RE = re.compile(r"/home/")
+_PRIVACY_WIN_USERS_RE = re.compile(r"\\Users\\")
+_PRIVACY_AT_RE = re.compile(r"@")
+
+
+def _assert_table_rows_privacy(tables) -> None:
+    violations: list[str] = []
+    for table in tables:
+        for row_index, row in enumerate(table.rows):
+            for col_index, cell in enumerate(row):
+                if not isinstance(cell, str):
+                    continue
+                where = f"{table.name}.rows[{row_index}][{col_index}]"
+                if _PRIVACY_DRIVE_RE.search(cell):
+                    violations.append(f"{where} matches a Windows drive path: {cell!r}")
+                if _PRIVACY_POSIX_HOME_RE.search(cell):
+                    violations.append(f"{where} matches a POSIX /home/ path: {cell!r}")
+                if _PRIVACY_WIN_USERS_RE.search(cell):
+                    violations.append(f"{where} matches a \\Users\\ path: {cell!r}")
+                if _PRIVACY_AT_RE.search(cell):
+                    violations.append(f"{where} contains '@': {cell!r}")
+    assert violations == [], violations
+
+
+def _build_all_records():
+    records = []
+    for project_name, session_id in (
+        ("interactive_chat", "session-interactive-001"),
+        ("long_agentic", "session-long-agentic-001"),
+        ("overnight", "session-overnight-001"),
+    ):
+        project_dir = FIXTURES / project_name
+        top, subs = _load_session(project_dir, session_id)
+        classification = classify.classify_session(top, subs, overrides={}, tz=None)
+        record = classify.build_session_record(
+            top, subs, workflows=[], classification=classification, slug=project_dir.name
+        )
+        records.append(record)
+    return records
+
+
+def test_build_session_record_populates_span_and_timestamps():
+    top, subs = _load_session(FIXTURES / "overnight", "session-overnight-001")
+    classification = classify.classify_session(top, subs, overrides={}, tz=None)
+    record = classify.build_session_record(
+        top, subs, workflows=[], classification=classification, slug="overnight"
+    )
+    assert record.session_id == "session-overnight-001"
+    assert record.slug == "overnight"
+    assert record.first_ts == "2026-09-17T22:00:05.000Z"
+    assert record.last_ts == "2026-09-18T03:00:05.000Z"
+    assert record.span_s == pytest.approx(5 * 3600)
+    assert record.classification is classification
+    assert record.archetype is None
+    assert record.snapshot_id is None
+    assert record.profile_id is None
+
+
+def test_group_sessions_by_mode_and_project():
+    records = _build_all_records()
+
+    by_mode = classify.group_sessions(records, "mode")
+    assert set(by_mode) == {"interactive", "long-agentic", "overnight"}
+    assert all(len(group) == 1 for group in by_mode.values())
+
+    by_project = classify.group_sessions(records, "project")
+    assert set(by_project) == {"interactive_chat", "long_agentic", "overnight"}
+
+
+def test_group_sessions_entrypoint_has_no_data_source_yet():
+    records = _build_all_records()
+    by_entrypoint = classify.group_sessions(records, "entrypoint")
+    # See classify.py's module docstring: SessionRecord carries no
+    # entrypoint field yet, so every session lands in one bucket today.
+    assert set(by_entrypoint) == {"unknown"}
+    assert len(by_entrypoint["unknown"]) == len(records)
+
+
+def test_group_sessions_rejects_unknown_key():
+    records = _build_all_records()
+    with pytest.raises(ValueError):
+        classify.group_sessions(records, "not-a-real-key")
+
+
+def test_build_section_produces_expected_tables_and_is_privacy_clean():
+    records = _build_all_records()
+    section = classify.build_section(records)
+
+    assert section.key == "sessions"
+    assert section.title == "Sessions"
+    table_names = {table.name for table in section.tables}
+    assert table_names == {"sessions_by_mode", "sessions_by_purpose", "sessions_detail"}
+
+    detail = next(t for t in section.tables if t.name == "sessions_detail")
+    assert len(detail.rows) == 3
+
+    by_mode = next(t for t in section.tables if t.name == "sessions_by_mode")
+    assert sum(row[1] for row in by_mode.rows) == 3  # sessions column sums to 3
+
+    _assert_table_rows_privacy(section.tables)
+
+
+def test_build_section_caps_detail_rows_at_fifty_with_a_note():
+    records = _build_all_records()
+    # Duplicate the same three records many times over (distinct only in
+    # identity, which is all group_sessions/build_section look at) to
+    # exceed the 50-row cap without needing 50 real fixture directories.
+    many = records * 20
+    section = classify.build_section(many)
+    detail = next(t for t in section.tables if t.name == "sessions_detail")
+    assert len(detail.rows) == 50
+    assert detail.notes
+    assert "50" in detail.notes[0]
