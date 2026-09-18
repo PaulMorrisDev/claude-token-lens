@@ -8,7 +8,10 @@ implementation. Nothing here reads a transcript yet.
 from __future__ import annotations
 
 import argparse
+import importlib.util
+import os
 import sys
+from pathlib import Path
 
 from . import __version__
 
@@ -83,6 +86,24 @@ def _build_common_parser() -> argparse.ArgumentParser:
     return common
 
 
+def _add_snapshot_config_args(sub: argparse.ArgumentParser) -> None:
+    """Extra flags for the ``snapshot-config`` subcommand only (WP7). Every
+    other subcommand stays a bare stub, so this is added just for this one
+    subparser rather than the shared common parser.
+    """
+    group = sub.add_mutually_exclusive_group()
+    group.add_argument(
+        "--print-hook",
+        action="store_true",
+        help="print the SessionStart settings.json fragment (Windows and POSIX)",
+    )
+    group.add_argument(
+        "--install-hook",
+        action="store_true",
+        help="copy hooks/snapshot-config.py into <config-dir>/token-lens/hooks/",
+    )
+
+
 def _make_parser() -> argparse.ArgumentParser:
     common = _build_common_parser()
     parser = argparse.ArgumentParser(prog="claude-token-lens")
@@ -91,10 +112,57 @@ def _make_parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="command")
     for name in SUBCOMMANDS:
-        subparsers.add_parser(
-            name, parents=[common], help=f"{name} (not implemented yet)"
+        help_text = (
+            "capture and diff Claude Code config (WP7)"
+            if name == "snapshot-config"
+            else f"{name} (not implemented yet)"
         )
+        sub = subparsers.add_parser(name, parents=[common], help=help_text)
+        if name == "snapshot-config":
+            _add_snapshot_config_args(sub)
     return parser
+
+
+def _load_snapshot_hook_module():
+    """Dynamically import ``hooks/snapshot-config.py`` by path. That script
+    is standalone stdlib and must never import from this package (see its
+    own docstring), so the dependency runs the other way: this CLI command
+    loads it, rather than it importing anything here.
+    """
+    hook_path = Path(__file__).resolve().parents[2] / "hooks" / "snapshot-config.py"
+    spec = importlib.util.spec_from_file_location(
+        "_claude_token_lens_snapshot_hook", hook_path
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"cannot locate snapshot-config hook at {hook_path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _cmd_snapshot_config(args: argparse.Namespace) -> int:
+    hook = _load_snapshot_hook_module()
+    config_dir = hook.resolve_config_dir(args.config_dir)
+
+    if args.print_hook:
+        print(hook.hook_fragment_text())
+        return 0
+
+    if args.install_hook:
+        dest = hook.install_hook(config_dir)
+        print(f"Installed snapshot-config hook to {dest}")
+        print(
+            "This does not edit settings.json - add the SessionStart fragment "
+            "from --print-hook yourself."
+        )
+        return 0
+
+    path, _written = hook.snapshot_and_get_path(config_dir, os.getcwd())
+    if path is None:
+        print("No snapshot written and none exists yet.", file=sys.stderr)
+        return 1
+    print(path)
+    return 0
 
 
 def _insert_default_subcommand(argv: list[str]) -> list[str]:
@@ -121,6 +189,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(raw_argv)  # may raise SystemExit (--version, --help, errors)
 
     command = args.command or DEFAULT_SUBCOMMAND
+    if command == "snapshot-config":
+        return _cmd_snapshot_config(args)
     print(f"claude-token-lens {command}: not implemented", file=sys.stderr)
     return 2
 

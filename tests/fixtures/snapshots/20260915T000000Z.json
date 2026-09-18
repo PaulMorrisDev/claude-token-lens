@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "ts": "20260915T000000Z",
+  "session_id": null,
+  "transcript_path": null,
+  "source": null,
+  "cwd_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "claude_version": "1.2.3",
+  "profile_id": null,
+  "user_settings": {
+    "model": "fable[1m]",
+    "effortLevel": "medium",
+    "autoCompactWindow": 150000,
+    "permissions": "dict(3)"
+  },
+  "project_settings": {},
+  "mcp_servers": {
+    "names": ["filesystem"],
+    "enabled_mcpjson_servers": [],
+    "disabled_mcpjson_servers": []
+  },
+  "enabled_plugins": [],
+  "agents": {
+    "verification-runner": {
+      "model": "sonnet",
+      "effort": "medium",
+      "maxTurns": 80,
+      "experimental.cacheTtl": "1h",
+      "description": "str(120)"
+    }
+  },
+  "env_names": ["CLAUDE_CODE_VERSION"],
+  "content_hash": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+}
