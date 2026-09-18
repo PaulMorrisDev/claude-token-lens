@@ -61,6 +61,7 @@ from __future__ import annotations
 import dataclasses
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from typing import Callable
 
 from .model import Column, CostBreakdown, Section, Table, TranscriptResult, Turn
 from .pricing import ModelRates, ResolvedRates, price_turn
@@ -114,6 +115,32 @@ _GAP_BUCKETS: tuple[tuple[str, str, float, float], ...] = (
 #: (bare or wrapped), or ``None`` for an unresolved model (prices at
 #: zero, ``model_known=False`` — see ``pricing.price_turn``).
 RatesArg = ModelRates | ResolvedRates | None
+
+#: Fix item 2: a turn-by-turn rate resolver, ``pricing.Pricing.resolve_model``'s
+#: own signature — ``model id -> ResolvedRates | None``. Every function in
+#: this module that prices more than one turn (``simulate``, ``observed``,
+#: ``cache_economy``, ``TtlStats.add``) accepts either this or a single
+#: already-resolved :data:`RatesArg` (see :func:`_as_lookup`): a mixed-model
+#: transcript (subagents can run a different model from their parent, and a
+#: user can switch models mid top-level session) must price each turn at
+#: its own observed model's rate, not the first turn's.
+RatesLookup = Callable[[str], RatesArg]
+
+
+def _as_lookup(rates: "RatesArg | RatesLookup") -> RatesLookup:
+    """Normalise a caller's ``rates`` argument to a per-turn lookup.
+
+    A single already-resolved rate (bare ``ModelRates``, ``ResolvedRates``,
+    or ``None``) is wrapped in a lookup that ignores the model id and
+    always returns it — the pre-item-2 behaviour every existing call site
+    (and most of this module's own tests, which build one Sonnet-5 rate
+    and reuse it) still relies on. A callable is assumed to already be a
+    per-model lookup (``Pricing.resolve_model``, or a test double with the
+    same shape) and is returned unchanged.
+    """
+    if callable(rates):
+        return rates
+    return lambda _model_id: rates
 
 #: Near-miss histogram boundaries (seconds), asymmetric on purpose: a
 #: gap that lands at or just under the TTL boundary still hit the cache
@@ -249,13 +276,24 @@ class SimResult:
     unsimulatable: int = 0
     #: Count of priced turns this result was computed over.
     turns: int = 0
+    #: Fix item 2: priced turns whose model the rates lookup could not
+    #: resolve — priced at zero (``price_turn``'s ``model_known=False``
+    #: path) and counted here rather than silently vanishing from cost.
+    unpriced_turns: int = 0
 
 
-def simulate(turns: list[Turn], rates: RatesArg, policy_s: int) -> SimResult:
+def simulate(turns: list[Turn], rates: "RatesArg | RatesLookup", policy_s: int) -> SimResult:
     """Replay ``turns`` under a single fixed TTL policy (plan Appendix
     A4): ``policy_s`` is ``POLICY_5M`` (300) or ``POLICY_1H`` (3600)
     seconds, though any positive int is accepted as a hypothetical
     policy.
+
+    ``rates`` (fix item 2) is either a single already-resolved rate
+    (applied to every turn regardless of its own model — the pre-item-2
+    behaviour) or a per-turn :data:`RatesLookup` callable, resolved via
+    :func:`_as_lookup`; a mixed-model transcript is priced correctly
+    either way turn by turn. A turn whose model the lookup cannot
+    resolve prices at zero and is counted in ``unpriced_turns``.
 
     Per priced turn ``t`` (``C = t.cache_read_tokens +
     t.cache_creation_tokens``):
@@ -286,12 +324,14 @@ def simulate(turns: list[Turn], rates: RatesArg, policy_s: int) -> SimResult:
     ``pricing.price_turn``, using the turn's own observed geo/model/ctx
     for everything else.
     """
+    lookup = _as_lookup(rates)
     priced = _priced_turns(turns)
     prev_c = 0
     cost = 0.0
     write_tokens = 0
     read_tokens = 0
     unsimulatable = 0
+    unpriced_turns = 0
     for i, t in enumerate(priced):
         c = t.cache_read_tokens + t.cache_creation_tokens
         if i == 0:
@@ -307,7 +347,10 @@ def simulate(turns: list[Turn], rates: RatesArg, policy_s: int) -> SimResult:
         else:
             read, write = 0, c
 
-        breakdown = price_turn(t, rates, write_split={policy_s: write}, read_tokens=read)
+        turn_rates = lookup(t.model)
+        if turn_rates is None:
+            unpriced_turns += 1
+        breakdown = price_turn(t, turn_rates, write_split={policy_s: write}, read_tokens=read)
         cost += breakdown.total
         write_tokens += write
         read_tokens += read
@@ -319,10 +362,11 @@ def simulate(turns: list[Turn], rates: RatesArg, policy_s: int) -> SimResult:
         read_tokens=read_tokens,
         unsimulatable=unsimulatable,
         turns=len(priced),
+        unpriced_turns=unpriced_turns,
     )
 
 
-def observed(turns: list[Turn], rates: RatesArg) -> SimResult:
+def observed(turns: list[Turn], rates: "RatesArg | RatesLookup") -> SimResult:
     """The real, as-billed cost: each priced turn through ``price_turn``'s
     default path (no ``write_split``/``read_tokens`` override, so it
     prices ``turn.cc_5m``/``turn.cc_1h``/``turn.cache_read_tokens`` as
@@ -330,17 +374,31 @@ def observed(turns: list[Turn], rates: RatesArg) -> SimResult:
     equals calling it with the observed split passed explicitly, so this
     is also "the simulation path with the observed split" the plan
     describes — there is only one code path either way.
+
+    ``rates`` accepts the same single-rate-or-per-turn-lookup shape as
+    :func:`simulate` (fix item 2, see :func:`_as_lookup`).
     """
+    lookup = _as_lookup(rates)
     priced = _priced_turns(turns)
     cost = 0.0
     write_tokens = 0
     read_tokens = 0
+    unpriced_turns = 0
     for t in priced:
-        breakdown = price_turn(t, rates)
+        turn_rates = lookup(t.model)
+        if turn_rates is None:
+            unpriced_turns += 1
+        breakdown = price_turn(t, turn_rates)
         cost += breakdown.total
         write_tokens += t.cc_5m + t.cc_1h
         read_tokens += t.cache_read_tokens
-    return SimResult(cost=cost, write_tokens=write_tokens, read_tokens=read_tokens, turns=len(priced))
+    return SimResult(
+        cost=cost,
+        write_tokens=write_tokens,
+        read_tokens=read_tokens,
+        turns=len(priced),
+        unpriced_turns=unpriced_turns,
+    )
 
 
 def dominant_ttl(turns: list[Turn]) -> str:
@@ -362,12 +420,16 @@ def dominant_ttl(turns: list[Turn]) -> str:
     return "mixed"
 
 
-def fidelity(turns: list[Turn], rates: RatesArg) -> float | None:
+def fidelity(turns: list[Turn], rates: "RatesArg | RatesLookup") -> float | None:
     """Self-check: simulate at the transcript's own ``dominant_ttl`` and
     compare to ``observed``. ``None`` when there is nothing meaningful to
     compare — ``dominant_ttl`` is "mixed"/"none", or observed cost is
     zero (would divide by zero, and a zero-cost transcript has nothing at
-    stake either way)."""
+    stake either way).
+
+    ``rates`` accepts the same single-rate-or-per-turn-lookup shape as
+    :func:`simulate`/:func:`observed` (fix item 2) and is forwarded to
+    both unchanged."""
     dominant = dominant_ttl(turns)
     if dominant in ("mixed", "none"):
         return None
@@ -379,7 +441,7 @@ def fidelity(turns: list[Turn], rates: RatesArg) -> float | None:
     return abs(sim.cost - obs.cost) / obs.cost
 
 
-def cache_economy(turns: list[Turn], rates: RatesArg) -> dict:
+def cache_economy(turns: list[Turn], rates: "RatesArg | RatesLookup") -> dict:
     """Standalone cache-economy summary over an arbitrary turns list —
     item 6 of the cache-utilisation follow-up. Not tied to
     :class:`TtlStats`, so report assembly (WP10) can compute the same
@@ -397,23 +459,32 @@ def cache_economy(turns: list[Turn], rates: RatesArg) -> dict:
     (``net_saving_usd / write_usd``, ``0.0`` when nothing was ever
     written).
 
+    ``rates`` accepts the same single-rate-or-per-turn-lookup shape as
+    :func:`simulate`/:func:`observed` (fix item 2, see :func:`_as_lookup`)
+    — each turn is priced at its own resolved model's rate.
+
     Returns a dict with keys ``tokens_written``, ``tokens_read``,
     ``write_usd``, ``read_usd``, ``uncached_equivalent_usd``,
-    ``net_saving_usd``, ``cache_roi``.
+    ``net_saving_usd``, ``cache_roi``, ``unpriced_turns``.
     """
+    lookup = _as_lookup(rates)
     priced = _priced_turns(turns)
     tokens_written = 0
     tokens_read = 0
     write_usd = 0.0
     read_usd = 0.0
     uncached_equivalent_usd = 0.0
+    unpriced_turns = 0
     for t in priced:
-        breakdown = price_turn(t, rates)
+        turn_rates = lookup(t.model)
+        if turn_rates is None:
+            unpriced_turns += 1
+        breakdown = price_turn(t, turn_rates)
         tokens_written += t.cc_5m + t.cc_1h
         tokens_read += t.cache_read_tokens
         write_usd += breakdown.cache_write_cost
         read_usd += breakdown.cache_read_cost
-        uncached_equivalent_usd += _cache_tokens_at_input_rate(t, rates, breakdown)
+        uncached_equivalent_usd += _cache_tokens_at_input_rate(t, turn_rates, breakdown)
     net_saving_usd = uncached_equivalent_usd - (write_usd + read_usd)
     cache_roi = net_saving_usd / write_usd if write_usd > 0 else 0.0
     return {
@@ -424,6 +495,7 @@ def cache_economy(turns: list[Turn], rates: RatesArg) -> dict:
         "uncached_equivalent_usd": uncached_equivalent_usd,
         "net_saving_usd": net_saving_usd,
         "cache_roi": cache_roi,
+        "unpriced_turns": unpriced_turns,
     }
 
 
@@ -449,10 +521,25 @@ class _RawAccumulator:
     cost_all_5m: float = 0.0
     cost_all_1h: float = 0.0
     unsimulatable: int = 0
+    #: Fix item 2: priced turns whose model the rates lookup could not
+    #: resolve, taken from ``observed()``'s own count (see
+    #: ``TtlStats.add``) rather than re-tallied by hand.
+    unpriced_turns: int = 0
     #: Token-weighted running sum/weight for the mean fidelity fraction
     #: across every transcript of this agent type (see ``TtlStats.add``).
     fidelity_weighted_sum: float = 0.0
     fidelity_weight: int = 0
+    #: Fix item 2: per-model total token volume (input + cache_creation +
+    #: cache_read + output) seen for this agent type, so ``by_key`` can
+    #: resolve ``premium_ratio`` against the *dominant* model's rates
+    #: rather than merely "whichever turn happened to price last" (the
+    #: pre-item-2 ``sample_rates`` behaviour).
+    model_tokens: dict[str, int] = field(default_factory=dict)
+    #: The rates-lookup callable last passed to ``TtlStats.add`` — reused
+    #: by ``by_key`` to resolve the dominant model found above. A single
+    #: ``TtlStats`` is expected to be fed from one consistent lookup
+    #: (e.g. ``Pricing.resolve_model``) across every ``add`` call.
+    rates_lookup: "RatesLookup | None" = None
 
     # -- item 1: wasted writes -----------------------------------------
     waste_writes: int = 0
@@ -477,11 +564,6 @@ class _RawAccumulator:
     premium_5m_would_expire_tokens: int = 0
 
     # -- item 3: break-even share ---------------------------------------
-    #: The last non-``None`` resolved rate seen for this agent type
-    #: (``TtlStats.add``'s ``rates`` argument is already the transcript's
-    #: dominant-model rate — see that method's docstring), used to derive
-    #: ``premium_ratio`` in ``by_key``.
-    sample_rates: ModelRates | None = None
     inwindow_weight: float = 0.0
     inwindow_total_weight: float = 0.0
     #: Σ_i W_i × (write_1h - write_5m) over *every* priced write (not
@@ -542,6 +624,9 @@ class TtlTypeStats:
     fidelity_pct: float | None
     #: bucket key (see ``_GAP_BUCKETS``) -> count.
     gap_buckets: dict[str, int]
+    #: Fix item 2: priced turns whose model the rates lookup could not
+    #: resolve, priced at zero rather than silently vanishing from cost.
+    unpriced_turns: int = 0
 
     # -- item 1: wasted writes -----------------------------------------
     waste_writes: int = 0
@@ -697,7 +782,7 @@ class TtlTypeStats:
         return f"experimental.cacheTtl in {self.key}.md (or subagentPromptCacheTtl for all subagents)"
 
 
-def _accumulate_waste(priced: list[Turn], rates: RatesArg, acc: _RawAccumulator) -> None:
+def _accumulate_waste(priced: list[Turn], lookup: RatesLookup, acc: _RawAccumulator) -> None:
     """Item 1: for every priced turn's cache-write portion(s), was the
     prefix it wrote ever actually read back before its TTL expired?
 
@@ -709,15 +794,20 @@ def _accumulate_waste(priced: list[Turn], rates: RatesArg, acc: _RawAccumulator)
     reused, which says nothing about whether it *would* have been reused
     in a later session — so it is tallied separately and never counted
     towards ``waste_writes``/``waste_wasted_writes``.
+
+    ``lookup`` (fix item 2) resolves each turn's own model, so a
+    mixed-model transcript's write cost is never mispriced at another
+    turn's rate.
     """
     n = len(priced)
     for i, t in enumerate(priced):
         c_i = t.cache_read_tokens + t.cache_creation_tokens
         is_terminal = i == n - 1
+        turn_rates = lookup(t.model)
         for ttl_seconds, tokens in ((POLICY_5M, t.cc_5m), (POLICY_1H, t.cc_1h)):
             if tokens <= 0:
                 continue
-            cost = _write_cost(t, rates, ttl_seconds, tokens)
+            cost = _write_cost(t, turn_rates, ttl_seconds, tokens)
             if is_terminal:
                 acc.waste_terminal_writes += 1
                 acc.waste_terminal_tokens += tokens
@@ -759,33 +849,43 @@ class TtlStats:
         #: type.
         self._subagent_mtimes_ns: list[int] = []
 
-    def add(self, result: TranscriptResult, rates: RatesArg) -> None:
+    def add(self, result: TranscriptResult, rates_lookup: "RatesArg | RatesLookup") -> None:
         """Fold one transcript's turns into its agent type's running
         totals: "top-level" for a ``kind="top-level"`` transcript,
         otherwise ``result.meta.agent_type`` (falling back to "unknown"
         for a subagent/workflow-agent transcript with no recorded
         type).
 
-        ``rates`` is the single resolved rate used for every turn in
-        this transcript (the same argument ``simulate``/``observed``
-        take) — callers with a mixed-model transcript should resolve per
-        the transcript's dominant model before calling this.
+        ``rates_lookup`` (fix item 2) is either a single already-resolved
+        rate (the pre-item-2 behaviour, applied to every turn regardless
+        of its own model) or a per-turn :data:`RatesLookup` callable —
+        normalised via :func:`_as_lookup`. A mixed-model transcript
+        (a model switch mid-session, or a subagent pinned to a different
+        model from its parent) is priced turn by turn at its own
+        resolved model's rate either way; a turn whose model the lookup
+        can't resolve prices at zero and is counted in
+        ``unpriced_turns``.
         """
+        lookup = _as_lookup(rates_lookup)
         key = "top-level" if result.meta.kind == "top-level" else (result.meta.agent_type or "unknown")
         acc = self._raw.setdefault(key, _RawAccumulator(key=key))
         acc.spawns += 1
+        acc.rates_lookup = lookup
 
         if result.meta.kind != "top-level":
             self._subagent_mtimes_ns.append(result.meta.mtime_ns)
-
-        resolved_rates = rates.rates if isinstance(rates, ResolvedRates) else rates
-        if resolved_rates is not None:
-            acc.sample_rates = resolved_rates
 
         priced = _priced_turns(result.turns)
         acc.priced_turns += len(priced)
         n = len(priced)
         for i, t in enumerate(priced):
+            turn_rates = lookup(t.model)
+            if turn_rates is None:
+                acc.unpriced_turns += 1
+            acc.model_tokens[t.model] = acc.model_tokens.get(t.model, 0) + (
+                t.input_tokens + t.cache_creation_tokens + t.cache_read_tokens + t.output_tokens
+            )
+
             acc.cc_5m_tokens += t.cc_5m
             acc.cc_1h_tokens += t.cc_1h
             c_i = t.cache_read_tokens + t.cache_creation_tokens
@@ -796,8 +896,8 @@ class TtlStats:
             # are honoured per turn rather than hand-rolled.
             w_i = t.cache_creation_tokens
             if w_i > 0:
-                acc.premium_all_1h_usd += _write_cost(t, rates, POLICY_1H, w_i) - _write_cost(
-                    t, rates, POLICY_5M, w_i
+                acc.premium_all_1h_usd += _write_cost(t, turn_rates, POLICY_1H, w_i) - _write_cost(
+                    t, turn_rates, POLICY_5M, w_i
                 )
 
             # i == 0 is the transcript's first priced turn: it has no
@@ -822,7 +922,7 @@ class TtlStats:
                     # this turn's whole prefix (C_j) at the 5m write
                     # rate, since a 5m TTL would have expired across
                     # this gap where a 1h one would have survived.
-                    acc.expiry_loss_all_5m_usd += _write_cost(t, rates, POLICY_5M, c_i)
+                    acc.expiry_loss_all_5m_usd += _write_cost(t, turn_rates, POLICY_5M, c_i)
 
                 # Item 4: near-miss histogram at both TTL boundaries.
                 if _NEAR_5M_HIT[0] <= gap <= _NEAR_5M_HIT[1]:
@@ -830,32 +930,37 @@ class TtlStats:
                 elif _NEAR_5M_MISS[0] < gap <= _NEAR_5M_MISS[1]:
                     acc.near_5m_miss += 1
                     acc.near_5m_miss_tokens += t.cache_creation_tokens
-                    acc.near_5m_miss_usd += price_turn(t, rates).cache_write_cost
+                    acc.near_5m_miss_usd += price_turn(t, turn_rates).cache_write_cost
                 if _NEAR_1H_HIT[0] <= gap <= _NEAR_1H_HIT[1]:
                     acc.near_1h_hit += 1
                 elif _NEAR_1H_MISS[0] < gap <= _NEAR_1H_MISS[1]:
                     acc.near_1h_miss += 1
                     acc.near_1h_miss_tokens += t.cache_creation_tokens
-                    acc.near_1h_miss_usd += price_turn(t, rates).cache_write_cost
+                    acc.near_1h_miss_usd += price_turn(t, turn_rates).cache_write_cost
 
             # Item 2: 1h premium waste vs 5m expiry loss, bucketed by the
             # gap to the *next* priced turn (None when t is the last one
             # — treated the same as "gap > 3600", i.e. the entry expired
             # either way with nothing to show for the premium/the loss).
-            next_gap = priced[i + 1].gap_s if i + 1 < n else None
+            # The *next* turn may run a different model in a mixed
+            # transcript, so its own share of a cost is priced at its
+            # own resolved rate, not this turn's.
+            next_turn = priced[i + 1] if i + 1 < n else None
+            next_gap = next_turn.gap_s if next_turn is not None else None
+            next_rates = lookup(next_turn.model) if next_turn is not None else None
             if t.cc_1h > 0:
                 if next_gap is not None and next_gap <= POLICY_5M:
-                    premium = _write_cost(t, rates, POLICY_1H, t.cc_1h) - _write_cost(
-                        t, rates, POLICY_5M, t.cc_1h
+                    premium = _write_cost(t, turn_rates, POLICY_1H, t.cc_1h) - _write_cost(
+                        t, turn_rates, POLICY_5M, t.cc_1h
                     )
                     acc.premium_1h_not_needed_tokens += t.cc_1h
                     acc.premium_1h_not_needed_usd += premium
                 elif next_gap is not None and next_gap <= POLICY_1H:
                     acc.premium_1h_earned_tokens += t.cc_1h
-                    acc.premium_1h_earned_usd += _write_cost(t, rates, POLICY_5M, t.cc_1h)
+                    acc.premium_1h_earned_usd += _write_cost(t, turn_rates, POLICY_5M, t.cc_1h)
                 else:
-                    premium = _write_cost(t, rates, POLICY_1H, t.cc_1h) - _write_cost(
-                        t, rates, POLICY_5M, t.cc_1h
+                    premium = _write_cost(t, turn_rates, POLICY_1H, t.cc_1h) - _write_cost(
+                        t, turn_rates, POLICY_5M, t.cc_1h
                     )
                     acc.premium_1h_expired_tokens += t.cc_1h
                     acc.premium_1h_expired_usd += premium
@@ -864,7 +969,7 @@ class TtlStats:
                     acc.premium_5m_fine_tokens += t.cc_5m
                 elif next_gap is not None and next_gap <= POLICY_1H:
                     acc.premium_5m_loss_tokens += t.cc_5m
-                    acc.premium_5m_loss_usd += price_turn(priced[i + 1], rates).cache_write_cost
+                    acc.premium_5m_loss_usd += price_turn(next_turn, next_rates).cache_write_cost
                 else:
                     acc.premium_5m_would_expire_tokens += t.cc_5m
 
@@ -872,7 +977,7 @@ class TtlStats:
             # (prefix-invalidated) re-cache tokens/USD.
             classification = _recache_classification(t)
             if classification in ("full-expiry", "prefix-invalidated"):
-                write_cost = price_turn(t, rates).cache_write_cost
+                write_cost = price_turn(t, turn_rates).cache_write_cost
                 if classification == "full-expiry":
                     acc.addressable_full_expiry_tokens += t.cache_creation_tokens
                     acc.addressable_full_expiry_usd += write_cost
@@ -882,11 +987,11 @@ class TtlStats:
 
         # Item 1: wasted writes (needs the whole priced list at once, to
         # look ahead across possibly many turns — see _accumulate_waste).
-        _accumulate_waste(priced, rates, acc)
+        _accumulate_waste(priced, lookup, acc)
 
-        obs = observed(result.turns, rates)
-        sim_5m = simulate(result.turns, rates, POLICY_5M)
-        sim_1h = simulate(result.turns, rates, POLICY_1H)
+        obs = observed(result.turns, lookup)
+        sim_5m = simulate(result.turns, lookup, POLICY_5M)
+        sim_1h = simulate(result.turns, lookup, POLICY_1H)
         acc.cost_observed += obs.cost
         acc.cost_all_5m += sim_5m.cost
         acc.cost_all_1h += sim_1h.cost
@@ -896,7 +1001,7 @@ class TtlStats:
         # either would do.
         acc.unsimulatable += sim_5m.unsimulatable
 
-        fid = fidelity(result.turns, rates)
+        fid = fidelity(result.turns, lookup)
         if fid is not None:
             weight = obs.write_tokens + obs.read_tokens
             if weight > 0:
@@ -905,7 +1010,7 @@ class TtlStats:
 
         # Item 6: cache economy, delegated to the standalone function so
         # the two are guaranteed to agree (see cache_economy's docstring).
-        economy = cache_economy(result.turns, rates)
+        economy = cache_economy(result.turns, lookup)
         acc.economy_tokens_written += economy["tokens_written"]
         acc.economy_tokens_read += economy["tokens_read"]
         acc.economy_write_usd += economy["write_usd"]
@@ -926,10 +1031,18 @@ class TtlStats:
                 else None
             )
 
-            # Item 3: premium_ratio from the resolved rate card, never
-            # hard-coded (see ASSUMPTIONS-adjacent module docstring note
-            # and _RawAccumulator.sample_rates).
-            rates = acc.sample_rates
+            # Item 3 (refined by fix item 2): premium_ratio from the
+            # resolved rate card, never hard-coded — resolved against
+            # this agent type's *dominant* model (the model with the
+            # most total token volume, not merely whichever turn's rate
+            # happened to be stored last), so a mixed-model agent type's
+            # premium_ratio reflects the model that actually dominates
+            # its cost rather than an arbitrary sample.
+            rates: ModelRates | None = None
+            if acc.model_tokens and acc.rates_lookup is not None:
+                dominant_model = max(acc.model_tokens, key=acc.model_tokens.get)
+                resolved = acc.rates_lookup(dominant_model)
+                rates = resolved.rates if isinstance(resolved, ResolvedRates) else resolved
             premium_ratio = (
                 (rates.cache_write_1h - rates.cache_write_5m) / rates.cache_write_5m
                 if rates is not None and rates.cache_write_5m
@@ -961,6 +1074,7 @@ class TtlStats:
                 cost_all_5m=acc.cost_all_5m,
                 cost_all_1h=acc.cost_all_1h,
                 unsimulatable=acc.unsimulatable,
+                unpriced_turns=acc.unpriced_turns,
                 fidelity_pct=fidelity_pct,
                 gap_buckets=dict(acc.gap_buckets),
                 waste_writes=acc.waste_writes,
@@ -1078,6 +1192,7 @@ def build_section(
         Column(key="delta_pct", label="Delta vs observed", kind="pct"),
         Column(key="fidelity_pct", label="Fidelity", kind="pct"),
         Column(key="unsimulatable", label="Unsimulatable turns", kind="int"),
+        Column(key="unpriced_turns", label="Unpriced turns (unknown model)", kind="int"),
         Column(key="recommendation", label="Recommendation", kind="str"),
         Column(key="lever", label="Lever", kind="str"),
     ]
@@ -1112,6 +1227,7 @@ def build_section(
                 row_stats.delta_pct,
                 row_stats.fidelity_pct,
                 row_stats.unsimulatable,
+                row_stats.unpriced_turns,
                 recommendation,
                 row_stats.lever,
             ]
@@ -1244,7 +1360,11 @@ def build_section(
         notes=[
             "the 1h premium is paid on incremental writes; an expiry re-writes the whole"
             " prefix, so the break-even share is the premium ratio scaled by the"
-            " incremental-to-prefix ratio"
+            " incremental-to-prefix ratio",
+            "fix item 2: premium_ratio is resolved against this agent type's dominant"
+            " model (the model with the most total token volume observed for it), not"
+            " an arbitrary sample turn — a mixed-model agent type's break-even share"
+            " reflects the model that actually dominates its cost.",
         ],
     )
 

@@ -37,7 +37,9 @@ from claude_token_lens.ttl import (
 
 from helpers import assert_privacy, turn_line, write_jsonl
 
-SONNET_RATES = load_pricing().resolve_model("claude-sonnet-5")
+PRICING = load_pricing()
+SONNET_RATES = PRICING.resolve_model("claude-sonnet-5")
+HAIKU_RATES = PRICING.resolve_model("claude-haiku-4-5-20251001")
 
 
 def _turn(**overrides) -> model.Turn:
@@ -272,6 +274,91 @@ def test_observed_equals_price_turn_default_path_for_three_turns():
 
 
 # --------------------------------------------------------------------
+# Fix item 2: per-turn rates lookup (mixed-model transcripts)
+# --------------------------------------------------------------------
+
+
+def _two_model_turns() -> list[model.Turn]:
+    """One Sonnet-5 turn and one Haiku-4.5 turn, hand-computable at
+    each model's own packaged rates (Sonnet: input 2.0, output 10.0,
+    cache_write_5m 2.5, cache_read 0.2; Haiku: input 1.0, output 5.0,
+    cache_write_5m 1.25, cache_read 0.1 — all per million tokens)."""
+    return [
+        _turn(
+            model="claude-sonnet-5",
+            input_tokens=100,
+            output_tokens=50,
+            cache_creation_tokens=1000,
+            cc_5m=1000,
+            cache_read_tokens=0,
+        ),
+        _turn(
+            turn_index=2,
+            message_id="msg_2",
+            model="claude-haiku-4-5-20251001",
+            input_tokens=200,
+            output_tokens=80,
+            cache_creation_tokens=2000,
+            cc_5m=2000,
+            cache_read_tokens=500,
+            gap_s=90,
+        ),
+    ]
+
+
+def test_observed_prices_each_turn_at_its_own_models_rate():
+    turns = _two_model_turns()
+    result = observed(turns, PRICING.resolve_model)
+
+    sonnet_cost = 100 / 1e6 * 2.0 + 50 / 1e6 * 10.0 + 1000 / 1e6 * 2.5 + 0 / 1e6 * 0.2
+    haiku_cost = 200 / 1e6 * 1.0 + 80 / 1e6 * 5.0 + 2000 / 1e6 * 1.25 + 500 / 1e6 * 0.1
+    expected = sonnet_cost + haiku_cost
+    assert result.cost == pytest.approx(expected)
+    assert result.unpriced_turns == 0
+
+    # Mispricing every turn at a single model's rate gives a different
+    # (wrong) total — this is exactly the bug the per-turn lookup fixes.
+    single_model_total = sum(price_turn(t, SONNET_RATES).total for t in turns)
+    assert result.cost != pytest.approx(single_model_total)
+
+
+def test_observed_accepts_single_rate_compatibility_path():
+    """A bare ResolvedRates (not a callable) is still accepted, applied
+    to every turn regardless of its own model — the pre-item-2 shape
+    every other test in this module still uses."""
+    turns = _two_model_turns()
+    result = observed(turns, SONNET_RATES)
+    expected = sum(price_turn(t, SONNET_RATES).total for t in turns)
+    assert result.cost == pytest.approx(expected)
+
+
+def test_observed_counts_unpriced_turns_for_unresolvable_model():
+    turns = _two_model_turns()
+    turns[1] = dataclasses.replace(turns[1], model="claude-unreleased-9000")
+    result = observed(turns, PRICING.resolve_model)
+    assert result.unpriced_turns == 1
+    sonnet_cost = 100 / 1e6 * 2.0 + 50 / 1e6 * 10.0 + 1000 / 1e6 * 2.5
+    assert result.cost == pytest.approx(sonnet_cost)
+
+
+def test_ttl_stats_two_model_transcript_matches_hand_computed_observed_cost():
+    turns = _two_model_turns()
+    result = TranscriptResult(meta=TranscriptMeta(kind="top-level"), turns=turns)
+    stats = TtlStats()
+    stats.add(result, PRICING.resolve_model)
+    row = stats.by_key()["top-level"]
+
+    sonnet_cost = 100 / 1e6 * 2.0 + 50 / 1e6 * 10.0 + 1000 / 1e6 * 2.5
+    haiku_cost = 200 / 1e6 * 1.0 + 80 / 1e6 * 5.0 + 2000 / 1e6 * 1.25 + 500 / 1e6 * 0.1
+    assert row.cost_observed == pytest.approx(sonnet_cost + haiku_cost)
+    assert row.unpriced_turns == 0
+    # Dominant model by total token volume is Haiku (turn 2 carries more
+    # tokens), so premium_ratio must be Haiku's, not Sonnet's.
+    expected_premium_ratio = (HAIKU_RATES.rates.cache_write_1h - HAIKU_RATES.rates.cache_write_5m) / HAIKU_RATES.rates.cache_write_5m
+    assert row.premium_ratio == pytest.approx(expected_premium_ratio)
+
+
+# --------------------------------------------------------------------
 # dominant_ttl()
 # --------------------------------------------------------------------
 
@@ -498,6 +585,7 @@ def test_build_section_table_shape_and_columns():
         "delta_pct",
         "fidelity_pct",
         "unsimulatable",
+        "unpriced_turns",
         "recommendation",
         "lever",
     ]
