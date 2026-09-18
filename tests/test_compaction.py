@@ -1,0 +1,418 @@
+"""Tests for WP6's compaction analytics (src/claude_token_lens/compaction.py).
+
+Two fixtures:
+
+- A small, fully hand-checked transcript ("Fixture A" below), built at
+  test time via ``tests/helpers.write_jsonl`` per the WP6 brief: 4 priced
+  turns and 2 ``compact_boundary`` system lines (triggers ``auto`` then
+  ``manual``), used for every arithmetic assertion (ratio, dropped-token
+  share, post-compaction write cost, RE-CACHE flag, per-session summary).
+- The committed ``tests/fixtures/compaction/rediscovery_window.jsonl``
+  (27 priced turns, same two triggers), used only for the rediscovery
+  before/after counts, where a realistic 10-turn window either side of
+  each compaction actually matters. See
+  ``scripts/_gen_compaction_fixture.py``-equivalent generation logic
+  inlined in this docstring's sibling comment below for the exact tool
+  assignment per turn, reproduced here for the assertions:
+
+  Pre-compaction #1 tools (turns 1-12): Bash, Read, Grep, Write, Read,
+  Bash, Glob, Read, Bash, Grep, Write, Bash.
+  Post-compaction #1 tools (turns 13-24): none, Read, Read, Grep, Read,
+  Bash, Glob, Read, Read, Bash, Grep, Bash.
+  Trailing tools (turns 25-27): Bash, Read, Glob.
+
+  Compaction #1's "before" window is the last 10 pre-compaction turns
+  (turns 3-12): Grep, Write, Read, Bash, Glob, Read, Bash, Grep, Write,
+  Bash -> 5 of 10 are Read/Grep/Glob.
+  Compaction #1's "after" window is the first 10 post-compaction turns
+  (turns 13-22): none, Read, Read, Grep, Read, Bash, Glob, Read, Read,
+  Bash -> 7 of 10 are Read/Grep/Glob.
+  Compaction #2's "before" window is turns 15-24: Read, Grep, Read, Bash,
+  Glob, Read, Read, Bash, Grep, Bash -> 7 of 10.
+  Compaction #2's "after" window is only turns 25-27 (transcript ends):
+  Bash, Read, Glob -> 2 of 3.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from claude_token_lens import compaction
+from claude_token_lens.model import TranscriptMeta
+from claude_token_lens.parse import parse_transcript
+from claude_token_lens.pricing import load_pricing
+
+from helpers import assert_privacy, system_line, tool_use_block, turn_line, write_jsonl
+
+FIXTURES = Path(__file__).resolve().parent / "fixtures" / "compaction"
+
+_SONNET_5_CACHE_WRITE_1H = 4.0
+_SONNET_5_CACHE_WRITE_5M = 2.5
+
+
+def _build_fixture_a(tmp_path: Path, session_id: str = "sess_A") -> tuple[Path, TranscriptMeta]:
+    """4 priced turns, 2 compact_boundary lines (auto then manual): see
+    this module's docstring for the exact numbers. Turn 2 (right after
+    compaction #1) is a RE-CACHE turn (ctx=26000 > 20000, cache_read=1000
+    < 0.2*26000=5200); turn 4 (right after compaction #2) is not
+    (ctx=600 <= 20000).
+    """
+    lines = [
+        turn_line(
+            model="claude-sonnet-5",
+            timestamp="2026-09-18T12:00:00.000Z",
+            ephemeral_5m_input_tokens=1000,
+            input_tokens=100,
+            output_tokens=50,
+            content=[tool_use_block("Bash", "tu1", {"command": "echo hi"})],
+        ),
+        system_line(
+            "compact_boundary",
+            timestamp="2026-09-18T12:00:30.000Z",
+            compactMetadata={
+                "trigger": "auto",
+                "preTokens": 100000,
+                "postTokens": 20000,
+                "cumulativeDroppedTokens": 80000,
+                "durationMs": 1200,
+            },
+        ),
+        turn_line(
+            model="claude-sonnet-5",
+            timestamp="2026-09-18T12:01:00.000Z",
+            ephemeral_1h_input_tokens=25000,
+            cache_read_input_tokens=1000,
+            input_tokens=0,
+            output_tokens=80,
+        ),
+        turn_line(
+            model="claude-sonnet-5",
+            timestamp="2026-09-18T12:02:00.000Z",
+            ephemeral_5m_input_tokens=300,
+            cache_read_input_tokens=25000,
+            input_tokens=50,
+            output_tokens=30,
+            content=[tool_use_block("Read", "tu2", {"file_path": "x.txt"})],
+        ),
+        system_line(
+            "compact_boundary",
+            timestamp="2026-09-18T12:02:30.000Z",
+            compactMetadata={
+                "trigger": "manual",
+                "preTokens": 50000,
+                "postTokens": 15000,
+                "cumulativeDroppedTokens": 35000,
+                "durationMs": 900,
+            },
+        ),
+        turn_line(
+            model="claude-sonnet-5",
+            timestamp="2026-09-18T12:03:00.000Z",
+            ephemeral_5m_input_tokens=300,
+            cache_read_input_tokens=100,
+            input_tokens=200,
+            output_tokens=40,
+            content=[tool_use_block("Bash", "tu3", {"command": "echo done"})],
+        ),
+    ]
+    path = tmp_path / "session.jsonl"
+    write_jsonl(path, lines)
+    return path, TranscriptMeta(path=str(path), session_id=session_id)
+
+
+@pytest.fixture()
+def sonnet_rates():
+    pricing = load_pricing()
+    return pricing.resolve_model("claude-sonnet-5")
+
+
+# -- is_recache_turn --------------------------------------------------------
+
+
+def test_is_recache_turn_true_above_floor_and_below_ratio():
+    from claude_token_lens.model import Turn
+
+    turn = Turn(ctx=26000, cache_read_tokens=1000)
+    assert compaction.is_recache_turn(turn) is True
+
+
+def test_is_recache_turn_false_at_or_below_ctx_floor():
+    from claude_token_lens.model import Turn
+
+    turn = Turn(ctx=20000, cache_read_tokens=0)
+    assert compaction.is_recache_turn(turn) is False
+
+
+def test_is_recache_turn_false_when_cache_read_share_high():
+    from claude_token_lens.model import Turn
+
+    turn = Turn(ctx=26000, cache_read_tokens=10000)  # 10000 >= 0.2*26000=5200
+    assert compaction.is_recache_turn(turn) is False
+
+
+# -- compaction_records_for_transcript --------------------------------------
+
+
+def test_compaction_records_two_triggers_ratio_and_recache(tmp_path, sonnet_rates):
+    path, meta = _build_fixture_a(tmp_path)
+    result = parse_transcript(path, meta)
+
+    records = compaction.compaction_records_for_transcript(result, sonnet_rates)
+    assert len(records) == 2
+
+    first, second = records
+    assert first.trigger == "auto"
+    assert first.pre_tokens == 100000
+    assert first.post_tokens == 20000
+    assert first.dropped_tokens == 80000
+    assert first.duration_ms == 1200
+    assert first.ratio == pytest.approx(0.2)
+    assert first.next_turn_cache_creation == 25000
+    assert first.next_turn_write_cost == pytest.approx(25000 * _SONNET_5_CACHE_WRITE_1H / 1_000_000)
+    assert first.next_turn_is_recache is True
+
+    assert second.trigger == "manual"
+    assert second.pre_tokens == 50000
+    assert second.post_tokens == 15000
+    assert second.dropped_tokens == 35000
+    assert second.duration_ms == 900
+    assert second.ratio == pytest.approx(0.3)
+    assert second.next_turn_cache_creation == 300
+    assert second.next_turn_write_cost == pytest.approx(300 * _SONNET_5_CACHE_WRITE_5M / 1_000_000)
+    assert second.next_turn_is_recache is False
+
+    assert_privacy(result)
+
+
+def test_compaction_record_session_id_from_meta(tmp_path, sonnet_rates):
+    path, meta = _build_fixture_a(tmp_path, session_id="sess_XYZ")
+    result = parse_transcript(path, meta)
+    records = compaction.compaction_records_for_transcript(result, sonnet_rates)
+    assert all(r.session_id == "sess_XYZ" for r in records)
+
+
+def test_compaction_record_ratio_none_when_pre_tokens_zero(tmp_path, sonnet_rates):
+    lines = [
+        turn_line(model="claude-sonnet-5", timestamp="2026-09-18T12:00:00.000Z"),
+        system_line(
+            "compact_boundary",
+            timestamp="2026-09-18T12:00:30.000Z",
+            compactMetadata={"trigger": "auto", "postTokens": 0, "cumulativeDroppedTokens": 0},
+        ),
+    ]
+    path = tmp_path / "session.jsonl"
+    write_jsonl(path, lines)
+    result = parse_transcript(path, TranscriptMeta(path=str(path), session_id="sess_Z"))
+    records = compaction.compaction_records_for_transcript(result, sonnet_rates)
+    assert len(records) == 1
+    assert records[0].pre_tokens is None
+    assert records[0].ratio is None
+
+
+def test_compaction_record_no_following_turn_leaves_next_fields_none(tmp_path, sonnet_rates):
+    lines = [
+        turn_line(model="claude-sonnet-5", timestamp="2026-09-18T12:00:00.000Z"),
+        system_line(
+            "compact_boundary",
+            timestamp="2026-09-18T12:01:00.000Z",
+            compactMetadata={"trigger": "auto", "preTokens": 1000, "postTokens": 100},
+        ),
+    ]
+    path = tmp_path / "session.jsonl"
+    write_jsonl(path, lines)
+    result = parse_transcript(path, TranscriptMeta(path=str(path), session_id="sess_tail"))
+    records = compaction.compaction_records_for_transcript(result, sonnet_rates)
+    assert len(records) == 1
+    assert records[0].next_turn_cache_creation is None
+    assert records[0].next_turn_write_cost is None
+    assert records[0].next_turn_is_recache is None
+
+
+def test_compaction_records_empty_when_no_compact_boundary(tmp_path, sonnet_rates):
+    lines = [turn_line(model="claude-sonnet-5")]
+    path = tmp_path / "session.jsonl"
+    write_jsonl(path, lines)
+    result = parse_transcript(path, TranscriptMeta(path=str(path), session_id="sess_none"))
+    assert compaction.compaction_records_for_transcript(result, sonnet_rates) == []
+
+
+# -- CompactionStats ----------------------------------------------------
+
+
+def test_compaction_stats_aggregates_over_fixture_a(tmp_path, sonnet_rates):
+    path, meta = _build_fixture_a(tmp_path)
+    result = parse_transcript(path, meta)
+
+    stats = compaction.CompactionStats()
+    stats.add_transcript(result, sonnet_rates)
+
+    assert stats.total_sessions == 1
+    assert stats.sessions_with_compaction == 1
+    assert stats.compactions_per_session_mean == pytest.approx(2.0)
+    assert stats.compactions_per_session_max == 2
+    assert stats.trigger_mix == {"auto": 1, "manual": 1}
+    assert stats.pre_median == pytest.approx(75000.0)
+    assert stats.post_median == pytest.approx(17500.0)
+    assert stats.dropped_total == 115000
+    # total cache_creation across all 4 priced turns: 1000+25000+300+300
+    assert stats.total_cache_creation == 26600
+    assert stats.dropped_share_of_cache_creation == pytest.approx(115000 / 26600 * 100)
+    assert stats.mean_duration_ms == pytest.approx(1050.0)
+    # Only the first record (next_turn_is_recache=True) counts.
+    assert stats.total_post_compaction_recache_cost == pytest.approx(
+        25000 * _SONNET_5_CACHE_WRITE_1H / 1_000_000
+    )
+
+
+def test_compaction_stats_build_classmethod_matches_manual_fold(tmp_path, sonnet_rates):
+    path, meta = _build_fixture_a(tmp_path)
+    result = parse_transcript(path, meta)
+
+    via_build = compaction.CompactionStats.build([(result, sonnet_rates)])
+    via_manual = compaction.CompactionStats()
+    via_manual.add_transcript(result, sonnet_rates)
+
+    assert via_build.dropped_total == via_manual.dropped_total
+    assert via_build.trigger_mix == via_manual.trigger_mix
+    assert len(via_build.records) == len(via_manual.records)
+
+
+def test_compaction_stats_sessions_without_compaction_are_not_counted(tmp_path, sonnet_rates):
+    no_compaction_lines = [turn_line(model="claude-sonnet-5", ephemeral_5m_input_tokens=50)]
+    path = tmp_path / "no_compaction.jsonl"
+    write_jsonl(path, no_compaction_lines)
+    no_compaction_result = parse_transcript(
+        path, TranscriptMeta(path=str(path), session_id="sess_none")
+    )
+
+    fixture_path, meta = _build_fixture_a(tmp_path, session_id="sess_with")
+    with_compaction_result = parse_transcript(fixture_path, meta)
+
+    stats = compaction.CompactionStats.build(
+        [(no_compaction_result, sonnet_rates), (with_compaction_result, sonnet_rates)]
+    )
+    assert stats.total_sessions == 2
+    assert stats.sessions_with_compaction == 1
+    # Only the session with a compaction contributes to the per-session
+    # mean/max (the brief lists "sessions with >=1 compaction" as its own
+    # separate metric, so a zero-compaction session shouldn't silently
+    # drag this one toward zero).
+    assert stats.compactions_per_session_mean == pytest.approx(2.0)
+
+
+def test_per_session_summary_sorted_by_dropped_tokens_desc(tmp_path, sonnet_rates):
+    path, meta = _build_fixture_a(tmp_path, session_id="sess_only")
+    result = parse_transcript(path, meta)
+    stats = compaction.CompactionStats.build([(result, sonnet_rates)])
+    rows = stats.per_session_summary()
+    assert rows == [("sess_only", 2, 115000, pytest.approx(0.1 + 0.00075))]
+
+
+# -- build_section --------------------------------------------------------
+
+
+def test_build_section_shape_and_notes(tmp_path, sonnet_rates):
+    path, meta = _build_fixture_a(tmp_path)
+    result = parse_transcript(path, meta)
+    stats = compaction.CompactionStats.build([(result, sonnet_rates)])
+
+    section = compaction.build_section(stats)
+    assert section.key == "compactions"
+    assert section.title == "Compactions"
+    table_names = [t.name for t in section.tables]
+    assert table_names == [
+        "compactions_summary",
+        "compactions_trigger_mix",
+        "compactions_per_session",
+    ]
+    assert any("WP10" in note for note in section.notes)
+
+    trigger_table = section.tables[1]
+    trigger_rows = {row[0]: row[1] for row in trigger_table.rows}
+    assert trigger_rows == {"auto": 1, "manual": 1}
+
+    per_session_table = section.tables[2]
+    assert len(per_session_table.rows) == 1
+    assert per_session_table.rows[0][0] == "sess_A"
+
+
+def test_build_section_empty_stats_has_no_data_note():
+    stats = compaction.CompactionStats()
+    section = compaction.build_section(stats)
+    assert section.tables[0].rows  # summary table still has metric rows
+    assert any("No compact_boundary events" in note for note in section.notes)
+
+
+def test_build_section_per_session_table_limited_to_20(tmp_path, sonnet_rates):
+    stats = compaction.CompactionStats()
+    for i in range(25):
+        lines = [
+            turn_line(model="claude-sonnet-5", timestamp="2026-09-18T12:00:00.000Z"),
+            system_line(
+                "compact_boundary",
+                timestamp="2026-09-18T12:00:30.000Z",
+                compactMetadata={
+                    "trigger": "auto",
+                    "preTokens": 1000,
+                    "postTokens": 100,
+                    "cumulativeDroppedTokens": 900 + i,
+                },
+            ),
+            turn_line(model="claude-sonnet-5", timestamp="2026-09-18T12:01:00.000Z"),
+        ]
+        path = tmp_path / f"session_{i}.jsonl"
+        write_jsonl(path, lines)
+        result = parse_transcript(path, TranscriptMeta(path=str(path), session_id=f"sess_{i}"))
+        stats.add_transcript(result, sonnet_rates)
+
+    section = compaction.build_section(stats)
+    per_session_table = section.tables[2]
+    assert len(per_session_table.rows) == 20
+    # Sorted descending by dropped tokens: session 24 (900+24=924) first.
+    assert per_session_table.rows[0][0] == "sess_24"
+
+
+# -- rediscovery ----------------------------------------------------------
+
+
+def _parse_rediscovery_fixture():
+    path = FIXTURES / "rediscovery_window.jsonl"
+    return parse_transcript(path, TranscriptMeta(path=str(path), session_id="sess_rediscovery"))
+
+
+def test_rediscovery_before_after_counts_both_compactions():
+    result = _parse_rediscovery_fixture()
+    windows = compaction.rediscovery(result)
+    assert len(windows) == 2
+
+    first, second = windows
+    assert first.before_total == 10
+    assert first.before_count == 5
+    assert first.after_total == 10
+    assert first.after_count == 7
+
+    assert second.before_total == 10
+    assert second.before_count == 7
+    # Only 3 turns remain after the second compaction (transcript ends).
+    assert second.after_total == 3
+    assert second.after_count == 2
+
+
+def test_rediscovery_window_session_id_and_ts(tmp_path):
+    path, meta = _build_fixture_a(tmp_path, session_id="sess_short")
+    result = parse_transcript(path, meta)
+    windows = compaction.rediscovery(result)
+    assert len(windows) == 2
+    assert all(w.session_id == "sess_short" for w in windows)
+    assert windows[0].compaction_ts == "2026-09-18T12:00:30.000Z"
+    assert windows[1].compaction_ts == "2026-09-18T12:02:30.000Z"
+
+
+def test_rediscovery_empty_when_no_compaction(tmp_path):
+    lines = [turn_line(model="claude-sonnet-5")]
+    path = tmp_path / "session.jsonl"
+    write_jsonl(path, lines)
+    result = parse_transcript(path, TranscriptMeta(path=str(path), session_id="sess_none"))
+    assert compaction.rediscovery(result) == []

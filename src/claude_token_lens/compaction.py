@@ -1,0 +1,509 @@
+"""Compaction-event analytics and post-compaction rediscovery cost (WP6).
+
+Reads the ``COMPACT_BOUNDARY`` events a transcript already carries (see
+``events.py``'s A2 row 1 and ``parse.py``'s ``compactMetadata`` mapping)
+and answers two questions a report needs:
+
+- :func:`compaction_records_for_transcript` / :class:`CompactionStats` —
+  per-compaction facts (trigger, pre/post/dropped tokens, duration,
+  compression ratio) plus what happened to the very next priced turn: how
+  much it wrote back into the cache and what that write cost, and whether
+  that turn itself looks like a RE-CACHE (a full re-send of the prefix
+  rather than a cheap continuation).
+- :func:`rediscovery` — whether the turns right after a compaction lean on
+  Read/Grep/Glob more than the turns right before it, i.e. whether the
+  agent is re-learning things the compaction just dropped.
+
+RE-CACHE detector (deviation, reported rather than made silently — see
+``model.py``'s module docstring for this project's convention on that):
+the plan's WP6 brief asks for "whether that turn was a re-cache per WP3's
+rule re-implemented minimally here as ``ctx > 20k and cache_read <
+0.2*ctx``". WP3 (``recache.py``) does not exist yet in this worktree, so
+:func:`is_recache_turn` below is exactly that minimal rule and nothing
+more — no signature classification (full-expiry vs prefix-invalidated),
+no thresholds object, no override. **WP10 (report assembly) should
+replace every call site here with the shared ``recache.py`` detector once
+WP3 lands**, so this module's own notion of "re-cache" never drifts from
+the corpus-wide one.
+
+Correlating a compaction to "the following turn": ``Turn`` doesn't carry
+a back-reference to the ``Event`` objects that preceded it (only their
+``kind``s, via ``preceding_event_kinds`` — see ``model.py``), so the
+compaction's own token/trigger/duration fields (only present on the
+``Event``) have to be matched to a ``Turn`` by timestamp instead. Both
+``TranscriptResult.events`` and ``TranscriptResult.turns`` are already in
+file order (chronological), so this is a single forward merge: for each
+``COMPACT_BOUNDARY`` event, walk the priced-turn list forward until a
+turn's timestamp is at or after the event's, and skip turns already
+consumed by an earlier compaction. An event with no matching later turn
+(the transcript ends right after it) or an unparsable timestamp still
+produces a ``CompactionRecord`` — just with ``next_turn_*`` fields left
+``None``, rather than being dropped.
+
+``CompactionStats`` aggregates across as many transcripts as
+:meth:`CompactionStats.add_transcript` is called with (the plan calls
+this shape "sessions with >=1 compaction" etc. — genuinely corpus-wide
+numbers). The plan's own phrase "``CompactionStats`` fed by
+``(TranscriptResult, rates)``" describes that one-call shape, not a
+single-transcript-only constructor; :func:`compaction_records_for_transcript`
+is the standalone function that produces exactly the "per transcript list
+of compaction records" the brief also asks for, and
+``CompactionStats.add_transcript`` is built on top of it.
+
+Privacy: nothing here retains message text, tool_result content, or a
+full path — only counts, token totals (already present on ``Turn``/
+``Event``), and the small set of tool names in ``_REDISCOVERY_TOOLS``.
+"""
+
+from __future__ import annotations
+
+import statistics
+from dataclasses import dataclass, field
+from datetime import datetime
+from typing import Iterable
+
+from .model import Column, Event, EventKind, Section, Table, TranscriptResult, Turn
+from .pricing import ModelRates, ResolvedRates, price_turn
+
+#: Minimal re-implementation of WP3's RE-CACHE floor/ratio (see the module
+#: docstring's deviation note) — not the full ``RecacheThresholds`` the
+#: plan describes for WP3, just the two numbers this module's brief names.
+RECACHE_CTX_FLOOR = 20_000
+RECACHE_CR_RATIO = 0.2
+
+#: Tool names counted as "rediscovery" work in :func:`rediscovery`.
+_REDISCOVERY_TOOLS = frozenset({"Read", "Grep", "Glob"})
+
+#: Turns considered on each side of a compaction in :func:`rediscovery`.
+_REDISCOVERY_WINDOW = 10
+
+#: Rows shown in the per-session table :func:`build_section` emits.
+_PER_SESSION_TABLE_LIMIT = 20
+
+
+def is_recache_turn(turn: Turn) -> bool:
+    """Minimal RE-CACHE test: a large context whose cache-read share is
+    small, i.e. the turn looks like it re-sent most of its prefix as a
+    fresh write rather than reading it back from cache.
+
+    See the module docstring's deviation note — this is deliberately not
+    WP3's full detector (no signature, no thresholds object), just the two
+    numbers ("ctx > 20k and cache_read < 0.2*ctx") the WP6 brief specifies.
+    """
+    if turn.ctx <= RECACHE_CTX_FLOOR:
+        return False
+    return turn.cache_read_tokens < RECACHE_CR_RATIO * turn.ctx
+
+
+def _parse_ts(ts_raw: str | None) -> datetime | None:
+    if not ts_raw:
+        return None
+    try:
+        return datetime.fromisoformat(ts_raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _priced_turns(tr: TranscriptResult) -> list[Turn]:
+    """Turns that actually went through the pricing/gap machinery — see
+    ``parse.py``'s ``turn_index`` convention (0 for synthetic/no-usage
+    turns, 1-based otherwise). Compaction records and rediscovery windows
+    are both about priced work, so unpriced turns are excluded from both.
+    """
+    return [t for t in tr.turns if t.turn_index > 0]
+
+
+def _compaction_events(tr: TranscriptResult) -> list[Event]:
+    return [e for e in tr.events if e.kind == EventKind.COMPACT_BOUNDARY]
+
+
+def _correlate_compactions_to_turn_index(
+    tr: TranscriptResult, priced_turns: list[Turn]
+) -> list[tuple[Event, int | None]]:
+    """Pair each ``COMPACT_BOUNDARY`` event with the index (into
+    ``priced_turns``) of the first priced turn at or after it, per the
+    module docstring's forward-merge. ``None`` when no later turn exists.
+
+    Two or more compactions with no priced turn between them (rare, but
+    not impossible — e.g. a compaction immediately followed by another)
+    correctly resolve to the *same* index: the pointer only advances past
+    a turn once its timestamp is confirmed to be before the event being
+    matched, never merely because it was returned for an earlier event.
+    """
+    results: list[tuple[Event, int | None]] = []
+    turn_idx = 0
+    n = len(priced_turns)
+    for event in _compaction_events(tr):
+        event_dt = _parse_ts(event.ts)
+        while turn_idx < n:
+            turn_dt = _parse_ts(priced_turns[turn_idx].ts)
+            if event_dt is None or turn_dt is None or turn_dt >= event_dt:
+                break
+            turn_idx += 1
+        results.append((event, turn_idx if turn_idx < n else None))
+    return results
+
+
+@dataclass(slots=True)
+class CompactionRecord:
+    """One ``COMPACT_BOUNDARY`` event, plus what its transcript's very
+    next priced turn did with the cache immediately afterwards.
+    """
+
+    session_id: str = ""
+    ts: str | None = None
+    trigger: str | None = None
+    pre_tokens: int | None = None
+    post_tokens: int | None = None
+    dropped_tokens: int | None = None
+    duration_ms: int | None = None
+    #: post_tokens / pre_tokens; ``None`` when ``pre_tokens`` is missing
+    #: or zero (nothing to divide by).
+    ratio: float | None = None
+    next_turn_cache_creation: int | None = None
+    next_turn_write_cost: float | None = None
+    #: ``None`` only when there is no next turn to test at all.
+    next_turn_is_recache: bool | None = None
+
+
+def compaction_records_for_transcript(
+    tr: TranscriptResult, rates: ResolvedRates | ModelRates | None
+) -> list[CompactionRecord]:
+    """The "per transcript list of compaction records" the WP6 brief
+    asks for: one :class:`CompactionRecord` per ``COMPACT_BOUNDARY``
+    event in ``tr.events``, correlated to the priced turn immediately
+    following it (see the module docstring).
+
+    ``rates`` prices that following turn's observed cache-write split
+    (``price_turn``'s default path — ``turn.cc_5m``/``turn.cc_1h``, not a
+    simulated one) via :func:`~claude_token_lens.pricing.price_turn`. An
+    unresolved/``None`` rate (unknown model, or no pricing available at
+    all) leaves ``next_turn_write_cost`` at ``0.0`` — ``price_turn``'s own
+    contract for an unpriced turn — rather than ``None``, so a caller
+    summing this field never has to special-case it.
+    """
+    priced_turns = _priced_turns(tr)
+    session_id = tr.meta.session_id
+    records: list[CompactionRecord] = []
+    for event, turn_idx in _correlate_compactions_to_turn_index(tr, priced_turns):
+        ratio: float | None = None
+        if event.pre_tokens:
+            ratio = event.post_tokens / event.pre_tokens if event.post_tokens is not None else None
+
+        next_cache_creation: int | None = None
+        next_write_cost: float | None = None
+        next_is_recache: bool | None = None
+        if turn_idx is not None:
+            next_turn = priced_turns[turn_idx]
+            next_cache_creation = next_turn.cache_creation_tokens
+            next_write_cost = price_turn(next_turn, rates).cache_write_cost
+            next_is_recache = is_recache_turn(next_turn)
+
+        records.append(
+            CompactionRecord(
+                session_id=session_id,
+                ts=event.ts,
+                trigger=event.trigger,
+                pre_tokens=event.pre_tokens,
+                post_tokens=event.post_tokens,
+                dropped_tokens=event.dropped_tokens,
+                duration_ms=event.duration_ms,
+                ratio=ratio,
+                next_turn_cache_creation=next_cache_creation,
+                next_turn_write_cost=next_write_cost,
+                next_turn_is_recache=next_is_recache,
+            )
+        )
+    return records
+
+
+@dataclass(slots=True)
+class CompactionStats:
+    """Corpus-wide compaction aggregates, built by folding in one
+    transcript (and its resolved pricing rate) at a time via
+    :meth:`add_transcript`. See the module docstring for why this is a
+    fold rather than a single-transcript-only constructor.
+    """
+
+    records: list[CompactionRecord] = field(default_factory=list)
+    _sessions_seen: set[str] = field(default_factory=set, repr=False)
+    _sessions_with_compaction: set[str] = field(default_factory=set, repr=False)
+    _compactions_per_session: dict[str, int] = field(default_factory=dict, repr=False)
+    #: Sum of ``cache_creation_tokens`` across every priced turn in every
+    #: transcript folded in so far (not just turns following a
+    #: compaction) — the denominator for "dropped tokens' share of total
+    #: cache_creation".
+    total_cache_creation: int = 0
+
+    @classmethod
+    def build(
+        cls, items: Iterable[tuple[TranscriptResult, ResolvedRates | ModelRates | None]]
+    ) -> "CompactionStats":
+        """Convenience constructor: fold in every ``(TranscriptResult,
+        rates)`` pair from ``items`` in order.
+        """
+        stats = cls()
+        for tr, rates in items:
+            stats.add_transcript(tr, rates)
+        return stats
+
+    def add_transcript(
+        self, tr: TranscriptResult, rates: ResolvedRates | ModelRates | None
+    ) -> list[CompactionRecord]:
+        """Fold one transcript's compactions (and overall cache_creation
+        total) into the running aggregates. Returns this transcript's own
+        record list (the "per transcript list" the brief names), which is
+        also appended to ``self.records``.
+        """
+        session_id = tr.meta.session_id
+        self._sessions_seen.add(session_id)
+        self.total_cache_creation += sum(t.cache_creation_tokens for t in _priced_turns(tr))
+
+        records = compaction_records_for_transcript(tr, rates)
+        if records:
+            self._sessions_with_compaction.add(session_id)
+            self._compactions_per_session[session_id] = (
+                self._compactions_per_session.get(session_id, 0) + len(records)
+            )
+        self.records.extend(records)
+        return records
+
+    # -- aggregates -------------------------------------------------------
+
+    @property
+    def total_sessions(self) -> int:
+        return len(self._sessions_seen)
+
+    @property
+    def sessions_with_compaction(self) -> int:
+        return len(self._sessions_with_compaction)
+
+    @property
+    def compactions_per_session_mean(self) -> float | None:
+        counts = list(self._compactions_per_session.values())
+        return statistics.mean(counts) if counts else None
+
+    @property
+    def compactions_per_session_max(self) -> int | None:
+        counts = list(self._compactions_per_session.values())
+        return max(counts) if counts else None
+
+    @property
+    def trigger_mix(self) -> dict[str, int]:
+        mix: dict[str, int] = {}
+        for record in self.records:
+            key = record.trigger or "unknown"
+            mix[key] = mix.get(key, 0) + 1
+        return mix
+
+    @property
+    def pre_median(self) -> float | None:
+        values = [r.pre_tokens for r in self.records if r.pre_tokens is not None]
+        return statistics.median(values) if values else None
+
+    @property
+    def post_median(self) -> float | None:
+        values = [r.post_tokens for r in self.records if r.post_tokens is not None]
+        return statistics.median(values) if values else None
+
+    @property
+    def dropped_total(self) -> int:
+        return sum(r.dropped_tokens for r in self.records if r.dropped_tokens is not None)
+
+    @property
+    def dropped_share_of_cache_creation(self) -> float | None:
+        """Dropped tokens as a percentage of every priced turn's
+        cache_creation across the whole corpus folded in so far. ``None``
+        when no cache_creation has been observed at all (nothing to
+        divide by) — deliberately not 0.0, which would misleadingly read
+        as "no tokens dropped".
+        """
+        if self.total_cache_creation == 0:
+            return None
+        return 100.0 * self.dropped_total / self.total_cache_creation
+
+    @property
+    def mean_duration_ms(self) -> float | None:
+        values = [r.duration_ms for r in self.records if r.duration_ms is not None]
+        return statistics.mean(values) if values else None
+
+    @property
+    def total_post_compaction_recache_cost(self) -> float:
+        return sum(
+            r.next_turn_write_cost
+            for r in self.records
+            if r.next_turn_is_recache and r.next_turn_write_cost is not None
+        )
+
+    def per_session_summary(self) -> list[tuple[str, int, int, float]]:
+        """``(session_id, compaction_count, dropped_tokens, post-compaction
+        write cost)`` for every session with >=1 compaction, sorted by
+        dropped tokens descending (the ordering :func:`build_section`'s
+        per-session table uses).
+        """
+        by_session: dict[str, tuple[int, int, float]] = {}
+        for record in self.records:
+            count, dropped, cost = by_session.get(record.session_id, (0, 0, 0.0))
+            count += 1
+            dropped += record.dropped_tokens or 0
+            cost += record.next_turn_write_cost or 0.0
+            by_session[record.session_id] = (count, dropped, cost)
+        rows = [
+            (session_id, count, dropped, cost)
+            for session_id, (count, dropped, cost) in by_session.items()
+        ]
+        rows.sort(key=lambda row: row[2], reverse=True)
+        return rows
+
+
+# -- report section ---------------------------------------------------------
+
+
+def build_section(stats: CompactionStats) -> Section:
+    """The "Compactions" report section (key ``compactions``): a summary
+    table, a trigger-mix table, and a per-session table (top 20 by
+    dropped tokens).
+    """
+    summary_table = Table(
+        name="compactions_summary",
+        title="Compaction summary",
+        columns=[
+            Column(key="metric", label="Metric", kind="str"),
+            Column(key="value", label="Value", kind="str"),
+        ],
+        rows=[
+            ["Sessions with >=1 compaction", stats.sessions_with_compaction],
+            ["Total sessions", stats.total_sessions],
+            ["Compactions per session (mean)", stats.compactions_per_session_mean],
+            ["Compactions per session (max)", stats.compactions_per_session_max],
+            ["Pre-compaction tokens (median)", stats.pre_median],
+            ["Post-compaction tokens (median)", stats.post_median],
+            ["Dropped tokens (total)", stats.dropped_total],
+            ["Dropped tokens (share of cache_creation)", stats.dropped_share_of_cache_creation],
+            ["Mean duration (ms)", stats.mean_duration_ms],
+            ["Total post-compaction re-cache cost (USD)", stats.total_post_compaction_recache_cost],
+        ],
+    )
+
+    trigger_mix = stats.trigger_mix
+    total_compactions = sum(trigger_mix.values())
+    trigger_table = Table(
+        name="compactions_trigger_mix",
+        title="Trigger mix",
+        columns=[
+            Column(key="trigger", label="Trigger", kind="str"),
+            Column(key="count", label="Count", kind="int"),
+            Column(key="pct", label="Share", kind="pct"),
+        ],
+        rows=[
+            [
+                trigger,
+                count,
+                100.0 * count / total_compactions if total_compactions else None,
+            ]
+            for trigger, count in sorted(trigger_mix.items(), key=lambda kv: kv[0])
+        ],
+    )
+
+    per_session_rows = stats.per_session_summary()[:_PER_SESSION_TABLE_LIMIT]
+    per_session_table = Table(
+        name="compactions_per_session",
+        title=f"Top {_PER_SESSION_TABLE_LIMIT} sessions by dropped tokens",
+        columns=[
+            Column(key="session", label="Session", kind="str"),
+            Column(key="count", label="Compactions", kind="int"),
+            Column(key="dropped_tokens", label="Dropped tokens", kind="tokens"),
+            Column(key="write_cost", label="Post-compaction write cost", kind="money"),
+        ],
+        rows=[list(row) for row in per_session_rows],
+    )
+
+    notes = [
+        "A turn is flagged as a RE-CACHE here using a minimal, standalone "
+        "rule (ctx > 20,000 and cache_read < 20% of ctx) — the same numbers "
+        "WP3's detector uses, but without WP3's full signature "
+        "classification. WP10 will switch this section to the shared "
+        "recache.py detector once WP3 lands.",
+        "\"Dropped tokens (share of cache_creation)\" divides total dropped "
+        "tokens by every priced turn's cache_creation across the whole "
+        "corpus, not just turns following a compaction, so it can exceed "
+        "100% when compactions are large relative to ordinary cache "
+        "growth.",
+    ]
+    if not stats.records:
+        notes.insert(0, "No compact_boundary events found in this window.")
+
+    return Section(
+        key="compactions",
+        title="Compactions",
+        tables=[summary_table, trigger_table, per_session_table],
+        notes=notes,
+    )
+
+
+# -- rediscovery --------------------------------------------------------
+
+
+@dataclass(slots=True)
+class RediscoveryWindow:
+    """Read/Grep/Glob turn counts in the ``_REDISCOVERY_WINDOW`` priced
+    turns immediately before and after one compaction. ``*_total`` is the
+    number of turns actually available in each window — it can be less
+    than ``_REDISCOVERY_WINDOW`` near either end of a transcript.
+    """
+
+    session_id: str = ""
+    compaction_ts: str | None = None
+    before_count: int = 0
+    before_total: int = 0
+    after_count: int = 0
+    after_total: int = 0
+
+
+def _is_rediscovery_turn(turn: Turn) -> bool:
+    return any(name in _REDISCOVERY_TOOLS for name in turn.tool_names)
+
+
+def rediscovery(tr: TranscriptResult) -> list[RediscoveryWindow]:
+    """One :class:`RediscoveryWindow` per ``COMPACT_BOUNDARY`` event in
+    ``tr``: how many of the ``_REDISCOVERY_WINDOW`` (10) priced turns
+    right after it used Read/Grep/Glob, versus the ``_REDISCOVERY_WINDOW``
+    right before — counts only, no file identity or content.
+    """
+    priced_turns = _priced_turns(tr)
+    session_id = tr.meta.session_id
+    windows: list[RediscoveryWindow] = []
+    for event, turn_idx in _correlate_compactions_to_turn_index(tr, priced_turns):
+        # "Before" turns: the up-to-10 priced turns strictly earlier than
+        # the compaction's own following turn (or, if there was no
+        # following turn, strictly earlier than the transcript's end).
+        before_end = turn_idx if turn_idx is not None else len(priced_turns)
+        before_slice = priced_turns[max(0, before_end - _REDISCOVERY_WINDOW):before_end]
+        after_slice = (
+            priced_turns[turn_idx:turn_idx + _REDISCOVERY_WINDOW] if turn_idx is not None else []
+        )
+
+        windows.append(
+            RediscoveryWindow(
+                session_id=session_id,
+                compaction_ts=event.ts,
+                before_count=sum(1 for t in before_slice if _is_rediscovery_turn(t)),
+                before_total=len(before_slice),
+                after_count=sum(1 for t in after_slice if _is_rediscovery_turn(t)),
+                after_total=len(after_slice),
+            )
+        )
+    return windows
+
+
+__all__ = [
+    "RECACHE_CTX_FLOOR",
+    "RECACHE_CR_RATIO",
+    "is_recache_turn",
+    "CompactionRecord",
+    "compaction_records_for_transcript",
+    "CompactionStats",
+    "build_section",
+    "RediscoveryWindow",
+    "rediscovery",
+]
