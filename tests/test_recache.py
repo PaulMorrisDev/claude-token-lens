@@ -388,3 +388,30 @@ def test_assert_privacy_on_every_table_row(tmp_path: Path):
     assert len(section.tables) == 10
     for table in section.tables:
         _assert_table_rows_privacy_clean(table)
+
+
+# --------------------------------------------------------------------
+# apply() (fix item 1): signatures land on the real, returned turns
+# --------------------------------------------------------------------
+
+
+def test_apply_sets_is_recache_and_signature_on_qualifying_turns():
+    t1 = _turn(message_id="msg_1", turn_index=1, ctx=0, cache_read_tokens=0, cache_creation_tokens=1000)
+    # Qualifies: turn_index > 1, ctx > 20_000, cache_read (5_000) < 0.2 * ctx (20_000),
+    # cache_read (5_000) >= full_expiry_cr (2_000) -> prefix-invalidated.
+    t2 = _turn(message_id="msg_2", turn_index=2, ctx=100_000, cache_read_tokens=5_000, cache_creation_tokens=95_000)
+    t3 = _turn(message_id="msg_3", turn_index=3, ctx=0, cache_read_tokens=0, cache_creation_tokens=100)
+    result = _result([t1, t2, t3])
+
+    updated = recache.apply(result, recache.RecacheThresholds())
+
+    assert updated is not result
+    assert [t.message_id for t in updated.turns] == ["msg_1", "msg_2", "msg_3"]
+    assert updated.turns[0].is_recache is False
+    assert updated.turns[0] is t1  # non-qualifying turns pass through unchanged
+    assert updated.turns[1].is_recache is True
+    assert updated.turns[1].recache_signature == "prefix-invalidated"
+    assert updated.turns[2] is t3
+    # apply() never mutates the input.
+    assert t2.is_recache is False
+    assert t2.recache_signature is None

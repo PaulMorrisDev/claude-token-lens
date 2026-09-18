@@ -262,11 +262,15 @@ def simulate(turns: list[Turn], rates: RatesArg, policy_s: int) -> SimResult:
 
     - The first priced turn always writes the full prefix: ``read=0``,
       ``write=C``.
-    - A turn WP3 flagged ``recache_signature == "prefix-invalidated"``
-      keeps its *observed* split under every policy — a prefix
-      invalidation is a cache-content event, not a TTL-expiry event, so
-      simulating a different TTL cannot have prevented it (no double
-      counting the two causes).
+    - A turn classified "prefix-invalidated" (via
+      ``_recache_classification``: WP3's own ``recache_signature`` when
+      set, else its minimal fallback rule — see that function's
+      docstring) keeps its *observed* split under every policy — a
+      prefix invalidation is a cache-content event, not a TTL-expiry
+      event, so simulating a different TTL cannot have prevented it (no
+      double counting the two causes). The fallback means this branch is
+      reachable even in a pipeline that never called
+      ``recache.apply``/``recache.detect`` on the transcript first.
     - A turn with unknown ``gap_s`` also carries its observed split
       (nothing to simulate) and is counted in ``unsimulatable``.
     - Otherwise: ``gap_s <= policy_s`` means the previous write's TTL
@@ -292,7 +296,7 @@ def simulate(turns: list[Turn], rates: RatesArg, policy_s: int) -> SimResult:
         c = t.cache_read_tokens + t.cache_creation_tokens
         if i == 0:
             read, write = 0, c
-        elif t.recache_signature == "prefix-invalidated":
+        elif _recache_classification(t) == "prefix-invalidated":
             read, write = t.cache_read_tokens, t.cache_creation_tokens
         elif t.gap_s is None:
             read, write = t.cache_read_tokens, t.cache_creation_tokens

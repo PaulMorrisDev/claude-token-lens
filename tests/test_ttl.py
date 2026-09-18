@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from claude_token_lens import model
+from claude_token_lens import model, recache
 from claude_token_lens.model import TranscriptMeta, TranscriptResult
 from claude_token_lens.parse import parse_transcript
 from claude_token_lens.pricing import load_pricing, price_turn
@@ -151,6 +151,47 @@ def test_prefix_invalidated_turn_keeps_observed_split_regardless_of_gap():
     result = simulate([t1, t2], SONNET_RATES, POLICY_5M)
     assert result.write_tokens == 1000 + 300
     assert result.read_tokens == 0 + 700
+
+
+def test_prefix_invalidated_falls_back_to_minimal_rule_with_and_without_apply():
+    """Fix item 1: a prefix-invalidated turn (ctx 100k, cache_read 5k,
+    gap 10s) keeps its observed split under both the 5m and 1h policies,
+    whether or not ``recache.apply`` has run first — the fallback
+    classification inside ``simulate`` (see ``_recache_classification``)
+    makes the branch reachable even when nothing upstream ever called
+    the RE-CACHE detector, and ``apply``'s real signature agrees with it.
+    """
+    t1 = _turn(cache_creation_tokens=50_000, cc_5m=50_000, cache_read_tokens=0)
+    # C2 = 5_000 + 95_000 = 100_000. ctx (100_000) > ctx_floor (20_000);
+    # cache_read (5_000) < cr_ratio * ctx (20_000); cache_read (5_000) >=
+    # full_expiry_cr (2_000) -> "prefix-invalidated". gap_s=10 is well
+    # inside both the 5m and 1h policy windows, so without the fallback
+    # this would take the "read = min(C, prev_C)" gap branch instead.
+    t2 = _turn(
+        turn_index=2,
+        message_id="msg_2",
+        ctx=100_000,
+        cache_read_tokens=5_000,
+        cache_creation_tokens=95_000,
+        cc_5m=95_000,
+        gap_s=10,
+    )
+    assert t2.recache_signature is None  # never classified by anything upstream
+
+    for policy in (POLICY_5M, POLICY_1H):
+        result = simulate([t1, t2], SONNET_RATES, policy)
+        assert result.write_tokens == 50_000 + 95_000
+        assert result.read_tokens == 0 + 5_000
+
+    # Same outcome once recache.apply has actually stamped the signature
+    # onto the turn (the ordinary pipeline path).
+    transcript = TranscriptResult(meta=TranscriptMeta(), turns=[t1, t2])
+    updated = recache.apply(transcript, recache.RecacheThresholds())
+    assert updated.turns[1].recache_signature == "prefix-invalidated"
+    for policy in (POLICY_5M, POLICY_1H):
+        result = simulate(updated.turns, SONNET_RATES, policy)
+        assert result.write_tokens == 50_000 + 95_000
+        assert result.read_tokens == 0 + 5_000
 
 
 def test_unknown_gap_carries_observed_split_and_counts_unsimulatable():

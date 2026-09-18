@@ -162,6 +162,32 @@ def detect(turns: Sequence[Turn], th: RecacheThresholds) -> list[Turn]:
     return detected
 
 
+def apply(result: TranscriptResult, th: RecacheThresholds) -> TranscriptResult:
+    """Return a new :class:`TranscriptResult` whose ``turns`` carry the
+    ``is_recache``/``recache_signature`` :func:`detect` computed against
+    ``th``, in place of the transcript's own as-parsed turns (which never
+    set those two fields — see ``parse.py``).
+
+    Pure, like :func:`detect`: ``result`` and every ``Turn`` in it are
+    left untouched; the returned ``TranscriptResult`` is a shallow copy
+    (``dataclasses.replace``) with only ``turns`` substituted. Every
+    non-qualifying turn is carried through unchanged (same object, not a
+    copy) so identity-sensitive callers (e.g. a cache keyed by object id)
+    still see the same turn for anything :func:`detect` didn't flag.
+
+    This is what makes ``Turn.recache_signature`` actually reach a
+    turn's real, in-report copy: :class:`RecacheStats` computes the same
+    ``detect`` result internally for its own accumulation, but never
+    mutates the ``TranscriptResult`` it was handed, so a caller that
+    wants the signature to be visible on the turns themselves (e.g.
+    ``ttl.py``'s ``simulate``/``TtlStats``, run over the same corpus)
+    must call ``apply`` first and feed the result onward.
+    """
+    detected_by_id = {t.message_id: t for t in detect(result.turns, th)}
+    new_turns = [detected_by_id.get(t.message_id, t) for t in result.turns]
+    return dataclasses.replace(result, turns=new_turns)
+
+
 def gap_bucket(gap_s: float | None) -> str:
     """Bucket an inter-turn gap into one of :data:`GAP_BUCKETS`.
 
@@ -727,6 +753,7 @@ __all__ = [
     "SIGNATURES",
     "RecacheThresholds",
     "detect",
+    "apply",
     "gap_bucket",
     "RecacheStats",
     "build_section",
