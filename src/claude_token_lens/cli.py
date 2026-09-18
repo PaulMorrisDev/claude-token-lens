@@ -11,6 +11,8 @@ import argparse
 import sys
 
 from . import __version__
+from .pricing import PricingError, load_pricing
+from .render.tables import format_cell
 
 #: Every subcommand in the WP0 CLI surface, in the order they are
 #: registered. "report" is also the default when no subcommand is given.
@@ -91,9 +93,15 @@ def _make_parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="command")
     for name in SUBCOMMANDS:
-        subparsers.add_parser(
+        sub = subparsers.add_parser(
             name, parents=[common], help=f"{name} (not implemented yet)"
         )
+        if name == "pricing-check":
+            sub.add_argument(
+                "--models",
+                metavar="ID,ID,...",
+                help="comma-separated model ids to resolve and report",
+            )
     return parser
 
 
@@ -110,6 +118,63 @@ def _insert_default_subcommand(argv: list[str]) -> list[str]:
     return [DEFAULT_SUBCOMMAND, *argv]
 
 
+def _cmd_pricing_check(args: argparse.Namespace) -> int:
+    """``pricing-check``: print the resolved rate card's provenance and
+    rate table, and (with ``--models``) how each given model id resolves
+    against it. Exit 2 on a malformed or unreadable pricing file.
+    """
+    try:
+        rates = load_pricing(path=args.pricing, config_dir=args.config_dir)
+    except PricingError as exc:
+        print(f"claude-token-lens pricing-check: {exc}", file=sys.stderr)
+        return 2
+
+    print(f"Pricing file: {rates.path}")
+    print(f"Version:      {rates.version}")
+    print(f"SHA8:         {rates.sha8}")
+    print(f"Currency:     {rates.currency}")
+    if rates.source_url:
+        print(f"Source:       {rates.source_url}")
+    if rates.retrieved:
+        print(f"Retrieved:    {rates.retrieved}")
+    print()
+
+    table = rates.describe()
+    headers = [column.label for column in table.columns]
+    formatted_rows = [
+        [
+            format_cell(value, column.kind, currency=rates.currency)
+            for value, column in zip(row, table.columns)
+        ]
+        for row in table.rows
+    ]
+    widths = [
+        max(len(headers[i]), *(len(row[i]) for row in formatted_rows)) if formatted_rows else len(headers[i])
+        for i in range(len(headers))
+    ]
+    print(table.title)
+    print("  ".join(header.ljust(width) for header, width in zip(headers, widths)))
+    print("  ".join("-" * width for width in widths))
+    for row in formatted_rows:
+        print("  ".join(cell.ljust(width) for cell, width in zip(row, widths)))
+
+    if args.models:
+        print()
+        print("Model resolution:")
+        for model_id in (m.strip() for m in args.models.split(",")):
+            if not model_id:
+                continue
+            resolved = rates.resolve_model(model_id)
+            if resolved is None:
+                print(f"  {model_id} -> UNKNOWN (no matching rate)")
+            else:
+                print(
+                    f"  {model_id} -> {resolved.canonical_id} (matched via {resolved.matched_via})"
+                )
+
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -121,6 +186,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(raw_argv)  # may raise SystemExit (--version, --help, errors)
 
     command = args.command or DEFAULT_SUBCOMMAND
+
+    if command == "pricing-check":
+        return _cmd_pricing_check(args)
+
     print(f"claude-token-lens {command}: not implemented", file=sys.stderr)
     return 2
 
