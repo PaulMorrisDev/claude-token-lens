@@ -106,11 +106,18 @@ def test_overnight_classifies_as_overnight():
 
     assert features.span_s == pytest.approx(5 * 3600)
     assert features.human_gap_max_s == pytest.approx(90 * 60)
+    # Fix 5: the fixture's activity (22:00-04:00 UTC) is genuine
+    # night-time local activity, not just a long span/gap at an
+    # arbitrary hour -- the real evidence this WP's overnight rule now
+    # requires.
+    assert features.night_turn_share > 0.0 or features.long_gap_in_night
 
     mode, evidence = classify.classify_mode(features)
     assert mode == "overnight"
     assert "span_s" in evidence
     assert "human_gap_max_s" in evidence
+    assert "night_turn_share" in evidence
+    assert "long_gap_in_night" in evidence
 
 
 def test_mode_mixed_fallback_on_hand_built_features():
@@ -125,6 +132,180 @@ def test_mode_mixed_fallback_on_hand_built_features():
     mode, evidence = classify.classify_mode(f)
     assert mode == "mixed"
     assert "human_prompts" in evidence
+
+
+# --------------------------------------------------------------------
+# Fix 5: overnight requires genuine local night-time activity
+# --------------------------------------------------------------------
+
+
+def test_overnight_does_not_fire_without_night_time_evidence():
+    """A long span with a long human gap in the middle of the (local)
+    afternoon -- e.g. a session spanning a long lunch break or an
+    all-afternoon meeting -- must not be classified overnight just
+    because it happens to clear the span/gap thresholds.
+    """
+    f = classify.SessionFeatures(
+        span_s=6 * 3600,
+        human_gap_max_s=90 * 60,
+        human_gap_median_s=90 * 60,
+        night_turn_share=0.0,
+        long_gap_in_night=False,
+    )
+    mode, evidence = classify.classify_mode(f)
+    assert mode != "overnight"
+
+
+def test_overnight_fires_via_night_turn_share_alone():
+    f = classify.SessionFeatures(
+        span_s=6 * 3600,
+        human_gap_max_s=90 * 60,
+        night_turn_share=0.5,
+        long_gap_in_night=False,
+    )
+    mode, evidence = classify.classify_mode(f)
+    assert mode == "overnight"
+    assert evidence["night_turn_share"] == pytest.approx(0.5)
+
+
+def test_overnight_fires_via_long_gap_in_night_alone():
+    """A session with almost no top-level assistant turns to sample
+    (night_turn_share near 0) can still be overnight if the one long
+    idle gap itself sat in the night hours.
+    """
+    f = classify.SessionFeatures(
+        span_s=6 * 3600,
+        human_gap_max_s=90 * 60,
+        night_turn_share=0.0,
+        long_gap_in_night=True,
+    )
+    mode, evidence = classify.classify_mode(f)
+    assert mode == "overnight"
+    assert evidence["long_gap_in_night"] is True
+
+
+def test_overnight_night_turn_share_threshold_is_overridable():
+    f = classify.SessionFeatures(
+        span_s=6 * 3600,
+        human_gap_max_s=90 * 60,
+        night_turn_share=0.1,
+        long_gap_in_night=False,
+    )
+    mode, _ = classify.classify_mode(f)
+    assert mode != "overnight"  # 0.1 < the 0.3 default
+
+    mode, _ = classify.classify_mode(f, thresholds={"overnight_night_turn_share": 0.05})
+    assert mode == "overnight"
+
+
+def test_multi_day_evidence_added_on_fallthrough_when_span_exceeds_24h():
+    f = classify.SessionFeatures(
+        span_s=30 * 3600,  # > 24h
+        human_gap_max_s=90 * 60,
+        night_turn_share=0.0,
+        long_gap_in_night=False,  # overnight's night check fails -> falls through
+        subagent_count=5,
+        human_prompts=10,
+        assistant_turns=5,
+    )
+    mode, evidence = classify.classify_mode(f)
+    assert mode == "mixed"
+    assert evidence["multi_day"] is True
+
+
+def test_multi_day_evidence_absent_when_span_under_24h():
+    f = classify.SessionFeatures(
+        span_s=6 * 3600,
+        human_gap_max_s=90 * 60,
+        night_turn_share=0.0,
+        long_gap_in_night=False,
+        subagent_count=5,
+        human_prompts=10,
+        assistant_turns=5,
+    )
+    mode, evidence = classify.classify_mode(f)
+    assert mode == "mixed"
+    assert "multi_day" not in evidence
+
+
+def test_multi_day_evidence_not_added_when_overnight_fires():
+    f = classify.SessionFeatures(
+        span_s=30 * 3600,
+        human_gap_max_s=90 * 60,
+        night_turn_share=0.5,
+    )
+    mode, evidence = classify.classify_mode(f)
+    assert mode == "overnight"
+    assert "multi_day" not in evidence
+
+
+def test_multi_day_span_threshold_is_overridable():
+    f = classify.SessionFeatures(
+        span_s=10 * 3600,
+        human_gap_max_s=90 * 60,
+        night_turn_share=0.0,
+        long_gap_in_night=False,
+    )
+    mode, evidence = classify.classify_mode(f, thresholds={"multi_day_span_s": 8 * 3600})
+    assert mode == "mixed"
+    assert evidence["multi_day"] is True
+
+
+def test_night_window_wraps_midnight():
+    assert classify._in_night_window(23, 22, 7) is True
+    assert classify._in_night_window(3, 22, 7) is True
+    assert classify._in_night_window(21, 22, 7) is False
+    assert classify._in_night_window(7, 22, 7) is False
+    assert classify._in_night_window(22, 22, 7) is True
+
+
+def test_gap_overlaps_night_detects_overlap_even_when_endpoints_are_daytime():
+    from datetime import datetime, timezone
+
+    # A gap from 18:00 to 09:00 the next day plainly spans the night even
+    # though neither endpoint's own hour is inside the 22:00-07:00
+    # window -- the interval-overlap check must catch this, not just an
+    # endpoint-hour check. tz="UTC" is passed explicitly so the fixed UTC
+    # inputs below are also the "local" hours being checked, independent
+    # of the machine running the test (falls back to the machine's own
+    # zone only if "UTC" itself can't be resolved -- see _to_local).
+    start = datetime(2026, 9, 17, 18, 0, tzinfo=timezone.utc)
+    end = datetime(2026, 9, 18, 9, 0, tzinfo=timezone.utc)
+    assert classify._gap_overlaps_night(start, end, "UTC", 22, 7) is True
+
+
+def test_gap_overlaps_night_false_for_a_purely_daytime_gap():
+    from datetime import datetime, timezone
+
+    start = datetime(2026, 9, 17, 9, 0, tzinfo=timezone.utc)
+    end = datetime(2026, 9, 17, 17, 0, tzinfo=timezone.utc)
+    assert classify._gap_overlaps_night(start, end, None, 22, 7) is False
+
+
+# --------------------------------------------------------------------
+# Fix 5: Config.thresholds["classify"] sub-dict
+# --------------------------------------------------------------------
+
+
+def test_mode_and_purpose_thresholds_from_config_reads_classify_subdict():
+    config_thresholds = {
+        "classify": {
+            "mode": {"overnight_night_turn_share": 0.1},
+            "purpose": {"local_llm_min_hits": 1},
+        },
+        "some_other_package": {"unrelated": True},
+    }
+    mode_t, purpose_t = classify.mode_and_purpose_thresholds_from_config(config_thresholds)
+    assert mode_t == {"overnight_night_turn_share": 0.1}
+    assert purpose_t == {"local_llm_min_hits": 1}
+
+
+def test_mode_and_purpose_thresholds_from_config_empty_when_absent():
+    assert classify.mode_and_purpose_thresholds_from_config({}) == ({}, {})
+    assert classify.mode_and_purpose_thresholds_from_config({"classify": "not-a-dict"}) == ({}, {})
+    assert classify.mode_and_purpose_thresholds_from_config(
+        {"classify": {"mode": "not-a-dict"}}
+    ) == ({}, {})
 
 
 # --------------------------------------------------------------------

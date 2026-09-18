@@ -101,14 +101,34 @@ from .model import (
 
 # -- Thresholds -------------------------------------------------------------
 
-#: Default thresholds for :func:`classify_mode`, overridable per call (and,
-#: eventually, from ``Config.thresholds`` — see the module docstring: this
-#: WP doesn't wire that up itself, since neither the brief's
-#: ``classify_mode(f)`` signature nor ``config.py``'s ``thresholds: dict``
-#: shape name a sub-key convention for it yet).
+#: Default thresholds for :func:`classify_mode`, overridable per call via
+#: this function's own ``thresholds`` parameter, or corpus-wide via
+#: ``Config.thresholds["classify"]["mode"]`` (fix 5 addition — see
+#: :func:`mode_and_purpose_thresholds_from_config`). ``Config.thresholds``
+#: itself stays the flat, free-form dict ``config.py``'s module docstring
+#: describes ("passed to other packages' from_config"); this module reads
+#: its own ``"classify"`` sub-key rather than the dict's top level so it
+#: never collides with another package reading the same ``Config``.
 DEFAULT_MODE_THRESHOLDS: dict = {
     "overnight_span_s": 4 * 3600,
     "overnight_gap_s": 60 * 60,
+    #: Local-time window a session's activity must fall inside for
+    #: "overnight" to fire (fix 5: span + gap alone used to over-fire on
+    #: sessions that merely spanned a lunch break or a long meeting with
+    #: no actual night-time activity). Wraps midnight: hour >= start OR
+    #: hour < end.
+    "overnight_night_start_hour": 22,
+    "overnight_night_end_hour": 7,
+    #: Share of top-level assistant turns that must fall in the local
+    #: night window above for "overnight" to fire, UNLESS the long human
+    #: gap itself overlaps that window (``SessionFeatures.long_gap_in_night``)
+    #: — either signal alone is enough, per the plan's Risk 9.
+    "overnight_night_turn_share": 0.3,
+    #: When "overnight" doesn't fire, a span longer than this still gets
+    #: flagged ``mode_evidence["multi_day"] = True`` on whichever mode the
+    #: rest of the table picks, so a report can tell "genuinely overnight"
+    #: apart from "just a very long-running session" (fix 5).
+    "multi_day_span_s": 24 * 3600,
     "long_agentic_max_human_prompts": 5,
     # Tuned from the plan's implied starting point of 50 down to 30
     # against the real RevIXO corpus (131 top-level sessions, see this
@@ -138,6 +158,37 @@ DEFAULT_PURPOSE_THRESHOLDS: dict = {
     "refactor_min_edit_turns": 10,
     "refactor_min_test_hits": 1,
 }
+
+
+def mode_and_purpose_thresholds_from_config(config_thresholds: dict) -> tuple[dict, dict]:
+    """Pull this module's own threshold overrides out of ``Config.thresholds``
+    (fix 5): ``config_thresholds["classify"]["mode"]`` and
+    ``config_thresholds["classify"]["purpose"]``.
+
+    ``Config.thresholds`` is a flat, free-form dict shared by every
+    package's own override seam (see ``config.py``'s module docstring —
+    RE-CACHE has its own dedicated ``Config.recache`` field instead, so
+    this isn't every package's convention, just this module's). Reading
+    it through a ``"classify"`` sub-key rather than the dict's top level
+    means another package's keys living alongside it in the same
+    ``Config.thresholds`` table can never collide with these.
+
+    Returns ``(mode_thresholds, purpose_thresholds)``, each ``{}`` when
+    absent or malformed (never raises on a foreign shape — same posture
+    ``config.py``/``pricing.py``/``snapshots.py`` already take). Pass the
+    results straight through to :func:`classify_session`'s
+    ``mode_thresholds``/``purpose_thresholds`` keyword arguments.
+    """
+    classify_cfg = config_thresholds.get("classify") if config_thresholds else None
+    if not isinstance(classify_cfg, dict):
+        return {}, {}
+    mode_thresholds = classify_cfg.get("mode")
+    purpose_thresholds = classify_cfg.get("purpose")
+    return (
+        dict(mode_thresholds) if isinstance(mode_thresholds, dict) else {},
+        dict(purpose_thresholds) if isinstance(purpose_thresholds, dict) else {},
+    )
+
 
 #: Bash ``cmd_prefix`` substrings identifying a call into a local LLM
 #: server (plan "Classification" section / "Other clients").
@@ -189,6 +240,20 @@ class SessionFeatures:
     read_turns: int = 0
     start_local_hour: int | None = None
     end_local_hour: int | None = None
+    #: Share (0.0-1.0) of top-level, non-synthetic assistant turns whose
+    #: local timestamp falls inside the night window (fix 5; see
+    #: ``DEFAULT_MODE_THRESHOLDS``). 0.0 when there are no assistant
+    #: turns to measure, same "nothing to divide by" convention as
+    #: ``compaction.py``'s share properties use elsewhere in this
+    #: project — never mistaken for "definitely not overnight" on its
+    #: own, since ``long_gap_in_night`` can still carry the signal.
+    night_turn_share: float = 0.0
+    #: Whether the session's single longest human-to-human gap overlaps
+    #: the local night window on any day it spans (fix 5) — a session
+    #: with hardly any assistant turns overall (so ``night_turn_share``
+    #: is a poor sample) can still clearly be "worked overnight" if the
+    #: one big idle gap itself sat in the night hours.
+    long_gap_in_night: bool = False
 
 
 # -- Timestamp / timezone helpers -------------------------------------------
@@ -253,6 +318,32 @@ def _median_and_max_gap(stamps: list[datetime]) -> tuple[float | None, float | N
     return statistics.median(gaps), max(gaps)
 
 
+def _max_gap_pair(stamps: list[datetime]) -> tuple[datetime, datetime] | None:
+    """The ``(earlier, later)`` pair of consecutive ``stamps`` achieving
+    the single largest gap — the same gap :func:`_median_and_max_gap`
+    reports the duration of, but with both endpoints, so
+    :func:`_gap_overlaps_night` can check what time of day that gap
+    actually spanned rather than just how long it was.
+    """
+    if len(stamps) < 2:
+        return None
+    pairs = list(zip(stamps, stamps[1:]))
+    return max(pairs, key=lambda pair: (pair[1] - pair[0]).total_seconds())
+
+
+def _to_local(dt: datetime, tz: str | None) -> datetime:
+    """Convert a UTC-aware ``dt`` to ``tz`` (an IANA name), or the
+    machine's own local zone when ``tz`` is falsy or can't be resolved
+    (see the module docstring's timezone-conversion note).
+    """
+    if tz:
+        try:
+            return dt.astimezone(ZoneInfo(tz))
+        except (ZoneInfoNotFoundError, ValueError):
+            return dt.astimezone()
+    return dt.astimezone()
+
+
 def _local_hour(ts: str | None, tz: str | None) -> int | None:
     """Convert ``ts`` (a ``Turn``/``Event`` UTC ISO timestamp) to the hour
     of day in ``tz`` (an IANA name), or the machine's own local zone when
@@ -261,14 +352,54 @@ def _local_hour(ts: str | None, tz: str | None) -> int | None:
     dt = _parse_ts(ts)
     if dt is None:
         return None
-    if tz:
-        try:
-            localized = dt.astimezone(ZoneInfo(tz))
-        except (ZoneInfoNotFoundError, ValueError):
-            localized = dt.astimezone()
-    else:
-        localized = dt.astimezone()
-    return localized.hour
+    return _to_local(dt, tz).hour
+
+
+def _in_night_window(hour: int, night_start_hour: int, night_end_hour: int) -> bool:
+    """Whether ``hour`` (0-23) falls in the ``[night_start_hour,
+    night_end_hour)`` window, wrapping past midnight (the default 22-7
+    window means hour >= 22 or hour < 7).
+    """
+    if night_start_hour <= night_end_hour:
+        return night_start_hour <= hour < night_end_hour
+    return hour >= night_start_hour or hour < night_end_hour
+
+
+def _gap_overlaps_night(
+    start: datetime, end: datetime, tz: str | None, night_start_hour: int, night_end_hour: int
+) -> bool:
+    """Whether the ``[start, end]`` gap (UTC-aware) overlaps the local
+    night window on ANY calendar day it spans — checked as interval
+    overlap against that day's night window, not just by looking at the
+    two endpoints' own hours (a gap from 18:00 to 09:00 the next day
+    plainly spans the night even though neither endpoint's hour is
+    itself in the window).
+    """
+    start_local = _to_local(start, tz)
+    end_local = _to_local(end, tz)
+    if end_local <= start_local:
+        return False
+
+    from datetime import time, timedelta
+
+    # Start one day early: a wrapping window (e.g. 22:00-07:00) that began
+    # the evening before ``start_local``'s own date can still be the
+    # window ``start_local`` itself falls inside (a gap starting at
+    # 02:00 is inside the night that began at 22:00 the previous day).
+    day = start_local.date() - timedelta(days=1)
+    last_day = end_local.date()
+    while day <= last_day:
+        night_begin = datetime.combine(day, time(night_start_hour, 0), tzinfo=start_local.tzinfo)
+        if night_start_hour <= night_end_hour:
+            night_end = datetime.combine(day, time(night_end_hour, 0), tzinfo=start_local.tzinfo)
+        else:
+            night_end = datetime.combine(
+                day + timedelta(days=1), time(night_end_hour, 0), tzinfo=start_local.tzinfo
+            )
+        if start_local < night_end and end_local > night_begin:
+            return True
+        day += timedelta(days=1)
+    return False
 
 
 # -- extract_features ---------------------------------------------------------
@@ -290,6 +421,7 @@ def extract_features(
     *,
     workflows: int = 0,
     entrypoint: str | None = None,
+    thresholds: dict | None = None,
 ) -> SessionFeatures:
     """Reduce one session (``top`` plus its ``subs``) to a
     :class:`SessionFeatures` bundle. See the module docstring for which
@@ -297,9 +429,20 @@ def extract_features(
     transcript in ``subs``, and for the ``workflows``/``entrypoint``
     keyword-only parameters (data ``TranscriptResult`` alone can't supply
     yet — see the module docstring).
+
+    ``thresholds`` (fix 5) only supplies the night-window bounds
+    (``overnight_night_start_hour``/``overnight_night_end_hour``) used to
+    compute ``night_turn_share``/``long_gap_in_night`` — merged over
+    ``DEFAULT_MODE_THRESHOLDS`` the same way :func:`classify_mode` merges
+    its own ``thresholds`` argument, so a caller can pass the very same
+    dict to both without the window bounds ever disagreeing between the
+    feature computed here and the rule that reads it.
     """
     subs = subs or []
     all_transcripts = (top, *subs)
+    t = {**DEFAULT_MODE_THRESHOLDS, **(thresholds or {})}
+    night_start_hour = t["overnight_night_start_hour"]
+    night_end_hour = t["overnight_night_end_hour"]
 
     human_stamps = _human_text_timestamps(top)
     human_gap_median_s, human_gap_max_s = _median_and_max_gap(human_stamps)
@@ -308,6 +451,22 @@ def extract_features(
     span_s = _span_seconds(first_ts, last_ts)
 
     assistant_turns = sum(1 for turn in top.turns if not turn.is_synthetic)
+
+    night_turns = sum(
+        1
+        for turn in top.turns
+        if not turn.is_synthetic
+        and (hour := _local_hour(turn.ts, tz)) is not None
+        and _in_night_window(hour, night_start_hour, night_end_hour)
+    )
+    night_turn_share = (night_turns / assistant_turns) if assistant_turns else 0.0
+
+    long_gap_in_night = False
+    gap_pair = _max_gap_pair(human_stamps)
+    if gap_pair is not None:
+        long_gap_in_night = _gap_overlaps_night(
+            gap_pair[0], gap_pair[1], tz, night_start_hour, night_end_hour
+        )
 
     max_spawn_depth = max((s.meta.spawn_depth for s in subs), default=0)
     has_chain = max_spawn_depth >= 2 or any(s.meta.parent_agent_id for s in subs)
@@ -385,6 +544,8 @@ def extract_features(
         read_turns=read_turns,
         start_local_hour=start_local_hour,
         end_local_hour=end_local_hour,
+        night_turn_share=night_turn_share,
+        long_gap_in_night=long_gap_in_night,
     )
 
 
@@ -394,6 +555,19 @@ def extract_features(
 def classify_mode(f: SessionFeatures, thresholds: dict | None = None) -> tuple[str, dict]:
     """First-match-wins mode classification (plan "Classification"
     section): overnight -> long-agentic -> interactive -> mixed.
+
+    Fix 5 (plan Risk 9: "overnight detection needs local time"): span and
+    the max human gap alone used to fire "overnight" on any session that
+    merely spanned a long lunch break or an afternoon meeting, with no
+    actual night-time activity. Overnight now additionally requires
+    ``night_turn_share`` to clear ``overnight_night_turn_share`` OR
+    ``long_gap_in_night`` to be set — real local-night evidence, not just
+    a long idle gap at an arbitrary hour. A session that fails only that
+    extra check (still a long span and a long gap, just not at night)
+    falls through to the rest of the table as normal; if its span also
+    exceeds ``multi_day_span_s``, whichever mode it lands on gets
+    ``mode_evidence["multi_day"] = True`` merged in, so a report can tell
+    "genuinely overnight" apart from "just a very long-running session".
     """
     t = {**DEFAULT_MODE_THRESHOLDS, **(thresholds or {})}
 
@@ -401,44 +575,53 @@ def classify_mode(f: SessionFeatures, thresholds: dict | None = None) -> tuple[s
         f.span_s > t["overnight_span_s"]
         and f.human_gap_max_s is not None
         and f.human_gap_max_s > t["overnight_gap_s"]
+        and (f.night_turn_share >= t["overnight_night_turn_share"] or f.long_gap_in_night)
     ):
-        return "overnight", {"span_s": f.span_s, "human_gap_max_s": f.human_gap_max_s}
+        return "overnight", {
+            "span_s": f.span_s,
+            "human_gap_max_s": f.human_gap_max_s,
+            "night_turn_share": f.night_turn_share,
+            "long_gap_in_night": f.long_gap_in_night,
+        }
 
     if f.has_chain:
-        return "long-agentic", {"has_chain": f.has_chain}
-    if f.subagent_count >= 1 and f.human_prompts <= t["long_agentic_max_human_prompts"]:
-        return "long-agentic", {
+        mode, evidence = "long-agentic", {"has_chain": f.has_chain}
+    elif f.subagent_count >= 1 and f.human_prompts <= t["long_agentic_max_human_prompts"]:
+        mode, evidence = "long-agentic", {
             "subagent_count": f.subagent_count,
             "human_prompts": f.human_prompts,
         }
-    if (
+    elif (
         f.assistant_turns >= t["long_agentic_min_turns"]
         and f.human_prompts <= t["long_agentic_max_human_prompts"]
     ):
-        return "long-agentic", {
+        mode, evidence = "long-agentic", {
             "assistant_turns": f.assistant_turns,
             "human_prompts": f.human_prompts,
         }
-
-    if (
+    elif (
         f.human_gap_median_s is not None
         and f.human_gap_median_s < t["interactive_gap_s"]
         and f.subagent_count <= t["interactive_max_subagents"]
     ):
-        return "interactive", {
+        mode, evidence = "interactive", {
             "human_gap_median_s": f.human_gap_median_s,
             "subagent_count": f.subagent_count,
         }
+    else:
+        mode, evidence = "mixed", {
+            "span_s": f.span_s,
+            "human_gap_max_s": f.human_gap_max_s,
+            "human_gap_median_s": f.human_gap_median_s,
+            "subagent_count": f.subagent_count,
+            "assistant_turns": f.assistant_turns,
+            "human_prompts": f.human_prompts,
+            "has_chain": f.has_chain,
+        }
 
-    return "mixed", {
-        "span_s": f.span_s,
-        "human_gap_max_s": f.human_gap_max_s,
-        "human_gap_median_s": f.human_gap_median_s,
-        "subagent_count": f.subagent_count,
-        "assistant_turns": f.assistant_turns,
-        "human_prompts": f.human_prompts,
-        "has_chain": f.has_chain,
-    }
+    if f.span_s > t["multi_day_span_s"]:
+        evidence = {**evidence, "multi_day": True}
+    return mode, evidence
 
 
 def classify_purpose(f: SessionFeatures, thresholds: dict | None = None) -> tuple[str, dict]:
@@ -511,7 +694,9 @@ def classify_session(
     and/or ``"purpose"`` (independently — a session can override one and
     let the other run through the rules).
     """
-    features = extract_features(top, subs, tz, workflows=workflows, entrypoint=entrypoint)
+    features = extract_features(
+        top, subs, tz, workflows=workflows, entrypoint=entrypoint, thresholds=mode_thresholds
+    )
     override = overrides.get(top.meta.session_id, {}) if overrides else {}
 
     if "mode" in override:
@@ -754,6 +939,7 @@ __all__ = [
     "SessionFeatures",
     "DEFAULT_MODE_THRESHOLDS",
     "DEFAULT_PURPOSE_THRESHOLDS",
+    "mode_and_purpose_thresholds_from_config",
     "extract_features",
     "classify_mode",
     "classify_purpose",

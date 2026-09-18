@@ -126,6 +126,42 @@ def test_thresholds_must_be_a_table(tmp_path):
         load_config(config_dir=token_lens_dir)
 
 
+def test_thresholds_classify_subdict_round_trips_as_a_nested_table(tmp_path):
+    """Fix 5: classify.py reads its own overrides out of
+    Config.thresholds["classify"]["mode"/"purpose"] (see
+    classify.mode_and_purpose_thresholds_from_config) -- thresholds
+    itself stays this module's plain free-form dict, so a nested TOML
+    table under it just round-trips as a nested dict with no special
+    parsing needed here.
+    """
+    token_lens_dir = tmp_path / "token-lens"
+    token_lens_dir.mkdir()
+    (token_lens_dir / "config.toml").write_text(
+        "[thresholds.classify.mode]\n"
+        "overnight_night_turn_share = 0.15\n"
+        "\n"
+        "[thresholds.classify.purpose]\n"
+        "local_llm_min_hits = 1\n",
+        encoding="utf-8",
+    )
+
+    config = load_config(config_dir=token_lens_dir)
+    assert config.thresholds == {
+        "classify": {
+            "mode": {"overnight_night_turn_share": 0.15},
+            "purpose": {"local_llm_min_hits": 1},
+        }
+    }
+
+    from claude_token_lens.classify import mode_and_purpose_thresholds_from_config
+
+    mode_t, purpose_t = mode_and_purpose_thresholds_from_config(config.thresholds)
+    assert mode_t == {"overnight_night_turn_share": 0.15}
+    assert purpose_t == {"local_llm_min_hits": 1}
+
+    assert any("classify" in line for line in config.describe())
+
+
 # --------------------------------------------------------------------
 # Config.describe()
 # --------------------------------------------------------------------
