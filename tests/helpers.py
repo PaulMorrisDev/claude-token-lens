@@ -186,13 +186,17 @@ def ignorable_line(line_type: str, **overrides: Any) -> dict:
 # path-shaped tokens from ``cmd_prefix``/``preceding_cmd_prefix``, but
 # the privacy criterion is broader than that one field: no dataclass
 # field anywhere in a ``TranscriptResult`` should ever match a drive
-# letter, a POSIX home path, a Windows ``\Users\`` path, or a bare "@".
-# ``assert_privacy`` is the reusable scan for that, on top of
-# test_privacy.py's existing length-based walk.
+# letter, a POSIX home path, a Windows ``\Users\`` path, an MSYS/Git Bash
+# drive path (``/c/...``), or a bare "@". ``assert_privacy`` is the
+# reusable scan for that, on top of test_privacy.py's existing
+# length-based walk.
 
 _PRIVACY_DRIVE_RE = re.compile(r"[A-Za-z]:\\")
 _PRIVACY_POSIX_HOME_RE = re.compile(r"/home/")
 _PRIVACY_WIN_USERS_RE = re.compile(r"\\Users\\")
+#: MSYS/Git Bash drive form, e.g. ``/c/Dev/x`` — the same leak shape as
+#: ``C:\`` but produced by a Bash tool call on a Windows machine.
+_PRIVACY_MSYS_DRIVE_RE = re.compile(r"/[a-zA-Z]/")
 _PRIVACY_AT_RE = re.compile(r"@")
 
 #: Field names holding values that are allowed to contain the above
@@ -216,8 +220,9 @@ def assert_privacy(result) -> None:
     every ``Turn`` in ``turns``, every ``Event`` in ``events``) for string
     fields shaped like an absolute path or username/email leak: a drive
     letter (``C:\\``), a POSIX ``/home/`` path, a Windows ``\\Users\\``
-    path, or a bare ``@``. Raises via ``assert`` with every violation
-    listed, so a failure names exactly which field and value tripped it.
+    path, an MSYS/Git Bash drive path (``/c/...``), or a bare ``@``.
+    Raises via ``assert`` with every violation listed, so a failure names
+    exactly which field and value tripped it.
 
     Dict-typed fields are intentionally not walked, matching
     test_privacy.py's scope note: they're free-form small counters the
@@ -233,6 +238,8 @@ def assert_privacy(result) -> None:
             violations.append(f"{where} matches a POSIX /home/ path: {value!r}")
         if _PRIVACY_WIN_USERS_RE.search(value):
             violations.append(f"{where} matches a \\Users\\ path: {value!r}")
+        if _PRIVACY_MSYS_DRIVE_RE.search(value):
+            violations.append(f"{where} matches an MSYS drive path: {value!r}")
         if field_name not in _PRIVACY_AT_SIGN_ALLOWED_FIELDS and _PRIVACY_AT_RE.search(value):
             violations.append(f"{where} contains '@': {value!r}")
 

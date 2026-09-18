@@ -21,14 +21,16 @@ through structurally. What this test guards is every *named, typed*
 Independent-review follow-up (task 6): every fixture below is also run
 through ``helpers.assert_privacy``, a second, shape-based scan (not
 length-based) that asserts no field matches a Windows drive path
-(``C:\\``), a POSIX ``/home/`` path, a Windows ``\\Users\\`` path, or a
-bare ``@`` — the concrete regressions a length cap alone wouldn't catch
-(e.g. a short absolute path under 64 chars).
+(``C:\\``), a POSIX ``/home/`` path, a Windows ``\\Users\\`` path, an
+MSYS/Git Bash drive path (``/c/...``), or a bare ``@`` — the concrete
+regressions a length cap alone wouldn't catch (e.g. a short absolute
+path under 64 chars).
 """
 
 from __future__ import annotations
 
 import dataclasses
+import re
 from pathlib import Path
 
 from claude_token_lens.model import TranscriptMeta
@@ -151,6 +153,28 @@ def test_privacy_long_file_path_is_never_stored_only_edit_kind(tmp_path: Path):
     write_jsonl(path, lines)
     result = parse_transcript(path, TranscriptMeta(path=str(path)))
     assert result.turns[0].edit_kind == "real"
+    _assert_no_violations(result)
+
+
+_MSYS_DRIVE_RE = re.compile(r"/[a-z]/")
+
+
+def test_privacy_msys_drive_path_is_never_stored(tmp_path: Path):
+    # Git Bash on Windows renders "C:\Dev\x" as "/c/Dev/x"; that shape
+    # must be redacted out of cmd_prefix just like the C:\ form is.
+    lines = [
+        turn_line(
+            message_id="msg_1",
+            input_tokens=100,
+            output_tokens=10,
+            content=[tool_use_block("Bash", "tu1", {"command": "cd /c/Dev/secret_project && pytest"})],
+        ),
+    ]
+    path = tmp_path / "session.jsonl"
+    write_jsonl(path, lines)
+    result = parse_transcript(path, TranscriptMeta(path=str(path)))
+    assert result.turns[0].cmd_prefix == "cd <path> && pytest"
+    assert not _MSYS_DRIVE_RE.search(result.turns[0].cmd_prefix)
     _assert_no_violations(result)
 
 

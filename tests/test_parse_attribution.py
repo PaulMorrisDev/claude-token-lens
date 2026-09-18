@@ -211,6 +211,46 @@ def test_cmd_prefix_redacts_posix_home_path(tmp_path: Path):
     assert_privacy(result)
 
 
+def test_cmd_prefix_redacts_msys_drive_path(tmp_path: Path):
+    # Git Bash on Windows renders drive-letter paths as /c/Dev/x rather
+    # than C:\Dev\x; _redact_paths must catch that form too.
+    lines = [
+        turn_line(
+            message_id="msg_1",
+            content=[tool_use_block("Bash", "tu1", {"command": "cd /c/Dev/secret_project && ls -la"})],
+        ),
+    ]
+    path = tmp_path / "session.jsonl"
+    write_jsonl(path, lines)
+
+    result = parse_transcript(path, TranscriptMeta(path=str(path)))
+
+    turn = result.turns[0]
+    assert turn.cmd_prefix == "cd <path> && ls -la"
+    assert_privacy(result)
+
+
+def test_cmd_prefix_redacts_bare_backslash_users_path(tmp_path: Path):
+    # A drive-less \Users\<name> token (no leading "C:") still names a
+    # real machine account and must be redacted like the drive-qualified
+    # form.
+    lines = [
+        turn_line(
+            message_id="msg_1",
+            content=[tool_use_block("Bash", "tu1", {"command": "cat \\Users\\paulm\\.ssh\\id_rsa"})],
+        ),
+    ]
+    path = tmp_path / "session.jsonl"
+    write_jsonl(path, lines)
+
+    result = parse_transcript(path, TranscriptMeta(path=str(path)))
+
+    turn = result.turns[0]
+    assert turn.cmd_prefix == "cat <path>"
+    assert "paulm" not in turn.cmd_prefix
+    assert_privacy(result)
+
+
 def test_preceding_cmd_prefix_inherits_redaction(tmp_path: Path):
     # preceding_cmd_prefix on the NEXT turn is read off the previous
     # turn's already-redacted cmd_prefix, so it must never leak either.
