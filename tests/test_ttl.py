@@ -31,6 +31,7 @@ from claude_token_lens.ttl import (
     cache_economy,
     dominant_ttl,
     fidelity,
+    normalize_ttl_split,
     observed,
     simulate,
 )
@@ -381,6 +382,74 @@ def test_dominant_ttl_mixed_below_threshold():
 
 def test_dominant_ttl_none_when_no_cache_write_tokens():
     assert dominant_ttl([_turn(cc_5m=0, cc_1h=0)]) == "none"
+
+
+# --------------------------------------------------------------------
+# normalize_ttl_split() (coordinator follow-up, WP12a diversity fixtures)
+# --------------------------------------------------------------------
+
+
+def test_normalize_ttl_split_attributes_pre_split_turn_to_observed_dominant():
+    # t1 has a real, observed 1h-dominant split; t2 is pre-split (no
+    # nested cache_creation object was ever seen for it) with a nonzero
+    # flat cache_creation_tokens - it must be attributed to the
+    # transcript's own dominant TTL ("1h" here), not silently zeroed.
+    t1 = _turn(message_id="m1", cache_creation_tokens=9_000, cc_5m=0, cc_1h=9_000)
+    t2 = _turn(
+        message_id="m2",
+        turn_index=2,
+        cache_creation_tokens=1_000,
+        cc_5m=0,
+        cc_1h=0,
+        ttl_split_unknown=True,
+    )
+    normalized = normalize_ttl_split([t1, t2])
+    assert normalized[0] is t1  # already-split turn passes through unchanged
+    assert normalized[1].cc_5m == 0
+    assert normalized[1].cc_1h == 1_000
+    assert normalized[1].cache_creation_tokens == 1_000
+    # Purity: the input turn itself is never mutated.
+    assert t2.cc_1h == 0
+
+
+def test_normalize_ttl_split_falls_back_to_5m_when_no_dominant():
+    # Only pre-split turns in this transcript: dominant_ttl sees zero
+    # real cc_5m/cc_1h tokens anywhere (both are 0 on every turn), so it
+    # returns "none" - normalize_ttl_split must fall back to 5m rather
+    # than leaving the write unattributed.
+    t1 = _turn(message_id="m1", cache_creation_tokens=2_000, cc_5m=0, cc_1h=0, ttl_split_unknown=True)
+    normalized = normalize_ttl_split([t1])
+    assert normalized[0].cc_5m == 2_000
+    assert normalized[0].cc_1h == 0
+
+
+def test_normalize_ttl_split_leaves_zero_cache_creation_turn_alone():
+    t1 = _turn(message_id="m1", cache_creation_tokens=0, cc_5m=0, cc_1h=0, ttl_split_unknown=True)
+    normalized = normalize_ttl_split([t1])
+    assert normalized[0] is t1
+
+
+def test_observed_prices_pre_split_turn_at_the_dominant_ttl_rate():
+    # Without normalization, observed()'s default price_turn path would
+    # price this pre-split write at zero (cc_5m == cc_1h == 0) despite a
+    # real, nonzero cache_creation_tokens - undercounting real spend.
+    t1 = _turn(message_id="m1", cache_creation_tokens=8_000, cc_5m=8_000, cc_1h=0)
+    t2 = _turn(
+        message_id="m2",
+        turn_index=2,
+        cache_creation_tokens=2_000,
+        cc_5m=0,
+        cc_1h=0,
+        ttl_split_unknown=True,
+    )
+    result = observed([t1, t2], SONNET_RATES)
+    # write_tokens must include t2's cache_creation_tokens once
+    # attributed to the dominant (5m) side, not silently drop it.
+    assert result.write_tokens == 8_000 + 2_000
+    expected_cost = price_turn(t1, SONNET_RATES).total + price_turn(
+        dataclasses.replace(t2, cc_5m=2_000), SONNET_RATES
+    ).total
+    assert result.cost == pytest.approx(expected_cost)
 
 
 # --------------------------------------------------------------------

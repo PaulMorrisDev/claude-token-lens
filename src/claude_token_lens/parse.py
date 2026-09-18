@@ -219,6 +219,11 @@ class _PendingTurn:
     #: ``_new_pending`` time (before any reconciliation) so a later
     #: correction to ``cache_creation_tokens`` doesn't erase the signal.
     ttl_sum_mismatch: bool = False
+    #: Set when ``usage`` had no nested ``cache_creation`` object at all
+    #: (older, pre-split JSONL) - see ``Turn.ttl_split_unknown``. Never
+    #: set alongside ``ttl_sum_mismatch``: a missing split is a format
+    #: difference, not a sum invariant breach.
+    ttl_split_unknown: bool = False
     inference_geo: str | None = None
     attribution_mcp_server: str | None = None
     attribution_mcp_tool: str | None = None
@@ -315,18 +320,28 @@ def _new_pending(d: dict, tool_use_names: dict[str, str]) -> _PendingTurn:
             pending.cc_5m = int(cache_creation.get("ephemeral_5m_input_tokens") or 0)
             pending.cc_1h = int(cache_creation.get("ephemeral_1h_input_tokens") or 0)
 
-        # Reconcile the flat cache_creation_input_tokens field against the
-        # 5m/1h split: some usage payloads under-report the flat field
-        # relative to its own ephemeral breakdown. The mismatch is always
-        # recorded (even when nothing needs correcting, e.g. the flat
-        # field is *larger* than the split); ctx (computed from
-        # cache_creation_tokens in _finalize_turn) picks up the corrected
-        # value automatically.
-        ttl_sum = pending.cc_5m + pending.cc_1h
-        if ttl_sum != pending.cache_creation_tokens:
-            pending.ttl_sum_mismatch = True
-        if pending.cache_creation_tokens < ttl_sum:
-            pending.cache_creation_tokens = ttl_sum
+            # Reconcile the flat cache_creation_input_tokens field against
+            # the 5m/1h split: some usage payloads under-report the flat
+            # field relative to its own ephemeral breakdown. The mismatch
+            # is always recorded (even when nothing needs correcting, e.g.
+            # the flat field is *larger* than the split); ctx (computed
+            # from cache_creation_tokens in _finalize_turn) picks up the
+            # corrected value automatically.
+            ttl_sum = pending.cc_5m + pending.cc_1h
+            if ttl_sum != pending.cache_creation_tokens:
+                pending.ttl_sum_mismatch = True
+            if pending.cache_creation_tokens < ttl_sum:
+                pending.cache_creation_tokens = ttl_sum
+        else:
+            # Coordinator follow-up (WP12a diversity fixtures): older,
+            # pre-5m/1h-split Claude Code JSONL has no nested
+            # cache_creation object at all. cc_5m/cc_1h stay 0 (the split
+            # was never recorded, not that nothing was written) and the
+            # flat cache_creation_input_tokens is kept as the write total
+            # unchanged - this is a format difference, not a sum mismatch,
+            # so it must never set ttl_sum_mismatch (0 != a nonzero flat
+            # value is not evidence of anything broken here).
+            pending.ttl_split_unknown = True
 
     _merge_content_blocks(pending, message.get("content"), tool_use_names)
     return pending
@@ -406,6 +421,8 @@ def _finalize_turn(
     if pending.has_usage:
         if pending.ttl_sum_mismatch:
             diagnostics.ttl_sum_mismatch += 1
+        if pending.ttl_split_unknown:
+            diagnostics.pre_split_turns += 1
     else:
         diagnostics.turns_missing_usage += 1
 
@@ -457,6 +474,7 @@ def _finalize_turn(
         web_fetch_requests=pending.web_fetch_requests,
         cc_5m=pending.cc_5m,
         cc_1h=pending.cc_1h,
+        ttl_split_unknown=pending.ttl_split_unknown,
         ctx=ctx,
         tool_names=tuple(pending.tool_names),
         tool_use_ids=tuple(pending.tool_use_ids),

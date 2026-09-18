@@ -169,6 +169,44 @@ def test_cache_creation_matching_split_does_not_flag_mismatch(tmp_path: Path):
     assert result.diagnostics.ttl_sum_mismatch == 0
 
 
+def test_pre_split_usage_counts_pre_split_turns_not_ttl_sum_mismatch(tmp_path: Path):
+    # Coordinator follow-up (WP12a diversity fixtures): older Claude Code
+    # JSONL has no nested usage.cache_creation object at all - a format
+    # difference, not an invariant breach, so it must be counted under
+    # Diagnostics.pre_split_turns and never flagged as ttl_sum_mismatch
+    # (0 == cc_5m + cc_1h trivially "mismatching" a nonzero flat value
+    # here is not evidence anything is broken).
+    lines = [
+        turn_line(
+            message_id="msg_1",
+            message={
+                "id": "msg_1",
+                "model": "claude-sonnet-5",
+                "usage": {
+                    "input_tokens": 100,
+                    "cache_creation_input_tokens": 5_000,
+                    "cache_read_input_tokens": 0,
+                    "output_tokens": 10,
+                },
+                "content": [{"type": "text", "text": "ok"}],
+            },
+        ),
+    ]
+    path = tmp_path / "session.jsonl"
+    write_jsonl(path, lines)
+
+    result = parse_transcript(path, TranscriptMeta(path=str(path)))
+
+    turn = result.turns[0]
+    assert turn.cache_creation_tokens == 5_000  # flat value kept as the write total
+    assert turn.cc_5m == 0
+    assert turn.cc_1h == 0
+    assert turn.ttl_split_unknown is True
+    assert turn.ctx == 100 + 5_000
+    assert result.diagnostics.pre_split_turns == 1
+    assert result.diagnostics.ttl_sum_mismatch == 0
+
+
 # -- Task 6: absolute paths inside a command prefix are redacted. -------
 
 

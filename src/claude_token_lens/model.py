@@ -235,6 +235,17 @@ class Turn:
     #: input or result content.
     tool_use_ids: tuple[str, ...] = ()
 
+    #: Coordinator follow-up (WP12a diversity fixtures): set when this
+    #: turn's ``usage`` had no nested ``cache_creation`` object at all
+    #: (older, pre-5m/1h-split Claude Code JSONL) - ``cc_5m``/``cc_1h``
+    #: are both 0 even though ``cache_creation_tokens`` may be nonzero,
+    #: because the write's TTL split was never recorded, not because
+    #: nothing was written. ``ttl.py``'s simulation functions normalize
+    #: this by attributing the flat total to the transcript's own
+    #: ``dominant_ttl`` (or "5m" when that's "mixed"/"none") before
+    #: replaying any policy - see ``ttl.normalize_ttl_split``.
+    ttl_split_unknown: bool = False
+
 
 @dataclass(slots=True)
 class TranscriptMeta:
@@ -310,6 +321,12 @@ class Diagnostics:
     #: generic ATTACHMENT catch-all kind (A2's "any attachment type not
     #: listed above" row), counted by type for next-release triage.
     attachment_catch_all: dict = field(default_factory=dict)
+    #: Coordinator follow-up (WP12a diversity fixtures): turns whose
+    #: usage had no nested ``cache_creation`` object at all (see
+    #: ``Turn.ttl_split_unknown``). This is a format difference, not an
+    #: invariant breach, so it's counted separately from
+    #: ``ttl_sum_mismatch`` rather than folded into it.
+    pre_split_turns: int = 0
 
 
 @dataclass(slots=True)

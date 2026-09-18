@@ -325,6 +325,7 @@ def simulate(turns: list[Turn], rates: "RatesArg | RatesLookup", policy_s: int) 
     for everything else.
     """
     lookup = _as_lookup(rates)
+    turns = normalize_ttl_split(turns)
     priced = _priced_turns(turns)
     prev_c = 0
     cost = 0.0
@@ -379,6 +380,7 @@ def observed(turns: list[Turn], rates: "RatesArg | RatesLookup") -> SimResult:
     :func:`simulate` (fix item 2, see :func:`_as_lookup`).
     """
     lookup = _as_lookup(rates)
+    turns = normalize_ttl_split(turns)
     priced = _priced_turns(turns)
     cost = 0.0
     write_tokens = 0
@@ -418,6 +420,44 @@ def dominant_ttl(turns: list[Turn]) -> str:
     if total_1h / total >= _DOMINANCE_THRESHOLD:
         return "1h"
     return "mixed"
+
+
+def normalize_ttl_split(turns: list[Turn]) -> list[Turn]:
+    """Coordinator follow-up (WP12a diversity fixtures): a turn parsed
+    from older, pre-5m/1h-split Claude Code JSONL carries
+    ``ttl_split_unknown=True`` with ``cc_5m == cc_1h == 0`` even though
+    its flat ``cache_creation_tokens`` may be nonzero - the write really
+    happened, its TTL bucket just wasn't recorded. Left as-is, every
+    price/simulation path here that reads ``cc_5m``/``cc_1h`` directly
+    (``observed``'s default ``price_turn`` path chief among them) would
+    silently price that write at zero.
+
+    Returns a new list attributing each such turn's full
+    ``cache_creation_tokens`` to the transcript's own :func:`dominant_ttl`
+    ("5m" or "1h"), falling back to "5m" when the transcript has no clear
+    dominant side ("mixed" or "none" — nothing else to go on). Turns that
+    already carry a real split, or whose ``cache_creation_tokens`` is 0,
+    pass through unchanged (same object). Pure: never mutates ``turns``.
+
+    Every top-level entry point (:func:`simulate`, :func:`observed`,
+    :func:`cache_economy`, :class:`TtlStats`'s ``add``) calls this first,
+    so the normalization happens exactly once per transcript, from the
+    same whole-transcript view ``dominant_ttl`` needs, rather than
+    requiring every internal ``cc_5m``/``cc_1h`` read-site downstream to
+    special-case it.
+    """
+    dominant = dominant_ttl(turns)
+    fallback_to_1h = dominant == "1h"
+    normalized = []
+    for t in turns:
+        if t.ttl_split_unknown and t.cache_creation_tokens > 0 and t.cc_5m == 0 and t.cc_1h == 0:
+            if fallback_to_1h:
+                normalized.append(dataclasses.replace(t, cc_1h=t.cache_creation_tokens))
+            else:
+                normalized.append(dataclasses.replace(t, cc_5m=t.cache_creation_tokens))
+        else:
+            normalized.append(t)
+    return normalized
 
 
 def fidelity(turns: list[Turn], rates: "RatesArg | RatesLookup") -> float | None:
@@ -468,6 +508,7 @@ def cache_economy(turns: list[Turn], rates: "RatesArg | RatesLookup") -> dict:
     ``net_saving_usd``, ``cache_roi``, ``unpriced_turns``.
     """
     lookup = _as_lookup(rates)
+    turns = normalize_ttl_split(turns)
     priced = _priced_turns(turns)
     tokens_written = 0
     tokens_read = 0
@@ -875,7 +916,13 @@ class TtlStats:
         if result.meta.kind != "top-level":
             self._subagent_mtimes_ns.append(result.meta.mtime_ns)
 
-        priced = _priced_turns(result.turns)
+        # Coordinator follow-up (WP12a diversity fixtures): normalize
+        # pre-split turns (see normalize_ttl_split) once here, so both
+        # this method's own direct cc_5m/cc_1h reads below and the
+        # observed/simulate/fidelity/cache_economy calls further down
+        # see the same corrected split.
+        turns = normalize_ttl_split(result.turns)
+        priced = _priced_turns(turns)
         acc.priced_turns += len(priced)
         n = len(priced)
         for i, t in enumerate(priced):
@@ -989,9 +1036,9 @@ class TtlStats:
         # look ahead across possibly many turns — see _accumulate_waste).
         _accumulate_waste(priced, lookup, acc)
 
-        obs = observed(result.turns, lookup)
-        sim_5m = simulate(result.turns, lookup, POLICY_5M)
-        sim_1h = simulate(result.turns, lookup, POLICY_1H)
+        obs = observed(turns, lookup)
+        sim_5m = simulate(turns, lookup, POLICY_5M)
+        sim_1h = simulate(turns, lookup, POLICY_1H)
         acc.cost_observed += obs.cost
         acc.cost_all_5m += sim_5m.cost
         acc.cost_all_1h += sim_1h.cost
@@ -1001,7 +1048,7 @@ class TtlStats:
         # either would do.
         acc.unsimulatable += sim_5m.unsimulatable
 
-        fid = fidelity(result.turns, lookup)
+        fid = fidelity(turns, lookup)
         if fid is not None:
             weight = obs.write_tokens + obs.read_tokens
             if weight > 0:
@@ -1010,7 +1057,7 @@ class TtlStats:
 
         # Item 6: cache economy, delegated to the standalone function so
         # the two are guaranteed to agree (see cache_economy's docstring).
-        economy = cache_economy(result.turns, lookup)
+        economy = cache_economy(turns, lookup)
         acc.economy_tokens_written += economy["tokens_written"]
         acc.economy_tokens_read += economy["tokens_read"]
         acc.economy_write_usd += economy["write_usd"]
@@ -1563,6 +1610,7 @@ __all__ = [
     "simulate",
     "observed",
     "dominant_ttl",
+    "normalize_ttl_split",
     "fidelity",
     "cache_economy",
     "build_section",
