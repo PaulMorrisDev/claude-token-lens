@@ -881,27 +881,31 @@ def test_mixed_write_counted_as_two_separate_writes():
 
 def test_premium_waste_vs_expiry_loss_hand_computed_sonnet_5():
     """Four turns (Sonnet 5: cache_write_5m=2.5/M, cache_write_1h=4.0/M).
-    Each turn's bucket is decided by the gap to the *next* turn
-    (t2.gap_s is "t1's next gap", etc.):
+    Independent-review item 5: every priced write W_i (=
+    cache_creation_tokens, regardless of its own observed cc_5m/cc_1h
+    split) is bucketed, unconditionally, into BOTH the 1h-premium and
+    the 5m-expiry-loss counterfactuals by the gap to the *next* turn
+    (t2.gap_s is "t1's next gap", etc.) -- these are two independent
+    "what if every write used this TTL" simulations over the same W_i,
+    not a report on whichever TTL the write actually happened to use.
 
-    cc_1h side:
-    - t1: cc_1h=1000, next gap (t2.gap_s) = 200 (<=300) ->
-      "premium paid, not needed". USD = 1000/1e6*(4.0-2.5) = 0.0015.
-    - t2: cc_1h=800, next gap (t3.gap_s) = 1000 (300 < 1000 <= 3600) ->
-      "premium earned". USD saved = 800/1e6*2.5 = 0.002.
-    - t3: cc_1h=500, next gap (t4.gap_s) = 4000 (>3600) ->
-      "expired anyway". USD = 500/1e6*(4.0-2.5) = 0.00075.
-    - t4: cc_1h=0 (last turn, no next gap) -> contributes nothing.
+    - t1: W=1300, next gap (t2.gap_s) = 200 (<=300) ->
+      1h "not needed" (USD = 1300/1e6*(4.0-2.5) = 0.00195) AND
+      5m "fine" (no USD).
+    - t2: W=1200, next gap (t3.gap_s) = 1000 (300 < 1000 <= 3600) ->
+      1h "earned" AND 5m "expiry loss", both priced at the *next*
+      turn's (t3's) own prefix C3 = cache_read(0) + cache_creation(1100)
+      = 1100, at the flat 5m rate: 1100/1e6*2.5 = 0.00275.
+    - t3: W=1100, next gap (t4.gap_s) = 4000 (>3600) ->
+      1h "expired anyway" (USD = 1100/1e6*(4.0-2.5) = 0.00165) AND
+      5m "would have expired under 1h too" (no USD).
+    - t4: W=0 (cache_creation_tokens=0) -> contributes nothing on
+      either side, and there is no turn after it to receive a gap.
 
-    cc_5m side (same four turns, same next-gap values):
-    - t1: cc_5m=300, next gap 200 (<=300) -> "fine" (no USD given).
-    - t2: cc_5m=400, next gap 1000 (in window) -> "5m expiry loss": USD
-      = the NEXT turn's (t3's) actual observed cache_creation write
-      cost = t3's cc_1h(500)*4.0/1e6 + cc_5m(600)*2.5/1e6
-           = 0.002 + 0.0015 = 0.0035.
-    - t3: cc_5m=600, next gap 4000 (>3600) ->
-      "would have expired under 1h too".
-    - t4: cc_5m=0 -> contributes nothing.
+    Because t2's "5m loss" is priced off t3's own C at the 5m rate --
+    exactly expiry_loss_all_5m's own basis for t3's in-window gap --
+    summing premium_5m_loss_usd across this transcript reproduces
+    expiry_loss_all_5m exactly (see the dedicated invariant test below).
     """
     t1 = _turn(cache_creation_tokens=1300, cc_5m=300, cc_1h=1000, cache_read_tokens=0, gap_s=None)
     t2 = _turn(
@@ -933,18 +937,60 @@ def test_premium_waste_vs_expiry_loss_hand_computed_sonnet_5():
     )
     row = _row_for([t1, t2, t3, t4])
 
-    assert row.premium_1h_not_needed_tokens == 1000
-    assert row.premium_1h_not_needed_usd == pytest.approx(1000 / 1_000_000 * (4.0 - 2.5))
-    assert row.premium_1h_earned_tokens == 800
-    assert row.premium_1h_earned_usd == pytest.approx(800 / 1_000_000 * 2.5)
-    assert row.premium_1h_expired_tokens == 500
-    assert row.premium_1h_expired_usd == pytest.approx(500 / 1_000_000 * (4.0 - 2.5))
+    assert row.premium_1h_not_needed_tokens == 1300
+    assert row.premium_1h_not_needed_usd == pytest.approx(1300 / 1_000_000 * (4.0 - 2.5))
+    assert row.premium_1h_earned_tokens == 1200
+    assert row.premium_1h_earned_usd == pytest.approx(1100 / 1_000_000 * 2.5)
+    assert row.premium_1h_expired_tokens == 1100
+    assert row.premium_1h_expired_usd == pytest.approx(1100 / 1_000_000 * (4.0 - 2.5))
 
-    assert row.premium_5m_fine_tokens == 300
-    assert row.premium_5m_loss_tokens == 400
-    expected_t3_write_cost = 500 / 1_000_000 * 4.0 + 600 / 1_000_000 * 2.5
-    assert row.premium_5m_loss_usd == pytest.approx(expected_t3_write_cost)
-    assert row.premium_5m_would_expire_tokens == 600
+    assert row.premium_5m_fine_tokens == 1300
+    assert row.premium_5m_loss_tokens == 1200
+    assert row.premium_5m_loss_usd == pytest.approx(1100 / 1_000_000 * 2.5)
+    assert row.premium_5m_would_expire_tokens == 1100
+
+
+def test_premium_5m_loss_usd_sums_to_expiry_loss_all_5m():
+    """Independent-review item 5's required invariant: for a
+    well-formed fixture where every non-terminal turn actually writes
+    something (W_i > 0), summing premium_5m_loss_usd across the
+    transcript reproduces expiry_loss_all_5m exactly, because both are
+    the same "receiving turn's own C, priced at the flat 5m rate"
+    computation -- just attributed from opposite ends of the same gap
+    (the writer's "loss bucket" vs. the receiver's "expiry loss").
+    Reuses the same four-turn fixture as the hand-computed test above.
+    """
+    t1 = _turn(cache_creation_tokens=1300, cc_5m=300, cc_1h=1000, cache_read_tokens=0, gap_s=None)
+    t2 = _turn(
+        turn_index=2,
+        message_id="msg_2",
+        cache_creation_tokens=1200,
+        cc_5m=400,
+        cc_1h=800,
+        cache_read_tokens=0,
+        gap_s=200,
+    )
+    t3 = _turn(
+        turn_index=3,
+        message_id="msg_3",
+        cache_creation_tokens=1100,
+        cc_5m=600,
+        cc_1h=500,
+        cache_read_tokens=0,
+        gap_s=1000,
+    )
+    t4 = _turn(
+        turn_index=4,
+        message_id="msg_4",
+        cache_creation_tokens=0,
+        cc_5m=0,
+        cc_1h=0,
+        cache_read_tokens=0,
+        gap_s=4000,
+    )
+    row = _row_for([t1, t2, t3, t4])
+
+    assert row.premium_5m_loss_usd == pytest.approx(row.expiry_loss_all_5m)
 
 
 # -- Item 3: break-even share -------------------------------------------
@@ -1134,12 +1180,20 @@ def test_near_miss_histogram_boundaries_hand_computed_sonnet_5():
     forced a full rewrite; anything past 360/3660 is neither bucket.
 
     5m side: gaps 240 and 300 -> hits (2). Gaps 301 and 360 -> misses
-    (2), rewriting 100 and 200 tokens respectively
-    (tokens=300, USD=(100+200)/1e6*2.5=0.00075). Gap 361 -> neither.
+    (2), rewriting 100 and 200 tokens respectively (tokens=300).
+    Gap 361 -> neither.
 
     1h side: gaps 3540 and 3600 -> hits (2). Gaps 3601 and 3660 ->
-    misses (2), rewriting 300 and 400 tokens respectively
-    (tokens=700, USD=(300+400)/1e6*4.0=0.0028). Gap 3661 -> neither.
+    misses (2), rewriting 300 and 400 tokens respectively (tokens=700).
+    Gap 3661 -> neither.
+
+    USD (independent-review item 5): both sides price the miss at the
+    flat 5m write rate against the turn's own C_i = cache_read +
+    cache_creation (here cache_read=0, so C_i is just the tokens
+    written), never the turn's real observed rate -- so the 1h-side
+    misses are NOT priced at the 1h premium they actually paid.
+    5m side: (100+200)/1e6*2.5 = 0.00075. 1h side: (300+400)/1e6*2.5
+    = 0.00175.
     """
     turns = [_turn(cache_creation_tokens=0, cache_read_tokens=0, gap_s=None)]
     gap_values = [240, 300, 301, 360, 361, 3540, 3600, 3601, 3660, 3661]
@@ -1165,7 +1219,7 @@ def test_near_miss_histogram_boundaries_hand_computed_sonnet_5():
     assert row.near_1h_hit == 2
     assert row.near_1h_miss == 2
     assert row.near_1h_miss_tokens == 700
-    assert row.near_1h_miss_usd == pytest.approx(700 / 1_000_000 * 4.0)
+    assert row.near_1h_miss_usd == pytest.approx((300 + 400) / 1_000_000 * 2.5)
 
 
 # -- Item 5: TTL-addressable share ---------------------------------------

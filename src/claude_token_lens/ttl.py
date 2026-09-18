@@ -971,54 +971,84 @@ class TtlStats:
                     # this gap where a 1h one would have survived.
                     acc.expiry_loss_all_5m_usd += _write_cost(t, turn_rates, POLICY_5M, c_i)
 
-                # Item 4: near-miss histogram at both TTL boundaries.
+                # Item 4 (fixed, independent-review item 5): near-miss
+                # histogram at both TTL boundaries. The $ figure uses the
+                # same C x w5m basis as expiry_loss_all_5m/m5_loss_usd
+                # below (this turn's own prefix C_i, priced at the flat
+                # 5m write rate) rather than this turn's real observed
+                # cache_write_cost, so a near-miss at the 1h boundary
+                # isn't priced at the 1h premium rate it actually paid.
                 if _NEAR_5M_HIT[0] <= gap <= _NEAR_5M_HIT[1]:
                     acc.near_5m_hit += 1
                 elif _NEAR_5M_MISS[0] < gap <= _NEAR_5M_MISS[1]:
                     acc.near_5m_miss += 1
                     acc.near_5m_miss_tokens += t.cache_creation_tokens
-                    acc.near_5m_miss_usd += price_turn(t, turn_rates).cache_write_cost
+                    acc.near_5m_miss_usd += _write_cost(t, turn_rates, POLICY_5M, c_i)
                 if _NEAR_1H_HIT[0] <= gap <= _NEAR_1H_HIT[1]:
                     acc.near_1h_hit += 1
                 elif _NEAR_1H_MISS[0] < gap <= _NEAR_1H_MISS[1]:
                     acc.near_1h_miss += 1
                     acc.near_1h_miss_tokens += t.cache_creation_tokens
-                    acc.near_1h_miss_usd += price_turn(t, turn_rates).cache_write_cost
+                    acc.near_1h_miss_usd += _write_cost(t, turn_rates, POLICY_5M, c_i)
 
-            # Item 2: 1h premium waste vs 5m expiry loss, bucketed by the
-            # gap to the *next* priced turn (None when t is the last one
-            # — treated the same as "gap > 3600", i.e. the entry expired
-            # either way with nothing to show for the premium/the loss).
-            # The *next* turn may run a different model in a mixed
-            # transcript, so its own share of a cost is priced at its
-            # own resolved rate, not this turn's.
+            # Fix (independent-review item 5): 1h premium waste vs 5m
+            # expiry loss, computed unconditionally for EVERY priced
+            # write W_i (w_i > 0) — the pre-fix code only bucketed a
+            # turn into the 1h-premium buckets when it happened to have
+            # observed cc_1h > 0 (and likewise cc_5m > 0 for the 5m
+            # buckets), so a transcript's counterfactual "what if every
+            # write had used TTL X" only ever covered the writes that
+            # already used X, which isn't a counterfactual at all.
+            # Bucketed by the gap to the *next* priced turn (None when t
+            # is the last one — treated the same as "gap > 3600", i.e.
+            # the entry expired either way with nothing to show for the
+            # premium/the loss). The *next* turn may run a different
+            # model in a mixed transcript, so its own share of a cost is
+            # priced at its own resolved rate, not this turn's.
             next_turn = priced[i + 1] if i + 1 < n else None
             next_gap = next_turn.gap_s if next_turn is not None else None
             next_rates = lookup(next_turn.model) if next_turn is not None else None
-            if t.cc_1h > 0:
+            c_next = (next_turn.cache_read_tokens + next_turn.cache_creation_tokens) if next_turn is not None else 0
+            if w_i > 0:
                 if next_gap is not None and next_gap <= POLICY_5M:
-                    premium = _write_cost(t, turn_rates, POLICY_1H, t.cc_1h) - _write_cost(
-                        t, turn_rates, POLICY_5M, t.cc_1h
-                    )
-                    acc.premium_1h_not_needed_tokens += t.cc_1h
+                    # "not needed": W_i x (w1h - w5m) — the next request
+                    # arrived within 5m anyway, so a 5m write would have
+                    # covered it just as well; whatever premium this
+                    # write paid for a 1h TTL bought nothing.
+                    premium = _write_cost(t, turn_rates, POLICY_1H, w_i) - _write_cost(t, turn_rates, POLICY_5M, w_i)
+                    acc.premium_1h_not_needed_tokens += w_i
                     acc.premium_1h_not_needed_usd += premium
                 elif next_gap is not None and next_gap <= POLICY_1H:
-                    acc.premium_1h_earned_tokens += t.cc_1h
-                    acc.premium_1h_earned_usd += _write_cost(t, turn_rates, POLICY_5M, t.cc_1h)
+                    # "earned": C_{i+1} x w5m — the gap was long enough
+                    # that only a 1h (not a 5m) TTL would have survived
+                    # to the next turn, so the earned benefit is the
+                    # avoided re-write of the *next* turn's own prefix
+                    # C_{i+1}, priced at the flat 5m write rate (same
+                    # basis as expiry_loss_all_5m/m5_loss_usd).
+                    acc.premium_1h_earned_tokens += w_i
+                    acc.premium_1h_earned_usd += _write_cost(next_turn, next_rates, POLICY_5M, c_next)
                 else:
-                    premium = _write_cost(t, turn_rates, POLICY_1H, t.cc_1h) - _write_cost(
-                        t, turn_rates, POLICY_5M, t.cc_1h
-                    )
-                    acc.premium_1h_expired_tokens += t.cc_1h
+                    # "expired anyway": W_i x (w1h - w5m) — the gap
+                    # exceeded even a 1h TTL, so the 1h premium bought
+                    # nothing either. Same basis as "not needed".
+                    premium = _write_cost(t, turn_rates, POLICY_1H, w_i) - _write_cost(t, turn_rates, POLICY_5M, w_i)
+                    acc.premium_1h_expired_tokens += w_i
                     acc.premium_1h_expired_usd += premium
-            if t.cc_5m > 0:
+
                 if next_gap is not None and next_gap <= POLICY_5M:
-                    acc.premium_5m_fine_tokens += t.cc_5m
+                    acc.premium_5m_fine_tokens += w_i
                 elif next_gap is not None and next_gap <= POLICY_1H:
-                    acc.premium_5m_loss_tokens += t.cc_5m
-                    acc.premium_5m_loss_usd += price_turn(next_turn, next_rates).cache_write_cost
+                    # 5m expiry loss: C_{i+1} x w5m — same basis as
+                    # expiry_loss_all_5m (a 5m TTL would have expired
+                    # across this gap, so the next turn's own prefix
+                    # C_{i+1} has to be rewritten at the flat 5m rate).
+                    acc.premium_5m_loss_tokens += w_i
+                    acc.premium_5m_loss_usd += _write_cost(next_turn, next_rates, POLICY_5M, c_next)
                 else:
-                    acc.premium_5m_would_expire_tokens += t.cc_5m
+                    # "would expire under 1h too": the gap is long enough
+                    # that even a 1h TTL wouldn't have survived, so this
+                    # isn't a 5m-specific loss — no $ attributed.
+                    acc.premium_5m_would_expire_tokens += w_i
 
             # Item 5: TTL-addressable (full-expiry) vs content-addressable
             # (prefix-invalidated) re-cache tokens/USD.
@@ -1340,19 +1370,33 @@ def build_section(
         ],
     )
 
-    # -- Item 2: 1h premium waste vs 5m expiry loss ----------------------
+    # -- Item 2 (fixed, independent-review item 5): 1h premium waste vs
+    # 5m expiry loss. Every priced write W_i is bucketed, unconditionally,
+    # by the gap to the next priced turn; dollar amounts use one of two
+    # bases, stated in the labels/notes below: W_i x (w1h - w5m) for the
+    # "not needed"/"expired anyway" premium buckets, and the next turn's
+    # own prefix C_{i+1} x w5m (the avoided re-write) for "earned" and
+    # for the 5m expiry loss.
     premium_columns = [
         Column(key="agent_type", label="Agent type", kind="str"),
-        Column(key="h1_not_needed_tokens", label="1h: premium paid, not needed (tokens)", kind="tokens"),
-        Column(key="h1_not_needed_usd", label="1h: premium paid, not needed (USD)", kind="money"),
-        Column(key="h1_earned_tokens", label="1h: premium earned (tokens)", kind="tokens"),
-        Column(key="h1_earned_usd", label="1h: premium earned (USD saved)", kind="money"),
-        Column(key="h1_expired_tokens", label="1h: expired anyway (tokens)", kind="tokens"),
-        Column(key="h1_expired_usd", label="1h: expired anyway (USD)", kind="money"),
-        Column(key="m5_fine_tokens", label="5m: fine (tokens)", kind="tokens"),
-        Column(key="m5_loss_tokens", label="5m: expiry loss (tokens)", kind="tokens"),
-        Column(key="m5_loss_usd", label="5m: expiry loss (USD)", kind="money"),
-        Column(key="m5_would_expire_tokens", label="5m: would expire under 1h too (tokens)", kind="tokens"),
+        Column(
+            key="h1_not_needed_tokens", label="1h: premium paid, not needed (tokens, W_i basis)", kind="tokens"
+        ),
+        Column(key="h1_not_needed_usd", label="1h: premium paid, not needed (USD, W_i x (w1h-w5m))", kind="money"),
+        Column(key="h1_earned_tokens", label="1h: premium earned (tokens, W_i basis)", kind="tokens"),
+        Column(
+            key="h1_earned_usd", label="1h: premium earned (USD saved, next turn's C x w5m)", kind="money"
+        ),
+        Column(key="h1_expired_tokens", label="1h: expired anyway (tokens, W_i basis)", kind="tokens"),
+        Column(key="h1_expired_usd", label="1h: expired anyway (USD, W_i x (w1h-w5m))", kind="money"),
+        Column(key="m5_fine_tokens", label="5m: fine (tokens, W_i basis)", kind="tokens"),
+        Column(key="m5_loss_tokens", label="5m: expiry loss (tokens, W_i basis)", kind="tokens"),
+        Column(key="m5_loss_usd", label="5m: expiry loss (USD, next turn's C x w5m)", kind="money"),
+        Column(
+            key="m5_would_expire_tokens",
+            label="5m: would expire under 1h too (tokens, W_i basis)",
+            kind="tokens",
+        ),
     ]
     premium_rows = [
         [
@@ -1375,6 +1419,18 @@ def build_section(
         title="1h premium waste vs 5m expiry loss",
         columns=premium_columns,
         rows=premium_rows,
+        notes=[
+            "Computed unconditionally for every priced write W_i (cache_creation_tokens > 0),"
+            " regardless of which TTL that write actually observed, bucketed by the gap to the"
+            " next priced turn.",
+            "\"Not needed\"/\"expired anyway\" price the 1h-vs-5m premium on this write's own"
+            " tokens: W_i x (w1h - w5m).",
+            "\"Earned\" and the 5m expiry loss both price the avoided (or incurred) re-write of"
+            " the *next* turn's own prefix, C_{i+1} x w5m — the same basis as"
+            " expiry_loss_all_5m/break_even_share above, so summing m5_loss_usd across a"
+            " transcript where every turn writes something reproduces expiry_loss_all_5m"
+            " exactly.",
+        ],
     )
 
     # -- Item 3: break-even share -----------------------------------------
