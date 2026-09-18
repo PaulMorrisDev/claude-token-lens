@@ -1,0 +1,4 @@
+# Deliberately invalid TOML syntax (unterminated string) for
+# test_pricing.py's malformed-file case.
+version = "2099-01-01-test
+currency = "USD"

@@ -1,0 +1,11 @@
+# Syntactically valid TOML, but structurally invalid: the model entry is
+# missing the required "cache_read" rate field.
+version = "2099-01-01-test"
+currency = "USD"
+
+[models."claude-broken-1"]
+aliases = []
+input = 1.0
+output = 2.0
+cache_write_5m = 0.5
+cache_write_1h = 0.8
