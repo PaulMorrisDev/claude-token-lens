@@ -1,0 +1,188 @@
+version = "2026-09-18"
+currency = "USD"
+source_url = "https://platform.claude.com/docs/en/about-claude/pricing"
+retrieved = "2026-09-18"
+notes = """
+Manually curated USD list prices, per million tokens, read from the
+Claude pricing page on the date above. Never fetched automatically (see
+the project's non-goals: no network fetch for pricing). Edit this file
+directly to correct a rate or add a model; nothing in the codebase hard-
+codes a price. cache_write_5m / cache_write_1h are the write rates for a
+5-minute and a 1-hour prompt-cache TTL entry respectively; cache_read is
+the flat rate for a cache hit regardless of which TTL wrote it. Owner:
+confirm these figures against the live pricing page before relying on
+them for anything other than relative comparisons.
+"""
+
+# --- Fable ------------------------------------------------------------
+
+[models."claude-fable-5-1"]
+aliases = ["fable", "fable[1m]", "best"]
+input = 10.0
+output = 50.0
+cache_write_5m = 12.5
+cache_write_1h = 20.0
+cache_read = 0.25
+
+[models."claude-fable-5-1".geo_multipliers]
+us = 1.1 # documented data-residency uplift when usage.inference_geo == "us"
+
+# Long-context pricing is absent by default: the docs state 4.6+ models
+# bill the full 1M-token context window at standard rates. Uncomment and
+# adjust only if a specific model's pricing page adds a long-context
+# tier. Explicit per-rate overrides win over `multiplier` when both are
+# present (see pricing.py's price_turn).
+# [models."claude-fable-5-1".long_context]
+# threshold_tokens = 200000
+# multiplier = 1.0
+# input = 20.0            # optional explicit overrides, one or more of:
+# output = 100.0          # input / output / cache_write_5m /
+# cache_write_5m = 25.0   # cache_write_1h / cache_read
+# cache_write_1h = 40.0
+# cache_read = 0.5
+
+[models."claude-fable-5"]
+aliases = []
+input = 10.0
+output = 50.0
+cache_write_5m = 12.5
+cache_write_1h = 20.0
+cache_read = 1.0
+
+# --- Opus ---------------------------------------------------------------
+
+[models."claude-opus-5"]
+aliases = ["opus", "opus[1m]"]
+input = 5.0
+output = 25.0
+cache_write_5m = 6.25
+cache_write_1h = 10.0
+cache_read = 0.5
+
+[models."claude-opus-5".geo_multipliers]
+us = 1.1 # documented data-residency uplift when usage.inference_geo == "us"
+
+[models."claude-opus-4-8"]
+aliases = []
+input = 5.0
+output = 25.0
+cache_write_5m = 6.25
+cache_write_1h = 10.0
+cache_read = 0.5
+
+[models."claude-opus-4-8".geo_multipliers]
+us = 1.1 # documented data-residency uplift when usage.inference_geo == "us"
+
+[models."claude-opus-4-7"]
+aliases = []
+input = 5.0
+output = 25.0
+cache_write_5m = 6.25
+cache_write_1h = 10.0
+cache_read = 0.5
+
+[models."claude-opus-4-7".geo_multipliers]
+us = 1.1 # documented data-residency uplift when usage.inference_geo == "us"
+
+[models."claude-opus-4-6"]
+aliases = []
+input = 5.0
+output = 25.0
+cache_write_5m = 6.25
+cache_write_1h = 10.0
+cache_read = 0.5
+
+[models."claude-opus-4-6".geo_multipliers]
+us = 1.1 # documented data-residency uplift when usage.inference_geo == "us"
+
+[models."claude-opus-4-5"]
+aliases = []
+input = 5.0
+output = 25.0
+cache_write_5m = 6.25
+cache_write_1h = 10.0
+cache_read = 0.5
+
+[models."claude-opus-4-1"]
+aliases = []
+input = 15.0
+output = 75.0
+cache_write_5m = 18.75
+cache_write_1h = 30.0
+cache_read = 1.5
+
+[models."claude-opus-4"]
+aliases = []
+input = 15.0
+output = 75.0
+cache_write_5m = 18.75
+cache_write_1h = 30.0
+cache_read = 1.5
+
+# --- Sonnet ---------------------------------------------------------------
+
+[models."claude-sonnet-5"]
+aliases = ["sonnet", "sonnet[1m]"]
+input = 2.0
+output = 10.0
+cache_write_5m = 2.5
+cache_write_1h = 4.0
+cache_read = 0.2
+
+[models."claude-sonnet-5".geo_multipliers]
+us = 1.1 # documented data-residency uplift when usage.inference_geo == "us"
+
+[models."claude-sonnet-4-6"]
+aliases = []
+input = 3.0
+output = 15.0
+cache_write_5m = 3.75
+cache_write_1h = 6.0
+cache_read = 0.3
+
+[models."claude-sonnet-4-6".geo_multipliers]
+us = 1.1 # documented data-residency uplift when usage.inference_geo == "us"
+
+[models."claude-sonnet-4-5"]
+aliases = []
+input = 3.0
+output = 15.0
+cache_write_5m = 3.75
+cache_write_1h = 6.0
+cache_read = 0.3
+
+[models."claude-sonnet-4"]
+aliases = []
+input = 3.0
+output = 15.0
+cache_write_5m = 3.75
+cache_write_1h = 6.0
+cache_read = 0.3
+
+# --- Haiku ---------------------------------------------------------------
+
+[models."claude-haiku-4-5-20251001"]
+aliases = ["haiku", "claude-haiku-4-5"]
+input = 1.0
+output = 5.0
+cache_write_5m = 1.25
+cache_write_1h = 2.0
+cache_read = 0.1
+
+[models."claude-haiku-4-5-20251001".geo_multipliers]
+us = 1.1 # documented data-residency uplift when usage.inference_geo == "us"
+
+[models."claude-haiku-3-5"]
+aliases = []
+input = 0.8
+output = 4.0
+cache_write_5m = 1.0
+cache_write_1h = 1.6
+cache_read = 0.08
+
+# --- Server tools ---------------------------------------------------------
+
+# Optional; if absent, server-tool requests (web_search_requests /
+# web_fetch_requests on a Turn) are counted but not priced.
+[server_tools]
+web_search_per_1000 = 10.0 # verify: documented rate, confirm on the pricing page
