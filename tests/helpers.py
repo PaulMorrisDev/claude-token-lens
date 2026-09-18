@@ -198,6 +198,10 @@ _PRIVACY_WIN_USERS_RE = re.compile(r"\\Users\\")
 #: ``C:\`` but produced by a Bash tool call on a Windows machine.
 _PRIVACY_MSYS_DRIVE_RE = re.compile(r"/[a-zA-Z]/")
 _PRIVACY_AT_RE = re.compile(r"@")
+#: Independent-review item 3: a URL is as identity-leaking as an
+#: absolute path or a bare "@" (query strings, hostnames, tokens in the
+#: path segment), so it gets the same forbidden-pattern treatment.
+_PRIVACY_URL_RE = re.compile(r"https?://|www\.")
 
 #: Field names holding values that are allowed to contain the above
 #: shapes by design, not by accident.
@@ -216,18 +220,31 @@ _PRIVACY_AT_SIGN_ALLOWED_FIELDS = {"model"}
 
 
 def assert_privacy(result) -> None:
-    """Recursively scan a ``TranscriptResult`` (``meta``, ``diagnostics``,
-    every ``Turn`` in ``turns``, every ``Event`` in ``events``) for string
-    fields shaped like an absolute path or username/email leak: a drive
-    letter (``C:\\``), a POSIX ``/home/`` path, a Windows ``\\Users\\``
-    path, an MSYS/Git Bash drive path (``/c/...``), or a bare ``@``.
-    Raises via ``assert`` with every violation listed, so a failure names
-    exactly which field and value tripped it.
+    """Recursively scan ``result`` for string values shaped like an
+    absolute path or username/email/URL leak: a drive letter (``C:\\``),
+    a POSIX ``/home/`` path, a Windows ``\\Users\\`` path, an MSYS/Git
+    Bash drive path (``/c/...``), a bare ``@``, or a URL (``https?://``
+    / ``www.``). Raises via ``assert`` with every violation listed, so a
+    failure names exactly which field/index and value tripped it.
 
-    Dict-typed fields are intentionally not walked, matching
-    test_privacy.py's scope note: they're free-form small counters the
-    module controls, not a place message text/paths could leak through
-    structurally.
+    ``result`` may be a ``TranscriptResult`` (the original, most common
+    shape - walks ``meta``, ``diagnostics``, every ``Turn`` in ``turns``,
+    every ``Event`` in ``events``), or - independent-review item 3 -
+    any other dataclass (``Table``, ``Section``, ``Recommendation``,
+    ...), a plain ``list``/``tuple``, or a ``dict``. Nested lists/tuples
+    reached through a dataclass field (e.g. ``Table.rows``, a
+    ``list[list]``, or ``Recommendation.evidence``, a ``list[tuple]``)
+    are walked all the way down, not just one level - the earlier
+    version silently skipped a list-of-lists because it only recursed
+    into an item when the item was itself a dataclass.
+
+    Dict values reached through a dataclass field are intentionally not
+    walked, matching test_privacy.py's scope note: they're free-form
+    small counters the module controls (``Event.detail``,
+    ``Diagnostics.agent_settings``, ...), not a place message text/paths
+    could leak through structurally. A dict passed as ``result`` itself
+    (the top-level argument) *is* walked, since item 3 requires
+    ``assert_privacy`` to accept a plain ``dict`` as input.
     """
     violations: list[str] = []
 
@@ -242,32 +259,44 @@ def assert_privacy(result) -> None:
             violations.append(f"{where} matches an MSYS drive path: {value!r}")
         if field_name not in _PRIVACY_AT_SIGN_ALLOWED_FIELDS and _PRIVACY_AT_RE.search(value):
             violations.append(f"{where} contains '@': {value!r}")
+        if _PRIVACY_URL_RE.search(value):
+            violations.append(f"{where} contains a URL: {value!r}")
 
-    def _walk(obj, where: str) -> None:
-        if not (dataclasses.is_dataclass(obj) and not isinstance(obj, type)):
-            return
+    def _walk_value(value, where: str, field_name: str) -> None:
+        """Walk a value reached via a dataclass field (or the top-level
+        argument): strings are checked, dataclasses/lists/tuples are
+        recursed into fully, dicts are left alone (see docstring)."""
+        if isinstance(value, str):
+            _check(value, where, field_name)
+        elif isinstance(value, (tuple, list)):
+            for i, item in enumerate(value):
+                _walk_value(item, f"{where}[{i}]", field_name)
+        elif dataclasses.is_dataclass(value) and not isinstance(value, type):
+            _walk_dataclass(value, where)
+        # dict: intentionally not walked when reached through a field.
+
+    def _walk_dataclass(obj, where: str) -> None:
         for f in dataclasses.fields(obj):
             if f.name in _PRIVACY_EXCLUDED_FIELDS:
                 continue
-            value = getattr(obj, f.name)
-            field_where = f"{where}.{f.name}"
-            if isinstance(value, str):
-                _check(value, field_where, f.name)
-            elif isinstance(value, (tuple, list)):
-                for i, item in enumerate(value):
-                    item_where = f"{field_where}[{i}]"
-                    if isinstance(item, str):
-                        _check(item, item_where, f.name)
-                    else:
-                        _walk(item, item_where)
-            elif dataclasses.is_dataclass(value):
-                _walk(value, field_where)
+            _walk_value(getattr(obj, f.name), f"{where}.{f.name}", f.name)
 
-    _walk(result.meta, "meta")
-    _walk(result.diagnostics, "diagnostics")
-    for i, turn in enumerate(result.turns):
-        _walk(turn, f"turns[{i}]")
-    for i, event in enumerate(result.events):
-        _walk(event, f"events[{i}]")
+    is_transcript_result = all(
+        hasattr(result, attr) for attr in ("meta", "diagnostics", "turns", "events")
+    )
+    if is_transcript_result:
+        _walk_value(result.meta, "meta", "meta")
+        _walk_value(result.diagnostics, "diagnostics", "diagnostics")
+        for i, turn in enumerate(result.turns):
+            _walk_value(turn, f"turns[{i}]", "turns")
+        for i, event in enumerate(result.events):
+            _walk_value(event, f"events[{i}]", "events")
+    elif isinstance(result, dict):
+        for key, value in result.items():
+            if isinstance(key, str):
+                _check(key, "root.<key>", "")
+            _walk_value(value, f"root[{key!r}]", "")
+    else:
+        _walk_value(result, "root", "")
 
     assert violations == [], violations

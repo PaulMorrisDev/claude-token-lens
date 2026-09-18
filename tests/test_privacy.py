@@ -33,7 +33,7 @@ import dataclasses
 import re
 from pathlib import Path
 
-from claude_token_lens.model import TranscriptMeta
+from claude_token_lens.model import Column, Recommendation, Section, Table, TranscriptMeta
 from claude_token_lens.parse import parse_transcript
 
 from helpers import (
@@ -248,3 +248,84 @@ def test_privacy_every_event_kind_fixture(tmp_path: Path):
     result = parse_transcript(path, TranscriptMeta(path=str(path)))
     assert len(result.events) >= 20
     _assert_no_violations(result)
+
+
+# -- Independent-review item 3: assert_privacy inspects table cells and --
+# -- sections, not just TranscriptResult's own dataclass fields. ---------
+
+
+def test_assert_privacy_flags_a_windows_path_in_a_table_cell():
+    # The earlier assert_privacy only recursed into a list item when the
+    # item was itself a dataclass, so Table.rows (list[list[str | int]])
+    # was never actually scanned - a leaking cell passed silently.
+    table = Table(
+        name="workstyle_by_hour",
+        title="Workstyle by hour",
+        columns=[Column(key="hour", label="Hour", kind="int"), Column(key="note", label="Note")],
+        rows=[[9, "normal"], [14, "cwd=C:\\Users\\paulm\\secret_project"]],
+    )
+    try:
+        assert_privacy(table)
+    except AssertionError as exc:
+        assert any("Users" in v for v in exc.args[0])
+    else:
+        raise AssertionError("assert_privacy should have flagged the leaking table cell")
+
+
+def test_assert_privacy_walks_section_tables_and_notes():
+    leaking_table = Table(
+        name="t",
+        title="T",
+        columns=[Column(key="k", label="K")],
+        rows=[["cd /home/paulm/project && ls"]],
+    )
+    section = Section(key="workstyle", title="Workstyle", tables=[leaking_table], notes=["fine note"])
+    try:
+        assert_privacy(section)
+    except AssertionError as exc:
+        assert any("/home/" in v for v in exc.args[0])
+    else:
+        raise AssertionError("assert_privacy should have flagged the leaking nested table")
+
+    clean_section = Section(key="workstyle", title="Workstyle", tables=[], notes=["nothing to see here"])
+    assert_privacy(clean_section)  # no raise
+
+
+def test_assert_privacy_walks_recommendation_evidence_tuples():
+    rec = Recommendation(
+        id="r1",
+        title="Move off ad-hoc paths",
+        action="Stop hardcoding paths",
+        evidence=[("cmd_prefix", "cd C:\\Users\\paulm\\proj", "workstyle_by_hour", "14")],
+    )
+    try:
+        assert_privacy(rec)
+    except AssertionError as exc:
+        assert any("Users" in v for v in exc.args[0])
+    else:
+        raise AssertionError("assert_privacy should have flagged the leaking evidence tuple")
+
+
+def test_assert_privacy_flags_url_in_table_cell():
+    table = Table(
+        name="t",
+        title="T",
+        columns=[Column(key="k", label="K")],
+        rows=[["curl https://x.example/a"]],
+    )
+    try:
+        assert_privacy(table)
+    except AssertionError as exc:
+        assert any("URL" in v for v in exc.args[0])
+    else:
+        raise AssertionError("assert_privacy should have flagged the URL in the table cell")
+
+
+def test_assert_privacy_accepts_a_plain_dict():
+    assert_privacy({"count": 3, "label": "fine"})
+    try:
+        assert_privacy({"cmd": "cd C:\\Users\\paulm\\proj"})
+    except AssertionError as exc:
+        assert any("Users" in v for v in exc.args[0])
+    else:
+        raise AssertionError("assert_privacy should have flagged the leaking dict value")

@@ -230,6 +230,26 @@ def test_cmd_prefix_redacts_msys_drive_path(tmp_path: Path):
     assert_privacy(result)
 
 
+def test_cmd_prefix_redacts_url(tmp_path: Path):
+    # Independent-review item 3: a URL in a command prefix is as
+    # identity-leaking as an absolute path (internal hostname, signed
+    # query string) and must be redacted the same way.
+    lines = [
+        turn_line(
+            message_id="msg_1",
+            content=[tool_use_block("Bash", "tu1", {"command": "curl https://x.example/a"})],
+        ),
+    ]
+    path = tmp_path / "session.jsonl"
+    write_jsonl(path, lines)
+
+    result = parse_transcript(path, TranscriptMeta(path=str(path)))
+
+    turn = result.turns[0]
+    assert turn.cmd_prefix == "curl <url>"
+    assert_privacy(result)
+
+
 def test_cmd_prefix_redacts_bare_backslash_users_path(tmp_path: Path):
     # A drive-less \Users\<name> token (no leading "C:") still names a
     # real machine account and must be redacted like the drive-qualified

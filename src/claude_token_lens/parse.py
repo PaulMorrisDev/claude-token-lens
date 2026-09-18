@@ -111,14 +111,28 @@ _ABS_PATH_TOKEN_RE = re.compile(
     re.VERBOSE,
 )
 
+#: Fix item 3: URLs in a command prefix are as identity-leaking as an
+#: absolute path (a bug tracker link, an internal hostname, a signed
+#: URL's query string) and were previously left untouched by
+#: ``_redact_paths``. Matches an ``http``/``https`` URL, or a bare
+#: ``www.`` form with no scheme, up to the next whitespace/quote.
+_URL_TOKEN_RE = re.compile(r"""https?://[^\s"']+|www\.[^\s"']+""")
+
 
 def _redact_paths(text: str) -> str:
     """Replace every absolute-path-shaped token in ``text`` with
-    ``<path>``, keeping the surrounding verb/flags intact. Called before
-    truncation so a path near the 40-char cutoff can't leak a partial
-    drive letter or username fragment.
+    ``<path>``, and every URL with ``<url>``, keeping the surrounding
+    verb/flags intact. Called before truncation so a path or URL near
+    the 40-char cutoff can't leak a partial drive letter, username
+    fragment, or query string.
+
+    URLs are redacted first: ``_ABS_PATH_TOKEN_RE``'s drive-letter
+    alternative (``[A-Za-z]:[\\/]``) is happy to match the single
+    letter before a scheme's ``://`` (e.g. the "s" in "https://"),
+    which would otherwise mangle a URL into "http<path>" before the URL
+    regex ever saw it intact.
     """
-    return _ABS_PATH_TOKEN_RE.sub("<path>", text)
+    return _ABS_PATH_TOKEN_RE.sub("<path>", _URL_TOKEN_RE.sub("<url>", text))
 
 
 def detect_provider(model_id: str | None) -> str | None:
