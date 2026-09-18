@@ -52,6 +52,12 @@ defaults so every existing call site keeps working:
   assumptions), and analytics packages (TTL, RE-CACHE, ...) need a place
   to push that text onto the report without the renderers inventing it.
   Defaulting to ``[]`` keeps every existing call site valid.
+
+Independent-review follow-up fixes (post-WP1/WP2/WP7), all with defaults:
+
+- ``Diagnostics.trailing_events: int = 0`` — events observed after the
+  last finalised turn in a transcript (nothing left to attach them to).
+  See ``parse.py``'s two-buffer rewrite.
 """
 
 from __future__ import annotations
@@ -212,6 +218,9 @@ class Diagnostics:
     #: by ``jsonl.iter_lines`` for exceeding ``MAX_LINE_BYTES``, counted
     #: without being parsed.
     oversized_lines: int = 0
+    #: Independent-review addition (see module docstring): events observed
+    #: after the last finalised turn, attached to no turn.
+    trailing_events: int = 0
 
 
 @dataclass(slots=True)

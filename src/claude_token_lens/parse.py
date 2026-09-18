@@ -3,9 +3,19 @@
 Implements the project plan's "Parsing" section: assistant lines are
 grouped into ``Turn`` records by ``message.id`` (fallback ``requestId``,
 then ``uuid``); every other line becomes an ``Event`` (via
-``events.classify_line``) attached to the next finalised turn as
+``events.classify_line``) attached to the turn it PRECEDES as
 ``preceding_event_kinds``/``preceding_attachment_types``/
-``preceding_primary``.
+``preceding_primary`` — i.e. the turn whose assistant line comes right
+after it, not the turn whose assistant line came right before it. A
+task-notification line sitting between turn A and turn B describes what
+happened just before B ran, so it must attach to B; it says nothing about
+what preceded A. This is implemented with two rotating buffers
+(``events_for_current``/``events_since_current`` in ``parse_transcript``):
+whatever accumulates while a turn is the in-progress ``current`` precedes
+the *next* turn, not this one, so it's held back and only handed to
+``_finalize_turn`` once the next turn actually starts. Events seen after
+the transcript's last assistant line have no later turn to attach to and
+are counted in ``Diagnostics.trailing_events`` instead.
 
 ``preceding_tool`` (for a non-first turn) is "Bash" if the previous turn's
 ``tool_names`` contains Bash, else "PowerShell" if it contains PowerShell,
@@ -357,8 +367,16 @@ def parse_transcript(path: str | Path, meta: TranscriptMeta) -> TranscriptResult
     #: reference a tool_use from an earlier turn.
     tool_use_names: dict[str, str] = {}
 
-    pending_events: list[Event] = []
-    pending_attachment_types: list[str] = []
+    #: Events attached to the turn currently being accumulated in
+    #: ``current`` (i.e. observed *before* ``current`` started): what
+    #: ``current`` finalises with. ``*_since_current`` accumulates events
+    #: seen *while* ``current`` is in progress — these precede the NEXT
+    #: turn, not this one, and become ``*_for_current`` when that next
+    #: turn starts (see the module docstring's two-buffer fix).
+    events_for_current: list[Event] = []
+    attachments_for_current: list[str] = []
+    events_since_current: list[Event] = []
+    attachments_since_current: list[str] = []
     finalized_keys: set[str] = set()
 
     current: _PendingTurn | None = None
@@ -382,8 +400,8 @@ def parse_transcript(path: str | Path, meta: TranscriptMeta) -> TranscriptResult
             if current is not None:
                 turn, previous_non_synthetic_ts, priced_turn_count = _finalize_turn(
                     current,
-                    pending_events,
-                    pending_attachment_types,
+                    events_for_current,
+                    attachments_for_current,
                     previous_turn,
                     previous_non_synthetic_ts,
                     priced_turn_count,
@@ -392,8 +410,13 @@ def parse_transcript(path: str | Path, meta: TranscriptMeta) -> TranscriptResult
                 turns.append(turn)
                 finalized_keys.add(current_key)  # type: ignore[arg-type]
                 previous_turn = turn
-                pending_events = []
-                pending_attachment_types = []
+            # Rotate regardless of whether `current` was None: whatever
+            # accumulated since it started (or, for the first turn,
+            # since the file began) precedes the turn about to start.
+            events_for_current = events_since_current
+            attachments_for_current = attachments_since_current
+            events_since_current = []
+            attachments_since_current = []
             current = _new_pending(d, tool_use_names)
             current_key = key
             continue
@@ -408,9 +431,9 @@ def parse_transcript(path: str | Path, meta: TranscriptMeta) -> TranscriptResult
             )
             continue
         events.append(event)
-        pending_events.append(event)
+        events_since_current.append(event)
         if line_type == "attachment":
-            pending_attachment_types.append(event.subkind or "")
+            attachments_since_current.append(event.subkind or "")
         if event.kind == EventKind.UNKNOWN:
             diagnostics.ignored_line_types[line_type] = (
                 diagnostics.ignored_line_types.get(line_type, 0) + 1
@@ -419,14 +442,18 @@ def parse_transcript(path: str | Path, meta: TranscriptMeta) -> TranscriptResult
     if current is not None:
         turn, previous_non_synthetic_ts, priced_turn_count = _finalize_turn(
             current,
-            pending_events,
-            pending_attachment_types,
+            events_for_current,
+            attachments_for_current,
             previous_turn,
             previous_non_synthetic_ts,
             priced_turn_count,
             diagnostics,
         )
         turns.append(turn)
+
+    # Events observed after the last finalised turn's assistant line have
+    # no later turn to attach to (see the module docstring).
+    diagnostics.trailing_events = len(events_since_current)
 
     diagnostics.lines = line_stats.lines
     diagnostics.unparsable_lines = line_stats.unparsable_lines
