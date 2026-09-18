@@ -1,0 +1,22 @@
+{
+  "generated_at": "2026-09-18T21:45:14.000Z",
+  "line_type_counts": {
+    "agent-name": 108,
+    "assistant": 4037,
+    "atis-latch": 176,
+    "attachment": 3663,
+    "bridge-session": 184,
+    "custom-title": 185,
+    "file-history-snapshot": 9,
+    "last-prompt": 178,
+    "mode": 177,
+    "queue-operation": 267,
+    "system": 154,
+    "user": 2406
+  },
+  "schema": 1,
+  "scrub_tool_version": 1,
+  "source_session_hash": "proj-28547252be52",
+  "subagent_count": 25,
+  "workflow_count": 0
+}
