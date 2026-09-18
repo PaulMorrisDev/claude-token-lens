@@ -126,7 +126,9 @@ def test_mode_mixed_fallback_on_hand_built_features():
         human_gap_median_s=1000.0,
         human_gap_max_s=1000.0,
         subagent_count=5,
-        human_prompts=10,
+        # Above long_agentic_max_human_prompts (10) so this still falls
+        # through past the subagent-chain rule into "mixed".
+        human_prompts=11,
         assistant_turns=5,
     )
     mode, evidence = classify.classify_mode(f)
@@ -205,7 +207,9 @@ def test_multi_day_evidence_added_on_fallthrough_when_span_exceeds_24h():
         night_turn_share=0.0,
         long_gap_in_night=False,  # overnight's night check fails -> falls through
         subagent_count=5,
-        human_prompts=10,
+        # Above long_agentic_max_human_prompts (10) so this still falls
+        # through past the subagent-chain rule into "mixed".
+        human_prompts=11,
         assistant_turns=5,
     )
     mode, evidence = classify.classify_mode(f)
@@ -220,7 +224,9 @@ def test_multi_day_evidence_absent_when_span_under_24h():
         night_turn_share=0.0,
         long_gap_in_night=False,
         subagent_count=5,
-        human_prompts=10,
+        # Above long_agentic_max_human_prompts (10) so this still falls
+        # through past the subagent-chain rule into "mixed".
+        human_prompts=11,
         assistant_turns=5,
     )
     mode, evidence = classify.classify_mode(f)

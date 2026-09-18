@@ -128,7 +128,17 @@ DEFAULT_MODE_THRESHOLDS: dict = {
     #: rest of the table picks, so a report can tell "genuinely overnight"
     #: apart from "just a very long-running session" (fix 5).
     "multi_day_span_s": 24 * 3600,
-    "long_agentic_max_human_prompts": 5,
+    # Raised from the plan's implied starting point of 5 to 10 against a
+    # real 30-day corpus (120 top-level sessions in
+    # C--Dev-RevIXO, scratch script corpus_classify_tune.py): at 5,
+    # sessions with a real subagent chain or a
+    # long run of self-chained turns but a handful more human nudges
+    # (6-10) than the cap allowed fell through into "mixed" - the
+    # corpus's mixed share sat at 23.3%. Raising just this one
+    # threshold (leaving long_agentic_min_turns, interactive_gap_s, and
+    # the overnight thresholds at their prior values) took the corpus's
+    # mixed share to 15.8%, without moving overnight's own share.
+    "long_agentic_max_human_prompts": 10,
     # Tuned from the plan's implied starting point of 50 down to 30
     # against a real 30-day corpus (131 top-level sessions, see this
     # WP's report): at 50, sessions that were plainly autonomous
