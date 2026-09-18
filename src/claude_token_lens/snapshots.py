@@ -50,6 +50,7 @@ _ISO_TS_FORMATS = ("%Y-%m-%dT%H:%M:%S.%fZ", "%Y-%m-%dT%H:%M:%SZ")
 #: diffing and grouping.
 _CONFIG_SECTIONS = (
     "user_settings",
+    "managed_settings",
     "project_settings",
     "mcp_servers",
     "enabled_plugins",
@@ -162,6 +163,21 @@ def flatten_snapshot(snapshot: Snapshot) -> dict:
         if section in snapshot.data:
             _flatten(section, snapshot.data[section], out)
     return out
+
+
+def managed_keys(snapshot: Snapshot) -> list[str]:
+    """The top-level ``managed-settings.json`` key names recorded on
+    ``snapshot`` (fix 7) — e.g. ``["model", "permissions"]`` — or ``[]`` if
+    the snapshot predates this field or the machine has no managed-settings
+    file. A report uses this to mark any recommendation whose lever is one
+    of these keys as "managed by policy, raise with your administrator"
+    instead of something the user can change themselves (plan "Enterprise
+    use" section).
+    """
+    keys = snapshot.data.get("managed_keys")
+    if not isinstance(keys, list):
+        return []
+    return [str(k) for k in keys]
 
 
 def _hashable(value):
@@ -351,6 +367,7 @@ __all__ = [
     "load_snapshots",
     "snapshot_for",
     "flatten_snapshot",
+    "managed_keys",
     "diff_keys",
     "co_changed_keys",
     "build_config_diff_table",

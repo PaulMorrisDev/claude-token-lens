@@ -75,6 +75,38 @@ def test_load_snapshots_skips_malformed_file(tmp_path):
     assert [s.ts for s in result] == ["20260902T000000Z"]
 
 
+# -- managed_keys (fix 7) ------------------------------------------------
+
+
+def test_managed_keys_returns_recorded_key_list():
+    snap = snap_mod.Snapshot(
+        path=Path("x"), ts="t", data={"managed_keys": ["model", "permissions"]}
+    )
+    assert snap_mod.managed_keys(snap) == ["model", "permissions"]
+
+
+def test_managed_keys_missing_field_returns_empty_list():
+    # A snapshot written before fix 7 (or from a machine with no
+    # managed-settings file) has no managed_keys field at all.
+    snap = snap_mod.Snapshot(path=Path("x"), ts="t", data={})
+    assert snap_mod.managed_keys(snap) == []
+
+
+def test_managed_keys_malformed_field_returns_empty_list():
+    snap = snap_mod.Snapshot(path=Path("x"), ts="t", data={"managed_keys": "not-a-list"})
+    assert snap_mod.managed_keys(snap) == []
+
+
+def test_flatten_snapshot_includes_managed_settings_section():
+    snap = snap_mod.Snapshot(
+        path=Path("x"),
+        ts="t",
+        data={"managed_settings": {"model": "sonnet"}, "managed_keys": ["model"]},
+    )
+    flat = snap_mod.flatten_snapshot(snap)
+    assert flat["managed_settings.model"] == "sonnet"
+
+
 # -- snapshot_for (the session/snapshot join) ----------------------------
 
 

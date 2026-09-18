@@ -104,6 +104,13 @@ def _add_snapshot_config_args(sub: argparse.ArgumentParser) -> None:
         action="store_true",
         help="copy hooks/snapshot-config.py into <config-dir>/token-lens/hooks/",
     )
+    sub.add_argument(
+        "--managed-path",
+        metavar="PATH",
+        default=None,
+        help="override the platform managed-settings.json path (fix 7; "
+        "default is the platform's own policy-file location)",
+    )
 
 
 def _make_parser() -> argparse.ArgumentParser:
@@ -169,7 +176,9 @@ def _cmd_snapshot_config(args: argparse.Namespace) -> int:
         )
         return 0
 
-    path, _written = hook.snapshot_and_get_path(config_dir, os.getcwd())
+    path, _written = hook.snapshot_and_get_path(
+        config_dir, os.getcwd(), managed_path=args.managed_path
+    )
     if path is None:
         print("No snapshot written and none exists yet.", file=sys.stderr)
         return 1

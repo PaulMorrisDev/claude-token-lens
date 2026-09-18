@@ -32,6 +32,21 @@ replaced by a shape-only marker: ``dict(n)``, ``list(n)`` or ``str(len)``.
 This is deliberately generic (not just settings.json) so a new, unknown key
 in a future Claude Code version degrades to a safe shape marker instead of
 leaking its value.
+
+Managed (enterprise-policy) settings (fix 7, plan "Enterprise use" section):
+the platform-wide ``managed-settings.json`` a system administrator can drop
+outside any user's control (macOS
+``/Library/Application Support/ClaudeCode/managed-settings.json``, Linux
+``/etc/claude-code/managed-settings.json``, Windows
+``%ProgramData%\\ClaudeCode\\managed-settings.json``) is read the same way as
+user/project settings.json and redacted with the exact same
+``redact_settings`` rule into ``snapshot["managed_settings"]``. Its raw
+top-level key names (never values) are additionally recorded verbatim into
+``snapshot["managed_keys"]``, since the plan calls for reports to be able to
+say "this lever is managed by policy" for any recommendation whose key
+appears there — the key name alone ("permissions", "model", ...) carries no
+content to redact. ``--managed-path`` overrides the platform default, for
+tests and for the rare machine whose policy file lives somewhere else.
 """
 
 from __future__ import annotations
@@ -102,6 +117,20 @@ def resolve_config_dir(cli_arg: str | None = None) -> Path:
     if env:
         return Path(env)
     return Path.home() / ".claude"
+
+
+def default_managed_settings_path() -> Path:
+    """The platform's system-wide ``managed-settings.json`` path (fix 7).
+    This file is written by IT/policy tooling, not by the current user, so
+    unlike ``resolve_config_dir`` there is no per-user env var to prefer —
+    only ``--managed-path`` (handled by the caller) overrides it.
+    """
+    if sys.platform == "win32":
+        program_data = os.environ.get("ProgramData", r"C:\ProgramData")
+        return Path(program_data) / "ClaudeCode" / "managed-settings.json"
+    if sys.platform == "darwin":
+        return Path("/Library/Application Support/ClaudeCode/managed-settings.json")
+    return Path("/etc/claude-code/managed-settings.json")
 
 
 def _read_json_dict(path: Path) -> dict | None:
@@ -337,9 +366,20 @@ def _load_stdin_json() -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def build_snapshot(stdin_data: dict, cwd_override: str | None, config_dir: Path) -> dict:
+def build_snapshot(
+    stdin_data: dict,
+    cwd_override: str | None,
+    config_dir: Path,
+    managed_path: Path | str | None = None,
+) -> dict:
     """Build the full A6-shaped snapshot dict (unwritten) for the given
     hook stdin payload, cwd override and resolved config directory.
+
+    ``managed_path`` overrides the platform default from
+    :func:`default_managed_settings_path` (used by tests and by the
+    ``--managed-path`` CLI flag); it is read even if missing, since most
+    machines have no managed-settings file at all and that must degrade to
+    ``{}``/``[]`` rather than an error.
     """
     session_id = stdin_data.get("session_id")
     transcript_path = stdin_data.get("transcript_path")
@@ -352,6 +392,11 @@ def build_snapshot(stdin_data: dict, cwd_override: str | None, config_dir: Path)
 
     user_settings_raw = _read_json_dict(config_dir / "settings.json") or {}
     user_settings = redact_settings(user_settings_raw)
+
+    resolved_managed_path = Path(managed_path) if managed_path else default_managed_settings_path()
+    managed_settings_raw = _read_json_dict(resolved_managed_path) or {}
+    managed_settings = redact_settings(managed_settings_raw)
+    managed_keys = sorted(managed_settings_raw.keys())
 
     project_settings: dict = {}
     for name in ("settings.json", "settings.local.json"):
@@ -416,6 +461,8 @@ def build_snapshot(stdin_data: dict, cwd_override: str | None, config_dir: Path)
         "claude_version": claude_version,
         "profile_id": profile_id,
         "user_settings": user_settings,
+        "managed_settings": managed_settings,
+        "managed_keys": managed_keys,
         "project_settings": project_settings,
         "mcp_servers": mcp_servers,
         "enabled_plugins": enabled_plugins,
@@ -467,6 +514,7 @@ def snapshot_and_get_path(
     cwd: str | None,
     min_interval: int = 300,
     stdin_data: dict | None = None,
+    managed_path: Path | str | None = None,
 ) -> tuple[Path | None, bool]:
     """Build a snapshot for ``cwd`` and write it unless idempotency skips
     it. Returns ``(path, written)``: ``path`` is the snapshot that now
@@ -476,7 +524,7 @@ def snapshot_and_get_path(
     (shouldn't happen, since a skip requires a latest snapshot to compare
     against — kept for defensiveness).
     """
-    snapshot = build_snapshot(stdin_data or {}, cwd, config_dir)
+    snapshot = build_snapshot(stdin_data or {}, cwd, config_dir, managed_path=managed_path)
     snapshots_dir = _snapshots_dir(config_dir)
     if _should_skip(snapshot, snapshots_dir, min_interval):
         return _find_latest_snapshot(snapshots_dir), False
@@ -552,6 +600,11 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         help="print the snapshot JSON instead of writing it",
     )
     parser.add_argument("--min-interval", type=int, default=300)
+    parser.add_argument(
+        "--managed-path", default=None,
+        help="override the platform managed-settings.json path (testing, or a "
+        "non-standard policy location)",
+    )
     return parser.parse_args(argv)
 
 
@@ -560,7 +613,7 @@ def _run(args: argparse.Namespace) -> None:
     config_dir = resolve_config_dir(args.config_dir)
 
     if args.print_only:
-        snapshot = build_snapshot(stdin_data, args.cwd, config_dir)
+        snapshot = build_snapshot(stdin_data, args.cwd, config_dir, managed_path=args.managed_path)
         print(json.dumps(snapshot, indent=2, sort_keys=True))
         return
 
@@ -569,6 +622,7 @@ def _run(args: argparse.Namespace) -> None:
         args.cwd or stdin_data.get("cwd"),
         min_interval=args.min_interval,
         stdin_data=stdin_data,
+        managed_path=args.managed_path,
     )
 
 

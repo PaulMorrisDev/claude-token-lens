@@ -325,6 +325,93 @@ def test_content_change_writes_a_second_snapshot(home, project):
     assert latest["user_settings"]["effortLevel"] == "low"
 
 
+def test_managed_settings_captured_and_redacted_with_keys_recorded(tmp_path, home, project):
+    config_dir = home / ".claude"
+    managed_path = tmp_path / "managed-settings.json"
+    managed_settings = {
+        "model": "sonnet",
+        "permissions": {"deny": ["Bash(curl *)"]},
+    }
+    managed_path.write_text(json.dumps(managed_settings), encoding="utf-8")
+
+    stdin = json.dumps({"session_id": "s", "cwd": str(project)})
+    result = _run_hook(
+        config_dir=config_dir,
+        cwd=project,
+        stdin_text=stdin,
+        extra_args=["--managed-path", str(managed_path)],
+    )
+    assert result.returncode == 0
+
+    snapshot = _latest_snapshot(config_dir)
+    # Allowlisted scalar kept verbatim, same redaction rule as user_settings.
+    assert snapshot["managed_settings"]["model"] == "sonnet"
+    # Non-allowlisted dict reduced to a shape marker -- the value never leaks.
+    assert snapshot["managed_settings"]["permissions"] == "dict(1)"
+    # Key *names* (not values) are recorded so a report can say "managed by
+    # policy" for any recommendation whose lever is one of these keys.
+    assert snapshot["managed_keys"] == ["model", "permissions"]
+    assert "Bash(curl" not in json.dumps(snapshot)
+
+
+def test_managed_settings_absent_file_degrades_to_empty(tmp_path, home, project):
+    config_dir = home / ".claude"
+    stdin = json.dumps({"session_id": "s", "cwd": str(project)})
+    # Point --managed-path at a file that doesn't exist -- must never fail
+    # the hook, and must degrade to an empty dict/list.
+    missing_path = tmp_path / "does-not-exist-managed-settings.json"
+    result = _run_hook(
+        config_dir=config_dir,
+        cwd=project,
+        stdin_text=stdin,
+        extra_args=["--managed-path", str(missing_path)],
+    )
+    assert result.returncode == 0
+    snapshot = _latest_snapshot(config_dir)
+    assert snapshot["managed_settings"] == {}
+    assert snapshot["managed_keys"] == []
+
+
+def test_managed_settings_default_platform_path_used_when_no_override(home, project):
+    # Without --managed-path, the hook falls back to the platform default
+    # (default_managed_settings_path()); on a machine with no such file it
+    # must still degrade cleanly rather than erroring.
+    config_dir = home / ".claude"
+    stdin = json.dumps({"session_id": "s", "cwd": str(project)})
+    result = _run_hook(config_dir=config_dir, cwd=project, stdin_text=stdin)
+    assert result.returncode == 0
+    snapshot = _latest_snapshot(config_dir)
+    assert "managed_settings" in snapshot
+    assert "managed_keys" in snapshot
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="exercises the Windows default path branch")
+def test_managed_settings_default_windows_path_honours_programdata_env(tmp_path, home, project):
+    # No --managed-path override: point the well-known ProgramData env var
+    # at a throwaway directory and prove default_managed_settings_path()'s
+    # Windows branch (<ProgramData>/ClaudeCode/managed-settings.json) is
+    # what actually gets read, not a hardcoded literal path.
+    fake_program_data = tmp_path / "fake-programdata"
+    managed_dir = fake_program_data / "ClaudeCode"
+    managed_dir.mkdir(parents=True)
+    (managed_dir / "managed-settings.json").write_text(
+        json.dumps({"effortLevel": "high"}), encoding="utf-8"
+    )
+
+    config_dir = home / ".claude"
+    stdin = json.dumps({"session_id": "s", "cwd": str(project)})
+    result = _run_hook(
+        config_dir=config_dir,
+        cwd=project,
+        stdin_text=stdin,
+        extra_env={"ProgramData": str(fake_program_data)},
+    )
+    assert result.returncode == 0
+    snapshot = _latest_snapshot(config_dir)
+    assert snapshot["managed_settings"]["effortLevel"] == "high"
+    assert snapshot["managed_keys"] == ["effortLevel"]
+
+
 def test_min_interval_zero_always_writes_even_with_identical_content(home, project):
     config_dir = home / ".claude"
     stdin = json.dumps({"session_id": "s1", "cwd": str(project)})
