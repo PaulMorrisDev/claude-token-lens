@@ -41,7 +41,11 @@ REQUIRED_PACKAGED_MODEL_IDS = {
     "claude-sonnet-4-5",
     "claude-sonnet-4",
     "claude-haiku-4-5-20251001",
-    "claude-haiku-3-5",
+    "claude-3-5-haiku-20241022",
+    "claude-3-5-sonnet-20241022",
+    "claude-3-7-sonnet-20250219",
+    "claude-3-haiku-20240307",
+    "claude-3-opus-20240229",
 }
 
 
@@ -229,8 +233,132 @@ def test_longest_prefix_match(min_pricing):
     assert resolved.matched_via == "prefix"
 
 
+#: Two models sharing a numeric prefix, used to isolate the token-
+#: boundary rule from the packaged pricing.toml's own model set (which
+#: happens to give "claude-opus-4" and "claude-opus-4-1" identical
+#: rates, making a wrong match invisible in the numbers).
+_BOUNDARY_FIXTURE_TOML = """
+version = "test"
+currency = "USD"
+
+[models."claude-foo-4-1"]
+aliases = []
+input = 1.0
+output = 2.0
+cache_write_5m = 0.5
+cache_write_1h = 0.8
+cache_read = 0.1
+"""
+
+_BOUNDARY_FIXTURE_WITH_SHORTER_TOML = (
+    _BOUNDARY_FIXTURE_TOML
+    + """
+[models."claude-foo-4"]
+aliases = []
+input = 9.0
+output = 9.0
+cache_write_5m = 9.0
+cache_write_1h = 9.0
+cache_read = 9.0
+"""
+)
+
+
+def test_prefix_match_requires_token_boundary_no_shorter_fallback(tmp_path):
+    path = tmp_path / "boundary.toml"
+    path.write_text(_BOUNDARY_FIXTURE_TOML, encoding="utf-8")
+    pricing = load_pricing(path=path)
+    # "claude-foo-4-10-x" merely shares the leading digits of the
+    # registered "claude-foo-4-1" id — the character right after the
+    # would-be match is "0", not "-"/"@"/end — and there's no shorter
+    # registered id to fall back to, so it must resolve to None.
+    assert pricing.resolve_model("claude-foo-4-10-x") is None
+
+
+def test_prefix_match_boundary_rejects_longer_falls_back_to_shorter(tmp_path):
+    path = tmp_path / "boundary2.toml"
+    path.write_text(_BOUNDARY_FIXTURE_WITH_SHORTER_TOML, encoding="utf-8")
+    pricing = load_pricing(path=path)
+    resolved = pricing.resolve_model("claude-foo-4-10-x")
+    assert resolved is not None
+    # Must NOT resolve to "claude-foo-4-1" (fails the boundary check) —
+    # the shorter "claude-foo-4" is a genuinely valid boundary match.
+    assert resolved.canonical_id == "claude-foo-4"
+    assert resolved.matched_via == "prefix"
+
+
+def test_prefix_match_boundary_dash_still_resolves():
+    pricing = load_pricing()
+    resolved = pricing.resolve_model("claude-opus-4-1-preview")
+    assert resolved is not None
+    assert resolved.canonical_id == "claude-opus-4-1"
+    assert resolved.matched_via == "prefix"
+
+
+def test_cloud_strip_matched_via_survives_a_subsequent_prefix_step(min_pricing):
+    # "claude-widget-9" has no exact/alias hit for the dated variant
+    # below, so after the Bedrock prefix is stripped, resolution only
+    # succeeds via the prefix-match step — matched_via must still report
+    # "cloud_strip", not "prefix", since the cloud wrapping is the
+    # substantive fact.
+    resolved = min_pricing.resolve_model("us.anthropic.claude-widget-9-20260101")
+    assert resolved is not None
+    assert resolved.canonical_id == "claude-widget-9"
+    assert resolved.matched_via == "cloud_strip"
+
+
 def test_unknown_model_resolves_to_none(min_pricing):
     assert min_pricing.resolve_model("claude-totally-unheard-of") is None
+
+
+# --------------------------------------------------------------------
+# Legacy dated ids (independent-review fix 5)
+# --------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("model_id", "expected"),
+    [
+        ("claude-3-5-haiku-20241022", (0.8, 4.0, 1.0, 1.6, 0.08)),
+        ("claude-3-5-sonnet-20241022", (3.0, 15.0, 3.75, 6.0, 0.3)),
+        ("claude-3-7-sonnet-20250219", (3.0, 15.0, 3.75, 6.0, 0.3)),
+        ("claude-3-haiku-20240307", (0.25, 1.25, 0.3, 0.5, 0.03)),
+        ("claude-3-opus-20240229", (15.0, 75.0, 18.75, 30.0, 1.5)),
+    ],
+)
+def test_packaged_legacy_ids_resolve_exactly_with_documented_rates(model_id, expected):
+    pricing = load_pricing()
+    resolved = pricing.resolve_model(model_id)
+    assert resolved is not None
+    assert resolved.canonical_id == model_id
+    assert resolved.matched_via == "exact"
+    rates = resolved.rates
+    assert (
+        rates.input,
+        rates.output,
+        rates.cache_write_5m,
+        rates.cache_write_1h,
+        rates.cache_read,
+    ) == expected
+
+
+def test_packaged_legacy_ids_have_no_geo_multiplier():
+    # The documented "us" uplift only applies to 4.6-generation and
+    # later models; every legacy dated id must carry none.
+    pricing = load_pricing()
+    for model_id in [
+        "claude-3-5-haiku-20241022",
+        "claude-3-5-sonnet-20241022",
+        "claude-3-7-sonnet-20250219",
+        "claude-3-haiku-20240307",
+        "claude-3-opus-20240229",
+    ]:
+        assert pricing.models[model_id].geo_multipliers == {}
+
+
+def test_packaged_web_search_counts_only_by_default():
+    pricing = load_pricing()
+    assert pricing.server_tools["web_search_per_1000"] == 0.0
 
 
 @pytest.mark.parametrize("model_id", [None, "", "<synthetic>"])

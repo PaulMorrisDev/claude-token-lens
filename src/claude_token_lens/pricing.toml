@@ -14,6 +14,12 @@ confirm these figures against the live pricing page before relying on
 them for anything other than relative comparisons.
 """
 
+# Geo multiplier rule: the documented 1.1x "us" data-residency uplift is
+# only stated for the 4.6-generation and later models. Earlier models
+# (4.5 and below, and every legacy dated id below) deliberately carry no
+# [models.<id>.geo_multipliers] table — that's the asymmetry documented
+# here, not an omission to fix.
+
 # --- Fable ------------------------------------------------------------
 
 [models."claude-fable-5-1"]
@@ -172,7 +178,13 @@ cache_read = 0.1
 [models."claude-haiku-4-5-20251001".geo_multipliers]
 us = 1.1 # documented data-residency uplift when usage.inference_geo == "us"
 
-[models."claude-haiku-3-5"]
+# --- Legacy dated ids -------------------------------------------------
+#
+# Real legacy Claude 3.x model ids, kept for corpora that still reference
+# them. Renamed from the earlier "claude-haiku-3-5" (wrong id shape) to
+# the real dated id below; the rates are unchanged.
+
+[models."claude-3-5-haiku-20241022"]
 aliases = []
 input = 0.8
 output = 4.0
@@ -180,9 +192,42 @@ cache_write_5m = 1.0
 cache_write_1h = 1.6
 cache_read = 0.08
 
+[models."claude-3-5-sonnet-20241022"]
+aliases = []
+input = 3.0
+output = 15.0
+cache_write_5m = 3.75
+cache_write_1h = 6.0
+cache_read = 0.3
+
+[models."claude-3-7-sonnet-20250219"]
+aliases = []
+input = 3.0
+output = 15.0
+cache_write_5m = 3.75
+cache_write_1h = 6.0
+cache_read = 0.3
+
+[models."claude-3-haiku-20240307"]
+aliases = []
+input = 0.25
+output = 1.25
+cache_write_5m = 0.3
+cache_write_1h = 0.5
+cache_read = 0.03
+
+[models."claude-3-opus-20240229"]
+aliases = []
+input = 15.0
+output = 75.0
+cache_write_5m = 18.75
+cache_write_1h = 30.0
+cache_read = 1.5
+
 # --- Server tools ---------------------------------------------------------
 
 # Optional; if absent, server-tool requests (web_search_requests /
-# web_fetch_requests on a Turn) are counted but not priced.
+# web_fetch_requests on a Turn) are counted but not priced. Set to the
+# documented rate to price web search; 0 counts requests only.
 [server_tools]
-web_search_per_1000 = 10.0 # verify: documented rate, confirm on the pricing page
+web_search_per_1000 = 0.0

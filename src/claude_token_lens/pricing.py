@@ -154,6 +154,21 @@ class Pricing:
         match -> ``None``. ``<synthetic>`` and empty/``None`` return
         ``None`` immediately and are never treated as an unknown-model
         warning by callers (synthetic lines carry no billable usage).
+
+        The prefix-match step requires a token boundary right after the
+        matched prefix (the next character must be ``-``, ``@``, or end
+        of string) so ``claude-opus-4-10-x`` — a real (hypothetical)
+        model whose id happens to start with the characters of
+        ``claude-opus-4-1`` — never falsely resolves to that shorter,
+        unrelated registered id.
+
+        When the cloud-provider strip actually changed the candidate
+        (Bedrock/Vertex wrapping was present) and resolution only
+        succeeds via the prefix step afterwards, ``matched_via`` is still
+        reported as ``"cloud_strip"`` — the cloud wrapping is the
+        substantive fact about how this id was resolved, and a caller
+        reading ``matched_via`` shouldn't have to also inspect the raw id
+        to notice a Bedrock/Vertex form was involved.
         """
         if not model_id or model_id in _NO_WARNING_MODEL_IDS:
             return None
@@ -173,7 +188,8 @@ class Pricing:
             candidate = stripped
 
         cleaned = _strip_cloud_provider(candidate)
-        if cleaned != candidate:
+        cloud_stripped = cleaned != candidate
+        if cloud_stripped:
             hit = self._lookup_exact_or_alias(cleaned)
             if hit is not None:
                 canonical, _ = hit
@@ -181,11 +197,12 @@ class Pricing:
 
         best_id: str | None = None
         for canonical_id in self.models:
-            if cleaned.startswith(canonical_id):
+            if _prefix_boundary_match(cleaned, canonical_id):
                 if best_id is None or len(canonical_id) > len(best_id):
                     best_id = canonical_id
         if best_id is not None:
-            return ResolvedRates(best_id, self.models[best_id], "prefix")
+            matched_via = "cloud_strip" if cloud_stripped else "prefix"
+            return ResolvedRates(best_id, self.models[best_id], matched_via)
 
         return None
 
@@ -233,6 +250,25 @@ class Pricing:
             columns=columns,
             rows=rows,
         )
+
+
+#: Characters allowed to immediately follow a matched registered-id
+#: prefix for the match to count (see ``_prefix_boundary_match``).
+_PREFIX_BOUNDARY_CHARS = ("-", "@")
+
+
+def _prefix_boundary_match(cleaned: str, canonical_id: str) -> bool:
+    """Does ``cleaned`` start with ``canonical_id`` at a real token
+    boundary? The character immediately after the matched prefix must be
+    ``-``, ``@``, or nothing (the strings are equal) — otherwise
+    ``cleaned`` merely shares a numeric run with ``canonical_id``
+    (``claude-opus-4-10`` sharing ``claude-opus-4-1``'s digits) rather
+    than actually being a dated/suffixed variant of it.
+    """
+    if not cleaned.startswith(canonical_id):
+        return False
+    rest = cleaned[len(canonical_id) :]
+    return rest == "" or rest[0] in _PREFIX_BOUNDARY_CHARS
 
 
 def _strip_cloud_provider(model_id: str) -> str:
