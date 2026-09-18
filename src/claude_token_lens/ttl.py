@@ -480,6 +480,15 @@ class _RawAccumulator:
     sample_rates: ModelRates | None = None
     inwindow_weight: float = 0.0
     inwindow_total_weight: float = 0.0
+    #: Σ_i W_i × (write_1h - write_5m) over *every* priced write (not
+    #: gated on a gap at all) — the dollar premium paid across the whole
+    #: transcript if every write had used a 1h TTL instead of 5m.
+    premium_all_1h_usd: float = 0.0
+    #: Σ over gaps in (300s, 3600s] of C_j × write_5m, where C_j is the
+    #: prefix (cache_read + cache_creation) of the turn that follows the
+    #: gap — the dollar cost of re-writing that whole prefix because a 5m
+    #: TTL expired where a 1h one would have survived.
+    expiry_loss_all_5m_usd: float = 0.0
 
     # -- item 4: near-miss histogram -------------------------------------
     near_5m_hit: int = 0
@@ -555,6 +564,18 @@ class TtlTypeStats:
     # -- item 3: break-even share ---------------------------------------
     premium_ratio: float = 0.0
     in_window_share: float = 0.0
+    #: Σ_i W_i × (write_1h - write_5m) over every write, in USD: the
+    #: total premium paid across the transcript if every write had used
+    #: a 1h TTL instead of 5m.
+    premium_all_1h: float = 0.0
+    #: Σ over in-window gaps (300s, 3600s] of C_j × write_5m, in USD: the
+    #: total cost of re-writing the prefix each time a 5m TTL expired
+    #: where a 1h one would have survived.
+    expiry_loss_all_5m: float = 0.0
+    #: ``premium_ratio`` scaled by the incremental-to-prefix token ratio
+    #: (Σ W_i / Σ_{all gaps} C_j) — the break-even point for
+    #: ``in_window_share`` to clear before 1h pays for itself.
+    break_even_share: float = 0.0
 
     # -- item 4: near-miss histogram -------------------------------------
     near_5m_hit: int = 0
@@ -590,20 +611,22 @@ class TtlTypeStats:
         return 100.0 * self.waste_tokens_wasted / self.waste_tokens_written
 
     @property
-    def margin_pts(self) -> float:
-        """``in_window_share`` minus ``premium_ratio``, in percentage
-        points (both are fractions internally; this is where the *100
-        scaling happens) — positive means the prefix-weighted share of
-        gaps that would actually benefit from a 1h TTL exceeds what the
-        1h premium costs."""
-        return (self.in_window_share - self.premium_ratio) * 100.0
+    def margin(self) -> float:
+        """``expiry_loss_all_5m`` minus ``premium_all_1h``, in USD —
+        positive means running under a 5m TTL would have cost more (in
+        re-written prefixes) than paying the 1h premium on every write,
+        i.e. 1h pays."""
+        return self.expiry_loss_all_5m - self.premium_all_1h
 
     @property
     def verdict(self) -> str:
-        """One-word break-even verdict: "marginal" within 5 points either
-        way, else "1h pays" or "5m pays"."""
-        margin = self.margin_pts
-        if abs(margin) < 5.0:
+        """One-word break-even verdict: "marginal" when ``margin`` is
+        small either in relative terms (within 5% of the larger side) or
+        in absolute terms (within $1.00) — either condition alone is
+        enough to call it marginal. Otherwise "1h pays" or "5m pays"."""
+        margin = self.margin
+        larger_side = max(self.expiry_loss_all_5m, self.premium_all_1h)
+        if abs(margin) < 0.05 * larger_side or abs(margin) < 1.00:
             return "marginal"
         return "1h pays" if margin > 0 else "5m pays"
 
@@ -763,6 +786,16 @@ class TtlStats:
             acc.cc_1h_tokens += t.cc_1h
             c_i = t.cache_read_tokens + t.cache_creation_tokens
 
+            # Item 3: premium_all_1h, over *every* write regardless of
+            # gap — W_i is this turn's own incremental write, priced at
+            # both TTLs via _write_cost so geo/long-context multipliers
+            # are honoured per turn rather than hand-rolled.
+            w_i = t.cache_creation_tokens
+            if w_i > 0:
+                acc.premium_all_1h_usd += _write_cost(t, rates, POLICY_1H, w_i) - _write_cost(
+                    t, rates, POLICY_5M, w_i
+                )
+
             # i == 0 is the transcript's first priced turn: it has no
             # previous priced turn, so gap_s is always None there and
             # carries no gap-distribution information (see simulate's
@@ -781,6 +814,11 @@ class TtlStats:
                 acc.inwindow_total_weight += c_i
                 if POLICY_5M < gap <= POLICY_1H:
                     acc.inwindow_weight += c_i
+                    # expiry_loss_all_5m: the dollar cost of re-writing
+                    # this turn's whole prefix (C_j) at the 5m write
+                    # rate, since a 5m TTL would have expired across
+                    # this gap where a 1h one would have survived.
+                    acc.expiry_loss_all_5m_usd += _write_cost(t, rates, POLICY_5M, c_i)
 
                 # Item 4: near-miss histogram at both TTL boundaries.
                 if _NEAR_5M_HIT[0] <= gap <= _NEAR_5M_HIT[1]:
@@ -898,6 +936,12 @@ class TtlStats:
                 if acc.inwindow_total_weight > 0
                 else 0.0
             )
+            total_w = acc.cc_5m_tokens + acc.cc_1h_tokens  # Σ W_i, every write
+            break_even_share = (
+                premium_ratio * (total_w / acc.inwindow_total_weight)
+                if acc.inwindow_total_weight > 0
+                else 0.0
+            )
 
             out[key] = TtlTypeStats(
                 key=key,
@@ -935,6 +979,9 @@ class TtlStats:
                 premium_5m_would_expire_tokens=acc.premium_5m_would_expire_tokens,
                 premium_ratio=premium_ratio,
                 in_window_share=in_window_share,
+                premium_all_1h=acc.premium_all_1h_usd,
+                expiry_loss_all_5m=acc.expiry_loss_all_5m_usd,
+                break_even_share=break_even_share,
                 near_5m_hit=acc.near_5m_hit,
                 near_5m_miss=acc.near_5m_miss,
                 near_5m_miss_tokens=acc.near_5m_miss_tokens,
@@ -1166,17 +1213,21 @@ def build_section(
     # -- Item 3: break-even share -----------------------------------------
     break_even_columns = [
         Column(key="agent_type", label="Agent type", kind="str"),
-        Column(key="premium_ratio", label="Write premium ratio", kind="pct"),
+        Column(key="premium_all_1h", label="Premium if all 1h", kind="money"),
+        Column(key="expiry_loss_all_5m", label="Expiry loss if all 5m", kind="money"),
+        Column(key="margin", label="Margin", kind="money"),
         Column(key="in_window_share", label="Prefix-weighted 5-60min share", kind="pct"),
-        Column(key="margin_pts", label="Margin", kind="pct"),
+        Column(key="break_even_share", label="Break-even share", kind="pct"),
         Column(key="verdict", label="Verdict", kind="str"),
     ]
     break_even_rows = [
         [
             key,
-            by_key[key].premium_ratio * 100.0,
+            by_key[key].premium_all_1h,
+            by_key[key].expiry_loss_all_5m,
+            by_key[key].margin,
             by_key[key].in_window_share * 100.0,
-            by_key[key].margin_pts,
+            by_key[key].break_even_share * 100.0,
             by_key[key].verdict,
         ]
         for key in sorted(by_key)
@@ -1187,8 +1238,9 @@ def build_section(
         columns=break_even_columns,
         rows=break_even_rows,
         notes=[
-            "A hit refreshes the TTL, so 1h pays only when the prefix-weighted share of"
-            " gaps landing between 5 and 60 minutes exceeds the write premium ratio."
+            "the 1h premium is paid on incremental writes; an expiry re-writes the whole"
+            " prefix, so the break-even share is the premium ratio scaled by the"
+            " incremental-to-prefix ratio"
         ],
     )
 

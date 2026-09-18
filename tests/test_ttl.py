@@ -761,20 +761,30 @@ def test_break_even_premium_ratio_is_0_6_for_sonnet_5():
 
 
 def test_break_even_share_hand_computed_sonnet_5():
-    """Three turns. t1 is the first write (its gap is excluded from the
-    weighted share, per simulate's own i==0 convention). t2's gap is
+    """Three turns (Sonnet 5: cache_write_5m=2.5/M, cache_write_1h=4.0/M,
+    cache_read=0.2/M). t1 is the first write (its gap is excluded from
+    the weighted share, per simulate's own i==0 convention). t2's gap is
     500s (in the (300, 3600] window) with prefix C2 = cache_read(1000) +
     cache_creation(2000) = 3000. t3's gap is 100s (NOT in the window,
     <=300) with prefix C3 = cache_read(500) + cache_creation(500) =
     1000.
 
-    in_window_share = C2 / (C2 + C3) = 3000 / 4000 = 0.75 (prefix-
-    weighted, per the module's definition — weighted by the prefix size
-    of the turn that *follows* each gap).
+    premium_all_1h = Sigma_i W_i * (write_1h - write_5m) over EVERY
+    write (t1, t2, t3 all count, not gated on a gap): W = 500+2000+500 =
+    3000 tokens * 1.5/1e6 = 0.0045.
 
-    premium_ratio = 0.6 (Sonnet 5, see the dedicated ratio test).
-    margin_pts = (0.75 - 0.6) * 100 = 15.0 points -> not "marginal"
-    (>=5 points) and positive -> verdict "1h pays".
+    expiry_loss_all_5m = Sigma over in-window gaps of C_j * write_5m:
+    only t2's gap (500s) lands in (300, 3600] -> C2(3000) * 2.5/1e6 =
+    0.0075. (t3's gap is 100s, <=300, excluded.)
+
+    margin = 0.0075 - 0.0045 = 0.003 -> positive (1h direction), but
+    both the 5%-of-larger-side (0.000375) and the $1.00 floor put this
+    well inside "marginal" — small hand-computed dollar amounts like
+    this one are exactly what the $1.00 floor exists to catch.
+
+    break_even_share = premium_ratio * (Sigma W_i / Sigma_{all gaps} C_j)
+    = 0.6 * (3000 / (C2+C3)) = 0.6 * (3000/4000) = 0.45. in_window_share
+    (unchanged formula) = C2 / (C2+C3) = 3000/4000 = 0.75.
     """
     t1 = _turn(cache_creation_tokens=500, cc_5m=500, cache_read_tokens=0, gap_s=None)
     t2 = _turn(
@@ -787,12 +797,18 @@ def test_break_even_share_hand_computed_sonnet_5():
 
     assert row.premium_ratio == pytest.approx(0.6)
     assert row.in_window_share == pytest.approx(0.75)
-    assert row.margin_pts == pytest.approx(15.0)
-    assert row.verdict == "1h pays"
+    assert row.premium_all_1h == pytest.approx(0.0045)
+    assert row.expiry_loss_all_5m == pytest.approx(0.0075)
+    assert row.margin == pytest.approx(0.003)
+    assert row.break_even_share == pytest.approx(0.45)
+    assert row.verdict == "marginal"
 
 
-def test_break_even_verdict_marginal_within_five_points():
-    s = TtlTypeStats(
+def _break_even_stats(premium_all_1h: float, expiry_loss_all_5m: float) -> TtlTypeStats:
+    """A ``TtlTypeStats`` with only the item-3 USD fields the
+    marginal/verdict threshold tests care about set to something
+    meaningful."""
+    return TtlTypeStats(
         key="top-level",
         spawns=1,
         priced_turns=1,
@@ -808,11 +824,106 @@ def test_break_even_verdict_marginal_within_five_points():
         unsimulatable=0,
         fidelity_pct=0.0,
         gap_buckets={},
-        premium_ratio=0.6,
-        in_window_share=0.62,  # margin = (0.62-0.6)*100 = 2.0 points
+        premium_all_1h=premium_all_1h,
+        expiry_loss_all_5m=expiry_loss_all_5m,
     )
-    assert s.margin_pts == pytest.approx(2.0)
+
+
+def test_break_even_verdict_marginal_within_five_percent_of_larger_side():
+    """margin = 104.0 - 100.0 = 4.0; larger side = 104.0, 5% of it =
+    5.2. |margin| (4.0) < 5.2 -> "marginal", even though |margin| is
+    well above the $1.00 floor on its own (this case is decided purely
+    by the relative condition)."""
+    s = _break_even_stats(premium_all_1h=100.0, expiry_loss_all_5m=104.0)
+    assert s.margin == pytest.approx(4.0)
     assert s.verdict == "marginal"
+
+
+def test_break_even_verdict_marginal_within_one_dollar():
+    """margin = 1.9 - 1.0 = 0.9; larger side = 1.9, 5% of it = 0.095, so
+    the relative condition alone would NOT call this marginal (0.9 >
+    0.095) -- it's the $1.00 absolute floor that decides it here (0.9 <
+    1.00), proving the two conditions are independent ORs."""
+    s = _break_even_stats(premium_all_1h=1.0, expiry_loss_all_5m=1.9)
+    assert s.margin == pytest.approx(0.9)
+    assert s.verdict == "marginal"
+
+
+def test_break_even_verdict_decisive_1h_and_5m_pays():
+    """Neither threshold trips: margin=10.0 against a larger side of
+    20.0 (5% = 1.0) clears both the relative and the $1.00 floor, so the
+    sign of margin alone decides the verdict."""
+    pays_1h = _break_even_stats(premium_all_1h=10.0, expiry_loss_all_5m=20.0)
+    assert pays_1h.margin == pytest.approx(10.0)
+    assert pays_1h.verdict == "1h pays"
+
+    pays_5m = _break_even_stats(premium_all_1h=20.0, expiry_loss_all_5m=5.0)
+    assert pays_5m.margin == pytest.approx(-15.0)
+    assert pays_5m.verdict == "5m pays"
+
+
+def test_break_even_verdict_agrees_with_best_policy_direction_large_prefix():
+    """Regression test for the item-3 formula bug the corpus run
+    surfaced: the old percentage-point formula could disagree in
+    *direction* with the precise ``simulate()``-based ``best_policy``.
+    This fixture is the "large prefix, small increments" shape that
+    exposes it — a big first write, then three small per-turn writes
+    onto a steadily growing context, two of whose gaps (500s, 600s) land
+    in the (300, 3600] in-window bucket where a 5m TTL would force a
+    full 500k+-token prefix rewrite but a 1h TTL would not.
+
+    c_i (= cache_read_i + cache_creation_i) grows 500,000 -> 505,000 ->
+    510,000 -> 515,000 across the four turns; simulate()'s own
+    read/write derivation (min(c_i, prev_c) when the gap survives the
+    policy) gives cost_all_5m=3.902 and cost_all_1h=2.363 by hand, i.e.
+    best_policy="1h" -- and the new verdict must agree.
+
+    premium_all_1h = Sigma W_i * 1.5/1e6 over ALL FOUR writes (500000 +
+    5000 + 5000 + 5000 = 515000 tokens) = 0.7725. expiry_loss_all_5m =
+    C2(505000)*2.5/1e6 + C3(510000)*2.5/1e6 = 1.2625 + 1.275 = 2.5375
+    (t4's gap is 200s, <=300, so it's excluded). margin = 2.5375 -
+    0.7725 = 1.765, comfortably clear of both the 5%-of-2.5375 (~0.127)
+    and $1.00 thresholds -> "1h pays", matching best_policy.
+    """
+    t1 = _turn(cache_creation_tokens=500_000, cc_5m=500_000, cache_read_tokens=0, gap_s=None)
+    t2 = _turn(
+        turn_index=2,
+        message_id="msg_2",
+        cache_creation_tokens=5_000,
+        cc_5m=5_000,
+        cache_read_tokens=500_000,
+        gap_s=500,
+    )
+    t3 = _turn(
+        turn_index=3,
+        message_id="msg_3",
+        cache_creation_tokens=5_000,
+        cc_5m=5_000,
+        cache_read_tokens=505_000,
+        gap_s=600,
+    )
+    t4 = _turn(
+        turn_index=4,
+        message_id="msg_4",
+        cache_creation_tokens=5_000,
+        cc_5m=5_000,
+        cache_read_tokens=510_000,
+        gap_s=200,
+    )
+    turns = [t1, t2, t3, t4]
+    row = _row_for(turns)
+
+    assert row.premium_all_1h == pytest.approx(0.7725)
+    assert row.expiry_loss_all_5m == pytest.approx(2.5375)
+    assert row.margin == pytest.approx(1.765)
+    assert row.verdict == "1h pays"
+
+    sim_5m = simulate(turns, SONNET_RATES, POLICY_5M)
+    sim_1h = simulate(turns, SONNET_RATES, POLICY_1H)
+    assert sim_5m.cost == pytest.approx(3.902)
+    assert sim_1h.cost == pytest.approx(2.363)
+    assert row.best_policy == "1h"
+    assert (row.verdict == "1h pays") == (row.best_policy == "1h")
 
 
 # -- Item 4: near-miss histogram -----------------------------------------
@@ -1023,7 +1134,11 @@ def test_build_section_new_tables_have_expected_notes():
     section = build_section(stats, billing_mode="api")
     tables_by_name = {t.name: t for t in section.tables}
 
-    assert "prefix-weighted share of gaps" in " ".join(tables_by_name["ttl_break_even_share"].notes)
+    assert (
+        "the 1h premium is paid on incremental writes; an expiry re-writes the whole prefix, so the"
+        " break-even share is the premium ratio scaled by the incremental-to-prefix ratio"
+        in " ".join(tables_by_name["ttl_break_even_share"].notes)
+    )
     assert "statusline countdown" in " ".join(tables_by_name["ttl_near_miss"].notes)
 
 
