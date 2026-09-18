@@ -50,12 +50,12 @@ def slug_for(cwd: str | Path) -> str:
     characters become ``-``, truncated to 200 characters plus an 8-hex
     hash when longer (see the module docstring's deviation note).
 
-    Honours ``CLAUDE_CODE_PROJECT_DIR_NAME`` when ``CLAUDE_CONFIG_DIR``
-    is set — the documented override for renaming the slug under a
-    switched config tree.
+    Honours ``CLAUDE_CODE_PROJECT_DIR_NAME`` whenever it's set, whether or
+    not ``CLAUDE_CONFIG_DIR`` also moves the whole config tree — the two
+    env vars are independent documented overrides, not a package deal.
     """
     project_dir_name = os.environ.get("CLAUDE_CODE_PROJECT_DIR_NAME")
-    if os.environ.get("CLAUDE_CONFIG_DIR") and project_dir_name:
+    if project_dir_name:
         return project_dir_name
 
     raw = str(cwd)

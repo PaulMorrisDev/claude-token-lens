@@ -32,6 +32,17 @@ counted in ``Diagnostics.replayed_lines`` the second and later time its
 ``uuid`` is seen; lines with no ``uuid`` (``queue-operation``,
 ``bridge-session``) are never subject to this check.
 
+``gap_s`` is measured request-start to request-start: the interval between
+the *first* JSONL line's timestamp of one priced turn and the first line's
+timestamp of the previous priced turn, not (say) a turn's finalisation
+time or its last line. ``discovery.find_sessions``'s ``--window-by
+timestamp`` mode is the same convention applied at the session level: it
+reads the first ``user``/``assistant`` line's timestamp, not the file's
+own mtime. Both are deliberate, not an oversight — a turn/session's
+*start* is the meaningful instant for gap and window calculations, and
+it's the one value guaranteed to exist before any tool call or streaming
+delay could skew it.
+
 Privacy: no raw JSONL line, message content, tool_result content, file
 path, or command is ever retained past the single line/block that
 produces it. Only lengths, short prefixes (<=40 chars), names, and counts
@@ -351,6 +362,8 @@ def _finalize_turn(
     if not pending.is_synthetic and pending.has_usage:
         new_priced_count = priced_turn_count + 1
         turn_index = new_priced_count
+        if pending.ts_raw and ts_dt is None:
+            diagnostics.timestamp_parse_failures += 1
         if previous_non_synthetic_ts is not None and ts_dt is not None:
             gap_s = (ts_dt - previous_non_synthetic_ts).total_seconds()
         if ts_dt is not None:

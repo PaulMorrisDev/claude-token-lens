@@ -1,8 +1,9 @@
 """Independent-review follow-up fixes: the two-buffer preceding-events
 attribution rewrite (task 1), uuid-based replay dedup (task 2), the
 cache_creation/TTL-split reconciliation (task 3), absolute-path
-redaction inside ``cmd_prefix`` (task 6), and the agent-setting/mode/
-attachment_catch_all diagnostics counters (task 8).
+redaction inside ``cmd_prefix`` (task 6), the agent-setting/mode/
+attachment_catch_all diagnostics counters (task 8), and
+``timestamp_parse_failures`` (task 9).
 
 Each test exercises the behaviour through a full ``parse_transcript``
 pass over a small synthetic fixture, not by calling private helpers
@@ -268,3 +269,32 @@ def test_attachment_catch_all_counts_unclassified_attachment_types(tmp_path: Pat
         "some_new_unclassified_type_x": 2,
         "another_unclassified_type_y": 1,
     }
+
+
+# -- Task 9: timestamp_parse_failures. -----------------------------------
+
+
+def test_timestamp_parse_failure_is_counted(tmp_path: Path):
+    lines = [
+        turn_line(message_id="msg_1", timestamp="not-a-valid-timestamp"),
+        turn_line(message_id="msg_2", timestamp="2026-09-18T12:00:05.000Z"),
+    ]
+    path = tmp_path / "session.jsonl"
+    write_jsonl(path, lines)
+
+    result = parse_transcript(path, TranscriptMeta(path=str(path)))
+
+    assert result.diagnostics.timestamp_parse_failures == 1
+    assert result.turns[0].gap_s is None
+
+
+def test_missing_timestamp_is_not_a_parse_failure(tmp_path: Path):
+    # An empty/missing timestamp is a different condition from "present
+    # but unparsable" - only the latter counts as a parse failure.
+    lines = [turn_line(message_id="msg_1", timestamp="")]
+    path = tmp_path / "session.jsonl"
+    write_jsonl(path, lines)
+
+    result = parse_transcript(path, TranscriptMeta(path=str(path)))
+
+    assert result.diagnostics.timestamp_parse_failures == 0

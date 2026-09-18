@@ -58,10 +58,13 @@ def test_slug_for_honours_project_dir_name_override(monkeypatch):
     assert discovery.slug_for("C:\\Dev\\RevIXO") == "my-custom-slug"
 
 
-def test_slug_for_ignores_project_dir_name_without_config_dir(monkeypatch):
+def test_slug_for_honours_project_dir_name_even_without_config_dir(monkeypatch):
+    # CLAUDE_CODE_PROJECT_DIR_NAME is an independent override, not
+    # gated on CLAUDE_CONFIG_DIR also being set (fix: the two env vars
+    # were previously wrongly coupled).
     monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
     monkeypatch.setenv("CLAUDE_CODE_PROJECT_DIR_NAME", "my-custom-slug")
-    assert discovery.slug_for("C:\\Dev\\RevIXO") == "C--Dev-RevIXO"
+    assert discovery.slug_for("C:\\Dev\\RevIXO") == "my-custom-slug"
 
 
 # -- resolve_project_dirs ----------------------------------------------------

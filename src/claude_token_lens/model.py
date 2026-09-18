@@ -61,6 +61,8 @@ Independent-review follow-up fixes (post-WP1/WP2/WP7), all with defaults:
 - ``Diagnostics.replayed_lines: int = 0`` — non-blank lines skipped
   because their ``uuid`` was already seen earlier in the same file
   (transcripts replay whole blocks on rewind/resume).
+- ``Diagnostics.timestamp_parse_failures: int = 0`` — a priced turn's
+  ``timestamp`` field was present but could not be parsed.
 - ``TranscriptMeta.tool_use_id: str | None = None`` — a subagent's
   ``.meta.json`` ``toolUseId``, linking the subagent back to the parent
   turn that spawned it (topology/workstyle, plan Appendix A1).
@@ -243,6 +245,9 @@ class Diagnostics:
     #: Independent-review addition (see module docstring): lines skipped
     #: because their ``uuid`` had already been seen earlier in this file.
     replayed_lines: int = 0
+    #: Independent-review addition (see module docstring): a priced turn's
+    #: timestamp was present but failed to parse.
+    timestamp_parse_failures: int = 0
     #: Independent-review addition: ``agent-setting`` lines are ignored as
     #: events (see events.py) but their ``agentSetting`` value is useful
     #: for archetype detection, so it's counted here instead of dropped
