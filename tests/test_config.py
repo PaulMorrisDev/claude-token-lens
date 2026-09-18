@@ -71,6 +71,9 @@ def test_valid_config_parses_every_field(tmp_path):
     assert config.pricing_path == "/custom/pricing.toml"
     assert config.thresholds == {"ctx_floor": 20000, "cr_ratio": 0.2}
     assert config.recache == {"full_expiry_cr": 2000, "huge_ctx": 200000}
+    assert config.exclude_projects == ["^scratch-", "throwaway$"]
+    assert config.retention_days == 90
+    assert config.provider == "bedrock"
 
 
 def test_partial_config_falls_back_to_defaults_for_missing_fields(tmp_path):
@@ -85,6 +88,110 @@ def test_partial_config_falls_back_to_defaults_for_missing_fields(tmp_path):
     assert config.tz is None
     assert config.min_turns == 200
     assert config.allow_titles is False
+    assert config.exclude_projects == []
+    assert config.retention_days is None
+    assert config.provider is None
+
+
+# --------------------------------------------------------------------
+# load_config: exclude_projects / retention_days / provider (fix 6)
+# --------------------------------------------------------------------
+
+
+def test_exclude_projects_defaults_to_empty_list():
+    assert Config().exclude_projects == []
+
+
+def test_exclude_projects_parses_list_of_regex_strings(tmp_path):
+    token_lens_dir = tmp_path / "token-lens"
+    token_lens_dir.mkdir()
+    (token_lens_dir / "config.toml").write_text(
+        'exclude_projects = ["^scratch-", "throwaway$"]\n', encoding="utf-8"
+    )
+    config = load_config(config_dir=token_lens_dir)
+    assert config.exclude_projects == ["^scratch-", "throwaway$"]
+
+
+def test_exclude_projects_wrong_type_raises_config_error(tmp_path):
+    token_lens_dir = tmp_path / "token-lens"
+    token_lens_dir.mkdir()
+    (token_lens_dir / "config.toml").write_text('exclude_projects = "not-a-list"\n', encoding="utf-8")
+    with pytest.raises(ConfigError, match="exclude_projects"):
+        load_config(config_dir=token_lens_dir)
+
+
+def test_exclude_projects_non_string_item_raises_config_error(tmp_path):
+    token_lens_dir = tmp_path / "token-lens"
+    token_lens_dir.mkdir()
+    (token_lens_dir / "config.toml").write_text('exclude_projects = ["ok", 5]\n', encoding="utf-8")
+    with pytest.raises(ConfigError, match="exclude_projects"):
+        load_config(config_dir=token_lens_dir)
+
+
+def test_retention_days_defaults_to_none():
+    assert Config().retention_days is None
+
+
+def test_retention_days_parses_integer(tmp_path):
+    token_lens_dir = tmp_path / "token-lens"
+    token_lens_dir.mkdir()
+    (token_lens_dir / "config.toml").write_text("retention_days = 30\n", encoding="utf-8")
+    config = load_config(config_dir=token_lens_dir)
+    assert config.retention_days == 30
+
+
+def test_retention_days_wrong_type_raises_config_error(tmp_path):
+    token_lens_dir = tmp_path / "token-lens"
+    token_lens_dir.mkdir()
+    (token_lens_dir / "config.toml").write_text('retention_days = "thirty"\n', encoding="utf-8")
+    with pytest.raises(ConfigError, match="retention_days"):
+        load_config(config_dir=token_lens_dir)
+
+
+def test_retention_days_bool_rejected_as_not_an_integer(tmp_path):
+    # bool is a subclass of int in Python; the validator must special-case
+    # it out so `retention_days = true` doesn't silently become 1.
+    token_lens_dir = tmp_path / "token-lens"
+    token_lens_dir.mkdir()
+    (token_lens_dir / "config.toml").write_text("retention_days = true\n", encoding="utf-8")
+    with pytest.raises(ConfigError, match="retention_days"):
+        load_config(config_dir=token_lens_dir)
+
+
+def test_provider_defaults_to_none():
+    assert Config().provider is None
+
+
+def test_provider_accepts_each_allowed_value(tmp_path):
+    for value in ("anthropic", "bedrock", "vertex"):
+        token_lens_dir = tmp_path / f"token-lens-{value}"
+        token_lens_dir.mkdir()
+        (token_lens_dir / "config.toml").write_text(f'provider = "{value}"\n', encoding="utf-8")
+        config = load_config(config_dir=token_lens_dir)
+        assert config.provider == value
+
+
+def test_provider_invalid_value_raises_config_error(tmp_path):
+    token_lens_dir = tmp_path / "token-lens"
+    token_lens_dir.mkdir()
+    (token_lens_dir / "config.toml").write_text('provider = "openai"\n', encoding="utf-8")
+    with pytest.raises(ConfigError, match="provider"):
+        load_config(config_dir=token_lens_dir)
+
+
+def test_describe_shows_exclude_projects_retention_and_provider_when_set():
+    config = Config(exclude_projects=["^scratch-"], retention_days=45, provider="vertex")
+    lines = config.describe()
+    assert any("exclude_projects" in line and "scratch-" in line for line in lines)
+    assert any("retention_days: 45" in line for line in lines)
+    assert any("provider: vertex" in line for line in lines)
+
+
+def test_describe_omits_exclude_projects_retention_and_provider_when_unset():
+    lines = Config().describe()
+    assert not any("exclude_projects" in line for line in lines)
+    assert not any("retention_days" in line for line in lines)
+    assert not any(line.strip().startswith("provider:") for line in lines)
 
 
 # --------------------------------------------------------------------

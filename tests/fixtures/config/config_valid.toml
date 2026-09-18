@@ -4,6 +4,9 @@ min_sessions = 8
 min_turns = 150
 allow_titles = true
 pricing_path = "/custom/pricing.toml"
+exclude_projects = ["^scratch-", "throwaway$"]
+retention_days = 90
+provider = "bedrock"
 
 [thresholds]
 ctx_floor = 20000

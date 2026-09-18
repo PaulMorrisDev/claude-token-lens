@@ -42,6 +42,8 @@ from pathlib import Path
 TOKEN_LENS_DIRNAME = "token-lens"
 
 _ALLOWED_BILLING = frozenset({"api", "subscription"})
+#: Same three values ``parse.detect_provider`` can return (fix 6).
+_ALLOWED_PROVIDER = frozenset({"anthropic", "bedrock", "vertex"})
 
 
 class ConfigError(Exception):
@@ -67,6 +69,31 @@ class Config:
     min_turns: int = 200
     allow_titles: bool = False
     pricing_path: str | None = None
+    #: Slug regexes (``re.search``, case-insensitive — same convention as
+    #: ``discovery.resolve_project_dirs``'s own ``family_regex``) for
+    #: project directories to leave out of every discovery call. A slug
+    #: matching any one of these is excluded even when explicitly named
+    #: by ``--project`` or matched by ``--project-family``/
+    #: ``--all-projects`` — this is a standing "never touch this project"
+    #: list (e.g. a work project on a personal machine), not a narrower
+    #: selector. Fix 6 addition.
+    exclude_projects: list[str] = field(default_factory=list)
+    #: Sessions older than this many days (by the same ``mtime``/
+    #: ``timestamp`` window key ``discovery.find_sessions`` already
+    #: understands) are outside the tool's normal window — not enforced
+    #: by this module, just carried through for a future caller (report
+    #: assembly/CLI) to apply as its own default ``--days`` when neither
+    #: ``--days`` nor ``--since``/``--until`` is given explicitly on the
+    #: command line. ``None`` means no retention window. Fix 6 addition.
+    retention_days: int | None = None
+    #: Force every session's ``TranscriptMeta.provider`` to this value
+    #: (``"anthropic"``/``"bedrock"``/``"vertex"``) rather than deriving
+    #: it per-session from the model id (see ``parse.detect_provider``) —
+    #: for an account that's always on one provider and wants the report
+    #: header to say so unambiguously even for a session with no model
+    #: line at all. ``None`` (the default) leaves per-session detection
+    #: alone. Fix 6 addition.
+    provider: str | None = None
 
     def describe(self) -> list[str]:
         """Lines for the report header (plan "Renderers and CLI"
@@ -83,6 +110,12 @@ class Config:
             lines.append(f"thresholds: {self.thresholds}")
         if self.recache:
             lines.append(f"recache: {self.recache}")
+        if self.exclude_projects:
+            lines.append(f"exclude_projects: {self.exclude_projects}")
+        if self.retention_days is not None:
+            lines.append(f"retention_days: {self.retention_days}")
+        if self.provider is not None:
+            lines.append(f"provider: {self.provider}")
         return lines
 
 
@@ -165,6 +198,27 @@ def _build_config(data: dict, path: Path) -> Config:
     if pricing_path is not None and not isinstance(pricing_path, str):
         raise ConfigError(f"config file {path}: 'pricing_path' must be a string")
     config.pricing_path = pricing_path
+
+    exclude_projects = data.get("exclude_projects", [])
+    if not isinstance(exclude_projects, list) or not all(
+        isinstance(item, str) for item in exclude_projects
+    ):
+        raise ConfigError(f"config file {path}: 'exclude_projects' must be a list of strings")
+    config.exclude_projects = list(exclude_projects)
+
+    retention_days = data.get("retention_days")
+    if retention_days is not None and (
+        not isinstance(retention_days, int) or isinstance(retention_days, bool)
+    ):
+        raise ConfigError(f"config file {path}: 'retention_days' must be an integer")
+    config.retention_days = retention_days
+
+    provider = data.get("provider")
+    if provider is not None and (not isinstance(provider, str) or provider not in _ALLOWED_PROVIDER):
+        raise ConfigError(
+            f"config file {path}: 'provider' must be one of {sorted(_ALLOWED_PROVIDER)}, got {provider!r}"
+        )
+    config.provider = provider
 
     return config
 

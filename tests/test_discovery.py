@@ -120,6 +120,64 @@ def test_resolve_project_dirs_no_selector_returns_empty(tmp_path):
     assert discovery.resolve_project_dirs(tmp_path) == []
 
 
+def test_resolve_project_dirs_exclude_projects_filters_slug_selection(tmp_path):
+    (tmp_path / "proj-a").mkdir()
+    (tmp_path / "proj-b").mkdir()
+    result = discovery.resolve_project_dirs(
+        tmp_path, slugs=["proj-a", "proj-b"], exclude_projects=["^proj-b$"]
+    )
+    assert [p.name for p in result] == ["proj-a"]
+
+
+def test_resolve_project_dirs_exclude_projects_filters_family_regex_selection(tmp_path):
+    (tmp_path / "C--Dev-RevIXO").mkdir()
+    (tmp_path / "C--Dev-RevIXO--claude-worktrees-foo-abc123").mkdir()
+    result = discovery.resolve_project_dirs(
+        tmp_path, family_regex="RevIXO", exclude_projects=["claude-worktrees"]
+    )
+    assert [p.name for p in result] == ["C--Dev-RevIXO"]
+
+
+def test_resolve_project_dirs_exclude_projects_filters_all_projects_selection(tmp_path):
+    (tmp_path / "proj-a").mkdir()
+    (tmp_path / "scratch-throwaway").mkdir()
+    result = discovery.resolve_project_dirs(
+        tmp_path, all_projects=True, exclude_projects=["^scratch-"]
+    )
+    assert [p.name for p in result] == ["proj-a"]
+
+
+def test_resolve_project_dirs_exclude_projects_is_case_insensitive(tmp_path):
+    (tmp_path / "PROJ-A").mkdir()
+    result = discovery.resolve_project_dirs(
+        tmp_path, all_projects=True, exclude_projects=["proj-a"]
+    )
+    assert result == []
+
+
+def test_resolve_project_dirs_exclude_projects_tolerates_malformed_regex(tmp_path):
+    (tmp_path / "proj-a").mkdir()
+    (tmp_path / "proj-b").mkdir()
+    # An unbalanced group is invalid regex syntax; it must be skipped
+    # rather than raising, while the well-formed entry after it still
+    # applies (fix 6: "one bad entry in an exclude list shouldn't take
+    # discovery down entirely").
+    result = discovery.resolve_project_dirs(
+        tmp_path, all_projects=True, exclude_projects=["(unbalanced", "^proj-b$"]
+    )
+    assert [p.name for p in result] == ["proj-a"]
+
+
+def test_resolve_project_dirs_exclude_projects_none_or_empty_is_a_no_op(tmp_path):
+    (tmp_path / "proj-a").mkdir()
+    assert [p.name for p in discovery.resolve_project_dirs(tmp_path, all_projects=True, exclude_projects=None)] == [
+        "proj-a"
+    ]
+    assert [p.name for p in discovery.resolve_project_dirs(tmp_path, all_projects=True, exclude_projects=[])] == [
+        "proj-a"
+    ]
+
+
 # -- find_sessions -----------------------------------------------------------
 
 

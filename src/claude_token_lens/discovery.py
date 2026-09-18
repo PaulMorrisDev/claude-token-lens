@@ -76,6 +76,7 @@ def resolve_project_dirs(
     slugs: list[str] | None = None,
     all_projects: bool = False,
     family_regex: str | None = None,
+    exclude_projects: list[str] | None = None,
 ) -> list[Path]:
     """Resolve which project directories under ``root`` a query selects.
 
@@ -88,6 +89,17 @@ def resolve_project_dirs(
     Precedence when more than one selector is given: ``all_projects``,
     then ``family_regex``, then ``slugs``. Returns ``[]`` if none of the
     three select anything (including when ``root`` doesn't exist).
+
+    ``exclude_projects`` (fix 6, ``Config.exclude_projects``) is a list of
+    slug regexes (``re.search``, case-insensitive — same convention as
+    ``family_regex``) applied AFTER the selector above, dropping any
+    candidate whose slug matches one of them even when it was explicitly
+    named by ``slugs`` or matched by ``family_regex``/``all_projects`` —
+    a standing "never touch this project" list, not a narrower selector.
+    A malformed regex in the list is skipped rather than raising (same
+    "never crash on a foreign shape" posture ``config.py`` documents for
+    its own optional structure), since one bad entry in a user's
+    exclude list shouldn't take discovery down entirely.
     """
     root = Path(root)
     if not root.exists():
@@ -104,6 +116,18 @@ def resolve_project_dirs(
         selected = [p for p in candidates if p.name.lower() in wanted]
     else:
         selected = []
+
+    if exclude_projects:
+        exclude_patterns = []
+        for raw_pattern in exclude_projects:
+            try:
+                exclude_patterns.append(re.compile(raw_pattern, re.IGNORECASE))
+            except re.error:
+                continue
+        if exclude_patterns:
+            selected = [
+                p for p in selected if not any(pattern.search(p.name) for pattern in exclude_patterns)
+            ]
 
     seen: set[str] = set()
     result: list[Path] = []
