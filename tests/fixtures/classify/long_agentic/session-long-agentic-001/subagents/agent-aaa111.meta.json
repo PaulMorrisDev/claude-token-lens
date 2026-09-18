@@ -1,0 +1,11 @@
+{
+  "agentType": "claude-implementer",
+  "description": "Implement the parts audit backend service and its tests.",
+  "toolUseId": "tu-la-1",
+  "spawnDepth": 1,
+  "parentAgentId": null,
+  "requestShape": "single",
+  "model": "sonnet",
+  "worktreeBranch": null,
+  "stoppedByUser": false
+}

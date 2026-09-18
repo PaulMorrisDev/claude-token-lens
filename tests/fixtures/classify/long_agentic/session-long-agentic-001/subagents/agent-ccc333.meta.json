@@ -1,0 +1,11 @@
+{
+  "agentType": "revixo-reviewer",
+  "description": "Review the parts audit implementation for correctness.",
+  "toolUseId": "tu-la-3",
+  "spawnDepth": 1,
+  "parentAgentId": null,
+  "requestShape": "single",
+  "model": "opus",
+  "worktreeBranch": null,
+  "stoppedByUser": false
+}
