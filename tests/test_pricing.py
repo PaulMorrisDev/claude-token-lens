@@ -316,6 +316,42 @@ def test_write_split_simulation_overrides_observed_values(min_pricing):
     assert simulated_1h.cache_write_cost != price_turn(turn, resolved).cache_write_cost
 
 
+# --------------------------------------------------------------------
+# write_split key normalisation (independent-review fix 4; plan
+# Appendix A4's TTL simulation calls price_turn with write_split={T:
+# write} where T is 300/3600, not "5m"/"1h").
+# --------------------------------------------------------------------
+
+
+def test_write_split_accepts_seconds_int_key_for_5m(min_pricing):
+    resolved = min_pricing.resolve_model("claude-widget-9")
+    turn = _turn(model="claude-widget-9")
+    breakdown = price_turn(turn, resolved, write_split={300: 1_000_000}, read_tokens=0)
+    assert breakdown.cache_write_cost == pytest.approx(1_000_000 / 1e6 * 0.5)  # cache_write_5m rate
+
+
+def test_write_split_accepts_seconds_int_key_for_1h(min_pricing):
+    resolved = min_pricing.resolve_model("claude-widget-9")
+    turn = _turn(model="claude-widget-9")
+    breakdown = price_turn(turn, resolved, write_split={3600: 1_000_000}, read_tokens=0)
+    assert breakdown.cache_write_cost == pytest.approx(1_000_000 / 1e6 * 0.8)  # cache_write_1h rate
+
+
+def test_write_split_accepts_stringified_seconds_key(min_pricing):
+    resolved = min_pricing.resolve_model("claude-widget-9")
+    turn = _turn(model="claude-widget-9")
+    via_int = price_turn(turn, resolved, write_split={300: 1_000_000}, read_tokens=0)
+    via_str = price_turn(turn, resolved, write_split={"300": 1_000_000}, read_tokens=0)
+    assert via_int == via_str
+
+
+def test_write_split_unknown_key_raises_value_error(min_pricing):
+    resolved = min_pricing.resolve_model("claude-widget-9")
+    turn = _turn(model="claude-widget-9")
+    with pytest.raises(ValueError):
+        price_turn(turn, resolved, write_split={"90m": 1_000_000}, read_tokens=0)
+
+
 def test_geo_multiplier_applied_to_all_four_components(min_pricing):
     resolved = min_pricing.resolve_model("claude-widget-9")
     turn = _turn(
@@ -340,6 +376,34 @@ def test_geo_multiplier_no_effect_when_geo_unmatched(min_pricing):
     base = price_turn(turn, resolved)
     other_geo = price_turn(turn, resolved, geo="eu")
     assert other_geo == base
+
+
+# --------------------------------------------------------------------
+# geo sentinel default (independent-review fix 4): omitting `geo` means
+# "use turn.inference_geo"; an explicit geo=None disables it even when
+# the turn observed one.
+# --------------------------------------------------------------------
+
+
+def test_geo_omitted_uses_turns_own_inference_geo(min_pricing):
+    resolved = min_pricing.resolve_model("claude-widget-9")
+    turn = _turn(model="claude-widget-9", input_tokens=1_000_000, inference_geo="us")
+    breakdown = price_turn(turn, resolved)  # geo not passed at all
+    assert breakdown.input_cost == pytest.approx(1_000_000 / 1e6 * 1.0 * 1.2)
+
+
+def test_geo_explicit_none_overrides_turns_inference_geo(min_pricing):
+    resolved = min_pricing.resolve_model("claude-widget-9")
+    turn = _turn(model="claude-widget-9", input_tokens=1_000_000, inference_geo="us")
+    breakdown = price_turn(turn, resolved, geo=None)  # explicit override disables it
+    assert breakdown.input_cost == pytest.approx(1_000_000 / 1e6 * 1.0)
+
+
+def test_geo_not_available_string_applies_no_multiplier(min_pricing):
+    resolved = min_pricing.resolve_model("claude-widget-9")
+    turn = _turn(model="claude-widget-9", input_tokens=1_000_000, inference_geo="not_available")
+    breakdown = price_turn(turn, resolved)
+    assert breakdown.input_cost == pytest.approx(1_000_000 / 1e6 * 1.0)
 
 
 def test_long_context_multiplier_applies_above_threshold(min_pricing):

@@ -430,12 +430,53 @@ def _turn_token_total(turn: Turn) -> int:
     )
 
 
+#: ``write_split`` keys accepted for the 5-minute and 1-hour TTL buckets.
+#: The TTL simulation (plan Appendix A4) calls ``price_turn`` with
+#: ``write_split={T: write}`` where ``T`` is the *seconds* form (300 /
+#: 3600) since that's the policy identifier the simulation loop iterates
+#: over; other callers (existing tests, report code) pass the friendlier
+#: "5m"/"1h" string form. Both, plus the stringified-int form a caller
+#: might produce by accident (``"300"``), are accepted; anything else is
+#: a programming error, not a silently-ignored key, so it raises.
+_WRITE_SPLIT_5M_KEYS = frozenset({300, "300", "5m"})
+_WRITE_SPLIT_1H_KEYS = frozenset({3600, "3600", "1h"})
+
+
+def _normalize_write_split(write_split: dict) -> tuple[int, int]:
+    write_5m = 0
+    write_1h = 0
+    for key, value in write_split.items():
+        if key in _WRITE_SPLIT_5M_KEYS:
+            write_5m += int(value)
+        elif key in _WRITE_SPLIT_1H_KEYS:
+            write_1h += int(value)
+        else:
+            raise ValueError(
+                f"unknown write_split key: {key!r} (expected one of 300/'300'/'5m' "
+                "or 3600/'3600'/'1h')"
+            )
+    return write_5m, write_1h
+
+
+#: Sentinel default for ``price_turn``'s ``geo`` parameter: "use
+#: ``turn.inference_geo``" — distinct from an explicitly passed ``None``,
+#: which means "disable the geo multiplier even if the turn observed one".
+_GEO_FROM_TURN = object()
+
+#: ``geo`` values that apply no multiplier even when a matching
+#: ``geo_multipliers`` entry exists — "not_available" is the documented
+#: literal ``usage.inference_geo`` carries when the field is present but
+#: unresolved; empty string and ``None`` are the same "nothing observed"
+#: case from an unset/blank field.
+_NO_GEO_VALUES = frozenset({None, "", "not_available"})
+
+
 def price_turn(
     turn: Turn,
     rates: ModelRates | ResolvedRates | None,
-    write_split: dict[str, int] | None = None,
+    write_split: dict | None = None,
     read_tokens: int | None = None,
-    geo: str | None = None,
+    geo: str | None = _GEO_FROM_TURN,  # type: ignore[assignment]
 ) -> CostBreakdown:
     """Price one turn against a resolved rate.
 
@@ -443,15 +484,21 @@ def price_turn(
     the turn's own observed split: ``turn.cc_5m``/``turn.cc_1h`` for
     cache-write tokens and ``turn.cache_read_tokens`` for cache-read
     tokens. The simulation path (used by the TTL package) overrides one
-    or both: ``write_split={"5m": n}`` or ``{"1h": n}`` replaces the
-    write split entirely, and ``read_tokens`` replaces the read count.
-    Calling this with the turn's own observed values passed explicitly
-    must equal the default-path result exactly — later packages rely on
-    that invariant.
+    or both: ``write_split`` replaces the write split entirely (keys
+    ``300``/``"300"``/``"5m"`` -> the 5-minute bucket, ``3600``/
+    ``"3600"``/``"1h"`` -> the 1-hour bucket; any other key raises
+    ``ValueError``), and ``read_tokens`` replaces the read count. Calling
+    this with the turn's own observed values passed explicitly must equal
+    the default-path result exactly — later packages rely on that
+    invariant.
 
-    ``geo``, when given and the model defines a matching entry in
-    ``geo_multipliers``, multiplies all four cost components (the
-    documented data-residency uplift).
+    ``geo`` defaults to a sentinel meaning "use ``turn.inference_geo``",
+    so an ordinary call prices the turn's actual observed geo
+    automatically. Passing ``geo=None`` explicitly (or ``""``/
+    ``"not_available"``) overrides that and disables the multiplier even
+    when the turn observed a geo. When the effective geo value matches an
+    entry in the model's ``geo_multipliers``, it multiplies all four cost
+    components (the documented data-residency uplift).
 
     A model's ``long_context`` rule applies when ``turn.ctx`` is at or
     above its threshold: explicit ``overrides`` win over ``multiplier``
@@ -473,8 +520,7 @@ def price_turn(
         write_5m = turn.cc_5m
         write_1h = turn.cc_1h
     else:
-        write_5m = int(write_split.get("5m", 0))
-        write_1h = int(write_split.get("1h", 0))
+        write_5m, write_1h = _normalize_write_split(write_split)
 
     read = turn.cache_read_tokens if read_tokens is None else read_tokens
 
@@ -508,8 +554,12 @@ def price_turn(
     )
     cache_read_cost = read / 1_000_000 * read_rate
 
-    if geo and model_rates.geo_multipliers:
-        multiplier = model_rates.geo_multipliers.get(geo)
+    effective_geo = turn.inference_geo if geo is _GEO_FROM_TURN else geo
+    if effective_geo in _NO_GEO_VALUES:
+        effective_geo = None
+
+    if effective_geo and model_rates.geo_multipliers:
+        multiplier = model_rates.geo_multipliers.get(effective_geo)
         if multiplier is not None:
             input_cost *= multiplier
             output_cost *= multiplier
