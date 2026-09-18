@@ -1,0 +1,129 @@
+"""Command-line interface skeleton for claude-token-lens.
+
+WP0 ships the argparse surface and subcommand stubs only; each work
+package named in the project plan replaces its stub with a real
+implementation. Nothing here reads a transcript yet.
+"""
+
+from __future__ import annotations
+
+import argparse
+import sys
+
+from . import __version__
+
+#: Every subcommand in the WP0 CLI surface, in the order they are
+#: registered. "report" is also the default when no subcommand is given.
+SUBCOMMANDS: tuple[str, ...] = (
+    "report",
+    "sessions",
+    "recache",
+    "ttl",
+    "compactions",
+    "config-diff",
+    "snapshot-config",
+    "log-usage",
+    "pricing-check",
+    "scrub-fixture",
+    "probe",
+    "statusline",
+    "init",
+    "baseline",
+    "serve",
+)
+
+DEFAULT_SUBCOMMAND = "report"
+
+# Tokens that must never trigger default-subcommand insertion because
+# argparse needs to see them as the very first token.
+_LEADING_PASSTHROUGH = ("-h", "--help", "--version")
+
+
+def _build_common_parser() -> argparse.ArgumentParser:
+    """Global options shared by every subcommand, per the plan's CLI
+    surface. Returned as a parent parser so each subcommand inherits them.
+    """
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--projects-root")
+    common.add_argument(
+        "--project",
+        action="append",
+        default=None,
+        help="repeatable; default is the current directory's project slug",
+    )
+    common.add_argument("--all-projects", action="store_true")
+    common.add_argument("--project-family", metavar="REGEX")
+
+    window = common.add_mutually_exclusive_group()
+    window.add_argument("--days", type=int)
+    window.add_argument("--since")
+    common.add_argument("--until")
+    common.add_argument("--limit", type=int)
+
+    common.add_argument(
+        "--window-by", choices=("mtime", "timestamp"), default="mtime"
+    )
+    common.add_argument("--pricing", metavar="PATH")
+    common.add_argument(
+        "--config-dir", metavar="PATH", default=None, help="default: ~/.claude/token-lens"
+    )
+    common.add_argument(
+        "--group-by",
+        choices=("mode", "purpose", "agent", "project", "model", "profile"),
+    )
+
+    cache = common.add_mutually_exclusive_group()
+    cache.add_argument("--no-cache", action="store_true")
+    cache.add_argument("--rebuild-cache", action="store_true")
+
+    verbosity = common.add_mutually_exclusive_group()
+    verbosity.add_argument("--quiet", action="store_true")
+    verbosity.add_argument("--verbose", action="store_true")
+
+    return common
+
+
+def _make_parser() -> argparse.ArgumentParser:
+    common = _build_common_parser()
+    parser = argparse.ArgumentParser(prog="claude-token-lens")
+    parser.add_argument(
+        "--version", action="version", version=f"claude-token-lens {__version__}"
+    )
+    subparsers = parser.add_subparsers(dest="command")
+    for name in SUBCOMMANDS:
+        subparsers.add_parser(
+            name, parents=[common], help=f"{name} (not implemented yet)"
+        )
+    return parser
+
+
+def _insert_default_subcommand(argv: list[str]) -> list[str]:
+    """If the first token isn't a known subcommand (and isn't a top-level
+    flag argparse must see first, like --version), insert the default
+    subcommand ahead of it.
+    """
+    if not argv:
+        return [DEFAULT_SUBCOMMAND]
+    first = argv[0]
+    if first in SUBCOMMANDS or first in _LEADING_PASSTHROUGH:
+        return argv
+    return [DEFAULT_SUBCOMMAND, *argv]
+
+
+def main(argv: list[str] | None = None) -> int:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
+    raw_argv = list(sys.argv[1:]) if argv is None else list(argv)
+    raw_argv = _insert_default_subcommand(raw_argv)
+
+    parser = _make_parser()
+    args = parser.parse_args(raw_argv)  # may raise SystemExit (--version, --help, errors)
+
+    command = args.command or DEFAULT_SUBCOMMAND
+    print(f"claude-token-lens {command}: not implemented", file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())
