@@ -61,6 +61,9 @@ Independent-review follow-up fixes (post-WP1/WP2/WP7), all with defaults:
 - ``Diagnostics.replayed_lines: int = 0`` — non-blank lines skipped
   because their ``uuid`` was already seen earlier in the same file
   (transcripts replay whole blocks on rewind/resume).
+- ``TranscriptMeta.tool_use_id: str | None = None`` — a subagent's
+  ``.meta.json`` ``toolUseId``, linking the subagent back to the parent
+  turn that spawned it (topology/workstyle, plan Appendix A1).
 """
 
 from __future__ import annotations
@@ -201,6 +204,10 @@ class TranscriptMeta:
     claude_version: str | None = None
     mtime_ns: int = 0
     size_bytes: int = 0
+    #: Independent-review addition (see module docstring): the subagent's
+    #: ``.meta.json`` ``toolUseId``, linking it to the parent turn that
+    #: spawned it.
+    tool_use_id: str | None = None
 
 
 @dataclass(slots=True)

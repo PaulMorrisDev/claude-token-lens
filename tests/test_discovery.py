@@ -227,6 +227,7 @@ def test_load_meta_maps_documented_keys(tmp_path):
                 "requestShape": "isolated",
                 "worktreeBranch": "wp1-parse",
                 "stoppedByUser": False,
+                "toolUseId": "tu_01abc",
             }
         )
     )
@@ -240,6 +241,19 @@ def test_load_meta_maps_documented_keys(tmp_path):
     assert meta.request_shape == "isolated"
     assert meta.worktree_branch_present is True  # bool only, never the branch name
     assert meta.stopped_by_user is False
+    assert meta.tool_use_id == "tu_01abc"
+
+
+def test_load_meta_derives_agent_id_and_session_id_from_path(tmp_path):
+    # Realistic layout: <projects_root>/<slug>/<session_id>/subagents/agent-<hex>.meta.json
+    subagents_dir = tmp_path / "session-xyz-789" / "subagents"
+    subagents_dir.mkdir(parents=True)
+    meta_path = subagents_dir / "agent-deadbeef.meta.json"
+    meta_path.write_text(json.dumps({"agentType": "claude-implementer"}))
+
+    meta = discovery.load_meta(meta_path)
+    assert meta.agent_id == "agent-deadbeef"
+    assert meta.session_id == "session-xyz-789"
 
 
 def test_load_meta_missing_file_returns_defaults(tmp_path):

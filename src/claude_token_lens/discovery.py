@@ -250,9 +250,22 @@ def load_meta(path: str | Path) -> TranscriptMeta:
     — ``model`` on ``TranscriptMeta`` isn't a field; the transcript's own
     turns carry the real per-turn ``model``), ``requestShape``,
     ``worktreeBranch`` (-> ``worktree_branch_present``, a bool: never the
-    branch name itself) and ``stoppedByUser``. Returns a
-    ``kind="subagent"`` ``TranscriptMeta`` with defaults for anything
-    missing or the file being absent/unparsable — this never raises.
+    branch name itself), ``stoppedByUser`` and ``toolUseId`` (->
+    ``tool_use_id``, linking the subagent back to the parent turn that
+    spawned it). Returns a ``kind="subagent"`` ``TranscriptMeta`` with
+    defaults for anything missing or the file being absent/unparsable —
+    this never raises.
+
+    ``agent_id`` and ``session_id`` are derived from ``path`` itself
+    rather than the file's content, per the documented layout
+    ``<projects_root>/<slug>/<session_id>/subagents/agent-<hex>.jsonl``
+    (paired with ``agent-<hex>.meta.json``): ``agent_id`` is the filename
+    stem with a trailing ``.meta.json``/``.json`` stripped, and
+    ``session_id`` is the grandparent directory's name (``path``'s
+    parent is ``subagents/``, its parent is ``<session_id>/``). A ``path``
+    that isn't actually two levels under a session directory (e.g. a
+    test fixture that hands ``load_meta`` a bare file) still derives
+    *some* value for each — never raises — it just won't be meaningful.
     """
     path = Path(path)
     try:
@@ -281,6 +294,17 @@ def load_meta(path: str | Path) -> TranscriptMeta:
     stopped_by_user = raw.get("stoppedByUser")
     if isinstance(stopped_by_user, bool):
         meta.stopped_by_user = stopped_by_user
+
+    tool_use_id = raw.get("toolUseId")
+    if isinstance(tool_use_id, str):
+        meta.tool_use_id = tool_use_id
+
+    name = path.name
+    if name.endswith(".meta.json"):
+        meta.agent_id = name[: -len(".meta.json")]
+    else:
+        meta.agent_id = path.stem
+    meta.session_id = path.parent.parent.name
 
     return meta
 
