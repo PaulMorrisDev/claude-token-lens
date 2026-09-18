@@ -27,6 +27,24 @@ concrete, constructible contract (proposed here, not silently changed):
   ``PricingMeta`` and ``ReportMeta``, are introduced to hold that
   structure so ``ReportModel`` can be constructed with defaults like
   every other contract type.
+
+WP1 (parse.py, events.py, jsonl.py, discovery.py) additions, all with
+defaults so every existing call site keeps working:
+
+- ``Event.size_chars: int | None`` — length of an attachment line's
+  ``rendered`` field, when present. Requested by the WP1 brief for
+  CONTEXT_INJECT/REMINDER/CACHE_SIGNAL/HOOK_OUTPUT/ATTACHMENT sizing.
+- ``Event.detail: dict`` — small numeric/short-string detail a kind needs
+  beyond kind/subkind (API_ERROR's ``status``/``retryAttempt``,
+  MODEL_FALLBACK's ``originalModel``/``fallbackModel``, and the three
+  delta attachment types' ``added``/``removed`` counts). Never message
+  text, a full path, or a command.
+- ``Turn.inference_geo: str | None`` — from ``usage.inference_geo``,
+  needed for the documented 1.1x geo multiplier (plan Pricing section).
+- ``Diagnostics.oversized_lines: int`` — lines ``jsonl.iter_lines`` skips
+  for exceeding ``MAX_LINE_BYTES`` (8 MB), counted without being parsed.
+  Not in Appendix A1's ``Diagnostics`` list; added because the WP1 brief
+  requires counting them somewhere and no existing field fits.
 """
 
 from __future__ import annotations
@@ -80,6 +98,16 @@ class Event:
     dropped_tokens: int | None = None
     duration_ms: int | None = None
     trigger: str | None = None
+    #: WP1 addition (plan deviation, see module docstring): length of the
+    #: attachment's ``rendered`` field, when present. Never the rendered
+    #: text itself.
+    size_chars: int | None = None
+    #: WP1 addition (plan deviation, see module docstring): small numeric
+    #: detail for kinds whose meaning needs more than kind/subkind, e.g.
+    #: API_ERROR's ``status``/``retryAttempt``, MODEL_FALLBACK's
+    #: ``originalModel``/``fallbackModel``, or the delta attachment types'
+    #: ``added``/``removed`` counts. Never message text or full paths.
+    detail: dict = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -132,6 +160,10 @@ class Turn:
     #: "full-expiry" | "prefix-invalidated" | None
     recache_signature: str | None = None
 
+    #: WP1 addition (plan deviation, see module docstring): from
+    #: ``usage.inference_geo``. Drives the documented 1.1x geo multiplier.
+    inference_geo: str | None = None
+
 
 @dataclass(slots=True)
 class TranscriptMeta:
@@ -169,6 +201,10 @@ class Diagnostics:
     ttl_sum_mismatch: int = 0
     late_duplicate_ids: int = 0
     ignored_line_types: dict = field(default_factory=dict)
+    #: WP1 addition (plan deviation, see module docstring): lines skipped
+    #: by ``jsonl.iter_lines`` for exceeding ``MAX_LINE_BYTES``, counted
+    #: without being parsed.
+    oversized_lines: int = 0
 
 
 @dataclass(slots=True)
