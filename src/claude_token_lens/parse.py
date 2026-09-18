@@ -50,13 +50,27 @@ survive into ``Turn``/``Event``/``Diagnostics``. Absolute-path-shaped
 tokens inside a Bash/PowerShell command are redacted to ``<path>`` before
 the 40-char truncation (see ``_redact_paths``), so a path near the cutoff
 can never leak a partial drive letter or username.
+
+Batch C addition: ``meta`` is provenance the caller already knows (from
+``discovery.py``) and this function never mutates the object it was
+handed — but the ``TranscriptResult.meta`` it *returns* can carry three
+more fields than the input, derived from the transcript's own content:
+``claude_version``/``entrypoint`` (first non-empty ``version``/
+``entrypoint`` field seen on any raw line) and ``provider`` (from the
+first turn with a model, via ``detect_provider``). A field already set on
+the input ``meta`` (e.g. by ``discovery.load_meta``, which derives
+``provider`` from a subagent's ``.meta.json`` model alias before any
+turn is known) is left as-is, never overwritten by the scan — except
+``provider``, where the transcript's own per-turn model is the more
+authoritative source and takes precedence once a turn with a model
+exists.
 """
 
 from __future__ import annotations
 
 import re
 import tempfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 
@@ -105,6 +119,29 @@ def _redact_paths(text: str) -> str:
     drive letter or username fragment.
     """
     return _ABS_PATH_TOKEN_RE.sub("<path>", text)
+
+
+def detect_provider(model_id: str | None) -> str | None:
+    """Classify which API surface a model id was billed through, from the
+    id's own form (plan Enterprise-use section): a Bedrock id is prefixed
+    ``anthropic.``/``us.anthropic.`` or suffixed ``-v1:0``; a Vertex id
+    carries an ``@<date>`` suffix; anything else is a direct Anthropic API
+    id. Returns ``None`` for an empty/missing id — nothing to classify.
+
+    Shared with ``discovery.load_meta``, which derives a subagent's
+    ``provider`` from its ``.meta.json`` model alias before any turn is
+    parsed; ``parse_transcript`` recomputes it from the transcript's own
+    turns once one exists, since a turn's ``model`` is the authoritative
+    source (see this module's docstring).
+    """
+    if not model_id:
+        return None
+    lowered = model_id.lower()
+    if lowered.startswith("anthropic.") or lowered.startswith("us.anthropic.") or lowered.endswith("-v1:0"):
+        return "bedrock"
+    if "@" in model_id:
+        return "vertex"
+    return "anthropic"
 
 
 def _escape_newlines(text: str) -> str:
@@ -173,6 +210,9 @@ class _PendingTurn:
     attribution_mcp_tool: str | None = None
     attribution_skill: str | None = None
     tool_names: list[str] = field(default_factory=list)
+    #: Batch C addition (see model.py's ``Turn.tool_use_ids`` docstring):
+    #: every ``tool_use`` block's ``id`` in this turn, in encounter order.
+    tool_use_ids: list[str] = field(default_factory=list)
     cmd_prefix: str | None = None
     edit_real_found: bool = False
     edit_scratch_found: bool = False
@@ -193,6 +233,7 @@ def _merge_content_blocks(pending: _PendingTurn, content, tool_use_names: dict[s
         tool_use_id = block.get("id")
         if isinstance(tool_use_id, str) and tool_use_id:
             tool_use_names[tool_use_id] = name
+            pending.tool_use_ids.append(tool_use_id)
         tool_input = block.get("input")
         if not isinstance(tool_input, dict):
             continue
@@ -404,6 +445,7 @@ def _finalize_turn(
         cc_1h=pending.cc_1h,
         ctx=ctx,
         tool_names=tuple(pending.tool_names),
+        tool_use_ids=tuple(pending.tool_use_ids),
         cmd_prefix=pending.cmd_prefix,
         edit_kind=edit_kind,
         attribution_mcp_server=pending.attribution_mcp_server,
@@ -425,7 +467,9 @@ def parse_transcript(path: str | Path, meta: TranscriptMeta) -> TranscriptResult
     ``meta`` is provenance the caller already knows (from
     ``discovery.py``) — this function fills in ``turns``, ``events``,
     ``diagnostics``, ``tool_result_chars`` and ``tool_result_calls``
-    around it; it never mutates ``meta``.
+    around it; it never mutates ``meta`` (see module docstring for the
+    ``claude_version``/``entrypoint``/``provider`` derivation this
+    function's *returned* meta copy adds on top).
     """
     line_stats = jsonl.LineStats()
     diagnostics = Diagnostics()
@@ -437,6 +481,15 @@ def parse_transcript(path: str | Path, meta: TranscriptMeta) -> TranscriptResult
     #: Deliberately not scoped to the current turn: a tool_result can
     #: reference a tool_use from an earlier turn.
     tool_use_names: dict[str, str] = {}
+    #: Batch C addition: first non-empty ``entrypoint``/``version`` field
+    #: seen on any raw line, in file order. Every line type carries these
+    #: (when present), not just assistant lines.
+    first_entrypoint: str | None = None
+    first_claude_version: str | None = None
+    #: Batch C addition: provider derived from the first turn with a
+    #: model, overriding whatever ``meta.provider`` already held (see
+    #: ``detect_provider``/module docstring).
+    provider = meta.provider
 
     #: Events attached to the turn currently being accumulated in
     #: ``current`` (i.e. observed *before* ``current`` started): what
@@ -473,6 +526,15 @@ def parse_transcript(path: str | Path, meta: TranscriptMeta) -> TranscriptResult
             seen_uuids.add(uuid_val)
 
         line_type = d.get("type")
+
+        if first_entrypoint is None:
+            entrypoint_raw = d.get("entrypoint")
+            if isinstance(entrypoint_raw, str) and entrypoint_raw:
+                first_entrypoint = entrypoint_raw
+        if first_claude_version is None:
+            version_raw = d.get("version")
+            if isinstance(version_raw, str) and version_raw:
+                first_claude_version = version_raw
 
         if line_type == "assistant":
             diagnostics.assistant_lines += 1
@@ -560,8 +622,25 @@ def parse_transcript(path: str | Path, meta: TranscriptMeta) -> TranscriptResult
     diagnostics.oversized_lines = line_stats.oversized_lines
     diagnostics.distinct_turns = len(turns)
 
+    # Batch C addition: the transcript's own first turn with a model is
+    # the authoritative provider signal (see module docstring), taking
+    # precedence over whatever meta.provider already held.
+    for turn in turns:
+        if turn.model:
+            detected = detect_provider(turn.model)
+            if detected:
+                provider = detected
+            break
+
+    final_meta = replace(
+        meta,
+        entrypoint=meta.entrypoint if meta.entrypoint is not None else first_entrypoint,
+        claude_version=meta.claude_version if meta.claude_version is not None else first_claude_version,
+        provider=provider,
+    )
+
     return TranscriptResult(
-        meta=meta,
+        meta=final_meta,
         turns=turns,
         events=events,
         diagnostics=diagnostics,
@@ -570,4 +649,4 @@ def parse_transcript(path: str | Path, meta: TranscriptMeta) -> TranscriptResult
     )
 
 
-__all__ = ["parse_transcript"]
+__all__ = ["parse_transcript", "detect_provider"]

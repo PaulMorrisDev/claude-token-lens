@@ -292,6 +292,42 @@ def test_skill_rollup_mean_spawns_per_invocation(tmp_path):
     assert acc.direct_spawns / acc.invocations == 1.0
 
 
+def test_skill_rollup_uses_turn_tool_use_ids_without_the_raw_file(tmp_path):
+    """Batch C: the roll-up must not need to re-read the transcript file
+    at all once Turn.tool_use_ids is populated -- parse_transcript already
+    fills it, so index_tool_use_ids's raw re-scan is now only a fallback
+    (see topology.py's module docstring)."""
+    top, subs, pricing = _build_scenario(tmp_path)
+    top.meta.path = str(tmp_path / "does-not-exist.jsonl")  # prove no re-read happens
+
+    stats = TopologyStats()
+    stats.add_session("sess-1", top, subs, pricing)
+
+    acc = stats.skills["grill-me"]
+    assert acc.invocations == 1
+    assert acc.direct_spawns == 1
+    assert acc.report_proxy_values == [400, 150]
+
+
+def test_skill_rollup_falls_back_to_raw_scan_when_turns_carry_no_tool_use_ids(tmp_path):
+    """A TranscriptResult parsed before Turn.tool_use_ids existed (e.g. an
+    on-disk cache from an older schema) still gets a correct roll-up via
+    index_tool_use_ids's raw-file fallback."""
+    import dataclasses
+
+    top, subs, pricing = _build_scenario(tmp_path)
+    top.turns = [dataclasses.replace(t, tool_use_ids=()) for t in top.turns]
+    assert all(t.tool_use_ids == () for t in top.turns)
+
+    stats = TopologyStats()
+    stats.add_session("sess-1", top, subs, pricing)
+
+    acc = stats.skills["grill-me"]
+    assert acc.invocations == 1
+    assert acc.direct_spawns == 1  # recovered via index_tool_use_ids fallback
+    assert acc.report_proxy_values == [400, 150]
+
+
 # -- (d) chains: depth histogram, cost/spawn, stopped_by_user -----------
 
 

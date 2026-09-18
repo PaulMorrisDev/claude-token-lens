@@ -12,13 +12,16 @@ turns a finished accumulator into a ``Section`` of report ``Table``s.
 
 Two things this module reads only lengths/counts/ids of, never content:
 
-- :func:`index_tool_use_ids` re-scans a top-level transcript's raw JSONL
-  for assistant lines' ``tool_use`` blocks, to join a subagent (by its
-  ``.meta.json`` ``toolUseId``) back to the parent turn — and that turn's
-  ``attributionSkill`` — that spawned it. ``Turn`` itself does not carry
-  tool_use ids (see model.py's module docstring and this package's
-  report for the proposed ``Turn.tool_use_ids`` addition this join would
-  otherwise use); this helper is the documented stand-in.
+- The skill roll-up's tool_use_id join (subagent ``.meta.json``
+  ``toolUseId`` -> the parent turn, and that turn's ``attributionSkill``,
+  that spawned it) is built in-memory from already-parsed
+  ``Turn.tool_use_ids`` (batch C addition — see model.py's module
+  docstring) via :func:`_tool_use_index_from_turns`.
+  :func:`index_tool_use_ids`, which re-scans a top-level transcript's raw
+  JSONL for the same join, is kept only as a fallback for a
+  ``TranscriptResult`` parsed before that field existed (``subs``/``top``
+  loaded from an on-disk cache written by an older schema version, say) —
+  see ``_add_skill_rollup``.
 - The skill roll-up's "spawned cost" is the transitive closure of every
   agent reachable from a skill's invoking turns via that tool_use_id join
   (direct spawns) and then ``parent_agent_id`` (further agents those
@@ -115,10 +118,10 @@ def index_tool_use_ids(path: str | Path) -> dict[str, tuple[str, str | None]]:
     which ``events.py`` deliberately reduces to a count for exactly this
     reason.
 
-    A stand-in for the ``Turn.tool_use_ids`` field this package's report
-    proposes adding to ``model.py`` (see module docstring): once that
-    field exists, this re-scan becomes unnecessary and the join is a
-    plain in-memory lookup over already-parsed turns.
+    Fallback only: ``_add_skill_rollup`` prefers the in-memory join built
+    from ``Turn.tool_use_ids`` (:func:`_tool_use_index_from_turns`, batch
+    C) and only re-scans the raw file via this function when that index
+    comes back empty (see module docstring).
     """
     index: dict[str, tuple[str, str | None]] = {}
     for _line_no, d in jsonl.iter_lines(path):
@@ -142,6 +145,20 @@ def index_tool_use_ids(path: str | Path) -> dict[str, tuple[str, str | None]]:
             tool_use_id = block.get("id")
             if isinstance(tool_use_id, str) and tool_use_id:
                 index[tool_use_id] = (message_id, attribution_skill)
+    return index
+
+
+def _tool_use_index_from_turns(top: TranscriptResult) -> dict[str, tuple[str, str | None]]:
+    """Batch C: the in-memory equivalent of :func:`index_tool_use_ids`,
+    built from already-parsed ``Turn.tool_use_ids`` instead of re-scanning
+    the raw JSONL. Empty when every turn's ``tool_use_ids`` is empty
+    (e.g. a ``TranscriptResult`` parsed before that field existed) — the
+    caller falls back to :func:`index_tool_use_ids` in that case.
+    """
+    index: dict[str, tuple[str, str | None]] = {}
+    for turn in top.turns:
+        for tool_use_id in turn.tool_use_ids:
+            index[tool_use_id] = (turn.message_id, turn.attribution_skill)
     return index
 
 
@@ -299,9 +316,14 @@ class TopologyStats:
     def _add_skill_rollup(
         self, top: TranscriptResult, subs: list[TranscriptResult], rates_lookup: Pricing
     ) -> None:
-        if not top.meta.path:
-            return
-        tool_use_index = index_tool_use_ids(top.meta.path)
+        tool_use_index = _tool_use_index_from_turns(top)
+        if not tool_use_index:
+            # Fallback for a TranscriptResult parsed before Turn.tool_use_ids
+            # existed (or a transcript that genuinely made no tool calls at
+            # top level, where the raw re-scan is equally empty and cheap).
+            if not top.meta.path:
+                return
+            tool_use_index = index_tool_use_ids(top.meta.path)
 
         children_by_parent: dict[str, list[TranscriptResult]] = {}
         for sub in subs:

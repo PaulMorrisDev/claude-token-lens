@@ -35,6 +35,8 @@ def test_parse_workflow_file_reads_documented_keys():
     assert run.started == "2026-09-18T12:00:00.000Z"
     assert run.finished == "2026-09-18T12:02:00.000Z"  # startTime + durationMs
     assert run.cost == 0.0  # link_workflow_agents fills this in
+    assert run.status == "completed"  # batch C addition
+    assert run.phase_titles == ("Phase one", "Phase two")  # titles only, never detail
 
 
 def test_parse_workflow_file_minimal_json_tolerates_missing_fields():
@@ -49,6 +51,8 @@ def test_parse_workflow_file_minimal_json_tolerates_missing_fields():
     assert run.started is None
     assert run.finished is None
     assert run.cost == 0.0
+    assert run.status == "killed"
+    assert run.phase_titles == ("Only phase",)
 
 
 def test_parse_workflow_file_malformed_json_never_raises(tmp_path):
@@ -63,6 +67,8 @@ def test_parse_workflow_file_malformed_json_never_raises(tmp_path):
     assert run.agent_count == 0
     assert run.phases == 0
     assert run.started is None
+    assert run.status is None
+    assert run.phase_titles == ()
 
 
 def test_parse_workflow_file_missing_file_never_raises(tmp_path):
@@ -84,6 +90,35 @@ def test_parse_workflow_file_falls_back_to_timestamp_when_no_start_time(tmp_path
     run = workflows.parse_workflow_file(path)
     assert run.started == "2026-09-01T00:00:00.000Z"
     assert run.finished is None  # no durationMs to compute an end from
+
+
+def test_parse_workflow_file_phase_titles_never_carry_detail_text(tmp_path):
+    session_dir = tmp_path / "sess-detail" / "workflows"
+    session_dir.mkdir(parents=True)
+    path = session_dir / "wf_detail-000.json"
+    path.write_text(
+        '{"runId": "wf_detail-000", "phases": ['
+        '{"title": "Discovery", "detail": "full task prompt text that must never be stored"}, '
+        '{"detail": "a phase with no title at all"}'
+        "]}",
+        encoding="utf-8",
+    )
+
+    run = workflows.parse_workflow_file(path)
+    assert run.phases == 2
+    assert run.phase_titles == ("Discovery",)  # untitled entry skipped, no detail text anywhere
+    for title in run.phase_titles:
+        assert "prompt text" not in title
+
+
+def test_parse_workflow_file_non_string_status_is_ignored(tmp_path):
+    session_dir = tmp_path / "sess-status" / "workflows"
+    session_dir.mkdir(parents=True)
+    path = session_dir / "wf_status-000.json"
+    path.write_text('{"runId": "wf_status-000", "status": 42}', encoding="utf-8")
+
+    run = workflows.parse_workflow_file(path)
+    assert run.status is None
 
 
 # -- link_workflow_agents -----------------------------------------------------

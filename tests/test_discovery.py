@@ -245,6 +245,28 @@ def test_load_meta_maps_documented_keys(tmp_path):
     assert meta.worktree_branch_present is True  # bool only, never the branch name
     assert meta.stopped_by_user is False
     assert meta.tool_use_id == "tu_01abc"
+    assert meta.provider == "anthropic"  # batch C: "sonnet" matches no cloud-provider form
+
+
+def test_load_meta_derives_provider_from_bedrock_model_alias(tmp_path):
+    meta_path = tmp_path / "agent-abc.meta.json"
+    meta_path.write_text(json.dumps({"model": "us.anthropic.claude-sonnet-5-20260101-v1:0"}))
+    meta = discovery.load_meta(meta_path)
+    assert meta.provider == "bedrock"
+
+
+def test_load_meta_derives_provider_from_vertex_model_alias(tmp_path):
+    meta_path = tmp_path / "agent-abc.meta.json"
+    meta_path.write_text(json.dumps({"model": "claude-sonnet-5@20260101"}))
+    meta = discovery.load_meta(meta_path)
+    assert meta.provider == "vertex"
+
+
+def test_load_meta_no_model_leaves_provider_unset(tmp_path):
+    meta_path = tmp_path / "agent-abc.meta.json"
+    meta_path.write_text(json.dumps({"agentType": "claude-implementer"}))
+    meta = discovery.load_meta(meta_path)
+    assert meta.provider is None
 
 
 def test_load_meta_derives_agent_id_and_session_id_from_path(tmp_path):

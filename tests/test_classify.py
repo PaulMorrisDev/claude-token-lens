@@ -26,6 +26,8 @@ from claude_token_lens import classify, discovery
 from claude_token_lens.model import TranscriptMeta
 from claude_token_lens.parse import parse_transcript
 
+from helpers import turn_line, write_jsonl
+
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "classify"
 
 
@@ -341,6 +343,7 @@ def test_build_session_record_populates_span_and_timestamps():
     assert record.archetype is None
     assert record.snapshot_id is None
     assert record.profile_id is None
+    assert record.entrypoint is None  # fixture carries no entrypoint field
 
 
 def test_group_sessions_by_mode_and_project():
@@ -354,13 +357,44 @@ def test_group_sessions_by_mode_and_project():
     assert set(by_project) == {"interactive_chat", "long_agentic", "overnight"}
 
 
-def test_group_sessions_entrypoint_has_no_data_source_yet():
+def test_group_sessions_entrypoint_falls_back_to_unknown_when_absent():
     records = _build_all_records()
     by_entrypoint = classify.group_sessions(records, "entrypoint")
-    # See classify.py's module docstring: SessionRecord carries no
-    # entrypoint field yet, so every session lands in one bucket today.
+    # None of these fixtures' raw lines carry an entrypoint field, so
+    # every session falls back to "unknown" (batch C: SessionRecord.entrypoint
+    # is None, not a missing feature — see test_group_sessions_by_entrypoint
+    # below for the populated case).
     assert set(by_entrypoint) == {"unknown"}
     assert len(by_entrypoint["unknown"]) == len(records)
+
+
+def _build_session_record_with_entrypoint(session_dir: Path, entrypoint: str | None):
+    session_dir.mkdir(parents=True, exist_ok=True)
+    lines = [turn_line(message_id="msg_1", input_tokens=100, output_tokens=10)]
+    if entrypoint is not None:
+        lines[0]["entrypoint"] = entrypoint
+    top_path = session_dir / "session.jsonl"
+    write_jsonl(top_path, lines)
+    top = parse_transcript(top_path, TranscriptMeta(path=str(top_path), session_id=top_path.stem))
+    classification = classify.classify_session(top, [], overrides={}, tz=None)
+    return classify.build_session_record(top, [], workflows=[], classification=classification, slug="proj")
+
+
+def test_build_session_record_fills_entrypoint_from_top_meta(tmp_path: Path):
+    record = _build_session_record_with_entrypoint(tmp_path, "sdk-python")
+    assert record.entrypoint == "sdk-python"
+
+
+def test_group_sessions_by_entrypoint(tmp_path: Path):
+    cli_record = _build_session_record_with_entrypoint(tmp_path / "a", "cli")
+    sdk_record = _build_session_record_with_entrypoint(tmp_path / "b", "sdk-python")
+    unknown_record = _build_session_record_with_entrypoint(tmp_path / "c", None)
+
+    by_entrypoint = classify.group_sessions([cli_record, sdk_record, unknown_record], "entrypoint")
+    assert set(by_entrypoint) == {"cli", "sdk-python", "unknown"}
+    assert by_entrypoint["cli"] == [cli_record]
+    assert by_entrypoint["sdk-python"] == [sdk_record]
+    assert by_entrypoint["unknown"] == [unknown_record]
 
 
 def test_group_sessions_rejects_unknown_key():

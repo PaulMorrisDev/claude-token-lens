@@ -27,6 +27,7 @@ from pathlib import Path
 
 from . import jsonl
 from .model import TranscriptMeta
+from .parse import detect_provider
 
 _NON_ALNUM_RE = re.compile(r"[^A-Za-z0-9]")
 _SLUG_MAX_CHARS = 200
@@ -248,7 +249,10 @@ def load_meta(path: str | Path) -> TranscriptMeta:
     Maps ``agentType``, ``description`` (length only, never the text),
     ``spawnDepth``, ``parentAgentId``, ``model`` (-> ``agent_model_alias``
     — ``model`` on ``TranscriptMeta`` isn't a field; the transcript's own
-    turns carry the real per-turn ``model``), ``requestShape``,
+    turns carry the real per-turn ``model`` — and, from the same value,
+    -> ``provider`` via ``parse.detect_provider``, a best guess before any
+    turn is parsed that ``parse_transcript`` recomputes and takes
+    precedence over once a turn exists), ``requestShape``,
     ``worktreeBranch`` (-> ``worktree_branch_present``, a bool: never the
     branch name itself), ``stoppedByUser`` and ``toolUseId`` (->
     ``tool_use_id``, linking the subagent back to the parent turn that
@@ -288,6 +292,11 @@ def load_meta(path: str | Path) -> TranscriptMeta:
     model = raw.get("model")
     if isinstance(model, str):
         meta.agent_model_alias = model
+        # Batch C addition (see model.py's TranscriptMeta.provider
+        # docstring): best guess before any turn is parsed.
+        # parse_transcript recomputes this from the transcript's own
+        # turns once one exists, which takes precedence.
+        meta.provider = detect_provider(model)
 
     meta.worktree_branch_present = bool(raw.get("worktreeBranch"))
 

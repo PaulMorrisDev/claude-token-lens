@@ -85,18 +85,16 @@ def parse_workflow_file(path: str | Path) -> WorkflowRun:
     Reads only: ``runId`` (-> ``run_id``), the file's own path (->
     ``session_id``, the grandparent directory name per the documented
     layout), ``agentCount`` (-> ``agent_count``), the *count* of entries
-    in ``phases`` (-> ``phases``; the plan's frozen ``WorkflowRun``
-    contract has no field for phase titles, so only the count survives —
-    see this package's report for a proposed richer field), and
+    in ``phases`` (-> ``phases``) plus each entry's ``title`` only, never
+    ``detail`` (-> ``phase_titles``; ``detail`` carries workflow
+    source/prompt text and is never read into anything returned), and
     ``startTime``/``durationMs`` (-> ``started``/``finished``, converted
     from epoch milliseconds to the corpus's ISO-``Z`` timestamp
     convention). ``cost`` starts at ``0.0``; :func:`link_workflow_agents`
     fills it in once the run's subagent transcripts are known.
 
     ``status`` (``"completed"``/``"killed"`` observed) is read from the
-    file but has nowhere to go on the frozen ``WorkflowRun`` contract —
-    also flagged as a proposed addition in this package's report, not
-    silently dropped without mention.
+    file straight across to ``WorkflowRun.status`` (batch C addition).
 
     Never raises: an unreadable or malformed file yields a ``WorkflowRun``
     with ``run_id`` taken from the filename stem and every other field at
@@ -122,12 +120,21 @@ def parse_workflow_file(path: str | Path) -> WorkflowRun:
     agent_count = agent_count_raw if isinstance(agent_count_raw, int) else 0
 
     phases_raw = raw.get("phases")
+    phase_titles: list[str] = []
     if isinstance(phases_raw, list):
         phases = len(phases_raw)
+        for entry in phases_raw:
+            if isinstance(entry, dict):
+                title = entry.get("title")
+                if isinstance(title, str) and title:
+                    phase_titles.append(title)
     elif isinstance(phases_raw, int):
         phases = phases_raw
     else:
         phases = 0
+
+    status_raw = raw.get("status")
+    status = status_raw if isinstance(status_raw, str) else None
 
     started: str | None = None
     finished: str | None = None
@@ -151,6 +158,8 @@ def parse_workflow_file(path: str | Path) -> WorkflowRun:
         started=started,
         finished=finished,
         cost=0.0,
+        status=status,
+        phase_titles=tuple(phase_titles),
     )
 
 

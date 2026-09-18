@@ -53,18 +53,19 @@ Two features the brief calls out with an explicit instruction to skip:
   as the literal value ``"docs-or-light-edit"`` per the brief's wording.
 - The plan's ``extract_features(top, subs, tz)`` signature has no
   parameter for ``workflows`` (a count) or ``entrypoint`` (a carry-through
-  value), yet lists both among the features it produces. Neither is
-  derivable from a ``TranscriptResult`` — ``workflows`` comes from
-  ``WorkflowRun`` parsing (WP8, not yet written) and ``entrypoint`` has no
-  home anywhere in the frozen ``model.py`` contract yet (see the "Other
-  clients" plan section, which describes it as a future grouping axis
-  without ever adding the field). Both are added here as optional
-  keyword-only parameters with inert defaults (``workflows=0``,
-  ``entrypoint=None``) so a caller that *does* have the data (once WP8
-  exists) can supply it without ``extract_features`` guessing. Until
-  then, ``group_sessions(records, key="entrypoint")`` always returns a
-  single ``"unknown"`` bucket — flagged in this module's report as a
-  proposed ``model.py``/``SessionRecord`` addition, not made silently.
+  value), yet lists both among the features it produces. Neither was
+  derivable from a ``TranscriptResult`` at the time this module was
+  written — ``workflows`` comes from ``WorkflowRun`` parsing (WP8) and
+  ``entrypoint`` had no home anywhere in the frozen ``model.py`` contract.
+  Both remain optional keyword-only parameters here with inert defaults
+  (``workflows=0``, ``entrypoint=None``) so a caller that has the data can
+  supply it without ``extract_features`` guessing (``classify_session``
+  passes both straight through). Batch C added ``TranscriptMeta.entrypoint``
+  (first-seen, from ``parse_transcript``) and ``SessionRecord.entrypoint``;
+  ``build_session_record`` fills the latter from ``top.meta.entrypoint``,
+  so ``group_sessions(records, key="entrypoint")`` now groups by that
+  value (falling back to ``"unknown"`` only for a session with none
+  recorded) rather than always returning a single bucket.
 
 Timezone conversion (``start_local_hour``/``end_local_hour``) uses
 ``zoneinfo.ZoneInfo``. On a machine with no system tz database and no
@@ -551,6 +552,11 @@ def build_session_record(
 ) -> SessionRecord:
     """Build one ``SessionRecord``. ``archetype``/``snapshot_id``/
     ``profile_id`` are left ``None`` (WP8/WP10/WP12's job to populate).
+    ``entrypoint`` (batch C addition) is carried straight through from
+    ``top.meta.entrypoint`` — ``parse_transcript`` already derived it as
+    the first non-empty ``entrypoint`` field seen anywhere in the top
+    transcript's raw lines (see ``model.py``'s ``TranscriptMeta``
+    docstring); this is no longer a proposed field with nowhere to live.
     """
     first_ts, last_ts = _ts_range([top, *subs])
     span_s = _span_seconds(first_ts, last_ts)
@@ -564,6 +570,7 @@ def build_session_record(
         subs=list(subs),
         workflows=list(workflows),
         classification=classification,
+        entrypoint=top.meta.entrypoint,
     )
 
 
@@ -609,18 +616,18 @@ def _group_key_value(record: SessionRecord, key: str) -> str:
     if key == "agent":
         return _dominant_agent(record)
     if key == "entrypoint":
-        # No data source exists yet — see the module docstring's proposed
-        # model.py addition (SessionRecord.entrypoint).
-        return "unknown"
+        # Batch C addition: SessionRecord.entrypoint, carried through from
+        # top.meta.entrypoint by build_session_record.
+        return record.entrypoint or "unknown"
     raise ValueError(f"unknown group_sessions key: {key!r} (expected one of {sorted(_GROUP_KEYS)})")
 
 
 def group_sessions(records: list[SessionRecord], key: str) -> dict[str, list[SessionRecord]]:
     """Group ``records`` by ``key`` (``"mode"``, ``"purpose"``,
     ``"project"``, ``"model"``, ``"agent"``, or ``"entrypoint"``). See
-    ``_group_key_value`` and the module docstring for how each key's
-    value is derived (``"entrypoint"`` always groups into a single
-    ``"unknown"`` bucket today).
+    ``_group_key_value`` for how each key's value is derived
+    (``"entrypoint"`` groups by ``SessionRecord.entrypoint``, falling
+    back to ``"unknown"`` for a session with none recorded).
     """
     if key not in _GROUP_KEYS:
         raise ValueError(f"unknown group_sessions key: {key!r} (expected one of {sorted(_GROUP_KEYS)})")

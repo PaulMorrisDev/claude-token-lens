@@ -75,6 +75,34 @@ Independent-review follow-up fixes (post-WP1/WP2/WP7), all with defaults:
   fell into the generic ``ATTACHMENT`` kind, counted by type, so a new
   attachment type shows up in Diagnostics the moment it's seen rather
   than only via a manual scan of ``TranscriptResult.events``.
+
+Batch C additive fields (all with defaults, per this module's own rule):
+
+- ``Turn.tool_use_ids: tuple[str, ...] = ()`` — the ``id`` of every
+  ``tool_use`` content block in this turn, in encounter order. Lets
+  ``topology.py``'s skill roll-up join a subagent back to its parent turn
+  from already-parsed ``Turn``s instead of re-scanning the raw JSONL (see
+  ``topology.index_tool_use_ids``, now a fallback for transcripts parsed
+  before this field existed).
+- ``WorkflowRun.status: str | None = None`` — the run file's own
+  ``status`` (``"completed"``/``"killed"`` observed), filled by
+  ``workflows.parse_workflow_file``.
+- ``WorkflowRun.phase_titles: tuple[str, ...] = ()`` — each phase entry's
+  ``title`` only, never its ``detail`` (workflow source/prompt text) —
+  filled by ``workflows.parse_workflow_file``.
+- ``SessionRecord.entrypoint: str | None = None`` — carried through from
+  ``top.meta.entrypoint`` by ``classify.build_session_record``; previously
+  a caller-supplied ``extract_features`` keyword with no real data source
+  (see ``classify.py``'s module docstring).
+- ``TranscriptMeta.provider: str | None = None`` — the API surface a
+  transcript's turns were billed through (``"anthropic"`` | ``"bedrock"``
+  | ``"vertex"`` | ``"foundry"``), derived from model-id form.
+- ``TranscriptMeta.entrypoint: str | None = None`` — the first non-empty
+  ``entrypoint`` field seen anywhere in the transcript's raw lines
+  (``cli``/``sdk-python``/... observed), set by ``parse.parse_transcript``
+  alongside the existing ``claude_version`` field (also first-seen, from
+  each line's own ``version`` field — previously declared but never
+  populated by any module).
 """
 
 from __future__ import annotations
@@ -194,6 +222,11 @@ class Turn:
     #: ``usage.inference_geo``. Drives the documented 1.1x geo multiplier.
     inference_geo: str | None = None
 
+    #: Batch C addition (see module docstring): every ``tool_use`` block's
+    #: ``id`` in this turn, in encounter order. Ids only — never the tool
+    #: input or result content.
+    tool_use_ids: tuple[str, ...] = ()
+
 
 @dataclass(slots=True)
 class TranscriptMeta:
@@ -219,6 +252,12 @@ class TranscriptMeta:
     #: ``.meta.json`` ``toolUseId``, linking it to the parent turn that
     #: spawned it.
     tool_use_id: str | None = None
+    #: Batch C addition (see module docstring): the API surface these
+    #: turns were billed through, derived from model-id form.
+    provider: str | None = None
+    #: Batch C addition (see module docstring): the first non-empty
+    #: ``entrypoint`` field seen anywhere in the transcript's raw lines.
+    entrypoint: str | None = None
 
 
 @dataclass(slots=True)
@@ -287,6 +326,12 @@ class WorkflowRun:
     started: str | None = None
     finished: str | None = None
     cost: float = 0.0
+    #: Batch C addition (see module docstring): the run file's own
+    #: ``status`` (``"completed"``/``"killed"`` observed).
+    status: str | None = None
+    #: Batch C addition (see module docstring): each phase's ``title``
+    #: only — never ``detail``, which carries workflow source/prompt text.
+    phase_titles: tuple[str, ...] = ()
 
 
 @dataclass(slots=True)
@@ -321,6 +366,9 @@ class SessionRecord:
     archetype: str | None = None
     snapshot_id: str | None = None
     profile_id: str | None = None
+    #: Batch C addition (see module docstring): carried through from
+    #: ``top.meta.entrypoint`` by ``classify.build_session_record``.
+    entrypoint: str | None = None
 
 
 @dataclass(slots=True)
