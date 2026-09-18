@@ -161,14 +161,20 @@ def detect_archetype(features: SessionFeatures) -> tuple[str, dict]:
     if len(qualifying_efforts) >= 2:
         return "effort-varied", evidence
 
+    # Fix (coordinator follow-up, WP12a diversity fixtures): chat-only
+    # must be tested before single-model. A genuine chat-only session
+    # (zero spawns, zero workflows, no plan-mode signal, and no tool
+    # beyond Read/Grep/Glob) still resolves a real, single model family
+    # from its own turns - so testing single-model first made chat-only
+    # unreachable except when the model failed to resolve at all.
+    if features.spawn_count == 0 and features.top_level_tool_names <= _CHAT_ONLY_TOOLS:
+        evidence["top_level_tool_names"] = sorted(features.top_level_tool_names)
+        return "chat-only", evidence
+
     known_families = {tier for tier in (top_tier, *subagent_tiers) if tier != -1}
     evidence["known_model_families"] = len(known_families)
     if len(known_families) == 1 and features.spawn_count <= _SINGLE_MODEL_MAX_SPAWNS:
         return "single-model", evidence
-
-    if features.spawn_count == 0 and features.top_level_tool_names <= _CHAT_ONLY_TOOLS:
-        evidence["top_level_tool_names"] = sorted(features.top_level_tool_names)
-        return "chat-only", evidence
 
     return "mixed", evidence
 

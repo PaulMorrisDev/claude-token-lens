@@ -152,6 +152,23 @@ def test_chat_only_requires_no_mutating_tools():
     assert archetype != "chat-only"
 
 
+def test_chat_only_wins_over_single_model_with_a_real_resolvable_model():
+    # Coordinator follow-up (WP12a diversity fixtures): a genuine
+    # chat-only session still resolves a single, real model family from
+    # its own turns (no subagents, so nothing to disagree with it) - the
+    # pre-fix ordering tested single-model first, so this fixture would
+    # have wrongly landed on "single-model" and chat-only was only ever
+    # reachable when the model failed to resolve at all.
+    features = SessionFeatures(
+        top_level_models=("claude-sonnet-5",),
+        spawn_count=0,
+        top_level_tool_names=frozenset({"Read", "Grep", "Glob"}),
+    )
+    archetype, evidence = detect_archetype(features)
+    assert archetype == "chat-only"
+    assert evidence["top_level_tool_names"] == ["Glob", "Grep", "Read"]
+
+
 def test_detect_mixed_fallback():
     # No archetype's condition holds: multiple spawns but no tier gap,
     # no plan/workflow signal, uniform effort, more than one model family
