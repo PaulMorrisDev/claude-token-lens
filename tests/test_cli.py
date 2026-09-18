@@ -8,6 +8,13 @@ import pytest
 
 from claude_token_lens import __version__, cli
 
+#: Subcommands that have a real implementation and so must be excluded from
+#: the "every stub exits 2" sweep below. Update this set as each work
+#: package replaces another stub.
+IMPLEMENTED = {"pricing-check", "snapshot-config"}
+
+STUB_SUBCOMMANDS = tuple(c for c in cli.SUBCOMMANDS if c not in IMPLEMENTED)
+
 
 def test_version_exits_zero_and_prints_version(capsys):
     with pytest.raises(SystemExit) as exc_info:
@@ -32,13 +39,25 @@ def test_known_subcommand_is_left_alone():
     assert cli._insert_default_subcommand(argv) == argv
 
 
-@pytest.mark.parametrize("command", cli.SUBCOMMANDS)
+@pytest.mark.parametrize("command", STUB_SUBCOMMANDS)
 def test_every_subcommand_stub_exits_2(command, capsys):
     exit_code = cli.main([command])
     assert exit_code == 2
     err = capsys.readouterr().err
     assert "not implemented" in err
     assert command in err
+
+
+def test_pricing_check_exits_0(capsys):
+    exit_code = cli.main(["pricing-check"])
+    assert exit_code == 0
+    capsys.readouterr()
+
+
+def test_snapshot_config_print_hook_exits_0(capsys):
+    exit_code = cli.main(["snapshot-config", "--print-hook"])
+    assert exit_code == 0
+    capsys.readouterr()
 
 
 def test_no_argv_defaults_to_report_stub(capsys):
