@@ -45,6 +45,13 @@ defaults so every existing call site keeps working:
   for exceeding ``MAX_LINE_BYTES`` (8 MB), counted without being parsed.
   Not in Appendix A1's ``Diagnostics`` list; added because the WP1 brief
   requires counting them somewhere and no existing field fits.
+
+- ``ReportMeta.assumptions`` (``list[str]``, default empty) is added by
+  WP9 (renderers). The plan's Markdown/HTML layout requires an
+  ``## Assumptions`` block (e.g. the TTL simulation's stated
+  assumptions), and analytics packages (TTL, RE-CACHE, ...) need a place
+  to push that text onto the report without the renderers inventing it.
+  Defaulting to ``[]`` keeps every existing call site valid.
 """
 
 from __future__ import annotations
@@ -361,6 +368,9 @@ class ReportMeta:
     pricing: PricingMeta = field(default_factory=PricingMeta)
     thresholds: dict = field(default_factory=dict)
     billing_mode: str = "api"  # "api" | "subscription"
+    #: TTL/RE-CACHE/etc. assumption text, rendered as the report's
+    #: "## Assumptions" block. See the module docstring's deviation note.
+    assumptions: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
