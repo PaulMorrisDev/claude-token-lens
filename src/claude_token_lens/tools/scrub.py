@@ -127,6 +127,14 @@ _PREFIX_PRESERVE: tuple[str, ...] = (
 
 _COMMAND_VERB_RE = re.compile(r"^\S+")
 
+#: A "verb" is only preserved when it's a bare word (letters/digits/
+#: ``_``/``.``/``-`` only) -- a first token containing ``/``, ``\``,
+#: ``:``, ``=``, ``$``, ``~`` or a quote is not a safe thing to keep
+#: verbatim (e.g. a leading ``VAR="/c/Users/..."`` assignment embeds a
+#: path in what looks like the first token), so the whole command falls
+#: back to a full-length ``x`` run instead.
+_SAFE_VERB_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
+
 
 def _rehash_id(key: bytes, value: str) -> str:
     """HMAC-SHA256-rehash ``value`` into a same-length lowercase-hex
@@ -197,7 +205,9 @@ def _scrub_command(command: str) -> str:
     """
     match = _COMMAND_VERB_RE.match(command)
     verb = match.group(0) if match else ""
-    return verb + ("x" * (len(command) - len(verb)))
+    if verb and _SAFE_VERB_RE.match(verb):
+        return verb + ("x" * (len(command) - len(verb)))
+    return "x" * len(command)
 
 
 def _tool_result_content_length(content: Any) -> int:

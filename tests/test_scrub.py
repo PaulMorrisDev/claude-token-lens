@@ -111,6 +111,29 @@ def test_scrub_line_keeps_tool_use_name_and_bash_command_verb_only():
     assert len(block["id"]) == len("toolu_001")
 
 
+def test_scrub_command_falls_back_to_full_x_run_when_first_token_is_not_a_bare_word():
+    """A leading shell-variable assignment embeds a path in what a naive
+    "first whitespace token" split would treat as the verb (e.g.
+    ``P="/c/Users/alice/secret.log" cat "$P"``) -- found via a real-corpus
+    dry run while building the WP12a real fixture. The whole command
+    must fall back to a full-length x run rather than leaking that path.
+    """
+    command = 'P="/c/Users/alice/secret.log" cat "$P"'
+    scrubbed = scrub._scrub_command(command)
+    assert scrubbed == "x" * len(command)
+    assert "alice" not in scrubbed
+    assert "/c/" not in scrubbed
+
+
+def test_scrub_command_falls_back_for_drive_path_or_url_leading_token():
+    for command in (
+        'SP="C:/Users/alice/scratch";cd "$SP"',
+        "B=http://127.0.0.1:5124/api curl $B",
+    ):
+        scrubbed = scrub._scrub_command(command)
+        assert scrubbed == "x" * len(command)
+
+
 def test_scrub_line_collapses_other_tool_input_to_length_only():
     line = turn_line(content=[tool_use_block("Read", "toolu_002", input={"file_path": "C:\\Dev\\secret\\file.py"})])
     out = scrub.scrub_line(line, _KEY)
