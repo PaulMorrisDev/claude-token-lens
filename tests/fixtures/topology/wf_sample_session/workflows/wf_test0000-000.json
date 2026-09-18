@@ -1,0 +1,25 @@
+{
+  "runId": "wf_test0000-000",
+  "timestamp": "2026-09-18T12:00:00.000Z",
+  "taskId": "task-test-1",
+  "script": "// placeholder -- not real workflow source, fixture only",
+  "scriptPath": "workflows/example.js",
+  "result": {"sections": [], "gaps": []},
+  "agentCount": 4,
+  "logs": [],
+  "durationMs": 120000,
+  "summary": "placeholder summary text",
+  "workflowName": "example-workflow",
+  "status": "completed",
+  "startTime": 1789732800000,
+  "phases": [
+    {"title": "Phase one", "detail": "placeholder detail"},
+    {"title": "Phase two", "detail": "placeholder detail"}
+  ],
+  "defaultModel": "claude-sonnet-5",
+  "workflowProgress": [
+    {"type": "phase-start", "index": 0, "title": "Phase one"}
+  ],
+  "totalTokens": 50000,
+  "totalToolCalls": 30
+}
