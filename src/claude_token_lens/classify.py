@@ -37,11 +37,10 @@ doesn't say which of ``top``/``subs`` each signal is drawn from:
   ``test_tool_hits``/``review_markers``/``edit_turns``/``read_turns``) are
   summed across ``top`` *and every* transcript in ``subs``. Purpose
   classification asks "what kind of work did this session as a whole do",
-  and in this codebase's own real sessions the actual editing/testing
-  usually happens inside a spawned ``claude-implementer``/
-  ``verification-runner`` subagent while the top-level turn just
-  orchestrates — restricting these to ``top`` would make "refactor" and
-  "test-triage" nearly unreachable.
+  and in real-world multi-agent setups the actual editing/testing often
+  happens inside a spawned implementation/verification subagent while the
+  top-level turn just orchestrates — restricting these to ``top`` would
+  make "refactor" and "test-triage" nearly unreachable.
 
 Two features the brief calls out with an explicit instruction to skip:
 
@@ -131,7 +130,7 @@ DEFAULT_MODE_THRESHOLDS: dict = {
     "multi_day_span_s": 24 * 3600,
     "long_agentic_max_human_prompts": 5,
     # Tuned from the plan's implied starting point of 50 down to 30
-    # against the real RevIXO corpus (131 top-level sessions, see this
+    # against a real 30-day corpus (131 top-level sessions, see this
     # WP's report): at 50, sessions that were plainly autonomous
     # top-level runs (dozens of self-chained turns, at most a couple of
     # human nudges) but topped out under 50 turns fell through every

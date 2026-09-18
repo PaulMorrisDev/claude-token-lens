@@ -154,8 +154,8 @@ def _flatten(prefix: str, value, out: dict) -> None:
 def flatten_snapshot(snapshot: Snapshot) -> dict:
     """Flatten a snapshot's config sections into ``key.path -> value``
     pairs, e.g. ``user_settings.autoCompactWindow`` or
-    ``agents.verification-runner.experimental.cacheTtl`` (the agents dict's
-    own values are already flattened by the hook, so nesting one more level
+    ``agents.code-reviewer.experimental.cacheTtl`` (the agents dict's own
+    values are already flattened by the hook, so nesting one more level
     here reproduces exactly that example path).
     """
     out: dict = {}

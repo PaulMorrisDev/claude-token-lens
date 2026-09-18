@@ -207,7 +207,8 @@ def compaction_records_for_transcript(
 
     ``CompactionRecord.dropped_tokens`` is a **per-compaction delta**, not
     ``Event.dropped_tokens`` copied straight through. Verified against a
-    real 30-day corpus (``C:\\Users\\...\\projects\\C--Dev-RevIXO``):
+    real 30-day corpus of a project's transcripts under
+    ``~/.claude/projects/<project-slug>``:
     ``compactMetadata.cumulativeDroppedTokens`` is a running total *for the
     whole session*, monotonically non-decreasing across that session's
     compactions (e.g. observed values 555197 then 1017658 in one
