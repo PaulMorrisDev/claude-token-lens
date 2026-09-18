@@ -1,0 +1,18 @@
+# Virtual environments
+venv/
+.venv/
+
+# Python bytecode / caches
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Packaging
+*.egg-info/
+build/
+dist/
+*.pyz
+
+# Project-local caches and private fixtures
+.token-lens-cache/
+tests/fixtures/_private/

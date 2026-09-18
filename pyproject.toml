@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "claude-token-lens"
+version = "0.1.0.dev0"
+description = "Config-aware token and prompt-cache analytics for Claude Code transcripts"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Paul Morris" }]
+keywords = ["claude", "claude-code", "tokens", "prompt-cache", "analytics"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Debuggers",
+    "Topic :: Utilities",
+]
+dependencies = []
+
+[project.optional-dependencies]
+rich = ["rich>=13"]
+test = ["pytest>=8"]
+
+[project.scripts]
+claude-token-lens = "claude_token_lens.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+claude_token_lens = ["pricing.toml"]
