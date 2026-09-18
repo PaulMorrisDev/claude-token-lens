@@ -77,3 +77,102 @@ def write_jsonl(path: Path, dicts: list[dict]) -> None:
         for d in dicts:
             fh.write(json.dumps(d))
             fh.write("\n")
+
+
+# -- WP1 additions: non-assistant line builders --------------------------
+#
+# ``turn_line``/``write_jsonl`` above are WP0. WP1 (jsonl.py, events.py,
+# parse.py, discovery.py) needs realistic-shaped non-assistant lines too,
+# for every EventKind/subtype in plan Appendix A2. Same convention:
+# convenience kwargs for the common fields, ``**overrides`` merges into
+# the top-level dict as-is for anything else.
+
+
+def _base_line(line_type: str, **overrides: Any) -> dict:
+    n = next(_counter)
+    timestamp = overrides.pop("timestamp", "2026-09-18T12:00:00.000Z")
+    uuid = overrides.pop("uuid", f"uuid_{n:06d}")
+    line: dict[str, Any] = {
+        "type": line_type,
+        "timestamp": timestamp,
+        "uuid": uuid,
+        "sessionId": "session_test",
+    }
+    line.update(overrides)
+    return line
+
+
+def user_str_line(content: str, **overrides: Any) -> dict:
+    """Build a ``type=user`` line whose ``message.content`` is a plain
+    string (the shape used by compaction summaries, slash commands,
+    scheduled-task/task-notification/interrupt markers, and genuine human
+    text prompts).
+    """
+    message = overrides.pop("message", None)
+    if message is None:
+        message = {"role": "user", "content": content}
+    line = _base_line("user", **overrides)
+    line["message"] = message
+    return line
+
+
+def user_block_line(content: list[dict], **overrides: Any) -> dict:
+    """Build a ``type=user`` line whose ``message.content`` is a block
+    list (tool_result / text / image blocks)."""
+    message = overrides.pop("message", None)
+    if message is None:
+        message = {"role": "user", "content": content}
+    line = _base_line("user", **overrides)
+    line["message"] = message
+    return line
+
+
+def tool_result_block(tool_use_id: str, content: str | list[dict], **overrides: Any) -> dict:
+    """Build one ``tool_result`` content block for ``user_block_line``."""
+    block = {"type": "tool_result", "tool_use_id": tool_use_id, "content": content}
+    block.update(overrides)
+    return block
+
+
+def tool_use_block(name: str, tool_use_id: str, input: dict | None = None, **overrides: Any) -> dict:
+    """Build one ``tool_use`` content block for ``turn_line(content=...)``."""
+    block = {"type": "tool_use", "id": tool_use_id, "name": name, "input": input or {}}
+    block.update(overrides)
+    return block
+
+
+def system_line(subtype: str, **overrides: Any) -> dict:
+    """Build a ``type=system`` line (compact_boundary, api_error,
+    model_refusal_fallback, local_command, stop_hook_summary)."""
+    line = _base_line("system", **overrides)
+    line["subtype"] = subtype
+    return line
+
+
+def attachment_line(attachment_type: str, rendered: str | None = None, **attachment_overrides: Any) -> dict:
+    """Build a ``type=attachment`` line with ``attachment.type`` set and
+    the rest of ``attachment_overrides`` merged into the nested
+    ``attachment`` dict (e.g. ``addedNames=[...]`` for a delta type).
+    ``rendered``, when given, becomes the top-level ``rendered`` field
+    ``Event.size_chars`` is measured from.
+    """
+    line = _base_line("attachment")
+    attachment = {"type": attachment_type}
+    attachment.update(attachment_overrides)
+    line["attachment"] = attachment
+    if rendered is not None:
+        line["rendered"] = rendered
+    return line
+
+
+def queue_operation_line(operation: str, **overrides: Any) -> dict:
+    """Build a ``type=queue-operation`` line."""
+    line = _base_line("queue-operation", **overrides)
+    line["operation"] = operation
+    return line
+
+
+def ignorable_line(line_type: str, **overrides: Any) -> dict:
+    """Build a line whose top-level ``type`` is one of the plan's
+    "ignored outright but counted" values (e.g. ``bridge-session``)."""
+    return _base_line(line_type, **overrides)
