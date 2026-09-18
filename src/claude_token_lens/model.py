@@ -103,6 +103,14 @@ Batch C additive fields (all with defaults, per this module's own rule):
   alongside the existing ``claude_version`` field (also first-seen, from
   each line's own ``version`` field — previously declared but never
   populated by any module).
+
+Discovery fix (workflow-nested subagents), also additive:
+
+- ``TranscriptMeta.workflow_run_id: str | None = None`` — the run id of
+  the ``<session_id>/subagents/workflows/<run_id>/agent-*.jsonl``
+  directory a workflow-nested subagent lives under (see
+  ``workflows.py``'s module docstring on this layout), set by
+  ``discovery.load_meta``. ``None`` for every other transcript kind.
 """
 
 from __future__ import annotations
@@ -258,6 +266,9 @@ class TranscriptMeta:
     #: Batch C addition (see module docstring): the first non-empty
     #: ``entrypoint`` field seen anywhere in the transcript's raw lines.
     entrypoint: str | None = None
+    #: Discovery fix addition (see module docstring): the workflow run id
+    #: a workflow-nested subagent lives under.
+    workflow_run_id: str | None = None
 
 
 @dataclass(slots=True)

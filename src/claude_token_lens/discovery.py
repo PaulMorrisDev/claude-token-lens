@@ -4,8 +4,12 @@ query, without parsing any of them.
 Layout assumed throughout (plan "Verified facts"): ``<projects_root>/
 <slug>/<session_id>.jsonl`` for top-level sessions, ``<projects_root>/
 <slug>/<session_id>/subagents/agent-<hex>.jsonl`` (+ sibling
-``.meta.json``) for subagent transcripts, and ``<projects_root>/<slug>/
-<session_id>/workflows/wf_*.json`` for workflow runs.
+``.meta.json``) for subagent transcripts, ``<projects_root>/<slug>/
+<session_id>/workflows/wf_*.json`` for workflow runs, and (fix 3
+addition) ``<projects_root>/<slug>/<session_id>/subagents/workflows/
+<run_id>/agent-<hex>.jsonl`` for a workflow run's own agents — see
+``workflows.py``'s module docstring for why this nested shape can't be
+linked back to an invoking turn the way an ordinary subagent can.
 
 Deviation from the plan, proposed here rather than silently made: the
 plan states project slugs are "truncated to 200 chars plus a hash when
@@ -198,28 +202,102 @@ def find_sessions(
     return paths
 
 
-def find_subagents(project_dir: str | Path, session_id: str) -> list[tuple[Path, dict]]:
+def _read_meta_dict(jsonl_path: Path) -> dict:
+    """The raw parsed ``.meta.json`` content sibling to ``jsonl_path``
+    (``{}`` if missing or unparsable) — shared by both glob shapes
+    :func:`find_subagents` reads.
+    """
+    meta_path = jsonl_path.with_name(jsonl_path.stem + ".meta.json")
+    if not meta_path.exists():
+        return {}
+    try:
+        loaded = json.loads(meta_path.read_text(encoding="utf-8", errors="replace"))
+    except (OSError, ValueError):
+        return {}
+    return loaded if isinstance(loaded, dict) else {}
+
+
+def filter_subagents_by_window(
+    pairs: list[tuple[Path, dict]], since: str | None, until: str | None
+) -> list[tuple[Path, dict]]:
+    """Filter ``find_subagents`` pairs to those whose own transcript's
+    first ``user``/``assistant`` line timestamp falls inside
+    ``[since, until]`` (ISO 8601, same convention as ``find_sessions``).
+    This is the ``subagent_window="own"`` behaviour on ``find_subagents``,
+    also usable standalone by a caller that already has a pair list from
+    elsewhere.
+
+    A pair whose window key can't be determined (no user/assistant line,
+    stat failure) is kept only when neither ``since`` nor ``until`` is
+    given, matching ``find_sessions``'s own tolerant-inclusion rule.
+    """
+    since_dt, until_dt = _resolve_window(None, since, until)
+    has_window_filter = since_dt is not None or until_dt is not None
+    kept: list[tuple[Path, dict]] = []
+    for jsonl_path, meta_dict in pairs:
+        ts = _session_window_ts(jsonl_path, "timestamp")
+        if ts is None:
+            if not has_window_filter:
+                kept.append((jsonl_path, meta_dict))
+            continue
+        if since_dt is not None and ts < since_dt:
+            continue
+        if until_dt is not None and ts > until_dt:
+            continue
+        kept.append((jsonl_path, meta_dict))
+    return kept
+
+
+def find_subagents(
+    project_dir: str | Path,
+    session_id: str,
+    since: str | None = None,
+    until: str | None = None,
+    subagent_window: str = "parent",
+) -> list[tuple[Path, dict]]:
     """List ``(jsonl_path, meta_dict)`` pairs for a session's subagent
     transcripts. ``meta_dict`` is the raw parsed ``.meta.json`` content
     (``{}`` if missing or unparsable) — callers needing a
     ``TranscriptMeta`` should pass it through ``load_meta`` instead, this
     is the raw form for callers that want individual keys.
+
+    Globs both the ordinary ``<session_id>/subagents/agent-*.jsonl``
+    shape and the workflow-nested ``<session_id>/subagents/workflows/
+    <run_id>/agent-*.jsonl`` shape (see ``workflows.py``'s module
+    docstring) — a workflow-nested subagent's ``.meta.json`` was observed
+    to carry no ``toolUseId``, so it can't be joined to an invoking turn
+    the way an ordinary subagent is (``topology.index_tool_use_ids``);
+    ``workflows.link_workflow_agents`` links these by path instead.
+    ``load_meta`` derives ``TranscriptMeta.workflow_run_id`` for these
+    from the same path shape.
+
+    ``subagent_window`` selects how ``since``/``until`` apply (deviation
+    note: the plan named this parameter on ``find_sessions``, but only
+    this function has subagent transcripts to filter against a window —
+    ``find_sessions`` only ever lists top-level session files). ``"parent"``
+    (default, matches the seed script's own behaviour) returns every
+    subagent of this session regardless of its own timestamp — a
+    subagent inherits inclusion from its already-windowed parent session,
+    and ``since``/``until`` are ignored. ``"own"`` additionally requires
+    the subagent transcript's own first line timestamp to fall inside
+    ``[since, until]`` (via :func:`filter_subagents_by_window`).
     """
+    if subagent_window not in ("parent", "own"):
+        raise ValueError(f"unknown subagent_window: {subagent_window!r} (expected 'parent' or 'own')")
+
     subagents_dir = Path(project_dir) / session_id / "subagents"
     if not subagents_dir.exists():
         return []
     results: list[tuple[Path, dict]] = []
     for jsonl_path in sorted(subagents_dir.glob("agent-*.jsonl")):
-        meta_path = jsonl_path.with_name(jsonl_path.stem + ".meta.json")
-        meta: dict = {}
-        if meta_path.exists():
-            try:
-                loaded = json.loads(meta_path.read_text(encoding="utf-8", errors="replace"))
-            except (OSError, ValueError):
-                loaded = None
-            if isinstance(loaded, dict):
-                meta = loaded
-        results.append((jsonl_path, meta))
+        results.append((jsonl_path, _read_meta_dict(jsonl_path)))
+    workflows_dir = subagents_dir / "workflows"
+    if workflows_dir.exists():
+        for jsonl_path in sorted(workflows_dir.glob("*/agent-*.jsonl")):
+            results.append((jsonl_path, _read_meta_dict(jsonl_path)))
+
+    if subagent_window == "own":
+        results = filter_subagents_by_window(results, since, until)
     return results
 
 
@@ -266,10 +344,22 @@ def load_meta(path: str | Path) -> TranscriptMeta:
     (paired with ``agent-<hex>.meta.json``): ``agent_id`` is the filename
     stem with a trailing ``.meta.json``/``.json`` stripped, and
     ``session_id`` is the grandparent directory's name (``path``'s
-    parent is ``subagents/``, its parent is ``<session_id>/``). A ``path``
-    that isn't actually two levels under a session directory (e.g. a
-    test fixture that hands ``load_meta`` a bare file) still derives
-    *some* value for each — never raises — it just won't be meaningful.
+    parent is ``subagents/``, its parent is ``<session_id>/``) — except
+    for the workflow-nested layout ``<session_id>/subagents/workflows/
+    <run_id>/agent-<hex>.jsonl`` (three levels under ``subagents/``, not
+    one), detected by the immediate parent's parent being named
+    ``workflows``: there, ``session_id`` is the great-grandparent and
+    ``workflow_run_id`` (fix 3 addition) is set to the run id directory
+    name. A ``path`` that isn't actually under either shape (e.g. a test
+    fixture that hands ``load_meta`` a bare file) still derives *some*
+    value for each — never raises — it just won't be meaningful.
+
+    ``path`` (fix 3 addition, on the returned ``TranscriptMeta`` itself)
+    is set to the sibling transcript file (``.meta.json`` -> ``.jsonl``
+    in the same directory), and ``mtime_ns``/``size_bytes`` are that
+    transcript file's own ``stat()`` — 0 for either when the transcript
+    file doesn't exist (e.g. a ``.meta.json`` written before its
+    ``.jsonl``, or a bare test fixture), never raising.
     """
     path = Path(path)
     try:
@@ -313,7 +403,26 @@ def load_meta(path: str | Path) -> TranscriptMeta:
         meta.agent_id = name[: -len(".meta.json")]
     else:
         meta.agent_id = path.stem
-    meta.session_id = path.parent.parent.name
+
+    # Workflow-nested subagent: <session_id>/subagents/workflows/<run_id>/
+    # agent-<hex>.meta.json — one directory level deeper than the
+    # ordinary <session_id>/subagents/agent-<hex>.meta.json shape (see
+    # workflows.py's module docstring).
+    if path.parent.parent.name == "workflows":
+        meta.workflow_run_id = path.parent.name
+        meta.session_id = path.parent.parent.parent.parent.name
+    else:
+        meta.session_id = path.parent.parent.name
+
+    sibling_jsonl = path.parent / f"{meta.agent_id}.jsonl"
+    meta.path = str(sibling_jsonl)
+    try:
+        stat = sibling_jsonl.stat()
+    except OSError:
+        pass
+    else:
+        meta.mtime_ns = stat.st_mtime_ns
+        meta.size_bytes = stat.st_size
 
     return meta
 
@@ -324,6 +433,7 @@ __all__ = [
     "resolve_project_dirs",
     "find_sessions",
     "find_subagents",
+    "filter_subagents_by_window",
     "find_workflows",
     "load_meta",
 ]

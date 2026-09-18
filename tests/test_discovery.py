@@ -204,6 +204,74 @@ def test_find_subagents_missing_dir_returns_empty(tmp_path):
     assert discovery.find_subagents(tmp_path, "no-such-session") == []
 
 
+def test_find_subagents_also_finds_workflow_nested_agents(tmp_path):
+    session_id = "sess-1"
+    subagents_dir = tmp_path / session_id / "subagents"
+    subagents_dir.mkdir(parents=True)
+    (subagents_dir / "agent-abc123.jsonl").write_text("")
+    (subagents_dir / "agent-abc123.meta.json").write_text(json.dumps({"agentType": "claude-implementer"}))
+
+    wf_dir = subagents_dir / "workflows" / "wf_run_a"
+    wf_dir.mkdir(parents=True)
+    (wf_dir / "agent-1.jsonl").write_text("")
+    # Observed shape: workflow-nested meta carries no toolUseId.
+    (wf_dir / "agent-1.meta.json").write_text(json.dumps({"agentType": "claude-implementer"}))
+    (wf_dir / "agent-2.jsonl").write_text("")  # no meta file
+
+    result = discovery.find_subagents(tmp_path, session_id)
+    names = {p.name for p, _meta in result}
+    assert names == {"agent-abc123.jsonl", "agent-1.jsonl", "agent-2.jsonl"}
+
+
+def test_find_subagents_rejects_unknown_subagent_window(tmp_path):
+    with pytest.raises(ValueError):
+        discovery.find_subagents(tmp_path, "sess-1", subagent_window="bogus")
+
+
+def _write_subagent_transcript(dir_: Path, name: str, timestamp: str) -> Path:
+    dir_.mkdir(parents=True, exist_ok=True)
+    path = dir_ / f"{name}.jsonl"
+    path.write_text(f'{{"type":"user","timestamp":"{timestamp}"}}\n', encoding="utf-8")
+    return path
+
+
+def test_find_subagents_parent_window_ignores_own_timestamp(tmp_path):
+    # Default subagent_window="parent": since/until are accepted but have
+    # no effect -- every subagent of the session is returned regardless
+    # of its own timestamp (seed-script parity).
+    session_id = "sess-1"
+    subagents_dir = tmp_path / session_id / "subagents"
+    _write_subagent_transcript(subagents_dir, "agent-old", "2020-01-01T00:00:00.000Z")
+
+    result = discovery.find_subagents(
+        tmp_path, session_id, since="2025-01-01T00:00:00Z", subagent_window="parent"
+    )
+    assert {p.name for p, _meta in result} == {"agent-old.jsonl"}
+
+
+def test_find_subagents_own_window_filters_by_own_timestamp(tmp_path):
+    session_id = "sess-1"
+    subagents_dir = tmp_path / session_id / "subagents"
+    _write_subagent_transcript(subagents_dir, "agent-old", "2020-01-01T00:00:00.000Z")
+    _write_subagent_transcript(subagents_dir, "agent-new", "2026-06-01T00:00:00.000Z")
+
+    result = discovery.find_subagents(
+        tmp_path, session_id, since="2025-01-01T00:00:00Z", subagent_window="own"
+    )
+    assert {p.name for p, _meta in result} == {"agent-new.jsonl"}
+
+
+def test_filter_subagents_by_window_standalone(tmp_path):
+    old_path = _write_subagent_transcript(tmp_path, "agent-old", "2020-01-01T00:00:00.000Z")
+    new_path = _write_subagent_transcript(tmp_path, "agent-new", "2026-06-01T00:00:00.000Z")
+    pairs = [(old_path, {}), (new_path, {})]
+
+    kept = discovery.filter_subagents_by_window(pairs, since="2025-01-01T00:00:00Z", until=None)
+    assert kept == [(new_path, {})]
+
+    assert discovery.filter_subagents_by_window(pairs, None, None) == pairs
+
+
 def test_find_workflows_lists_wf_json_files(tmp_path):
     session_id = "sess-1"
     workflows_dir = tmp_path / session_id / "workflows"
@@ -279,6 +347,45 @@ def test_load_meta_derives_agent_id_and_session_id_from_path(tmp_path):
     meta = discovery.load_meta(meta_path)
     assert meta.agent_id == "agent-deadbeef"
     assert meta.session_id == "session-xyz-789"
+    assert meta.workflow_run_id is None
+
+
+def test_load_meta_derives_session_id_and_run_id_for_workflow_nested_agent(tmp_path):
+    # Layout: <session_id>/subagents/workflows/<run_id>/agent-<hex>.meta.json
+    run_dir = tmp_path / "session-xyz-789" / "subagents" / "workflows" / "wf_run_a"
+    run_dir.mkdir(parents=True)
+    meta_path = run_dir / "agent-1.meta.json"
+    meta_path.write_text(json.dumps({"agentType": "claude-implementer"}))
+
+    meta = discovery.load_meta(meta_path)
+    assert meta.agent_id == "agent-1"
+    assert meta.session_id == "session-xyz-789"  # not "workflows" (the buggy shallow derivation)
+    assert meta.workflow_run_id == "wf_run_a"
+
+
+def test_load_meta_sets_path_mtime_and_size_from_sibling_transcript(tmp_path):
+    subagents_dir = tmp_path / "session-xyz" / "subagents"
+    subagents_dir.mkdir(parents=True)
+    jsonl_path = subagents_dir / "agent-abc.jsonl"
+    jsonl_path.write_text('{"type":"user","timestamp":"2026-01-01T00:00:00.000Z"}\n', encoding="utf-8")
+    meta_path = subagents_dir / "agent-abc.meta.json"
+    meta_path.write_text(json.dumps({"agentType": "claude-implementer"}))
+
+    meta = discovery.load_meta(meta_path)
+    assert meta.path == str(jsonl_path)
+    assert meta.size_bytes == jsonl_path.stat().st_size
+    assert meta.mtime_ns == jsonl_path.stat().st_mtime_ns
+    assert meta.size_bytes > 0
+
+
+def test_load_meta_mtime_and_size_are_zero_when_transcript_file_missing(tmp_path):
+    meta_path = tmp_path / "agent-ghost.meta.json"
+    meta_path.write_text(json.dumps({"agentType": "claude-implementer"}))
+
+    meta = discovery.load_meta(meta_path)
+    assert meta.path == str(tmp_path / "agent-ghost.jsonl")
+    assert meta.mtime_ns == 0
+    assert meta.size_bytes == 0
 
 
 def test_load_meta_missing_file_returns_defaults(tmp_path):
