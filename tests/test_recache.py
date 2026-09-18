@@ -236,7 +236,8 @@ def test_gap_bucket_control_column_sums_to_all_priced_turns():
     stats = _stats_for(turns)
     section = recache.build_section(stats, PRICING, recache.RecacheThresholds())
     gap_table = _table(section, "recache_gap_buckets")
-    control_total = sum(row[4] for row in gap_table.rows)
+    # columns: bucket, turns, share_pct_turns, control_turns, control_share_pct_turns, ...
+    control_total = sum(row[3] for row in gap_table.rows)
     assert control_total == len(turns)
 
 
@@ -249,7 +250,8 @@ def test_preceding_tool_control_column_sums_to_all_priced_turns():
     stats = _stats_for(turns)
     section = recache.build_section(stats, PRICING, recache.RecacheThresholds())
     tool_table = _table(section, "recache_preceding_tool")
-    control_total = sum(row[4] for row in tool_table.rows)
+    # columns: preceding_tool, turns, share_pct_turns, control_turns, control_share_pct_turns, ...
+    control_total = sum(row[3] for row in tool_table.rows)
     assert control_total == len(turns)
 
 
@@ -385,7 +387,7 @@ def test_assert_privacy_on_every_table_row(tmp_path: Path):
     stats.add(result, lambda m: PRICING.resolve_model(m))
     section = recache.build_section(stats, PRICING, recache.RecacheThresholds())
 
-    assert len(section.tables) == 10
+    assert len(section.tables) == 11
     for table in section.tables:
         _assert_table_rows_privacy_clean(table)
 

@@ -336,13 +336,16 @@ def build_section(stats: RecacheStats, pricing: Pricing, th: RecacheThresholds, 
     total_cc_recache = sum(t.cache_creation_tokens for t in recache_turns)
     total_avoidable = sum(r.avoidable_cost for r in recache_records)
 
+    prefix_invalidated_turns = [t for t in recache_turns if t.recache_signature == "prefix-invalidated"]
+
     tables = [
         _summary_table(transcripts, total_priced, total_recache, total_cc_recache, total_cc_all, total_avoidable),
         _signature_table(recache_turns, recache_records),
-        _gap_bucket_table(all_turns, recache_turns, total_cc_recache, total_priced),
-        _preceding_tool_table(all_turns, recache_turns, total_cc_recache, total_priced),
+        _gap_bucket_table(all_turns, recache_turns, total_cc_recache, total_cc_all, total_priced),
+        _preceding_tool_table(all_turns, recache_turns, total_cc_recache, total_cc_all, total_priced),
         _top_command_prefix_table(recache_turns),
-        _primary_cause_table(all_turns, recache_turns, recache_records, total_recache, total_priced),
+        _primary_cause_table(all_turns, recache_turns, recache_records, total_recache, total_priced, total_cc_recache, total_cc_all),
+        _primary_cause_prefix_invalidated_table(all_turns, prefix_invalidated_turns, total_priced, total_cc_all),
         _cooccurrence_table(all_turns, recache_turns, total_recache, total_priced),
         _attachment_subsplit_table(recache_turns),
         _by_agent_type_table(records),
@@ -430,94 +433,129 @@ def _signature_table(recache_turns: list[Turn], recache_records: list[_Record]) 
     )
 
 
-def _gap_bucket_table(
-    all_turns: list[Turn], recache_turns: list[Turn], total_cc_recache: int, total_priced: int
-) -> Table:
-    control_counts = {b: 0 for b in GAP_BUCKETS}
-    for t in all_turns:
-        control_counts[gap_bucket(t.gap_s)] += 1
-    recache_by_bucket: dict[str, list[Turn]] = {b: [] for b in GAP_BUCKETS}
-    for t in recache_turns:
-        recache_by_bucket[gap_bucket(t.gap_s)].append(t)
+def _weighted_bucket_stats(
+    keys: Sequence,
+    key_of: Callable[[Turn], object],
+    control_turns: list[Turn],
+    target_turns: list[Turn],
+    total_target: int,
+    total_control: int,
+    total_cc_target: int,
+    total_cc_control: int,
+) -> dict:
+    """Fix item 4: shared turn-count *and* token-weighted tallying for
+    every table that buckets re-cache turns by some key (gap bucket,
+    preceding tool, primary cause) and reports a control column next to
+    it. Returns ``{key: [turns, share_pct_turns, control_turns,
+    control_share_pct_turns, cc_tokens, cc_share_pct, control_cc_tokens,
+    control_cc_share_pct]}`` for every key in ``keys``.
 
-    rows = []
-    for bucket in GAP_BUCKETS:
-        sub = recache_by_bucket[bucket]
-        cc = sum(t.cache_creation_tokens for t in sub)
-        rows.append(
-            [
-                bucket,
-                len(sub),
-                cc,
-                _pct(cc, total_cc_recache),
-                control_counts[bucket],
-                _pct(control_counts[bucket], total_priced),
-            ]
-        )
+    Reporting only a token-weighted share for the target population next
+    to a turn-count share for the control population (the pre-fix shape
+    of ``recache_gap_buckets``/``recache_preceding_tool``) mixes bases:
+    a bucket holding few turns but a lot of tokens looks artificially
+    under-represented against a turn-counted baseline. Both bases are
+    computed here so a caller can report either pair, or both.
+    """
+    control_counts: dict = {}
+    control_cc: dict = {}
+    for t in control_turns:
+        k = key_of(t)
+        control_counts[k] = control_counts.get(k, 0) + 1
+        control_cc[k] = control_cc.get(k, 0) + t.cache_creation_tokens
+    target_counts: dict = {}
+    target_cc: dict = {}
+    for t in target_turns:
+        k = key_of(t)
+        target_counts[k] = target_counts.get(k, 0) + 1
+        target_cc[k] = target_cc.get(k, 0) + t.cache_creation_tokens
+
+    stats = {}
+    for k in keys:
+        turns_n = target_counts.get(k, 0)
+        cc = target_cc.get(k, 0)
+        ctrl_n = control_counts.get(k, 0)
+        ctrl_cc = control_cc.get(k, 0)
+        stats[k] = [
+            turns_n,
+            _pct(turns_n, total_target),
+            ctrl_n,
+            _pct(ctrl_n, total_control),
+            cc,
+            _pct(cc, total_cc_target),
+            ctrl_cc,
+            _pct(ctrl_cc, total_cc_control),
+        ]
+    return stats
+
+
+def _gap_bucket_table(
+    all_turns: list[Turn], recache_turns: list[Turn], total_cc_recache: int, total_cc_all: int, total_priced: int
+) -> Table:
+    total_recache = len(recache_turns)
+    stats_by_bucket = _weighted_bucket_stats(
+        GAP_BUCKETS, lambda t: gap_bucket(t.gap_s), all_turns, recache_turns, total_recache, total_priced, total_cc_recache, total_cc_all
+    )
+    rows = [[bucket, *stats_by_bucket[bucket]] for bucket in GAP_BUCKETS]
     return Table(
         name="recache_gap_buckets",
         title="Re-cache by inter-turn gap",
         columns=[
             Column(key="bucket", label="Gap since previous turn", kind="str"),
             Column(key="turns", label="Re-cache turns", kind="int"),
+            Column(key="share_pct_turns", label="Share of re-cache turns", kind="pct"),
+            Column(key="control_turns", label="All priced turns (control)", kind="int"),
+            Column(key="control_share_pct_turns", label="Control share (turns)", kind="pct"),
             Column(key="cc_tokens", label="Cache-creation tokens", kind="tokens"),
             Column(key="cc_share_pct", label="Share of re-cache cc tokens", kind="pct"),
-            Column(key="control_turns", label="All priced turns (control)", kind="int"),
-            Column(key="control_share_pct", label="Control share", kind="pct"),
+            Column(key="control_cc_tokens", label="Cache-creation tokens (control)", kind="tokens"),
+            Column(key="control_cc_share_pct", label="Control share (cc tokens)", kind="pct"),
         ],
         rows=rows,
         notes=[
             "The 5-minute bucket boundary is inclusive on its lower side: "
             "a gap of exactly 300s falls in 5-15m, not 1-5m. The control "
-            "columns show the same buckets over every priced turn, so a "
-            "re-cache bucket's over-representation is visible against the "
-            "baseline distribution of gaps, not just its raw count.",
+            "columns show the same buckets over every priced turn, on "
+            "both a turn-count basis (control_share_pct_turns) and a "
+            "token-weighted basis (control_cc_share_pct) - fix item 4: "
+            "comparing a token-weighted share against a turn-counted "
+            "control (or vice versa) makes a bucket look over- or "
+            "under-represented purely from the basis mismatch.",
         ],
     )
 
 
 def _preceding_tool_table(
-    all_turns: list[Turn], recache_turns: list[Turn], total_cc_recache: int, total_priced: int
+    all_turns: list[Turn], recache_turns: list[Turn], total_cc_recache: int, total_cc_all: int, total_priced: int
 ) -> Table:
-    control_counts: dict[str, int] = {}
-    for t in all_turns:
-        control_counts[t.preceding_tool] = control_counts.get(t.preceding_tool, 0) + 1
-    recache_by_tool: dict[str, list[Turn]] = {}
-    for t in recache_turns:
-        recache_by_tool.setdefault(t.preceding_tool, []).append(t)
-
-    tools = sorted(set(control_counts) | set(recache_by_tool))
-    rows = []
-    for tool in tools:
-        sub = recache_by_tool.get(tool, [])
-        cc = sum(t.cache_creation_tokens for t in sub)
-        rows.append(
-            [
-                tool,
-                len(sub),
-                cc,
-                _pct(cc, total_cc_recache),
-                control_counts.get(tool, 0),
-                _pct(control_counts.get(tool, 0), total_priced),
-            ]
-        )
-    rows.sort(key=lambda row: row[2], reverse=True)
+    total_recache = len(recache_turns)
+    tools = sorted({t.preceding_tool for t in all_turns} | {t.preceding_tool for t in recache_turns})
+    stats_by_tool = _weighted_bucket_stats(
+        tools, lambda t: t.preceding_tool, all_turns, recache_turns, total_recache, total_priced, total_cc_recache, total_cc_all
+    )
+    rows = [[tool, *stats_by_tool[tool]] for tool in tools]
+    rows.sort(key=lambda row: row[5], reverse=True)  # cc_tokens
     return Table(
         name="recache_preceding_tool",
         title="Re-cache by preceding tool",
         columns=[
             Column(key="preceding_tool", label="Preceding tool", kind="str"),
             Column(key="turns", label="Re-cache turns", kind="int"),
+            Column(key="share_pct_turns", label="Share of re-cache turns", kind="pct"),
+            Column(key="control_turns", label="All priced turns (control)", kind="int"),
+            Column(key="control_share_pct_turns", label="Control share (turns)", kind="pct"),
             Column(key="cc_tokens", label="Cache-creation tokens", kind="tokens"),
             Column(key="cc_share_pct", label="Share of re-cache cc tokens", kind="pct"),
-            Column(key="control_turns", label="All priced turns (control)", kind="int"),
-            Column(key="control_share_pct", label="Control share", kind="pct"),
+            Column(key="control_cc_tokens", label="Cache-creation tokens (control)", kind="tokens"),
+            Column(key="control_cc_share_pct", label="Control share (cc tokens)", kind="pct"),
         ],
         rows=rows,
         notes=[
             "preceding_tool is Bash if the previous turn used it, else "
             "PowerShell, else the previous turn's first tool, else "
-            "'none'/'n/a' (parse.py's priority scan).",
+            "'none'/'n/a' (parse.py's priority scan). Fix item 4: both a "
+            "turn-count and a token-weighted control share are reported, "
+            "for the same reason given on recache_gap_buckets.",
         ],
     )
 
@@ -556,55 +594,131 @@ def _primary_cause_table(
     recache_records: list[_Record],
     total_recache: int,
     total_priced: int,
+    total_cc_recache: int,
+    total_cc_all: int,
 ) -> Table:
-    control_counts: dict[EventKind, int] = {}
-    for t in all_turns:
-        control_counts[t.preceding_primary] = control_counts.get(t.preceding_primary, 0) + 1
-    recache_by_primary: dict[EventKind, list[Turn]] = {}
-    for t in recache_turns:
-        recache_by_primary.setdefault(t.preceding_primary, []).append(t)
     cost_by_primary: dict[EventKind, float] = {}
     for r in recache_records:
         cost_by_primary[r.turn.preceding_primary] = cost_by_primary.get(r.turn.preceding_primary, 0.0) + r.avoidable_cost
 
+    primaries = {t.preceding_primary for t in all_turns} | {t.preceding_primary for t in recache_turns}
+    stats_by_primary = _weighted_bucket_stats(
+        primaries, lambda t: t.preceding_primary, all_turns, recache_turns, total_recache, total_priced, total_cc_recache, total_cc_all
+    )
+
     rows = []
-    for primary in set(control_counts) | set(recache_by_primary):
-        sub = recache_by_primary.get(primary, [])
-        cc = sum(t.cache_creation_tokens for t in sub)
-        share = _pct(len(sub), total_recache)
-        control_share = _pct(control_counts.get(primary, 0), total_priced)
+    for primary in primaries:
+        turns_n, share_turns, ctrl_n, ctrl_share_turns, cc, cc_share, ctrl_cc, ctrl_cc_share = stats_by_primary[primary]
         rows.append(
             [
                 primary.value,
-                len(sub),
+                turns_n,
+                share_turns,
+                ctrl_share_turns,
+                share_turns - ctrl_share_turns,
                 cc,
-                share,
+                cc_share,
+                ctrl_cc,
+                ctrl_cc_share,
+                cc_share - ctrl_cc_share,
                 round(cost_by_primary.get(primary, 0.0), 6),
-                control_share,
-                share - control_share,
             ]
         )
-    rows.sort(key=lambda row: row[2], reverse=True)
+    rows.sort(key=lambda row: row[5], reverse=True)  # cc_tokens
     return Table(
         name="recache_primary_cause",
         title="Re-cache primary cause",
         columns=[
             Column(key="preceding_primary", label="Preceding primary", kind="str"),
             Column(key="turns", label="Turns", kind="int"),
+            Column(key="share_pct_turns", label="Share of re-cache turns", kind="pct"),
+            Column(key="control_share_pct_turns", label="Control share (all priced turns)", kind="pct"),
+            Column(key="over_representation_points_turns", label="Over-representation (turns)", kind="float"),
             Column(key="cc_tokens", label="Cache-creation tokens", kind="tokens"),
-            Column(key="share_pct", label="Share of re-cache turns", kind="pct"),
+            Column(key="cc_share_pct", label="Share of re-cache cc tokens", kind="pct"),
+            Column(key="control_cc_tokens", label="Cache-creation tokens (control)", kind="tokens"),
+            Column(key="control_cc_share_pct", label="Control share (cc tokens)", kind="pct"),
+            Column(key="over_representation_points_tokens", label="Over-representation (tokens)", kind="float"),
             Column(key="avoidable_cost_usd", label="Avoidable cost", kind="money"),
-            Column(key="control_share_pct", label="Control share (all priced turns)", kind="pct"),
-            Column(key="over_representation_points", label="Over-representation", kind="float"),
         ],
         rows=rows,
         notes=[
             "preceding_primary is the single highest-precedence event "
             "kind observed since the previous turn (plan Appendix A2). "
-            "over-representation is this row's share of re-cache turns "
-            "minus its share of all priced turns, in percentage points, "
-            "so a cause's prevalence in ordinary turns is never mistaken "
-            "for evidence it drives re-caching.",
+            "Fix item 4: both a turn-count basis (share_pct_turns/"
+            "control_share_pct_turns/over_representation_points_turns) "
+            "and a token-weighted basis (cc_share_pct/"
+            "control_cc_share_pct/over_representation_points_tokens) are "
+            "reported side by side - a cause driving a few turns with "
+            "enormous cache-creation volume looks very different on each "
+            "basis, and mixing them (as the pre-fix table did, pairing a "
+            "count-based over-representation with a token-based cc "
+            "column) hid that.",
+        ],
+    )
+
+
+def _primary_cause_prefix_invalidated_table(
+    all_turns: list[Turn],
+    prefix_invalidated_turns: list[Turn],
+    total_priced: int,
+    total_cc_all: int,
+) -> Table:
+    """Fix item 4: the same primary-cause breakdown as
+    :func:`_primary_cause_table`, restricted to prefix-invalidated
+    re-cache turns only (full-expiry turns excluded — their cache had
+    already fully expired regardless of what preceded them, so any
+    "cause" attribution is noise). Denominators (``share_pct_turns``,
+    ``cc_share_pct``) are against this restricted population, not the
+    full re-cache population, so shares sum to 100% within this table.
+    """
+    total_pi = len(prefix_invalidated_turns)
+    total_cc_pi = sum(t.cache_creation_tokens for t in prefix_invalidated_turns)
+    primaries = {t.preceding_primary for t in all_turns} | {t.preceding_primary for t in prefix_invalidated_turns}
+    stats_by_primary = _weighted_bucket_stats(
+        primaries, lambda t: t.preceding_primary, all_turns, prefix_invalidated_turns, total_pi, total_priced, total_cc_pi, total_cc_all
+    )
+
+    rows = []
+    for primary in primaries:
+        turns_n, share_turns, ctrl_n, ctrl_share_turns, cc, cc_share, ctrl_cc, ctrl_cc_share = stats_by_primary[primary]
+        rows.append(
+            [
+                primary.value,
+                turns_n,
+                share_turns,
+                ctrl_share_turns,
+                cc,
+                cc_share,
+                ctrl_cc,
+                ctrl_cc_share,
+                cc_share - ctrl_cc_share,
+            ]
+        )
+    rows.sort(key=lambda row: row[4], reverse=True)  # cc_tokens
+    return Table(
+        name="recache_primary_cause_prefix_invalidated",
+        title="Re-cache primary cause (prefix-invalidated only)",
+        columns=[
+            Column(key="preceding_primary", label="Preceding primary", kind="str"),
+            Column(key="turns", label="Turns", kind="int"),
+            Column(key="share_pct_turns", label="Share of prefix-invalidated turns", kind="pct"),
+            Column(key="control_share_pct_turns", label="Control share (all priced turns)", kind="pct"),
+            Column(key="cc_tokens", label="Cache-creation tokens", kind="tokens"),
+            Column(key="cc_share_pct", label="Share of prefix-invalidated cc tokens", kind="pct"),
+            Column(key="control_cc_tokens", label="Cache-creation tokens (control)", kind="tokens"),
+            Column(key="control_cc_share_pct", label="Control share (cc tokens)", kind="pct"),
+            Column(key="over_representation_points_tokens", label="Over-representation (tokens)", kind="float"),
+        ],
+        rows=rows,
+        notes=[
+            "Restricted to prefix-invalidated re-cache turns: full-expiry "
+            "turns are excluded, since their cache had already fully "
+            "expired regardless of any cause observed alongside them "
+            "(mirrors recache_attachment_subsplit's same restriction). "
+            "The control population is still every priced turn, so this "
+            "table asks 'what precedes a prefix invalidation, compared "
+            "to an ordinary turn' rather than 'compared to any re-cache'.",
         ],
     )
 
