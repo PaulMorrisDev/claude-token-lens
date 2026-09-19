@@ -237,6 +237,7 @@ def test_run_init_writes_config_and_project_files(tmp_path, monkeypatch):
     real_project_path, projects_root, slug = _make_project(tmp_path)
     monkeypatch.chdir(real_project_path)
     config_dir = tmp_path / "config"
+    stdout = io.StringIO()
 
     rc = onboarding.run_init(
         config_dir=config_dir,
@@ -246,15 +247,29 @@ def test_run_init_writes_config_and_project_files(tmp_path, monkeypatch):
         hook_fragment="HOOK",
         statusline_fragment="STATUSLINE",
         stdin=io.StringIO(""),
-        stdout=io.StringIO(),
+        stdout=stdout,
     )
     assert rc == 0
+    project_toml_path = config_dir / "projects" / f"{slug}.toml"
     assert (config_dir / "config.toml").is_file()
-    assert (config_dir / "projects" / f"{slug}.toml").is_file()
+    assert project_toml_path.is_file()
 
     config = load_config(config_dir)
     assert config.capture_window == onboarding.DEFAULT_CAPTURE_WINDOW_DAYS
     assert config.capture_started is not None
+
+    # Fix N3: assert_privacy_deep was imported but never actually called
+    # anywhere in this file -- the privacy assertion its import implies
+    # was never run against init's own written output. Exercise it here
+    # against everything init writes/prints: the written config.toml,
+    # the written projects/<slug>.toml, and stdout.
+    assert_privacy_deep(
+        {
+            "config_toml": (config_dir / "config.toml").read_text(encoding="utf-8"),
+            "project_toml": project_toml_path.read_text(encoding="utf-8"),
+            "stdout": stdout.getvalue(),
+        }
+    )
 
 
 def test_run_init_no_install_skips_fragments(tmp_path, monkeypatch):

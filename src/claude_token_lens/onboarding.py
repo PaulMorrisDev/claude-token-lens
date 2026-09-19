@@ -64,6 +64,22 @@ DEFAULT_CAPTURE_WINDOW_DAYS = 7
 _TRUE_STRINGS = frozenset({"y", "yes", "true", "1", "on"})
 
 
+def _relative_label(path: Path, base: Path) -> str:
+    """``path`` rendered relative to ``base`` when possible, matching
+    ``profiles.apply._relative_label``'s convention: ``base`` (here,
+    always ``config_dir``, a path the caller explicitly supplied via
+    ``--config-dir`` or its documented default) is not itself a privacy
+    leak, so printing paths *relative to it* keeps the "Wrote ..."
+    confirmation messages useful without ever putting a raw absolute
+    filesystem path (home directory, username, drive letter) on stdout.
+    Falls back to ``path``'s own name when it isn't under ``base``.
+    """
+    try:
+        return str(path.relative_to(base))
+    except ValueError:
+        return path.name
+
+
 class OnboardingError(Exception):
     """An ``--answers`` file could not be read or is not valid JSON.
     Same "stand-alone, user-facing" convention as
@@ -424,7 +440,7 @@ def run_init(
         stdout.write(f"claude-token-lens init: {exc}\n")
         return 2
 
-    stdout.write(f"Wrote {written_path}\n")
+    stdout.write(f"Wrote {_relative_label(written_path, config_dir)}\n")
     if written_path.name == "config.toml.new":
         stdout.write(
             "(the existing config.toml had a shape init could not merge automatically -- "
@@ -439,7 +455,7 @@ def run_init(
     )
     project_slug = discovery.slug_for(os.getcwd())
     project_path = save_project_config(config_dir, project_slug, project_config)
-    stdout.write(f"Wrote {project_path}\n\n")
+    stdout.write(f"Wrote {_relative_label(project_path, config_dir)}\n\n")
 
     if no_install:
         stdout.write("Install step skipped (--no-install).\n\n")
@@ -479,7 +495,7 @@ def run_init(
             )
             report_markdown = baseline_mod.render_onboarding_report(record)
             baseline_path = baseline_mod.save_baseline(config_dir, record, report_markdown)
-            stdout.write(f"Wrote initial baseline {baseline_path}\n")
+            stdout.write(f"Wrote initial baseline {_relative_label(baseline_path, config_dir)}\n")
             stdout.write(f"Sessions analysed: {record['sessions_analysed']}\n")
 
     status = baseline_mod.capture_status(config, now=now)
