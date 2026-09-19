@@ -75,7 +75,7 @@ from datetime import datetime, timezone
 from typing import Callable
 
 from . import __version__ as _TOOL_VERSION
-from . import classify, compaction, recache, scorecard, snapshots as snapshots_mod, topology, ttl, workflows, workstyle
+from . import classify, compaction, context_budget, recache, scorecard, snapshots as snapshots_mod, topology, ttl, workflows, workstyle
 from .config import Config
 from .corpus import Corpus, SessionBundle
 from .model import (
@@ -112,6 +112,7 @@ _SECTION_ORDER: tuple[str, ...] = (
     "workflows",
     "phases",
     "config",
+    "context_budget",
     "scorecard",
 )
 
@@ -577,6 +578,7 @@ def build_report(
     ts = ttl.TtlStats()
     cs = compaction.CompactionStats()
     tp = topology.TopologyStats()
+    cb = context_budget.ContextBudgetStats()
     ph = PhaseStats() if phases else None
 
     for bundle in corpus.sessions:
@@ -655,6 +657,7 @@ def build_report(
                 session_cc_total_tokens += turn.cache_creation_tokens
 
         tp.add_session(record.session_id, top, list(subs), pricing)
+        cb.add_session(bundle.slug, top)
 
         session_cost[record.session_id] = session_cost_total
         session_cc_total[record.session_id] = session_cc_total_tokens
@@ -771,6 +774,9 @@ def build_report(
             for record in session_records
         ]
         sections.append(_build_config_section(sessions_with_metrics, snapshots))
+
+    if _want("context_budget"):
+        sections.append(context_budget.build_section(cb, snapshots=snapshots, usage_log_rows=None))
 
     if _want("scorecard"):
         sections.append(_build_scorecard_section(rs, ts, tp, cs, pricing_coverage, diagnostics, session_records, snapshots, config, scorecard_th))
