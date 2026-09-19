@@ -8,7 +8,14 @@ __version__ = "0.1.0.dev0"
 
 #: Bump when transcript-parsing logic changes in a way that could change
 #: results computed from a previously cached file.
-PARSER_VERSION = 1
+#:
+#: Bumped to 2 by the wp11-cache/wp12a-fixtures merge: parse.py's
+#: ttl_split_unknown/pre_split_turns fix (main's 709239a) and
+#: workstyle.py's chat-only-before-single-model reorder (main's 0f892e3)
+#: both landed on main after wp11-cache branched from 25c68c1 (before
+#: PARSER_VERSION existed), so a cache entry written under the old
+#: parsing behaviour must not be treated as still valid.
+PARSER_VERSION = 2
 
 #: Bump when the model.py contract changes in a way that invalidates the
 #: on-disk digest cache (see model.py's module docstring for the contract

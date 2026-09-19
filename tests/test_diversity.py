@@ -145,17 +145,17 @@ def test_sdk_headless_entrypoint_is_captured():
     assert top.meta.entrypoint == "sdk"
 
 
-# -- (d) chat-only: no tool use anywhere; a documented archetype-precedence --
+# -- (d) chat-only: no tool use anywhere -------------------------------------
 #
-# workstyle.detect_archetype checks "single-model" (>=1 known model tier,
-# <=2 spawns) BEFORE "chat-only" (0 spawns, tools within the discovery
-# set). A real chat-only session almost always has a resolvable model
-# tier (its turns carry a real model id), so it lands in "single-model",
-# never "chat-only" -- "chat-only" is only reachable when no turn's model
-# resolves to a known tier at all. This is a genuine characterization
-# finding from this fixture, not a bug this WP is authorized to fix
-# (workstyle.py is outside WP12a's writable paths) -- see the final
-# report's proposed-deviations section.
+# workstyle.detect_archetype used to check "single-model" (>=1 known model
+# tier, <=2 spawns) BEFORE "chat-only" (0 spawns, tools within the
+# discovery set). A real chat-only session almost always has a resolvable
+# model tier (its turns carry a real model id), so it always landed on
+# "single-model" -- "chat-only" was only reachable when no turn's model
+# resolved to a known tier at all. Fixed on main (0f892e3) by testing
+# chat-only first: it's a strictly narrower condition than single-model's
+# "at most 2 spawns", so nothing that used to correctly match single-model
+# or mixed changes.
 
 
 def test_chat_only_has_no_tool_use_at_all():
@@ -166,12 +166,12 @@ def test_chat_only_has_no_tool_use_at_all():
         assert turn.tool_names == ()
 
 
-def test_chat_only_archetype_is_single_model_not_chat_only():
+def test_chat_only_archetype_is_chat_only():
     top, _subs = _load("chat-only")
     features = _session_features(top)
     archetype, evidence = workstyle.detect_archetype(features)
-    assert archetype == "single-model", evidence
-    assert evidence["known_model_families"] == 1
+    assert archetype == "chat-only", evidence
+    assert evidence["top_level_tool_names"] == sorted(features.top_level_tool_names)
 
 
 # -- (e) peer-team: origin.kind == "peer" messages ---------------------------
@@ -238,17 +238,17 @@ def test_plan_then_implement_archetype_is_plan_high_implement_low():
 
 # -- (i) old-version: flat cache_creation_input_tokens, no ephemeral split --
 #
-# Documented, expected parser behaviour (report rather than fix -- parse.py
-# is outside WP12a's writable paths): when a turn's usage payload has no
-# nested "cache_creation" object at all (an older Claude Code JSONL shape,
-# before the ephemeral_5m/1h split existed), cc_5m and cc_1h both default
-# to 0. parse.py's reconciliation compares that 0 sum against the flat
-# cache_creation_input_tokens field; when the flat field is non-zero, the
-# two disagree, so Diagnostics.ttl_sum_mismatch is incremented for that
-# turn even though nothing is actually wrong with this transcript -- it's
-# simply older than the field split. The flat value itself is preserved
-# (never zeroed or dropped): turn.cache_creation_tokens still reads the
-# real flat number.
+# When a turn's usage payload has no nested "cache_creation" object at all
+# (an older Claude Code JSONL shape, before the ephemeral_5m/1h split
+# existed), cc_5m and cc_1h both default to 0. parse.py used to compare
+# that 0 sum against the flat cache_creation_input_tokens field and flag
+# a Diagnostics.ttl_sum_mismatch whenever the flat field was non-zero --
+# but that's not an invariant breach, just a transcript older than the
+# field split. Fixed on main (709239a): a missing nested object now sets
+# Turn.ttl_split_unknown and is counted under the new, additive
+# Diagnostics.pre_split_turns instead of ttl_sum_mismatch. The flat value
+# itself is preserved (never zeroed or dropped): turn.cache_creation_tokens
+# still reads the real flat number.
 
 
 def test_old_version_flat_cache_creation_field_is_honoured():
@@ -261,8 +261,13 @@ def test_old_version_flat_cache_creation_field_is_honoured():
     assert priced[1].cache_creation_tokens == 0
 
 
-def test_old_version_flags_the_expected_ttl_sum_mismatch():
+def test_old_version_flags_pre_split_turns_not_ttl_sum_mismatch():
     top, _subs = _load("old-version")
-    # See the module-level note above: this is the documented, expected
-    # consequence of parsing a pre-split transcript, not a bug fixed here.
-    assert top.diagnostics.ttl_sum_mismatch == 1
+    # See the module-level note above (fixed on main, 709239a): a missing
+    # nested cache_creation object is a format difference, not a sum
+    # invariant breach, so it must never set ttl_sum_mismatch.
+    priced = [t for t in top.turns if t.turn_index > 0]
+    assert priced[0].ttl_split_unknown is True
+    assert priced[1].ttl_split_unknown is True
+    assert top.diagnostics.ttl_sum_mismatch == 0
+    assert top.diagnostics.pre_split_turns == 2
