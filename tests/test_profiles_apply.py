@@ -10,6 +10,7 @@ touch the machine's actual ``~/.claude``.
 
 from __future__ import annotations
 
+import difflib
 import json
 import subprocess
 from pathlib import Path
@@ -19,7 +20,6 @@ import pytest
 from helpers import assert_privacy
 
 from claude_token_lens.profiles import apply as apply_mod
-from claude_token_lens.profiles.diff import diff_against_effective, render_unified_diff
 from claude_token_lens.profiles.frontmatter import parse_frontmatter
 from claude_token_lens.profiles.schema import load_dict
 from claude_token_lens.snapshots import Snapshot
@@ -58,18 +58,20 @@ def _init_git_repo_with_file(project: Path, rel_path: str, content: str) -> None
 
 def test_plan_apply_user_scope_targets_home_settings(tmp_path):
     home = tmp_path / "home"
+    claude_root = home / ".claude"
     config_dir = home / ".claude" / "token-lens"
-    plan = apply_mod.plan_apply(_profile(), scope="user", project_path=None, config_dir=config_dir, home=home)
+    plan = apply_mod.plan_apply(_profile(), scope="user", project_path=None, config_dir=config_dir, claude_root=claude_root)
     settings_action = next(a for a in plan.actions if a.kind == "settings")
-    assert settings_action.path == home / ".claude" / "settings.json"
+    assert settings_action.path == claude_root / "settings.json"
 
 
 def test_plan_apply_project_local_scope_targets_settings_local(tmp_path):
     home = tmp_path / "home"
+    claude_root = home / ".claude"
     project = tmp_path / "proj"
     config_dir = home / ".claude" / "token-lens"
     plan = apply_mod.plan_apply(
-        _profile(), scope="project-local", project_path=project, config_dir=config_dir, home=home
+        _profile(), scope="project-local", project_path=project, config_dir=config_dir, claude_root=claude_root
     )
     settings_action = next(a for a in plan.actions if a.kind == "settings")
     assert settings_action.path == project / ".claude" / "settings.local.json"
@@ -77,63 +79,110 @@ def test_plan_apply_project_local_scope_targets_settings_local(tmp_path):
 
 def test_plan_apply_repo_scope_targets_shared_settings(tmp_path):
     home = tmp_path / "home"
+    claude_root = home / ".claude"
     project = tmp_path / "proj"
     config_dir = home / ".claude" / "token-lens"
-    plan = apply_mod.plan_apply(_profile(), scope="repo", project_path=project, config_dir=config_dir, home=home)
+    plan = apply_mod.plan_apply(_profile(), scope="repo", project_path=project, config_dir=config_dir, claude_root=claude_root)
     settings_action = next(a for a in plan.actions if a.kind == "settings")
     assert settings_action.path == project / ".claude" / "settings.json"
 
 
 def test_plan_apply_rejects_unknown_scope(tmp_path):
     home = tmp_path / "home"
+    claude_root = home / ".claude"
     config_dir = home / ".claude" / "token-lens"
     with pytest.raises(ValueError):
-        apply_mod.plan_apply(_profile(), scope="not-a-scope", project_path=None, config_dir=config_dir, home=home)
+        apply_mod.plan_apply(_profile(), scope="not-a-scope", project_path=None, config_dir=config_dir, claude_root=claude_root)
 
 
 def test_plan_apply_project_scope_without_project_path_raises(tmp_path):
     home = tmp_path / "home"
+    claude_root = home / ".claude"
     config_dir = home / ".claude" / "token-lens"
     with pytest.raises(ValueError):
-        apply_mod.plan_apply(_profile(), scope="repo", project_path=None, config_dir=config_dir, home=home)
+        apply_mod.plan_apply(_profile(), scope="repo", project_path=None, config_dir=config_dir, claude_root=claude_root)
 
 
 # --------------------------------------------------------------------
-# dry-run diff: provably the same computation diff.py's own render uses
+# dry-run diff (fix B4): rendered from the real target files, not the
+# snapshot -- see apply.render_plan_diff and the module docstring's B4
+# note for the bug this replaced (a stale/absent snapshot rendered the
+# file's real current value as "(unset)", and the subsequent real apply
+# then silently overwrote it).
 # --------------------------------------------------------------------
 
 
-def test_plan_apply_diff_text_matches_diff_module_computed_independently(tmp_path):
+def test_plan_apply_diff_text_reflects_the_real_file_not_a_stale_snapshot(tmp_path):
+    """Reproduces the review's exact repro: an agent file already has
+    ``model: opus`` on disk, but the snapshot handed to plan_apply
+    claims nothing about this agent at all (an empty
+    ``effective_agents`` -- the stale/absent case B4 was about). The
+    diff must show the real current value, never "(unset)"."""
     home = tmp_path / "home"
+    claude_root = home / ".claude"
     config_dir = home / ".claude" / "token-lens"
-    profile = _profile(settings={"effortLevel": "high"})
-    snapshot = _snapshot(effective={"effortLevel": "medium"}, effective_provenance={"effortLevel": "user"})
+    agents_dir = claude_root / "agents"
+    agents_dir.mkdir(parents=True)
+    (agents_dir / "reviewer.md").write_text(
+        "---\nname: reviewer\nmodel: opus   # deliberate\n---\n\nBody.\n", encoding="utf-8"
+    )
+    profile = _profile(settings={}, agents={"reviewer": {"model": "sonnet"}})
+    snapshot = _snapshot(effective_agents={})
 
     plan = apply_mod.plan_apply(
-        profile, scope="user", project_path=None, config_dir=config_dir, home=home, snapshot=snapshot
+        profile, scope="user", project_path=None, config_dir=config_dir, claude_root=claude_root, snapshot=snapshot
     )
 
-    expected_diff = diff_against_effective(
-        profile,
-        effective={"effortLevel": "medium"},
-        effective_agents={},
-        provenance={"effortLevel": "user"},
-        managed_keys=set(),
+    assert "(unset)" not in plan.diff_text
+    assert "-model: opus   # deliberate" in plan.diff_text
+    assert "+model: sonnet   # deliberate" in plan.diff_text
+
+
+def test_plan_apply_diff_text_equals_the_diff_of_a_real_apply(tmp_path):
+    """The regression case the review asked for directly: the dry-run
+    diff text must equal the unified diff of the target file's actual
+    before/after content -- not a computation derived from anything
+    else -- when a real (non-dry-run) apply is executed against the
+    exact same starting state."""
+    home = tmp_path / "home"
+    claude_root = home / ".claude"
+    config_dir = home / ".claude" / "token-lens"
+    claude_root.mkdir(parents=True)
+    settings_path = claude_root / "settings.json"
+    settings_path.write_text('{\n  "effortLevel": "medium"\n}\n', encoding="utf-8")
+
+    profile = _profile(settings={"effortLevel": "high"})
+    plan = apply_mod.plan_apply(
+        profile, scope="user", project_path=None, config_dir=config_dir, claude_root=claude_root
     )
-    expected_text = render_unified_diff(expected_diff, scope="user")
-    assert plan.diff_text == expected_text
-    assert "-effortLevel: medium" in plan.diff_text
-    assert "+effortLevel: high" in plan.diff_text
+    before = settings_path.read_bytes()
+    apply_mod.execute(plan, config_dir=config_dir)
+    after = settings_path.read_bytes()
+    assert before != after
+
+    expected_lines = [
+        line
+        for line in difflib.unified_diff(
+            before.decode("utf-8").splitlines(),
+            after.decode("utf-8").splitlines(),
+            fromfile="settings.json",
+            tofile="settings.json",
+            lineterm="",
+        )
+        if not line.startswith("@@")
+    ]
+    assert "\n".join(expected_lines) in plan.diff_text
 
 
 def test_plan_apply_diff_text_is_privacy_clean_without_project_path(tmp_path):
     home = tmp_path / "home"
+    claude_root = home / ".claude"
     config_dir = home / ".claude" / "token-lens"
     profile = _profile(settings={"effortLevel": "high"}, agents={"reviewer": {"effort": "high"}})
     for scope in ("user", "project-local", "repo"):
         project_path = tmp_path / "proj" if scope != "user" else None
         plan = apply_mod.plan_apply(
-            profile, scope=scope, project_path=project_path, config_dir=config_dir, home=home
+            profile, scope=scope, project_path=project_path, config_dir=config_dir, claude_root=claude_root
         )
         assert_privacy({"diff": plan.diff_text})
 
@@ -145,6 +194,7 @@ def test_plan_apply_diff_text_is_privacy_clean_without_project_path(tmp_path):
 
 def test_apply_then_revert_restores_byte_identical_content(tmp_path):
     home = tmp_path / "home"
+    claude_root = home / ".claude"
     project = tmp_path / "proj"
     config_dir = home / ".claude" / "token-lens"
     agents_dir = project / ".claude" / "agents"
@@ -168,7 +218,7 @@ def test_apply_then_revert_restores_byte_identical_content(tmp_path):
         settings={"effortLevel": "high"}, agents={"reviewer": {"effort": "high"}}
     )
     plan = apply_mod.plan_apply(
-        profile, scope="project-local", project_path=project, config_dir=config_dir, home=home
+        profile, scope="project-local", project_path=project, config_dir=config_dir, claude_root=claude_root
     )
     assert not plan.blocked
     result = apply_mod.execute(plan, config_dir=config_dir)
@@ -194,13 +244,14 @@ def test_apply_then_revert_restores_byte_identical_content(tmp_path):
 
 def test_apply_then_revert_deletes_files_that_did_not_exist_before(tmp_path):
     home = tmp_path / "home"
+    claude_root = home / ".claude"
     config_dir = home / ".claude" / "token-lens"
 
     profile = _profile(settings={"effortLevel": "high"})
-    plan = apply_mod.plan_apply(profile, scope="user", project_path=None, config_dir=config_dir, home=home)
+    plan = apply_mod.plan_apply(profile, scope="user", project_path=None, config_dir=config_dir, claude_root=claude_root)
     result = apply_mod.execute(plan, config_dir=config_dir)
 
-    settings_path = home / ".claude" / "settings.json"
+    settings_path = claude_root / "settings.json"
     assert settings_path.exists()
     active_path = config_dir / "active-profile"
     assert active_path.read_text(encoding="utf-8").strip() == "sample"
@@ -220,12 +271,13 @@ def test_revert_raises_for_unknown_timestamp(tmp_path):
 
 def test_execute_raises_and_writes_nothing_when_plan_is_blocked(tmp_path):
     home = tmp_path / "home"
+    claude_root = home / ".claude"
     project = tmp_path / "proj"
     config_dir = home / ".claude" / "token-lens"
     _init_git_repo_with_file(project, ".claude/settings.json", "{}\n")
 
     profile = _profile(settings={"effortLevel": "high"})
-    plan = apply_mod.plan_apply(profile, scope="repo", project_path=project, config_dir=config_dir, home=home)
+    plan = apply_mod.plan_apply(profile, scope="repo", project_path=project, config_dir=config_dir, claude_root=claude_root)
     assert plan.blocked
     with pytest.raises(apply_mod.ApplyError) as excinfo:
         apply_mod.execute(plan, config_dir=config_dir)
@@ -240,32 +292,67 @@ def test_execute_raises_and_writes_nothing_when_plan_is_blocked(tmp_path):
 
 def test_plan_apply_blocks_tracked_settings_file(tmp_path):
     home = tmp_path / "home"
+    claude_root = home / ".claude"
     project = tmp_path / "proj"
     config_dir = home / ".claude" / "token-lens"
     _init_git_repo_with_file(project, ".claude/settings.json", "{}\n")
 
     profile = _profile(settings={"effortLevel": "high"})
-    plan = apply_mod.plan_apply(profile, scope="repo", project_path=project, config_dir=config_dir, home=home)
+    plan = apply_mod.plan_apply(profile, scope="repo", project_path=project, config_dir=config_dir, claude_root=claude_root)
     assert any("tracked by git" in reason for reason in plan.blocked)
 
 
 def test_allow_tracked_permits_writing_a_tracked_settings_file(tmp_path):
     home = tmp_path / "home"
+    claude_root = home / ".claude"
     project = tmp_path / "proj"
     config_dir = home / ".claude" / "token-lens"
     _init_git_repo_with_file(project, ".claude/settings.json", "{}\n")
 
     profile = _profile(settings={"effortLevel": "high"})
     plan = apply_mod.plan_apply(
-        profile, scope="repo", project_path=project, config_dir=config_dir, home=home, allow_tracked=True
+        profile, scope="repo", project_path=project, config_dir=config_dir, claude_root=claude_root, allow_tracked=True
     )
     assert not plan.blocked
     result = apply_mod.execute(plan, config_dir=config_dir)
     assert (project / ".claude" / "settings.json") in result.written
 
 
+def test_plan_apply_blocks_tracked_settings_file_at_user_scope(tmp_path):
+    """Fix S7: the tracked-file refusal used to be checked only when
+    ``project_path is not None``, so a user-scope ``~/.claude`` kept in
+    a dotfiles repository (common) was written without
+    ``--allow-tracked`` -- this is the same refusal as the project-scope
+    test above, exercised with ``claude_root`` itself as the git repo
+    (mirroring a real dotfiles layout: ``settings.json`` committed
+    directly under the tracked Claude root, no project involved)."""
+    home = tmp_path / "home"
+    claude_root = home / ".claude"
+    config_dir = home / ".claude" / "token-lens"
+    _init_git_repo_with_file(claude_root, "settings.json", "{}\n")
+
+    profile = _profile(settings={"effortLevel": "high"})
+    plan = apply_mod.plan_apply(
+        profile, scope="user", project_path=None, config_dir=config_dir, claude_root=claude_root
+    )
+    assert any("tracked by git" in reason for reason in plan.blocked)
+
+    plan_allowed = apply_mod.plan_apply(
+        profile,
+        scope="user",
+        project_path=None,
+        config_dir=config_dir,
+        claude_root=claude_root,
+        allow_tracked=True,
+    )
+    assert not plan_allowed.blocked
+    result = apply_mod.execute(plan_allowed, config_dir=config_dir)
+    assert (claude_root / "settings.json") in result.written
+
+
 def test_plan_apply_blocks_tracked_agent_file(tmp_path):
     home = tmp_path / "home"
+    claude_root = home / ".claude"
     project = tmp_path / "proj"
     config_dir = home / ".claude" / "token-lens"
     _init_git_repo_with_file(
@@ -274,7 +361,7 @@ def test_plan_apply_blocks_tracked_agent_file(tmp_path):
 
     profile = _profile(settings={}, agents={"reviewer": {"effort": "high"}})
     plan = apply_mod.plan_apply(
-        profile, scope="project-local", project_path=project, config_dir=config_dir, home=home
+        profile, scope="project-local", project_path=project, config_dir=config_dir, claude_root=claude_root
     )
     assert any("tracked by git" in reason for reason in plan.blocked)
 
@@ -283,7 +370,7 @@ def test_plan_apply_blocks_tracked_agent_file(tmp_path):
         scope="project-local",
         project_path=project,
         config_dir=config_dir,
-        home=home,
+        claude_root=claude_root,
         allow_tracked=True,
     )
     assert not plan_allowed.blocked
@@ -298,13 +385,14 @@ def test_plan_apply_blocks_tracked_agent_file(tmp_path):
 
 def test_plan_apply_blocks_missing_agent_file(tmp_path):
     home = tmp_path / "home"
+    claude_root = home / ".claude"
     project = tmp_path / "proj"
     config_dir = home / ".claude" / "token-lens"
     (project / ".claude" / "agents").mkdir(parents=True)
 
     profile = _profile(settings={}, agents={"ghost": {"model": "opus"}})
     plan = apply_mod.plan_apply(
-        profile, scope="project-local", project_path=project, config_dir=config_dir, home=home
+        profile, scope="project-local", project_path=project, config_dir=config_dir, claude_root=claude_root
     )
     assert any("no agent file found" in reason for reason in plan.blocked)
     assert not (project / ".claude" / "agents" / "ghost.md").exists()
@@ -312,13 +400,14 @@ def test_plan_apply_blocks_missing_agent_file(tmp_path):
 
 def test_force_creates_missing_agent_file_from_scratch(tmp_path):
     home = tmp_path / "home"
+    claude_root = home / ".claude"
     project = tmp_path / "proj"
     config_dir = home / ".claude" / "token-lens"
     (project / ".claude" / "agents").mkdir(parents=True)
 
     profile = _profile(settings={}, agents={"ghost": {"model": "opus"}})
     plan = apply_mod.plan_apply(
-        profile, scope="project-local", project_path=project, config_dir=config_dir, home=home, force=True
+        profile, scope="project-local", project_path=project, config_dir=config_dir, claude_root=claude_root, force=True
     )
     assert not plan.blocked
     apply_mod.execute(plan, config_dir=config_dir)
@@ -332,13 +421,14 @@ def test_force_does_not_affect_allow_tracked(tmp_path):
     it must not also waive the tracked-file refusal (that is
     --allow-tracked's job specifically, per the module docstring)."""
     home = tmp_path / "home"
+    claude_root = home / ".claude"
     project = tmp_path / "proj"
     config_dir = home / ".claude" / "token-lens"
     _init_git_repo_with_file(project, ".claude/settings.json", "{}\n")
 
     profile = _profile(settings={"effortLevel": "high"})
     plan = apply_mod.plan_apply(
-        profile, scope="repo", project_path=project, config_dir=config_dir, home=home, force=True
+        profile, scope="repo", project_path=project, config_dir=config_dir, claude_root=claude_root, force=True
     )
     assert any("tracked by git" in reason for reason in plan.blocked)
 
@@ -350,12 +440,13 @@ def test_force_does_not_affect_allow_tracked(tmp_path):
 
 def test_managed_settings_key_is_excluded_and_reported(tmp_path):
     home = tmp_path / "home"
+    claude_root = home / ".claude"
     config_dir = home / ".claude" / "token-lens"
     profile = _profile(settings={"effortLevel": "high", "outputStyle": "concise"})
     snapshot = _snapshot(managed_keys=["effortLevel"])
 
     plan = apply_mod.plan_apply(
-        profile, scope="user", project_path=None, config_dir=config_dir, home=home, snapshot=snapshot
+        profile, scope="user", project_path=None, config_dir=config_dir, claude_root=claude_root, snapshot=snapshot
     )
     assert "settings.effortLevel" in plan.skipped_managed
     settings_action = next(a for a in plan.actions if a.kind == "settings")
@@ -366,6 +457,7 @@ def test_managed_settings_key_is_excluded_and_reported(tmp_path):
 
 def test_managed_agent_key_is_excluded_via_agents_wildcard(tmp_path):
     home = tmp_path / "home"
+    claude_root = home / ".claude"
     project = tmp_path / "proj"
     config_dir = home / ".claude" / "token-lens"
     agents_dir = project / ".claude" / "agents"
@@ -379,7 +471,7 @@ def test_managed_agent_key_is_excluded_via_agents_wildcard(tmp_path):
         scope="project-local",
         project_path=project,
         config_dir=config_dir,
-        home=home,
+        claude_root=claude_root,
         snapshot=snapshot,
     )
     assert "agents.reviewer.effort" in plan.skipped_managed
@@ -388,13 +480,14 @@ def test_managed_agent_key_is_excluded_via_agents_wildcard(tmp_path):
 
 def test_managed_env_key_is_excluded_from_env_lines(tmp_path):
     home = tmp_path / "home"
+    claude_root = home / ".claude"
     config_dir = home / ".claude" / "token-lens"
     profile = _profile(
         settings={}, env={"CLAUDE_CODE_PROMPT_CACHE_TTL": "5m", "MAX_THINKING_TOKENS": "1024"}
     )
     snapshot = _snapshot(managed_keys=["CLAUDE_CODE_PROMPT_CACHE_TTL"])
     plan = apply_mod.plan_apply(
-        profile, scope="user", project_path=None, config_dir=config_dir, home=home, snapshot=snapshot
+        profile, scope="user", project_path=None, config_dir=config_dir, claude_root=claude_root, snapshot=snapshot
     )
     assert "env.CLAUDE_CODE_PROMPT_CACHE_TTL" in plan.skipped_managed
     assert not any(line.startswith("CLAUDE_CODE_PROMPT_CACHE_TTL=") for line in plan.env_lines)
@@ -431,14 +524,15 @@ def test_env_lines_for_profile_orders_by_allowlist_and_excludes_managed():
 
 def test_plan_apply_raises_on_unparseable_existing_settings_json(tmp_path):
     home = tmp_path / "home"
+    claude_root = home / ".claude"
     config_dir = home / ".claude" / "token-lens"
-    settings_path = home / ".claude" / "settings.json"
+    settings_path = claude_root / "settings.json"
     settings_path.parent.mkdir(parents=True)
     settings_path.write_text("not json at all", encoding="utf-8")
 
     profile = _profile(settings={"effortLevel": "high"})
     with pytest.raises(apply_mod.ApplyError):
-        apply_mod.plan_apply(profile, scope="user", project_path=None, config_dir=config_dir, home=home)
+        apply_mod.plan_apply(profile, scope="user", project_path=None, config_dir=config_dir, claude_root=claude_root)
 
 
 # --------------------------------------------------------------------
@@ -448,6 +542,7 @@ def test_plan_apply_raises_on_unparseable_existing_settings_json(tmp_path):
 
 def test_write_launch_overlay_writes_only_the_overlay_file(tmp_path):
     home = tmp_path / "home"
+    claude_root = home / ".claude"
     config_dir = home / ".claude" / "token-lens"
     profile = _profile(settings={"effortLevel": "high", "outputStyle": "concise"})
 
@@ -464,6 +559,7 @@ def test_write_launch_overlay_writes_only_the_overlay_file(tmp_path):
 
 def test_write_launch_overlay_excludes_managed_keys(tmp_path):
     home = tmp_path / "home"
+    claude_root = home / ".claude"
     config_dir = home / ".claude" / "token-lens"
     profile = _profile(settings={"effortLevel": "high", "outputStyle": "concise"})
     path = apply_mod.write_launch_overlay(profile, config_dir=config_dir, managed_keys={"effortLevel"})
@@ -483,14 +579,15 @@ def test_list_backups_empty_when_no_backups_dir(tmp_path):
 
 def test_list_backups_reports_ts_profile_scope_and_file_count(tmp_path):
     home = tmp_path / "home"
+    claude_root = home / ".claude"
     config_dir = home / ".claude" / "token-lens"
 
     profile_a = _profile(settings={"effortLevel": "high"})
-    plan_a = apply_mod.plan_apply(profile_a, scope="user", project_path=None, config_dir=config_dir, home=home)
+    plan_a = apply_mod.plan_apply(profile_a, scope="user", project_path=None, config_dir=config_dir, claude_root=claude_root)
     result_a = apply_mod.execute(plan_a, config_dir=config_dir)
 
     profile_b = load_dict({"id": "other", "settings": {"outputStyle": "concise"}})
-    plan_b = apply_mod.plan_apply(profile_b, scope="user", project_path=None, config_dir=config_dir, home=home)
+    plan_b = apply_mod.plan_apply(profile_b, scope="user", project_path=None, config_dir=config_dir, claude_root=claude_root)
     result_b = apply_mod.execute(plan_b, config_dir=config_dir)
 
     # Both executes can legitimately land in the same wall-clock second;
@@ -517,6 +614,7 @@ def test_execute_avoids_backup_collision_within_the_same_second(tmp_path, monkey
     first apply's backup survives untouched -- the collision this
     module's ``execute()`` disambiguates against."""
     home = tmp_path / "home"
+    claude_root = home / ".claude"
     config_dir = home / ".claude" / "token-lens"
 
     import claude_token_lens.profiles.apply as apply_module
@@ -529,11 +627,11 @@ def test_execute_avoids_backup_collision_within_the_same_second(tmp_path, monkey
     monkeypatch.setattr(apply_module, "datetime", _FrozenDatetime)
 
     profile_a = _profile(settings={"effortLevel": "high"})
-    plan_a = apply_mod.plan_apply(profile_a, scope="user", project_path=None, config_dir=config_dir, home=home)
+    plan_a = apply_mod.plan_apply(profile_a, scope="user", project_path=None, config_dir=config_dir, claude_root=claude_root)
     result_a = apply_mod.execute(plan_a, config_dir=config_dir)
 
     profile_b = load_dict({"id": "other", "settings": {"outputStyle": "concise"}})
-    plan_b = apply_mod.plan_apply(profile_b, scope="user", project_path=None, config_dir=config_dir, home=home)
+    plan_b = apply_mod.plan_apply(profile_b, scope="user", project_path=None, config_dir=config_dir, claude_root=claude_root)
     result_b = apply_mod.execute(plan_b, config_dir=config_dir)
 
     assert result_a.ts == "20260101T000000Z"
@@ -564,13 +662,14 @@ def test_list_backups_skips_unparseable_manifest(tmp_path):
 
 def test_apply_result_paths_are_all_under_caller_supplied_roots(tmp_path):
     home = tmp_path / "home"
+    claude_root = home / ".claude"
     project = tmp_path / "proj"
     config_dir = home / ".claude" / "token-lens"
     (project / ".claude" / "agents").mkdir(parents=True)
 
     profile = _profile(settings={"effortLevel": "high"})
     plan = apply_mod.plan_apply(
-        profile, scope="project-local", project_path=project, config_dir=config_dir, home=home
+        profile, scope="project-local", project_path=project, config_dir=config_dir, claude_root=claude_root
     )
     result = apply_mod.execute(plan, config_dir=config_dir)
 

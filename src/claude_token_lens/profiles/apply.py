@@ -10,12 +10,24 @@ This module is the one place in the package that actually touches a
 project's or a user's real files -- ``schema.py``/``diff.py``/
 ``catalogue.py`` are all pure/filesystem-free by design (see their own
 module docstrings); this is deliberately the exception, since applying a
-profile is inherently a filesystem-writing operation. ``diff.py``'s
-``diff_against_effective``/``render_unified_diff`` are reused verbatim
-for the dry-run text, so the diff a user sees before applying and the
-diff this module's own :func:`plan_apply` computed to build the write
-plan are provably the same computation, not two independently-maintained
-renderings that could drift apart.
+profile is inherently a filesystem-writing operation.
+
+Fix B4: the dry-run text used to be ``diff.py``'s ``diff_against_effective``/
+``render_unified_diff`` -- a snapshot-vs-profile computation, independent
+of whatever :func:`execute` would actually merge into the *current*
+target file. With no snapshot (a supported configuration -- see
+:func:`plan_apply`'s own docstring), or merely a stale one, that
+rendering showed ``(unset)``/a superseded value for a key the real file
+already held, so the one preview a user has before writing was wrong
+about what would be overwritten. :func:`render_plan_diff` now renders
+the dry-run text directly from :func:`plan_apply`'s own ``actions`` --
+each one already carries the real ``old_bytes`` :func:`execute` read
+from the target file and the exact ``new_bytes`` it would write -- so
+the preview and the write are provably the same bytes, not two
+independently-maintained computations that could drift apart. ``diff.py``'s
+functions remain the right tool for the service's ``GET
+/api/profiles/<id>/diff`` (which has no target file to read, only a
+snapshot's effective config), and are unchanged here.
 
 Enterprise-use safety (plan "Enterprise use" section, Risks item 5): a
 project-scoped write (``project-local`` or ``repo``) is refused when its
@@ -71,6 +83,7 @@ Deviations from the plan/brief, reported rather than made silently (see
 
 from __future__ import annotations
 
+import difflib
 import json
 import os
 import subprocess
@@ -80,7 +93,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .. import snapshots as snapshots_mod
-from .diff import diff_against_effective, render_unified_diff
 from .frontmatter import FrontmatterError, patch_frontmatter
 from .schema import ENV_ALLOWLIST, Profile
 
@@ -97,6 +109,7 @@ __all__ = [
     "list_backups",
     "write_launch_overlay",
     "env_lines_for_profile",
+    "render_plan_diff",
 ]
 
 _VALID_SCOPES = ("user", "project-local", "repo")
@@ -240,8 +253,8 @@ def _is_git_tracked(path: Path) -> bool:
 def _relative_label(path: Path, base: Path | None) -> str:
     """``path`` rendered relative to ``base`` when possible (``base`` is
     always a path the caller explicitly supplied -- ``project_path`` or
-    ``home`` -- so printing it back is not a privacy leak, matching this
-    project's "paths explicitly given by the caller print verbatim"
+    ``claude_root`` -- so printing it back is not a privacy leak, matching
+    this project's "paths explicitly given by the caller print verbatim"
     convention). Falls back to ``path``'s own name when it isn't under
     ``base``."""
     if base is not None:
@@ -272,9 +285,9 @@ def _is_agent_key_managed(key: str, managed_keys: set[str]) -> bool:
 # -- scope resolution ------------------------------------------------------
 
 
-def _resolve_settings_path(scope: str, project_path: Path | None, home: Path) -> Path:
+def _resolve_settings_path(scope: str, project_path: Path | None, claude_root: Path) -> Path:
     if scope == "user":
-        return home / ".claude" / "settings.json"
+        return claude_root / "settings.json"
     if project_path is None:
         raise ValueError(f"scope={scope!r} requires project_path")
     if scope == "project-local":
@@ -282,9 +295,9 @@ def _resolve_settings_path(scope: str, project_path: Path | None, home: Path) ->
     return project_path / ".claude" / "settings.json"  # "repo"
 
 
-def _resolve_agents_dir(scope: str, project_path: Path | None, home: Path) -> Path:
+def _resolve_agents_dir(scope: str, project_path: Path | None, claude_root: Path) -> Path:
     if scope == "user":
-        return home / ".claude" / "agents"
+        return claude_root / "agents"
     if project_path is None:
         raise ValueError(f"scope={scope!r} requires project_path")
     return project_path / ".claude" / "agents"
@@ -307,13 +320,99 @@ def env_lines_for_profile(profile: Profile, managed_keys: set[str]) -> tuple[str
     )
 
 
+def _detect_json_style(existing_bytes: bytes | None) -> tuple[int, str]:
+    """The settings file's own indentation width (spaces) and line
+    ending, sniffed from its current bytes so rewriting it doesn't
+    reformat lines nobody touched (fix N1: every write previously used
+    a hardcoded ``indent=2``/``\\n`` regardless of the file's own style,
+    so a 4-space or CRLF settings file -- e.g. one shared through a
+    Windows-authored dotfiles repo, which S7 now allows apply to write
+    to with ``--allow-tracked`` -- turned a one-key change into a
+    whole-file reformat diff). Defaults to ``(2, "\\n")`` -- this
+    project's own convention, and the previous hardcoded behaviour --
+    when there is no existing file, or nothing in it reveals an indent
+    (e.g. ``{}``)."""
+    if not existing_bytes:
+        return 2, "\n"
+    line_ending = "\r\n" if b"\r\n" in existing_bytes else "\n"
+    indent = 2
+    for raw_line in existing_bytes.split(b"\n"):
+        stripped_line = raw_line.rstrip(b"\r")
+        content = stripped_line.lstrip(b" ")
+        leading = len(stripped_line) - len(content)
+        if leading > 0 and content:
+            indent = leading
+            break
+    return indent, line_ending
+
+
+def _render_settings_json(*, existing_bytes: bytes | None, merged: dict) -> bytes:
+    """``merged`` serialised to match ``existing_bytes``'s own
+    indentation/line-ending style (see :func:`_detect_json_style`, fix
+    N1), so a single-key change doesn't reformat the rest of a shared or
+    git-tracked settings file."""
+    indent, line_ending = _detect_json_style(existing_bytes)
+    text = json.dumps(merged, indent=indent) + "\n"
+    if line_ending != "\n":
+        text = text.replace("\n", line_ending)
+    return text.encode("utf-8")
+
+
+def render_plan_diff(actions: tuple[FileAction, ...], *, base: Path | None) -> str:
+    """A true unified diff of every non-``active_profile`` action's
+    ``old_bytes`` -> ``new_bytes`` (fix B4) -- the exact bytes
+    :func:`execute` would write, decoded as UTF-8 text (best-effort: an
+    undecodable byte is substituted rather than raising, since this is
+    display-only) and compared line by line with
+    :func:`difflib.unified_diff`. See the module docstring's B4 note for
+    why this replaced a snapshot-based rendering. The ``active_profile``
+    marker is internal bookkeeping (see :func:`plan_apply`), not a file
+    a user asked to change, so it never appears here -- matching the
+    previous diff text's own scope.
+
+    A file with no ``old_bytes`` (:func:`execute` will create it, e.g.
+    ``--force`` on a missing agent file) diffs against an empty "does
+    not exist yet" baseline rather than being skipped, so the preview
+    still shows what it will contain. ``base``, when given, is used the
+    same way :func:`_relative_label` already uses it elsewhere in this
+    module -- to print a path relative to a directory the caller
+    explicitly supplied, per this project's "paths given by the caller
+    print verbatim" convention -- rather than an absolute path.
+
+    ``difflib.unified_diff``'s own ``@@ -a,b +c,d @@`` hunk-position
+    header lines are dropped: this is a preview, never fed back in as a
+    patch, so the position info has no use here, and this project's own
+    privacy convention (``tests/helpers.py``'s ``assert_privacy``) flags
+    any bare ``@`` as email-shaped -- keeping the header would make
+    every non-trivial dry-run diff fail that check for a false reason.
+    """
+    blocks: list[str] = []
+    for action in actions:
+        if action.kind == "active_profile":
+            continue
+        label = _relative_label(action.path, base)
+        from_label = f"{label} (does not exist yet)" if action.old_bytes is None else label
+        old_text = (action.old_bytes or b"").decode("utf-8", errors="replace")
+        new_text = action.new_bytes.decode("utf-8", errors="replace")
+        diff_lines = [
+            line
+            for line in difflib.unified_diff(
+                old_text.splitlines(), new_text.splitlines(), fromfile=from_label, tofile=label, lineterm=""
+            )
+            if not line.startswith("@@")
+        ]
+        if diff_lines:
+            blocks.append("\n".join(diff_lines))
+    return ("\n\n".join(blocks) + "\n") if blocks else ""
+
+
 def plan_apply(
     profile: Profile,
     *,
     scope: str,
     project_path: str | Path | None,
     config_dir: str | Path,
-    home: str | Path,
+    claude_root: str | Path,
     snapshot: "snapshots_mod.Snapshot | None" = None,
     allow_tracked: bool = False,
     force: bool = False,
@@ -321,8 +420,8 @@ def plan_apply(
     """Resolve every file :func:`execute` would touch for applying
     ``profile`` at ``scope``, without writing anything.
 
-    ``scope`` is one of ``"user"`` (``<home>/.claude/settings.json`` +
-    ``<home>/.claude/agents/``), ``"project-local"``
+    ``scope`` is one of ``"user"`` (``<claude_root>/settings.json`` +
+    ``<claude_root>/agents/``), ``"project-local"``
     (``<project_path>/.claude/settings.local.json`` +
     ``<project_path>/.claude/agents/``), or ``"repo"``
     (``<project_path>/.claude/settings.json`` + the same agents dir --
@@ -331,6 +430,16 @@ def plan_apply(
     ``.claude/agents/<name>.md`` regardless of scope"). ``project_path``
     is required for ``"project-local"``/``"repo"`` and ignored for
     ``"user"``.
+
+    ``claude_root`` is the directory that directly holds ``settings.json``
+    and ``agents/`` -- ``~/.claude``, or ``$CLAUDE_CONFIG_DIR`` when that
+    env var moves the whole tree -- **not** ``config_dir`` and not
+    necessarily an ancestor of it: ``config_dir`` (this tool's own
+    ``token-lens`` directory) can be pointed anywhere via
+    ``--config-dir``/``config.toml``, independently of where the real
+    Claude Code config lives (fix B3). The caller resolves this
+    explicitly (``cli._resolve_claude_root``) rather than this module
+    deriving one from the other.
 
     ``snapshot``, when given, supplies the "current" side of the dry-run
     diff and the managed-key exclusion (via ``snapshots.effective_config``/
@@ -344,19 +453,26 @@ def plan_apply(
     Every settings/agent-frontmatter key a managed-settings layer
     governs is silently dropped from the write plan (never blocked --
     there's nothing wrong with the rest of the apply) and named in
-    ``skipped_managed`` instead. A project-scoped ``FileAction`` whose
-    target is already git-tracked is kept in ``actions`` (so a caller can
-    still show what *would* be written) but also names itself in
+    ``skipped_managed`` instead. A ``FileAction`` whose target is
+    already git-tracked -- at any scope, user included: a ``~/.claude``
+    kept in a dotfiles repository is exactly as real as a project's own
+    tracked ``.claude/`` (fix S7) -- is kept in ``actions`` (so a caller
+    can still show what *would* be written) but also names itself in
     ``blocked`` unless ``allow_tracked=True`` -- :func:`execute` refuses
     to write anything at all when ``blocked`` is non-empty. Likewise, a
     profile agent key whose target ``<name>.md`` file does not exist is
     blocked unless ``force=True`` (see the module docstring).
+
+    ``diff_text`` (fix B4) is rendered from the plan's own ``actions`` --
+    a true unified diff of each touched file's real current bytes versus
+    what :func:`execute` would write -- never from ``snapshot``, which
+    can be absent or stale; see :func:`render_plan_diff`.
     """
     if scope not in _VALID_SCOPES:
         raise ValueError(f"unknown scope: {scope!r} (expected one of {_VALID_SCOPES})")
 
     config_dir = Path(config_dir)
-    home = Path(home)
+    claude_root = Path(claude_root)
     project_path = Path(project_path) if project_path is not None else None
     if scope != "user" and project_path is None:
         raise ValueError(f"scope={scope!r} requires project_path")
@@ -373,16 +489,13 @@ def plan_apply(
     else:
         effective, provenance, managed_keys, effective_agents = {}, {}, set(), {}
 
-    profile_diff = diff_against_effective(profile, effective, effective_agents, provenance, managed_keys)
-    diff_text = render_unified_diff(profile_diff, scope=scope)
-
-    settings_path = _resolve_settings_path(scope, project_path, home)
-    agents_dir = _resolve_agents_dir(scope, project_path, home)
+    settings_path = _resolve_settings_path(scope, project_path, claude_root)
+    agents_dir = _resolve_agents_dir(scope, project_path, claude_root)
 
     actions: list[FileAction] = []
     skipped_managed: list[str] = []
     blocked: list[str] = []
-    home_or_project = project_path if project_path is not None else home
+    claude_root_or_project = project_path if project_path is not None else claude_root
 
     # -- settings overlay --
     settings_changes = {k: v for k, v in profile.settings.items() if k not in managed_keys}
@@ -397,12 +510,17 @@ def plan_apply(
             raise ApplyError([f"{settings_path}: cannot parse as JSON ({exc})"]) from None
         merged = dict(existing)
         merged.update(settings_changes)
-        new_bytes = (json.dumps(merged, indent=2) + "\n").encode("utf-8")
+        new_bytes = _render_settings_json(existing_bytes=old_bytes, merged=merged)
         if new_bytes != (old_bytes or b""):
-            tracked = _is_git_tracked(settings_path) if project_path is not None else False
+            # Fix S7: checked regardless of scope -- a user-scope
+            # ~/.claude can be a dotfiles repo just as easily as a
+            # project's .claude/ can be shared, and _is_git_tracked
+            # never raises (it degrades to "not tracked" outside any
+            # git repo, or when git itself isn't installed).
+            tracked = _is_git_tracked(settings_path)
             if tracked and not allow_tracked:
                 blocked.append(
-                    f"{_relative_label(settings_path, home_or_project)} is tracked by git; "
+                    f"{_relative_label(settings_path, claude_root_or_project)} is tracked by git; "
                     "pass --allow-tracked to write it anyway"
                 )
             actions.append(
@@ -425,7 +543,7 @@ def plan_apply(
             if not force:
                 blocked.append(
                     f"no agent file found for {agent_name!r} at "
-                    f"{_relative_label(agent_path, home_or_project)}; apply does not create a "
+                    f"{_relative_label(agent_path, claude_root_or_project)}; apply does not create a "
                     "new agent file (pass --force to create one from scratch)"
                 )
                 continue
@@ -441,10 +559,12 @@ def plan_apply(
 
         if new_bytes == (old_bytes or b""):
             continue
-        tracked = _is_git_tracked(agent_path) if project_path is not None else False
+        # Fix S7: see the settings-overlay check above -- same
+        # every-scope rule applies to agent frontmatter files.
+        tracked = _is_git_tracked(agent_path)
         if tracked and not allow_tracked:
             blocked.append(
-                f"{_relative_label(agent_path, home_or_project)} is tracked by git; "
+                f"{_relative_label(agent_path, claude_root_or_project)} is tracked by git; "
                 "pass --allow-tracked to write it anyway"
             )
         actions.append(
@@ -470,6 +590,8 @@ def plan_apply(
 
     env_lines = env_lines_for_profile(profile, managed_keys)
     skipped_managed += [f"env.{name}" for name in profile.env if name in managed_keys]
+
+    diff_text = render_plan_diff(tuple(actions), base=claude_root_or_project)
 
     return ApplyPlan(
         profile_id=profile.id,
