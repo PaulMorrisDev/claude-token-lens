@@ -530,6 +530,12 @@ def _reconstruct_snapshots(store: Store) -> list[Snapshot] | None:
             data = {}
         if not isinstance(data, dict):
             data = {}
+        # Mirror the real closure's S1-integration fix 1.c: it injects
+        # the store's own project attribution over whatever (if
+        # anything) the digest blob itself carries under this key, so
+        # snapshots.py's _project_label() sees an honest per-project
+        # slug rather than the "(unknown project)" fallback.
+        data["project_slug"] = row.get("project_slug")
         snaps.append(Snapshot(path=Path(""), ts=row["ts"], data=data))
     snaps.sort(key=lambda s: s.ts)
     return snaps or None
