@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Planned
+
+- **v0.3** — `init` (first-run onboarding), a `baseline` capture window, a
+  profile schema/catalogue, `apply`/`--revert` for writing a chosen
+  profile into `settings.json`/agent frontmatter, a `compare` command,
+  a reconciliation pass against real billing data, and a team aggregate
+  command that imports several machines' hashed-slug exports into one
+  store for per-archetype comparisons across people (no text ever — for
+  team leads on the work machine).
+
+A v0.4 backlog, kept here until scheduled into a milestone:
+
+- **Budget check.** `check --weekly-tokens N --daily-usd N` exits non-zero
+  when exceeded; UI banner; uses `log-usage` window data when present.
+  Guardrail for overnight runs.
+- **Anomaly outliers.** Sessions or spawns whose cost is more than 3 median
+  absolute deviations from their mode/purpose group, with the composition
+  table attached. Catches runaway agents.
+- **Scheduled reports.** `serve --weekly-report DIR` writes the Markdown/HTML
+  report every Monday for sharing. Habit-forming review.
+- **Opt-in local path view.** `--show-paths` (local only, never in exports)
+  lists the top files by Read tokens, as token-dashboard does.
+
+## [0.2.0] - 2026-09-19
+
 ### Added
 
 - **Service web UI** (`service/static/index.html`/`app.js`/`app.css`,
@@ -264,162 +289,91 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-v0.2-exports code review fixes (`export`, `monthly-report`, statusline
-ground truth) — see the review verdict: "do not tag v0.2.0 yet" until
-these landed.
-
-- **Blocking: `export --format csv-flat` doubled every CRLF line ending
-  on Windows.** `csv.DictWriter`'s dialect already terminates rows with
-  `\r\n`; writing that through a text-mode handle with default newline
-  translation doubled every `\r`, corrupting the file for BI/pandas
-  import (roughly half the rows read back blank). `--out` and stdout are
-  now both opened/wrapped with `newline=""`.
-- **Blocking: `--per-session` used to default to raw (unhashed) project
-  slugs.** `resolve_export_options`'s `hash_slugs` default used to track
-  whatever `--aggregate-only`/`--per-session` resolved to, so the
-  *more* identifying mode got *less* protection by default. `hash_slugs`
-  now defaults to `True` unconditionally. `--no-hash-slugs` is still an
-  explicit opt-out, but no longer prints the fully raw slug either — it
-  redacts just the OS-username segment (`Users-<name>-`/`home-<name>-`
-  -> `<user>`) and warns on stderr naming the risk.
-  `tests/helpers.assert_privacy` gained a slug-shaped-username check
-  that fails on any unredacted `Users-`/`home-`-anchored segment
-  anywhere in a scanned string.
-- **Statusline hardening.** The assembled status line is now bounded to
-  120 characters (truncating the cache segment first, or dropping it
-  entirely if that still doesn't fit) and never emits a second line;
-  every echoed string field (`ttl`, miss-cause tokens) is sanitised to
-  `[A-Za-z0-9_.-]` and capped at 16 characters; a non-numeric
-  `expires_at`/`recache_tokens_if_cold` is treated as absent; an
-  `expires_at` above `1e11` is treated as epoch milliseconds; and the
-  warm countdown renders `expiring` instead of a clock-skew-stuck
-  `00:00` once past zero.
-- **`top_miss_causes` no longer double-counts a sticky field.** It now
-  reads the wire's own cumulative `prompt_cache.miss_causes` per-cause
-  counts (persisted as a new `cache_miss_causes` usage-log column)
-  instead of incrementing a counter for the sticky
-  `prompt_cache.last_miss_cause` once per logged row, which re-counted
-  one real miss on every quiet subsequent refresh. Falls back to
-  counting `last_miss_cause` only on a genuine `cache_misses` increase
-  for logs with no `cache_miss_causes` data.
-  `build_cache_ground_truth_table`'s notes now also clarify that
-  `warm_share` is a share of logged rows, not of wall-clock session
-  time.
-- **The usage-log CSV header is now upgraded in place, once, when a
-  legacy file has fewer columns than the current writer expects** — read
-  all rows, pad short ones, and rewrite atomically (temp file +
-  `os.replace`) rather than silently misaligning columns forever.
-  `tools.log_usage.load_usage_log` also now reads with
-  `restkey="_extra"` as defence in depth against a stray `None` key.
-- **csv-flat/otel-jsonl cache-creation totals now agree, including for
-  pre-TTL-split transcripts.** Both formats (and `report`'s own overview
-  total) now key off the same `cache_creation_tokens` total rather than
-  the 5m/1h split, which can legitimately be `0`/`0` on an
-  older transcript recorded before the split existed even though real
-  cache-creation tokens were spent. A new `cache_write_tokens` csv-flat
-  column carries this total explicitly.
+- **`export --format csv-flat` doubled every CRLF line ending on
+  Windows**, corrupting the file for BI/pandas import; `--out` and
+  stdout are now opened with `newline=""`.
+- **`--per-session` used to default to raw (unhashed) project slugs.**
+  `hash_slugs` now defaults to `True` unconditionally; `--no-hash-slugs`
+  still opts out but now redacts just the OS-username segment and warns
+  on stderr; `assert_privacy` gained a matching slug-shaped-username
+  check.
+- **Statusline hardening.** Output is now bounded to 120 characters
+  (truncating or dropping the cache segment first) and never wraps to a
+  second line; echoed string fields are sanitised and length-capped; a
+  non-numeric or millisecond-scale `expires_at` is handled correctly;
+  the warm countdown shows `expiring` instead of a clock-skew-stuck
+  `00:00`.
+- **`top_miss_causes` no longer double-counts a sticky field** — it now
+  reads the wire's own cumulative `prompt_cache.miss_causes` counts (a
+  new `cache_miss_causes` usage-log column) instead of re-counting one
+  real miss on every quiet refresh.
+- **The usage-log CSV header is now upgraded in place, once,** when a
+  legacy file has fewer columns than the current writer expects, rather
+  than silently misaligning columns forever.
+- **csv-flat/otel-jsonl cache-creation totals now agree**, including for
+  pre-TTL-split transcripts, by keying off the same
+  `cache_creation_tokens` total rather than the 5m/1h split; a new
+  `cache_write_tokens` csv-flat column carries this total explicitly.
 - **`cache_ground_truth` now respects the report's own window/project
-  scope**, instead of including every ground-truth row ever logged for
-  every session regardless of `--days`/`--since`/`--until`/`--project`.
-  The monthly report applies the equivalent month-scoping.
+  scope** instead of including every ground-truth row ever logged; the
+  monthly report applies the equivalent month-scoping.
 - **`monthly-report` can now actually produce the `cache_ground_truth`
-  table `docs/exports.md` already promised.** `write_monthly_report`
-  gained a `usage_log_rows` parameter (loaded from
-  `<config-dir>/usage-log.csv` by `cli.py`, same as the `report`
-  command) — previously the parameter didn't exist, so the promise could
-  never be kept regardless of what was on disk.
-- **`context_window` field-name fallbacks widened.** The `used_tokens`,
-  `total_input_tokens`, and `current_usage.{input_tokens,
-  cache_creation_input_tokens, cache_read_input_tokens}` sum are now all
-  tried in that order for "used tokens"; `context_window_size`,
-  `total_tokens`, and `size` for the window size;
-  `used_percentage`/`100 - remaining_percentage` for the percentage.
-  Every statusline invocation also now records the payload's own key
-  names (recursively, dotted, names only, capped at 200) to
-  `<config-dir>/statusline-keys.json` when they differ from what is
-  stored, so the real payload shape becomes ground truth going forward.
+  table `docs/exports.md` already promised** — `write_monthly_report`
+  gained the `usage_log_rows` parameter it was missing.
+- **`context_window` field-name fallbacks widened** for used tokens,
+  window size and percentage; every statusline invocation now records
+  the payload's own key names to `statusline-keys.json` when they
+  differ from what is stored.
 - **`monthly-report`'s "byte-identical" idempotency claim is now
-  actually true when it matters.** Repeated runs were only identical
-  "apart from one Generated-at line/comment", contradicting the module's
-  own literal wording. `write_monthly_report` gained a `generated_at`
-  parameter (wired to `monthly-report --generated-at`/
-  `SOURCE_DATE_EPOCH`, shared with `export`'s existing
-  reproducible-build support) for a genuinely byte-identical run.
+  actually true** — `write_monthly_report` gained a `generated_at`
+  parameter (`--generated-at`/`SOURCE_DATE_EPOCH`) for a genuinely
+  byte-identical run.
 - **`resolve_month`'s "previous calendar month" default now uses
-  `config.tz`**, not the machine's own local zone — on the 1st of a
-  month the two could disagree about which month "previous" means.
+  `config.tz`**, not the machine's own local zone.
 - Hash construction and "byte-identical" documentation corrections in
-  `docs/exports.md`, `SECURITY.md`, and `README.md` (the docs claimed
-  the project-slug hash used the same construction as `parse.py`'s own
-  read-target-path hash, which it didn't until this pass — it now
-  genuinely does, via HMAC-SHA256 with a distinct domain tag and
-  truncation length so the two can never collide).
+  `docs/exports.md`, `SECURITY.md`, and `README.md` — the project-slug
+  hash now genuinely shares `parse.py`'s read-target-path hash
+  construction (HMAC-SHA256, distinct domain tag and truncation length
+  so the two can never collide).
+- **A1 — `recommend.py`'s spawn-cost rule** now only offers the
+  `omitClaudeMd` frontmatter lever for agent types that actually have a
+  frontmatter file to trim; built-in agent types get `category="workflow"`
+  advice instead.
+- **A2 — no table row key may be a bare `int`.** `recache.py`'s and
+  `topology.py`'s session/turn/depth-keyed tables now carry a real
+  string row key with the count in its own typed column.
+- **A3 — recommendation evidence values are now formatted by their
+  cited column's kind** (e.g. `63.7%`, `47,345`) instead of printed
+  raw; the JSON renderer is unaffected by design.
+- **`statusline --config-dir` is now honoured.** `cli.py`'s
+  `_cmd_statusline` never forwarded `args.config_dir` to
+  `statusline.main()`, so an explicit `--config-dir` was silently
+  ignored and the real `~/.claude/token-lens` was written to instead;
+  found and fixed during v0.2 release verification against a real
+  corpus.
+- **`serve --once` now prints its `WatcherStats` line** (duration,
+  discovery/parse/store timings, file and session counts) instead of
+  discarding them silently, matching what `docs/api.md` already
+  documented as a diagnostic.
+- **Report-backed API routes now accept `since`/`until`.**
+  `/api/report.json`, `/api/ttl`, `/api/config-diff` and
+  `/api/recommendations` previously read only `window_days` and
+  silently ignored `since`/`until`; they now resolve the window the
+  same way the CLI does and cache the result under a `(window_days,
+  since, until)` key. See `docs/api.md`.
+- **`load_or_create_salt` now opens the salt file in binary mode on
+  Windows.** The previous text-mode `os.open()` call silently turned a
+  `\n` (`0x0a`) byte in the random salt into `\r\n`, corrupting the
+  stored salt whenever one was drawn — the root cause of the
+  intermittently flaky `test_load_or_create_salt_persists_across_calls`.
 
-### Planned
+### Security
 
-- **v0.2** — `claude-token-lens serve` (local read-only service: watcher
-  thread, SQLite store, `http.server` JSON API, dependency-free static
-  web UI), Docker packaging, the Windows Scheduled Task/systemd hosting
-  paths and the `.pyz` build all shipped (see the S1-integration entry
-  above and [docs/deploy.md](docs/deploy.md)); a live TTL countdown in
-  the statusline, an aggregate-only `export` command, and a monthly
-  report remain planned.
-  web UI), Docker packaging, and a live TTL countdown in the statusline.
-- **v0.3** — `init`, a `baseline`/onboarding capture window, a profile
-  schema and catalogue, `apply`/`--revert` for writing a chosen profile
-  into `settings.json`/agent frontmatter, a `compare` command, a team
-  aggregate command that imports several machines' hashed-slug exports
-  into one store for per-archetype comparisons across people (no text
-  ever — for team leads on the work machine), and a reconciliation pass
-  against real billing data.
-
-The following are a v0.4 backlog, kept here until they are scheduled into a
-milestone:
-
-- **Budget check.** `check --weekly-tokens N --daily-usd N` exits non-zero
-  when exceeded; UI banner; uses `log-usage` window data when present.
-  Guardrail for overnight runs.
-- **Anomaly outliers.** Sessions or spawns whose cost is more than 3 median
-  absolute deviations from their mode/purpose group, with the composition
-  table attached. Catches runaway agents.
-- **Scheduled reports.** `serve --weekly-report DIR` writes the Markdown/HTML
-  report every Monday for sharing. Habit-forming review.
-- **Opt-in local path view.** `--show-paths` (local only, never in exports)
-  lists the top files by Read tokens, as token-dashboard does.
-
-## [0.1.1] - Unreleased
-
-### Fixed
-
-- **A1 — `recommend.py`'s spawn-cost rule.** The `omitClaudeMd`
-  frontmatter lever (scope `repo`) is now only offered for agent types
-  that actually have a `.claude/agents/<type>.md` frontmatter file —
-  read from the latest config snapshot's `agents` map when a snapshot
-  is available, else from a built-in list of Claude Code's bundled
-  agent types (`claude`, `general-purpose`, `Explore`, `Plan`,
-  `claude-code-guide`, `statusline-setup`, `workflow-subagent`).
-  A built-in agent type instead gets `category="workflow"` advice to
-  shorten the Agent-prompt briefing, with `lever=None` (so it is
-  correctly skipped by `render_patch_set()`) — there is no frontmatter
-  file to trim for it.
-- **A2 — no table row key may be a bare `int`.** `recache.py`'s
-  `recache_summary`/`recache_huge_context` tables and `topology.py`'s
-  `topology_session_baseline`/`topology_spawn_depth` tables all had a
-  numeric (session/turn/depth count) first column standing in as the
-  row key. Every one now carries a real string key (`"all"`, or the
-  depth as a string) with the count moved into its own `metric`/typed
-  column. `tests/test_recommend_contract.py`'s evidence-and-row-key
-  check, which previously accepted `int` row keys, now rejects them —
-  row 0 of any table must be a non-empty `str`.
-- **A3 — recommendation evidence values are formatted by their cited
-  column's kind.** The Markdown and HTML renderers used to print a
-  `Recommendation.evidence` value raw (`63.749066571507974` instead of
-  `63.7%`, `47345.372881355936` instead of `47,345`). `render/tables.py`
-  gained `resolve_evidence_column_kind`/`format_evidence_value`, which
-  look the cited `source_table`/`row_key` up in the `ReportModel` and
-  format the value through the same `format_cell` every table cell
-  uses. The JSON renderer is unaffected by design — it keeps raw
-  values via `to_jsonable`.
+- Confirmed no route may return `transcripts.path`/`projects.root_path`
+  during v0.2 release verification: a full privacy audit of every saved
+  API response body, the generated report, and a full-text dump of
+  `service.db` (all tables, decompressed `digest_blob`) found no path,
+  username, or over-length string leak.
 
 ## [0.1.0] - 2026-09-19
 

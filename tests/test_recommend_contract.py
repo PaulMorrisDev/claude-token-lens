@@ -6,7 +6,7 @@ renderer (Markdown/HTML, or a future ``--group-by`` drill-down) needs to
 key off column zero uniformly, without a per-table special case for "this
 one's first column might be ``None``/an int/a float/a tuple".
 
-v0.1.1 fix A2: this used to also accept a plain ``int`` row key (excluding
+v0.2.0 fix A2: this used to also accept a plain ``int`` row key (excluding
 ``bool``), because ``recache.py``'s ``recache_summary``/``recache_huge_context``
 tables each led with a bare numeric count rather than a label. Both now carry
 an explicit leading ``metric`` string column (see ``recache.py``'s module

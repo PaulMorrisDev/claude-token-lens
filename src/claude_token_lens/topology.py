@@ -632,7 +632,7 @@ def _build_spawn_write_table(stats: TopologyStats) -> Table:
 def _build_session_baseline_table(stats: TopologyStats) -> Table:
     values = stats.session_baseline_writes
     columns = [
-        # v0.1.1 fix A2: leading string row-key column -- see
+        # v0.2.0 fix A2: leading string row-key column -- see
         # recache.py's module docstring for the same fix and rationale;
         # this table's single row used to start with the bare `sessions`
         # int count.
@@ -754,7 +754,7 @@ def _build_skills_table(stats: TopologyStats) -> Table:
 
 def _build_spawn_depth_table(stats: TopologyStats) -> Table:
     columns = [
-        # v0.1.1 fix A2: row key must be a str (see recache.py's module
+        # v0.2.0 fix A2: row key must be a str (see recache.py's module
         # docstring) -- the depth itself is still a genuine per-row key
         # (unlike recache_summary's bug), just stringified; the column
         # stays kind="int" since format_cell's "int" formatting accepts

@@ -5,7 +5,7 @@ Markdown, JSON, CSV and HTML renderers all agree on numeric formatting
 (thousands separators, decimal places, unit suffixes). Renderers must not
 format numbers themselves — they call ``format_cell`` per ``Column.kind``.
 
-v0.1.1 fix A3: a ``Recommendation.evidence`` tuple (``label, value,
+v0.2.0 fix A3: a ``Recommendation.evidence`` tuple (``label, value,
 source_table, row_key``) carries no column reference of its own, so the
 Markdown/HTML renderers used to print its raw ``value`` unformatted --
 ``63.749066571507974`` rather than ``63.7%``, ``47345.372881355936``

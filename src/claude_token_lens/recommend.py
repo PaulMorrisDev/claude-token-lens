@@ -99,7 +99,7 @@ Deviations from the plan/brief, reported rather than made silently (see
   comment), this rule requires each share to independently clear the
   threshold and cites both as separate evidence entries.
 
-v0.1.1 fix A1: ``spawn-cost``'s ``omitClaudeMd`` lever only means anything
+v0.2.0 fix A1: ``spawn-cost``'s ``omitClaudeMd`` lever only means anything
 for an agent type that actually has a ``.claude/agents/<type>.md``
 frontmatter file -- a built-in Claude Code agent type (``general-purpose``,
 ``Explore``, ``Plan``, ...) has none, so the earlier version of this rule

@@ -344,6 +344,13 @@ Per-tick timing is visible at runtime via `GET /api/health`'s
 so a slow tick's dominant phase on your own corpus/hardware doesn't
 have to be guessed at.
 
+Re-verified during v0.2.0 release sign-off, two consecutive
+`serve --once` runs against a different real corpus: first tick
+(cold) `duration_s=30.14` (`discovery_s=0.49`, `parse_s=20.58`,
+`store_s=1.81`), second tick (warm, no changed files) `duration_s=3.56`
+(`discovery_s=0.64`, `parse_s=0.00`, `store_s=0.14`), `service.db`
+22.8 MB — consistent with the S1-perf table above.
+
 Storage-shape changes behind this: `transcripts.digest_blob` (was
 `digest_json`) stores the same per-transcript JSON zlib-compressed;
 `events_agg` (was `events`) stores one row per `(transcript_id, kind,

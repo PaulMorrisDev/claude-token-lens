@@ -50,7 +50,7 @@ kinds, a ``<=40``-char command prefix, token counts) is already
 privacy-clean per ``model.py``'s contract; this module never adds a new
 field that could hold message text, a full path, or a full command.
 
-v0.1.1 fix A2: ``recache_summary`` and ``recache_huge_context`` are each a
+v0.2.0 fix A2: ``recache_summary`` and ``recache_huge_context`` are each a
 single-row table whose row used to start with a bare numeric count
 (``transcripts`` / ``len(huge_turns)``) as ``row[0]`` — a table's row-key
 column must be a non-empty string (every other table's row key already is;
