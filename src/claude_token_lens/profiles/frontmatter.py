@@ -75,6 +75,16 @@ _TOP_LINE_RE = re.compile(r"^(?P<indent>[ \t]*)(?P<key>[A-Za-z_][A-Za-z0-9_.\-]*
 #: every YAML emitter this project has observed, writes exactly one).
 _LIST_ITEM_RE = re.compile(r"^(?P<indent>[ \t]*)-\s?(?P<value>.*)$")
 
+#: A YAML block-scalar header: ``|``/``>`` optionally followed by a
+#: chomping indicator (``-``/``+``) and/or an explicit indentation digit,
+#: in either order (``|-``, ``|2``, ``|-2``, ``>+``, ...). Fix S8: real
+#: Claude Code agent files commonly use ``description: |`` for a long
+#: multi-line description; this module doesn't need to read or rewrite
+#: that value (see module docstring), only to recognise the header and
+#: skip its indented body rather than tripping over it as an unparsable
+#: line.
+_BLOCK_SCALAR_RE = re.compile(r"^[|>][+\-]?[0-9]?[+\-]?$")
+
 _RESERVED_BARE = {"true", "false", "null", "~", ""}
 _SPECIAL_CHARS_RE = re.compile(r"""[:#\[\]{},&*!|>'"%@`]""")
 
@@ -243,6 +253,20 @@ class _MapBlock:
     end: int = 0  # exclusive index of the first line after this block
 
 
+@dataclass
+class _BlockScalarBlock:
+    """A YAML block scalar (``key: |`` / ``key: >``, see
+    ``_BLOCK_SCALAR_RE``): ``key_line`` is the header line, ``end`` the
+    exclusive index of the first line after its indented (or blank)
+    body. Fix S8: this module never parses or rewrites the body -- it is
+    an opaque, verbatim-preserved range, tracked only so :func:`_scan`
+    doesn't mistake its continuation lines for a new top-level key or a
+    list/mapping block."""
+
+    key_line: int
+    end: int = 0
+
+
 def _leading_ws(line: str) -> str:
     return line[: len(line) - len(line.lstrip(" \t"))]
 
@@ -271,6 +295,22 @@ def _scan(fm_lines: list[str]) -> dict[str, object]:
         if key in blocks:
             raise FrontmatterError(f"line {i + 1}: duplicate top-level key {key!r}")
         value_area, _comment = _find_comment_split(m.group("rest"))
+        if _BLOCK_SCALAR_RE.match(value_area.strip()):
+            # Opaque block scalar (fix S8): consume every following line
+            # that is blank or indented -- both are legitimate body
+            # content (a block scalar's paragraphs may contain blank
+            # lines, unlike a list/mapping's children below) -- until a
+            # non-blank, zero-indent line ends it (a new top-level key,
+            # or the closing fence, which is outside fm_lines entirely).
+            j = i + 1
+            while j < n:
+                body_raw = fm_lines[j].rstrip("\r\n")
+                if body_raw.strip() != "" and body_raw[:1] not in (" ", "\t"):
+                    break
+                j += 1
+            blocks[key] = _BlockScalarBlock(key_line=i, end=j)
+            i = j
+            continue
         if value_area.strip() != "":
             blocks[key] = _ScalarBlock(line=i)
             i += 1
@@ -360,6 +400,13 @@ def parse_frontmatter(text: str) -> dict:
 
     result: dict = {}
     for key, block in blocks.items():
+        if isinstance(block, _BlockScalarBlock):
+            # Opaque block scalar (fix S8): its value is never read --
+            # see the module docstring and _BlockScalarBlock's own
+            # docstring -- so it is silently omitted from the result
+            # rather than raising, the same as any other key this
+            # caller never asked about.
+            continue
         if isinstance(block, _ScalarBlock):
             line = fm_lines[block.line].rstrip("\r\n")
             m = _TOP_LINE_RE.match(line)
@@ -407,6 +454,11 @@ def _shift_blocks_after(blocks: dict[str, object], from_idx: int, delta: int) ->
             if block.key_line >= from_idx:
                 block.key_line += delta
             block.children = {k: (idx + delta if idx >= from_idx else idx) for k, idx in block.children.items()}
+            if block.end >= from_idx:
+                block.end += delta
+        elif isinstance(block, _BlockScalarBlock):
+            if block.key_line >= from_idx:
+                block.key_line += delta
             if block.end >= from_idx:
                 block.end += delta
 
@@ -521,6 +573,8 @@ def patch_frontmatter(text: str, changes: dict) -> str:
                 _shift_blocks_after(blocks, end, delta)
         elif isinstance(block, _MapBlock):
             raise FrontmatterError(f"{key}: existing value is a nested mapping, cannot patch as a scalar/list")
+        elif isinstance(block, _BlockScalarBlock):
+            raise FrontmatterError(f"{key}: existing value is a block scalar ('|'/'>'), cannot patch as a scalar/list")
 
     # -- dotted (one-level nested) keys, e.g. "experimental.cacheTtl" --
     for parent, child_values in nested_changes.items():
