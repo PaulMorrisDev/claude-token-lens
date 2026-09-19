@@ -153,6 +153,64 @@ def test_by_model_group_sums_equal_overview_totals(tmp_path):
     assert sum(row[6] for row in by_model.rows) == pytest.approx(totals["total_cost_usd"])
 
 
+def _write_session_with_ctx_values(
+    project_dir: Path, session_id: str, top_ctx_values: list[int], sub_ctx_values: list[int]
+) -> None:
+    """Write one session whose top-level turns' ``ctx`` (== ``input_tokens``
+    here -- no cache tokens involved) are exactly ``top_ctx_values`` and
+    whose single subagent's turns' ``ctx`` are exactly ``sub_ctx_values``,
+    so a test can assert precisely which set a stat was computed from.
+    """
+    write_jsonl(
+        project_dir / f"{session_id}.jsonl",
+        [turn_line(input_tokens=v, output_tokens=20) for v in top_ctx_values],
+    )
+    if sub_ctx_values:
+        agent_dir = project_dir / session_id / "subagents"
+        agent_dir.mkdir(parents=True, exist_ok=True)
+        write_jsonl(
+            agent_dir / "agent-ctx.jsonl",
+            [turn_line(input_tokens=v, output_tokens=20) for v in sub_ctx_values],
+        )
+        (agent_dir / "agent-ctx.meta.json").write_text(
+            json.dumps({"agentType": "claude-implementer", "model": "claude-sonnet-5"}), encoding="utf-8"
+        )
+
+
+def test_scorecard_ctx_stats_use_top_level_transcripts_only(tmp_path, monkeypatch):
+    """Regression test for review finding R7: the scorecard's
+    context-hygiene ctx values were built from every transcript's turns,
+    not top-level only, so a subagent with a much bigger ctx (subagents
+    typically start from a large system-prompt/task payload) skewed both
+    the median and the p90 upward.
+    """
+    project_dir = tmp_path / "proj-ctx"
+    project_dir.mkdir()
+    _write_session_with_ctx_values(project_dir, "session-ctx", top_ctx_values=[100, 200], sub_ctx_values=[500_000])
+
+    corpus = load_corpus([project_dir])
+
+    from claude_token_lens import report as report_mod
+
+    captured = {}
+    original_build_section = report_mod.scorecard.build_section
+
+    def _capture(inputs, th):
+        captured["inputs"] = inputs
+        return original_build_section(inputs, th)
+
+    monkeypatch.setattr(report_mod.scorecard, "build_section", _capture)
+
+    build_report(corpus, PRICING, Config(), projects=("proj-ctx",), window="w")
+
+    inputs = captured["inputs"]
+    # Top-level turns only: ctx values [100, 200]. If the subagent's
+    # 500_000-token turn leaked in, both stats would be orders of
+    # magnitude bigger.
+    assert inputs.median_top_level_ctx == pytest.approx(150.0)
+    assert inputs.p90_top_level_ctx == pytest.approx(200.0)
+
+
 def test_recache_by_group_table_rows_sum_to_the_ungrouped_summary(tmp_path):
     corpus = _two_session_corpus(tmp_path)
     report = build_report(

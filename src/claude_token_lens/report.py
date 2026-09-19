@@ -764,6 +764,21 @@ def build_report(
     return report_model
 
 
+def _top_level_ctx_values(rs: recache.RecacheStats) -> list[int]:
+    """Sorted ``ctx`` values from top-level-only turns in ``rs.records``
+    (R7 fix): ``recache.RecacheStats.add`` stamps every record's
+    ``agent_type`` as ``result.meta.agent_type or "top-level"`` (see
+    ``recache.py``), so filtering to ``"top-level"`` here excludes every
+    subagent transcript. A subagent's own ctx runs far larger than its
+    parent's (subagents typically start from a large system-prompt/task
+    payload) and would otherwise skew both the scorecard's
+    context-hygiene dimension and the overview's long-context-share
+    metric upward, hiding an actually-healthy top-level session behind
+    its subagents' naturally bigger context windows.
+    """
+    return sorted(r.turn.ctx for r in rs.records if r.agent_type == "top-level" and r.turn.ctx)
+
+
 def _build_scorecard_section(
     rs: recache.RecacheStats,
     ts: ttl.TtlStats,
@@ -787,7 +802,11 @@ def _build_scorecard_section(
     hit_denom = total_read + total_cc_all + total_input
     cache_hit_ratio_pct = 100.0 * total_read / hit_denom if hit_denom else None
 
-    top_level_ctx = sorted(t.ctx for t in all_turns if t.ctx)
+    # Top-level-only (excludes subagent transcripts) -- see
+    # _top_level_ctx_values's docstring. Was previously built from
+    # ``all_turns`` (every transcript, top-level and subagent alike).
+    top_level_ctx = _top_level_ctx_values(rs)
+    median_ctx = statistics.median(top_level_ctx) if top_level_ctx else None
     p90_ctx = None
     if top_level_ctx:
         idx = max(0, min(len(top_level_ctx) - 1, int(round(0.9 * (len(top_level_ctx) - 1)))))
@@ -816,6 +835,7 @@ def _build_scorecard_section(
     inputs = scorecard.ScorecardInputs(
         recache_share_pct=recache_share_pct,
         cache_hit_ratio_pct=cache_hit_ratio_pct,
+        median_top_level_ctx=median_ctx,
         p90_top_level_ctx=p90_ctx,
         compaction_count=len(cs.records),
         dropped_share_pct=cs.dropped_share_of_new_tokens,
