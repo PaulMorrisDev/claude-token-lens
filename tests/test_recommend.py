@@ -961,6 +961,59 @@ def test_pricing_coverage_does_not_fire_at_full_coverage():
     assert not any(rec.id == "pricing-coverage" for rec in recs)
 
 
+def test_pricing_coverage_fires_from_coverage_pct_alone_with_no_unknown_models_table():
+    # R12: report.py never actually attaches a usage.pricing_unknown_models
+    # table to any section -- the rule must fire off
+    # report.meta.pricing.coverage_pct alone, not a dead table lookup.
+    r = _base_report()
+    r.meta.pricing.coverage_pct = 42.0
+    r = _add_section(
+        r,
+        Section(
+            key="scorecard",
+            title="Scorecard",
+            tables=[_scorecard_dimensions_table([["data_quality", "warn", "Data quality", "pricing_coverage_pct", 42.0, 100.0]])],
+        ),
+    )
+    recs = recommend_fn(r, config=_config(), archetype=None)
+    assert any(rec.id == "pricing-coverage" for rec in recs)
+
+
+def test_pricing_coverage_action_names_unknown_model_ids_when_table_present():
+    r = _base_report()
+    r.meta.pricing.coverage_pct = 90.0
+    r = _add_section(
+        r,
+        Section(
+            key="scorecard",
+            title="Scorecard",
+            tables=[_scorecard_dimensions_table([["data_quality", "warn", "Data quality", "pricing_coverage_pct", 90.0, 100.0]])],
+        ),
+    )
+    r = _add_section(
+        r,
+        Section(
+            key="usage",
+            title="Usage",
+            tables=[
+                Table(
+                    name="pricing_unknown_models",
+                    title="Unpriced models",
+                    columns=[
+                        Column(key="model_id", label="Model"),
+                        Column(key="turns", label="Turns"),
+                        Column(key="tokens", label="Tokens"),
+                    ],
+                    rows=[["claude-mystery-9", 3, 1000]],
+                )
+            ],
+        ),
+    )
+    recs = recommend_fn(r, config=_config(), archetype=None)
+    rec = next(rec for rec in recs if rec.id == "pricing-coverage")
+    assert "claude-mystery-9" in rec.action
+
+
 # -- data-quality ---------------------------------------------------------
 
 

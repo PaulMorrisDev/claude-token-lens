@@ -825,13 +825,35 @@ def _rule_discovery_share(report: ReportModel, th: RecommendThresholds) -> list[
 
 
 def _rule_pricing_coverage(report: ReportModel) -> list[Recommendation]:
+    """Fix R12: the old check read ``usage.pricing_unknown_models`` --
+    a table ``report.py`` never actually builds into any section (see
+    ``pricing.PricingCoverage.as_table``, which nothing calls), so that
+    lookup was always ``None`` and coverage-below-100% never fired
+    through it. The real, always-present signal is
+    ``report.meta.pricing.coverage_pct`` -- gate on that directly, and
+    cite the ``scorecard.dimensions`` row that mirrors it (a real table
+    cell) as evidence. If a future ``report.py`` change does start
+    attaching ``pricing_unknown_models`` to a section, this still
+    opportunistically names the unpriced model ids in the action text.
+    """
     coverage_pct = report.meta.pricing.coverage_pct
-    unknown_table = _table(report, "usage", "pricing_unknown_models")
-    if coverage_pct >= 100.0 and (unknown_table is None or not unknown_table.rows):
+    if coverage_pct >= 100.0:
         return []
     dq_value = _cell(report, "scorecard", "dimensions", "data_quality", "value")
     if dq_value is None:
         return []
+    action = (
+        "Add the unpriced model id(s) to pricing.toml so the report's cost figures cover "
+        "the whole corpus."
+    )
+    unknown_table = _table(report, "usage", "pricing_unknown_models")
+    if unknown_table is not None and unknown_table.rows:
+        model_ids = [row[0] for row in unknown_table.rows if row]
+        if model_ids:
+            action = (
+                f"Add {', '.join(str(m) for m in model_ids)} to pricing.toml so the "
+                "report's cost figures cover the whole corpus."
+            )
     return [
         Recommendation(
             id="pricing-coverage",
@@ -839,10 +861,7 @@ def _rule_pricing_coverage(report: ReportModel) -> list[Recommendation]:
             category="data",
             archetypes=_ALL_ARCHETYPES,
             title="Some usage could not be priced",
-            action=(
-                "Add the unpriced model id(s) to pricing.toml so the report's cost figures "
-                "cover the whole corpus."
-            ),
+            action=action,
             lever=None,
             evidence=[
                 _evidence("Pricing coverage (data-quality dimension)", dq_value, "scorecard", "dimensions", "data_quality"),
