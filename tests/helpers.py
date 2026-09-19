@@ -351,3 +351,81 @@ def assert_privacy(result) -> None:
         _walk_value(result, "root", "")
 
     assert violations == [], violations
+
+
+# -- Review v0.2 fix #3: a deep scan that does not stop at a dict boundary --
+#
+# ``assert_privacy`` above deliberately leaves a ``dict`` reached through a
+# dataclass field unwalked (see its docstring) -- a reasonable exemption for
+# the small, module-controlled counters it was written against
+# (``Event.detail``, ``Diagnostics.agent_settings``), but it makes the guard
+# blind to a snapshot-shaped ``dict`` passed in directly, since a dict's own
+# *values* are themselves dicts (``settings_layers``, ``effective``,
+# ``effective_provenance``, ``effective_agents``, ``claude_json``,
+# ``content_layers``). ``assert_privacy_deep`` reuses the exact same
+# forbidden-shape patterns and allowlists defined above -- it does not
+# change what counts as a violation, only how far it looks -- and walks
+# every dict, list, tuple and dataclass all the way down, checking both
+# keys and values.
+
+#: Deep-scan-only "@" exemption, built by adding to (never mutating)
+#: ``assert_privacy``'s own ``_PRIVACY_AT_SIGN_ALLOWED_FIELDS``. Claude
+#: Code's plugin identifier convention is ``<name>@<marketplace>`` (see
+#: ``hooks/snapshot-config.py``'s ``_extract_enabled_plugins`` and its
+#: ``settings_layers.user`` copy) -- fix #5 already caps every recorded
+#: plugin name's length and masks a path/URL *shape*, so a bare "@" in
+#: this one field is the plugin naming scheme itself, not a leak, the
+#: same reasoning that already exempts "model" for a Vertex "@date"
+#: suffix.
+_PRIVACY_DEEP_AT_SIGN_ALLOWED_KEYS = _PRIVACY_AT_SIGN_ALLOWED_FIELDS | {"enabled_plugins"}
+
+
+def assert_privacy_deep(obj) -> None:
+    """Recursively scan ``obj`` -- typically a raw snapshot ``dict`` (e.g.
+    loaded straight from a written snapshot JSON file), but also any
+    dataclass/list/tuple/dict nesting -- for the same forbidden shapes
+    ``assert_privacy`` checks (a Windows drive path, a POSIX ``/home/``
+    path, a Windows ``Users\\``/``Users/`` path, an MSYS drive path, a bare
+    ``@``, or a URL), except it never stops at a ``dict`` boundary: every
+    dict's keys *and* values are walked, at every depth. Raises via
+    ``assert`` with every violation listed, so a failure names exactly
+    which path/index/key and value tripped it.
+    """
+    violations: list[str] = []
+
+    def _check(value: str, where: str, key_name: str) -> None:
+        if _PRIVACY_DRIVE_RE.search(value):
+            violations.append(f"{where} matches a Windows drive path: {value!r}")
+        if _PRIVACY_POSIX_HOME_RE.search(value) or _PRIVACY_BARE_HOME_RE.search(value):
+            violations.append(f"{where} matches a /home/ path: {value!r}")
+        if _PRIVACY_WIN_USERS_RE.search(value):
+            violations.append(f"{where} matches a Users\\ path: {value!r}")
+        if _PRIVACY_MSYS_DRIVE_RE.search(value):
+            violations.append(f"{where} matches an MSYS drive path: {value!r}")
+        if key_name not in _PRIVACY_DEEP_AT_SIGN_ALLOWED_KEYS and _PRIVACY_AT_RE.search(
+            value.replace(_PRIVACY_AT_MARKER, "")
+        ):
+            violations.append(f"{where} contains '@': {value!r}")
+        if _PRIVACY_URL_RE.search(value) and value not in _PRIVACY_URL_ALLOWED_VALUES:
+            violations.append(f"{where} contains a URL: {value!r}")
+
+    def _walk(value, where: str, key_name: str) -> None:
+        if key_name in _PRIVACY_EXCLUDED_FIELDS:
+            return
+        if isinstance(value, str):
+            _check(value, where, key_name)
+        elif isinstance(value, dict):
+            for key, item in value.items():
+                key_name_str = key if isinstance(key, str) else ""
+                if isinstance(key, str):
+                    _check(key, f"{where}.<key>", "")
+                _walk(item, f"{where}[{key!r}]", key_name_str)
+        elif isinstance(value, (list, tuple)):
+            for i, item in enumerate(value):
+                _walk(item, f"{where}[{i}]", key_name)
+        elif dataclasses.is_dataclass(value) and not isinstance(value, type):
+            for f in dataclasses.fields(value):
+                _walk(getattr(value, f.name), f"{where}.{f.name}", f.name)
+
+    _walk(obj, "root", "")
+    assert violations == [], violations

@@ -122,10 +122,6 @@ _ASSUMED_CONTEXT_WINDOW_DEFAULT = 200_000
 # see e.g. report.py's/topology.py's own module docstrings) -------------
 
 
-def _priced_turns(result: TranscriptResult) -> list[Turn]:
-    return [t for t in result.turns if t.turn_index > 0]
-
-
 def _first_priced_turn(result: TranscriptResult) -> Turn | None:
     for turn in result.turns:
         if turn.turn_index == 1:
@@ -150,14 +146,25 @@ def _median(values: Sequence[float]) -> float | None:
     return median(values) if values else None
 
 
-def _dominant_model(top: TranscriptResult) -> str | None:
-    counts: dict[str, int] = {}
-    for turn in _priced_turns(top):
-        if turn.model:
-            counts[turn.model] = counts.get(turn.model, 0) + 1
-    if not counts:
+def _model_alias_from_snapshot(snapshot: Snapshot | None) -> str | None:
+    """The model *setting* (an alias like ``"sonnet"``/``"fable[1m]"``) for
+    a project's own config, not the full API model id a transcript's
+    ``Turn.model`` carries -- see fix #25: the ``"[1m]"`` suffix only ever
+    appears in settings, never in an observed transcript model. Prefers
+    schema 2's merged :func:`snapshots.effective_config`, falling back to
+    schema 1's raw ``user_settings.model`` (which predates the settings-layer
+    merge but already carries the same alias shape)."""
+    if snapshot is None:
         return None
-    return max(counts.items(), key=lambda kv: (kv[1], kv[0]))[0]
+    effective_model = snapshots_mod.effective_config(snapshot).get("model")
+    if isinstance(effective_model, str) and effective_model:
+        return effective_model
+    user_settings = snapshot.data.get("user_settings")
+    if isinstance(user_settings, dict):
+        legacy_model = user_settings.get("model")
+        if isinstance(legacy_model, str) and legacy_model:
+            return legacy_model
+    return None
 
 
 def _events_before_first_turn(top: TranscriptResult, first_turn: Turn | None) -> list[Event]:
@@ -278,7 +285,6 @@ class _ProjectAcc:
     human_prompt_est_tokens: list[float] = field(default_factory=list)
     skills_listing_est_tokens: list[float] = field(default_factory=list)
     compaction_records: list[compaction.CompactionRecord] = field(default_factory=list)
-    saw_1m_alias: bool = False
     session_ids: list[str] = field(default_factory=list)
 
 
@@ -303,15 +309,12 @@ class ContextBudgetStats:
             acc.session_ids.append(top.meta.session_id)
 
         first = _first_priced_turn(top)
-        acc.baseline_writes.append(first.cache_creation_tokens if first is not None else 0)
+        if first is not None:
+            acc.baseline_writes.append(first.cache_creation_tokens)
 
         events_before = _events_before_first_turn(top, first)
         acc.human_prompt_est_tokens.append(_human_prompt_est_tokens(first, events_before))
         acc.skills_listing_est_tokens.append(_skills_listing_est_tokens(events_before))
-
-        model = _dominant_model(top)
-        if model and model.endswith(_CONTEXT_WINDOW_SUFFIX):
-            acc.saw_1m_alias = True
 
         # rates=None: only trigger/pre_tokens/dropped_tokens are read by
         # this module (all come straight from the COMPACT_BOUNDARY event,
@@ -323,19 +326,27 @@ class ContextBudgetStats:
 
 
 # -- usage-log (statusline) row helpers -------------------------------------
+#
+# ``statusline.py`` appends nine trailing CSV columns after
+# ``log_usage.CSV_FIELDS``'s existing six (three ``context_window_*``
+# columns this work package added, plus six ``cache_*`` columns a later
+# package added -- see that module's own docstring for the write-side
+# contract), for 15 columns total. This module only ever reads the three
+# ``context_window_*`` ones, positionally rather than by name (see
+# :func:`load_context_window_rows`).
 
-#: Trailing CSV columns ``statusline.py`` appends after
-#: ``log_usage.CSV_FIELDS``'s existing six -- see that module's own
-#: docstring for the write-side contract this mirrors. Duplicated here
-#: (not imported) since ``log_usage.CSV_FIELDS`` intentionally stays a
-#: fixed six-tuple (this project's convention -- see ``tools/log_usage.py``'s
-#: module docstring) and these three extra columns are this work
-#: package's own addition, read positionally rather than by name.
-_STATUSLINE_TRAILING_FIELDS = (
-    "context_window_used_tokens",
-    "context_window_size",
-    "context_window_autocompact_threshold",
-)
+
+#: Same literal ``statusline._CONTEXT_WINDOW_SENTINEL`` value (the
+#: ``window`` column statusline writes on its own context-window rows),
+#: duplicated per this project's small-constant convention rather than
+#: reaching across that module's underscore boundary. Fix #28: identify a
+#: context-window row by this sentinel, the same way
+#: ``statusline.load_usage_log_ground_truth`` does, rather than by width
+#: alone -- width and sentinel agree today (only
+#: ``_append_context_window_row`` writes wide rows), but checking the
+#: sentinel too means a future wide row shape can't be silently
+#: misread as a context-window row.
+_CONTEXT_WINDOW_SENTINEL = "context_window"
 
 
 def _parse_number(text: str | None) -> float | None:
@@ -361,7 +372,11 @@ def load_context_window_rows(csv_path: str | Path) -> list[dict]:
     before this work package existed) simply has nothing at the extra
     positions and is skipped -- there is no context_window data to
     report for it -- rather than raising or misreading a later column as
-    an earlier one. Returns ``[]`` when the file doesn't exist, matching
+    an earlier one. A row is also required to carry the
+    :data:`_CONTEXT_WINDOW_SENTINEL` value in its ``window`` column (fix
+    #28), matching how ``statusline.load_usage_log_ground_truth``
+    identifies the same rows, rather than relying on width alone. Returns
+    ``[]`` when the file doesn't exist, matching
     ``log_usage.load_usage_log``'s own "the log is optional" contract.
     """
     csv_path = Path(csv_path)
@@ -375,6 +390,8 @@ def load_context_window_rows(csv_path: str | Path) -> list[dict]:
             return []
         for raw_row in reader:
             if len(raw_row) <= len(log_usage.CSV_FIELDS):
+                continue
+            if len(raw_row) <= 2 or raw_row[2] != _CONTEXT_WINDOW_SENTINEL:
                 continue
             used_tokens = _parse_number(raw_row[6]) if len(raw_row) > 6 else None
             if used_tokens is None:
@@ -434,7 +451,17 @@ def _baseline_row(
     if isinstance(agents_est, (int, float)):
         known_total += agents_est
 
-    residual = max(0.0, mean_baseline - known_total) if isinstance(mean_baseline, (int, float)) else None
+    # Floored at 0, but the floor is not silently absorbed: when the
+    # chars/4 estimates alone already exceed the measured baseline, that
+    # is itself informative (the estimates over-shot), so this reports
+    # None rather than a misleading 0.0 -- see fix #24 and the table note
+    # below.
+    if not isinstance(mean_baseline, (int, float)):
+        residual = None
+    elif known_total > mean_baseline:
+        residual = None
+    else:
+        residual = mean_baseline - known_total
 
     return [
         project,
@@ -491,12 +518,15 @@ def _build_baseline_table(stats: ContextBudgetStats, latest_snapshots: dict[str,
         columns=columns,
         rows=rows,
         notes=[
-            "Every column ending \"(est)\" approximates tokens as "
-            f"characters/bytes divided by {_CHARS_PER_TOKEN_APPROX} -- no "
-            "tokenizer runs over transcript content. Claude Code's own "
-            "/context view is the authoritative breakdown of the context "
-            "window; treat every (est) figure here as a rough proxy, never "
-            "as ground truth.",
+            "Human prompt, skills listing and memory files (est) approximate "
+            f"tokens as characters/bytes divided by {_CHARS_PER_TOKEN_APPROX} "
+            "-- no tokenizer runs over transcript content. Custom agents "
+            f"(est) instead counts agents x {_AGENT_LISTING_TOKENS_PER_AGENT} "
+            "tokens per agent, and MCP tools (est) is a flag, not a size "
+            "(\"present, size unknown\" -- this module cannot measure an MCP "
+            "server's own tool-schema size). Claude Code's own /context view "
+            "is the authoritative breakdown of the context window; treat "
+            "every (est) figure here as a rough proxy, never as ground truth.",
             "The \"all\" row sums every project's own sessions into one "
             "mean/median baseline; its memory files, custom agents and MCP "
             "tools buckets are null because those figures come from each "
@@ -507,7 +537,10 @@ def _build_baseline_table(stats: ContextBudgetStats, latest_snapshots: dict[str,
             "it also silently absorbs any bucket that could not be "
             "estimated at all (e.g. no config snapshot for that project), "
             "so a large residual does not necessarily mean a large system "
-            "prompt.",
+            "prompt. It is reported as null rather than 0 when the (est) "
+            "buckets alone already exceed the measured baseline -- that "
+            "means the estimates over-shot, not that the system prompt is "
+            "free.",
         ],
     )
 
@@ -547,12 +580,37 @@ def _build_autocompact_table(
         window_size = statusline_window_by_project.get(project)
         source = "statusline"
         if window_size is None:
-            window_size = _ASSUMED_CONTEXT_WINDOW_1M if acc.saw_1m_alias else _ASSUMED_CONTEXT_WINDOW_DEFAULT
+            # Fix #25: the "[1m]" alias only ever appears in a *setting*
+            # (project config), never on an observed transcript model --
+            # read it from the project's own snapshot rather than from
+            # any session's Turn.model.
+            model_alias = _model_alias_from_snapshot(snapshot)
+            saw_1m_alias = bool(model_alias) and model_alias.endswith(_CONTEXT_WINDOW_SUFFIX)
+            window_size = _ASSUMED_CONTEXT_WINDOW_1M if saw_1m_alias else _ASSUMED_CONTEXT_WINDOW_DEFAULT
             source = "assumed"
 
         observed_threshold = compaction.effective_autocompact_threshold(acc.compaction_records)
         implied_buffer = window_size - observed_threshold if observed_threshold is not None else None
-        auto_compactions = sum(1 for record in acc.compaction_records if record.trigger == "auto")
+        if (
+            implied_buffer is not None
+            and implied_buffer < 0
+            and source == "assumed"
+        ):
+            # An assumed window size is a guess; a negative buffer here
+            # means the guess was wrong (e.g. a real 1M-context session
+            # whose "[1m]" alias this project's snapshot didn't carry),
+            # not that Claude Code is actually compacting past its own
+            # window -- suppress rather than publish a nonsensical
+            # negative buffer.
+            implied_buffer = None
+        # Counts the same sample effective_autocompact_threshold's median
+        # is drawn from (trigger == "auto" AND a usable pre_tokens) --
+        # fix #23: this used to count every trigger="auto" boundary
+        # regardless of pre_tokens, so it could read non-zero next to a
+        # null observed threshold.
+        auto_compactions = sum(
+            1 for record in acc.compaction_records if record.trigger == "auto" and record.pre_tokens is not None
+        )
 
         drift = None
         if (
@@ -584,7 +642,10 @@ def _build_autocompact_table(
             "Observed effective threshold is the median "
             "compactMetadata.preTokens over this project's own compactions "
             "whose trigger is \"auto\" (compaction.effective_autocompact_threshold); "
-            "null when no auto-triggered compaction was observed.",
+            "null when no auto-triggered compaction carried a preTokens value. "
+            "\"Auto compactions\" counts that same sample (trigger=\"auto\" "
+            "with a usable preTokens), not every trigger=\"auto\" boundary, "
+            "so it is never non-zero next to a null threshold.",
             "Model context window is read from a statusline usage-log row's "
             "own context_window fields when one is available for a session "
             "in this project (context_window_source = \"statusline\"); "

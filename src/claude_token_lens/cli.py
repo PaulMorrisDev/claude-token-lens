@@ -35,6 +35,7 @@ from . import statusline as statusline_mod
 from .cache import DigestCache
 from .config import Config, ConfigError, load_config, load_session_overrides
 from .corpus import Corpus, load_corpus
+from .parse import load_or_create_salt
 from .model import EventKind, TranscriptResult
 from .pricing import Pricing, PricingError, load_pricing, price_turn
 from .render.csv_out import write_csv_dir
@@ -416,6 +417,15 @@ def _add_snapshot_config_args(sub: argparse.ArgumentParser) -> None:
         "not --project, because the common --project flag already means "
         "'a repeatable project slug to filter by'.",
     )
+    sub.add_argument(
+        "--min-interval",
+        type=int,
+        default=300,
+        metavar="SECONDS",
+        help="skip the write when the newest snapshot for this project is both "
+        "younger than this and has identical content (default: 300; the hook "
+        "script itself already accepts this flag -- fix #13 exposes it here too)",
+    )
 
 
 def _add_probe_config_args(sub: argparse.ArgumentParser) -> None:
@@ -617,6 +627,13 @@ def _load_corpus_for_args(
         cache = DigestCache(config_dir)
         if args.rebuild_cache:
             cache.purge(all=True)
+    # Fix #8: wire the A3 read-target-hash salt up to the actual corpus
+    # load -- previously nothing in src/ ever called set_salt/
+    # load_or_create_salt, so Turn.read_target_hashes was always empty in
+    # every shipped code path. load_corpus threads this through to both
+    # the in-process (jobs == 1) parse calls and, for jobs > 1, every
+    # ProcessPoolExecutor worker's own initializer.
+    salt = load_or_create_salt(config_dir)
     corpus = load_corpus(
         project_dirs,
         days=args.days,
@@ -627,6 +644,7 @@ def _load_corpus_for_args(
         cache=cache,
         jobs=args.jobs,
         exclude_projects=config.exclude_projects,
+        salt=salt,
     )
     # Fix R21: --quiet was accepted by argparse (mutually exclusive with
     # --verbose) but never actually consulted anywhere -- a silent no-op
@@ -1297,11 +1315,19 @@ def _cmd_snapshot_config(args: argparse.Namespace) -> int:
         return 0
 
     cwd = getattr(args, "project_dir", None) or os.getcwd()
-    path, _written = hook.snapshot_and_get_path(config_dir, cwd, managed_path=args.managed_path)
+    path, written = hook.snapshot_and_get_path(
+        config_dir, cwd, min_interval=args.min_interval, managed_path=args.managed_path
+    )
     if path is None:
         print("No snapshot written and none exists yet.", file=sys.stderr)
         return 1
-    print(path)
+    # Fix #13: previously discarded `written`, so running this command
+    # twice inside --min-interval printed an old snapshot's path and
+    # exited 0 -- indistinguishable from having actually captured.
+    if written:
+        print(path)
+    else:
+        print(f"{path} (unchanged, not rewritten)")
     return 0
 
 

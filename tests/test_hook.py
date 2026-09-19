@@ -17,6 +17,8 @@ from pathlib import Path
 
 import pytest
 
+from helpers import assert_privacy_deep
+
 _HOOK_PATH = (
     Path(__file__).resolve().parent.parent
     / "src"
@@ -148,6 +150,27 @@ def project(tmp_path):
     return _build_project(tmp_path)
 
 
+def test_assert_privacy_is_blind_to_a_nested_dict_leak_but_deep_variant_catches_it():
+    """Regression test for review fix #3: ``assert_privacy`` recurses into
+    a dataclass/list/tuple but deliberately stops at a ``dict`` boundary,
+    so a leak nested two dicts deep -- exactly the shape a schema-2
+    snapshot's ``settings_layers``/``effective``/``claude_json``/
+    ``content_layers`` fields are -- passes silently. ``assert_privacy_deep``
+    must catch the same leak. This fails before the fix (no
+    ``assert_privacy_deep`` existed) and passes after it."""
+    from helpers import assert_privacy
+
+    leaking = {"settings_layers": {"user": {"leak": r"C:\Users\alice\secret.txt"}}}
+
+    # The shallow scan is blind to it -- this is the bug fix #3 reports,
+    # pinned here so nobody "fixes" assert_privacy itself into breaking it.
+    assert_privacy(leaking)
+
+    # The deep scan must not be.
+    with pytest.raises(AssertionError):
+        assert_privacy_deep(leaking)
+
+
 def test_hook_writes_redacted_snapshot(tmp_path, home, project):
     config_dir = home / ".claude" / "token-lens"
     stdin = json.dumps(
@@ -194,10 +217,22 @@ def test_hook_writes_redacted_snapshot(tmp_path, home, project):
     assert project_entry["permissions"] == "dict(1)"
 
     assert snapshot["session_id"] == "sess-1"
-    assert snapshot["transcript_path"] == "/x/transcript.jsonl"
+    # Fix #1: the raw absolute transcript path must never be written --
+    # only a hash, matching cwd_hash's own shape. The raw value passed on
+    # stdin must not appear anywhere in the file.
+    assert "transcript_path" not in snapshot
+    assert snapshot["transcript_path_hash"].startswith("sha256:")
+    assert "/x/transcript.jsonl" not in json.dumps(snapshot)
     assert snapshot["source"] == "startup"
     assert snapshot["cwd_hash"].startswith("sha256:")
     assert snapshot["content_hash"].startswith("sha256:")
+
+    # Fix #3: assert_privacy's dataclass-field scan never sees this
+    # dict-of-dicts at all -- assert_privacy_deep walks every key and
+    # value in it, including the raw fixture paths (project/home live
+    # under a realistic C:\Users\...\AppData\Local\Temp\... root here,
+    # not a fake "/x/..." string a privacy scan would never trip on).
+    assert_privacy_deep(snapshot)
 
 
 def test_hook_flattens_nested_agent_frontmatter(home, project):
@@ -581,24 +616,99 @@ def test_env_numeric_caps_absent_when_unset(home, project):
     assert snapshot["env_numeric_caps"] == {}
 
 
+# -- schema 2: snapshot filename collision-proofing --------------------------
+
+
+def test_snapshot_filenames_are_collision_proof_within_the_same_second(
+    tmp_path, home, monkeypatch
+):
+    """Regression test for review fix #11: ``_TS_FORMAT`` has one-second
+    resolution, so two snapshots for different projects (different
+    content) that land in the same wall-clock second used to collide on
+    ``<ts>.json`` and the later, non-atomic write silently destroyed the
+    earlier one -- eight writes could produce a single file on disk. Force
+    both writes into the exact same forged ``ts`` (rather than relying on
+    real-clock timing, which is flaky) and confirm both survive as two
+    distinct, individually-parseable files. This fails before the fix
+    (``len(files) == 1``, the second project's write clobbering the
+    first's) and passes after it.
+    """
+    hook = _load_hook_module()
+    config_dir = home / ".claude" / "token-lens"
+
+    project_a = tmp_path / "project-a"
+    project_b = tmp_path / "project-b"
+    project_a.mkdir()
+    project_b.mkdir()
+
+    monkeypatch.setattr(hook, "_now_ts", lambda now=None: "20260919T120000Z")
+
+    path_a, written_a = hook.snapshot_and_get_path(config_dir, str(project_a), min_interval=0)
+    path_b, written_b = hook.snapshot_and_get_path(config_dir, str(project_b), min_interval=0)
+
+    assert written_a is True
+    assert written_b is True
+    assert path_a != path_b
+    assert path_a.exists()
+    assert path_b.exists()
+
+    files = sorted((config_dir / "snapshots").glob("*.json"))
+    assert len(files) == 2, f"expected 2 distinct snapshot files, got {[f.name for f in files]}"
+
+    for f in files:
+        assert f.name.startswith("20260919T120000Z-")
+        # Each file must be a complete, valid JSON document -- proves the
+        # write is atomic (temp file + os.replace), not merely
+        # distinctly named.
+        data = json.loads(f.read_text(encoding="utf-8"))
+        assert "project_slug" in data
+
+
 # -- schema 2: project slug --------------------------------------------------
 
 
-def test_project_slug_is_non_alnum_substituted_cwd(home, project):
+def _load_hook_module():
+    """Dynamically import the standalone hook script (see
+    ``test_model_pricing_absent_reduces_to_not_present`` for the same
+    pattern) so a test can call its redaction helpers directly to build
+    an expected value, without duplicating their algorithm."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("snapshot_config_hook", _HOOK_PATH)
+    hook = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(hook)
+    return hook
+
+
+def test_project_slug_is_redacted_hash_not_the_raw_cwd(home, project):
+    """Fix #2: ``project_slug`` used to be the absolute cwd with
+    punctuation swapped for "-" (e.g. ``C--Users-alice-work-acme-client``)
+    -- the username and full directory structure, stored verbatim and
+    later rendered in report tables / probe-config Markdown. The stored
+    value must now be an opaque ``slug:<hash>`` join key that reveals
+    neither the path nor its structure.
+    """
+    hook = _load_hook_module()
     config_dir = home / ".claude" / "token-lens"
     stdin = json.dumps({"session_id": "s", "cwd": str(project)})
     result = _run_hook(config_dir=config_dir, cwd=project, stdin_text=stdin)
     assert result.returncode == 0
     snapshot = _latest_snapshot(config_dir)
     slug = snapshot["project_slug"]
-    assert slug
-    # Never a raw path separator or drive-letter colon in the slug.
+
+    raw_slug = hook._project_slug(str(project))
+    assert slug == hook._redact_slug(raw_slug)
+    assert slug.startswith("slug:")
+    # Never a raw path separator, a drive-letter colon, the raw
+    # (unredacted) slug, or the cwd itself.
     assert "/" not in slug
     assert "\\" not in slug
-    assert ":" not in slug
+    assert raw_slug not in slug
+    assert str(project) not in slug
 
 
 def test_project_slug_honours_project_dir_name_env_override(home, project):
+    hook = _load_hook_module()
     config_dir = home / ".claude" / "token-lens"
     stdin = json.dumps({"session_id": "s", "cwd": str(project)})
     result = _run_hook(
@@ -609,7 +719,9 @@ def test_project_slug_honours_project_dir_name_env_override(home, project):
     )
     assert result.returncode == 0
     snapshot = _latest_snapshot(config_dir)
-    assert snapshot["project_slug"] == "my-fixed-slug"
+    # The override still flows through the same redaction as any other
+    # slug -- it is not a way to bypass fix #2 and get a raw slug stored.
+    assert snapshot["project_slug"] == hook._redact_slug("my-fixed-slug")
 
 
 # -- schema 2: settings layers / effective config / provenance --------------
@@ -821,6 +933,12 @@ def test_claude_json_matches_project_by_normcase_realpath(home, project):
     # The raw project-key spelling (a path) must never be recorded verbatim.
     assert weird_key not in raw_text
 
+    # Fix #3: deep-scan the whole snapshot, not just the fields this test
+    # already names -- catches a leak anywhere in claude_json's nested
+    # dicts (top_level, last_session, ...), which assert_privacy cannot
+    # reach through a dataclass field.
+    assert_privacy_deep(snapshot)
+
 
 def test_claude_json_no_matching_project_entry(home, project):
     config_dir = home / ".claude" / "token-lens"
@@ -902,6 +1020,11 @@ def test_content_layers_claude_md_rules_commands_and_skills(home, project):
     assert content["commands"] == {"count": 1, "bytes": len("command body")}
     assert content["skills"]["project"]["names"] == ["my-skill"]
     assert content["skills"]["project"]["total_bytes"] == len("skill body")
+
+    # Fix #3: deep-scan the whole snapshot -- content_layers is itself a
+    # dict of dicts (claude_md, rules, commands, skills), the exact shape
+    # assert_privacy cannot see into.
+    assert_privacy_deep(snapshot)
 
     # Never raw content, only sizes/counts/names.
     assert "project root memory" not in raw_text

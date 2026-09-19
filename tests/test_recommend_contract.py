@@ -686,10 +686,14 @@ def test_recommend_every_rule_fires_with_valid_evidence():
     (like R11's subagent-volume bug) in any rule, not just the one a
     real corpus happens to exercise."""
     model = _build_every_rule_fixture()
+    # Fix #20: mcp_servers is the fixed three-key dict the hook actually
+    # emits ({"names": [...], "enabled_mcpjson_servers": [...],
+    # "disabled_mcpjson_servers": [...]}) -- server names live under
+    # "names", not as top-level dict keys.
     snapshot = snapshots.Snapshot(
         path=Path("snap.json"),
         ts="20260918T000000Z",
-        data={"mcp_servers": {f"server{i}": {} for i in range(5)}},
+        data={"mcp_servers": {"names": [f"server{i}" for i in range(5)]}},
     )
     recs = recommend.recommend(model, config=Config(), archetype=None, snapshot=snapshot)
 

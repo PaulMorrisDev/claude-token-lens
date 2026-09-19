@@ -145,9 +145,11 @@ def test_baseline_table_human_prompt_and_skills_listing_estimates(tmp_path):
     assert_privacy(section)
 
 
-def test_baseline_table_residual_floored_at_zero(tmp_path):
-    """A baseline smaller than the known (est) buckets must never produce
-    a negative residual."""
+def test_baseline_table_residual_is_none_when_est_exceeds_baseline(tmp_path):
+    """Fix #24: a baseline smaller than the known (est) buckets must never
+    silently report "the system prompt costs 0 tokens" -- that reads as a
+    measurement, not as "the estimates over-shot". None is reported
+    instead, with a note explaining why."""
     top = _build_session(
         tmp_path,
         "s1",
@@ -161,7 +163,29 @@ def test_baseline_table_residual_floored_at_zero(tmp_path):
     table = next(t for t in section.tables if t.name == "context_budget_baseline")
     col = {c.key: i for i, c in enumerate(table.columns)}
     proj_row = next(row for row in table.rows if row[col["project"]] == "proj-a")
-    assert proj_row[col["system_prompt_and_tools_est"]] == 0.0
+    assert proj_row[col["system_prompt_and_tools_est"]] is None
+    assert any("over-shot" in n for n in table.notes)
+
+
+def test_baseline_table_residual_is_the_gap_when_baseline_exceeds_est(tmp_path):
+    """The ordinary case: the residual is a real, positive figure equal to
+    the baseline minus every known (est) bucket."""
+    top = _build_session(
+        tmp_path,
+        "s1",
+        session_id="sess_1",
+        human_text="x" * 4_000,
+        baseline_cache_creation=50_000,
+    )
+    stats = context_budget.ContextBudgetStats()
+    stats.add_session("proj-a", top)
+    section = context_budget.build_section(stats)
+    table = next(t for t in section.tables if t.name == "context_budget_baseline")
+    col = {c.key: i for i, c in enumerate(table.columns)}
+    proj_row = next(row for row in table.rows if row[col["project"]] == "proj-a")
+    human_est = proj_row[col["human_prompt_est"]]
+    skills_est = proj_row[col["skills_listing_est"]]
+    assert proj_row[col["system_prompt_and_tools_est"]] == pytest.approx(50_000 - human_est - skills_est)
 
 
 def test_baseline_table_uses_snapshot_for_memory_agents_mcp(tmp_path):
@@ -268,10 +292,16 @@ def test_autocompact_table_null_drift_without_configured_window(tmp_path):
 
 
 def test_autocompact_table_1m_alias_assumes_million_window(tmp_path):
-    top = _build_session(tmp_path, "s1", session_id="sess_1", model="claude-sonnet-5[1m]")
+    """Fix #25: the "[1m]" alias only ever appears in a *setting*, never
+    on an observed transcript model (Turn.model is always a full API id)
+    -- so this must be read from the project's own snapshot, not from
+    ``model=`` on the transcript itself (which stays a plain, unaliased
+    id here to prove the transcript side is no longer consulted)."""
+    top = _build_session(tmp_path, "s1", session_id="sess_1", model="claude-sonnet-5")
     stats = context_budget.ContextBudgetStats()
     stats.add_session("proj-a", top)
-    section = context_budget.build_section(stats)
+    snapshot = _snapshot("proj-a", effective={"model": "sonnet[1m]"})
+    section = context_budget.build_section(stats, snapshots=[snapshot])
     table = next(t for t in section.tables if t.name == "context_budget_autocompact")
     col = {c.key: i for i, c in enumerate(table.columns)}
     row = table.rows[0]
@@ -279,6 +309,34 @@ def test_autocompact_table_1m_alias_assumes_million_window(tmp_path):
     assert row[col["context_window_source"]] == "assumed"
     assert row[col["auto_compactions"]] == 0
     assert row[col["observed_threshold"]] is None
+
+
+def test_autocompact_table_1m_alias_falls_back_to_schema1_user_settings(tmp_path):
+    """Schema-1 snapshots predate ``effective`` entirely; the alias must
+    still be found via the raw ``user_settings.model`` field."""
+    top = _build_session(tmp_path, "s1", session_id="sess_1", model="claude-sonnet-5")
+    stats = context_budget.ContextBudgetStats()
+    stats.add_session("proj-a", top)
+    snapshot = _snapshot("proj-a", user_settings={"model": "sonnet[1m]"})
+    section = context_budget.build_section(stats, snapshots=[snapshot])
+    table = next(t for t in section.tables if t.name == "context_budget_autocompact")
+    col = {c.key: i for i, c in enumerate(table.columns)}
+    row = table.rows[0]
+    assert row[col["context_window_size"]] == 1_000_000
+
+
+def test_autocompact_table_no_alias_uses_default_window_even_with_1m_transcript_model(tmp_path):
+    """A full API model id that happens to contain "[1m]"-shaped text on
+    the transcript side must not be mistaken for the settings alias --
+    only the joined snapshot's own model setting counts."""
+    top = _build_session(tmp_path, "s1", session_id="sess_1", model="claude-sonnet-5[1m]")
+    stats = context_budget.ContextBudgetStats()
+    stats.add_session("proj-a", top)
+    section = context_budget.build_section(stats, snapshots=None)
+    table = next(t for t in section.tables if t.name == "context_budget_autocompact")
+    col = {c.key: i for i, c in enumerate(table.columns)}
+    row = table.rows[0]
+    assert row[col["context_window_size"]] == 200_000
 
 
 # -- statusline table -----------------------------------------------------

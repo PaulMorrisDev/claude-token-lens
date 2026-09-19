@@ -444,7 +444,23 @@ def build_config_groups_table(
 # -- schema 2: drift detection ------------------------------------------------
 
 
-def detect_drift(snapshot: Snapshot, observed: dict) -> list[tuple[str, object, object]]:
+def _model_family(model_id: object, resolve_model) -> object:
+    """Fix #15: reduce ``model_id`` to the canonical id ``resolve_model``
+    (a ``Pricing.resolve_model``-shaped callable) resolves it to, so a
+    settings *alias* (``"sonnet"``, ``"fable[1m]"``) compares equal to an
+    observed full API id (``claude-opus-4-5-20260101``) when they name the
+    same model. Falls back to the raw value unchanged when it isn't a
+    non-empty string or ``resolve_model`` can't resolve it at all (an
+    unrecognised id is still compared as itself, so a genuine drift to an
+    unknown model is still reported).
+    """
+    if resolve_model is None or not isinstance(model_id, str) or not model_id:
+        return model_id
+    resolved = resolve_model(model_id)
+    return resolved.canonical_id if resolved is not None else model_id
+
+
+def detect_drift(snapshot: Snapshot, observed: dict, resolve_model=None) -> list[tuple[str, object, object]]:
     """Every key present in both ``snapshot``'s merged
     :func:`effective_config` and the caller's ``observed`` dict (its own
     computed dominant model / observed TTL mix / effort mode from real
@@ -455,23 +471,47 @@ def detect_drift(snapshot: Snapshot, observed: dict) -> list[tuple[str, object, 
     "Configuration layers" section) — evidence, not proof. A key in
     ``observed`` that the snapshot doesn't have an effective value for is
     silently skipped: there's nothing to compare it against.
+
+    Fix #15: raw equality used to compare a settings *alias* (what
+    ``effective_config``'s ``model`` key holds -- ``"sonnet"``, ``"opus"``,
+    ``"fable[1m]"``) against a full API model id (what any caller derives
+    ``observed["model"]`` from), which can never compare equal -- every
+    session would report 100% drift on ``model`` the moment this table is
+    wired up (see #14). ``resolve_model`` (a ``Pricing.resolve_model``-
+    shaped callable, typically ``pricing.resolve_model``) resolves both
+    sides to the same canonical id before comparing when the drifting key
+    is ``"model"``; every other key keeps the previous exact-value
+    comparison. ``promptCacheTtl``'s own false-positive case (a session
+    that legitimately writes cache in both the 5m default and an 1h
+    override tier within the same window) is not resolved here -- doing
+    so needs the caller to say whether the session wrote in both tiers,
+    which is outside this function's plain (key -> value) ``observed``
+    contract; flagged rather than silently "fixed" by guessing.
     """
     eff = effective_config(snapshot)
     mismatches: list[tuple[str, object, object]] = []
     for key, observed_value in observed.items():
         if key not in eff:
             continue
-        if _hashable(eff[key]) != _hashable(observed_value):
-            mismatches.append((key, eff[key], observed_value))
+        snap_value = eff[key]
+        if key == "model":
+            if _model_family(snap_value, resolve_model) == _model_family(observed_value, resolve_model):
+                continue
+        elif _hashable(snap_value) == _hashable(observed_value):
+            continue
+        mismatches.append((key, snap_value, observed_value))
     return mismatches
 
 
-def build_config_drift_table(sessions_with_observed: list[dict], snapshots: list[Snapshot]) -> Table:
+def build_config_drift_table(
+    sessions_with_observed: list[dict], snapshots: list[Snapshot], resolve_model=None
+) -> Table:
     """``sessions_with_observed`` entries: ``{"session_id", "first_ts",
     "observed": {key: value, ...}}``. One row per (session, key) where the
     session's joined snapshot's effective value disagrees with what was
     observed; a session predating every snapshot is skipped and counted in
-    a note (same convention as :func:`build_config_diff_table`).
+    a note (same convention as :func:`build_config_diff_table``).
+    ``resolve_model`` is forwarded to :func:`detect_drift` (fix #15).
     """
     rows: list[list] = []
     excluded = 0
@@ -481,7 +521,7 @@ def build_config_drift_table(sessions_with_observed: list[dict], snapshots: list
         if snap is None:
             excluded += 1
             continue
-        for key, snap_value, observed_value in detect_drift(snap, observed):
+        for key, snap_value, observed_value in detect_drift(snap, observed, resolve_model=resolve_model):
             rows.append(
                 [
                     str(session.get("session_id", "")),
@@ -561,10 +601,33 @@ def claude_json_cross_check(snapshot: Snapshot, observed_session_totals: dict) -
             continue
         claude_json_value = last_session[claude_json_key]
         observed_value = observed_session_totals[observed_key]
-        if claude_json_value != observed_value:
+        if observed_key == "cost":
+            # Fix #16: lastCost and the observed cost are two
+            # independently computed floats (Claude Code's own rate card
+            # vs pricing.price_turn against pricing.toml) -- exact `!=`
+            # reports a "difference" for any discrepancy as small as the
+            # 15th decimal place. Compared with a tolerance instead; every
+            # other field here is an integer token count, which stays
+            # exact.
+            if not _floats_effectively_equal(claude_json_value, observed_value):
+                differences[observed_key] = (claude_json_value, observed_value)
+        elif claude_json_value != observed_value:
             differences[observed_key] = (claude_json_value, observed_value)
 
     return {"matched": True, "differences": differences}
+
+
+#: Fix #16: absolute cost tolerance (half a cent) plus a relative 0.1%
+#: tolerance for larger totals -- either satisfied is enough to call two
+#: independently computed costs "the same".
+_COST_ABS_TOLERANCE = 0.005
+_COST_REL_TOLERANCE = 0.001
+
+
+def _floats_effectively_equal(a: object, b: object) -> bool:
+    if not isinstance(a, (int, float)) or not isinstance(b, (int, float)):
+        return a == b
+    return abs(a - b) <= max(_COST_ABS_TOLERANCE, _COST_REL_TOLERANCE * max(abs(a), abs(b)))
 
 
 def _hashable(value):
@@ -768,6 +831,7 @@ def build_config_section(
     *,
     include_effective: bool = False,
     sessions_with_observed: list[dict] | None = None,
+    resolve_model=None,
 ) -> Section:
     """Wrap :func:`build_config_diff_table` in a "Config diff" report
     ``Section`` (fix item 10), so a CLI report can list a config-diff
@@ -808,7 +872,7 @@ def build_config_section(
         tables.append(build_config_layers_table(snapshots))
         tables.append(build_config_groups_table(snapshots, sessions_with_metrics))
     if sessions_with_observed:
-        tables.append(build_config_drift_table(sessions_with_observed, snapshots))
+        tables.append(build_config_drift_table(sessions_with_observed, snapshots, resolve_model=resolve_model))
     return Section(key="config_diff", title="Config diff", tables=tables)
 
 

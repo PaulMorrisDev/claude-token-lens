@@ -770,10 +770,17 @@ def test_baseline_bloat_fires_with_snapshot_evidence():
             ],
         ),
     )
+    # Fix #20: mcp_servers is the fixed three-key dict the hook actually
+    # emits (hooks/snapshot-config.py) -- server names live under
+    # "names", not as top-level dict keys -- and enabled_plugins is a
+    # plain list, not a dict.
     snapshot = Snapshot(
         path=Path("s.json"),
         ts="20260918T000000Z",
-        data={"mcp_servers": {"a": {}, "b": {}, "c": {}}, "enabled_plugins": {"x": {}, "y": {}}},
+        data={
+            "mcp_servers": {"names": ["a", "b", "c"], "enabled_mcpjson_servers": [], "disabled_mcpjson_servers": []},
+            "enabled_plugins": ["x", "y"],
+        },
     )
     recs = recommend_fn(r, config=_config(), archetype=None, snapshot=snapshot)
     rec = next(rec for rec in recs if rec.id == "baseline-bloat")
@@ -829,7 +836,9 @@ def test_baseline_bloat_does_not_fire_with_too_few_mcp_servers():
             ],
         ),
     )
-    snapshot = Snapshot(path=Path("s.json"), ts="20260918T000000Z", data={"mcp_servers": {"a": {}}})
+    snapshot = Snapshot(
+        path=Path("s.json"), ts="20260918T000000Z", data={"mcp_servers": {"names": ["a"]}}
+    )
     recs = recommend_fn(r, config=_config(), archetype=None, snapshot=snapshot)
     assert not any(rec.id == "baseline-bloat" for rec in recs)
 
@@ -855,7 +864,11 @@ def test_baseline_bloat_suppressed_for_chat_only():
             ],
         ),
     )
-    snapshot = Snapshot(path=Path("s.json"), ts="20260918T000000Z", data={"mcp_servers": {"a": {}, "b": {}, "c": {}, "d": {}, "e": {}}})
+    snapshot = Snapshot(
+        path=Path("s.json"),
+        ts="20260918T000000Z",
+        data={"mcp_servers": {"names": ["a", "b", "c", "d", "e"]}},
+    )
     recs = recommend_fn(r, config=_config(), archetype="chat-only", snapshot=snapshot)
     assert not any(rec.id == "baseline-bloat" for rec in recs)
 

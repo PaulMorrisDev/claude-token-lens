@@ -44,6 +44,21 @@ Deviations from the task brief, reported rather than made silently (see
   than reusing :func:`snapshots.build_config_section` directly (which
   takes exactly one ``key`` and returns ``Section(key="config_diff", ...)``
   — a different section key than this task specifies).
+  Review fix #14: this section now additionally appends
+  ``snapshots.build_effective_config_table``/``build_config_layers_table``/
+  ``build_config_groups_table`` (no inputs beyond the snapshots already
+  in hand) and, once a session's own dominant top-level model is known,
+  ``build_config_drift_table`` (fix #15: model comparisons are alias-
+  normalised via ``pricing.resolve_model``, so this no longer reports
+  100% drift on ``model``). ``snapshots.claude_json_cross_check`` is
+  still not surfaced as a report table: unlike the other five functions
+  fix #14 names, it has no existing ``build_*_table`` wrapper to reuse
+  (only the raw dict-returning comparison), and it also needs a full
+  per-session input/output/cache-token accumulation this section doesn't
+  otherwise keep, joined against ``~/.claude.json``'s own
+  ``lastSessionId`` — designing that table shape is a larger addition
+  than this fix round covers; it remains reachable only via direct
+  library use.
 - ``allow_titles`` is accepted (matching the required signature) but is
   currently a no-op: nothing in ``model.py``/``parse.py``/``events.py``
   captures ``customTitle``/``ai-title`` line text anywhere, even
@@ -410,7 +425,13 @@ def _build_overview_section(
 # -- config section (see module docstring's deviation note) -------------
 
 
-def _build_config_section(sessions_with_metrics: list[dict], snaps: list[Snapshot]) -> Section:
+def _build_config_section(
+    sessions_with_metrics: list[dict],
+    snaps: list[Snapshot],
+    *,
+    sessions_with_observed: list[dict] | None = None,
+    resolve_model=None,
+) -> Section:
     changed_keys = sorted(snapshots_mod.diff_keys(snaps).keys())
     shown_keys = changed_keys[:_MAX_CONFIG_DIFF_KEYS]
 
@@ -436,6 +457,25 @@ def _build_config_section(sessions_with_metrics: list[dict], snaps: list[Snapsho
             f"Showing the first {_MAX_CONFIG_DIFF_KEYS} of {len(changed_keys)} changed "
             "config keys, alphabetically."
         )
+
+    # Fix #14: build_effective_config_table/build_config_layers_table/
+    # build_config_groups_table need no inputs beyond the snapshots
+    # already supplied here, so wire them in directly -- previously
+    # reachable only via snapshots.build_config_section(...,
+    # include_effective=True), which this section deliberately doesn't
+    # reuse (see module docstring). Fix #15: build_config_drift_table now
+    # normalises a settings model *alias* against an observed full model
+    # id via resolve_model before comparing, so this is no longer the
+    # "100% drift on model" trap #15 describes.
+    if snaps:
+        tables.append(snapshots_mod.build_effective_config_table(snaps))
+        tables.append(snapshots_mod.build_config_layers_table(snaps))
+        tables.append(snapshots_mod.build_config_groups_table(snaps, sessions_with_metrics))
+        if sessions_with_observed:
+            tables.append(
+                snapshots_mod.build_config_drift_table(sessions_with_observed, snaps, resolve_model=resolve_model)
+            )
+
     return Section(key="config", title="Config", tables=tables, notes=notes)
 
 
@@ -584,6 +624,11 @@ def build_report(
     session_cost: dict[str, float] = {}
     session_cc_total: dict[str, int] = {}
     session_recache_cc: dict[str, int] = {}
+    #: Fix #14/#15: the top-level transcript's own dominant model per
+    #: session, for the config-drift table's "observed" side --
+    #: deliberately top-level only (a subagent's own model is a separate
+    #: question from "did this session's own settings take effect").
+    session_observed_model: dict[str, str] = {}
     all_workflow_runs: list[WorkflowRun] = []
 
     overview = _OverviewAcc()
@@ -640,6 +685,9 @@ def build_report(
             dominant_model = _dominant_transcript_model(tr)
             dominant_rate = pricing.resolve_model(dominant_model) if dominant_model else None
             cs.add_transcript(tr, dominant_rate, recache_th)
+
+            if tr is top and dominant_model:
+                session_observed_model[record.session_id] = dominant_model
 
             if ph is not None:
                 ph.add_transcript(tr, pricing)
@@ -799,7 +847,23 @@ def build_report(
             }
             for record in session_records
         ]
-        sections.append(_build_config_section(sessions_with_metrics, snapshots))
+        sessions_with_observed = [
+            {
+                "session_id": record.session_id,
+                "first_ts": record.first_ts,
+                "observed": {"model": session_observed_model[record.session_id]},
+            }
+            for record in session_records
+            if record.session_id in session_observed_model
+        ]
+        sections.append(
+            _build_config_section(
+                sessions_with_metrics,
+                snapshots,
+                sessions_with_observed=sessions_with_observed,
+                resolve_model=pricing.resolve_model,
+            )
+        )
 
     if _want("context_budget"):
         sections.append(context_budget.build_section(cb, snapshots=snapshots, usage_log_rows=usage_log_rows))

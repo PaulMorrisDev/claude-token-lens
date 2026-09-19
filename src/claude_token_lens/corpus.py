@@ -67,6 +67,7 @@ from pathlib import Path
 from typing import Callable
 
 from . import discovery
+from . import parse as parse_mod
 from .cache import DigestCache
 from .model import TranscriptMeta, TranscriptResult, WorkflowRun
 from .parse import parse_transcript
@@ -279,6 +280,7 @@ def load_corpus(
     jobs: int = 1,
     exclude_projects=(),
     progress: Callable[[int, int], None] | None = None,
+    salt: bytes | None = None,
 ) -> Corpus:
     """Assemble a :class:`Corpus` from ``project_dirs``. See the module
     docstring for the full algorithm; parameters mirror
@@ -289,6 +291,17 @@ def load_corpus(
     ``progress(done, total)`` once per transcript file as it's resolved
     (cache hit or freshly parsed) — ``total`` is fixed for the whole call,
     ``done`` only ever increases.
+
+    ``salt`` (fix #8), when given, wires up ``Turn.read_target_hashes``:
+    with ``jobs == 1`` this process calls ``parse.set_salt(salt)`` directly
+    before parsing any pending transcript; with ``jobs > 1`` it is instead
+    passed as the ``ProcessPoolExecutor``'s own ``initializer``/``initargs``,
+    so every spawned worker calls ``parse.set_salt(salt)`` exactly once
+    before parsing its first job — without this, a ``jobs > 1`` run would
+    silently produce empty ``read_target_hashes`` for every transcript
+    while a ``jobs == 1`` run on the same corpus produced full ones (the
+    exact defect fix #8 describes). ``None`` (the default) leaves hashing
+    off entirely, matching ``parse.set_salt``'s own "never called" contract.
     """
     start = time.monotonic()
 
@@ -330,7 +343,11 @@ def load_corpus(
 
     if pending:
         if jobs > 1:
-            with concurrent.futures.ProcessPoolExecutor(max_workers=jobs) as executor:
+            pool_kwargs = {"max_workers": jobs}
+            if salt is not None:
+                pool_kwargs["initializer"] = parse_mod.set_salt
+                pool_kwargs["initargs"] = (salt,)
+            with concurrent.futures.ProcessPoolExecutor(**pool_kwargs) as executor:
                 future_map = {
                     executor.submit(_parse_worker, path, meta): (path, meta) for path, meta in pending
                 }
@@ -342,6 +359,8 @@ def load_corpus(
                         cache.put(path, meta, result)
                     _tick()
         else:
+            if salt is not None:
+                parse_mod.set_salt(salt)
             for path, meta in pending:
                 result = parse_transcript(path, meta)
                 results[str(path)] = result
