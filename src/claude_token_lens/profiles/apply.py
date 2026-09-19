@@ -550,8 +550,24 @@ def execute(plan: ApplyPlan, *, config_dir: str | Path) -> ApplyResult:
     if plan.blocked:
         raise ApplyError(list(plan.blocked))
 
-    ts = datetime.now(timezone.utc).strftime(_TS_FORMAT)
+    # _TS_FORMAT only has second resolution, so two applies within the
+    # same UTC second (a real risk for scripted/back-to-back applies,
+    # not just a test artefact) would otherwise collide on the same
+    # backup directory -- the second apply's manifest and backup files
+    # would silently overwrite the first's, corrupting that first
+    # apply's revert. A numeric suffix disambiguates rather than
+    # guessing the collision away: "<ts>-2", "<ts>-3", ... -- each
+    # still sorts immediately after its bare "<ts>" (a longer string
+    # with that exact prefix always compares greater), so
+    # list_backups' ascending-by-ts order is unaffected.
+    base_ts = datetime.now(timezone.utc).strftime(_TS_FORMAT)
+    ts = base_ts
     backup_dir = config_dir / "backups" / ts
+    suffix = 2
+    while backup_dir.exists():
+        ts = f"{base_ts}-{suffix}"
+        backup_dir = config_dir / "backups" / ts
+        suffix += 1
     files_dir = backup_dir / "files"
 
     manifest_entries = []
