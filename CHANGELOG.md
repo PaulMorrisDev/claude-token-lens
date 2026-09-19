@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Service watcher and store rebuild (v0.2)** — `FileWatcher`
+  (`service/watcher.py`) polls `--projects-root` on a background thread,
+  parsing new or changed transcripts (top-level, subagent and
+  workflow-nested subagent) and config snapshots into the SQLite store,
+  skipping files still inside the 60-second live-file window until they
+  stabilise. `service/rebuild.py`'s `corpus_from_store` reconstructs a
+  full `Corpus` from the store's `digest_json` columns alone, with no
+  transcript files on disk, so a report can still be built for a session
+  after Claude Code's own `cleanupPeriodDays` retention has removed its
+  transcript.
+
 ### Planned
 
 - **v0.2** — `claude-token-lens serve` (local read-only service: watcher
