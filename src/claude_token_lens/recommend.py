@@ -848,9 +848,9 @@ def _rule_baseline_bloat(
         return []
     if snapshot is None:
         return []
-    mcp_servers = snapshot.data.get("mcp_servers") or {}
-    enabled_plugins = snapshot.data.get("enabled_plugins") or {}
-    prefix_count = len(mcp_servers) + len(enabled_plugins)
+    prefix_count = len((snapshot.data.get("mcp_servers") or {}).get("names") or []) + len(
+        snapshot.data.get("enabled_plugins") or []
+    )
     if prefix_count < th.baseline_bloat_min_mcp_or_plugins:
         return []
 
@@ -863,15 +863,31 @@ def _rule_baseline_bloat(
     biggest_bucket_label: str | None = None
     cb_table = _table(report, "context_budget", "context_budget_baseline")
     if cb_table is not None:
-        cb_row_key = next((row[0] for row in cb_table.rows if row[0] == "all"), None)
+        # Fix #21: the "all" row is built with snapshot=None
+        # (context_budget._build_baseline_table), so its memory-files and
+        # custom-agents buckets are structurally null -- when the report
+        # covers exactly one project, cite that project's own row instead,
+        # which carries every bucket.
+        project_row_keys = [row[0] for row in cb_table.rows if row[0] != "all"]
+        cb_row_key = (
+            project_row_keys[0]
+            if len(project_row_keys) == 1
+            else next((row[0] for row in cb_table.rows if row[0] == "all"), None)
+        )
         if cb_row_key is not None:
+            # The residual ("system prompt and tools") is a remainder --
+            # mean baseline minus every other known bucket -- not a sized
+            # bucket in its own right, so it is excluded from the "biggest
+            # bucket" contest entirely (it would otherwise win by default
+            # whenever a bucket the table can't size, e.g. MCP tools, ate
+            # into the true total). It is still shown as evidence.
             bucket_columns = (
                 ("human_prompt_est", "human prompt"),
                 ("skills_listing_est", "skills listing"),
                 ("memory_files_est", "memory files"),
                 ("custom_agents_est", "custom agents"),
-                ("system_prompt_and_tools_est", "system prompt and tools"),
             )
+            residual_column = ("system_prompt_and_tools_est", "system prompt and tools")
             sized_evidence = []
             best_label = None
             best_value = None
@@ -884,6 +900,19 @@ def _rule_baseline_bloat(
                 )
                 if best_value is None or value > best_value:
                     best_value, best_label = value, label
+            residual_value = _cell(
+                report, "context_budget", "context_budget_baseline", cb_row_key, residual_column[0]
+            )
+            if isinstance(residual_value, (int, float)):
+                sized_evidence.append(
+                    _evidence(
+                        f"Estimated {residual_column[1]} (est)",
+                        residual_value,
+                        "context_budget",
+                        "context_budget_baseline",
+                        cb_row_key,
+                    )
+                )
             if sized_evidence:
                 evidence = sized_evidence
                 biggest_bucket_label = best_label
