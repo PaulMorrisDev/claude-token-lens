@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`elasticity.py`** (v4-elasticity): fits how many percentage points
+  of a `five_hour`/`seven_day`/`spend_limit` usage window one million
+  tokens (or one list-price dollar) is actually worth, from consecutive
+  `tools/log_usage.py` samples paired with the token volume this
+  machine's own transcripts consumed between them (weighted
+  least-squares through the origin, refusing to report a figure below
+  8 pairs or an R² of 0.5). New `elasticity` report section
+  (`elasticity_fit`, `elasticity_budget`, `elasticity_recent_burn`)
+  derives the million-new-tokens-per-window budget and the last-24h
+  burn share of the weekly window; new `express_in_window` function
+  converts a USD saving into "≈ x% of your weekly window" for
+  subscription-billed accounts; new `window-budget` recommendation
+  rule (`elasticity.RULES`) states the derived budget/burn and points
+  at the biggest other lever already on the report by id. See
+  [`docs/elasticity.md`](docs/elasticity.md).
 - **v4-carry-cost context carry cost per tool** (`carry.py`, work
   package v4-carry-cost): a tool result doesn't cost tokens only on the
   turn it's produced — it rides along in the cached prefix, re-read or

@@ -673,6 +673,40 @@ concrete workflow lever (truncate long Bash/PowerShell output, prefer
 `Grep` over `Read`, cap agent report length) and cites the matching
 `carry_truncation_savings` row as the projected saving.
 
+## `elasticity` (`elasticity.py`)
+
+Full field-by-field contract: [`docs/elasticity.md`](elasticity.md).
+
+How many percentage points of a `five_hour`/`seven_day`/`spend_limit`
+usage window one million tokens (or one list-price dollar) is actually
+worth, fit empirically from consecutive `tools/log_usage.py` CSV samples
+paired with the token volume this machine's own transcripts (top-level
+and subagent, every project) consumed between them. A weighted (`1/x`)
+least-squares fit through the origin — `slope = sum(deltas) /
+sum(volumes)` — per window kind and per volume metric (new tokens,
+cache-read tokens, list-price USD); a fit below 8 pairs or an R² of 0.5
+is refused outright rather than reported with a caveat.
+
+- `elasticity_fit` — one row per window kind × metric: unit, the fitted
+  window-percent-per-unit slope (blank when refused), R², pairs used,
+  residual spread, whether it was accepted, and the reason when not.
+- `elasticity_budget` — per window kind, the derived million new tokens
+  a full window is worth (`100 / slope`), for every window whose own
+  new-tokens fit was accepted with a positive slope.
+- `elasticity_recent_burn` — the last 24h's new-token volume expressed
+  as a share of `ElasticityThresholds.weekly_window` (`seven_day` by
+  default, "your weekly window").
+
+`express_in_window(usd_saving, elasticity_stats, window=None)` converts
+a USD saving into a share of a usage window via that window's own USD
+fit — the function a wiring step calls to append "≈ x% of your weekly
+window" to a recommendation's saving line once `config.billing ==
+"subscription"`. `elasticity.RULES`'s `window-budget` rule fires only
+under subscription billing with an accepted weekly-window fit, states
+the derived budget and burn share, and names whichever other
+already-computed recommendation looks like the biggest lever by its own
+id — never repeating that recommendation's own numbers.
+
 ## `scorecard` (`scorecard.py`)
 
 Five 1-5 levels (1 poor, 5 excellent) summarising a corpus's cache
