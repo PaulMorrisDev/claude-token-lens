@@ -428,6 +428,7 @@ def test_append_context_window_row_writes_cache_columns(tmp_path):
         "cache_misses",
         "cache_last_miss_cause",
         "cache_recache_tokens_if_cold",
+        "cache_miss_causes",
     ]
 
     rows = statusline.load_usage_log_ground_truth(csv_path)
@@ -610,3 +611,387 @@ def test_report_cli_renders_with_old_and_new_format_usage_log(tmp_path):
         ]
     )
     assert rc == 0
+
+
+def test_report_cli_scopes_cache_ground_truth_to_the_report_window(tmp_path, capsys):
+    """Regression test for review finding 8 (should-fix): cache_ground_truth
+    used to include every ground-truth row ever logged, from every
+    session, ignoring the invocation's own --days/--since/--until window.
+    Two rows logged for the same session -- one just now, one over a
+    year ago -- must only count the recent one once the report is
+    scoped to a recent --days window.
+    """
+    from helpers import turn_line, write_jsonl
+
+    from claude_token_lens import cli as cli_mod
+
+    projects_root = tmp_path / "projects"
+    project_dir = projects_root / "proj-a"
+    project_dir.mkdir(parents=True)
+    now = datetime.now(timezone.utc)
+    now_iso = now.isoformat().replace("+00:00", "Z")
+    write_jsonl(project_dir / "s1.jsonl", [turn_line(timestamp=now_iso, input_tokens=100)])
+
+    config_dir = tmp_path / "token-lens"
+    config_dir.mkdir()
+    csv_path = config_dir / "usage-log.csv"
+
+    old = now - timedelta(days=400)
+    statusline._append_context_window_row(
+        csv_path, {"session_id": "s1", "prompt_cache": {"warm": True, "misses": 1}}, old
+    )
+    statusline._append_context_window_row(
+        csv_path, {"session_id": "s1", "prompt_cache": {"warm": False, "misses": 2}}, now
+    )
+    # Sanity: both rows really did land on disk before scoping.
+    all_rows = statusline.load_usage_log_ground_truth(csv_path)
+    assert len(all_rows) == 2
+
+    rc = cli_mod.main(
+        [
+            "report",
+            "--projects-root",
+            str(projects_root),
+            "--all-projects",
+            "--config-dir",
+            str(config_dir),
+            "--days",
+            "30",
+            "--json",
+        ]
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    payload = json.loads(out)
+    usage_section = next(s for s in payload["report"]["sections"] if s["key"] == "usage")
+    cache_table = next(t for t in usage_section["tables"] if t["name"] == "cache_ground_truth")
+    by_session = {row[0]: row for row in cache_table["rows"]}
+    # Only the recent row (inside the 30-day window) counts -- the
+    # year-old row must be excluded, so rows_logged is 1, not 2.
+    assert by_session["s1"][1] == 1
+
+
+# -- review finding 3: statusline length bound -------------------------------
+
+
+def test_render_status_bounds_line_length_against_huge_expires_at():
+    """Regression test for review finding 3 (should-fix): an unbounded
+    ``expires_at`` (e.g. 1e308) used to produce a 300+ character line by
+    feeding straight into arithmetic with no clamp. render_status must
+    now stay at or under statusline._MAX_LINE_LEN for every payload."""
+    now = datetime(2026, 9, 18, 12, 0, 0, tzinfo=timezone.utc)
+    payload = {"prompt_cache": {"warm": True, "ttl": "5m", "expires_at": 1e308}}
+    line = statusline.render_status(payload, now, 300)
+    assert len(line) <= statusline._MAX_LINE_LEN
+
+
+def test_render_status_bounds_line_length_against_huge_recache_tokens():
+    now = datetime(2026, 9, 18, 12, 0, 0, tzinfo=timezone.utc)
+    payload = {"prompt_cache": {"warm": False, "recache_tokens_if_cold": 1e300}}
+    line = statusline.render_status(payload, now, 300)
+    assert len(line) <= statusline._MAX_LINE_LEN
+    # Capped at _MAX_RECACHE_TOKENS before formatting, not left as 1e300.
+    assert "recache ~10000k tokens" in line
+
+
+def test_render_status_treats_huge_expires_at_as_epoch_milliseconds():
+    """A payload shaped like ``(now + 252) * 1000`` (a plausible epoch-ms
+    variant per the module docstring, not just adversarial input) must
+    degrade to a sane countdown rather than a multi-digit garbage value."""
+    now = datetime(2026, 9, 18, 12, 5, 0, tzinfo=timezone.utc)
+    expires_at_ms = (now.timestamp() + 252) * 1000
+    payload = {"prompt_cache": {"warm": True, "ttl": "5m", "expires_at": expires_at_ms}}
+    line = statusline.render_status(payload, now, 300)
+    assert line == "cache warm 5m 04:12"
+    assert len(line) <= statusline._MAX_LINE_LEN
+
+
+def test_render_status_full_line_never_exceeds_max_len_with_all_segments_hostile():
+    """Every segment hostile at once -- the assembled line (even after
+    per-segment clamps) must still respect the hard cap, and must never
+    contain an embedded newline (finding 4's "one line" guarantee)."""
+    now = datetime(2026, 9, 18, 12, 0, 0, tzinfo=timezone.utc)
+    payload = {
+        "context_window": {"used_tokens": 999999999},
+        "prompt_cache": {"warm": True, "ttl": "5m\nEVIL", "expires_at": 1e308},
+        "rate_limits": {
+            "five_hour": {"used_percentage": 37},
+            "seven_day": {"used_percentage": 12},
+        },
+    }
+    line = statusline.render_status(payload, now, 300)
+    assert len(line) <= statusline._MAX_LINE_LEN
+    assert "\n" not in line
+    assert "\r" not in line
+
+
+# -- review finding 4: ttl injection -----------------------------------------
+
+
+def test_render_status_ttl_with_embedded_newline_never_emits_second_line():
+    """Regression test for review finding 4 (should-fix): a ``ttl`` string
+    containing a newline used to be echoed verbatim, breaking the "one
+    line" contract. It must now fall back to the numeric/label handling
+    (or "?"), never carry the newline through."""
+    now = datetime(2026, 9, 18, 12, 5, 0, tzinfo=timezone.utc)
+    payload = {
+        "prompt_cache": {"warm": True, "ttl": "5m\nEVIL SECOND LINE", "expires_at": now.timestamp() + 252},
+    }
+    line = statusline.render_status(payload, now, 300)
+    assert "\n" not in line
+    assert "EVIL" not in line
+
+
+def test_render_status_ttl_non_shape_string_falls_back_to_placeholder():
+    now = datetime(2026, 9, 18, 12, 0, 0, tzinfo=timezone.utc)
+    payload = {"prompt_cache": {"warm": True, "ttl": "not-a-real-ttl-value-that-is-way-too-long"}}
+    line = statusline.render_status(payload, now, 300)
+    assert line == "cache warm ?"
+
+
+def test_render_status_ttl_valid_shape_string_still_echoed():
+    """A ``ttl`` matching ``^\\d+[smh]$`` is still accepted and echoed --
+    the hardening only rejects everything else."""
+    now = datetime(2026, 9, 18, 12, 0, 0, tzinfo=timezone.utc)
+    payload = {"prompt_cache": {"warm": True, "ttl": "900s"}}
+    assert statusline.render_status(payload, now, 300) == "cache warm 900s"
+
+
+# -- nit 13: expired warm countdown renders "expiring", not stuck 00:00 -----
+
+
+def test_render_status_warm_countdown_past_expiry_renders_expiring():
+    now = datetime(2026, 9, 18, 12, 10, 0, tzinfo=timezone.utc)
+    payload = {"prompt_cache": {"warm": True, "ttl": "5m", "expires_at": now.timestamp() - 30}}
+    assert statusline.render_status(payload, now, 300) == "cache warm 5m expiring"
+
+
+# -- review finding 5: top_miss_causes from the wire's cumulative counts ----
+
+
+def test_cache_row_values_reads_miss_causes_cumulative_counts():
+    """``prompt_cache.miss_causes`` (the wire's own cumulative
+    per-cause counts) is mapped through the same short-token allowlist
+    and formatted as a compact ``cause:count;cause:count`` string."""
+    payload = {
+        "prompt_cache": {
+            "warm": True,
+            "miss_causes": {"tools_changed": 3, "ttl_expired_5m": 2, "some_unknown_cause": 1},
+        }
+    }
+    values = statusline._cache_row_values(payload)
+    assert values is not None
+    miss_causes_str = values[6]
+    assert miss_causes_str == "other:1;tools:3;ttl:2"
+
+
+def test_build_cache_ground_truth_table_uses_last_row_cumulative_miss_causes():
+    """Regression test for review finding 5 (should-fix): the *wire's*
+    cumulative cache_miss_causes snapshot must be taken from the last row
+    per session (an overwrite), not summed once per logged row -- summing
+    would double the true counts across repeated refreshes."""
+    rows = [
+        {"session_id": "s1", "cache_warm": True, "cache_misses": 1, "cache_miss_causes": "ttl:1"},
+        {"session_id": "s1", "cache_warm": True, "cache_misses": 1, "cache_miss_causes": "ttl:1"},
+        {"session_id": "s1", "cache_warm": True, "cache_misses": 1, "cache_miss_causes": "ttl:1"},
+    ]
+    table = statusline.build_cache_ground_truth_table(rows)
+    by_session = {row[0]: row for row in table.rows}
+    assert by_session["s1"][4] == "ttl:1"  # not "ttl:3"
+
+
+def test_build_cache_ground_truth_table_falls_back_to_counting_genuine_misses():
+    """Reproduces the review's own repro: one real miss (cause 'ttl'),
+    followed by nine quiet warm turns where prompt_cache.last_miss_cause
+    stays sticky (still 'ttl') but cache_misses does not increase, and no
+    row in the session ever carries cache_miss_causes data at all (the
+    old-format-log fallback case). top_miss_causes must report 'ttl:1',
+    matching the misses column beside it -- not 'ttl:10' from naively
+    counting the sticky field once per row."""
+    rows = [{"session_id": "s1", "cache_warm": True, "cache_misses": 0, "cache_last_miss_cause": None}]
+    rows.append({"session_id": "s1", "cache_warm": True, "cache_misses": 1, "cache_last_miss_cause": "ttl"})
+    for _ in range(8):
+        rows.append({"session_id": "s1", "cache_warm": True, "cache_misses": 1, "cache_last_miss_cause": "ttl"})
+    table = statusline.build_cache_ground_truth_table(rows)
+    by_session = {row[0]: row for row in table.rows}
+    s1 = by_session["s1"]
+    assert s1[1] == 10  # rows_logged
+    assert s1[3] == 1  # misses: peak counter
+    assert s1[4] == "ttl:1"  # not "ttl:10"
+
+
+# -- review finding 6: usage-log header upgrade ------------------------------
+
+
+def test_append_context_window_row_upgrades_a_legacy_6_column_header(tmp_path):
+    """Regression test for review finding 6 (should-fix): a file created
+    by log_usage.append_rows first (6-column CSV_FIELDS header) followed
+    by a ground-truth row appended positionally used to leave a
+    16-column row sitting under a 6-column header forever. Appending a
+    ground-truth row must now upgrade the header once, atomically,
+    padding every existing row out to the new width."""
+    from claude_token_lens.tools import log_usage as log_usage_mod
+
+    csv_path = tmp_path / "usage-log.csv"
+    now = datetime(2026, 9, 18, tzinfo=timezone.utc)
+    # Simulate the real main() ordering: append_rows creates the file
+    # with the plain 6-column header and one rate_limits row first.
+    log_usage_mod.append_rows(
+        csv_path,
+        [{"session_id": "s1", "window": "five_hour", "used_percentage": 37.0, "resets_at": "x"}],
+        source="statusline",
+        now=now,
+    )
+    with open(csv_path, encoding="utf-8", newline="") as fh:
+        header_before = fh.readline().strip().split(",")
+    assert len(header_before) == 6
+
+    statusline._append_context_window_row(
+        csv_path, {"session_id": "s1", "context_window": {"used_tokens": 5000}}, now
+    )
+
+    with open(csv_path, "r", encoding="utf-8", newline="") as fh:
+        import csv as _csv
+
+        rows = list(_csv.reader(fh))
+    header_after = rows[0]
+    assert header_after == list(statusline._GROUND_TRUTH_HEADER)
+    # The pre-existing rate_limits row was padded out to the new width,
+    # not truncated or dropped.
+    legacy_row = rows[1]
+    assert len(legacy_row) == len(header_after)
+    assert legacy_row[:6] == [now.isoformat().replace("+00:00", "Z"), "s1", "five_hour", "37.0", "x", "statusline"]
+    assert legacy_row[6:] == [""] * (len(header_after) - 6)
+
+    # The new ground-truth row landed after the (now-padded) legacy row,
+    # with its own real values.
+    new_row = rows[2]
+    assert new_row[2] == "context_window"
+    assert new_row[6] == "5000.0" or new_row[6] == "5000"
+
+
+def test_load_usage_log_upgraded_file_is_readable_by_dict_reader_without_none_key(tmp_path):
+    """Fix for review finding 6's defence-in-depth (log_usage.py's
+    ``restkey="_extra"``): even before any header upgrade runs, a
+    ground-truth row with more fields than a legacy 6-column header
+    must not corrupt log_usage.load_usage_log's dict rows with a
+    literal ``None`` key -- the overflow lands under "_extra" instead.
+    """
+    from claude_token_lens.tools import log_usage as log_usage_mod
+
+    csv_path = tmp_path / "usage-log.csv"
+    # Write a legacy-shaped header directly, then a longer row under it,
+    # without going through _ensure_ground_truth_header, to exercise the
+    # reader's own defence independently of the writer-side fix.
+    with open(csv_path, "w", encoding="utf-8", newline="") as fh:
+        fh.write("logged_at,session_id,window,used_percentage,resets_at,source\n")
+        fh.write("2026-09-18T00:00:00Z,s1,context_window,,,statusline,5000,,,1\n")
+
+    rows = log_usage_mod.load_usage_log(csv_path)
+    assert len(rows) == 1
+    assert None not in rows[0]
+    assert rows[0]["_extra"] == ["5000", "", "", "1"]
+
+
+# -- nit 16: context_window field-name fallbacks -----------------------------
+
+
+def test_render_status_ctx_segment_falls_back_to_total_input_tokens():
+    now = datetime(2026, 9, 18, 12, 0, 0, tzinfo=timezone.utc)
+    payload = {"context_window": {"total_input_tokens": 42000}}
+    assert statusline.render_status(payload, now, 300) == "ctx 42k"
+
+
+def test_render_status_ctx_segment_falls_back_to_current_usage_sum():
+    now = datetime(2026, 9, 18, 12, 0, 0, tzinfo=timezone.utc)
+    payload = {
+        "context_window": {
+            "current_usage": {
+                "input_tokens": 1000,
+                "cache_creation_input_tokens": 500,
+                "cache_read_input_tokens": 250,
+            }
+        }
+    }
+    assert statusline.render_status(payload, now, 300) == "ctx 2k"
+
+
+def test_context_window_row_values_field_name_fallbacks():
+    payload = {
+        "session_id": "s1",
+        "context_window": {
+            "total_input_tokens": 1000,
+            "total_tokens": 200000,
+            "remaining_percentage": 75,
+        },
+    }
+    values = statusline._context_window_row_values(payload)
+    assert values is not None
+    session_id, used_percentage, used_tokens, size, autocompact = values
+    assert used_tokens == 1000
+    assert size == 200000
+    assert used_percentage == 25  # 100 - remaining_percentage
+
+
+def test_context_window_size_falls_back_to_size_field():
+    assert statusline._context_window_size({"size": 100000}) == 100000
+
+
+# -- payload key-name recording -----------------------------------------
+
+
+def test_record_payload_keys_writes_dotted_names_only(tmp_path):
+    config_dir = tmp_path / "token-lens"
+    config_dir.mkdir()
+    payload = {
+        "context_window": {"used_tokens": 1000},
+        "prompt_cache": {"warm": True, "expires_at": 123.0},
+        "session_id": "sess-super-secret-value",
+    }
+    statusline.record_payload_keys(payload, config_dir)
+    keys_path = config_dir / "statusline-keys.json"
+    assert keys_path.exists()
+    data = json.loads(keys_path.read_text(encoding="utf-8"))
+    assert set(data["keys"]) == {
+        "context_window",
+        "context_window.used_tokens",
+        "prompt_cache",
+        "prompt_cache.warm",
+        "prompt_cache.expires_at",
+        "session_id",
+    }
+    # Names only -- the secret-looking session id value must never appear.
+    assert "sess-super-secret-value" not in keys_path.read_text(encoding="utf-8")
+
+
+def test_record_payload_keys_does_not_rewrite_when_unchanged(tmp_path):
+    config_dir = tmp_path / "token-lens"
+    config_dir.mkdir()
+    payload = {"a": 1, "b": {"c": 2}}
+    statusline.record_payload_keys(payload, config_dir)
+    keys_path = config_dir / "statusline-keys.json"
+    first_mtime = keys_path.stat().st_mtime_ns
+    statusline.record_payload_keys(payload, config_dir)
+    assert keys_path.stat().st_mtime_ns == first_mtime
+
+
+def test_record_payload_keys_caps_at_max_recorded_keys(tmp_path):
+    config_dir = tmp_path / "token-lens"
+    config_dir.mkdir()
+    payload = {f"key_{i}": i for i in range(500)}
+    statusline.record_payload_keys(payload, config_dir)
+    data = json.loads((config_dir / "statusline-keys.json").read_text(encoding="utf-8"))
+    assert len(data["keys"]) <= statusline._MAX_RECORDED_KEYS
+
+
+def test_main_records_payload_keys(monkeypatch, capsys, tmp_path):
+    config_dir = tmp_path / "token-lens"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+    payload = {"context_window": {"used_tokens": 10000}}
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
+    rc = statusline.main([])
+    assert rc == 0
+    keys_path = config_dir / "statusline-keys.json"
+    assert keys_path.exists()
+    data = json.loads(keys_path.read_text(encoding="utf-8"))
+    assert "context_window.used_tokens" in data["keys"]

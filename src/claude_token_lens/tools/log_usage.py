@@ -296,13 +296,25 @@ def load_usage_log(csv_path: str | Path) -> list[dict]:
     """Every row in ``csv_path``, in file order, with ``used_percentage``
     parsed back to ``float`` where possible. Returns ``[]`` when the file
     doesn't exist — the log is optional, never required.
+
+    ``restkey="_extra"`` (fix for review finding 6, defence-in-depth
+    alongside ``statusline._ensure_ground_truth_header``'s primary fix):
+    this module's own header only ever names :data:`CSV_FIELDS`, but a
+    row written by ``statusline.py`` carries additional trailing
+    ground-truth columns. Without an explicit ``restkey``,
+    ``csv.DictReader`` bins every one of those extra fields under a
+    literal ``None`` key, which is awkward to detect and easy to trip
+    over accidentally; naming it ``"_extra"`` instead keeps the row a
+    well-formed ``dict`` and makes the overflow columns available (as a
+    list) to a caller that wants them, without this module needing to
+    know their names.
     """
     csv_path = Path(csv_path)
     if not csv_path.exists():
         return []
     rows: list[dict] = []
     with open(csv_path, "r", encoding="utf-8", newline="") as fh:
-        reader = csv.DictReader(fh)
+        reader = csv.DictReader(fh, restkey="_extra")
         for raw_row in reader:
             row = dict(raw_row)
             used = row.get("used_percentage")
