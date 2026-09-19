@@ -501,7 +501,7 @@ def test_app_js_load_report_accepts_the_unwrapped_report_json_shape() -> None:
     check) and passes once ``loadReport()`` accepts the unwrapped shape.
     """
     app_js = _static_text("app.js")
-    start = app_js.index("function loadReport()")
+    start = app_js.index("function loadReport(")
     # Slice to the next top-level function declaration so the assertions
     # below are scoped to loadReport()'s own body, not a coincidental
     # match elsewhere in the file.
@@ -515,6 +515,62 @@ def test_app_js_load_report_accepts_the_unwrapped_report_json_shape() -> None:
     )
     assert "body.ok === false" in load_report_src, (
         "loadReport() should still treat an explicit `ok: false` body as a failure"
+    )
+
+
+def test_load_report_cache_is_keyed_by_the_selected_window() -> None:
+    """Regression test for review finding 21 (should-fix): ``loadReport()``
+    used to memoize a single ``state.reportPromise`` shared by every
+    caller, regardless of which window was requested -- once Overview's
+    window selector triggered one fetch, every tab (including Overview's
+    own Scorecard/Totals) kept reading that same cached promise forever,
+    silently showing one window's data no matter what the selector said.
+    ``/api/report.json`` accepts a ``window_days`` query parameter
+    (``docs/api.md``) and the fix caches per requested window instead of
+    once globally. Fails against the pre-fix source (a single
+    ``state.reportPromise`` field, and ``loadReport()`` taking no
+    parameter and always fetching the bare ``/api/report.json`` URL).
+    """
+    app_js = _static_text("app.js")
+    assert "reportPromise:" not in app_js, "the report cache must not be a single unkeyed promise"
+    assert "reportPromises" in app_js, "the report cache should be keyed (e.g. by window_days)"
+
+    start = app_js.index("function loadReport(")
+    end = app_js.index("\n  function ", start + 1)
+    load_report_src = app_js[start:end]
+    assert "windowDays" in load_report_src, "loadReport() must accept the selected window"
+    assert "window_days=" in load_report_src, "loadReport() must forward the window to /api/report.json"
+
+    # renderOverview must actually pass the selected window through when
+    # it (re)loads the report, and refetch it on a window change rather
+    # than only refreshing the plain /api/summary cards.
+    overview_start = app_js.index("function renderOverview(")
+    overview_end = app_js.index("\n  function ", overview_start + 1)
+    overview_src = app_js[overview_start:overview_end]
+    assert "loadReport(select.value)" in overview_src or "loadReport(windowDays)" in overview_src
+    change_listener_start = overview_src.index("addEventListener(\"change\"")
+    change_listener_src = overview_src[change_listener_start:]
+    assert "renderOverviewSummary" in change_listener_src
+    assert "loadReport" in change_listener_src or "renderOverviewReportSections" in change_listener_src, (
+        "the window-change handler must also refresh the report-backed Scorecard/Totals, not just the summary cards"
+    )
+
+
+def test_section_tab_map_includes_recache_by_group() -> None:
+    """Regression test for review finding 20 (should-fix): docs/ui.md
+    documents ``recache_by_group`` as mapping to the Cache tab alongside
+    ``recache`` itself, but ``app.js``'s ``SECTION_TAB_MAP`` only listed
+    ``recache`` -- a docs/code mismatch. Fails against the pre-fix
+    source (no ``recache_by_group`` key in the map) and passes once it
+    is added, mapped to the same ``"cache"`` tab.
+    """
+    app_js = _static_text("app.js")
+    start = app_js.index("var SECTION_TAB_MAP")
+    end = app_js.index("};", start) + 2
+    section_tab_map_src = app_js[start:end]
+    assert "recache_by_group" in section_tab_map_src
+    assert re.search(r'recache_by_group\s*:\s*"cache"', section_tab_map_src), (
+        "recache_by_group should map to the same Cache tab as recache"
     )
 
 

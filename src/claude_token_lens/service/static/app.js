@@ -209,13 +209,27 @@
   //    Config/Usage/Diagnostics/Recommendations) ------------------------
 
   var state = {
-    reportPromise: null,
+    // Review finding 21: this used to be a single `reportPromise` shared
+    // by every caller (Overview's Scorecard/Totals, and the Cache/TTL/
+    // Agents/Config/Usage/Diagnostics/Recommendations tabs), memoized
+    // forever after the first fetch. /api/report.json accepts a
+    // `window_days` query parameter and the server memoizes its own
+    // response per `(window_days, change_token)` (docs/api.md), but the
+    // client-side cache didn't vary by window at all -- once Overview's
+    // window selector fetched a report for one window, every tab kept
+    // reading that same cached promise even after the selector changed,
+    // silently showing stale data for every other window choice. Keyed
+    // by the `window_days` value now (`""` for "All time", matching
+    // WINDOW_OPTIONS), so each window gets its own cache entry.
+    reportPromises: {},
     currency: "USD",
   };
 
-  function loadReport() {
-    if (!state.reportPromise) {
-      state.reportPromise = fetchJson("/api/report.json").then(function (result) {
+  function loadReport(windowDays) {
+    var key = windowDays || "";
+    if (!state.reportPromises[key]) {
+      var url = "/api/report.json" + (key ? "?window_days=" + encodeURIComponent(key) : "");
+      state.reportPromises[key] = fetchJson(url).then(function (result) {
         var body = result.body;
         if (!body || body.ok === false) {
           return { error: (body && body.error) || { code: "error", message: "failed to load report" } };
@@ -236,7 +250,7 @@
         return { report: report };
       });
     }
-    return state.reportPromise;
+    return state.reportPromises[key];
   }
 
   function findSection(report, key) {
@@ -450,6 +464,14 @@
   // dropped when report.py grows one.
   var SECTION_TAB_MAP = {
     recache: "cache",
+    // Review finding 20: docs/ui.md documents recache_by_group as part of
+    // this map too. It never actually arrives as a section's own `key`
+    // today -- report.py's _build_recache_section appends it as an extra
+    // *table* inside the "recache" section rather than a section in its
+    // own right -- but it costs nothing to map here now, so a future
+    // refactor that promotes it to its own section lands on the Cache
+    // tab without anyone having to remember to update this file too.
+    recache_by_group: "cache",
     ttl: "ttl",
     agents: "agents",
     workflows: "agents",
@@ -610,11 +632,6 @@
     panel.appendChild(summaryContainer);
     renderOverviewSummary(summaryContainer, select.value);
 
-    select.addEventListener("change", function () {
-      storageSet("tls:overviewWindow", select.value);
-      renderOverviewSummary(summaryContainer, select.value);
-    });
-
     var scorecardContainer = el("div", { id: "overview-scorecard" });
     panel.appendChild(el("h3", { text: "Scorecard" }));
     panel.appendChild(scorecardContainer);
@@ -624,29 +641,43 @@
     panel.appendChild(totalsContainer);
     totalsContainer.appendChild(loadingNode());
 
-    loadReport().then(function (result) {
+    function renderOverviewReportSections(windowDays) {
       clear(scorecardContainer);
       clear(totalsContainer);
-      if (result.error) {
-        scorecardContainer.appendChild(errorNotice(result.error));
-        totalsContainer.appendChild(errorNotice(result.error));
-        return;
-      }
-      var report = result.report;
-      renderScorecardTiles(scorecardContainer, findSection(report, "scorecard"));
-      var overviewSection = findSection(report, "overview");
-      if (overviewSection) {
-        var totalsTable = (overviewSection.tables || []).filter(function (t) {
-          return t.name === "totals";
-        })[0];
-        if (totalsTable) totalsContainer.appendChild(renderTable(totalsTable, "overview-totals-table", state.currency));
-        var byModel = (overviewSection.tables || []).filter(function (t) {
-          return t.name === "by_model";
-        })[0];
-        if (byModel) totalsContainer.appendChild(renderTable(byModel, "overview-by-model-table", state.currency));
-      } else {
-        totalsContainer.appendChild(el("p", { class: "notice", text: "No overview section in this report." }));
-      }
+      scorecardContainer.appendChild(loadingNode());
+      totalsContainer.appendChild(loadingNode());
+      loadReport(windowDays).then(function (result) {
+        clear(scorecardContainer);
+        clear(totalsContainer);
+        if (result.error) {
+          scorecardContainer.appendChild(errorNotice(result.error));
+          totalsContainer.appendChild(errorNotice(result.error));
+          return;
+        }
+        var report = result.report;
+        renderScorecardTiles(scorecardContainer, findSection(report, "scorecard"));
+        var overviewSection = findSection(report, "overview");
+        if (overviewSection) {
+          var totalsTable = (overviewSection.tables || []).filter(function (t) {
+            return t.name === "totals";
+          })[0];
+          if (totalsTable) totalsContainer.appendChild(renderTable(totalsTable, "overview-totals-table", state.currency));
+          var byModel = (overviewSection.tables || []).filter(function (t) {
+            return t.name === "by_model";
+          })[0];
+          if (byModel) totalsContainer.appendChild(renderTable(byModel, "overview-by-model-table", state.currency));
+        } else {
+          totalsContainer.appendChild(el("p", { class: "notice", text: "No overview section in this report." }));
+        }
+      });
+    }
+
+    renderOverviewReportSections(select.value);
+
+    select.addEventListener("change", function () {
+      storageSet("tls:overviewWindow", select.value);
+      renderOverviewSummary(summaryContainer, select.value);
+      renderOverviewReportSections(select.value);
     });
 
     var healthContainer = el("div", { id: "overview-health" });
