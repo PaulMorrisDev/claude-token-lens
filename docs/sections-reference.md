@@ -530,6 +530,45 @@ section's sized buckets as its evidence, and names the largest one in
 its action text, whenever `context_budget` is present in the report —
 falling back to its older single-mean-baseline evidence otherwise.
 
+## `carry` (`carry.py`)
+
+Full field-by-field contract: [`docs/carry.md`](carry.md#the-carry-report-section).
+
+Every other section prices a tool result once, at the turn it entered
+context. `carry` prices it again for every later turn it keeps riding
+along inside the cached prefix — re-read at the flat `cache_read` rate,
+or re-written at a `cache_write_5m`/`cache_write_1h` rate on a re-cache
+— until a `COMPACT_BOUNDARY` drops it or the transcript ends.
+
+- `carry_by_tool` — per tool name: carried-result count, tokens
+  entered, mean turns carried, carry tokens, carry cost, and that
+  tool's carry-token share of the corpus's total cache volume (an
+  attribution share, not a partition — rows need not sum to 100%,
+  since one physical cache read carries every still-live result in
+  that turn's prefix at once).
+- `carry_by_agent_type` — the same roll-up keyed by agent type
+  (`"top-level"` for the main session).
+- `carry_top_results` — the single most expensive individual carried
+  results corpus-wide: tool name, agent type, tokens, turns carried,
+  cost — no content, path, or command.
+- `carry_truncation_savings` — for each configured cap in
+  `CarryThresholds.truncation_tokens` (default 2,000 and 8,000 tokens):
+  how many carried results exceed it and the exact tokens/USD saved had
+  every one been capped there, computed by linear scaling rather than
+  re-simulation (carry cost is exactly proportional to a result's own
+  token size for a fixed run of later turns).
+
+`carry.py` never imports or is imported by `recommend.py`; its
+`tool-output-carry` rule lives in `carry.RULES` (same
+`(report, thresholds) -> list[Recommendation]` shape as every baseline
+rule) for a caller to fold into `recommend.recommend()`'s own rule
+list, and it fires whenever a tool's carry-cost share of cache volume
+clears `CarryThresholds.carry_share_pct` (default 25%) on at least
+`min_sample_results` (default 5) carried results — its action names a
+concrete workflow lever (truncate long Bash/PowerShell output, prefer
+`Grep` over `Read`, cap agent report length) and cites the matching
+`carry_truncation_savings` row as the projected saving.
+
 ## `scorecard` (`scorecard.py`)
 
 Five 1-5 levels (1 poor, 5 excellent) summarising a corpus's cache

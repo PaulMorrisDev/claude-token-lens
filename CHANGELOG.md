@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **v4-carry-cost context carry cost per tool** (`carry.py`, work
+  package v4-carry-cost): a tool result doesn't cost tokens only on the
+  turn it's produced — it rides along in the cached prefix, re-read or
+  re-written on every later turn until a compaction drops it. New
+  `carry` report section (`carry_by_tool`, `carry_by_agent_type`,
+  `carry_top_results`, `carry_truncation_savings`) prices that ongoing
+  cost per tool and per agent type, and reports the exact saving from
+  capping large results at 2,000/8,000 tokens. New `tool-output-carry`
+  recommendation rule (`carry.RULES`) fires when a tool's carry cost
+  exceeds a configurable share of the corpus's cache volume, naming a
+  concrete truncation lever and citing the projected saving. See
+  [`docs/carry.md`](docs/carry.md).
+
 ## [0.3.0] - 2026-09-19
 
 ### Added
