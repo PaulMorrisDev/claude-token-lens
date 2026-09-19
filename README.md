@@ -87,13 +87,29 @@ What it cannot do:
 
 ## 2. Quick start
 
+New to this tool, or on a locked-down work machine? [`docs/first-run.md`](docs/first-run.md)
+walks through all three install routes end to end: download the
+`claude-token-lens.pyz` from the Releases page for a machine with no
+`pip` or network access, `pip install .` from a clone for a normal one,
+or `pip install git+https://github.com/PaulMorrisDev/claude-token-lens`
+straight from GitHub. It then covers `init`, the logon service, the
+dashboard and your first report, with a troubleshooting table.
+
 ```bash
 pip install .
 # or, isolated from your other Python environments:
 pipx install .
-# or, with no pip at all — see "Other ways to run the service" below:
-# python -m zipapp src -m "claude_token_lens.__main__:main" -o claude-token-lens.pyz
+# or, straight from GitHub (needs git):
+pip install git+https://github.com/PaulMorrisDev/claude-token-lens
+# or, no pip at all: download claude-token-lens.pyz from the Releases page and run
+#   py -3 claude-token-lens.pyz --version
 ```
+
+Then run `PYTHONPATH=src C:\Dev\claude-token-lens\.venv\Scripts\python.exe -m pytest -q -p no:cacheprovider tests/test_readme.py tests/test_docs.py` if those files exist (otherwise run `-k readme`), and commit with the message:
+
+docs(readme): point Quick start at the first-run guide and list all install routes
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 
 Then, from the project you want to analyse:
 
