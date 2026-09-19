@@ -29,6 +29,21 @@ keyed by the config dir's own salt (:func:`parse.load_or_create_salt`),
 so it is stable for one machine/config dir but never reveals or
 reverses to the hostname it was built from.
 
+Review finding S10: the ``by_agent_type`` axis's group value is a
+transcript's ``TranscriptMeta.agent_type`` -- for a project-defined
+custom subagent (as opposed to one of Claude Code's own bundled agent
+types) this is frequently a product- or project-named string (e.g. a
+project's own reviewer/implementer agent names), which is exactly the
+kind of identifying detail this module otherwise goes out of its way
+never to export. ``_agent_type_group_label`` keeps the synthetic
+``"top-level"``/``"unknown"`` labels and every entry of
+:data:`recommend._BUILTIN_AGENT_TYPES` verbatim (there is nothing
+project-identifying about a stock agent type), and hashes anything else
+-- a custom agent name -- to ``custom:<8 hex chars>`` using the same
+salted-HMAC construction as :func:`exports._hash_slug`, just its own
+domain tag and truncation length so the namespace can't collide with
+the project-slug or machine-id ones.
+
 Deviation (report, don't silently resolve): ``compaction_rate`` for the
 per-transcript axes (``by_agent_type``, ``by_model``) is really "the
 mean compactions-per-session of sessions that used this agent type/
@@ -50,6 +65,7 @@ import hashlib
 import hmac
 import json
 import platform
+import re
 import statistics
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -61,6 +77,7 @@ from .exports import _TOOL_VERSION, _hash_slug
 from .model import Column, Section, Table
 from .parse import load_or_create_salt
 from .pricing import price_turn
+from .recommend import _BUILTIN_AGENT_TYPES
 from .report import (
     _dominant_transcript_model,
     _extract_workstyle_features,
@@ -88,6 +105,23 @@ GROUP_AXES: tuple[str, ...] = ("archetype", "mode", "purpose", "agent_type", "mo
 #: cross-machine comparison cells (which *are* gated -- see
 #: :func:`build_team_report_section`).
 MIN_SESSIONS = 5
+
+#: ``machine_id`` is always exactly 12 lowercase hex characters -- the
+#: truncated HMAC digest :func:`machine_id` produces. A document whose
+#: ``machine_id`` doesn't match this shape is rejected outright rather
+#: than trusted as a filename component (review B1): an untrusted
+#: document's ``machine_id`` reaches ``save_team_document``'s output
+#: path verbatim, so anything looser than "exactly what our own
+#: exporter writes" is a traversal surface.
+_MACHINE_ID_RE = re.compile(r"^[0-9a-f]{12}$")
+
+#: ``generated_at`` is always the ISO-8601 UTC "basic" shape the
+#: exporter writes (``_resolve_generated_at`` in ``cli.py`` can also
+#: produce the no-fractional-seconds form via ``SOURCE_DATE_EPOCH`` /
+#: ``datetime.isoformat()``, hence the optional fractional group) --
+#: never anything containing ``/`` or ``\`` or ``..`` that could
+#: escape the team directory once it reaches a filename (review B1).
+_GENERATED_AT_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?Z$")
 
 _TOP_LEVEL_KEYS = {
     "tool_version",
@@ -175,6 +209,42 @@ def _agent_type_label(tr, top) -> str:
     module docstring documents for this exact function.
     """
     return "top-level" if tr is top else (tr.meta.agent_type or "unknown")
+
+
+def _hash_custom_agent_type(agent_type: str, salt: bytes) -> str:
+    """First 8 hex characters of a salted HMAC-SHA256 over a custom
+    (non-built-in) agent type name, domain-separated with an
+    ``agent_type:`` tag.
+
+    Same HMAC construction as :func:`exports._hash_slug` (salt as the
+    HMAC key, SHA-256) but its own domain tag and truncation length, so
+    this namespace can never collide with the project-slug or
+    machine-id namespaces even if two happened to truncate to the same
+    length (review S10, matching the separation
+    :func:`exports._hash_slug`'s own docstring documents against
+    :func:`machine_id`).
+    """
+    digest = hmac.new(salt, b"agent_type:" + agent_type.encode("utf-8"), hashlib.sha256).hexdigest()
+    return digest[:8]
+
+
+def _agent_type_group_label(agent_type: str, salt: bytes) -> str:
+    """The ``by_agent_type`` axis's exported group value for one raw
+    ``agent_type`` (review S10).
+
+    ``"top-level"``/``"unknown"`` (the synthetic labels
+    :func:`_agent_type_label` itself produces) and every entry of
+    :data:`recommend._BUILTIN_AGENT_TYPES` (Claude Code's own bundled
+    agent types) are kept verbatim -- there is nothing project-
+    identifying about a stock agent type. Anything else is a project- or
+    user-defined custom agent, frequently named after the project or
+    its own conventions, so it is hashed rather than exported as
+    plaintext, the same privacy posture already applied to project
+    slugs elsewhere in this module.
+    """
+    if agent_type in ("top-level", "unknown") or agent_type in _BUILTIN_AGENT_TYPES:
+        return agent_type
+    return f"custom:{_hash_custom_agent_type(agent_type, salt)}"
 
 
 def _build_axis_buckets(
@@ -321,6 +391,11 @@ def build_team_aggregate(
 
     model = build_report(corpus, pricing, config, projects=projects, window=window, snapshots=snapshots)
 
+    # Loaded unconditionally (not just under include_projects) because
+    # the by_agent_type axis now hashes custom agent names regardless of
+    # that flag -- see _agent_type_group_label (review S10).
+    salt = load_or_create_salt(config_dir)
+
     document: dict = {
         "tool_version": _TOOL_VERSION,
         "generated_at": generated_at or (datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.") + "000Z"),
@@ -329,12 +404,17 @@ def build_team_aggregate(
         "scorecard": scorecard_dimensions_metric(model.sections),
     }
     for axis in GROUP_AXES:
-        rows = [_group_row(value, acc, compaction_counts) for value, acc in axes[axis].items()]
+        if axis == "agent_type":
+            rows = [
+                _group_row(_agent_type_group_label(value, salt), acc, compaction_counts)
+                for value, acc in axes[axis].items()
+            ]
+        else:
+            rows = [_group_row(value, acc, compaction_counts) for value, acc in axes[axis].items()]
         rows.sort(key=lambda row: (-row["sessions"], row["value"]))
         document[f"by_{axis}"] = rows
 
     if include_projects:
-        salt = load_or_create_salt(config_dir)
         document["projects"] = sorted({_hash_slug(p, salt) for p in projects if p})
 
     return document
@@ -379,6 +459,13 @@ def validate_team_document(doc) -> str | None:
     for key in ("tool_version", "generated_at", "machine_id", "window"):
         if key not in doc:
             return f"missing required key: {key!r}"
+        if not isinstance(doc[key], str):
+            return f"{key!r} must be a string"
+
+    if not _MACHINE_ID_RE.match(doc["machine_id"]):
+        return "'machine_id' must be exactly 12 lowercase hex characters"
+    if not _GENERATED_AT_RE.match(doc["generated_at"]):
+        return "'generated_at' must be an ISO-8601 UTC timestamp such as '2026-09-19T00:00:00.000Z'"
 
     for axis_key in _GROUP_AXIS_KEYS:
         rows = doc.get(axis_key, [])
@@ -421,15 +508,28 @@ def save_team_document(config_dir: str | Path, document: dict) -> Path:
     """Copy ``document`` into
     ``<config_dir>/team/<machine_id>-<generated_at>.json`` -- matching
     ``import``'s own contract exactly. Callers validate with
-    :func:`validate_team_document` first (this function does not
-    re-validate); the ``generated_at`` timestamp is sanitised into a
-    filesystem-safe token since ``:`` isn't valid in a Windows filename.
+    :func:`validate_team_document` first, which already rejects a
+    ``machine_id``/``generated_at`` shaped for path traversal (review
+    B1); this function re-checks both against the same patterns and
+    confirms the resolved path stays inside the team directory before
+    writing, so a caller that skips validation can't be tricked into
+    writing outside ``<config_dir>/team/`` either. The ``generated_at``
+    timestamp is then sanitised into a filesystem-safe token since
+    ``:`` isn't valid in a Windows filename.
     """
     directory = team_dir(config_dir)
     directory.mkdir(parents=True, exist_ok=True)
     machine = str(document.get("machine_id", "unknown"))
-    generated_at = str(document.get("generated_at", "unknown")).replace(":", "").replace(".", "-")
+    generated_at_raw = str(document.get("generated_at", "unknown"))
+    if not _MACHINE_ID_RE.match(machine):
+        raise ValueError(f"refusing to save team document: invalid machine_id {machine!r}")
+    if not _GENERATED_AT_RE.match(generated_at_raw):
+        raise ValueError(f"refusing to save team document: invalid generated_at {generated_at_raw!r}")
+    generated_at = generated_at_raw.replace(":", "").replace(".", "-")
     path = directory / f"{machine}-{generated_at}.json"
+    resolved_directory = directory.resolve()
+    if not path.resolve().is_relative_to(resolved_directory):
+        raise ValueError("refusing to save team document outside the team directory")
     path.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return path
 
