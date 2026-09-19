@@ -838,3 +838,44 @@ run with `python dist/claude-token-lens.pyz serve ...`.
 The store is always a derived cache, never source of truth: delete and
 rebuild it any time with `claude-token-lens serve --purge --yes`, and
 prune old sessions automatically with `--retention-days N`.
+
+## 15. Applying a profile
+
+`claude-token-lens apply` writes one of the seven shipped catalogue
+profiles (or your own profile TOML file) into `settings.json`/agent
+frontmatter/env-var guidance for a project or your user config — the
+host-side half of v0.3's profile system (`docs/profiles.md` is the full
+schema/catalogue/diff reference; this is the applying-it walkthrough).
+
+```bash
+# Preview the exact diff, nothing written:
+claude-token-lens apply interactive-chat --dry-run
+
+# Apply it to the current project (writes .claude/settings.local.json):
+claude-token-lens apply interactive-chat --project-dir .
+
+# Undo it:
+claude-token-lens apply --revert 20260919T100252Z
+
+# One-session overlay instead of a persisted apply:
+claude-token-lens apply interactive-chat --launch
+```
+
+| Flag | Meaning |
+|---|---|
+| `--scope {user,project-local,repo}` | Which settings file is written (default: `user`, or `project-local` once `--project-dir` is given) |
+| `--project-dir PATH` | Project directory for `project-local`/`repo` scope. Named `--project-dir`, not `--project` — the global `--project` flag already means "a repeatable project slug to filter a report by", the same collision `snapshot-config`/`probe-config` resolve the same way |
+| `--dry-run` | Print the diff and the exact command to run, without writing anything |
+| `--launch` | Write a one-session `<config-dir>/profiles/<id>.settings.json` overlay instead of a persisted apply |
+| `--allow-tracked` | Allow writing a target file that a git repository already tracks (refused by default for `project-local`/`repo` scope) |
+| `--force` | Create a missing `.claude/agents/<name>.md` file from scratch instead of refusing |
+| `--revert TS` | Undo a previous apply, byte for byte, named by the timestamp `apply` printed at the time |
+| `--list-backups` | List previous applies (timestamp, profile, scope, file count) and exit |
+
+Every real apply backs up whatever it overwrites first, so `--revert`
+always restores the exact prior state; a managed-settings key is never
+written regardless of scope or flags; and `env` values are printed as
+`export NAME=value` guidance only, never written to any file. See
+[docs/profiles.md](docs/profiles.md#applying-a-profile) for the full
+detail on scopes, backups, and the tracked-file/missing-agent-file
+refusals.
