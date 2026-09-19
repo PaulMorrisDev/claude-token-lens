@@ -98,6 +98,7 @@ import os
 import re
 import tempfile
 import threading
+import time
 import urllib.parse
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler
@@ -136,6 +137,14 @@ _SECURITY_HEADERS: tuple[tuple[str, str], ...] = (
 #: ``window_days`` isn't given -- matches ``docs/api.md``'s "Accept
 #: window_days (default 30) on these routes".
 _DEFAULT_WINDOW_DAYS = 30
+
+#: v3: how long a ``service_registered`` probe result is reused before
+#: ``/api/health`` runs the platform's own query command again --
+#: registration status essentially never changes between requests, and
+#: the probe itself shells out to ``schtasks``/``systemctl``/
+#: ``launchctl`` (``installer.is_registered``), so this keeps a busy UI
+#: polling ``/api/health`` from spawning that process on every refresh.
+_SERVICE_REGISTERED_CACHE_TTL_S = 600.0
 
 _PLACEHOLDER_INDEX_HTML = (
     "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>claude-token-lens</title>"
@@ -274,6 +283,7 @@ def make_handler(
     *,
     watcher_stats: Callable[[], WatcherStats] | None = None,
     static_dir: Path | None = None,
+    service_registered: Callable[[], bool | None] | None = None,
 ) -> type[BaseHTTPRequestHandler]:
     """Build an ``http.server.BaseHTTPRequestHandler`` subclass with every
     ``/api/*`` route from ``docs/api.md`` bound to ``store``/``options``,
@@ -287,6 +297,20 @@ def make_handler(
     by an implementation that accepts *extra* optional parameters, so
     this remains a valid ``MakeHandler``); omitted, ``/api/health``
     reports an all-zero :class:`WatcherStats`.
+
+    ``service_registered``, when given, is called (at most once every
+    ``_SERVICE_REGISTERED_CACHE_TTL_S``, per module docstring above) for
+    ``/api/health``'s own ``service_registered`` field -- ``True``/
+    ``False``/``None`` exactly as it returns them. Omitted (the default,
+    and always the case in this module's own tests -- see
+    ``installer.py``'s "never touch the machine from a test" posture),
+    ``/api/health`` reports ``service_registered: null``, the same
+    "unknown, not false" meaning ``installer.is_registered`` itself
+    documents. ``service.serve.run`` wires the real
+    ``installer.is_registered`` probe in here for an actual ``serve``
+    process; this module never imports ``installer.py`` itself, so a
+    checkout with only this module's own tests never shells out to
+    ``schtasks``/``systemctl``/``launchctl``.
 
     ``static_dir``, when given, overrides the directory the ``/`` and
     ``/static/*`` routes serve from (default: this package's own
@@ -304,6 +328,29 @@ def make_handler(
 
     report_lock = threading.Lock()
     report_cache: dict = {"token": None, "models": {}}
+
+    service_registered_lock = threading.Lock()
+    service_registered_cache: dict = {"checked_at": None, "value": None}
+
+    def _cached_service_registered() -> bool | None:
+        if service_registered is None:
+            return None
+        now = time.monotonic()
+        with service_registered_lock:
+            checked_at = service_registered_cache["checked_at"]
+            if checked_at is not None and (now - checked_at) < _SERVICE_REGISTERED_CACHE_TTL_S:
+                return service_registered_cache["value"]
+        # Deliberately called outside the lock: the probe itself may
+        # spawn a process (installer.is_registered's own subprocess
+        # call) and take real wall-clock time -- holding the lock across
+        # it would serialise every concurrent /api/health request behind
+        # one slow probe instead of just letting a rare double-probe
+        # happen right at cache expiry.
+        value = service_registered()
+        with service_registered_lock:
+            service_registered_cache["checked_at"] = time.monotonic()
+            service_registered_cache["value"] = value
+        return value
 
     # -- report building / caching --------------------------------------
 
@@ -402,6 +449,13 @@ def make_handler(
             # here lets an operator notice a projects-root misconfiguration
             # (everything suddenly "missing") without it being silent.
             "transcripts_missing": store.count_missing_transcripts(),
+            # v3: whether `serve` is registered to start at logon/boot
+            # (installer.py) -- true/false when the platform's own query
+            # command gave a clear answer, null when it couldn't be run
+            # at all (no probe wired up, an unsupported platform, or the
+            # query tool itself missing). Never a raw path -- a plain
+            # boolean, per this route's existing privacy posture.
+            "service_registered": _cached_service_registered(),
         }
         return _ok(data)
 

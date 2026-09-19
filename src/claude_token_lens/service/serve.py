@@ -128,9 +128,24 @@ def run(options: ServeOptions, *, once: bool = False, allow_remote: bool = False
     # above, not out of necessity (api.py is this package's own module).
     from .api import make_handler
 
+    # v3: wire the real logon/boot registration probe into /api/health
+    # here (not inside api.py itself, per that module's own docstring on
+    # why it never imports installer.py) -- installer.is_registered's
+    # own default runner is subprocess.run, and api.py's make_handler
+    # caches whatever this callable returns for
+    # api._SERVICE_REGISTERED_CACHE_TTL_S, so this only actually shells
+    # out to schtasks/systemctl/launchctl at most once every 10 minutes
+    # of live traffic, not on every request.
+    from ..installer import is_registered as _probe_service_registered
+
     watcher.start()
     try:
-        handler_cls = make_handler(store, options, watcher_stats=lambda: watcher.last_stats)
+        handler_cls = make_handler(
+            store,
+            options,
+            watcher_stats=lambda: watcher.last_stats,
+            service_registered=_probe_service_registered,
+        )
         server = ThreadingHTTPServer((options.bind, options.port), handler_cls)
         # nit 30: ThreadingHTTPServer defaults daemon_threads to True, so
         # a KeyboardInterrupt/shutdown() can tear the process down mid-
