@@ -958,6 +958,70 @@ def test_spawn_cost_suppressed_for_chat_only():
     assert not any(rec.id == "spawn-cost" for rec in recs)
 
 
+def test_spawn_cost_emits_workflow_advice_with_no_lever_for_builtin_agent_type():
+    # Fix A1: "general-purpose" is one of Claude Code's own bundled agent
+    # types (_BUILTIN_AGENT_TYPES) -- it has no .claude/agents/*.md file
+    # for omitClaudeMd to patch, so without a snapshot to say otherwise
+    # this must fall back to workflow advice with no lever.
+    r = _base_report()
+    r = _add_section(
+        r,
+        Section(
+            key="agents",
+            title="Agents",
+            tables=[
+                Table(
+                    name="topology_spawn_write",
+                    title="Spawn write",
+                    columns=[Column(key="agent_type", label="Agent type"), Column(key="mean_write", label="Mean write")],
+                    rows=[["general-purpose", 50_000]],
+                )
+            ],
+        ),
+    )
+    recs = recommend_fn(r, config=_config(), archetype=None)
+    rec = next(rec for rec in recs if rec.id == "spawn-cost")
+    assert rec.lever is None
+    assert rec.category == "workflow"
+    assert "briefing you pass in the Agent prompt" in rec.action
+    text = render_patch_set([rec])
+    assert text == ""
+
+
+def test_spawn_cost_snapshot_agents_map_overrides_builtin_fallback():
+    # Fix A1: when a snapshot is available, its own "agents" map (real
+    # frontmatter files found on disk) is authoritative -- even for an
+    # agent type not on the built-in list, absence from that map means
+    # no lever; presence means a lever, regardless of the built-in guess.
+    r = _base_report()
+    r = _add_section(
+        r,
+        Section(
+            key="agents",
+            title="Agents",
+            tables=[
+                Table(
+                    name="topology_spawn_write",
+                    title="Spawn write",
+                    columns=[Column(key="agent_type", label="Agent type"), Column(key="mean_write", label="Mean write")],
+                    rows=[["claude-implementer", 50_000], ["general-purpose", 50_000]],
+                )
+            ],
+        ),
+    )
+    snapshot = Snapshot(
+        path=Path("s.json"),
+        ts="20260918T000000Z",
+        data={"agents": {"claude-implementer": {"model": "sonnet"}}},
+    )
+    recs = recommend_fn(r, config=_config(), archetype=None, snapshot=snapshot)
+    spawn_recs = {rec.agent_type: rec for rec in recs if rec.id == "spawn-cost"}
+    assert spawn_recs["claude-implementer"].lever == "omitClaudeMd"
+    assert spawn_recs["claude-implementer"].scope == "repo"
+    assert spawn_recs["general-purpose"].lever is None
+    assert spawn_recs["general-purpose"].category == "workflow"
+
+
 def test_spawn_cost_does_not_fire_below_threshold():
     r = _base_report()
     r = _add_section(

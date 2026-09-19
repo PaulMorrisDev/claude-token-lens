@@ -98,6 +98,20 @@ Deviations from the plan/brief, reported rather than made silently (see
   on the true joint share, not the share itself -- see this rule's own
   comment), this rule requires each share to independently clear the
   threshold and cites both as separate evidence entries.
+
+v0.1.1 fix A1: ``spawn-cost``'s ``omitClaudeMd`` lever only means anything
+for an agent type that actually has a ``.claude/agents/<type>.md``
+frontmatter file -- a built-in Claude Code agent type (``general-purpose``,
+``Explore``, ``Plan``, ...) has none, so the earlier version of this rule
+was naming a lever with nothing on disk for ``apply``/``render_patch_set``
+to patch. ``_agent_has_frontmatter`` now answers this from the latest
+config snapshot's ``agents`` map when one is available, else from a
+built-in list of Claude Code's own bundled agent types
+(``_BUILTIN_AGENT_TYPES``). A built-in agent type still gets a
+recommendation, just as ``category="workflow"`` advice ("shorten the
+briefing you pass in the Agent prompt") with ``lever=None`` -- which
+``render_patch_set`` already skips, so no patch-set stanza is emitted for
+it either.
 """
 
 from __future__ import annotations
@@ -130,6 +144,44 @@ _FANOUT_ARCHETYPES = frozenset({"overseer-fanout"})
 #: specific gating apply to all of them, including ``None``/unclassified
 #: which is represented as the empty tuple meaning "no restriction").
 _ALL_ARCHETYPES: tuple[str, ...] = ()
+
+#: Claude Code's own bundled agent types (fix A1) -- these ship with the
+#: harness itself and have no ``.claude/agents/<type>.md`` frontmatter
+#: file anywhere for ``spawn-cost`` to patch, unlike a project- or
+#: user-defined custom agent (e.g. ``claude-implementer``). Used only as
+#: the fallback when no config snapshot is available to answer the
+#: question directly from its ``agents`` map (see ``_agent_has_frontmatter``).
+_BUILTIN_AGENT_TYPES = frozenset(
+    {
+        "claude",
+        "general-purpose",
+        "Explore",
+        "Plan",
+        "claude-code-guide",
+        "statusline-setup",
+        "workflow-subagent",
+    }
+)
+
+
+def _agent_has_frontmatter(agent_type: str, snapshot: Snapshot | None) -> bool:
+    """Whether ``agent_type`` has its own ``.claude/agents/<type>.md``
+    frontmatter file for ``spawn-cost`` (fix A1) to name as a lever.
+
+    When a config snapshot is available, its ``agents`` map (populated by
+    ``hooks/snapshot-config.py`` from every agent frontmatter file that
+    actually exists on disk -- see ``snapshots.py``'s module docstring)
+    answers this directly: ``agent_type`` has a file if and only if it is
+    a key in that map. Without a snapshot, fall back to a built-in list
+    of Claude Code's own bundled agent types (:data:`_BUILTIN_AGENT_TYPES`)
+    -- anything else is assumed to be a custom agent with its own file,
+    since that's the only kind a corpus would otherwise be spawning.
+    """
+    if snapshot is not None:
+        agents_map = snapshot.data.get("agents")
+        if isinstance(agents_map, dict):
+            return agent_type in agents_map
+    return agent_type not in _BUILTIN_AGENT_TYPES
 
 
 # -- thresholds --------------------------------------------------------------
@@ -861,7 +913,9 @@ def _rule_agent_report_size(report: ReportModel, th: RecommendThresholds, archet
     return out
 
 
-def _rule_spawn_cost(report: ReportModel, th: RecommendThresholds, archetype: str | None) -> list[Recommendation]:
+def _rule_spawn_cost(
+    report: ReportModel, th: RecommendThresholds, archetype: str | None, snapshot: Snapshot | None
+) -> list[Recommendation]:
     if archetype in _NO_SUBAGENT_ARCHETYPES:
         return []
     table = _table(report, "agents", "topology_spawn_write")
@@ -881,29 +935,50 @@ def _rule_spawn_cost(report: ReportModel, th: RecommendThresholds, archetype: st
         priced_turns = _cell(report, "ttl", "ttl_by_agent_type", agent_type, "priced_turns")
         if not _row_meets_min_sample(th, spawns, priced_turns):
             continue
+        evidence = [
+            _evidence("Mean first-turn write", mean_write, "agents", "topology_spawn_write", agent_type),
+        ]
+        # Fix A1: only a genuine frontmatter-backed agent type has an
+        # omitClaudeMd lever this rule can point at -- Claude Code's own
+        # bundled agent types (see _BUILTIN_AGENT_TYPES) have no
+        # ``.claude/agents/<type>.md`` file to patch. For those, this is
+        # workflow advice ("shorten the briefing you pass in the Agent
+        # prompt") with no lever and therefore no render_patch_set stanza.
+        if _agent_has_frontmatter(agent_type, snapshot):
+            category = "settings"
+            action = (
+                f"Trim {agent_type}'s briefing -- omitClaudeMd or a narrower skills set "
+                "cuts what has to be written into its cache on the very first turn."
+            )
+            lever = "omitClaudeMd"
+            # Fix R13: omitClaudeMd is per-agent frontmatter (each
+            # .claude/agents/<type>.md has its own copy), not a
+            # top-level settings key, so this is "repo" scope the
+            # same way a per-agent TTL lever is -- it was previously
+            # left at the "user" default because _lever_scope() only
+            # ever saw the TTL-switch lever text.
+            scope = "repo"
+        else:
+            category = "workflow"
+            action = (
+                f"Shorten the briefing you pass in the Agent prompt for {agent_type} -- "
+                "there is no agent frontmatter file to trim for a built-in agent type, so "
+                "this cost has to come out of what you ask it to do on spawn."
+            )
+            lever = None
+            scope = "user"
         out.append(
             Recommendation(
                 id="spawn-cost",
                 severity="advice",
-                category="settings",
+                category=category,
                 archetypes=_ALL_ARCHETYPES,
                 title=f"Spawning {agent_type} is expensive before it does any work",
-                action=(
-                    f"Trim {agent_type}'s briefing -- omitClaudeMd or a narrower skills set "
-                    "cuts what has to be written into its cache on the very first turn."
-                ),
-                lever="omitClaudeMd",
-                # Fix R13: omitClaudeMd is per-agent frontmatter (each
-                # .claude/agents/<type>.md has its own copy), not a
-                # top-level settings key, so this is "repo" scope the
-                # same way a per-agent TTL lever is -- it was previously
-                # left at the "user" default because _lever_scope() only
-                # ever saw the TTL-switch lever text.
-                scope="repo",
+                action=action,
+                lever=lever,
+                scope=scope,
                 agent_type=agent_type,
-                evidence=[
-                    _evidence("Mean first-turn write", mean_write, "agents", "topology_spawn_write", agent_type),
-                ],
+                evidence=evidence,
             )
         )
     return out
@@ -1119,7 +1194,7 @@ def recommend(
     recs.extend(_rule_cache_read_dominance(report, th))
     recs.extend(_rule_baseline_bloat(report, th, snapshot, archetype))
     recs.extend(_rule_agent_report_size(report, th, archetype))
-    recs.extend(_rule_spawn_cost(report, th, archetype))
+    recs.extend(_rule_spawn_cost(report, th, archetype, snapshot))
     recs.extend(_rule_effort_mismatch(report, th))
     if _section(report, "phases") is not None:
         recs.extend(_rule_discovery_share(report, th))
