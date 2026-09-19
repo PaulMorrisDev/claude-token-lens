@@ -196,6 +196,12 @@ def ignorable_line(line_type: str, **overrides: Any) -> dict:
 # scan for that, on top of test_privacy.py's existing length-based walk,
 # and (per its own docstring) descends into every table cell, section
 # note, and Recommendation field it reaches via a dataclass field.
+#
+# v0.2-exports review fix: also flags a slug-shaped username segment
+# (``Users-<name>-``/``home-<name>-``) — the shape a raw, un-hashed,
+# un-redacted project slug carries — so running the full suite after
+# adding this check surfaces any other place a raw slug still leaks
+# (see ``_PRIVACY_SLUG_USER_RE`` below).
 
 _PRIVACY_DRIVE_RE = re.compile(r"[A-Za-z]:\\")
 _PRIVACY_POSIX_HOME_RE = re.compile(r"/home/")
@@ -216,6 +222,16 @@ _PRIVACY_AT_RE = re.compile(r"@")
 #: absolute path or a bare "@" (query strings, hostnames, tokens in the
 #: path segment), so it gets the same forbidden-pattern treatment.
 _PRIVACY_URL_RE = re.compile(r"https?://|www\.")
+
+#: Review v0.2-exports locked decision: a slug-shaped username segment,
+#: e.g. the ``Users-paulm-`` or ``home-paulm-`` fragment
+#: ``discovery.slug_for``/``exports._redact_slug`` produce from a real
+#: filesystem path before redaction. The allowed character class
+#: (``[A-Za-z0-9_.]+``) deliberately excludes ``<``/``>``, so a properly
+#: redacted segment (``Users-<user>-``) can never match this pattern —
+#: there is no separate "unless it's <user>" exemption to code, the
+#: character class itself is that exemption.
+_PRIVACY_SLUG_USER_RE = re.compile(r"(?i)(^|-)(Users|home)-[A-Za-z0-9_.]+-")
 
 #: Field names holding values that are allowed to contain the above
 #: shapes by design, not by accident.
@@ -294,6 +310,8 @@ def assert_privacy(result) -> None:
             violations.append(f"{where} contains '@': {value!r}")
         if _PRIVACY_URL_RE.search(value) and value not in _PRIVACY_URL_ALLOWED_VALUES:
             violations.append(f"{where} contains a URL: {value!r}")
+        if _PRIVACY_SLUG_USER_RE.search(value):
+            violations.append(f"{where} matches a slug-shaped username segment: {value!r}")
 
     def _walk_value(value, where: str, field_name: str) -> None:
         """Walk a value reached via a dataclass field (or the top-level
