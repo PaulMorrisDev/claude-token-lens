@@ -480,6 +480,62 @@ def test_config_diff_finds_snapshots_for_a_custom_config_dir_used_as_hook_base(t
     assert "Sessions" in out
 
 
+def test_config_diff_honors_session_overrides(tmp_path, capsys, monkeypatch):
+    """Fix R18: _build_session_metrics used to hardcode {} for
+    classify.classify_session's overrides argument, so a manual
+    sessions.toml mode/purpose correction -- honoured by every other
+    report-like subcommand via _cmd_report_like's own
+    load_session_overrides(config_dir) -- was silently dropped for
+    config-diff alone. Spy on classify.classify_session to confirm
+    config-diff now actually loads and threads sessions.toml through.
+    """
+    root = tmp_path / "projects"
+    _write_project(root, "proj-diff", age_seconds=120)
+
+    config_dir = tmp_path / "token-lens"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    snapshots_dir = config_dir.parent / "token-lens" / "snapshots"
+    snapshots_dir.mkdir(parents=True, exist_ok=True)
+    (snapshots_dir / "20200101T000000Z.json").write_text(
+        json.dumps({"ts": "20200101T000000Z", "user_settings": {"model": "sonnet"}}),
+        encoding="utf-8",
+    )
+    (snapshots_dir / "20200201T000000Z.json").write_text(
+        json.dumps({"ts": "20200201T000000Z", "user_settings": {"model": "fable"}}),
+        encoding="utf-8",
+    )
+    (config_dir / "sessions.toml").write_text(
+        '[sessions."some-session-id"]\nmode = "auto"\n', encoding="utf-8"
+    )
+
+    seen_overrides: list[dict] = []
+    real_classify_session = cli.classify.classify_session
+
+    def _spy(top, subs, overrides, tz, **kwargs):
+        seen_overrides.append(overrides)
+        return real_classify_session(top, subs, overrides, tz, **kwargs)
+
+    monkeypatch.setattr(cli.classify, "classify_session", _spy)
+
+    exit_code = cli.main(
+        [
+            "config-diff",
+            "--projects-root",
+            str(root),
+            "--project",
+            "proj-diff",
+            "--config-dir",
+            str(config_dir),
+            "--key",
+            "user_settings.model",
+        ]
+    )
+    assert exit_code == 0
+    capsys.readouterr()
+    assert seen_overrides, "classify_session was never called"
+    assert all(o == {"some-session-id": {"mode": "auto"}} for o in seen_overrides)
+
+
 def test_config_diff_requires_key_or_auto_keys(tmp_path, capsys):
     root = tmp_path / "projects"
     _write_project(root, "proj-a")

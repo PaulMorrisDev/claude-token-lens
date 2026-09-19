@@ -527,7 +527,9 @@ def _cmd_report_like(args: argparse.Namespace, include: set[str] | None) -> int:
 # -- config-diff -------------------------------------------------------------
 
 
-def _build_session_metrics(corpus: Corpus, rates: Pricing, recache_th, config: Config) -> list[dict]:
+def _build_session_metrics(
+    corpus: Corpus, rates: Pricing, recache_th, config: Config, session_overrides: dict
+) -> list[dict]:
     """Per-session ``{session_id, first_ts, turns, cost, recache_cc,
     cc_total, compactions, span_s}`` dicts for
     :func:`~claude_token_lens.snapshots.build_config_diff_table`.
@@ -545,7 +547,12 @@ def _build_session_metrics(corpus: Corpus, rates: Pricing, recache_th, config: C
     for bundle in corpus.sessions:
         if bundle.top is None:
             continue
-        classification = classify.classify_session(bundle.top, bundle.subs, {}, config.tz)
+        # Fix R18: this used to hardcode {} here, so a manual
+        # sessions.toml mode/purpose override -- honoured by every
+        # other subcommand via _cmd_report_like's own
+        # load_session_overrides(config_dir) -- was silently ignored
+        # for config-diff alone.
+        classification = classify.classify_session(bundle.top, bundle.subs, session_overrides, config.tz)
         record = classify.build_session_record(
             bundle.top, bundle.subs, bundle.workflows, classification, bundle.slug
         )
@@ -612,8 +619,14 @@ def _cmd_config_diff(args: argparse.Namespace) -> int:
         )
         return 1
 
+    try:
+        session_overrides = load_session_overrides(config_dir)
+    except ConfigError as exc:
+        print(f"claude-token-lens config-diff: {exc}", file=sys.stderr)
+        return 2
+
     recache_th = recache.RecacheThresholds.from_config(config.thresholds)
-    session_metrics = _build_session_metrics(corpus, rates, recache_th, config)
+    session_metrics = _build_session_metrics(corpus, rates, recache_th, config, session_overrides)
 
     if args.auto_keys:
         changed_keys = sorted(snapshots.diff_keys(snaps).keys())
