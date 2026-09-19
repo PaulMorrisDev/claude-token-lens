@@ -227,6 +227,27 @@ previously-cached transcripts (a path that previously leaked through
 that constant's own doc comment. Not done here: `__init__.py` is outside
 this change's file scope.
 
+Independent review (round 3) fixes, `cli.py`/`recommend.py`/`ttl.py`:
+
+- **Breaking:** removed the `--allow-titles` CLI flag. It implied a
+  privacy control that never existed — `report.py`'s own module
+  docstring documents `build_report`'s `allow_titles` parameter as a
+  permanent no-op, since nothing anywhere in this codebase captures
+  `customTitle`/`ai-title` text to gate in the first place.
+  `build_report` still accepts the keyword (unused) for signature
+  compatibility.
+- New `--tz ZONE` flag overrides `config.toml`'s `tz` for a single run,
+  threaded through every report-like subcommand and `config-diff`.
+- `--quiet` now actually does something: it used to be accepted by
+  argparse (mutually exclusive with `--verbose`) but never once
+  consulted, so passing it silently changed nothing.
+- `scorecard.py`'s `[thresholds.scorecard]` overrides are now validated
+  for correct ascending/descending ordering; a misordered tuple used to
+  silently score a corpus at the wrong level and now raises a clean,
+  named `claude-token-lens report: ...` error (exit 2) instead.
+- `init`/`baseline`/`serve`'s `--help` listing now leads with the same
+  `(planned)` marker every other not-yet-implemented subcommand uses.
+
 ### Documentation
 
 - README rewritten against the code as it actually stands today (WP12b):

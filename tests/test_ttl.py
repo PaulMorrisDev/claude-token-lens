@@ -67,15 +67,28 @@ def _turn(**overrides) -> model.Turn:
     return model.Turn(**fields)
 
 
-def _stats(cost_observed: float, cost_all_5m: float, cost_all_1h: float, key: str = "claude-implementer") -> TtlTypeStats:
+def _stats(
+    cost_observed: float,
+    cost_all_5m: float,
+    cost_all_1h: float,
+    key: str = "claude-implementer",
+    observed_5m_pct: float = 100.0,
+    observed_1h_pct: float = 0.0,
+    fidelity_pct: float | None = 0.0,
+) -> TtlTypeStats:
     """A ``TtlTypeStats`` with only the cost fields the recommendation
-    threshold tests care about set to something meaningful."""
+    threshold tests care about set to something meaningful.
+    ``observed_5m_pct``/``observed_1h_pct``/``fidelity_pct`` default to
+    values that never trip R2's dominant-policy or fidelity-gate
+    suppression (100% observed 5m, 0% fidelity), so existing tests that
+    don't care about those checks keep working unchanged; pass explicit
+    values to exercise them."""
     return TtlTypeStats(
         key=key,
         spawns=1,
         priced_turns=1,
-        observed_5m_pct=100.0,
-        observed_1h_pct=0.0,
+        observed_5m_pct=observed_5m_pct,
+        observed_1h_pct=observed_1h_pct,
         gaps_over_5m=0,
         gaps_over_1h=0,
         gap_p50_s=None,
@@ -84,7 +97,7 @@ def _stats(cost_observed: float, cost_all_5m: float, cost_all_1h: float, key: st
         cost_all_5m=cost_all_5m,
         cost_all_1h=cost_all_1h,
         unsimulatable=0,
-        fidelity_pct=0.0,
+        fidelity_pct=fidelity_pct,
         gap_buckets={},
     )
 
@@ -507,13 +520,92 @@ def test_recommendation_switches_to_1h_when_both_thresholds_clear():
 
 
 def test_recommendation_switches_to_5m_symmetrically():
-    s = _stats(cost_observed=100.0, cost_all_5m=90.0, cost_all_1h=100.0)
+    # Observed traffic is dominated by 1h (not 5m, the _stats default),
+    # so switching to the cheaper 5m policy is a genuine cross-policy
+    # switch rather than "keep 1h (already dominant)".
+    s = _stats(
+        cost_observed=100.0, cost_all_5m=90.0, cost_all_1h=100.0, observed_5m_pct=0.0, observed_1h_pct=100.0
+    )
     assert s.recommendation() == "switch to 5m"
 
 
 def test_recommendation_no_material_difference_when_observed_cost_zero():
     s = _stats(cost_observed=0.0, cost_all_5m=0.0, cost_all_1h=0.0)
     assert s.recommendation() == "no material difference"
+
+
+# -- R1: recommendation must pick the cheaper policy, not whichever is
+# checked first -----------------------------------------------------------
+
+
+def test_recommendation_picks_cheaper_policy_not_first_checked_order():
+    # cost_all_1h (91.0) clears both switch thresholds on its own
+    # (cheaper than 95% of observed, saves > $1), but cost_all_5m (80.0)
+    # is cheaper still. The old implementation checked 1h before 5m and
+    # returned on the first policy to clear the bar, so it would wrongly
+    # recommend "switch to 1h" here instead of the actually-cheaper 5m.
+    s = _stats(
+        cost_observed=100.0,
+        cost_all_5m=80.0,
+        cost_all_1h=91.0,
+        observed_5m_pct=0.0,
+        observed_1h_pct=100.0,
+    )
+    assert s.best_policy == "5m"
+    assert s.recommendation() == "switch to 5m"
+
+
+# -- R2: never advise switching to the policy already dominant, and gate
+# on simulation fidelity ---------------------------------------------------
+
+
+def test_recommendation_suppressed_when_best_policy_already_dominant():
+    # Best policy is 5m, and observed traffic is already ~100% 5m: no
+    # genuine switch is available, so this reads back as "keep", not a
+    # switch recommendation.
+    s = _stats(
+        cost_observed=100.0,
+        cost_all_5m=90.0,
+        cost_all_1h=200.0,
+        observed_5m_pct=100.0,
+        observed_1h_pct=0.0,
+    )
+    assert s.recommendation() == "keep 5m (already dominant)"
+
+
+def test_recommendation_suppressed_when_fidelity_exceeds_max_for_advice():
+    # Best policy (1h) differs from the dominant observed policy (5m),
+    # both switch thresholds clear, but the simulation's own fidelity is
+    # too poor to trust: nothing should be advised.
+    s = _stats(
+        cost_observed=100.0,
+        cost_all_5m=100.0,
+        cost_all_1h=90.0,
+        observed_5m_pct=100.0,
+        observed_1h_pct=0.0,
+        fidelity_pct=50.0,
+    )
+    rec = s.recommendation()
+    assert rec.startswith("no material difference (suppressed:")
+    assert "fidelity" in rec
+
+
+def test_recommendation_suppressed_when_saving_does_not_clear_fidelity_margin():
+    # A looser switch_pct lets a small (2%) saving clear the switch
+    # gate, but that saving doesn't exceed this row's own 3% simulation
+    # fidelity -- too close to the simulation's own noise to act on.
+    th = TtlThresholds(switch_pct=0.99, switch_usd=0.5)
+    s = _stats(
+        cost_observed=100.0,
+        cost_all_5m=100.0,
+        cost_all_1h=98.0,
+        observed_5m_pct=100.0,
+        observed_1h_pct=0.0,
+        fidelity_pct=3.0,
+    )
+    assert s.delta_pct == pytest.approx(2.0)
+    rec = s.recommendation(th)
+    assert rec == "no material difference (suppressed: 2.0% saving does not exceed 3.0% simulation fidelity)"
 
 
 def test_lever_text_top_level_vs_subagent():
@@ -694,6 +786,47 @@ def test_build_section_suppresses_subagent_switch_in_subscription_mode_but_not_t
     assert by_key["top-level"][rec_idx] == "switch to 1h"
     assert "suppressed" in by_key["claude-implementer"][rec_idx]
     assert any("usage credits" in note for note in section.notes)
+
+
+_REAL_SESSION_A = Path(__file__).parent / "fixtures" / "real" / "session-a"
+
+
+@pytest.mark.skipif(
+    not _REAL_SESSION_A.exists() or not any(_REAL_SESSION_A.glob("*.jsonl")),
+    reason="tests/fixtures/real/session-a/ not present (real fixture not checked out)",
+)
+def test_real_fixture_no_row_recommends_its_own_current_policy():
+    """R2 regression: on a real corpus, ``build_section``'s recommendation
+    must never tell an agent type to switch to the TTL policy that
+    already dominates that same row's own observed traffic (previously
+    possible since ``recommendation()`` didn't compare against the
+    dominant *observed* split at all)."""
+    from claude_token_lens import discovery
+
+    top_paths = list(_REAL_SESSION_A.glob("*.jsonl"))
+    assert len(top_paths) == 1, f"expected exactly one top-level jsonl, found {top_paths}"
+    top_path = top_paths[0]
+    session_id = top_path.stem
+    top_meta = TranscriptMeta(path=str(top_path), kind="top-level", session_id=session_id)
+
+    stats = TtlStats()
+    stats.add(parse_transcript(top_path, top_meta), PRICING.resolve_model)
+    for jsonl_path, _meta_dict in discovery.find_subagents(_REAL_SESSION_A, session_id):
+        meta_path = jsonl_path.with_name(jsonl_path.stem + ".meta.json")
+        meta = discovery.load_meta(meta_path)
+        stats.add(parse_transcript(jsonl_path, meta), PRICING.resolve_model)
+
+    section = build_section(stats, billing_mode="api")
+    table = section.tables[0]
+    idx = {c.key: i for i, c in enumerate(table.columns)}
+    for row in table.rows:
+        recommendation = row[idx["recommendation"]]
+        observed_5m_pct = row[idx["observed_5m_pct"]]
+        observed_1h_pct = row[idx["observed_1h_pct"]]
+        if observed_5m_pct >= 90.0:
+            assert recommendation != "switch to 5m", row
+        if observed_1h_pct >= 90.0:
+            assert recommendation != "switch to 1h", row
 
 
 def test_build_section_fidelity_warning_lists_offending_agent_types():

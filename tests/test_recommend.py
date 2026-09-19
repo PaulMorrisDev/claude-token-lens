@@ -30,7 +30,12 @@ from claude_token_lens.model import (
     Section,
     Table,
 )
-from claude_token_lens.recommend import RecommendThresholds, recommend as recommend_fn, render_patch_set
+from claude_token_lens.recommend import (
+    RecommendThresholds,
+    effective_min_sample,
+    recommend as recommend_fn,
+    render_patch_set,
+)
 from claude_token_lens.snapshots import Snapshot
 
 from helpers import assert_privacy, turn_line, write_jsonl
@@ -179,6 +184,32 @@ def test_ttl_switch_does_not_fire_for_no_material_difference():
     assert not any(rec.id == "ttl-switch" for rec in recs)
 
 
+def test_ttl_switch_suppressed_for_non_top_level_row_when_chat_only():
+    # Fix R10: chat-only never spawns subagents, so per-agent-type TTL
+    # advice for anything other than the session's own top-level row
+    # should not fire -- the top-level row itself still can.
+    r = _base_report()
+    r = _add_section(
+        r,
+        Section(
+            key="ttl",
+            title="TTL",
+            tables=[
+                _ttl_by_agent_type_table(
+                    [
+                        ["top-level", 10.0, 0.0, "switch to 1h", "promptCacheTtl"],
+                        ["claude-planner", 5.0, 0.0, "switch to 1h", "experimental.cacheTtl in claude-planner.md (or subagentPromptCacheTtl for all subagents)"],
+                    ]
+                )
+            ],
+        ),
+    )
+    recs = recommend_fn(r, config=_config(), archetype="chat-only")
+    ttl_recs = [rec for rec in recs if rec.id == "ttl-switch"]
+    assert len(ttl_recs) == 1
+    assert ttl_recs[0].title == "Cache TTL is a poor fit for top-level"
+
+
 def test_ttl_switch_suppressed_for_non_anthropic_provider():
     r = _base_report()
     r = _add_section(
@@ -260,6 +291,204 @@ def test_ttl_switch_unmanaged_key_has_user_scope():
     assert "managed by policy" not in rec.action
 
 
+# -- R3: per-row minimum-sample gate -----------------------------------
+
+
+def test_ttl_switch_suppressed_for_low_sample_agent_type_despite_corpus_wide_pass():
+    # Corpus-wide gate passes (_base_report's default sessions=10,
+    # priced_turns=400), but this specific agent type only has 1 spawn
+    # / 3 priced turns of its own -- a claude-planner-like row that
+    # should get no per-agent-type advice even though the rest of the
+    # corpus is large enough.
+    r = _base_report()
+    r = _add_section(
+        r,
+        Section(
+            key="ttl",
+            title="TTL",
+            tables=[
+                Table(
+                    name="ttl_by_agent_type",
+                    title="TTL by agent type",
+                    columns=[
+                        Column(key="agent_type", label="Agent type"),
+                        Column(key="cost_observed", label="Cost observed"),
+                        Column(key="fidelity_pct", label="Fidelity"),
+                        Column(key="recommendation", label="Recommendation"),
+                        Column(key="lever", label="Lever"),
+                        Column(key="spawns", label="Spawns"),
+                        Column(key="priced_turns", label="Priced turns"),
+                    ],
+                    rows=[
+                        [
+                            "claude-planner",
+                            10.0,
+                            0.0,
+                            "switch to 1h",
+                            "experimental.cacheTtl in claude-planner.md (or subagentPromptCacheTtl for all subagents)",
+                            1,
+                            3,
+                        ]
+                    ],
+                )
+            ],
+        ),
+    )
+    recs = recommend_fn(r, config=_config(), archetype=None)
+    assert not any(rec.id == "ttl-switch" for rec in recs)
+
+
+def test_subagent_volume_suppressed_for_low_sample_agent_type():
+    r = _base_report()
+    r = _add_section(
+        r,
+        Section(
+            key="ttl",
+            title="TTL",
+            tables=[
+                Table(
+                    name="ttl_by_agent_type",
+                    title="TTL by agent type",
+                    columns=[
+                        Column(key="agent_type", label="Agent type"),
+                        Column(key="cost_observed", label="Cost observed"),
+                        Column(key="fidelity_pct", label="Fidelity"),
+                        Column(key="recommendation", label="Recommendation"),
+                        Column(key="lever", label="Lever"),
+                        Column(key="spawns", label="Spawns"),
+                        Column(key="priced_turns", label="Priced turns"),
+                    ],
+                    rows=[
+                        ["top-level", 40.0, 0.0, "no material difference", "promptCacheTtl", 10, 400],
+                        ["claude-planner", 60.0, 0.0, "no material difference", "promptCacheTtl", 1, 3],
+                    ],
+                )
+            ],
+        ),
+    )
+    recs = recommend_fn(r, config=_config(), archetype=None)
+    assert not any(rec.id == "subagent-volume" for rec in recs)
+
+
+def _report_proxy_report(spawns: int, mean_proxy: float = 12_000) -> ReportModel:
+    r = _base_report()
+    r = _add_section(
+        r,
+        Section(
+            key="agents",
+            title="Agents",
+            tables=[
+                Table(
+                    name="topology_report_proxy",
+                    title="Report proxy",
+                    columns=[
+                        Column(key="agent_type", label="Agent type"),
+                        Column(key="spawns", label="Spawns"),
+                        Column(key="mean_proxy", label="Mean proxy"),
+                    ],
+                    rows=[["claude-planner", spawns, mean_proxy]],
+                )
+            ],
+        ),
+    )
+    return r
+
+
+def test_agent_report_size_suppressed_for_low_sample_via_ttl_cross_reference():
+    # topology_report_proxy has no priced_turns column of its own; the
+    # per-row gate cross-references ttl_by_agent_type's priced_turns
+    # for the same agent type -- absent here, so it stays None and the
+    # gate falls back to the (too-low) own spawns count.
+    r = _report_proxy_report(spawns=1)
+    r = _add_section(
+        r,
+        Section(
+            key="ttl",
+            title="TTL",
+            tables=[_ttl_by_agent_type_table([["claude-planner", 10.0, 0.0, "no material difference", "promptCacheTtl"]])],
+        ),
+    )
+    recs = recommend_fn(r, config=_config(), archetype=None)
+    assert not any(rec.id == "agent-report-size" for rec in recs)
+
+
+def test_agent_report_size_fires_when_cross_referenced_priced_turns_clears_gate():
+    # Same low own-spawns count as above, but this time
+    # ttl_by_agent_type carries a priced_turns figure for the same
+    # agent type that alone clears the minimum-sample bar -- proving
+    # the cross-reference lookup (not just the table's own spawns
+    # column) is actually consulted.
+    r = _report_proxy_report(spawns=1)
+    ttl_table = Table(
+        name="ttl_by_agent_type",
+        title="TTL by agent type",
+        columns=[
+            Column(key="agent_type", label="Agent type"),
+            Column(key="cost_observed", label="Cost observed", kind="money"),
+            Column(key="fidelity_pct", label="Fidelity", kind="pct"),
+            Column(key="recommendation", label="Recommendation"),
+            Column(key="lever", label="Lever"),
+            Column(key="priced_turns", label="Priced turns"),
+        ],
+        rows=[["claude-planner", 10.0, 0.0, "no material difference", "promptCacheTtl", 500]],
+    )
+    r = _add_section(r, Section(key="ttl", title="TTL", tables=[ttl_table]))
+    recs = recommend_fn(r, config=_config(), archetype=None)
+    assert any(rec.id == "agent-report-size" for rec in recs)
+
+
+def test_spawn_cost_suppressed_for_low_sample_via_ttl_cross_reference():
+    r = _base_report()
+    r = _add_section(
+        r,
+        Section(
+            key="agents",
+            title="Agents",
+            tables=[
+                Table(
+                    name="topology_spawn_write",
+                    title="Spawn write",
+                    columns=[
+                        Column(key="agent_type", label="Agent type"),
+                        Column(key="spawns", label="Spawns"),
+                        Column(key="mean_write", label="Mean write"),
+                    ],
+                    rows=[["claude-planner", 1, 50_000]],
+                )
+            ],
+        ),
+    )
+    r = _add_section(
+        r,
+        Section(
+            key="ttl",
+            title="TTL",
+            tables=[_ttl_by_agent_type_table([["claude-planner", 10.0, 0.0, "no material difference", "promptCacheTtl"]])],
+        ),
+    )
+    recs = recommend_fn(r, config=_config(), archetype=None)
+    assert not any(rec.id == "spawn-cost" for rec in recs)
+
+
+def test_from_config_seeds_min_sample_from_config_when_no_explicit_override():
+    cfg = Config(min_sessions=3, min_turns=50)
+    th = RecommendThresholds.from_config(None, cfg)
+    assert th.min_sessions == 3
+    assert th.min_turns == 50
+
+
+def test_from_config_explicit_override_wins_over_config_default():
+    cfg = Config(min_sessions=3, min_turns=50)
+    th = RecommendThresholds.from_config({"min_sessions": 7}, cfg)
+    assert th.min_sessions == 7
+    assert th.min_turns == 50
+
+
+def test_effective_min_sample_reflects_the_thresholds_actually_used():
+    th = RecommendThresholds(min_sessions=9, min_turns=99)
+    assert effective_min_sample(th) == (9, 99)
+
+
 # -- subagent-volume ------------------------------------------------------
 
 
@@ -282,9 +511,14 @@ def test_subagent_volume_fires_above_threshold():
     )
     recs = recommend_fn(r, config=_config(), archetype=None)
     rec = next(rec for rec in recs if rec.id == "subagent-volume")
+    # R11: the cited evidence is the real cost_observed cell (60.0 is
+    # claude-implementer's own cost_observed value in the fixture below,
+    # not a derived share) -- the computed 60% share lives in the
+    # action text instead.
     assert rec.evidence == [
-        ("Share of corpus cost", 60.0, "ttl.ttl_by_agent_type", "claude-implementer"),
+        ("Cost (observed)", 60.0, "ttl.ttl_by_agent_type", "claude-implementer"),
     ]
+    assert "60.0%" in rec.action
 
 
 def test_subagent_volume_does_not_fire_below_threshold():
@@ -796,6 +1030,11 @@ def test_effort_mismatch_fires_with_evidence_per_purpose_row():
     assert ("docs-or-light-edit sessions in corpus", 4, "sessions.sessions_by_purpose", "docs-or-light-edit") in rec.evidence
     assert ("general-dev sessions in corpus", 3, "sessions.sessions_by_purpose", "general-dev") in rec.evidence
     assert len(rec.evidence) == 3
+    # R22: this rule can't join the thinking-share group-by to the
+    # purpose group-by by session (no report table carries both), so
+    # the approximation is disclosed in the action text rather than
+    # presented as a genuine per-session join.
+    assert "not joined" in rec.action or "Approximation" in rec.action
 
 
 def test_effort_mismatch_does_not_fire_without_docs_purposes():
@@ -961,6 +1200,59 @@ def test_pricing_coverage_does_not_fire_at_full_coverage():
     assert not any(rec.id == "pricing-coverage" for rec in recs)
 
 
+def test_pricing_coverage_fires_from_coverage_pct_alone_with_no_unknown_models_table():
+    # R12: report.py never actually attaches a usage.pricing_unknown_models
+    # table to any section -- the rule must fire off
+    # report.meta.pricing.coverage_pct alone, not a dead table lookup.
+    r = _base_report()
+    r.meta.pricing.coverage_pct = 42.0
+    r = _add_section(
+        r,
+        Section(
+            key="scorecard",
+            title="Scorecard",
+            tables=[_scorecard_dimensions_table([["data_quality", "warn", "Data quality", "pricing_coverage_pct", 42.0, 100.0]])],
+        ),
+    )
+    recs = recommend_fn(r, config=_config(), archetype=None)
+    assert any(rec.id == "pricing-coverage" for rec in recs)
+
+
+def test_pricing_coverage_action_names_unknown_model_ids_when_table_present():
+    r = _base_report()
+    r.meta.pricing.coverage_pct = 90.0
+    r = _add_section(
+        r,
+        Section(
+            key="scorecard",
+            title="Scorecard",
+            tables=[_scorecard_dimensions_table([["data_quality", "warn", "Data quality", "pricing_coverage_pct", 90.0, 100.0]])],
+        ),
+    )
+    r = _add_section(
+        r,
+        Section(
+            key="usage",
+            title="Usage",
+            tables=[
+                Table(
+                    name="pricing_unknown_models",
+                    title="Unpriced models",
+                    columns=[
+                        Column(key="model_id", label="Model"),
+                        Column(key="turns", label="Turns"),
+                        Column(key="tokens", label="Tokens"),
+                    ],
+                    rows=[["claude-mystery-9", 3, 1000]],
+                )
+            ],
+        ),
+    )
+    recs = recommend_fn(r, config=_config(), archetype=None)
+    rec = next(rec for rec in recs if rec.id == "pricing-coverage")
+    assert "claude-mystery-9" in rec.action
+
+
 # -- data-quality ---------------------------------------------------------
 
 
@@ -1085,6 +1377,65 @@ def test_long_tool_waits_fires_above_both_thresholds():
     recs = recommend_fn(r, config=_config(), archetype=None)
     rec = next(rec for rec in recs if rec.id == "long-tool-waits")
     assert ("Full-expiry cache-creation tokens", 30_000, "recache.recache_signature_split", "full-expiry") in rec.evidence
+    # R14: no table exposes the true joint count of turns preceded by
+    # Bash/PowerShell AND following a long gap, so each of the two
+    # independent shares that stand in for it must be cited as its own
+    # evidence entry (previously the long-gap-bucket shares weren't
+    # cited at all, only used to compute a fake "combined" number).
+    for bucket, expected in ((">60m", 30.0), ("15-60m", 25.0), ("5-15m", 20.0)):
+        assert (
+            f"{bucket} gap-bucket re-cache turn share",
+            expected,
+            "recache.recache_gap_buckets",
+            bucket,
+        ) in rec.evidence
+
+
+def test_long_tool_waits_requires_both_shares_independently_above_threshold():
+    # Bash/PowerShell share is well above threshold (90%), but the
+    # long-gap share is well below it (10%) -- the two independent
+    # turn populations plainly don't overlap enough to justify firing,
+    # even though a naive min() of two *different* metrics could be
+    # fooled by a badly-chosen pair of inputs. Here both the old and
+    # new logic agree the rule should not fire; this pins that a low
+    # long-gap share alone is enough to suppress it regardless of how
+    # high the tool share runs.
+    r = _base_report()
+    r = _add_section(
+        r,
+        Section(
+            key="recache",
+            title="Recache",
+            tables=[
+                Table(
+                    name="recache_summary",
+                    title="Recache summary",
+                    columns=[Column(key="metric", label="Metric"), Column(key="recache_cc_tokens", label="Recache cc tokens")],
+                    rows=[["all", 100_000]],
+                ),
+                Table(
+                    name="recache_signature_split",
+                    title="Signature split",
+                    columns=[Column(key="signature", label="Signature"), Column(key="cc_tokens", label="CC tokens")],
+                    rows=[["full-expiry", 30_000]],
+                ),
+                Table(
+                    name="recache_preceding_tool",
+                    title="Preceding tool",
+                    columns=[Column(key="tool", label="Tool"), Column(key="share_pct_turns", label="Share")],
+                    rows=[["Bash", 60.0], ["PowerShell", 30.0]],
+                ),
+                Table(
+                    name="recache_gap_buckets",
+                    title="Gap buckets",
+                    columns=[Column(key="bucket", label="Bucket"), Column(key="share_pct_turns", label="Share")],
+                    rows=[[">60m", 5.0], ["15-60m", 3.0], ["5-15m", 2.0]],
+                ),
+            ],
+        ),
+    )
+    recs = recommend_fn(r, config=_config(), archetype=None)
+    assert not any(rec.id == "long-tool-waits" for rec in recs)
 
 
 def test_long_tool_waits_does_not_fire_below_full_expiry_share():
@@ -1308,6 +1659,58 @@ def test_render_patch_set_skips_recommendations_with_no_lever():
     rec = dataclasses.replace(_make_recommendation(), lever=None)
     text = render_patch_set([rec])
     assert text == ""
+
+
+def test_render_patch_set_routes_omit_claude_md_to_the_agent_file_not_settings():
+    # Fix R13: omitClaudeMd (spawn-cost's lever) is per-agent
+    # frontmatter, not a top-level settings key -- it must not fall
+    # into the generic "settings (user)" stanza.
+    rec = dataclasses.replace(
+        _make_recommendation(),
+        lever="omitClaudeMd",
+        agent_type="claude-implementer",
+        action="Trim claude-implementer's briefing.",
+    )
+    text = render_patch_set([rec])
+    assert "--- .claude/agents/claude-implementer.md" in text
+    assert "+omitClaudeMd: true" in text
+    assert "settings (user)" not in text
+
+
+def test_render_patch_set_merges_multiple_levers_for_the_same_agent_into_one_stanza():
+    # Fix R13: a TTL switch and an omitClaudeMd recommendation for the
+    # *same* agent type must produce one merged diff for that agent's
+    # file, not two separate "--- .claude/agents/..." stanzas.
+    ttl_rec = dataclasses.replace(
+        _make_recommendation(id="ttl"),
+        lever="experimental.cacheTtl in claude-implementer.md (or subagentPromptCacheTtl for all subagents)",
+        agent_type="claude-implementer",
+        action="Switch claude-implementer's prompt cache TTL to 1h.",
+    )
+    briefing_rec = dataclasses.replace(
+        _make_recommendation(id="spawn"),
+        lever="omitClaudeMd",
+        agent_type="claude-implementer",
+        action="Trim claude-implementer's briefing.",
+    )
+    text = render_patch_set([ttl_rec, briefing_rec])
+    assert text.count("--- .claude/agents/claude-implementer.md") == 1
+    assert "+experimental.cacheTtl: 1h" in text
+    assert "+omitClaudeMd: true" in text
+
+
+def test_render_patch_set_top_level_agent_type_stays_a_settings_key_not_a_file():
+    # agent_type="top-level" is the main session, not a subagent --
+    # it must still render as the bare settings-key stanza.
+    rec = dataclasses.replace(
+        _make_recommendation(),
+        lever="promptCacheTtl",
+        agent_type="top-level",
+        action="Switch top-level's prompt cache TTL to 5m.",
+    )
+    text = render_patch_set([rec])
+    assert "--- settings (user)" in text
+    assert ".claude/agents/" not in text
 
 
 def _make_recommendation(**overrides):

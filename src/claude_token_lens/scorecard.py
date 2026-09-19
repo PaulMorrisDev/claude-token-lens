@@ -47,8 +47,19 @@ from __future__ import annotations
 
 import dataclasses
 from dataclasses import dataclass
+from typing import ClassVar
 
 from .model import Column, Section, Table
+
+
+class ScorecardError(Exception):
+    """A ``[thresholds.scorecard]`` config.toml value is invalid --
+    written to stand alone as user-facing output, the same convention
+    as ``config.ConfigError``/``pricing.PricingError`` (not literally
+    ``config.ConfigError`` itself: this module deliberately depends on
+    nothing but ``model.py``, see the module docstring).
+    """
+
 
 #: 1 (poor) .. 5 (excellent) level labels, printed alongside the level
 #: number in the report table.
@@ -93,30 +104,55 @@ class ScorecardThresholds:
     #: Pricing coverage, pct of tokens priced (higher is better).
     data_pricing_coverage_pct: tuple[float, float, float, float] = (99.5, 97.0, 90.0, 75.0)
 
+    #: Fields whose 4-tuple is (level-5 bound, level-4, level-3, level-2)
+    #: in *ascending* order -- lower values are better.
+    _LOWER_IS_BETTER_FIELDS: ClassVar[tuple[str, ...]] = (
+        "cache_recache_share_pct",
+        "context_p90_ctx",
+        "agent_cost_variance_ratio",
+        "config_changed_keys",
+    )
+    #: Fields whose 4-tuple is in *descending* order -- higher is better.
+    _HIGHER_IS_BETTER_FIELDS: ClassVar[tuple[str, ...]] = ("data_pricing_coverage_pct",)
+
     @classmethod
     def from_config(cls, data: dict | None) -> "ScorecardThresholds":
         """Build thresholds from ``config.toml``'s ``[thresholds.scorecard]``
         table (a flat dict of this class's field names to 4-item
         sequences). Any absent or malformed key keeps this class's
         default. Unknown keys are ignored.
+
+        Fix R20: ``_level_lower_is_better``/``_level_higher_is_better``
+        below assume each tuple is monotonic (ascending for a
+        lower-is-better metric, descending for the one higher-is-better
+        metric) and short-circuit on that assumption -- a misordered
+        override would silently score a corpus at the wrong level
+        rather than fail loudly, so a tuple that isn't correctly
+        ordered raises :class:`ScorecardError` naming the offending key
+        instead of being accepted.
         """
         defaults = cls()
         if not isinstance(data, dict):
             return defaults
         kwargs: dict = {}
-        for field_name in (
-            "cache_recache_share_pct",
-            "context_p90_ctx",
-            "agent_cost_variance_ratio",
-            "config_changed_keys",
-            "data_pricing_coverage_pct",
-        ):
+        for field_name in (*cls._LOWER_IS_BETTER_FIELDS, *cls._HIGHER_IS_BETTER_FIELDS):
             raw = data.get(field_name)
             if isinstance(raw, (list, tuple)) and len(raw) == 4:
                 try:
-                    kwargs[field_name] = tuple(float(v) for v in raw)
+                    values = tuple(float(v) for v in raw)
                 except (TypeError, ValueError):
                     continue
+                b5, b4, b3, b2 = values
+                if field_name in cls._LOWER_IS_BETTER_FIELDS:
+                    ordered, direction = b5 <= b4 <= b3 <= b2, "ascending"
+                else:
+                    ordered, direction = b5 >= b4 >= b3 >= b2, "descending"
+                if not ordered:
+                    raise ScorecardError(
+                        f"[thresholds.scorecard].{field_name} must be {direction} "
+                        f"(level 5, 4, 3, 2 bounds in that order), got {values!r}"
+                    )
+                kwargs[field_name] = values
         if not kwargs:
             return defaults
         return dataclasses.replace(defaults, **kwargs)
@@ -351,6 +387,7 @@ def build_section(inputs: ScorecardInputs, thresholds: ScorecardThresholds | Non
 __all__ = [
     "LEVEL_LABELS",
     "ALL_DIMENSIONS",
+    "ScorecardError",
     "ScorecardThresholds",
     "ScorecardInputs",
     "build_section",

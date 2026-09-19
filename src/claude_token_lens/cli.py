@@ -27,6 +27,7 @@ import importlib.util
 import os
 import sys
 from pathlib import Path
+from zoneinfo import available_timezones
 
 from . import __version__, classify, discovery, probe as probe_mod, recache, snapshots
 from . import statusline as statusline_mod
@@ -41,6 +42,7 @@ from .render.json_out import render_json
 from .render.markdown import render_markdown
 from .render.tables import format_cell
 from .report import build_report
+from .scorecard import ScorecardError
 from .tools import log_usage as log_usage_mod
 from .tools import scrub as scrub_mod
 
@@ -115,8 +117,24 @@ def _build_common_parser() -> argparse.ArgumentParser:
         "--config-dir", metavar="PATH", default=None, help="default: ~/.claude/token-lens"
     )
     common.add_argument(
+        "--tz",
+        metavar="ZONE",
+        default=None,
+        help="IANA zone name overriding config.toml's tz for this run only "
+        "(e.g. America/New_York); default: config.toml's tz, or the "
+        "machine's own local zone",
+    )
+    common.add_argument(
         "--group-by",
-        choices=("mode", "purpose", "agent", "project", "model", "profile"),
+        # Fix R6: this tuple used to be hand-maintained and had drifted
+        # from classify._GROUP_KEYS (it offered a non-existent
+        # "profile" key -- which classify.group_sessions() would reject
+        # with an uncaught ValueError deep inside build_report() rather
+        # than a clean CLI error -- and omitted the real "entrypoint"
+        # key entirely). Derive the choices so they can never drift
+        # again; argparse itself exits 2 with a one-line message on an
+        # invalid choice.
+        choices=sorted(classify._GROUP_KEYS),
     )
 
     cache = common.add_mutually_exclusive_group()
@@ -152,11 +170,14 @@ def _add_report_output_args(sub: argparse.ArgumentParser, *, allow_patch_set: bo
         action="store_true",
         help="add the DISCOVERY/IMPLEMENTATION/VERIFICATION phase-split section",
     )
-    sub.add_argument(
-        "--allow-titles",
-        action="store_true",
-        help="include customTitle/ai-title text (off by default for privacy)",
-    )
+    # Fix R17: --allow-titles was removed -- report.py's own module
+    # docstring documents that its allow_titles parameter is a
+    # currently-permanent no-op (nothing anywhere in this codebase
+    # captures customTitle/ai-title text to gate in the first place), so
+    # the flag implied a privacy control that did not actually exist.
+    # build_report() still accepts the keyword (matching its required
+    # signature; report.py is out of this fix's file scope), always
+    # called with the default.
     if allow_patch_set:
         sub.add_argument(
             "--patch-set",
@@ -248,9 +269,14 @@ def _make_parser() -> argparse.ArgumentParser:
             "probe": "content-free schema histogram of a project or file",
             "statusline": "Claude Code statusLine handler (reads stdin JSON)",
             "scrub-fixture": "scrub a real session into a privacy-safe test fixture",
-            "init": "planned for v0.3",
-            "baseline": "planned for v0.3",
-            "serve": "planned for v0.2",
+            # Fix R25: lead with the same "(planned)" marker the plain
+            # "not implemented yet" fallback below uses for every other
+            # stub, so a subcommand listing (``--help``) makes stub
+            # commands visually scannable as a group instead of only
+            # readable one at a time via "planned for vX.Y" prose.
+            "init": "(planned) v0.3 milestone",
+            "baseline": "(planned) v0.3 milestone",
+            "serve": "(planned) v0.2 milestone",
         }.get(name, f"{name} (not implemented yet)")
         sub = subparsers.add_parser(name, parents=[common], help=help_text)
         if name == "pricing-check":
@@ -290,6 +316,34 @@ def _resolve_config_dir(cli_arg: str | Path | None) -> Path:
     base = os.environ.get("CLAUDE_CONFIG_DIR")
     root = Path(base) if base else (Path.home() / ".claude")
     return root / "token-lens"
+
+
+def _load_snapshots_for_config_dir(config_dir: Path) -> list[snapshots.Snapshot]:
+    """Fix R16: ``snapshots.load_snapshots(base)`` always appends
+    ``token-lens/snapshots`` to whatever base it is given. This
+    module's own ``config_dir`` (see ``_resolve_config_dir`` above) is
+    the directory ``config.toml`` lives in directly, so
+    ``config_dir.parent`` recovers the right base under the *documented*
+    shape (an explicit ``--config-dir`` deliberately pointed at
+    ``<root>/token-lens``, matching the default's own ``root /
+    "token-lens"``) -- this is what the existing config-diff fixtures
+    exercise.
+
+    But ``hooks/snapshot-config.py``'s own ``resolve_config_dir``
+    treats an *explicit* ``--config-dir`` as the base directly (it only
+    appends ``token-lens`` for the no-argument default, same as here).
+    A user who points the *same* literal ``--config-dir`` value at both
+    ``snapshot-config`` and this command -- the natural thing to try --
+    gets snapshots written under ``<that-dir>/token-lens/snapshots``,
+    which ``config_dir.parent`` never finds (it looks one directory too
+    high). Try the documented ``.parent`` shape first, then fall back
+    to treating ``config_dir`` itself as the base, so both conventions
+    resolve to the right snapshots.
+    """
+    found = snapshots.load_snapshots(config_dir.parent)
+    if found:
+        return found
+    return snapshots.load_snapshots(config_dir)
 
 
 def _priced_turns(result: TranscriptResult):
@@ -339,6 +393,26 @@ def _load_config_and_pricing(args: argparse.Namespace) -> tuple[Config | None, P
         print(f"claude-token-lens: {exc}", file=sys.stderr)
         return None, None, config_dir, 2
 
+    # Fix R24: --tz overrides config.toml's tz for this run only, the
+    # same "explicit flag wins over the file" convention --pricing/
+    # --config-dir already follow. classify.classify_session/usage.py's
+    # _to_local both already fall back to the machine's local zone when
+    # a zone name can't be resolved -- deliberately, since a bare
+    # Windows install with no tzdata package can't resolve *any* named
+    # zone (see classify.py's module docstring) and that's a machine
+    # limitation, not a bad value. So this only rejects a --tz value
+    # outright when the machine actually has a populated tz database to
+    # check it against and the name genuinely isn't in it (a real
+    # command-line typo); otherwise it's passed through uncontested and
+    # degrades the same way a config.toml value already does.
+    tz_override = getattr(args, "tz", None)
+    if tz_override is not None:
+        known_zones = available_timezones()
+        if known_zones and tz_override not in known_zones:
+            print(f"claude-token-lens: --tz {tz_override!r} is not a known IANA zone", file=sys.stderr)
+            return None, None, config_dir, 2
+        config.tz = tz_override
+
     pricing_path = args.pricing or config.pricing_path
     try:
         rates = load_pricing(path=pricing_path, config_dir=config_dir)
@@ -377,7 +451,15 @@ def _load_corpus_for_args(
         jobs=args.jobs,
         exclude_projects=config.exclude_projects,
     )
-    if args.verbose:
+    # Fix R21: --quiet was accepted by argparse (mutually exclusive with
+    # --verbose) but never actually consulted anywhere -- a silent no-op
+    # flag. The CLI's argparse wiring already keeps a human from passing
+    # both at once, but this function's own contract shouldn't depend on
+    # that: guard explicitly so --quiet reliably suppresses this stderr
+    # diagnostic even if a future caller builds/mutates the Namespace
+    # itself (e.g. a script driving this function directly) rather than
+    # going through argparse's mutual-exclusion check.
+    if args.verbose and not args.quiet:
         _print_corpus_stats(corpus)
     return corpus
 
@@ -460,7 +542,7 @@ def _cmd_report_like(args: argparse.Namespace, include: set[str] | None) -> int:
         )
         return 1
 
-    snaps = snapshots.load_snapshots(config_dir.parent) or None
+    snaps = _load_snapshots_for_config_dir(config_dir) or None
     projects = tuple(p.name for p in project_dirs)
 
     try:
@@ -469,19 +551,27 @@ def _cmd_report_like(args: argparse.Namespace, include: set[str] | None) -> int:
         print(f"claude-token-lens {command}: {exc}", file=sys.stderr)
         return 2
 
-    model = build_report(
-        corpus,
-        rates,
-        config,
-        projects=projects,
-        window=window,
-        group_by=args.group_by,
-        phases=getattr(args, "phases", False),
-        snapshots=snaps,
-        allow_titles=getattr(args, "allow_titles", False),
-        include=include,
-        session_overrides=session_overrides,
-    )
+    try:
+        model = build_report(
+            corpus,
+            rates,
+            config,
+            projects=projects,
+            window=window,
+            group_by=args.group_by,
+            phases=getattr(args, "phases", False),
+            snapshots=snaps,
+            include=include,
+            session_overrides=session_overrides,
+        )
+    except ScorecardError as exc:
+        # Fix R20: a misordered [thresholds.scorecard] override in
+        # config.toml used to surface as a raw traceback out of
+        # scorecard.build_section (called deep inside build_report);
+        # give it the same clean one-line-and-exit-2 treatment as every
+        # other user-facing config error in this function.
+        print(f"claude-token-lens {command}: {exc}", file=sys.stderr)
+        return 2
     _emit_report_outputs(model, args)
     return 0
 
@@ -489,7 +579,9 @@ def _cmd_report_like(args: argparse.Namespace, include: set[str] | None) -> int:
 # -- config-diff -------------------------------------------------------------
 
 
-def _build_session_metrics(corpus: Corpus, rates: Pricing, recache_th, config: Config) -> list[dict]:
+def _build_session_metrics(
+    corpus: Corpus, rates: Pricing, recache_th, config: Config, session_overrides: dict
+) -> list[dict]:
     """Per-session ``{session_id, first_ts, turns, cost, recache_cc,
     cc_total, compactions, span_s}`` dicts for
     :func:`~claude_token_lens.snapshots.build_config_diff_table`.
@@ -507,7 +599,12 @@ def _build_session_metrics(corpus: Corpus, rates: Pricing, recache_th, config: C
     for bundle in corpus.sessions:
         if bundle.top is None:
             continue
-        classification = classify.classify_session(bundle.top, bundle.subs, {}, config.tz)
+        # Fix R18: this used to hardcode {} here, so a manual
+        # sessions.toml mode/purpose override -- honoured by every
+        # other subcommand via _cmd_report_like's own
+        # load_session_overrides(config_dir) -- was silently ignored
+        # for config-diff alone.
+        classification = classify.classify_session(bundle.top, bundle.subs, session_overrides, config.tz)
         record = classify.build_session_record(
             bundle.top, bundle.subs, bundle.workflows, classification, bundle.slug
         )
@@ -564,17 +661,24 @@ def _cmd_config_diff(args: argparse.Namespace) -> int:
         )
         return 1
 
-    snaps = snapshots.load_snapshots(config_dir.parent)
+    snaps = _load_snapshots_for_config_dir(config_dir)
     if not snaps:
         print(
             "claude-token-lens config-diff: no config snapshots found under "
-            f"{config_dir.parent / 'token-lens' / 'snapshots'}",
+            f"{config_dir.parent / 'token-lens' / 'snapshots'} or "
+            f"{config_dir / 'token-lens' / 'snapshots'}",
             file=sys.stderr,
         )
         return 1
 
+    try:
+        session_overrides = load_session_overrides(config_dir)
+    except ConfigError as exc:
+        print(f"claude-token-lens config-diff: {exc}", file=sys.stderr)
+        return 2
+
     recache_th = recache.RecacheThresholds.from_config(config.thresholds)
-    session_metrics = _build_session_metrics(corpus, rates, recache_th, config)
+    session_metrics = _build_session_metrics(corpus, rates, recache_th, config, session_overrides)
 
     if args.auto_keys:
         changed_keys = sorted(snapshots.diff_keys(snaps).keys())

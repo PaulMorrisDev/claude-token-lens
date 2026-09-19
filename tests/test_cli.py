@@ -13,11 +13,13 @@ except the cache/snapshot/log-usage tests, which need a real
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import re
 import subprocess
 import sys
+import zoneinfo
 from pathlib import Path
 
 import pytest
@@ -95,6 +97,46 @@ def test_default_subcommand_constant_is_report():
     assert cli.DEFAULT_SUBCOMMAND == "report"
 
 
+# -- --group-by choices (Fix R6) ---------------------------------------------
+
+
+def test_group_by_choices_match_classify_group_keys():
+    import argparse
+
+    from claude_token_lens import classify
+
+    parser = cli._make_parser()
+    subparsers_action = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
+    report_parser = subparsers_action.choices["report"]
+    group_by_action = next(a for a in report_parser._actions if a.dest == "group_by")
+    assert tuple(group_by_action.choices) == tuple(sorted(classify._GROUP_KEYS))
+
+
+def test_group_by_invalid_choice_exits_2_with_one_line_message(capsys):
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main(["report", "--group-by", "profile"])
+    assert exc_info.value.code == 2
+    err = capsys.readouterr().err
+    # argparse's own usage banner precedes the error line -- just check
+    # the actual error line is the expected single one-line message,
+    # not that the whole stderr output is short.
+    error_lines = [line for line in err.splitlines() if "invalid choice" in line]
+    assert len(error_lines) == 1
+    assert "profile" in error_lines[0]
+
+
+def test_group_by_accepts_entrypoint(tmp_path, capsys):
+    # "entrypoint" is a real classify._GROUP_KEYS member that the old
+    # hand-maintained choices tuple omitted entirely.
+    root = tmp_path / "projects"
+    _write_project(root, "proj-a")
+    exit_code = cli.main(
+        ["report", "--projects-root", str(root), "--project", "proj-a", "--group-by", "entrypoint", "--json"]
+    )
+    assert exit_code == 0
+    capsys.readouterr()
+
+
 @pytest.mark.parametrize("command", STUB_SUBCOMMANDS)
 def test_planned_stub_exits_2(command, capsys):
     exit_code = cli.main([command])
@@ -102,6 +144,22 @@ def test_planned_stub_exits_2(command, capsys):
     err = capsys.readouterr().err
     assert "planned for v0." in err
     assert command in err
+
+
+@pytest.mark.parametrize("command", STUB_SUBCOMMANDS)
+def test_stub_subcommand_help_text_is_marked_planned(command, capsys):
+    # Fix R25: init/baseline/serve's --help listing used to read as
+    # "planned for v0.3" prose with no visual marker distinguishing a
+    # stub from a real subcommand at a glance in the full listing;
+    # confirm the top-level --help output now leads each with the same
+    # "(planned)" tag the generic not-implemented-yet fallback uses.
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main(["--help"])
+    assert exc_info.value.code == 0
+    out = capsys.readouterr().out
+    lines = [line for line in out.splitlines() if command in line]
+    assert lines, f"{command} not found in --help output"
+    assert any("(planned)" in line for line in lines)
 
 
 def test_no_argv_with_no_data_exits_1(capsys):
@@ -141,6 +199,73 @@ def test_report_renders_markdown(tmp_path, capsys):
     assert out.startswith("# Claude token lens report")
     assert "## Overview" in out
     assert "## Diagnostics" in out
+
+
+def test_allow_titles_flag_was_removed(capsys):
+    # Fix R17: --allow-titles implied a privacy control that never
+    # existed (report.py's own docstring says the keyword it still
+    # accepts is a permanent no-op -- nothing captures title text to
+    # gate) -- it must no longer be a recognised CLI flag at all.
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main(["report", "--allow-titles"])
+    assert exc_info.value.code == 2
+    err = capsys.readouterr().err
+    assert "unrecognized arguments" in err
+    assert "--allow-titles" in err
+
+
+# -- --quiet / --verbose (Fix R21) ------------------------------------------
+
+
+def test_quiet_and_verbose_are_mutually_exclusive():
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main(["report", "--quiet", "--verbose"])
+    assert exc_info.value.code == 2
+
+
+def test_verbose_prints_corpus_stats_to_stderr(tmp_path, capsys):
+    root = tmp_path / "projects"
+    _write_project(root, "proj-a")
+    exit_code = cli.main(["report", "--projects-root", str(root), "--project", "proj-a", "--verbose"])
+    assert exit_code == 0
+    err = capsys.readouterr().err
+    assert "[corpus]" in err
+
+
+def test_default_verbosity_omits_corpus_stats(tmp_path, capsys):
+    root = tmp_path / "projects"
+    _write_project(root, "proj-a")
+    exit_code = cli.main(["report", "--projects-root", str(root), "--project", "proj-a"])
+    assert exit_code == 0
+    err = capsys.readouterr().err
+    assert "[corpus]" not in err
+
+
+def test_load_corpus_for_args_quiet_suppresses_stats_even_if_verbose_is_also_set(tmp_path, capsys):
+    # Fix R21: --quiet was accepted by argparse but never actually
+    # consulted anywhere in the code -- a silent no-op. argparse's own
+    # mutual-exclusion check keeps a human from passing both flags at
+    # once (covered above), but _load_corpus_for_args's own contract
+    # must not lean on that alone: build a Namespace with both set (as
+    # a caller bypassing argparse could) and confirm --quiet still wins.
+    root = tmp_path / "projects"
+    project_dir = _write_project(root, "proj-a")
+    config = cli.load_config(None)
+    args = argparse.Namespace(
+        no_cache=True,
+        rebuild_cache=False,
+        days=None,
+        since=None,
+        until=None,
+        limit=None,
+        window_by="mtime",
+        jobs=1,
+        verbose=True,
+        quiet=True,
+    )
+    cli._load_corpus_for_args(args, config, root, [project_dir])
+    err = capsys.readouterr().err
+    assert "[corpus]" not in err
 
 
 @pytest.mark.parametrize("command,section_title", [("sessions", "## Sessions"), ("recache", "## Re-cache"), ("ttl", "## TTL"), ("compactions", "## Compactions")])
@@ -310,6 +435,38 @@ def test_no_cache_and_warm_cache_give_byte_identical_output(tmp_path, capsys):
     assert cold_output == warm_output
 
 
+# -- _load_snapshots_for_config_dir (Fix R16) --------------------------
+
+
+def _write_snapshot(path: Path, ts: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"ts": ts, "user_settings": {}}), encoding="utf-8")
+
+
+def test_load_snapshots_for_config_dir_finds_the_documented_parent_shape(tmp_path):
+    config_dir = tmp_path / "root" / "token-lens"
+    _write_snapshot(config_dir.parent / "token-lens" / "snapshots" / "a.json", "20200101T000000Z")
+    found = cli._load_snapshots_for_config_dir(config_dir)
+    assert [s.ts for s in found] == ["20200101T000000Z"]
+
+
+def test_load_snapshots_for_config_dir_falls_back_to_treating_it_as_the_hook_base(tmp_path):
+    config_dir = tmp_path / "my-custom-settings"
+    _write_snapshot(config_dir / "token-lens" / "snapshots" / "a.json", "20200101T000000Z")
+    # config_dir.parent (tmp_path) has no "token-lens/snapshots" under
+    # it -- only the config_dir-as-base fallback finds this one.
+    found = cli._load_snapshots_for_config_dir(config_dir)
+    assert [s.ts for s in found] == ["20200101T000000Z"]
+
+
+def test_load_snapshots_for_config_dir_prefers_parent_shape_when_both_exist(tmp_path):
+    config_dir = tmp_path / "root" / "token-lens"
+    _write_snapshot(config_dir.parent / "token-lens" / "snapshots" / "parent.json", "20200101T000000Z")
+    _write_snapshot(config_dir / "token-lens" / "snapshots" / "base.json", "20210101T000000Z")
+    found = cli._load_snapshots_for_config_dir(config_dir)
+    assert [s.ts for s in found] == ["20200101T000000Z"]
+
+
 # -- config-diff --------------------------------------------------------
 
 
@@ -348,12 +505,262 @@ def test_config_diff_renders_a_table(tmp_path, capsys):
     assert "Sessions" in out
 
 
+def test_config_diff_finds_snapshots_for_a_custom_config_dir_used_as_hook_base(tmp_path, capsys):
+    """Fix R16: snapshots.load_snapshots() always appends
+    "token-lens/snapshots" to whatever base it's given, and
+    _resolve_config_dir() returns an explicit --config-dir as-is (no
+    "token-lens" appended) -- so config_dir.parent only recovers the
+    hook's actual write location when --config-dir happens to end in
+    "token-lens" (as in test_config_diff_renders_a_table above). A user
+    who instead points the *same* --config-dir value at both
+    `snapshot-config` and `config-diff` -- the natural thing to try --
+    gets snapshots written under <that-dir>/token-lens/snapshots
+    (hooks/snapshot-config.py's resolve_config_dir treats an explicit
+    --config-dir as the base). This must also resolve correctly.
+    """
+    root = tmp_path / "projects"
+    _write_project(root, "proj-diff", age_seconds=120)
+
+    config_dir = tmp_path / "my-custom-settings"
+    snapshots_dir = config_dir / "token-lens" / "snapshots"
+    snapshots_dir.mkdir(parents=True, exist_ok=True)
+    (snapshots_dir / "20200101T000000Z.json").write_text(
+        json.dumps({"ts": "20200101T000000Z", "user_settings": {"model": "sonnet"}}),
+        encoding="utf-8",
+    )
+    (snapshots_dir / "20200201T000000Z.json").write_text(
+        json.dumps({"ts": "20200201T000000Z", "user_settings": {"model": "fable"}}),
+        encoding="utf-8",
+    )
+
+    exit_code = cli.main(
+        [
+            "config-diff",
+            "--projects-root",
+            str(root),
+            "--project",
+            "proj-diff",
+            "--config-dir",
+            str(config_dir),
+            "--key",
+            "user_settings.model",
+        ]
+    )
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "Config diff: user_settings.model" in out
+    assert "Sessions" in out
+
+
+def test_config_diff_honors_session_overrides(tmp_path, capsys, monkeypatch):
+    """Fix R18: _build_session_metrics used to hardcode {} for
+    classify.classify_session's overrides argument, so a manual
+    sessions.toml mode/purpose correction -- honoured by every other
+    report-like subcommand via _cmd_report_like's own
+    load_session_overrides(config_dir) -- was silently dropped for
+    config-diff alone. Spy on classify.classify_session to confirm
+    config-diff now actually loads and threads sessions.toml through.
+    """
+    root = tmp_path / "projects"
+    _write_project(root, "proj-diff", age_seconds=120)
+
+    config_dir = tmp_path / "token-lens"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    snapshots_dir = config_dir.parent / "token-lens" / "snapshots"
+    snapshots_dir.mkdir(parents=True, exist_ok=True)
+    (snapshots_dir / "20200101T000000Z.json").write_text(
+        json.dumps({"ts": "20200101T000000Z", "user_settings": {"model": "sonnet"}}),
+        encoding="utf-8",
+    )
+    (snapshots_dir / "20200201T000000Z.json").write_text(
+        json.dumps({"ts": "20200201T000000Z", "user_settings": {"model": "fable"}}),
+        encoding="utf-8",
+    )
+    (config_dir / "sessions.toml").write_text(
+        '[sessions."some-session-id"]\nmode = "auto"\n', encoding="utf-8"
+    )
+
+    seen_overrides: list[dict] = []
+    real_classify_session = cli.classify.classify_session
+
+    def _spy(top, subs, overrides, tz, **kwargs):
+        seen_overrides.append(overrides)
+        return real_classify_session(top, subs, overrides, tz, **kwargs)
+
+    monkeypatch.setattr(cli.classify, "classify_session", _spy)
+
+    exit_code = cli.main(
+        [
+            "config-diff",
+            "--projects-root",
+            str(root),
+            "--project",
+            "proj-diff",
+            "--config-dir",
+            str(config_dir),
+            "--key",
+            "user_settings.model",
+        ]
+    )
+    assert exit_code == 0
+    capsys.readouterr()
+    assert seen_overrides, "classify_session was never called"
+    assert all(o == {"some-session-id": {"mode": "auto"}} for o in seen_overrides)
+
+
 def test_config_diff_requires_key_or_auto_keys(tmp_path, capsys):
     root = tmp_path / "projects"
     _write_project(root, "proj-a")
     with pytest.raises(SystemExit) as exc_info:
         cli.main(["config-diff", "--projects-root", str(root), "--project", "proj-a"])
     assert exc_info.value.code == 2
+
+
+# -- ScorecardError surfaced as a clean exit-2 error (Fix R20) --------------
+
+
+def test_report_exits_2_with_clean_message_on_misordered_scorecard_thresholds(tmp_path, capsys):
+    root = tmp_path / "projects"
+    _write_project(root, "proj-a")
+    config_dir = tmp_path / "token-lens"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    (config_dir / "config.toml").write_text(
+        "[thresholds.scorecard]\n"
+        "cache_recache_share_pct = [50.0, 30.0, 15.0, 5.0]\n",
+        encoding="utf-8",
+    )
+
+    exit_code = cli.main(
+        [
+            "report",
+            "--projects-root",
+            str(root),
+            "--project",
+            "proj-a",
+            "--config-dir",
+            str(config_dir),
+        ]
+    )
+    assert exit_code == 2
+    err = capsys.readouterr().err
+    lines = [line for line in err.splitlines() if line.strip()]
+    assert len(lines) == 1
+    assert "cache_recache_share_pct" in lines[0]
+    assert "Traceback" not in err
+
+
+# -- --tz (Fix R24) ----------------------------------------------------------
+
+
+def test_tz_flag_overrides_config_toml_for_this_run(tmp_path, capsys, monkeypatch):
+    root = tmp_path / "projects"
+    _write_project(root, "proj-a")
+    config_dir = tmp_path / "token-lens"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    (config_dir / "config.toml").write_text('tz = "UTC"\n', encoding="utf-8")
+
+    seen_tz: list[str | None] = []
+    real_classify_session = cli.classify.classify_session
+
+    def _spy(top, subs, overrides, tz, **kwargs):
+        seen_tz.append(tz)
+        return real_classify_session(top, subs, overrides, tz, **kwargs)
+
+    monkeypatch.setattr(cli.classify, "classify_session", _spy)
+
+    exit_code = cli.main(
+        [
+            "report",
+            "--projects-root",
+            str(root),
+            "--project",
+            "proj-a",
+            "--config-dir",
+            str(config_dir),
+            "--tz",
+            "America/New_York",
+        ]
+    )
+    assert exit_code == 0
+    capsys.readouterr()
+    assert seen_tz, "classify_session was never called"
+    assert all(tz == "America/New_York" for tz in seen_tz)
+
+
+def test_tz_flag_defaults_to_config_toml_value_when_absent(tmp_path, capsys, monkeypatch):
+    root = tmp_path / "projects"
+    _write_project(root, "proj-a")
+    config_dir = tmp_path / "token-lens"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    (config_dir / "config.toml").write_text('tz = "UTC"\n', encoding="utf-8")
+
+    seen_tz: list[str | None] = []
+    real_classify_session = cli.classify.classify_session
+
+    def _spy(top, subs, overrides, tz, **kwargs):
+        seen_tz.append(tz)
+        return real_classify_session(top, subs, overrides, tz, **kwargs)
+
+    monkeypatch.setattr(cli.classify, "classify_session", _spy)
+
+    exit_code = cli.main(
+        ["report", "--projects-root", str(root), "--project", "proj-a", "--config-dir", str(config_dir)]
+    )
+    assert exit_code == 0
+    capsys.readouterr()
+    assert seen_tz and all(tz == "UTC" for tz in seen_tz)
+
+
+@pytest.mark.skipif(
+    not zoneinfo.available_timezones(),
+    reason="no tz database on this machine (see classify.py's module docstring) -- "
+    "--tz can't be validated against anything here, so it's accepted uncontested",
+)
+def test_tz_flag_rejects_an_unknown_zone_with_a_clean_exit_2(tmp_path, capsys):
+    root = tmp_path / "projects"
+    _write_project(root, "proj-a")
+
+    exit_code = cli.main(
+        [
+            "report",
+            "--projects-root",
+            str(root),
+            "--project",
+            "proj-a",
+            "--tz",
+            "Not/A_Real_Zone",
+        ]
+    )
+    assert exit_code == 2
+    err = capsys.readouterr().err
+    lines = [line for line in err.splitlines() if line.strip()]
+    assert len(lines) == 1
+    assert "Not/A_Real_Zone" in lines[0]
+    assert "Traceback" not in err
+
+
+def test_tz_flag_is_accepted_uncontested_when_machine_has_no_tz_database(tmp_path, capsys, monkeypatch):
+    # The inverse of the skipped test above: force the "no tz database"
+    # branch regardless of what this machine actually has, and confirm
+    # a clearly-bogus zone name is still accepted (degrading later to
+    # local time inside classify._to_local, exactly like an unresolvable
+    # config.toml value already does) rather than rejected.
+    root = tmp_path / "projects"
+    _write_project(root, "proj-a")
+    monkeypatch.setattr(cli, "available_timezones", lambda: frozenset())
+
+    exit_code = cli.main(
+        [
+            "report",
+            "--projects-root",
+            str(root),
+            "--project",
+            "proj-a",
+            "--tz",
+            "Not/A_Real_Zone",
+        ]
+    )
+    assert exit_code == 0
 
 
 # -- probe ----------------------------------------------------------------

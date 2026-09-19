@@ -470,6 +470,15 @@ class Recommendation:
     #: locally). Replaces the earlier ``"[managed] "`` string prefix on
     #: ``title`` that ``recommend.py`` used to encode the same fact.
     scope: str = "user"
+    #: Fix R13 (additive): the agent type this recommendation is about,
+    #: e.g. "claude-implementer", or "top-level" for the main session
+    #: itself -- None when the recommendation is not agent-scoped (a
+    #: corpus-wide rule like baseline-bloat or pricing-coverage).
+    #: ``render_patch_set`` uses this to merge every per-agent lever for
+    #: the same agent type into a single ``.claude/agents/<type>.md``
+    #: stanza instead of guessing the agent type back out of ``lever``'s
+    #: text.
+    agent_type: str | None = None
 
 
 @dataclass(slots=True)
