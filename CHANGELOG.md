@@ -27,6 +27,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   gating, a minimum-sample gate, and managed-settings-aware scope
   encoding; `render_patch_set()` renders the settings/frontmatter changes
   a recommendation set implies as unified-diff-style text.
+- `report.build_report` now accepts `session_overrides` and populates
+  `ReportModel.recommendations` via `recommend.recommend()`, using the
+  corpus's own archetype and latest config snapshot.
 
 ### Fixed
 
