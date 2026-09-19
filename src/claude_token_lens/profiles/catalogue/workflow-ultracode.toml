@@ -1,0 +1,29 @@
+id = "workflow-ultracode"
+name = "Workflow (ultracode)"
+for = ["workflow-run", "scripted-multi-phase"]
+archetype = "workflow-heavy"
+notes = """
+For the workflow-heavy archetype (workstyle.detect_archetype: at least \
+one Workflow/ultracode run, coordinating many agents through a scripted \
+multi-phase run rather than ad-hoc spawns) and the workflow-run purpose \
+(classify.classify_purpose). workflows.workflows_summary's own "Total \
+workflow runs" row plus its per-run agent_count/phases columns \
+(workflows.workflows_detail) are what this corpus's own workflow \
+activity looks like; each phase in a scripted run tends to be a short, \
+tightly-scoped agent invocation rather than a long open-ended \
+conversation, so implementer agents in a workflow are capped at a \
+tighter maxTurns (40, below implementation-heavy's 60) and kept on the \
+same short-gap 5m "experimental.cacheTtl"/subagentPromptCacheTtl \
+pairing as implementation-heavy for the same reason (ttl.ttl_by_agent_type's \
+per-agent-type lever). No effortLevel override: a scripted workflow's \
+own phases already fix what each step does, so the effort-mismatch \
+rule's docs/general-dev concern (agents.topology_effort_tokens's \
+thinking_share column) does not apply the same way here.
+"""
+
+[settings]
+subagentPromptCacheTtl = "5m"
+
+[agents.claude-implementer]
+maxTurns = 40
+"experimental.cacheTtl" = "5m"

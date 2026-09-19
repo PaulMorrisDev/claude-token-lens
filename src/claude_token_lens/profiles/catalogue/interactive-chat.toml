@@ -1,0 +1,26 @@
+id = "interactive-chat"
+name = "Interactive chat"
+for = ["chat", "quick-question", "pairing"]
+archetype = "chat-only"
+notes = """
+For the chat-only archetype (workstyle.detect_archetype: no subagent is \
+ever spawned and the turn stays on read-only inspection tools). \
+recommend.py's ttl-switch rule reads ttl.ttl_by_agent_type's top-level \
+row (columns gap_p50_s/gap_p90_s, recommendation, lever): a chat-only \
+session's short human-paced turn gaps rarely clear the 1h TTL's \
+break-even (A4's switch rule needs cost_all_1h to beat cost_observed by \
+both switch_pct and switch_usd), so this profile keeps \
+promptCacheTtl at the 5m default rather than paying the 1h write \
+premium up front. effortLevel stays at "medium": scorecard.dimensions' \
+cache_efficiency/context_hygiene rows have no evidence in this \
+archetype (chat-only sessions never spawn, so agent_efficiency is \
+excluded entirely) that would justify running a plain conversation at a \
+higher tier. No autoCompactWindow override -- compactions.compactions_summary's \
+"Compactions per session (mean)" only becomes a compaction-churn concern \
+(recommend.py's compaction-churn rule) once a session runs long enough \
+to need it, which a chat-only session structurally does not.
+"""
+
+[settings]
+effortLevel = "medium"
+promptCacheTtl = "5m"
