@@ -180,6 +180,18 @@ def _add_report_output_args(sub: argparse.ArgumentParser, *, allow_patch_set: bo
         action="store_true",
         help="add the DISCOVERY/IMPLEMENTATION/VERIFICATION phase-split section",
     )
+    # v0.3 Task 2: --baseline is deliberately on _add_report_output_args
+    # itself (not gated behind a keyword-only flag the way --patch-set
+    # is via allow_patch_set) so every report-like subcommand
+    # (report/sessions/recache/ttl/compactions) accepts it uniformly --
+    # see report.build_report's own docstring for why the resulting
+    # baseline_comparison section bypasses --group-by-style include
+    # filtering rather than silently vanishing on a focused subcommand.
+    sub.add_argument(
+        "--baseline",
+        metavar="ID|latest",
+        help="add a baseline_comparison section against a saved `baseline` record",
+    )
     # Fix R17: --allow-titles was removed -- report.py's own module
     # docstring documents that its allow_titles parameter is a
     # currently-permanent no-op (nothing anywhere in this codebase
@@ -635,13 +647,6 @@ def _make_parser() -> argparse.ArgumentParser:
             "compare": "A/B compare two arms of sessions (window/key/profile/project), stratified by purpose+mode",
             "reconcile": "compare local usage/cost accounting against an Admin API CSV export, offline",
             "scrub-fixture": "scrub a real session into a privacy-safe test fixture",
-            # Fix R25: lead with the same "(planned)" marker the plain
-            # "not implemented yet" fallback below uses for every other
-            # stub, so a subcommand listing (``--help``) makes stub
-            # commands visually scannable as a group instead of only
-            # readable one at a time via "planned for vX.Y" prose.
-            "init": "(planned) v0.3 milestone",
-            "baseline": "(planned) v0.3 milestone",
             "apply": "apply a profile's settings/agent/env levers to a project or your user config",
             "init": "detect + ask (or derive) config, write config.toml, run an initial baseline",
             "baseline": "capture/list/show an onboarding baseline (mode mix, suggested profile, projected saving)",
@@ -1026,6 +1031,37 @@ def _cmd_report_like(args: argparse.Namespace, include: set[str] | None) -> int:
             and _usage_log_row_in_window(row, since_dt, until_dt)
         ]
 
+    # v0.3 Task 2: --baseline <id|latest> resolves a saved baseline.py
+    # record for build_report's own baseline_comparison section. This is
+    # a plain-dict/no-Path lookup (baseline_mod.list_baselines/
+    # load_baseline), so it's resolved here rather than inside
+    # build_report itself -- report.py must not gain a config_dir/file-IO
+    # dependency just for this one flag (matches the module's own
+    # documented "no config_dir parameter" deviation for session
+    # overrides above). When resolution fails, the section is simply
+    # omitted and a note is threaded through as baseline_note instead of
+    # erroring -- matches the plan's "when no baseline exists, the
+    # section is omitted" wording.
+    baseline_record = None
+    baseline_note = None
+    baseline_arg = getattr(args, "baseline", None)
+    if baseline_arg:
+        if baseline_arg == "latest":
+            saved = baseline_mod.list_baselines(config_dir)
+            baseline_record = saved[-1] if saved else None
+            if baseline_record is None:
+                baseline_note = (
+                    "--baseline latest requested but no baseline has been saved yet -- run "
+                    "`claude-token-lens baseline` first."
+                )
+        else:
+            baseline_record = baseline_mod.load_baseline(config_dir, baseline_arg)
+            if baseline_record is None:
+                baseline_note = (
+                    f"--baseline {baseline_arg!r} requested but no such baseline was found -- run "
+                    "`claude-token-lens baseline --list` to see what's saved."
+                )
+
     try:
         model = build_report(
             corpus,
@@ -1039,6 +1075,8 @@ def _cmd_report_like(args: argparse.Namespace, include: set[str] | None) -> int:
             include=include,
             session_overrides=session_overrides,
             usage_log_rows=usage_log_rows,
+            baseline_record=baseline_record,
+            baseline_note=baseline_note,
         )
     except ScorecardError as exc:
         # Fix R20: a misordered [thresholds.scorecard] override in

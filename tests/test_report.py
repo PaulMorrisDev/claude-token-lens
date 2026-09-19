@@ -301,6 +301,123 @@ def test_include_restricts_to_named_sections(tmp_path):
     assert [s.key for s in report.sections] == ["overview", "recache"]
 
 
+# -- v0.3 Task 2: baseline_comparison ---------------------------------------
+
+
+def _minimal_baseline_record(**overrides) -> dict:
+    record = {
+        "id": "abc123",
+        "created_at": "2026-09-01T00:00:00+00:00",
+        "window_days": 7,
+        "sessions_analysed": 6,
+        "mode_mix": {},
+        "cost_per_session": 0.01,
+        "recache_share_pct": 5.0,
+        "compactions_per_session": 0.5,
+        "ttl_mix_top_level": {"5m_pct": 80.0, "1h_pct": 20.0},
+        "ttl_mix_by_agent_type": {"claude-implementer": {"5m_pct": 90.0, "1h_pct": 10.0}},
+        "session_baseline_size": 1234.0,
+        "mean_spawn_write_by_agent_type": {"claude-implementer": 500.0},
+        "scorecard_dimensions": {"cache_efficiency": 3, "context_hygiene": 4},
+        "by_mode": {},
+    }
+    record.update(overrides)
+    return record
+
+
+def test_baseline_record_adds_baseline_comparison_section(tmp_path):
+    corpus = _two_session_corpus(tmp_path)
+    baseline_record = _minimal_baseline_record()
+    report = build_report(
+        corpus, PRICING, Config(), projects=("proj-two",), window="w", baseline_record=baseline_record
+    )
+    assert "baseline_comparison" in [s.key for s in report.sections]
+    section = next(s for s in report.sections if s.key == "baseline_comparison")
+    overview_table = next(t for t in section.tables if t.name == "baseline_comparison_overview")
+    metrics = {row[0] for row in overview_table.rows}
+    assert "Cost per session" in metrics
+    assert "Re-cache share of cache-creation" in metrics
+    assert "Compactions per session" in metrics
+    assert any(m.startswith("TTL mix - top-level") for m in metrics)
+    assert any(m.startswith("TTL mix - claude-implementer") for m in metrics)
+    assert any(m.startswith("Mean spawn write - claude-implementer") for m in metrics)
+    assert any(m.startswith("Scorecard level - ") for m in metrics)
+    # baseline_comparison is not part of _SECTION_ORDER's include-filtering
+    # contract -- it bypasses `include` deliberately (see build_report's
+    # own docstring), so a focused-view call still gets it.
+    focused = build_report(
+        corpus,
+        PRICING,
+        Config(),
+        projects=("proj-two",),
+        window="w",
+        include={"overview"},
+        baseline_record=baseline_record,
+    )
+    assert [s.key for s in focused.sections] == ["overview", "baseline_comparison"]
+    for section in report.sections:
+        assert_privacy(section)
+
+
+def test_baseline_comparison_by_mode_table_only_when_mode_mix_recorded(tmp_path):
+    corpus = _two_session_corpus(tmp_path)
+    no_mode_record = _minimal_baseline_record(mode_mix={})
+    report = build_report(
+        corpus, PRICING, Config(), projects=("proj-two",), window="w", baseline_record=no_mode_record
+    )
+    section = next(s for s in report.sections if s.key == "baseline_comparison")
+    assert [t.name for t in section.tables] == ["baseline_comparison_overview"]
+
+    with_mode_record = _minimal_baseline_record(
+        mode_mix={"interactive": 6}, by_mode={"interactive": {"sessions": 6, "cost_per_session": 0.01}}
+    )
+    report2 = build_report(
+        corpus, PRICING, Config(), projects=("proj-two",), window="w", baseline_record=with_mode_record
+    )
+    section2 = next(s for s in report2.sections if s.key == "baseline_comparison")
+    assert "baseline_comparison_by_mode" in [t.name for t in section2.tables]
+    by_mode_table = next(t for t in section2.tables if t.name == "baseline_comparison_by_mode")
+    # The table's row set is the union of the baseline's recorded modes and
+    # whatever mode(s) the current window's own sessions classified as --
+    # "interactive" (baseline-only, 0 current sessions) is always present;
+    # any modes the current corpus itself produced are additional rows,
+    # not a mismatch.
+    assert "interactive" in {row[0] for row in by_mode_table.rows}
+
+
+def test_baseline_comparison_by_mode_suppresses_below_min_sample(tmp_path):
+    corpus = _two_session_corpus(tmp_path)  # only 2 sessions, below the 5-session gate
+    record = _minimal_baseline_record(mode_mix={"interactive": 6}, by_mode={"interactive": {"sessions": 6}})
+    report = build_report(corpus, PRICING, Config(), projects=("proj-two",), window="w", baseline_record=record)
+    section = next(s for s in report.sections if s.key == "baseline_comparison")
+    by_mode_table = next(t for t in section.tables if t.name == "baseline_comparison_by_mode")
+    row = next(r for r in by_mode_table.rows if r[0] == "interactive")
+    sample_ok_index = [c.key for c in by_mode_table.columns].index("sample_ok")
+    assert row[sample_ok_index] == "no"
+
+
+def test_no_baseline_record_omits_section_and_no_note_by_default(tmp_path):
+    corpus = _two_session_corpus(tmp_path)
+    report = build_report(corpus, PRICING, Config(), projects=("proj-two",), window="w")
+    assert "baseline_comparison" not in [s.key for s in report.sections]
+    assert not any("baseline" in a.lower() for a in report.meta.assumptions)
+
+
+def test_baseline_note_is_recorded_in_assumptions_when_no_record(tmp_path):
+    corpus = _two_session_corpus(tmp_path)
+    report = build_report(
+        corpus,
+        PRICING,
+        Config(),
+        projects=("proj-two",),
+        window="w",
+        baseline_record=None,
+        baseline_note="run `claude-token-lens baseline` first",
+    )
+    assert "baseline_comparison" not in [s.key for s in report.sections]
+    assert "run `claude-token-lens baseline` first" in report.meta.assumptions
+
+
 # -- meta ---------------------------------------------------------------
 
 

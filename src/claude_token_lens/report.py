@@ -14,10 +14,13 @@ optionally :class:`phases.PhaseStats`), and assembles their
 Section order and keys: ``overview``, ``usage``, ``sessions``, ``recache``,
 ``ttl``, ``compactions``, ``agents``, ``workstyle``, ``workflows``,
 ``phases`` (only when ``phases=True``), ``config`` (only when snapshots
-are supplied), ``scorecard``. ``include``, when given, keeps only
-sections whose key is in it (used by the ``recache``/``ttl``/
-``compactions``/``sessions`` subcommands to render a single focused
-section rather than the whole report).
+are supplied), ``context_budget``, ``scorecard``, ``baseline_comparison``
+(v0.3 Task 2 addition, only when a ``baseline_record`` is passed --
+see ``build_report``'s own docstring; deliberately *not* subject to
+``include`` filtering). ``include``, when given, keeps only sections
+whose key is in it (used by the ``recache``/``ttl``/``compactions``/
+``sessions`` subcommands to render a single focused section rather than
+the whole report).
 
 Deviations from the task brief, reported rather than made silently (see
 ``model.py``'s module docstring for this project's convention):
@@ -111,6 +114,7 @@ from .phases import PhaseStats
 from .phases import build_section as build_phases_section
 from .pricing import Pricing, PricingCoverage, price_turn
 from .recommend import recommend
+from .render.tables import format_cell
 from .snapshots import Snapshot
 
 #: Fixed section order (before ``include`` filtering). Matches the task
@@ -179,6 +183,436 @@ def _dominant_transcript_model(tr: TranscriptResult) -> str | None:
     if not counts:
         return None
     return max(counts.items(), key=lambda kv: (kv[1], kv[0]))[0]
+
+
+# -- baseline comparison (v0.3 Task 2): metric extraction from an
+# already-assembled sections list. These are the shared implementation
+# ``baseline.py`` imports (rather than duplicating table-lookup logic)
+# for its own baseline-record extraction -- ``baseline.py`` already
+# imports :func:`build_report` from this module, so the dependency only
+# ever runs one way (no import cycle). Every function here follows the
+# same "never fabricate, only cite the report's own tables" convention
+# ``baseline.py``'s module docstring documents: each reads a value
+# straight out of a ``Section``/``Table`` this module (or another
+# writable-surface module it calls) already built, never recomputing it
+# independently. -------------------------------------------------------
+
+
+def _section_table(sections: list[Section], section_key: str, table_name: str) -> Table | None:
+    for section in sections:
+        if section.key != section_key:
+            continue
+        for table in section.tables:
+            if table.name == table_name:
+                return table
+    return None
+
+
+def _col_index(table: Table, key: str) -> int | None:
+    for index, column in enumerate(table.columns):
+        if column.key == key:
+            return index
+    return None
+
+
+def overview_metric(sections: list[Section], metric: str) -> float | None:
+    """A single metric's value from the "overview" section's "totals"
+    table -- a label-keyed table (``row[0]`` is the metric name, e.g.
+    ``"total_cost_usd"``/``"sessions"``, ``row[1]`` its value), unlike
+    most tables in this project which are column-key-based.
+    """
+    table = _section_table(sections, "overview", "totals")
+    if table is None:
+        return None
+    for row in table.rows:
+        if row[0] == metric:
+            value = row[1]
+            return float(value) if isinstance(value, (int, float)) else None
+    return None
+
+
+def recache_share_pct_metric(sections: list[Section]) -> float | None:
+    """The corpus-wide re-cache cache-creation share, from the "recache"
+    section's single-row "recache_summary" table."""
+    table = _section_table(sections, "recache", "recache_summary")
+    if table is None or not table.rows:
+        return None
+    index = _col_index(table, "recache_cc_share_pct")
+    if index is None:
+        return None
+    value = table.rows[0][index]
+    return float(value) if isinstance(value, (int, float)) else None
+
+
+def compactions_per_session_metric(sections: list[Section]) -> float | None:
+    """"Compactions per session (mean)" from the "compactions" section's
+    "compactions_summary" table -- like the overview "totals" table,
+    this one is label-keyed (``row[0]`` a literal English label, see
+    ``compaction.build_section``), so the lookup matches that exact
+    string rather than a ``Column.key``.
+    """
+    table = _section_table(sections, "compactions", "compactions_summary")
+    if table is None:
+        return None
+    for row in table.rows:
+        if row[0] == "Compactions per session (mean)":
+            value = row[1]
+            return float(value) if isinstance(value, (int, float)) else None
+    return None
+
+
+def ttl_mix_by_agent_type_metric(sections: list[Section]) -> dict[str, dict[str, float | None]]:
+    """``{agent_type: {"5m_pct": ..., "1h_pct": ...}}`` from the "ttl"
+    section's "ttl_by_agent_type" table, including the "top-level" row.
+    """
+    table = _section_table(sections, "ttl", "ttl_by_agent_type")
+    if table is None:
+        return {}
+    agent_index = _col_index(table, "agent_type")
+    pct5_index = _col_index(table, "observed_5m_pct")
+    pct1h_index = _col_index(table, "observed_1h_pct")
+    if agent_index is None or pct5_index is None or pct1h_index is None:
+        return {}
+    result: dict[str, dict[str, float | None]] = {}
+    for row in table.rows:
+        v5, v1h = row[pct5_index], row[pct1h_index]
+        result[str(row[agent_index])] = {
+            "5m_pct": float(v5) if isinstance(v5, (int, float)) else None,
+            "1h_pct": float(v1h) if isinstance(v1h, (int, float)) else None,
+        }
+    return result
+
+
+def session_baseline_size_metric(sections: list[Section]) -> float | None:
+    """Mean top-level first-turn cache-creation ("session baseline"),
+    from the "agents" section's single-row "topology_session_baseline"
+    table."""
+    table = _section_table(sections, "agents", "topology_session_baseline")
+    if table is None or not table.rows:
+        return None
+    index = _col_index(table, "mean_baseline")
+    if index is None:
+        return None
+    value = table.rows[0][index]
+    return float(value) if isinstance(value, (int, float)) else None
+
+
+def mean_spawn_write_by_agent_type_metric(sections: list[Section]) -> dict[str, float]:
+    """``{agent_type: mean_write}`` from the "agents" section's
+    "topology_spawn_write" table."""
+    table = _section_table(sections, "agents", "topology_spawn_write")
+    if table is None:
+        return {}
+    agent_index = _col_index(table, "agent_type")
+    mean_index = _col_index(table, "mean_write")
+    if agent_index is None or mean_index is None:
+        return {}
+    result: dict[str, float] = {}
+    for row in table.rows:
+        value = row[mean_index]
+        if isinstance(value, (int, float)):
+            result[str(row[agent_index])] = float(value)
+    return result
+
+
+def scorecard_dimensions_metric(sections: list[Section]) -> dict[str, int]:
+    """``{dimension: level}`` from the "scorecard" section's "dimensions"
+    table."""
+    table = _section_table(sections, "scorecard", "dimensions")
+    if table is None:
+        return {}
+    dim_index = _col_index(table, "dimension")
+    level_index = _col_index(table, "level")
+    if dim_index is None or level_index is None:
+        return {}
+    result: dict[str, int] = {}
+    for row in table.rows:
+        value = row[level_index]
+        if isinstance(value, int):
+            result[str(row[dim_index])] = value
+    return result
+
+
+#: Minimum sessions required in BOTH the baseline and the current window
+#: for a per-mode baseline_comparison row to show real numbers rather
+#: than "suppressed" -- same default ``compare.py`` uses for its own
+#: arm-vs-arm stratification.
+_BASELINE_MIN_SESSIONS = 5
+
+
+def _baseline_delta_row(label: str, kind: str, baseline_value, current_value, currency: str) -> list:
+    """One before/after ``baseline_comparison_overview`` row: label plus
+    pre-formatted baseline/current/delta/delta-% text -- the same
+    pre-formatted-``kind="str"``-cell convention ``compare.py``'s own
+    ``_fmt_metric_row`` uses, for the same reason (see that module's
+    docstring): the table stacks metrics of different ``Column.kind``s
+    into one shared pair of columns.
+    """
+    baseline_str = format_cell(baseline_value, kind, currency)
+    current_str = format_cell(current_value, kind, currency)
+    if baseline_value is None or current_value is None:
+        return [label, baseline_str, current_str, "-", "-"]
+    delta_raw = current_value - baseline_value
+    delta_str = ("+" if delta_raw > 0 else "") + format_cell(delta_raw, kind, currency)
+    if baseline_value == 0:
+        delta_pct_str = "n/a (baseline = 0)"
+    else:
+        pct = (current_value - baseline_value) / baseline_value * 100.0
+        delta_pct_str = ("+" if pct > 0 else "") + f"{pct:.1f}%"
+    return [label, baseline_str, current_str, delta_str, delta_pct_str]
+
+
+def _pct_of_baseline(baseline_value, current_value) -> float | None:
+    if baseline_value is None or current_value is None or baseline_value == 0:
+        return None
+    return (current_value - baseline_value) / baseline_value * 100.0
+
+
+def _build_baseline_by_mode_table(
+    baseline_mode_mix: dict[str, int],
+    baseline_by_mode: dict[str, dict],
+    current_by_mode: dict[str, dict],
+) -> Table:
+    modes = sorted(set(baseline_mode_mix) | set(current_by_mode))
+    columns = [
+        Column(key="mode", label="Mode", kind="str"),
+        Column(key="sessions_baseline", label="Sessions (baseline)", kind="int"),
+        Column(key="sessions_current", label="Sessions (current)", kind="int"),
+        Column(key="sample_ok", label="Sample OK", kind="str"),
+        Column(key="cost_per_session_baseline", label="Cost/session (baseline)", kind="money"),
+        Column(key="cost_per_session_current", label="Cost/session (current)", kind="money"),
+        Column(key="cost_per_session_delta_pct", label="Cost/session delta (% of baseline)", kind="pct"),
+        Column(key="recache_share_baseline", label="Re-cache share (baseline)", kind="pct"),
+        Column(key="recache_share_current", label="Re-cache share (current)", kind="pct"),
+        Column(key="recache_share_delta_pct", label="Re-cache share delta (% of baseline)", kind="pct"),
+        Column(key="compactions_per_session_baseline", label="Compactions/session (baseline)", kind="float"),
+        Column(key="compactions_per_session_current", label="Compactions/session (current)", kind="float"),
+        Column(key="compactions_per_session_delta_pct", label="Compactions/session delta (% of baseline)", kind="pct"),
+        Column(key="note", label="Note", kind="str"),
+    ]
+    rows = []
+    for mode in modes:
+        baseline_n = baseline_mode_mix.get(mode, 0)
+        current_stats = current_by_mode.get(mode, {})
+        current_n = int(current_stats.get("sessions", 0))
+        if baseline_n < _BASELINE_MIN_SESSIONS or current_n < _BASELINE_MIN_SESSIONS:
+            rows.append(
+                [
+                    mode,
+                    baseline_n,
+                    current_n,
+                    "no",
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    f"suppressed: needs >={_BASELINE_MIN_SESSIONS} session(s) in both the baseline "
+                    f"and the current window (baseline has {baseline_n}, current has {current_n})",
+                ]
+            )
+            continue
+        baseline_stats = baseline_by_mode.get(mode, {})
+        b_cost = baseline_stats.get("cost_per_session")
+        c_cost = current_stats.get("cost_per_session")
+        b_recache = baseline_stats.get("recache_share_pct")
+        c_recache = current_stats.get("recache_share_pct")
+        b_comp = baseline_stats.get("compactions_per_session")
+        c_comp = current_stats.get("compactions_per_session")
+        rows.append(
+            [
+                mode,
+                baseline_n,
+                current_n,
+                "yes",
+                b_cost,
+                c_cost,
+                _pct_of_baseline(b_cost, c_cost),
+                b_recache,
+                c_recache,
+                _pct_of_baseline(b_recache, c_recache),
+                b_comp,
+                c_comp,
+                _pct_of_baseline(b_comp, c_comp),
+                "",
+            ]
+        )
+    return Table(
+        name="baseline_comparison_by_mode",
+        title="Baseline comparison by mode",
+        columns=columns,
+        rows=rows,
+        notes=[
+            "Observed, not controlled -- see the overview table's own note.",
+            f"Minimum sample: {_BASELINE_MIN_SESSIONS} session(s) required in both the baseline "
+            "and the current window for a mode to show real numbers; below that only session "
+            "counts are shown (see the Note column).",
+            "Only cost per session, re-cache share and compactions per session are stratified by "
+            "mode here -- TTL mix, session baseline size, mean spawn write and scorecard levels "
+            "stay corpus-wide only (see the overview table), because the accumulators they come "
+            "from (topology.TopologyStats/ttl.TtlStats) do not retain a per-session mode linkage.",
+        ],
+    )
+
+
+def _build_baseline_comparison_section(
+    baseline_record: dict,
+    sections: list[Section],
+    *,
+    currency: str,
+    current_by_mode: dict[str, dict[str, float | None]],
+) -> Section:
+    """The ``baseline_comparison`` section (v0.3 Task 2): a before/after
+    table of ``baseline_record`` (as produced by
+    :func:`~claude_token_lens.baseline.build_baseline`) against this same
+    window's own already-assembled ``sections``, plus a per-mode
+    breakdown table when the baseline recorded a mode mix.
+    """
+    rows: list[list] = []
+
+    baseline_sessions = baseline_record.get("sessions_analysed") or 0
+    baseline_cost_per_session = baseline_record.get("cost_per_session")
+    current_sessions = overview_metric(sections, "sessions")
+    current_total_cost = overview_metric(sections, "total_cost_usd")
+    current_cost_per_session = (
+        current_total_cost / current_sessions if current_sessions else None
+    )
+    rows.append(
+        _baseline_delta_row(
+            "Cost per session", "money", baseline_cost_per_session, current_cost_per_session, currency
+        )
+    )
+    rows.append(
+        _baseline_delta_row(
+            "Re-cache share of cache-creation",
+            "pct",
+            baseline_record.get("recache_share_pct"),
+            recache_share_pct_metric(sections),
+            currency,
+        )
+    )
+    rows.append(
+        _baseline_delta_row(
+            "Compactions per session",
+            "float",
+            baseline_record.get("compactions_per_session"),
+            compactions_per_session_metric(sections),
+            currency,
+        )
+    )
+    rows.append(
+        _baseline_delta_row(
+            "Session baseline size (mean top-level first-turn cache-creation)",
+            "tokens",
+            baseline_record.get("session_baseline_size"),
+            session_baseline_size_metric(sections),
+            currency,
+        )
+    )
+
+    baseline_ttl_top = baseline_record.get("ttl_mix_top_level") or {}
+    current_ttl = ttl_mix_by_agent_type_metric(sections)
+    current_ttl_top = current_ttl.get("top-level", {})
+    rows.append(
+        _baseline_delta_row(
+            "TTL mix - top-level (5m share)",
+            "pct",
+            baseline_ttl_top.get("5m_pct"),
+            current_ttl_top.get("5m_pct"),
+            currency,
+        )
+    )
+    rows.append(
+        _baseline_delta_row(
+            "TTL mix - top-level (1h share)",
+            "pct",
+            baseline_ttl_top.get("1h_pct"),
+            current_ttl_top.get("1h_pct"),
+            currency,
+        )
+    )
+
+    baseline_ttl_agents = baseline_record.get("ttl_mix_by_agent_type") or {}
+    agent_types = sorted(set(baseline_ttl_agents) | {k for k in current_ttl if k != "top-level"})
+    for agent_type in agent_types:
+        b = baseline_ttl_agents.get(agent_type, {})
+        c = current_ttl.get(agent_type, {})
+        rows.append(
+            _baseline_delta_row(
+                f"TTL mix - {agent_type} (5m share)", "pct", b.get("5m_pct"), c.get("5m_pct"), currency
+            )
+        )
+        rows.append(
+            _baseline_delta_row(
+                f"TTL mix - {agent_type} (1h share)", "pct", b.get("1h_pct"), c.get("1h_pct"), currency
+            )
+        )
+
+    baseline_spawn = baseline_record.get("mean_spawn_write_by_agent_type") or {}
+    current_spawn = mean_spawn_write_by_agent_type_metric(sections)
+    for agent_type in sorted(set(baseline_spawn) | set(current_spawn)):
+        rows.append(
+            _baseline_delta_row(
+                f"Mean spawn write - {agent_type}",
+                "tokens",
+                baseline_spawn.get(agent_type),
+                current_spawn.get(agent_type),
+                currency,
+            )
+        )
+
+    baseline_scorecard = baseline_record.get("scorecard_dimensions") or {}
+    current_scorecard = scorecard_dimensions_metric(sections)
+    for dimension in scorecard.ALL_DIMENSIONS:
+        rows.append(
+            _baseline_delta_row(
+                f"Scorecard level - {dimension}",
+                "int",
+                baseline_scorecard.get(dimension),
+                current_scorecard.get(dimension),
+                currency,
+            )
+        )
+
+    columns = [
+        Column(key="metric", label="Metric", kind="str"),
+        Column(key="baseline", label="Baseline", kind="str"),
+        Column(key="current", label="Current", kind="str"),
+        Column(key="delta", label="Delta", kind="str"),
+        Column(key="delta_pct", label="Delta (% of baseline)", kind="str"),
+    ]
+    overview_table = Table(
+        name="baseline_comparison_overview",
+        title=f"Baseline comparison: {baseline_record.get('id', '?')} vs current window",
+        columns=columns,
+        rows=rows,
+        notes=[
+            "Observed, not controlled: the baseline and the current window are not a "
+            "randomised experiment -- a difference may reflect a changed workload mix, "
+            "not the effect of any config change made in between.",
+            f"Baseline {baseline_record.get('id', '?')!r} captured "
+            f"{baseline_record.get('created_at', '?')} over {baseline_sessions} session(s) "
+            f"({baseline_record.get('window_days')!r} day window).",
+        ],
+    )
+
+    tables = [overview_table]
+    baseline_mode_mix = baseline_record.get("mode_mix") or {}
+    if baseline_mode_mix:
+        tables.append(
+            _build_baseline_by_mode_table(baseline_mode_mix, baseline_record.get("by_mode") or {}, current_by_mode)
+        )
+
+    return Section(
+        key="baseline_comparison",
+        title="Baseline comparison",
+        tables=tables,
+        notes=["Observed, not controlled -- see each table's own notes for exactly what that means here."],
+    )
 
 
 def _recommend_min_sample_values(config: Config) -> tuple[int, int]:
@@ -578,6 +1012,8 @@ def build_report(
     include: set[str] | None = None,
     session_overrides: dict | None = None,
     usage_log_rows: list[dict] | None = None,
+    baseline_record: dict | None = None,
+    baseline_note: str | None = None,
 ) -> ReportModel:
     """Assemble the whole :class:`ReportModel` for ``corpus``. See the
     module docstring for section order/keys and the deviations from the
@@ -607,6 +1043,22 @@ def build_report(
     ``statusline.build_cache_ground_truth_table``'s own docstring).
     Defaults to ``None`` (no rows), which behaves exactly as it did
     before this parameter existed.
+
+    ``baseline_record``/``baseline_note`` (v0.3 Task 2 addition): when
+    ``baseline_record`` is given (a dict shaped like
+    ``baseline.build_baseline``'s own return value), a ``baseline_comparison``
+    section is appended -- unconditionally, i.e. it bypasses ``include``
+    filtering, because the plan explicitly wants ``--baseline`` "also
+    honoured by the report-like subcommands" that otherwise restrict the
+    model to one focused section; suppressing this section for those
+    subcommands would make the flag silently do nothing there.
+    ``baseline_note``, when given and ``baseline_record`` is ``None``
+    (the caller asked for a baseline but none resolved), is appended to
+    ``ReportMeta.assumptions`` instead of a section -- ``model.py``'s
+    ``Diagnostics`` dataclass has no free-text notes field to put this in
+    (see the module docstring's first deviation note), so ``assumptions``
+    is the pragmatic substitute for "a note in Diagnostics says how to
+    create one".
     """
     from . import usage as usage_mod  # local import: avoids a cycle risk with any future usage<->report coupling
     from . import statusline as statusline_mod  # local import: same rationale as usage_mod above
@@ -624,6 +1076,11 @@ def build_report(
     session_cost: dict[str, float] = {}
     session_cc_total: dict[str, int] = {}
     session_recache_cc: dict[str, int] = {}
+    #: v0.3 Task 2: session -> classification.mode, so a baseline
+    #: comparison can stratify cost/recache/compactions by mode without
+    #: re-classifying anything -- populated from the same
+    #: classify.classify_session() call the loop below already makes.
+    session_mode: dict[str, str] = {}
     #: Fix #14/#15: the top-level transcript's own dominant model per
     #: session, for the config-drift table's "observed" side --
     #: deliberately top-level only (a subagent's own model is a separate
@@ -667,6 +1124,7 @@ def build_report(
             purpose_thresholds=purpose_thresholds,
         )
         record = classify.build_session_record(top, subs, bundle.workflows, classification, slug)
+        session_mode[record.session_id] = classification.mode
 
         features = _extract_workstyle_features(top, subs, bundle.workflows)
         archetype, _evidence = workstyle.detect_archetype(features)
@@ -786,6 +1244,33 @@ def build_report(
         else None
     )
 
+    # -- v0.3 Task 2: current-window per-mode metrics for a
+    # baseline_comparison's by-mode table -- built once here (cheap: it
+    # only re-sums dicts the loop above already populated) regardless of
+    # whether a baseline was actually requested, since the cost of
+    # skipping it conditionally isn't worth the branch.
+    current_by_mode: dict[str, dict[str, float | None]] = {}
+    mode_sessions: dict[str, list[str]] = {}
+    for session_id, mode in session_mode.items():
+        mode_sessions.setdefault(mode, []).append(session_id)
+    compaction_counts = {sid: count for sid, count, _dropped, _cost in cs.per_session_summary()}
+    for mode, session_ids in mode_sessions.items():
+        n = len(session_ids)
+        total_cost = sum(session_cost.get(sid, 0.0) for sid in session_ids)
+        total_cc = sum(session_cc_total.get(sid, 0) for sid in session_ids)
+        total_recache_cc = sum(session_recache_cc.get(sid, 0) for sid in session_ids)
+        total_compactions = sum(compaction_counts.get(sid, 0) for sid in session_ids)
+        current_by_mode[mode] = {
+            "sessions": n,
+            "cost_per_session": (total_cost / n) if n else None,
+            # 0.0 (not None) on a zero-cache_creation denominator, matching
+            # recache.py's own _pct() zero-denominator convention -- so a
+            # mode with genuinely no cache-creation tokens reads as "0.0%"
+            # rather than the misleadingly stronger "no data" of "-".
+            "recache_share_pct": (100.0 * total_recache_cc / total_cc) if total_cc > 0 else 0.0,
+            "compactions_per_session": (total_compactions / n) if n else None,
+        }
+
     # -- assemble sections ---------------------------------------------
 
     sections: list[Section] = []
@@ -878,6 +1363,16 @@ def build_report(
     if _want("scorecard"):
         sections.append(_build_scorecard_section(rs, ts, tp, cs, pricing_coverage, diagnostics, session_records, snapshots, config, scorecard_th))
 
+    if baseline_record is not None:
+        # Deliberately not gated by _want()/include -- see build_report's
+        # own docstring for why --baseline must keep working on the
+        # focused report-like subcommands too.
+        sections.append(
+            _build_baseline_comparison_section(
+                baseline_record, sections, currency=pricing.currency, current_by_mode=current_by_mode
+            )
+        )
+
     # -- meta -------------------------------------------------------------
 
     recommend_min_sessions, recommend_min_turns = _recommend_min_sample_values(config)
@@ -899,6 +1394,8 @@ def build_report(
     }
 
     assumptions: list[str] = list(ttl.ASSUMPTIONS) + list(recache.ASSUMPTIONS)
+    if baseline_record is None and baseline_note:
+        assumptions.append(baseline_note)
 
     meta = ReportMeta(
         tool_version=_TOOL_VERSION,

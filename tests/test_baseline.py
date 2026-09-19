@@ -22,6 +22,15 @@ from claude_token_lens.config import Config
 from claude_token_lens.corpus import load_corpus
 from claude_token_lens.model import Column, ReportModel, Section, Table
 from claude_token_lens.pricing import load_pricing
+from claude_token_lens.report import (
+    compactions_per_session_metric,
+    mean_spawn_write_by_agent_type_metric,
+    overview_metric,
+    recache_share_pct_metric,
+    scorecard_dimensions_metric,
+    session_baseline_size_metric,
+    ttl_mix_by_agent_type_metric,
+)
 
 from helpers import assert_privacy_deep, turn_line, write_jsonl
 
@@ -155,6 +164,105 @@ def test_projected_saving_zero_when_ttl_section_absent():
 
 
 # --------------------------------------------------------------------
+# v0.3 Task 2: report.py's shared metric-extraction functions, imported
+# here since baseline.py itself uses them -- these are the same
+# functions build_report's own baseline_comparison section reads on the
+# current-window side, so a test pinning one side pins both.
+# --------------------------------------------------------------------
+
+
+def test_overview_metric_reads_label_keyed_totals_row():
+    table = Table(
+        name="totals",
+        columns=[Column(key="metric"), Column(key="value")],
+        rows=[["sessions", 6], ["total_cost_usd", 1.25]],
+    )
+    sections = [Section(key="overview", title="Overview", tables=[table])]
+    assert overview_metric(sections, "sessions") == 6
+    assert overview_metric(sections, "total_cost_usd") == pytest.approx(1.25)
+    assert overview_metric(sections, "nope") is None
+    assert overview_metric([], "sessions") is None
+
+
+def test_recache_share_pct_metric_reads_recache_summary_single_row():
+    table = Table(
+        name="recache_summary",
+        columns=[Column(key="metric"), Column(key="recache_cc_share_pct", kind="pct")],
+        rows=[["all", 12.5]],
+    )
+    sections = [Section(key="recache", title="Re-cache events", tables=[table])]
+    assert recache_share_pct_metric(sections) == pytest.approx(12.5)
+    assert recache_share_pct_metric([]) is None
+
+
+def test_compactions_per_session_metric_matches_literal_label_not_column_key():
+    table = Table(
+        name="compactions_summary",
+        columns=[Column(key="metric"), Column(key="value")],
+        rows=[
+            ["Total sessions", 6],
+            ["Compactions per session (mean)", 0.75],
+        ],
+    )
+    sections = [Section(key="compactions", title="Compactions", tables=[table])]
+    assert compactions_per_session_metric(sections) == pytest.approx(0.75)
+    assert compactions_per_session_metric([]) is None
+
+
+def test_ttl_mix_by_agent_type_metric_includes_top_level():
+    table = Table(
+        name="ttl_by_agent_type",
+        columns=[
+            Column(key="agent_type"),
+            Column(key="observed_5m_pct", kind="pct"),
+            Column(key="observed_1h_pct", kind="pct"),
+        ],
+        rows=[["top-level", 80.0, 20.0], ["claude-implementer", 90.0, 10.0]],
+    )
+    sections = [Section(key="ttl", title="Cache TTL break-even", tables=[table])]
+    mix = ttl_mix_by_agent_type_metric(sections)
+    assert mix["top-level"] == {"5m_pct": 80.0, "1h_pct": 20.0}
+    assert mix["claude-implementer"] == {"5m_pct": 90.0, "1h_pct": 10.0}
+    assert ttl_mix_by_agent_type_metric([]) == {}
+
+
+def test_session_baseline_size_metric_reads_mean_baseline():
+    table = Table(
+        name="topology_session_baseline",
+        columns=[Column(key="metric"), Column(key="sessions", kind="int"), Column(key="mean_baseline", kind="tokens")],
+        rows=[["all", 6, 4321.0]],
+    )
+    sections = [Section(key="agents", title="Agents and information flow", tables=[table])]
+    assert session_baseline_size_metric(sections) == pytest.approx(4321.0)
+    assert session_baseline_size_metric([]) is None
+
+
+def test_mean_spawn_write_by_agent_type_metric_reads_per_row():
+    table = Table(
+        name="topology_spawn_write",
+        columns=[Column(key="agent_type"), Column(key="spawns", kind="int"), Column(key="mean_write", kind="tokens")],
+        rows=[["claude-implementer", 3, 500.0], ["revixo-researcher", 2, 250.0]],
+    )
+    sections = [Section(key="agents", title="Agents and information flow", tables=[table])]
+    assert mean_spawn_write_by_agent_type_metric(sections) == {
+        "claude-implementer": 500.0,
+        "revixo-researcher": 250.0,
+    }
+    assert mean_spawn_write_by_agent_type_metric([]) == {}
+
+
+def test_scorecard_dimensions_metric_reads_dimension_level_pairs():
+    table = Table(
+        name="dimensions",
+        columns=[Column(key="dimension"), Column(key="level", kind="int")],
+        rows=[["cache_efficiency", 4], ["context_hygiene", 5]],
+    )
+    sections = [Section(key="scorecard", title="Scorecard", tables=[table])]
+    assert scorecard_dimensions_metric(sections) == {"cache_efficiency": 4, "context_hygiene": 5}
+    assert scorecard_dimensions_metric([]) == {}
+
+
+# --------------------------------------------------------------------
 # _suggested_profile: overnight-majority override + catalogue.suggest()
 # --------------------------------------------------------------------
 
@@ -251,6 +359,17 @@ def test_build_baseline_with_no_sessions_is_a_minimal_provisional_record(tmp_pat
     assert record["mode_mix"] == {}
     assert record["projected_saving_usd"] == 0.0
     assert record["billing_mismatch_warning"] is None
+    # v0.3 Task 2 fields: minimal all-defaults, same posture as every
+    # other field in this branch.
+    assert record["cost_per_session"] == 0.0
+    assert record["recache_share_pct"] is None
+    assert record["compactions_per_session"] is None
+    assert record["ttl_mix_top_level"] is None
+    assert record["ttl_mix_by_agent_type"] == {}
+    assert record["session_baseline_size"] is None
+    assert record["mean_spawn_write_by_agent_type"] == {}
+    assert record["scorecard_dimensions"] == {}
+    assert record["by_mode"] == {}
 
 
 def test_build_baseline_with_sessions_extracts_from_the_real_report(tmp_path):
@@ -270,6 +389,32 @@ def test_build_baseline_with_sessions_extracts_from_the_real_report(tmp_path):
     assert record["suggested_profile"]
     assert isinstance(record["projected_saving_usd"], float)
     assert record["projects"] == ["real-proj"]
+    # v0.3 Task 2 fields: extracted from the same already-built model,
+    # never fabricated -- see module docstring's addition note.
+    assert isinstance(record["cost_per_session"], float)
+    assert isinstance(record["ttl_mix_by_agent_type"], dict)
+    assert isinstance(record["mean_spawn_write_by_agent_type"], dict)
+    assert isinstance(record["scorecard_dimensions"], dict)
+    assert record["scorecard_dimensions"]  # a single-session corpus still gets scored
+    # One session -> exactly one mode bucket in by_mode, and its own
+    # session count matches sessions_analysed.
+    assert sum(stats["sessions"] for stats in record["by_mode"].values()) == record["sessions_analysed"]
+
+
+def test_build_baseline_by_mode_has_one_bucket_per_distinct_mode(tmp_path):
+    project_dir = tmp_path / "projects" / "multi-mode-proj"
+    project_dir.mkdir(parents=True)
+    for i in range(6):
+        _write_session(project_dir, f"session-{i}", n_turns=2)
+    config_dir = tmp_path / "config"
+
+    record, model = baseline.build_baseline(
+        config=Config(), pricing=PRICING, config_dir=config_dir, project_dirs=[project_dir]
+    )
+    assert model is not None
+    assert set(record["by_mode"]) == set(record["mode_mix"])
+    for mode, count in record["mode_mix"].items():
+        assert record["by_mode"][mode]["sessions"] == count
 
 
 def test_build_baseline_provisional_by_default_before_window_elapses(tmp_path):

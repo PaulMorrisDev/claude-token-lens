@@ -43,17 +43,42 @@ heuristic (:func:`_billing_mismatch_warning`): when ``config.billing ==
 (more than :data:`BILLING_MISMATCH_THRESHOLD_PCT`), warn that ``billing``
 may actually be ``"api"`` -- observing a 1h TTL happening somewhere it's
 supposed to be impossible is evidence the stated mode is wrong.
+
+v0.3 Task 2 addition: ``build_baseline`` now also records the metrics
+:func:`~claude_token_lens.report.build_report`'s own ``baseline_comparison``
+section diffs a later report against (``cost_per_session``,
+``recache_share_pct``, ``compactions_per_session``, TTL mix, session
+baseline size, mean spawn write, scorecard dimension levels, and a
+per-mode ``by_mode`` breakdown of the first three). The extraction
+functions for these live in ``report.py`` (as public, non-underscore
+names) rather than here, and this module imports them, because
+``report.py`` needs the identical logic for the *current* window's side
+of that same comparison and ``baseline.py`` already imports from
+``report.py`` (never the other way around) -- duplicating the table
+lookups in both modules would risk the two sides of a comparison
+silently drifting apart.
+
+Third deviation, reported per this module's own convention: per-mode
+stratification is scoped to just those three metrics (cost/re-cache/
+compactions), computed by re-running :func:`~claude_token_lens.report.build_report`
+once per mode value over a session-filtered sub-corpus. TTL mix, session
+baseline size, mean spawn write and scorecard levels stay corpus-wide
+only -- the accumulators behind them (``topology.TopologyStats``,
+``ttl.TtlStats``) accumulate flat lists/dicts with no per-session id
+retained, so stratifying those would need changes to modules outside
+this work package's file list.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import discovery, snapshots
+from . import classify, discovery, snapshots
 from .cache import DigestCache
 from .config import Config
 from .corpus import load_corpus
@@ -61,7 +86,16 @@ from .model import ReportModel, Table
 from .parse import load_or_create_salt
 from .pricing import Pricing
 from .profiles import catalogue
-from .report import build_report
+from .report import (
+    build_report,
+    compactions_per_session_metric,
+    mean_spawn_write_by_agent_type_metric,
+    overview_metric,
+    recache_share_pct_metric,
+    scorecard_dimensions_metric,
+    session_baseline_size_metric,
+    ttl_mix_by_agent_type_metric,
+)
 
 __all__ = [
     "CaptureStatus",
@@ -364,6 +398,16 @@ def build_baseline(
             "projected_saving_usd": 0.0,
             "billing_mismatch_warning": None,
             "projects": redacted_projects,
+            # v0.3 Task 2 fields -- see module docstring's addition note.
+            "cost_per_session": 0.0,
+            "recache_share_pct": None,
+            "compactions_per_session": None,
+            "ttl_mix_top_level": None,
+            "ttl_mix_by_agent_type": {},
+            "session_baseline_size": None,
+            "mean_spawn_write_by_agent_type": {},
+            "scorecard_dimensions": {},
+            "by_mode": {},
         }
         return record, None
 
@@ -378,12 +422,28 @@ def build_baseline(
     scorecard = _scorecard_overall(model)
     profile_id, profile_reason = _suggested_profile(mode_mix, archetype, purposes)
 
+    # v0.3 Task 2: metrics report.py's own baseline_comparison section
+    # will later diff a fresh window against -- see module docstring's
+    # addition note for why the extraction functions live in report.py.
+    sessions_analysed = len(corpus.sessions)
+    total_cost = overview_metric(model.sections, "total_cost_usd")
+    cost_per_session = (total_cost / sessions_analysed) if total_cost is not None and sessions_analysed else 0.0
+    recache_share_pct = recache_share_pct_metric(model.sections)
+    compactions_per_session = compactions_per_session_metric(model.sections)
+    ttl_mix = ttl_mix_by_agent_type_metric(model.sections)
+    ttl_mix_top_level = ttl_mix.get("top-level")
+    ttl_mix_by_agent_type = {agent_type: mix for agent_type, mix in ttl_mix.items() if agent_type != "top-level"}
+    session_baseline_size = session_baseline_size_metric(model.sections)
+    mean_spawn_write_by_agent_type = mean_spawn_write_by_agent_type_metric(model.sections)
+    scorecard_dimensions = scorecard_dimensions_metric(model.sections)
+    by_mode = _by_mode_metrics(corpus, pricing, config, projects, window, snaps)
+
     record = {
         "id": uuid.uuid4().hex[:12],
         "created_at": now.isoformat(),
         "window_days": days,
         "provisional": provisional,
-        "sessions_analysed": len(corpus.sessions),
+        "sessions_analysed": sessions_analysed,
         "mode_mix": mode_mix,
         "dominant_purposes": purposes,
         "archetype": archetype,
@@ -394,8 +454,56 @@ def build_baseline(
         "projected_saving_usd": round(_projected_saving_usd(model), 4),
         "billing_mismatch_warning": _billing_mismatch_warning(config, model),
         "projects": redacted_projects,
+        # v0.3 Task 2 fields -- see module docstring's addition note.
+        "cost_per_session": round(cost_per_session, 4),
+        "recache_share_pct": recache_share_pct,
+        "compactions_per_session": compactions_per_session,
+        "ttl_mix_top_level": ttl_mix_top_level,
+        "ttl_mix_by_agent_type": ttl_mix_by_agent_type,
+        "session_baseline_size": session_baseline_size,
+        "mean_spawn_write_by_agent_type": mean_spawn_write_by_agent_type,
+        "scorecard_dimensions": scorecard_dimensions,
+        "by_mode": by_mode,
     }
     return record, model
+
+
+def _by_mode_metrics(
+    corpus,
+    pricing: Pricing,
+    config: Config,
+    projects: tuple[str, ...],
+    window: str,
+    snaps,
+) -> dict[str, dict[str, float | None]]:
+    """``{mode: {"sessions": n, "cost_per_session": ..., "recache_share_pct":
+    ..., "compactions_per_session": ...}}`` -- one extra
+    :func:`~claude_token_lens.report.build_report` call per distinct mode
+    present in ``corpus``, each over a session-filtered sub-corpus, so the
+    per-mode figures come from the exact same table-extraction functions
+    as the corpus-wide ones above (see module docstring's third deviation
+    note for why stratification stops at these three metrics).
+    """
+    buckets: dict[str, list] = {}
+    for bundle in corpus.sessions:
+        if bundle.top is None:
+            continue
+        classification = classify.classify_session(bundle.top, bundle.subs, {}, config.tz)
+        buckets.setdefault(classification.mode, []).append(bundle)
+
+    by_mode: dict[str, dict[str, float | None]] = {}
+    for mode, bundles in buckets.items():
+        n = len(bundles)
+        sub_corpus = dataclasses.replace(corpus, sessions=bundles)
+        sub_model = build_report(sub_corpus, pricing, config, projects=projects, window=window, snapshots=snaps)
+        sub_total_cost = overview_metric(sub_model.sections, "total_cost_usd")
+        by_mode[mode] = {
+            "sessions": n,
+            "cost_per_session": round(sub_total_cost / n, 4) if sub_total_cost is not None and n else None,
+            "recache_share_pct": recache_share_pct_metric(sub_model.sections),
+            "compactions_per_session": compactions_per_session_metric(sub_model.sections),
+        }
+    return by_mode
 
 
 # -- persistence: plain JSON files, never SQLite -----------------------

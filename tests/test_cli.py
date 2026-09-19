@@ -36,7 +36,7 @@ from pathlib import Path
 
 import pytest
 
-from claude_token_lens import __version__, cli, discovery
+from claude_token_lens import __version__, baseline as baseline_mod, cli, discovery
 
 from helpers import assert_privacy, turn_line, write_jsonl
 
@@ -378,6 +378,115 @@ def test_report_renders_markdown(tmp_path, capsys):
     assert out.startswith("# Claude token lens report")
     assert "## Overview" in out
     assert "## Diagnostics" in out
+
+
+# -- v0.3 Task 2: report --baseline <id|latest> -----------------------------
+
+
+def test_report_baseline_latest_adds_baseline_comparison_section(tmp_path, capsys):
+    root = tmp_path / "projects"
+    config_dir = tmp_path / "config"
+    _write_project(root, "proj-a")
+
+    baseline_exit = cli.main(
+        ["baseline", "--finalise", "--config-dir", str(config_dir), "--projects-root", str(root), "--project", "proj-a"]
+    )
+    assert baseline_exit == 0
+    capsys.readouterr()
+
+    exit_code = cli.main(
+        ["report", "--config-dir", str(config_dir), "--projects-root", str(root), "--project", "proj-a", "--baseline", "latest"]
+    )
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert "## Baseline comparison" in out
+    assert "Cost per session" in out
+    assert "Observed, not controlled" in out
+
+
+def test_report_baseline_explicit_id_matches_latest(tmp_path, capsys):
+    root = tmp_path / "projects"
+    config_dir = tmp_path / "config"
+    _write_project(root, "proj-a")
+
+    cli.main(
+        ["baseline", "--finalise", "--config-dir", str(config_dir), "--projects-root", str(root), "--project", "proj-a"]
+    )
+    capsys.readouterr()
+    baseline_id = baseline_mod.list_baselines(config_dir)[-1]["id"]
+
+    exit_code = cli.main(
+        [
+            "report",
+            "--config-dir",
+            str(config_dir),
+            "--projects-root",
+            str(root),
+            "--project",
+            "proj-a",
+            "--baseline",
+            baseline_id,
+        ]
+    )
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert f"Baseline comparison: {baseline_id}" in out
+
+
+def test_report_baseline_unresolved_id_omits_section_and_notes_how_to_fix(tmp_path, capsys):
+    root = tmp_path / "projects"
+    config_dir = tmp_path / "config"
+    _write_project(root, "proj-a")
+
+    exit_code = cli.main(
+        [
+            "report",
+            "--config-dir",
+            str(config_dir),
+            "--projects-root",
+            str(root),
+            "--project",
+            "proj-a",
+            "--baseline",
+            "does-not-exist",
+        ]
+    )
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert "## Baseline comparison" not in out
+    assert "no such baseline was found" in out
+    assert "claude-token-lens baseline --list" in out
+
+
+def test_report_baseline_latest_with_none_saved_yet_omits_section(tmp_path, capsys):
+    root = tmp_path / "projects"
+    config_dir = tmp_path / "config"
+    _write_project(root, "proj-a")
+
+    exit_code = cli.main(
+        ["report", "--config-dir", str(config_dir), "--projects-root", str(root), "--project", "proj-a", "--baseline", "latest"]
+    )
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert "## Baseline comparison" not in out
+    assert "no baseline has been saved yet" in out
+
+
+def test_report_without_baseline_flag_has_no_note_or_section(tmp_path, capsys):
+    root = tmp_path / "projects"
+    config_dir = tmp_path / "config"
+    _write_project(root, "proj-a")
+
+    exit_code = cli.main(["report", "--config-dir", str(config_dir), "--projects-root", str(root), "--project", "proj-a"])
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert "## Baseline comparison" not in out
+    # No --baseline flag given at all -- no resolution attempted, so no
+    # "no baseline found"/"run `claude-token-lens baseline`" note either
+    # (unlike test_report_baseline_latest_with_none_saved_yet_omits_section,
+    # where --baseline latest IS given but resolves to nothing).
+    assert "no such baseline" not in out
+    assert "no baseline has been saved yet" not in out
 
 
 def test_allow_titles_flag_was_removed(capsys):
