@@ -26,6 +26,7 @@ import importlib.resources
 import importlib.util
 import os
 import sys
+import types
 from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import available_timezones
@@ -1313,22 +1314,34 @@ def _cmd_scrub_fixture(args: argparse.Namespace) -> int:
 
 def _load_snapshot_hook_module():
     """Dynamically import the packaged ``hooks/snapshot-config.py`` module
-    by path. That script is standalone stdlib and must never import from
-    this package (see its own docstring), so the dependency runs the other
-    way: this CLI command loads it, rather than it importing anything here.
+    from its source text. That script is standalone stdlib and must never
+    import from this package (see its own docstring), so the dependency
+    runs the other way: this CLI command loads it, rather than it
+    importing anything here.
+
+    Reads the source via ``importlib.resources`` (``Traversable.
+    read_text``) and ``exec``s it into a fresh module, rather than
+    ``importlib.util.spec_from_file_location`` on the resource path
+    directly -- fix (surfaced once ``init``, not just ``snapshot-
+    config``/``probe-config``, started calling this at runtime): inside
+    a zipapp build (``scripts/build-pyz.py``,
+    ``tests/test_service_build_pyz.py``), ``importlib.resources.files``
+    returns a ``zipfile.Path``, which satisfies the ``Traversable``
+    protocol but not ``os.PathLike`` -- ``spec_from_file_location``
+    rejects it outright (``TypeError: expected str, bytes or
+    os.PathLike object, not Path``). Reading the text and ``exec``-ing
+    it works identically on a normal filesystem install and inside a
+    zip.
     """
-    hook_path = (
-        importlib.resources.files("claude_token_lens")
-        / "hooks"
-        / "snapshot-config.py"
-    )
-    spec = importlib.util.spec_from_file_location(
-        "_claude_token_lens_snapshot_hook", hook_path
-    )
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"cannot locate snapshot-config hook at {hook_path}")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    hook_resource = importlib.resources.files("claude_token_lens") / "hooks" / "snapshot-config.py"
+    try:
+        source = hook_resource.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise RuntimeError(f"cannot read snapshot-config hook at {hook_resource}: {exc}") from exc
+    module = types.ModuleType("_claude_token_lens_snapshot_hook")
+    module.__file__ = str(hook_resource)
+    code = compile(source, str(hook_resource), "exec")
+    exec(code, module.__dict__)
     return module
 
 
