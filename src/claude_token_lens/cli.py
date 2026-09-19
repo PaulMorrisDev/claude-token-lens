@@ -160,11 +160,14 @@ def _add_report_output_args(sub: argparse.ArgumentParser, *, allow_patch_set: bo
         action="store_true",
         help="add the DISCOVERY/IMPLEMENTATION/VERIFICATION phase-split section",
     )
-    sub.add_argument(
-        "--allow-titles",
-        action="store_true",
-        help="include customTitle/ai-title text (off by default for privacy)",
-    )
+    # Fix R17: --allow-titles was removed -- report.py's own module
+    # docstring documents that its allow_titles parameter is a
+    # currently-permanent no-op (nothing anywhere in this codebase
+    # captures customTitle/ai-title text to gate in the first place), so
+    # the flag implied a privacy control that did not actually exist.
+    # build_report() still accepts the keyword (matching its required
+    # signature; report.py is out of this fix's file scope), always
+    # called with the default.
     if allow_patch_set:
         sub.add_argument(
             "--patch-set",
@@ -514,7 +517,6 @@ def _cmd_report_like(args: argparse.Namespace, include: set[str] | None) -> int:
         group_by=args.group_by,
         phases=getattr(args, "phases", False),
         snapshots=snaps,
-        allow_titles=getattr(args, "allow_titles", False),
         include=include,
         session_overrides=session_overrides,
     )

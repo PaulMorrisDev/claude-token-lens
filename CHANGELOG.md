@@ -145,6 +145,16 @@ one-commit-per-fix / green-tests discipline:
   `is_recache_turn()` heuristic, so compaction's RE-CACHE-flagged
   write-cost figures use the same signature logic as every other module.
 
+Independent review (round 3) fixes, `cli.py`/`recommend.py`/`ttl.py`:
+
+- **Breaking:** removed the `--allow-titles` CLI flag. It implied a
+  privacy control that never existed — `report.py`'s own module
+  docstring documents `build_report`'s `allow_titles` parameter as a
+  permanent no-op, since nothing anywhere in this codebase captures
+  `customTitle`/`ai-title` text to gate in the first place.
+  `build_report` still accepts the keyword (unused) for signature
+  compatibility.
+
 ### Documentation
 
 - README rewritten against the code as it actually stands today (WP12b):

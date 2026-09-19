@@ -183,6 +183,19 @@ def test_report_renders_markdown(tmp_path, capsys):
     assert "## Diagnostics" in out
 
 
+def test_allow_titles_flag_was_removed(capsys):
+    # Fix R17: --allow-titles implied a privacy control that never
+    # existed (report.py's own docstring says the keyword it still
+    # accepts is a permanent no-op -- nothing captures title text to
+    # gate) -- it must no longer be a recognised CLI flag at all.
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main(["report", "--allow-titles"])
+    assert exc_info.value.code == 2
+    err = capsys.readouterr().err
+    assert "unrecognized arguments" in err
+    assert "--allow-titles" in err
+
+
 @pytest.mark.parametrize("command,section_title", [("sessions", "## Sessions"), ("recache", "## Re-cache"), ("ttl", "## TTL"), ("compactions", "## Compactions")])
 def test_focused_subcommands_render_overview_plus_their_own_section(tmp_path, capsys, command, section_title):
     root = tmp_path / "projects"
