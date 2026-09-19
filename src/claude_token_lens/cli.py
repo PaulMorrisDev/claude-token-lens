@@ -68,6 +68,7 @@ SUBCOMMANDS: tuple[str, ...] = (
     "monthly-report",
     "init",
     "baseline",
+    "apply",
     "serve",
 )
 
@@ -428,6 +429,65 @@ def _add_snapshot_config_args(sub: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_apply_args(sub: argparse.ArgumentParser) -> None:
+    """Flags for the ``apply`` subcommand (v0.3 milestone, ``profiles/apply.py``):
+    apply a profile's allowlisted settings/agent/env levers to a project
+    or the current user, dry-run its diff first, or revert/list a
+    previous apply. ``profile`` is a catalogue id (``profiles.catalogue``)
+    or a path to a profile TOML file; it is optional only because
+    ``--revert``/``--list-backups`` don't need one.
+
+    Named ``--project-dir``, not ``--project``: the common ``--project``
+    flag every subcommand already has means "a repeatable project slug
+    to filter a report by" (same collision, same resolution, as
+    ``snapshot-config``/``probe-config``'s own ``--project-dir``).
+    """
+    sub.add_argument(
+        "profile", nargs="?", metavar="PROFILE", help="catalogue id or path to a profile TOML file"
+    )
+    sub.add_argument(
+        "--scope",
+        choices=("user", "project-local", "repo"),
+        default=None,
+        help="default: user, or project-local when --project-dir is given",
+    )
+    sub.add_argument(
+        "--project-dir",
+        metavar="PATH",
+        default=None,
+        dest="project_dir",
+        help="project directory for a project-local/repo scope",
+    )
+    sub.add_argument(
+        "--dry-run", action="store_true", help="print the diff and how to apply it, without writing anything"
+    )
+    sub.add_argument(
+        "--launch",
+        action="store_true",
+        help="write a one-session settings-only overlay instead of a persisted apply",
+    )
+    sub.add_argument(
+        "--allow-tracked",
+        action="store_true",
+        dest="allow_tracked",
+        help="allow writing a target file that is already tracked by git",
+    )
+    sub.add_argument(
+        "--revert", metavar="TS", default=None, help="undo a previous apply, named by its backup timestamp"
+    )
+    sub.add_argument(
+        "--force",
+        action="store_true",
+        help="create a missing agent frontmatter file from scratch instead of refusing",
+    )
+    sub.add_argument(
+        "--list-backups",
+        action="store_true",
+        dest="list_backups",
+        help="list previous applies (timestamp, profile, scope) and exit",
+    )
+
+
 def _add_probe_config_args(sub: argparse.ArgumentParser) -> None:
     """Flags for the ``probe-config`` subcommand (schema 2): the same scan
     ``snapshot-config`` does, for an arbitrary project directory, without a
@@ -480,6 +540,7 @@ def _make_parser() -> argparse.ArgumentParser:
             # readable one at a time via "planned for vX.Y" prose.
             "init": "(planned) v0.3 milestone",
             "baseline": "(planned) v0.3 milestone",
+            "apply": "apply a profile's settings/agent/env levers to a project or your user config",
             "serve": "run the local JSON API + watcher service",
         }.get(name, f"{name} (not implemented yet)")
         sub = subparsers.add_parser(name, parents=[common], help=help_text)
@@ -493,6 +554,8 @@ def _make_parser() -> argparse.ArgumentParser:
             _add_snapshot_config_args(sub)
         if name == "probe-config":
             _add_probe_config_args(sub)
+        if name == "apply":
+            _add_apply_args(sub)
         if name in _REPORT_LIKE_COMMANDS:
             _add_report_output_args(sub, allow_patch_set=(name == "report"))
         if name == "config-diff":
@@ -1439,6 +1502,162 @@ def _cmd_planned_stub(command: str, milestone: str) -> int:
     return 2
 
 
+# -- apply (v0.3 milestone) ---------------------------------------------------
+
+
+def _load_profile_arg(profile_arg: str):
+    """``(Profile, None)`` on success, or ``(None, message)`` on
+    failure -- ``profile_arg`` is tried as a catalogue id first
+    (:func:`~claude_token_lens.profiles.catalogue.get`), then as a path
+    to a profile TOML file (:func:`~claude_token_lens.profiles.schema.load_profile`).
+    """
+    from .profiles import catalogue as catalogue_mod
+    from .profiles.schema import ProfileError, load_profile
+
+    catalogue_profile = catalogue_mod.get(profile_arg)
+    if catalogue_profile is not None:
+        return catalogue_profile, None
+
+    path = Path(profile_arg)
+    if not path.is_file():
+        return None, f"no such catalogue profile or profile file: {profile_arg}"
+    try:
+        return load_profile(path), None
+    except ProfileError as exc:
+        return None, str(exc)
+
+
+def _cmd_apply(args: argparse.Namespace) -> int:
+    """``apply``: apply a profile's allowlisted settings/agent/env
+    levers to a project or the current user (plan Milestone v0.3's
+    ``apply`` bullet -- see ``profiles/apply.py``'s module docstring for
+    the full resolution/backup/revert contract this delegates to).
+
+    Exit codes: 0 success (including ``--dry-run``/``--list-backups``/a
+    successful ``--revert``), 1 a refused operation (a git-tracked
+    target without ``--allow-tracked``, a missing agent file without
+    ``--force``, or an existing file this command cannot parse), 2 bad
+    input (an unrecognised profile, a scope/``--project`` mismatch, or
+    an unknown ``--revert`` timestamp).
+    """
+    from .profiles import apply as apply_mod
+
+    command = "apply"
+    config_dir = _resolve_config_dir(args.config_dir)
+    home = config_dir.parent
+
+    if args.list_backups:
+        backups = apply_mod.list_backups(config_dir)
+        if not backups:
+            print("No backups found.")
+            return 0
+        for backup in backups:
+            print(f"{backup.ts}  profile={backup.profile_id}  scope={backup.scope}  files={backup.file_count}")
+        return 0
+
+    if args.revert:
+        try:
+            result = apply_mod.revert(args.revert, config_dir=config_dir)
+        except apply_mod.ApplyError as exc:
+            print(f"claude-token-lens {command}: {exc}", file=sys.stderr)
+            return 2
+        print(
+            f"Reverted {args.revert}: restored {len(result.restored)} file(s), "
+            f"removed {len(result.deleted)} file(s)."
+        )
+        return 0
+
+    if not args.profile:
+        print(
+            f"claude-token-lens {command}: a profile id or path is required "
+            "(or use --revert/--list-backups)",
+            file=sys.stderr,
+        )
+        return 2
+
+    profile, err = _load_profile_arg(args.profile)
+    if err is not None:
+        print(f"claude-token-lens {command}: {err}", file=sys.stderr)
+        return 2
+
+    project_path = Path(args.project_dir) if args.project_dir else None
+    scope = args.scope or ("project-local" if project_path else "user")
+    if scope != "user" and project_path is None:
+        print(f"claude-token-lens {command}: --scope {scope} requires --project-dir", file=sys.stderr)
+        return 2
+
+    snaps = snapshots.load_snapshots(config_dir)
+    latest_snapshot = snaps[-1] if snaps else None
+
+    if args.launch:
+        managed = set(snapshots.managed_keys(latest_snapshot)) if latest_snapshot else set()
+        path = apply_mod.write_launch_overlay(profile, config_dir=config_dir, managed_keys=managed)
+        print(f"Wrote {path}")
+        print(f"claude --settings {path}")
+        return 0
+
+    try:
+        plan = apply_mod.plan_apply(
+            profile,
+            scope=scope,
+            project_path=project_path,
+            config_dir=config_dir,
+            home=home,
+            snapshot=latest_snapshot,
+            allow_tracked=args.allow_tracked,
+            force=args.force,
+        )
+    except ValueError as exc:
+        print(f"claude-token-lens {command}: {exc}", file=sys.stderr)
+        return 2
+    except apply_mod.ApplyError as exc:
+        print(f"claude-token-lens {command}: {exc}", file=sys.stderr)
+        return 1
+
+    if args.dry_run:
+        from .profiles.diff import apply_command
+
+        print(plan.diff_text if plan.diff_text else "No changes to apply.")
+        if plan.skipped_managed:
+            for key in plan.skipped_managed:
+                print(f"# {key}: managed by policy, raise with your administrator")
+        if plan.env_lines:
+            print("Environment variables (set these yourself; never written to any file):")
+            for line in plan.env_lines:
+                print(f"  export {line}")
+        suggested = apply_command(
+            plan.profile_id, scope, str(project_path) if project_path else None
+        )
+        # diff.py is read-only for this work package and its
+        # apply_command() hardcodes "--project" in the suggested
+        # invocation text; this CLI's own flag is "--project-dir" (see
+        # _add_apply_args's docstring for why "--project" was already
+        # taken). Substitute only the flag token immediately after the
+        # profile id -- the one place diff.py inserts it -- never the
+        # path value itself.
+        suggested = suggested.replace(
+            f"apply {plan.profile_id} --project ", f"apply {plan.profile_id} --project-dir "
+        )
+        print(suggested)
+        return 0
+
+    if plan.blocked:
+        for reason in plan.blocked:
+            print(f"claude-token-lens {command}: refused: {reason}", file=sys.stderr)
+        return 1
+
+    result = apply_mod.execute(plan, config_dir=config_dir)
+    print(f"Applied {plan.profile_id} ({scope}).")
+    for path in result.written:
+        print(f"  wrote {path}")
+    if plan.env_lines:
+        print("Environment variables (set these yourself; never written to any file):")
+        for line in plan.env_lines:
+            print(f"  export {line}")
+    print(f"To revert: claude-token-lens apply --revert {result.ts}")
+    return 0
+
+
 def _cmd_serve_purge(config_dir: Path, *, confirmed: bool) -> int:
     """``serve --purge`` (S1-integration fix 2.e): delete
     ``<config-dir>/service.db`` and its WAL/SHM sidecars. The store is
@@ -1592,6 +1811,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_scrub_fixture(args)
     if command in ("init", "baseline"):
         return _cmd_planned_stub(command, "v0.3")
+    if command == "apply":
+        return _cmd_apply(args)
     if command == "serve":
         return _cmd_serve(args)
 

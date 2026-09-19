@@ -42,7 +42,9 @@ and [docs/deploy.md](docs/deploy.md).
 Nothing outside these locations is read, and nothing is ever written to
 except claude-token-lens's own on-disk digest cache, config-snapshot
 files, usage log, and salt file, under `<config-dir>` (default
-`~/.claude/token-lens`, or `$CLAUDE_CONFIG_DIR/token-lens`).
+`~/.claude/token-lens`, or `$CLAUDE_CONFIG_DIR/token-lens`) — with one
+deliberate, explicit-opt-in exception: `claude-token-lens apply`. See
+"Applying a profile" below.
 
 ## What is stored
 
@@ -120,6 +122,47 @@ bare `@`, or a URL). Run it yourself:
 ```bash
 python -m pytest tests/test_privacy.py tests/test_scrub.py -q
 ```
+
+## Applying a profile: the one command that writes outside `<config-dir>`
+
+Every guarantee above describes every subcommand except one:
+`claude-token-lens apply` (`profiles/apply.py`) is the single command
+in this package that writes to a project's or your user account's real
+Claude Code configuration files, and only when you explicitly run it —
+never as a side effect of `report`, `snapshot-config`, or any other
+subcommand, and never on `--dry-run` (which only prints text).
+
+A real apply (not `--dry-run`, not `--launch`) writes exactly these
+files, depending on `--scope`:
+
+- One of `~/.claude/settings.json` (`user`), `<project>/.claude/
+  settings.local.json` (`project-local`), or `<project>/.claude/
+  settings.json` (`repo`) — a JSON read-merge-write of the profile's
+  allowlisted settings keys only.
+- `<project or ~>/.claude/agents/<name>.md` for each agent the profile
+  configures — only the allowlisted frontmatter keys are patched in
+  place; every surrounding character (comments, unrelated keys,
+  formatting) is preserved verbatim.
+- `<config-dir>/backups/<ts>/...` — a byte-for-byte pre-image of every
+  file above, written *before* the new content, plus a `manifest.json`
+  recording which backup corresponds to which target.
+- `<config-dir>/snapshots/<ts>.json` and `<config-dir>/active-profile`
+  — claude-token-lens's own bookkeeping, not a Claude Code config file.
+
+`--launch` writes only `<config-dir>/profiles/<id>.settings.json` (a
+one-session overlay) and nothing else. `apply` never writes an
+environment-variable *value* to any file — a profile's `env` names are
+printed as `export NAME=value` guidance only (see `docs/profiles.md`'s
+"What a profile cannot do") — and never writes a key a managed-settings
+layer currently governs, regardless of scope or flags.
+
+Two refusals are on by default, both requiring an explicit flag to
+override: writing to a project file already tracked by git
+(`--allow-tracked`), and creating an agent frontmatter file that
+doesn't exist yet (`--force`). Every write is preceded by a
+byte-for-byte backup, so any apply can be undone exactly with
+`claude-token-lens apply --revert <ts>`. Full detail:
+[docs/profiles.md#applying-a-profile](docs/profiles.md#applying-a-profile).
 
 ## No outbound network calls
 

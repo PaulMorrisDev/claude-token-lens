@@ -348,3 +348,130 @@ other `lever` literal `recommend.py`/`ttl.py` can emit
 see `tests/test_profiles_schema.py`'s `recommend.py` lever-coverage
 tests for the regression check that keeps this true as `recommend.py`
 evolves.
+
+## Applying a profile
+
+`profiles/apply.py` is the one module in this package that actually
+writes to a project's or a user's real files — `plan_apply` resolves
+every write without touching disk, `execute` performs it, and `revert`
+undoes it. `cli.py`'s `apply` subcommand is the only caller; the
+functions themselves take no CLI dependency (a future `POST
+/api/profiles` route can call them the same way).
+
+```
+claude-token-lens apply <profile> [--scope user|project-local|repo]
+                                   [--project-dir PATH]
+                                   [--dry-run] [--launch]
+                                   [--allow-tracked] [--force]
+                                   [--revert TS] [--list-backups]
+```
+
+`<profile>` is a catalogue id or a path to a profile TOML file.
+
+### Scopes: what gets touched
+
+| `--scope` | Settings file written | Agent files written |
+|---|---|---|
+| `user` (default with no `--project-dir`) | `~/.claude/settings.json` | `~/.claude/agents/<name>.md` |
+| `project-local` (default once `--project-dir` is given) | `<project>/.claude/settings.local.json` | `<project>/.claude/agents/<name>.md` |
+| `repo` | `<project>/.claude/settings.json` | `<project>/.claude/agents/<name>.md` |
+
+An agent's frontmatter file is not itself scope-specific — the same
+`.claude/agents/<name>.md` is patched regardless of which settings
+scope is chosen (this mirrors `diff.py`'s own `target_file` note above:
+a per-agent row always renders against that one path). Existing keys
+and surrounding text (comments, unrelated keys, formatting) in an agent
+file are preserved exactly — only the allowlisted keys a profile sets
+are patched in place (`frontmatter.patch_frontmatter`).
+
+### The `--project-dir` flag, not `--project`
+
+Every subcommand already has a `--project` flag (repeatable, filters a
+report by project slug). `apply` needs an unrelated "which directory is
+this project" argument, so — matching the identical collision already
+resolved for `snapshot-config`/`probe-config` — it is spelled
+`--project-dir` instead. `--scope` defaults to `user` when
+`--project-dir` is omitted, and to `project-local` when it is given.
+
+### `--dry-run`: the diff, never a write
+
+`--dry-run` prints exactly the text `diff.render_unified_diff` would
+render for this profile/scope/effective-config combination (see
+"Diffing a profile against a project's effective config" above —
+`plan_apply` calls the same `diff_against_effective`/
+`render_unified_diff` functions to build this text, so the preview and
+the real write plan are provably one computation, not two that could
+drift apart), followed by any managed-key notes, the env-var export
+lines, and the exact command to run for real. Nothing is written to
+disk.
+
+### Backups and `--revert`
+
+A real apply first backs up every file it is about to overwrite, byte
+for byte, under `<config-dir>/backups/<ts>/` (a file that didn't exist
+yet backs up as "absent" rather than empty), writes a `manifest.json`
+recording which backup corresponds to which target, then writes the
+new content atomically (temp file + rename, so a crash mid-apply never
+leaves a half-written target). It also writes a small stamp snapshot to
+`<config-dir>/snapshots/<ts>.json` and updates
+`<config-dir>/active-profile` to the applied profile's id (the same
+file `hooks/snapshot-config.py`'s `_read_active_profile` already reads
+on its next run).
+
+`claude-token-lens apply --revert <ts>` restores every file from that
+apply's manifest to its exact pre-apply state — byte for byte, deleting
+a file the apply had created rather than emptying it. `--list-backups`
+prints every previous apply's timestamp, profile id, scope, and file
+count, oldest first.
+
+Two applies landing within the same wall-clock second (both `execute()`
+would otherwise stamp with an identical timestamp) get distinct backup
+directories — a `-2`, `-3`, ... suffix disambiguates rather than
+letting the second apply silently overwrite the first's backup.
+
+### `--launch`: a one-session overlay, not a persisted apply
+
+`--launch` writes only `<config-dir>/profiles/<id>.settings.json` — a
+plain `settings.json`-shaped JSON object holding the profile's
+non-managed settings keys — and prints the matching `claude --settings
+<path>` command. No backup, no manifest, no `active-profile` update, no
+existing file read or merged: this is a one-off overlay for a single
+session, not a change to any of the layered settings files.
+
+### Environment variables: printed, never written
+
+A profile's `env` names are printed as `export NAME=value` lines (both
+in `--dry-run` and after a real apply) — never written to any file.
+This matches `env` being a name allowlist in the first place (see "What
+a profile cannot do" above): the value the profile carries is applied
+by the user exporting it in their own shell.
+
+### Managed keys
+
+Any settings/agent/env key the caller's snapshot reports as governed by
+a managed-settings layer is dropped from the write plan entirely (never
+attempted, never blocked-and-retryable) and named instead in a "managed
+by policy, raise with your administrator" note — the same exclusion
+`diff.py`'s own unified-diff rendering already applies.
+
+### Git-tracked files: refused unless `--allow-tracked`
+
+A project-scoped write (`project-local` or `repo`) whose target file —
+a settings file or an agent's frontmatter file — is already tracked by
+git is refused by default (an apply changing a file colleagues share
+through version control should be a deliberate, reviewed choice, not a
+side effect of running a profile). `--allow-tracked` opts in. This
+check never applies to `user` scope or to the config directory's own
+files (backups, the active-profile marker, snapshot stamps), none of
+which are ever expected to live in a project's repository.
+
+### Missing agent files: refused unless `--force`
+
+Applying an agent-frontmatter change to an agent that has no
+`<name>.md` file yet at the resolved scope is refused by default —
+there is nothing to patch, and creating one from a profile's partial
+key set would be a guess about the rest of that agent's configuration.
+`--force` is the explicit escape hatch: it creates a new frontmatter
+file holding exactly the keys the profile sets. `--force` controls only
+this behaviour — it has no effect on the git-tracked-file refusal
+above, which is `--allow-tracked`'s job specifically.

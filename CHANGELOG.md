@@ -62,6 +62,37 @@ A v0.4 backlog, kept here until scheduled into a milestone:
   (`"mcpServers"`) that has no exact-name allowlist counterpart. This
   package does not wire `cli.py`'s `apply`/`init`/`baseline` or the
   `/api/profiles*` routes — those remain a later work package's scope.
+- **`claude-token-lens apply`** (`profiles/apply.py`, `profiles/
+  frontmatter.py`, work package V3-apply): applies a catalogue profile
+  (or your own profile TOML file) to a project or your user config —
+  the host-side write path the V3-profiles entry above deliberately
+  left out of scope. `--dry-run` prints `diff.py`'s own unified-diff
+  text before anything is written; a real apply backs up every touched
+  file byte for byte under `<config-dir>/backups/<ts>/` before writing,
+  so `apply --revert <ts>` always restores the exact prior state.
+  `frontmatter.py` is a new, from-scratch parser/patcher for a `.claude/
+  agents/<name>.md` file's `---`-delimited frontmatter block: it updates
+  an allowlisted key in place while preserving every other character
+  (comments, unrelated keys, formatting) verbatim, and refuses outright
+  — rather than guessing — on any frontmatter shape it cannot safely
+  round-trip (tab indentation, more than one level of nested mapping, a
+  duplicate key, an unterminated fence, and a handful of other
+  ambiguous shapes; see the module's own docstring for the full list).
+  A project-scoped write to a file already tracked by git is refused
+  unless `--allow-tracked` is given; a profile agent key with no
+  existing `<name>.md` file is refused unless `--force` is given (it
+  then creates one from scratch). A managed-settings key is never
+  written regardless of scope or flags, and an `env` value is only ever
+  printed as `export NAME=value` guidance, never written to any file.
+  `--launch` writes a one-session `<config-dir>/profiles/<id>.settings
+  .json` overlay instead of a persisted apply. `--project-dir` (not
+  `--project`, already taken by the global project-slug filter) selects
+  the target directory for `project-local`/`repo` scope, matching the
+  identical collision `snapshot-config`/`probe-config` resolve the same
+  way. See [docs/profiles.md#applying-a-profile](docs/profiles.md#applying-a-profile),
+  [README.md's "Applying a profile"](README.md#15-applying-a-profile),
+  and [SECURITY.md](SECURITY.md#applying-a-profile-the-one-command-that-writes-outside-config-dir)
+  for full detail.
 - **Service web UI** (`service/static/index.html`/`app.js`/`app.css`,
   work package S1-ui): a CSP-compliant, framework-free, no-build-step
   UI with ten keyboard-navigable tabs (Overview, Sessions, Cache, TTL,
