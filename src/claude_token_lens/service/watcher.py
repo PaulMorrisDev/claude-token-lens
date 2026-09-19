@@ -54,6 +54,7 @@ import json
 import os
 import threading
 import time
+import zlib
 from pathlib import Path
 
 from .. import PARSER_VERSION, classify, discovery, recache, workflows as workflows_mod, workstyle
@@ -66,7 +67,7 @@ from ..pricing import Pricing, PricingError, load_pricing, price_turn
 from ..report import _dominant_transcript_model, _extract_workstyle_features
 from .. import snapshots as snapshots_mod
 from .contracts import ServeOptions, WatcherStats
-from .store import GLOBAL_PROJECT_SLUG, Store
+from .store import GLOBAL_PROJECT_SLUG, Store, decode_digest_blob
 
 #: A file whose mtime is under this many seconds old is assumed to still
 #: be an active Claude Code session (same convention/value as
@@ -224,15 +225,27 @@ def _build_recache_turns(result: TranscriptResult, thresholds: recache.RecacheTh
 
 
 def _build_events(result: TranscriptResult) -> list[dict]:
+    """One aggregate row per ``(kind, subkind)`` (S1-perf item 4) --
+    ``events_agg.count``/``dropped_tokens_sum``/``duration_ms_sum``,
+    rather than one row per raw ``Event`` -- no reader anywhere in this
+    codebase used per-event detail (``store.py`` has no ``events()``
+    read method, and neither ``api.py`` nor ``rebuild.py`` ever queries
+    the table), so this is the exact same information any caller could
+    ever get back out, at a small fraction of the row count. ``ts`` is
+    intentionally dropped: aggregating necessarily collapses it (an
+    aggregate row spans every occurrence's own timestamp), and nothing
+    read it back either.
+    """
+    aggregates: dict[tuple[str, str | None], dict[str, int]] = {}
+    for event in result.events:
+        key = (event.kind.value, event.subkind)
+        agg = aggregates.setdefault(key, {"count": 0, "dropped_tokens_sum": 0, "duration_ms_sum": 0})
+        agg["count"] += 1
+        agg["dropped_tokens_sum"] += event.dropped_tokens or 0
+        agg["duration_ms_sum"] += event.duration_ms or 0
     return [
-        {
-            "kind": event.kind.value,
-            "subkind": event.subkind,
-            "ts": event.ts,
-            "dropped_tokens": event.dropped_tokens,
-            "duration_ms": event.duration_ms,
-        }
-        for event in result.events
+        {"kind": kind, "subkind": subkind, **agg}
+        for (kind, subkind), agg in aggregates.items()
     ]
 
 
@@ -772,20 +785,22 @@ class FileWatcher:
 
     def _load_existing(self, path_str: str, stats: WatcherStats) -> TranscriptResult | None:
         """The already-stored ``TranscriptResult`` for ``path_str``, decoded
-        from its ``transcripts.digest_json`` column — the same encoding
-        ``cache.py`` uses (see :func:`~claude_token_lens.cache.encode_result`),
-        so this is a lossless round trip, not a re-parse."""
+        from its ``transcripts.digest_blob`` column (zlib-compressed, S1-perf
+        item 4 -- see :func:`~claude_token_lens.service.store.decode_digest_blob`)
+        — the same encoding ``cache.py`` uses (see
+        :func:`~claude_token_lens.cache.encode_result`), so this is a
+        lossless round trip, not a re-parse."""
         row = self._time_store(
             stats,
             lambda: self.store._connection().execute(
-                "SELECT digest_json FROM transcripts WHERE path = ?", (path_str,)
+                "SELECT digest_blob FROM transcripts WHERE path = ?", (path_str,)
             ).fetchone(),
         )
         if row is None:
             return None
         try:
-            return result_from_jsonable(json.loads(row["digest_json"]))
-        except (KeyError, TypeError, ValueError):
+            return result_from_jsonable(json.loads(decode_digest_blob(row["digest_blob"])))
+        except (KeyError, TypeError, ValueError, zlib.error):
             return None
 
     def _upsert_transcript_row(

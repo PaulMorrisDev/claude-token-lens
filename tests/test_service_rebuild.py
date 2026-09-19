@@ -92,6 +92,77 @@ def test_watcher_then_rebuild_matches_fresh_corpus_report(tmp_path: Path):
     assert rebuilt_json == fresh_json
 
 
+def _api_backing_bodies(store: Store) -> dict:
+    """Every ``/api/*`` Store-backed route's own data (as opposed to the
+    Report-backed routes, which go through ``corpus_from_store`` --
+    ``api.py``'s own module docstring names the split), serialised
+    through the exact same JSON round trip a real HTTP response body
+    goes through -- so a change to internal storage shape (S1-perf's
+    ``digest_json``->``digest_blob`` compression, ``events``->
+    ``events_agg`` aggregation) that somehow leaked into one of these
+    dicts would show up as a JSON diff here, not just as a Python
+    object-identity difference "close enough" not to notice."""
+    session_ids = [row["id"] for row in store.sessions(limit=1_000_000)]
+    return json.loads(
+        json.dumps(
+            {
+                "summary": store.summary(),
+                "sessions": store.sessions(limit=1_000_000),
+                "recache": store.recache(),
+                "compactions": store.compactions(),
+                "session_detail": {sid: store.session(sid) for sid in session_ids},
+            },
+            sort_keys=True,
+        )
+    )
+
+
+def test_api_backing_bodies_survive_a_full_store_rebuild(tmp_path: Path):
+    """S1-perf's storage-shape changes (item 3's write batching, item 4's
+    ``events_agg`` aggregation and ``digest_blob`` compression) must not
+    change a single byte of any ``/api/*`` response body (this work
+    package's own acceptance bar). ``Store.migrate``'s only migration
+    path is "drop every table and let the next watcher tick repopulate
+    them from scratch" (see ``schema.py``'s module docstring) -- so a
+    full store rebuild is simulated exactly that way: run one watcher
+    tick over a real fixture corpus, capture every Store-backed route's
+    own body, drop and recreate every table, run a second watcher tick
+    over the *same* on-disk files into the now-empty store, and assert
+    the five bodies it produces are identical to the first tick's.
+    """
+    project_dirs = _fixture_project_dirs()
+
+    projects_root = tmp_path / "projects"
+    projects_root.mkdir()
+    for project_dir in project_dirs:
+        shutil.copytree(project_dir, projects_root / project_dir.name)
+
+    config_dir = tmp_path / "config"
+    options = ServeOptions(projects_root=projects_root, config_dir=config_dir)
+    store = Store(tmp_path / "rebuild.db")
+    store.open()
+
+    stats1 = FileWatcher(store, options).run_once()
+    assert_privacy(stats1)
+    assert stats1.errors == 0
+    before = _api_backing_bodies(store)
+
+    # Simulate the schema's only "migration": drop every table and let a
+    # fresh tick repopulate them (Store.migrate's own behaviour whenever
+    # the recorded schema_version differs from schema.SCHEMA_VERSION).
+    conn = store._connection()
+    store._drop_all_tables(conn)
+    store.migrate()
+    assert store.known_files() == {}
+
+    stats2 = FileWatcher(store, options).run_once()
+    assert_privacy(stats2)
+    assert stats2.errors == 0
+    after = _api_backing_bodies(store)
+
+    assert after == before
+
+
 def test_corpus_from_store_window_filters_like_discovery(tmp_path: Path):
     """A session outside the requested window is excluded, the same way
     ``discovery.find_sessions(..., days=N)`` would never have surfaced it

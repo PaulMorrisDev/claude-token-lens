@@ -134,7 +134,7 @@ def _seed_store(store: Store, corpus: corpus_mod.Corpus) -> str:
                 "gap_s": 400.0,
             }
         ],
-        events=[{"kind": "COMPACT_BOUNDARY", "subkind": None, "ts": "2026-09-18T12:30:00Z"}],
+        events=[{"kind": "compact_boundary", "subkind": None, "count": 1, "dropped_tokens_sum": 0, "duration_ms_sum": 0}],
         compactions=[
             {
                 "ts": "2026-09-18T12:30:00Z",
