@@ -116,7 +116,15 @@ def _build_common_parser() -> argparse.ArgumentParser:
     )
     common.add_argument(
         "--group-by",
-        choices=("mode", "purpose", "agent", "project", "model", "profile"),
+        # Fix R6: this tuple used to be hand-maintained and had drifted
+        # from classify._GROUP_KEYS (it offered a non-existent
+        # "profile" key -- which classify.group_sessions() would reject
+        # with an uncaught ValueError deep inside build_report() rather
+        # than a clean CLI error -- and omitted the real "entrypoint"
+        # key entirely). Derive the choices so they can never drift
+        # again; argparse itself exits 2 with a one-line message on an
+        # invalid choice.
+        choices=sorted(classify._GROUP_KEYS),
     )
 
     cache = common.add_mutually_exclusive_group()

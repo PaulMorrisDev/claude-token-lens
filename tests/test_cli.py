@@ -95,6 +95,46 @@ def test_default_subcommand_constant_is_report():
     assert cli.DEFAULT_SUBCOMMAND == "report"
 
 
+# -- --group-by choices (Fix R6) ---------------------------------------------
+
+
+def test_group_by_choices_match_classify_group_keys():
+    import argparse
+
+    from claude_token_lens import classify
+
+    parser = cli._make_parser()
+    subparsers_action = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
+    report_parser = subparsers_action.choices["report"]
+    group_by_action = next(a for a in report_parser._actions if a.dest == "group_by")
+    assert tuple(group_by_action.choices) == tuple(sorted(classify._GROUP_KEYS))
+
+
+def test_group_by_invalid_choice_exits_2_with_one_line_message(capsys):
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main(["report", "--group-by", "profile"])
+    assert exc_info.value.code == 2
+    err = capsys.readouterr().err
+    # argparse's own usage banner precedes the error line -- just check
+    # the actual error line is the expected single one-line message,
+    # not that the whole stderr output is short.
+    error_lines = [line for line in err.splitlines() if "invalid choice" in line]
+    assert len(error_lines) == 1
+    assert "profile" in error_lines[0]
+
+
+def test_group_by_accepts_entrypoint(tmp_path, capsys):
+    # "entrypoint" is a real classify._GROUP_KEYS member that the old
+    # hand-maintained choices tuple omitted entirely.
+    root = tmp_path / "projects"
+    _write_project(root, "proj-a")
+    exit_code = cli.main(
+        ["report", "--projects-root", str(root), "--project", "proj-a", "--group-by", "entrypoint", "--json"]
+    )
+    assert exit_code == 0
+    capsys.readouterr()
+
+
 @pytest.mark.parametrize("command", STUB_SUBCOMMANDS)
 def test_planned_stub_exits_2(command, capsys):
     exit_code = cli.main([command])
