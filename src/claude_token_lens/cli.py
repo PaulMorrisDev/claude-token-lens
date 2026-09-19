@@ -30,7 +30,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import available_timezones
 
-from . import __version__, classify, discovery, probe as probe_mod, recache, snapshots
+from . import __version__, baseline as baseline_mod, classify, discovery, onboarding
+from . import probe as probe_mod, recache, snapshots
 from . import statusline as statusline_mod
 from .cache import DigestCache
 from .config import Config, ConfigError, load_config, load_session_overrides
@@ -428,6 +429,41 @@ def _add_snapshot_config_args(sub: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_init_args(sub: argparse.ArgumentParser) -> None:
+    sub.add_argument(
+        "--answers",
+        metavar="FILE",
+        default=None,
+        help="a JSON file answering some or all of init's questions (any key it "
+        "omits falls back to interactive prompting, or a derived default under "
+        "--non-interactive)",
+    )
+    sub.add_argument(
+        "--non-interactive",
+        action="store_true",
+        help="never prompt on stdin; any question --answers doesn't cover uses a "
+        "derived default, printed as 'derived: ...' so nothing is guessed silently",
+    )
+    sub.add_argument(
+        "--no-install",
+        action="store_true",
+        help="skip printing the SessionStart hook / statusLine install fragments",
+    )
+
+
+def _add_baseline_args(sub: argparse.ArgumentParser) -> None:
+    # Note: --days is already provided by the common parent parser
+    # (mutually exclusive with --since) -- every subcommand inherits it,
+    # baseline included, so it is not redefined here.
+    sub.add_argument(
+        "--finalise",
+        action="store_true",
+        help="accept this baseline even if the onboarding capture window hasn't finished",
+    )
+    sub.add_argument("--list", action="store_true", dest="list_baselines", help="list every saved baseline")
+    sub.add_argument("--show", metavar="ID", default=None, help="print one saved baseline's onboarding report")
+
+
 def _add_probe_config_args(sub: argparse.ArgumentParser) -> None:
     """Flags for the ``probe-config`` subcommand (schema 2): the same scan
     ``snapshot-config`` does, for an arbitrary project directory, without a
@@ -473,13 +509,8 @@ def _make_parser() -> argparse.ArgumentParser:
             "export": "export digests as csv-flat, json or otel-jsonl (aggregate-only by default)",
             "monthly-report": "write a monthly Markdown/HTML finance report",
             "scrub-fixture": "scrub a real session into a privacy-safe test fixture",
-            # Fix R25: lead with the same "(planned)" marker the plain
-            # "not implemented yet" fallback below uses for every other
-            # stub, so a subcommand listing (``--help``) makes stub
-            # commands visually scannable as a group instead of only
-            # readable one at a time via "planned for vX.Y" prose.
-            "init": "(planned) v0.3 milestone",
-            "baseline": "(planned) v0.3 milestone",
+            "init": "detect + ask (or derive) config, write config.toml, run an initial baseline",
+            "baseline": "capture/list/show an onboarding baseline (mode mix, suggested profile, projected saving)",
             "serve": "run the local JSON API + watcher service",
         }.get(name, f"{name} (not implemented yet)")
         sub = subparsers.add_parser(name, parents=[common], help=help_text)
@@ -509,6 +540,10 @@ def _make_parser() -> argparse.ArgumentParser:
             _add_monthly_report_args(sub)
         if name == "serve":
             _add_serve_args(sub)
+        if name == "init":
+            _add_init_args(sub)
+        if name == "baseline":
+            _add_baseline_args(sub)
     return parser
 
 
@@ -1421,12 +1456,105 @@ def _cmd_pricing_check(args: argparse.Namespace) -> int:
     return 0
 
 
-# -- init / baseline (v0.3 stubs) / serve (v0.2) -----------------------------
+# -- init / baseline (v0.3) / serve (v0.2) -----------------------------------
 
 
-def _cmd_planned_stub(command: str, milestone: str) -> int:
-    print(f"claude-token-lens {command}: planned for {milestone}", file=sys.stderr)
-    return 2
+def _cmd_init(args: argparse.Namespace) -> int:
+    """``init``: detect what's on the machine, ask (or derive, under
+    ``--non-interactive``) the "Asked, not guessed" questions, write
+    ``config.toml``/``projects/<slug>.toml``, print the install-step
+    fragments, and run an initial baseline. The two fragments (the
+    SessionStart hook's and the statusLine's) are resolved here, via the
+    same dynamic-import/``statusline`` module this CLI already uses for
+    ``snapshot-config``/``statusline`` -- ``onboarding.py`` itself never
+    imports either, so it stays plain and unit-testable (see its module
+    docstring).
+    """
+    config_dir = _resolve_config_dir(args.config_dir)
+    projects_root_path = Path(args.projects_root) if args.projects_root else discovery.projects_root()
+
+    hook = _load_snapshot_hook_module()
+    hook_fragment = hook.hook_fragment_text()
+    statusline_fragment = statusline_mod.print_install_fragment()
+
+    try:
+        return onboarding.run_init(
+            config_dir=config_dir,
+            projects_root_path=projects_root_path,
+            answers_path=args.answers,
+            non_interactive=args.non_interactive,
+            no_install=args.no_install,
+            hook_fragment=hook_fragment,
+            statusline_fragment=statusline_fragment,
+            # Resolved here rather than relying on run_init's own
+            # sys.stdin/sys.stdout default parameter values: a default
+            # argument is bound once, at function-definition time, so it
+            # would keep pointing at whatever sys.stdout/sys.stdin were
+            # when onboarding.py was first imported -- not whatever a
+            # caller (e.g. pytest's capsys, which monkeypatches
+            # sys.stdout per test) has made current by the time this
+            # actually runs. Referencing sys.stdin/sys.stdout here,
+            # inside the function body, re-resolves them fresh on every
+            # call, same as every other subcommand's own bare print().
+            stdin=sys.stdin,
+            stdout=sys.stdout,
+        )
+    except onboarding.OnboardingError as exc:
+        print(f"claude-token-lens init: {exc}", file=sys.stderr)
+        return 2
+
+
+def _cmd_baseline(args: argparse.Namespace) -> int:
+    """``baseline``: capture a new baseline (default), or ``--list``/
+    ``--show ID`` an already-saved one. Shares its project/window
+    resolution with every report-like subcommand
+    (``_resolve_project_dirs_for_args``/``_load_config_and_pricing``).
+    """
+    config_dir = _resolve_config_dir(args.config_dir)
+
+    if args.list_baselines:
+        records = baseline_mod.list_baselines(config_dir)
+        if not records:
+            print(f"claude-token-lens baseline: no baselines saved yet under {config_dir}", file=sys.stderr)
+            return 1
+        for record in records:
+            flag = " (provisional)" if record.get("provisional") else ""
+            print(f"{record['id']}  {record.get('created_at', '')}  sessions={record.get('sessions_analysed', 0)}{flag}")
+        return 0
+
+    if args.show:
+        record = baseline_mod.load_baseline(config_dir, args.show)
+        if record is None:
+            print(f"claude-token-lens baseline: no baseline {args.show!r} under {config_dir}", file=sys.stderr)
+            return 1
+        print(baseline_mod.render_onboarding_report(record))
+        return 0
+
+    config, rates, config_dir, err = _load_config_and_pricing(args)
+    if err is not None:
+        return err
+
+    root, project_dirs = _resolve_project_dirs_for_args(args, config)
+    if not project_dirs:
+        print(f"claude-token-lens baseline: no matching project directories under {root}", file=sys.stderr)
+        return 1
+
+    record, _model = baseline_mod.build_baseline(
+        config=config,
+        pricing=rates,
+        config_dir=config_dir,
+        project_dirs=project_dirs,
+        days=args.days,
+        finalise=args.finalise,
+    )
+    report_markdown = baseline_mod.render_onboarding_report(record)
+    path = baseline_mod.save_baseline(config_dir, record, report_markdown)
+    print(f"Wrote {path}")
+    print(report_markdown)
+
+    status = baseline_mod.capture_status(config)
+    print(baseline_mod.format_capture_status(status))
+    return 0
 
 
 def _cmd_serve_purge(config_dir: Path, *, confirmed: bool) -> int:
@@ -1580,8 +1708,10 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_monthly_report(args)
     if command == "scrub-fixture":
         return _cmd_scrub_fixture(args)
-    if command in ("init", "baseline"):
-        return _cmd_planned_stub(command, "v0.3")
+    if command == "init":
+        return _cmd_init(args)
+    if command == "baseline":
+        return _cmd_baseline(args)
     if command == "serve":
         return _cmd_serve(args)
 
