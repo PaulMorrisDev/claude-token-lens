@@ -353,7 +353,7 @@ def _add_serve_args(sub: argparse.ArgumentParser) -> None:
     sub.add_argument(
         "--once",
         action="store_true",
-        help="run a single watcher tick and exit instead of serving",
+        help="run a single watcher tick, print its WatcherStats, and exit instead of serving",
     )
     sub.add_argument(
         "--billing-mode",
@@ -1077,6 +1077,16 @@ def _cmd_probe(args: argparse.Namespace) -> int:
 
 def _cmd_statusline(args: argparse.Namespace) -> int:
     forward = ["--print-install-fragment"] if getattr(args, "print_install_fragment", False) else []
+    # --config-dir was accepted by argparse (it's a "common" flag added to
+    # every subcommand, including statusline -- see --help) but silently
+    # dropped on the floor here: statusline_mod.main() always resolved
+    # against log_usage.resolve_config_dir(None), i.e. $CLAUDE_CONFIG_DIR
+    # or ~/.claude/token-lens, never the value the caller actually passed.
+    # Forward it so statusline honours the same --config-dir contract
+    # every other subcommand does (fixed for v0.2 release verification).
+    config_dir = getattr(args, "config_dir", None)
+    if config_dir:
+        forward += ["--config-dir", str(config_dir)]
     return statusline_mod.main(forward)
 
 

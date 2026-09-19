@@ -53,6 +53,26 @@ def _is_loopback(bind: str) -> bool:
     return bind in _LOOPBACK_ADDRESSES
 
 
+def _format_stats_line(stats) -> str:
+    """Render a ``WatcherStats`` as the single line ``serve --once``
+    prints on exit -- same fields ``/api/health`` exposes (``docs/api.md``),
+    formatted for a terminal/cron log rather than as JSON, matching this
+    module's other ``print()`` lines (``"claude-token-lens serve: ..."``).
+    """
+    line = (
+        "claude-token-lens serve --once: "
+        f"duration_s={stats.duration_s:.3f} "
+        f"(discovery_s={stats.discovery_s:.3f} parse_s={stats.parse_s:.3f} store_s={stats.store_s:.3f}) "
+        f"files_scanned={stats.files_scanned} files_parsed={stats.files_parsed} "
+        f"files_skipped_live={stats.files_skipped_live} files_removed={stats.files_removed} "
+        f"transcripts_missing={stats.transcripts_missing} sessions_upserted={stats.sessions_upserted} "
+        f"errors={stats.errors}"
+    )
+    if stats.error_messages:
+        line += f" error_messages={list(stats.error_messages)!r}"
+    return line
+
+
 def run(options: ServeOptions, *, once: bool = False, allow_remote: bool = False) -> int:
     """Run the v0.2 service until ``SIGINT``/``KeyboardInterrupt``
     (or, with ``once=True``, run a single watcher tick and return).
@@ -79,9 +99,17 @@ def run(options: ServeOptions, *, once: bool = False, allow_remote: bool = False
     # results across ticks.
     cache = DigestCache(options.config_dir)
     watcher = FileWatcher(store, options, cache=cache)
-    watcher.run_once()
+    stats = watcher.run_once()
 
     if once:
+        # Print the tick's WatcherStats before exiting -- --once is the
+        # one-shot/cron/verification entry point, and until this was
+        # added it discarded every number docs/api.md documents as a
+        # first-class diagnostic (discovery_s/parse_s/store_s, errors,
+        # ...), leaving an operator running --once with no way to see
+        # what the tick actually did short of reading the store or
+        # starting the full server just to hit /api/health once.
+        print(_format_stats_line(stats))
         store.close()
         return 0
 

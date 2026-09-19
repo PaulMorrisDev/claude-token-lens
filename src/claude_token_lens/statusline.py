@@ -1353,6 +1353,16 @@ def main(argv: list[str] | None = None) -> int:
         _safe_print(print_install_fragment())
         return 0
 
+    # ``--config-dir PATH`` (forwarded by cli.py's _cmd_statusline, which
+    # parses it as one of the "common" flags every subcommand accepts --
+    # see --help). Parsed by hand rather than via argparse to match this
+    # module's existing minimal argv handling above.
+    config_dir_arg: str | None = None
+    if "--config-dir" in argv:
+        i = argv.index("--config-dir")
+        if i + 1 < len(argv):
+            config_dir_arg = argv[i + 1]
+
     try:
         raw = sys.stdin.read()
     except Exception:
@@ -1367,7 +1377,7 @@ def main(argv: list[str] | None = None) -> int:
         payload = {}
 
     try:
-        config_dir = log_usage.resolve_config_dir(None)
+        config_dir = log_usage.resolve_config_dir(config_dir_arg)
         effective_ttl_s = resolve_effective_ttl(payload, config_dir)
         now = datetime.now(timezone.utc)
         line = render_status(payload, now, effective_ttl_s)

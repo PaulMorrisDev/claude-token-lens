@@ -22,6 +22,7 @@ except the cache/snapshot/log-usage tests, which need a real
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import os
 import re
@@ -1114,3 +1115,23 @@ def test_python_dash_m_unimplemented_subcommand_exits_2():
     )
     assert result.returncode == 2
     assert "init" in result.stderr
+
+
+def test_statusline_cli_forwards_config_dir_flag(tmp_path, monkeypatch, capsys):
+    """``claude-token-lens statusline --config-dir PATH`` must actually
+    write there. A v0.2 release bug: ``_cmd_statusline`` parsed
+    ``--config-dir`` via the "common" argparse group (it's in ``--help``
+    for every subcommand) but never forwarded it to
+    ``statusline.main()``, which always fell back to
+    ``$CLAUDE_CONFIG_DIR``/``~/.claude`` -- silently writing
+    ``usage-log.csv``/``statusline-keys.json`` to the real config dir
+    even when a caller explicitly asked for an isolated one.
+    """
+    explicit_config_dir = tmp_path / "explicit-dir"
+    payload = {"rate_limits": {"five_hour": {"used_percentage": 7}}}
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
+
+    rc = cli.main(["statusline", "--config-dir", str(explicit_config_dir)])
+
+    assert rc == 0
+    assert (explicit_config_dir / "usage-log.csv").exists()

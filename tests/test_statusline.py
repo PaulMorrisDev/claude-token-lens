@@ -288,6 +288,30 @@ def test_main_full_payload_prints_line_and_logs_usage_row(monkeypatch, capsys, t
     assert rows[1]["window"] == "context_window"
 
 
+def test_main_explicit_config_dir_flag_wins_over_env_var(monkeypatch, capsys, tmp_path):
+    """``--config-dir PATH`` (forwarded by cli.py's ``_cmd_statusline`` --
+    see ``docs/api.md``-adjacent ``resolve_config_dir`` contract: "
+    ``--config-dir`` wins; else ``$CLAUDE_CONFIG_DIR``; else
+    ``~/.claude``") must actually be honoured, not silently dropped in
+    favour of ``$CLAUDE_CONFIG_DIR`` -- a real v0.2 release bug where the
+    CLI's own ``--help`` advertised the flag but ``main()`` never parsed
+    it out of argv, so it always wrote to the env-var/home-dir location
+    regardless of what the caller passed.
+    """
+    env_config_dir = tmp_path / "env-dir"
+    explicit_config_dir = tmp_path / "explicit-dir"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(env_config_dir))
+    payload = {"rate_limits": {"five_hour": {"used_percentage": 5}}}
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
+
+    rc = statusline.main(["--config-dir", str(explicit_config_dir)])
+
+    assert rc == 0
+    assert (explicit_config_dir / "usage-log.csv").exists()
+    assert not (env_config_dir / "token-lens" / "usage-log.csv").exists()
+    assert not (env_config_dir / "usage-log.csv").exists()
+
+
 def test_main_no_rate_limits_still_logs_context_window_row(monkeypatch, capsys, tmp_path):
     """S1-context-budget: a payload with no ``rate_limits`` at all still
     gets its own ``context_window`` row logged, independently of the
