@@ -21,6 +21,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   exceeds a configurable share of the corpus's cache volume, naming a
   concrete truncation lever and citing the projected saving. See
   [`docs/carry.md`](docs/carry.md).
+- **`model_swap.py`** (v4-model-swap): a model-swap counterfactual per
+  agent type — reprices every already-observed priced turn at every
+  model `pricing.toml` carries (same tokens, same observed 5m/1h
+  cache-write split) and reports the ceiling saving from moving one
+  tier down (fable -> opus -> sonnet -> haiku), plus a `model-tier`
+  recommendation naming the exact `settings.json`/`<agent>.md` lever.
+  Every saving is stated as a price ceiling at today's usage shape,
+  never a prediction. See [`docs/model-swap.md`](docs/model-swap.md).
 
 ## [0.3.0] - 2026-09-19
 

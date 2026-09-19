@@ -1,0 +1,768 @@
+"""Model-swap counterfactual (v4-model-swap): for each subagent type and
+the top-level conversation, what would today's already-observed token
+volumes have cost at every other model this rate card knows, and — the
+number that actually leads somewhere — what's the ceiling saving from
+moving one tier down (fable -> opus -> sonnet -> haiku)?
+
+This module answers a narrower, more honest question than "switch model
+X to model Y and save $Z": it holds every observed token volume and the
+observed 5m/1h cache-write split exactly constant (the same
+``price_turn`` the rest of the engine uses, called with
+``write_split=None`` so it falls back to the turn's own ``cc_5m``/
+``cc_1h`` — see ``pricing.price_turn``'s docstring) and only swaps the
+per-token rate. A smaller model may need more turns to reach the same
+result, or fail the task outright, and neither of those possibilities
+has any representation here — every saving figure this module produces
+is a **price ceiling at today's usage shape**, never a prediction of
+what a real swap would cost. ``build_section``'s notes and every
+``model-tier`` recommendation's action text restate this explicitly, per
+the project's "every number must lead to a lever, honestly" convention.
+
+Three layers, mirroring ``ttl.py``/``topology.py``'s own shape:
+
+- :func:`compute_model_swap` — a pure function (no ``add``-style
+  accumulator; the whole corpus's transcripts are handed in at once) that
+  folds every priced turn into a per-agent-type :class:`ModelSwapTypeStats`,
+  keyed exactly like ``TtlStats.add`` (``"top-level"`` for a
+  ``TranscriptMeta.kind == "top-level"`` transcript, else
+  ``TranscriptMeta.agent_type`` or ``"unknown"``): observed cost (each
+  turn priced at its own resolved model, so a mixed-model agent type is
+  priced correctly), and — for every model this rate card carries, not
+  just the four current-generation ones — the same turns repriced flat
+  at that model's rate. The tier verdict (see below) is resolved here,
+  once, because it needs ``Pricing.aliases`` and ``build_section`` is
+  deliberately pricing-free (matching the literal signature the work
+  order asked for).
+- :func:`build_section` — renders a finished :class:`ModelSwapStats` as
+  the report's ``model_swap`` section: ``model_swap_by_agent_type`` (one
+  row per agent type, observed cost, cost at every alternative model,
+  and the one-tier-down verdict) and ``model_swap_summary`` (the
+  corpus-wide ceiling if every subagent type currently on Fable/Opus
+  moved one tier down).
+- :data:`RULES` — one rule, ``model-tier``, built the same way
+  ``recommend.py``'s own rules are (reads back the *rendered*
+  ``model_swap_by_agent_type`` table, never the raw stats — see below),
+  so a future ``recommend.py`` (off-limits to this work order — see
+  deviations) can fold it in by calling ``RULES["model-tier"](report,
+  th, archetype, snapshot)``.
+
+Tier order: this module deliberately reuses ``workstyle.model_tier``'s
+existing "fable(3) > opus(2) > sonnet(1) > haiku(0)" family-substring
+ranking rather than inventing a cost-derived ordering of its own — the
+four models the work order names as "at minimum" present
+(``claude-fable-5-1``, ``claude-opus-5``, ``claude-sonnet-5``,
+``claude-haiku-4-5-20251001``) are exactly the current model each
+family's bare alias (``"fable"``/``"opus"``/``"sonnet"``/``"haiku"``)
+resolves to in ``pricing.toml`` today, so "one tier down" is resolved
+via ``Pricing.aliases[family]`` — the public alias table, per the work
+order's "resolve via pricing.py's public API, do not hardcode" — never
+a hardcoded model id. If a future rate card drops a family's bare alias
+entirely, that agent type's row reports "unknown tier" rather than
+guessing at a specific dated id.
+
+Deviations from the brief, reported rather than made silently (project
+convention — see ``model.py``'s own module docstring):
+
+- **Every model in ``pricing.toml`` is priced as an alternative column**,
+  not just the four current-generation ones the brief names "at
+  minimum" — read literally, "every model in pricing.toml with known
+  rates" is the full set (legacy dated ids included), and the four named
+  models are a floor on that set, not a ceiling on it.
+- **The RULES-firing "one tier down" pick is narrower than "cheapest
+  alternative overall"**: it is specifically the immediately next
+  cheaper *family*'s current aliased model (via ``Pricing.aliases``),
+  matching the rule id ``model-tier`` and the brief's own "one-tier-down
+  saving" wording — jumping straight from Fable to Haiku is a bigger,
+  differently-risky move than "move down one tier", so this module never
+  recommends it as the ``model-tier`` action even though it's visible as
+  a column in ``model_swap_by_agent_type``.
+- **``recommend.py``, ``model.py``, ``pricing.py`` and ``report.py`` are
+  off-limits to this work order** (a wiring agent integrates this module
+  afterwards — see the module's own header comment in this repo's task
+  brief). Several small private helpers this module needs — the
+  report-lookup helpers (``_table``/``_col_index``/``_row``/``_cell``/
+  ``_evidence``), the minimum-sample row gate (``_row_meets_min_sample``),
+  the archetype-gating constants (``_ALL_ARCHETYPES``/
+  ``_NO_SUBAGENT_ARCHETYPES``), and the lever-scope convention
+  (``"user"``/``"repo"``/``"managed"``) — already exist in
+  ``recommend.py`` in exactly this shape, and ``workstyle.py`` already
+  carries the private ``_TIER_FAMILIES`` tuple this module's tier lookup
+  needs the family *name* for (``workstyle.model_tier`` returns only the
+  rank). Rather than reach into another module's underscore-prefixed
+  internals across a file this module can't also keep in lockstep with,
+  every one of these is duplicated locally, in the same shape, following
+  ``topology.py``'s own documented precedent for ``_transcript_cost``
+  ("deliberately duplicated ... rather than imported"). A wiring agent
+  editing ``recommend.py`` calls ``model_swap.RULES["model-tier"](...)``
+  directly rather than merging this module's copies back in.
+- **Lever scope for the per-agent-type ``model`` lever is computed
+  locally** (``_scope_for``) instead of via ``recommend.py``'s private
+  ``_lever_scope``/``_AGENT_LEVER_RE``: that regex only ever matched the
+  TTL-switch lever's specific wording (``"experimental.cacheTtl in
+  X.md"``), and since ``Recommendation.agent_type`` is set on every row
+  here, ``recommend.py``'s own ``render_patch_set`` already routes by
+  ``agent_type`` first (Fix R13), never falling back to the regex, for a
+  recommendation from this module — so a text-format match was never
+  necessary here. Scope is simply "user" for the top-level row's
+  ``settings.json`` lever and "repo" for a subagent's
+  ``.claude/agents/<type>.md`` frontmatter lever, upgraded to "managed"
+  when ``"model"`` appears in ``snapshots.managed_keys(snapshot)`` — the
+  same three-value convention, computed directly from what this module
+  already knows about the row rather than sniffed back out of text.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Callable, Sequence
+
+from . import workstyle
+from .model import Column, Recommendation, ReportModel, Section, Table, TranscriptResult, Turn
+from .pricing import Pricing, price_turn
+from .snapshots import Snapshot, managed_keys
+
+#: See module docstring's tier-order deviation note: kept in lock-step
+#: with (never imported from) ``workstyle._TIER_FAMILIES`` — the
+#: family name at rank ``r`` is ``_TIER_FAMILIES[r]``, and
+#: ``workstyle.model_tier`` returns exactly that rank.
+_TIER_FAMILIES: tuple[str, ...] = ("haiku", "sonnet", "opus", "fable")
+
+#: The exact phrase every "no cheaper alternative exists" state's label
+#: contains, so a caller (a rule, a test, a reader skimming the report)
+#: never mistakes "already on the cheapest model" for a real saving.
+_ALREADY_CHEAPEST_LABEL = "already on the cheapest model"
+
+#: Archetypes that never spawn subagents of their own -- duplicated from
+#: ``recommend.py``'s own constant of the same name (see module
+#: docstring's deviation note): per-agent-type model advice makes no
+#: sense for a session that never runs a subagent.
+_NO_SUBAGENT_ARCHETYPES = frozenset({"chat-only"})
+
+#: Every archetype ``workstyle.detect_archetype``/``corpus_archetype``
+#: can return; the empty tuple means "no restriction" -- same convention
+#: as ``recommend.py``'s ``_ALL_ARCHETYPES``.
+_ALL_ARCHETYPES: tuple[str, ...] = ()
+
+#: Deviations from the brief/plan, reported per this project's own
+#: convention -- see module docstring for the full explanation of each.
+ASSUMPTIONS: list[str] = [
+    "token volumes, turn counts, and the observed 5m/1h cache-write split are held constant across every alternative-model repricing -- every saving figure is a price ceiling at today's usage shape, never a prediction",
+    "a smaller model may need more turns to reach the same result, or fail the task outright; neither possibility is represented here",
+    "alternative columns cover every model in pricing.toml (legacy dated ids included), but the model-tier rule only ever recommends the immediately next cheaper family's current aliased model, never the cheapest alternative overall",
+    "tier order (fable > opus > sonnet > haiku) is workstyle.model_tier's existing family-substring ranking, not a cost-derived ordering computed here",
+]
+
+
+def _priced_turns(result: TranscriptResult) -> list[Turn]:
+    """Turns that actually got a ``turn_index`` — same convention as
+    ``topology._priced_turns``/``ttl``'s own filtering, duplicated here
+    for the same "small private helper, not worth a cross-module
+    import" reason given in the module docstring."""
+    return [t for t in result.turns if t.turn_index > 0]
+
+
+def _agent_type_label(result: TranscriptResult) -> str:
+    """"top-level" for the main conversation, else the recorded agent
+    type (or "unknown") -- exactly ``TtlStats.add``'s own keying, so a
+    corpus fed to both modules always agrees on group boundaries."""
+    if result.meta.kind == "top-level":
+        return "top-level"
+    return result.meta.agent_type or "unknown"
+
+
+def _dominant_label(counts: dict[str, int]) -> str | None:
+    """The most-observed key in ``counts``, ties broken lexicographically
+    -- same convention as ``report._dominant_transcript_model``."""
+    if not counts:
+        return None
+    return max(counts.items(), key=lambda kv: (kv[1], kv[0]))[0]
+
+
+# -- thresholds --------------------------------------------------------------
+
+
+@dataclass(slots=True)
+class ModelSwapThresholds:
+    """Every tunable number the ``model-tier`` rule's firing decision
+    depends on, in the same config-driven shape as
+    ``recache.RecacheThresholds``/``ttl.TtlThresholds``/
+    ``limits.LimitThresholds``/``recommend.RecommendThresholds``.
+    """
+
+    #: A one-tier-down swap must clear both this percentage floor...
+    saving_pct_min: float = 10.0
+    #: ...and this absolute USD floor, at today's observed volumes,
+    #: before ``model-tier`` fires for a row (both independently
+    #: blocking -- same "and", not "or", convention as
+    #: ``TtlThresholds.switch_pct``/``switch_usd``).
+    saving_usd_min: float = 1.00
+    #: Per-row minimum sample -- same convention as
+    #: ``RecommendThresholds.min_sessions``/``min_turns`` and
+    #: ``recommend._row_meets_min_sample``: a row needs at least this
+    #: many spawns OR this many priced turns before its saving is
+    #: trusted enough to recommend.
+    min_sessions: int = 5
+    min_turns: int = 200
+
+    @classmethod
+    def from_config(cls, config: dict | None) -> "ModelSwapThresholds":
+        """Build thresholds from a config dict, keeping this class's
+        defaults for any key that's absent or of the wrong shape.
+
+        Accepts either a flat dict of this class's four field names
+        directly, or a full ``config.toml``-shaped ``[thresholds]``
+        dict with a nested ``model_swap`` table
+        (``{"model_swap": {"saving_pct_min": ...}}``) -- whichever a
+        caller happens to have loaded, same dual-shape convention as
+        ``RecacheThresholds.from_config``. Unknown keys are ignored.
+        """
+        data = config or {}
+        if not isinstance(data, dict):
+            data = {}
+        nested = data.get("model_swap")
+        if isinstance(nested, dict):
+            data = nested
+
+        kwargs: dict = {}
+        if "saving_pct_min" in data:
+            kwargs["saving_pct_min"] = float(data["saving_pct_min"])
+        if "saving_usd_min" in data:
+            kwargs["saving_usd_min"] = float(data["saving_usd_min"])
+        if "min_sessions" in data:
+            kwargs["min_sessions"] = int(data["min_sessions"])
+        if "min_turns" in data:
+            kwargs["min_turns"] = int(data["min_turns"])
+        return cls(**kwargs)
+
+    def describe(self) -> list[str]:
+        """One sentence per threshold, for the report's thresholds block
+        and this module's own section notes -- same convention as
+        ``RecacheThresholds.describe``/``TtlThresholds.describe``."""
+        return [
+            f"saving_pct_min = {self.saving_pct_min:.1f}% and saving_usd_min = "
+            f"${self.saving_usd_min:.2f}: a one-tier-down swap is only surfaced as a "
+            "recommendation when the ceiling saving at today's volumes clears both -- "
+            "both conditions, independently blocking.",
+            f"min_sessions = {self.min_sessions} and min_turns = {self.min_turns}: a "
+            "per-agent-type row needs at least this many spawns or priced turns before "
+            "its swap saving is trusted enough to recommend.",
+        ]
+
+
+_DEFAULT_THRESHOLDS = ModelSwapThresholds()
+
+
+# -- tier verdict --------------------------------------------------------------
+
+
+@dataclass(slots=True)
+class TierVerdict:
+    """The one-tier-down verdict for one agent type's row: whether a
+    cheaper family is available, which model it names (``None`` unless
+    ``state == "cheaper_available"``), the ceiling saving, and the
+    human-readable label ``build_section`` puts in the table.
+
+    ``state`` is one of ``"cheaper_available"`` / ``"already_cheapest"``
+    / ``"unknown_tier"`` / ``"no_data"`` -- every state other than
+    ``"cheaper_available"`` carries ``saving_usd == saving_pct == 0.0``,
+    so the table never implies a saving where none exists.
+    """
+
+    state: str
+    alt_model: str | None
+    saving_usd: float
+    saving_pct: float
+    label: str
+
+
+def _tier_verdict(stats: "ModelSwapTypeStats", pricing: Pricing) -> TierVerdict:
+    if stats.priced_turns == 0 or stats.observed_cost <= 0:
+        return TierVerdict("no_data", None, 0.0, 0.0, "no priced turns")
+
+    rank = workstyle.model_tier(stats.observed_model, stats.observed_model_alias)
+    if rank == -1:
+        return TierVerdict(
+            "unknown_tier", None, 0.0, 0.0,
+            "model family not recognised -- cannot determine a cheaper tier",
+        )
+    if rank == 0:
+        return TierVerdict(
+            "already_cheapest", None, 0.0, 0.0,
+            f"{_ALREADY_CHEAPEST_LABEL} ({stats.observed_model})",
+        )
+
+    family = _TIER_FAMILIES[rank - 1]
+    alt_model = pricing.aliases.get(family)
+    if alt_model is None or alt_model not in stats.cost_by_model:
+        return TierVerdict(
+            "unknown_tier", None, 0.0, 0.0,
+            f"no {family} rate in this pricing file -- cannot determine a cheaper tier",
+        )
+
+    alt_cost = stats.cost_by_model[alt_model]
+    saving_usd = stats.observed_cost - alt_cost
+    if saving_usd <= 0:
+        return TierVerdict(
+            "already_cheapest", None, 0.0, 0.0,
+            f"{_ALREADY_CHEAPEST_LABEL} at today's volumes (already cheaper than {alt_model})",
+        )
+    saving_pct = 100.0 * saving_usd / stats.observed_cost
+    return TierVerdict(
+        "cheaper_available", alt_model, saving_usd, saving_pct,
+        f"{alt_model} (saves ${saving_usd:,.2f}, {saving_pct:.1f}%, at today's volumes)",
+    )
+
+
+# -- accumulation --------------------------------------------------------------
+
+
+@dataclass(slots=True)
+class ModelSwapTypeStats:
+    """Rolled-up model-swap stats for one agent type (or
+    ``"top-level"``) -- the values behind one row of
+    ``build_section``'s ``model_swap_by_agent_type`` table."""
+
+    key: str
+    spawns: int = 0
+    priced_turns: int = 0
+    #: Priced turns whose observed model the rate card couldn't resolve
+    #: -- priced at zero rather than silently vanishing from
+    #: ``observed_cost`` (same convention as ``ttl.TtlTypeStats.unpriced_turns``
+    #: / ``pricing.PricingCoverage``).
+    unpriced_turns: int = 0
+    #: Sum of every priced turn's own resolved-model cost (a mixed-model
+    #: agent type is priced correctly, turn by turn).
+    observed_cost: float = 0.0
+    #: Turn.model -> turn count, for the dominant-model label and the
+    #: tier lookup.
+    model_turn_counts: dict[str, int] = field(default_factory=dict)
+    #: TranscriptMeta.agent_model_alias -> transcript count (one vote per
+    #: transcript, not per turn -- it's transcript-level metadata).
+    alias_counts: dict[str, int] = field(default_factory=dict)
+    #: canonical model id (every id in the loaded Pricing.models, not
+    #: just the observed one(s)) -> this group's turns repriced flat at
+    #: that model's rate, same token volumes and write split throughout.
+    cost_by_model: dict[str, float] = field(default_factory=dict)
+    #: Resolved once, in ``compute_model_swap`` (needs ``Pricing.aliases``
+    #: -- see module docstring on why ``build_section`` doesn't take
+    #: ``pricing`` and can't compute this itself).
+    tier_verdict: TierVerdict = field(
+        default_factory=lambda: TierVerdict("no_data", None, 0.0, 0.0, "no priced turns")
+    )
+
+    @property
+    def observed_model(self) -> str | None:
+        return _dominant_label(self.model_turn_counts)
+
+    @property
+    def observed_model_alias(self) -> str | None:
+        return _dominant_label(self.alias_counts)
+
+    @property
+    def distinct_models(self) -> int:
+        return len(self.model_turn_counts)
+
+    @property
+    def observed_model_label(self) -> str:
+        """The dominant model id, plus a "(+N more)" suffix when this
+        group actually mixed models across its turns."""
+        dominant = self.observed_model
+        if dominant is None:
+            return "unknown"
+        extra = self.distinct_models - 1
+        return dominant if extra <= 0 else f"{dominant} (+{extra} more)"
+
+
+@dataclass(slots=True)
+class ModelSwapStats:
+    """The whole model-swap roll-up: one :class:`ModelSwapTypeStats` per
+    agent type, plus the full set of alternative model ids every row was
+    repriced against (every id the loaded :class:`~claude_token_lens.pricing.Pricing`
+    carries, sorted for deterministic column order)."""
+
+    by_key: dict[str, ModelSwapTypeStats] = field(default_factory=dict)
+    alternative_models: tuple[str, ...] = ()
+
+
+def compute_model_swap(
+    results: Sequence[TranscriptResult],
+    pricing: Pricing,
+    thresholds: ModelSwapThresholds | None = None,
+) -> ModelSwapStats:
+    """Fold every transcript in ``results`` (top-level and subagent
+    alike -- pass the whole corpus's transcripts, one entry per
+    transcript, exactly the flat shape ``ttl.TtlStats.add`` consumes one
+    at a time) into a per-agent-type :class:`ModelSwapTypeStats`, then
+    resolve each row's one-tier-down :class:`TierVerdict`.
+
+    ``thresholds`` isn't used by the arithmetic here (it only gates
+    whether ``RULES["model-tier"]`` fires, downstream, off the rendered
+    report) -- accepted for symmetry with every other ``compute_*``/
+    ``*Stats`` constructor in this codebase and so a future threshold
+    that *does* affect accumulation (e.g. a minimum-turn floor before a
+    model is even considered as an alternative) has somewhere to land
+    without changing this function's signature again.
+    """
+    del thresholds  # see docstring: accepted for signature symmetry only
+
+    by_key: dict[str, ModelSwapTypeStats] = {}
+    for result in results:
+        key = _agent_type_label(result)
+        stats = by_key.setdefault(key, ModelSwapTypeStats(key=key))
+        stats.spawns += 1
+
+        alias = result.meta.agent_model_alias
+        if alias:
+            stats.alias_counts[alias] = stats.alias_counts.get(alias, 0) + 1
+
+        for turn in _priced_turns(result):
+            stats.priced_turns += 1
+            if turn.model:
+                stats.model_turn_counts[turn.model] = stats.model_turn_counts.get(turn.model, 0) + 1
+
+            resolved = pricing.resolve_model(turn.model)
+            observed_breakdown = price_turn(turn, resolved)
+            stats.observed_cost += observed_breakdown.total
+            if not observed_breakdown.model_known:
+                stats.unpriced_turns += 1
+
+            for alt_id, alt_rates in pricing.models.items():
+                alt_cost = price_turn(turn, alt_rates).total
+                stats.cost_by_model[alt_id] = stats.cost_by_model.get(alt_id, 0.0) + alt_cost
+
+    for stats in by_key.values():
+        stats.tier_verdict = _tier_verdict(stats, pricing)
+
+    return ModelSwapStats(by_key=by_key, alternative_models=tuple(sorted(pricing.models)))
+
+
+# -- report section --------------------------------------------------------------
+
+
+def build_section(stats: ModelSwapStats, thresholds: ModelSwapThresholds | None = None) -> Section:
+    """Render a finished :class:`ModelSwapStats` as the report's
+    ``model_swap`` section: ``model_swap_by_agent_type`` (one row per
+    agent type) and ``model_swap_summary`` (the corpus-wide ceiling for
+    moving every Fable/Opus subagent type one tier down).
+    """
+    th = thresholds or _DEFAULT_THRESHOLDS
+
+    columns = [
+        Column(key="agent_type", label="Agent type", kind="str"),
+        Column(key="spawns", label="Spawns", kind="int"),
+        Column(key="priced_turns", label="Priced turns", kind="int"),
+        Column(key="unpriced_turns", label="Unpriced turns (unknown model)", kind="int"),
+        Column(key="observed_model", label="Observed model", kind="str"),
+        Column(key="observed_cost", label="Observed cost", kind="money"),
+    ]
+    for alt_id in stats.alternative_models:
+        columns.append(Column(key=f"cost_{alt_id}", label=f"Cost at {alt_id}", kind="money"))
+    columns.extend(
+        [
+            Column(key="best_cheaper_alternative_model", label="Best cheaper alternative (model id)", kind="str"),
+            Column(key="best_cheaper_alternative", label="Best cheaper alternative", kind="str"),
+            Column(key="saving_usd", label="Ceiling saving (USD, one tier down)", kind="money"),
+            Column(key="saving_pct", label="Ceiling saving (%, one tier down)", kind="pct"),
+            Column(key="lever", label="Lever", kind="str"),
+        ]
+    )
+
+    rows: list[list] = []
+    any_unpriced = False
+    for key in sorted(stats.by_key):
+        row_stats = stats.by_key[key]
+        verdict = row_stats.tier_verdict
+        lever = "model (settings.json)" if key == "top-level" else f"model in {key}.md"
+        row = [
+            row_stats.key,
+            row_stats.spawns,
+            row_stats.priced_turns,
+            row_stats.unpriced_turns,
+            row_stats.observed_model_label,
+            row_stats.observed_cost,
+        ]
+        for alt_id in stats.alternative_models:
+            row.append(row_stats.cost_by_model.get(alt_id, 0.0))
+        row.extend(
+            [
+                verdict.alt_model,
+                verdict.label,
+                verdict.saving_usd,
+                verdict.saving_pct,
+                lever,
+            ]
+        )
+        rows.append(row)
+        if row_stats.unpriced_turns > 0:
+            any_unpriced = True
+
+    table = Table(
+        name="model_swap_by_agent_type",
+        title="Model-swap counterfactual by agent type",
+        columns=columns,
+        rows=rows,
+    )
+
+    # -- corpus-wide summary: every subagent type currently on Fable/Opus,
+    # moved one tier down.
+    qualifying = [
+        s
+        for key, s in stats.by_key.items()
+        if key != "top-level"
+        and workstyle.model_tier(s.observed_model, s.observed_model_alias) in (2, 3)
+        and s.tier_verdict.state == "cheaper_available"
+    ]
+    total_observed = sum(s.observed_cost for s in qualifying)
+    total_saving = sum(s.tier_verdict.saving_usd for s in qualifying)
+    total_after = total_observed - total_saving
+    total_saving_pct = 100.0 * total_saving / total_observed if total_observed > 0 else 0.0
+
+    summary_table = Table(
+        name="model_swap_summary",
+        title="Corpus-wide ceiling: every Fable/Opus subagent type moved one tier down",
+        columns=[
+            Column(key="scope", label="Scope", kind="str"),
+            Column(key="agent_types", label="Agent types (Fable/Opus, cheaper tier available)", kind="int"),
+            Column(key="observed_cost_usd", label="Observed cost", kind="money"),
+            Column(key="cost_after_tier_down_usd", label="Cost after one-tier-down swap", kind="money"),
+            Column(key="saving_usd", label="Ceiling saving", kind="money"),
+            Column(key="saving_pct", label="Ceiling saving (%)", kind="pct"),
+        ],
+        rows=[
+            [
+                "subagent types currently on Fable/Opus",
+                len(qualifying),
+                total_observed,
+                total_after,
+                total_saving,
+                total_saving_pct,
+            ]
+        ],
+        notes=[
+            "Excludes the top-level row (this is a subagent-fleet figure, per the brief) and "
+            "any Fable/Opus agent type already at, or below, its next tier's cost at today's "
+            "volumes.",
+        ],
+    )
+
+    notes = list(ASSUMPTIONS)
+    if any_unpriced:
+        notes.append(
+            "At least one agent type has priced turns whose observed model this pricing file "
+            "doesn't resolve (see its own \"Unpriced turns\" column) -- those turns price at "
+            "zero and are excluded from both the observed cost and every alternative-model cost."
+        )
+    notes.append(f"Thresholds: {' '.join(th.describe())}")
+
+    return Section(
+        key="model_swap",
+        title="Model-swap counterfactual",
+        tables=[table, summary_table],
+        notes=notes,
+    )
+
+
+# -- report-lookup helpers --------------------------------------------------
+#
+# Duplicated from recommend.py (see module docstring's deviation note):
+# recommend.py is off-limits to this work order, so these small,
+# private, already-stable helpers are copied rather than imported.
+
+
+def _section(report: ReportModel, key: str) -> Section | None:
+    for section in report.sections:
+        if section.key == key:
+            return section
+    return None
+
+
+def _table(report: ReportModel, section_key: str, table_name: str) -> Table | None:
+    section = _section(report, section_key)
+    if section is None:
+        return None
+    for table in section.tables:
+        if table.name == table_name:
+            return table
+    return None
+
+
+def _col_index(table: Table, column_key: str) -> int | None:
+    for idx, column in enumerate(table.columns):
+        if column.key == column_key:
+            return idx
+    return None
+
+
+def _row(table: Table, row_key) -> list | None:
+    for row in table.rows:
+        if row and row[0] == row_key:
+            return row
+    return None
+
+
+def _cell(report: ReportModel, section_key: str, table_name: str, row_key, column_key: str):
+    table = _table(report, section_key, table_name)
+    if table is None:
+        return None
+    row = _row(table, row_key)
+    if row is None:
+        return None
+    idx = _col_index(table, column_key)
+    if idx is None or idx >= len(row):
+        return None
+    return row[idx]
+
+
+def _evidence(label: str, value, section_key: str, table_name: str, row_key) -> tuple:
+    return (label, value, f"{section_key}.{table_name}", row_key)
+
+
+def _row_meets_min_sample(th: ModelSwapThresholds, spawns: int | None, priced_turns: int | None) -> bool:
+    """Per-row analogue of ``recommend._row_meets_min_sample`` -- a row
+    with neither column populated (an older/hand-built table shape)
+    can't be evaluated and is treated as passing, same as the original."""
+    if spawns is None and priced_turns is None:
+        return True
+    if spawns is not None and spawns >= th.min_sessions:
+        return True
+    if priced_turns is not None and priced_turns >= th.min_turns:
+        return True
+    return False
+
+
+def _scope_for(agent_type: str, snapshot: Snapshot | None) -> str:
+    """"user" for the top-level row's settings.json lever, "repo" for a
+    subagent's ``.claude/agents/<type>.md`` frontmatter lever, upgraded
+    to "managed" when "model" is a managed-settings key (see module
+    docstring's scope deviation note)."""
+    if snapshot is not None and "model" in set(managed_keys(snapshot)):
+        return "managed"
+    return "user" if agent_type == "top-level" else "repo"
+
+
+def _action_with_scope(action: str, scope: str) -> str:
+    if scope == "managed":
+        return f"{action} This lever is managed by policy, raise with your administrator."
+    return action
+
+
+# -- rules --------------------------------------------------------------------
+
+
+def _rule_model_tier(
+    report: ReportModel,
+    th: ModelSwapThresholds,
+    archetype: str | None = None,
+    snapshot: Snapshot | None = None,
+) -> list[Recommendation]:
+    """The ``model-tier`` rule: fires per agent type when the one-tier-
+    down saving (already computed by ``build_section``, read back from
+    the rendered table -- this module's rules never read raw stats,
+    matching ``recommend.py``'s own "rules work only from the rendered
+    report" convention) exceeds both of ``th``'s floors and the row's own
+    sample clears ``th.min_sessions``/``th.min_turns``.
+
+    Suppressed for a non-top-level row when ``archetype`` is one that
+    never spawns subagents of its own (``_NO_SUBAGENT_ARCHETYPES`` --
+    "never tell a chat-only user about subagent models"); the top-level
+    row is never suppressed, since the main session's own model is a
+    real lever regardless of archetype (same asymmetry as
+    ``recommend._rule_ttl_switch``).
+    """
+    table = _table(report, "model_swap", "model_swap_by_agent_type")
+    if table is None:
+        return []
+
+    agent_idx = _col_index(table, "agent_type")
+    spawns_idx = _col_index(table, "spawns")
+    priced_turns_idx = _col_index(table, "priced_turns")
+    observed_cost_idx = _col_index(table, "observed_cost")
+    observed_model_idx = _col_index(table, "observed_model")
+    alt_model_idx = _col_index(table, "best_cheaper_alternative_model")
+    alt_label_idx = _col_index(table, "best_cheaper_alternative")
+    saving_usd_idx = _col_index(table, "saving_usd")
+    saving_pct_idx = _col_index(table, "saving_pct")
+    if agent_idx is None or alt_model_idx is None or saving_usd_idx is None or saving_pct_idx is None:
+        return []
+
+    out: list[Recommendation] = []
+    for row in table.rows:
+        agent_type = row[agent_idx]
+        if agent_type != "top-level" and archetype in _NO_SUBAGENT_ARCHETYPES:
+            continue
+
+        spawns = row[spawns_idx] if spawns_idx is not None and spawns_idx < len(row) else None
+        priced_turns = row[priced_turns_idx] if priced_turns_idx is not None and priced_turns_idx < len(row) else None
+        if not _row_meets_min_sample(th, spawns, priced_turns):
+            continue
+
+        alt_model = row[alt_model_idx]
+        if not alt_model:
+            # "already on the cheapest model" / "unknown tier" / "no
+            # priced turns" -- every one of these carries saving 0.0 (see
+            # TierVerdict), but the explicit None-model check is the
+            # unambiguous gate, not the numeric one.
+            continue
+
+        saving_usd = row[saving_usd_idx] or 0.0
+        saving_pct = row[saving_pct_idx] or 0.0
+        if saving_usd <= th.saving_usd_min or saving_pct <= th.saving_pct_min:
+            continue
+
+        observed_cost = row[observed_cost_idx] if observed_cost_idx is not None else None
+        observed_model = row[observed_model_idx] if observed_model_idx is not None else "the observed model"
+        alt_label = row[alt_label_idx] if alt_label_idx is not None else alt_model
+
+        scope = _scope_for(agent_type, snapshot)
+        if agent_type == "top-level":
+            frontmatter_note = f'Set "model": "{alt_model}" in settings.json'
+        else:
+            frontmatter_note = f"Set `model: {alt_model}` in .claude/agents/{agent_type}.md's frontmatter"
+        action = _action_with_scope(
+            f"{frontmatter_note} (currently effectively {observed_model}). "
+            f"Ceiling saving at today's volumes: ${saving_usd:,.2f} ({saving_pct:.1f}%) -- token "
+            "volumes and turn counts are held constant, so a smaller model may need more turns "
+            "or fail tasks outright; verify quality before committing.",
+            scope,
+        )
+
+        out.append(
+            Recommendation(
+                id="model-tier",
+                severity="advice",
+                category="settings",
+                archetypes=_ALL_ARCHETYPES,
+                title=f"{agent_type} could run a cheaper model tier",
+                action=action,
+                lever="model",
+                scope=scope,
+                agent_type=agent_type,
+                evidence=[
+                    _evidence("Observed cost", observed_cost, "model_swap", "model_swap_by_agent_type", agent_type),
+                    _evidence("Best cheaper alternative", alt_label, "model_swap", "model_swap_by_agent_type", agent_type),
+                    _evidence("Ceiling saving (USD)", saving_usd, "model_swap", "model_swap_by_agent_type", agent_type),
+                    _evidence("Ceiling saving (%)", saving_pct, "model_swap", "model_swap_by_agent_type", agent_type),
+                ],
+            )
+        )
+    return out
+
+
+#: One rule, keyed by id -- a wiring agent folds this into recommend.py's
+#: own rule list via ``RULES["model-tier"](report, th, archetype,
+#: snapshot)`` (see module docstring).
+RULES: dict[str, Callable[..., list[Recommendation]]] = {
+    "model-tier": _rule_model_tier,
+}
+
+
+__all__ = [
+    "ASSUMPTIONS",
+    "ModelSwapThresholds",
+    "ModelSwapTypeStats",
+    "ModelSwapStats",
+    "TierVerdict",
+    "RULES",
+    "compute_model_swap",
+    "build_section",
+]
