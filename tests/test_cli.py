@@ -283,6 +283,22 @@ def test_cmd_apply_claude_root_flag_overrides_default(tmp_path):
     assert not (Path(os.environ["CLAUDE_CONFIG_DIR"]) / "settings.json").exists()
 
 
+def test_cmd_apply_dry_run_exits_nonzero_when_plan_would_be_refused(tmp_path, capsys):
+    """Fix S1: a --dry-run whose real apply would refuse (here: a
+    profile naming an agent with no corresponding file, and no
+    --force) must say so and exit non-zero, not print a clean diff and
+    exit 0 as if the apply would succeed."""
+    config_dir = tmp_path / "token-lens"
+    profile_path = tmp_path / "sample.toml"
+    _write_profile_toml(profile_path, agents={"ghost": {"model": "opus"}})
+
+    exit_code = cli.main(["apply", str(profile_path), "--config-dir", str(config_dir), "--dry-run"])
+    err = capsys.readouterr().err
+    assert exit_code == 2
+    assert "would be refused" in err
+    assert "no agent file found" in err
+
+
 def test_baseline_list_and_show_round_trip(tmp_path, monkeypatch, capsys):
     projects_root = tmp_path / "projects"
     config_dir = tmp_path / "config"

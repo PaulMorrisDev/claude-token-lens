@@ -2169,12 +2169,15 @@ def _cmd_apply(args: argparse.Namespace) -> int:
     ``apply`` bullet -- see ``profiles/apply.py``'s module docstring for
     the full resolution/backup/revert contract this delegates to).
 
-    Exit codes: 0 success (including ``--dry-run``/``--list-backups``/a
-    successful ``--revert``), 1 a refused operation (a git-tracked
-    target without ``--allow-tracked``, a missing agent file without
-    ``--force``, or an existing file this command cannot parse), 2 bad
-    input (an unrecognised profile, a scope/``--project`` mismatch, or
-    an unknown ``--revert`` timestamp).
+    Exit codes: 0 success (``--list-backups``, a successful ``--revert``,
+    or a ``--dry-run`` whose plan is not blocked), 1 a refused *real*
+    apply (a git-tracked target without ``--allow-tracked``, a missing
+    agent file without ``--force``, or an existing file this command
+    cannot parse), 2 bad input (an unrecognised profile, a scope/
+    ``--project`` mismatch, an unknown ``--revert`` timestamp) -- fix
+    S1: also a ``--dry-run`` whose plan *would* be refused, so the dry
+    run a user runs specifically to find out whether an apply will work
+    doesn't print a clean diff and exit 0 for one that wouldn't.
     """
     from .profiles import apply as apply_mod
 
@@ -2261,6 +2264,13 @@ def _cmd_apply(args: argparse.Namespace) -> int:
             print("Environment variables (set these yourself; never written to any file):")
             for line in plan.env_lines:
                 print(f"  export {line}")
+        if plan.blocked:
+            # Fix S1: a real apply of this plan would refuse -- say so
+            # here too, rather than printing a clean diff and exiting 0
+            # as if the apply would succeed.
+            for reason in plan.blocked:
+                print(f"claude-token-lens {command}: would be refused: {reason}", file=sys.stderr)
+            return 2
         suggested = apply_command(
             plan.profile_id, scope, str(project_path) if project_path else None
         )
