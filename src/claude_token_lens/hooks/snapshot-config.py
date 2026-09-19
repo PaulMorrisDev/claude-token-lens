@@ -109,6 +109,7 @@ import os
 import re
 import shutil
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -187,9 +188,22 @@ _SLUG_HASH_HEX_CHARS = 8
 
 #: Directory names skipped by the bounded nested-CLAUDE.md walk (never
 #: worth descending into: VCS metadata, dependency/venv trees, build output).
-_CLAUDE_MD_WALK_SKIP_DIRS = frozenset({".git", "node_modules", ".venv", "bin", "obj"})
+_CLAUDE_MD_WALK_SKIP_DIRS = frozenset(
+    {
+        ".git", "node_modules", ".venv", "bin", "obj",
+        # Fix #18: common build/vendor directory names the original list
+        # missed -- an unpruned one of these can hold tens of thousands
+        # of files.
+        "dist", "build", "target", "__pycache__", ".next", "vendor", "Pods", "packages",
+    }
+)
 _CLAUDE_MD_WALK_MAX_DEPTH = 6
 _CLAUDE_MD_WALK_MAX_DIRS = 5000
+#: Fix #18: wall-clock budget for the whole walk, on top of the existing
+#: depth/breadth bounds -- those bound the number of *directories*
+#: visited, not the per-directory cost (iterdir + a stat per entry), so a
+#: single huge directory could still make a SessionStart hang.
+_CLAUDE_MD_WALK_MAX_SECONDS = 1.0
 
 #: Env var name prefixes captured (names only, values never recorded) --
 #: widened from ANTHROPIC_*/CLAUDE_* to also cover OpenTelemetry config
@@ -363,7 +377,17 @@ def redact_agent_frontmatter(parsed: dict) -> dict:
             out[key] = f"str({len(value)})" if isinstance(value, str) else "str(0)"
             continue
         if key in AGENT_KEEP_KEYS or key.startswith("experimental."):
-            out[key] = value
+            # Fix #5: AGENT_KEEP_KEYS entries (e.g. "tools", "name") are
+            # user-authored names/lists of names, not the shape-neutral
+            # scalars the allowlist elsewhere is built for -- clip/mask
+            # each one the same way every other recorded name now is,
+            # rather than keeping it fully verbatim and uncapped.
+            if isinstance(value, str):
+                out[key] = _clip_name(value)
+            elif isinstance(value, list):
+                out[key] = [_clip_name(item) for item in value]
+            else:
+                out[key] = value
             continue
         out[key] = _redact_generic(value)
     return out
@@ -469,10 +493,10 @@ def _load_agents(agents_dir: Path, source: str) -> dict:
         parsed = parse_frontmatter(text)
         if not parsed:
             continue
-        name = parsed.get("name") or md_path.stem
+        name = _clip_name(parsed.get("name") or md_path.stem)
         entry = redact_agent_frontmatter(parsed)
         entry["source"] = source
-        result[str(name)] = entry
+        result[name] = entry
     return result
 
 
@@ -508,14 +532,14 @@ def _now_ts(now: datetime | None = None) -> str:
 
 
 def _content_hash(snapshot: dict) -> str:
-    """sha256 of the snapshot with ``ts``/``session_id``/``transcript_path``/
-    ``source`` excluded, so an idempotent re-run (same config, new session,
-    new timestamp) compares equal.
+    """sha256 of the snapshot with ``ts``/``session_id``/
+    ``transcript_path_hash``/``source`` excluded, so an idempotent re-run
+    (same config, new session, new timestamp) compares equal.
     """
     payload = {
         key: value
         for key, value in snapshot.items()
-        if key not in ("ts", "session_id", "transcript_path", "source")
+        if key not in ("ts", "session_id", "transcript_path_hash", "source")
     }
     encoded = json.dumps(payload, sort_keys=True, default=str).encode("utf-8")
     return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
@@ -546,15 +570,61 @@ def _project_slug(cwd: str) -> str:
     return f"{slug[:_SLUG_MAX_CHARS]}-{digest}"
 
 
+#: Review finding #2: ``_project_slug`` only swaps separators for ``-``,
+#: it does not remove the *content* -- the result still carries the
+#: username and full directory structure (e.g.
+#: ``C--Users-alice-work-acme-client``) and was being stored verbatim in
+#: the snapshot and printed in report tables / ``probe-config`` Markdown.
+#: This reduces the slug to an opaque join key before it is ever stored:
+#: same shape as ``cwd_hash``/``source_path_hash`` elsewhere in this file.
+#: Duplicates the (future) ``discovery.redact_slug`` algorithm rather than
+#: importing it -- this script stays standalone stdlib (module docstring)
+#: and ``discovery.redact_slug`` is landing on a sibling branch; once it
+#: exists, package-level callers (``snapshots.py``, ``cli.py``) can prefer
+#: it directly since both read the *stored* (already-redacted) slug back
+#: off the snapshot rather than recomputing it.
+_SLUG_HASH_PREFIX = "slug"
+_SLUG_HASH_HEX_CHARS_REDACTED = 12
+
+
+def _redact_slug(slug: str) -> str:
+    digest = hashlib.sha256(slug.encode("utf-8")).hexdigest()[:_SLUG_HASH_HEX_CHARS_REDACTED]
+    return f"{_SLUG_HASH_PREFIX}:{digest}"
+
+
+#: Review finding #5: every *value* this hook records goes through some
+#: redaction, but names (plugin/MCP-server/agent/skill names, and the
+#: ``tools`` list an ``AGENT_KEEP_KEYS`` entry keeps verbatim) were
+#: recorded with no shape check and no length cap -- unlike ``probe.py``'s
+#: own ``_clip``/``MAX_VALUE_CHARS`` for exactly this reason. Mirrors that
+#: helper: caps length, and additionally masks a name shaped like an
+#: absolute path or a URL (a locally sourced plugin marketplace, an MCP
+#: server named after its endpoint, an agent whose frontmatter ``name`` is
+#: a path) rather than recording it verbatim.
+_MAX_NAME_CHARS = 64
+_NAME_LOOKS_LIKE_PATH_OR_URL_RE = re.compile(
+    r"^[A-Za-z]:[\\/]|^[\\/]{1,2}|^[a-zA-Z][a-zA-Z0-9+.-]*://"
+)
+
+
+def _clip_name(value: object) -> str:
+    text = str(value)
+    if _NAME_LOOKS_LIKE_PATH_OR_URL_RE.search(text):
+        return f"<redacted path/url, str({len(text)})>"
+    if len(text) <= _MAX_NAME_CHARS:
+        return text
+    return text[: _MAX_NAME_CHARS - 3] + "..."
+
+
 # -- schema 2: settings layers ------------------------------------------------
 
 
 def _extract_enabled_plugins(raw_settings: dict) -> list[str]:
     raw = raw_settings.get("enabledPlugins")
     if isinstance(raw, dict):
-        return sorted(str(k) for k in raw)
+        return sorted(_clip_name(k) for k in raw)
     if isinstance(raw, list):
-        return sorted(str(x) for x in raw)
+        return sorted(_clip_name(x) for x in raw)
     return []
 
 
@@ -749,17 +819,23 @@ def _find_claude_json_project_entry(dot_claude_json: dict, cwd_path: Path) -> di
     return best
 
 
-def build_claude_json_section(cwd_path: Path) -> dict:
-    """A redacted read of ``~/.claude.json`` (the CLI's own per-machine
-    state file -- distinct from any Claude Code *settings* file): whether
-    this project has an entry at all, its MCP server/plugin names and
-    small counts, and its ``last*`` session totals if present -- a
-    cross-check against this tool's own accounting for the same session
+def build_claude_json_section(cwd_path: Path, dot_claude_json: dict | None) -> dict:
+    """A redacted view of an already-read ``~/.claude.json`` (the CLI's
+    own per-machine state file -- distinct from any Claude Code *settings*
+    file): whether this project has an entry at all, its MCP server/plugin
+    names and small counts, and its ``last*`` session totals if present --
+    a cross-check against this tool's own accounting for the same session
     (joined later by ``lastSessionId``). Degrades to ``{"matched": False}``
     on a missing, unreadable or malformed file, or one with no matching
     project entry -- never raises.
+
+    Fix #19: ``dot_claude_json`` is now read once by the caller
+    (``build_snapshot``) and passed in here, rather than this function
+    re-reading and re-parsing the same (potentially multi-MB) file that
+    ``build_snapshot``'s own MCP-name gathering also reads --
+    ``build_settings_layers``'s docstring already establishes "read once"
+    as this file's convention; this closes the one place that didn't.
     """
-    dot_claude_json = _read_json_dict(Path.home() / ".claude.json")
     if dot_claude_json is None:
         return {"matched": False}
 
@@ -768,14 +844,16 @@ def build_claude_json_section(cwd_path: Path) -> dict:
     result: dict = {"matched": entry is not None}
     if entry is not None:
         mcp_servers = entry.get("mcpServers")
-        result["mcp_servers"] = sorted(mcp_servers.keys()) if isinstance(mcp_servers, dict) else []
+        result["mcp_servers"] = (
+            sorted(_clip_name(k) for k in mcp_servers) if isinstance(mcp_servers, dict) else []
+        )
         enabled = entry.get("enabledMcpjsonServers")
         result["enabled_mcpjson_servers"] = (
-            sorted(str(x) for x in enabled) if isinstance(enabled, list) else []
+            sorted(_clip_name(x) for x in enabled) if isinstance(enabled, list) else []
         )
         disabled = entry.get("disabledMcpjsonServers")
         result["disabled_mcpjson_servers"] = (
-            sorted(str(x) for x in disabled) if isinstance(disabled, list) else []
+            sorted(_clip_name(x) for x in disabled) if isinstance(disabled, list) else []
         )
         allowed_tools = entry.get("allowedTools")
         result["allowed_tools_count"] = len(allowed_tools) if isinstance(allowed_tools, list) else 0
@@ -849,30 +927,38 @@ def _walk_nested_claude_md(root: Path) -> tuple[int, int]:
     ``root`` itself -- the project root's own ``CLAUDE.md``/``CLAUDE.local.md``
     are recorded separately. Depth-limited to
     :data:`_CLAUDE_MD_WALK_MAX_DEPTH` and :data:`_CLAUDE_MD_WALK_MAX_DIRS`
-    directories visited, skipping :data:`_CLAUDE_MD_WALK_SKIP_DIRS`, so a
-    huge or symlink-cyclic tree can't make a session start hang.
+    directories visited, skipping :data:`_CLAUDE_MD_WALK_SKIP_DIRS`, and
+    now also wall-clock-bounded to :data:`_CLAUDE_MD_WALK_MAX_SECONDS`
+    (fix #18) -- the depth/breadth bounds cap the number of directories
+    visited, not the per-directory cost, so a single huge directory could
+    otherwise still make a SessionStart hang. Uses ``os.scandir`` with
+    ``entry.is_dir(follow_symlinks=False)`` rather than
+    ``Path.iterdir()``/``Path.is_dir()``/``Path.is_file()``, which each
+    issue their own ``stat`` call -- ``DirEntry`` caches that information
+    from the original directory read on most platforms.
     """
     count = 0
     total_bytes = 0
     visited_dirs = 0
+    deadline = time.monotonic() + _CLAUDE_MD_WALK_MAX_SECONDS
     stack: list[tuple[Path, int]] = [(root, 0)]
     while stack:
-        if visited_dirs >= _CLAUDE_MD_WALK_MAX_DIRS:
+        if visited_dirs >= _CLAUDE_MD_WALK_MAX_DIRS or time.monotonic() >= deadline:
             break
         current, depth = stack.pop()
         visited_dirs += 1
         try:
-            entries = list(current.iterdir())
+            entries = list(os.scandir(current))
         except OSError:
             continue
         for entry in entries:
             try:
-                if entry.is_dir():
+                if entry.is_dir(follow_symlinks=False):
                     if entry.name in _CLAUDE_MD_WALK_SKIP_DIRS:
                         continue
                     if depth < _CLAUDE_MD_WALK_MAX_DEPTH:
-                        stack.append((entry, depth + 1))
-                elif depth > 0 and entry.name == "CLAUDE.md" and entry.is_file():
+                        stack.append((Path(entry.path), depth + 1))
+                elif depth > 0 and entry.name == "CLAUDE.md" and entry.is_file(follow_symlinks=False):
                     count += 1
                     total_bytes += entry.stat().st_size
             except OSError:
@@ -900,7 +986,7 @@ def _skills_summary(skills_dir: Path) -> dict:
                 continue
             skill_md = entry / "SKILL.md"
             if skill_md.is_file():
-                names.append(entry.name)
+                names.append(_clip_name(entry.name))
                 total_bytes += skill_md.stat().st_size
         except OSError:
             continue
@@ -970,7 +1056,7 @@ def build_content_layers(cwd_path: Path, claude_root: Path, project_slug: str, a
     if mcp_json is not None:
         servers = mcp_json.get("mcpServers")
         if isinstance(servers, dict):
-            mcp_json_names = sorted(str(k) for k in servers)
+            mcp_json_names = sorted(_clip_name(k) for k in servers)
 
     output_styles_dir = claude_root / "output-styles"
     output_style_names: list[str] = []
@@ -1093,6 +1179,7 @@ def build_snapshot(
         project_mcp_servers = mcp_json.get("mcpServers")
         if isinstance(project_mcp_servers, dict):
             mcp_names.update(str(k) for k in project_mcp_servers)
+    # Fix #19: read once, reused below for build_claude_json_section too.
     dot_claude_json = _read_json_dict(Path.home() / ".claude.json")
     if dot_claude_json is not None:
         global_mcp_servers = dot_claude_json.get("mcpServers")
@@ -1103,11 +1190,11 @@ def build_snapshot(
     disabled_mcpjson = user_settings_raw.get("disabledMcpjsonServers")
 
     mcp_servers = {
-        "names": sorted(mcp_names),
-        "enabled_mcpjson_servers": sorted(str(x) for x in enabled_mcpjson)
+        "names": sorted(_clip_name(name) for name in mcp_names),
+        "enabled_mcpjson_servers": sorted(_clip_name(x) for x in enabled_mcpjson)
         if isinstance(enabled_mcpjson, list)
         else [],
-        "disabled_mcpjson_servers": sorted(str(x) for x in disabled_mcpjson)
+        "disabled_mcpjson_servers": sorted(_clip_name(x) for x in disabled_mcpjson)
         if isinstance(disabled_mcpjson, list)
         else [],
     }
@@ -1144,15 +1231,25 @@ def build_snapshot(
     effective, effective_provenance = build_effective_settings(raw_settings_by_layer)
     effective_agents = build_effective_agents(agents)
 
-    project_slug = _project_slug(cwd)
-    claude_json_section = build_claude_json_section(cwd_path)
-    content_layers = build_content_layers(cwd_path, claude_root, project_slug, agents)
+    # Fix #2: the raw slug (still the real on-disk `~/.claude/projects/`
+    # directory name) is kept ONLY for internal lookups that need the real
+    # directory -- e.g. _memory_summary below -- and is never itself
+    # stored in the snapshot or returned to a caller. Everything the
+    # snapshot records or a report prints uses the redacted form.
+    raw_project_slug = _project_slug(cwd)
+    project_slug = _redact_slug(raw_project_slug)
+    claude_json_section = build_claude_json_section(cwd_path, dot_claude_json)
+    content_layers = build_content_layers(cwd_path, claude_root, raw_project_slug, agents)
 
     snapshot = {
         "schema": SCHEMA_VERSION,
         "ts": _now_ts(),
         "session_id": session_id,
-        "transcript_path": transcript_path,
+        # Fix #1: the raw transcript_path is an absolute path
+        # (C:\Users\<username>\.claude\projects\<slug>\<uuid>.jsonl) --
+        # hashed the same way cwd_hash/source_path_hash already are,
+        # rather than stored verbatim.
+        "transcript_path_hash": _sha256_prefixed(transcript_path) if transcript_path else None,
         "source": source,
         "cwd_hash": _sha256_prefixed(cwd),
         "claude_version": claude_version,
@@ -1186,11 +1283,39 @@ def _snapshots_dir(config_dir: Path) -> Path:
     return config_dir / "snapshots"
 
 
+#: How many of the newest snapshot files ``_should_skip`` will scan
+#: looking for one matching ``project_slug`` (fix #12) -- bounded so a
+#: user with a long snapshot history doesn't turn every SessionStart into
+#: an unbounded directory scan.
+_LATEST_SNAPSHOT_FOR_PROJECT_SCAN_LIMIT = 50
+
+
 def _find_latest_snapshot(snapshots_dir: Path) -> Path | None:
     if not snapshots_dir.is_dir():
         return None
     files = sorted(p for p in snapshots_dir.glob("*.json") if p.is_file())
     return files[-1] if files else None
+
+
+def _find_latest_snapshot_for_project(snapshots_dir: Path, project_slug: str) -> Path | None:
+    """Fix #12: the newest existing snapshot whose own ``project_slug``
+    matches ``project_slug`` -- scanned newest-first, stopping at the
+    first match, bounded to the last
+    :data:`_LATEST_SNAPSHOT_FOR_PROJECT_SCAN_LIMIT` files. ``_should_skip``
+    used to compare against :func:`_find_latest_snapshot` (the globally
+    newest file regardless of project), which made ``--min-interval``
+    inoperative for anyone alternating between projects -- two different
+    projects never hash equal, so the "same content_hash" half of the
+    check never passed.
+    """
+    if not snapshots_dir.is_dir():
+        return None
+    files = sorted((p for p in snapshots_dir.glob("*.json") if p.is_file()), reverse=True)
+    for path in files[:_LATEST_SNAPSHOT_FOR_PROJECT_SCAN_LIMIT]:
+        existing = _read_json_dict(path)
+        if existing is not None and existing.get("project_slug") == project_slug:
+            return path
+    return None
 
 
 def _snapshot_age_seconds(ts: str, now: datetime | None = None) -> float | None:
@@ -1203,7 +1328,10 @@ def _snapshot_age_seconds(ts: str, now: datetime | None = None) -> float | None:
 
 
 def _should_skip(new_snapshot: dict, snapshots_dir: Path, min_interval: int) -> bool:
-    latest_path = _find_latest_snapshot(snapshots_dir)
+    # Fix #12: compare against the newest snapshot for THIS project, not
+    # the globally newest file in snapshots/ -- see
+    # _find_latest_snapshot_for_project's docstring.
+    latest_path = _find_latest_snapshot_for_project(snapshots_dir, new_snapshot.get("project_slug"))
     if latest_path is None:
         return False
     existing = _read_json_dict(latest_path)
@@ -1233,11 +1361,24 @@ def snapshot_and_get_path(
     snapshot = build_snapshot(stdin_data or {}, cwd, config_dir, managed_path=managed_path)
     snapshots_dir = _snapshots_dir(config_dir)
     if _should_skip(snapshot, snapshots_dir, min_interval):
-        return _find_latest_snapshot(snapshots_dir), False
+        return _find_latest_snapshot_for_project(snapshots_dir, snapshot.get("project_slug")), False
 
     snapshots_dir.mkdir(parents=True, exist_ok=True)
-    out_path = snapshots_dir / f"{snapshot['ts']}.json"
-    out_path.write_text(json.dumps(snapshot, indent=2, sort_keys=True), encoding="utf-8")
+    # Fix #11: _TS_FORMAT has one-second granularity, so two snapshots
+    # written in the same second (concurrent SessionStart hooks, several
+    # sessions opened at once) used to collide on the same filename and
+    # the later write silently destroyed the earlier one. The
+    # content_hash's own first 8 hex characters make the name
+    # collision-proof while staying lexicographically sortable after the
+    # timestamp (_find_latest_snapshot still just needs the newest name).
+    # The write itself is now atomic (temp file + os.replace) so a reader
+    # can never observe a torn/partial file mid-write.
+    content_hash = snapshot.get("content_hash", "")
+    hash_suffix = content_hash.split(":", 1)[-1][:8] if content_hash else "00000000"
+    out_path = snapshots_dir / f"{snapshot['ts']}-{hash_suffix}.json"
+    tmp_path = out_path.with_suffix(out_path.suffix + ".tmp")
+    tmp_path.write_text(json.dumps(snapshot, indent=2, sort_keys=True), encoding="utf-8")
+    os.replace(tmp_path, out_path)
     return out_path, True
 
 
@@ -1335,10 +1476,23 @@ def _run(args: argparse.Namespace) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else list(argv)
-    args = _parse_args(argv)  # -h/--help/bad-flag exits are a deliberate CLI
-    # usage error, not a session-start failure, so argparse's own SystemExit
-    # is left alone. Everything below this point is a session-start
-    # failure mode and must never propagate as a non-zero exit.
+    # Fix #17: this file's own module docstring promises a SessionStart
+    # hook "always exits 0", but an unrecognised flag used to let
+    # argparse's SystemExit(2) straight through, contradicting it -- a
+    # hook fragment is a string in settings.json that Claude Code (or a
+    # typo) could one day invoke with an extra argument. Running
+    # interactively (stdin is a TTY, e.g. `--help` or a genuine usage
+    # typo at a terminal) keeps argparse's normal exit-code behaviour;
+    # only the non-interactive (hook) path is coerced to 0.
+    interactive = sys.stdin.isatty()
+    try:
+        args = _parse_args(argv)
+    except SystemExit as exc:
+        if interactive or exc.code in (0, None):
+            raise
+        return 0
+    # Everything below this point is a session-start failure mode and
+    # must never propagate as a non-zero exit.
     try:
         _run(args)
     except Exception as exc:  # noqa: BLE001 - must never fail a session start

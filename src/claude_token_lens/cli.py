@@ -393,6 +393,15 @@ def _add_snapshot_config_args(sub: argparse.ArgumentParser) -> None:
         "not --project, because the common --project flag already means "
         "'a repeatable project slug to filter by'.",
     )
+    sub.add_argument(
+        "--min-interval",
+        type=int,
+        default=300,
+        metavar="SECONDS",
+        help="skip the write when the newest snapshot for this project is both "
+        "younger than this and has identical content (default: 300; the hook "
+        "script itself already accepts this flag -- fix #13 exposes it here too)",
+    )
 
 
 def _add_probe_config_args(sub: argparse.ArgumentParser) -> None:
@@ -1114,11 +1123,19 @@ def _cmd_snapshot_config(args: argparse.Namespace) -> int:
         return 0
 
     cwd = getattr(args, "project_dir", None) or os.getcwd()
-    path, _written = hook.snapshot_and_get_path(config_dir, cwd, managed_path=args.managed_path)
+    path, written = hook.snapshot_and_get_path(
+        config_dir, cwd, min_interval=args.min_interval, managed_path=args.managed_path
+    )
     if path is None:
         print("No snapshot written and none exists yet.", file=sys.stderr)
         return 1
-    print(path)
+    # Fix #13: previously discarded `written`, so running this command
+    # twice inside --min-interval printed an old snapshot's path and
+    # exited 0 -- indistinguishable from having actually captured.
+    if written:
+        print(path)
+    else:
+        print(f"{path} (unchanged, not rewritten)")
     return 0
 
 
