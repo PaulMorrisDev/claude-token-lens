@@ -9,8 +9,11 @@ from __future__ import annotations
 from pathlib import Path
 
 from claude_token_lens.config import Config
-from claude_token_lens.corpus import load_corpus
+from claude_token_lens.corpus import SessionBundle, load_corpus
+from claude_token_lens.model import TranscriptMeta
+from claude_token_lens.parse import parse_transcript
 from claude_token_lens.pricing import load_pricing
+from claude_token_lens.report import build_report
 from claude_token_lens.usage import build_section
 
 from helpers import assert_privacy, turn_line, write_jsonl
@@ -131,3 +134,56 @@ def test_subscription_billing_populates_five_hour_blocks_and_relabels_cost(tmp_p
                 assert column.label == "Cost (list-price equivalent USD)"
     assert any("subscription" in note for note in section.notes)
     assert_privacy(section)
+
+
+def test_orphaned_subagent_bundle_session_count_matches_report(tmp_path):
+    # R23: a bundle with ``top is None`` is an orphaned subagent -- its
+    # parent top-level session was never discovered. ``load_corpus``
+    # never produces this through normal discovery (a subagent transcript
+    # is only ever attached to a bundle whose top-level session was also
+    # found), so it's constructed by hand here, the same way report.py's
+    # own build_report loop is exercised against one. Before the fix,
+    # usage.py counted this bundle's session (report.py has always
+    # skipped it -- see build_report's ``if bundle.top is None:
+    # continue``), so the two sections' session totals disagreed on any
+    # corpus containing one.
+    project_dir = tmp_path / "proj-orphan"
+    project_dir.mkdir()
+    _write_top(project_dir, "session-normal", ["2026-09-18T10:00:00.000Z"], input_tokens=100, output_tokens=20)
+    corpus = load_corpus([project_dir])
+    assert len(corpus.sessions) == 1
+
+    orphan_path = project_dir / "orphan-sub.jsonl"
+    write_jsonl(
+        orphan_path,
+        [turn_line(timestamp="2026-09-18T11:00:00.000Z", input_tokens=50, output_tokens=10)],
+    )
+    orphan_meta = TranscriptMeta(
+        path=str(orphan_path),
+        kind="subagent",
+        session_id="session-orphan",
+        agent_type="explore",
+        project_slug="proj-orphan",
+    )
+    orphan_transcript = parse_transcript(orphan_path, orphan_meta)
+    corpus.sessions.append(
+        SessionBundle(
+            session_id="session-orphan",
+            slug="proj-orphan",
+            top=None,
+            subs=[orphan_transcript],
+        )
+    )
+    assert len(corpus.sessions) == 2
+
+    section = build_section(corpus, PRICING, Config())
+    by_project = next(t for t in section.tables if t.name == "by_project")
+    usage_session_total = sum(row[1] for row in by_project.rows)
+    assert usage_session_total == 1  # the orphaned bundle must not be counted
+
+    report_model = build_report(corpus, PRICING, Config(), projects=(), window="all")
+    overview = next(s for s in report_model.sections if s.key == "overview")
+    totals_table = next(t for t in overview.tables if t.name == "totals")
+    report_sessions = next(row[1] for row in totals_table.rows if row[0] == "sessions")
+
+    assert report_sessions == usage_session_total

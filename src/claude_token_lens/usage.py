@@ -162,6 +162,15 @@ def build_section(corpus: Corpus, pricing: Pricing, config: Config) -> Section:
     money_label = "Cost (list-price equivalent USD)" if is_subscription else "Cost"
 
     for bundle in corpus.sessions:
+        # A bundle with no top-level transcript is an orphaned subagent
+        # (its parent session was never discovered) -- report.py's own
+        # main loop skips these entirely (see build_report's ``if
+        # bundle.top is None: continue``), so this module must too (R23
+        # fix) or the two sections' session/turn counts disagree on a
+        # corpus containing one.
+        if bundle.top is None:
+            continue
+
         project_bucket = by_project.setdefault(
             bundle.slug, {"sessions": 0, "cost": 0.0}
         )
