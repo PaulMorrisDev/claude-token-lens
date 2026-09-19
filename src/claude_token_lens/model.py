@@ -150,6 +150,54 @@ Capture-improvements batch (all additive, all defaulted -- see
   text content, and whether any of it looks pasted (>2,000 chars, or
   contains a ``[Pasted text`` marker). ``human_prompt_chars`` is
   ``None`` when no HUMAN_TEXT event precedes this turn.
+
+Usage-limits batch (v3-limits, all additive, all defaulted -- see
+``events.py``/``parse.py``/``limits.py``'s module docstrings for how each
+is detected and used):
+
+- ``EventKind.LIMIT_HIT`` -- a synthetic assistant line (``model:
+  "<synthetic>"``, ``isApiErrorMessage: true``) reporting "You've hit
+  your session limit" or "...weekly limit". ``subkind`` is
+  ``"session_limit"`` or ``"weekly_limit"``. Ranked above ``INTERRUPT``
+  in ``events.PRECEDENCE`` (a usage-cap pause is a stronger explanation
+  for a gap than a plain interrupt).
+- ``EventKind.LIMIT_RESUME`` -- the desktop app's automatic resume
+  prompt after a pause ("I hit my usage limit while you were working,
+  but it has reset now"): a ``type=user`` line with ``promptSource:
+  "sdk"`` and ``origin.kind == "human"``. Also ranked above
+  ``INTERRUPT``. Marks the end of a limit-induced pause.
+- ``EventKind.AGENT_TERMINATED`` -- a ``type=user`` task-notification
+  line reporting a subagent killed mid-task ("Agent terminated early due
+  to an API error: ..."). ``subkind`` is ``"rate_limit"`` when the
+  reported reason is a usage-limit 429, else ``"other"``.
+- ``Turn.synthetic_kind: str | None = None`` -- for a synthetic assistant
+  turn (``is_synthetic=True``), which of the six known synthetic texts it
+  is: ``"session_limit"``, ``"weekly_limit"``, ``"overloaded"``,
+  ``"unsupported_model"``, ``"autocompact_thrash"``, or
+  ``"other_api_error"``. ``None`` for a non-synthetic turn, or a
+  synthetic turn whose text didn't match any of the six.
+- ``Turn.gap_cause: str | None = None`` -- ``"limit"`` when the gap to
+  the previous turn spans a ``LIMIT_HIT``/``LIMIT_RESUME`` pair (the
+  harness was paused by a usage cap, not idle), else ``None``. Read by
+  ``recache.py``/``ttl.py``/``classify.py`` to keep a limit pause from
+  being counted as behavioural idle time.
+- ``Event.detail`` additions for ``LIMIT_HIT``: ``reset_minutes_of_day``
+  (``int | None``, minutes since local midnight the window resets),
+  ``reset_tz`` (``str | None``, an IANA zone name only when it matches
+  the single-slash form ``^[A-Za-z_]+/[A-Za-z_]+$`` -- a multi-part name
+  like ``America/Argentina/Buenos_Aires`` is deliberately left as
+  ``None`` rather than guessed at), and ``reset_ts`` (``str | None``, UTC
+  ISO -- from the line's own ``quotaLimits.resetsAt`` epoch when present,
+  else reconstructed from the parsed local time + zone via
+  ``zoneinfo.ZoneInfo`` when that resolves, else ``None`` when neither
+  source is usable, e.g. missing tzdata on a bare Windows install).
+- ``Event.detail`` additions for ``API_ERROR``: ``source`` (``str |
+  None``, the ``system.subtype=api_error`` line's own ``request_retry``/
+  ``connection_retry`` value) alongside the existing ``status``/
+  ``retryAttempt``, plus ``retryInMs`` (``int | None``).
+- ``Diagnostics.limit_hits: int = 0`` / ``Diagnostics.limit_resumes: int
+  = 0`` / ``Diagnostics.agents_terminated: int = 0`` -- corpus-wide
+  counts of the three new event kinds, for the Diagnostics section.
 """
 
 from __future__ import annotations
@@ -187,6 +235,11 @@ class EventKind(StrEnum):
     INTERRUPT = "interrupt"
     HUMAN_TEXT = "human_text"
     UNKNOWN = "unknown"
+    #: Usage-limits batch (v3-limits, see module docstring): ranked above
+    #: INTERRUPT in events.PRECEDENCE.
+    LIMIT_HIT = "limit_hit"
+    LIMIT_RESUME = "limit_resume"
+    AGENT_TERMINATED = "agent_terminated"
 
 
 @dataclass(slots=True)
@@ -309,6 +362,12 @@ class Turn:
     #: turn that follows a HUMAN_TEXT event.
     human_prompt_chars: int | None = None
     human_prompt_has_paste: bool = False
+    #: Usage-limits addition (see module docstring): which of the six
+    #: known synthetic texts this turn is, when ``is_synthetic`` is True.
+    synthetic_kind: str | None = None
+    #: Usage-limits addition (see module docstring): "limit" when the gap
+    #: to the previous turn spans a usage-cap pause, else None.
+    gap_cause: str | None = None
 
 
 @dataclass(slots=True)
@@ -391,6 +450,11 @@ class Diagnostics:
     #: invariant breach, so it's counted separately from
     #: ``ttl_sum_mismatch`` rather than folded into it.
     pre_split_turns: int = 0
+    #: Usage-limits addition (see module docstring): corpus-wide counts
+    #: of the three new event kinds.
+    limit_hits: int = 0
+    limit_resumes: int = 0
+    agents_terminated: int = 0
 
 
 @dataclass(slots=True)
