@@ -417,6 +417,22 @@ def test_report_against_the_real_fixture_exits_0_with_nonempty_sections(capsys):
             str(_REAL_FIXTURE_ROOT),
             "--project",
             "session-a",
+        ]
+    )
+    assert exit_code == 0
+    markdown = capsys.readouterr().out
+    assert "## Overview" in markdown
+    assert "## Sessions" in markdown
+    assert "## Re-cache events" in markdown
+    assert "## Cache TTL break-even" in markdown
+
+    exit_code = cli.main(
+        [
+            "report",
+            "--projects-root",
+            str(_REAL_FIXTURE_ROOT),
+            "--project",
+            "session-a",
             "--json",
         ]
     )
