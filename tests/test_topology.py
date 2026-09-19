@@ -554,7 +554,7 @@ def test_build_section_produces_one_table_per_plan_item(tmp_path):
     section = build_section(stats)
     assert section.key == "agents"
     assert section.title == "Agents and information flow"
-    assert len(section.tables) == 16
+    assert len(section.tables) == 17
 
     skills_table = next(t for t in section.tables if t.name == "topology_skills_rollup")
     row = next(r for r in skills_table.rows if r[0] == "grill-me")
@@ -608,7 +608,7 @@ def test_build_section_empty_stats_never_raises():
     stats = TopologyStats()
     section = build_section(stats)
     assert section.key == "agents"
-    assert len(section.tables) == 16
+    assert len(section.tables) == 17
     # These tables always emit fixed rows (Agent/Workflow, the baseline
     # summary row, the truncation-signal summary) regardless of whether
     # any data was ever added; every other table is empty-row.
@@ -617,6 +617,7 @@ def test_build_section_empty_stats_never_raises():
         "topology_chains_summary",
         "topology_upward_tool_result",
         "topology_redundant_work",
+        "topology_redundant_reads",
     }
     for table in section.tables:
         assert table.rows == [] or table.name in always_populated

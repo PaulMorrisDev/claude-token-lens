@@ -275,6 +275,12 @@ class TopologyStats:
     redundant_cmd_repeats_per_session: list[int] = field(default_factory=list)
     rediscovery_reads_per_session: list[int] = field(default_factory=list)
 
+    #: Fix #8 consumer: the A3 read-target-hash subsystem
+    #: (``parse.set_salt``/``Turn.read_target_hashes``) had no consumer
+    #: anywhere in ``src/`` -- see :meth:`_add_redundant_reads`.
+    redundant_reads_per_session: list[int] = field(default_factory=list)
+    redundant_reads_after_compaction_per_session: list[int] = field(default_factory=list)
+
     def add_session(
         self,
         session_id: str,
@@ -301,6 +307,7 @@ class TopologyStats:
         self._add_effort(top, subs)
         self._add_composition(top, subs)
         self._add_redundant_work(top)
+        self._add_redundant_reads(top)
 
     # -- (a) downward --------------------------------------------------
 
@@ -532,6 +539,52 @@ class TopologyStats:
                 if turn is not None and "Read" in turn.tool_names:
                     rediscovery += 1
         self.rediscovery_reads_per_session.append(rediscovery)
+
+    def _add_redundant_reads(self, top: TranscriptResult) -> None:
+        """Fix #8: the only consumer of ``Turn.read_target_hashes`` (a
+        salted hash of each Read/Edit/Write tool's target path -- see
+        ``parse.set_salt``/``parse.load_or_create_salt``'s own
+        docstrings). Counts, per top-level transcript, how many times a
+        target hash already seen earlier in the same transcript is read
+        again, and how many of those repeats land within
+        :data:`_REDISCOVERY_WINDOW_TURNS` turns of a ``COMPACT_BOUNDARY``
+        -- the same window ``_add_redundant_work``'s rediscovery metric
+        uses, since this is the same phenomenon (context lost to
+        compaction, paid for again) narrowed from "any Read tool call" to
+        "a read of a file this session had already read before".
+
+        Requires a salt to have been wired up before parsing (``cli.py``'s
+        corpus load does this automatically via
+        ``parse.load_or_create_salt`` -- see ``corpus.load_corpus``'s own
+        docstring); with no salt set, every ``Turn.read_target_hashes`` is
+        empty and both counts are always 0 -- the same "cleanly reports
+        nothing" degradation every metric in this module follows for an
+        unmet precondition, never a crash.
+
+        Only ever sees a hash, never a path -- consistent with this
+        module's privacy rule (see the module docstring).
+        """
+        priced = _priced_turns(top)
+        compaction_starts = [
+            t.turn_index for t in priced if EventKind.COMPACT_BOUNDARY in t.preceding_event_kinds
+        ]
+        seen_hashes: set[str] = set()
+        repeats = 0
+        repeats_after_compaction = 0
+        for turn in priced:
+            in_rediscovery_window = any(
+                start <= turn.turn_index < start + _REDISCOVERY_WINDOW_TURNS
+                for start in compaction_starts
+            )
+            for target_hash in turn.read_target_hashes:
+                if target_hash in seen_hashes:
+                    repeats += 1
+                    if in_rediscovery_window:
+                        repeats_after_compaction += 1
+                else:
+                    seen_hashes.add(target_hash)
+        self.redundant_reads_per_session.append(repeats)
+        self.redundant_reads_after_compaction_per_session.append(repeats_after_compaction)
 
 
 # -- Section/Table assembly --------------------------------------------------
@@ -950,6 +1003,49 @@ def _build_redundant_work_table(stats: TopologyStats) -> Table:
     )
 
 
+def _build_redundant_reads_table(stats: TopologyStats) -> Table:
+    columns = [
+        Column(key="metric", label="Metric", kind="str"),
+        Column(key="sessions", label="Sessions", kind="int"),
+        Column(key="mean_per_session", label="Mean per session", kind="float"),
+        Column(key="total", label="Total", kind="int"),
+    ]
+    rows = [
+        [
+            "Repeated reads (same file read more than once in a session)",
+            len(stats.redundant_reads_per_session),
+            _mean(stats.redundant_reads_per_session),
+            sum(stats.redundant_reads_per_session),
+        ],
+        [
+            f"...within {_REDISCOVERY_WINDOW_TURNS} turns of a compaction",
+            len(stats.redundant_reads_after_compaction_per_session),
+            _mean(stats.redundant_reads_after_compaction_per_session),
+            sum(stats.redundant_reads_after_compaction_per_session),
+        ],
+    ]
+    return Table(
+        name="topology_redundant_reads",
+        title="Redundant reads: the same file read more than once per session",
+        columns=columns,
+        rows=rows,
+        notes=[
+            "Computed from the top-level transcript only, via "
+            "Turn.read_target_hashes -- a salted hash of each read/write "
+            "tool's target path, never the path itself. Requires the "
+            "corpus load to have wired up a salt (the CLI does this "
+            "automatically via parse.load_or_create_salt); every count is "
+            "0 when no salt was set for this parse.",
+            "The second row is the subset of the first whose repeat read "
+            f"lands within {_REDISCOVERY_WINDOW_TURNS} turns of a "
+            "compact_boundary event -- the same window "
+            "\"Redundant work\"'s rediscovery-reads metric uses, since "
+            "both describe context a compaction dropped being paid for "
+            "again.",
+        ],
+    )
+
+
 def build_section(stats: TopologyStats) -> Section:
     """Turn a finished :class:`TopologyStats` accumulator into the
     "Agents and information flow" report section: one table per plan
@@ -973,6 +1069,7 @@ def build_section(stats: TopologyStats) -> Section:
         _build_effort_by_agent_type_table(stats),
         _build_composition_table(stats),
         _build_redundant_work_table(stats),
+        _build_redundant_reads_table(stats),
     ]
     return Section(key="agents", title="Agents and information flow", tables=tables, notes=[])
 

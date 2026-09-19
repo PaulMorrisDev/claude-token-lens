@@ -34,6 +34,7 @@ from . import statusline as statusline_mod
 from .cache import DigestCache
 from .config import Config, ConfigError, load_config, load_session_overrides
 from .corpus import Corpus, load_corpus
+from .parse import load_or_create_salt
 from .model import EventKind, TranscriptResult
 from .pricing import Pricing, PricingError, load_pricing, price_turn
 from .render.csv_out import write_csv_dir
@@ -603,6 +604,13 @@ def _load_corpus_for_args(
         cache = DigestCache(config_dir)
         if args.rebuild_cache:
             cache.purge(all=True)
+    # Fix #8: wire the A3 read-target-hash salt up to the actual corpus
+    # load -- previously nothing in src/ ever called set_salt/
+    # load_or_create_salt, so Turn.read_target_hashes was always empty in
+    # every shipped code path. load_corpus threads this through to both
+    # the in-process (jobs == 1) parse calls and, for jobs > 1, every
+    # ProcessPoolExecutor worker's own initializer.
+    salt = load_or_create_salt(config_dir)
     corpus = load_corpus(
         project_dirs,
         days=args.days,
@@ -613,6 +621,7 @@ def _load_corpus_for_args(
         cache=cache,
         jobs=args.jobs,
         exclude_projects=config.exclude_projects,
+        salt=salt,
     )
     # Fix R21: --quiet was accepted by argparse (mutually exclusive with
     # --verbose) but never actually consulted anywhere -- a silent no-op

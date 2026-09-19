@@ -194,7 +194,8 @@ the agents/skills/workflows it spawns" with numbers only:
 
 - `topology_spawn_write` — downward: mean/median first-turn
   `cache_creation` per agent type (the briefing + system prompt + preloaded
-  skills a new spawn pays for).
+  skills a new spawn pays for), plus the mean `agent_brief_chars` (mean
+  briefing chars) the spawning turn handed that agent type.
 - `topology_session_baseline` — the top-level session's own first-turn
   `cache_creation` (system prompt + `CLAUDE.md` + prefix-loaded tool
   schemas) across sessions, for baseline-bloat comparison.
@@ -209,7 +210,8 @@ the agents/skills/workflows it spawns" with numbers only:
   direct cost, spawned cost, mean spawns per invocation, mean report
   size.
 - `topology_spawn_depth` — spawn-depth histogram.
-- `topology_cost_per_spawn` — cost per spawn by agent type.
+- `topology_cost_per_spawn` — cost per spawn by agent type, plus the mean
+  `tool_wait_s` (mean tool wait) across that agent type's priced turns.
 - `topology_chains_summary` — `stoppedByUser`/`maxTurns` truncation
   signals.
 - `topology_reminder_hook_pressure` — attachment/hook-output counts per
@@ -227,6 +229,11 @@ the agents/skills/workflows it spawns" with numbers only:
 - `topology_redundant_work` — repeated Bash/PowerShell command prefixes
   and post-compaction rediscovery signals ("how much am I paying to
   re-learn").
+- `topology_redundant_reads` — the same file (by salted
+  `Turn.read_target_hashes`, never a path) read more than once in a
+  session, and how many of those repeats land within a compaction's
+  rediscovery window; every count is 0 unless the corpus load wired up a
+  hashing salt (see `parse.load_or_create_salt`).
 
 ## `workstyle` (`workstyle.py`)
 
