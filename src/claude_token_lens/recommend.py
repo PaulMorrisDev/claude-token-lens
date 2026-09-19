@@ -75,6 +75,15 @@ Deviations from the plan/brief, reported rather than made silently (see
   its rule function, using the closest available signal; the cited
   evidence is always a real table cell even where the full joint
   condition described in the plan can only be approximated.
+- ``long-tool-waits``, specifically: no table anywhere in this codebase
+  exposes the *joint* count of turns that are both preceded by
+  Bash/PowerShell (``recache_preceding_tool``) and follow a gap > 300s
+  (``recache_gap_buckets``) -- those are two independent turn
+  populations, not a single joint one. Rather than approximate the
+  joint share with ``min(tool_share, long_gap_share)`` (an upper bound
+  on the true joint share, not the share itself -- see this rule's own
+  comment), this rule requires each share to independently clear the
+  threshold and cites both as separate evidence entries.
 """
 
 from __future__ import annotations
@@ -402,10 +411,18 @@ def _rule_long_tool_waits(report: ReportModel, th: RecommendThresholds) -> list[
         return []
 
     # "> 60% of those turns follow a gap > 300s after Bash/PowerShell":
-    # approximated as the combined Bash+PowerShell share of re-cache
-    # turns (recache_preceding_tool) intersected with the combined
-    # >5-minute-gap share of re-cache turns (recache_gap_buckets) -- the
-    # two tables closest to this joint condition (see module docstring).
+    # recache_preceding_tool and recache_gap_buckets are the two closest
+    # tables, but neither -- nor anything else in this codebase --
+    # exposes the *joint* count of turns that are both preceded by
+    # Bash/PowerShell AND follow a long gap (see module docstring).
+    # Fix R14: min(tool_share, long_gap_share) is only an upper bound on
+    # that joint share, not the share itself (e.g. two disjoint 70%
+    # turn-sets can never overlap by more than 40%, yet min() would
+    # still report 70%) -- it could pass this gate on inputs whose real
+    # joint share is much smaller. Since the joint count is genuinely
+    # unavailable, require each share to independently clear the
+    # threshold instead of pretending to combine them, and cite each
+    # contributing table cell as its own evidence entry.
     tool_table = _table(report, "recache", "recache_preceding_tool")
     gap_table = _table(report, "recache", "recache_gap_buckets")
     if tool_table is None or gap_table is None:
@@ -413,11 +430,18 @@ def _rule_long_tool_waits(report: ReportModel, th: RecommendThresholds) -> list[
     bash_share = _cell(report, "recache", "recache_preceding_tool", "Bash", "share_pct_turns") or 0.0
     pwsh_share = _cell(report, "recache", "recache_preceding_tool", "PowerShell", "share_pct_turns") or 0.0
     tool_share = bash_share + pwsh_share
+
+    long_gap_buckets = (">60m", "15-60m", "5-15m")
+    long_gap_evidence = []
     long_gap_share = 0.0
-    for bucket in (">60m", "15-60m", "5-15m"):
-        long_gap_share += _cell(report, "recache", "recache_gap_buckets", bucket, "share_pct_turns") or 0.0
-    combined_share = min(tool_share, long_gap_share)
-    if combined_share <= th.long_tool_waits_gap_share_pct:
+    for bucket in long_gap_buckets:
+        value = _cell(report, "recache", "recache_gap_buckets", bucket, "share_pct_turns") or 0.0
+        long_gap_share += value
+        long_gap_evidence.append(
+            _evidence(f"{bucket} gap-bucket re-cache turn share", value, "recache", "recache_gap_buckets", bucket)
+        )
+
+    if tool_share <= th.long_tool_waits_gap_share_pct or long_gap_share <= th.long_tool_waits_gap_share_pct:
         return []
 
     return [
@@ -436,6 +460,7 @@ def _rule_long_tool_waits(report: ReportModel, th: RecommendThresholds) -> list[
                 _evidence("Full-expiry cache-creation tokens", full_expiry_cc, "recache", "recache_signature_split", "full-expiry"),
                 _evidence("Bash re-cache turn share", bash_share, "recache", "recache_preceding_tool", "Bash"),
                 _evidence("PowerShell re-cache turn share", pwsh_share, "recache", "recache_preceding_tool", "PowerShell"),
+                *long_gap_evidence,
             ],
         )
     ]

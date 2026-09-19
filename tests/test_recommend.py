@@ -1138,6 +1138,65 @@ def test_long_tool_waits_fires_above_both_thresholds():
     recs = recommend_fn(r, config=_config(), archetype=None)
     rec = next(rec for rec in recs if rec.id == "long-tool-waits")
     assert ("Full-expiry cache-creation tokens", 30_000, "recache.recache_signature_split", "full-expiry") in rec.evidence
+    # R14: no table exposes the true joint count of turns preceded by
+    # Bash/PowerShell AND following a long gap, so each of the two
+    # independent shares that stand in for it must be cited as its own
+    # evidence entry (previously the long-gap-bucket shares weren't
+    # cited at all, only used to compute a fake "combined" number).
+    for bucket, expected in ((">60m", 30.0), ("15-60m", 25.0), ("5-15m", 20.0)):
+        assert (
+            f"{bucket} gap-bucket re-cache turn share",
+            expected,
+            "recache.recache_gap_buckets",
+            bucket,
+        ) in rec.evidence
+
+
+def test_long_tool_waits_requires_both_shares_independently_above_threshold():
+    # Bash/PowerShell share is well above threshold (90%), but the
+    # long-gap share is well below it (10%) -- the two independent
+    # turn populations plainly don't overlap enough to justify firing,
+    # even though a naive min() of two *different* metrics could be
+    # fooled by a badly-chosen pair of inputs. Here both the old and
+    # new logic agree the rule should not fire; this pins that a low
+    # long-gap share alone is enough to suppress it regardless of how
+    # high the tool share runs.
+    r = _base_report()
+    r = _add_section(
+        r,
+        Section(
+            key="recache",
+            title="Recache",
+            tables=[
+                Table(
+                    name="recache_summary",
+                    title="Recache summary",
+                    columns=[Column(key="metric", label="Metric"), Column(key="recache_cc_tokens", label="Recache cc tokens")],
+                    rows=[["all", 100_000]],
+                ),
+                Table(
+                    name="recache_signature_split",
+                    title="Signature split",
+                    columns=[Column(key="signature", label="Signature"), Column(key="cc_tokens", label="CC tokens")],
+                    rows=[["full-expiry", 30_000]],
+                ),
+                Table(
+                    name="recache_preceding_tool",
+                    title="Preceding tool",
+                    columns=[Column(key="tool", label="Tool"), Column(key="share_pct_turns", label="Share")],
+                    rows=[["Bash", 60.0], ["PowerShell", 30.0]],
+                ),
+                Table(
+                    name="recache_gap_buckets",
+                    title="Gap buckets",
+                    columns=[Column(key="bucket", label="Bucket"), Column(key="share_pct_turns", label="Share")],
+                    rows=[[">60m", 5.0], ["15-60m", 3.0], ["5-15m", 2.0]],
+                ),
+            ],
+        ),
+    )
+    recs = recommend_fn(r, config=_config(), archetype=None)
+    assert not any(rec.id == "long-tool-waits" for rec in recs)
 
 
 def test_long_tool_waits_does_not_fire_below_full_expiry_share():
