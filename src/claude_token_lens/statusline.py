@@ -75,11 +75,19 @@ the estimate when a payload carries no usable ``prompt_cache``:
 - **Fields used, confirmed from the research capture**: ``warm`` (bool),
   ``ttl`` (``"5m"``/``"1h"``), ``expires_at`` (epoch seconds), ``misses``
   (a running counter), ``last_miss_cause.causes`` (a list of strings,
-  first element used), ``recache_tokens_if_cold``. ``miss_causes`` is
-  accepted on the wire but not currently rendered or logged (no column
-  needs it yet). Other confirmed-but-unused fields (``caching_observed``,
-  ``requests``, ``expected_rebuilds``, ``hit_ratio``, ``cache_write_tokens``,
-  ``miss_recache_tokens``, ``last_miss_at``) are simply ignored.
+  first element used), ``recache_tokens_if_cold``. ``miss_causes`` (a
+  dict of cumulative per-cause counts) is now also read and logged --
+  see the ``cache_miss_causes`` (fix for review finding 5) point below.
+  Other confirmed-but-unused fields (``caching_observed``, ``requests``,
+  ``expected_rebuilds``, ``hit_ratio``, ``cache_write_tokens``,
+  ``miss_recache_tokens``, ``last_miss_at``) are simply ignored. The
+  research capture's own §2 notes that every field here reflects only
+  the *main conversation* -- subagent requests are excluded from
+  ``prompt_cache`` entirely, so a session that spends most of its
+  tokens in subagent turns will show a cache picture that looks
+  healthier (or emptier) than the session's total token spend would
+  suggest. This module does not attempt to correct for that; it is a
+  property of the payload, not a bug in how this module reads it.
 - **Line segment**: ``cache warm 5m 03:12`` (a ``MM:SS`` countdown to
   ``expires_at``) when warm, else ``cache cold`` with an optional
   trailing ``recache ~12k tokens`` when ``recache_tokens_if_cold`` is
@@ -106,12 +114,13 @@ the estimate when a payload carries no usable ``prompt_cache``:
   ``_new_pending`` already reads to populate ``Turn.cc_1h`` (see its
   comment there), so this is read straight off a real, already-parsed
   transcript field rather than guessed.
-- **Trailing CSV columns 10-15** (after the three S1-context-budget
-  columns above, so the file now has 15 columns total): ``cache_warm``
+- **Trailing CSV columns 10-16** (after the three S1-context-budget
+  columns above, so the file now has 16 columns total): ``cache_warm``
   (``0``/``1``), ``cache_ttl_s``, ``cache_expires_in_s`` (computed at
   log time, so it is *not* part of the dedupe key below), ``cache_misses``,
-  ``cache_last_miss_cause`` (the short token above), and
-  ``cache_recache_tokens_if_cold``. A row is written when *either* the
+  ``cache_last_miss_cause`` (the short token above),
+  ``cache_recache_tokens_if_cold``, and ``cache_miss_causes`` (fix for
+  review finding 5, see below). A row is written when *either* the
   context-window values or the cache values (or both) are present and
   differ from the last ground-truth row already on file; per the task
   spec, a change in ``cache_warm`` or ``cache_misses`` alone now also
@@ -125,6 +134,77 @@ the estimate when a payload carries no usable ``prompt_cache``:
   new ``cache_ground_truth`` table, wired in by ``report.py`` via
   ``dataclasses.replace`` since ``usage.py`` itself is not writable for
   this work package) both use.
+- **``cache_miss_causes`` (fix for review finding 5)**: ``top_miss_causes``
+  used to be built by incrementing a counter for
+  ``prompt_cache.last_miss_cause`` once per *logged row* -- but that
+  field is sticky (it stays set across refreshes until the next miss),
+  so one real miss got re-counted on every quiet subsequent turn,
+  contradicting the ``misses`` column right beside it. The wire's own
+  ``prompt_cache.miss_causes`` field is documented (research capture §2)
+  as *cumulative counts for the session, per cause* -- exactly what
+  ``top_miss_causes`` should summarise -- so it is now read, mapped
+  through the same short-token allowlist as ``last_miss_cause``, and
+  persisted as this compact ``cause:count;cause:count`` column (sorted,
+  sanitised the same way every other echoed string field is -- see the
+  statusline-hardening note below). ``build_cache_ground_truth_table``
+  now takes ``top_miss_causes`` from the *last* row's cumulative
+  snapshot per session (an overwrite, not a per-row accumulation), with
+  a documented fallback for a log carrying no ``cache_miss_causes`` data
+  at all (old-format rows, or a payload that never sent the field):
+  count ``cache_last_miss_cause`` only on a row whose ``cache_misses``
+  increased over the previous row for that session, exactly the
+  finding's own suggested fallback.
+- **Statusline hardening (fix for review findings 3/4)**: the line was
+  promised "kept under 120 characters by construction" and "one line",
+  but neither was actually enforced -- an adversarial or just
+  differently-shaped ``prompt_cache`` (``expires_at``/
+  ``recache_tokens_if_cold`` as an extreme float, epoch **milliseconds**
+  instead of the documented epoch seconds, or a ``ttl`` string carrying
+  an embedded newline) could blow the line past 300+ characters or print
+  a second line outright. Now: ``ttl`` is only ever echoed when it
+  matches ``^\\d+[smh]$`` (else the numeric/label fallback, else ``"?"``),
+  every echoed string field (the sanitised ``ttl`` label, a miss-cause
+  token) is further restricted to ``[A-Za-z0-9_.-]`` and capped at 16
+  characters, ``expires_at`` above ``1e11`` is treated as epoch
+  milliseconds (divided down), the warm countdown is clamped to
+  ``[0, ttl_s or 3600]`` (and renders ``expiring`` rather than a
+  clock-skew-stuck ``00:00`` once past zero -- nit 13), the cold-path
+  recache-token estimate is capped at 10,000,000 before formatting, and
+  :func:`render_status` bounds the whole assembled line to 120
+  characters (truncating the cache segment first, since it's the one
+  built from the least-trusted fields) and strips any embedded newline
+  as a last resort.
+- **``context_window`` field-name fallbacks**: the confirmed payload
+  field names (research capture §2: ``total_input_tokens``,
+  ``total_output_tokens``, ``context_window_size``, ``used_percentage``,
+  ``remaining_percentage``, ``current_usage.*``) don't actually list
+  ``used_tokens``, the key this module has read from the start (nit 16)
+  -- so a real payload may never have populated the ``ctx NNk`` segment
+  or the context-window trailing columns at all. Both now try, in
+  order: ``used_tokens``, then ``total_input_tokens``, then the sum of
+  ``current_usage.{input_tokens, cache_creation_input_tokens,
+  cache_read_input_tokens}`` for the "used tokens" figure (see
+  :func:`_context_window_used_tokens`); ``context_window_size``, then
+  ``total_tokens``, then ``size`` for the window size
+  (:func:`_context_window_size`); and ``used_percentage``, else
+  ``100 - remaining_percentage``, for the percentage
+  (:func:`_context_window_used_percentage`). This is this module's own
+  reasonable guess at reconciling two partially-overlapping field-name
+  lists, not a restatement of a single documented contract -- see the
+  next point for how a real payload's actual shape gets recorded so a
+  later release can settle it for good.
+- **Payload key-name recording** (:func:`record_payload_keys`): every
+  statusline invocation now writes the payload's own key names --
+  recursively, dotted (e.g. ``prompt_cache.expires_at``), **names only,
+  never values**, capped at 200 -- to
+  ``<config_dir>/statusline-keys.json``, but only rewrites the file when
+  the recorded set actually differs from what a real payload has been
+  sending. This makes the real, currently-deployed statusline payload
+  shape observable ground truth (see ``docs/exports.md`` and
+  ``SECURITY.md`` for the "names only" privacy guarantee) instead of a
+  one-off research capture that can drift as Claude Code's own payload
+  evolves. Wrapped in ``try``/``except`` like every other filesystem step
+  in :func:`main` -- it must never affect the printed line.
 
 Never raises: :func:`main` wraps every step that touches the outside
 world (stdin, the filesystem, config) in ``try``/``except Exception`` and
@@ -140,6 +220,7 @@ from __future__ import annotations
 import csv
 import json
 import os
+import re
 import sys
 import tomllib
 from datetime import datetime, timezone
@@ -162,15 +243,112 @@ _DEFAULT_TTL_S = 300
 #: expires in 4m12s". Anything else falls back to "{n}s TTL ...".
 _TTL_LABELS = {300: "5m", 3600: "1h"}
 
+# -- statusline hardening (fix for review findings 3/4) ----------------------
+
+#: The whole assembled line is bounded to this many characters (see
+#: render_status) -- the module docstring's "kept under 120 characters"
+#: promise, now actually enforced rather than assumed from each
+#: segment's own small size.
+_MAX_LINE_LEN = 120
+
+#: Every echoed string field (a sanitised ttl label, a miss-cause token)
+#: is restricted to this character class and length.
+_ECHO_SANITIZE_RE = re.compile(r"[^A-Za-z0-9_.-]")
+_MAX_ECHO_LEN = 16
+
+#: A raw `ttl` string is only ever echoed verbatim when it matches this
+#: shape (e.g. "5m", "300s") -- anything else (including a newline
+#: injection attempt) falls back to the numeric/label path or "?".
+_TTL_RAW_RE = re.compile(r"^\d+[smh]$")
+
+#: A payload `expires_at` above this is treated as epoch milliseconds
+#: rather than the documented epoch seconds (a real epoch-seconds value
+#: for any date in this project's lifetime is comfortably below 1e11).
+_EPOCH_MS_THRESHOLD = 1e11
+
+#: Upper bound for the cold-path "recache ~Nk tokens" estimate, so a
+#: wildly out-of-range payload value can't blow the line up.
+_MAX_RECACHE_TOKENS = 10_000_000
+
+#: Fallback cap (seconds) for the warm countdown when no numeric TTL is
+#: known at all -- "clamp remaining to [0, ttl_s or 3600]".
+_MAX_REMAINING_FALLBACK_S = 3600
+
+
+def _sanitize_echo(text: str) -> str:
+    """Strip an echoed string field down to ``[A-Za-z0-9_.-]``, capped at
+    16 characters -- belt-and-suspenders against a malformed/hostile
+    payload smuggling a newline or an oversized string into the status
+    line (see the module docstring's statusline-hardening note)."""
+    return _ECHO_SANITIZE_RE.sub("", text)[:_MAX_ECHO_LEN]
+
+
+def _sanitize_ttl_label(ttl_raw: object) -> str:
+    """The TTL label to render: ``ttl_raw`` itself, but only when it's a
+    string shaped like ``^\\d+[smh]$`` (fix for review finding 4 -- the
+    previous code echoed *any* string verbatim, so a ``ttl`` value
+    containing a newline could print a second line); otherwise the
+    numeric/label fallback :func:`_parse_ttl_value` + :data:`_TTL_LABELS`
+    already used for a non-string ``ttl``, or ``"?"`` when nothing
+    parses. Always passed through :func:`_sanitize_echo` as a final
+    belt-and-suspenders step.
+    """
+    if isinstance(ttl_raw, str):
+        stripped = ttl_raw.strip()
+        if _TTL_RAW_RE.match(stripped):
+            return _sanitize_echo(stripped)
+    parsed = _parse_ttl_value(ttl_raw)
+    if parsed is not None:
+        return _sanitize_echo(_TTL_LABELS.get(parsed, f"{parsed}s"))
+    return "?"
+
 
 # -- formatting helpers ---------------------------------------------------
+
+
+def _context_window_used_tokens(context_window: dict) -> float | None:
+    """The "used tokens" figure, trying field names in the order the
+    module docstring documents (nit 16 + the ``context_window``
+    field-name-fallbacks note): ``used_tokens`` (this module's original
+    guess), then ``total_input_tokens``, then the sum of
+    ``current_usage.{input_tokens, cache_creation_input_tokens,
+    cache_read_input_tokens}``."""
+    used = _numeric(context_window.get("used_tokens"))
+    if used is not None:
+        return used
+    used = _numeric(context_window.get("total_input_tokens"))
+    if used is not None:
+        return used
+    current_usage = context_window.get("current_usage")
+    if isinstance(current_usage, dict):
+        parts = [
+            _numeric(current_usage.get("input_tokens")),
+            _numeric(current_usage.get("cache_creation_input_tokens")),
+            _numeric(current_usage.get("cache_read_input_tokens")),
+        ]
+        numeric_parts = [p for p in parts if p is not None]
+        if numeric_parts:
+            return sum(numeric_parts)
+    return None
+
+
+def _context_window_used_percentage(context_window: dict) -> float | None:
+    """``used_percentage``, else ``100 - remaining_percentage`` when only
+    the latter is present (see the module docstring)."""
+    used_percentage = _numeric(context_window.get("used_percentage"))
+    if used_percentage is not None:
+        return used_percentage
+    remaining_percentage = _numeric(context_window.get("remaining_percentage"))
+    if remaining_percentage is not None:
+        return 100.0 - remaining_percentage
+    return None
 
 
 def _fmt_ctx(context_window: object) -> str | None:
     if not isinstance(context_window, dict):
         return None
-    used = context_window.get("used_tokens")
-    if not isinstance(used, (int, float)) or isinstance(used, bool):
+    used = _context_window_used_tokens(context_window)
+    if used is None:
         return None
     return f"ctx {round(used / 1000.0)}k"
 
@@ -193,6 +371,55 @@ def _map_miss_cause(cause: object) -> str | None:
     return _MISS_CAUSE_ALLOWLIST.get(cause, "other")
 
 
+def _format_cause_counts(counts: dict[str, int]) -> str:
+    """``prompt_cache.miss_causes`` (already mapped through the short-token
+    allowlist and summed per short token) as the compact
+    ``cause:count;cause:count`` column persisted for review finding 5 --
+    sorted for determinism, each token passed through
+    :func:`_sanitize_echo`."""
+    parts = [f"{_sanitize_echo(cause)}:{int(count)}" for cause, count in sorted(counts.items()) if cause]
+    return ";".join(parts)
+
+
+def _parse_cause_counts(text: str | None) -> dict[str, int]:
+    """The inverse of :func:`_format_cause_counts`, tolerant of a blank/
+    malformed column (an old-format row, or a corrupted field) by simply
+    skipping any segment that doesn't parse."""
+    if not text:
+        return {}
+    counts: dict[str, int] = {}
+    for part in text.split(";"):
+        if ":" not in part:
+            continue
+        cause, _, count_raw = part.partition(":")
+        cause = cause.strip()
+        if not cause:
+            continue
+        try:
+            counts[cause] = int(count_raw)
+        except ValueError:
+            continue
+    return counts
+
+
+def _miss_causes_from_payload(prompt_cache: dict) -> dict[str, int]:
+    """``prompt_cache.miss_causes`` mapped through the short-token
+    allowlist and summed per short token (several raw causes can map to
+    the same short token, e.g. anything unrecognised collapses to
+    ``"other"``). Returns ``{}`` when the field is missing/not a dict."""
+    raw = prompt_cache.get("miss_causes")
+    if not isinstance(raw, dict):
+        return {}
+    counts: dict[str, int] = {}
+    for raw_cause, raw_count in raw.items():
+        mapped = _map_miss_cause(raw_cause)
+        count = _numeric(raw_count)
+        if mapped is None or count is None:
+            continue
+        counts[mapped] = counts.get(mapped, 0) + int(count)
+    return counts
+
+
 def _numeric(value: object) -> float | None:
     if not isinstance(value, (int, float)) or isinstance(value, bool):
         return None
@@ -210,6 +437,15 @@ def _fmt_cache_ground_truth(prompt_cache: dict, now: datetime) -> str | None:
     ``prompt_cache`` ground truth (see the module docstring). Returns
     ``None`` when ``prompt_cache`` doesn't carry a boolean ``warm`` at
     all, so callers can fall back to the estimate instead.
+
+    Hardened per review findings 3/4 and nit 13 (see the module
+    docstring's "Statusline hardening" note): the ``ttl`` label is only
+    ever echoed verbatim when it matches ``^\\d+[smh]$``, an
+    ``expires_at`` above :data:`_EPOCH_MS_THRESHOLD` is treated as epoch
+    milliseconds, the cold-path recache estimate is capped at
+    :data:`_MAX_RECACHE_TOKENS`, and the warm countdown is clamped to
+    ``[0, ttl_s or _MAX_REMAINING_FALLBACK_S]`` -- once past zero this
+    renders ``expiring`` rather than a clock-skew-stuck ``00:00``.
     """
     warm = prompt_cache.get("warm")
     if not isinstance(warm, bool):
@@ -219,21 +455,25 @@ def _fmt_cache_ground_truth(prompt_cache: dict, now: datetime) -> str | None:
         segment = "cache cold"
         recache = _numeric(prompt_cache.get("recache_tokens_if_cold"))
         if recache is not None:
+            recache = min(max(recache, 0.0), _MAX_RECACHE_TOKENS)
             segment += f" recache ~{round(recache / 1000.0)}k tokens"
         return segment
 
     ttl_raw = prompt_cache.get("ttl")
-    if isinstance(ttl_raw, str) and ttl_raw:
-        ttl_label = ttl_raw
-    else:
-        parsed = _parse_ttl_value(ttl_raw)
-        ttl_label = _TTL_LABELS.get(parsed, f"{parsed}s") if parsed is not None else "?"
+    ttl_label = _sanitize_ttl_label(ttl_raw)
+    ttl_s = _parse_ttl_value(ttl_raw)
 
     expires_at = _numeric(prompt_cache.get("expires_at"))
     if expires_at is None:
         return f"cache warm {ttl_label}"
+    if expires_at > _EPOCH_MS_THRESHOLD:
+        expires_at = expires_at / 1000.0
     now_ts = (now if now.tzinfo is not None else now.replace(tzinfo=timezone.utc)).timestamp()
-    remaining = expires_at - now_ts
+    raw_remaining = expires_at - now_ts
+    if raw_remaining <= 0:
+        return f"cache warm {ttl_label} expiring"
+    cap = ttl_s or _MAX_REMAINING_FALLBACK_S
+    remaining = min(raw_remaining, cap)
     return f"cache warm {ttl_label} {_format_mmss(remaining)}"
 
 
@@ -448,19 +688,29 @@ def render_status(payload: dict, now: datetime, effective_ttl_s: int | None) -> 
     04:12 | 5h 37% | 7d 12%`` (estimate fallback, no ``prompt_cache`` on
     the payload). Every segment is optional — a missing/malformed field
     simply drops its segment rather than raising. Never prints message
-    text; kept under 120 characters by construction (each segment is a
-    handful of tokens). Returns :data:`_FALLBACK_LINE` when nothing at
-    all could be rendered (an (almost) empty payload).
+    text. Returns :data:`_FALLBACK_LINE` when nothing at all could be
+    rendered (an (almost) empty payload).
+
+    Fix for review findings 3/4 (see the module docstring's "Statusline
+    hardening" note): the assembled line is now actually bounded to
+    :data:`_MAX_LINE_LEN` characters rather than merely assumed to be
+    short -- the cache segment (built from the least-trusted payload
+    fields) is truncated first, and dropped entirely if even an empty
+    truncation wouldn't fit; any embedded newline is stripped as a
+    last-resort guarantee that this never becomes a second line.
     """
     if not isinstance(payload, dict):
         payload = {}
 
     segments: list[str] = []
+    cache_index: int | None = None
+
     ctx_seg = _fmt_ctx(payload.get("context_window"))
     if ctx_seg:
         segments.append(ctx_seg)
     cache_seg = _fmt_cache_segment(payload, now, effective_ttl_s)
     if cache_seg:
+        cache_index = len(segments)
         segments.append(cache_seg)
     five_h_seg = _fmt_rate(payload.get("rate_limits"), "five_hour", "5h")
     if five_h_seg:
@@ -471,7 +721,22 @@ def render_status(payload: dict, now: datetime, effective_ttl_s: int | None) -> 
 
     if not segments:
         return _FALLBACK_LINE
-    return " | ".join(segments)
+
+    line = " | ".join(segments)
+    if len(line) > _MAX_LINE_LEN and cache_index is not None:
+        other_len = sum(len(s) for i, s in enumerate(segments) if i != cache_index)
+        separators_len = 3 * max(0, len(segments) - 1)  # " | " between each pair
+        budget = max(0, _MAX_LINE_LEN - other_len - separators_len)
+        truncated_cache = segments[cache_index][:budget].rstrip()
+        segments = list(segments)
+        if truncated_cache:
+            segments[cache_index] = truncated_cache
+        else:
+            del segments[cache_index]
+        line = " | ".join(segments)
+
+    line = line.replace("\n", " ").replace("\r", " ")
+    return line[:_MAX_LINE_LEN]
 
 
 # -- install fragment -------------------------------------------------------
@@ -508,12 +773,80 @@ def print_install_fragment() -> str:
 #: ``log_usage.load_usage_log`` read of the file skips these rows.
 _CONTEXT_WINDOW_SENTINEL = "context_window"
 
+#: The full 16-column ground-truth header this module writes (fix for
+#: review finding 6 -- see :func:`_ensure_ground_truth_header`). Kept as
+#: a single source of truth so the "write a new file" and "upgrade an
+#: old file" paths can't drift apart.
+_GROUND_TRUTH_TRAILING_COLUMNS = (
+    "context_window_used_tokens",
+    "context_window_size",
+    "context_window_autocompact_threshold",
+    "cache_warm",
+    "cache_ttl_s",
+    "cache_expires_in_s",
+    "cache_misses",
+    "cache_last_miss_cause",
+    "cache_recache_tokens_if_cold",
+    "cache_miss_causes",
+)
+_GROUND_TRUTH_HEADER = list(log_usage.CSV_FIELDS) + list(_GROUND_TRUTH_TRAILING_COLUMNS)
+
+
+def _ensure_ground_truth_header(csv_path: Path) -> None:
+    """Fix for review finding 6: a usage-log CSV written before this
+    module's trailing columns existed (or before ``cache_miss_causes``
+    was added) has fewer columns than :data:`_GROUND_TRUTH_HEADER`. A
+    plain append would then leave that file with two different row
+    shapes forever, silently breaking any positional read (this
+    module's own :func:`load_usage_log_ground_truth` tolerates a short
+    row, but a naive ``csv.DictReader`` elsewhere would misalign).
+
+    When the file exists and its header has fewer columns than the
+    current writer, this rewrites the file *once*: read every row, pad
+    each out to the new header's width with empty strings, then write
+    the new header plus the padded rows to a temp file in the same
+    directory and ``os.replace`` it over the original -- atomic on both
+    POSIX and Windows, so a crash mid-rewrite never leaves a truncated
+    file in place. A no-op when the file doesn't exist yet (the normal
+    append path below creates it with the full header) or already has
+    at least as many columns.
+    """
+    if not csv_path.exists():
+        return
+    try:
+        with open(csv_path, "r", encoding="utf-8", newline="") as fh:
+            reader = csv.reader(fh)
+            rows = list(reader)
+    except OSError:
+        return
+    if not rows:
+        return
+    header = rows[0]
+    if len(header) >= len(_GROUND_TRUTH_HEADER):
+        return
+
+    width = len(_GROUND_TRUTH_HEADER)
+    padded_rows = [row + [""] * (width - len(row)) if len(row) < width else row for row in rows[1:]]
+
+    tmp_path = csv_path.with_name(f"{csv_path.name}.tmp-{os.getpid()}")
+    with open(tmp_path, "w", encoding="utf-8", newline="") as fh:
+        writer = csv.writer(fh)
+        writer.writerow(_GROUND_TRUTH_HEADER)
+        writer.writerows(padded_rows)
+    os.replace(tmp_path, csv_path)
+
 
 def _context_window_size(context_window: dict) -> float | None:
+    """The window's size, trying ``context_window_size``, then
+    ``total_tokens``, then ``size`` (nit 16 + field-name-fallbacks
+    note)."""
     size = _numeric(context_window.get("context_window_size"))
     if size is not None:
         return size
-    return _numeric(context_window.get("total_tokens"))
+    size = _numeric(context_window.get("total_tokens"))
+    if size is not None:
+        return size
+    return _numeric(context_window.get("size"))
 
 
 def _autocompact_field(context_window: dict) -> float | None:
@@ -536,12 +869,12 @@ def _context_window_row_values(payload: dict) -> tuple[str, float | None, float,
     context_window = payload.get("context_window")
     if not isinstance(context_window, dict):
         return None
-    used_tokens = _numeric(context_window.get("used_tokens"))
+    used_tokens = _context_window_used_tokens(context_window)
     if used_tokens is None:
         return None
     session_id = payload.get("session_id")
     session_id = session_id if isinstance(session_id, str) else ""
-    used_percentage = _numeric(context_window.get("used_percentage"))
+    used_percentage = _context_window_used_percentage(context_window)
     size = _context_window_size(context_window)
     autocompact = _autocompact_field(context_window)
     return (session_id, used_percentage, used_tokens, size, autocompact)
@@ -552,13 +885,17 @@ def _context_window_row_values(payload: dict) -> tuple[str, float | None, float,
 
 def _cache_row_values(
     payload: dict,
-) -> tuple[float | None, int | None, float | None, float | None, str | None, float | None] | None:
-    """``(warm, ttl_s, expires_at, misses, last_miss_cause, recache_tokens_if_cold)``
-    from ``payload["prompt_cache"]``, or ``None`` when there is nothing at
-    all worth logging (``prompt_cache`` missing/not a dict, or every one
-    of these fields absent). ``warm`` is kept as ``0.0``/``1.0`` (not a
+) -> tuple[float | None, int | None, float | None, float | None, str | None, float | None, str | None] | None:
+    """``(warm, ttl_s, expires_at, misses, last_miss_cause,
+    recache_tokens_if_cold, miss_causes_str)`` from
+    ``payload["prompt_cache"]``, or ``None`` when there is nothing at all
+    worth logging (``prompt_cache`` missing/not a dict, or every one of
+    these fields absent). ``warm`` is kept as ``0.0``/``1.0`` (not a
     bool) so it slots into the same numeric CSV/dedupe-key handling as
-    every other value here.
+    every other value here. ``miss_causes_str`` is the fix for review
+    finding 5 (see the module docstring): ``prompt_cache.miss_causes``,
+    mapped and summed by :func:`_miss_causes_from_payload`, formatted by
+    :func:`_format_cause_counts`.
     """
     prompt_cache = payload.get("prompt_cache")
     if not isinstance(prompt_cache, dict):
@@ -576,10 +913,20 @@ def _cache_row_values(
         if isinstance(causes, list) and causes:
             last_miss_cause = _map_miss_cause(causes[0])
     recache_tokens_if_cold = _numeric(prompt_cache.get("recache_tokens_if_cold"))
+    miss_causes_counts = _miss_causes_from_payload(prompt_cache)
+    miss_causes_str = _format_cause_counts(miss_causes_counts) if miss_causes_counts else None
 
-    if warm is None and ttl_s is None and expires_at is None and misses is None and last_miss_cause is None and recache_tokens_if_cold is None:
+    if (
+        warm is None
+        and ttl_s is None
+        and expires_at is None
+        and misses is None
+        and last_miss_cause is None
+        and recache_tokens_if_cold is None
+        and miss_causes_str is None
+    ):
         return None
-    return (warm, ttl_s, expires_at, misses, last_miss_cause, recache_tokens_if_cold)
+    return (warm, ttl_s, expires_at, misses, last_miss_cause, recache_tokens_if_cold, miss_causes_str)
 
 
 def _parse_csv_number(text: str | None) -> float | None:
@@ -594,10 +941,12 @@ def _parse_csv_number(text: str | None) -> float | None:
 def _last_context_window_key(csv_path: Path) -> tuple | None:
     """The dedupe key of the last row in ``csv_path`` whose ``window``
     column is :data:`_CONTEXT_WINDOW_SENTINEL`, or ``None`` if the file
-    doesn't exist or carries no such row yet. Columns 9 (``cache_warm``)
-    and 12 (``cache_misses``) are included per the S1-exports spec: a
-    change in either alone counts as a new row even when every
-    context-window column stays the same (see the module docstring)."""
+    doesn't exist or carries no such row yet. Columns 9 (``cache_warm``),
+    12 (``cache_misses``) and 15 (``cache_miss_causes``) are included per
+    the S1-exports spec (and review finding 5's cumulative-counts
+    column): a change in any of them alone counts as a new row even when
+    every context-window column stays the same (see the module
+    docstring)."""
     if not csv_path.exists():
         return None
     last_key: tuple | None = None
@@ -616,6 +965,7 @@ def _last_context_window_key(csv_path: Path) -> tuple | None:
                     _parse_csv_number(row[8]) if len(row) > 8 else None,
                     _parse_csv_number(row[9]) if len(row) > 9 else None,
                     _parse_csv_number(row[12]) if len(row) > 12 else None,
+                    row[15] if len(row) > 15 else "",
                 )
     except OSError:
         return None
@@ -638,15 +988,33 @@ def _append_context_window_row(csv_path: Path, payload: dict, now: datetime) -> 
     else:
         used_percentage = used_tokens = size = autocompact = None
     if cache_values is not None:
-        cache_warm, cache_ttl_s, cache_expires_at, cache_misses, cache_last_miss_cause, cache_recache = cache_values
+        (
+            cache_warm,
+            cache_ttl_s,
+            cache_expires_at,
+            cache_misses,
+            cache_last_miss_cause,
+            cache_recache,
+            cache_miss_causes_str,
+        ) = cache_values
     else:
         cache_warm = cache_ttl_s = cache_expires_at = cache_misses = cache_recache = None
-        cache_last_miss_cause = None
+        cache_last_miss_cause = cache_miss_causes_str = None
 
     session_id = payload.get("session_id")
     session_id = session_id if isinstance(session_id, str) else ""
 
-    key = (session_id, used_percentage, used_tokens, size, autocompact, cache_warm, cache_misses)
+    key = (
+        session_id,
+        used_percentage,
+        used_tokens,
+        size,
+        autocompact,
+        cache_warm,
+        cache_misses,
+        cache_miss_causes_str or "",
+    )
+    _ensure_ground_truth_header(csv_path)
     if key == _last_context_window_key(csv_path):
         return
 
@@ -662,20 +1030,7 @@ def _append_context_window_row(csv_path: Path, payload: dict, now: datetime) -> 
     with open(csv_path, "a", encoding="utf-8", newline="") as fh:
         writer = csv.writer(fh)
         if is_new_file:
-            writer.writerow(
-                list(log_usage.CSV_FIELDS)
-                + [
-                    "context_window_used_tokens",
-                    "context_window_size",
-                    "context_window_autocompact_threshold",
-                    "cache_warm",
-                    "cache_ttl_s",
-                    "cache_expires_in_s",
-                    "cache_misses",
-                    "cache_last_miss_cause",
-                    "cache_recache_tokens_if_cold",
-                ]
-            )
+            writer.writerow(_GROUND_TRUTH_HEADER)
         writer.writerow(
             [
                 logged_at,
@@ -693,6 +1048,7 @@ def _append_context_window_row(csv_path: Path, payload: dict, now: datetime) -> 
                 cache_misses if cache_misses is not None else "",
                 cache_last_miss_cause or "",
                 cache_recache if cache_recache is not None else "",
+                cache_miss_causes_str or "",
             ]
         )
 
@@ -701,11 +1057,15 @@ def load_usage_log_ground_truth(csv_path: str | Path) -> list[dict]:
     """Tolerant reader for *every* ground-truth trailing column this
     module writes -- both the S1-context-budget ``context_window_*``
     columns and the S1-exports ``cache_*`` columns -- as one dict per
-    row: ``{"session_id", "context_window_used_percentage",
+    row: ``{"logged_at", "session_id", "context_window_used_percentage",
     "context_window_used_tokens", "context_window_size",
     "context_window_autocompact_threshold", "cache_warm", "cache_ttl_s",
     "cache_expires_in_s", "cache_misses", "cache_last_miss_cause",
-    "cache_recache_tokens_if_cold"}``.
+    "cache_recache_tokens_if_cold", "cache_miss_causes"}``. ``logged_at``
+    is the row's own first column (the shared ``log_usage.CSV_FIELDS``
+    timestamp) -- ``cli.py``'s ``report``/``monthly-report`` commands
+    filter on it to scope these rows to a reporting window (review
+    finding 8).
 
     Unlike :func:`context_budget.load_context_window_rows` (which only
     ever needed the context-window columns, and so skips a row lacking a
@@ -738,8 +1098,10 @@ def load_usage_log_ground_truth(csv_path: str | Path) -> list[dict]:
 
             cache_warm_raw = _at(9)
             cause_raw = raw[13].strip() if len(raw) > 13 and raw[13].strip() else None
+            miss_causes_raw = raw[15].strip() if len(raw) > 15 and raw[15].strip() else None
             rows.append(
                 {
+                    "logged_at": raw[0] if len(raw) > 0 else "",
                     "session_id": raw[1] if len(raw) > 1 else "",
                     "context_window_used_percentage": _at(3),
                     "context_window_used_tokens": _at(6),
@@ -751,6 +1113,7 @@ def load_usage_log_ground_truth(csv_path: str | Path) -> list[dict]:
                     "cache_misses": _at(12),
                     "cache_last_miss_cause": cause_raw,
                     "cache_recache_tokens_if_cold": _at(14),
+                    "cache_miss_causes": miss_causes_raw,
                 }
             )
     return rows
@@ -765,6 +1128,15 @@ def build_cache_ground_truth_table(usage_log_rows: list[dict] | None) -> Table:
     :func:`load_usage_log_ground_truth`'s rows. A row lacking any cache
     data at all (``cache_warm`` is ``None``) is excluded -- it has
     nothing to contribute here even if it carries context-window data.
+
+    ``top_miss_causes`` is the fix for review finding 5: it comes from
+    the *last* row's cumulative ``cache_miss_causes`` snapshot for that
+    session (an overwrite, not summed across rows -- the field is
+    already a running total), falling back to counting
+    ``cache_last_miss_cause`` once per row whose ``cache_misses``
+    increased over the previous row, only for a session whose rows never
+    carry ``cache_miss_causes`` data at all (old-format rows, or a
+    payload that never sent the field).
     """
     per_session: dict[str, dict] = {}
     for row in usage_log_rows or []:
@@ -773,7 +1145,15 @@ def build_cache_ground_truth_table(usage_log_rows: list[dict] | None) -> Table:
         session_id = row.get("session_id") or ""
         bucket = per_session.setdefault(
             session_id,
-            {"rows": 0, "warm": 0, "misses_max": 0.0, "cause_counts": {}, "recache_values": []},
+            {
+                "rows": 0,
+                "warm": 0,
+                "misses_max": 0.0,
+                "recache_values": [],
+                "last_miss_causes": None,
+                "prev_misses": None,
+                "fallback_causes": {},
+            },
         )
         bucket["rows"] += 1
         if row.get("cache_warm"):
@@ -781,9 +1161,25 @@ def build_cache_ground_truth_table(usage_log_rows: list[dict] | None) -> Table:
         misses = row.get("cache_misses")
         if isinstance(misses, (int, float)):
             bucket["misses_max"] = max(bucket["misses_max"], misses)
-        cause = row.get("cache_last_miss_cause")
-        if cause:
-            bucket["cause_counts"][cause] = bucket["cause_counts"].get(cause, 0) + 1
+
+        # Fix for review finding 5: prefer the wire's own cumulative
+        # ``cache_miss_causes`` snapshot (an overwrite per row, since it's
+        # already a running total -- see the module docstring), and only
+        # fall back to counting the sticky ``cache_last_miss_cause`` once
+        # per genuine miss (a row whose ``cache_misses`` increased over
+        # the previous row for this session) when no row in the whole
+        # session ever carried ``cache_miss_causes`` data at all.
+        miss_causes_raw = row.get("cache_miss_causes")
+        if miss_causes_raw:
+            bucket["last_miss_causes"] = miss_causes_raw
+        else:
+            cause = row.get("cache_last_miss_cause")
+            prev_misses = bucket["prev_misses"]
+            if cause and isinstance(misses, (int, float)) and (prev_misses is None or misses > prev_misses):
+                bucket["fallback_causes"][cause] = bucket["fallback_causes"].get(cause, 0) + 1
+        if isinstance(misses, (int, float)):
+            bucket["prev_misses"] = misses
+
         recache = row.get("cache_recache_tokens_if_cold")
         if isinstance(recache, (int, float)):
             bucket["recache_values"].append(recache)
@@ -792,7 +1188,11 @@ def build_cache_ground_truth_table(usage_log_rows: list[dict] | None) -> Table:
     for session_id, bucket in sorted(per_session.items()):
         rows_count = bucket["rows"]
         warm_share = (100.0 * bucket["warm"] / rows_count) if rows_count else 0.0
-        top_causes = sorted(bucket["cause_counts"].items(), key=lambda kv: (-kv[1], kv[0]))[:3]
+        if bucket["last_miss_causes"]:
+            cause_counts = _parse_cause_counts(bucket["last_miss_causes"])
+        else:
+            cause_counts = bucket["fallback_causes"]
+        top_causes = sorted(cause_counts.items(), key=lambda kv: (-kv[1], kv[0]))[:3]
         top_causes_str = ", ".join(f"{cause}:{count}" for cause, count in top_causes)
         recache_values = bucket["recache_values"]
         mean_recache = (sum(recache_values) / len(recache_values)) if recache_values else None
@@ -824,7 +1224,92 @@ def build_cache_ground_truth_table(usage_log_rows: list[dict] | None) -> Table:
             "columns in the usage-log CSV (see statusline.py's module "
             "docstring); sessions with no logged cache data are absent "
             "from this table.",
+            "Warm share is the percentage of *logged rows* (statusline "
+            "refreshes) that were warm, not a share of wall-clock session "
+            "time -- refreshes are not evenly spaced, so a session with "
+            "many quick warm refreshes and one long cold stretch can show "
+            "a high warm share despite spending most of its wall-clock "
+            "time cold, and vice versa (nit 20).",
         ],
+    )
+
+
+# -- payload key-name recording ---------------------------------------------
+
+#: Hard cap on the number of dotted key names recorded per invocation
+#: (see :func:`record_payload_keys`) -- a defensive bound against a
+#: pathological/hostile payload with a huge or deeply-nested key set.
+_MAX_RECORDED_KEYS = 200
+
+_PAYLOAD_KEYS_FILENAME = "statusline-keys.json"
+
+
+def _collect_dotted_keys(value: object, prefix: str, out: set[str]) -> None:
+    """Recursively collect every dict key under ``value`` as a dotted
+    name (e.g. ``prompt_cache.expires_at``) into ``out``, stopping once
+    :data:`_MAX_RECORDED_KEYS` distinct names have been collected.
+    **Names only -- never values** (see the module docstring's
+    "Payload key-name recording" note and ``SECURITY.md``): this walks
+    the payload's structure, not its contents, so nothing a user typed
+    or any token/session/path value can end up in the recorded set.
+    """
+    if len(out) >= _MAX_RECORDED_KEYS:
+        return
+    if isinstance(value, dict):
+        for key, sub_value in value.items():
+            if not isinstance(key, str):
+                continue
+            dotted = f"{prefix}.{key}" if prefix else key
+            out.add(dotted)
+            if len(out) >= _MAX_RECORDED_KEYS:
+                return
+            _collect_dotted_keys(sub_value, dotted, out)
+            if len(out) >= _MAX_RECORDED_KEYS:
+                return
+    elif isinstance(value, list):
+        # A list's own items aren't named, but a dict inside one (e.g. a
+        # future ``causes: [...]``-shaped list of objects) still has keys
+        # worth recording under the same dotted prefix.
+        for item in value:
+            if isinstance(item, dict):
+                _collect_dotted_keys(item, prefix, out)
+                if len(out) >= _MAX_RECORDED_KEYS:
+                    return
+
+
+def record_payload_keys(payload: dict, config_dir: Path) -> None:
+    """Write the payload's own key names -- recursively, dotted, names
+    only, capped at :data:`_MAX_RECORDED_KEYS` -- to
+    ``<config_dir>/statusline-keys.json``, but only when the recorded set
+    actually differs from what's already stored there (per the locked
+    decision: this makes a real, currently-deployed payload's shape
+    observable ground truth for a later release, without rewriting the
+    file on every single invocation). Never raises -- callers (``main``)
+    already wrap this in ``try``/``except`` like every other filesystem
+    step, but this function is defensive on its own account too, since
+    it's also directly unit-testable.
+    """
+    if not isinstance(payload, dict):
+        return
+    keys: set[str] = set()
+    _collect_dotted_keys(payload, "", keys)
+    sorted_keys = sorted(keys)
+
+    keys_path = Path(config_dir) / _PAYLOAD_KEYS_FILENAME
+    try:
+        existing_raw = keys_path.read_text(encoding="utf-8")
+        existing = json.loads(existing_raw)
+        existing_keys = existing.get("keys") if isinstance(existing, dict) else None
+    except (OSError, ValueError):
+        existing_keys = None
+
+    if existing_keys == sorted_keys:
+        return
+
+    keys_path.parent.mkdir(parents=True, exist_ok=True)
+    keys_path.write_text(
+        json.dumps({"keys": sorted_keys}, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
     )
 
 
@@ -908,6 +1393,11 @@ def main(argv: list[str] | None = None) -> int:
     except Exception:
         pass
 
+    try:
+        record_payload_keys(payload, config_dir)
+    except Exception:
+        pass
+
     return 0
 
 
@@ -922,4 +1412,5 @@ __all__ = [
     "main",
     "load_usage_log_ground_truth",
     "build_cache_ground_truth_table",
+    "record_payload_keys",
 ]

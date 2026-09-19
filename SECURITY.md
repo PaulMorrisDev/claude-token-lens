@@ -184,14 +184,20 @@ totals, and costs; never a prompt, a tool result, or a file path.
   `(day, project, model, entrypoint, agent_type)`; `session_id` is only
   present when the caller explicitly passes `--per-session`
   (`exports.resolve_export_options`).
-- **Project slugs are hashed by default whenever aggregate-only is in
-  effect**, using the same salted `sha256(salt + slug)[:12]`
-  construction and the same `<config-dir>/salt` file described under
-  "What is stored" above (`parse.load_or_create_salt`, reused rather
-  than a second salt) — never an unsalted hash, and never the raw slug
-  unless `--no-hash-slugs` is passed explicitly. `--no-hash-slugs`
-  together with `--aggregate-only` is honoured as the caller's own
-  informed choice, not a default.
+- **Project slugs are hashed by default in every mode, including
+  `--per-session`** — `--per-session` alone no longer implies raw
+  slugs. Hashing uses a salted HMAC-SHA256 over the slug
+  (`hmac.new(salt, b"slug:" + slug, sha256).hexdigest()[:12]`), the same
+  HMAC-SHA256 construction (just a different truncation length and
+  domain-separation tag) and the same `<config-dir>/salt` file described
+  under "What is stored" above (`parse.load_or_create_salt`, reused
+  rather than a second salt) — never an unsalted hash, and never the
+  fully raw slug unless `--no-hash-slugs` is passed explicitly.
+  `--no-hash-slugs` does not print the fully raw slug either: it
+  replaces just the OS-username segment (`Users-<name>-`/`home-<name>-`)
+  with `<user>` and prints a one-line warning to stderr naming the risk
+  — a caller who genuinely needs raw slugs for correlation still cannot
+  leak the machine's own username by accident.
 - **`otel-jsonl` carries no project/session attribute at all** — the
   OpenTelemetry metric names it mirrors (`claude_code.token.usage`,
   `claude_code.cost.usage`) don't have one, so `--aggregate-only`/
@@ -205,8 +211,24 @@ totals, and costs; never a prompt, a tool result, or a file path.
 against the fully rendered export text (not just the in-memory rows) in
 every format, plus explicit checks that no real session id string is
 present in an aggregate-only export and that no raw slug string is
-present when `--hash-slugs` is in effect. Full column-by-column detail:
-[`docs/exports.md`](docs/exports.md).
+present when `--hash-slugs` is in effect (`tests/helpers.assert_privacy`
+also fails on any slug-shaped `Users-`/`home-`-anchored username segment
+anywhere in a scanned string, not just in export output). Full
+column-by-column detail: [`docs/exports.md`](docs/exports.md).
+
+## Statusline payload key recording (`statusline-keys.json`)
+
+`claude-token-lens`'s statusline integration
+(`src/claude_token_lens/statusline.py`) records the *key names* of the
+JSON payload Claude Code writes to it on every refresh —
+recursively, dotted (e.g. `context_window.used_tokens`), capped at 200
+names — to `<config-dir>/statusline-keys.json`, and only when that set
+differs from what is already stored. **Names only, never values**: no
+prompt text, no token counts, no file paths, no usernames, and no
+session ids are ever written to this file, regardless of what the live
+payload actually contains. See [`docs/exports.md`](docs/exports.md) for
+why this exists (reconciling undocumented, partially-overlapping
+field-name lists against the real payload shape).
 
 ## Reporting a vulnerability
 

@@ -26,6 +26,7 @@ import importlib.resources
 import importlib.util
 import os
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import available_timezones
 
@@ -230,7 +231,10 @@ def _add_statusline_args(sub: argparse.ArgumentParser) -> None:
 def _add_export_args(sub: argparse.ArgumentParser) -> None:
     """Flags for the ``export`` subcommand (S1-exports, plan "Feeds
     existing tooling" / "Aggregation without surveillance"): aggregate-only
-    and hashed by default, per-session and raw slugs are opt-in.
+    and hashed by default (in every mode -- fix for review finding 2),
+    per-session is opt-in and the hashing opt-out still redacts the
+    OS-username segment rather than printing the slug fully raw (see
+    ``exports._apply_slug_redaction``).
     """
     sub.add_argument(
         "--format",
@@ -258,16 +262,26 @@ def _add_export_args(sub: argparse.ArgumentParser) -> None:
         action="store_true",
         dest="hash_slugs",
         default=None,
-        help="replace project slugs with a salted hash (default when --aggregate-only)",
+        help="replace project slugs with a salted hash (default, in every mode)",
     )
     hash_slugs.add_argument(
         "--no-hash-slugs",
         action="store_false",
         dest="hash_slugs",
-        help="keep raw project slugs, even together with --aggregate-only "
-        "(an explicit, informed choice -- not the default)",
+        help="don't hash project slugs -- an explicit, informed opt-out, not the "
+        "default; the OS-username segment is still redacted to '<user>' "
+        "rather than printed raw, and a one-line warning is printed to stderr",
     )
     sub.add_argument("--out", metavar="PATH", help="write to PATH instead of stdout")
+    sub.add_argument(
+        "--generated-at",
+        metavar="ISO8601",
+        default=None,
+        dest="generated_at",
+        help="override --format json's meta.generated_at (also honours the "
+        "SOURCE_DATE_EPOCH env var) so the export is byte-reproducible "
+        "(nit 21/19: it wasn't wired up to the CLI before)",
+    )
 
 
 def _add_monthly_report_args(sub: argparse.ArgumentParser) -> None:
@@ -282,6 +296,15 @@ def _add_monthly_report_args(sub: argparse.ArgumentParser) -> None:
         metavar="YYYY-MM",
         default=None,
         help="calendar month to report on (default: the previous calendar month)",
+    )
+    sub.add_argument(
+        "--generated-at",
+        metavar="ISO8601",
+        default=None,
+        dest="generated_at",
+        help="override the report's trailing 'Generated at: ...' line/comment "
+        "(also honours the SOURCE_DATE_EPOCH env var) so repeated runs are "
+        "genuinely byte-identical (fix for review finding 11)",
     )
 
 
@@ -644,7 +667,56 @@ def _print_table(table, currency: str) -> None:
         print(f"note: {note}")
 
 
+def _resolve_generated_at(args: argparse.Namespace) -> str | None:
+    """``args.generated_at`` (``--generated-at``) if given; else
+    ``SOURCE_DATE_EPOCH`` (the same reproducible-build env var convention
+    other tooling already looks for), interpreted as an integer Unix
+    timestamp; else ``None`` (the callee's own "current instant"
+    default). Shared by ``export`` (nit 19) and ``monthly-report``
+    (finding 11) -- both subcommands' output is otherwise only
+    "identical apart from one wall-clock line" across repeated runs.
+    """
+    generated_at = args.generated_at
+    if generated_at is None:
+        source_date_epoch = os.environ.get("SOURCE_DATE_EPOCH")
+        if source_date_epoch:
+            try:
+                generated_at = (
+                    datetime.fromtimestamp(int(source_date_epoch), tz=timezone.utc)
+                    .isoformat()
+                    .replace("+00:00", "Z")
+                )
+            except (ValueError, OverflowError, OSError):
+                generated_at = None
+    return generated_at
+
+
 # -- report-like subcommands (report/sessions/recache/ttl/compactions) -----
+
+
+def _usage_log_row_in_window(row: dict, since_dt, until_dt) -> bool:
+    """``True`` when a usage-log ground-truth row's own ``logged_at``
+    falls inside ``[since_dt, until_dt]`` (either bound ``None`` means
+    unbounded on that side) -- part of the fix for review finding 8, see
+    :func:`_cmd_report_like`. A row with no parseable ``logged_at`` is
+    kept only when there is no window filter active at all (nothing to
+    exclude it for), matching this project's usual "unparseable ->
+    excluded only when it would otherwise matter" posture.
+    """
+    if since_dt is None and until_dt is None:
+        return True
+    logged_at_raw = row.get("logged_at")
+    if not logged_at_raw:
+        return False
+    try:
+        logged_at = datetime.fromisoformat(str(logged_at_raw).replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if since_dt is not None and logged_at < since_dt:
+        return False
+    if until_dt is not None and logged_at > until_dt:
+        return False
+    return True
 
 
 def _render_patch_set_text(model, args: argparse.Namespace) -> str | None:
@@ -734,10 +806,32 @@ def _cmd_report_like(args: argparse.Namespace, include: set[str] | None) -> int:
     # rows into build_report -- statusline.load_usage_log_ground_truth is
     # the tolerant reader that copes with both an old-format file (no
     # cache_* columns yet) and a new one, per its own docstring.
+    #
+    # Fix for review finding 8: this used to hand build_report every row
+    # ever logged, from every project, ignoring this invocation's own
+    # --days/--since/--until window and --project selection -- the only
+    # table in the report that didn't respect either. Scoped now to
+    # exactly the sessions this invocation actually loaded (project
+    # selection falls out of that for free: project_dirs already
+    # reflects --project/--all-projects/--project-family) and to the
+    # resolved --days/--since/--until window via each row's own
+    # logged_at (discovery._resolve_window is the same resolution
+    # discovery.find_sessions itself uses -- see service/rebuild.py for
+    # existing precedent importing this private helper cross-module).
     usage_log_csv_path = config_dir / "usage-log.csv"
-    usage_log_rows = (
-        statusline_mod.load_usage_log_ground_truth(usage_log_csv_path) if usage_log_csv_path.exists() else None
-    )
+    usage_log_rows = None
+    if usage_log_csv_path.exists():
+        from .discovery import _resolve_window
+
+        raw_usage_log_rows = statusline_mod.load_usage_log_ground_truth(usage_log_csv_path)
+        known_session_ids = {b.session_id for b in corpus.sessions}
+        since_dt, until_dt = _resolve_window(args.days, args.since, args.until)
+        usage_log_rows = [
+            row
+            for row in raw_usage_log_rows
+            if row.get("session_id") in known_session_ids
+            and _usage_log_row_in_window(row, since_dt, until_dt)
+        ]
 
     try:
         model = build_report(
@@ -997,11 +1091,64 @@ def _cmd_export(args: argparse.Namespace) -> int:
         return 1
 
     options = exports_mod.resolve_export_options(args.format, args.aggregate_only, args.hash_slugs)
-    text = exports_mod.build_export_text(corpus, rates, config, config_dir, options, window=window)
 
+    # Nit 18: --per-session/--hash-slugs are silently accepted but moot
+    # for otel-jsonl (it carries no project/session dimension at all --
+    # see exports.py's module docstring), so a caller who explicitly
+    # asked for per-session data doesn't silently get an aggregate file.
+    if options.fmt == "otel-jsonl" and (args.aggregate_only is not None or args.hash_slugs is not None):
+        print(
+            f"claude-token-lens {command}: --aggregate-only/--per-session and "
+            "--hash-slugs/--no-hash-slugs have no effect on --format otel-jsonl "
+            "(it carries no project/session attribute at all)",
+            file=sys.stderr,
+        )
+
+    # Fix for review finding 2: the hashing opt-out still redacts the
+    # OS-username segment (exports._apply_slug_redaction), but the rest
+    # of the project slug -- directory shape, a client/codename -- is
+    # still visible, so name that residual risk explicitly.
+    if not options.hash_slugs and options.fmt != "otel-jsonl":
+        print(
+            f"claude-token-lens {command}: --no-hash-slugs is in effect -- project "
+            "slugs will still have their OS-username segment redacted, but the "
+            "rest of the path shape (which can itself name a client or a "
+            "project) is exported as-is",
+            file=sys.stderr,
+        )
+
+    # Nit 19: build_export_text already accepted a generated_at override
+    # (for a reproducible --format json), but _cmd_export never passed
+    # anything through, so it was unreachable from the CLI. --generated-at
+    # wins; else SOURCE_DATE_EPOCH (the same env var reproducible-build
+    # tooling already looks for), interpreted as an integer Unix
+    # timestamp; else the default (the current instant) -- see
+    # _resolve_generated_at, shared with _cmd_monthly_report (finding 11).
+    generated_at = _resolve_generated_at(args)
+
+    text = exports_mod.build_export_text(
+        corpus, rates, config, config_dir, options, window=window, generated_at=generated_at
+    )
+
+    # Fix for review finding 1 (blocking): csv.DictWriter's default
+    # dialect already terminates rows with "\r\n" (render_csv_flat builds
+    # the text with an io.StringIO opened with newline="\n", so that
+    # "\r\n" survives into the returned string literally). Handing that
+    # text to a text-mode writer with the platform's own newline
+    # translation switched on then rewrites every "\n" to os.linesep a
+    # *second* time -- "\r\n" becomes "\r\r\n" on Windows, and Python's
+    # own csv.reader then sees a blank record after every real one. Both
+    # output paths below write with newline translation switched off
+    # ("newline=''", the same convention render/csv_out.py already uses)
+    # so the bytes generated are the bytes written, once.
     if args.out:
-        Path(args.out).write_text(text, encoding="utf-8")
+        Path(args.out).write_text(text, encoding="utf-8", newline="")
     else:
+        if hasattr(sys.stdout, "reconfigure"):
+            try:
+                sys.stdout.reconfigure(newline="")
+            except Exception:
+                pass
         sys.stdout.write(text)
         if not text.endswith("\n"):
             sys.stdout.write("\n")
@@ -1025,7 +1172,12 @@ def _cmd_monthly_report(args: argparse.Namespace) -> int:
         return 1
 
     try:
-        month = monthly_mod.resolve_month(args.month)
+        # Fix for review finding 12: resolve_month's "previous calendar
+        # month" default now takes its reference date from config.tz
+        # (falling back to the machine's own zone when tz is None/
+        # unresolvable, unchanged from before) rather than unconditionally
+        # from the machine's own zone -- see resolve_month's docstring.
+        month = monthly_mod.resolve_month(args.month, config.tz)
     except ValueError as exc:
         print(f"claude-token-lens {command}: {exc}", file=sys.stderr)
         return 2
@@ -1047,8 +1199,39 @@ def _cmd_monthly_report(args: argparse.Namespace) -> int:
         )
         return 1
 
+    # Fix for review finding 9: docs/exports.md promises cache_ground_truth
+    # in the monthly report's usage section "when a usage log is
+    # available", but write_monthly_report never received usage_log_rows
+    # at all -- load it the same tolerant way _cmd_report_like does (no
+    # --days/--since/--until/--project scoping needed here beyond what
+    # write_monthly_report's own month-session filter already applies).
+    usage_log_csv_path = config_dir / "usage-log.csv"
+    usage_log_rows = (
+        statusline_mod.load_usage_log_ground_truth(usage_log_csv_path) if usage_log_csv_path.exists() else None
+    )
+
+    # Nit 17: an empty target month exits 0 and still writes files with
+    # zeroed tables (a reasonable choice for a scheduled job -- it should
+    # not fail a cron run just because nothing happened that month), but
+    # that was undocumented and asymmetric with the *corpus*-empty case
+    # just above, which exits 1 and writes nothing. Behaviour is
+    # unchanged; this just names it on stderr instead of failing silent.
+    if not monthly_mod.filter_corpus_to_month(corpus, month, config.tz).sessions:
+        print(
+            f"claude-token-lens {command}: no sessions found for {month} -- "
+            "writing a report with zeroed tables (exit 0)",
+            file=sys.stderr,
+        )
+
+    # Fix for review finding 11: a fixed generated_at makes repeated runs
+    # genuinely byte-identical rather than "identical apart from one
+    # line" -- see _resolve_generated_at (shared with _cmd_export).
+    generated_at = _resolve_generated_at(args)
+
     out_dir = Path(args.out)
-    paths = monthly_mod.write_monthly_report(corpus, rates, config, month, out_dir)
+    paths = monthly_mod.write_monthly_report(
+        corpus, rates, config, month, out_dir, usage_log_rows=usage_log_rows, generated_at=generated_at
+    )
     for path in paths:
         print(str(path))
     return 0
