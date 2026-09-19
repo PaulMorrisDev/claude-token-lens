@@ -54,8 +54,8 @@ its snapshot's `effective` config implies one of these).
 ## Redaction rule (settings and agent frontmatter alike)
 
 A value is kept as-is only if its key is on the safe allowlist, or the
-value itself is a `bool`/`int` (a toggle or a small limit, never
-content). Everything else becomes a shape-only marker: `dict(n)`,
+value itself is a `bool`/`int`/`float`/`None` (a toggle or a small limit,
+never content). Everything else becomes a shape-only marker: `dict(n)`,
 `list(n)`, or `str(len)`. This applies uniformly, so an unknown key in a
 future Claude Code version degrades safely instead of leaking its value.
 
@@ -149,9 +149,12 @@ When matched, `claude_json` records:
   is unpredictable and could hold identity data, unlike the small fixed
   set of per-project fields handled above.
 
-A missing, unreadable, or malformed `~/.claude.json`, or one with no
-entry for the current project, degrades to `{"matched": false}` —
-never raises.
+A missing, unreadable, or malformed `~/.claude.json` degrades to the bare
+`{"matched": false}` — never raises. A `~/.claude.json` that reads fine
+but has no entry for the current project still reports `"matched":
+false`, but keeps the `top_level` block described above (there is
+nothing project-specific to redact, but the file's own top-level scalars
+are still safe to report): `{"matched": false, "top_level": {...}}`.
 
 ## `content_layers`
 

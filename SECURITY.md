@@ -41,7 +41,7 @@ and [docs/deploy.md](docs/deploy.md).
 
 Nothing outside these locations is read, and nothing is ever written to
 except claude-token-lens's own on-disk digest cache, config-snapshot
-files, and usage log under `<config-dir>` (default
+files, usage log, and salt file, under `<config-dir>` (default
 `~/.claude/token-lens`, or `$CLAUDE_CONFIG_DIR/token-lens`).
 
 ## What is stored
@@ -58,7 +58,7 @@ Only numeric digests and short, non-identifying labels:
   `autoCompactWindow`, `autoCompactEnabled`, `promptCacheTtl`,
   `subagentPromptCacheTtl`, `cleanupPeriodDays`,
   `desktopSessionCleanupPeriodDays`, `autoUpdatesChannel`,
-  `alwaysThinkingEnabled`) or a plain `bool`/`int`. Two further keys get
+  `alwaysThinkingEnabled`) or a plain `bool`/`int`/`float`/`None`. Two further keys get
   their own safe summary shape instead of a raw value: `statusLine`
   (a bare present/absent boolean, never the command it runs) and
   `modelPricing` (a present flag plus the model ids it overrides, never
@@ -68,7 +68,10 @@ Only numeric digests and short, non-identifying labels:
 ever stored", and it is deliberately a one-way hash rather than a
 shortened/redacted string: for every `Read`/`Edit`/`Write`/
 `NotebookEdit` tool call in a turn, `parse.py` stores
-`hmac.new(salt, normcase(path), sha256).hexdigest()[:16]` — a 16-character
+`hmac.new(salt, path.replace("\\", "/").casefold(), sha256).hexdigest()[:16]`
+(a case- and slash-normalised path, not `os.path.normcase` — that call is a
+no-op on POSIX and would leave two spellings of the same Windows path
+unmerged) — a 16-character
 hex digest that lets the *same* file be recognised as re-read across
 turns and sessions (for "which files does this session keep
 re-opening" analytics) without the path itself, or any substring of it,
