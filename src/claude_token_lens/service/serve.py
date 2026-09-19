@@ -39,8 +39,11 @@ from http.server import ThreadingHTTPServer
 from .contracts import ServeOptions
 from .store import Store
 
-#: See module docstring's first contract note.
-_STORE_FILENAME = "service.db"
+#: See module docstring's first contract note. Public (S1-integration
+#: fix 2.e) so ``cli.py``'s ``serve --purge`` can name the exact file
+#: (and its WAL/SHM sidecars) it is about to delete without duplicating
+#: the filename as a second literal.
+STORE_FILENAME = "service.db"
 
 _LOOPBACK_ADDRESSES = {"127.0.0.1", "::1", "localhost"}
 
@@ -56,7 +59,7 @@ def run(options: ServeOptions, *, once: bool = False, allow_remote: bool = False
     binding a non-loopback ``options.bind`` was refused).
     """
     options.config_dir.mkdir(parents=True, exist_ok=True)
-    store = Store(options.config_dir / _STORE_FILENAME)
+    store = Store(options.config_dir / STORE_FILENAME)
     store.open()
 
     # Local import: service.watcher is a sibling work package's module
@@ -108,4 +111,4 @@ def run(options: ServeOptions, *, once: bool = False, allow_remote: bool = False
     return 0
 
 
-__all__ = ["run"]
+__all__ = ["run", "STORE_FILENAME"]
