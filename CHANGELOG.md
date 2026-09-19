@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`claude-token-lens serve`'s JSON API** (S1-api, part of the v0.2
+  milestone below): every `/api/*` route in `docs/api.md`
+  (`service/api.py`'s `make_handler`), the `serve.py` runtime that opens
+  the store, runs one watcher tick, and serves until interrupted, and
+  the `serve` CLI subcommand (`--port`, `--bind`, `--allow-remote`,
+  `--poll-interval`, `--retention-days`, `--exclude-project`, `--once`).
+  Ships alongside an egress test proving no route ever opens an
+  outbound connection. The watcher thread and the static web UI (also
+  part of the v0.2 milestone) ship from concurrent sibling work
+  packages.
+
 ### Planned
 
 - **v0.2** — `claude-token-lens serve` (local read-only service: watcher
