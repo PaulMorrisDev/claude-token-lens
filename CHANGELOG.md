@@ -39,6 +39,29 @@ A v0.4 backlog, kept here until scheduled into a milestone:
 
 ### Added
 
+- **v0.3 profile schema, catalogue and diff renderer** (`profiles/`,
+  work package V3-profiles): a new `claude_token_lens.profiles`
+  package with an allowlist-driven `Profile` schema (`schema.py`) —
+  every settings/agent-frontmatter/environment-variable key a profile
+  may set, with its type, permitted values, and a doc reference back
+  to `docs/config-layers.md`/`docs/api.md`, so `validate()`'s
+  rejections and [docs/profiles.md](docs/profiles.md)'s tables come
+  from the same source of truth. A hand-rolled deterministic TOML
+  emitter (`dump_profile`) round-trips every allowlisted value, since
+  the standard library has no TOML writer. Seven shipped catalogue
+  profiles (`profiles/catalogue/*.toml`, `catalogue.py`'s
+  `list_profiles`/`get`/`suggest`) each cite a real report table/column
+  as justification, never an invented number. `diff.py`'s
+  `diff_against_effective`/`render_unified_diff`/`apply_command` are
+  pure functions (no filesystem access) that render a profile's
+  proposed changes against a project's effective config for the
+  `"user"`/`"project-local"`/`"repo"` scopes, excluding managed-policy
+  keys from the diff body in favour of a "managed by policy" note. See
+  [docs/profiles.md](docs/profiles.md) for the full schema/catalogue/
+  `suggest()`/diff contract, including the one `recommend.py` lever
+  (`"mcpServers"`) that has no exact-name allowlist counterpart. This
+  package does not wire `cli.py`'s `apply`/`init`/`baseline` or the
+  `/api/profiles*` routes — those remain a later work package's scope.
 - **Service web UI** (`service/static/index.html`/`app.js`/`app.css`,
   work package S1-ui): a CSP-compliant, framework-free, no-build-step
   UI with ten keyboard-navigable tabs (Overview, Sessions, Cache, TTL,

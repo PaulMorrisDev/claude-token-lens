@@ -1,0 +1,33 @@
+id = "overseer-fanout"
+name = "Overseer fanout"
+for = ["fanout", "multi-agent-coordination"]
+archetype = "overseer-fanout"
+notes = """
+For the overseer-fanout archetype (workstyle.detect_archetype: the \
+top-level session runs a higher-tier model than the agents it spawns, \
+three or more of them) and the agent-fanout purpose \
+(classify.classify_purpose: high agent_tool_calls). \
+agents.topology_report_proxy's mean_proxy column (recommend.py's \
+agent-report-size rule) is what an over-large report coming back up \
+from a spawned agent looks like in this corpus's own numbers; this \
+profile does not try to guess a maxTurns cap tight enough to force \
+concise reports (that is workflow advice, not a settings lever, per \
+recommend.py's own category split), only keeps the top-level effort at \
+"high" (an overseer session's whole point is judging and directing, the \
+opposite of the effort-mismatch rule's docs/general-dev concern) while \
+its implementer agents run at "medium" -- the same delegation-cost \
+concern topology_spawn_write's mean_write column measures for \
+recommend.py's spawn-cost rule. subagentPromptCacheTtl stays at the \
+5m fallback per the plan's per-subagent-TTL owner note, since an \
+overseer-fanout corpus's own agent types should each get their own \
+ttl.ttl_by_agent_type-driven verdict once a baseline exists, not one \
+guessed value here.
+"""
+
+[settings]
+effortLevel = "high"
+subagentPromptCacheTtl = "5m"
+
+[agents.claude-implementer]
+effort = "medium"
+maxTurns = 60
