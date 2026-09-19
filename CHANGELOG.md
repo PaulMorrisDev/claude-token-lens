@@ -73,6 +73,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `model.py`'s module docstring). No pre-batch digest cache entry ever
   computed these, so any cache built under `PARSER_VERSION` 5 or
   earlier is invalidated and transcripts are reparsed on next use.
+- **`savers.py`** (v4-saver-roi): third-party token-saver tool ROI —
+  detects candidate "saver" MCP servers/plugins/skills via an explicit
+  `config.toml` `[savers]` allowlist plus auto-detection (a
+  case-insensitive name regex over MCP server names, config-snapshot
+  `mcp_servers`/`enabled_plugins`, and `attribution_skill`), then reports
+  each candidate's own overhead, its effect on cost/tokens/re-cache/
+  compactions/turns in sessions where it was present versus absent
+  (stratified by purpose/mode, gated on a 5-session-per-arm minimum),
+  a search-substitution comparison against native `Grep`/`Glob`/`Read`/
+  shell search calls (reusing `carry.compute_carry`'s per-turn pricing),
+  and a net-saving-per-session verdict labelled "observed, not
+  controlled". New `saver-tool-roi` recommendation rule (`savers.RULES`)
+  recommends keeping or disabling a saver based on that net saving. See
+  [`docs/savers.md`](docs/savers.md).
 
 ## [0.3.0] - 2026-09-19
 

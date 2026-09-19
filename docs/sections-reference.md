@@ -673,6 +673,54 @@ concrete workflow lever (truncate long Bash/PowerShell output, prefer
 `Grep` over `Read`, cap agent report length) and cites the matching
 `carry_truncation_savings` row as the projected saving.
 
+## `savers` (`savers.py`)
+
+Full field-by-field contract: [`docs/savers.md`](savers.md#the-savers-report-section).
+
+Whether an installed third-party token-saver tool (an MCP server,
+plugin, or skill claiming to save tokens) actually nets a saving once
+its own overhead is paid for. Detection merges an explicit
+`config.toml` `[savers] names = [...]` allowlist with auto-detection: a
+case-insensitive regex (`token|saver|savior|optimi[sz]|compress|
+context|memory|cache|lean|trim|condens`) over MCP server names
+(`Turn.attribution_mcp_server`, `mcp__<server>__<tool>` tool-name
+prefixes), config-snapshot `mcp_servers`/`enabled_plugins` entries, and
+`Turn.attribution_skill`.
+
+- `savers_detected` — one row per candidate: name, whether it came from
+  the explicit `[savers]` list, and every auto-detection source
+  matched.
+- `savers_overhead` — attributed turns and cost, tool-call count, mean
+  result size, and a distinct-tool-name count as a schema/prefix-load
+  footprint proxy.
+- `savers_effect_by_stratum` — cost/session, new tokens/session,
+  cache-creation/turn, mean tool-result tokens/turn, re-cache share,
+  compactions/session and turns/session, compared between sessions with
+  the saver present versus absent, overall and by purpose/mode stratum,
+  gated on a minimum 5 sessions per arm (`SaverThresholds.
+  min_sessions_per_arm`).
+- `savers_search_substitution` — for the working theory that a saver's
+  real job is a code-search replacement: native `Grep`/`Glob`/`Read`/
+  shell-search calls per session versus the saver's own calls per
+  session, mean result size on each side, and each side's carry-cost
+  implication (reusing `carry.compute_carry` per arm).
+- `savers_verdict` — net saving per session = (cost/session absent −
+  cost/session present) − overhead/session, labelled "observed, not
+  controlled", plus any other config key that co-changed between the
+  two arms' representative snapshots.
+
+`savers.py` never imports or is imported by `recommend.py`; its
+`saver-tool-roi` rule lives in `savers.RULES` (same
+`(report, thresholds, snapshot=None) -> list[Recommendation]` shape as
+`model_swap.RULES`) for a caller to fold into `recommend.recommend()`'s
+own rule list, and it fires per candidate whose verdict row clears the
+minimum sample and whose net saving per session clears
+`SaverThresholds.net_saving_usd_min` (default $0.01) in either
+direction — keep (naming a result-size lever when overhead eats too
+much of the gross saving, and citing displaced native search calls plus
+smaller mean result size when the search-substitution table supports
+it) or disable.
+
 ## `scorecard` (`scorecard.py`)
 
 Five 1-5 levels (1 poor, 5 excellent) summarising a corpus's cache

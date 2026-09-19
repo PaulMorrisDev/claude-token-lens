@@ -160,6 +160,13 @@ class Config:
     #: — see :class:`ProjectConfig`. Loaded from
     #: ``<config_dir>/projects/<slug>.toml`` by :func:`load_config`.
     projects: dict[str, ProjectConfig] = field(default_factory=dict)
+    #: v4-saver-roi addition: explicit MCP server / plugin / skill names
+    #: from ``config.toml``'s ``[savers]`` table (``names = [...]``) that
+    #: ``savers.detect_savers`` should always treat as a candidate
+    #: token-saver tool, regardless of whether its name matches the
+    #: auto-detection regex — for a saver whose name gives no lexical
+    #: hint at all (a codename, an acronym).
+    savers: list[str] = field(default_factory=list)
 
     def describe(self) -> list[str]:
         """Lines for the report header (plan "Renderers and CLI"
@@ -194,6 +201,8 @@ class Config:
             lines.append(f"apply_scope: {self.apply_scope}")
         if self.projects:
             lines.append(f"projects: {sorted(self.projects)}")
+        if self.savers:
+            lines.append(f"savers: {self.savers}")
         return lines
 
 
@@ -326,6 +335,14 @@ def _build_config(data: dict, path: Path) -> Config:
             f"config file {path}: 'apply_scope' must be one of {sorted(_ALLOWED_APPLY_SCOPE)}, got {apply_scope!r}"
         )
     config.apply_scope = apply_scope
+
+    savers = data.get("savers", {})
+    if not isinstance(savers, dict):
+        raise ConfigError(f"config file {path}: 'savers' must be a table, e.g. [savers]\\nnames = [...]")
+    saver_names = savers.get("names", [])
+    if not isinstance(saver_names, list) or not all(isinstance(item, str) for item in saver_names):
+        raise ConfigError(f"config file {path}: 'savers.names' must be a list of strings")
+    config.savers = list(saver_names)
 
     return config
 
