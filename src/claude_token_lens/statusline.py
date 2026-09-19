@@ -213,6 +213,35 @@ brief — a broken Python must never blank the status line, matching
 ``hooks/snapshot-config.py``'s "never fail a session start" contract for
 the same underlying reason (this runs on every prompt, not just session
 start).
+
+v3-limits addition: two small, self-contained changes so a usage-cap hit
+(or a near-hit) is visible live, not only after the fact in a report.
+
+1. **Near-cap warning in the line itself**: :func:`_fmt_rate` now appends
+   a trailing ``"!"`` to a ``5h``/``7d`` segment once that window's
+   ``used_percentage`` clears :data:`_RATE_WARNING_PCT` (90%) — e.g.
+   ``5h 92%!`` — giving the same live warning the plan's "should I send
+   the next message now" framing already gives the cache segment, but for
+   the account-wide cap a harness-level pause (see ``limits.py``'s module
+   docstring) may follow shortly after. One extra character per segment
+   can never itself push :func:`render_status` past :data:`_MAX_LINE_LEN`
+   given every other segment's existing headroom, so no change was needed
+   to the truncation logic.
+2. **Tagging an exhausted row in the usage log**: :func:`main` now runs
+   every row from ``log_usage.parse_usage_json`` through
+   :func:`_tag_limit_hit_rows` before appending — a ``five_hour``/
+   ``seven_day`` row read back at or above :data:`_LIMIT_HIT_EXHAUSTION_PCT`
+   (100%) gets its ``source`` overridden to ``"limit_hit"`` instead of the
+   usual ``"statusline"``. ``limits.csv_cross_check`` doesn't actually
+   need this tag — it counts a CSV row as an exhaustion signal from
+   ``used_percentage`` alone (see that function's own docstring) — but a
+   human or another tool reading the raw CSV benefits from the row saying
+   outright that this reading *was* a cap hit rather than merely
+   "nearly exhausted". :data:`_LIMIT_HIT_EXHAUSTION_PCT` is a local
+   constant rather than an import of ``limits.LimitThresholds`` (kept in
+   sync by value, documented here) — the statusline's hot path stays free
+   of any dependency whose own failure mode could threaten the "never
+   raises" contract above.
 """
 
 from __future__ import annotations
@@ -539,6 +568,14 @@ def _fmt_cache_segment(payload: dict, now: datetime, effective_ttl_s: int | None
     return _fmt_cache_estimate(payload, now, effective_ttl_s)
 
 
+#: A rate-window segment gets a trailing "!" warning marker once its
+#: used_percentage clears this bound -- close enough to the account-wide
+#: cap that a harness-level pause (see limits.py's module docstring) may
+#: follow shortly, distinct from the cap already being fully hit at 100%
+#: (see :data:`_LIMIT_HIT_EXHAUSTION_PCT` below).
+_RATE_WARNING_PCT = 90.0
+
+
 def _fmt_rate(rate_limits: object, key: str, label: str) -> str | None:
     if not isinstance(rate_limits, dict):
         return None
@@ -548,7 +585,10 @@ def _fmt_rate(rate_limits: object, key: str, label: str) -> str | None:
     pct = window.get("used_percentage")
     if not isinstance(pct, (int, float)) or isinstance(pct, bool):
         return None
-    return f"{label} {round(pct)}%"
+    segment = f"{label} {round(pct)}%"
+    if pct >= _RATE_WARNING_PCT:
+        segment += "!"
+    return segment
 
 
 def _windows_long_path(path: Path) -> str:
@@ -1313,6 +1353,43 @@ def record_payload_keys(payload: dict, config_dir: Path) -> None:
     )
 
 
+# -- v3-limits: tagging an exhausted usage-log row --------------------------
+
+#: A ``five_hour``/``seven_day`` usage-log row at or above this
+#: used_percentage is tagged ``source="limit_hit"`` by
+#: :func:`_tag_limit_hit_rows` (see the module docstring). Matches
+#: ``limits.LimitThresholds.csv_exhaustion_pct``'s default by value --
+#: kept as a local constant rather than an import so this hot-path module
+#: never depends on another module's config-reading code (see the module
+#: docstring's "never raises" contract).
+_LIMIT_HIT_EXHAUSTION_PCT = 100.0
+
+#: Windows a "limit_hit" source tag can apply to -- matches
+#: ``limits.CSV_WINDOWS``.
+_LIMIT_HIT_WINDOWS = ("five_hour", "seven_day")
+
+
+def _tag_limit_hit_rows(rows: list[dict]) -> list[dict]:
+    """Return ``rows`` (from ``log_usage.parse_usage_json``) with a
+    qualifying row's ``source`` overridden to ``"limit_hit"``: a
+    ``five_hour``/``seven_day`` window read back at or above
+    :data:`_LIMIT_HIT_EXHAUSTION_PCT` used. Every other row is passed
+    through unchanged. Rows are shallow-copied rather than mutated in
+    place, so the caller's own list is never modified underneath it.
+    """
+    tagged: list[dict] = []
+    for row in rows:
+        used = row.get("used_percentage")
+        is_exhausted = (
+            row.get("window") in _LIMIT_HIT_WINDOWS
+            and isinstance(used, (int, float))
+            and not isinstance(used, bool)
+            and used >= _LIMIT_HIT_EXHAUSTION_PCT
+        )
+        tagged.append(dict(row, source="limit_hit") if is_exhausted else row)
+    return tagged
+
+
 # -- CLI entry point ------------------------------------------------------
 
 
@@ -1392,6 +1469,7 @@ def main(argv: list[str] | None = None) -> int:
         if isinstance(rate_limits, dict):
             rows = log_usage.parse_usage_json(json.dumps(payload))
             if rows:
+                rows = _tag_limit_hit_rows(rows)
                 csv_path = config_dir / "usage-log.csv"
                 log_usage.append_rows(csv_path, rows, source="statusline")
     except Exception:
