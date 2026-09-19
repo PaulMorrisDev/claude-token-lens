@@ -23,6 +23,26 @@ RUN pip install --no-cache-dir .
 # --config-dir, both bind-mounted by the operator (see
 # docker-compose.yml) -- it never needs root inside the container.
 RUN useradd --create-home --shell /usr/sbin/nologin --uid 10001 token-lens
+
+# Review finding 4 (blocking): docker-compose.yml mounts the SQLite
+# store's own directory (/data/token-lens) as a *named* volume. Docker
+# only ever seeds a named volume's ownership/contents from what already
+# exists at that path in the image at first-create time -- if the path
+# doesn't exist yet, the daemon (running as root) creates the mount
+# point owned by root, and the non-root `token-lens` user below gets
+# "Permission denied" the first time it tries to create service.db.
+# Pre-creating and chowning both mount points here (root, before USER
+# switches away) means the *image* already owns them correctly, so a
+# fresh named volume (or a bind mount an operator points at an
+# already-token-lens-owned host directory) is writable from the first
+# container start, not just after a manual `chown` on the host.
+# /data/claude is read-only at the compose level (see
+# docker-compose.yml), but is still created/chowned here for the same
+# "mount point exists with the right owner before USER switches"
+# consistency, and so a local `docker run` smoke test that bind-mounts
+# a plain host directory there (docs/deploy.md's `--network none` test)
+# doesn't depend on that directory happening to be world-readable.
+RUN mkdir -p /data/token-lens /data/claude && chown -R token-lens:token-lens /data/token-lens /data/claude
 USER token-lens
 WORKDIR /home/token-lens
 

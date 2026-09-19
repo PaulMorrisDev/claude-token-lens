@@ -165,7 +165,10 @@ Three layers, from "always runs" to "manual, occasional":
    docker build -t claude-token-lens:smoke .
    docker run -d --rm --network none --name ctl-smoke \
      -v "$CLAUDE_HOME:/data/claude:ro" \
-     claude-token-lens:smoke --bind 0.0.0.0 --allow-remote
+     -v ctl-smoke-data:/data/token-lens \
+     claude-token-lens:smoke \
+     --projects-root /data/claude/projects --config-dir /data/token-lens \
+     --bind 0.0.0.0 --allow-remote
 
    # From inside the container -- there is no host-published port to
    # curl from outside when --network none is used, so the check runs
@@ -174,7 +177,23 @@ Three layers, from "always runs" to "manual, occasional":
      "import json,urllib.request as u; r=u.urlopen('http://127.0.0.1:8765/api/health', timeout=4); assert json.load(r)['ok'] is True; print('OK')"
 
    docker stop ctl-smoke
+   docker volume rm ctl-smoke-data
    ```
+
+   `--projects-root`/`--config-dir` are passed explicitly here (review
+   finding 4) rather than left to `claude-token-lens serve`'s own
+   argparse defaults: any bare `docker run <image> <args>` replaces the
+   image's `CMD` entirely (the fixed `ENTRYPOINT` in the `Dockerfile`
+   only supplies `claude-token-lens serve`), so omitting them would
+   silently fall back to a `~`-relative default inside the container
+   instead of the `/data/claude`/`/data/token-lens` mount points this
+   image and `docker-compose.yml` are actually built around. The named
+   `ctl-smoke-data` volume in particular is what proves the Dockerfile's
+   `chown -R token-lens:token-lens /data/token-lens` (finding 4) is
+   doing its job: a *fresh* named volume is seeded from that path's
+   ownership in the image, so the non-root `token-lens` user can create
+   `service.db` in it on first start without a manual `docker exec ...
+   chown` step.
 
    A `--network none` container has no network namespace connectivity
    at all beyond loopback — if `/api/health` still answers `ok: true`
