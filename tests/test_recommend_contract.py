@@ -460,6 +460,7 @@ _ALL_RULE_IDS = frozenset(
         "discovery-share",
         "pricing-coverage",
         "data-quality",
+        "limit-pressure",
     }
 )
 
@@ -660,6 +661,24 @@ def _build_every_rule_fixture() -> "report.ReportModel":
         ],
     )
 
+    limits_section = Section(
+        key="limits",
+        title="Usage limits",
+        tables=[
+            Table(
+                name="limits_summary",
+                title="Usage-limits summary",
+                columns=[
+                    Column(key="metric", label="Metric"),
+                    Column(key="limit_hits", label="Limit hits"),
+                    Column(key="agents_terminated_rate_limit", label="Agents terminated by rate limit"),
+                    Column(key="sessions_affected", label="Sessions affected"),
+                ],
+                rows=[["all", 5, 1, 3]],
+            )
+        ],
+    )
+
     return ReportModel(
         meta=ReportMeta(pricing=PricingMeta(coverage_pct=90.0)),
         sections=[
@@ -671,6 +690,7 @@ def _build_every_rule_fixture() -> "report.ReportModel":
             agents_section,
             sessions_section,
             phases_section,
+            limits_section,
         ],
         recommendations=[],
         diagnostics=Diagnostics(lines=1000, unparsable_lines=0, ttl_sum_mismatch=1),

@@ -256,6 +256,12 @@ class RecommendThresholds:
     data_quality_unparsable_pct: float = 0.1
     data_quality_fidelity_pct: float = 10.0
 
+    # limit-pressure (v3-limits addition, not part of plan Appendix A5):
+    # ">= 3 usage-cap hits, or >= 1 subagent terminated by the rate
+    # limit specifically (not any other termination reason)".
+    limit_pressure_min_hits: int = 3
+    limit_pressure_min_terminated_rate_limit: int = 1
+
     #: Minimum sample before ANY rule fires: 5 sessions OR 200 priced
     #: turns in the group (plan A5's closing line). Mirrors
     #: ``Config.min_sessions``/``Config.min_turns`` -- kept here too so a
@@ -1218,6 +1224,55 @@ def _rule_data_quality(report: ReportModel, th: RecommendThresholds) -> list[Rec
     ]
 
 
+def _rule_limit_pressure(report: ReportModel, th: RecommendThresholds) -> list[Recommendation]:
+    """v3-limits addition (not part of plan Appendix A5, see this
+    module's module docstring convention for a documented deviation):
+    repeated usage-cap hits, or even one subagent the harness killed
+    specifically for hitting the rate limit, are worth surfacing on
+    their own account -- not because there's a single setting to
+    change, but because several of this report's other findings
+    (recache's limit-expiry rows, ttl's limit_gaps column, a session
+    that would otherwise misclassify as "overnight") are all downstream
+    symptoms of the same root cause. Reads the ``limits`` section built
+    by ``limits.build_section`` -- returns ``[]`` when that section
+    isn't present (e.g. an older cached report, or a report assembled
+    before this batch's ``report.py`` wiring landed).
+    """
+    hits = _cell(report, "limits", "limits_summary", "all", "limit_hits")
+    terminated_rate_limit = _cell(report, "limits", "limits_summary", "all", "agents_terminated_rate_limit")
+    hits_n = hits if isinstance(hits, (int, float)) else 0
+    terminated_n = terminated_rate_limit if isinstance(terminated_rate_limit, (int, float)) else 0
+
+    if hits_n < th.limit_pressure_min_hits and terminated_n < th.limit_pressure_min_terminated_rate_limit:
+        return []
+
+    evidence = [
+        _evidence("Usage-cap hits", hits_n, "limits", "limits_summary", "all"),
+        _evidence("Agents terminated by rate limit", terminated_n, "limits", "limits_summary", "all"),
+    ]
+    sessions_affected = _cell(report, "limits", "limits_summary", "all", "sessions_affected")
+    if sessions_affected is not None:
+        evidence.append(_evidence("Sessions affected", sessions_affected, "limits", "limits_summary", "all"))
+
+    return [
+        Recommendation(
+            id="limit-pressure",
+            severity="advice",
+            category="workflow",
+            archetypes=_ALL_ARCHETYPES,
+            title="Usage-cap pauses are a recurring interruption",
+            action=(
+                "This corpus hit its session/weekly usage cap repeatedly (or had a subagent "
+                "killed by it) -- consider pacing concurrent agents to the usage window, or "
+                "reviewing the weekly cap against actual usage, rather than treating the "
+                "resulting pauses as ordinary idle time."
+            ),
+            lever=None,
+            evidence=evidence,
+        )
+    ]
+
+
 # -- entry point --------------------------------------------------------
 
 
@@ -1266,6 +1321,7 @@ def recommend(
         recs.extend(_rule_discovery_share(report, th))
     recs.extend(_rule_pricing_coverage(report))
     recs.extend(_rule_data_quality(report, th))
+    recs.extend(_rule_limit_pressure(report, th))
 
     if archetype is not None:
         recs = [r for r in recs if not r.archetypes or archetype in r.archetypes]

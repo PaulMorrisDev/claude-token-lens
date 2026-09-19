@@ -1435,6 +1435,78 @@ def test_data_quality_does_not_fire_when_all_clean():
     assert not any(rec.id == "data-quality" for rec in recs)
 
 
+# -- limit-pressure (v3-limits addition) ------------------------------------
+
+
+def _limits_summary_table(hits: int, terminated_rate_limit: int, sessions_affected: int = 1) -> Table:
+    return Table(
+        name="limits_summary",
+        title="Usage-limits summary",
+        columns=[
+            Column(key="metric", label="Metric"),
+            Column(key="limit_hits", label="Limit hits"),
+            Column(key="agents_terminated_rate_limit", label="Agents terminated by rate limit"),
+            Column(key="sessions_affected", label="Sessions affected"),
+        ],
+        rows=[["all", hits, terminated_rate_limit, sessions_affected]],
+    )
+
+
+def test_limit_pressure_fires_on_hit_count():
+    r = _base_report()
+    r = _add_section(
+        r,
+        Section(key="limits", title="Usage limits", tables=[_limits_summary_table(hits=3, terminated_rate_limit=0)]),
+    )
+    recs = recommend_fn(r, config=_config(), archetype=None)
+    rec = next(rec for rec in recs if rec.id == "limit-pressure")
+    assert ("Usage-cap hits", 3, "limits.limits_summary", "all") in rec.evidence
+
+
+def test_limit_pressure_fires_on_a_single_rate_limit_termination():
+    r = _base_report()
+    r = _add_section(
+        r,
+        Section(key="limits", title="Usage limits", tables=[_limits_summary_table(hits=0, terminated_rate_limit=1)]),
+    )
+    recs = recommend_fn(r, config=_config(), archetype=None)
+    assert any(rec.id == "limit-pressure" for rec in recs)
+
+
+def test_limit_pressure_does_not_fire_below_both_thresholds():
+    r = _base_report()
+    r = _add_section(
+        r,
+        Section(key="limits", title="Usage limits", tables=[_limits_summary_table(hits=2, terminated_rate_limit=0)]),
+    )
+    recs = recommend_fn(r, config=_config(), archetype=None)
+    assert not any(rec.id == "limit-pressure" for rec in recs)
+
+
+def test_limit_pressure_absent_without_limits_section():
+    r = _base_report()
+    recs = recommend_fn(r, config=_config(), archetype=None)
+    assert not any(rec.id == "limit-pressure" for rec in recs)
+
+
+def test_limit_pressure_threshold_is_overridable():
+    r = _base_report()
+    r = _add_section(
+        r,
+        Section(key="limits", title="Usage limits", tables=[_limits_summary_table(hits=1, terminated_rate_limit=0)]),
+    )
+    recs = recommend_fn(r, config=_config(), archetype=None)
+    assert not any(rec.id == "limit-pressure" for rec in recs)
+
+    recs = recommend_fn(
+        r,
+        config=_config(),
+        archetype=None,
+        thresholds=RecommendThresholds(limit_pressure_min_hits=1),
+    )
+    assert any(rec.id == "limit-pressure" for rec in recs)
+
+
 # -- long-tool-waits / notification-invalidation / batch-instructions -------
 # (recache-derived rules whose conditions are approximated across two
 # tables each -- see recommend.py's module docstring)
