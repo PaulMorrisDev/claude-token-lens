@@ -1,10 +1,19 @@
 """Egress test for the v0.2 service (S1-api): proves ``docs/api.md``'s
 "Local only" guarantee -- the service opens exactly one listening
-socket and never opens an outbound connection -- by monkeypatching
-``socket.socket.connect`` for the lifetime of a real test server and
-recording every address it is ever asked to connect to, while a test
-client exercises every ``/api/*`` route (store-backed, report-backed,
-the two mutating routes, the v0.3 stub routes, and static/traversal).
+socket and never opens an outbound connection or resolves a remote
+hostname -- by monkeypatching every socket-level entry point that
+could originate one (``socket.socket.connect``,
+``socket.socket.connect_ex``, ``socket.create_connection`` and
+``socket.getaddrinfo``; review finding 16/17 -- an earlier version of
+this test patched only ``connect``, which would have missed a future
+change that dialled out via one of the others) for the lifetime of a
+real test server, recording every address/host it is ever asked to
+reach, while a test client exercises every ``/api/*`` route
+(store-backed, report-backed, the two mutating routes, the v0.3 stub
+routes, and static/traversal). ``sendto``/``sendmsg`` (UDP) are not
+patched: ``http.server``'s handler is always built on a ``SOCK_STREAM``
+listening socket, so this service has no code path that could reach
+for a UDP primitive in the first place.
 
 The test client's own connections to the server (``http.client``,
 itself built on ``socket.socket.connect``) are the *only* expected
@@ -127,12 +136,30 @@ def test_no_connect_call_ever_targets_a_non_loopback_address(tmp_path, monkeypat
 
     connect_targets: list = []
     real_connect = socket.socket.connect
+    real_connect_ex = socket.socket.connect_ex
+    real_create_connection = socket.create_connection
+    real_getaddrinfo = socket.getaddrinfo
 
     def _recording_connect(self, address, *args, **kwargs):
         connect_targets.append(address)
         return real_connect(self, address, *args, **kwargs)
 
+    def _recording_connect_ex(self, address, *args, **kwargs):
+        connect_targets.append(address)
+        return real_connect_ex(self, address, *args, **kwargs)
+
+    def _recording_create_connection(address, *args, **kwargs):
+        connect_targets.append(address)
+        return real_create_connection(address, *args, **kwargs)
+
+    def _recording_getaddrinfo(host, port, *args, **kwargs):
+        connect_targets.append((host, port))
+        return real_getaddrinfo(host, port, *args, **kwargs)
+
     monkeypatch.setattr(socket.socket, "connect", _recording_connect)
+    monkeypatch.setattr(socket.socket, "connect_ex", _recording_connect_ex)
+    monkeypatch.setattr(socket, "create_connection", _recording_create_connection)
+    monkeypatch.setattr(socket, "getaddrinfo", _recording_getaddrinfo)
 
     try:
         port = httpd.server_port
