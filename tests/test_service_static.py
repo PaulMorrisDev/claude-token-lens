@@ -402,6 +402,16 @@ def _build_fixture_data(tmp_path: Path) -> tuple[dict, dict]:
     ttl_section = next((s for s in report.sections if s.key == "ttl"), None)
     canned["/api/ttl"] = to_jsonable(ttl_section) if ttl_section is not None else {"tables": []}
 
+    # v4 wiring round: same "report-backed section" canning as ttl above.
+    for route, section_key in (
+        ("/api/carry", "carry"),
+        ("/api/compaction-sim", "compaction_sim"),
+        ("/api/model-swap", "model_swap"),
+        ("/api/waste", "waste"),
+    ):
+        section = next((s for s in report.sections if s.key == section_key), None)
+        canned[route] = to_jsonable(section) if section is not None else {"tables": []}
+
     config_section = next((s for s in report.sections if s.key == "config"), None)
     canned["/api/config-diff"] = to_jsonable(config_section) if config_section is not None else {"tables": []}
 
@@ -572,6 +582,42 @@ def test_section_tab_map_includes_recache_by_group() -> None:
     assert re.search(r'recache_by_group\s*:\s*"cache"', section_tab_map_src), (
         "recache_by_group should map to the same Cache tab as recache"
     )
+
+
+def test_savings_tab_wires_up_ids_routes_and_section_map() -> None:
+    """v4 wiring round: the new "Savings" tab (carry/compaction_sim/
+    model_swap/waste) must be consistent across all three places a tab
+    is registered -- index.html's button + panel ids, app.js's
+    TAB_ORDER/TAB_RENDERERS, and SECTION_TAB_MAP (so the four sections
+    don't also fall through to the Diagnostics tab's default, the same
+    trap ``recache_by_group`` hit above)."""
+    html = _static_text("index.html")
+    assert 'id="tab-savings"' in html
+    assert 'data-tab="savings"' in html
+    assert 'aria-controls="panel-savings"' in html
+    assert 'id="panel-savings"' in html
+    assert 'aria-labelledby="tab-savings"' in html
+
+    app_js = _static_text("app.js")
+    assert '"savings"' in app_js
+    assert "renderSavings" in app_js
+
+    tab_order_line = re.search(r"var TAB_ORDER\s*=\s*\[[^\]]+\];", app_js)
+    assert tab_order_line is not None
+    assert '"savings"' in tab_order_line.group(0)
+
+    tab_renderers_start = app_js.index("var TAB_RENDERERS")
+    tab_renderers_end = app_js.index("};", tab_renderers_start) + 2
+    tab_renderers_src = app_js[tab_renderers_start:tab_renderers_end]
+    assert re.search(r"savings\s*:\s*renderSavings", tab_renderers_src)
+
+    section_tab_map_start = app_js.index("var SECTION_TAB_MAP")
+    section_tab_map_end = app_js.index("};", section_tab_map_start) + 2
+    section_tab_map_src = app_js[section_tab_map_start:section_tab_map_end]
+    for section_key in ("carry", "compaction_sim", "model_swap", "waste"):
+        assert re.search(section_key + r'\s*:\s*"savings"', section_tab_map_src), (
+            f"{section_key} should map to the Savings tab, not fall through to Diagnostics"
+        )
 
 
 def test_render_baseline_shows_the_project_slug_not_the_raw_row_id() -> None:

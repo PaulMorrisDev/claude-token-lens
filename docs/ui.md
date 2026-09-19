@@ -37,8 +37,8 @@ inline SVG charts, `prefers-color-scheme` dark."
 
 One page (`index.html`), one `<nav>` of tabs, each rendering from its
 own `/api/*` route(s) so a tab's data can be refetched independently
-(a background poll re-renders only the active tab). Ten tabs ship, in
-this order:
+(a background poll re-renders only the active tab). Eleven tabs ship,
+in this order:
 
 1. **Overview** — `/api/summary` + the corpus-wide totals table also
    shown by the CLI's `report` overview section. The window selector
@@ -71,11 +71,25 @@ this order:
    5m/1h recommendation and its fidelity — same figures as the CLI's
    `ttl` subcommand, including the fidelity-exceeds-bound suppression
    note.
-5. **Agents** — per-agent-type cost/turn/spawn-depth breakdown (from
+5. **Savings** (v4 wiring round) — the four newly-wired analytics
+   sections, each fetched directly from its own report-backed route the
+   same way TTL fetches `/api/ttl` (rather than waiting on the full
+   `/api/report.json`), and each rendered with the same generic
+   Section/Table renderer: `/api/carry` (context carry cost per tool and
+   agent type, top carried results, truncation-cap savings), `/api/compaction-sim`
+   (the `autoCompactWindow` sweep: cost per candidate window, the
+   per-agent-type best window, and the fidelity check), `/api/model-swap`
+   (ceiling saving from moving a model/subagent type one tier down), and
+   `/api/waste` (spend on turns whose output was never used, by cause,
+   agent type and top session). The `tool-output-carry`/
+   `compaction-window`/`model-tier`/`wasted-turns` recommendations these
+   sections' rules produce are not duplicated here — they show up as
+   cards on the Recommendations tab like every other recommendation.
+6. **Agents** — per-agent-type cost/turn/spawn-depth breakdown (from
    `/api/summary` and `/api/sessions` grouped client-side by
    `agent_type`, avoiding a dedicated route for a shape the existing
    ones already carry).
-6. **Config** — `/api/config-diff`: `effective_config`/`config_layers`/
+7. **Config** — `/api/config-diff`: `effective_config`/`config_layers`/
    `config_groups`/`config_drift` (plan "Configuration layers and
    per-project effective config" section) — which layer supplied each
    key, and which projects share an identical effective config. A
@@ -87,7 +101,7 @@ this order:
    captured yet"), and every past capture in a history table — with a
    "capture window open: provisional" notice whenever
    `capture_status.started && !capture_status.complete`.
-7. **Profiles** — `/api/profiles` (v0.3: the catalogue's seven shipped
+8. **Profiles** — `/api/profiles` (v0.3: the catalogue's seven shipped
    profiles plus every user profile, each tagged `source`) and
    `/api/profiles/<id>/diff` (detail view, real as of v0.3): the entry
    matching the latest baseline's `suggested_profile_id` is marked
@@ -104,7 +118,7 @@ this order:
    settings-overlay textarea) posts to `POST /api/profiles` and shows
    the server's validation error inline on `400`/`409` rather than
    failing silently.
-8. **Recommendations** — `/api/recommendations`: one card per
+9. **Recommendations** — `/api/recommendations`: one card per
    `Recommendation`, grouped by `severity`. Every card shows its
    evidence line(s) (`label: formatted value (table, row)`, same
    formatting `render/tables.py::format_evidence_value` gives the CLI's
@@ -115,10 +129,10 @@ this order:
    The same "capture window open: provisional" notice as the Config
    tab's baseline panel appears above the list while a capture window is
    in progress (`/api/baseline`'s `capture_status`).
-9. **Usage** — the `usage`/`compactions` report sections plus a raw
-   `/api/compactions` list, its own dedicated tab rather than folded
-   into Diagnostics.
-10. **Diagnostics** — parse-quality counters (`Diagnostics` dataclass
+10. **Usage** — the `usage`/`compactions` report sections plus a raw
+    `/api/compactions` list, its own dedicated tab rather than folded
+    into Diagnostics.
+11. **Diagnostics** — parse-quality counters (`Diagnostics` dataclass
     fields), aggregated corpus-wide from the store — same figures as
     the CLI report's Diagnostics section, so a user comparing the UI
     against a CLI run for the same window sees identical numbers.
@@ -146,11 +160,12 @@ enough for a stdlib-only test suite.
 
 The UI shipped in `static/index.html` + `app.js` + `app.css` follows
 this document's Constraints, Data flow and Testing sections exactly —
-the Tabs section above now describes the shipped ten-tab structure
+the Tabs section above now describes the shipped eleven-tab structure
 directly (reconciled by S1-integration; it previously described a
 nine-tab plan with two footnoted deviations, which was corrected in
-place rather than left as a drifted historical record). One naming note
-remains:
+place rather than left as a drifted historical record; the Savings tab
+was added in the v4 wiring round, after S1-integration). One naming
+note remains:
 
 - The test file is `tests/test_service_static.py` (the S1-ui brief's
   literal filename), not `tests/test_service_ui.py` as an earlier draft
@@ -174,6 +189,23 @@ promotes it to its own section needs no corresponding `app.js` change.
 Diagnostics fallback: a usage-cap pause forces exactly the full-expiry
 re-cache cost `recache`/`ttl` already attribute, so its six tables read
 naturally alongside them.
+
+**Savings tab (v4 wiring round).** `carry`/`compaction_sim`/
+`model_swap`/`waste` are mapped to a `"savings"` tab key in the same
+`SECTION_TAB_MAP` — not because anything calls
+`renderMappedSections(report, "savings", ...)` (nothing does), but
+because an entry there is the only thing standing between a section and
+the Diagnostics tab's default fallback, exactly the same as `ttl`'s own
+`"ttl"` entry above (the TTL tab never calls `renderMappedSections`
+either). The Savings tab instead fetches its own four sections directly
+— `/api/carry`, `/api/compaction-sim`, `/api/model-swap`, `/api/waste`
+— the same one-route-per-tab pattern `renderTtl` already used, via a
+new shared `renderReportBackedSection` helper factored out of what used
+to be `renderTtlData`'s own body (identical behaviour, now shared by
+five call sites instead of duplicated). This keeps the four new
+sections off the full `/api/report.json` fetch entirely for this tab,
+matching TTL's existing "own dedicated route" precedent rather than
+introducing a second pattern.
 
 **Session timeline (S1-integration fix 1.g).** `/api/session/<id>` now
 carries `turn_series`/`markers` (`docs/api.md`) whenever the watcher has
