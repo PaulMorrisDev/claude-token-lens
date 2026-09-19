@@ -68,6 +68,7 @@ from pathlib import Path
 from . import schema
 from ..cache import result_from_jsonable
 from ..discovery import redact_slug
+from ..limits import limit_markers as _limit_markers
 from ..model import EventKind
 
 #: ``meta`` key recording the schema version the store's tables were
@@ -820,6 +821,14 @@ class Store:
         ``truncated``: ``True`` when ``turn_series`` was downsampled --
         the UI uses this to say so rather than silently showing a
         thinned-out chart as if it were the complete picture.
+
+        ``limit_markers`` (v3-limits wiring): every ``LIMIT_HIT``/
+        ``LIMIT_RESUME``/``AGENT_TERMINATED`` event on this session's
+        top-level transcript, as ``{"ts", "kind", "detail"}`` dicts --
+        ``limits.limit_markers(result)``'s own ``(ts, kind, detail)``
+        triples reshaped into JSON objects. Never downsampled (there are
+        at most a handful of these per session, nothing like
+        ``turn_series``'s volume).
         """
         row = self._connection().execute(
             "SELECT digest_blob FROM transcripts WHERE session_id = ? AND kind = 'top-level'",
@@ -883,6 +892,9 @@ class Store:
             "turn_series": turn_series,
             "markers": {"compactions": compactions, "spawns": spawns, "human": human},
             "truncated": truncated,
+            "limit_markers": [
+                {"ts": ts, "kind": kind, "detail": detail} for ts, kind, detail in _limit_markers(result)
+            ],
         }
 
     def summary(self, *, window_days: int | None = None) -> dict:

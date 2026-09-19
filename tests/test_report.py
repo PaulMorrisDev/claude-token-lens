@@ -25,7 +25,7 @@ from claude_token_lens.render.json_out import render_json
 from claude_token_lens.render.markdown import render_markdown
 from claude_token_lens.snapshots import Snapshot
 
-from helpers import assert_privacy, turn_line, write_jsonl
+from helpers import assert_privacy, turn_line, user_str_line, write_jsonl
 
 PRICING = load_pricing()
 
@@ -249,6 +249,71 @@ def test_recache_by_group_table_rows_sum_to_the_ungrouped_summary(tmp_path):
     # group column prepended, so index 1 onward mirrors recache_summary's columns (metric first).
     assert sum(row[2] for row in group_table.rows) == summary_row[1]  # transcripts
     assert sum(row[3] for row in group_table.rows) == summary_row[2]  # priced_turns
+
+
+# -- v3-limits wiring --------------------------------------------------------
+
+
+def _corpus_with_one_limit_hit(tmp_path: Path):
+    # Mirrors tests/test_limits.py's own _session_limit_fixture: a
+    # synthetic session-limit LIMIT_HIT, a human resume message, then a
+    # post-pause turn that necessarily did a full-expiry re-cache.
+    project_dir = tmp_path / "proj-limit"
+    project_dir.mkdir()
+    lines = [
+        turn_line(message_id="msg_1", input_tokens=30_000, timestamp="2026-09-18T12:00:00.000Z"),
+        turn_line(
+            message_id="msg_synth",
+            model="<synthetic>",
+            isApiErrorMessage=True,
+            input_tokens=0,
+            output_tokens=0,
+            content=[{"type": "text", "text": "You've hit your session limit · resets 3pm (Europe/London)"}],
+            timestamp="2026-09-18T12:00:05.000Z",
+        ),
+        user_str_line(
+            "I hit my usage limit while you were working, but it has reset now.",
+            promptSource="sdk",
+            origin={"kind": "human"},
+            timestamp="2026-09-18T15:00:00.000Z",
+        ),
+        turn_line(
+            message_id="msg_2",
+            input_tokens=30_000,
+            cache_creation_input_tokens=25_000,
+            cache_read_input_tokens=0,
+            timestamp="2026-09-18T15:00:10.000Z",
+        ),
+    ]
+    write_jsonl(project_dir / "session-limit.jsonl", lines)
+    return load_corpus([project_dir])
+
+
+def test_limits_section_and_scorecard_receive_the_limit_hit(tmp_path):
+    corpus = _corpus_with_one_limit_hit(tmp_path)
+    report = build_report(corpus, PRICING, Config(), projects=("proj-limit",), window="w")
+
+    limits_section = next(s for s in report.sections if s.key == "limits")
+    summary_row = {c.key: v for c, v in zip(limits_section.tables[0].columns, limits_section.tables[0].rows[0])}
+    assert summary_row["limit_hits"] == 1
+    assert summary_row["session_limit_hits"] == 1
+    assert summary_row["sessions_affected"] == 1
+    assert summary_row["pause_count"] == 1
+    assert summary_row["limit_turn_cc_tokens"] == 25_000
+
+    assert any(a.startswith("a usage-cap pause's") for a in report.meta.assumptions)
+
+    scorecard_section = next(s for s in report.sections if s.key == "scorecard")
+    dimensions_table = next(t for t in scorecard_section.tables if t.name == "dimensions")
+    # data_quality's note fires whenever ScorecardInputs.limit_pause_sessions
+    # > 0 (scorecard.py's _data_quality) -- proves report.py actually
+    # threaded LimitStats.sessions_affected through, not just built the
+    # section.
+    assert any("usage-limit pause" in note for note in dimensions_table.notes if note)
+
+    for section in report.sections:
+        assert_privacy(section)
+    _all_sections_row_keys_are_valid(report.sections)
 
 
 # -- subscription vs api labelling (delegated to usage.py, exercised here) --

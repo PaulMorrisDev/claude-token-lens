@@ -87,10 +87,10 @@ one of these events carries `Turn.gap_cause == "limit"`.
 
 ## Session-timeline marker contract
 
-`limit_markers(result) -> list[tuple[str, str, dict]]` is the proposed
-basis for a session-timeline API's usage-limit markers: each triple is
-`(ts, kind, detail)`, sorted by `ts` (ascending, ISO-8601 string
-comparison; an event with no timestamp sorts first as `""`).
+`limit_markers(result) -> list[tuple[str, str, dict]]` is the basis for
+`service/api.py`'s `GET /api/session/<id>` usage-limit markers: each
+triple is `(ts, kind, detail)`, sorted by `ts` (ascending, ISO-8601
+string comparison; an event with no timestamp sorts first as `""`).
 
 - `ts`: the event's own `Event.ts` (an ISO-8601 string), or `""`.
 - `kind`: the event kind's own string value — one of `"limit_hit"`,
@@ -103,6 +103,20 @@ comparison; an event with no timestamp sorts first as `""`).
 
 A consumer can render one marker per triple without importing `EventKind`
 or reaching into `TranscriptResult.events` directly.
+
+Wired: `service/store.py`'s `Store.turns_for_session` calls this
+function against the session's stored top-level transcript digest and
+reshapes each triple into a `{"ts", "kind", "detail"}` object;
+`service/api.py`'s `route_session` forwards the result as
+`GET /api/session/<id>`'s `limit_markers` field (see
+[`docs/api.md`](api.md)). `service/static/app.js`'s session timeline
+renders them as their own marker kind (distinct colour, legend entry,
+tooltip naming `kind`/`detail.subkind`), positioned along the chart's
+time axis by `ts` rather than by turn index — unlike the
+compaction/spawn/human markers, a usage-limit event's timestamp falls
+*inside* the pause gap between two turns, not at a turn index of its
+own, so it cannot be pinned to one of `turn_series`'s existing points
+(see `docs/ui.md`).
 
 ## Assumptions and what isn't attributable
 

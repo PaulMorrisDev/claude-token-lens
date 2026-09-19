@@ -745,7 +745,7 @@ def test_load_corpus_for_args_quiet_suppresses_stats_even_if_verbose_is_also_set
     assert "[corpus]" not in err
 
 
-@pytest.mark.parametrize("command,section_title", [("sessions", "## Sessions"), ("recache", "## Re-cache"), ("ttl", "## TTL"), ("compactions", "## Compactions")])
+@pytest.mark.parametrize("command,section_title", [("sessions", "## Sessions"), ("recache", "## Re-cache"), ("ttl", "## TTL"), ("limits", "## Usage limits"), ("compactions", "## Compactions")])
 def test_focused_subcommands_render_overview_plus_their_own_section(tmp_path, capsys, command, section_title):
     root = tmp_path / "projects"
     _write_project(root, "proj-a")

@@ -472,6 +472,11 @@
     // refactor that promotes it to its own section lands on the Cache
     // tab without anyone having to remember to update this file too.
     recache_by_group: "cache",
+    // v3-limits wiring: usage-cap pauses force the exact full-expiry
+    // re-cache recache/ttl already attribute cost to -- grouped onto
+    // Cache alongside them rather than Diagnostics's parse-quality
+    // counters.
+    limits: "cache",
     ttl: "ttl",
     agents: "agents",
     workflows: "agents",
@@ -956,12 +961,14 @@
   // `turn_series`: a list of `[turn_index, ctx, cache_creation_tokens,
   // is_recache, preceding_primary]` per priced turn of the session's
   // top-level transcript, plus `markers`: `{compactions, spawns,
-  // human}`, each a list of turn_index values. It's absent (rather
-  // than an empty list) whenever the store has no stored top-level
-  // transcript digest to source it from -- e.g. a session ingested
-  // before the watcher parsed a top-level transcript, or one whose
-  // digest failed to decode -- so this still falls back to a clearly
-  // labelled placeholder rather than inventing a curve.
+  // human}`, each a list of turn_index values, and (v3-limits wiring)
+  // `limit_markers`: `[{ts, kind, detail}, ...]` usage-cap pause/resume/
+  // agent-terminated events. It's absent (rather than an empty list)
+  // whenever the store has no stored top-level transcript digest to
+  // source it from -- e.g. a session ingested before the watcher parsed
+  // a top-level transcript, or one whose digest failed to decode -- so
+  // this still falls back to a clearly labelled placeholder rather than
+  // inventing a curve.
   function findPerTurnSeries(session) {
     var series = session.turn_series;
     return Array.isArray(series) && series.length ? series : null;
@@ -1021,6 +1028,16 @@
     // dynamic value embedded below is either a fixed-precision number
     // or passed through `escapeHtml`.
     var markerColors = { recache: "#c0392b", compaction: "#a06a00", spawn: "#2563eb", human: "#1a7f37" };
+    // v3-limits wiring: distinct colours from markerColors above, drawn
+    // in the blank strip above the context-size line (y well below
+    // `padding`) rather than pinned to a turn's own point -- a
+    // usage-limit event's `ts` falls *inside* the pause gap between two
+    // turns, not at a turn_index of its own, so unlike recache/
+    // compaction/spawn/human it cannot share the index-based x position
+    // those markers use. Positioned instead by interpolating `ts`
+    // between the session's own `first_ts`/`last_ts` (docs/limits.md's
+    // "Session-timeline marker contract" / docs/ui.md).
+    var limitMarkerColors = { limit_hit: "#9333ea", limit_resume: "#0891b2", agent_terminated: "#ea580c" };
     var svgParts = [];
     svgParts.push(
       '<svg viewBox="0 0 ' + width + " " + height + '" class="timeline-svg" role="img" aria-label="' +
@@ -1069,6 +1086,35 @@
         );
       });
     });
+
+    var limitMarkers = Array.isArray(session.limit_markers) ? session.limit_markers : [];
+    var limitKindsSeen = {};
+    if (limitMarkers.length) {
+      var firstMs = Date.parse(session.first_ts);
+      var lastMs = Date.parse(session.last_ts);
+      var hasTimeRange = !isNaN(firstMs) && !isNaN(lastMs) && lastMs > firstMs;
+      limitMarkers.forEach(function (marker) {
+        var ms = Date.parse(marker.ts);
+        if (isNaN(ms)) return;
+        var fraction = hasTimeRange ? Math.max(0, Math.min(1, (ms - firstMs) / (lastMs - firstMs))) : 0;
+        var mx = padding + fraction * (width - 2 * padding);
+        var my = Math.round(padding / 2);
+        var subkind = marker.detail && marker.detail.subkind;
+        var label = escapeHtml(marker.kind + (subkind ? " (" + subkind + ")" : "") + " at " + marker.ts);
+        limitKindsSeen[marker.kind] = true;
+        svgParts.push(
+          '<circle cx="' +
+            mx.toFixed(1) +
+            '" cy="' +
+            my +
+            '" r="3" fill="' +
+            (limitMarkerColors[marker.kind] || "var(--muted)") +
+            '"><title>' +
+            label +
+            "</title></circle>"
+        );
+      });
+    }
     svgParts.push("</svg>");
 
     var wrap = el("div", { html: svgParts.join("") });
@@ -1077,6 +1123,12 @@
       var swatch = el("span", { class: "swatch" });
       swatch.style.background = markerColors[kind];
       legend.appendChild(el("span", null, [swatch, document.createTextNode(kind)]));
+    });
+    Object.keys(limitMarkerColors).forEach(function (kind) {
+      if (!limitKindsSeen[kind]) return;
+      var swatch = el("span", { class: "swatch" });
+      swatch.style.background = limitMarkerColors[kind];
+      legend.appendChild(el("span", null, [swatch, document.createTextNode(kind.replace(/_/g, " "))]));
     });
     wrap.appendChild(legend);
     if (session.truncated) {

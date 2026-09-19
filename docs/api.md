@@ -204,8 +204,16 @@ shape, no client-side reconstruction needed:
   `turn_series` above was downsampled to that cap (every marker turn is
   kept; the rest are evenly sampled across the full session). `false`
   for every session at or under the cap.
+- `limit_markers` (v3-limits wiring): `[{"ts", "kind", "detail"}, ...]`
+  — every `LIMIT_HIT`/`LIMIT_RESUME`/`AGENT_TERMINATED` event on this
+  session's top-level transcript, sourced from `limits.limit_markers`
+  (see [`docs/limits.md`](limits.md#session-timeline-marker-contract)
+  for the exact contract) and never downsampled. `kind` is one of
+  `"limit_hit"`, `"limit_resume"`, `"agent_terminated"`; `detail` carries
+  a `subkind` key when the event has one (`session_limit`/`weekly_limit`
+  for `limit_hit`; `rate_limit`/`other` for `agent_terminated`).
 
-All three fields are omitted entirely (never present as an empty list)
+All four fields are omitted entirely (never present as an empty list)
 when no top-level transcript digest is stored yet, or the stored digest
 can't be decoded — never fabricated.
 

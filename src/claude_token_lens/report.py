@@ -12,9 +12,10 @@ optionally :class:`phases.PhaseStats`), and assembles their
 ``build_section`` outputs into ``ReportModel.sections`` in a fixed order.
 
 Section order and keys: ``overview``, ``usage``, ``sessions``, ``recache``,
-``ttl``, ``compactions``, ``agents``, ``workstyle``, ``workflows``,
-``phases`` (only when ``phases=True``), ``config`` (only when snapshots
-are supplied), ``context_budget``, ``scorecard``, ``baseline_comparison``
+``ttl``, ``limits``, ``compactions``, ``agents``, ``workstyle``,
+``workflows``, ``phases`` (only when ``phases=True``), ``config`` (only
+when snapshots are supplied), ``context_budget``, ``scorecard``,
+``baseline_comparison``
 (v0.3 Task 2 addition, only when a ``baseline_record`` is passed --
 see ``build_report``'s own docstring; deliberately *not* subject to
 ``include`` filtering). ``include``, when given, keeps only sections
@@ -93,7 +94,7 @@ from datetime import datetime, timezone
 from typing import Callable
 
 from . import __version__ as _TOOL_VERSION
-from . import classify, compaction, context_budget, discovery, recache, scorecard, snapshots as snapshots_mod, topology, ttl, workflows, workstyle
+from . import classify, compaction, context_budget, discovery, limits, recache, scorecard, snapshots as snapshots_mod, topology, ttl, workflows, workstyle
 from .config import Config
 from .corpus import Corpus, SessionBundle
 from .model import (
@@ -125,6 +126,7 @@ _SECTION_ORDER: tuple[str, ...] = (
     "sessions",
     "recache",
     "ttl",
+    "limits",
     "compactions",
     "agents",
     "workstyle",
@@ -1065,6 +1067,7 @@ def build_report(
 
     recache_th = recache.RecacheThresholds.from_config(config.thresholds)
     ttl_th = ttl.TtlThresholds.from_config(config.thresholds)
+    limits_th = limits.LimitThresholds.from_config(config.thresholds)
     mode_thresholds, purpose_thresholds = classify.mode_and_purpose_thresholds_from_config(config.thresholds)
     scorecard_th = scorecard.ScorecardThresholds.from_config(
         config.thresholds.get("scorecard") if isinstance(config.thresholds, dict) else None
@@ -1093,6 +1096,7 @@ def build_report(
     diagnostics = Diagnostics()
 
     rs = recache.RecacheStats(recache_th)
+    ls = limits.LimitStats()
     ts = ttl.TtlStats()
     cs = compaction.CompactionStats()
     tp = topology.TopologyStats()
@@ -1145,6 +1149,7 @@ def build_report(
             _merge_diagnostics(diagnostics, tr.diagnostics)
 
             rs.add(tr, pricing.resolve_model)
+            ls.add(tr, pricing.resolve_model)
             ts.add(tr, pricing.resolve_model, ttl_th)
 
             dominant_model = _dominant_transcript_model(tr)
@@ -1307,6 +1312,17 @@ def build_report(
     if _want("ttl"):
         sections.append(ttl.build_section(ts, billing_mode=config.billing, thresholds=ttl_th))
 
+    if _want("limits"):
+        limits_section = limits.build_section(ls, pricing, limits_th)
+        if usage_log_rows:
+            # Same dataclasses.replace-a-table-on pattern the "usage"
+            # section above uses for cache_ground_truth: csv_cross_check
+            # needs the already-loaded usage-log rows, which this
+            # module doesn't otherwise keep.
+            cross_check_table = limits.csv_cross_check(usage_log_rows, ls, limits_th)
+            limits_section = dataclasses.replace(limits_section, tables=[*limits_section.tables, cross_check_table])
+        sections.append(limits_section)
+
     if _want("compactions"):
         sections.append(compaction.build_section(cs))
 
@@ -1361,7 +1377,7 @@ def build_report(
         sections.append(context_budget.build_section(cb, snapshots=snapshots, usage_log_rows=usage_log_rows))
 
     if _want("scorecard"):
-        sections.append(_build_scorecard_section(rs, ts, tp, cs, pricing_coverage, diagnostics, session_records, snapshots, config, scorecard_th))
+        sections.append(_build_scorecard_section(rs, ls, ts, tp, cs, pricing_coverage, diagnostics, session_records, snapshots, config, scorecard_th))
 
     if baseline_record is not None:
         # Deliberately not gated by _want()/include -- see build_report's
@@ -1393,7 +1409,7 @@ def build_report(
         "min_turns": recommend_min_turns,
     }
 
-    assumptions: list[str] = list(ttl.ASSUMPTIONS) + list(recache.ASSUMPTIONS)
+    assumptions: list[str] = list(ttl.ASSUMPTIONS) + list(recache.ASSUMPTIONS) + list(limits.ASSUMPTIONS)
     if baseline_record is None and baseline_note:
         assumptions.append(baseline_note)
 
@@ -1454,6 +1470,7 @@ def _top_level_ctx_values(rs: recache.RecacheStats) -> list[int]:
 
 def _build_scorecard_section(
     rs: recache.RecacheStats,
+    ls: limits.LimitStats,
     ts: ttl.TtlStats,
     tp: topology.TopologyStats,
     cs: compaction.CompactionStats,
@@ -1469,6 +1486,13 @@ def _build_scorecard_section(
     total_cc_all = sum(t.cache_creation_tokens for t in all_turns)
     total_cc_recache = sum(t.cache_creation_tokens for t in recache_turns)
     recache_share_pct = 100.0 * total_cc_recache / total_cc_all if total_cc_all else None
+
+    # Portion of recache_share_pct already known to be forced by a
+    # usage-limit pause (limits.py) rather than a workflow choice --
+    # excluded from the cache_efficiency level rather than scored as one
+    # (see scorecard.ScorecardInputs.limit_recache_share_pct's docstring).
+    total_cc_limit = sum(t.cache_creation_tokens for t in all_turns if t.gap_cause == "limit")
+    limit_recache_share_pct = 100.0 * total_cc_limit / total_cc_all if total_cc_all else None
 
     total_read = sum(t.cache_read_tokens for t in all_turns)
     total_input = sum(t.input_tokens for t in all_turns)
@@ -1507,6 +1531,7 @@ def _build_scorecard_section(
 
     inputs = scorecard.ScorecardInputs(
         recache_share_pct=recache_share_pct,
+        limit_recache_share_pct=limit_recache_share_pct,
         cache_hit_ratio_pct=cache_hit_ratio_pct,
         median_top_level_ctx=median_ctx,
         p90_top_level_ctx=p90_ctx,
@@ -1518,6 +1543,7 @@ def _build_scorecard_section(
         changed_config_keys=changed_keys,
         pricing_coverage_pct=pricing_coverage.coverage_pct,
         parse_error_rate_pct=parse_error_rate_pct,
+        limit_pause_sessions=len(ls.sessions_affected),
     )
     return scorecard.build_section(inputs, th)
 

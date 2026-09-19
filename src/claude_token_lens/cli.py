@@ -58,6 +58,7 @@ SUBCOMMANDS: tuple[str, ...] = (
     "sessions",
     "recache",
     "ttl",
+    "limits",
     "compactions",
     "config-diff",
     "snapshot-config",
@@ -93,6 +94,7 @@ _REPORT_LIKE_SECTIONS: dict[str, str] = {
     "sessions": "sessions",
     "recache": "recache",
     "ttl": "ttl",
+    "limits": "limits",
     "compactions": "compactions",
 }
 
@@ -692,6 +694,7 @@ def _make_parser() -> argparse.ArgumentParser:
             "sessions": "sessions-only report view",
             "recache": "RE-CACHE-only report view",
             "ttl": "TTL break-even-only report view",
+            "limits": "usage-limits-only report view",
             "compactions": "compactions-only report view",
             "config-diff": "compare sessions grouped by a config key's value",
             "probe-config": "scan a project's config layers without a session (schema 2)",

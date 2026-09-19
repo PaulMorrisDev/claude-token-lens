@@ -181,6 +181,47 @@ simulation at a transcript's own dominant observed TTL and compare it to
 observed cost; `TtlThresholds.fidelity_warn_pct` (default 10.0) is the
 flag threshold `build_section` applies per agent type.
 
+## `limits` (`limits.py`)
+
+Full field-by-field contract: [`docs/limits.md`](limits.md#the-limits-report-section).
+
+A usage-cap pause (the harness pausing when the account hits its 5-hour/
+weekly limit), a harness-forced early subagent termination, and the
+desktop app's resume ping, turned into first-class facts rather than
+behavioural noise (see `docs/limits.md`'s module-docstring summary for
+why an unattributed pause otherwise misreads as an ordinary long idle
+gap in `recache`/`ttl`/`sessions`).
+
+- `limits_summary` — one "all" row: transcripts, sessions affected,
+  limit hits (session + weekly split), resumes, agents terminated (and
+  by rate limit specifically), pause count/total time, and the
+  cache-creation tokens/write cost paid by the turn immediately
+  following each pause.
+- `limits_hits_by_kind` — `session_limit`/`weekly_limit` hit counts and
+  share.
+- `limits_agent_terminated` — `rate_limit`/`other` termination counts
+  and share.
+- `limits_pauses` — corpus-wide pause count/total/mean duration.
+- `limits_reset_hour_histogram` — count and share of `LIMIT_HIT` resets
+  by local hour of day (0-23).
+- `limits_by_agent_type` — per-agent-type roll-up: hits, resumes,
+  terminations, pause count/total/median/max, and the post-pause
+  cache-creation tokens/cost.
+- `limits_csv_cross_check` — transcript-derived hit counts vs.
+  `usage-log.csv`'s own exhaustion-row counts for `five_hour`/
+  `seven_day`, appended as an extra table on this section only when
+  `report.build_report` is given `usage_log_rows` (same "extra table
+  bolted on" convention `usage_ground_truth` uses for the `usage`
+  section above).
+
+`scorecard.py`'s `cache_efficiency` dimension excludes the portion of
+re-cache share already known to be pause-forced
+(`ScorecardInputs.limit_recache_share_pct`); `data_quality` notes the
+count of sessions with at least one pause
+(`ScorecardInputs.limit_pause_sessions`). `recommend.py`'s
+`limit-pressure` rule fires off this section's own `limits_summary`
+counts.
+
 ## `compactions` (`compaction.py`)
 
 - `compactions_summary` — sessions with ≥1 compaction, total sessions,

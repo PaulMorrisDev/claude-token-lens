@@ -61,7 +61,10 @@ this order:
    context composition (feature #1) and the events immediately
    preceding it. A session with no stored top-level transcript digest
    yet shows an explicit "no per-turn data for this session" notice
-   instead of a chart.
+   instead of a chart. Usage-limit events (v3-limits wiring) draw as a
+   fourth marker kind, `limit_markers`, in the blank strip above the
+   context line rather than on the line itself — see "Session timeline"
+   below for why they're positioned by timestamp instead of turn index.
 3. **Cache** — `/api/recache`: the full-expiry vs. prefix-invalidated
    breakdown, same figures as the CLI's `recache` subcommand.
 4. **TTL** — `/api/ttl`: per-agent-type observed/simulated cost, the
@@ -156,9 +159,9 @@ remains:
   was the one that drifted, not the test suite.
 
 **Generic Section/Table rendering** for Cache/TTL/Agents/Config/Usage/
-Diagnostics is driven by an explicit section-key -> tab map (`recache`
--> Cache, `ttl` -> TTL, `agents`/`workflows`/`workstyle` -> Agents,
-`config`/`scorecard` -> Config, `usage`/`compactions` -> Usage,
+Diagnostics is driven by an explicit section-key -> tab map (`recache`/
+`limits` -> Cache, `ttl` -> TTL, `agents`/`workflows`/`workstyle` ->
+Agents, `config`/`scorecard` -> Config, `usage`/`compactions` -> Usage,
 everything else including `phases` -> Diagnostics) so an unrecognised
 section key still lands somewhere visible instead of being silently
 dropped. `recache_by_group` is also in that map, mapped to Cache like
@@ -167,6 +170,10 @@ dropped. `recache_by_group` is also in that map, mapped to Cache like
 extra *table* inside the `"recache"` section rather than a section of
 its own (review finding 20) -- kept there so a future refactor that
 promotes it to its own section needs no corresponding `app.js` change.
+`limits` (v3-limits wiring) is mapped to Cache rather than left to the
+Diagnostics fallback: a usage-cap pause forces exactly the full-expiry
+re-cache cost `recache`/`ttl` already attribute, so its six tables read
+naturally alongside them.
 
 **Session timeline (S1-integration fix 1.g).** `/api/session/<id>` now
 carries `turn_series`/`markers` (`docs/api.md`) whenever the watcher has
@@ -188,6 +195,23 @@ limit on a session with tens of thousands of turns. A session over
 `Store.MAX_TURN_SERIES_POINTS` turns has its `turn_series` downsampled
 server-side (`truncated: true`, `docs/api.md`); the timeline shows a
 note saying so rather than presenting the thinned-out chart as complete.
+
+**Usage-limit markers (v3-limits wiring).** `/api/session/<id>`'s
+`limit_markers` (`docs/api.md`, `docs/limits.md`'s "Session-timeline
+marker contract") ride the same `<svg>`, but a usage-cap
+pause/resume/agent-terminated event's own `ts` falls *inside* the gap
+between two turns, not at one of `turn_series`'s own points — there is
+no turn index to pin it to the way a compaction/spawn/human marker is
+pinned. `buildSessionTimeline` instead interpolates each marker's `ts`
+between the session's own `first_ts`/`last_ts` and draws it in the
+blank strip above the context-size line, in one of three colours
+(`limit_hit`/`limit_resume`/`agent_terminated`, distinct from the four
+turn-indexed marker colours), with its own legend entries (shown only
+for kinds actually present) and a tooltip naming the kind and, when
+present, `detail.subkind` (`session_limit`/`weekly_limit` for a hit,
+`rate_limit`/`other` for a termination). A marker whose `ts` doesn't
+parse is skipped rather than mis-plotted at a wrong-but-plausible
+position.
 
 **Shape-defensive rendering for routes `api.py` hadn't shipped yet.**
 At the time this UI was first built, `service/api.py` did not exist (a

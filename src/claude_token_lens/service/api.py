@@ -41,11 +41,12 @@ project's convention -- see e.g. ``report.py``'s own module docstring):
 - ``GET /api/session/<id>`` returns ``Store.session()``'s dict verbatim,
   which includes ``mode_source``/``purpose_source`` alongside the fields
   ``docs/api.md`` lists for ``/api/sessions``, plus (S1-integration fix
-  1.g) ``turn_series``/``markers`` from ``Store.turns_for_session``. This
-  is a superset, not a contradiction -- ``docs/api.md`` describes it as
-  "the session-summary fields above, plus transcripts ... and tags", not
-  an exact field count, and dropping fields ``Store`` already computes
-  for no privacy reason would only lose information a client might want.
+  1.g) ``turn_series``/``markers``/``truncated``, and (v3-limits wiring)
+  ``limit_markers``, all from ``Store.turns_for_session``. This is a
+  superset, not a contradiction -- ``docs/api.md`` describes it as "the
+  session-summary fields above, plus transcripts ... and tags", not an
+  exact field count, and dropping fields ``Store`` already computes for
+  no privacy reason would only lose information a client might want.
 - ``GET /api/profiles/<id>/diff`` renders the real
   ``profiles/diff.py`` computation (v0.3) against the store's own
   *latest* recorded config snapshot (``snapshots.effective_config`` and
@@ -438,6 +439,10 @@ def make_handler(
             # downsampled server-side; tell the UI so it can say so
             # rather than silently rendering a thinned-out chart.
             result["truncated"] = turns["truncated"]
+            # v3-limits wiring: usage-cap pause/resume/agent-terminated
+            # markers for the session-timeline chart, alongside the
+            # existing compactions/spawns/human markers above.
+            result["limit_markers"] = turns["limit_markers"]
         return _ok(result)
 
     def route_recache(store, query, body):

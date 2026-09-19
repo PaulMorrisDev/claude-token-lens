@@ -432,6 +432,64 @@ def test_session_detail_turn_series_and_markers(tmp_path, monkeypatch):
         store.close()
 
 
+def test_session_detail_limit_markers(tmp_path, monkeypatch):
+    # v3-limits wiring: GET /api/session/<id> exposes limit_markers
+    # (limits.limit_markers) alongside turn_series/markers, sourced from
+    # the same stored top-level transcript digest.
+    from claude_token_lens.cache import encode_result
+    from claude_token_lens.model import Event, EventKind, Turn, TranscriptMeta, TranscriptResult
+
+    corpus = _build_corpus(tmp_path)
+    _install_fake_rebuild(monkeypatch, corpus)
+
+    store = Store(tmp_path / "service.db")
+    store.open()
+    session_id = corpus.sessions[0].session_id
+    store.upsert_session(session_id=session_id, project_slug="proj-a", slug="proj-a")
+
+    result = TranscriptResult(
+        meta=TranscriptMeta(path=_FAKE_PATH, kind="top-level", session_id=session_id),
+        turns=[
+            Turn(turn_index=1, ctx=1000, cache_creation_tokens=500, is_recache=False,
+                 preceding_primary=EventKind.HUMAN_TEXT, human_prompt_chars=42, ts="2026-09-18T12:00:05.000Z"),
+            Turn(turn_index=2, ctx=1500, cache_creation_tokens=25_000, is_recache=True,
+                 gap_cause="limit", gap_s=10_795.0, ts="2026-09-18T15:00:10.000Z"),
+        ],
+        events=[
+            Event(kind=EventKind.LIMIT_HIT, subkind="session_limit", ts="2026-09-18T12:00:05.000Z",
+                  detail={"reset_minutes_of_day": 15 * 60}),
+            Event(kind=EventKind.LIMIT_RESUME, ts="2026-09-18T15:00:00.000Z"),
+        ],
+    )
+    store.upsert_transcript(
+        session_id=session_id,
+        path=_FAKE_PATH,
+        kind="top-level",
+        digest_json=json.dumps(encode_result(result)),
+    )
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    options = ServeOptions(projects_root=tmp_path / "projects", config_dir=config_dir)
+    handler_cls = service_api.make_handler(store, options)
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler_cls)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    handle = _ServerHandle(httpd, thread, corpus=corpus, store=store, options=options)
+    try:
+        resp, body = handle.get_json(f"/api/session/{session_id}")
+        assert resp.status == 200
+        assert body["data"]["limit_markers"] == [
+            {"ts": "2026-09-18T12:00:05.000Z", "kind": "limit_hit", "detail": {"reset_minutes_of_day": 900, "subkind": "session_limit"}},
+            {"ts": "2026-09-18T15:00:00.000Z", "kind": "limit_resume", "detail": {}},
+        ]
+        assert_privacy(body)
+        _assert_no_leak(json.dumps(body).encode("utf-8"))
+    finally:
+        handle.close()
+        store.close()
+
+
 def test_session_detail_not_found(server):
     resp, body = server.get_json("/api/session/does-not-exist")
     assert resp.status == 404
