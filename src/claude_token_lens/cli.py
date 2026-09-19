@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import importlib.resources
 import importlib.util
+import json
 import os
 import sys
 import types
@@ -74,6 +75,8 @@ SUBCOMMANDS: tuple[str, ...] = (
     "baseline",
     "apply",
     "serve",
+    "import",
+    "team-report",
 )
 
 DEFAULT_SUBCOMMAND = "report"
@@ -361,6 +364,27 @@ def _add_export_args(sub: argparse.ArgumentParser) -> None:
         "SOURCE_DATE_EPOCH env var) so the export is byte-reproducible "
         "(nit 21/19: it wasn't wired up to the CLI before)",
     )
+    # v0.3 Task 1: a team-aggregate document is a different shape from
+    # every other --format (per-group sums, never a session id or a
+    # per-session row), so it's its own flag rather than a --format
+    # choice -- --aggregate-only/--per-session/--hash-slugs (which
+    # govern the *per-session* export shapes) have no effect on it, and
+    # --format itself is ignored (a team document is always JSON) since
+    # it has no CSV/OTel analogue.
+    sub.add_argument(
+        "--aggregate",
+        action="store_true",
+        help="write a team-aggregate JSON document (see `import`/`team-report`, "
+        "docs/team.md) instead of a per-project export; aggregate-only and "
+        "hashed by construction",
+    )
+    sub.add_argument(
+        "--include-projects",
+        action="store_true",
+        dest="include_projects",
+        help="with --aggregate, add a 'projects' list of hashed project slugs "
+        "(default: omitted -- opt in per person)",
+    )
 
 
 def _add_monthly_report_args(sub: argparse.ArgumentParser) -> None:
@@ -622,6 +646,38 @@ def _add_probe_config_args(sub: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_import_args(sub: argparse.ArgumentParser) -> None:
+    """Flags for the ``import`` subcommand (v0.3 Task 1): one or more
+    already-built team-aggregate documents (``export --aggregate``'s own
+    output) to validate and copy into ``<config_dir>/team/``.
+    """
+    sub.add_argument(
+        "files", nargs="+", metavar="FILE", help="team-aggregate JSON document(s) to import"
+    )
+
+
+def _add_team_report_args(sub: argparse.ArgumentParser) -> None:
+    """Flags for the ``team-report`` subcommand (v0.3 Task 1): reads
+    only already-imported documents under ``<config_dir>/team/`` (see
+    ``import``), so it needs no project/window selection of its own --
+    just the shared output flags. Deviation (report, don't silently
+    resolve): the plan's ``[--md|--json|--html]`` gets no explicit
+    ``--md`` switch -- "no output flag" already means Markdown for
+    every other report-like/compare-like subcommand in this CLI
+    (``_add_compare_output_args``), so adding one here would be the one
+    inconsistent flag in the whole surface.
+    """
+    _add_compare_output_args(sub)
+    sub.add_argument(
+        "--min-sessions",
+        type=int,
+        default=5,
+        metavar="N",
+        help="minimum sessions required in a machine's own group row before a "
+        "team-report cell shows a number rather than 'n<N' (default: 5)",
+    )
+
+
 def _make_parser() -> argparse.ArgumentParser:
     common = _build_common_parser()
     parser = argparse.ArgumentParser(prog="claude-token-lens")
@@ -651,6 +707,8 @@ def _make_parser() -> argparse.ArgumentParser:
             "init": "detect + ask (or derive) config, write config.toml, run an initial baseline",
             "baseline": "capture/list/show an onboarding baseline (mode mix, suggested profile, projected saving)",
             "serve": "run the local JSON API + watcher service",
+            "import": "validate and copy team-aggregate document(s) into <config_dir>/team/",
+            "team-report": "cross-machine comparison built from every imported team document",
         }.get(name, f"{name} (not implemented yet)")
         sub = subparsers.add_parser(name, parents=[common], help=help_text)
         if name == "pricing-check":
@@ -689,6 +747,10 @@ def _make_parser() -> argparse.ArgumentParser:
             _add_init_args(sub)
         if name == "baseline":
             _add_baseline_args(sub)
+        if name == "import":
+            _add_import_args(sub)
+        if name == "team-report":
+            _add_team_report_args(sub)
     return parser
 
 
@@ -1501,6 +1563,36 @@ def _cmd_export(args: argparse.Namespace) -> int:
         )
         return 1
 
+    if args.aggregate:
+        from . import team as team_mod
+
+        if args.aggregate_only is not None or args.hash_slugs is not None:
+            print(
+                f"claude-token-lens {command}: --aggregate-only/--per-session and "
+                "--hash-slugs/--no-hash-slugs have no effect with --aggregate (a "
+                "team document is aggregate-only and hashes project slugs by "
+                "construction)",
+                file=sys.stderr,
+            )
+        snaps = snapshots.load_snapshots(config_dir) or None
+        document = team_mod.build_team_aggregate(
+            corpus,
+            rates,
+            config,
+            config_dir,
+            window=window,
+            projects=tuple(p.name for p in project_dirs),
+            include_projects=args.include_projects,
+            snapshots=snaps,
+            generated_at=_resolve_generated_at(args),
+        )
+        text = json.dumps(document, indent=2, sort_keys=True) + "\n"
+        if args.out:
+            Path(args.out).write_text(text, encoding="utf-8")
+        else:
+            sys.stdout.write(text)
+        return 0
+
     options = exports_mod.resolve_export_options(args.format, args.aggregate_only, args.hash_slugs)
 
     # Nit 18: --per-session/--hash-slugs are silently accepted but moot
@@ -1927,6 +2019,79 @@ def _cmd_baseline(args: argparse.Namespace) -> int:
     return 0
 
 
+# -- team aggregate import / team-report (v0.3 Task 1) -----------------------
+
+
+def _cmd_import(args: argparse.Namespace) -> int:
+    """``import FILE...``: validate every file first (schema/length
+    allowlist -- :func:`team.validate_team_document`), then copy each
+    into ``<config_dir>/team/<machine_id>-<generated_at>.json``. Exits 2
+    on the first invalid file, naming it and the reason, per the plan's
+    own "schema-checked ... exit 2 with the reason" contract; nothing is
+    written for *any* file once one has failed, so a bad batch never
+    partially imports.
+    """
+    from . import team as team_mod
+
+    config_dir = _resolve_config_dir(args.config_dir)
+
+    documents: list[tuple[str, dict]] = []
+    for file_arg in args.files:
+        path = Path(file_arg)
+        try:
+            raw = path.read_text(encoding="utf-8")
+        except OSError as exc:
+            print(f"claude-token-lens import: cannot read {file_arg}: {exc}", file=sys.stderr)
+            return 2
+        try:
+            doc = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            print(f"claude-token-lens import: {file_arg} is not valid JSON: {exc}", file=sys.stderr)
+            return 2
+        reason = team_mod.validate_team_document(doc)
+        if reason is not None:
+            print(f"claude-token-lens import: {file_arg} rejected: {reason}", file=sys.stderr)
+            return 2
+        documents.append((file_arg, doc))
+
+    for file_arg, doc in documents:
+        saved_path = team_mod.save_team_document(config_dir, doc)
+        print(f"Imported {file_arg} -> {saved_path}")
+    return 0
+
+
+def _cmd_team_report(args: argparse.Namespace) -> int:
+    """``team-report``: the cross-machine comparison built from every
+    document already imported into ``<config_dir>/team/`` (see
+    ``import``). Reads no project/session data of its own at all --
+    only the already-aggregated, already-privacy-checked documents on
+    disk.
+    """
+    from . import team as team_mod
+
+    config_dir = _resolve_config_dir(args.config_dir)
+    documents = team_mod.load_latest_team_documents(config_dir)
+    if not documents:
+        print(
+            f"claude-token-lens team-report: no team documents under {config_dir / 'team'} -- "
+            "run `claude-token-lens import <file>...` first",
+            file=sys.stderr,
+        )
+        return 1
+
+    section = team_mod.build_team_report_section(documents, min_sessions=args.min_sessions)
+    machine_ids = sorted({str(doc.get("machine_id", "?")) for doc in documents})
+
+    meta = ReportMeta(
+        tool_version=__version__,
+        generated_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.") + "000Z",
+        window=f"{len(documents)} machine(s): {', '.join(machine_ids)}",
+    )
+    model = ReportModel(meta=meta, sections=[section], recommendations=[], diagnostics=Diagnostics())
+    _emit_report_outputs(model, args)
+    return 0
+
+
 # -- apply (v0.3 milestone) ---------------------------------------------------
 
 
@@ -2246,6 +2411,10 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_baseline(args)
     if command == "serve":
         return _cmd_serve(args)
+    if command == "import":
+        return _cmd_import(args)
+    if command == "team-report":
+        return _cmd_team_report(args)
 
     print(f"claude-token-lens {command}: not implemented", file=sys.stderr)
     return 2

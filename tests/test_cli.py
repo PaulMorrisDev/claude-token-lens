@@ -489,6 +489,183 @@ def test_report_without_baseline_flag_has_no_note_or_section(tmp_path, capsys):
     assert "no baseline has been saved yet" not in out
 
 
+# -- v0.3 Task 1: export --aggregate / import / team-report ----------------
+
+
+def test_export_aggregate_writes_a_team_document(tmp_path, capsys):
+    root = tmp_path / "projects"
+    config_dir = tmp_path / "config"
+    _write_project(root, "proj-a", n_turns=6)
+
+    out_path = tmp_path / "agg.json"
+    exit_code = cli.main(
+        [
+            "export",
+            "--config-dir",
+            str(config_dir),
+            "--projects-root",
+            str(root),
+            "--project",
+            "proj-a",
+            "--aggregate",
+            "--out",
+            str(out_path),
+        ]
+    )
+    assert exit_code == 0
+    doc = json.loads(out_path.read_text(encoding="utf-8"))
+    for key in ("tool_version", "generated_at", "machine_id", "window", "scorecard"):
+        assert key in doc
+    for axis in ("archetype", "mode", "purpose", "agent_type", "model"):
+        assert f"by_{axis}" in doc
+    assert "projects" not in doc
+    serialised = json.dumps(doc)
+    assert "proj-a" not in serialised
+    assert_privacy(doc)
+
+
+def test_export_aggregate_include_projects_adds_hashed_slugs(tmp_path):
+    root = tmp_path / "projects"
+    config_dir = tmp_path / "config"
+    _write_project(root, "proj-a", n_turns=6)
+
+    out_path = tmp_path / "agg.json"
+    exit_code = cli.main(
+        [
+            "export",
+            "--config-dir",
+            str(config_dir),
+            "--projects-root",
+            str(root),
+            "--project",
+            "proj-a",
+            "--aggregate",
+            "--include-projects",
+            "--out",
+            str(out_path),
+        ]
+    )
+    assert exit_code == 0
+    doc = json.loads(out_path.read_text(encoding="utf-8"))
+    assert "projects" in doc
+    assert doc["projects"]
+    for value in doc["projects"]:
+        assert "proj-a" not in value
+
+
+def test_import_then_team_report_round_trip(tmp_path, capsys):
+    root = tmp_path / "projects"
+    export_config_dir = tmp_path / "config_export"
+    _write_project(root, "proj-a", n_turns=6)
+
+    agg_path = tmp_path / "agg.json"
+    cli.main(
+        [
+            "export",
+            "--config-dir",
+            str(export_config_dir),
+            "--projects-root",
+            str(root),
+            "--project",
+            "proj-a",
+            "--aggregate",
+            "--out",
+            str(agg_path),
+        ]
+    )
+    capsys.readouterr()
+
+    team_config_dir = tmp_path / "config_team"
+    import_exit = cli.main(["import", str(agg_path), "--config-dir", str(team_config_dir)])
+    out = capsys.readouterr().out
+    assert import_exit == 0
+    assert "Imported" in out
+    saved = list((team_config_dir / "team").glob("*.json"))
+    assert len(saved) == 1
+
+    report_exit = cli.main(["team-report", "--config-dir", str(team_config_dir)])
+    out = capsys.readouterr().out
+    assert report_exit == 0
+    assert "## Team report" in out
+    assert "Team comparison: archetype" in out
+    assert "Team comparison: agent type" in out
+    assert "Observed, not controlled" in out
+
+
+def test_import_rejects_a_document_with_a_disallowed_key(tmp_path, capsys):
+    bad_path = tmp_path / "bad.json"
+    bad_path.write_text(
+        json.dumps(
+            {
+                "tool_version": "0.2.0",
+                "generated_at": "2026-01-01T00:00:00.000Z",
+                "machine_id": "abc123abc123",
+                "window": "last 7 days",
+                "session_id": "leaked",
+            }
+        ),
+        encoding="utf-8",
+    )
+    config_dir = tmp_path / "config"
+    exit_code = cli.main(["import", str(bad_path), "--config-dir", str(config_dir)])
+    out = capsys.readouterr().err
+    assert exit_code == 2
+    assert "rejected" in out
+    assert not (config_dir / "team").exists()
+
+
+def test_import_rejects_invalid_json(tmp_path, capsys):
+    bad_path = tmp_path / "bad.json"
+    bad_path.write_text("{not valid json", encoding="utf-8")
+    config_dir = tmp_path / "config"
+    exit_code = cli.main(["import", str(bad_path), "--config-dir", str(config_dir)])
+    out = capsys.readouterr().err
+    assert exit_code == 2
+    assert "not valid JSON" in out
+
+
+def test_team_report_with_no_imported_documents_exits_1(tmp_path, capsys):
+    config_dir = tmp_path / "config"
+    exit_code = cli.main(["team-report", "--config-dir", str(config_dir)])
+    out = capsys.readouterr().err
+    assert exit_code == 1
+    assert "run `claude-token-lens import" in out
+
+
+def test_team_report_json_output(tmp_path, capsys):
+    root = tmp_path / "projects"
+    export_config_dir = tmp_path / "config_export"
+    _write_project(root, "proj-a", n_turns=6)
+
+    agg_path = tmp_path / "agg.json"
+    cli.main(
+        [
+            "export",
+            "--config-dir",
+            str(export_config_dir),
+            "--projects-root",
+            str(root),
+            "--project",
+            "proj-a",
+            "--aggregate",
+            "--out",
+            str(agg_path),
+        ]
+    )
+    capsys.readouterr()
+
+    team_config_dir = tmp_path / "config_team"
+    cli.main(["import", str(agg_path), "--config-dir", str(team_config_dir)])
+    capsys.readouterr()
+
+    exit_code = cli.main(["team-report", "--config-dir", str(team_config_dir), "--json"])
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    payload = json.loads(out)
+    section = next(s for s in payload["report"]["sections"] if s["key"] == "team_report")
+    assert section["tables"]
+
+
 def test_allow_titles_flag_was_removed(capsys):
     # Fix R17: --allow-titles implied a privacy control that never
     # existed (report.py's own docstring says the keyword it still
