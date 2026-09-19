@@ -196,13 +196,16 @@ above lists what each one adds on top):
 ### Performance
 
 Timings against a real 1.6 GB corpus (`~/.claude/projects`, `--all-projects`,
-no window filter), measured on the machine used to write this README:
+30-day window — 120 sessions, 1,644 subagent transcripts, 29 workflow runs),
+measured 2026-09-19 on the owner's own machine. The corpus was live (being
+actively written to by ordinary Claude Code use) during measurement, so
+treat these as representative rather than lab-controlled numbers:
 
 | Run | Time |
 |---|---|
-| Cold (`--rebuild-cache`, empty digest cache) | `<cold>` s |
-| Warm (unchanged corpus, digest cache populated) | `<warm>` s |
-| Warm, `--jobs 4` | `<jobs4>` s |
+| Cold (`--rebuild-cache`, empty digest cache, `--jobs 1`) | `22.1` s |
+| Warm (unchanged corpus, digest cache populated) | `7.6` s |
+| Warm, `--jobs 4` | `12.6` s |
 
 The digest cache that makes the warm numbers possible lives under
 `<config-dir>/cache/` (`<config-dir>` defaults to `~/.claude/token-lens`,
@@ -454,7 +457,13 @@ transcript's own dominant observed TTL and compares it to the actually
 observed cost; `ttl.build_section` flags any agent type whose fidelity
 error exceeds 10% (`TtlThresholds.fidelity_warn_pct`), so a report never
 presents a simulated number as trustworthy when the model's own
-assumptions demonstrably don't fit that agent type's transcripts.
+assumptions demonstrably don't fit that agent type's transcripts. That
+same fidelity is printed per agent type in the `ttl_by_agent_type` table,
+and a TTL-switch recommendation is suppressed for an agent type whenever
+its projected saving doesn't clear the simulation's own fidelity margin,
+or whenever its fidelity exceeds `TtlThresholds.max_fidelity_for_advice_pct`
+(5% by default) — the tool would rather stay silent than recommend a
+policy change it can't back with a trustworthy number.
 
 ## 8. Installing the SessionStart hook and the statusline
 
