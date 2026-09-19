@@ -329,3 +329,118 @@ def test_assert_privacy_accepts_a_plain_dict():
         assert any("Users" in v for v in exc.args[0])
     else:
         raise AssertionError("assert_privacy should have flagged the leaking dict value")
+
+
+# -- R4: parse-time redaction must survive every renderer -----------------
+#
+# _redact_paths runs once, at parse time, on cmd_prefix/preceding_cmd_prefix
+# (see parse.py's module docstring) — so the digest cache never stores the
+# raw prefix and every renderer downstream (markdown/json/html/csv) only
+# ever sees the already-redacted text. This is the fixture-driven,
+# full-pipeline proof of that: a relative Windows path with no drive
+# letter, an ssh user@host target, and an email address, none of which
+# the pre-R4 regexes caught. Two of the five turns are engineered to trip
+# RE-CACHE detection (big ctx, ~0 cache_read, 45 minutes after the turn
+# that ran the sensitive command) so each command actually surfaces as a
+# preceding_cmd_prefix in the recache section's top-command-prefix table
+# — this exercises the redaction through a real rendered report, not just
+# parse_transcript in isolation.
+
+
+def test_redacted_commands_never_leak_through_any_renderer(tmp_path: Path):
+    from claude_token_lens.config import Config
+    from claude_token_lens.corpus import load_corpus
+    from claude_token_lens.pricing import load_pricing
+    from claude_token_lens.render.csv_out import write_csv_dir
+    from claude_token_lens.render.html import render_html
+    from claude_token_lens.render.json_out import render_json
+    from claude_token_lens.render.markdown import render_markdown
+    from claude_token_lens.report import build_report
+
+    cmd1 = "cd Users\\paulm\\secret-repo && ssh deploy@internal-build-01.acme.local make"
+    cmd2 = "git commit -m 'fix login for jane.doe@acme.com'"
+
+    lines = [
+        turn_line(message_id="msg1", timestamp="2026-09-18T12:00:00.000Z", input_tokens=100, output_tokens=20),
+        turn_line(
+            message_id="msg2",
+            timestamp="2026-09-18T12:01:00.000Z",
+            input_tokens=100,
+            output_tokens=20,
+            content=[tool_use_block("Bash", "tu2", {"command": cmd1})],
+        ),
+        # 45-minute gap since msg2, big ctx, ~0 cache_read: a full-expiry
+        # re-cache row whose preceding_cmd_prefix is msg2's (redacted)
+        # command.
+        turn_line(
+            message_id="msg3",
+            timestamp="2026-09-18T12:46:00.000Z",
+            input_tokens=30000,
+            cache_creation_input_tokens=0,
+            cache_read_input_tokens=0,
+            output_tokens=20,
+        ),
+        turn_line(
+            message_id="msg4",
+            timestamp="2026-09-18T12:47:00.000Z",
+            input_tokens=100,
+            output_tokens=20,
+            content=[tool_use_block("Bash", "tu4", {"command": cmd2})],
+        ),
+        # Second 45-minute-gap full-expiry row, surfacing msg4's command.
+        turn_line(
+            message_id="msg5",
+            timestamp="2026-09-18T13:32:00.000Z",
+            input_tokens=30000,
+            cache_creation_input_tokens=0,
+            cache_read_input_tokens=0,
+            output_tokens=20,
+        ),
+    ]
+    project_dir = tmp_path / "proj-redact"
+    project_dir.mkdir()
+    write_jsonl(project_dir / "session-redact.jsonl", lines)
+
+    corpus = load_corpus([project_dir])
+    pricing = load_pricing()
+    report = build_report(corpus, pricing, Config(), projects=("proj-redact",), window="w")
+
+    # Sanity: the fixture actually tripped RE-CACHE detection, so the
+    # commands really do reach a rendered table rather than sitting
+    # unused in the corpus.
+    recache_section = next(s for s in report.sections if s.key == "recache")
+    summary_row = recache_section.tables[0].rows[0]
+    assert summary_row[2] >= 2  # recache_turns
+
+    assert_privacy(report)
+
+    # "<user@host>" is _redact_paths's own redaction marker (see parse.py)
+    # and legitimately contains "@" — stripped out (both raw and, for
+    # HTML, html.escape'd as "&lt;user@host&gt;") before the "@" check so
+    # the marker doesn't flag itself as the very leak it just fixed, while
+    # a real, un-redacted "@" anywhere else in the output is still caught.
+    # HTML's own <style>/<script> boilerplate (a dark-mode "@media" query,
+    # the click-to-sort script) is never populated from report data, so
+    # it's stripped too rather than tripping the same "@" check.
+    forbidden = ("paulm", "acme", "@", "Users\\")
+
+    def _assert_clean(name: str, text: str) -> None:
+        scrubbed = text.replace("<user@host>", "").replace("&lt;user@host&gt;", "")
+        if name == "html":
+            scrubbed = re.sub(r"<style>.*?</style>", "", scrubbed, flags=re.DOTALL)
+            scrubbed = re.sub(r"<script>.*?</script>", "", scrubbed, flags=re.DOTALL)
+        for token in forbidden:
+            assert token not in scrubbed, f"{name} output leaked {token!r}"
+
+    rendered = {
+        "markdown": render_markdown(report),
+        "json": render_json(report),
+        "html": render_html(report),
+    }
+    for name, text in rendered.items():
+        _assert_clean(name, text)
+
+    csv_dir = tmp_path / "csv-out"
+    write_csv_dir(report, csv_dir)
+    csv_text = "\n".join(p.read_text(encoding="utf-8") for p in csv_dir.rglob("*.csv"))
+    _assert_clean("csv", csv_text)
