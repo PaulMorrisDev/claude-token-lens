@@ -26,7 +26,7 @@ header and one of two top-level shapes:
 ```
 
 `error.code` is a short, stable, machine-matchable string (`not_found`,
-`bad_request`, `conflict`, `managed`, `internal_error`, ...);
+`bad_request`, `conflict`, `forbidden`, `managed`, `internal_error`, ...);
 `error.message` is a one-line human-readable explanation. The HTTP
 status code carries the same information for clients that don't want to
 parse the body (`200` for `ok: true` on every route except
@@ -111,11 +111,42 @@ Flags beyond `--projects-root`/`--config-dir`/`--port`/`--bind`/
   `--yes` is missing, `0` otherwise (including when there is nothing to
   delete).
 
+## Cross-site protection (review S3)
+
+Both `POST` routes below are mutating, and — without a same-origin
+check — a `Content-Type: text/plain` POST is a preflight-free "simple"
+cross-site request a browser will send blind. The response is opaque to
+a cross-site attacker (no CORS headers are ever sent, so it can't read
+`ok`/`data` back), but a profile written this way is exactly what
+`apply` later reads and acts on, so the write itself is the risk, not
+exfiltration. Every `POST` request is checked before its body is even
+parsed:
+
+- **`Content-Type` must be `application/json`** (a parameter such as
+  `; charset=utf-8` is ignored) — `400 bad_request` otherwise. This
+  alone forces a real browser to preflight the request, which this
+  service already fails for a cross-origin caller (no
+  `Access-Control-Allow-Origin` is ever sent).
+- **`Origin`, when the request carries one, must match this server's own
+  `Host`** (compared as `http://<Host>` — this service is `http`-only) —
+  `403 forbidden` otherwise.
+- **`Sec-Fetch-Site`, when the request carries one, must be
+  `same-origin` or `none`** — `403 forbidden` otherwise.
+
+A request carrying neither `Origin` nor `Sec-Fetch-Site` (e.g. a
+same-machine CLI tool such as `curl`) is allowed — this API has no
+authentication of its own (see "Local only" above), so that posture is
+unchanged; the guard targets a *browser* silently issuing the request on
+a victim's behalf, not a deliberate local caller. `service/static/app.js`
+already sends `Content-Type: application/json` on both of its own `POST`
+calls, so the UI itself is unaffected.
+
 ## Routes
 
 All `GET` routes accept query-string parameters; all `POST` routes
-accept a JSON request body (`Content-Type: application/json`). A route
-not listed here returns `404` with `error.code: "not_found"`.
+accept a JSON request body (`Content-Type: application/json`, now
+enforced — see "Cross-site protection" above). A route not listed here
+returns `404` with `error.code: "not_found"`.
 
 ### `GET /api/health`
 
@@ -397,7 +428,9 @@ and never touching `~/.claude` proper (plan: "neither touches
 
 Body: `{"key": "mode"|"purpose", "value": str}`. Calls `Store.set_tag`
 (the same override `config.sessions.toml` holds for the CLI). `404` if
-`<id>` is unknown; `400` if `key` isn't `mode`/`purpose`.
+`<id>` is unknown; `400` if `key` isn't `mode`/`purpose` (or the
+`Content-Type`/cross-site checks above reject the request first — see
+"Cross-site protection").
 
 `data`: `{"session_id": str, "tags": {key: value}}` (the session's full
 tag set after the write).
@@ -407,7 +440,9 @@ tag set after the write).
 Body: a profile document's JSON form (the same shape a TOML profile
 round-trips to — `id`, optional `name`/`for`/`archetype`/`notes`,
 optional `settings`/`agents`/`env` tables), validated by
-`profiles.schema.load_dict` before anything is written. `400`
+`profiles.schema.load_dict` before anything is written. `403`
+(`error.code: "forbidden"`) if the `Content-Type`/cross-site checks
+above reject the request first — see "Cross-site protection". `400`
 (`error.code: "bad_request"`) if the schema rejects an unknown key or
 an out-of-range value — the schema's own problem text, joined with
 `"; "` (plan: "the schema rejects anything else so a profile can never

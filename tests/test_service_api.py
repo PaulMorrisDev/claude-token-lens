@@ -192,15 +192,31 @@ class _ServerHandle:
     def port(self) -> int:
         return self.server.server_port
 
-    def request(self, method: str, path: str, *, body: dict | None = None):
+    def request(
+        self,
+        method: str,
+        path: str,
+        *,
+        body: dict | None = None,
+        headers: dict[str, str] | None = None,
+        raw_body: bytes | None = None,
+    ):
+        """``headers`` overrides/extends the default ``Content-Type``
+        this method sends whenever ``body`` is given -- used by the
+        review-S3 same-origin tests to send ``Origin``/``Sec-Fetch-Site``
+        or a deliberately wrong ``Content-Type``. ``raw_body``, when
+        given, is sent verbatim instead of JSON-encoding ``body`` (also
+        S3: a non-JSON payload with a spoofed ``Content-Type``)."""
         conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
         try:
-            headers = {}
-            payload = None
+            sent_headers: dict[str, str] = {}
+            payload = raw_body
             if body is not None:
                 payload = json.dumps(body).encode("utf-8")
-                headers["Content-Type"] = "application/json"
-            conn.request(method, path, body=payload, headers=headers)
+                sent_headers["Content-Type"] = "application/json"
+            if headers:
+                sent_headers.update(headers)
+            conn.request(method, path, body=payload, headers=sent_headers)
             resp = conn.getresponse()
             raw = resp.read()
             return resp, raw
@@ -788,6 +804,97 @@ def test_create_profile_bad_body_is_bad_request(server):
     resp, raw = server.request("POST", "/api/profiles", body=None)
     body = json.loads(raw)
     assert resp.status == 400
+
+
+# -- S3: same-origin / Content-Type guard on mutating routes -----------------
+
+
+def test_post_wrong_content_type_is_bad_request(server):
+    resp, raw = server.request(
+        "POST",
+        f"/api/sessions/{server.session_id}/tags",
+        raw_body=json.dumps({"key": "mode", "value": "agentic"}).encode("utf-8"),
+        headers={"Content-Type": "text/plain"},
+    )
+    body = json.loads(raw)
+    assert resp.status == 400
+    assert body["ok"] is False
+    assert body["error"]["code"] == "bad_request"
+    # The tag was never set.
+    resp2, tags_body = server.get_json(f"/api/session/{server.session_id}")
+    assert tags_body["data"]["tags"].get("mode") != "agentic"
+
+
+def test_post_content_type_with_charset_parameter_is_accepted(server):
+    resp, raw = server.request(
+        "POST",
+        f"/api/sessions/{server.session_id}/tags",
+        raw_body=json.dumps({"key": "mode", "value": "agentic"}).encode("utf-8"),
+        headers={"Content-Type": "application/json; charset=utf-8"},
+    )
+    body = json.loads(raw)
+    assert resp.status == 200
+    assert body["ok"] is True
+
+
+def test_post_cross_origin_is_forbidden(server):
+    resp, raw = server.request(
+        "POST",
+        f"/api/sessions/{server.session_id}/tags",
+        body={"key": "mode", "value": "agentic"},
+        headers={"Origin": "https://evil.example"},
+    )
+    body = json.loads(raw)
+    assert resp.status == 403
+    assert body["ok"] is False
+    assert body["error"]["code"] == "forbidden"
+    resp2, session_body = server.get_json(f"/api/session/{server.session_id}")
+    assert session_body["data"]["tags"].get("mode") != "agentic"
+
+
+def test_post_cross_site_sec_fetch_site_is_forbidden(server):
+    resp, raw = server.request(
+        "POST",
+        "/api/profiles",
+        body={"id": "csrf-test", "name": "CSRF test"},
+        headers={"Sec-Fetch-Site": "cross-site"},
+    )
+    body = json.loads(raw)
+    assert resp.status == 403
+    assert body["ok"] is False
+    # Nothing was written.
+    assert not (server.options.config_dir / "profiles" / "csrf-test.toml").exists()
+
+
+def test_post_same_origin_is_allowed(server):
+    resp, body = server.post_json(
+        f"/api/sessions/{server.session_id}/tags",
+        {"key": "mode", "value": "agentic"},
+    )
+    # post_json sends no Origin/Sec-Fetch-Site at all (plain
+    # http.client), which must still be accepted -- but confirm the
+    # explicit same-origin/same-origin-site case works too.
+    assert resp.status == 200
+    resp2, raw2 = server.request(
+        "POST",
+        f"/api/sessions/{server.session_id}/tags",
+        body={"key": "mode", "value": "agentic"},
+        headers={"Origin": f"http://127.0.0.1:{server.port}", "Sec-Fetch-Site": "same-origin"},
+    )
+    body2 = json.loads(raw2)
+    assert resp2.status == 200
+    assert body2["ok"] is True
+
+
+def test_post_with_no_content_type_and_no_body_is_bad_request(server):
+    """A request with Content-Length: 0 and no Content-Type header must
+    be rejected as bad_request (never dispatched with an empty/None
+    body) -- this is the same code path review S2's sibling finding
+    (a missing header) used to reach the handler directly."""
+    resp, raw = server.request("POST", f"/api/sessions/{server.session_id}/tags")
+    body = json.loads(raw)
+    assert resp.status == 400
+    assert body["error"]["code"] == "bad_request"
 
 
 # -- report-backed routes -----------------------------------------------------

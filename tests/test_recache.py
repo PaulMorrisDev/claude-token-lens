@@ -75,6 +75,17 @@ def _table(section, name: str) -> Table:
     raise AssertionError(f"no table named {name!r} in section {section.key!r}")
 
 
+def _col(table: Table, key: str, row: int = 0):
+    """Fetch a cell by column key rather than a fragile positional
+    index -- used by the review-B5 tests below, where a new column
+    (``unavoidable_limit_expiry_cost_usd``) was appended after the
+    long-standing ``avoidable_cost_usd`` one."""
+    for index, column in enumerate(table.columns):
+        if column.key == key:
+            return table.rows[row][index]
+    raise AssertionError(f"no column {key!r} in table {table.name!r}")
+
+
 # --------------------------------------------------------------------
 # detect(): pure classifier
 # --------------------------------------------------------------------
@@ -211,7 +222,7 @@ def test_avoidable_cost_hand_computed_for_sonnet_5_turn():
     section = recache.build_section(stats, PRICING, recache.RecacheThresholds())
     summary = _table(section, "recache_summary")
     assert summary.rows[0][0] == "all"
-    avoidable = summary.rows[0][-1]
+    avoidable = _col(summary, "avoidable_cost_usd")
     assert avoidable == pytest.approx(0.23, abs=1e-9)
 
 
@@ -220,7 +231,55 @@ def test_avoidable_cost_is_zero_for_non_recache_turns():
     stats = _stats_for([turn])
     section = recache.build_section(stats, PRICING, recache.RecacheThresholds())
     summary = _table(section, "recache_summary")
-    assert summary.rows[0][-1] == 0.0
+    assert _col(summary, "avoidable_cost_usd") == 0.0
+
+
+def test_avoidable_cost_excludes_limit_expiry_turns():
+    """B5 regression: a limit-expiry turn's cost delta must never be
+    folded into recache_summary's headline avoidable_cost_usd -- it is
+    unavoidable (an external usage-cap pause, not a caching problem) and
+    is already reported by limits.py's limits_summary, so counting it as
+    avoidable would both mislabel and double-count it. It must instead
+    show up in the separate unavoidable_limit_expiry_cost_usd column."""
+    behavioural_turn = _turn(
+        message_id="m2",
+        turn_index=2,
+        model="claude-sonnet-5",
+        ctx=100_600,
+        cache_creation_tokens=100_000,
+        cache_read_tokens=500,
+        cc_5m=100_000,
+        cc_1h=0,
+    )
+    limit_turn = _turn(
+        message_id="m3",
+        turn_index=3,
+        model="claude-sonnet-5",
+        ctx=100_600,
+        cache_creation_tokens=100_000,
+        cache_read_tokens=500,
+        cc_5m=100_000,
+        cc_1h=0,
+        gap_cause="limit",
+        gap_s=10_800.0,
+    )
+    stats = _stats_for([behavioural_turn, limit_turn])
+    section = recache.build_section(stats, PRICING, recache.RecacheThresholds())
+    summary = _table(section, "recache_summary")
+
+    # Both turns cost the same 0.23 (see the hand-computed test above);
+    # only the behavioural one may count as avoidable.
+    assert _col(summary, "avoidable_cost_usd") == pytest.approx(0.23, abs=1e-9)
+    assert _col(summary, "unavoidable_limit_expiry_cost_usd") == pytest.approx(0.23, abs=1e-9)
+
+    # The signature-split table still reports the limit-expiry row's own
+    # cost (never hidden), and it isn't summed into the other two
+    # signatures' rows either.
+    split = _table(section, "recache_signature_split")
+    limit_row = next(row for row in split.rows if row[0] == "limit-expiry")
+    full_expiry_row = next(row for row in split.rows if row[0] == "full-expiry")
+    assert limit_row[3] == pytest.approx(0.23, abs=1e-9)
+    assert full_expiry_row[3] == pytest.approx(0.23, abs=1e-9)
 
 
 # --------------------------------------------------------------------

@@ -23,14 +23,28 @@ opened in WAL journal mode (``PRAGMA journal_mode=WAL``) so a writer
 is ``CREATE TABLE IF NOT EXISTS``/``CREATE INDEX IF NOT EXISTS``, so
 calling it against an already-migrated database at the current
 ``schema.SCHEMA_VERSION`` is a no-op beyond recording
-``meta['schema_version']`` again. When the store's own recorded
-``schema_version`` *differs at all* from the running code's
-``schema.SCHEMA_VERSION`` (older or newer), ``migrate()`` drops every table first and
-recreates them from scratch (see ``schema.py``'s module docstring) --
-the store is always a derived cache over transcripts still on disk,
-never the source of truth, and the next watcher tick repopulates it
-because ``known_files()`` is empty again. There is still no in-place
-``ALTER TABLE`` migration path -- this drop-and-rebuild is the only one.
+``meta['schema_version']`` again.
+
+When the store's own recorded ``schema_version`` is *older* than the
+running code's ``schema.SCHEMA_VERSION``, ``migrate()`` walks the
+additive ``MIGRATIONS`` ladder (review B2) -- one ``ALTER TABLE``/
+``CREATE INDEX`` step per version, run inside a single transaction that
+stamps the new version last -- so an upgrade never loses a row. This
+matters because the store is the one artefact documented to outlive
+Claude Code's own ``cleanupPeriodDays`` transcript cleanup: dropping it
+on every version bump would silently erase history nothing else can
+re-derive once the source transcripts are gone. Drop-and-rebuild
+remains the fallback for the two cases a ladder genuinely can't serve --
+a recorded version *newer* than the code's own (e.g. a downgraded
+install pointed at a store a later version already migrated), or a
+recorded version with no registered ladder step (a version this codebase
+never actually shipped, or one from further back than the ladder
+reaches) -- and in either case the on-disk file is first copied aside to
+``<path>.bak-<version>`` and a warning printed, so a drop-and-rebuild
+still never *silently* discards data. The store is always a derived
+cache over transcripts still on disk, never the source of truth, and
+the next watcher tick repopulates a rebuilt store because
+``known_files()`` is empty again.
 
 A transcript whose file disappears from disk (review finding 3: "the
 store must outlive Claude Code's own ``cleanupPeriodDays``") is never
@@ -59,10 +73,13 @@ from __future__ import annotations
 import contextlib
 import json
 import re
+import shutil
 import sqlite3
+import sys
 import threading
 import time
 import zlib
+from collections.abc import Callable
 from pathlib import Path
 
 from . import schema
@@ -131,7 +148,10 @@ def _transaction(conn: sqlite3.Connection):
     -- and every statement it runs there is an idempotent ``CREATE TABLE
     IF NOT EXISTS``/``CREATE INDEX IF NOT EXISTS`` anyway, so partial
     application on failure is harmless (the next ``migrate()`` call
-    finishes the job).
+    finishes the job). It *is* used around the ``MIGRATIONS`` ladder
+    steps below (plain ``conn.execute`` calls, never ``executescript``),
+    so an upgrade's ``ALTER TABLE``/``CREATE INDEX`` statements and the
+    version stamp that follows them either all land or none do.
     """
     conn.execute("BEGIN IMMEDIATE")
     try:
@@ -141,6 +161,48 @@ def _transaction(conn: sqlite3.Connection):
         raise
     else:
         conn.execute("COMMIT")
+
+
+def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    return {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+
+
+def _add_column_if_missing(conn: sqlite3.Connection, table: str, column: str, ddl_type: str) -> None:
+    """``ALTER TABLE ... ADD COLUMN`` is not itself idempotent (it errors
+    if the column is already there), so every ladder step in
+    ``MIGRATIONS`` goes through this rather than a bare ``ALTER TABLE``
+    -- a migration step that only half-applied (process killed
+    mid-``migrate()``, before the version stamp landed) is safely
+    re-run in full on the next ``open()``."""
+    if column not in _table_columns(conn, table):
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl_type}")
+
+
+def _migrate_4_to_5(conn: sqlite3.Connection) -> None:
+    """v4 -> v5 (``schema.py``'s "Version 5" paragraph, review B2):
+    baseline/profile content-hash dedupe columns, plus the baseline
+    ``record_id`` natural key. SQLite cannot add a ``UNIQUE`` column via
+    ``ALTER TABLE``, so that constraint moves to a separate unique index
+    here -- ``CREATE_BASELINES`` also declares ``record_id TEXT UNIQUE``
+    directly for a table created fresh at v5, so both paths end up with
+    the same constraint."""
+    _add_column_if_missing(conn, "profiles", "content_hash", "TEXT NOT NULL DEFAULT ''")
+    _add_column_if_missing(conn, "baselines", "record_id", "TEXT")
+    _add_column_if_missing(conn, "baselines", "content_hash", "TEXT NOT NULL DEFAULT ''")
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_baselines_record_id ON baselines(record_id)")
+
+
+#: Additive migration ladder for :meth:`Store.migrate`, keyed by the
+#: *recorded* version being migrated away from -- ``MIGRATIONS[4]`` takes
+#: a v4 store to v5. Each step may only add columns/indexes/tables, never
+#: drop or rewrite existing data (review B2: the store outlives Claude
+#: Code's own transcript cleanup, so an upgrade must never lose a row).
+#: A recorded version with no entry here -- older than anything this
+#: ladder reaches -- falls back to backup-then-drop-and-rebuild, same as
+#: a recorded version newer than the running code's own.
+MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
+    4: _migrate_4_to_5,
+}
 
 
 class Store:
@@ -205,9 +267,10 @@ class Store:
     def _drop_all_tables(self, conn: sqlite3.Connection) -> None:
         """Drop every table this schema creates, child-before-parent (the
         reverse of ``schema.ALL_STATEMENTS``'s own dependency order), so
-        a foreign key never blocks a drop. Used only when the store's
-        recorded schema version is older than the running code's (see
-        :meth:`migrate`)."""
+        a foreign key never blocks a drop. Used only for the two cases
+        the ``MIGRATIONS`` ladder can't serve -- a recorded version newer
+        than the running code's, or older with no registered ladder step
+        (see :meth:`migrate`)."""
         conn.execute("PRAGMA foreign_keys = OFF")
         try:
             for table in reversed(self._table_names_in_creation_order()):
@@ -215,22 +278,86 @@ class Store:
         finally:
             conn.execute("PRAGMA foreign_keys = ON")
 
+    def _backup_before_rebuild(self, version: int) -> None:
+        """Copy the on-disk store file aside as ``<path>.bak-<version>``
+        before a drop-and-rebuild that the ``MIGRATIONS`` ladder can't
+        serve (review B2), and print a warning naming where it went --
+        so a version this build can't migrate additively is never
+        *silently* discarded. A no-op for an in-memory store (nothing on
+        disk to copy)."""
+        if self.path == ":memory:":
+            return
+        source = Path(self.path)
+        if not source.exists():
+            return
+        conn = getattr(self._local, "conn", None)
+        if conn is not None:
+            with contextlib.suppress(sqlite3.Error):
+                conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        backup = source.with_name(source.name + f".bak-{version}")
+        shutil.copy2(source, backup)
+        print(
+            f"claude-token-lens: store at {source} is schema version {version}, which "
+            f"this build cannot migrate additively -- backed up to {backup} before "
+            "rebuilding it from scratch",
+            file=sys.stderr,
+        )
+
     def migrate(self) -> None:
         """Create every table/index in ``schema.ALL_STATEMENTS`` if
         missing, and record ``schema.SCHEMA_VERSION`` in ``meta``.
-        Idempotent when the store is already current. When the store's
-        recorded version differs at all from ``schema.SCHEMA_VERSION`` --
-        older (an upgrade) or newer (e.g. a downgraded install pointed at
-        a store a later version already migrated) -- every table is
-        dropped and recreated first (see module docstring) -- the store
-        is a derived cache, never the source of truth, so there is
-        nothing to preserve either way (nit 24: the original ``<``-only
-        check left a newer-than-code store's stale shape in place
-        instead of rebuilding it)."""
+        Idempotent when the store is already current.
+
+        When the store's recorded version is *older* than
+        ``schema.SCHEMA_VERSION``, every intervening version's
+        ``MIGRATIONS`` step is run -- additive ``ALTER TABLE``/
+        ``CREATE INDEX`` only, inside one transaction that stamps the
+        new version last -- so existing rows survive the upgrade (review
+        B2). Drop-and-rebuild (with a backup copy first, see
+        :meth:`_backup_before_rebuild`) is used only for the two cases a
+        ladder can't serve: a recorded version *newer* than the running
+        code's own (e.g. a downgraded install pointed at a store a later
+        version already migrated), or an older recorded version with no
+        registered ladder step (nit 24: the original ``<``-only check
+        left a newer-than-code store's stale shape in place instead of
+        rebuilding it -- still handled here, just via backup-then-drop
+        rather than a silent drop)."""
         conn = self._connection()
         current = self.schema_version()
-        if current is not None and current != schema.SCHEMA_VERSION:
+
+        if current is not None and current > schema.SCHEMA_VERSION:
+            self._backup_before_rebuild(current)
             self._drop_all_tables(conn)
+        elif current is not None and current < schema.SCHEMA_VERSION:
+            steps: list[Callable[[sqlite3.Connection], None]] = []
+            version = current
+            while version < schema.SCHEMA_VERSION:
+                step = MIGRATIONS.get(version)
+                if step is None:
+                    self._backup_before_rebuild(current)
+                    self._drop_all_tables(conn)
+                    steps = []
+                    break
+                steps.append(step)
+                version += 1
+            if steps:
+                # Ensure any wholly new table exists (a harmless re-run
+                # of CREATE TABLE/INDEX IF NOT EXISTS against tables the
+                # ladder steps below don't touch), then run every
+                # version step and stamp the new version together so an
+                # interrupted upgrade is safely retried in full.
+                for statement in schema.ALL_STATEMENTS:
+                    conn.executescript(statement)
+                with _transaction(conn):
+                    for step in steps:
+                        step(conn)
+                    conn.execute(
+                        "INSERT INTO meta (key, value) VALUES (?, ?) "
+                        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                        (_SCHEMA_VERSION_KEY, str(schema.SCHEMA_VERSION)),
+                    )
+                return
+
         with conn:
             for statement in schema.ALL_STATEMENTS:
                 conn.executescript(statement)

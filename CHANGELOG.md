@@ -266,6 +266,83 @@ A v0.4 backlog, kept here until scheduled into a milestone:
   a missing-tzdata fallback), and a `~/.claude.json` path-matching test
   that assumed case-insensitive filesystems everywhere. No production
   behaviour changed.
+- **`import`: path traversal via an untrusted document's `machine_id`**
+  (review finding B1, `team.py`): a team document's `machine_id` was
+  written verbatim into `<config_dir>/team/<machine_id>-<generated_at>.json`
+  with no shape check, so a crafted `machine_id` (e.g. containing `../`)
+  could write outside the team directory. `machine_id`/`generated_at`
+  are now validated against the exact shapes this tool's own exporter
+  produces (12 lowercase hex characters; an ISO-8601 UTC timestamp)
+  both in `validate_team_document` (rejects with exit 2 before any file
+  I/O) and again, defence-in-depth, in `save_team_document` itself,
+  which also asserts the resolved output path stays inside
+  `<config_dir>/team` before writing. Review finding N4: every other
+  required string field (`window`, `tool_version`) is now type-checked
+  as a string too, not just present.
+- **`store.migrate()` dropped every table on any `SCHEMA_VERSION`
+  mismatch** (review finding B2, `service/store.py`): an older store
+  (e.g. one built by v0.2.0) hit the same code path as a newer,
+  unreadable one, silently losing every row on the next `serve` run
+  instead of being upgraded in place. `migrate()` now walks an additive
+  migration ladder (currently one step, 4→5: `ALTER TABLE ADD COLUMN`
+  for `profiles.content_hash`/`baselines.record_id`/
+  `baselines.content_hash`, plus the `CREATE UNIQUE INDEX` SQLite
+  requires in place of an `ALTER`-added `UNIQUE`, all in one
+  transaction that stamps the new version last) and only falls back to
+  the old drop-and-rebuild behaviour for a genuinely newer-than-code
+  store or a version with no ladder step — and even then takes a
+  `service.db.bak-<version>` backup first.
+- **`recache_summary.avoidable_cost_usd` double-counted limit-pause
+  cost** (review findings B5/N2, `recache.py`/`limits.py`): a
+  `limit-expiry` re-cache (forced by a usage-limit pause, not by
+  anything the agent could have avoided) was summed into
+  `avoidable_cost_usd` alongside genuinely avoidable re-cache, and the
+  same cost was *also* reported by the `limits` section — so the two
+  sections' cost figures overlapped without saying so. `limit-expiry`
+  turns are now excluded from `avoidable_cost_usd`, and a new
+  `unavoidable_limit_expiry_cost_usd` row reports them separately; both
+  `recache.py` and `limits.py` now carry a note cross-referencing the
+  other section's own cost-of-a-limit-pause figure, and
+  [`docs/limits.md`](docs/limits.md) documents precisely how the two
+  numbers relate.
+- **`import`: `FileNotFoundError` when the team directory doesn't
+  exist yet** (review finding S2, `cli.py`): the first `import` run on
+  a fresh `--config-dir` crashed instead of creating
+  `<config_dir>/team/`. `_cmd_import` now wraps the save call and
+  turns an `OSError`/`ValueError` into a single-line stderr message and
+  exit 2, on top of `save_team_document`'s existing `mkdir(parents=True)`.
+- **Service API: mutating routes accepted cross-origin POSTs**
+  (review finding S3, `service/api.py`): `POST /api/profiles` and
+  `POST /api/sessions/<id>/tags` had no origin check of any kind, so a
+  malicious page open in the same browser could POST to the local
+  service. `do_POST` now rejects a request whose `Origin` header is
+  present and doesn't match the server's own origin, or whose
+  `Sec-Fetch-Site` header is present and isn't `same-origin`/`none`,
+  with `403 {"error": {"code": "forbidden"}}`, and separately requires
+  `Content-Type: application/json` (`400` otherwise). See
+  [`docs/api.md`](docs/api.md)'s new "Cross-site protection" section.
+- **`compare`: overview headline metrics were arm totals, not
+  per-session means** (review finding S4, `compare.py`): `cost`,
+  `new_tokens` and `priced_turns` were summed across every session in
+  an arm, so an arm with more sessions than the other always showed a
+  large headline delta driven by arm size rather than by any real
+  difference between the two arms' work. `compare_overview` now leads
+  with per-session means (`cost_per_session`, per-session new tokens,
+  per-session priced turns); the raw totals are kept as separate rows
+  labelled "... (informational)". `compare_by_stratum`'s `cost_a`/
+  `cost_b` (and its new-tokens columns) are normalised the same way.
+  See [`docs/compare.md`](docs/compare.md)'s new "Overview metrics"
+  section.
+- **Team documents' `by_agent_type` axis carried raw custom agent
+  names** (review finding S10, `team.py`): a project- or user-defined
+  custom subagent's name (as opposed to one of Claude Code's own
+  bundled agent types) is frequently product- or project-named, which
+  is exactly the kind of detail this module otherwise never exports.
+  Built-in agent types (and the synthetic `top-level`/`unknown`
+  labels) are kept verbatim; any other agent type is now hashed to
+  `custom:<8 hex chars>` with the same salted-HMAC construction as
+  `machine_id`/project slugs before a team document is ever written.
+  See [`docs/team.md`](docs/team.md)'s privacy-guarantees list.
 
 ## [0.2.0] - 2026-09-19
 

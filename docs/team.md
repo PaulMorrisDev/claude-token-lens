@@ -33,7 +33,18 @@ files out.
   over the hostname, not the hostname itself, and it cannot be
   reversed without the machine's own `<config_dir>/salt` file (which
   never leaves that machine). Project slugs, when included at all, are
-  the same kind of hash, never the plaintext.
+  the same kind of hash, never the plaintext. So is a **custom agent
+  type name** in the `agent_type` grouping axis (`by_agent_type`):
+  Claude Code's own bundled agent types (`general-purpose`, `Explore`,
+  `Plan`, `claude`, `claude-code-guide`, `statusline-setup`,
+  `workflow-subagent`), plus the synthetic `top-level`/`unknown`
+  labels, are kept as-is since there is nothing project-identifying
+  about them — but a project- or user-defined custom agent (frequently
+  named after the project or its own conventions, e.g. a project's own
+  reviewer/implementer agent) is hashed to `custom:<8 hex chars>`
+  before it ever leaves the machine that built the document, the same
+  salted-HMAC construction as `machine_id` and project slugs, just its
+  own domain tag so the three hash namespaces never collide.
 - **Opt-in per person, per project.** Nobody's data reaches a team
   document unless they personally run `export --aggregate`. Project
   slugs specifically are opt-in a second time, on top of that, via

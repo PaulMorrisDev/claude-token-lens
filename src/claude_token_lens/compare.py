@@ -28,25 +28,37 @@ convention (see ``model.py``/``report.py``/``snapshots.py``/``classify.py``
 module docstrings for the same pattern):
 
 - ``compare_overview``'s ``Table`` contract requires one ``Column.kind``
-  per column, shared by every row -- but the brief's nine headline
-  metrics span five different kinds (money, tokens, pct, float, secs).
-  Rather than force every metric into its own four-column group (arm A/
-  arm B/delta/delta-%), which would make one nine-metric table roughly
-  forty columns wide, this module uses one row per metric with the value/
-  delta/delta-% cells pre-formatted (via ``render.tables.format_cell``,
-  the project's single formatting entry point, called here instead of at
-  render time) into ``kind="str"`` columns. This keeps the table narrow
-  and readable but means its JSON/CSV export carries display text for
-  this one table, not raw numbers, unlike every other table in this
-  codebase (see ``render/csv_out.py``'s module docstring for the raw-
-  value convention this knowingly departs from).
-- ``compare_by_stratum`` reports a reduced set of the overview's nine
-  metrics (session counts, cost, new tokens, cache-read share) rather
-  than repeating all nine per stratum -- again to keep one row per
-  stratum a fixed-width, fixed-kind-per-column, raw-valued table (so its
-  CSV/JSON export stays numeric) instead of a very wide or pre-formatted
-  one. The overview table already carries the full nine-metric breakdown
-  for the corpus as a whole.
+  per column, shared by every row -- but the brief's headline metrics
+  span five different kinds (money, tokens, pct, float, secs). Rather
+  than force every metric into its own four-column group (arm A/arm B/
+  delta/delta-%), which would make one table roughly forty columns wide,
+  this module uses one row per metric with the value/delta/delta-% cells
+  pre-formatted (via ``render.tables.format_cell``, the project's single
+  formatting entry point, called here instead of at render time) into
+  ``kind="str"`` columns. This keeps the table narrow and readable but
+  means its JSON/CSV export carries display text for this one table, not
+  raw numbers, unlike every other table in this codebase (see
+  ``render/csv_out.py``'s module docstring for the raw-value convention
+  this knowingly departs from).
+- Review finding S4: ``cost``, ``new_tokens`` and ``priced_turns`` are
+  arm *totals* -- summed across every session in the arm -- so an arm
+  with more sessions than the other always produced a large headline
+  delta on these three rows even when nothing about the sessions
+  themselves differed. ``_METRIC_SPECS`` now leads with the per-session
+  means (``cost_per_session``, ``new_tokens_per_session``,
+  ``priced_turns_per_session``) computed by ``_aggregate``; the raw
+  totals are kept as separate rows labelled "... (informational)" further
+  down the table so the aggregate figures are not lost, just no longer
+  presented as if they were rates. ``_build_stratum_table`` applies the
+  same per-session normalisation to its cost/new-tokens columns for the
+  same reason.
+- ``compare_by_stratum`` reports a reduced set of the overview's metrics
+  (session counts, cost per session, new tokens per session, cache-read
+  share) rather than repeating every headline metric per stratum -- again
+  to keep one row per stratum a fixed-width, fixed-kind-per-column,
+  raw-valued table (so its CSV/JSON export stays numeric) instead of a
+  very wide or pre-formatted one. The overview table already carries the
+  full headline breakdown for the corpus as a whole.
 - The ``profile:<id>`` arm form filters on ``SessionRecord.profile_id``
   exactly as specified. As of this work package, nothing in the shipped
   codebase ever populates that field (see
@@ -345,18 +357,28 @@ def _session_matches(sm: _SessionMetrics, spec: ArmSpec, snapshot_by_session: di
 # -- aggregation --------------------------------------------------------------
 
 #: (field name in the dict _aggregate returns, display label, Column.kind)
-#: -- the nine headline metrics the brief names for compare_overview, in
-#: the brief's own order.
+#: -- the headline metrics for compare_overview.
+#:
+#: Review finding S4: the original ordering put arm *totals* (cost,
+#: new_tokens, priced_turns) at the top of the table, so an arm with more
+#: sessions than the other always showed a large headline delta driven
+#: purely by arm size rather than by any behavioural difference. The
+#: per-session-session metrics now carry the headline rows; the raw totals
+#: are kept further down as separate, clearly-labelled "Total ..." rows so
+#: the information is not lost, just no longer mistaken for a rate.
 _METRIC_SPECS: tuple[tuple[str, str, str], ...] = (
     ("sessions", "Sessions", "int"),
-    ("priced_turns", "Priced turns", "int"),
-    ("cost", "Total cost", "money"),
-    ("new_tokens", "New tokens (input + cache-creation)", "tokens"),
+    ("priced_turns_per_session", "Priced turns per session", "float"),
+    ("cost_per_session", "Cost per session", "money"),
+    ("new_tokens_per_session", "New tokens per session (input + cache-creation)", "tokens"),
     ("cache_read_share_pct", "Cache-read share of tokens processed", "pct"),
     ("recache_share_pct", "Re-cache share of cache-creation", "pct"),
     ("compactions_per_session", "Compactions per session", "float"),
     ("median_span_s", "Median session span", "secs"),
     ("mean_first_turn_write", "Mean first-turn cache-creation write", "tokens"),
+    ("priced_turns", "Total priced turns (informational)", "int"),
+    ("cost", "Total cost (informational)", "money"),
+    ("new_tokens", "Total new tokens (informational)", "tokens"),
 )
 
 
@@ -377,6 +399,12 @@ def _aggregate(group: list[_SessionMetrics]) -> dict[str, float | None]:
     median_span_s = statistics.median(spans) if spans else None
     writes = [m.first_turn_write for m in group if m.first_turn_write is not None]
     mean_first_turn_write = statistics.mean(writes) if writes else None
+    # S4: per-session means so that a headline delta reflects a behavioural
+    # difference rather than one arm simply having more sessions than the
+    # other. The raw totals are still returned (and shown) separately.
+    cost_per_session = (cost / sessions) if sessions > 0 else None
+    new_tokens_per_session = (new_tokens / sessions) if sessions > 0 else None
+    priced_turns_per_session = (priced_turns / sessions) if sessions > 0 else None
     return {
         "sessions": float(sessions),
         "priced_turns": float(priced_turns),
@@ -387,6 +415,9 @@ def _aggregate(group: list[_SessionMetrics]) -> dict[str, float | None]:
         "compactions_per_session": compactions_per_session,
         "median_span_s": median_span_s,
         "mean_first_turn_write": mean_first_turn_write,
+        "cost_per_session": cost_per_session,
+        "new_tokens_per_session": new_tokens_per_session,
+        "priced_turns_per_session": priced_turns_per_session,
     }
 
 
@@ -462,17 +493,20 @@ def _build_stratum_table(
         by_b.setdefault(_stratum_key(m, stratify_by), []).append(m)
     all_keys = sorted(set(by_a) | set(by_b))
 
+    # S4: as with compare_overview, per-stratum cost/token figures are shown
+    # as per-session means so a stratum with more sessions in one arm than
+    # the other doesn't produce a delta driven by arm size alone.
     columns = [
         Column(key="stratum", label="Stratum", kind="str"),
         Column(key="sessions_a", label="Sessions (A)", kind="int"),
         Column(key="sessions_b", label="Sessions (B)", kind="int"),
         Column(key="sample_ok", label="Sample OK", kind="str"),
-        Column(key="cost_a", label="Cost (A)", kind="money"),
-        Column(key="cost_b", label="Cost (B)", kind="money"),
-        Column(key="cost_delta_pct", label="Cost delta (% of A)", kind="pct"),
-        Column(key="new_tokens_a", label="New tokens (A)", kind="tokens"),
-        Column(key="new_tokens_b", label="New tokens (B)", kind="tokens"),
-        Column(key="new_tokens_delta_pct", label="New tokens delta (% of A)", kind="pct"),
+        Column(key="cost_a", label="Cost per session (A)", kind="money"),
+        Column(key="cost_b", label="Cost per session (B)", kind="money"),
+        Column(key="cost_delta_pct", label="Cost per session delta (% of A)", kind="pct"),
+        Column(key="new_tokens_a", label="New tokens per session (A)", kind="tokens"),
+        Column(key="new_tokens_b", label="New tokens per session (B)", kind="tokens"),
+        Column(key="new_tokens_delta_pct", label="New tokens per session delta (% of A)", kind="pct"),
         Column(key="cache_read_share_a", label="Cache-read share (A)", kind="pct"),
         Column(key="cache_read_share_b", label="Cache-read share (B)", kind="pct"),
         Column(key="note", label="Note", kind="str"),
@@ -509,12 +543,12 @@ def _build_stratum_table(
                 na,
                 nb,
                 "yes",
-                agg_a["cost"],
-                agg_b["cost"],
-                _pct_of_a(agg_a["cost"], agg_b["cost"]),
-                agg_a["new_tokens"],
-                agg_b["new_tokens"],
-                _pct_of_a(agg_a["new_tokens"], agg_b["new_tokens"]),
+                agg_a["cost_per_session"],
+                agg_b["cost_per_session"],
+                _pct_of_a(agg_a["cost_per_session"], agg_b["cost_per_session"]),
+                agg_a["new_tokens_per_session"],
+                agg_b["new_tokens_per_session"],
+                _pct_of_a(agg_a["new_tokens_per_session"], agg_b["new_tokens_per_session"]),
                 agg_a["cache_read_share_pct"],
                 agg_b["cache_read_share_pct"],
                 "",

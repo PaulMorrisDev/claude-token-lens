@@ -50,6 +50,29 @@ one of these events carries `Turn.gap_cause == "limit"`.
 | `limits_by_agent_type` | Per-agent-type roll-up: hits, resumes, terminations, pause count/total/median/max, and the post-pause cache-creation tokens/cost. |
 | `limits_csv_cross_check` (`csv_cross_check`, called separately) | Transcript-derived hit counts vs. `usage-log.csv`'s own exhaustion-row counts for `five_hour`/`seven_day`. |
 
+### Reconciling the two "cost of a limit pause" figures (N2)
+
+Two tables both put a dollar figure on usage-cap pauses, and they are
+**related but not equal** — reading one as a check on the other will
+look like a discrepancy unless the population difference is understood:
+
+| Figure | Table | Population |
+|---|---|---|
+| `limit_turn_write_cost_usd` | `limits_summary` (this section) | Every turn with `Turn.gap_cause == "limit"` and `turn_index > 0` — i.e. every turn that immediately followed a usage-cap pause, full stop. |
+| `unavoidable_limit_expiry_cost_usd` | `recache_summary` (`docs/sections-reference.md`'s "recache" section) | The subset of the above that *also* clears `recache.py`'s ordinary re-cache thresholds (`ctx > ctx_floor` and `cache_read_tokens < cr_ratio * ctx` — see `recache.detect`). A post-pause turn with a small context, or one whose cache happened to still hold enough to clear `cr_ratio`, is counted here but not there. |
+
+Both are legitimate: `limits_summary`'s figure answers "what did every
+post-pause turn cost to rewrite its cache", unconditionally, because the
+assumption above ("`Turn.gap_cause == "limit"``' always did a full prefix
+rewrite") holds regardless of `recache.py`'s thresholds. `recache_summary`'s
+figure exists to make sure `avoidable_cost_usd` on that same table only
+ever totals genuinely avoidable causes — a limit-expiry turn's cost is
+reported there as `unavoidable_limit_expiry_cost_usd`, a separate column,
+specifically so it is never summed into `avoidable_cost_usd` (review B5)
+and never double-counted as caching behaviour to fix. Neither figure is
+wrong; they simply answer different questions over overlapping but
+distinct populations.
+
 ## Downstream attribution
 
 - **`classify.py`**: `SessionFeatures.limit_pause_s` sums every pause

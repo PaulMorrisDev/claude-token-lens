@@ -12,6 +12,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from claude_token_lens import team
 from claude_token_lens.config import Config
 from claude_token_lens.corpus import load_corpus
@@ -146,7 +148,63 @@ def test_by_agent_type_axis_distinguishes_top_level_from_subagents(tmp_path):
     doc = team.build_team_aggregate(corpus, PRICING, Config(), config_dir, window="last 7 days")
     values = {row["value"] for row in doc["by_agent_type"]}
     assert "top-level" in values
-    assert "claude-implementer" in values
+    # "claude-implementer" is a project-defined custom agent, not one of
+    # Claude Code's own bundled agent types -- review S10 requires it be
+    # hashed rather than exported verbatim (see the S10 tests below).
+    assert "claude-implementer" not in values
+    assert any(value.startswith("custom:") for value in values)
+
+
+# -- by_agent_type: custom agent names are hashed (review S10) -----------
+
+
+def test_agent_type_group_label_keeps_builtin_types_verbatim():
+    salt = b"x" * 32
+    for builtin in ("top-level", "unknown", "general-purpose", "Explore", "Plan", "claude"):
+        assert team._agent_type_group_label(builtin, salt) == builtin
+
+
+def test_agent_type_group_label_hashes_custom_names():
+    salt = b"x" * 32
+    label = team._agent_type_group_label("claude-implementer", salt)
+    assert label.startswith("custom:")
+    assert "claude-implementer" not in label
+    assert len(label) == len("custom:") + 8
+    int(label.removeprefix("custom:"), 16)  # hex only
+
+
+def test_agent_type_group_label_is_stable_for_the_same_salt():
+    salt = b"y" * 32
+    first = team._agent_type_group_label("revixo-reviewer", salt)
+    second = team._agent_type_group_label("revixo-reviewer", salt)
+    assert first == second
+
+
+def test_agent_type_group_label_differs_across_salts():
+    label_a = team._agent_type_group_label("revixo-reviewer", b"a" * 32)
+    label_b = team._agent_type_group_label("revixo-reviewer", b"b" * 32)
+    assert label_a != label_b
+
+
+def test_agent_type_group_label_differs_from_project_slug_hash_for_the_same_name_and_salt():
+    # Different domain tag from exports._hash_slug -- same input string
+    # and salt must not collide with the project-slug namespace.
+    salt = b"z" * 32
+    agent_label = team._agent_type_group_label("shared-name", salt)
+    from claude_token_lens.exports import _hash_slug
+
+    slug_hash = _hash_slug("shared-name", salt)
+    assert agent_label.removeprefix("custom:") != slug_hash[:8]
+
+
+def test_build_team_aggregate_never_leaks_a_custom_agent_type_name(tmp_path):
+    corpus = _two_session_corpus(tmp_path)
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    doc = team.build_team_aggregate(corpus, PRICING, Config(), config_dir, window="last 7 days")
+    serialised = json.dumps(doc)
+    assert "claude-implementer" not in serialised
+    assert_privacy_deep(doc)
 
 
 def test_group_row_sessions_never_exceeds_total_sessions_in_corpus(tmp_path):
@@ -249,6 +307,86 @@ def test_validate_team_document_rejects_projects_not_a_list():
     assert reason is not None
 
 
+# -- review B1/N4: machine_id/generated_at path-traversal hardening --------
+
+
+def test_validate_team_document_rejects_relative_traversal_machine_id():
+    doc = _valid_doc(machine_id="../../evil/PWNED")
+    reason = team.validate_team_document(doc)
+    assert reason is not None
+    assert "machine_id" in reason
+
+
+def test_validate_team_document_rejects_absolute_path_machine_id():
+    doc = _valid_doc(machine_id=r"C:\x\y")
+    reason = team.validate_team_document(doc)
+    assert reason is not None
+
+
+def test_validate_team_document_rejects_short_machine_id():
+    doc = _valid_doc(machine_id="abc123")
+    reason = team.validate_team_document(doc)
+    assert reason is not None
+
+
+def test_validate_team_document_rejects_uppercase_machine_id():
+    doc = _valid_doc(machine_id="ABC123ABC123")
+    reason = team.validate_team_document(doc)
+    assert reason is not None
+
+
+@pytest.mark.parametrize("bad_machine_id", [123456789012, None, 12.5, ["a"], {"a": 1}])
+def test_validate_team_document_rejects_non_string_machine_id(bad_machine_id):
+    doc = _valid_doc(machine_id=bad_machine_id)
+    reason = team.validate_team_document(doc)
+    assert reason is not None
+
+
+@pytest.mark.parametrize("key", ["generated_at", "window", "tool_version"])
+def test_validate_team_document_rejects_non_string_required_keys(key):
+    doc = _valid_doc(**{key: 12345})
+    reason = team.validate_team_document(doc)
+    assert reason is not None
+    assert key in reason
+
+
+def test_validate_team_document_rejects_traversal_shaped_generated_at():
+    doc = _valid_doc(generated_at="../../evil/2026-01-01T00:00:00.000Z")
+    reason = team.validate_team_document(doc)
+    assert reason is not None
+    assert "generated_at" in reason
+
+
+def test_validate_team_document_accepts_generated_at_without_fractional_seconds():
+    # _resolve_generated_at's SOURCE_DATE_EPOCH path produces this shape
+    # (no ".000" -- an integer Unix timestamp has no fractional part).
+    doc = _valid_doc(generated_at="2026-01-01T00:00:00Z")
+    assert team.validate_team_document(doc) is None
+
+
+def test_save_team_document_rejects_traversal_machine_id_even_without_prior_validation(tmp_path):
+    """Defence in depth (review B1): save_team_document re-checks
+    machine_id/generated_at itself, in case a caller ever skips
+    validate_team_document."""
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    doc = _valid_doc(machine_id="../../evil/PWNED")
+    with pytest.raises(ValueError):
+        team.save_team_document(config_dir, doc)
+    # Nothing was written outside (or inside) the team directory.
+    assert not (tmp_path / "evil").exists()
+    assert not team.team_dir(config_dir).exists() or not any(team.team_dir(config_dir).iterdir())
+
+
+def test_save_team_document_rejects_traversal_generated_at_even_without_prior_validation(tmp_path):
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    doc = _valid_doc(generated_at="../../evil/2026-01-01T00:00:00.000Z")
+    with pytest.raises(ValueError):
+        team.save_team_document(config_dir, doc)
+    assert not (tmp_path / "evil").exists()
+
+
 # -- save/load round trip --------------------------------------------------
 
 
@@ -279,11 +417,14 @@ def test_load_latest_team_documents_keeps_only_the_newest_per_machine(tmp_path):
 def test_load_latest_team_documents_keeps_one_per_distinct_machine(tmp_path):
     config_dir = tmp_path / "config"
     config_dir.mkdir()
-    team.save_team_document(config_dir, _valid_doc(machine_id="machine-one1"))
-    team.save_team_document(config_dir, _valid_doc(machine_id="machine-two2"))
+    # 12 lowercase hex chars each -- machine_id's real shape (review B1
+    # tightened save_team_document/validate_team_document to reject
+    # anything else, since an untrusted machine_id reaches a filename).
+    team.save_team_document(config_dir, _valid_doc(machine_id="aaaaaaaaaaaa"))
+    team.save_team_document(config_dir, _valid_doc(machine_id="bbbbbbbbbbbb"))
 
     loaded = team.load_latest_team_documents(config_dir)
-    assert {doc["machine_id"] for doc in loaded} == {"machine-one1", "machine-two2"}
+    assert {doc["machine_id"] for doc in loaded} == {"aaaaaaaaaaaa", "bbbbbbbbbbbb"}
 
 
 def test_load_latest_team_documents_skips_invalid_or_unparsable_files(tmp_path):
@@ -380,3 +521,55 @@ def test_team_report_section_privacy(tmp_path):
     doc = team.build_team_aggregate(corpus, PRICING, Config(), config_dir, window="last 7 days")
     section = team.build_team_report_section([doc])
     assert_privacy_deep(section)
+
+
+# -- CLI `import` wiring (review B1/S2) -------------------------------------
+
+
+def test_cli_import_rejects_traversal_machine_id_and_exits_2(tmp_path, capsys):
+    from claude_token_lens import cli
+
+    doc_path = tmp_path / "evil.json"
+    doc_path.write_text(json.dumps(_valid_doc(machine_id="../../evil/PWNED")), encoding="utf-8")
+    config_dir = tmp_path / "home" / "token-lens"
+
+    exit_code = cli.main(["import", str(doc_path), "--config-dir", str(config_dir)])
+
+    assert exit_code == 2
+    err = capsys.readouterr().err
+    assert "machine_id" in err
+    # Nothing was written anywhere under tmp_path, in or out of config_dir.
+    assert not (tmp_path / "evil").exists()
+    assert not config_dir.exists()
+
+
+def test_cli_import_accepts_a_well_formed_document(tmp_path, capsys):
+    from claude_token_lens import cli
+
+    doc_path = tmp_path / "good.json"
+    doc_path.write_text(json.dumps(_valid_doc()), encoding="utf-8")
+    config_dir = tmp_path / "home" / "token-lens"
+
+    exit_code = cli.main(["import", str(doc_path), "--config-dir", str(config_dir)])
+
+    assert exit_code == 0
+    saved = list((config_dir / "team").glob("*.json"))
+    assert len(saved) == 1
+    assert json.loads(saved[0].read_text(encoding="utf-8")) == _valid_doc()
+
+
+def test_cli_import_creates_a_missing_team_directory_rather_than_crashing(tmp_path):
+    """S2 regression: import used to raise an unhandled FileNotFoundError
+    (a Python traceback, exit 1) when <config_dir>/team didn't exist yet
+    -- it must create the directory and succeed instead."""
+    from claude_token_lens import cli
+
+    doc_path = tmp_path / "good.json"
+    doc_path.write_text(json.dumps(_valid_doc()), encoding="utf-8")
+    config_dir = tmp_path / "brand-new-home" / "token-lens"
+    assert not config_dir.exists()
+
+    exit_code = cli.main(["import", str(doc_path), "--config-dir", str(config_dir)])
+
+    assert exit_code == 0
+    assert (config_dir / "team").is_dir()

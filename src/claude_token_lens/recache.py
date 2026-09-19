@@ -57,9 +57,9 @@ model.py's/parse.py's module docstrings) gets the signature
 first in :func:`detect`, since the cache genuinely had nothing left to
 hit (same shape as full-expiry) but the cause was an external pause, not
 a caching problem. :func:`build_section` shows it as its own row in
-``recache_signature_split`` (summary/signature-split tables still use the
-*full* re-cache population, so total avoidable cost is never hidden) but
-excludes it from every behavioural cause-attribution table (gap buckets,
+``recache_signature_split`` (still computed from the *full* re-cache
+population, so its own per-signature cost is never hidden) and excludes
+it from every behavioural cause-attribution table (gap buckets,
 preceding tool, top command prefixes, primary cause, event
 co-occurrence, by-agent-type) via a ``behavioural_turns``/
 ``behavioural_records`` population computed once at the top of
@@ -68,6 +68,20 @@ diagnose. ``recommend.py``'s ``_rule_long_tool_waits``/
 ``_rule_notification_invalidation`` read exactly these behavioural
 tables, so they automatically ignore limit-induced turns with no changes
 of their own needed.
+
+Review B5: ``recache_summary``'s headline ``avoidable_cost_usd`` is
+likewise computed from ``behavioural_records`` only, never the full
+re-cache population -- a limit-expiry turn's cost is unavoidable (an
+external pause, not a caching problem to fix) and is already reported
+separately by ``limits.py``'s ``limits_summary.limit_turn_write_cost_usd``,
+so folding it into the headline "money you could save" figure would both
+mislabel it and double-count it against that other table. It is instead
+surfaced as its own ``unavoidable_limit_expiry_cost_usd`` column on the
+same row. See :func:`_summary_table`'s notes and ``docs/limits.md`` for
+exactly how that figure relates to (but does not equal)
+``limits_summary``'s own -- ``recache.detect`` additionally requires
+``ctx > ctx_floor`` and the ``cr_ratio`` test that ``limits.py`` does not,
+so the two populations differ (N2).
 
 v0.2.0 fix A2: ``recache_summary`` and ``recache_huge_context`` are each a
 single-row table whose row used to start with a bare numeric count
@@ -387,7 +401,6 @@ def build_section(stats: RecacheStats, pricing: Pricing, th: RecacheThresholds, 
     total_recache = len(recache_turns)
     total_cc_all = sum(t.cache_creation_tokens for t in all_turns)
     total_cc_recache = sum(t.cache_creation_tokens for t in recache_turns)
-    total_avoidable = sum(r.avoidable_cost for r in recache_records)
 
     prefix_invalidated_turns = [t for t in recache_turns if t.recache_signature == "prefix-invalidated"]
 
@@ -400,8 +413,27 @@ def build_section(stats: RecacheStats, pricing: Pricing, th: RecacheThresholds, 
     total_behavioural = len(behavioural_turns)
     total_cc_behavioural = sum(t.cache_creation_tokens for t in behavioural_turns)
 
+    # Review B5: the headline "avoidable" figure must only ever total the
+    # behavioural population -- a limit-expiry turn's cost delta is
+    # unavoidable (the module docstring's own framing), and it is also
+    # already reported by limits.py's limits_summary, so folding it into
+    # avoidable_cost_usd both mis-labels it and double-counts it against
+    # that other table. Reported separately here instead.
+    total_avoidable = sum(r.avoidable_cost for r in behavioural_records)
+    total_unavoidable_limit = sum(
+        r.avoidable_cost for r in recache_records if r.turn.recache_signature == "limit-expiry"
+    )
+
     tables = [
-        _summary_table(transcripts, total_priced, total_recache, total_cc_recache, total_cc_all, total_avoidable),
+        _summary_table(
+            transcripts,
+            total_priced,
+            total_recache,
+            total_cc_recache,
+            total_cc_all,
+            total_avoidable,
+            total_unavoidable_limit,
+        ),
         _signature_table(recache_turns, recache_records),
         _gap_bucket_table(all_turns, behavioural_turns, total_cc_behavioural, total_cc_all, total_priced),
         _preceding_tool_table(all_turns, behavioural_turns, total_cc_behavioural, total_cc_all, total_priced),
@@ -431,6 +463,7 @@ def _summary_table(
     total_cc_recache: int,
     total_cc_all: int,
     total_avoidable: float,
+    total_unavoidable_limit: float,
 ) -> Table:
     return Table(
         name="recache_summary",
@@ -445,6 +478,11 @@ def _summary_table(
             Column(key="total_cc_tokens", label="Cache-creation tokens (all)", kind="tokens"),
             Column(key="recache_cc_share_pct", label="Cache-creation share", kind="pct"),
             Column(key="avoidable_cost_usd", label="Avoidable cost", kind="money"),
+            Column(
+                key="unavoidable_limit_expiry_cost_usd",
+                label="Unavoidable cost (limit-expiry)",
+                kind="money",
+            ),
         ],
         rows=[
             [
@@ -457,12 +495,21 @@ def _summary_table(
                 total_cc_all,
                 _pct(total_cc_recache, total_cc_all),
                 round(total_avoidable, 6),
+                round(total_unavoidable_limit, 6),
             ]
         ],
         notes=[
             "A turn is a re-cache when it is not the transcript's first "
             "priced turn, ctx > ctx_floor, and cache_read_tokens < "
             "cr_ratio * ctx.",
+            "avoidable_cost_usd excludes limit-expiry turns (see "
+            "unavoidable_limit_expiry_cost_usd) -- a usage-cap pause isn't "
+            "a caching behaviour to fix, and its cost is already reported "
+            "by the 'limits' section's limits_summary.limit_turn_write_cost_usd "
+            "(a related but not identical figure: that one counts every "
+            "first turn after a pause, this one only the subset that also "
+            "clears recache.detect's ctx_floor/cr_ratio thresholds -- see "
+            "docs/limits.md).",
         ],
     )
 

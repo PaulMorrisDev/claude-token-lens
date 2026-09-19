@@ -2303,7 +2303,11 @@ def _cmd_import(args: argparse.Namespace) -> int:
         documents.append((file_arg, doc))
 
     for file_arg, doc in documents:
-        saved_path = team_mod.save_team_document(config_dir, doc)
+        try:
+            saved_path = team_mod.save_team_document(config_dir, doc)
+        except (OSError, ValueError) as exc:
+            print(f"claude-token-lens import: cannot write {file_arg}: {exc}", file=sys.stderr)
+            return 2
         print(f"Imported {file_arg} -> {saved_path}")
     return 0
 
