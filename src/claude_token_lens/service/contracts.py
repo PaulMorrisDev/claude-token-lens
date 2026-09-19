@@ -99,6 +99,13 @@ class WatcherStats:
     #: on a tick where the missing check itself was skipped (see
     #: ``error_messages``'s "projects root returned no projects" note).
     files_removed: int = 0
+    #: This tick's count of transcripts re-parsed even though their
+    #: ``(mtime_ns, size_bytes)`` hadn't changed, because their stored
+    #: digest was written under an older ``PARSER_VERSION`` than the one
+    #: now running (``FileWatcher._resolve``) -- lets an operator see a
+    #: parser-version bump's corpus-wide rebuild actually happening,
+    #: rather than it silently never reaching untouched files.
+    files_reparsed_stale_parser: int = 0
     #: Running total of transcripts currently marked missing
     #: (``Store.count_missing_transcripts``) as of this tick -- a
     #: transcript whose file the watcher can no longer find is marked,
@@ -174,10 +181,11 @@ class Watcher(Protocol):
     def run_once(self) -> "WatcherStats":
         """Scan ``ServeOptions.projects_root`` once: find new/changed
         transcript files since the last tick (via ``Store.known_files``),
-        re-parse each in full with ``parse_transcript`` (nit 25: there is
-        no incremental "resume from the last byte offset" path -- a
-        changed file is re-read from the start), fold the result into
-        the store (``Store.upsert_transcript``/``upsert_session``),
+        plus any unchanged file whose stored digest predates the running
+        ``PARSER_VERSION``, re-parse each in full with ``parse_transcript``
+        (nit 25: there is no incremental "resume from the last byte
+        offset" path -- a changed file is re-read from the start), fold
+        the result into the store (``Store.upsert_transcript``/``upsert_session``),
         remove rows for files no longer present (``Store.remove_missing``),
         and run ``Store.retention_prune`` if configured. Returns stats
         for this one tick. Must never raise for a single bad file —

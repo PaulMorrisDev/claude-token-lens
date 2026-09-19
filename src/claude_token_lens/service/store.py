@@ -764,13 +764,19 @@ class Store:
             )
             return int(cursor.lastrowid)
 
-    def known_files(self) -> dict[str, tuple[int, int]]:
-        """``{path: (mtime_ns, size_bytes)}`` for every transcript
-        currently stored — the watcher's own incremental-diff basis, so
-        it never has to re-stat/re-parse an unchanged file. Local-only:
-        never exposed through a read query or the API."""
-        rows = self._connection().execute("SELECT path, mtime_ns, size_bytes FROM transcripts").fetchall()
-        return {row["path"]: (row["mtime_ns"], row["size_bytes"]) for row in rows}
+    def known_files(self) -> dict[str, tuple[int, int, int]]:
+        """``{path: (mtime_ns, size_bytes, parser_version)}`` for every
+        transcript currently stored — the watcher's own incremental-diff
+        basis, so it never has to re-stat/re-parse an unchanged file.
+        ``parser_version`` is included (not just the file identity pair)
+        so the watcher can also detect a transcript that hasn't changed
+        on disk at all but was parsed under an older ``PARSER_VERSION``
+        than the one now running -- see ``watcher.FileWatcher._resolve``.
+        Local-only: never exposed through a read query or the API."""
+        rows = self._connection().execute(
+            "SELECT path, mtime_ns, size_bytes, parser_version FROM transcripts"
+        ).fetchall()
+        return {row["path"]: (row["mtime_ns"], row["size_bytes"], row["parser_version"]) for row in rows}
 
     def remove_missing(self, known_paths: set[str]) -> int:
         """Mark every transcript row whose ``path`` is not in

@@ -21,7 +21,9 @@ present at the time this docstring was written):
   each new-or-changed transcript in full (nit 25: there is no incremental
   "resume from the last byte offset" path -- ``FileWatcher._resolve``
   decides *whether* a file needs re-parsing this tick from its
-  ``(mtime_ns, size_bytes)`` against ``Store.known_files()``, but the
+  ``(mtime_ns, size_bytes)`` against ``Store.known_files()``, and also
+  re-parses a file whose ``(mtime_ns, size_bytes)`` are unchanged but
+  whose stored ``parser_version`` predates the one now running, but the
   re-parse itself, when triggered, always runs ``parse_transcript`` over
   the whole file), and folds the result into the store via
   ``Store.upsert_transcript``/``upsert_session``.

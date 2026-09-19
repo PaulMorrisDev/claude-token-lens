@@ -15,6 +15,7 @@ docstrings warn against.
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 
 import pytest
@@ -463,6 +464,72 @@ def test_migrate_upgrades_a_v4_store_without_losing_rows(tmp_path) -> None:
         store.close()
 
 
+def test_migrate_then_watcher_upgrades_a_stale_parser_version(tmp_path) -> None:
+    """Integration of two independent version ladders that must not mask
+    each other: ``Store.migrate()`` upgrading a v4 (schema.SCHEMA_VERSION
+    4) store additively, preserving its one transcript row (review B2,
+    see :func:`test_migrate_upgrades_a_v4_store_without_losing_rows`
+    above), and the watcher's own stale-``parser_version`` re-parse (the
+    confirmed watcher bug this fix addresses) then reaching that
+    preserved row on the very next tick, even though its file never
+    changed and the schema migration itself never touches
+    ``parser_version``."""
+    import time
+
+    from claude_token_lens import PARSER_VERSION
+    from claude_token_lens.service import schema
+    from claude_token_lens.service.contracts import ServeOptions
+    from claude_token_lens.service.watcher import FileWatcher
+    from helpers import turn_line, write_jsonl
+
+    # A real, on-disk transcript the watcher can actually discover --
+    # session id ("session-a") and project slug ("proj-a") match the v4
+    # fixture's own session/transcript rows below, well outside the
+    # live-file window.
+    projects_root = tmp_path / "projects"
+    session_path = projects_root / "proj-a" / "session-a.jsonl"
+    session_path.parent.mkdir(parents=True, exist_ok=True)
+    write_jsonl(session_path, [turn_line(timestamp="2026-09-18T12:00:00.000Z")])
+    stable_mtime = time.time() - 3600
+    os.utime(session_path, (stable_mtime, stable_mtime))
+    file_stat = session_path.stat()
+
+    db_path = tmp_path / "v4.db"
+    _build_v4_store(str(db_path))
+    # Point the v4 fixture's transcript row at the real file above, with
+    # its real (mtime_ns, size_bytes) and an old parser_version -- from
+    # the watcher's point of view this is a file that hasn't changed
+    # since the last tick, but was parsed under a since-superseded
+    # PARSER_VERSION.
+    conn = sqlite3.connect(str(db_path))
+    conn.execute(
+        "UPDATE transcripts SET path = ?, mtime_ns = ?, size_bytes = ?, parser_version = 1 WHERE id = 1",
+        (str(session_path), file_stat.st_mtime_ns, file_stat.st_size),
+    )
+    conn.commit()
+    conn.close()
+
+    store = Store(str(db_path))
+    store.open()  # Store.migrate(): v4 -> current schema, additively
+    try:
+        assert store.schema_version() == schema.SCHEMA_VERSION
+        transcript_count = store._connection().execute(
+            "SELECT COUNT(*) AS n FROM transcripts"
+        ).fetchone()["n"]
+        assert transcript_count == 1, "the migration lost the v4 store's transcript row"
+        assert store.known_files()[str(session_path)] == (file_stat.st_mtime_ns, file_stat.st_size, 1)
+
+        options = ServeOptions(projects_root=projects_root, config_dir=tmp_path / "config")
+        watcher = FileWatcher(store, options)
+        stats = watcher.run_once()
+
+        assert stats.errors == 0
+        assert stats.files_reparsed_stale_parser == 1
+        assert store.known_files()[str(session_path)][2] == PARSER_VERSION
+    finally:
+        store.close()
+
+
 def test_migrate_backs_up_and_rebuilds_a_newer_than_code_store(tmp_path) -> None:
     """Review B2: a recorded schema_version newer than the running
     code's own is the one case (besides "no ladder step") a migration
@@ -585,8 +652,8 @@ def test_upsert_transcript_replaces_child_rows_wholesale(store: Store) -> None:
 def test_known_files_reports_every_transcript(store: Store) -> None:
     _seed(store)
     files = store.known_files()
-    assert files[_FAKE_PATH] == (123, 456)
-    assert files[_FAKE_SUB_PATH] == (789, 1011)
+    assert files[_FAKE_PATH] == (123, 456, 3)
+    assert files[_FAKE_SUB_PATH] == (789, 1011, 3)
 
 
 def test_remove_missing_marks_transcripts_not_in_known_set(store: Store) -> None:

@@ -11,10 +11,11 @@ Each :meth:`FileWatcher.run_once` tick:
    session file, subagent transcript (ordinary and workflow-nested — see
    ``discovery.find_subagents``'s own docstring) and workflow run file
    under each, honouring the same four shapes ``discovery.py`` documents.
-2. Diffs the discovered ``(path, mtime_ns, size_bytes)`` triples against
+2. Diffs the discovered ``(path, mtime_ns, size_bytes)`` triples, plus
+   each stored transcript's own ``parser_version``, against
    ``Store.known_files()`` to decide, per file, whether to re-parse it
    this tick (see :meth:`FileWatcher._resolve`'s docstring for the exact
-   new/changed/live decision table).
+   new/changed/live/stale-parser decision table).
 3. Folds every parsed (or previously-stored, for an unchanged file)
    transcript into the store via ``Store.upsert_transcript``, and every
    session's classification/cost totals via ``Store.upsert_session``.
@@ -454,33 +455,38 @@ class FileWatcher:
     # -- S1-perf item 2: bulk parallel prewarm -------------------------------
 
     def _needs_parse_this_tick(
-        self, path_str: str, meta: TranscriptMeta, known: dict[str, tuple[int, int]]
+        self, path_str: str, meta: TranscriptMeta, known: dict[str, tuple[int, int, int]]
     ) -> bool:
         """A read-only predicate mirroring :meth:`_resolve`'s own new/
-        changed/live decision table (see that method's docstring) --
-        used only by :meth:`_collect_parse_candidates` to decide which
-        paths are worth bulk-parsing in parallel ahead of the main
-        per-session loop. Never mutates ``_pending_stabilize`` or any
-        ``stats`` counter -- :meth:`_resolve` remains the sole authority
-        on what actually gets parsed and recorded this tick; a mismatch
-        between the two here only costs efficiency (a file prewarmed
-        that ``_resolve`` decides not to re-parse after all, or vice
-        versa), never correctness.
+        changed/live/stale-parser decision table (see that method's
+        docstring) -- used only by :meth:`_collect_parse_candidates` to
+        decide which paths are worth bulk-parsing in parallel ahead of
+        the main per-session loop. Never mutates ``_pending_stabilize``
+        or any ``stats`` counter -- :meth:`_resolve` remains the sole
+        authority on what actually gets parsed and recorded this tick; a
+        mismatch between the two here only costs efficiency (a file
+        prewarmed that ``_resolve`` decides not to re-parse after all,
+        or vice versa), never correctness.
         """
         prior = known.get(path_str)
         never_seen = prior is None
-        changed = never_seen or (meta.mtime_ns, meta.size_bytes) != prior
+        prior_key = prior[:2] if prior is not None else None
+        changed = never_seen or (meta.mtime_ns, meta.size_bytes) != prior_key
         forced = path_str in self._pending_stabilize
         live = self._is_live(meta.mtime_ns)
+        #: The file itself is unchanged, but the digest stored for it was
+        #: produced under an older ``PARSER_VERSION`` than the one now
+        #: running -- see :meth:`_resolve`'s docstring.
+        parser_stale = (not never_seen) and prior[2] != PARSER_VERSION
 
         if not changed and not forced:
-            return False
+            return parser_stale
         if live and not never_seen and not forced:
             return False
         return True
 
     def _collect_parse_candidates(
-        self, project_dirs: list[Path], known: dict[str, tuple[int, int]]
+        self, project_dirs: list[Path], known: dict[str, tuple[int, int, int]]
     ) -> list[tuple[str, TranscriptMeta]]:
         """Every top-level/subagent transcript path
         :meth:`_needs_parse_this_tick` says needs a fresh parse this
@@ -527,7 +533,7 @@ class FileWatcher:
         return candidates
 
     def _prewarm_cache(
-        self, project_dirs: list[Path], known: dict[str, tuple[int, int]], stats: WatcherStats
+        self, project_dirs: list[Path], known: dict[str, tuple[int, int, int]], stats: WatcherStats
     ) -> None:
         """Parse this tick's pending transcripts in a
         ``ProcessPoolExecutor`` and prime ``self.cache`` with the
@@ -600,7 +606,7 @@ class FileWatcher:
         project_dir: Path,
         slug: str,
         top_path: Path,
-        known: dict[str, tuple[int, int]],
+        known: dict[str, tuple[int, int, int]],
         seen_paths: set[str],
         stats: WatcherStats,
         all_tags: dict[str, dict[str, str]],
@@ -716,7 +722,7 @@ class FileWatcher:
         self,
         path_str: str,
         meta: TranscriptMeta,
-        known: dict[str, tuple[int, int]],
+        known: dict[str, tuple[int, int, int]],
         stats: WatcherStats,
     ) -> tuple[TranscriptResult, bool]:
         """Decide whether ``path_str`` needs (re-)parsing this tick, and
@@ -728,8 +734,18 @@ class FileWatcher:
         Decision table (see the module docstring's algorithm summary):
 
         - Unchanged since the last tick (same ``(mtime_ns, size_bytes)``
-          as ``known``) and not pending a forced re-parse: reuse the
-          store's existing digest, no re-parse.
+          as ``known``), not pending a forced re-parse, and its stored
+          digest was produced under the ``PARSER_VERSION`` still
+          running: reuse the store's existing digest, no re-parse.
+        - Unchanged since the last tick, not pending a forced re-parse,
+          but its stored digest predates the current ``PARSER_VERSION``
+          (bumped 6): re-parse anyway (``files_reparsed_stale_parser``)
+          — the file on disk hasn't changed, but the parsing logic that
+          produced its stored fields has, so a digest computed under an
+          older parser must not be silently reused forever (this is the
+          only path that ever revisits an untouched file; see the digest
+          cache's own ``header["parser_version"]`` check in ``cache.py``
+          for the matching on-disk-cache half of this).
         - New-or-changed, but live (mtime under
           :data:`LIVE_FILE_WINDOW_S`) and already known from a previous
           tick: skip parsing this tick (``files_skipped_live``), reuse
@@ -743,17 +759,27 @@ class FileWatcher:
         """
         prior = known.get(path_str)
         never_seen = prior is None
+        prior_key = prior[:2] if prior is not None else None
         current_key = (meta.mtime_ns, meta.size_bytes)
-        changed = never_seen or current_key != prior
+        changed = never_seen or current_key != prior_key
         forced = path_str in self._pending_stabilize
         live = self._is_live(meta.mtime_ns)
+        #: The file itself is unchanged, but the digest stored for it was
+        #: produced under an older ``PARSER_VERSION`` than the one now
+        #: running.
+        parser_stale = (not never_seen) and prior[2] != PARSER_VERSION
 
-        if not changed and not forced:
+        if not changed and not forced and not parser_stale:
             existing = self._load_existing(path_str, stats)
             if existing is not None:
                 return existing, False
             # No prior digest despite a known_files entry -- shouldn't
             # normally happen, but parse rather than return nothing.
+
+        elif not changed and not forced and parser_stale:
+            stats.files_reparsed_stale_parser += 1
+            # Fall through to parse: the file hasn't changed, but its
+            # stored digest predates the current PARSER_VERSION.
 
         elif live and not never_seen and not forced:
             stats.files_skipped_live += 1

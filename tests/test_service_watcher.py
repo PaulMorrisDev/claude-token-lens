@@ -18,6 +18,7 @@ from pathlib import Path
 
 import pytest
 
+from claude_token_lens import PARSER_VERSION
 from claude_token_lens.service.contracts import ServeOptions
 from claude_token_lens.service.store import Store
 from claude_token_lens.service.watcher import LIVE_FILE_WINDOW_S, FileWatcher
@@ -361,6 +362,69 @@ def test_incremental_reparse_only_touches_the_changed_file(tmp_path: Path, store
 
     session_a = store.session("sess-a1")
     assert len(session_a["transcripts"]) == 1  # no duplicate row for the same path
+
+
+# -- stale parser_version forces a re-parse of an otherwise-unchanged file --
+
+
+def test_stale_parser_version_forces_reparse_of_an_unchanged_file(tmp_path: Path, store: Store):
+    """The confirmed bug: a transcript whose file hasn't changed since
+    the last tick was never re-parsed even when its stored digest was
+    produced under an older PARSER_VERSION, because _resolve/
+    _needs_parse_this_tick only ever compared (mtime_ns, size_bytes).
+    Force the stored row back to a stale parser_version without
+    touching the file at all, then confirm the very next tick re-parses
+    it anyway, bumps files_reparsed_stale_parser, and lands the row back
+    on the current PARSER_VERSION."""
+    root = tmp_path / "projects"
+    path_a = _write_session(root, "proj-a", "sess-a1", _two_turns())
+
+    options = _options(tmp_path)
+    watcher = FileWatcher(store, options)
+    stats1 = watcher.run_once()
+    assert stats1.files_parsed == 1
+    assert stats1.files_reparsed_stale_parser == 0
+    assert store.known_files()[str(path_a)][2] == PARSER_VERSION
+
+    # Roll the stored row back to an older parser_version, as if it had
+    # been parsed by a since-upgraded build -- the file on disk is left
+    # completely untouched (same mtime, same bytes).
+    store._connection().execute(
+        "UPDATE transcripts SET parser_version = ? WHERE path = ?",
+        (PARSER_VERSION - 1, str(path_a)),
+    )
+
+    stats2 = watcher.run_once()
+    assert_privacy(stats2)
+    assert stats2.errors == 0
+    assert stats2.files_parsed == 1
+    assert stats2.files_skipped_live == 0
+    assert stats2.files_reparsed_stale_parser == 1
+    assert store.known_files()[str(path_a)][2] == PARSER_VERSION
+
+    # Now up to date again (same mtime/size, current parser_version):
+    # the very next tick must not re-parse it a second time.
+    stats3 = watcher.run_once()
+    assert stats3.files_parsed == 0
+    assert stats3.files_reparsed_stale_parser == 0
+
+
+def test_up_to_date_parser_version_is_not_reparsed_on_an_unchanged_file(tmp_path: Path, store: Store):
+    """The counterpart to the stale-parser test above: a row already at
+    the current PARSER_VERSION with an unchanged file must never be
+    counted as a stale-parser re-parse, on any number of repeat ticks."""
+    root = tmp_path / "projects"
+    _write_session(root, "proj-a", "sess-a1", _two_turns())
+
+    options = _options(tmp_path)
+    watcher = FileWatcher(store, options)
+    stats1 = watcher.run_once()
+    assert stats1.files_parsed == 1
+
+    for _ in range(3):
+        stats = watcher.run_once()
+        assert stats.files_parsed == 0
+        assert stats.files_reparsed_stale_parser == 0
 
 
 # -- live-file skip / re-check next tick ------------------------------------
