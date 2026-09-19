@@ -61,6 +61,7 @@ def test_watcher_stats_defaults_are_all_zero_or_empty():
     assert stats.files_parsed == 0
     assert stats.files_skipped_live == 0
     assert stats.files_removed == 0
+    assert stats.transcripts_missing == 0
     assert stats.sessions_upserted == 0
     assert stats.errors == 0
     assert stats.error_messages == ()
