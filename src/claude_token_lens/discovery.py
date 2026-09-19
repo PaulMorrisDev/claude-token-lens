@@ -37,6 +37,30 @@ _NON_ALNUM_RE = re.compile(r"[^A-Za-z0-9]")
 _SLUG_MAX_CHARS = 200
 _SLUG_HASH_HEX_CHARS = 8
 
+#: Matches the ``Users-<name>``, ``home-<name>`` or ``c-Users-<name>``
+#: shape ``slug_for`` produces from a real home-directory path (every
+#: non-alphanumeric character, including ``:``/``\\``/``/``, becomes
+#: ``-``, so ``C:\Users\alice\repo`` -> ``C--Users-alice-repo`` and
+#: ``/home/alice/repo`` -> ``-home-alice-repo``) -- see ``redact_slug``.
+_HOME_SEGMENT_RE = re.compile(r"(?i)(c-users|users|home)-([^-]+)")
+
+
+def redact_slug(slug: str) -> str:
+    """Replace the path segment immediately following a ``Users-``,
+    ``home-`` or ``c-Users-`` marker (case-insensitive) with the literal
+    ``<user>``, so a project slug built from a real filesystem path never
+    carries a real username through the API or a rendered report (review
+    finding 6: "raw slugs with usernames"). Applied at every API
+    boundary (``service/store.py``'s ``sessions``/``session``/
+    ``baselines`` read queries) and inside ``report.build_report`` itself
+    (so the CLI and the service redact identically), never only at one
+    of the two. A slug that matches none of those markers -- the common
+    case, since most slugs are already a short project name -- is
+    returned unchanged."""
+    if not slug:
+        return slug
+    return _HOME_SEGMENT_RE.sub(lambda m: f"{m.group(1)}-<user>", slug)
+
 
 def projects_root() -> Path:
     """The root directory holding every ``<slug>/`` project directory.
@@ -454,6 +478,7 @@ def load_meta(path: str | Path) -> TranscriptMeta:
 __all__ = [
     "projects_root",
     "slug_for",
+    "redact_slug",
     "resolve_project_dirs",
     "find_sessions",
     "find_subagents",
