@@ -41,6 +41,7 @@ from .render.json_out import render_json
 from .render.markdown import render_markdown
 from .render.tables import format_cell
 from .report import build_report
+from .scorecard import ScorecardError
 from .tools import log_usage as log_usage_mod
 from .tools import scrub as scrub_mod
 
@@ -508,18 +509,27 @@ def _cmd_report_like(args: argparse.Namespace, include: set[str] | None) -> int:
         print(f"claude-token-lens {command}: {exc}", file=sys.stderr)
         return 2
 
-    model = build_report(
-        corpus,
-        rates,
-        config,
-        projects=projects,
-        window=window,
-        group_by=args.group_by,
-        phases=getattr(args, "phases", False),
-        snapshots=snaps,
-        include=include,
-        session_overrides=session_overrides,
-    )
+    try:
+        model = build_report(
+            corpus,
+            rates,
+            config,
+            projects=projects,
+            window=window,
+            group_by=args.group_by,
+            phases=getattr(args, "phases", False),
+            snapshots=snaps,
+            include=include,
+            session_overrides=session_overrides,
+        )
+    except ScorecardError as exc:
+        # Fix R20: a misordered [thresholds.scorecard] override in
+        # config.toml used to surface as a raw traceback out of
+        # scorecard.build_section (called deep inside build_report);
+        # give it the same clean one-line-and-exit-2 treatment as every
+        # other user-facing config error in this function.
+        print(f"claude-token-lens {command}: {exc}", file=sys.stderr)
+        return 2
     _emit_report_outputs(model, args)
     return 0
 

@@ -8,10 +8,13 @@ no-snapshot-scores-5 special cases.
 
 from __future__ import annotations
 
+import pytest
+
 from claude_token_lens.model import Section
 from claude_token_lens.scorecard import (
     ALL_DIMENSIONS,
     LEVEL_LABELS,
+    ScorecardError,
     ScorecardInputs,
     ScorecardThresholds,
     build_section,
@@ -189,6 +192,45 @@ def test_thresholds_from_config_keeps_defaults_for_malformed_input():
     assert ScorecardThresholds.from_config(None) == ScorecardThresholds()
     assert ScorecardThresholds.from_config("not a dict") == ScorecardThresholds()
     assert ScorecardThresholds.from_config({"cache_recache_share_pct": [1, 2]}) == ScorecardThresholds()
+
+
+# -- Fix R20: 4-tuple ordering validation -----------------------------------
+
+
+def test_thresholds_from_config_rejects_misordered_lower_is_better_tuple():
+    with pytest.raises(ScorecardError) as exc_info:
+        ScorecardThresholds.from_config({"cache_recache_share_pct": [50.0, 30.0, 15.0, 5.0]})
+    assert "cache_recache_share_pct" in str(exc_info.value)
+    assert "ascending" in str(exc_info.value)
+
+
+def test_thresholds_from_config_rejects_misordered_higher_is_better_tuple():
+    with pytest.raises(ScorecardError) as exc_info:
+        ScorecardThresholds.from_config({"data_pricing_coverage_pct": [75.0, 90.0, 97.0, 99.5]})
+    assert "data_pricing_coverage_pct" in str(exc_info.value)
+    assert "descending" in str(exc_info.value)
+
+
+def test_thresholds_from_config_accepts_ties_in_ordering():
+    # <= / >= in _level_lower_is_better/_level_higher_is_better tolerate
+    # equal neighbouring bounds -- so should the validation.
+    th = ScorecardThresholds.from_config({"cache_recache_share_pct": [5.0, 5.0, 30.0, 50.0]})
+    assert th.cache_recache_share_pct == (5.0, 5.0, 30.0, 50.0)
+
+
+def test_thresholds_from_config_accepts_all_default_tuples_unchanged():
+    # The class's own defaults must obviously pass their own validation.
+    defaults = ScorecardThresholds()
+    th = ScorecardThresholds.from_config(
+        {
+            "cache_recache_share_pct": list(defaults.cache_recache_share_pct),
+            "context_p90_ctx": list(defaults.context_p90_ctx),
+            "agent_cost_variance_ratio": list(defaults.agent_cost_variance_ratio),
+            "config_changed_keys": list(defaults.config_changed_keys),
+            "data_pricing_coverage_pct": list(defaults.data_pricing_coverage_pct),
+        }
+    )
+    assert th == defaults
 
 
 # -- contract / privacy ---------------------------------------------------

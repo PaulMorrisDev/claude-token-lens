@@ -544,6 +544,39 @@ def test_config_diff_requires_key_or_auto_keys(tmp_path, capsys):
     assert exc_info.value.code == 2
 
 
+# -- ScorecardError surfaced as a clean exit-2 error (Fix R20) --------------
+
+
+def test_report_exits_2_with_clean_message_on_misordered_scorecard_thresholds(tmp_path, capsys):
+    root = tmp_path / "projects"
+    _write_project(root, "proj-a")
+    config_dir = tmp_path / "token-lens"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    (config_dir / "config.toml").write_text(
+        "[thresholds.scorecard]\n"
+        "cache_recache_share_pct = [50.0, 30.0, 15.0, 5.0]\n",
+        encoding="utf-8",
+    )
+
+    exit_code = cli.main(
+        [
+            "report",
+            "--projects-root",
+            str(root),
+            "--project",
+            "proj-a",
+            "--config-dir",
+            str(config_dir),
+        ]
+    )
+    assert exit_code == 2
+    err = capsys.readouterr().err
+    lines = [line for line in err.splitlines() if line.strip()]
+    assert len(lines) == 1
+    assert "cache_recache_share_pct" in lines[0]
+    assert "Traceback" not in err
+
+
 # -- probe ----------------------------------------------------------------
 
 
