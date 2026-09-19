@@ -165,6 +165,41 @@ def _dominant_transcript_model(tr: TranscriptResult) -> str | None:
     return max(counts.items(), key=lambda kv: (kv[1], kv[0]))[0]
 
 
+def _recommend_min_sample_values(config: Config) -> tuple[int, int]:
+    """The min-sample values ``recommend()`` actually gates recommendations
+    on, for display in the report's thresholds header -- NOT
+    ``config.min_sessions``/``config.min_turns`` directly.
+    ``recommend.RecommendThresholds`` has its own ``min_sessions``/
+    ``min_turns`` defaults, independently overridable via
+    ``config.thresholds["recommend"]`` (a ``[thresholds.recommend]`` TOML
+    table distinct from the top-level ``Config.min_sessions``/
+    ``min_turns``), so printing the ``Config`` fields verbatim can show a
+    stale number when a corpus's ``[thresholds.recommend]`` overrides
+    them. Prefers ``recommend.effective_min_sample(th)`` when that
+    function exists (a future recommend.py addition this module doesn't
+    own and can't rely on), otherwise reads ``RecommendThresholds``'s own
+    resolved fields directly; falls back to the ``Config`` fields only if
+    ``recommend.RecommendThresholds`` itself isn't importable.
+    """
+    from . import recommend as recommend_mod
+
+    recommend_th_cls = getattr(recommend_mod, "RecommendThresholds", None)
+    if recommend_th_cls is None:
+        return config.min_sessions, config.min_turns
+
+    recommend_th = recommend_th_cls.from_config(
+        config.thresholds.get("recommend") if isinstance(config.thresholds, dict) else None
+    )
+
+    effective_min_sample = getattr(recommend_mod, "effective_min_sample", None)
+    if effective_min_sample is not None:
+        result = effective_min_sample(recommend_th)
+        if isinstance(result, tuple) and len(result) == 2:
+            return result
+
+    return recommend_th.min_sessions, recommend_th.min_turns
+
+
 def _merge_diagnostics(acc: Diagnostics, d: Diagnostics) -> None:
     """Fold one transcript's :class:`Diagnostics` into the running
     corpus-wide total: sum every int counter, merge every dict counter
@@ -295,7 +330,12 @@ class _OverviewAcc:
     by_model: dict[str, _ModelCell] = dataclasses.field(default_factory=dict)
 
 
-def _build_overview_section(acc: _OverviewAcc, cache_economy_totals: dict) -> Section:
+def _build_overview_section(
+    acc: _OverviewAcc,
+    cache_economy_totals: dict,
+    top_level_median_ctx: float | None,
+    top_level_turns_ctx_ge_200k_pct: float | None,
+) -> Section:
     usage_tokens = acc.input_tokens + acc.cache_creation_tokens + acc.cache_read_tokens + acc.output_tokens
     new_tokens = acc.input_tokens + acc.cache_creation_tokens + acc.output_tokens
     cache_read_cost_share = 100.0 * acc.cache_read_cost / acc.total_cost if acc.total_cost else None
@@ -322,6 +362,14 @@ def _build_overview_section(acc: _OverviewAcc, cache_economy_totals: dict) -> Se
             ["total_cost_usd", acc.total_cost],
             ["cache_read_cost_share_pct", cache_read_cost_share],
             ["cache_roi", cache_economy_totals.get("cache_roi", 0.0)],
+            # Top-level-only (agent_type == "top-level") ctx stats -- see
+            # _top_level_ctx_values's docstring for why subagent transcripts
+            # are excluded. Added so the "long-context share of recent
+            # top-level turns" verification anchor has a turn-count-basis,
+            # top-level-only table to check against (a subagent's ctx runs
+            # far larger and would otherwise skew this upward).
+            ["top_level_median_ctx", top_level_median_ctx],
+            ["top_level_turns_ctx_ge_200k_pct", top_level_turns_ctx_ge_200k_pct],
         ],
     )
 
@@ -399,6 +447,11 @@ def _stringify(value: object) -> str:
 # -- recache group-by breakdown ------------------------------------------
 
 
+#: ``group_by`` values that must be keyed per-*transcript* rather than
+#: per-*session* (see ``_transcript_key_lookup``'s docstring for why).
+_TRANSCRIPT_GROUP_KEYS = frozenset({"agent", "model", "entrypoint"})
+
+
 def _group_key_lookup(records: list[SessionRecord], group_by: str) -> Callable[[TranscriptResult], str]:
     groups = classify.group_sessions(records, group_by)
     label_by_session: dict[str, str] = {}
@@ -408,6 +461,38 @@ def _group_key_lookup(records: list[SessionRecord], group_by: str) -> Callable[[
 
     def _key(result: TranscriptResult) -> str:
         return label_by_session.get(result.meta.session_id, "unknown")
+
+    return _key
+
+
+def _transcript_key_lookup(group_by: str) -> Callable[[TranscriptResult], str]:
+    """Per-*transcript* group-key lookup for ``group_by in
+    _TRANSCRIPT_GROUP_KEYS`` (``"agent"``/``"model"``/``"entrypoint"``).
+
+    ``_group_key_lookup`` labels every transcript in a session with that
+    *session's* one dominant group (``classify.group_sessions`` computes a
+    single label per :class:`SessionRecord`), so a subagent inherits its
+    session's key rather than its own -- fine for ``mode``/``purpose``/
+    ``project`` (genuinely session-level properties) but wrong for
+    ``agent``/``model``/``entrypoint``, which vary *per transcript* within
+    one session (e.g. a session that spawns both a ``claude-implementer``
+    and a ``general-purpose`` subagent has no single "session agent type").
+    This keys each transcript by its own ``TranscriptMeta.agent_type``,
+    dominant model, or ``TranscriptMeta.entrypoint`` instead, matching how
+    :meth:`recache.RecacheStats.add` itself derives ``agent_type`` for the
+    ``recache_by_agent_type`` table (``result.meta.agent_type or
+    "top-level"``) so ``recache_by_group`` (grouped by ``"agent"``) sums to
+    the same per-agent-type totals as that table.
+    """
+
+    def _key(result: TranscriptResult) -> str:
+        if group_by == "agent":
+            return result.meta.agent_type or "top-level"
+        if group_by == "model":
+            return _dominant_transcript_model(result) or "unknown"
+        if group_by == "entrypoint":
+            return result.meta.entrypoint or "unknown"
+        raise ValueError(f"not a transcript-keyed group_by: {group_by!r}")
 
     return _key
 
@@ -576,7 +661,14 @@ def build_report(
         session_recache_cc[record.session_id] = session_recache_cc_tokens
 
     if group_by:
-        rs.group_key = _group_key_lookup(session_records, group_by)
+        # "agent"/"model"/"entrypoint" vary per transcript within a
+        # session (see _transcript_key_lookup's docstring — R5 fix);
+        # everything else (mode/purpose/project/...) is a genuinely
+        # session-level property, so it keeps the session-keyed lookup.
+        if group_by in _TRANSCRIPT_GROUP_KEYS:
+            rs.group_key = _transcript_key_lookup(group_by)
+        else:
+            rs.group_key = _group_key_lookup(session_records, group_by)
         # RecacheStats folds groups in during .add(); since grouping was
         # decided only after the fact (group_key needs every session
         # classified first), re-fold every transcript now that the
@@ -608,6 +700,18 @@ def build_report(
     cache_economy_totals["net_saving_usd"] = total_net_saving
     cache_economy_totals["cache_roi"] = total_net_saving / total_write_usd if total_write_usd > 0 else 0.0
 
+    # -- top-level-only ctx stats (R7 + coordinator follow-up): computed
+    # once here, off the final ``rs`` (post group-by re-fold, if any),
+    # and reused by both the overview totals table and the scorecard's
+    # context-hygiene dimension. See _top_level_ctx_values's docstring.
+    top_level_ctx_values = _top_level_ctx_values(rs)
+    top_level_median_ctx = statistics.median(top_level_ctx_values) if top_level_ctx_values else None
+    top_level_turns_ctx_ge_200k_pct = (
+        100.0 * sum(1 for c in top_level_ctx_values if c >= recache_th.huge_ctx) / len(top_level_ctx_values)
+        if top_level_ctx_values
+        else None
+    )
+
     # -- assemble sections ---------------------------------------------
 
     sections: list[Section] = []
@@ -616,7 +720,11 @@ def build_report(
         return include is None or key in include
 
     if _want("overview"):
-        sections.append(_build_overview_section(overview, cache_economy_totals))
+        sections.append(
+            _build_overview_section(
+                overview, cache_economy_totals, top_level_median_ctx, top_level_turns_ctx_ge_200k_pct
+            )
+        )
 
     if _want("usage"):
         sections.append(usage_mod.build_section(corpus, pricing, config))
@@ -669,6 +777,7 @@ def build_report(
 
     # -- meta -------------------------------------------------------------
 
+    recommend_min_sessions, recommend_min_turns = _recommend_min_sample_values(config)
     thresholds_dict: dict = {
         "recache": {
             "ctx_floor": recache_th.ctx_floor,
@@ -679,8 +788,11 @@ def build_report(
         "ttl": dataclasses.asdict(ttl_th) if dataclasses.is_dataclass(ttl_th) else {},
         "classify_mode": mode_thresholds,
         "classify_purpose": purpose_thresholds,
-        "min_sessions": config.min_sessions,
-        "min_turns": config.min_turns,
+        # The min-sample gate recommend() actually applies, NOT
+        # config.min_sessions/config.min_turns directly -- see
+        # _recommend_min_sample_values's docstring (min-sample header fix).
+        "min_sessions": recommend_min_sessions,
+        "min_turns": recommend_min_turns,
     }
 
     assumptions: list[str] = list(ttl.ASSUMPTIONS) + list(recache.ASSUMPTIONS)
@@ -720,6 +832,21 @@ def build_report(
     return report_model
 
 
+def _top_level_ctx_values(rs: recache.RecacheStats) -> list[int]:
+    """Sorted ``ctx`` values from top-level-only turns in ``rs.records``
+    (R7 fix): ``recache.RecacheStats.add`` stamps every record's
+    ``agent_type`` as ``result.meta.agent_type or "top-level"`` (see
+    ``recache.py``), so filtering to ``"top-level"`` here excludes every
+    subagent transcript. A subagent's own ctx runs far larger than its
+    parent's (subagents typically start from a large system-prompt/task
+    payload) and would otherwise skew both the scorecard's
+    context-hygiene dimension and the overview's long-context-share
+    metric upward, hiding an actually-healthy top-level session behind
+    its subagents' naturally bigger context windows.
+    """
+    return sorted(r.turn.ctx for r in rs.records if r.agent_type == "top-level" and r.turn.ctx)
+
+
 def _build_scorecard_section(
     rs: recache.RecacheStats,
     ts: ttl.TtlStats,
@@ -743,7 +870,11 @@ def _build_scorecard_section(
     hit_denom = total_read + total_cc_all + total_input
     cache_hit_ratio_pct = 100.0 * total_read / hit_denom if hit_denom else None
 
-    top_level_ctx = sorted(t.ctx for t in all_turns if t.ctx)
+    # Top-level-only (excludes subagent transcripts) -- see
+    # _top_level_ctx_values's docstring. Was previously built from
+    # ``all_turns`` (every transcript, top-level and subagent alike).
+    top_level_ctx = _top_level_ctx_values(rs)
+    median_ctx = statistics.median(top_level_ctx) if top_level_ctx else None
     p90_ctx = None
     if top_level_ctx:
         idx = max(0, min(len(top_level_ctx) - 1, int(round(0.9 * (len(top_level_ctx) - 1)))))
@@ -772,6 +903,7 @@ def _build_scorecard_section(
     inputs = scorecard.ScorecardInputs(
         recache_share_pct=recache_share_pct,
         cache_hit_ratio_pct=cache_hit_ratio_pct,
+        median_top_level_ctx=median_ctx,
         p90_top_level_ctx=p90_ctx,
         compaction_count=len(cs.records),
         dropped_share_pct=cs.dropped_share_of_new_tokens,

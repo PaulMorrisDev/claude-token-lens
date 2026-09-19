@@ -153,6 +153,90 @@ def test_by_model_group_sums_equal_overview_totals(tmp_path):
     assert sum(row[6] for row in by_model.rows) == pytest.approx(totals["total_cost_usd"])
 
 
+def _write_session_with_ctx_values(
+    project_dir: Path, session_id: str, top_ctx_values: list[int], sub_ctx_values: list[int]
+) -> None:
+    """Write one session whose top-level turns' ``ctx`` (== ``input_tokens``
+    here -- no cache tokens involved) are exactly ``top_ctx_values`` and
+    whose single subagent's turns' ``ctx`` are exactly ``sub_ctx_values``,
+    so a test can assert precisely which set a stat was computed from.
+    """
+    write_jsonl(
+        project_dir / f"{session_id}.jsonl",
+        [turn_line(input_tokens=v, output_tokens=20) for v in top_ctx_values],
+    )
+    if sub_ctx_values:
+        agent_dir = project_dir / session_id / "subagents"
+        agent_dir.mkdir(parents=True, exist_ok=True)
+        write_jsonl(
+            agent_dir / "agent-ctx.jsonl",
+            [turn_line(input_tokens=v, output_tokens=20) for v in sub_ctx_values],
+        )
+        (agent_dir / "agent-ctx.meta.json").write_text(
+            json.dumps({"agentType": "claude-implementer", "model": "claude-sonnet-5"}), encoding="utf-8"
+        )
+
+
+def test_scorecard_ctx_stats_use_top_level_transcripts_only(tmp_path, monkeypatch):
+    """Regression test for review finding R7: the scorecard's
+    context-hygiene ctx values were built from every transcript's turns,
+    not top-level only, so a subagent with a much bigger ctx (subagents
+    typically start from a large system-prompt/task payload) skewed both
+    the median and the p90 upward.
+    """
+    project_dir = tmp_path / "proj-ctx"
+    project_dir.mkdir()
+    _write_session_with_ctx_values(project_dir, "session-ctx", top_ctx_values=[100, 200], sub_ctx_values=[500_000])
+
+    corpus = load_corpus([project_dir])
+
+    from claude_token_lens import report as report_mod
+
+    captured = {}
+    original_build_section = report_mod.scorecard.build_section
+
+    def _capture(inputs, th):
+        captured["inputs"] = inputs
+        return original_build_section(inputs, th)
+
+    monkeypatch.setattr(report_mod.scorecard, "build_section", _capture)
+
+    build_report(corpus, PRICING, Config(), projects=("proj-ctx",), window="w")
+
+    inputs = captured["inputs"]
+    # Top-level turns only: ctx values [100, 200]. If the subagent's
+    # 500_000-token turn leaked in, both stats would be orders of
+    # magnitude bigger.
+    assert inputs.median_top_level_ctx == pytest.approx(150.0)
+    assert inputs.p90_top_level_ctx == pytest.approx(200.0)
+
+
+def test_overview_long_context_share_is_top_level_turn_count_basis(tmp_path):
+    """Coordinator follow-up to R7: the overview's "long-context share of
+    recent top-level turns" verification anchor needs a turn-count-basis,
+    top-level-only stat to check against. Top-level ctx values
+    [50_000, 100_000, 250_000, 300_000] -> median 175_000.0, and 2 of 4
+    (50%) are >= huge_ctx (200_000). A subagent turn with an even bigger
+    ctx must not shift either figure.
+    """
+    project_dir = tmp_path / "proj-ctx2"
+    project_dir.mkdir()
+    _write_session_with_ctx_values(
+        project_dir,
+        "session-ctx2",
+        top_ctx_values=[50_000, 100_000, 250_000, 300_000],
+        sub_ctx_values=[900_000],
+    )
+
+    corpus = load_corpus([project_dir])
+    report = build_report(corpus, PRICING, Config(), projects=("proj-ctx2",), window="w")
+    overview = next(s for s in report.sections if s.key == "overview")
+    totals = {row[0]: row[1] for row in overview.tables[0].rows}
+
+    assert totals["top_level_median_ctx"] == pytest.approx(175_000.0)
+    assert totals["top_level_turns_ctx_ge_200k_pct"] == pytest.approx(50.0)
+
+
 def test_recache_by_group_table_rows_sum_to_the_ungrouped_summary(tmp_path):
     corpus = _two_session_corpus(tmp_path)
     report = build_report(
@@ -237,6 +321,26 @@ def test_report_meta_is_fully_populated(tmp_path):
     assert meta.generated_at.endswith("Z")
 
 
+def test_thresholds_min_sample_reflects_recommend_overrides_not_config_defaults(tmp_path):
+    """Regression test for the min-sample header fix: the thresholds
+    header used to print ``config.min_sessions``/``config.min_turns``
+    directly, but ``recommend.RecommendThresholds`` has its own
+    independently overridable ``min_sessions``/``min_turns`` (via
+    ``[thresholds.recommend]``), which is what ``recommend()`` actually
+    gates on. A config that leaves the top-level fields at their defaults
+    but overrides ``[thresholds.recommend]`` must show the *override* in
+    the header, not the stale top-level default.
+    """
+    corpus = _two_session_corpus(tmp_path)
+    config = Config(thresholds={"recommend": {"min_sessions": 42, "min_turns": 4242}})
+    assert config.min_sessions == 5  # top-level default, deliberately left untouched
+    assert config.min_turns == 200
+
+    report = build_report(corpus, PRICING, config, projects=("proj-two",), window="w")
+    assert report.meta.thresholds["min_sessions"] == 42
+    assert report.meta.thresholds["min_turns"] == 4242
+
+
 # -- smoke: full render through every renderer -------------------------
 
 
@@ -293,3 +397,40 @@ def test_build_report_against_real_fixture():
     for section in report.sections:
         assert_privacy(section)
     _all_sections_row_keys_are_valid(report.sections)
+
+
+# -- R5: group_by="agent" must key by transcript, not session ---------------
+
+
+@pytestmark_real
+def test_recache_by_group_agent_matches_recache_by_agent_type_on_real_fixture():
+    """Regression test for review finding R5: the group-by re-fold used to
+    key every transcript by its *session's* one dominant group, so every
+    subagent in a session inherited that session's single label even when
+    the session spawned several different agent types. The real fixture's
+    one session spawns claude-implementer/general-purpose/revixo-researcher/
+    verification-runner subagents (plus the top-level transcript), so a
+    correct per-transcript ``group_by="agent"`` re-fold must produce one
+    ``recache_by_group`` row per agent_type -- matching
+    ``recache_by_agent_type`` exactly -- rather than collapsing them all
+    into whichever single agent type the session-keyed lookup used to pick.
+    """
+    corpus = load_corpus([FIXTURE_DIR])
+    report = build_report(
+        corpus, PRICING, Config(), projects=("session-a",), window="real fixture", group_by="agent"
+    )
+    recache_section = next(s for s in report.sections if s.key == "recache")
+    group_table = next(t for t in recache_section.tables if t.name == "recache_by_group")
+    by_agent_type_table = next(t for t in recache_section.tables if t.name == "recache_by_agent_type")
+
+    assert len(by_agent_type_table.rows) > 1  # the fixture spawns several distinct agent types
+    assert len(group_table.rows) == len(by_agent_type_table.rows)
+
+    priced_turns_by_agent_type = {row[0]: row[1] for row in by_agent_type_table.rows}
+    recache_turns_by_agent_type = {row[0]: row[2] for row in by_agent_type_table.rows}
+    for row in group_table.rows:
+        label = row[0]
+        assert label in priced_turns_by_agent_type, f"unexpected group label {label!r}"
+        # group column prepended: row[1]=transcripts, row[2]=priced_turns, row[3]=recache_turns.
+        assert row[2] == priced_turns_by_agent_type[label]
+        assert row[3] == recache_turns_by_agent_type[label]

@@ -46,10 +46,13 @@ delay could skew it.
 Privacy: no raw JSONL line, message content, tool_result content, file
 path, or command is ever retained past the single line/block that
 produces it. Only lengths, short prefixes (<=40 chars), names, and counts
-survive into ``Turn``/``Event``/``Diagnostics``. Absolute-path-shaped
-tokens inside a Bash/PowerShell command are redacted to ``<path>`` before
-the 40-char truncation (see ``_redact_paths``), so a path near the cutoff
-can never leak a partial drive letter or username.
+survive into ``Turn``/``Event``/``Diagnostics``. Absolute- and
+relative-path-shaped tokens, URLs, and any ``@``-bearing token (an
+``ssh user@host`` target, an email address) inside a Bash/PowerShell
+command are redacted to ``<path>``/``<url>``/``<user@host>`` before the
+40-char truncation (see ``_redact_paths``), so a path, host, or address
+near the cutoff can never leak a partial drive letter, username, or
+domain.
 
 Batch C addition: ``meta`` is provenance the caller already knows (from
 ``discovery.py``) and this function never mutates the object it was
@@ -98,6 +101,19 @@ _CMD_PREFIX_MAX_CHARS = 40
 #: stopping at the first whitespace or quote so the verb and flags around
 #: it survive. Order doesn't matter — each alternative is anchored to a
 #: distinct prefix shape.
+#:
+#: R4 fix: the previous alternatives only caught *absolute* forms
+#: (``\Users\...``, ``/home/...``) — a *relative* Windows path with no
+#: leading separator (``cd Users\paulm\proj``, the shape a shell prints
+#: for a path relative to the drive root) survived untouched. The new
+#: last alternative catches just the ``Users``/``home``/``Documents and
+#: Settings`` segment plus its own username component (stopping at the
+#: next separator, same as the bare-backslash alternative above it) —
+#: deliberately narrower than the greedy absolute-path alternatives,
+#: since only the username segment is sensitive; a following relative
+#: path component (a repo name, say) isn't. The ``(?<![\w:])`` lookbehind
+#: keeps it from firing mid-word or right after a drive-letter colon,
+#: where the absolute-path alternatives above already have it covered.
 _ABS_PATH_TOKEN_RE = re.compile(
     r"""
     [A-Za-z]:[\\/][^\s"']*                       # C:\... or C:/...
@@ -107,6 +123,8 @@ _ABS_PATH_TOKEN_RE = re.compile(
     | ~[\\/][^\s"']*                              # ~/... or ~\...
     | %[A-Z_]+%[^\s"']*                           # %USERPROFILE%\...
     | \$HOME[^\s"']*                              # $HOME/...
+    | (?<![\w:])(?:Users|home|Documents\ and\ Settings)[\\/][^\s\\/]+
+                                                   # relative Users\name / home/name (no leading separator)
     """,
     re.VERBOSE,
 )
@@ -118,21 +136,36 @@ _ABS_PATH_TOKEN_RE = re.compile(
 #: ``www.`` form with no scheme, up to the next whitespace/quote.
 _URL_TOKEN_RE = re.compile(r"""https?://[^\s"']+|www\.[^\s"']+""")
 
+#: R4 fix: any whitespace-delimited token containing ``@`` is redacted
+#: wholesale — this covers both an ``ssh user@host`` target and a bare
+#: email address (e.g. inside a commit message), neither of which the
+#: path/URL patterns above ever matched. Deliberately not anchored to
+#: a stricter user@host/email shape: a bare ``@`` in a command is
+#: already a strong enough identity signal (an account/host name) that
+#: erring toward over-redaction here is the right trade-off.
+_AT_TOKEN_RE = re.compile(r"""[^\s"']*@[^\s"']*""")
+
 
 def _redact_paths(text: str) -> str:
-    """Replace every absolute-path-shaped token in ``text`` with
-    ``<path>``, and every URL with ``<url>``, keeping the surrounding
-    verb/flags intact. Called before truncation so a path or URL near
-    the 40-char cutoff can't leak a partial drive letter, username
-    fragment, or query string.
+    """Replace every absolute- or relative-path-shaped token in ``text``
+    with ``<path>``, every URL with ``<url>``, and every ``@``-bearing
+    token (an ``ssh user@host`` target, an email address) with
+    ``<user@host>`` — keeping the surrounding verb/flags intact. Called
+    before truncation so a path, URL, or user@host/email near the
+    40-char cutoff can't leak a partial drive letter, username fragment,
+    query string, or domain.
 
     URLs are redacted first: ``_ABS_PATH_TOKEN_RE``'s drive-letter
     alternative (``[A-Za-z]:[\\/]``) is happy to match the single
     letter before a scheme's ``://`` (e.g. the "s" in "https://"),
     which would otherwise mangle a URL into "http<path>" before the URL
-    regex ever saw it intact.
+    regex ever saw it intact. The ``@`` rule runs next (a URL's own
+    ``user:pass@host`` form, if any, has already been swallowed whole
+    into ``<url>`` by then), and the path rule runs last.
     """
-    return _ABS_PATH_TOKEN_RE.sub("<path>", _URL_TOKEN_RE.sub("<url>", text))
+    without_urls = _URL_TOKEN_RE.sub("<url>", text)
+    without_at = _AT_TOKEN_RE.sub("<user@host>", without_urls)
+    return _ABS_PATH_TOKEN_RE.sub("<path>", without_at)
 
 
 def detect_provider(model_id: str | None) -> str | None:

@@ -9,8 +9,11 @@ from __future__ import annotations
 from pathlib import Path
 
 from claude_token_lens.config import Config
-from claude_token_lens.corpus import load_corpus
+from claude_token_lens.corpus import SessionBundle, load_corpus
+from claude_token_lens.model import TranscriptMeta
+from claude_token_lens.parse import parse_transcript
 from claude_token_lens.pricing import load_pricing
+from claude_token_lens.report import build_report
 from claude_token_lens.usage import build_section
 
 from helpers import assert_privacy, turn_line, write_jsonl
@@ -131,3 +134,98 @@ def test_subscription_billing_populates_five_hour_blocks_and_relabels_cost(tmp_p
                 assert column.label == "Cost (list-price equivalent USD)"
     assert any("subscription" in note for note in section.notes)
     assert_privacy(section)
+
+
+def test_orphaned_subagent_bundle_session_count_matches_report(tmp_path):
+    # R23: a bundle with ``top is None`` is an orphaned subagent -- its
+    # parent top-level session was never discovered. ``load_corpus``
+    # never produces this through normal discovery (a subagent transcript
+    # is only ever attached to a bundle whose top-level session was also
+    # found), so it's constructed by hand here, the same way report.py's
+    # own build_report loop is exercised against one. Before the fix,
+    # usage.py counted this bundle's session (report.py has always
+    # skipped it -- see build_report's ``if bundle.top is None:
+    # continue``), so the two sections' session totals disagreed on any
+    # corpus containing one.
+    project_dir = tmp_path / "proj-orphan"
+    project_dir.mkdir()
+    _write_top(project_dir, "session-normal", ["2026-09-18T10:00:00.000Z"], input_tokens=100, output_tokens=20)
+    corpus = load_corpus([project_dir])
+    assert len(corpus.sessions) == 1
+
+    orphan_path = project_dir / "orphan-sub.jsonl"
+    write_jsonl(
+        orphan_path,
+        [turn_line(timestamp="2026-09-18T11:00:00.000Z", input_tokens=50, output_tokens=10)],
+    )
+    orphan_meta = TranscriptMeta(
+        path=str(orphan_path),
+        kind="subagent",
+        session_id="session-orphan",
+        agent_type="explore",
+        project_slug="proj-orphan",
+    )
+    orphan_transcript = parse_transcript(orphan_path, orphan_meta)
+    corpus.sessions.append(
+        SessionBundle(
+            session_id="session-orphan",
+            slug="proj-orphan",
+            top=None,
+            subs=[orphan_transcript],
+        )
+    )
+    assert len(corpus.sessions) == 2
+
+    section = build_section(corpus, PRICING, Config())
+    by_project = next(t for t in section.tables if t.name == "by_project")
+    usage_session_total = sum(row[1] for row in by_project.rows)
+    assert usage_session_total == 1  # the orphaned bundle must not be counted
+
+    report_model = build_report(corpus, PRICING, Config(), projects=(), window="all")
+    overview = next(s for s in report_model.sections if s.key == "overview")
+    totals_table = next(t for t in overview.tables if t.name == "totals")
+    report_sessions = next(row[1] for row in totals_table.rows if row[0] == "sessions")
+
+    assert report_sessions == usage_session_total
+
+
+def test_twelve_hour_session_spans_three_five_hour_blocks(tmp_path):
+    # R15: a session's turns must be assigned to five-hour blocks by
+    # *each turn's own* local timestamp, not stamped wholesale onto the
+    # block its first turn landed in. A 12-hour session (00:30 -> 12:30
+    # local, one turn per hour) starting at the very beginning of a
+    # fixed block (00:00 local) crosses three block boundaries (00:00,
+    # 05:00, 10:00), so before the fix every one of these turns would
+    # have landed in the single 00:00 block instead of being split
+    # across three.
+    #
+    # The UTC timestamps below are built from fixed LOCAL wall-clock
+    # times (via this machine's current UTC offset) rather than a named
+    # zone passed through Config -- this test suite's own convention
+    # elsewhere (see _tzdata_has in test_classify.py) is that a resolvable
+    # IANA zone isn't guaranteed on every machine (e.g. bare Windows
+    # without the tzdata package), and Config(tz=None) always falls back
+    # to the machine's own local zone regardless.
+    from datetime import datetime, timedelta, timezone
+
+    offset = datetime.now().astimezone().utcoffset() or timedelta(0)
+    local_base = datetime(2026, 9, 18, 0, 30)  # 00:30 local
+    local_times = [local_base + timedelta(hours=h) for h in range(13)]  # 00:30 .. 12:30 local
+    timestamps = [(lt - offset).replace(tzinfo=timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z") for lt in local_times]
+
+    project_dir = tmp_path / "proj-long-session"
+    project_dir.mkdir()
+    _write_top(project_dir, "session-long", timestamps, input_tokens=100, output_tokens=20)
+    corpus = load_corpus([project_dir])
+
+    section = build_section(corpus, PRICING, Config(billing="subscription"))
+    blocks = next(t for t in section.tables if t.name == "five_hour_blocks")
+
+    assert len(blocks.rows) == 3
+    assert sum(row[2] for row in blocks.rows) == len(timestamps)  # every turn accounted for
+    # Every block has the same single session, but split turn counts.
+    assert all(row[1] == 1 for row in blocks.rows)
+    turns_per_block = sorted(row[2] for row in blocks.rows)
+    # 00:00 block: 00:30..04:30 (5 turns); 05:00 block: 05:30..09:30 (5
+    # turns); 10:00 block: 10:30..12:30 (3 turns).
+    assert turns_per_block == [3, 5, 5]

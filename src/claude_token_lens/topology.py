@@ -513,8 +513,10 @@ def _build_spawn_write_table(stats: TopologyStats) -> Table:
             "Spawn write is the first priced turn's cache_creation_tokens for"
             " each subagent transcript: the briefing, system prompt and any"
             " preloaded skills the parent pays to write into that agent's cache.",
-            "WP7 snapshot MCP/plugin counts are not correlated here; WP10"
-            " joins this table against a session's snapshot, as planned.",
+            "A snapshot's MCP/plugin counts (config.py/snapshots.py) are not"
+            " joined against this table -- there is currently no per-session"
+            " link between a spawn's write size and the snapshot in effect"
+            " when it happened.",
         ],
     )
 
@@ -534,8 +536,9 @@ def _build_session_baseline_table(stats: TopologyStats) -> Table:
         rows=rows,
         notes=[
             "The top-level transcript's own first priced turn: system prompt,"
-            " CLAUDE.md and prefix-loaded tool schemas. WP7 snapshot MCP/plugin"
-            " counts are not correlated here; WP10 joins them, as planned.",
+            " CLAUDE.md and prefix-loaded tool schemas. A snapshot's MCP/plugin"
+            " counts (config.py/snapshots.py) are not correlated against this"
+            " baseline -- there is currently no join between the two.",
         ],
     )
 

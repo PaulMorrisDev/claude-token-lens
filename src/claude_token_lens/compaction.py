@@ -407,6 +407,31 @@ class CompactionStats:
 
     @property
     def compactions_per_session_mean(self) -> float | None:
+        """Mean compactions per session across every session folded in so
+        far (``total_sessions``) -- NOT just sessions that actually
+        compacted (R8 fix). Dividing by ``sessions_with_compaction`` alone
+        silently drops every zero-compaction session from the
+        denominator, inflating the reported mean (e.g. 1 compacting
+        session out of 10 total, with 2 compactions, used to report a
+        mean of 2.0 instead of 0.2). ``None`` only when no session has
+        been seen at all. See
+        :attr:`compactions_per_compacting_session_mean` for the previous
+        (compacting-sessions-only) denominator, kept as a separate stat.
+        """
+        if self.total_sessions == 0:
+            return None
+        return sum(self._compactions_per_session.values()) / self.total_sessions
+
+    @property
+    def compactions_per_compacting_session_mean(self) -> float | None:
+        """Mean compactions per session, counting only sessions that had
+        at least one compaction -- the denominator
+        ``compactions_per_session_mean`` used before the R8 fix. Kept
+        separately since "how bad is it when a session does compact" is a
+        different question from "how often does compaction happen across
+        the whole corpus" (the latter is what ``compactions_per_session_mean``
+        now answers).
+        """
         counts = list(self._compactions_per_session.values())
         return statistics.mean(counts) if counts else None
 
@@ -551,6 +576,7 @@ def build_section(stats: CompactionStats) -> Section:
             ["Sessions with >=1 compaction", stats.sessions_with_compaction],
             ["Total sessions", stats.total_sessions],
             ["Compactions per session (mean)", stats.compactions_per_session_mean],
+            ["Compactions per compacting session (mean)", stats.compactions_per_compacting_session_mean],
             ["Compactions per session (max)", stats.compactions_per_session_max],
             ["Pre-compaction tokens (median)", stats.pre_median],
             ["Post-compaction tokens (median)", stats.post_median],
@@ -600,11 +626,17 @@ def build_section(stats: CompactionStats) -> Section:
     )
 
     notes = [
-        "A turn is flagged as a RE-CACHE here using a minimal, standalone "
-        "rule (ctx > 20,000 and cache_read < 20% of ctx) — the same numbers "
-        "WP3's detector uses, but without WP3's full signature "
-        "classification. WP10 will switch this section to the shared "
-        "recache.py detector once WP3 lands.",
+        "Whether the turn right after a compaction is itself a RE-CACHE "
+        "(the next_turn_is_recache field behind the tables above) is "
+        "decided by the shared recache.py detector's full signature "
+        "classification (recache.apply — turn_index > 1, non-synthetic, "
+        "ctx > ctx_floor, cache_read < cr_ratio*ctx), the same detector "
+        "the RE-CACHE section itself uses, so this module's notion of "
+        "\"re-cache\" can't drift from the corpus-wide one. The standalone, "
+        "minimal two-number rule (ctx > 20,000 and cache_read < 20% of "
+        "ctx) in this module's own is_recache_turn helper is no longer "
+        "used here — it's kept only because its own tests exercise it "
+        "directly.",
         "\"Dropped tokens (share of cache_creation)\" divides total dropped "
         "tokens by every priced turn's cache_creation across the whole "
         "corpus, not just turns following a compaction, so it can exceed "

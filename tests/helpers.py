@@ -183,17 +183,31 @@ def ignorable_line(line_type: str, **overrides: Any) -> dict:
 # -- Independent-review follow-up: reusable privacy regex scan -----------
 #
 # Task 6's redaction fix (parse.py's ``_redact_paths``) removes absolute-
-# path-shaped tokens from ``cmd_prefix``/``preceding_cmd_prefix``, but
-# the privacy criterion is broader than that one field: no dataclass
-# field anywhere in a ``TranscriptResult`` should ever match a drive
-# letter, a POSIX home path, a Windows ``\Users\`` path, an MSYS/Git Bash
-# drive path (``/c/...``), or a bare "@". ``assert_privacy`` is the
-# reusable scan for that, on top of test_privacy.py's existing
-# length-based walk.
+# and relative-path-shaped tokens, URLs, and "@"-bearing tokens from
+# ``cmd_prefix``/``preceding_cmd_prefix``, but the privacy criterion is
+# broader than that one field: no dataclass field anywhere in a
+# ``TranscriptResult`` (or a rendered-report dataclass — ``Table``,
+# ``Section``, ``Recommendation``, ``ReportMeta``, ...) should ever match
+# a drive letter, a POSIX home path (``/home/`` or bare ``home/``), a
+# Windows ``Users\``/``Users/`` path (absolute or relative), an MSYS/Git
+# Bash drive path (``/c/...``), a bare "@", or a URL (aside from the one
+# known-legitimate pricing source citation — see
+# ``_PRIVACY_URL_ALLOWED_VALUES``). ``assert_privacy`` is the reusable
+# scan for that, on top of test_privacy.py's existing length-based walk,
+# and (per its own docstring) descends into every table cell, section
+# note, and Recommendation field it reaches via a dataclass field.
 
 _PRIVACY_DRIVE_RE = re.compile(r"[A-Za-z]:\\")
 _PRIVACY_POSIX_HOME_RE = re.compile(r"/home/")
-_PRIVACY_WIN_USERS_RE = re.compile(r"\\Users\\")
+#: R4 fix: broadened from ``\Users\`` (absolute, backslash-only) to also
+#: flag a *relative* Windows path with no leading separator
+#: (``Users\paulm``, the shape ``cd Users\paulm\proj`` leaves if
+#: redaction ever regresses) and the forward-slash form a normalized
+#: path or a Bash-on-Windows tool might use (``Users/paulm``).
+_PRIVACY_WIN_USERS_RE = re.compile(r"Users[\\/]")
+#: R4 fix: bare "home/" (no leading slash) — the relative-path
+#: counterpart to ``_PRIVACY_POSIX_HOME_RE``'s absolute ``/home/`` form.
+_PRIVACY_BARE_HOME_RE = re.compile(r"home/")
 #: MSYS/Git Bash drive form, e.g. ``/c/Dev/x`` — the same leak shape as
 #: ``C:\`` but produced by a Bash tool call on a Windows machine.
 _PRIVACY_MSYS_DRIVE_RE = re.compile(r"/[a-zA-Z]/")
@@ -217,6 +231,23 @@ _PRIVACY_EXCLUDED_FIELDS = {
 #: cloud-provider model id's Vertex "@YYYYMMDD" date suffix), not a
 #: username/email leak - excluded from the "@" check only.
 _PRIVACY_AT_SIGN_ALLOWED_FIELDS = {"model"}
+
+#: R4 fix: parse.py's own ``@``-redaction marker (see ``_redact_paths``)
+#: is a constant, known-safe string that legitimately contains "@" —
+#: stripped out before the "@" check so a redacted cmd_prefix like
+#: ``"ssh <user@host>"`` doesn't flag itself as the very leak it just
+#: fixed, while a real, un-redacted "@" anywhere else in the same string
+#: is still caught.
+_PRIVACY_AT_MARKER = "<user@host>"
+
+#: R4 fix: values that legitimately contain a URL (and, incidentally,
+#: no "@") and are expected to appear verbatim in report output — the
+#: pricing rate card's own source citation — excluded from the URL
+#: check only, by exact string match rather than a broad field-name
+#: exemption (this is the one specific string, not a whole field).
+_PRIVACY_URL_ALLOWED_VALUES = {
+    "https://platform.claude.com/docs/en/about-claude/pricing",
+}
 
 
 def assert_privacy(result) -> None:
@@ -251,15 +282,17 @@ def assert_privacy(result) -> None:
     def _check(value: str, where: str, field_name: str) -> None:
         if _PRIVACY_DRIVE_RE.search(value):
             violations.append(f"{where} matches a Windows drive path: {value!r}")
-        if _PRIVACY_POSIX_HOME_RE.search(value):
-            violations.append(f"{where} matches a POSIX /home/ path: {value!r}")
+        if _PRIVACY_POSIX_HOME_RE.search(value) or _PRIVACY_BARE_HOME_RE.search(value):
+            violations.append(f"{where} matches a /home/ path: {value!r}")
         if _PRIVACY_WIN_USERS_RE.search(value):
-            violations.append(f"{where} matches a \\Users\\ path: {value!r}")
+            violations.append(f"{where} matches a Users\\ path: {value!r}")
         if _PRIVACY_MSYS_DRIVE_RE.search(value):
             violations.append(f"{where} matches an MSYS drive path: {value!r}")
-        if field_name not in _PRIVACY_AT_SIGN_ALLOWED_FIELDS and _PRIVACY_AT_RE.search(value):
+        if field_name not in _PRIVACY_AT_SIGN_ALLOWED_FIELDS and _PRIVACY_AT_RE.search(
+            value.replace(_PRIVACY_AT_MARKER, "")
+        ):
             violations.append(f"{where} contains '@': {value!r}")
-        if _PRIVACY_URL_RE.search(value):
+        if _PRIVACY_URL_RE.search(value) and value not in _PRIVACY_URL_ALLOWED_VALUES:
             violations.append(f"{where} contains a URL: {value!r}")
 
     def _walk_value(value, where: str, field_name: str) -> None:
