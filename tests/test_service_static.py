@@ -162,7 +162,9 @@ def test_pyproject_declares_static_as_package_data() -> None:
 
 def _documented_get_routes() -> list[str]:
     text = API_MD.read_text(encoding="utf-8")
-    routes = re.findall(r"`GET (/api/[^`]+)`", text)
+    # Only the route headings are the contract; prose may mention a
+    # route family in shorthand (e.g. "`GET /api/report.*`").
+    routes = re.findall(r"^### `GET (/api/[^`]+)`", text, flags=re.M)
     assert routes, "no GET routes found in docs/api.md -- has its format changed?"
     return [r for r in routes if r not in _EXCLUDED_ROUTE_PREFIXES]
 
