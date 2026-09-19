@@ -194,6 +194,7 @@ def make_handler(
     options: ServeOptions,
     *,
     watcher_stats: Callable[[], WatcherStats] | None = None,
+    static_dir: Path | None = None,
 ) -> type[BaseHTTPRequestHandler]:
     """Build an ``http.server.BaseHTTPRequestHandler`` subclass with every
     ``/api/*`` route from ``docs/api.md`` bound to ``store``/``options``,
@@ -207,9 +208,20 @@ def make_handler(
     by an implementation that accepts *extra* optional parameters, so
     this remains a valid ``MakeHandler``); omitted, ``/api/health``
     reports an all-zero :class:`WatcherStats`.
+
+    ``static_dir``, when given, overrides the directory the ``/`` and
+    ``/static/*`` routes serve from (default: this package's own
+    ``service/static/`` -- the UI package's build output, per
+    ``docs/ui.md``). This is a second additional keyword-only parameter,
+    added purely so tests can point it at a ``tmp_path`` fixture with a
+    real ``index.html``/asset without writing anything into the source
+    tree -- the package's own ``static/`` is empty at S1-api's own
+    delivery time (a sibling work package ships its contents), so this
+    module's own tests exercise only the placeholder-index and
+    traversal-protection paths against the real default directory.
     """
 
-    static_dir = Path(__file__).resolve().parent / "static"
+    static_dir = (static_dir if static_dir is not None else Path(__file__).resolve().parent / "static")
 
     report_lock = threading.Lock()
     report_cache: dict = {"token": None, "models": {}}
