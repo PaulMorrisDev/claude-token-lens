@@ -217,10 +217,19 @@
     if (!state.reportPromise) {
       state.reportPromise = fetchJson("/api/report.json").then(function (result) {
         var body = result.body;
-        if (!body || body.ok !== true) {
+        if (!body || body.ok === false) {
           return { error: (body && body.error) || { code: "error", message: "failed to load report" } };
         }
-        var report = body.data && body.data.report;
+        // docs/api.md: unlike every other route, /api/report.json is the
+        // raw rendered document ({"schema_version": ..., "report": {...}}),
+        // not the {"ok": true, "data": ...} envelope -- kept unwrapped for
+        // byte parity with the CLI's own `report --json` output. Accept
+        // both shapes here: `body.ok === true` is an enveloped response
+        // (a possible future/alternate deployment), whose report lives at
+        // `body.data.report`; anything else that reached this point (no
+        // `ok` key, or `ok` truthy-but-not-boolean) is the real unwrapped
+        // shape, whose report is `body.report` directly.
+        var report = body.ok === true ? body.data && body.data.report : body.report;
         if (report && report.meta && report.meta.pricing && report.meta.pricing.currency) {
           state.currency = report.meta.pricing.currency;
         }

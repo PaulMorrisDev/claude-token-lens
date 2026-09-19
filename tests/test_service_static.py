@@ -225,6 +225,14 @@ class _FixtureHandler(http.server.BaseHTTPRequestHandler):
         if canned is None:
             self._send_json(404, {"ok": False, "error": {"code": "not_found", "message": "not found"}})
             return
+        if path == "/api/report.json":
+            # Review finding 1 (blocking): docs/api.md deliberately keeps
+            # report.json unwrapped ({"schema_version": ..., "report":
+            # {...}}, no {"ok": ..., "data": ...} envelope) for CLI byte
+            # parity -- serve it raw here too, matching api.py's real
+            # route, instead of wrapping it like every other canned route.
+            self._send_json(200, canned)
+            return
         self._send_json(200, {"ok": True, "data": canned})
 
     def _serve_static(self, name: str) -> None:
@@ -456,7 +464,58 @@ def test_fixture_server_serves_every_canned_api_route(fixture_server: str) -> No
         assert status == 200, f"{route} -> {status}"
         assert content_type.startswith("application/json")
         envelope = json.loads(body)
+        if route == "/api/report.json":
+            # Finding 1: report.json is the one route that is never
+            # {"ok": ..., "data": ...} -- see
+            # test_fixture_server_serves_report_json_unwrapped below.
+            continue
         assert envelope["ok"] is True, f"{route} -> {envelope}"
+
+
+def test_fixture_server_serves_report_json_unwrapped(fixture_server: str) -> None:
+    """Regression test for review finding 1 (blocking): docs/api.md
+    documents ``/api/report.json`` as the raw rendered document, kept
+    unwrapped for CLI byte parity -- it must never gain an ``{"ok": ...,
+    "data": ...}`` envelope the way every other ``/api/*`` route does.
+    """
+    status, content_type, body = _get(fixture_server, "/api/report.json")
+    assert status == 200
+    assert content_type.startswith("application/json")
+    payload = json.loads(body)
+    assert "schema_version" in payload
+    assert "report" in payload
+    assert "ok" not in payload
+    assert "data" not in payload
+
+
+def test_app_js_load_report_accepts_the_unwrapped_report_json_shape() -> None:
+    """Regression test for review finding 1 (blocking): app.js's
+    ``loadReport()`` used to gate success on ``body.ok !== true`` and
+    only ever read the report out of ``body.data.report`` -- since the
+    real ``/api/report.json`` response never sets ``body.ok`` (see
+    ``test_fixture_server_serves_report_json_unwrapped`` above), every
+    tab that calls ``loadReport()`` (Overview/Cache/TTL/Agents/Config/
+    Usage/Diagnostics/Recommendations) treated a successful 200 response
+    as a hard failure. This fails against the pre-fix source (which
+    contains neither ``body.report`` nor an ``ok === false`` failure
+    check) and passes once ``loadReport()`` accepts the unwrapped shape.
+    """
+    app_js = _static_text("app.js")
+    start = app_js.index("function loadReport()")
+    # Slice to the next top-level function declaration so the assertions
+    # below are scoped to loadReport()'s own body, not a coincidental
+    # match elsewhere in the file.
+    end = app_js.index("\n  function ", start + 1)
+    load_report_src = app_js[start:end]
+    assert "body.report" in load_report_src, (
+        "loadReport() must read the unwrapped report.json shape's `body.report` directly"
+    )
+    assert "body.ok !== true" not in load_report_src, (
+        "loadReport() must not treat report.json's lack of `ok: true` as a failure"
+    )
+    assert "body.ok === false" in load_report_src, (
+        "loadReport() should still treat an explicit `ok: false` body as a failure"
+    )
 
 
 def test_fixture_server_serves_session_detail(fixture_server: str) -> None:
