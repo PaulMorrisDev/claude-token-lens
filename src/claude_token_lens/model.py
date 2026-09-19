@@ -198,6 +198,20 @@ is detected and used):
 - ``Diagnostics.limit_hits: int = 0`` / ``Diagnostics.limit_resumes: int
   = 0`` / ``Diagnostics.agents_terminated: int = 0`` -- corpus-wide
   counts of the three new event kinds, for the Diagnostics section.
+
+Wasted-turns batch (v4-wasted-turns, additive, see ``parse.py``'s module
+docstring for how each is computed and ``waste.py`` for how they are
+used):
+
+- ``Turn.tool_error_count: int = 0`` -- how many of this turn's own
+  ``tool_use_ids`` came back with a ``tool_result`` block carrying
+  ``is_error: true``. Counted only for tool_use ids belonging to this
+  turn, mirroring ``tool_result_chars_by_tool``'s own attribution.
+- ``Turn.tool_error_chars: int = 0`` -- the summed length of those
+  erroring tool_result blocks' content (via the existing
+  ``_tool_result_length`` helper). The LENGTH only -- never the error
+  text itself, per this module's own rule against storing tool result
+  content.
 """
 
 from __future__ import annotations
@@ -368,6 +382,12 @@ class Turn:
     #: Usage-limits addition (see module docstring): "limit" when the gap
     #: to the previous turn spans a usage-cap pause, else None.
     gap_cause: str | None = None
+    #: Wasted-turns addition (see module docstring): tool_result blocks
+    #: with ``is_error: true`` answering this turn's own tool_use_ids.
+    tool_error_count: int = 0
+    #: Wasted-turns addition (see module docstring): summed length of
+    #: those erroring tool_result blocks' content. Length only.
+    tool_error_chars: int = 0
 
 
 @dataclass(slots=True)

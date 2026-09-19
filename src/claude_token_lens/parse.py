@@ -85,6 +85,17 @@ parsed local-time-plus-zone clause is only a fallback for the ~24% of
 limit-hit lines that don't carry ``quotaLimits``. ``Turn.gap_cause`` is
 set to ``"limit"`` in ``_finalize_turn`` whenever a ``LIMIT_HIT``/
 ``LIMIT_RESUME`` event precedes that turn.
+
+Wasted-turns batch (v4-wasted-turns, see model.py's ``Turn.
+tool_error_count``/``tool_error_chars`` docstrings): ``_accumulate_tool_
+results`` already walks every ``tool_result`` block answering the current
+turn's own ``tool_use_ids`` to build ``tool_result_chars_by_tool``; the
+same loop now also checks each block's own ``is_error`` field (``bool``
+on the real corpus, verified read-only against the full local project
+tree before implementing) and, when it is ``True``, increments
+``current.tool_error_count`` and adds the same ``_tool_result_length``
+figure already computed for that block onto ``current.tool_error_chars``
+— no second pass over the content list, keeping the parser single-pass.
 """
 
 from __future__ import annotations
@@ -537,6 +548,12 @@ class _PendingTurn:
     reset_minutes_of_day: int | None = None
     reset_tz: str | None = None
     reset_ts: str | None = None
+    #: Wasted-turns addition (see model.py's ``Turn.tool_error_count``/
+    #: ``tool_error_chars`` docstrings): populated by
+    #: ``_accumulate_tool_results`` for tool_result lines answering this
+    #: turn's own ``tool_use_ids`` that carry ``is_error: true``.
+    tool_error_count: int = 0
+    tool_error_chars: int = 0
 
 
 def _merge_content_blocks(pending: _PendingTurn, content, tool_use_names: dict[str, str]) -> None:
@@ -743,6 +760,13 @@ def _accumulate_tool_results(
             )
             if isinstance(ts_raw, str) and ts_raw:
                 current.tool_result_ts_values.append(ts_raw)
+            # Wasted-turns addition (see model.py's ``Turn.
+            # tool_error_count``/``tool_error_chars`` docstrings): a
+            # tool_result answering this turn's own tool_use flagged
+            # ``is_error: true`` -- length only, never the error content.
+            if block.get("is_error") is True:
+                current.tool_error_count += 1
+                current.tool_error_chars += length
 
 
 def _resolve_preceding_tool(previous_turn: Turn | None) -> tuple[str, str | None]:
@@ -892,6 +916,8 @@ def _finalize_turn(
         human_prompt_has_paste=human_prompt_has_paste,
         synthetic_kind=pending.synthetic_kind,
         gap_cause=gap_cause,
+        tool_error_count=pending.tool_error_count,
+        tool_error_chars=pending.tool_error_chars,
     )
     return turn, new_prev_ts, new_priced_count
 

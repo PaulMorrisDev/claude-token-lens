@@ -36,7 +36,13 @@ __version__ = "0.3.0"
 #: Turn.synthetic_kind, Turn.gap_cause -- see model.py's module
 #: docstring), none of which a pre-batch digest cache entry ever
 #: computed, so it must not be treated as still valid.
-PARSER_VERSION = 5
+#:
+#: Bumped to 6 by the v4-wasted-turns batch: parse.py now derives two new
+#: additive ``Turn`` fields, ``tool_error_count``/``tool_error_chars``,
+#: from each turn's own tool_result blocks that carry ``is_error: true``
+#: (see model.py's module docstring), which no pre-batch digest cache
+#: entry ever computed, so it must not be treated as still valid.
+PARSER_VERSION = 6
 
 #: Bump when the model.py contract changes in a way that invalidates the
 #: on-disk digest cache (see model.py's module docstring for the contract
