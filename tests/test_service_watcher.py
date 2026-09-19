@@ -133,6 +133,202 @@ def test_run_once_parses_synthetic_two_session_corpus(tmp_path: Path, store: Sto
     assert kinds == {"top-level", "subagent"}
 
 
+# -- /api/summary windowing parity with the report's overview totals -------
+
+
+def test_summary_windowing_matches_report_overview_totals(tmp_path: Path, store: Store):
+    """Regression for a live windowing bug: with ``window_days=7``,
+    ``/api/summary`` (``Store.summary``) used to count ``transcripts``
+    corpus-wide (never windowed at all) and window ``sessions`` by the
+    session row's own ``last_ts`` rather than the report's own windowing
+    rule (a session's top-level transcript file's ``mtime`` -- the same
+    ``window_by="mtime"`` default ``discovery.find_sessions``/
+    ``corpus.load_corpus``/``service.rebuild.corpus_from_store`` all
+    share). Build a synthetic two-session corpus -- one session touched
+    recently, one touched 40 days ago, well outside a 7-day window, one
+    of them with a subagent transcript -- and assert
+    ``Store.summary(window_days=7)`` agrees exactly with the same window
+    built the way the CLI ``report`` command does: a fresh
+    ``corpus.load_corpus(project_dirs, days=7)`` fed through
+    ``report.build_report``, read back from its "overview" section's
+    "totals" table (``sessions``, ``top_level_transcripts`` +
+    ``subagent_transcripts``).
+    """
+    from claude_token_lens.config import Config
+    from claude_token_lens.corpus import load_corpus
+    from claude_token_lens.pricing import load_pricing
+    from claude_token_lens.report import build_report
+
+    root = tmp_path / "projects"
+    project_dir = root / "proj-a"
+    _write_session(root, "proj-a", "sess-recent", _two_turns(), age_s=600.0)
+    _write_subagent(root, "proj-a", "sess-recent", "agent-1", [turn_line(timestamp="2026-09-18T12:06:00.000Z")], age_s=600.0)
+    _write_session(root, "proj-a", "sess-old", _two_turns(), age_s=40 * 86400.0)
+
+    options = _options(tmp_path)
+    watcher = FileWatcher(store, options)
+    stats = watcher.run_once()
+    assert stats.errors == 0
+
+    summary = store.summary(window_days=7)
+    assert_privacy(summary)
+
+    fresh_corpus = load_corpus([project_dir], days=7)
+    fresh_report = build_report(fresh_corpus, load_pricing(), Config(), projects=("proj-a",), window="last 7 days")
+    totals = next(t for s in fresh_report.sections if s.key == "overview" for t in s.tables if t.name == "totals")
+    overview = {row[0]: row[1] for row in totals.rows}
+
+    assert summary["sessions"] == overview["sessions"] == 1
+    assert summary["transcripts"] == overview["top_level_transcripts"] + overview["subagent_transcripts"] == 2
+
+
+# -- baseline / profile ingestion -------------------------------------------
+
+
+def _write_baseline_record(config_dir: Path, *, record_id: str, archetype: str | None = "exploratory", window_days: int | None = 7, created_at: str = "2026-09-18T12:00:00+00:00") -> Path:
+    baselines_dir = config_dir / "baselines"
+    baselines_dir.mkdir(parents=True, exist_ok=True)
+    record = {
+        "id": record_id,
+        "created_at": created_at,
+        "window_days": window_days,
+        "provisional": False,
+        "sessions_analysed": 3,
+        "mode_mix": {"interactive": 3},
+        "dominant_purposes": ["implementation"],
+        "archetype": archetype,
+        "scorecard_overall": 72,
+        "scorecard_label": "good",
+        "suggested_profile": "implementation-heavy",
+        "suggested_profile_reason": "test fixture",
+        "projected_saving_usd": 1.5,
+        "billing_mismatch_warning": None,
+        "projects": ["proj-a"],
+    }
+    path = baselines_dir / f"{record_id}.json"
+    path.write_text(json.dumps(record, indent=2, sort_keys=True), encoding="utf-8")
+    return path
+
+
+def test_scan_baselines_ingests_every_record_under_config_dir(tmp_path: Path, store: Store):
+    options = _options(tmp_path)
+    _write_baseline_record(options.config_dir, record_id="base-1")
+
+    watcher = FileWatcher(store, options)
+    stats = watcher.run_once()
+
+    assert_privacy(stats)
+    assert stats.errors == 0
+    baselines = store.baselines()
+    assert_privacy(baselines)
+    assert len(baselines) == 1
+    assert baselines[0]["archetype"] == "exploratory"
+    assert baselines[0]["window_start"] == "2026-09-11T12:00:00+00:00"
+    assert baselines[0]["window_end"] == "2026-09-18T12:00:00+00:00"
+
+
+def test_scan_baselines_is_a_no_op_on_an_unchanged_repeat_tick(tmp_path: Path, store: Store):
+    options = _options(tmp_path)
+    _write_baseline_record(options.config_dir, record_id="base-1")
+
+    watcher = FileWatcher(store, options)
+    watcher.run_once()
+    first = store.baselines()
+
+    second_stats = watcher.run_once()
+    second = store.baselines()
+
+    assert_privacy(second_stats)
+    assert len(second) == len(first) == 1
+    assert second[0]["id"] == first[0]["id"]
+
+
+def test_scan_baselines_updates_in_place_when_the_record_changes(tmp_path: Path, store: Store):
+    options = _options(tmp_path)
+    _write_baseline_record(options.config_dir, record_id="base-1", archetype="exploratory")
+
+    watcher = FileWatcher(store, options)
+    watcher.run_once()
+    first = store.baselines()
+    assert len(first) == 1
+
+    _write_baseline_record(options.config_dir, record_id="base-1", archetype="deep-focus")
+    watcher.run_once()
+    second = store.baselines()
+
+    assert len(second) == 1
+    assert second[0]["id"] == first[0]["id"]
+    assert second[0]["archetype"] == "deep-focus"
+
+
+def _write_user_profile(config_dir: Path, *, profile_id: str, name: str = "My Profile") -> Path:
+    from claude_token_lens.profiles.schema import Profile, dump_profile
+
+    profiles_dir = config_dir / "profiles"
+    profiles_dir.mkdir(parents=True, exist_ok=True)
+    profile = Profile(id=profile_id, name=name, settings={"promptCacheTtl": "1h"})
+    path = profiles_dir / f"{profile_id}.toml"
+    path.write_text(dump_profile(profile), encoding="utf-8")
+    return path
+
+
+def test_scan_profiles_ingests_every_user_toml_under_config_dir(tmp_path: Path, store: Store):
+    options = _options(tmp_path)
+    _write_user_profile(options.config_dir, profile_id="my-profile", name="My Profile")
+
+    watcher = FileWatcher(store, options)
+    stats = watcher.run_once()
+
+    assert_privacy(stats)
+    assert stats.errors == 0
+    profiles = store.profiles()
+    assert_privacy(profiles)
+    assert [p["id"] for p in profiles] == ["my-profile"]
+    assert profiles[0]["name"] == "My Profile"
+
+
+def test_scan_profiles_is_a_no_op_on_an_unchanged_repeat_tick(tmp_path: Path, store: Store):
+    options = _options(tmp_path)
+    _write_user_profile(options.config_dir, profile_id="my-profile")
+
+    watcher = FileWatcher(store, options)
+    watcher.run_once()
+    first = store.profiles()
+
+    watcher.run_once()
+    second = store.profiles()
+
+    assert len(second) == len(first) == 1
+    assert second[0]["updated_at"] == first[0]["updated_at"]
+
+
+def test_scan_profiles_re_ingests_when_the_file_changes(tmp_path: Path, store: Store):
+    options = _options(tmp_path)
+    _write_user_profile(options.config_dir, profile_id="my-profile", name="Original Name")
+
+    watcher = FileWatcher(store, options)
+    watcher.run_once()
+    first = store.profiles()
+
+    _write_user_profile(options.config_dir, profile_id="my-profile", name="Renamed")
+    watcher.run_once()
+    second = store.profiles()
+
+    assert len(second) == 1
+    assert second[0]["name"] == "Renamed"
+
+
+def test_scan_profiles_never_ingests_a_catalogue_id(tmp_path: Path, store: Store):
+    options = _options(tmp_path)
+    _write_user_profile(options.config_dir, profile_id="interactive-chat", name="Shadow attempt")
+
+    watcher = FileWatcher(store, options)
+    stats = watcher.run_once()
+
+    assert stats.errors == 0
+    assert store.profiles() == []
+
+
 # -- incremental re-parse ---------------------------------------------------
 
 

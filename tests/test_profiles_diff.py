@@ -321,20 +321,20 @@ def test_apply_command_user_scope_has_no_project_flag():
 def test_apply_command_project_local_without_path_omits_project_flag():
     text = apply_command("interactive-chat", "project-local")
     apply_line = text.splitlines()[0]
-    assert "--project" not in apply_line
+    assert "--project-dir" not in apply_line
 
 
 def test_apply_command_project_local_with_path_prints_it_verbatim():
     text = apply_command("interactive-chat", "project-local", project_path="C:\\Dev\\SomeProject")
     apply_line = text.splitlines()[0]
-    assert "--project C:\\Dev\\SomeProject" in apply_line
+    assert "--project-dir C:\\Dev\\SomeProject" in apply_line
 
 
 def test_apply_command_repo_scope_adds_allow_tracked():
     text = apply_command("interactive-chat", "repo", project_path="/home/dev/project")
     apply_line = text.splitlines()[0]
     assert "--allow-tracked" in apply_line
-    assert "--project /home/dev/project" in apply_line
+    assert "--project-dir /home/dev/project" in apply_line
 
 
 def test_apply_command_rejects_unknown_scope():

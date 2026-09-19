@@ -50,20 +50,24 @@ One attribution choice remains, carried over unchanged:
 from __future__ import annotations
 
 import concurrent.futures
+import hashlib
 import json
 import os
 import threading
 import time
 import zlib
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from .. import PARSER_VERSION, classify, discovery, recache, workflows as workflows_mod, workstyle
+from .. import baseline as baseline_mod
 from ..cache import DigestCache, encode_result, result_from_jsonable
 from ..compaction import compaction_records_for_transcript
 from ..corpus import _parse_worker
 from ..model import TranscriptMeta, TranscriptResult
 from ..parse import parse_transcript
 from ..pricing import Pricing, PricingError, load_pricing, price_turn
+from ..profiles import catalogue as profile_catalogue, schema as profile_schema
 from ..report import _dominant_transcript_model, _extract_workstyle_features
 from .. import snapshots as snapshots_mod
 from .contracts import ServeOptions, WatcherStats
@@ -388,6 +392,8 @@ class FileWatcher:
 
     def _run_once(self, stats: WatcherStats) -> None:
         self._scan_snapshots(stats)
+        self._scan_baselines(stats)
+        self._scan_profiles(stats)
 
         known = self._time_store(stats, self.store.known_files)
         seen_paths: set[str] = set()
@@ -953,6 +959,113 @@ class FileWatcher:
                 stats.error_messages = stats.error_messages + (f"snapshot ingest error: {type(exc).__name__}",)
         self._snapshot_ids_by_ts = ids_by_ts
         self._snapshot_file_mtimes = fresh_mtimes
+
+    # -- v0.3 baseline / profile ingestion -----------------------------------
+
+    def _scan_baselines(self, stats: WatcherStats) -> None:
+        """Ingest every ``<config_dir>/baselines/*.json`` baseline record
+        (``claude-token-lens baseline`` -- ``baseline.list_baselines``)
+        into the ``baselines`` table, content-hash deduped
+        (``Store.record_baseline``'s own ``record_id``/``content_hash``
+        check) so a repeat tick over an unchanged file is a no-op.
+
+        A baseline record's own ``projects`` field (already redacted --
+        ``baseline.py``'s own privacy guarantee, restated in this
+        module's docstring) attributes the row to its first named
+        project, or the synthetic global slug when the record named
+        none (e.g. the "no sessions in this window yet" minimal record)
+        -- the same attribution posture :meth:`_scan_snapshots` uses for
+        a snapshot with no per-project identity of its own.
+        ``window_start``/``window_end`` are derived from the record's
+        own ``created_at``/``window_days`` fields -- there is no
+        separate start/end timestamp in a baseline record
+        (``baseline.build_baseline``) -- a computation from the record's
+        own already-computed fields, never a fabrication.
+        """
+        try:
+            records = baseline_mod.list_baselines(self.options.config_dir)
+        except OSError as exc:
+            stats.errors += 1
+            stats.error_messages = stats.error_messages + (f"baseline scan error: {type(exc).__name__}",)
+            return
+
+        for record in records:
+            try:
+                record_id = record.get("id")
+                if not record_id:
+                    continue
+                digest_json = json.dumps(record, sort_keys=True)
+                content_hash = hashlib.sha256(digest_json.encode("utf-8")).hexdigest()
+                projects = record.get("projects") or []
+                project_slug = projects[0] if projects else GLOBAL_PROJECT_SLUG
+
+                created_at = record.get("created_at") or _now_iso()
+                window_days = record.get("window_days")
+                window_end = created_at
+                window_start = created_at
+                if window_days:
+                    try:
+                        created_dt = datetime.fromisoformat(str(created_at).replace("Z", "+00:00"))
+                        window_start = (created_dt - timedelta(days=window_days)).isoformat()
+                    except ValueError:
+                        pass
+
+                self._time_store(
+                    stats,
+                    self.store.record_baseline,
+                    project_slug=project_slug,
+                    project_root_path="",
+                    window_start=window_start,
+                    window_end=window_end,
+                    archetype=record.get("archetype"),
+                    digest_json=digest_json,
+                    record_id=record_id,
+                    content_hash=content_hash,
+                )
+            except Exception as exc:
+                stats.errors += 1
+                stats.error_messages = stats.error_messages + (f"baseline ingest error: {type(exc).__name__}",)
+
+    def _scan_profiles(self, stats: WatcherStats) -> None:
+        """Ingest every ``<config_dir>/profiles/*.toml`` *user* profile
+        file into the ``profiles`` table (``Store.upsert_profile``),
+        content-hash deduped on the file's own raw text so a repeat tick
+        over an unchanged file is a no-op.
+
+        Catalogue profiles (``profiles.catalogue.CATALOGUE_IDS``) are
+        never ingested here -- they are shipped, static package data
+        with no on-disk file of the user's own under ``config_dir`` to
+        track; ``/api/profiles`` (``service/api.py``) merges them in at
+        query time instead. A user file that happens to name a catalogue
+        id is skipped rather than upserted, so it can never shadow the
+        shipped one. A malformed profile file (fails
+        ``profiles.schema.load_profile``) is skipped and recorded in
+        ``stats.error_messages`` rather than aborting the whole tick --
+        the same "never let one bad file break the tick" posture every
+        other per-file step in this module already follows.
+        """
+        profiles_dir = Path(self.options.config_dir) / "profiles"
+        if not profiles_dir.is_dir():
+            return
+
+        for path in sorted(profiles_dir.glob("*.toml")):
+            try:
+                text = path.read_text(encoding="utf-8")
+                profile = profile_schema.load_profile(path)
+                if profile.id in profile_catalogue.CATALOGUE_IDS:
+                    continue
+                content_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
+                self._time_store(
+                    stats,
+                    self.store.upsert_profile,
+                    profile_id=profile.id,
+                    name=profile.name or profile.id,
+                    toml_path=str(path),
+                    content_hash=content_hash,
+                )
+            except Exception as exc:
+                stats.errors += 1
+                stats.error_messages = stats.error_messages + (f"profile ingest error: {type(exc).__name__}",)
 
 
 __all__ = ["FileWatcher", "LIVE_FILE_WINDOW_S"]

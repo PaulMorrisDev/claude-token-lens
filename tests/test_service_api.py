@@ -36,6 +36,8 @@ import pytest
 from claude_token_lens import corpus as corpus_mod
 from claude_token_lens.config import ConfigError, load_config, load_session_overrides
 from claude_token_lens.pricing import load_pricing
+from claude_token_lens.profiles import catalogue as profile_catalogue
+from claude_token_lens.profiles import schema as profile_schema
 from claude_token_lens.render.json_out import render_json
 from claude_token_lens.report import build_report
 from claude_token_lens.service import api as service_api
@@ -153,7 +155,7 @@ def _seed_store(store: Store, corpus: corpus_mod.Corpus) -> str:
         window_start="2026-09-11T00:00:00Z",
         window_end="2026-09-18T00:00:00Z",
         archetype="plan-high-implement-low",
-        digest_json=json.dumps({"sessions": 1}),
+        digest_json=json.dumps({"sessions": 1, "suggested_profile": "implementation-heavy"}),
     )
     store.set_tag(bundle.session_id, "purpose", "refactor-override")
     return bundle.session_id
@@ -453,17 +455,70 @@ def test_compactions(server):
 def test_profiles_listing_has_no_toml_path(server):
     resp, body = server.get_json("/api/profiles")
     assert resp.status == 200
-    assert body["data"] == [{"id": "p1", "name": "implementation-heavy", "updated_at": body["data"][0]["updated_at"]}]
+    profiles = body["data"]["profiles"]
+    user_entries = [p for p in profiles if p["source"] == "user"]
+    assert user_entries == [
+        {
+            "id": "p1",
+            "name": "implementation-heavy",
+            "source": "user",
+            "archetype": None,
+            "for": [],
+            "updated_at": user_entries[0]["updated_at"],
+        }
+    ]
     assert_privacy(body)
     _assert_no_leak(json.dumps(body).encode("utf-8"))
 
 
-def test_baseline_latest_per_project(server):
+def test_profiles_listing_includes_the_catalogue(server):
+    resp, body = server.get_json("/api/profiles")
+    assert resp.status == 200
+    catalogue_ids = {p["id"] for p in body["data"]["profiles"] if p["source"] == "catalogue"}
+    assert catalogue_ids == set(profile_catalogue.CATALOGUE_IDS)
+    assert_privacy(body)
+
+
+def test_profiles_listing_reports_the_baseline_suggested_profile(server):
+    resp, body = server.get_json("/api/profiles")
+    assert resp.status == 200
+    assert body["data"]["suggested_profile_id"] == "implementation-heavy"
+
+
+def test_baseline_returns_the_latest_capture_and_capture_status(server):
     resp, body = server.get_json("/api/baseline")
     assert resp.status == 200
-    assert len(body["data"]) == 1
-    assert body["data"][0]["archetype"] == "plan-high-implement-low"
+    data = body["data"]
+    assert data["baseline"]["archetype"] == "plan-high-implement-low"
+    assert data["baseline"]["record"] == {"sessions": 1, "suggested_profile": "implementation-heavy"}
+    assert len(data["history"]) == 1
+    assert data["capture_status"]["started"] is False
+    assert "not started" in data["capture_status"]["summary"]
     assert_privacy(body)
+
+
+def test_baseline_is_null_when_none_recorded(tmp_path, monkeypatch):
+    corpus = _build_corpus(tmp_path)
+    _install_fake_rebuild(monkeypatch, corpus)
+    store = Store(tmp_path / "empty.db")
+    store.open()
+    config_dir = tmp_path / "empty-config"
+    config_dir.mkdir()
+    options = ServeOptions(projects_root=tmp_path / "projects", config_dir=config_dir)
+    handler_cls = service_api.make_handler(store, options)
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler_cls)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    handle = _ServerHandle(httpd, thread, corpus=corpus, store=store, options=options)
+    try:
+        resp, body = handle.get_json("/api/baseline")
+        assert resp.status == 200
+        assert body["data"]["baseline"] is None
+        assert body["data"]["history"] == []
+        assert_privacy(body)
+    finally:
+        handle.close()
+        store.close()
 
 
 def test_set_tag_round_trips(server):
@@ -501,19 +556,119 @@ def test_set_tag_bad_json_body_is_bad_request(server):
     assert resp.status == 400
 
 
-# -- v0.3-dependent stub routes ----------------------------------------------
+# -- v0.3 profile routes -----------------------------------------------------
 
 
-def test_profile_diff_is_not_implemented(server):
+def test_profile_diff_for_catalogue_profile_against_latest_snapshot(server):
+    # The "server" fixture seeds one (schema-1, no "effective" field)
+    # snapshot -- exercises the "a snapshot exists but the diff still
+    # has to degrade gracefully" path; the "no snapshot at all" path is
+    # covered separately below with a snapshot-free store.
+    resp, body = server.get_json("/api/profiles/interactive-chat/diff")
+    assert resp.status == 200
+    data = body["data"]
+    assert data["profile_id"] == "interactive-chat"
+    assert data["scope"] == "user"
+    assert data["notes"] == []
+    assert isinstance(data["settings"], list) and data["settings"]
+    assert "claude-token-lens apply interactive-chat" in data["apply_command"]
+    assert data["launch_command"].startswith("claude --settings")
+    assert_privacy(body)
+    _assert_no_leak(json.dumps(body).encode("utf-8"))
+
+
+def test_profile_diff_notes_missing_snapshot_when_store_has_none(tmp_path, monkeypatch):
+    corpus = _build_corpus(tmp_path)
+    _install_fake_rebuild(monkeypatch, corpus)
+    store = Store(tmp_path / "no-snapshot.db")
+    store.open()
+    config_dir = tmp_path / "no-snapshot-config"
+    config_dir.mkdir()
+    options = ServeOptions(projects_root=tmp_path / "projects", config_dir=config_dir)
+    handler_cls = service_api.make_handler(store, options)
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler_cls)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    handle = _ServerHandle(httpd, thread, corpus=corpus, store=store, options=options)
+    try:
+        resp, body = handle.get_json("/api/profiles/interactive-chat/diff")
+        assert resp.status == 200
+        assert any("no config snapshot" in note for note in body["data"]["notes"])
+        assert_privacy(body)
+    finally:
+        handle.close()
+        store.close()
+
+
+def test_profile_diff_unknown_id_is_not_found(server):
+    resp, body = server.get_json("/api/profiles/does-not-exist/diff")
+    assert resp.status == 404
+
+
+def test_profile_diff_rejects_a_user_profile_row_with_no_backing_file(server):
+    # "p1" is a store-only fixture row (test_service_store.py's own
+    # convention) with no real <config_dir>/profiles/p1.toml on disk --
+    # the diff route must treat it the same as an unknown id, never
+    # crash trying to read a file that was never written.
     resp, body = server.get_json("/api/profiles/p1/diff")
-    assert resp.status == 501
-    assert body["error"]["code"] == "not_implemented"
+    assert resp.status == 404
 
 
-def test_create_profile_is_not_implemented(server):
-    resp, body = server.post_json("/api/profiles", {"id": "p2", "name": "new-profile"})
-    assert resp.status == 501
-    assert body["error"]["code"] == "not_implemented"
+def test_profile_diff_bad_scope_is_bad_request(server):
+    resp, body = server.get_json("/api/profiles/interactive-chat/diff?scope=bogus")
+    assert resp.status == 400
+
+
+def test_profile_diff_never_includes_a_project_path(server):
+    # The route never accepts a client-supplied project directory (see
+    # route_profile_diff's own docstring note) -- a project-scoped scope
+    # simply renders its apply command without --project-dir, so the
+    # user fills in their own path when they actually run it.
+    resp, body = server.get_json("/api/profiles/interactive-chat/diff?scope=repo")
+    assert resp.status == 200
+    assert "--project-dir" not in body["data"]["apply_command"]
+
+
+def test_create_profile_writes_a_real_toml_file_and_is_listed(server):
+    payload = {"id": "my-new-profile", "name": "My New Profile", "settings": {"promptCacheTtl": "1h"}}
+    resp, body = server.post_json("/api/profiles", payload)
+    assert resp.status == 201
+    assert body["data"] == {"id": "my-new-profile", "name": "My New Profile", "source": "user", "updated_at": body["data"]["updated_at"]}
+
+    written = server.options.config_dir / "profiles" / "my-new-profile.toml"
+    assert written.is_file()
+    loaded = profile_schema.load_profile(written)
+    assert loaded.settings["promptCacheTtl"] == "1h"
+
+    resp, body = server.get_json("/api/profiles")
+    ids = {p["id"] for p in body["data"]["profiles"]}
+    assert "my-new-profile" in ids
+
+
+def test_create_profile_rejects_unknown_key(server):
+    resp, body = server.post_json("/api/profiles", {"id": "bad-profile", "bogus_key": 1})
+    assert resp.status == 400
+    assert body["error"]["code"] == "bad_request"
+    assert "bogus_key" in body["error"]["message"]
+
+
+def test_create_profile_rejects_catalogue_id(server):
+    resp, body = server.post_json("/api/profiles", {"id": "interactive-chat", "name": "shadow"})
+    assert resp.status == 409
+
+
+def test_create_profile_conflict_without_replace_then_succeeds_with_it(server):
+    resp, body = server.post_json("/api/profiles", {"id": "dup-profile", "name": "first"})
+    assert resp.status == 201
+
+    resp, body = server.post_json("/api/profiles", {"id": "dup-profile", "name": "second"})
+    assert resp.status == 409
+    assert body["error"]["code"] == "conflict"
+
+    resp, body = server.post_json("/api/profiles?replace=1", {"id": "dup-profile", "name": "second"})
+    assert resp.status == 201
+    written = server.options.config_dir / "profiles" / "dup-profile.toml"
+    assert profile_schema.load_profile(written).name == "second"
 
 
 def test_create_profile_bad_body_is_bad_request(server):

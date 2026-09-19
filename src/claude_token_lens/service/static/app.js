@@ -1232,12 +1232,29 @@
     }
   }
 
+  // v0.3: GET /api/baseline now returns {"baseline", "history",
+  // "capture_status"} (docs/api.md) rather than a bare list -- the
+  // shape-defensive fallbacks docs/ui.md's own "Shape-defensive
+  // rendering" note flagged for trimming once api.py landed are gone;
+  // this reads that shape directly.
   function renderBaseline(data, container) {
-    var rows = Array.isArray(data) ? data : data ? [data] : [];
-    if (!rows.length) {
+    var status = data && data.capture_status;
+    if (status) {
+      container.appendChild(el("p", { class: "notice", text: status.summary || "" }));
+    }
+
+    var latest = data && data.baseline;
+    if (!latest) {
       container.appendChild(el("p", { class: "notice", text: "No baseline captured yet (see `claude-token-lens baseline`)." }));
       return;
     }
+    if (status && status.started && !status.complete) {
+      container.appendChild(
+        el("p", { class: "notice", text: "Capture window open: provisional -- this baseline may change once capture completes." })
+      );
+    }
+
+    var rows = data.history && data.history.length ? data.history : [latest];
     var table = el("table");
     var head = el("thead", null, [
       el("tr", null, ["Project", "Window start", "Window end", "Archetype", "Captured"].map(function (h) {
@@ -1270,44 +1287,235 @@
   // ======================================================================
   // Profiles tab
   // ======================================================================
+  //
+  // v0.3: GET /api/profiles now returns {"profiles": [...each tagged
+  // source: "catalogue"|"user"...], "suggested_profile_id"} (docs/api.md)
+  // rather than a bare list of indexed (user-only) profiles, and GET
+  // /api/profiles/<id>/diff is a real computation (profiles/diff.py)
+  // rather than a 501 stub -- see that route's own docstring in api.py.
 
   function renderProfiles(panel) {
     clear(panel);
     panel.appendChild(el("h2", { text: "Profiles" }));
+
     var listContainer = el("div", { id: "profiles-list" });
     var diffContainer = el("div", { id: "profiles-diff" });
+    var formContainer = el("div", { id: "profiles-save-form" });
+
     panel.appendChild(listContainer);
     panel.appendChild(diffContainer);
-    loadInto(listContainer, "/api/profiles", function (profiles, container) {
-      renderProfilesList(profiles, container, diffContainer);
-    });
+    panel.appendChild(el("h3", { text: "Save as a new user profile" }));
+    panel.appendChild(formContainer);
+
+    function refreshList() {
+      loadInto(listContainer, "/api/profiles", function (data, container) {
+        renderProfilesList(data, container, diffContainer);
+      });
+    }
+
+    refreshList();
+    renderSaveProfileForm(formContainer, refreshList);
   }
 
-  function renderProfilesList(profiles, container, diffContainer) {
+  function renderProfilesList(data, container, diffContainer) {
+    var profiles = (data && data.profiles) || [];
+    var suggestedId = data && data.suggested_profile_id;
     if (!profiles.length) {
-      container.appendChild(el("p", { class: "notice", text: "No profiles saved yet." }));
+      container.appendChild(el("p", { class: "notice", text: "No profiles available." }));
       return;
     }
     var list = el("ul", { class: "profile-list" });
     profiles.forEach(function (profile) {
+      var isSuggested = Boolean(suggestedId) && profile.id === suggestedId;
       var button = el("button", { type: "button", text: profile.name || profile.id });
       button.addEventListener("click", function () {
         loadInto(diffContainer, "/api/profiles/" + encodeURIComponent(profile.id) + "/diff", renderProfileDiff);
       });
-      list.appendChild(
-        el("li", null, [button, el("span", { class: "notes", text: " — updated " + (profile.updated_at || "-") })])
-      );
+
+      var metaParts = ["source: " + profile.source];
+      if (profile.archetype) metaParts.push("archetype: " + profile.archetype);
+      if (profile.updated_at) metaParts.push("updated " + profile.updated_at);
+
+      var children = [button, el("span", { class: "notes", text: " — " + metaParts.join(", ") })];
+      if (isSuggested) {
+        children.push(el("span", { class: "profile-suggested", text: " (suggested by your latest baseline)" }));
+      }
+      list.appendChild(el("li", null, children));
     });
     container.appendChild(list);
   }
 
-  function renderProfileDiff(data, container) {
-    container.appendChild(el("h3", { text: "Diff" }));
-    container.appendChild(el("pre", { text: data.diff || "(no diff)" }));
-    if (data.apply_command) {
-      container.appendChild(el("p", { text: "Apply command (run yourself — the service never runs it):" }));
-      container.appendChild(el("pre", { text: data.apply_command }));
+  function _diffRowValue(value) {
+    if (value === null || value === undefined) return "(unset)";
+    if (Array.isArray(value)) return "[" + value.join(", ") + "]";
+    return String(value);
+  }
+
+  function renderDiffRowsTable(rows) {
+    var table = el("table");
+    var head = el(
+      "thead",
+      null,
+      [
+        el(
+          "tr",
+          null,
+          ["Key", "Current", "Proposed", "Where", "Managed"].map(function (h) {
+            return el("th", { text: h });
+          })
+        ),
+      ]
+    );
+    var body = el(
+      "tbody",
+      null,
+      rows.map(function (row) {
+        return el("tr", null, [
+          el("td", { text: row.key }),
+          el("td", { text: _diffRowValue(row.current_value) }),
+          el("td", { text: _diffRowValue(row.proposed_value) }),
+          el("td", { text: row.target_file || "-" }),
+          el("td", { text: row.managed ? "managed by policy" : "-" }),
+        ]);
+      })
+    );
+    table.appendChild(head);
+    table.appendChild(body);
+    return table;
+  }
+
+  function copyToClipboard(text) {
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text);
+      }
+    } catch (err) {
+      /* clipboard unavailable (insecure context, permissions) -- silently do nothing */
     }
+  }
+
+  function codeBlockWithCopy(text) {
+    var wrap = el("div", { class: "code-block" });
+    var pre = el("pre", { text: text || "" });
+    var button = el("button", { type: "button", class: "copy-button", text: "Copy" });
+    button.addEventListener("click", function () {
+      copyToClipboard(text || "");
+      button.textContent = "Copied";
+      setTimeout(function () {
+        button.textContent = "Copy";
+      }, 1500);
+    });
+    wrap.appendChild(pre);
+    wrap.appendChild(button);
+    return wrap;
+  }
+
+  function renderProfileDiff(data, container) {
+    clear(container);
+    container.appendChild(el("h3", { text: "Diff: " + data.profile_id + " (scope: " + data.scope + ")" }));
+
+    (data.notes || []).forEach(function (note) {
+      container.appendChild(el("p", { class: "notice", text: note }));
+    });
+
+    if (data.settings && data.settings.length) {
+      container.appendChild(el("h4", { text: "Settings" }));
+      container.appendChild(renderDiffRowsTable(data.settings));
+    }
+    if (data.agents && data.agents.length) {
+      container.appendChild(el("h4", { text: "Agents" }));
+      container.appendChild(renderDiffRowsTable(data.agents));
+    }
+    if (data.env && data.env.length) {
+      container.appendChild(el("h4", { text: "Environment" }));
+      container.appendChild(renderDiffRowsTable(data.env));
+    }
+
+    container.appendChild(el("h4", { text: "Unified diff" }));
+    container.appendChild(el("pre", { text: data.diff || "(no changes against the current effective config)" }));
+
+    container.appendChild(el("h4", { text: "Apply (run yourself — the service never runs it)" }));
+    container.appendChild(codeBlockWithCopy(data.apply_command));
+
+    container.appendChild(el("h4", { text: "Launch (one-session overlay, nothing written)" }));
+    container.appendChild(codeBlockWithCopy(data.launch_command));
+  }
+
+  function renderSaveProfileForm(container, onSaved) {
+    clear(container);
+
+    var idInput = el("input", { type: "text", id: "profile-form-id", name: "id", required: true, placeholder: "my-profile" });
+    var nameInput = el("input", { type: "text", id: "profile-form-name", name: "name", placeholder: "My profile" });
+    var settingsInput = el("textarea", { id: "profile-form-settings", name: "settings", rows: 4 });
+    settingsInput.value = "{}";
+    var errorNode = el("div", { class: "notice error", role: "alert", hidden: true });
+    var statusNode = el("p", { class: "notes" });
+
+    var form = el("form", { class: "profile-form" }, [
+      el("label", null, [el("span", { text: "Profile ID (lowercase, digits, hyphens)" }), idInput]),
+      el("label", null, [el("span", { text: "Name" }), nameInput]),
+      el(
+        "label",
+        null,
+        [el("span", { text: "Settings overlay (JSON object, e.g. {\"promptCacheTtl\": \"1h\"})" }), settingsInput]
+      ),
+      el("button", { type: "submit", text: "Save as user profile" }),
+      errorNode,
+      statusNode,
+    ]);
+
+    function showError(message) {
+      errorNode.hidden = false;
+      errorNode.textContent = message;
+    }
+
+    form.addEventListener("submit", function (event) {
+      event.preventDefault();
+      errorNode.hidden = true;
+      errorNode.textContent = "";
+      statusNode.textContent = "";
+
+      var id = idInput.value.trim();
+      if (!id) {
+        showError("Profile ID is required.");
+        return;
+      }
+
+      var settings;
+      try {
+        settings = settingsInput.value.trim() ? JSON.parse(settingsInput.value) : {};
+      } catch (err) {
+        showError("Settings must be valid JSON: " + (err && err.message ? err.message : String(err)));
+        return;
+      }
+      if (typeof settings !== "object" || settings === null || Array.isArray(settings)) {
+        showError("Settings must be a JSON object.");
+        return;
+      }
+
+      var body = { id: id, settings: settings };
+      var name = nameInput.value.trim();
+      if (name) body.name = name;
+
+      fetchJson("/api/profiles", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }).then(function (result) {
+        var respBody = result.body;
+        if (!respBody || respBody.ok !== true) {
+          showError((respBody && respBody.error && respBody.error.message) || "Could not save profile.");
+          return;
+        }
+        statusNode.textContent = 'Saved profile "' + respBody.data.id + '".';
+        idInput.value = "";
+        nameInput.value = "";
+        settingsInput.value = "{}";
+        if (onSaved) onSaved();
+      });
+    });
+
+    container.appendChild(form);
   }
 
   // ======================================================================
@@ -1319,9 +1527,25 @@
   function renderRecommendations(panel) {
     clear(panel);
     panel.appendChild(el("h2", { text: "Recommendations" }));
+    var noticeContainer = el("div", { id: "recommendations-notice" });
     var container = el("div", { id: "recommendations-list" });
+    panel.appendChild(noticeContainer);
     panel.appendChild(container);
     container.appendChild(loadingNode());
+
+    // v0.3: same "capture window open: provisional" notice the Config
+    // tab's baseline panel shows (docs/api.md's /api/baseline
+    // capture_status) -- a recommendation built while onboarding's
+    // capture window is still running may change once it completes.
+    fetchJson("/api/baseline").then(function (result) {
+      var status = result.body && result.body.ok === true ? result.body.data.capture_status : null;
+      if (status && status.started && !status.complete) {
+        clear(noticeContainer);
+        noticeContainer.appendChild(
+          el("p", { class: "notice", text: "Capture window open: provisional -- recommendations below may change once capture completes." })
+        );
+      }
+    });
 
     Promise.all([fetchJson("/api/recommendations"), loadReport()]).then(function (results) {
       clear(container);

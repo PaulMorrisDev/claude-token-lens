@@ -7,6 +7,71 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Service: baseline and profile ingestion, and the real `/api/profiles*`
+  routes** (`service/watcher.py`, `service/store.py`, `service/api.py`,
+  work package V3-service): the watcher now ingests every
+  `<config_dir>/baselines/*.json` baseline record and every
+  `<config_dir>/profiles/*.toml` user profile into new `baselines`/
+  `profiles` store tables on each tick, content-hash deduped so a
+  repeat tick over an unchanged file is a no-op (`SCHEMA_VERSION` 4 to
+  5, for the new `content_hash`/`record_id` columns). `GET
+  /api/baseline` now returns the latest stored baseline, its full
+  history, and a `capture_status` block (with a one-line human-readable
+  `summary`) so the UI can mark recommendations provisional while a
+  capture window is open. `GET /api/profiles` now returns the seven
+  shipped catalogue profiles plus every stored user profile, each
+  tagged `source: "catalogue"|"user"`, and the latest baseline's
+  `suggested_profile_id` if any. `GET /api/profiles/<id>/diff` is a
+  real route: it diffs the requested profile against the latest config
+  snapshot's effective config (or an empty one, with a note, if no
+  snapshot has been recorded yet) via `profiles/diff.py`, returning the
+  settings/agent/env overlay rows, the unified diff text, and the
+  `apply_command`/`launch_command` to run on the host — it never
+  accepts a client-supplied project directory, so no filesystem path
+  can round-trip through the API. `POST /api/profiles` is a real route:
+  it validates the request body against `profiles/schema.py`, rejects
+  an unknown key with `400` and the schema's own error text, refuses to
+  overwrite a catalogue id (`409`), refuses to overwrite an existing
+  user profile unless `?replace=1` is given (`409`), writes the new
+  profile TOML file atomically, and re-ingests it immediately so the
+  `201` response is consistent with a following `GET /api/profiles`.
+- **Service UI: Profiles tab, and a baseline panel on Config** (`service/
+  static/app.js`, `app.css`, work package V3-service): a new Profiles
+  tab lists the catalogue and user profiles (marking the one suggested
+  by the latest baseline), renders a selected profile's diff as
+  settings/agent/environment tables plus the full unified diff text,
+  and shows the apply/launch commands in a code block with a copy
+  button. A minimal "save as a new user profile" form (id, name, a JSON
+  settings-overlay textarea) posts to `POST /api/profiles` and surfaces
+  the server's `400`/`409` validation message inline. The Config tab
+  gained a "Latest baseline" panel (the stored baseline, its history,
+  and the capture-window status line); the Recommendations tab shows
+  the same "capture window open: provisional" notice while a capture
+  window is in progress.
+
+### Fixed
+
+- **`/api/summary` windowing bug**: for a given `window_days`, this
+  route counted sessions and transcripts by a session row's own stored
+  timestamp instead of by the top-level transcript file's mtime — the
+  same `window_by="mtime"` rule `discovery.find_sessions`/
+  `corpus.load_corpus` already use, and that the CLI `report` overview
+  has always honoured. The two could disagree by hundreds of
+  transcripts on a real corpus (window_days=7 returned sessions=8/
+  transcripts=1867 against the report's sessions=11/top-level 11/
+  subagent 270 on the same corpus). `Store.summary()` now windows the
+  same way the report does; a synthetic-corpus regression test proves
+  the two stay in parity.
+- **`profiles/diff.py`: `apply_command` printed the wrong CLI flag** —
+  it hardcoded `--project`, but the real `apply` subcommand flag for a
+  project directory is `--project-dir` (`--project`, singular, is
+  already taken by every subcommand's own repeatable project-slug
+  filter). Fixed in `apply_command` and its docstring, and in
+  `docs/profiles.md`'s own description of the two-line invocation it
+  returns, which had the same stale flag.
+
 ### Planned
 
 - **v0.3** — `init` (first-run onboarding), a `baseline` capture window, a

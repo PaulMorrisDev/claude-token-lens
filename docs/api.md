@@ -26,11 +26,12 @@ header and one of two top-level shapes:
 ```
 
 `error.code` is a short, stable, machine-matchable string (`not_found`,
-`bad_request`, `managed`, `internal_error`, ...); `error.message` is a
-one-line human-readable explanation. The HTTP status code carries the
-same information for clients that don't want to parse the body
-(`200` for `ok: true`, `400`/`404`/`403`/`500` for the matching
-`error.code`, per route below). This is exactly
+`bad_request`, `conflict`, `managed`, `internal_error`, ...);
+`error.message` is a one-line human-readable explanation. The HTTP
+status code carries the same information for clients that don't want to
+parse the body (`200` for `ok: true` on every route except
+`POST /api/profiles`, which is `201` on success; `400`/`404`/`409`/
+`500` for the matching `error.code`, per route below). This is exactly
 `service.contracts.ApiError.to_envelope()`'s shape.
 
 ## Security headers
@@ -153,6 +154,19 @@ Query: `window_days` (int, optional).
 
 `data`: `{"window_days": int|null, "sessions": int, "transcripts": int, "total_cost": float, "total_tokens": int}`.
 
+With `window_days` given, a session qualifies for the window by its
+*top-level transcript's* `mtime` — the same `window_by="mtime"` rule
+`discovery.find_sessions`/`corpus.load_corpus`/
+`service.rebuild.corpus_from_store` already share — and every
+transcript belonging to a qualifying session (top-level and every
+subagent) counts once the session itself qualifies. This is the same
+windowing the CLI's `report` overview section uses, so
+`sessions`/`transcripts` here always agree with a fresh
+`report --days <window_days>`'s own `sessions`/
+`top_level_transcripts + subagent_transcripts` totals for the identical
+window (v0.3 fix — this route used to window `sessions` by the session
+row's own `last_ts` and never window `transcripts` at all).
+
 ### `GET /api/sessions`
 
 Recent sessions — `Store.sessions`.
@@ -273,22 +287,70 @@ exactly `render/json_out.py`'s existing `Recommendation` encoding.
 
 ### `GET /api/profiles`
 
-Indexed profiles — `Store.profiles`. `data`: `[{"id", "name", "updated_at"}, ...]` (no `toml_path`).
+Every profile the service knows about (v0.3): the seven shipped
+catalogue profiles (`profiles.catalogue`, package data — never a row in
+the store) plus every user profile written under
+`<config_dir>/profiles/*.toml` (`Store.profiles`, ingested by the
+watcher's `_scan_profiles`), each tagged with which of the two it came
+from.
+
+`data`: `{"profiles": [{"id", "name", "source": "catalogue"|"user", "archetype": str|null, "for": [str, ...], "updated_at": str|null}, ...], "suggested_profile_id": str|null}`.
+
+A catalogue entry's `archetype`/`for` come straight from its shipped
+TOML document; a user entry never carries them (the `profiles` table
+only indexes `id`/`name`/`updated_at` — no `toml_path`, never
+API-returned). `updated_at` is `null` for a catalogue entry (nothing to
+timestamp). `suggested_profile_id` is the latest recorded baseline's own
+`suggested_profile` field (`null` if no baseline has been captured yet),
+so the UI can mark that entry in the list without a second round trip.
 
 ### `GET /api/profiles/<id>/diff`
 
-The unified-diff-style text `render_patch_set()` would produce for
-applying `<id>` against the requesting project's current effective
-config (`--dry-run` equivalent, read-only — this route never writes
-anything, matching the plan's "the service never calls `apply`; it
-renders the diff and the command").
+The real diff (v0.3, `profiles.diff.diff_against_effective`/
+`render_unified_diff`) between profile `<id>` (a catalogue id or a user
+profile written by `POST /api/profiles`) and the store's own *latest*
+recorded config snapshot's effective config (`--dry-run` equivalent,
+read-only — this route never writes anything, matching the plan's "the
+service never calls `apply`; it renders the diff and the command"). A
+store with no snapshot at all diffs against an empty effective config
+(nothing currently set, nothing managed) and says so in `notes`, rather
+than erroring. `404` if `<id>` names neither a catalogue id nor an
+existing `<config_dir>/profiles/<id>.toml`.
 
-`data`: `{"diff": str, "apply_command": str}`.
+Query: `scope` — one of `user` (default), `project-local`, `repo` (same
+three scopes `profiles.diff`/`apply` use); `400` for anything else. This
+route never accepts a client-supplied project directory — doing so
+would put a raw filesystem path in the response body, which this
+service's privacy rule forbids regardless of who supplied it — so a
+`project-local`/`repo` scope's `apply_command` always omits
+`--project-dir`; fill it in yourself when you run the command.
+
+`data`: `{"profile_id": str, "scope": str, "diff": str, "settings": [DiffRow, ...], "agents": [DiffRow, ...], "env": [DiffRow, ...], "apply_command": str, "launch_command": str, "notes": [str, ...]}`,
+where a `DiffRow` is `{"key", "current_value", "current_provenance", "proposed_value", "target_file", "managed"}`
+(`profiles.diff.DiffRow`'s own fields, split by key prefix into the
+three lists rather than left as one flat `rows` array — `settings.*` /
+`agents.<name>.*` / `env.*`). `apply_command`/`launch_command` are the
+two lines `profiles.diff.apply_command` returns, split apart — the
+exact host-side `claude-token-lens apply` invocation and the
+`--launch` one-session-overlay alternative respectively.
 
 ### `GET /api/baseline`
 
-The most recent baseline capture for a project — `Store.baselines`
-filtered to the newest row per `project_id`.
+The latest stored baseline capture, its full history, and the
+onboarding capture window's own status (v0.3,
+`baseline.capture_status`/`format_capture_status`) — so the UI can mark
+a baseline-derived suggestion as provisional while a capture window is
+still open.
+
+`data`: `{"baseline": Baseline|null, "history": [Baseline, ...], "capture_status": {"started": bool, "window_days": int|null, "elapsed_days": float|null, "remaining_days": float|null, "complete": bool, "summary": str}}`,
+where a `Baseline` is `{"id", "project_slug", "window_start", "window_end", "archetype", "created_at", "record": dict|null}`
+(`"record"` — only present on `"baseline"`, not on `history` entries —
+is the captured baseline JSON record itself, already redacted the same
+way `claude-token-lens baseline`'s own on-disk record is: no message
+text, no raw paths, `projects` a list of already-redacted slugs).
+`"baseline"` is `null` and `"history"` is `[]` when no baseline has ever
+been captured. `capture_status.summary` is the same one-line status
+`init`/`baseline` print to the terminal.
 
 ### `GET /api/report.md` / `GET /api/report.html` / `GET /api/report.json`
 
@@ -323,14 +385,29 @@ tag set after the write).
 
 ### `POST /api/profiles`
 
-Body: a profile TOML document's already-parsed-and-validated JSON form
-(v0.3's `profiles/schema.py` validates it before this route ever writes
-a file). Writes `<config_dir>/profiles/<id>.toml` and calls
-`Store.upsert_profile`. `400` (`error.code: "bad_request"`) if the
-schema rejects an unknown key (plan: "the schema rejects anything else
-so a profile can never promise an effect the harness cannot deliver").
+Body: a profile document's JSON form (the same shape a TOML profile
+round-trips to — `id`, optional `name`/`for`/`archetype`/`notes`,
+optional `settings`/`agents`/`env` tables), validated by
+`profiles.schema.load_dict` before anything is written. `400`
+(`error.code: "bad_request"`) if the schema rejects an unknown key or
+an out-of-range value — the schema's own problem text, joined with
+`"; "` (plan: "the schema rejects anything else so a profile can never
+promise an effect the harness cannot deliver"). `409`
+(`error.code: "conflict"`) if `id` names one of the seven shipped
+catalogue profiles — a catalogue id can never be created or overwritten
+this way, regardless of `?replace=1` — or if a user profile with that
+`id` already exists and `?replace=1` was not given.
 
-`data`: `{"id": str, "name": str}`.
+On success, writes `<config_dir>/profiles/<id>.toml` atomically (temp
+file + rename — never a half-written file) and re-ingests it into the
+store immediately via `Store.upsert_profile`, so the very next
+`GET /api/profiles` reflects the write without waiting for the
+watcher's next tick.
+
+Query: `replace` — `1` allows overwriting an existing *user* profile's
+file (never a catalogue one).
+
+`data`: `{"id": str, "name": str, "source": "user", "updated_at": str}` — `201` on success.
 
 ## Managed-settings routes
 
@@ -403,13 +480,11 @@ session-summary fields plus `transcripts`/`tags`, not an exact field
 count), and dropping fields `Store` already computes for no privacy
 reason would only lose information a client might want.
 
-**`/api/profiles/<id>/diff` and `POST /api/profiles` are `501`
-stubs.** Both routes' body-shape validation (unknown-key checks, JSON
-object checks) runs before the response, but both always return `501`
-`not_implemented` — v0.3's `profiles/schema.py` (the profile-file
-validator both routes need) does not exist yet at S1-api's own
-delivery time. Swapping the final `_not_implemented(...)` for the real
-read/write is the only change needed once that module lands.
+**`/api/profiles/<id>/diff` and `POST /api/profiles` are real routes as
+of v0.3**, no longer the `501 not_implemented` stubs an earlier version
+of this document described at S1-api's own delivery time (before
+`profiles/schema.py`/`profiles/diff.py` existed). See their own
+sections above for the shipped shapes.
 
 **`report.meta.projects` can differ from the CLI's for the identical
 window (release-verification finding, accepted, not a bug to fix
