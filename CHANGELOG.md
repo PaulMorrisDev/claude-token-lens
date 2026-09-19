@@ -35,6 +35,40 @@ milestone:
 - **Opt-in local path view.** `--show-paths` (local only, never in exports)
   lists the top files by Read tokens, as token-dashboard does.
 
+## [0.1.1] - Unreleased
+
+### Fixed
+
+- **A1 — `recommend.py`'s spawn-cost rule.** The `omitClaudeMd`
+  frontmatter lever (scope `repo`) is now only offered for agent types
+  that actually have a `.claude/agents/<type>.md` frontmatter file —
+  read from the latest config snapshot's `agents` map when a snapshot
+  is available, else from a built-in list of Claude Code's bundled
+  agent types (`claude`, `general-purpose`, `Explore`, `Plan`,
+  `claude-code-guide`, `statusline-setup`, `workflow-subagent`).
+  A built-in agent type instead gets `category="workflow"` advice to
+  shorten the Agent-prompt briefing, with `lever=None` (so it is
+  correctly skipped by `render_patch_set()`) — there is no frontmatter
+  file to trim for it.
+- **A2 — no table row key may be a bare `int`.** `recache.py`'s
+  `recache_summary`/`recache_huge_context` tables and `topology.py`'s
+  `topology_session_baseline`/`topology_spawn_depth` tables all had a
+  numeric (session/turn/depth count) first column standing in as the
+  row key. Every one now carries a real string key (`"all"`, or the
+  depth as a string) with the count moved into its own `metric`/typed
+  column. `tests/test_recommend_contract.py`'s evidence-and-row-key
+  check, which previously accepted `int` row keys, now rejects them —
+  row 0 of any table must be a non-empty `str`.
+- **A3 — recommendation evidence values are formatted by their cited
+  column's kind.** The Markdown and HTML renderers used to print a
+  `Recommendation.evidence` value raw (`63.749066571507974` instead of
+  `63.7%`, `47345.372881355936` instead of `47,345`). `render/tables.py`
+  gained `resolve_evidence_column_kind`/`format_evidence_value`, which
+  look the cited `source_table`/`row_key` up in the `ReportModel` and
+  format the value through the same `format_cell` every table cell
+  uses. The JSON renderer is unaffected by design — it keeps raw
+  values via `to_jsonable`.
+
 ## [0.1.0] - 2026-09-19
 
 ### Added
