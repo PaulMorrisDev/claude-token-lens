@@ -29,6 +29,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   recommendation naming the exact `settings.json`/`<agent>.md` lever.
   Every saving is stated as a price ceiling at today's usage shape,
   never a prediction. See [`docs/model-swap.md`](docs/model-swap.md).
+- **`compaction_sim.py`**: the `autoCompactWindow` sweep — replays every
+  top-level transcript's priced turns under each of a fixed set of
+  candidate auto-compaction windows (100k/150k/200k/250k/300k/400k/500k/
+  none), estimating total cost under each against this corpus's own
+  observed compression ratio and post-compaction rediscovery cost, with
+  a fidelity self-check against the session's actual configured window
+  and a `compaction-window` recommendation naming the cheapest one and
+  its projected saving. See [`docs/compaction-sim.md`](docs/compaction-sim.md)
+  and the `compaction_sim` entry in
+  [`docs/sections-reference.md`](docs/sections-reference.md). Not yet
+  wired into `report.py`/`cli.py`/`recommend.py` — see the module's own
+  docstring for the exact integration call sites.
 
 ## [0.3.0] - 2026-09-19
 

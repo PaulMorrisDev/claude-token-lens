@@ -271,6 +271,38 @@ write/recache cost aggregates exclude any join to the next turn that
 took longer than 15 minutes (the join is presumed stale, not a genuine
 immediate-post-compaction cost).
 
+## `compaction_sim` (`compaction_sim.py`)
+
+The `autoCompactWindow` sweep: full write-up and worked example in
+[`docs/compaction-sim.md`](compaction-sim.md).
+
+- `compaction_sim_by_window` — top-level sessions only, one row per
+  candidate window (100k/150k/200k/250k/300k/400k/500k/`none`):
+  simulated compactions per session, mean ctx, total cost, and delta vs.
+  the observed (`none`) cost in USD and percent — **negative delta means
+  cheaper**, the opposite sign convention to `ttl`'s own delta columns
+  (see the module docstring for why).
+- `compaction_sim_by_agent_type` — every agent type's (`"top-level"` and
+  each subagent type) own best candidate window, its cost, the saving
+  vs. observed (0 floor) and a recommendation string naming the window.
+- `compaction_sim_fidelity` — for each top-level session whose project
+  snapshot carries a known configured `autoCompactWindow`: simulating at
+  that same window against the recommendation threshold
+  (`CompactionSimThresholds.fidelity_warn_pct`, default 10%) confirms
+  the model's assumptions hold before trusting its recommendation.
+
+A simulated compaction resets context to this corpus's own observed
+compression ratio (median `postTokens`/`preTokens` across real
+`compact_boundary` events; 0.15 default) and charges a summary-write cost
+(the simulated post-compaction token count, priced as a fresh 5-minute
+cache write) plus a rediscovery allowance (this corpus's own median
+post-compaction re-cache write cost from real events; $0.00 default). A
+real, already-observed compaction is kept as-is under every candidate
+window rather than re-simulated. Recommendation rule: `compaction-window`
+(lever `autoCompactWindow`, category `settings`), gated on the same
+`switch_pct`/`switch_usd` shape as `ttl`'s own switch rule (default >5%
+and >$1.00 cheaper).
+
 ## `agents` (`topology.py`)
 
 Answers "how do tokens, cost and information flow between a session and
