@@ -766,6 +766,7 @@ def _make_parser() -> argparse.ArgumentParser:
             "limits": "usage-limits-only report view",
             "compactions": "compactions-only report view",
             "config-diff": "compare sessions grouped by a config key's value",
+            "pricing-check": "print the resolved rate card's provenance and rate table",
             "probe-config": "scan a project's config layers without a session (schema 2)",
             "log-usage": "append a pasted get_usage JSON payload to the usage log",
             "probe": "content-free schema histogram of a project or file",
