@@ -105,6 +105,7 @@ from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
+from .. import __version__ as _TOOL_VERSION
 from .. import baseline as baseline_mod
 from .. import snapshots as snapshots_mod
 from ..config import ConfigError, load_config, load_session_overrides
@@ -860,7 +861,10 @@ def make_handler(
     )
 
     class Handler(BaseHTTPRequestHandler):
-        server_version = "claude-token-lens/0.2"
+        # Review S5: derived from __version__ (major.minor, matching the
+        # stdlib http.server convention of a two-part version on this
+        # header) rather than a literal that goes stale on every release.
+        server_version = f"claude-token-lens/{'.'.join(_TOOL_VERSION.split('.')[:2])}"
         protocol_version = "HTTP/1.1"
 
         # -- quiet by default: never log a request path to stdout/stderr
