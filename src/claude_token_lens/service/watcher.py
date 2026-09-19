@@ -272,6 +272,12 @@ class FileWatcher:
 
         self._loaded_snapshots: list[snapshots_mod.Snapshot] = []
         self._snapshot_ids_by_ts: dict[str, int] = {}
+        #: ``{str(path): mtime_ns}`` as of the last tick that actually
+        #: upserted that snapshot file (nit 29) -- lets _scan_snapshots
+        #: skip re-flattening/re-upserting a snapshot file that hasn't
+        #: changed since the previous tick instead of doing so on every
+        #: single poll regardless.
+        self._snapshot_file_mtimes: dict[str, int] = {}
 
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
@@ -340,7 +346,23 @@ class FileWatcher:
             for top_path in discovery.find_sessions(project_dir):
                 self._scan_session(project_dir, slug, top_path, known, seen_paths, stats)
 
-        stats.files_removed = self.store.remove_missing(seen_paths)
+        if not project_dirs:
+            # Finding 3 (second failure mode): an empty project_dirs list
+            # is ambiguous between "genuinely no projects yet" and
+            # "--projects-root is misconfigured/unmounted this tick" --
+            # calling remove_missing(set()) here would mark every single
+            # known transcript missing on the strength of that ambiguity
+            # alone. Skip the missing-marking step entirely and record it,
+            # so a transient/misconfigured root never mass-marks a whole
+            # corpus missing; a real "no projects" installation is still
+            # visible as an explicit, non-error note rather than silence.
+            stats.error_messages = stats.error_messages + (
+                "projects root returned no projects; skipped missing check",
+            )
+        else:
+            stats.files_removed = self.store.remove_missing(seen_paths)
+
+        stats.transcripts_missing = self.store.count_missing_transcripts()
 
         if self.options.retention_days is not None:
             self.store.retention_prune(self.options.retention_days)
@@ -383,7 +405,22 @@ class FileWatcher:
             self._upsert_transcript_row(session_id, top_path_str, top_meta, top_result)
 
         subs: list[TranscriptResult] = []
-        for jsonl_path, _raw_meta in discovery.find_subagents(project_dir, session_id):
+        try:
+            # nit 26: find_subagents/find_workflows are generators that
+            # walk the filesystem lazily -- an OSError raised mid-walk
+            # (a directory removed/permission-denied between discovery
+            # and this iteration) previously escaped the surrounding
+            # try/except entirely, because the generator itself, not the
+            # loop body, is where the exception would actually surface.
+            # Materializing the listing up front brings that failure
+            # under the same per-session error handling as everything
+            # else in this method.
+            subagent_entries = list(discovery.find_subagents(project_dir, session_id))
+        except OSError as exc:
+            stats.errors += 1
+            stats.error_messages = stats.error_messages + (f"subagent discovery error: {type(exc).__name__}",)
+            subagent_entries = []
+        for jsonl_path, _raw_meta in subagent_entries:
             stats.files_scanned += 1
             sub_path_str = str(jsonl_path)
             seen_paths.add(sub_path_str)
@@ -405,7 +442,13 @@ class FileWatcher:
         # discovery.find_subagents's own docstring), and persisted so
         # service/rebuild.py can read them back into
         # SessionBundle.workflows.
-        for workflow_path in discovery.find_workflows(project_dir, session_id):
+        try:
+            workflow_paths = list(discovery.find_workflows(project_dir, session_id))
+        except OSError as exc:
+            stats.errors += 1
+            stats.error_messages = stats.error_messages + (f"workflow discovery error: {type(exc).__name__}",)
+            workflow_paths = []
+        for workflow_path in workflow_paths:
             stats.files_scanned += 1
             try:
                 run = workflows_mod.parse_workflow_file(workflow_path)
@@ -609,7 +652,29 @@ class FileWatcher:
         self._loaded_snapshots = loaded
 
         ids_by_ts: dict[str, int] = {}
+        fresh_mtimes: dict[str, int] = {}
         for snap in loaded:
+            path_key = str(snap.path)
+            try:
+                mtime_ns = snap.path.stat().st_mtime_ns
+            except OSError:
+                mtime_ns = None
+
+            # nit 29: a snapshot file only actually changes once per
+            # Claude Code session start, but this method previously
+            # re-flattened and re-upserted every loaded snapshot on every
+            # single poll tick (every 30s by default) regardless. Reuse
+            # the id already on record when the file's own mtime hasn't
+            # moved since the tick that last upserted it.
+            if (
+                mtime_ns is not None
+                and self._snapshot_file_mtimes.get(path_key) == mtime_ns
+                and snap.ts in self._snapshot_ids_by_ts
+            ):
+                ids_by_ts[snap.ts] = self._snapshot_ids_by_ts[snap.ts]
+                fresh_mtimes[path_key] = mtime_ns
+                continue
+
             try:
                 digest_json = json.dumps(snapshots_mod.flatten_snapshot(snap), sort_keys=True)
                 schema_version = int(snap.data.get("schema", 1)) if isinstance(snap.data, dict) else 1
@@ -621,10 +686,13 @@ class FileWatcher:
                     digest_json=digest_json,
                 )
                 ids_by_ts[snap.ts] = new_id
+                if mtime_ns is not None:
+                    fresh_mtimes[path_key] = mtime_ns
             except Exception as exc:
                 stats.errors += 1
                 stats.error_messages = stats.error_messages + (f"snapshot ingest error: {type(exc).__name__}",)
         self._snapshot_ids_by_ts = ids_by_ts
+        self._snapshot_file_mtimes = fresh_mtimes
 
 
 __all__ = ["FileWatcher", "LIVE_FILE_WINDOW_S"]

@@ -228,6 +228,11 @@ def test_never_seen_live_file_is_parsed_immediately(tmp_path: Path, store: Store
 
 
 def test_removed_file_cleanup(tmp_path: Path, store: Store):
+    """A transcript whose file disappears is marked missing, not deleted
+    (review finding 3: the store must be able to outlive Claude Code's
+    own ``cleanupPeriodDays`` transcript retention) -- it keeps serving
+    ``store.session()``/a rebuilt report until ``retention_prune()`` or
+    ``--purge`` actually removes the row."""
     root = tmp_path / "projects"
     path_a = _write_session(root, "proj-a", "sess-a1", _two_turns())
     _write_session(root, "proj-b", "sess-b1", _two_turns())
@@ -236,19 +241,49 @@ def test_removed_file_cleanup(tmp_path: Path, store: Store):
     watcher = FileWatcher(store, options)
     watcher.run_once()
     assert store.summary()["transcripts"] == 2
+    assert store.count_missing_transcripts() == 0
 
     path_a.unlink()
     stats = watcher.run_once()
     assert_privacy(stats)
-    assert stats.files_removed == 1
-    assert store.summary()["transcripts"] == 1
-    # remove_missing() only ever removes transcripts rows -- a session
-    # only ages out via retention_prune(), a separate (unconfigured, in
-    # this test) mechanism -- so the orphaned session row itself remains,
-    # now with no transcripts.
+    assert stats.files_removed == 1  # newly marked missing this tick, not deleted
+    assert stats.transcripts_missing == 1
+    # The row (and its digest) is kept, not deleted.
+    assert store.summary()["transcripts"] == 2
+    assert store.count_missing_transcripts() == 1
     session_a = store.session("sess-a1")
     assert session_a is not None
-    assert session_a["transcripts"] == []
+    assert len(session_a["transcripts"]) == 1
+    assert session_a["transcripts"][0]["kind"] == "top-level"
+
+    # A further tick with the file still gone doesn't grow the marked
+    # count again -- remove_missing()'s own newly-marked delta is 0.
+    stats2 = watcher.run_once()
+    assert stats2.files_removed == 0
+    assert stats2.transcripts_missing == 1
+
+
+def test_reappeared_file_clears_missing_since(tmp_path: Path, store: Store):
+    """A file that comes back (e.g. a transient mount hiccup, or the
+    watcher briefly racing a rewrite) has its ``missing_since`` cleared
+    the next time it's seen -- ``remove_missing`` is not one-way."""
+    root = tmp_path / "projects"
+    path_a = _write_session(root, "proj-a", "sess-a1", _two_turns())
+
+    options = _options(tmp_path)
+    watcher = FileWatcher(store, options)
+    watcher.run_once()
+
+    original_bytes = path_a.read_bytes()
+    path_a.unlink()
+    watcher.run_once()
+    assert store.count_missing_transcripts() == 1
+
+    path_a.write_bytes(original_bytes)
+    mtime = _backdated(_STABLE_AGE_S)
+    os.utime(path_a, (mtime, mtime))
+    watcher.run_once()
+    assert store.count_missing_transcripts() == 0
 
 
 # -- bad file never raises, never leaks a path ------------------------------

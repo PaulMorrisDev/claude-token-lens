@@ -33,6 +33,32 @@ same information for clients that don't want to parse the body
 `error.code`, per route below). This is exactly
 `service.contracts.ApiError.to_envelope()`'s shape.
 
+## Security headers
+
+Every response from every route carries the same three headers
+regardless of method or outcome (`api.py`'s `_SECURITY_HEADERS`,
+written once and applied by the single `_write_headers` helper every
+response path goes through — including a `404`/`405`/`500` error and a
+static-file response, not just a successful `{"ok": true, ...}` one):
+
+- `Cache-Control: no-store` — nothing served here (including a session's
+  cost/usage figures) should ever be cached by an intermediary or the
+  browser's own disk cache.
+- `X-Content-Type-Options: nosniff` — stops a browser from
+  MIME-sniffing a JSON or static-asset response into something else.
+- `Content-Security-Policy: default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'`
+  — matches the UI's own "no CDN, no external reference" constraint
+  (`docs/ui.md`): nothing may load from another origin, inline `<img>`
+  data URIs are allowed (the inline-SVG charts), and inline `<style>`
+  is allowed (the UI's static `app.css` plus small inline style
+  attributes) but inline `<script>` is not.
+
+Every request method is routed through this same path: `GET`/`HEAD`
+succeed or fail through the normal envelope, and `PUT`/`DELETE`/
+`PATCH`/`OPTIONS` (nothing in this API accepts them) return a `405`
+`method_not_allowed` error built the same way, with the same headers —
+never a bare stdlib error page (review finding 9).
+
 ## Privacy
 
 **No response body from any route below may ever contain message text,
@@ -95,7 +121,17 @@ not listed here returns `404` with `error.code: "not_found"`.
 Liveness/diagnostics probe (also the Docker healthcheck target — plan:
 "healthcheck on `/api/health`"). Never fails once the process is up.
 
-`data`: `{"status": "ok", "schema_version": int, "watcher": WatcherStats-as-dict}`.
+`data`: `{"status": "ok", "schema_version": int, "transcripts_missing": int, "watcher": WatcherStats-as-dict}`.
+
+`transcripts_missing` (review finding 3) is `Store.count_missing_transcripts()`
+— the current count of transcript rows whose backing file the watcher
+can no longer find on disk. A transcript in this state is *marked*, not
+deleted: its `digest_json` keeps serving `report.*`/rebuild until it is
+actually removed by `--retention-days`/`serve --purge` (see "Retention
+and purge" in [docs/deploy.md](deploy.md)). This is also why a report
+can still include a session whose transcript file Claude Code's own
+`cleanupPeriodDays` retention has already removed — see "Store rebuild"
+below.
 
 ### `GET /api/summary`
 
@@ -135,10 +171,16 @@ shape, no client-side reconstruction needed:
 - `markers`: `{"compactions": [turn_index, ...], "spawns": [turn_index, ...], "human": [turn_index, ...]}`
   — turn indices where a compaction boundary, an agent spawn
   (`agent_brief_chars` set), or a human prompt (`human_prompt_chars`
-  set) preceded that turn.
+  set) preceded that turn. Always computed from every priced turn, never
+  thinned by the downsampling below.
+- `truncated`: `bool` (review finding 11) — `true` when the session has
+  more than `Store.MAX_TURN_SERIES_POINTS` (5,000) priced turns and
+  `turn_series` above was downsampled to that cap (every marker turn is
+  kept; the rest are evenly sampled across the full session). `false`
+  for every session at or under the cap.
 
-Both fields are omitted entirely (never present as an empty list) when
-no top-level transcript digest is stored yet, or the stored digest
+All three fields are omitted entirely (never present as an empty list)
+when no top-level transcript digest is stored yet, or the stored digest
 can't be decoded — never fabricated.
 
 ### `GET /api/recache`
@@ -372,6 +414,16 @@ decodes those digests straight back into a `Corpus` shaped exactly as
 `report.build_report(corpus, ...)` runs unmodified against either one.
 `days`/`since`/`until`/`window_by` mirror `discovery.find_sessions`'s own
 parameters and windowing semantics.
+
+**A file Claude Code removed is marked, not deleted, in the store**
+(review finding 3). `Store.remove_missing` notices its transcript is no
+longer on disk and sets `transcripts.missing_since`; the row and its
+`digest_json` are left alone, so `corpus_from_store` keeps including it
+exactly like a transcript that is still there, and clears the mark again
+if a file at the same path reappears. Only `--retention-days`/`serve
+--purge` (see [docs/deploy.md](deploy.md)) actually delete a row — the
+service store is designed to outlive Claude Code's own retention window,
+not mirror it.
 
 **Workflow runs round-trip (S1-integration fix 1.d).** The watcher
 persists each `<session>/workflows/wf_*.json` run to a `workflow_runs`

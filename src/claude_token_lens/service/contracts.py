@@ -91,7 +91,20 @@ class WatcherStats:
     files_scanned: int = 0
     files_parsed: int = 0
     files_skipped_live: int = 0
+    #: Despite the name (kept for API stability), this tick's count of
+    #: transcripts newly marked missing (``Store.remove_missing``'s own
+    #: return value) -- not necessarily deleted. A transcript is only
+    #: ever actually deleted by ``Store.retention_prune`` or
+    #: ``claude-token-lens serve --purge`` (review finding 3). Always 0
+    #: on a tick where the missing check itself was skipped (see
+    #: ``error_messages``'s "projects root returned no projects" note).
     files_removed: int = 0
+    #: Running total of transcripts currently marked missing
+    #: (``Store.count_missing_transcripts``) as of this tick -- a
+    #: transcript whose file the watcher can no longer find is marked,
+    #: not deleted (review finding 3), so this is the *current* total,
+    #: not this tick's own delta.
+    transcripts_missing: int = 0
     sessions_upserted: int = 0
     errors: int = 0
     started_at: str | None = None
@@ -140,7 +153,9 @@ class Watcher(Protocol):
     def run_once(self) -> "WatcherStats":
         """Scan ``ServeOptions.projects_root`` once: find new/changed
         transcript files since the last tick (via ``Store.known_files``),
-        re-parse each from its last byte offset, fold the result into
+        re-parse each in full with ``parse_transcript`` (nit 25: there is
+        no incremental "resume from the last byte offset" path -- a
+        changed file is re-read from the start), fold the result into
         the store (``Store.upsert_transcript``/``upsert_session``),
         remove rows for files no longer present (``Store.remove_missing``),
         and run ``Store.retention_prune`` if configured. Returns stats

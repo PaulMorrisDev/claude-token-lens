@@ -34,7 +34,7 @@ from pathlib import Path
 import pytest
 
 from claude_token_lens import corpus as corpus_mod
-from claude_token_lens.config import load_config
+from claude_token_lens.config import ConfigError, load_config, load_session_overrides
 from claude_token_lens.pricing import load_pricing
 from claude_token_lens.render.json_out import render_json
 from claude_token_lens.report import build_report
@@ -270,6 +270,48 @@ def test_unknown_route_is_404_not_found(server):
     assert_privacy(body)
 
 
+# -- finding 9: HEAD/PUT/DELETE/PATCH/OPTIONS --------------------------------
+
+
+def test_head_health_matches_get_headers_with_no_body(server):
+    resp, raw = server.request("HEAD", "/api/health")
+    assert resp.status == 200
+    assert resp.getheader("Content-Type") == "application/json"
+    assert resp.getheader("Cache-Control") == "no-store"
+    assert resp.getheader("X-Content-Type-Options") == "nosniff"
+    assert raw == b""
+
+
+def test_head_report_json_returns_the_unwrapped_routes_headers_with_no_body(server):
+    # report.json is the one route with its own content type/envelope
+    # rules (finding 1) -- confirm HEAD threads head_only through that
+    # path too, not just the generic envelope one above.
+    resp, raw = server.request("HEAD", "/api/report.json")
+    assert resp.status == 200
+    assert resp.getheader("Content-Type") == "application/json"
+    assert raw == b""
+
+
+def test_head_static_index_returns_no_body(server):
+    resp, raw = server.request("HEAD", "/")
+    assert resp.status == 200
+    assert resp.getheader("Content-Type", "").startswith("text/html")
+    assert raw == b""
+
+
+@pytest.mark.parametrize("method", ["PUT", "DELETE", "PATCH", "OPTIONS"])
+def test_unsupported_methods_return_405_with_the_usual_envelope(server, method):
+    resp, raw = server.request(method, "/api/health")
+    assert resp.status == 405
+    assert resp.getheader("X-Content-Type-Options") == "nosniff"
+    body = json.loads(raw)
+    assert body == {
+        "ok": False,
+        "error": {"code": "method_not_allowed", "message": f"{method} is not supported on this route"},
+    }
+    assert_privacy(body)
+
+
 # -- store-backed routes ----------------------------------------------------
 
 
@@ -380,6 +422,7 @@ def test_session_detail_turn_series_and_markers(tmp_path, monkeypatch):
             [2, 1500, 0, True, "compact_boundary"],
         ]
         assert body["data"]["markers"] == {"compactions": [2], "spawns": [], "human": [1]}
+        assert body["data"]["truncated"] is False
         assert_privacy(body)
         _assert_no_leak(json.dumps(body).encode("utf-8"))
     finally:
@@ -556,6 +599,19 @@ def test_report_json_matches_cli_json_for_same_corpus(server):
     config = load_config(server.options.config_dir)
     rates = load_pricing(path=config.pricing_path, config_dir=server.options.config_dir)
     projects = tuple(sorted({b.slug for b in server.corpus.sessions if b.slug}))
+    # Mirrors api.py's own _build_report_model: store-set session tags
+    # (review finding 7) must be folded into the overrides the report is
+    # built with, the same way the real route does, or this "expected"
+    # build drifts from `server.store`'s seeded `purpose` tag.
+    try:
+        overrides = load_session_overrides(server.options.config_dir)
+    except ConfigError:
+        overrides = {}
+    overrides = {sid: dict(entry) for sid, entry in overrides.items()}
+    for session_id, tags in server.store.all_tags().items():
+        merged = overrides.get(session_id, {})
+        merged.update(tags)
+        overrides[session_id] = merged
     model = build_report(
         server.corpus,
         rates,
@@ -563,7 +619,7 @@ def test_report_json_matches_cli_json_for_same_corpus(server):
         projects=projects,
         window="last 30 days",
         snapshots=_reconstruct_snapshots(server.store),
-        session_overrides={},
+        session_overrides=overrides,
     )
     expected = json.loads(render_json(model))
     actual = json.loads(raw)
@@ -586,7 +642,7 @@ def test_report_json_is_not_enveloped(server):
 def test_report_md_route(server):
     resp, raw = server.request("GET", "/api/report.md")
     assert resp.status == 200
-    assert resp.getheader("Content-Type") == "text/markdown"
+    assert resp.getheader("Content-Type") == "text/markdown; charset=utf-8"
     assert len(raw) > 0
     _assert_no_leak(raw)
 
@@ -594,7 +650,7 @@ def test_report_md_route(server):
 def test_report_html_route(server):
     resp, raw = server.request("GET", "/api/report.html")
     assert resp.status == 200
-    assert resp.getheader("Content-Type") == "text/html"
+    assert resp.getheader("Content-Type") == "text/html; charset=utf-8"
     assert len(raw) > 0
     _assert_no_leak(raw)
 

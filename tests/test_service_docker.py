@@ -12,6 +12,7 @@ edit that silently drops a hardening line.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -103,6 +104,46 @@ def test_dockerfile_has_a_non_root_user_line() -> None:
     user_lines = [line.strip() for line in lines if line.strip().upper().startswith("USER ")]
     assert user_lines, "no USER instruction found -- image would run as root"
     assert not any(line.split()[-1].lower() in ("root", "0") for line in user_lines), user_lines
+
+
+def test_dockerfile_chowns_every_compose_mount_point_before_switching_user() -> None:
+    """Regression test for review finding 4 (blocking): docker-compose.yml
+    mounts a *named* volume at ``/data/token-lens`` (the SQLite store's own
+    directory) and a bind mount at ``/data/claude``. A named volume with no
+    prior contents is seeded from the image's own directory at that path,
+    owned by whoever the daemon (root) created it as if the image never
+    created it first -- leaving the non-root ``token-lens`` user unable to
+    write ``service.db`` on first start. The ``Dockerfile`` must create and
+    ``chown -R`` both paths to the non-root user *before* its ``USER``
+    instruction switches away from root (a ``chown`` issued while already
+    running as the unprivileged user cannot chown anything).
+
+    Fails against the pre-fix ``Dockerfile`` (which had no such
+    ``mkdir``/``chown`` line at all) and passes once it does.
+    """
+    text = DOCKERFILE.read_text(encoding="utf-8")
+    lines = _lines(DOCKERFILE)
+    user_idx = next(
+        (i for i, line in enumerate(lines) if line.strip().upper().startswith("USER ") and "root" not in line.lower()),
+        None,
+    )
+    assert user_idx is not None, "no non-root USER instruction found"
+
+    # Every /data/... path docker-compose.yml mounts must also appear in
+    # a RUN chown line before that USER switch.
+    compose_text = COMPOSE_FILE.read_text(encoding="utf-8")
+    mounted_paths = sorted(set(re.findall(r"(/data/[\w-]+)", compose_text)))
+    assert mounted_paths, "no /data/... mount points found in docker-compose.yml"
+
+    chown_lines_before_user = [
+        line for line in lines[:user_idx] if line.strip().upper().startswith("RUN") and "chown" in line.lower()
+    ]
+    assert chown_lines_before_user, "no RUN ... chown instruction found before the non-root USER switch"
+    chown_text = "\n".join(chown_lines_before_user)
+    for path in mounted_paths:
+        assert path in chown_text, f"{path!r} (mounted in docker-compose.yml) is never chowned in the Dockerfile: {chown_text}"
+
+    assert "chown -R" in text, "chown should be recursive (-R) to cover files Docker seeds into a fresh named volume"
 
 
 def test_dockerfile_installs_the_package_from_the_build_context() -> None:

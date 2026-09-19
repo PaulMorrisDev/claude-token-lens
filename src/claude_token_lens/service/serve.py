@@ -95,6 +95,14 @@ def run(options: ServeOptions, *, once: bool = False, allow_remote: bool = False
     try:
         handler_cls = make_handler(store, options, watcher_stats=lambda: watcher.last_stats)
         server = ThreadingHTTPServer((options.bind, options.port), handler_cls)
+        # nit 30: ThreadingHTTPServer defaults daemon_threads to True, so
+        # a KeyboardInterrupt/shutdown() can tear the process down mid-
+        # request, abandoning a request thread (and its still-open
+        # per-thread Store connection, see api.py's Handler._dispatch)
+        # without ever running its own cleanup. Non-daemon request
+        # threads are joined properly on interpreter/thread-pool
+        # teardown instead.
+        server.daemon_threads = False
         host = options.bind if ":" not in options.bind else f"[{options.bind}]"
         print(f"claude-token-lens serve: listening on http://{host}:{server.server_port}")
         try:

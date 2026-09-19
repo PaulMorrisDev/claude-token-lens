@@ -209,25 +209,48 @@
   //    Config/Usage/Diagnostics/Recommendations) ------------------------
 
   var state = {
-    reportPromise: null,
+    // Review finding 21: this used to be a single `reportPromise` shared
+    // by every caller (Overview's Scorecard/Totals, and the Cache/TTL/
+    // Agents/Config/Usage/Diagnostics/Recommendations tabs), memoized
+    // forever after the first fetch. /api/report.json accepts a
+    // `window_days` query parameter and the server memoizes its own
+    // response per `(window_days, change_token)` (docs/api.md), but the
+    // client-side cache didn't vary by window at all -- once Overview's
+    // window selector fetched a report for one window, every tab kept
+    // reading that same cached promise even after the selector changed,
+    // silently showing stale data for every other window choice. Keyed
+    // by the `window_days` value now (`""` for "All time", matching
+    // WINDOW_OPTIONS), so each window gets its own cache entry.
+    reportPromises: {},
     currency: "USD",
   };
 
-  function loadReport() {
-    if (!state.reportPromise) {
-      state.reportPromise = fetchJson("/api/report.json").then(function (result) {
+  function loadReport(windowDays) {
+    var key = windowDays || "";
+    if (!state.reportPromises[key]) {
+      var url = "/api/report.json" + (key ? "?window_days=" + encodeURIComponent(key) : "");
+      state.reportPromises[key] = fetchJson(url).then(function (result) {
         var body = result.body;
-        if (!body || body.ok !== true) {
+        if (!body || body.ok === false) {
           return { error: (body && body.error) || { code: "error", message: "failed to load report" } };
         }
-        var report = body.data && body.data.report;
+        // docs/api.md: unlike every other route, /api/report.json is the
+        // raw rendered document ({"schema_version": ..., "report": {...}}),
+        // not the {"ok": true, "data": ...} envelope -- kept unwrapped for
+        // byte parity with the CLI's own `report --json` output. Accept
+        // both shapes here: `body.ok === true` is an enveloped response
+        // (a possible future/alternate deployment), whose report lives at
+        // `body.data.report`; anything else that reached this point (no
+        // `ok` key, or `ok` truthy-but-not-boolean) is the real unwrapped
+        // shape, whose report is `body.report` directly.
+        var report = body.ok === true ? body.data && body.data.report : body.report;
         if (report && report.meta && report.meta.pricing && report.meta.pricing.currency) {
           state.currency = report.meta.pricing.currency;
         }
         return { report: report };
       });
     }
-    return state.reportPromise;
+    return state.reportPromises[key];
   }
 
   function findSection(report, key) {
@@ -441,6 +464,14 @@
   // dropped when report.py grows one.
   var SECTION_TAB_MAP = {
     recache: "cache",
+    // Review finding 20: docs/ui.md documents recache_by_group as part of
+    // this map too. It never actually arrives as a section's own `key`
+    // today -- report.py's _build_recache_section appends it as an extra
+    // *table* inside the "recache" section rather than a section in its
+    // own right -- but it costs nothing to map here now, so a future
+    // refactor that promotes it to its own section lands on the Cache
+    // tab without anyone having to remember to update this file too.
+    recache_by_group: "cache",
     ttl: "ttl",
     agents: "agents",
     workflows: "agents",
@@ -601,11 +632,6 @@
     panel.appendChild(summaryContainer);
     renderOverviewSummary(summaryContainer, select.value);
 
-    select.addEventListener("change", function () {
-      storageSet("tls:overviewWindow", select.value);
-      renderOverviewSummary(summaryContainer, select.value);
-    });
-
     var scorecardContainer = el("div", { id: "overview-scorecard" });
     panel.appendChild(el("h3", { text: "Scorecard" }));
     panel.appendChild(scorecardContainer);
@@ -615,29 +641,43 @@
     panel.appendChild(totalsContainer);
     totalsContainer.appendChild(loadingNode());
 
-    loadReport().then(function (result) {
+    function renderOverviewReportSections(windowDays) {
       clear(scorecardContainer);
       clear(totalsContainer);
-      if (result.error) {
-        scorecardContainer.appendChild(errorNotice(result.error));
-        totalsContainer.appendChild(errorNotice(result.error));
-        return;
-      }
-      var report = result.report;
-      renderScorecardTiles(scorecardContainer, findSection(report, "scorecard"));
-      var overviewSection = findSection(report, "overview");
-      if (overviewSection) {
-        var totalsTable = (overviewSection.tables || []).filter(function (t) {
-          return t.name === "totals";
-        })[0];
-        if (totalsTable) totalsContainer.appendChild(renderTable(totalsTable, "overview-totals-table", state.currency));
-        var byModel = (overviewSection.tables || []).filter(function (t) {
-          return t.name === "by_model";
-        })[0];
-        if (byModel) totalsContainer.appendChild(renderTable(byModel, "overview-by-model-table", state.currency));
-      } else {
-        totalsContainer.appendChild(el("p", { class: "notice", text: "No overview section in this report." }));
-      }
+      scorecardContainer.appendChild(loadingNode());
+      totalsContainer.appendChild(loadingNode());
+      loadReport(windowDays).then(function (result) {
+        clear(scorecardContainer);
+        clear(totalsContainer);
+        if (result.error) {
+          scorecardContainer.appendChild(errorNotice(result.error));
+          totalsContainer.appendChild(errorNotice(result.error));
+          return;
+        }
+        var report = result.report;
+        renderScorecardTiles(scorecardContainer, findSection(report, "scorecard"));
+        var overviewSection = findSection(report, "overview");
+        if (overviewSection) {
+          var totalsTable = (overviewSection.tables || []).filter(function (t) {
+            return t.name === "totals";
+          })[0];
+          if (totalsTable) totalsContainer.appendChild(renderTable(totalsTable, "overview-totals-table", state.currency));
+          var byModel = (overviewSection.tables || []).filter(function (t) {
+            return t.name === "by_model";
+          })[0];
+          if (byModel) totalsContainer.appendChild(renderTable(byModel, "overview-by-model-table", state.currency));
+        } else {
+          totalsContainer.appendChild(el("p", { class: "notice", text: "No overview section in this report." }));
+        }
+      });
+    }
+
+    renderOverviewReportSections(select.value);
+
+    select.addEventListener("change", function () {
+      storageSet("tls:overviewWindow", select.value);
+      renderOverviewSummary(summaryContainer, select.value);
+      renderOverviewReportSections(select.value);
     });
 
     var healthContainer = el("div", { id: "overview-health" });
@@ -950,12 +990,18 @@
     var humanTurns = toTurnIndexSet(markers.human);
 
     var width = 640, height = 180, padding = 28;
-    var maxCtx = Math.max.apply(
-      null,
-      series.map(function (t) {
-        return t[1] || 0;
-      })
-    ).valueOf() || 1;
+    // Finding 10: this used to compute the max via Math.max, spreading
+    // the whole per-turn array as individual call arguments -- a
+    // session with tens of thousands of turns could blow the engine's
+    // argument-count/call-stack limit ("Maximum call stack size
+    // exceeded"). A plain loop has no such limit (also cheaper: no
+    // intermediate array allocation).
+    var maxCtx = 0;
+    for (var mi = 0; mi < series.length; mi++) {
+      var ctxValue = series[mi][1] || 0;
+      if (ctxValue > maxCtx) maxCtx = ctxValue;
+    }
+    maxCtx = maxCtx || 1;
     var n = series.length;
     var points = series.map(function (t, i) {
       var x = padding + (n > 1 ? (i / (n - 1)) * (width - 2 * padding) : 0);
@@ -981,15 +1027,25 @@
         escapeHtml("Context size over turns for session " + session.id) +
         '">'
     );
-    svgParts.push(
-      '<polyline points="' +
-        points
-          .map(function (p) {
-            return p[0].toFixed(1) + "," + p[1].toFixed(1);
-          })
-          .join(" ") +
-        '" fill="none" stroke="var(--accent)" stroke-width="1.5"></polyline>'
-    );
+    if (points.length > 1) {
+      svgParts.push(
+        '<polyline points="' +
+          points
+            .map(function (p) {
+              return p[0].toFixed(1) + "," + p[1].toFixed(1);
+            })
+            .join(" ") +
+          '" fill="none" stroke="var(--accent)" stroke-width="1.5"></polyline>'
+      );
+    } else if (points.length === 1) {
+      // Finding 11: a single-turn session has exactly one point, and a
+      // <polyline> needs at least two to draw anything -- it silently
+      // rendered nothing at all. Draw the one point as a dot instead.
+      svgParts.push(
+        '<circle cx="' + points[0][0].toFixed(1) + '" cy="' + points[0][1].toFixed(1) +
+          '" r="3" fill="var(--accent)"></circle>'
+      );
+    }
     series.forEach(function (turn, i) {
       var turnIndex = turn[0];
       var isRecache = turn[3];
@@ -1023,6 +1079,14 @@
       legend.appendChild(el("span", null, [swatch, document.createTextNode(kind)]));
     });
     wrap.appendChild(legend);
+    if (session.truncated) {
+      // Finding 11: /api/session/<id> downsamples turn_series above
+      // Store.MAX_TURN_SERIES_POINTS -- say so rather than silently
+      // showing a thinned-out chart as the complete picture.
+      wrap.appendChild(
+        el("p", { class: "notes", text: "This session has many turns; the chart above is downsampled (every marked turn is kept)." })
+      );
+    }
     return wrap;
   }
 
@@ -1185,7 +1249,12 @@
       null,
       rows.map(function (row) {
         return el("tr", null, [
-          el("td", { text: row.project_id || "-" }),
+          // Nit 27: Store.baselines() joins in the owning project's
+          // (redacted) slug specifically so this table doesn't have to
+          // show the meaningless projects.id primary key -- render that
+          // instead of the raw project_id the route used to be the only
+          // thing available here.
+          el("td", { text: row.project_slug || "-" }),
           el("td", { text: row.window_start || "-" }),
           el("td", { text: row.window_end || "-" }),
           el("td", { text: row.archetype || "-" }),

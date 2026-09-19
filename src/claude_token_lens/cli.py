@@ -1456,9 +1456,27 @@ def _cmd_serve_purge(config_dir: Path, *, confirmed: bool) -> int:
         print("Re-run with --yes to actually delete these files.", file=sys.stderr)
         return 2
 
+    # Review finding 15: don't let one un-removable sidecar (e.g. a WAL
+    # file still open in another process, or a permissions problem) abort
+    # the whole purge with an unhandled OSError -- delete what can be
+    # deleted and report the rest, the same "always tell you exactly what
+    # happened" posture as the rest of this command.
+    deleted = 0
+    failures: list[str] = []
     for path in existing:
-        path.unlink()
-    print(f"Deleted {len(existing)} file(s).")
+        try:
+            path.unlink()
+            deleted += 1
+        except OSError as exc:
+            failures.append(f"{path}: {exc}")
+
+    if failures:
+        print(f"Deleted {deleted} file(s); {len(failures)} failed:", file=sys.stderr)
+        for failure in failures:
+            print(f"  {failure}", file=sys.stderr)
+        return 1
+
+    print(f"Deleted {deleted} file(s).")
     return 0
 
 

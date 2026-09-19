@@ -105,6 +105,63 @@ def test_unregister_script_removes_the_task_and_stops_the_process() -> None:
     assert "claude_token_lens" in text.lower()
 
 
+def test_register_script_domain_qualifies_the_scheduled_task_principal() -> None:
+    """Regression test for review finding 14 (should-fix): a bare
+    ``-UserId $env:USERNAME`` is ambiguous on a domain-joined machine --
+    Task Scheduler needs one unambiguous ``DOMAIN\\user`` (or
+    ``COMPUTERNAME\\user``) form to resolve to a single SID.
+    ``$env:USERDOMAIN`` is the domain name when domain-joined and the
+    local computer name otherwise, so qualifying with it names this
+    account unambiguously either way. Fails against the pre-fix line
+    (`-UserId $env:USERNAME` with no ``USERDOMAIN`` anywhere nearby).
+    """
+    text = _text(REGISTER_SCRIPT)
+    assert "USERDOMAIN" in text, "principal's -UserId should be domain-qualified via $env:USERDOMAIN"
+    assert "-UserId $env:USERNAME " not in text, "a bare, unqualified $env:USERNAME is ambiguous on a domain-joined machine"
+
+
+def test_register_script_escapes_embedded_quotes_in_the_schtasks_tr_value() -> None:
+    """Regression test for review finding 13 (should-fix): schtasks.exe
+    re-parses its own ``/TR`` value with a second, internal split (into
+    "the executable" and "its own arguments") on top of the normal
+    OS-level argv rules PowerShell already applies turning the array
+    into the child process's command line. A ``/TR`` value with plain
+    embedded quotes collides with PowerShell's own auto-quoting of that
+    value (needed because it contains spaces) -- confirmed by spawning a
+    real argv probe: a path containing a space (e.g. under
+    "C:\\Users\\Jane Doe\\...") gets split into two separate arguments
+    instead of surviving as one. Escaping every embedded quote as
+    ``\\"`` before it reaches schtasks fixes this. Fails against the
+    pre-fix line (plain backtick-quoted ``trArg`` with no escaping step).
+    """
+    text = _text(REGISTER_SCRIPT)
+    assert "/TR" in text
+    assert r'\"' in text, "the /TR value must escape embedded quotes as \\\" for schtasks' own re-parse"
+    assert "-replace" in text, "escaping should be an explicit, visible transformation on the /TR value"
+
+
+def test_unregister_script_does_not_redirect_stderr_under_stop_preference() -> None:
+    """Regression test for review finding 12 (should-fix): this script
+    sets ``$ErrorActionPreference = "Stop"`` at its top level. Under that
+    preference, redirecting a native command's stderr (``2>$null``) does
+    not silently discard it -- PowerShell 5.1 wraps each stderr line in a
+    NativeCommandError record, which "Stop" then promotes to a
+    terminating exception (confirmed by reproducing it against a real
+    stderr-writing process). That exception would propagate straight out
+    of the surrounding catch block -- there is no outer try/catch --
+    aborting the whole script before the process-cleanup section ever
+    runs, exactly when schtasks writing "ERROR: ..." to stderr (nothing
+    to delete) is the common case this script must tolerate. Fails
+    against the pre-fix line (``& schtasks.exe /Delete ... 2>$null``).
+    """
+    text = _text(UNREGISTER_SCRIPT)
+    assert 'Stop' in text  # sanity: this script really does set the Stop preference
+    for line in text.splitlines():
+        if "schtasks.exe" in line and "/Delete" in line:
+            assert "2>$null" not in line, f"stderr redirect on a native call under Stop preference: {line!r}"
+            assert "2>&1" not in line, f"stderr redirect on a native call under Stop preference: {line!r}"
+
+
 @pytest.mark.parametrize("path", [REGISTER_SCRIPT, UNREGISTER_SCRIPT])
 def test_windows_scripts_parse_with_a_real_powershell_when_available(path: Path) -> None:
     powershell = shutil.which("powershell.exe") or shutil.which("powershell")

@@ -165,7 +165,10 @@ Three layers, from "always runs" to "manual, occasional":
    docker build -t claude-token-lens:smoke .
    docker run -d --rm --network none --name ctl-smoke \
      -v "$CLAUDE_HOME:/data/claude:ro" \
-     claude-token-lens:smoke --bind 0.0.0.0 --allow-remote
+     -v ctl-smoke-data:/data/token-lens \
+     claude-token-lens:smoke \
+     --projects-root /data/claude/projects --config-dir /data/token-lens \
+     --bind 0.0.0.0 --allow-remote
 
    # From inside the container -- there is no host-published port to
    # curl from outside when --network none is used, so the check runs
@@ -173,8 +176,31 @@ Three layers, from "always runs" to "manual, occasional":
    docker exec ctl-smoke python -c \
      "import json,urllib.request as u; r=u.urlopen('http://127.0.0.1:8765/api/health', timeout=4); assert json.load(r)['ok'] is True; print('OK')"
 
+   # /api/health alone only proves the process started -- it says
+   # nothing about whether $CLAUDE_HOME's read-only mount was actually
+   # reachable. Confirm /api/summary sees a non-zero transcript count
+   # (skip this check if $CLAUDE_HOME has no Claude Code projects yet):
+   docker exec ctl-smoke python -c \
+     "import json,urllib.request as u; r=u.urlopen('http://127.0.0.1:8765/api/summary', timeout=4); data=json.load(r)['data']; assert data['transcripts'] > 0, data; print('transcripts:', data['transcripts'])"
+
    docker stop ctl-smoke
+   docker volume rm ctl-smoke-data
    ```
+
+   `--projects-root`/`--config-dir` are passed explicitly here (review
+   finding 4) rather than left to `claude-token-lens serve`'s own
+   argparse defaults: any bare `docker run <image> <args>` replaces the
+   image's `CMD` entirely (the fixed `ENTRYPOINT` in the `Dockerfile`
+   only supplies `claude-token-lens serve`), so omitting them would
+   silently fall back to a `~`-relative default inside the container
+   instead of the `/data/claude`/`/data/token-lens` mount points this
+   image and `docker-compose.yml` are actually built around. The named
+   `ctl-smoke-data` volume in particular is what proves the Dockerfile's
+   `chown -R token-lens:token-lens /data/token-lens` (finding 4) is
+   doing its job: a *fresh* named volume is seeded from that path's
+   ownership in the image, so the non-root `token-lens` user can create
+   `service.db` in it on first start without a manual `docker exec ...
+   chown` step.
 
    A `--network none` container has no network namespace connectivity
    at all beyond loopback — if `/api/health` still answers `ok: true`
@@ -238,10 +264,23 @@ verified locally as part of S1-integration.
 
 ## Retention and purge
 
+A transcript file the watcher can no longer find on disk (removed by
+Claude Code's own `cleanupPeriodDays`, or by hand) is never deleted from
+the store on the spot — `Store.remove_missing` only marks its
+`missing_since` timestamp (clearing it again if a file at the same path
+reappears). `report.*`/the UI keep including it exactly like a
+transcript still on disk (`GET /api/health`'s `transcripts_missing`
+reports the current count; see [docs/api.md](api.md)). The service
+store is deliberately designed to outlive Claude Code's own retention
+window, not mirror it — the two options below are the *only* things
+that actually delete a row.
+
 - **`--retention-days N`** (existing `serve` flag): every watcher poll
   tick prunes sessions whose transcripts were all last active more than
-  `N` days ago (`Store.retention_prune`). Off by default — nothing is
-  ever pruned unless you opt in.
+  `N` days ago (`Store.retention_prune`) — this is what actually deletes
+  a marked-missing (or still-present) transcript's row, not the
+  missing-file check itself. Off by default — nothing is ever pruned
+  unless you opt in.
 - **`serve --purge`** (deliverable 2.e): deletes `<config-dir>/service.db`
   and its `-wal`/`-shm` sidecars, then exits — never starts the watcher
   or API. Always prints exactly which files it would delete first; only
@@ -262,3 +301,8 @@ verified locally as part of S1-integration.
   run simply rebuilds it from the transcripts already on disk, the same
   way a schema-version bump's drop-and-rebuild migration
   (`Store.migrate()`) does.
+
+  If one of the files cannot be deleted (for example a `-wal` sidecar
+  still held open by another process), `--purge` deletes everything it
+  can, reports the failure(s) to stderr, and exits with status `1` —
+  it never aborts partway through with an unhandled error.

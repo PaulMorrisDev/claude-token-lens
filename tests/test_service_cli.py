@@ -174,6 +174,43 @@ def test_purge_with_nothing_to_delete_is_a_clean_no_op(tmp_path: Path, capsys):
     assert "nothing to delete" in out.out
 
 
+def test_purge_reports_and_continues_past_an_unremovable_sidecar(tmp_path: Path, capsys, monkeypatch):
+    """Regression test for review finding 15 (should-fix): a file that
+    cannot be deleted (locked by another process, permissions, ...)
+    must not raise out of ``--purge`` unhandled -- the command should
+    delete everything it can, report the failure(s), and exit non-zero,
+    the same "tell you exactly what happened" posture the rest of
+    --purge already has. Fails against the pre-fix code (a bare
+    ``path.unlink()`` with no try/except letting OSError propagate).
+    """
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    db_path = config_dir / "service.db"
+    wal_path = config_dir / "service.db-wal"
+    shm_path = config_dir / "service.db-shm"
+    db_path.write_text("not a real db", encoding="utf-8")
+    wal_path.write_text("wal", encoding="utf-8")
+    shm_path.write_text("shm", encoding="utf-8")
+
+    real_unlink = Path.unlink
+
+    def flaky_unlink(self: Path, *args, **kwargs):
+        if self.name == "service.db-wal":
+            raise OSError("simulated: file in use by another process")
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", flaky_unlink)
+
+    rc = cli.main(["serve", "--purge", "--yes", "--config-dir", str(config_dir)])
+    assert rc == 1
+    assert not db_path.exists()  # the deletable files still got deleted
+    assert not shm_path.exists()
+    assert wal_path.exists()  # the flaky one survives
+    out = capsys.readouterr()
+    assert "service.db-wal" in out.err
+    assert "simulated: file in use" in out.err
+
+
 def test_purge_never_reaches_service_serve_run(tmp_path: Path, monkeypatch):
     # --purge is a terminal action -- it must never fall through to
     # actually starting the watcher/API.

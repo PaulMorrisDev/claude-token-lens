@@ -85,6 +85,27 @@ the hash is keyed to a salt private to one machine's `<config-dir>`, it
 cannot be correlated against a hash produced on a different machine or
 after the salt file is rotated/deleted.
 
+**The `claude-token-lens serve` service's SQLite store**
+(`<config-dir>/service.db`) is a narrow, documented exception to "no
+path fragment is ever stored": `transcripts.path`, `projects.root_path`
+and `profiles.toml_path` hold real local filesystem paths, including
+the machine's username where it appears in a Windows/POSIX home
+directory (`service/schema.py`'s module docstring). They exist purely
+for the watcher's own bookkeeping — deciding what to re-parse and
+where a project's scan root is — and every one of `Store`'s read
+queries (`summary`, `sessions`, `session`, `daily_usage`, `recache`,
+`compactions`, `snapshots`, `tags`) is written to leave them out of its
+result dict entirely, so the `/api/*` routes and the UI never see
+them; `tests/test_service_store.py` asserts this by construction with
+a distinctive fake path round-tripped through every read query.
+`sessions.slug` (Claude Code's own project-slug encoding of the
+project's absolute path, so it also embeds the username) is read out —
+the UI needs some label for "which project" — but every read query
+that selects it passes it through `discovery.redact_slug()` first,
+which replaces the username segment with the literal `<user>` before
+it ever reaches `/api/sessions`, `/api/session/<id>`,
+`/api/report.{json,md,html}`, or the rendered UI.
+
 Message text, tool-result content, file contents, full file paths and
 full shell commands are never written to a dataclass field, the on-disk
 cache, or any rendered output. This is enforced today by
@@ -102,25 +123,33 @@ python -m pytest tests/test_privacy.py tests/test_scrub.py -q
 
 ## No outbound network calls
 
-No module in this codebase imports a networking library — no `socket`,
-`urllib`, `http.client`, `requests` or equivalent anywhere in
-`src/claude_token_lens/`. The package has zero third-party dependencies
-(`pyproject.toml`'s `dependencies = []`); `rich` is an optional,
-opt-in extra for nicer terminal output, not a networking dependency.
-Pricing comes from a user-edited local `pricing.toml`, never a live
-lookup — there is no code path that could fetch it.
+No module outside `src/claude_token_lens/service/` imports a
+networking library — no `socket`, `urllib`, `http.client`, `requests`
+or equivalent anywhere else in `src/claude_token_lens/`. The package
+has zero third-party dependencies (`pyproject.toml`'s
+`dependencies = []`); `rich` is an optional, opt-in extra for nicer
+terminal output, not a networking dependency. Pricing comes from a
+user-edited local `pricing.toml`, never a live lookup — there is no
+code path that could fetch it.
 
 For the CLI's analytics/report subcommands this is a structural
 guarantee: nothing to call out to, because there is no networking code
 at all. **The `claude-token-lens serve` service** (a local
-`http.server` API and static UI, `src/claude_token_lens/service/`) does
-open one socket — its own local HTTP bind, `127.0.0.1`-only unless you
-pass `--allow-remote` — but never initiates a connection of its own.
-This is an automated, always-on guarantee, not just documentation:
-`tests/test_service_egress.py` monkeypatches `socket.socket.connect`
-for the lifetime of a real running server and asserts every recorded
-connection target is the test client's own loopback address, so any
-future change that adds an outbound call fails the suite. It has also
+`http.server` API and static UI, `src/claude_token_lens/service/`) is
+the one exception: `service/api.py` and `service/serve.py` do import
+`http.server` (to listen on its own local socket) and `urllib.parse`
+(to parse request query strings — it never builds or fetches a URL).
+The service opens one socket — its own local HTTP bind,
+`127.0.0.1`-only unless you pass `--allow-remote` — but never
+initiates a connection of its own. This is an automated, always-on
+guarantee, not just documentation:
+`tests/test_service_egress.py` monkeypatches every socket-level call
+that could originate an outbound connection or a DNS lookup —
+`socket.socket.connect`, `socket.socket.connect_ex`,
+`socket.create_connection` and `socket.getaddrinfo` — for the lifetime
+of a real running server, and asserts every recorded target is the
+test client's own loopback address, so any future change that adds an
+outbound call or even resolves a remote hostname fails the suite. It has also
 been verified against the built Docker image directly, independent of
 the Python-level test: run with `--network none` (no network namespace
 connectivity beyond loopback at all), the service still answers

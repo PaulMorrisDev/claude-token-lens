@@ -52,7 +52,21 @@ try {
 }
 catch {
     Write-Warning "  Get-ScheduledTask/Unregister-ScheduledTask unavailable or failed ($($_.Exception.Message)); trying schtasks /delete."
-    & schtasks.exe /Delete /TN $TaskName /F 2>$null
+    # Review finding 12: with $ErrorActionPreference = "Stop" (set at the
+    # top of this script), redirecting a native command's stderr (2>$null)
+    # does not silently discard it the way it would under the default
+    # "Continue" preference -- PowerShell 5.1 wraps each stderr line in a
+    # NativeCommandError record, which "Stop" then promotes to a
+    # terminating exception. That exception would propagate straight out
+    # of this catch block (there is no outer try/catch here), aborting the
+    # whole script before the process-cleanup section below ever runs --
+    # confirmed by reproducing it against a real stderr-writing process.
+    # schtasks writing "ERROR: ..." to stderr when there is nothing to
+    # delete is the exact common case this script must tolerate, so
+    # stderr is left unredirected (it prints as ordinary console noise,
+    # which is harmless) and $LASTEXITCODE below is what actually decides
+    # success/failure, same as before.
+    & schtasks.exe /Delete /TN $TaskName /F
     if ($LASTEXITCODE -eq 0) {
         $taskRemoved = $true
         Write-Host "  Scheduled Task removed via schtasks."

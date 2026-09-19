@@ -17,10 +17,14 @@ present at the time this docstring was written):
   the watcher thread and the ``http.server`` API handler are implemented
   against, so those two pieces (and their tests) can be built in
   parallel from this one frozen file.
-- ``watcher.py`` (not yet built) — polls ``--projects-root`` on a timer,
-  re-parses changed/new transcripts from their last byte offset, and
-  folds the result into the store via ``Store.upsert_transcript``/
-  ``upsert_session``.
+- ``watcher.py`` — polls ``--projects-root`` on a timer and re-parses
+  each new-or-changed transcript in full (nit 25: there is no incremental
+  "resume from the last byte offset" path -- ``FileWatcher._resolve``
+  decides *whether* a file needs re-parsing this tick from its
+  ``(mtime_ns, size_bytes)`` against ``Store.known_files()``, but the
+  re-parse itself, when triggered, always runs ``parse_transcript`` over
+  the whole file), and folds the result into the store via
+  ``Store.upsert_transcript``/``upsert_session``.
 - ``api.py`` (not yet built) — the ``http.server`` JSON API described in
   ``docs/api.md``, built against ``contracts.ApiHandler``.
 

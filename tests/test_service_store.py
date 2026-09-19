@@ -246,13 +246,53 @@ def test_known_files_reports_every_transcript(store: Store) -> None:
     assert files[_FAKE_SUB_PATH] == (789, 1011)
 
 
-def test_remove_missing_deletes_transcripts_not_in_known_set(store: Store) -> None:
+def test_remove_missing_marks_transcripts_not_in_known_set(store: Store) -> None:
+    # Review finding 3: the store must outlive `cleanupPeriodDays` --
+    # `remove_missing` only marks a vanished transcript's `missing_since`,
+    # it never deletes the row. Only `retention_prune`/`--purge` do that.
     _seed(store)
-    removed = store.remove_missing({_FAKE_PATH})  # subagent path dropped
-    assert removed == 1
+    newly_missing = store.remove_missing({_FAKE_PATH})  # subagent path dropped
+    assert newly_missing == 1
+    assert store.count_missing_transcripts() == 1
     detail = store.session("session-a")
-    assert len(detail["transcripts"]) == 1
-    assert detail["transcripts"][0]["kind"] == "top-level"
+    # Both transcripts are still present -- a reader must include a
+    # missing-but-not-yet-pruned transcript by default.
+    assert len(detail["transcripts"]) == 2
+    kinds = {trow["kind"] for trow in detail["transcripts"]}
+    assert kinds == {"top-level", "subagent"}
+    # Calling it again with the same known set is a no-op: already-missing
+    # rows don't get re-marked or double-counted.
+    assert store.remove_missing({_FAKE_PATH}) == 0
+    assert store.count_missing_transcripts() == 1
+
+
+def test_missing_transcript_survives_until_retention_prune_deletes_it(store: Store) -> None:
+    """Regression test for review finding 3 (blocking): the store must
+    outlive Claude Code's own ``cleanupPeriodDays`` retention. A
+    transcript whose file has vanished is marked (``missing_since``), not
+    deleted -- it keeps serving reports/rebuild regardless of how long
+    ago it went missing, until its *session* actually ages past
+    ``--retention-days``/``--purge``. Fails against a pre-fix
+    ``remove_missing`` that deleted the row outright.
+    """
+    _seed(store)
+    store.remove_missing({_FAKE_PATH})  # subagent path dropped -> marked missing
+    assert store.count_missing_transcripts() == 1
+    assert store.session("session-a") is not None
+
+    # A generous retention window leaves a recently active session
+    # (missing transcript or not) untouched.
+    removed = store.retention_prune(retention_days=3650)
+    assert removed == 0
+    assert store.session("session-a") is not None
+    assert store.count_missing_transcripts() == 1
+
+    # Only once the session itself ages past the retention window does
+    # the row -- and its missing transcript -- actually get deleted.
+    removed = store.retention_prune(retention_days=0)
+    assert removed == 1
+    assert store.session("session-a") is None
+    assert store.count_missing_transcripts() == 0
 
 
 def test_retention_prune_removes_old_sessions(store: Store) -> None:
@@ -450,10 +490,103 @@ def test_turns_for_session_builds_series_and_markers(store: Store) -> None:
         [3, 2000, 300, False, "tool_result"],
     ]
     assert data["markers"] == {"compactions": [2], "spawns": [3], "human": [1]}
+    assert data["truncated"] is False
     assert_privacy(data)
 
 
+def test_turns_for_session_downsamples_above_the_point_cap(store: Store) -> None:
+    """Regression test for review finding 11 (should-fix): a very long
+    session's turn_series must be capped at
+    ``Store.MAX_TURN_SERIES_POINTS`` rather than shipping every single
+    turn to the browser (the original unbounded list is also what fed
+    app.js's ``Math.max.apply`` -- finding 10). Every marker turn must
+    still survive the downsampling.
+    """
+    from claude_token_lens.cache import encode_result
+    from claude_token_lens.model import EventKind, Turn, TranscriptMeta, TranscriptResult
+
+    total_turns = Store.MAX_TURN_SERIES_POINTS + 500
+    marker_turn_index = total_turns - 1  # deliberately outside any stride sample
+    turns = []
+    for i in range(1, total_turns + 1):
+        is_marker = i == marker_turn_index
+        turns.append(
+            Turn(
+                turn_index=i,
+                ctx=i * 10,
+                preceding_primary=EventKind.COMPACT_BOUNDARY if is_marker else None,
+            )
+        )
+    result = TranscriptResult(
+        meta=TranscriptMeta(path=_FAKE_PATH, kind="top-level", session_id="session-huge"),
+        turns=turns,
+    )
+    store.upsert_session(session_id="session-huge", project_slug="proj-a", slug="proj-a")
+    store.upsert_transcript(
+        session_id="session-huge",
+        path=_FAKE_PATH + ".huge",
+        kind="top-level",
+        digest_json=json.dumps(encode_result(result)),
+    )
+
+    data = store.turns_for_session("session-huge")
+    assert data is not None
+    assert data["truncated"] is True
+    assert len(data["turn_series"]) <= Store.MAX_TURN_SERIES_POINTS
+    # markers are always computed from the full turn list, never thinned.
+    assert data["markers"]["compactions"] == [marker_turn_index]
+    # the marker turn itself must survive into the downsampled series.
+    kept_turn_indices = {row[0] for row in data["turn_series"]}
+    assert marker_turn_index in kept_turn_indices
+
+
 # -- privacy guard ---------------------------------------------------------
+
+
+def test_slug_username_segment_is_redacted_from_every_read_query(store: Store) -> None:
+    """Regression test for review finding 6 (should-fix): a project slug
+    is derived from Claude Code's own project-directory naming, which
+    embeds the caller's OS username -- a ``C:\\Users\\someone\\repo``
+    project directory becomes the slug ``"C--Users-someone-repo"``. Every
+    read query returning a slug/``project_slug`` must redact that
+    username segment to ``"<user>"`` before it leaves the store layer.
+    Fails against a pre-fix store that returned the raw slug unchanged.
+    """
+    raw_slug = "C--Users-someone-repo"
+    store.upsert_session(
+        session_id="session-user",
+        project_slug=raw_slug,
+        project_root_path=_FAKE_ROOT,
+        slug=raw_slug,
+        first_ts="2026-09-18T12:00:00Z",
+        last_ts="2026-09-18T13:00:00Z",
+    )
+    store.upsert_snapshot(
+        project_slug=raw_slug,
+        project_root_path=_FAKE_ROOT,
+        ts="2026-09-18T12:30:00Z",
+        schema_version=2,
+        digest_json=json.dumps({}),
+    )
+    store.record_baseline(
+        project_slug=raw_slug,
+        project_root_path=_FAKE_ROOT,
+        window_start="2026-09-11T00:00:00Z",
+        window_end="2026-09-18T00:00:00Z",
+        archetype="plan-high-implement-low",
+        digest_json=json.dumps({"sessions": 1}),
+    )
+
+    outputs = {
+        "sessions": store.sessions(),
+        "session": store.session("session-user"),
+        "snapshots": store.snapshots(),
+        "baselines": store.baselines(),
+    }
+    blob = json.dumps(outputs, default=str)
+    assert "someone" not in blob, f"raw username segment leaked into a read-query result: {blob}"
+    assert raw_slug not in blob, f"unredacted slug leaked into a read-query result: {blob}"
+    assert "<user>" in blob, "redact_slug should have substituted the <user> placeholder"
 
 
 def test_no_local_path_leaks_from_any_read_query(store: Store) -> None:

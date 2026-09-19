@@ -43,7 +43,12 @@ this order:
 1. **Overview** — `/api/summary` + the corpus-wide totals table also
    shown by the CLI's `report` overview section. The window selector
    (7/30/90 days / all time) re-fetches `summary`/`daily_usage` with a
-   new `window_days`.
+   new `window_days`, and also re-fetches `/api/report.json` for that
+   same `window_days` so the Scorecard and Totals tables (both
+   report-derived) track the selector instead of staying pinned to
+   whichever window first populated them (review finding 21) --
+   `loadReport()`'s in-memory cache is keyed by the requested
+   `window_days` for exactly this reason.
 2. **Sessions** — `/api/sessions`, a sortable table (client-side sort,
    same click-to-sort pattern as `render/html.py`'s `_SCRIPT`); a row
    click renders that session's detail inline in the same panel rather
@@ -133,12 +138,17 @@ remains:
   was the one that drifted, not the test suite.
 
 **Generic Section/Table rendering** for Cache/TTL/Agents/Config/Usage/
-Diagnostics is driven by an explicit section-key -> tab map
-(`recache`/`recache_by_group` -> Cache, `ttl` -> TTL, `agents`/
-`workflows`/`workstyle` -> Agents, `config`/`scorecard` -> Config,
-`usage`/`compactions` -> Usage, everything else including `phases` ->
-Diagnostics) so an unrecognised section key still lands somewhere
-visible instead of being silently dropped.
+Diagnostics is driven by an explicit section-key -> tab map (`recache`
+-> Cache, `ttl` -> TTL, `agents`/`workflows`/`workstyle` -> Agents,
+`config`/`scorecard` -> Config, `usage`/`compactions` -> Usage,
+everything else including `phases` -> Diagnostics) so an unrecognised
+section key still lands somewhere visible instead of being silently
+dropped. `recache_by_group` is also in that map, mapped to Cache like
+`recache` itself, even though it never arrives as a section's own
+`key` today -- `report.py`'s `_build_recache_section` appends it as an
+extra *table* inside the `"recache"` section rather than a section of
+its own (review finding 20) -- kept there so a future refactor that
+promotes it to its own section needs no corresponding `app.js` change.
 
 **Session timeline (S1-integration fix 1.g).** `/api/session/<id>` now
 carries `turn_series`/`markers` (`docs/api.md`) whenever the watcher has
@@ -151,6 +161,15 @@ document previously described. A session with no stored digest yet
 (e.g. ingested before the watcher parsed a top-level transcript, or a
 digest that failed to decode) still falls back to an explicit "no
 per-turn data for this session" notice rather than a fabricated curve.
+A single-turn session (exactly one point) draws as a dot rather than a
+`<polyline>`, which needs at least two points to render anything
+(review finding 11). The chart's maximum-context axis scale is computed
+with a plain loop rather than `Math.max.apply` (review finding 10),
+which could otherwise exceed the engine's call-stack/argument-count
+limit on a session with tens of thousands of turns. A session over
+`Store.MAX_TURN_SERIES_POINTS` turns has its `turn_series` downsampled
+server-side (`truncated: true`, `docs/api.md`); the timeline shows a
+note saying so rather than presenting the thinned-out chart as complete.
 
 **Shape-defensive rendering for routes `api.py` hasn't shipped yet.**
 At the time this UI was built, `service/api.py` did not exist (a

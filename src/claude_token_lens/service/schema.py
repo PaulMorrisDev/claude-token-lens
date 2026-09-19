@@ -52,6 +52,17 @@ does, retiring the watcher's own pre-check-and-skip workaround; and a new
 (``workflows.py``'s ``WorkflowRun``, minus ``phase_titles``' sibling
 ``detail`` text) so ``service/rebuild.py`` can read it back into
 ``SessionBundle.workflows`` instead of always reporting an empty list.
+
+Version 3 (review finding 3, "the store must outlive Claude Code's own
+``cleanupPeriodDays``"): ``transcripts`` gains a nullable
+``missing_since`` timestamp column. A transcript whose file the watcher
+can no longer find on disk is no longer deleted on the spot — it is
+marked with ``missing_since`` instead (cleared again if the file
+reappears), so its stored ``digest_json`` keeps serving reports and
+``service/rebuild.py`` round trips until the row is actually removed by
+``Store.retention_prune`` or ``claude-token-lens serve --purge``. See
+``Store.remove_missing``'s own docstring for the exact mechanics.
+
 A store opened against an older ``schema_version`` is dropped and
 rebuilt from scratch (see ``Store.migrate``) — the next watcher tick
 repopulates it, since ``known_files()`` is empty again.
@@ -60,7 +71,7 @@ repopulates it, since ``known_files()`` is empty again.
 from __future__ import annotations
 
 #: Bump when a table or index below changes shape. See module docstring.
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 CREATE_META = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -111,6 +122,11 @@ CREATE INDEX IF NOT EXISTS idx_sessions_slug_first_ts ON sessions(slug, first_ts
 
 #: One row per parsed transcript file (top-level, subagent or
 #: workflow-agent). ``path`` is local-store-only (see module docstring).
+#: ``missing_since`` (v3) is NULL while the watcher can still find the
+#: file on disk; set to the timestamp the watcher first noticed it gone,
+#: cleared again if it reappears. A missing transcript's row (and its
+#: stored ``digest_json``) is kept, not deleted -- see
+#: ``Store.remove_missing``.
 CREATE_TRANSCRIPTS = """
 CREATE TABLE IF NOT EXISTS transcripts (
     id              INTEGER PRIMARY KEY,
@@ -125,6 +141,7 @@ CREATE TABLE IF NOT EXISTS transcripts (
     size_bytes      INTEGER NOT NULL,
     parser_version  INTEGER NOT NULL,
     digest_json     TEXT NOT NULL,
+    missing_since   TEXT,
     updated_at      TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_transcripts_session_id ON transcripts(session_id);

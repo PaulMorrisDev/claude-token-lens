@@ -24,13 +24,25 @@ is ``CREATE TABLE IF NOT EXISTS``/``CREATE INDEX IF NOT EXISTS``, so
 calling it against an already-migrated database at the current
 ``schema.SCHEMA_VERSION`` is a no-op beyond recording
 ``meta['schema_version']`` again. When the store's own recorded
-``schema_version`` is *older* than the running code's
-``schema.SCHEMA_VERSION``, ``migrate()`` drops every table first and
+``schema_version`` *differs at all* from the running code's
+``schema.SCHEMA_VERSION`` (older or newer), ``migrate()`` drops every table first and
 recreates them from scratch (see ``schema.py``'s module docstring) --
 the store is always a derived cache over transcripts still on disk,
 never the source of truth, and the next watcher tick repopulates it
 because ``known_files()`` is empty again. There is still no in-place
 ``ALTER TABLE`` migration path -- this drop-and-rebuild is the only one.
+
+A transcript whose file disappears from disk (review finding 3: "the
+store must outlive Claude Code's own ``cleanupPeriodDays``") is never
+deleted by the watcher's own poll tick -- ``remove_missing`` only marks
+its ``missing_since`` timestamp (clearing it again if the file
+reappears with the same path). Every read query that returns
+transcripts (``session``) includes a missing-but-not-yet-pruned
+transcript by default, same as one still on disk, so its stored
+``digest_json`` keeps serving reports/rebuild until the row is actually
+removed by ``retention_prune`` or ``claude-token-lens serve --purge``.
+``count_missing_transcripts`` is the one query that reports the current
+total, for ``/api/health``.
 
 ``GLOBAL_PROJECT_SLUG`` is the synthetic project slug the watcher
 attributes a machine-wide config snapshot to when the snapshot itself
@@ -44,6 +56,7 @@ honest "no project" rather than a fabricated one (S1-integration fix
 
 from __future__ import annotations
 
+import contextlib
 import json
 import re
 import sqlite3
@@ -53,6 +66,7 @@ from pathlib import Path
 
 from . import schema
 from ..cache import result_from_jsonable
+from ..discovery import redact_slug
 from ..model import EventKind
 
 #: ``meta`` key recording the schema version the store's tables were
@@ -73,6 +87,39 @@ _CREATE_TABLE_RE = re.compile(r"CREATE TABLE IF NOT EXISTS\s+(\w+)")
 
 def _now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+@contextlib.contextmanager
+def _transaction(conn: sqlite3.Connection):
+    """A real, explicit transaction for a connection opened with
+    ``isolation_level=None`` (autocommit mode -- see :meth:`Store.
+    _connection`). In that mode ``with conn:`` is a silent no-op: Python's
+    ``sqlite3`` module only wraps a ``with`` block in an implicit
+    transaction when ``isolation_level`` is *not* None, so every writer
+    touching more than one table/statement was previously running with
+    no atomicity at all -- a failure partway through left whatever had
+    already executed committed (review finding 2/5). This issues an
+    explicit ``BEGIN IMMEDIATE`` (taking the write lock up front, rather
+    than deferring it to the first write statement and risking a
+    SQLITE_BUSY upgrade later) and commits on success or rolls back on
+    any exception, re-raising it either way.
+
+    Not used around ``Store.migrate``'s own ``executescript`` calls:
+    ``executescript`` issues its own implicit ``COMMIT`` of any pending
+    transaction before running, which would silently end this one early
+    -- and every statement it runs there is an idempotent ``CREATE TABLE
+    IF NOT EXISTS``/``CREATE INDEX IF NOT EXISTS`` anyway, so partial
+    application on failure is harmless (the next ``migrate()`` call
+    finishes the job).
+    """
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        yield conn
+    except BaseException:
+        conn.execute("ROLLBACK")
+        raise
+    else:
+        conn.execute("COMMIT")
 
 
 class Store:
@@ -138,12 +185,17 @@ class Store:
         """Create every table/index in ``schema.ALL_STATEMENTS`` if
         missing, and record ``schema.SCHEMA_VERSION`` in ``meta``.
         Idempotent when the store is already current. When the store's
-        recorded version is older than ``schema.SCHEMA_VERSION``, every
-        table is dropped and recreated first (see module docstring) --
-        the store is a derived cache, never the source of truth."""
+        recorded version differs at all from ``schema.SCHEMA_VERSION`` --
+        older (an upgrade) or newer (e.g. a downgraded install pointed at
+        a store a later version already migrated) -- every table is
+        dropped and recreated first (see module docstring) -- the store
+        is a derived cache, never the source of truth, so there is
+        nothing to preserve either way (nit 24: the original ``<``-only
+        check left a newer-than-code store's stale shape in place
+        instead of rebuilding it)."""
         conn = self._connection()
         current = self.schema_version()
-        if current is not None and current < schema.SCHEMA_VERSION:
+        if current is not None and current != schema.SCHEMA_VERSION:
             self._drop_all_tables(conn)
         with conn:
             for statement in schema.ALL_STATEMENTS:
@@ -205,7 +257,7 @@ class Store:
         """Insert or update one top-level session row (``SessionRecord``
         plus the cost/token totals folded from its transcripts)."""
         conn = self._connection()
-        with conn:
+        with _transaction(conn):
             project_id = self._upsert_project(conn, project_slug, project_root_path)
             conn.execute(
                 """
@@ -267,14 +319,14 @@ class Store:
         breakdown for that file). Returns the transcript's row id.
         """
         conn = self._connection()
-        with conn:
+        with _transaction(conn):
             conn.execute(
                 """
                 INSERT INTO transcripts (
                     session_id, path, kind, agent_id, agent_type, spawn_depth,
                     parent_agent_id, mtime_ns, size_bytes, parser_version,
-                    digest_json, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    digest_json, missing_since, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
                 ON CONFLICT(path) DO UPDATE SET
                     session_id = excluded.session_id,
                     kind = excluded.kind,
@@ -286,6 +338,7 @@ class Store:
                     size_bytes = excluded.size_bytes,
                     parser_version = excluded.parser_version,
                     digest_json = excluded.digest_json,
+                    missing_since = NULL,
                     updated_at = excluded.updated_at
                 """,
                 (
@@ -372,7 +425,7 @@ class Store:
         already has. Returns the snapshot's row id, so a caller can pass
         it as ``upsert_session``'s ``snapshot_id``."""
         conn = self._connection()
-        with conn:
+        with _transaction(conn):
             project_id = self._upsert_project(conn, project_slug, project_root_path)
             conn.execute(
                 """
@@ -408,7 +461,7 @@ class Store:
         array of names only -- never ``detail``, which carries workflow
         source/prompt text (see ``workflows.py``'s module docstring)."""
         conn = self._connection()
-        with conn:
+        with _transaction(conn):
             conn.execute(
                 """
                 INSERT INTO workflow_runs (
@@ -440,13 +493,16 @@ class Store:
         """Insert or update one profile's index row (v0.3's
         ``profiles/<id>.toml``, tracked here from v0.2)."""
         conn = self._connection()
-        with conn:
-            conn.execute(
-                "INSERT INTO profiles (id, name, toml_path, updated_at) VALUES (?, ?, ?, ?) "
-                "ON CONFLICT(id) DO UPDATE SET name = excluded.name, toml_path = excluded.toml_path, "
-                "updated_at = excluded.updated_at",
-                (profile_id, name, toml_path, _now()),
-            )
+        # A single statement is already atomic under autocommit -- no
+        # explicit transaction wrapper needed (see _transaction's own
+        # docstring; this isn't one of the multi-statement writers finding
+        # 2/5 is about).
+        conn.execute(
+            "INSERT INTO profiles (id, name, toml_path, updated_at) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(id) DO UPDATE SET name = excluded.name, toml_path = excluded.toml_path, "
+            "updated_at = excluded.updated_at",
+            (profile_id, name, toml_path, _now()),
+        )
 
     def record_baseline(
         self, *, project_slug: str, project_root_path: str = "", window_start: str,
@@ -455,7 +511,7 @@ class Store:
         """Insert one baseline-capture row. Returns the baseline's row
         id."""
         conn = self._connection()
-        with conn:
+        with _transaction(conn):
             project_id = self._upsert_project(conn, project_slug, project_root_path)
             cursor = conn.execute(
                 "INSERT INTO baselines (project_id, window_start, window_end, archetype, digest_json, created_at) "
@@ -473,37 +529,76 @@ class Store:
         return {row["path"]: (row["mtime_ns"], row["size_bytes"]) for row in rows}
 
     def remove_missing(self, known_paths: set[str]) -> int:
-        """Delete every transcript row whose ``path`` is not in
-        ``known_paths`` (a file the watcher can no longer find on disk —
-        deleted, or past ``cleanupPeriodDays``), cascading to its
-        ``turns_agg``/``recache_turns``/``events``/``compactions`` rows.
-        Returns the number of transcripts removed."""
+        """Mark every transcript row whose ``path`` is not in
+        ``known_paths`` (a file the watcher can no longer find on disk --
+        deleted, or already past Claude Code's own ``cleanupPeriodDays``
+        retention) with a ``missing_since`` timestamp, instead of
+        deleting it outright (review finding 3: "the store must outlive
+        ``cleanupPeriodDays``"). A missing transcript's stored
+        ``digest_json`` is still enough to serve it in a report or
+        ``rebuild.corpus_from_store`` -- only :meth:`retention_prune` or
+        ``claude-token-lens serve --purge`` actually delete a transcript
+        row. A transcript whose file has reappeared (``path`` is back in
+        ``known_paths``) has its ``missing_since`` cleared again. Returns
+        the number of transcripts *newly* marked missing on this call --
+        see :meth:`count_missing_transcripts` for the running total."""
         conn = self._connection()
-        with conn:
-            rows = conn.execute("SELECT id, path FROM transcripts").fetchall()
-            stale_ids = [row["id"] for row in rows if row["path"] not in known_paths]
-            for transcript_id in stale_ids:
-                conn.execute("DELETE FROM turns_agg WHERE transcript_id = ?", (transcript_id,))
-                conn.execute("DELETE FROM recache_turns WHERE transcript_id = ?", (transcript_id,))
-                conn.execute("DELETE FROM events WHERE transcript_id = ?", (transcript_id,))
-                conn.execute("DELETE FROM compactions WHERE transcript_id = ?", (transcript_id,))
-                conn.execute("DELETE FROM transcripts WHERE id = ?", (transcript_id,))
-        return len(stale_ids)
+        with _transaction(conn):
+            rows = conn.execute("SELECT id, path, missing_since FROM transcripts").fetchall()
+            now = _now()
+            newly_missing = 0
+            for row in rows:
+                is_known = row["path"] in known_paths
+                if not is_known and row["missing_since"] is None:
+                    conn.execute(
+                        "UPDATE transcripts SET missing_since = ?, updated_at = ? WHERE id = ?",
+                        (now, now, row["id"]),
+                    )
+                    newly_missing += 1
+                elif is_known and row["missing_since"] is not None:
+                    conn.execute(
+                        "UPDATE transcripts SET missing_since = NULL, updated_at = ? WHERE id = ?",
+                        (now, row["id"]),
+                    )
+        return newly_missing
+
+    def count_missing_transcripts(self) -> int:
+        """The running total of transcripts currently marked missing
+        (``missing_since`` is set) -- what ``/api/health`` reports as
+        ``transcripts_missing``, distinct from :meth:`remove_missing`'s
+        own per-tick delta return value."""
+        row = self._connection().execute(
+            "SELECT COUNT(*) AS n FROM transcripts WHERE missing_since IS NOT NULL"
+        ).fetchone()
+        return int(row["n"])
 
     def retention_prune(self, retention_days: int) -> int:
-        """Delete every session (and its transcripts/child rows) last
-        active more than ``retention_days`` ago. Returns the number of
-        sessions removed. A transcript's file may still exist on disk
-        (or have already been cleaned up by Claude Code's own
-        ``cleanupPeriodDays``) — either way the store no longer needs
+        """Delete every session (and its transcripts/workflow runs/tags/
+        child rows) last active more than ``retention_days`` ago. Returns
+        the number of sessions removed. A transcript's file may still
+        exist on disk (or have already been cleaned up by Claude Code's
+        own ``cleanupPeriodDays``, or be marked missing via
+        :meth:`remove_missing`) -- either way the store no longer needs
         rows for it once its session ages out of the configured
         retention window (plan "Locked-down installs" / "Retention and
-        portability")."""
+        portability"). This is one of only two ways a session/transcript
+        row is ever actually deleted (the other being
+        ``claude-token-lens serve --purge``, which drops the whole
+        store).
+
+        The whole prune runs inside one explicit transaction (review
+        finding 2/5): every child table with a foreign key into
+        ``sessions``/``transcripts`` -- including ``workflow_runs``,
+        which the original implementation omitted and which would
+        otherwise raise ``sqlite3.IntegrityError`` on the ``sessions``
+        delete for any session with a recorded workflow run -- is deleted
+        before its parent, and a failure partway through rolls back the
+        entire prune rather than leaving it half-applied."""
         cutoff = time.strftime(
             "%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - retention_days * 86400)
         )
         conn = self._connection()
-        with conn:
+        with _transaction(conn):
             rows = conn.execute(
                 "SELECT id FROM sessions WHERE last_ts IS NOT NULL AND last_ts < ?", (cutoff,)
             ).fetchall()
@@ -519,6 +614,7 @@ class Store:
                     conn.execute("DELETE FROM events WHERE transcript_id = ?", (transcript_id,))
                     conn.execute("DELETE FROM compactions WHERE transcript_id = ?", (transcript_id,))
                 conn.execute("DELETE FROM transcripts WHERE session_id = ?", (session_id,))
+                conn.execute("DELETE FROM workflow_runs WHERE session_id = ?", (session_id,))
                 conn.execute("DELETE FROM session_tags WHERE session_id = ?", (session_id,))
                 conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
         return len(session_ids)
@@ -528,25 +624,31 @@ class Store:
         """Append one ``get_usage`` snapshot (see ``usage.py``'s
         ``log-usage``)."""
         conn = self._connection()
-        with conn:
-            conn.execute(
-                "INSERT INTO usage_log (ts, window_start, window_end, utilization_pct, raw_json) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (ts, window_start, window_end, utilization_pct, json.dumps(raw, sort_keys=True)),
-            )
+        # Single statement -- see upsert_profile's comment above.
+        conn.execute(
+            "INSERT INTO usage_log (ts, window_start, window_end, utilization_pct, raw_json) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (ts, window_start, window_end, utilization_pct, json.dumps(raw, sort_keys=True)),
+        )
 
     # -- read queries (API-facing: never a local path) --------------------
 
     def change_token(self) -> str:
         """A cheap fingerprint of the store's current content -- changes
-        whenever a transcript or snapshot is added, removed or
-        re-parsed, and only then. Combines each of ``transcripts`` and
-        ``snapshots``' own row count with its own "latest touched"
-        marker (``updated_at`` for transcripts; ``ts``, the closest
-        analogue, for snapshots, which have no ``updated_at`` column).
-        Used by ``api.py``'s report-model cache to know when a cached
-        report needs rebuilding, without exposing anything about *what*
-        changed."""
+        whenever a transcript, snapshot, workflow run or session tag is
+        added, removed, re-parsed or set, and only then. Combines each of
+        ``transcripts``, ``snapshots``, ``workflow_runs`` and
+        ``session_tags``' own row count with its own "latest touched"
+        marker (``updated_at`` for transcripts/workflow_runs; ``ts``, the
+        closest analogue, for snapshots, which have no ``updated_at``
+        column; ``set_at`` for session_tags). ``workflow_runs``/
+        ``session_tags`` were added under review finding 8 -- without
+        them, a tag write or a freshly-linked workflow run left the
+        report-model cache (``api.py``'s ``_get_report_model``) serving a
+        stale report until some unrelated transcript/snapshot change
+        happened to also invalidate it. Used by ``api.py``'s report-model
+        cache to know when a cached report needs rebuilding, without
+        exposing anything about *what* changed."""
         conn = self._connection()
         transcripts_row = conn.execute(
             "SELECT COUNT(*), COALESCE(MAX(updated_at), '') FROM transcripts"
@@ -554,7 +656,24 @@ class Store:
         snapshots_row = conn.execute(
             "SELECT COUNT(*), COALESCE(MAX(ts), '') FROM snapshots"
         ).fetchone()
-        return f"{transcripts_row[0]}:{transcripts_row[1]}:{snapshots_row[0]}:{snapshots_row[1]}"
+        workflow_runs_row = conn.execute(
+            "SELECT COUNT(*), COALESCE(MAX(updated_at), '') FROM workflow_runs"
+        ).fetchone()
+        session_tags_row = conn.execute(
+            "SELECT COUNT(*), COALESCE(MAX(set_at), '') FROM session_tags"
+        ).fetchone()
+        return (
+            f"{transcripts_row[0]}:{transcripts_row[1]}:"
+            f"{snapshots_row[0]}:{snapshots_row[1]}:"
+            f"{workflow_runs_row[0]}:{workflow_runs_row[1]}:"
+            f"{session_tags_row[0]}:{session_tags_row[1]}"
+        )
+
+    #: Review finding 11: an extreme-length session's turn_series could
+    #: otherwise ship tens of thousands of points to the browser (and,
+    #: pre-finding-10-fix, feed a huge array into `Math.max.apply` there).
+    #: Above this many priced turns, turns_for_session() downsamples.
+    MAX_TURN_SERIES_POINTS = 5000
 
     def turns_for_session(self, session_id: str) -> dict | None:
         """Per-turn ``ctx``/cache/marker series for one session's
@@ -567,14 +686,24 @@ class Store:
         ``turn_series``: one ``[turn_index, ctx, cache_creation_tokens,
         is_recache, preceding_primary]`` row per priced turn
         (``turn_index > 0``), ``preceding_primary`` rendered as its
-        enum's ``.value`` string (or ``None``).
+        enum's ``.value`` string (or ``None``) -- downsampled to at most
+        :data:`MAX_TURN_SERIES_POINTS` rows for a very long session
+        (review finding 11), keeping every marked turn (see
+        ``markers`` below) and evenly striding through the remainder to
+        fill the rest of the budget, so the shape of the series survives
+        even when most of its raw points are dropped.
 
         ``markers``: ``{"compactions": [...], "spawns": [...], "human":
         [...]}`` -- the turn indices whose ``preceding_primary`` is
         ``compact_boundary``, whose ``agent_brief_chars`` is set (an
         Agent/Task tool call was made from that turn), or whose
         ``human_prompt_chars`` is set (a human message preceded that
-        turn), respectively.
+        turn), respectively. Always computed from the *full* turn list,
+        never from the downsampled ``turn_series``.
+
+        ``truncated``: ``True`` when ``turn_series`` was downsampled --
+        the UI uses this to say so rather than silently showing a
+        thinned-out chart as if it were the complete picture.
         """
         row = self._connection().execute(
             "SELECT digest_json FROM transcripts WHERE session_id = ? AND kind = 'top-level'",
@@ -605,9 +734,39 @@ class Store:
             if turn.human_prompt_chars is not None:
                 human.append(turn.turn_index)
 
+        truncated = False
+        total_points = len(turn_series)
+        if total_points > self.MAX_TURN_SERIES_POINTS:
+            marker_turns = set(compactions) | set(spawns) | set(human)
+            keep = {i for i, row_ in enumerate(turn_series) if row_[0] in marker_turns}
+            budget = self.MAX_TURN_SERIES_POINTS - len(keep)
+            if budget > 0:
+                # Evenly spaced indices across the *full* range, computed
+                # with a float step rather than an integer stride -- an
+                # integer `total_points // budget` floors to 1 whenever
+                # budget is more than half of total_points, which would
+                # select every single index and then have the later
+                # `[:MAX_TURN_SERIES_POINTS]` truncation cut off
+                # everything past the cap, silently dropping any marker
+                # turn that happens to sit later in the series (the bug
+                # this comment replaces).
+                step = total_points / budget
+                for k in range(budget):
+                    idx = min(int(k * step), total_points - 1)
+                    keep.add(idx)
+            kept_indices = sorted(keep)
+            if len(kept_indices) > self.MAX_TURN_SERIES_POINTS:
+                # Pathological case: marker turns alone already exceed
+                # the cap. Truncate rather than silently exceed it --
+                # there is no marker-preserving way to shrink further.
+                kept_indices = kept_indices[: self.MAX_TURN_SERIES_POINTS]
+            turn_series = [turn_series[i] for i in kept_indices]
+            truncated = True
+
         return {
             "turn_series": turn_series,
             "markers": {"compactions": compactions, "spawns": spawns, "human": human},
+            "truncated": truncated,
         }
 
     def summary(self, *, window_days: int | None = None) -> dict:
@@ -651,7 +810,10 @@ class Store:
             """,
             (limit, offset),
         ).fetchall()
-        return [dict(row) for row in rows]
+        result = [dict(row) for row in rows]
+        for item in result:
+            item["slug"] = redact_slug(item["slug"])
+        return result
 
     def session(self, session_id: str) -> dict | None:
         """One session's full detail: its own summary fields plus its
@@ -670,6 +832,7 @@ class Store:
         if row is None:
             return None
         result = dict(row)
+        result["slug"] = redact_slug(result["slug"])
         transcript_rows = conn.execute(
             "SELECT id, kind, agent_id, agent_type, spawn_depth, parent_agent_id "
             "FROM transcripts WHERE session_id = ?",
@@ -753,6 +916,8 @@ class Store:
             item = dict(row)
             if item.get("project_slug") == GLOBAL_PROJECT_SLUG:
                 item["project_slug"] = None
+            elif item.get("project_slug") is not None:
+                item["project_slug"] = redact_slug(item["project_slug"])
             result.append(item)
         return result
 
@@ -765,12 +930,26 @@ class Store:
         return [dict(row) for row in rows]
 
     def baselines(self) -> list[dict]:
-        """Every recorded baseline capture."""
+        """Every recorded baseline capture, plus its owning project's
+        (redacted) ``slug`` -- joined in (nit 27) so a caller can label a
+        baseline row by project name without a second round trip through
+        ``sessions()``/a raw ``project_id``."""
         rows = self._connection().execute(
-            "SELECT id, project_id, window_start, window_end, archetype, digest_json, created_at "
-            "FROM baselines ORDER BY created_at"
+            """
+            SELECT b.id, b.project_id, p.slug AS project_slug, b.window_start,
+                   b.window_end, b.archetype, b.digest_json, b.created_at
+            FROM baselines b
+            LEFT JOIN projects p ON p.id = b.project_id
+            ORDER BY b.created_at
+            """
         ).fetchall()
-        return [dict(row) for row in rows]
+        result = []
+        for row in rows:
+            item = dict(row)
+            if item.get("project_slug") is not None:
+                item["project_slug"] = redact_slug(item["project_slug"])
+            result.append(item)
+        return result
 
     def tags(self, session_id: str) -> dict:
         """``{key: value}`` of every tag set on ``session_id`` (empty
@@ -780,17 +959,32 @@ class Store:
         ).fetchall()
         return {row["key"]: row["value"] for row in rows}
 
+    def all_tags(self) -> dict[str, dict[str, str]]:
+        """Every session's tags, grouped by ``session_id`` -- the
+        whole-store counterpart to :meth:`tags` (one session at a time).
+        Used by ``api.py``'s report building to merge ``POST
+        /api/sessions/<id>/tags`` writes into the same
+        ``session_overrides`` mechanism ``config.load_session_overrides``
+        feeds ``classify.classify_session`` (review finding 7: a tag
+        write must actually change the built report, not just sit in the
+        store inertly)."""
+        rows = self._connection().execute("SELECT session_id, key, value FROM session_tags").fetchall()
+        result: dict[str, dict[str, str]] = {}
+        for row in rows:
+            result.setdefault(row["session_id"], {})[row["key"]] = row["value"]
+        return result
+
     def set_tag(self, session_id: str, key: str, value: str) -> None:
         """Set (or overwrite) one ``session_tags`` entry — the only
         mutation the v0.2 API exposes (``POST /api/sessions/<id>/tags``,
         per ``docs/api.md``)."""
         conn = self._connection()
-        with conn:
-            conn.execute(
-                "INSERT INTO session_tags (session_id, key, value, set_at) VALUES (?, ?, ?, ?) "
-                "ON CONFLICT(session_id, key) DO UPDATE SET value = excluded.value, set_at = excluded.set_at",
-                (session_id, key, value, _now()),
-            )
+        # Single statement -- see upsert_profile's comment above.
+        conn.execute(
+            "INSERT INTO session_tags (session_id, key, value, set_at) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(session_id, key) DO UPDATE SET value = excluded.value, set_at = excluded.set_at",
+            (session_id, key, value, _now()),
+        )
 
 
 __all__ = ["Store"]

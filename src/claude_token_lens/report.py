@@ -90,7 +90,7 @@ from datetime import datetime, timezone
 from typing import Callable
 
 from . import __version__ as _TOOL_VERSION
-from . import classify, compaction, context_budget, recache, scorecard, snapshots as snapshots_mod, topology, ttl, workflows, workstyle
+from . import classify, compaction, context_budget, discovery, recache, scorecard, snapshots as snapshots_mod, topology, ttl, workflows, workstyle
 from .config import Config
 from .corpus import Corpus, SessionBundle
 from .model import (
@@ -648,6 +648,13 @@ def build_report(
             continue
         subs = bundle.subs
         transcripts = _transcripts_of(bundle)
+        # Review finding 6: redact a raw home-directory username out of
+        # the slug here, inside the one function both the CLI and the
+        # service's API call, so a project slug built from a real
+        # filesystem path (``C:\Users\<name>\...``, ``/home/<name>/...``)
+        # never surfaces a real username through either surface, and the
+        # two print the identical (redacted) slug for the same session.
+        slug = discovery.redact_slug(bundle.slug)
 
         classification = classify.classify_session(
             top,
@@ -659,7 +666,7 @@ def build_report(
             mode_thresholds=mode_thresholds,
             purpose_thresholds=purpose_thresholds,
         )
-        record = classify.build_session_record(top, subs, bundle.workflows, classification, bundle.slug)
+        record = classify.build_session_record(top, subs, bundle.workflows, classification, slug)
 
         features = _extract_workstyle_features(top, subs, bundle.workflows)
         archetype, _evidence = workstyle.detect_archetype(features)
@@ -721,7 +728,7 @@ def build_report(
                 session_cc_total_tokens += turn.cache_creation_tokens
 
         tp.add_session(record.session_id, top, list(subs), pricing)
-        cb.add_session(bundle.slug, top)
+        cb.add_session(slug, top)
 
         session_cost[record.session_id] = session_cost_total
         session_cc_total[record.session_id] = session_cc_total_tokens
@@ -897,7 +904,12 @@ def build_report(
         tool_version=_TOOL_VERSION,
         generated_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.") + "000Z",
         window=window,
-        projects=tuple(projects),
+        # Finding 6: `projects` is caller-supplied (the CLI's own
+        # discovered slugs, or api.py's `_build_report_model`'s
+        # store-derived set) -- redact defensively here too, not only at
+        # the `bundle.slug` call sites above, so a caller that hasn't
+        # redacted its own list can't leak a raw slug through this field.
+        projects=tuple(sorted({discovery.redact_slug(p) for p in projects})),
         pricing=PricingMeta(
             path=pricing.path,
             version=pricing.version,

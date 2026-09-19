@@ -22,9 +22,11 @@
     Name of the Scheduled Task to create. Default: ClaudeTokenLens.
 
 .PARAMETER PythonwPath
-    Path to pythonw.exe. Default: resolved via `where.exe pythonw`, or
-    prompts to install the package first if pythonw itself is not
-    found (Python's own installer ships it alongside python.exe).
+    Path to pythonw.exe. Default: resolved via `Get-Command pythonw.exe`
+    (nit 28: an earlier draft of this help text said `where.exe`, which
+    the code never actually called), or reports an error asking you to
+    install Python (which ships pythonw.exe alongside python.exe) or
+    pass -PythonwPath explicitly if pythonw itself is not found.
 
 .PARAMETER BillingMode
     Optional -BillingMode {api,subscription} forwarded to `serve`.
@@ -60,8 +62,12 @@ function Resolve-Pythonw {
         if (Test-Path $Explicit) {
             return $Explicit
         }
+        # Nit 28: this script sets $ErrorActionPreference = "Stop" at its
+        # top level, which this function inherits (it never sets its own
+        # local override) -- Write-Error is therefore already a
+        # terminating call here, so an `exit 1` on the next line would
+        # never run. No such line follows, on purpose.
         Write-Error "PythonwPath '$Explicit' does not exist."
-        exit 1
     }
 
     $found = $null
@@ -74,7 +80,6 @@ function Resolve-Pythonw {
 
     if (-not $found) {
         Write-Error "pythonw.exe not found on PATH. Install Python (which ships pythonw.exe alongside python.exe) or pass -PythonwPath explicitly."
-        exit 1
     }
     return $found
 }
@@ -98,7 +103,16 @@ $registered = $false
 try {
     $action = New-ScheduledTaskAction -Execute $pythonw -Argument $argumentList
     $trigger = New-ScheduledTaskTrigger -AtLogOn
-    $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
+    # Review finding 14: a bare $env:USERNAME is ambiguous as a
+    # -UserId on a domain-joined machine (Task Scheduler needs to
+    # resolve it to one SID, and an unqualified name can match a
+    # different account than the one actually running this script, or
+    # fail to resolve at all). $env:USERDOMAIN is the domain name when
+    # domain-joined and the local computer name otherwise, so
+    # "$env:USERDOMAIN\$env:USERNAME" always names this exact account
+    # unambiguously, the same "DOMAIN\user" form Task Scheduler's own UI
+    # displays a principal as.
+    $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive -RunLevel Limited
     $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
 
     Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
@@ -109,10 +123,22 @@ catch {
 }
 
 if (-not $registered) {
-    $trArg = "`"$pythonw`" $argumentList"
-    # schtasks' own quoting rules require the whole command wrapped once
-    # more for /TR -- RL LIMITED is schtasks' equivalent of -RunLevel
-    # Limited above.
+    # Review finding 13: schtasks.exe re-parses its own /TR value with a
+    # second, internal split (into "the executable" and "the
+    # executable's own arguments") on top of the normal OS-level argv
+    # rules PowerShell already applies when it turns this array into the
+    # child process's command line. Handing it a /TR value with plain
+    # embedded quotes (`"$pythonw`" ...) collides with PowerShell's own
+    # auto-quoting of that value (needed because it contains spaces,
+    # e.g. "C:\Users\Jane Doe\...") -- confirmed by spawning a real argv
+    # probe: the plain form gets the whole value split apart wherever a
+    # space falls *outside* what should have been a still-quoted
+    # segment, silently truncating both the pythonw path and every
+    # `--projects-root`/`--config-dir` value that itself contains a
+    # space. Escaping every embedded quote as `\"` (backslash + quote,
+    # not just PowerShell's own backtick-quote) makes the single /TR
+    # argument round-trip intact through both parsing layers.
+    $trArg = ("`"$pythonw`" $argumentList") -replace '"', '\"'
     $schtasksArgs = @(
         "/Create", "/TN", $TaskName, "/TR", $trArg, "/SC", "ONLOGON",
         "/RL", "LIMITED", "/F"
