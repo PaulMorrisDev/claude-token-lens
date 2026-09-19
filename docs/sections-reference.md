@@ -317,6 +317,66 @@ appear in `claude-token-lens report`'s output — call it directly:
   supplied by the caller; skipped with a note when not enough samples
   exist.
 
+## `context_budget` (`context_budget.py`)
+
+Answers the owner question "do we track preloaded skills, the system
+prompt, and the autocompact buffer?" A transcript never carries those
+sizes directly, so every column ending `(est)` is a clearly labelled
+*estimate* built from what is captured (first-turn `cache_creation`, a
+HUMAN_TEXT/`skill_listing` attachment's own `size_chars`, a schema-2
+config snapshot's `content_layers`) — Claude Code's own `/context` view
+remains the authoritative breakdown; treat every `(est)` figure here as a
+rough proxy, never as ground truth. Skipped cleanly (no tables, one note)
+when the corpus has no top-level transcripts at all.
+
+- `context_budget_baseline` — per project, plus one `all` row summing
+  every project: the measured mean/median top-level first-turn
+  `cache_creation` (the same metric `agents`' `topology_session_baseline`
+  reports, computed independently here rather than read back off that
+  table), next to estimated buckets in tokens for `human_prompt` (the
+  first HUMAN_TEXT event's `size_chars`, or the first turn's own
+  `human_prompt_chars`, divided by 4), `skills_listing` (every
+  `skill_listing` attachment's `size_chars` preceding the first turn,
+  divided by 4), `memory_files` (the joined schema-2 snapshot's
+  `content_layers` CLAUDE.md family + rules bytes, divided by 4; `null`
+  without a snapshot), `custom_agents` (the snapshot's agent count times
+  a labelled 60-tokens-per-agent-listing constant; `null` without a
+  snapshot), `mcp_tools` (`"present, size unknown"` when the snapshot
+  names at least one MCP server, else `null` — this module has no way to
+  measure an MCP server's own tool-schema size), and
+  `system_prompt_and_tools` — the residual: mean baseline minus every
+  other known `(est)` bucket, floored at 0. The `all` row's
+  snapshot-derived buckets are always `null` (they can't be meaningfully
+  combined across different projects' own snapshots).
+- `context_budget_autocompact` — per project: the configured
+  `autoCompactWindow` from the latest schema-2 snapshot's effective
+  settings (`null` if absent), the model's context window size (from a
+  statusline ground-truth row when one is available for the project,
+  else assumed as 1,000,000 for a `"[1m]"` model alias or 200,000
+  otherwise — `context_window_source` names which), the *observed*
+  effective autocompact threshold (median `compactMetadata.preTokens`
+  over this project's own `trigger == "auto"` compactions —
+  `compaction.effective_autocompact_threshold`), the implied buffer
+  (window minus threshold), how many auto compactions were observed, and
+  whether the observed threshold drifted more than 10% from the
+  configured window (`null` when either figure is unavailable).
+- `context_budget_statusline` — one real, non-estimated line per
+  session (last reported used tokens, window size, used percentage),
+  present only once at least one usage-log row carries `context_window`
+  fields (see `statusline.py`'s module docstring for how those columns
+  get there — `python -m claude_token_lens.statusline` appends them to
+  the same usage-log CSV `usage_windows` already reads, as three new
+  trailing columns old-format rows simply don't have). Empty with a note
+  otherwise — `report.build_report` has no `config_dir` to load that CSV
+  from today, so this table is only ever populated by a caller that
+  supplies `usage_log_rows` directly, not by `claude-token-lens report`.
+
+`recommend.py`'s `baseline-bloat` rule (see
+[Recommendations](#recommendations-recommendpy) below) cites this
+section's sized buckets as its evidence, and names the largest one in
+its action text, whenever `context_budget` is present in the report —
+falling back to its older single-mean-baseline evidence otherwise.
+
 ## `scorecard` (`scorecard.py`)
 
 Five 1-5 levels (1 poor, 5 excellent) summarising a corpus's cache
