@@ -15,9 +15,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   aggregate-only `export` command, and a monthly report.
 - **v0.3** — `init`, a `baseline`/onboarding capture window, a profile
   schema and catalogue, `apply`/`--revert` for writing a chosen profile
-  into `settings.json`/agent frontmatter, a `compare` command, team
-  aggregate import across machines, and a reconciliation pass against
-  real billing data.
+  into `settings.json`/agent frontmatter, a `compare` command, a team
+  aggregate command that imports several machines' hashed-slug exports
+  into one store for per-archetype comparisons across people (no text
+  ever — for team leads on the work machine), and a reconciliation pass
+  against real billing data.
+
+The following are a v0.4 backlog, kept here until they are scheduled into a
+milestone:
+
+- **Budget check.** `check --weekly-tokens N --daily-usd N` exits non-zero
+  when exceeded; UI banner; uses `log-usage` window data when present.
+  Guardrail for overnight runs.
+- **Anomaly outliers.** Sessions or spawns whose cost is more than 3 median
+  absolute deviations from their mode/purpose group, with the composition
+  table attached. Catches runaway agents.
+- **Scheduled reports.** `serve --weekly-report DIR` writes the Markdown/HTML
+  report every Monday for sharing. Habit-forming review.
+- **Opt-in local path view.** `--show-paths` (local only, never in exports)
+  lists the top files by Read tokens, as token-dashboard does.
 
 ## [0.1.0] - 2026-09-19
 
@@ -206,22 +222,3 @@ than silently reconciled:
   per-provider pricing tables, `--allow-titles` being a no-op, and
   `usage_windows` not being wired into the assembled report) are kept,
   stated honestly rather than papered over.
-
-### Planned
-
-The following are a v0.4 backlog, kept here until they are scheduled into a
-milestone:
-
-- **Budget check.** `check --weekly-tokens N --daily-usd N` exits non-zero
-  when exceeded; UI banner; uses `log-usage` window data when present.
-  Guardrail for overnight runs.
-- **Anomaly outliers.** Sessions or spawns whose cost is more than 3 median
-  absolute deviations from their mode/purpose group, with the composition
-  table attached. Catches runaway agents.
-- **Team aggregate.** `import` several machines' hashed-slug exports into one
-  store; per-archetype comparisons across people, no text ever. For team
-  leads on the work machine.
-- **Scheduled reports.** `serve --weekly-report DIR` writes the Markdown/HTML
-  report every Monday for sharing. Habit-forming review.
-- **Opt-in local path view.** `--show-paths` (local only, never in exports)
-  lists the top files by Read tokens, as token-dashboard does.
