@@ -81,6 +81,20 @@ _REDISCOVERY_WINDOW = 10
 #: Rows shown in the per-session table :func:`build_section` emits.
 _PER_SESSION_TABLE_LIMIT = 20
 
+#: A ``CompactionRecord`` whose ``join_delta_s`` exceeds this many seconds
+#: (15 minutes) is excluded from every aggregate built from its
+#: ``next_turn_*`` fields (fix item 9) — the correlation only guarantees
+#: "the next priced turn chronologically", and a gap this large means
+#: that turn's cache-write cost most likely belongs to a resumed session,
+#: not to recovering from the compaction. ``None`` (unparsable timestamp)
+#: is treated as tight — there's no evidence the join is loose, only that
+#: it can't be measured.
+_MAX_JOIN_DELTA_S = 900.0
+
+
+def _join_is_tight(record: CompactionRecord) -> bool:
+    return record.join_delta_s is None or record.join_delta_s <= _MAX_JOIN_DELTA_S
+
 
 def is_recache_turn(turn: Turn, thresholds: RecacheThresholds | None = None) -> bool:
     """Minimal RE-CACHE test: a large context whose cache-read share is
@@ -109,6 +123,21 @@ def _parse_ts(ts_raw: str | None) -> datetime | None:
         return datetime.fromisoformat(ts_raw.replace("Z", "+00:00"))
     except ValueError:
         return None
+
+
+def new_tokens(turn: Turn) -> int:
+    """``input_tokens + cache_creation_tokens`` for one turn: the tokens
+    that entered the context fresh this turn, as opposed to
+    ``cache_read_tokens`` replayed from an existing cache.
+
+    Fix item 9: defined once here (rather than re-derived at each call
+    site) as an alternative denominator to ``cache_creation_tokens``
+    alone for "what share of this turn's tokens..." questions —
+    ``cache_creation`` alone undercounts a turn whose prefix was never
+    cacheable in the first place (no cache_control breakpoint hit at
+    all), where every token still arrived as plain ``input_tokens``.
+    """
+    return turn.input_tokens + turn.cache_creation_tokens
 
 
 def _priced_turns(tr: TranscriptResult) -> list[Turn]:
@@ -191,6 +220,15 @@ class CompactionRecord:
     next_turn_write_cost: float | None = None
     #: ``None`` only when there is no next turn to test at all.
     next_turn_is_recache: bool | None = None
+    #: Seconds between this compaction event's own ``ts`` and the matched
+    #: next turn's ``ts`` (fix item 9). ``_correlate_compactions_to_turn_index``
+    #: only guarantees "the next priced turn chronologically" — with no
+    #: turn immediately after (the session paused, or ended), that can be
+    #: a turn far later, whose cache-write cost has nothing to do with
+    #: this compaction. ``None`` when there is no next turn, or either
+    #: timestamp is unparsable. See ``CompactionStats``'s join-tightness
+    #: gate on the aggregates that read ``next_turn_*``.
+    join_delta_s: float | None = None
 
 
 def compaction_records_for_transcript(
@@ -254,11 +292,16 @@ def compaction_records_for_transcript(
         next_cache_creation: int | None = None
         next_write_cost: float | None = None
         next_is_recache: bool | None = None
+        join_delta_s: float | None = None
         if turn_idx is not None:
             next_turn = priced_turns[turn_idx]
             next_cache_creation = next_turn.cache_creation_tokens
             next_write_cost = price_turn(next_turn, rates).cache_write_cost
             next_is_recache = is_recache_turn(next_turn, thresholds)
+            event_dt = _parse_ts(event.ts)
+            turn_dt = _parse_ts(next_turn.ts)
+            if event_dt is not None and turn_dt is not None:
+                join_delta_s = (turn_dt - event_dt).total_seconds()
 
         records.append(
             CompactionRecord(
@@ -273,6 +316,7 @@ def compaction_records_for_transcript(
                 next_turn_cache_creation=next_cache_creation,
                 next_turn_write_cost=next_write_cost,
                 next_turn_is_recache=next_is_recache,
+                join_delta_s=join_delta_s,
             )
         )
     return records
@@ -295,6 +339,11 @@ class CompactionStats:
     #: compaction) — the denominator for "dropped tokens' share of total
     #: cache_creation".
     total_cache_creation: int = 0
+    #: Sum of :func:`new_tokens` (``input_tokens + cache_creation_tokens``)
+    #: across the same priced turns (fix item 9) — the alternative
+    #: denominator that doesn't undercount a turn whose prefix was never
+    #: cacheable at all.
+    total_new_tokens: int = 0
 
     @classmethod
     def build(
@@ -322,7 +371,9 @@ class CompactionStats:
         """
         session_id = tr.meta.session_id
         self._sessions_seen.add(session_id)
-        self.total_cache_creation += sum(t.cache_creation_tokens for t in _priced_turns(tr))
+        priced = _priced_turns(tr)
+        self.total_cache_creation += sum(t.cache_creation_tokens for t in priced)
+        self.total_new_tokens += sum(new_tokens(t) for t in priced)
 
         records = compaction_records_for_transcript(tr, rates, thresholds)
         if records:
@@ -388,22 +439,43 @@ class CompactionStats:
         return 100.0 * self.dropped_total / self.total_cache_creation
 
     @property
+    def dropped_share_of_new_tokens(self) -> float | None:
+        """Dropped tokens as a percentage of every priced turn's
+        :func:`new_tokens` (``input_tokens + cache_creation_tokens``)
+        across the whole corpus (fix item 9) — a second denominator
+        alongside :attr:`dropped_share_of_cache_creation` that doesn't
+        undercount a corpus where much of the traffic never hit a
+        cache_control breakpoint at all. ``None`` when nothing has been
+        observed to divide by.
+        """
+        if self.total_new_tokens == 0:
+            return None
+        return 100.0 * self.dropped_total / self.total_new_tokens
+
+    @property
     def mean_duration_ms(self) -> float | None:
         values = [r.duration_ms for r in self.records if r.duration_ms is not None]
         return statistics.mean(values) if values else None
 
     @property
     def total_post_compaction_recache_cost(self) -> float:
+        """Sum of ``next_turn_write_cost`` for compactions whose next
+        turn both trips the minimal RE-CACHE heuristic and is tightly
+        joined (fix item 9: ``join_delta_s`` at or under 15 minutes) —
+        see :func:`_join_is_tight`.
+        """
         return sum(
             r.next_turn_write_cost
             for r in self.records
-            if r.next_turn_is_recache and r.next_turn_write_cost is not None
+            if r.next_turn_is_recache and r.next_turn_write_cost is not None and _join_is_tight(r)
         )
 
     @property
     def total_post_compaction_write_cost(self) -> float:
         """Sum of ``next_turn_write_cost`` for EVERY compaction's
-        immediate next turn, regardless of the RE-CACHE flag.
+        immediate next turn, regardless of the RE-CACHE flag, excluding
+        loosely-joined records (fix item 9: ``join_delta_s`` over 15
+        minutes — see :func:`_join_is_tight`).
 
         ``total_post_compaction_recache_cost`` only counts turns that trip
         the minimal RE-CACHE heuristic (:func:`is_recache_turn`) — on a
@@ -416,7 +488,9 @@ class CompactionStats:
         cache" report line should show.
         """
         return sum(
-            r.next_turn_write_cost for r in self.records if r.next_turn_write_cost is not None
+            r.next_turn_write_cost
+            for r in self.records
+            if r.next_turn_write_cost is not None and _join_is_tight(r)
         )
 
     def per_session_summary(self) -> list[tuple[str, int, int, float]]:
@@ -424,13 +498,19 @@ class CompactionStats:
         write cost)`` for every session with >=1 compaction, sorted by
         dropped tokens descending (the ordering :func:`build_section`'s
         per-session table uses).
+
+        ``compaction_count`` and ``dropped_tokens`` count every record
+        regardless of join tightness (they don't depend on the next-turn
+        join at all); the write-cost column excludes loosely-joined
+        records (fix item 9), matching ``total_post_compaction_write_cost``.
         """
         by_session: dict[str, tuple[int, int, float]] = {}
         for record in self.records:
             count, dropped, cost = by_session.get(record.session_id, (0, 0, 0.0))
             count += 1
             dropped += record.dropped_tokens or 0
-            cost += record.next_turn_write_cost or 0.0
+            if _join_is_tight(record):
+                cost += record.next_turn_write_cost or 0.0
             by_session[record.session_id] = (count, dropped, cost)
         rows = [
             (session_id, count, dropped, cost)
@@ -464,6 +544,7 @@ def build_section(stats: CompactionStats) -> Section:
             ["Post-compaction tokens (median)", stats.post_median],
             ["Dropped tokens (total)", stats.dropped_total],
             ["Dropped tokens (share of cache_creation)", stats.dropped_share_of_cache_creation],
+            ["Dropped tokens (share of new_tokens: input+cache_creation)", stats.dropped_share_of_new_tokens],
             ["Mean duration (ms)", stats.mean_duration_ms],
             ["Total post-compaction write cost (USD)", stats.total_post_compaction_write_cost],
             [
@@ -516,15 +597,24 @@ def build_section(stats: CompactionStats) -> Section:
         "tokens by every priced turn's cache_creation across the whole "
         "corpus, not just turns following a compaction, so it can exceed "
         "100% when compactions are large relative to ordinary cache "
-        "growth. \"Dropped tokens\" itself is a per-compaction delta "
-        "recovered from compactMetadata's running cumulativeDroppedTokens "
-        "counter, not that raw cumulative value summed across a session's "
-        "compactions (which would double- and triple-count).",
+        "growth. The \"share of new_tokens\" row below it uses "
+        "input_tokens + cache_creation_tokens as the denominator instead, "
+        "so it doesn't undercount a corpus where much of the traffic "
+        "never hit a cache_control breakpoint at all. \"Dropped tokens\" "
+        "itself is a per-compaction delta recovered from "
+        "compactMetadata's running cumulativeDroppedTokens counter, not "
+        "that raw cumulative value summed across a session's compactions "
+        "(which would double- and triple-count).",
         "\"Total post-compaction write cost\" sums the immediate next "
         "turn's cache-write cost after every compaction; the "
         "RE-CACHE-flagged variant below it only counts turns that trip "
         "the minimal RE-CACHE heuristic and is typically far smaller, "
-        "since most post-compaction turns still hit a warm cache.",
+        "since most post-compaction turns still hit a warm cache. Both "
+        "totals (and the per-session table's write-cost column) exclude "
+        "a compaction whose matched next turn lands more than 15 minutes "
+        "(join_delta_s > 900) after the compaction event, since that gap "
+        "means the turn most likely belongs to a resumed session rather "
+        "than to recovering from this compaction.",
     ]
     if not stats.records:
         notes.insert(0, "No compact_boundary events found in this window.")
@@ -594,6 +684,7 @@ def rediscovery(tr: TranscriptResult) -> list[RediscoveryWindow]:
 
 __all__ = [
     "is_recache_turn",
+    "new_tokens",
     "CompactionRecord",
     "compaction_records_for_transcript",
     "CompactionStats",

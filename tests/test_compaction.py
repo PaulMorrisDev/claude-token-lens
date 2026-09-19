@@ -169,6 +169,23 @@ def test_is_recache_turn_honors_a_custom_recache_thresholds():
     assert compaction.is_recache_turn(turn, RecacheThresholds(ctx_floor=10_000)) is True
 
 
+# -- new_tokens --------------------------------------------------------------
+
+
+def test_new_tokens_is_input_plus_cache_creation():
+    from claude_token_lens.model import Turn
+
+    turn = Turn(input_tokens=100, cache_creation_tokens=250, cache_read_tokens=999999)
+    assert compaction.new_tokens(turn) == 350
+
+
+def test_new_tokens_ignores_cache_read():
+    from claude_token_lens.model import Turn
+
+    turn = Turn(input_tokens=0, cache_creation_tokens=0, cache_read_tokens=50000)
+    assert compaction.new_tokens(turn) == 0
+
+
 # -- compaction_records_for_transcript --------------------------------------
 
 
@@ -189,6 +206,8 @@ def test_compaction_records_two_triggers_ratio_and_recache(tmp_path, sonnet_rate
     assert first.next_turn_cache_creation == 25000
     assert first.next_turn_write_cost == pytest.approx(25000 * _SONNET_5_CACHE_WRITE_1H / 1_000_000)
     assert first.next_turn_is_recache is True
+    # Fix item 9: event ts 12:00:30 -> next turn ts 12:01:00 is a 30s join.
+    assert first.join_delta_s == pytest.approx(30.0)
 
     assert second.trigger == "manual"
     assert second.pre_tokens == 50000
@@ -199,6 +218,7 @@ def test_compaction_records_two_triggers_ratio_and_recache(tmp_path, sonnet_rate
     assert second.next_turn_cache_creation == 300
     assert second.next_turn_write_cost == pytest.approx(300 * _SONNET_5_CACHE_WRITE_5M / 1_000_000)
     assert second.next_turn_is_recache is False
+    assert second.join_delta_s == pytest.approx(30.0)
 
     assert_privacy(result)
 
@@ -245,6 +265,7 @@ def test_compaction_record_no_following_turn_leaves_next_fields_none(tmp_path, s
     assert records[0].next_turn_cache_creation is None
     assert records[0].next_turn_write_cost is None
     assert records[0].next_turn_is_recache is None
+    assert records[0].join_delta_s is None
 
 
 def test_compaction_record_dropped_tokens_is_delta_not_raw_cumulative(tmp_path, sonnet_rates):
@@ -326,6 +347,7 @@ def test_compaction_join_event_with_unparsable_timestamp_leaves_next_fields_none
     assert records[0].next_turn_cache_creation is None
     assert records[0].next_turn_write_cost is None
     assert records[0].next_turn_is_recache is None
+    assert records[0].join_delta_s is None
 
 
 def test_compaction_join_skips_turn_with_unparsable_timestamp(tmp_path, sonnet_rates):
@@ -390,6 +412,10 @@ def test_compaction_stats_aggregates_over_fixture_a(tmp_path, sonnet_rates):
     # total cache_creation across all 4 priced turns: 1000+25000+300+300
     assert stats.total_cache_creation == 26600
     assert stats.dropped_share_of_cache_creation == pytest.approx(115000 / 26600 * 100)
+    # Fix item 9: total new_tokens (input+cache_creation) across the same 4
+    # turns: (100+1000)+(0+25000)+(50+300)+(200+300) = 26950.
+    assert stats.total_new_tokens == 26950
+    assert stats.dropped_share_of_new_tokens == pytest.approx(115000 / 26950 * 100)
     assert stats.mean_duration_ms == pytest.approx(1050.0)
     # Only the first record (next_turn_is_recache=True) counts.
     assert stats.total_post_compaction_recache_cost == pytest.approx(
@@ -403,6 +429,80 @@ def test_compaction_stats_aggregates_over_fixture_a(tmp_path, sonnet_rates):
         25000 * _SONNET_5_CACHE_WRITE_1H / 1_000_000 + 300 * _SONNET_5_CACHE_WRITE_5M / 1_000_000
     )
     assert stats.total_post_compaction_write_cost > stats.total_post_compaction_recache_cost
+
+
+def _build_fixture_loose_join(tmp_path, session_id: str = "sess_loose"):
+    """One compaction whose matched next turn lands 1000s later — past
+    fix item 9's 900s (15 minute) join-tightness threshold. Its per-record
+    ``next_turn_*`` fields are still populated (the correlation genuinely
+    found that turn), but ``CompactionStats``' aggregates must exclude it:
+    a gap this large means the turn most likely belongs to a resumed
+    session, not to recovering from this compaction.
+    """
+    lines = [
+        turn_line(model="claude-sonnet-5", timestamp="2026-09-18T12:00:00.000Z"),
+        system_line(
+            "compact_boundary",
+            timestamp="2026-09-18T12:00:30.000Z",
+            compactMetadata={
+                "trigger": "auto",
+                "preTokens": 100000,
+                "postTokens": 20000,
+                "cumulativeDroppedTokens": 80000,
+                "durationMs": 1200,
+            },
+        ),
+        turn_line(
+            model="claude-sonnet-5",
+            # 1000s after the compact_boundary event (12:00:30 + 1000s).
+            timestamp="2026-09-18T12:17:10.000Z",
+            ephemeral_1h_input_tokens=25000,
+            cache_read_input_tokens=1000,
+            input_tokens=0,
+            output_tokens=80,
+        ),
+    ]
+    path = tmp_path / "session.jsonl"
+    write_jsonl(path, lines)
+    return path, TranscriptMeta(path=str(path), session_id=session_id)
+
+
+def test_join_delta_s_over_900s_reported_on_the_record(tmp_path, sonnet_rates):
+    path, meta = _build_fixture_loose_join(tmp_path)
+    result = parse_transcript(path, meta)
+    records = compaction.compaction_records_for_transcript(result, sonnet_rates)
+    assert len(records) == 1
+    assert records[0].join_delta_s == pytest.approx(1000.0)
+    # The per-record fields are unaffected by join tightness -- the
+    # correlation did find this turn; only the aggregates below gate on it.
+    assert records[0].next_turn_write_cost == pytest.approx(
+        25000 * _SONNET_5_CACHE_WRITE_1H / 1_000_000
+    )
+    assert records[0].next_turn_is_recache is True
+
+
+def test_compaction_stats_excludes_loose_join_from_write_cost_aggregates(tmp_path, sonnet_rates):
+    path, meta = _build_fixture_loose_join(tmp_path)
+    result = parse_transcript(path, meta)
+
+    stats = compaction.CompactionStats()
+    stats.add_transcript(result, sonnet_rates)
+
+    # Fix item 9: join_delta_s (1000s) exceeds the 900s threshold, so
+    # neither cost aggregate counts this record's next_turn_write_cost.
+    assert stats.total_post_compaction_write_cost == 0.0
+    assert stats.total_post_compaction_recache_cost == 0.0
+    # The compaction's own dropped-token delta has nothing to do with the
+    # next-turn join, so it still counts in full.
+    assert stats.dropped_total == 80000
+
+    rows = stats.per_session_summary()
+    assert len(rows) == 1
+    session_id, count, dropped, cost = rows[0]
+    assert session_id == "sess_loose"
+    assert count == 1
+    assert dropped == 80000
+    assert cost == 0.0
 
 
 def test_compaction_stats_build_classmethod_matches_manual_fold(tmp_path, sonnet_rates):
@@ -476,6 +576,11 @@ def test_build_section_shape_and_notes(tmp_path, sonnet_rates):
     assert summary_metrics["Total post-compaction RE-CACHE-flagged write cost (USD)"] == pytest.approx(
         stats.total_post_compaction_recache_cost
     )
+    # Fix item 9: dropped-share is now reported against both denominators.
+    assert summary_metrics[
+        "Dropped tokens (share of new_tokens: input+cache_creation)"
+    ] == pytest.approx(stats.dropped_share_of_new_tokens)
+    assert any("join_delta_s" in note for note in section.notes)
 
     trigger_table = section.tables[1]
     trigger_rows = {row[0]: row[1] for row in trigger_table.rows}
