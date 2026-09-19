@@ -43,10 +43,14 @@ _MISSING_TYPE = "<missing type>"
 
 
 def _clip(value: object) -> str:
+    """Stringify ``value`` and cap it at :data:`MAX_VALUE_CHARS` total
+    (ellipsis included), so a caller checking "no string longer than N
+    chars" never trips over the marker meant to satisfy that same rule.
+    """
     text = str(value)
-    if len(text) > MAX_VALUE_CHARS:
-        return text[:MAX_VALUE_CHARS] + "...(truncated)"
-    return text
+    if len(text) <= MAX_VALUE_CHARS:
+        return text
+    return text[: MAX_VALUE_CHARS - 3] + "..."
 
 
 @dataclass(slots=True)
