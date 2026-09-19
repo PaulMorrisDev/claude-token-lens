@@ -345,9 +345,10 @@ def _recache_classification(t: Turn, th: TtlThresholds | None = None) -> str | N
     turn, for item 5 (TTL-addressable share) and ``simulate``'s own
     fallback branch.
 
-    Prefers ``t.recache_signature`` (WP3's own classification) when set.
-    Falls back, turn by turn, to WP3's documented minimal rule when it
-    is ``None``: a re-cache turn is ``turn_index > 1`` (never the
+    Prefers ``t.recache_signature`` (``recache.py``'s own classification,
+    set by ``recache.detect``/``recache.apply``) when set. Falls back,
+    turn by turn, to ``recache.py``'s documented minimal rule when it is
+    ``None``: a re-cache turn is ``turn_index > 1`` (never the
     transcript's first write) with ``ctx > th.ctx_floor`` and
     ``cache_read < th.cr_ratio * ctx`` (most of a large prefix was NOT
     served from cache — the signature of *some* re-cache event, TTL or
@@ -357,13 +358,18 @@ def _recache_classification(t: Turn, th: TtlThresholds | None = None) -> str | N
     cache content itself changed upstream of some point, which no TTL
     policy can prevent). Falling back per turn rather than only when
     every turn in a transcript is unsigned produces the same result in
-    every case this worktree can observe (WP3 hasn't merged, so
-    ``recache_signature`` is uniformly ``None`` across the whole corpus
-    today) while staying correct turn-by-turn once WP3 lands partially
-    or its detector skips some turns.
+    every case this module can observe today: ``report.py`` feeds
+    ``TtlStats.add`` (and this function, transitively) the raw,
+    un-``apply``'d transcript -- only ``compaction.py`` currently calls
+    ``recache.apply`` before its own turn correlation -- so
+    ``recache_signature`` is uniformly ``None`` on every turn this
+    function actually sees in the report pipeline, and the fallback
+    rule does all the classifying. It stays correct turn-by-turn should
+    a future caller pass turns that already carry a signature, or a
+    transcript where only some turns do.
 
-    ``th`` (fix item 6) defaults to :data:`_DEFAULT_THRESHOLDS` — WP3's
-    own documented defaults — when omitted.
+    ``th`` (fix item 6) defaults to :data:`_DEFAULT_THRESHOLDS` --
+    ``recache.py``'s own documented defaults — when omitted.
     """
     th = th or _DEFAULT_THRESHOLDS
     if t.recache_signature is not None:
@@ -1819,9 +1825,9 @@ def build_section(
             "Full-expiry re-cache is TTL-addressable: a longer TTL can prevent it."
             " Prefix-invalidated re-cache is content-addressable: the cached content"
             " itself changed, so no TTL policy can help. Uses Turn.recache_signature"
-            " when WP3 has set it, falling back turn-by-turn to WP3's own minimal rule"
-            " (turn_index > 1, ctx > 20k, cache_read < 0.2*ctx, full-expiry when"
-            " cache_read < 2,000) when it hasn't."
+            " when recache.py has set it, falling back turn-by-turn to recache.py's own"
+            " minimal rule (turn_index > 1, ctx > 20k, cache_read < 0.2*ctx, full-expiry"
+            " when cache_read < 2,000) when it hasn't."
         ],
     )
 

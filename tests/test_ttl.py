@@ -1584,9 +1584,10 @@ def test_near_miss_histogram_boundaries_hand_computed_sonnet_5():
 
 def test_addressable_share_falls_back_to_minimal_rule_when_signatures_none():
     """Every turn's ``recache_signature`` is ``None`` (the default —
-    WP3 hasn't run in this worktree), so classification falls back to
-    WP3's own minimal rule turn by turn: ``turn_index > 1``,
-    ``ctx > 20_000``, ``cache_read < 0.2 * ctx``.
+    nothing in this test ran ``recache.detect``/``recache.apply`` on
+    these turns), so classification falls back to ``recache.py``'s own
+    minimal rule turn by turn: ``turn_index > 1``, ``ctx > 20_000``,
+    ``cache_read < 0.2 * ctx``.
 
     - t1 (turn_index=1) never qualifies regardless of its ctx/cache_read
       (turn_index > 1 required) -> excluded.

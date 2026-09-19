@@ -234,8 +234,9 @@ class SessionFeatures:
     compactions: int = 0
     task_notifications: int = 0
     peer_messages: int = 0
-    #: Count of ``WorkflowRun``s for this session (WP8 not yet written;
-    #: see the module docstring). Caller-supplied, default 0.
+    #: Count of ``WorkflowRun``s for this session, computed by
+    #: ``workflows.py``'s own parsing (see the module docstring for why
+    #: this module doesn't compute it itself). Caller-supplied, default 0.
     workflows: int = 0
     #: Carry-through value (see the module docstring); caller-supplied.
     entrypoint: str | None = None
@@ -767,7 +768,15 @@ def build_session_record(
     slug: str,
 ) -> SessionRecord:
     """Build one ``SessionRecord``. ``archetype``/``snapshot_id``/
-    ``profile_id`` are left ``None`` (WP8/WP10/WP12's job to populate).
+    ``profile_id`` are left ``None`` here: ``report.py`` fills in
+    ``archetype`` afterwards, from ``workstyle.detect_archetype()``
+    against that session's own extracted features; ``snapshot_id`` stays
+    unset even after a report renders — the session-to-config join is
+    resolved on demand at render time instead, via
+    ``snapshots.snapshot_for(record.first_ts, snapshots)``, rather than
+    stored back onto the record; ``profile_id`` has nothing to populate
+    it with yet — the profile schema/catalogue it would reference is a
+    v0.3 milestone item (see ``CHANGELOG.md``).
     ``entrypoint`` (batch C addition) is carried straight through from
     ``top.meta.entrypoint`` — ``parse_transcript`` already derived it as
     the first non-empty ``entrypoint`` field seen anywhere in the top

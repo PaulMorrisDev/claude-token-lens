@@ -3,8 +3,9 @@ top-level session's parsed transcripts, subagent transcripts and workflow
 runs, optionally through the on-disk digest cache and/or a process pool.
 
 :func:`load_corpus` is the one entry point every later report-assembly
-package (and the CLI, once WP10 lands) is meant to call instead of
-hand-rolling ``discovery``/``parse``/``workflows`` plumbing itself. It:
+package (and the CLI's ``cli.py``, via ``_load_corpus_for_args``) calls
+instead of hand-rolling ``discovery``/``parse``/``workflows`` plumbing
+itself. It:
 
 - Enumerates sessions per project directory via ``discovery.find_sessions``,
   their subagent transcripts via ``discovery.find_subagents`` (both the
