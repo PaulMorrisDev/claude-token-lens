@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Config snapshot schema 2** (additive over schema 1 — a schema-1
+  snapshot still loads unchanged): `hooks/snapshot-config.py` now
+  resolves and records every settings layer (`managed` >
+  `.claude/settings.local.json` > `.claude/settings.json` >
+  `~/.claude/settings.json`) individually as `settings_layers`, plus the
+  merged `effective`/`effective_provenance` result across them; a
+  redacted read of `~/.claude.json` (`claude_json` — MCP server/plugin
+  names, trust-dialog/allowed-tools counts, and per-project `last*`
+  session totals, matched to the current project by
+  `normcase(realpath(...))`, never the raw matching key); and
+  `content_layers` (sizes/counts/names only, never content, for the
+  CLAUDE.md family including a bounded nested walk, `.claude/rules/`,
+  `.claude/commands/`, skills, agents source/shadow rollup, `.mcp.json`,
+  output styles, auto-memory footprint, and installed plugins).
+  `agents` entries are now tagged `source` (`user`/`project`) and, on a
+  name clash, `shadowed_by_project`. See
+  [`docs/config-layers.md`](docs/config-layers.md).
+- Widened the settings allowlist (`autoCompactEnabled`, `modelPricing` —
+  present flag + overridden model ids, never the numbers — plus a
+  dedicated `statusLine` present-flag shape) and the environment-name
+  allowlist (`OTEL_*`, plus enough irregular names —
+  `MAX_THINKING_TOKENS`, `MAX_MCP_OUTPUT_TOKENS`,
+  `BASH_MAX_OUTPUT_LENGTH`, `DISABLE_NON_ESSENTIAL_MODEL_CALLS` — that
+  the existing `ANTHROPIC_*`/`CLAUDE_*` prefixes now cover every
+  documented Claude Code environment lever by name). Four of those
+  names are numeric caps rather than secrets, so their integer value is
+  recorded too (`env_numeric_caps`): `MAX_THINKING_TOKENS`,
+  `MAX_MCP_OUTPUT_TOKENS`, `BASH_MAX_OUTPUT_LENGTH`,
+  `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`.
+- `snapshots.py`: `effective_config`, `effective_provenance`, `layers`,
+  `latest_snapshot_per_project`, `build_effective_config_table`,
+  `build_config_layers_table`, `build_config_groups_table`,
+  `detect_drift`, `build_config_drift_table`, `claude_json_cross_check`.
+  `build_config_section` gains optional `include_effective=True` and
+  `sessions_with_observed=` keyword arguments (both off by default, so
+  an existing caller's output is unchanged).
+- CLI: `claude-token-lens probe-config [--project-dir PATH]` scans a
+  project's config layers without a session and prints the layers +
+  effective-config tables as Markdown, never a raw path. `snapshot-config`
+  gains `--project-dir PATH` to run the hook for an explicit project
+  directory instead of the current one (named `--project-dir` rather
+  than `--project`, which every subcommand already uses for "a
+  repeatable project slug to filter a report by").
+
 ### Planned
 
 - **v0.2** — `claude-token-lens serve` (local read-only service: watcher
