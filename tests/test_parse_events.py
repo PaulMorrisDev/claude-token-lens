@@ -20,6 +20,8 @@ from helpers import (
     ignorable_line,
     queue_operation_line,
     system_line,
+    tool_result_block,
+    tool_use_block,
     turn_line,
     user_block_line,
     user_str_line,
@@ -368,7 +370,13 @@ def test_task_notification_beats_plain_attachment_regression():
 
 def test_full_fixture_every_kind_resolves_and_diagnostics_count_correctly(tmp_path: Path):
     lines = [
-        turn_line(message_id="msg_1", input_tokens=100, output_tokens=10),
+        turn_line(
+            message_id="msg_1",
+            input_tokens=100,
+            output_tokens=10,
+            content=[tool_use_block("Bash", "tu-err", {"command": "ls /nope"})],
+        ),
+        user_block_line([tool_result_block("tu-err", "No such file or directory", is_error=True)]),
         user_str_line("please fix the bug", origin={"kind": "human"}),
         user_str_line("<command-name>review</command-name>"),
         user_str_line("<scheduled-task>nightly</scheduled-task>"),
@@ -440,6 +448,12 @@ def test_full_fixture_every_kind_resolves_and_diagnostics_count_correctly(tmp_pa
         e.subkind for e in result.events if e.kind == EventKind.ATTACHMENT
     }
     assert unclassified_attachment_subkinds == {"a_brand_new_unclassified_type"}
+    # Wasted-turns addition (see model.py's Turn.tool_error_count/
+    # tool_error_chars docstrings): msg_1's own tool_use answered by an
+    # is_error:true tool_result is attributed onto msg_1's Turn, length
+    # only.
+    assert result.turns[0].tool_error_count == 1
+    assert result.turns[0].tool_error_chars == len("No such file or directory")
     assert result.diagnostics.unparsable_lines == 1  # the "{not valid json" line
     assert result.diagnostics.truncated_final_line is True
     assert len(result.turns) == 2

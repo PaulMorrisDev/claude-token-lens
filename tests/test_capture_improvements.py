@@ -2,9 +2,12 @@
 ``Turn.tool_wait_s``/``model_latency_s``/``tool_result_chars_by_tool``
 (A1), ``Turn.agent_brief_chars``/``tool_input_chars_by_tool`` (A2),
 ``Turn.read_target_hashes``/``parse.set_salt``/``parse.load_or_create_salt``
-(A3), ``Turn.human_prompt_chars``/``human_prompt_has_paste`` (A4), and
-``probe.compare_with_parser``/``parse.READ_KEYS`` (A6). See model.py's
-module docstring for the full field list and parse.py's for the salt
+(A3), ``Turn.human_prompt_chars``/``human_prompt_has_paste`` (A4),
+``probe.compare_with_parser``/``parse.READ_KEYS`` (A6), and the
+v4-wasted-turns batch's ``Turn.tool_error_count``/``tool_error_chars``
+(reusing A1's ``_accumulate_tool_results`` attribution, so it inherits
+the same current-turn-only attribution rule). See model.py's module
+docstring for the full field list and parse.py's for the salt
 architecture.
 
 Each test exercises the behaviour through a full ``parse_transcript`` pass
@@ -399,6 +402,147 @@ def test_batch_a4_fields_pass_privacy_scan(tmp_path: Path):
     lines = [
         user_str_line("please read C:/Users/paulm/secret.txt and fix it", origin={"kind": "human"}),
         turn_line(message_id="msg_1"),
+    ]
+    path = tmp_path / "session.jsonl"
+    write_jsonl(path, lines)
+    result = parse_transcript(path, TranscriptMeta(path=str(path)))
+    assert_privacy(result)
+
+
+# -- v4-wasted-turns: Turn.tool_error_count / tool_error_chars -------------
+
+
+def test_tool_error_count_and_chars_from_is_error_tool_result(tmp_path: Path):
+    lines = [
+        turn_line(
+            message_id="msg_1",
+            content=[tool_use_block("Bash", "tu_a", {"command": "cat missing.txt"})],
+        ),
+        user_block_line([tool_result_block("tu_a", "cat: missing.txt: No such file", is_error=True)]),
+    ]
+    path = tmp_path / "session.jsonl"
+    write_jsonl(path, lines)
+    result = parse_transcript(path, TranscriptMeta(path=str(path)))
+
+    turn = result.turns[0]
+    assert turn.tool_error_count == 1
+    assert turn.tool_error_chars == len("cat: missing.txt: No such file")
+
+
+def test_tool_error_count_ignores_successful_tool_result(tmp_path: Path):
+    lines = [
+        turn_line(
+            message_id="msg_1",
+            content=[tool_use_block("Read", "tu_a", {"file_path": "x.py"})],
+        ),
+        user_block_line([tool_result_block("tu_a", "print('ok')", is_error=False)]),
+    ]
+    path = tmp_path / "session.jsonl"
+    write_jsonl(path, lines)
+    result = parse_transcript(path, TranscriptMeta(path=str(path)))
+
+    turn = result.turns[0]
+    assert turn.tool_error_count == 0
+    assert turn.tool_error_chars == 0
+
+
+def test_tool_error_count_sums_multiple_erroring_tool_calls_in_one_turn(tmp_path: Path):
+    lines = [
+        turn_line(
+            message_id="msg_1",
+            content=[
+                tool_use_block("Bash", "tu_a", {"command": "ls /nope"}),
+                tool_use_block("Read", "tu_b", {"file_path": "missing.py"}),
+            ],
+        ),
+        user_block_line(
+            [
+                tool_result_block("tu_a", "no such directory", is_error=True),
+                tool_result_block("tu_b", "file not found", is_error=True),
+            ]
+        ),
+    ]
+    path = tmp_path / "session.jsonl"
+    write_jsonl(path, lines)
+    result = parse_transcript(path, TranscriptMeta(path=str(path)))
+
+    turn = result.turns[0]
+    assert turn.tool_error_count == 2
+    assert turn.tool_error_chars == len("no such directory") + len("file not found")
+
+
+def test_tool_error_count_zero_when_no_is_error_key_present(tmp_path: Path):
+    """Most of the real corpus's tool_result blocks carry no ``is_error``
+    key at all (only ~63% do, per the read-only corpus check run before
+    implementing this) -- absence must mean "not an error", not raise.
+    """
+    lines = [
+        turn_line(
+            message_id="msg_1",
+            content=[tool_use_block("Bash", "tu_a", {"command": "ls"})],
+        ),
+        user_block_line([tool_result_block("tu_a", "file1\nfile2")]),
+    ]
+    path = tmp_path / "session.jsonl"
+    write_jsonl(path, lines)
+    result = parse_transcript(path, TranscriptMeta(path=str(path)))
+
+    turn = result.turns[0]
+    assert turn.tool_error_count == 0
+    assert turn.tool_error_chars == 0
+
+
+def test_tool_error_from_earlier_turn_does_not_pollute_later_turn(tmp_path: Path):
+    """Same non-attribution rule as A1's ``tool_result_chars_by_tool``:
+    an is_error tool_result answering an *earlier* turn's tool_use, once
+    the next turn has already started, is credited to neither turn.
+    """
+    lines = [
+        turn_line(
+            message_id="msg_1",
+            timestamp="2026-09-18T12:00:00.000Z",
+            content=[tool_use_block("Read", "tu_a", {"file_path": "x.py"})],
+        ),
+        turn_line(message_id="msg_2", timestamp="2026-09-18T12:00:01.000Z"),
+        user_block_line(
+            [tool_result_block("tu_a", "not found", is_error=True)],
+            timestamp="2026-09-18T12:00:09.000Z",
+        ),
+    ]
+    path = tmp_path / "session.jsonl"
+    write_jsonl(path, lines)
+    result = parse_transcript(path, TranscriptMeta(path=str(path)))
+
+    assert result.turns[0].tool_error_count == 0
+    assert result.turns[1].tool_error_count == 0
+
+
+def test_tool_error_count_and_chars_default_to_zero_with_no_tool_calls(tmp_path: Path):
+    lines = [turn_line(message_id="msg_1")]
+    path = tmp_path / "session.jsonl"
+    write_jsonl(path, lines)
+    result = parse_transcript(path, TranscriptMeta(path=str(path)))
+
+    turn = result.turns[0]
+    assert turn.tool_error_count == 0
+    assert turn.tool_error_chars == 0
+
+
+def test_tool_error_chars_never_carries_error_text_itself(tmp_path: Path):
+    lines = [
+        turn_line(
+            message_id="msg_1",
+            content=[tool_use_block("Bash", "tu_a", {"command": "cat /c/Users/paulm/secret.txt"})],
+        ),
+        user_block_line(
+            [
+                tool_result_block(
+                    "tu_a",
+                    "cat: /c/Users/paulm/secret.txt: No such file or directory",
+                    is_error=True,
+                )
+            ]
+        ),
     ]
     path = tmp_path / "session.jsonl"
     write_jsonl(path, lines)
