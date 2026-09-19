@@ -24,6 +24,11 @@ classifiers = [
 ]
 dependencies = []
 
+[project.urls]
+Homepage = "https://github.com/PaulMorrisDev/claude-token-lens"
+Repository = "https://github.com/PaulMorrisDev/claude-token-lens"
+Changelog = "https://github.com/PaulMorrisDev/claude-token-lens/blob/main/CHANGELOG.md"
+
 [project.optional-dependencies]
 rich = ["rich>=13"]
 test = ["pytest>=8"]

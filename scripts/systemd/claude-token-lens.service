@@ -18,7 +18,7 @@
 
 [Unit]
 Description=claude-token-lens: local token/prompt-cache analytics service
-Documentation=https://github.com/paulmorris/claude-token-lens
+Documentation=https://github.com/PaulMorrisDev/claude-token-lens
 After=network.target
 
 [Service]
