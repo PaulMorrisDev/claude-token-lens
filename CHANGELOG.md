@@ -53,6 +53,71 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`apply` user scope resolved the wrong Claude Code directory**
+  (`profiles/apply.py`, `cli.py`) — user scope derived its target as
+  `config_dir.parent`, so with `config_dir` defaulting to
+  `<claude-root>/token-lens` this happened to work out, but the two are
+  independent by design (`--config-dir` can point anywhere), and
+  deriving one from the other meant a user-scope apply actually wrote
+  `<config_dir_parent>/.claude/settings.json` (effectively
+  `~/.claude/.claude/settings.json`) and could never find a user-scope
+  agent file to patch at all. `plan_apply` now takes an explicit
+  `claude_root` parameter, resolved by the new `cli._resolve_claude_root`
+  (a new `--claude-root PATH` flag, else `$CLAUDE_CONFIG_DIR`, else
+  `~/.claude`) — never derived from `--config-dir`. See
+  [`docs/profiles.md`](docs/profiles.md).
+- **`apply --dry-run` diffed against a stale snapshot instead of the
+  real target files** (`profiles/apply.py`) — the preview text was
+  built from the caller's *snapshot* of the effective config
+  (`diff.diff_against_effective`), which can already be stale by apply
+  time (an agent file hand-edited since the snapshot was taken, for
+  example), so the diff could show a change against a value the file
+  no longer has. `plan_apply` now renders the dry-run diff
+  (`render_plan_diff`) from the exact same `actions` — real
+  before/after file bytes — that a real apply writes from, so the
+  preview and the real write are provably one computation.
+- **`apply --dry-run` exited `0` even when the real apply would
+  refuse** (`cli.py`) — a git-tracked target or a missing agent file
+  now prints each `plan.blocked` reason to stderr and exits `2` from
+  `--dry-run` too, instead of only surfacing the refusal once the user
+  ran the apply for real.
+- **`init` ignored `--all-projects`/`--project`/`--project-family` for
+  its initial baseline capture** (`onboarding.py`) — the baseline was
+  always hard-wired to the current directory's own project slug.
+  `run_init` now honours all three selectors for the baseline the same
+  way `report`'s own project selection does, falling back to the
+  current project only when none of the three are given.
+- **Git-tracked-file refusal only ever checked project scope**
+  (`profiles/apply.py`) — a `~/.claude` kept under version control in a
+  personal dotfiles repository could be silently overwritten by a
+  user-scope apply, since `_is_git_tracked` was only consulted for
+  `project-local`/`repo` targets. The check now applies at every scope;
+  `--allow-tracked` still opts in.
+- **Frontmatter parser refused any YAML block scalar** (`profiles/
+  frontmatter.py`) — a `description: |` or `>` block (with its
+  indented continuation lines) raised `FrontmatterError` outright
+  instead of parsing. Block scalars are now recognised and kept as
+  opaque, byte-preserved blocks: every line is left untouched, and only
+  a top-level scalar key or the `experimental:` mapping can still be
+  patched (attempting to patch the block-scalar key itself still
+  raises, rather than guessing how to collapse it).
+- **README's `report` row documented a removed `--allow-titles`
+  flag** — the flag itself was removed as part of an earlier fix
+  (R17); the CLI reference table's `report` row still listed it as a
+  no-op option. Removed.
+- **Settings JSON rewrite always reformatted to 2-space indent and
+  `\n` line endings** (`profiles/apply.py`) — a merged `settings.json`
+  is now written back with the existing file's own indent width (2 vs
+  4 spaces) and line ending (`\r\n` vs `\n`) detected and preserved,
+  matching how agent-frontmatter patching already only ever touches the
+  lines it changes.
+- **`tests/test_onboarding.py` imported `assert_privacy_deep` but never
+  called it** — the privacy assertion its import implied was never
+  actually exercised against `init`'s own output. Now called against
+  the written `config.toml`, the written `projects/<slug>.toml`, and
+  `init`'s stdout; fixing this surfaced a real leak in the latter
+  (`onboarding.py`'s "Wrote ..." confirmation lines printed the full
+  absolute path), now printed relative to `config_dir` instead.
 - **`/api/summary` windowing bug**: for a given `window_days`, this
   route counted sessions and transcripts by a session row's own stored
   timestamp instead of by the top-level transcript file's mtime — the
