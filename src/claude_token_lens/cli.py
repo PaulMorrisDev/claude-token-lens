@@ -27,6 +27,7 @@ import importlib.util
 import os
 import sys
 from pathlib import Path
+from zoneinfo import available_timezones
 
 from . import __version__, classify, discovery, probe as probe_mod, recache, snapshots
 from . import statusline as statusline_mod
@@ -114,6 +115,14 @@ def _build_common_parser() -> argparse.ArgumentParser:
     common.add_argument("--pricing", metavar="PATH")
     common.add_argument(
         "--config-dir", metavar="PATH", default=None, help="default: ~/.claude/token-lens"
+    )
+    common.add_argument(
+        "--tz",
+        metavar="ZONE",
+        default=None,
+        help="IANA zone name overriding config.toml's tz for this run only "
+        "(e.g. America/New_York); default: config.toml's tz, or the "
+        "machine's own local zone",
     )
     common.add_argument(
         "--group-by",
@@ -378,6 +387,26 @@ def _load_config_and_pricing(args: argparse.Namespace) -> tuple[Config | None, P
     except ConfigError as exc:
         print(f"claude-token-lens: {exc}", file=sys.stderr)
         return None, None, config_dir, 2
+
+    # Fix R24: --tz overrides config.toml's tz for this run only, the
+    # same "explicit flag wins over the file" convention --pricing/
+    # --config-dir already follow. classify.classify_session/usage.py's
+    # _to_local both already fall back to the machine's local zone when
+    # a zone name can't be resolved -- deliberately, since a bare
+    # Windows install with no tzdata package can't resolve *any* named
+    # zone (see classify.py's module docstring) and that's a machine
+    # limitation, not a bad value. So this only rejects a --tz value
+    # outright when the machine actually has a populated tz database to
+    # check it against and the name genuinely isn't in it (a real
+    # command-line typo); otherwise it's passed through uncontested and
+    # degrades the same way a config.toml value already does.
+    tz_override = getattr(args, "tz", None)
+    if tz_override is not None:
+        known_zones = available_timezones()
+        if known_zones and tz_override not in known_zones:
+            print(f"claude-token-lens: --tz {tz_override!r} is not a known IANA zone", file=sys.stderr)
+            return None, None, config_dir, 2
+        config.tz = tz_override
 
     pricing_path = args.pricing or config.pricing_path
     try:

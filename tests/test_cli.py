@@ -19,6 +19,7 @@ import os
 import re
 import subprocess
 import sys
+import zoneinfo
 from pathlib import Path
 
 import pytest
@@ -630,6 +631,120 @@ def test_report_exits_2_with_clean_message_on_misordered_scorecard_thresholds(tm
     assert len(lines) == 1
     assert "cache_recache_share_pct" in lines[0]
     assert "Traceback" not in err
+
+
+# -- --tz (Fix R24) ----------------------------------------------------------
+
+
+def test_tz_flag_overrides_config_toml_for_this_run(tmp_path, capsys, monkeypatch):
+    root = tmp_path / "projects"
+    _write_project(root, "proj-a")
+    config_dir = tmp_path / "token-lens"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    (config_dir / "config.toml").write_text('tz = "UTC"\n', encoding="utf-8")
+
+    seen_tz: list[str | None] = []
+    real_classify_session = cli.classify.classify_session
+
+    def _spy(top, subs, overrides, tz, **kwargs):
+        seen_tz.append(tz)
+        return real_classify_session(top, subs, overrides, tz, **kwargs)
+
+    monkeypatch.setattr(cli.classify, "classify_session", _spy)
+
+    exit_code = cli.main(
+        [
+            "report",
+            "--projects-root",
+            str(root),
+            "--project",
+            "proj-a",
+            "--config-dir",
+            str(config_dir),
+            "--tz",
+            "America/New_York",
+        ]
+    )
+    assert exit_code == 0
+    capsys.readouterr()
+    assert seen_tz, "classify_session was never called"
+    assert all(tz == "America/New_York" for tz in seen_tz)
+
+
+def test_tz_flag_defaults_to_config_toml_value_when_absent(tmp_path, capsys, monkeypatch):
+    root = tmp_path / "projects"
+    _write_project(root, "proj-a")
+    config_dir = tmp_path / "token-lens"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    (config_dir / "config.toml").write_text('tz = "UTC"\n', encoding="utf-8")
+
+    seen_tz: list[str | None] = []
+    real_classify_session = cli.classify.classify_session
+
+    def _spy(top, subs, overrides, tz, **kwargs):
+        seen_tz.append(tz)
+        return real_classify_session(top, subs, overrides, tz, **kwargs)
+
+    monkeypatch.setattr(cli.classify, "classify_session", _spy)
+
+    exit_code = cli.main(
+        ["report", "--projects-root", str(root), "--project", "proj-a", "--config-dir", str(config_dir)]
+    )
+    assert exit_code == 0
+    capsys.readouterr()
+    assert seen_tz and all(tz == "UTC" for tz in seen_tz)
+
+
+@pytest.mark.skipif(
+    not zoneinfo.available_timezones(),
+    reason="no tz database on this machine (see classify.py's module docstring) -- "
+    "--tz can't be validated against anything here, so it's accepted uncontested",
+)
+def test_tz_flag_rejects_an_unknown_zone_with_a_clean_exit_2(tmp_path, capsys):
+    root = tmp_path / "projects"
+    _write_project(root, "proj-a")
+
+    exit_code = cli.main(
+        [
+            "report",
+            "--projects-root",
+            str(root),
+            "--project",
+            "proj-a",
+            "--tz",
+            "Not/A_Real_Zone",
+        ]
+    )
+    assert exit_code == 2
+    err = capsys.readouterr().err
+    lines = [line for line in err.splitlines() if line.strip()]
+    assert len(lines) == 1
+    assert "Not/A_Real_Zone" in lines[0]
+    assert "Traceback" not in err
+
+
+def test_tz_flag_is_accepted_uncontested_when_machine_has_no_tz_database(tmp_path, capsys, monkeypatch):
+    # The inverse of the skipped test above: force the "no tz database"
+    # branch regardless of what this machine actually has, and confirm
+    # a clearly-bogus zone name is still accepted (degrading later to
+    # local time inside classify._to_local, exactly like an unresolvable
+    # config.toml value already does) rather than rejected.
+    root = tmp_path / "projects"
+    _write_project(root, "proj-a")
+    monkeypatch.setattr(cli, "available_timezones", lambda: frozenset())
+
+    exit_code = cli.main(
+        [
+            "report",
+            "--projects-root",
+            str(root),
+            "--project",
+            "proj-a",
+            "--tz",
+            "Not/A_Real_Zone",
+        ]
+    )
+    assert exit_code == 0
 
 
 # -- probe ----------------------------------------------------------------
