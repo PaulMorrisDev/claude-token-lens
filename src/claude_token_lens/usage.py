@@ -23,9 +23,12 @@ rolling 5-hour period starting from a user's first message in it, reset
 per-account — this module cannot observe account-wide reset timing from
 transcripts alone, so it uses a fixed grid instead (each local calendar
 day cut into 00:00/05:00/10:00/15:00/20:00-local blocks) as a documented,
-deterministic proxy. A session is assigned to the block containing its
-first observed assistant turn's local timestamp; all of that session's
-priced turns (top-level and subagent) count toward that one block.
+deterministic proxy. Each priced turn (top-level and subagent alike) is
+assigned to the block containing *its own* local timestamp — not the
+block its session happened to start in — so a long-running session that
+spans several of these fixed blocks (e.g. a 12-hour session) has its
+turns split across all of them rather than stamped wholesale onto its
+first block.
 """
 
 from __future__ import annotations
@@ -99,27 +102,6 @@ def _block_key(local_dt: datetime) -> str:
     return block_start.strftime("%Y-%m-%d %H:%M") + f" ({local_dt.tzname() or 'local'})"
 
 
-def _session_first_ts(bundle: SessionBundle) -> str | None:
-    """Earliest ``Turn.ts`` across the session's transcripts, as the
-    original ISO string. Duplicated from ``corpus._session_first_ts``'s
-    same logic rather than imported (module-boundary convention, see
-    module docstring)."""
-    parsed: list[tuple[datetime, str]] = []
-    first_raw: str | None = None
-    for result in _transcripts_of(bundle):
-        for turn in result.turns:
-            if not turn.ts:
-                continue
-            if first_raw is None:
-                first_raw = turn.ts
-            dt = _parse_ts(turn.ts)
-            if dt is not None:
-                parsed.append((dt, turn.ts))
-    if parsed:
-        return min(parsed, key=lambda pair: pair[0])[1]
-    return first_raw
-
-
 @dataclass(slots=True)
 class _PeriodModelCell:
     turns: int = 0
@@ -176,13 +158,6 @@ def build_section(corpus: Corpus, pricing: Pricing, config: Config) -> Section:
         )
         project_bucket["sessions"] += 1
 
-        block_key: str | None = None
-        if is_subscription:
-            first_ts = _session_first_ts(bundle)
-            first_dt = _parse_ts(first_ts) if first_ts else None
-            if first_dt is not None:
-                block_key = _block_key(_to_local(first_dt, config.tz))
-
         for tr in _transcripts_of(bundle):
             entrypoint = tr.meta.entrypoint or "unknown"
             entry_bucket = by_entrypoint.setdefault(
@@ -223,7 +198,14 @@ def build_section(corpus: Corpus, pricing: Pricing, config: Config) -> Section:
                 entry_bucket["tokens"] += tokens
                 entry_bucket["cost"] += breakdown.total
 
-                if block_key is not None:
+                # R15 fix: the block a turn belongs to is computed from
+                # *that turn's own* local timestamp, not the session's
+                # first turn's -- a session spanning several blocks (e.g.
+                # a 12-hour session covers 2-3 of these 5-hour blocks) had
+                # every one of its turns stamped onto whichever block its
+                # first turn happened to land in.
+                if is_subscription and local_dt is not None:
+                    block_key = _block_key(local_dt)
                     block_bucket = by_block.setdefault(
                         block_key, {"sessions": set(), "turns": 0, "tokens": 0, "cost": 0.0}
                     )

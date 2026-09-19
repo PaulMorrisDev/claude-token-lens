@@ -187,3 +187,45 @@ def test_orphaned_subagent_bundle_session_count_matches_report(tmp_path):
     report_sessions = next(row[1] for row in totals_table.rows if row[0] == "sessions")
 
     assert report_sessions == usage_session_total
+
+
+def test_twelve_hour_session_spans_three_five_hour_blocks(tmp_path):
+    # R15: a session's turns must be assigned to five-hour blocks by
+    # *each turn's own* local timestamp, not stamped wholesale onto the
+    # block its first turn landed in. A 12-hour session (00:30 -> 12:30
+    # local, one turn per hour) starting at the very beginning of a
+    # fixed block (00:00 local) crosses three block boundaries (00:00,
+    # 05:00, 10:00), so before the fix every one of these turns would
+    # have landed in the single 00:00 block instead of being split
+    # across three.
+    #
+    # The UTC timestamps below are built from fixed LOCAL wall-clock
+    # times (via this machine's current UTC offset) rather than a named
+    # zone passed through Config -- this test suite's own convention
+    # elsewhere (see _tzdata_has in test_classify.py) is that a resolvable
+    # IANA zone isn't guaranteed on every machine (e.g. bare Windows
+    # without the tzdata package), and Config(tz=None) always falls back
+    # to the machine's own local zone regardless.
+    from datetime import datetime, timedelta, timezone
+
+    offset = datetime.now().astimezone().utcoffset() or timedelta(0)
+    local_base = datetime(2026, 9, 18, 0, 30)  # 00:30 local
+    local_times = [local_base + timedelta(hours=h) for h in range(13)]  # 00:30 .. 12:30 local
+    timestamps = [(lt - offset).replace(tzinfo=timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z") for lt in local_times]
+
+    project_dir = tmp_path / "proj-long-session"
+    project_dir.mkdir()
+    _write_top(project_dir, "session-long", timestamps, input_tokens=100, output_tokens=20)
+    corpus = load_corpus([project_dir])
+
+    section = build_section(corpus, PRICING, Config(billing="subscription"))
+    blocks = next(t for t in section.tables if t.name == "five_hour_blocks")
+
+    assert len(blocks.rows) == 3
+    assert sum(row[2] for row in blocks.rows) == len(timestamps)  # every turn accounted for
+    # Every block has the same single session, but split turn counts.
+    assert all(row[1] == 1 for row in blocks.rows)
+    turns_per_block = sorted(row[2] for row in blocks.rows)
+    # 00:00 block: 00:30..04:30 (5 turns); 05:00 block: 05:30..09:30 (5
+    # turns); 10:00 block: 10:30..12:30 (3 turns).
+    assert turns_per_block == [3, 5, 5]
