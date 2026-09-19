@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Release CI (`.github/workflows/release.yml`)**: on every `v*` tag
+  push, builds `dist/claude-token-lens.pyz` with `scripts/build-pyz.py`,
+  smoke-tests it with `--version`, and attaches it to the GitHub
+  Release via `softprops/action-gh-release`.
 - **Cross-platform service installer (`install-service`/
   `uninstall-service`, and `init`'s new logon-service step)**
   (`src/claude_token_lens/installer.py`, work package v3): registers
