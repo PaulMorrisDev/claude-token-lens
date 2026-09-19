@@ -33,6 +33,32 @@ same information for clients that don't want to parse the body
 `error.code`, per route below). This is exactly
 `service.contracts.ApiError.to_envelope()`'s shape.
 
+## Security headers
+
+Every response from every route carries the same three headers
+regardless of method or outcome (`api.py`'s `_SECURITY_HEADERS`,
+written once and applied by the single `_write_headers` helper every
+response path goes through — including a `404`/`405`/`500` error and a
+static-file response, not just a successful `{"ok": true, ...}` one):
+
+- `Cache-Control: no-store` — nothing served here (including a session's
+  cost/usage figures) should ever be cached by an intermediary or the
+  browser's own disk cache.
+- `X-Content-Type-Options: nosniff` — stops a browser from
+  MIME-sniffing a JSON or static-asset response into something else.
+- `Content-Security-Policy: default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'`
+  — matches the UI's own "no CDN, no external reference" constraint
+  (`docs/ui.md`): nothing may load from another origin, inline `<img>`
+  data URIs are allowed (the inline-SVG charts), and inline `<style>`
+  is allowed (the UI's static `app.css` plus small inline style
+  attributes) but inline `<script>` is not.
+
+Every request method is routed through this same path: `GET`/`HEAD`
+succeed or fail through the normal envelope, and `PUT`/`DELETE`/
+`PATCH`/`OPTIONS` (nothing in this API accepts them) return a `405`
+`method_not_allowed` error built the same way, with the same headers —
+never a bare stdlib error page (review finding 9).
+
 ## Privacy
 
 **No response body from any route below may ever contain message text,

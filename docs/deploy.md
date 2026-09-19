@@ -176,6 +176,13 @@ Three layers, from "always runs" to "manual, occasional":
    docker exec ctl-smoke python -c \
      "import json,urllib.request as u; r=u.urlopen('http://127.0.0.1:8765/api/health', timeout=4); assert json.load(r)['ok'] is True; print('OK')"
 
+   # /api/health alone only proves the process started -- it says
+   # nothing about whether $CLAUDE_HOME's read-only mount was actually
+   # reachable. Confirm /api/summary sees a non-zero transcript count
+   # (skip this check if $CLAUDE_HOME has no Claude Code projects yet):
+   docker exec ctl-smoke python -c \
+     "import json,urllib.request as u; r=u.urlopen('http://127.0.0.1:8765/api/summary', timeout=4); data=json.load(r)['data']; assert data['transcripts'] > 0, data; print('transcripts:', data['transcripts'])"
+
    docker stop ctl-smoke
    docker volume rm ctl-smoke-data
    ```
