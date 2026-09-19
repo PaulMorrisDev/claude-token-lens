@@ -65,6 +65,20 @@ class ServeOptions:
     #: Directories under ``projects_root`` to never scan (plan
     #: "Enterprise use": confidential repositories).
     exclude_projects: tuple[str, ...] = ()
+    #: ``"api"`` (pay-per-token) or ``"subscription"`` (flat-rate plan) --
+    #: stamped onto every ``sessions.billing_mode`` row the watcher
+    #: upserts (S1-integration fix 1.a). ``cli.py``'s ``serve`` subcommand
+    #: defaults this from ``<config_dir>/config.toml``'s own
+    #: ``Config.billing`` when no explicit ``--billing-mode`` flag is
+    #: given, falling back to this field's own default otherwise.
+    billing_mode: str = "api"
+    #: Directory a future monthly-report job should write its rendered
+    #: reports to under a ``"subscription"`` billing mode (plan
+    #: "Milestone v0.2"'s billing-mode note) -- ``None`` means no such
+    #: job is configured. Not yet consumed by ``serve``/``watcher.py``
+    #: themselves; carried here so ``cli.py``'s ``--monthly-report DIR``
+    #: flag has somewhere to put the value once a caller needs it.
+    monthly_report_dir: Path | None = None
 
 
 @dataclass(slots=True)
@@ -113,6 +127,15 @@ class Watcher(Protocol):
     :meth:`stop` on shutdown; tests call :meth:`run_once` directly
     without a background thread.
     """
+
+    #: The most recent :meth:`run_once` tick's stats, or ``None`` before
+    #: the first tick has ever run. A concrete ``Watcher`` must keep this
+    #: up to date so ``/api/health`` (via ``serve.run``'s
+    #: ``watcher_stats`` callable) always has a real answer once the
+    #: background poll thread is running, without ``serve.py`` having to
+    #: guess at an attribute a ``Watcher`` implementation might or might
+    #: not happen to expose (S1-integration fix 1.e).
+    last_stats: "WatcherStats | None"
 
     def run_once(self) -> "WatcherStats":
         """Scan ``ServeOptions.projects_root`` once: find new/changed

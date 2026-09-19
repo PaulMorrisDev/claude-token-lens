@@ -19,32 +19,56 @@ thread (``threading.local``), all pointed at the same on-disk file, each
 opened in WAL journal mode (``PRAGMA journal_mode=WAL``) so a writer
 (the watcher) and readers (API requests) don't block each other.
 
-``migrate()`` is unconditional and idempotent: every statement in
-``schema.ALL_STATEMENTS`` is ``CREATE TABLE IF NOT EXISTS``/``CREATE
-INDEX IF NOT EXISTS``, so calling it against an already-migrated
-database is a no-op beyond recording ``meta['schema_version']`` again.
-There is no ``ALTER TABLE`` migration path yet (see ``schema.py``'s
-module docstring) — a ``schema_version`` mismatch against the running
-code's ``schema.SCHEMA_VERSION`` is the caller's (``serve``'s) signal to
-delete the store file and let ``migrate()`` rebuild it from scratch,
-since the store is always a derived cache over transcripts still on
-disk, never the source of truth.
+``migrate()`` is idempotent: every statement in ``schema.ALL_STATEMENTS``
+is ``CREATE TABLE IF NOT EXISTS``/``CREATE INDEX IF NOT EXISTS``, so
+calling it against an already-migrated database at the current
+``schema.SCHEMA_VERSION`` is a no-op beyond recording
+``meta['schema_version']`` again. When the store's own recorded
+``schema_version`` is *older* than the running code's
+``schema.SCHEMA_VERSION``, ``migrate()`` drops every table first and
+recreates them from scratch (see ``schema.py``'s module docstring) --
+the store is always a derived cache over transcripts still on disk,
+never the source of truth, and the next watcher tick repopulates it
+because ``known_files()`` is empty again. There is still no in-place
+``ALTER TABLE`` migration path -- this drop-and-rebuild is the only one.
+
+``GLOBAL_PROJECT_SLUG`` is the synthetic project slug the watcher
+attributes a machine-wide config snapshot to when the snapshot itself
+carries no per-project identity (``hooks/snapshot-config.py`` writes one
+``<config_dir>/snapshots/<ts>.json`` per machine, never one per
+project). ``Store.snapshots()`` maps this slug back to a ``None``
+``project_slug`` in its own read query, so an API/UI consumer sees an
+honest "no project" rather than a fabricated one (S1-integration fix
+1.c).
 """
 
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import threading
 import time
 from pathlib import Path
 
 from . import schema
+from ..cache import result_from_jsonable
+from ..model import EventKind
 
 #: ``meta`` key recording the schema version the store's tables were
 #: created under. Compared against ``schema.SCHEMA_VERSION`` by callers
 #: that want to detect a stale store (see module docstring).
 _SCHEMA_VERSION_KEY = "schema_version"
+
+#: See module docstring's "GLOBAL_PROJECT_SLUG" paragraph.
+GLOBAL_PROJECT_SLUG = "__global__"
+
+#: Matches every ``CREATE TABLE IF NOT EXISTS <name>`` statement in
+#: ``schema.ALL_STATEMENTS``, so :meth:`Store.migrate` can derive the
+#: exact set of tables to drop (in reverse -- child-before-parent --
+#: order) from the same single source of truth as table creation,
+#: rather than hand-maintaining a second list that could drift.
+_CREATE_TABLE_RE = re.compile(r"CREATE TABLE IF NOT EXISTS\s+(\w+)")
 
 
 def _now() -> str:
@@ -91,11 +115,36 @@ class Store:
             self._local.conn = conn
         return conn
 
+    def _table_names_in_creation_order(self) -> list[str]:
+        names: list[str] = []
+        for statement in schema.ALL_STATEMENTS:
+            names.extend(_CREATE_TABLE_RE.findall(statement))
+        return names
+
+    def _drop_all_tables(self, conn: sqlite3.Connection) -> None:
+        """Drop every table this schema creates, child-before-parent (the
+        reverse of ``schema.ALL_STATEMENTS``'s own dependency order), so
+        a foreign key never blocks a drop. Used only when the store's
+        recorded schema version is older than the running code's (see
+        :meth:`migrate`)."""
+        conn.execute("PRAGMA foreign_keys = OFF")
+        try:
+            for table in reversed(self._table_names_in_creation_order()):
+                conn.execute(f"DROP TABLE IF EXISTS {table}")
+        finally:
+            conn.execute("PRAGMA foreign_keys = ON")
+
     def migrate(self) -> None:
         """Create every table/index in ``schema.ALL_STATEMENTS`` if
         missing, and record ``schema.SCHEMA_VERSION`` in ``meta``.
-        Idempotent — see module docstring."""
+        Idempotent when the store is already current. When the store's
+        recorded version is older than ``schema.SCHEMA_VERSION``, every
+        table is dropped and recreated first (see module docstring) --
+        the store is a derived cache, never the source of truth."""
         conn = self._connection()
+        current = self.schema_version()
+        if current is not None and current < schema.SCHEMA_VERSION:
+            self._drop_all_tables(conn)
         with conn:
             for statement in schema.ALL_STATEMENTS:
                 conn.executescript(statement)
@@ -107,10 +156,15 @@ class Store:
 
     def schema_version(self) -> int | None:
         """The schema version recorded in ``meta``, or ``None`` if this
-        store has never been migrated."""
-        row = self._connection().execute(
-            "SELECT value FROM meta WHERE key = ?", (_SCHEMA_VERSION_KEY,)
-        ).fetchone()
+        store has never been migrated (including the very first call
+        ever made against a brand new database, before ``meta`` itself
+        exists)."""
+        try:
+            row = self._connection().execute(
+                "SELECT value FROM meta WHERE key = ?", (_SCHEMA_VERSION_KEY,)
+            ).fetchone()
+        except sqlite3.OperationalError:
+            return None
         return int(row["value"]) if row is not None else None
 
     # -- writers ---------------------------------------------------------
@@ -309,18 +363,78 @@ class Store:
         self, *, project_slug: str, project_root_path: str = "", ts: str,
         schema_version: int, digest_json: str,
     ) -> int:
-        """Insert one config-snapshot row (``snapshots.py``'s
-        ``Snapshot``, already flattened/redacted). Returns the
-        snapshot's row id, so a caller can pass it as ``upsert_session``'s
-        ``snapshot_id``."""
+        """Insert or update one config-snapshot row (``snapshots.py``'s
+        ``Snapshot``, already flattened/redacted), deduped by its natural
+        key ``(project_id, ts, schema_version)`` (schema v2) so
+        re-ingesting the same on-disk snapshot file on a later watcher
+        tick updates the existing row instead of growing a duplicate one
+        -- the same idempotent posture every other ``upsert_*`` method
+        already has. Returns the snapshot's row id, so a caller can pass
+        it as ``upsert_session``'s ``snapshot_id``."""
         conn = self._connection()
         with conn:
             project_id = self._upsert_project(conn, project_slug, project_root_path)
-            cursor = conn.execute(
-                "INSERT INTO snapshots (project_id, ts, schema_version, digest_json) VALUES (?, ?, ?, ?)",
+            conn.execute(
+                """
+                INSERT INTO snapshots (project_id, ts, schema_version, digest_json)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(project_id, ts, schema_version) DO UPDATE SET
+                    digest_json = excluded.digest_json
+                """,
                 (project_id, ts, schema_version, digest_json),
             )
-            return int(cursor.lastrowid)
+            row = conn.execute(
+                "SELECT id FROM snapshots WHERE project_id = ? AND ts = ? AND schema_version = ?",
+                (project_id, ts, schema_version),
+            ).fetchone()
+            return int(row["id"])
+
+    def upsert_workflow_run(
+        self,
+        *,
+        session_id: str,
+        run_id: str,
+        agent_count: int = 0,
+        phase_titles: list[str] | None = None,
+        started: str | None = None,
+        finished: str | None = None,
+        cost: float = 0.0,
+        status: str | None = None,
+    ) -> int:
+        """Insert or update one ``<session>/workflows/wf_*.json`` run row
+        (``workflows.parse_workflow_file``/``link_workflow_agents``'s
+        ``WorkflowRun``, already cost-linked by the caller), deduped by
+        ``(session_id, run_id)``. ``phase_titles`` is stored as a JSON
+        array of names only -- never ``detail``, which carries workflow
+        source/prompt text (see ``workflows.py``'s module docstring)."""
+        conn = self._connection()
+        with conn:
+            conn.execute(
+                """
+                INSERT INTO workflow_runs (
+                    session_id, run_id, agent_count, phases, started,
+                    finished, cost, status, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(session_id, run_id) DO UPDATE SET
+                    agent_count = excluded.agent_count,
+                    phases = excluded.phases,
+                    started = excluded.started,
+                    finished = excluded.finished,
+                    cost = excluded.cost,
+                    status = excluded.status,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    session_id, run_id, agent_count,
+                    json.dumps(list(phase_titles or [])),
+                    started, finished, cost, status, _now(),
+                ),
+            )
+            row = conn.execute(
+                "SELECT id FROM workflow_runs WHERE session_id = ? AND run_id = ?",
+                (session_id, run_id),
+            ).fetchone()
+            return int(row["id"])
 
     def upsert_profile(self, *, profile_id: str, name: str, toml_path: str) -> None:
         """Insert or update one profile's index row (v0.3's
@@ -422,6 +536,79 @@ class Store:
             )
 
     # -- read queries (API-facing: never a local path) --------------------
+
+    def change_token(self) -> str:
+        """A cheap fingerprint of the store's current content -- changes
+        whenever a transcript or snapshot is added, removed or
+        re-parsed, and only then. Combines each of ``transcripts`` and
+        ``snapshots``' own row count with its own "latest touched"
+        marker (``updated_at`` for transcripts; ``ts``, the closest
+        analogue, for snapshots, which have no ``updated_at`` column).
+        Used by ``api.py``'s report-model cache to know when a cached
+        report needs rebuilding, without exposing anything about *what*
+        changed."""
+        conn = self._connection()
+        transcripts_row = conn.execute(
+            "SELECT COUNT(*), COALESCE(MAX(updated_at), '') FROM transcripts"
+        ).fetchone()
+        snapshots_row = conn.execute(
+            "SELECT COUNT(*), COALESCE(MAX(ts), '') FROM snapshots"
+        ).fetchone()
+        return f"{transcripts_row[0]}:{transcripts_row[1]}:{snapshots_row[0]}:{snapshots_row[1]}"
+
+    def turns_for_session(self, session_id: str) -> dict | None:
+        """Per-turn ``ctx``/cache/marker series for one session's
+        top-level transcript, decoded from its stored ``digest_json``
+        (the same lossless ``cache.result_from_jsonable`` decode
+        ``service/rebuild.py`` uses) -- never re-parses a file, never
+        exposes ``path`` or any other store-internal column. ``None``
+        when the session has no stored top-level transcript.
+
+        ``turn_series``: one ``[turn_index, ctx, cache_creation_tokens,
+        is_recache, preceding_primary]`` row per priced turn
+        (``turn_index > 0``), ``preceding_primary`` rendered as its
+        enum's ``.value`` string (or ``None``).
+
+        ``markers``: ``{"compactions": [...], "spawns": [...], "human":
+        [...]}`` -- the turn indices whose ``preceding_primary`` is
+        ``compact_boundary``, whose ``agent_brief_chars`` is set (an
+        Agent/Task tool call was made from that turn), or whose
+        ``human_prompt_chars`` is set (a human message preceded that
+        turn), respectively.
+        """
+        row = self._connection().execute(
+            "SELECT digest_json FROM transcripts WHERE session_id = ? AND kind = 'top-level'",
+            (session_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        try:
+            result = result_from_jsonable(json.loads(row["digest_json"]))
+        except (KeyError, TypeError, ValueError):
+            return None
+
+        turn_series: list[list] = []
+        compactions: list[int] = []
+        spawns: list[int] = []
+        human: list[int] = []
+        for turn in result.turns:
+            if turn.turn_index <= 0:
+                continue
+            primary = turn.preceding_primary.value if turn.preceding_primary is not None else None
+            turn_series.append(
+                [turn.turn_index, turn.ctx, turn.cache_creation_tokens, turn.is_recache, primary]
+            )
+            if primary == EventKind.COMPACT_BOUNDARY.value:
+                compactions.append(turn.turn_index)
+            if turn.agent_brief_chars is not None:
+                spawns.append(turn.turn_index)
+            if turn.human_prompt_chars is not None:
+                human.append(turn.turn_index)
+
+        return {
+            "turn_series": turn_series,
+            "markers": {"compactions": compactions, "spawns": spawns, "human": human},
+        }
 
     def summary(self, *, window_days: int | None = None) -> dict:
         """Corpus-wide totals: session/transcript counts and cost/token
@@ -544,11 +731,30 @@ class Store:
 
     def snapshots(self) -> list[dict]:
         """Every captured config snapshot's identity and digest (already
-        flattened/redacted before storage — see ``schema.py``)."""
+        flattened/redacted before storage — see ``schema.py``), plus its
+        owning project's ``slug`` as ``project_slug``. A snapshot
+        attributed to :data:`GLOBAL_PROJECT_SLUG` (the watcher's
+        synthetic attribution for a machine-wide, not-per-project
+        snapshot file — see module docstring) reports ``project_slug`` as
+        ``None`` instead of that internal sentinel, so a caller sees an
+        honest "no project" rather than a fabricated one (S1-integration
+        fix 1.c)."""
         rows = self._connection().execute(
-            "SELECT id, project_id, ts, schema_version, digest_json FROM snapshots ORDER BY ts"
+            """
+            SELECT sn.id, sn.project_id, p.slug AS project_slug, sn.ts,
+                   sn.schema_version, sn.digest_json
+            FROM snapshots sn
+            LEFT JOIN projects p ON p.id = sn.project_id
+            ORDER BY sn.ts
+            """
         ).fetchall()
-        return [dict(row) for row in rows]
+        result = []
+        for row in rows:
+            item = dict(row)
+            if item.get("project_slug") == GLOBAL_PROJECT_SLUG:
+                item["project_slug"] = None
+            result.append(item)
+        return result
 
     def profiles(self) -> list[dict]:
         """Every indexed profile's id/name (no ``toml_path`` — local
