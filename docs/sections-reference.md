@@ -222,6 +222,46 @@ count of sessions with at least one pause
 `limit-pressure` rule fires off this section's own `limits_summary`
 counts.
 
+## `waste` (`waste.py`)
+
+Full field-by-field contract: [`docs/waste.md`](waste.md#the-waste-report-section).
+
+Prices the turns whose output the user never actually benefited from —
+a failed tool call, a turn the user interrupted, one stopped by a tool
+denial, or every turn in a subagent transcript the harness killed
+before it could report back — and attributes each to a cause with a
+lever, so a "recoverable spend ceiling" always points at what to change
+to stop paying for it again. Purely a reader of state `parse.py`/
+`events.py` already produce (the v4-wasted-turns parser addition,
+`Turn.tool_error_count`/`Turn.tool_error_chars`, plus the existing
+`EventKind.INTERRUPT`/`TOOL_DENIAL`/`API_ERROR` and `TranscriptMeta.
+stopped_by_user`) — it detects nothing new. A turn following a
+usage-cap pause (`Turn.gap_cause == "limit"`) is excluded outright,
+since `limits.py` already owns that attribution.
+
+- `waste_summary` — one "all" row: total priced turns/cost, wasted
+  turns and their share of all priced turns, wasted cost (the
+  recoverable spend ceiling) and its share of all priced cost, wasted
+  tokens, the limit-pause-excluded count, and the api-error-retry count
+  (frequency only, never priced).
+- `waste_by_cause` — one row per cause (`tool-error`, `interrupt`,
+  `tool-denial`, `max-turns`, fixed order) plus an `api-error-retry`
+  row: turns, share of all priced turns, cost, share of all priced
+  cost, tokens, and that cause's own lever text.
+- `waste_by_agent_type` — per-agent-type roll-up: turns, share of
+  turns, cost, share of cost, tokens; sorted descending by cost.
+- `waste_top_sessions` — the 20 sessions with the highest wasted cost:
+  a salted, non-reversible session hash, turns, cost, share of cost,
+  and a cause-mix string.
+
+Every `share_pct` column here is against the whole corpus's priced
+turns/cost, not just the wasted subset, so `waste_by_cause`'s shares
+sum to `waste_summary`'s own totals. `recommend.py`'s `wasted-turns`
+rule (`waste.RULES`) fires when `waste_summary`'s own
+`wasted_cost_share_pct` clears `WasteThresholds.share_pct` (default
+10%) and the corpus meets the usual minimum-sample gate, naming the
+dominant cause and its lever.
+
 ## `compactions` (`compaction.py`)
 
 - `compactions_summary` — sessions with ≥1 compaction, total sessions,

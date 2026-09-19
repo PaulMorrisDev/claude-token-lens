@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **v4-wasted-turns spend tracking** (`waste.py`, work package
+  v4-wasted-turns): prices every turn whose output the user never
+  actually benefited from -- a failed tool call, a turn the user
+  interrupted, one stopped by a tool denial, or every turn in a
+  subagent transcript the harness killed before it could report back
+  -- and attributes each to a cause with a lever, so the report can say
+  not just what was spent but what's recoverable and how. New `waste`
+  report section (`waste_summary`, `waste_by_cause`,
+  `waste_by_agent_type`, `waste_top_sessions`), `compute_waste`/
+  `WasteStats`/`build_section` entry points, `WasteThresholds`
+  (`share_pct`, `min_sessions`, `min_turns`), and a new `wasted-turns`
+  recommendation rule (`waste.RULES`) that fires when the wasted-cost
+  share of total priced spend clears `WasteThresholds.share_pct`
+  (default 10%), naming the dominant cause and its lever.
+  `api-error-retry` (a turn preceded by a 529/retry gap)
+  is counted alongside the other causes but never priced -- the harness
+  already retried it automatically. Turns following a usage-cap pause
+  (`Turn.gap_cause == "limit"`) are excluded outright, since
+  `limits.py` already owns that attribution. Not yet wired into
+  `report.py`/`cli.py`/`recommend.py`/the service -- see
+  [`docs/waste.md`](docs/waste.md) for the exact functions an
+  integrating change should call.
+
+### Changed
+
+- **`PARSER_VERSION` 5 -> 6** (`__init__.py`, v4-wasted-turns): two new
+  additive `Turn` fields, `tool_error_count`/`tool_error_chars`,
+  derived from each turn's own tool_result blocks that carry
+  `is_error: true` (length only, never the error text itself -- see
+  `model.py`'s module docstring). No pre-batch digest cache entry ever
+  computed these, so any cache built under `PARSER_VERSION` 5 or
+  earlier is invalidated and transcripts are reparsed on next use.
+
 ## [0.3.0] - 2026-09-19
 
 ### Added
