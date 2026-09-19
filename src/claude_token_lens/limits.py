@@ -495,6 +495,11 @@ def _summary_table(stats: LimitStats, rows: list[LimitTypeStats]) -> Table:
             "== \"limit\" -- it always did a full prefix rewrite (see the "
             "module docstring), so its cache-creation tokens/write cost are "
             "unavoidable, not an ordinary re-cache finding.",
+            "limit_turn_write_cost_usd counts every post-pause turn; the "
+            "recache section's unavoidable_limit_expiry_cost_usd counts only "
+            "the subset that also clears recache.detect's ctx_floor/cr_ratio "
+            "thresholds, so the two figures are related but not equal -- see "
+            "docs/limits.md's reconciliation note (N2).",
         ],
     )
 
