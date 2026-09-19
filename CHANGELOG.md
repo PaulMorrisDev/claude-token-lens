@@ -89,6 +89,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `5h`/`7d` segment gets a `!` warning marker at >=90% used, and a
   `usage-log.csv` row for an exhausted `five_hour`/`seven_day` window is
   tagged `source=limit_hit`). See [`docs/limits.md`](docs/limits.md).
+- **v3-limits wired into `report.py`, the `limits` CLI subcommand, and
+  the service/UI**: `report.build_report` now folds every transcript
+  into a `limits.LimitStats` accumulator and appends the `limits`
+  section (gated by `include`, like every other section), with
+  `limits.csv_cross_check` bolted on as an extra table whenever
+  `usage_log_rows` is supplied; `limits.ASSUMPTIONS` joins the
+  report's assumptions list, and the scorecard's `cache_efficiency`/
+  `data_quality` dimensions now actually receive
+  `limit_recache_share_pct`/`limit_pause_sessions` (previously computed
+  fields on `ScorecardInputs` that nothing ever populated).
+  `claude-token-lens limits` is a new focused-view subcommand (`overview`
+  + `limits`), alongside `recache`/`ttl`/`compactions`. `GET
+  /api/session/<id>` gains `limit_markers` (`Store.turns_for_session`,
+  reshaping `limits.limit_markers`'s triples into `{"ts", "kind",
+  "detail"}` objects); the service UI's session timeline draws them as
+  their own marker kind, positioned by timestamp interpolation between
+  the session's `first_ts`/`last_ts` rather than by turn index (a
+  usage-limit event's `ts` falls inside the gap between two turns, with
+  no `turn_series` point of its own), and the `limits` report section
+  itself renders on the Cache tab alongside `recache`/`ttl`. See
+  [`docs/limits.md`](docs/limits.md), [`docs/sections-reference.md`](docs/sections-reference.md),
+  [`docs/api.md`](docs/api.md) and [`docs/ui.md`](docs/ui.md).
+- **`cli.py`: removed the dead `apply --dry-run` `--project` ->
+  `--project-dir` substitution workaround** — it patched the suggested
+  invocation text for a bug in `profiles/diff.py`'s `apply_command`
+  that was already fixed (the "printed the wrong CLI flag" entry
+  above), so the `.replace(...)` call had matched nothing for a while;
+  `apply_command`'s own output now prints through unchanged. README's
+  CLI reference table also had three stale "Planned for v0.2/v0.3" stub
+  rows for `init`/`baseline`/`serve` left over from before those
+  subcommands were implemented, contradicting the real rows already
+  above them; removed, and `serve`'s row now documents its real flags
+  (`--port`, `--bind`, `--allow-remote`, `--poll-interval`,
+  `--retention-days`, `--exclude-project`, `--billing-mode`,
+  `--monthly-report`, `--once`, `--purge --yes`) instead of the old
+  "prints which milestone it's planned for and exits 2" stub text.
 
 ### Planned
 
