@@ -90,6 +90,26 @@ def test_detect_pyz_path_none_when_argv_empty(monkeypatch):
     assert installer.detect_pyz_path() is None
 
 
+def test_detect_pyz_path_resolves_a_relative_argv0(monkeypatch, tmp_path):
+    """A user who ``cd``s into the archive's own directory and runs ``py -3
+    claude-token-lens.pyz ...`` gets a relative ``sys.argv[0]`` -- but the
+    Scheduled Task/systemd/launchd action this feeds
+    (``_serve_argv``/``plan_service_install``) runs from a different
+    working directory (e.g. Windows starts a logon task from
+    ``%SystemRoot%\\System32``), where a relative path would silently fail
+    to resolve. ``detect_pyz_path`` must always hand back an absolute path.
+    """
+    archive = tmp_path / "claude-token-lens.pyz"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("__main__.py", "print('hi')\n")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(installer.sys, "argv", ["claude-token-lens.pyz"])
+    result = installer.detect_pyz_path()
+    assert result is not None
+    assert result.is_absolute()
+    assert result == archive.resolve()
+
+
 # --------------------------------------------------------------------
 # plan_service_install: per-platform shape
 # --------------------------------------------------------------------

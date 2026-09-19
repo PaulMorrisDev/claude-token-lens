@@ -105,6 +105,16 @@ def detect_pyz_path() -> Path | None:
     build-and-run round trip. A real zip check (not just a ``.pyz``
     name check) avoids a false positive from a coincidentally-named
     file.
+
+    Always returns an **absolute** path (``.resolve()``), even when
+    ``sys.argv[0]`` itself was relative (e.g. the user ran ``py -3
+    claude-token-lens.pyz ...`` from the archive's own directory) --
+    every caller (:func:`_serve_argv`'s Scheduled-Task/systemd/launchd
+    action, ``statusline.print_install_fragment``) embeds this path
+    verbatim into a command line that a logon-triggered service or a
+    pasted-in settings.json fragment will later run from a *different*
+    working directory, where a relative path would silently fail to
+    resolve.
     """
     import zipfile
 
@@ -114,7 +124,7 @@ def detect_pyz_path() -> Path | None:
     path = Path(argv0)
     try:
         if path.is_file() and zipfile.is_zipfile(path):
-            return path
+            return path.resolve()
     except OSError:
         return None
     return None

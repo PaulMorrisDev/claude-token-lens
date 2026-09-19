@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import io
 import json
+import zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 
-from claude_token_lens import statusline
+from claude_token_lens import installer, statusline
 
 
 def _write_transcript(path: Path, assistant_ts_iso: str) -> None:
@@ -544,6 +545,76 @@ def test_main_install_flag_alias(monkeypatch, capsys):
     rc = statusline.main(["--install"])
     assert rc == 0
     assert "statusLine" in capsys.readouterr().out
+
+
+def _extract_commands(text: str) -> tuple[str, str]:
+    """(windows_command, posix_command) parsed out of a
+    ``print_install_fragment``-shaped report -- each platform's JSON
+    block decoded properly rather than string-matched, since a Windows
+    path's backslashes are JSON-escaped in the fragment text itself
+    (``"C:\\\\...\\\\claude-token-lens.pyz"``).
+    """
+    _, _, rest = text.partition("Windows:\n")
+    windows_json, _, posix_block = rest.partition("POSIX (Linux/macOS):\n")
+    windows_command = json.loads(windows_json.strip())["statusLine"]["command"]
+    posix_command = json.loads(posix_block.strip())["statusLine"]["command"]
+    return windows_command, posix_command
+
+
+def test_print_install_fragment_pyz_mode_uses_archive_path_not_dash_m(tmp_path):
+    """When invoked from a ``.pyz`` build, ``python -m
+    claude_token_lens.statusline`` does not work -- the package lives
+    inside the archive, not on ``sys.path``. Passing ``pyz_path`` explicitly
+    (mirroring ``installer.plan_service_install``'s own parameter) must
+    produce the archive-path form instead, matching
+    ``installer._serve_argv``'s ``[exe, str(pyz_path), *args]`` shape.
+    """
+    pyz_path = tmp_path / "claude-token-lens.pyz"
+    text = statusline.print_install_fragment(pyz_path=pyz_path)
+
+    assert "-m claude_token_lens.statusline" not in text
+    windows_command, posix_command = _extract_commands(text)
+    assert windows_command == f'py -3 "{pyz_path}" statusline'
+    assert posix_command == f'python3 "{pyz_path}" statusline'
+
+
+def test_print_install_fragment_pyz_mode_resolves_relative_path(tmp_path, monkeypatch):
+    """An explicit ``pyz_path`` that isn't already absolute is still
+    embedded as an absolute path -- the fragment ends up pasted into
+    settings.json and run from an arbitrary working directory later."""
+    monkeypatch.chdir(tmp_path)
+    text = statusline.print_install_fragment(pyz_path=Path("claude-token-lens.pyz"))
+    windows_command, posix_command = _extract_commands(text)
+    abs_path = str((tmp_path / "claude-token-lens.pyz").resolve())
+    assert windows_command == f'py -3 "{abs_path}" statusline'
+    assert posix_command == f'python3 "{abs_path}" statusline'
+
+
+def test_print_install_fragment_auto_detects_pyz_from_sys_argv(monkeypatch, tmp_path):
+    """With no explicit ``pyz_path``, the fragment auto-detects the same
+    way ``installer.detect_pyz_path``/``install-service`` already does --
+    from ``sys.argv[0]`` -- so a plain ``claude-token-lens.pyz init`` run
+    (which calls this with no arguments, see ``cli._cmd_init``) still gets
+    the pyz-aware fragment without any extra wiring.
+    """
+    archive = tmp_path / "claude-token-lens.pyz"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("__main__.py", "print('hi')\n")
+    monkeypatch.setattr(installer.sys, "argv", [str(archive)])
+
+    text = statusline.print_install_fragment()
+
+    assert "-m claude_token_lens.statusline" not in text
+    windows_command, posix_command = _extract_commands(text)
+    abs_path = str(archive.resolve())
+    assert windows_command == f'py -3 "{abs_path}" statusline'
+    assert posix_command == f'python3 "{abs_path}" statusline'
+
+
+def test_print_install_fragment_no_pyz_keeps_dash_m_form():
+    text = statusline.print_install_fragment(pyz_path=None)
+    assert "py -3 -m claude_token_lens.statusline" in text
+    assert "python3 -m claude_token_lens.statusline" in text
 
 
 # -- S1-exports: cache trailing CSV columns ----------------------------------

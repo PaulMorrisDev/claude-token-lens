@@ -2,10 +2,20 @@
 Code's ``statusLine`` setting answering "should I send the next message
 now or lose the cache?"
 
-Invoked via ``python -m claude_token_lens.statusline`` (both the Windows
-and POSIX fragments in :func:`print_install_fragment` use ``-m``, not a
-path — unlike ``hooks/snapshot-config.py`` this module is never copied out
-on its own, so it imports from the rest of the package freely).
+Invoked via ``python -m claude_token_lens.statusline`` when this package is
+an ordinary installed/checked-out package -- unlike ``hooks/snapshot-
+config.py`` this module is never copied out on its own, so it imports from
+the rest of the package freely. That ``-m`` form does **not** work when
+running from the ``.pyz`` build (``scripts/build-pyz.py``): the package
+lives inside the zip archive, not on ``sys.path``, so ``python -m
+claude_token_lens.statusline`` raises ``No module named
+claude_token_lens.statusline``. :func:`print_install_fragment` therefore
+mirrors :func:`~claude_token_lens.installer.plan_service_install`'s own
+pyz-awareness (see that module's ``detect_pyz_path``/``_serve_argv``): when
+this process was itself launched from a ``.pyz`` (or one is passed
+explicitly), the fragment instead names the archive directly --
+``"<python>" "<abs path to .pyz>" statusline`` -- rather than the ``-m``
+form.
 
 Contract (plan Appendix, "Statusline and live cache countdown" +
 "Hook and statusline commands on Windows"): Claude Code writes a JSON
@@ -255,6 +265,7 @@ import tomllib
 from datetime import datetime, timezone
 from pathlib import Path
 
+from . import installer as installer_mod
 from .model import Column, Table
 from .tools import log_usage
 
@@ -782,14 +793,39 @@ def render_status(payload: dict, now: datetime, effective_ttl_s: int | None) -> 
 # -- install fragment -------------------------------------------------------
 
 
-def print_install_fragment() -> str:
+def print_install_fragment(pyz_path: Path | None = None) -> str:
     """The ``settings.json`` ``statusLine`` fragment to paste in, for
     Windows and POSIX (named ``print_...`` per the WP6 brief; like
     ``hooks/snapshot-config.py``'s ``hook_fragment_text``, it returns the
     text rather than printing it directly, so a caller can also test it).
+
+    ``pyz_path`` mirrors ``installer.plan_service_install``'s own
+    parameter: defaults to :func:`~claude_token_lens.installer.detect_pyz_path`
+    (``None`` unless this process was itself launched from a ``.pyz``) --
+    pass one explicitly to force the ".pyz" fragment form regardless of how
+    this call is running (as ``cli.py``'s ``install-service`` planning
+    already does for the service action).
+
+    When running from a ``.pyz`` archive, ``python -m
+    claude_token_lens.statusline`` does not work -- the package lives
+    inside the zip, not on ``sys.path`` (see the module docstring) -- so
+    the fragment instead names the absolute archive path directly:
+    ``"<python>" "<abs path to .pyz>" statusline``, the same
+    ``[exe, str(pyz_path), *args]`` shape
+    ``installer._serve_argv`` already uses for the logon-service action.
+    Otherwise (an ordinary installed package/checkout) the fragment keeps
+    the original ``-m`` form.
     """
-    windows_command = "py -3 -m claude_token_lens.statusline"
-    posix_command = "python3 -m claude_token_lens.statusline"
+    if pyz_path is None:
+        pyz_path = installer_mod.detect_pyz_path()
+
+    if pyz_path is not None:
+        abs_pyz = str(Path(pyz_path).resolve())
+        windows_command = f'py -3 "{abs_pyz}" statusline'
+        posix_command = f'python3 "{abs_pyz}" statusline'
+    else:
+        windows_command = "py -3 -m claude_token_lens.statusline"
+        posix_command = "python3 -m claude_token_lens.statusline"
 
     def _fragment(command: str) -> str:
         return json.dumps({"statusLine": {"type": "command", "command": command}}, indent=2)

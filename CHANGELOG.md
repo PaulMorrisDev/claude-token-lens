@@ -11,6 +11,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`docs/first-run.md`**: the numbered, Windows-first walkthrough for a
+  first-time user on a locked-down work machine (no admin rights,
+  possibly no `git`, possibly no `pip` network access) — install (all
+  three routes: `.pyz`, `pip` from a local clone, `pip` from GitHub),
+  `init`, the logon-service step and how to confirm it actually
+  registered, opening the dashboard, the first `report`, a privacy
+  self-check, and a complete uninstall, plus a troubleshooting table
+  and a POSIX quick variant. Every command in it was rehearsed
+  end-to-end against a synthetic project during this work.
 - **Release CI (`.github/workflows/release.yml`)**: on every `v*` tag
   push, builds `dist/claude-token-lens.pyz` with `scripts/build-pyz.py`,
   smoke-tests it with `--version`, and attaches it to the GitHub
@@ -136,6 +145,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`statusline.print_install_fragment()` emitted a `-m` command that
+  cannot work from a `.pyz` build** (`statusline.py`) — the printed
+  `statusLine` fragment (both from `claude-token-lens init` and
+  `statusline --print-install-fragment`) always read `py -3 -m
+  claude_token_lens.statusline`/`python3 -m claude_token_lens.statusline`,
+  regardless of how the tool was installed. Run from inside a `.pyz`
+  archive, `-m claude_token_lens.statusline` fails outright (`No module
+  named claude_token_lens.statusline`) because the package lives inside
+  the zip, not on `sys.path` — a pyz-only user who followed `init`'s own
+  printed instructions ended up with a statusline that never worked.
+  `print_install_fragment` now mirrors `installer.plan_service_install`'s
+  existing pyz-awareness: it detects the running `.pyz` the same way
+  (`installer.detect_pyz_path`, also newly hardened to always return an
+  **absolute** path even when `sys.argv[0]` itself was relative — the
+  same absolute-path requirement `_serve_argv`'s Scheduled-Task/systemd/
+  launchd action already depended on) and, when running from one,
+  emits `"<python>" "<abs path to .pyz>" statusline` instead. An ordinary
+  installed package/checkout is unaffected — the fragment keeps the
+  original `-m` form. New unit tests cover both modes (explicit
+  `pyz_path=`, auto-detected via `sys.argv[0]`, and the no-pyz default).
 - **`apply` user scope resolved the wrong Claude Code directory**
   (`profiles/apply.py`, `cli.py`) — user scope derived its target as
   `config_dir.parent`, so with `config_dir` defaulting to
