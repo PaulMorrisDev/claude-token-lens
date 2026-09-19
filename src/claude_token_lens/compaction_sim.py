@@ -1,0 +1,1031 @@
+"""``autoCompactWindow`` sweep: replay every top-level transcript under a
+range of candidate auto-compaction windows and estimate the total cost
+under each, so a report can recommend the window that saves the most.
+
+This module is new (not part of the frozen work-package plan ``ttl.py``/
+``compaction.py``/``recache.py`` implement); it follows their shape and
+conventions closely rather than inventing new ones. It depends only on
+``model.py`` (frozen contract), ``pricing.py`` (``price_turn``),
+``recache.py`` (``RecacheThresholds``, reused unmodified for the
+corpus-wide rediscovery-allowance sample) and ``compaction.py``'s public
+``compaction_records_for_transcript``/``CompactionRecord`` (never its
+private ``_correlate_compactions_to_turn_index``/``_MAX_JOIN_DELTA_S`` --
+this module's own :func:`_real_compaction_turn_indices` re-implements the
+same event-to-turn forward-merge locally, at this module's own
+``CompactionSimThresholds.max_join_delta_s`` gate, rather than reaching
+into ``compaction.py``'s private symbols).
+
+**Why a compaction costs and saves money** (the model this module
+simulates): Claude Code auto-compacts a session once its context reaches
+``autoCompactWindow`` tokens (observed in config snapshots, e.g.
+``300000``; the model's own context window is typically 1,000,000 for a
+"[1m]"-aliased model or 200,000 otherwise -- see
+``context_budget.py``'s own assumed-window constants). Each compaction:
+
+- **Costs** a summary write -- ``compactMetadata.postTokens`` becomes the
+  new baseline, written as ``cache_creation`` on the very next turn -- plus
+  a rediscovery allowance for the re-reads a compacted session tends to
+  redo just after the boundary (already measured, for *real* compactions,
+  as the following turn's re-cache write cost;
+  ``topology_redundant_reads``/``compaction.py``'s own post-compaction
+  re-cache-cost measurement is the source of the corpus-wide default this
+  module falls back on when a corpus/transcript never suffered one).
+- **Saves** money on every later turn, which now carries ``postTokens`` of
+  context instead of ``preTokens`` -- priced at ``cache_read`` (or
+  ``cache_write`` on a turn that itself re-caches).
+
+:func:`simulate_compaction_windows` replays every transcript's priced
+turns, in order, against each of :data:`CANDIDATE_WINDOWS`: whenever the
+running (possibly already-scaled-down) context would exceed the candidate
+window, a simulated compaction is inserted -- charging the summary write
+plus the rediscovery allowance, and scaling every later turn's cache
+volumes down by the corpus's own observed compression ratio. A **real**
+observed compaction already recorded in the transcript's own events is
+kept as-is under every candidate window (its real cost, not a synthetic
+one) -- a policy sweep asks "what would happen on top of what already
+happened", not "pretend the real compaction never fired".
+
+**Sign convention (a deliberate divergence from ``ttl.py``):**
+``delta_usd = candidate_cost - observed_cost`` throughout this module --
+**negative means cheaper** (a saving), positive means more expensive.
+``ttl.py``'s own tables use the opposite sign (``cost_observed -
+best_cost``, positive = saving); that convention is unchanged there. This
+module picks the other one deliberately: "delta vs observed" reads most
+naturally as "what changes if you adopt this candidate", and a sweep
+walks *many* candidate windows per key (not one best-vs-observed pair), so
+a uniform "candidate minus observed" avoids re-deriving the sign per row.
+``saving_usd = max(0, -delta_usd)`` is always non-negative, exactly like
+``ttl.py``'s own ``saving_usd``.
+
+**The "no candidate window" identity**: ``window=None`` never triggers a
+synthetic compaction (the ``window is not None`` guard never opens), so
+the per-transcript scale factor never leaves ``1.0`` and every turn is
+priced via its own unmodified, real values -- ``simulate_compaction_windows``'s
+``window=None`` row is therefore *exactly* the transcript's true observed
+cost, including every real compaction that already happened in it. This
+identity is asserted directly in this module's tests and is why no
+separate "observed cost" code path exists here.
+
+**Wiring instructions for the integration agent** (this module cannot
+edit ``report.py``/``cli.py``/``recommend.py`` -- see the project's file
+ownership rules):
+
+1. ``report.py`` (wherever it assembles sections, alongside ``ttl.build_section``/
+   ``compaction`` etc.): build a ``snapshot_windows: dict[str, int | None]``
+   mapping each top-level session id to its project's configured
+   ``autoCompactWindow`` -- the same value ``context_budget.py``'s
+   ``_build_autocompact_table`` already reads via
+   ``snapshots.effective_config(snapshot).get("autoCompactWindow")``,
+   just keyed by session id instead of project (reuse
+   ``context_budget.py``'s own ``session_to_project`` reverse-lookup
+   pattern, built from ``ContextBudgetStats.projects[project].session_ids``,
+   or an equivalent per-session snapshot lookup already available at that
+   point in ``report.py``). Then call::
+
+       stats = compaction_sim.simulate_compaction_windows(all_results, rates, snapshot_windows)
+       section = compaction_sim.build_section(stats)
+
+   and append ``section`` to the assembled report's ``sections`` list.
+   ``all_results`` is every parsed ``TranscriptResult`` (top-level and
+   subagent) already available at that point in ``report.py``; ``rates``
+   is whatever ``ModelRates``/``ResolvedRates``/lookup callable the
+   surrounding code already passes to ``ttl.TtlStats.add``/``compaction
+   .compaction_records_for_transcript``.
+2. ``recommend.py`` (in ``recommend()``, alongside the other
+   ``recs.extend(_rule_xxx(...))`` calls): add
+   ``recs.extend(compaction_sim.RULES[0](report, compaction_sim.CompactionSimThresholds(), snapshot))``
+   (or thread a shared ``CompactionSimThresholds.from_config(config.thresholds)``
+   through, same as every other rule's threshold object) -- this requires
+   step 1 to have already added the ``compaction_sim`` section to
+   ``report`` first, since the rule reads its evidence back out of
+   ``report``'s own tables (same evidence contract as every existing
+   rule -- see ``recommend.py``'s module docstring).
+3. ``docs/sections-reference.md`` already carries this module's own
+   paragraph (added alongside this file); no further doc wiring needed.
+
+Public surface: :data:`ASSUMPTIONS`, :data:`CANDIDATE_WINDOWS`,
+:class:`CompactionSimThresholds`, :class:`CompactionSimWindowStats`,
+:class:`CompactionSimTypeStats`, :class:`CompactionSimFidelityRow`,
+:class:`CompactionSimStats`, :func:`simulate_compaction_windows`,
+:func:`build_section`, :data:`RULES`.
+"""
+
+from __future__ import annotations
+
+import statistics
+from collections import Counter
+from dataclasses import dataclass, replace
+from datetime import datetime
+from typing import Callable
+
+from .compaction import CompactionRecord, compaction_records_for_transcript
+from .model import (
+    Column,
+    EventKind,
+    Recommendation,
+    ReportModel,
+    Section,
+    Table,
+    TranscriptResult,
+    Turn,
+)
+from .pricing import ModelRates, ResolvedRates, price_turn
+from .recache import RecacheThresholds
+from .snapshots import Snapshot, effective_provenance, managed_keys
+
+#: Assumptions this module's simulation makes, printed verbatim in the
+#: report section's notes (same convention as ``ttl.ASSUMPTIONS``).
+ASSUMPTIONS: list[str] = [
+    "a simulated compaction resets context to this corpus's own observed "
+    "compression ratio (median post_tokens/pre_tokens across real "
+    "compact_boundary events; 0.15 when this corpus has none)",
+    "a simulated compaction charges a summary-write cost equal to the "
+    "simulated post-compaction token count, priced at the 5-minute "
+    "cache-write rate (no observed TTL split of its own to reuse)",
+    "a simulated compaction also charges a rediscovery allowance -- this "
+    "corpus's own median post-compaction re-cache write cost from real "
+    "compact_boundary events; $0.00 (noted) when this corpus has none",
+    "every later turn's cache volumes scale down by (simulated ctx / "
+    "observed ctx) until the next compaction, real or simulated",
+    "a real, observed compaction already in a transcript is kept as-is "
+    "under every candidate window -- never re-simulated, never removed",
+    "delta_usd = candidate_cost - observed_cost throughout this module: "
+    "negative means the candidate is cheaper (a saving) -- the opposite "
+    "sign convention to ttl.py's own tables, see this module's docstring",
+]
+
+#: Candidate ``autoCompactWindow`` values swept per transcript, plus
+#: ``None`` meaning "never auto-compact" (real, already-observed
+#: compactions are still kept under ``None`` -- see the module
+#: docstring's "no candidate window" identity).
+CANDIDATE_WINDOWS: tuple[int | None, ...] = (
+    100_000,
+    150_000,
+    200_000,
+    250_000,
+    300_000,
+    400_000,
+    500_000,
+    None,
+)
+
+#: The bucket a simulated compaction's summary write is priced at (5
+#: minutes) -- see ``ASSUMPTIONS``.
+_SUMMARY_WRITE_TTL_S = 300
+
+
+def _window_label(window: int | None) -> str:
+    return "none" if window is None else f"{window:,}"
+
+
+# -- thresholds ---------------------------------------------------------
+
+
+@dataclass(slots=True)
+class CompactionSimThresholds:
+    """Every tunable number this module's sweep and recommendation
+    depend on, consolidated into one config-driven object -- same
+    pattern as :class:`~claude_token_lens.recache.RecacheThresholds` and
+    :class:`~claude_token_lens.ttl.TtlThresholds`.
+    """
+
+    #: Used for a transcript/corpus with no real ``compact_boundary``
+    #: event to measure a compression ratio from.
+    default_compression_ratio: float = 0.15
+    #: Used for a corpus with no real post-compaction re-cache turn to
+    #: measure a rediscovery allowance from.
+    default_rediscovery_allowance_usd: float = 0.0
+    #: A window switch is recommended only when the best candidate
+    #: window's cost is below this fraction of the observed cost AND
+    #: saves more than ``switch_usd`` -- both conditions, independently
+    #: blocking (mirrors ``TtlThresholds.switch_pct``/``switch_usd``,
+    #: plan-analogous "> 5% and > $1.00").
+    switch_pct: float = 0.95
+    switch_usd: float = 1.00
+    #: A top-level session's fidelity self-check (simulating at its own
+    #: snapshot's configured ``autoCompactWindow``) is flagged in the
+    #: section notes once its fidelity exceeds this.
+    fidelity_warn_pct: float = 10.0
+    #: A real ``compact_boundary`` event is only correlated to a
+    #: following priced turn when that turn's own timestamp lands within
+    #: this many seconds of the event; a looser join is treated as
+    #: unmatched (mirrors ``compaction.py``'s own private
+    #: ``_MAX_JOIN_DELTA_S`` join-tightness gate of 900s).
+    max_join_delta_s: float = 900.0
+
+    @classmethod
+    def from_config(cls, config: dict | None) -> "CompactionSimThresholds":
+        """Build thresholds from a config dict, keeping this class's
+        defaults for any key that's absent or of the wrong shape.
+
+        Reads either a flat dict of this class's own field names, or a
+        full ``config.toml``-shaped dict with a nested ``thresholds``
+        table -- same flexible-shape convention as
+        ``RecacheThresholds.from_config``/``TtlThresholds.from_config``.
+        """
+        data = config or {}
+        if not isinstance(data, dict):
+            data = {}
+        nested = data.get("thresholds")
+        if isinstance(nested, dict):
+            data = nested
+
+        kwargs: dict = {}
+        if "default_compression_ratio" in data:
+            kwargs["default_compression_ratio"] = float(data["default_compression_ratio"])
+        if "default_rediscovery_allowance_usd" in data:
+            kwargs["default_rediscovery_allowance_usd"] = float(data["default_rediscovery_allowance_usd"])
+        if "switch_pct" in data:
+            kwargs["switch_pct"] = float(data["switch_pct"])
+        if "switch_usd" in data:
+            kwargs["switch_usd"] = float(data["switch_usd"])
+        if "fidelity_warn_pct" in data:
+            kwargs["fidelity_warn_pct"] = float(data["fidelity_warn_pct"])
+        if "max_join_delta_s" in data:
+            kwargs["max_join_delta_s"] = float(data["max_join_delta_s"])
+        return cls(**kwargs)
+
+    def describe(self) -> list[str]:
+        """One sentence per threshold, for the section's own notes --
+        same convention as ``RecacheThresholds.describe``/
+        ``TtlThresholds.describe``."""
+        return [
+            f"default_compression_ratio = {self.default_compression_ratio:.2f}: used "
+            "when this corpus has no real compact_boundary event to measure a "
+            "compression ratio from.",
+            f"default_rediscovery_allowance_usd = ${self.default_rediscovery_allowance_usd:.2f}: "
+            "used when this corpus has no real post-compaction re-cache turn to measure "
+            "a rediscovery allowance from.",
+            f"switch_pct = {self.switch_pct:.2f} and switch_usd = ${self.switch_usd:.2f}: a "
+            "window switch is recommended only when the best candidate window's cost is "
+            "below switch_pct of the observed cost AND saves more than switch_usd -- both "
+            "conditions, independently blocking.",
+            f"fidelity_warn_pct = {self.fidelity_warn_pct:.1f}%: a top-level session's "
+            "fidelity self-check is flagged in the section notes once it exceeds this.",
+            f"max_join_delta_s = {self.max_join_delta_s:.0f}s: a real compact_boundary "
+            "event is only correlated to a following priced turn when that turn's own "
+            "timestamp lands within this many seconds of the event.",
+        ]
+
+
+_DEFAULT_THRESHOLDS = CompactionSimThresholds()
+
+#: What ``price_turn``/rate resolution accepts, and a per-model lookup
+#: for mixed-model transcripts/subagents -- same aliases as ``ttl.py``.
+RatesArg = ModelRates | ResolvedRates | None
+RatesLookup = Callable[[str], RatesArg]
+
+
+def _as_lookup(rates: "RatesArg | RatesLookup") -> RatesLookup:
+    """Normalise a caller's ``rates`` argument to a per-turn lookup --
+    identical contract to ``ttl._as_lookup``."""
+    if callable(rates):
+        return rates
+    return lambda _model_id: rates
+
+
+def _parse_ts(ts_raw: str | None) -> datetime | None:
+    if not ts_raw:
+        return None
+    try:
+        return datetime.fromisoformat(ts_raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _priced_turns(turns: list[Turn]) -> list[Turn]:
+    """``Turn.turn_index > 0`` -- same "priced turns" convention as
+    ``ttl.py``/``compaction.py`` (see ``model.Turn.turn_index``)."""
+    return [t for t in turns if t.turn_index > 0]
+
+
+def _dominant_model(turns: list[Turn]) -> str | None:
+    """The most-common ``Turn.model`` among ``turns`` -- an approximation
+    used only to pick a single rate for corpus-wide compaction-record
+    correlation (:func:`_corpus_rediscovery_allowance`); per-turn pricing
+    in the replay itself always uses ``lookup(turn.model)``."""
+    models = [t.model for t in turns if t.model]
+    if not models:
+        return None
+    return Counter(models).most_common(1)[0][0]
+
+
+# -- real-compaction correlation -----------------------------------------
+
+
+def _real_compaction_turn_indices(
+    tr: TranscriptResult, priced_turns: list[Turn], th: CompactionSimThresholds
+) -> dict[int, int]:
+    """``{turn_index_in_priced_turns: count}`` for every real
+    ``COMPACT_BOUNDARY`` event in ``tr.events`` correlated to the next
+    priced turn at or after it, gated at ``th.max_join_delta_s`` -- a
+    small local re-implementation of ``compaction.py``'s private
+    forward-merge (never imported: see the module docstring)."""
+    marked: dict[int, int] = {}
+    idx = 0
+    n = len(priced_turns)
+    for event in tr.events:
+        if event.kind != EventKind.COMPACT_BOUNDARY:
+            continue
+        event_dt = _parse_ts(event.ts)
+        if event_dt is None:
+            continue
+        while idx < n and (_parse_ts(priced_turns[idx].ts) is None or _parse_ts(priced_turns[idx].ts) < event_dt):
+            idx += 1
+        if idx >= n:
+            continue
+        turn_dt = _parse_ts(priced_turns[idx].ts)
+        if turn_dt is None:
+            continue
+        join_delta = (turn_dt - event_dt).total_seconds()
+        if join_delta > th.max_join_delta_s:
+            continue
+        marked[idx] = marked.get(idx, 0) + 1
+    return marked
+
+
+# -- corpus-wide defaults --------------------------------------------------
+
+
+def _corpus_compression_ratio(
+    results: list[TranscriptResult], th: CompactionSimThresholds
+) -> tuple[float, bool]:
+    """``(ratio, is_default)`` -- the median ``post_tokens/pre_tokens``
+    across every real ``COMPACT_BOUNDARY`` event in ``results``, or
+    ``th.default_compression_ratio`` (flagged) when there are none."""
+    ratios: list[float] = []
+    for tr in results:
+        for event in tr.events:
+            if (
+                event.kind == EventKind.COMPACT_BOUNDARY
+                and event.pre_tokens
+                and event.post_tokens is not None
+            ):
+                ratios.append(event.post_tokens / event.pre_tokens)
+    if not ratios:
+        return th.default_compression_ratio, True
+    return statistics.median(ratios), False
+
+
+def _corpus_rediscovery_allowance(
+    results: list[TranscriptResult], lookup: RatesLookup, th: CompactionSimThresholds
+) -> tuple[float, bool]:
+    """``(allowance_usd, is_default)`` -- the median
+    ``next_turn_write_cost`` across every real, join-tight,
+    recache-flagged :class:`~claude_token_lens.compaction.CompactionRecord`
+    in ``results``, or ``th.default_rediscovery_allowance_usd``
+    (flagged) when there are none."""
+    recache_th = RecacheThresholds()
+    costs: list[float] = []
+    for tr in results:
+        priced = _priced_turns(tr.turns)
+        if not priced:
+            continue
+        rates = lookup(_dominant_model(priced))
+        records: list[CompactionRecord] = compaction_records_for_transcript(tr, rates, recache_th)
+        for record in records:
+            if not record.next_turn_is_recache or record.next_turn_write_cost is None:
+                continue
+            if record.join_delta_s is not None and record.join_delta_s > th.max_join_delta_s:
+                continue
+            costs.append(record.next_turn_write_cost)
+    if not costs:
+        return th.default_rediscovery_allowance_usd, True
+    return statistics.median(costs), False
+
+
+# -- replay -----------------------------------------------------------------
+
+
+@dataclass(slots=True)
+class _ReplayResult:
+    cost: float = 0.0
+    compactions: int = 0
+    ctx_sum: float = 0.0
+    turns: int = 0
+
+
+def _write_cost(turn: Turn, rates: RatesArg, tokens: float) -> float:
+    """Price ``tokens`` as a fresh 5-minute cache write on ``turn`` --
+    the simulated compaction's summary-write cost (see ``ASSUMPTIONS``).
+    """
+    if tokens <= 0:
+        return 0.0
+    return price_turn(
+        turn, rates, write_split={_SUMMARY_WRITE_TTL_S: int(round(tokens))}, read_tokens=0
+    ).cache_write_cost
+
+
+def _scaled_cost(turn: Turn, rates: RatesArg, scale: float, *, zero_cache: bool) -> float:
+    """Price ``turn`` with its ``ctx``/cache-token fields scaled by
+    ``scale``. ``zero_cache=True`` additionally zeroes every cache-token
+    field (used on a simulated compaction's own triggering turn, whose
+    real cache volumes are charged separately as the summary write plus
+    rediscovery allowance -- never both, see the module docstring)."""
+    if zero_cache:
+        scaled = replace(
+            turn,
+            ctx=int(round(turn.ctx * scale)),
+            cache_creation_tokens=0,
+            cache_read_tokens=0,
+            cc_5m=0,
+            cc_1h=0,
+        )
+    elif scale == 1.0:
+        scaled = turn
+    else:
+        scaled = replace(
+            turn,
+            ctx=int(round(turn.ctx * scale)),
+            cache_creation_tokens=int(round(turn.cache_creation_tokens * scale)),
+            cache_read_tokens=int(round(turn.cache_read_tokens * scale)),
+            cc_5m=int(round(turn.cc_5m * scale)),
+            cc_1h=int(round(turn.cc_1h * scale)),
+        )
+    return price_turn(scaled, rates).total
+
+
+def _replay_transcript(
+    priced_turns: list[Turn],
+    lookup: RatesLookup,
+    window: int | None,
+    compression_ratio: float,
+    rediscovery_allowance_usd: float,
+    real_after: dict[int, int],
+) -> _ReplayResult:
+    """Walk ``priced_turns`` in order under candidate ``window``. See the
+    module docstring's algorithm description and its "no candidate
+    window" identity (``window=None`` reproduces the true observed cost
+    exactly, since ``scale`` then never leaves 1.0)."""
+    scale = 1.0
+    cost = 0.0
+    compactions = 0
+    ctx_sum = 0.0
+    for i, turn in enumerate(priced_turns):
+        rates = lookup(turn.model)
+        real_count = real_after.get(i, 0)
+        if real_count:
+            # A real compact_boundary event already reset context here --
+            # the turn's own observed values already reflect what
+            # actually happened, so it is priced as-is (never re-scaled,
+            # never double-charged) and any earlier synthetic scale-down
+            # is superseded.
+            scale = 1.0
+            compactions += real_count
+            cost += price_turn(turn, rates).total
+            sim_ctx = float(turn.ctx)
+        else:
+            sim_ctx = turn.ctx * scale
+            if window is not None and sim_ctx > window:
+                post_tokens_sim = sim_ctx * compression_ratio
+                cost += _write_cost(turn, rates, post_tokens_sim)
+                cost += rediscovery_allowance_usd
+                compactions += 1
+                scale = (post_tokens_sim / turn.ctx) if turn.ctx > 0 else scale
+                cost += _scaled_cost(turn, rates, scale, zero_cache=True)
+                sim_ctx = turn.ctx * scale
+            else:
+                cost += _scaled_cost(turn, rates, scale, zero_cache=False)
+        ctx_sum += sim_ctx
+    return _ReplayResult(cost=cost, compactions=compactions, ctx_sum=ctx_sum, turns=len(priced_turns))
+
+
+# -- accumulation -----------------------------------------------------------
+
+
+@dataclass(slots=True)
+class _WindowAccumulator:
+    compactions: int = 0
+    ctx_sum: float = 0.0
+    ctx_turns: int = 0
+    cost: float = 0.0
+
+
+@dataclass(slots=True)
+class CompactionSimWindowStats:
+    """One ``(agent-type key, candidate window)`` cell: the corpus-wide
+    roll-up used to build ``compaction_sim_by_window``."""
+
+    key: str = ""
+    window: int | None = None
+    sessions: int = 0
+    compactions: int = 0
+    ctx_sum: float = 0.0
+    ctx_turns: int = 0
+    cost: float = 0.0
+    observed_cost: float = 0.0
+
+    @property
+    def compactions_per_session(self) -> float:
+        return self.compactions / self.sessions if self.sessions else 0.0
+
+    @property
+    def mean_ctx(self) -> float:
+        return self.ctx_sum / self.ctx_turns if self.ctx_turns else 0.0
+
+    @property
+    def delta_usd(self) -> float:
+        """``candidate_cost - observed_cost``: negative = cheaper. See
+        the module docstring's sign-convention note."""
+        return self.cost - self.observed_cost
+
+    @property
+    def delta_pct(self) -> float | None:
+        if self.observed_cost <= 0:
+            return None
+        return 100.0 * self.delta_usd / self.observed_cost
+
+    @property
+    def saving_usd(self) -> float:
+        return max(0.0, -self.delta_usd)
+
+
+@dataclass(slots=True)
+class CompactionSimTypeStats:
+    """One agent-type key's best candidate window, drawn from the same
+    per-``(key, window)`` accumulator ``CompactionSimWindowStats`` reads
+    -- used to build ``compaction_sim_by_agent_type``."""
+
+    key: str = ""
+    sessions: int = 0
+    observed_cost: float = 0.0
+    best_window: int | None = None
+    best_cost: float = 0.0
+
+    @property
+    def delta_usd(self) -> float:
+        return self.best_cost - self.observed_cost
+
+    @property
+    def delta_pct(self) -> float | None:
+        if self.observed_cost <= 0:
+            return None
+        return 100.0 * self.delta_usd / self.observed_cost
+
+    @property
+    def saving_usd(self) -> float:
+        return max(0.0, -self.delta_usd)
+
+    def recommendation(self, th: CompactionSimThresholds) -> str:
+        """Mirrors ``TtlTypeStats.recommendation``'s switch-gating
+        shape: a switch is only worth stating when it clears both
+        ``switch_pct`` and ``switch_usd``."""
+        if self.observed_cost <= 0:
+            return "no material difference"
+        pct_ok = self.best_cost < th.switch_pct * self.observed_cost
+        usd_ok = self.saving_usd > th.switch_usd
+        if self.best_window is None:
+            return "no material difference"
+        if pct_ok and usd_ok:
+            return f"switch to autoCompactWindow={self.best_window:,} (saves ${self.saving_usd:.2f})"
+        return "no material difference"
+
+
+@dataclass(slots=True)
+class CompactionSimFidelityRow:
+    """One top-level session's fidelity self-check: simulating at its
+    own snapshot's configured ``autoCompactWindow`` should reproduce its
+    true observed cost almost exactly."""
+
+    session_id: str = ""
+    window: int = 0
+    simulated_cost: float = 0.0
+    observed_cost: float = 0.0
+
+    @property
+    def fidelity_pct(self) -> float | None:
+        if self.observed_cost <= 0:
+            return None
+        return 100.0 * abs(self.simulated_cost - self.observed_cost) / self.observed_cost
+
+
+class CompactionSimStats:
+    """Accumulates :func:`_replay_transcript` results across many
+    transcripts, keyed by ``(agent-type key, candidate window)`` --
+    ``"top-level"`` for the main session, otherwise
+    ``TranscriptMeta.agent_type`` (``"unknown"`` fallback), same
+    convention as ``ttl.TtlStats``/``compaction.CompactionStats``.
+    """
+
+    def __init__(
+        self,
+        compression_ratio: float,
+        compression_ratio_is_default: bool,
+        rediscovery_allowance_usd: float,
+        rediscovery_allowance_is_default: bool,
+    ) -> None:
+        self.compression_ratio = compression_ratio
+        self.compression_ratio_is_default = compression_ratio_is_default
+        self.rediscovery_allowance_usd = rediscovery_allowance_usd
+        self.rediscovery_allowance_is_default = rediscovery_allowance_is_default
+        self._acc: dict[tuple[str, int | None], _WindowAccumulator] = {}
+        self._sessions_by_key: dict[str, int] = {}
+        self._fidelity_rows: list[CompactionSimFidelityRow] = []
+
+    def add_transcript(
+        self,
+        tr: TranscriptResult,
+        lookup: RatesLookup,
+        snapshot_window: int | None,
+        th: CompactionSimThresholds,
+    ) -> None:
+        priced_turns = _priced_turns(tr.turns)
+        if not priced_turns:
+            return
+        key = "top-level" if tr.meta.kind == "top-level" else (tr.meta.agent_type or "unknown")
+        real_after = _real_compaction_turn_indices(tr, priced_turns, th)
+        self._sessions_by_key[key] = self._sessions_by_key.get(key, 0) + 1
+
+        results_by_window: dict[int | None, _ReplayResult] = {}
+        for window in CANDIDATE_WINDOWS:
+            result = _replay_transcript(
+                priced_turns, lookup, window, self.compression_ratio, self.rediscovery_allowance_usd, real_after
+            )
+            results_by_window[window] = result
+            acc = self._acc.setdefault((key, window), _WindowAccumulator())
+            acc.compactions += result.compactions
+            acc.ctx_sum += result.ctx_sum
+            acc.ctx_turns += result.turns
+            acc.cost += result.cost
+
+        if tr.meta.kind == "top-level" and snapshot_window is not None:
+            observed_cost = results_by_window[None].cost
+            sim_result = results_by_window.get(snapshot_window)
+            if sim_result is None:
+                sim_result = _replay_transcript(
+                    priced_turns,
+                    lookup,
+                    snapshot_window,
+                    self.compression_ratio,
+                    self.rediscovery_allowance_usd,
+                    real_after,
+                )
+            self._fidelity_rows.append(
+                CompactionSimFidelityRow(
+                    session_id=tr.meta.session_id,
+                    window=snapshot_window,
+                    simulated_cost=sim_result.cost,
+                    observed_cost=observed_cost,
+                )
+            )
+
+    def by_window(self, key: str) -> list[CompactionSimWindowStats]:
+        """Every candidate window's roll-up for ``key`` (in
+        ``CANDIDATE_WINDOWS`` order), each carrying that key's observed
+        (``window=None``) cost for the delta columns."""
+        sessions = self._sessions_by_key.get(key, 0)
+        observed_acc = self._acc.get((key, None))
+        observed_cost = observed_acc.cost if observed_acc else 0.0
+        rows: list[CompactionSimWindowStats] = []
+        for window in CANDIDATE_WINDOWS:
+            acc = self._acc.get((key, window))
+            if acc is None:
+                continue
+            rows.append(
+                CompactionSimWindowStats(
+                    key=key,
+                    window=window,
+                    sessions=sessions,
+                    compactions=acc.compactions,
+                    ctx_sum=acc.ctx_sum,
+                    ctx_turns=acc.ctx_turns,
+                    cost=acc.cost,
+                    observed_cost=observed_cost,
+                )
+            )
+        return rows
+
+    def by_key(self) -> dict[str, CompactionSimTypeStats]:
+        """Every agent-type key's best candidate window (lowest cost;
+        ``None`` -- never auto-compact -- included as a candidate like
+        any other), keyed by ``key``."""
+        out: dict[str, CompactionSimTypeStats] = {}
+        for key in sorted(self._sessions_by_key):
+            sessions = self._sessions_by_key[key]
+            observed_acc = self._acc.get((key, None))
+            observed_cost = observed_acc.cost if observed_acc else 0.0
+            best_window: int | None = None
+            best_cost: float | None = None
+            for window in CANDIDATE_WINDOWS:
+                acc = self._acc.get((key, window))
+                if acc is None:
+                    continue
+                if best_cost is None or acc.cost < best_cost:
+                    best_cost = acc.cost
+                    best_window = window
+            out[key] = CompactionSimTypeStats(
+                key=key,
+                sessions=sessions,
+                observed_cost=observed_cost,
+                best_window=best_window,
+                best_cost=best_cost if best_cost is not None else observed_cost,
+            )
+        return out
+
+    @property
+    def fidelity_rows(self) -> list[CompactionSimFidelityRow]:
+        return list(self._fidelity_rows)
+
+    def keys(self) -> list[str]:
+        return sorted(self._sessions_by_key)
+
+
+def simulate_compaction_windows(
+    results: list[TranscriptResult],
+    rates: "RatesArg | RatesLookup",
+    snapshot_windows: dict[str, int | None],
+    thresholds: CompactionSimThresholds | None = None,
+) -> CompactionSimStats:
+    """Sweep :data:`CANDIDATE_WINDOWS` across every transcript in
+    ``results`` and return the accumulated :class:`CompactionSimStats`.
+
+    ``rates`` is either a single already-resolved rate or a per-model
+    lookup (``pricing.Pricing.resolve_model``) -- see :func:`_as_lookup`.
+    ``snapshot_windows`` maps a top-level session's ``session_id`` (the
+    same id a subagent transcript's own ``TranscriptMeta.session_id``
+    shares with its parent top-level session, per ``discovery.py``) to
+    that session's own configured ``autoCompactWindow``, or ``None`` when
+    unknown -- used only for the fidelity self-check, which is restricted
+    to top-level transcripts (see ``build_section``'s
+    ``compaction_sim_fidelity`` table).
+    """
+    th = thresholds or _DEFAULT_THRESHOLDS
+    lookup = _as_lookup(rates)
+    ratio, ratio_is_default = _corpus_compression_ratio(results, th)
+    allowance, allowance_is_default = _corpus_rediscovery_allowance(results, lookup, th)
+    stats = CompactionSimStats(ratio, ratio_is_default, allowance, allowance_is_default)
+    for tr in results:
+        snapshot_window = snapshot_windows.get(tr.meta.session_id)
+        stats.add_transcript(tr, lookup, snapshot_window, th)
+    return stats
+
+
+# -- report section -----------------------------------------------------
+
+
+def build_section(stats: CompactionSimStats, thresholds: CompactionSimThresholds | None = None) -> Section:
+    """Render a :class:`CompactionSimStats` roll-up as the report's
+    "Compaction-window sweep" section: ``compaction_sim_by_window``
+    (top-level sessions only), ``compaction_sim_by_agent_type`` (every
+    key's best window, top-level and subagent), and
+    ``compaction_sim_fidelity`` (top-level sessions with a known
+    configured window). Notes print :data:`ASSUMPTIONS` verbatim, the
+    compression ratio/rediscovery allowance actually used (flagging a
+    corpus default), ``thresholds.describe()``, and a fidelity warning
+    for any session above ``thresholds.fidelity_warn_pct``.
+    """
+    th = thresholds or _DEFAULT_THRESHOLDS
+
+    by_window_columns = [
+        Column(key="window", label="Candidate autoCompactWindow", kind="str"),
+        Column(key="compactions_per_session", label="Simulated compactions / session", kind="float"),
+        Column(key="mean_ctx", label="Mean ctx", kind="tokens"),
+        Column(key="cost", label="Total cost", kind="money"),
+        Column(key="delta_usd", label="Delta vs observed (USD, negative = cheaper)", kind="money"),
+        Column(key="delta_pct", label="Delta vs observed (%, negative = cheaper)", kind="pct"),
+    ]
+    window_rows = stats.by_window("top-level")
+    by_window_table = Table(
+        name="compaction_sim_by_window",
+        title="Compaction-window sweep: top-level sessions",
+        columns=by_window_columns,
+        rows=[
+            [
+                _window_label(r.window),
+                r.compactions_per_session,
+                r.mean_ctx,
+                r.cost,
+                r.delta_usd,
+                r.delta_pct,
+            ]
+            for r in window_rows
+        ],
+        notes=(
+            ["No top-level transcripts with priced turns in this corpus."]
+            if not window_rows
+            else []
+        ),
+    )
+
+    by_type_columns = [
+        Column(key="agent_type", label="Agent type", kind="str"),
+        Column(key="sessions", label="Sessions", kind="int"),
+        Column(key="observed_cost", label="Observed cost", kind="money"),
+        Column(key="best_window", label="Best window", kind="str"),
+        Column(key="best_cost", label="Best cost", kind="money"),
+        Column(key="saving_usd", label="Saving if switched (USD, 0 floor)", kind="money"),
+        Column(key="delta_pct", label="Delta at best window (%, negative = cheaper)", kind="pct"),
+        Column(key="recommendation", label="Recommendation", kind="str"),
+    ]
+    by_key = stats.by_key()
+    by_type_table = Table(
+        name="compaction_sim_by_agent_type",
+        title="Compaction-window sweep: best window by agent type",
+        columns=by_type_columns,
+        rows=[
+            [
+                key,
+                row.sessions,
+                row.observed_cost,
+                _window_label(row.best_window),
+                row.best_cost,
+                row.saving_usd,
+                row.delta_pct,
+                row.recommendation(th),
+            ]
+            for key, row in sorted(by_key.items())
+        ],
+        notes=(["No transcripts with priced turns in this corpus."] if not by_key else []),
+    )
+
+    fidelity_columns = [
+        Column(key="session", label="Session", kind="str"),
+        Column(key="configured_window", label="Configured autoCompactWindow", kind="tokens"),
+        Column(key="simulated_cost", label="Simulated cost", kind="money"),
+        Column(key="observed_cost", label="Observed cost", kind="money"),
+        Column(key="fidelity_pct", label="Fidelity", kind="pct"),
+    ]
+    fidelity_rows = stats.fidelity_rows
+    fidelity_table = Table(
+        name="compaction_sim_fidelity",
+        title="Compaction-window sweep: fidelity self-check",
+        columns=fidelity_columns,
+        rows=[
+            [row.session_id, row.window, row.simulated_cost, row.observed_cost, row.fidelity_pct]
+            for row in fidelity_rows
+        ],
+        notes=(
+            ["No top-level session with a known configured autoCompactWindow in this corpus."]
+            if not fidelity_rows
+            else []
+        ),
+    )
+
+    notes: list[str] = list(ASSUMPTIONS)
+    ratio_note = f"Compression ratio used: {stats.compression_ratio:.3f}"
+    if stats.compression_ratio_is_default:
+        ratio_note += " (this corpus's own default -- no real compact_boundary event found)."
+    else:
+        ratio_note += " (this corpus's own median post_tokens/pre_tokens across real compact_boundary events)."
+    notes.append(ratio_note)
+    allowance_note = f"Rediscovery allowance used: ${stats.rediscovery_allowance_usd:.4f}"
+    if stats.rediscovery_allowance_is_default:
+        allowance_note += " (this corpus's own default -- no real post-compaction re-cache turn found)."
+    else:
+        allowance_note += " (this corpus's own median post-compaction re-cache write cost)."
+    notes.append(allowance_note)
+    notes.extend(th.describe())
+
+    flagged = [row for row in fidelity_rows if (row.fidelity_pct or 0.0) > th.fidelity_warn_pct]
+    for row in sorted(flagged, key=lambda r: r.session_id):
+        notes.append(
+            f"Fidelity warning: session {row.session_id} simulated at its own configured "
+            f"autoCompactWindow={row.window:,} differs from its observed cost by "
+            f"{row.fidelity_pct:.1f}% (> {th.fidelity_warn_pct:.1f}%)."
+        )
+
+    return Section(
+        key="compaction_sim",
+        title="Compaction-window sweep",
+        tables=[by_window_table, by_type_table, fidelity_table],
+        notes=notes,
+    )
+
+
+# -- recommendation rule --------------------------------------------------
+
+
+def _cell(report: ReportModel, section_key: str, table_name: str, row_key: str, column_key: str):
+    """Same lookup contract as ``recommend._cell``: the value at
+    ``row_key``/``column_key`` in ``section_key``.``table_name``, or
+    ``None`` when any of those don't exist -- kept local to this module
+    since ``recommend.py``'s own helper is private."""
+    for section in report.sections:
+        if section.key != section_key:
+            continue
+        for table in section.tables:
+            if table.name != table_name:
+                continue
+            col_index = None
+            for i, col in enumerate(table.columns):
+                if col.key == column_key:
+                    col_index = i
+                    break
+            if col_index is None:
+                return None
+            for row in table.rows:
+                if row and row[0] == row_key:
+                    return row[col_index]
+    return None
+
+
+def _evidence(label: str, value, section_key: str, table_name: str, row_key) -> tuple:
+    """One ``Recommendation.evidence`` tuple -- same contract as
+    ``recommend._evidence`` (``source_table`` is
+    ``"<section_key>.<table_name>"``)."""
+    return (label, value, f"{section_key}.{table_name}", row_key)
+
+
+def _scope_and_lever_note(snapshot: Snapshot | None) -> tuple[str, str]:
+    """``(scope, file_note)`` for the ``autoCompactWindow`` lever, read
+    from ``snapshots.effective_provenance`` -- deliberately more precise
+    than ``recommend._lever_scope``'s generic repo/user/managed 3-way
+    (which only ever distinguishes per-agent frontmatter from a plain
+    settings key, so a plain settings key always reads "user" there).
+    Since ``autoCompactWindow`` is always a plain settings key, this
+    module instead reads which of the four real settings layers
+    (``snapshots.SETTINGS_LAYER_NAMES``) actually set the effective
+    value, and reports "user" or "project" per the brief's convention
+    (with "managed" doing what it always does everywhere else: named,
+    not offered as user-actionable)."""
+    if snapshot is None:
+        return "user", "~/.claude/settings.json"
+    keys = set(managed_keys(snapshot))
+    if "autoCompactWindow" in keys:
+        return "managed", "the org's managed-settings.json (raise with your administrator)"
+    layer = effective_provenance(snapshot).get("autoCompactWindow")
+    if layer == "project_shared":
+        return "project", "<project>/.claude/settings.json"
+    if layer == "project_local":
+        return "project", "<project>/.claude/settings.local.json"
+    return "user", "~/.claude/settings.json"
+
+
+def _rule_compaction_window(
+    report: ReportModel, thresholds: CompactionSimThresholds, snapshot: Snapshot | None
+) -> list[Recommendation]:
+    """"compaction-window": recommends the cheapest candidate
+    ``autoCompactWindow`` for the top-level session when it saves more
+    than ``thresholds.switch_pct``/``switch_usd`` over the observed
+    cost -- same evidence-tuple contract as every other rule in
+    ``recommend.py`` (see that module's docstring), reading its evidence
+    back out of this module's own ``compaction_sim_by_agent_type`` table
+    (so a caller must have already added :func:`build_section`'s output
+    to ``report.sections`` -- see this module's docstring's wiring
+    instructions)."""
+    row_key = "top-level"
+    observed_cost = _cell(report, "compaction_sim", "compaction_sim_by_agent_type", row_key, "observed_cost")
+    best_window_label = _cell(report, "compaction_sim", "compaction_sim_by_agent_type", row_key, "best_window")
+    best_cost = _cell(report, "compaction_sim", "compaction_sim_by_agent_type", row_key, "best_cost")
+    saving_usd = _cell(report, "compaction_sim", "compaction_sim_by_agent_type", row_key, "saving_usd")
+    if observed_cost is None or best_cost is None or saving_usd is None or best_window_label is None:
+        return []
+    if best_window_label == "none" or not observed_cost:
+        return []
+    pct_ok = best_cost < thresholds.switch_pct * observed_cost
+    usd_ok = saving_usd > thresholds.switch_usd
+    if not (pct_ok and usd_ok):
+        return []
+
+    scope, file_note = _scope_and_lever_note(snapshot)
+    action = (
+        f"Set autoCompactWindow to {best_window_label} in {file_note}. "
+        f"Projected saving: ${saving_usd:.2f} vs the observed cost of ${observed_cost:.2f}."
+    )
+    if scope == "managed":
+        action += " This key is managed by policy -- raise with your administrator."
+
+    evidence = [
+        _evidence("Observed cost (top-level)", observed_cost, "compaction_sim", "compaction_sim_by_agent_type", row_key),
+        _evidence("Best candidate window", best_window_label, "compaction_sim", "compaction_sim_by_agent_type", row_key),
+        _evidence("Best candidate cost", best_cost, "compaction_sim", "compaction_sim_by_agent_type", row_key),
+        _evidence("Projected saving", saving_usd, "compaction_sim", "compaction_sim_by_agent_type", row_key),
+    ]
+
+    return [
+        Recommendation(
+            id="compaction-window",
+            severity="advice",
+            category="settings",
+            archetypes=(),
+            title=f"Set autoCompactWindow to {best_window_label}",
+            action=action,
+            lever="autoCompactWindow",
+            evidence=evidence,
+            scope=scope,
+            agent_type="top-level",
+        )
+    ]
+
+
+#: Every recommendation-rule function this module exports, in the same
+#: shape ``recommend.py`` would register them (one rule id per entry) --
+#: see the module docstring's wiring instructions for how the
+#: integration agent calls this from ``recommend.recommend()``.
+RULES: list[Callable[[ReportModel, CompactionSimThresholds, Snapshot | None], list[Recommendation]]] = [
+    _rule_compaction_window
+]
+
+
+__all__ = [
+    "ASSUMPTIONS",
+    "CANDIDATE_WINDOWS",
+    "CompactionSimThresholds",
+    "CompactionSimWindowStats",
+    "CompactionSimTypeStats",
+    "CompactionSimFidelityRow",
+    "CompactionSimStats",
+    "simulate_compaction_windows",
+    "build_section",
+    "RULES",
+]
