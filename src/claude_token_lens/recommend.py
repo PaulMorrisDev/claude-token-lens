@@ -575,13 +575,18 @@ def _rule_subagent_volume(report: ReportModel, th: RecommendThresholds, archetyp
                 archetypes=_ALL_ARCHETYPES,
                 title=f"{agent_type} dominates subagent cost",
                 action=(
-                    f"Review why {agent_type} accounts for most of the corpus's subagent "
-                    "spend -- fewer spawns, a cheaper model, or a tighter brief before "
-                    "spawning it."
+                    f"Review why {agent_type} accounts for {share_pct:.1f}% of the corpus's "
+                    "subagent spend -- fewer spawns, a cheaper model, or a tighter brief "
+                    "before spawning it."
                 ),
                 lever=None,
                 evidence=[
-                    _evidence("Share of corpus cost", share_pct, "ttl", "ttl_by_agent_type", agent_type),
+                    # Fix R11: cite the real cost_observed cell -- there is
+                    # no "share of corpus cost" column on ttl_by_agent_type
+                    # to cite. share_pct is derived from this cell (plus the
+                    # table's other rows) and stated in the action text
+                    # instead, per the evidence contract (module docstring).
+                    _evidence("Cost (observed)", cost, "ttl", "ttl_by_agent_type", agent_type),
                 ],
             )
         )

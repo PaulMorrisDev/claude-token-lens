@@ -282,9 +282,14 @@ def test_subagent_volume_fires_above_threshold():
     )
     recs = recommend_fn(r, config=_config(), archetype=None)
     rec = next(rec for rec in recs if rec.id == "subagent-volume")
+    # R11: the cited evidence is the real cost_observed cell (60.0 is
+    # claude-implementer's own cost_observed value in the fixture below,
+    # not a derived share) -- the computed 60% share lives in the
+    # action text instead.
     assert rec.evidence == [
-        ("Share of corpus cost", 60.0, "ttl.ttl_by_agent_type", "claude-implementer"),
+        ("Cost (observed)", 60.0, "ttl.ttl_by_agent_type", "claude-implementer"),
     ]
+    assert "60.0%" in rec.action
 
 
 def test_subagent_volume_does_not_fire_below_threshold():
