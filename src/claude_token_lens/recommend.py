@@ -434,6 +434,15 @@ def _rule_ttl_switch(
     out: list[Recommendation] = []
     for row in table.rows:
         agent_type = row[0]
+        # Fix R10: this rule's own module docstring (see
+        # _NO_SUBAGENT_ARCHETYPES above) already claims per-agent-type
+        # TTL advice is suppressed for archetypes that never spawn
+        # subagents -- but this function accepted `archetype` and never
+        # once read it. Honour that claim for non-top-level rows (the
+        # top-level row is the session's own TTL, which chat-only
+        # sessions still have and can still act on).
+        if agent_type != "top-level" and archetype in _NO_SUBAGENT_ARCHETYPES:
+            continue
         recommendation_text = row[rec_idx]
         if not isinstance(recommendation_text, str) or not recommendation_text.startswith("switch to "):
             continue

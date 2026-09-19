@@ -184,6 +184,32 @@ def test_ttl_switch_does_not_fire_for_no_material_difference():
     assert not any(rec.id == "ttl-switch" for rec in recs)
 
 
+def test_ttl_switch_suppressed_for_non_top_level_row_when_chat_only():
+    # Fix R10: chat-only never spawns subagents, so per-agent-type TTL
+    # advice for anything other than the session's own top-level row
+    # should not fire -- the top-level row itself still can.
+    r = _base_report()
+    r = _add_section(
+        r,
+        Section(
+            key="ttl",
+            title="TTL",
+            tables=[
+                _ttl_by_agent_type_table(
+                    [
+                        ["top-level", 10.0, 0.0, "switch to 1h", "promptCacheTtl"],
+                        ["claude-planner", 5.0, 0.0, "switch to 1h", "experimental.cacheTtl in claude-planner.md (or subagentPromptCacheTtl for all subagents)"],
+                    ]
+                )
+            ],
+        ),
+    )
+    recs = recommend_fn(r, config=_config(), archetype="chat-only")
+    ttl_recs = [rec for rec in recs if rec.id == "ttl-switch"]
+    assert len(ttl_recs) == 1
+    assert ttl_recs[0].title == "Cache TTL is a poor fit for top-level"
+
+
 def test_ttl_switch_suppressed_for_non_anthropic_provider():
     r = _base_report()
     r = _add_section(
