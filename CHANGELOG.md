@@ -145,6 +145,59 @@ one-commit-per-fix / green-tests discipline:
   `is_recache_turn()` heuristic, so compaction's RE-CACHE-flagged
   write-cost figures use the same signature logic as every other module.
 
+Further independent review (findings R4/R5/R7/R8/R15/R19/R23), each fixed
+and landed as its own commit:
+
+- **R4** — `parse.py`'s `_redact_paths` now also redacts relative
+  Windows paths (no drive letter) and `<user@host>`-shaped `@`-tokens,
+  not just absolute `C:\Users\<name>\...` paths.
+- **R5** — `report.py`'s `--group-by agent`/`model`/`entrypoint` re-fold
+  now keys `RecacheStats` by transcript instead of by session, so a
+  subagent transcript is grouped under its own agent/model/entrypoint
+  rather than inheriting its parent session's.
+- **R7** — `report.py`'s scorecard context-hygiene stats
+  (`median_ctx`/`median_top_level_ctx`) are now computed from top-level
+  transcripts only, not every transcript (subagent ctx values, which run
+  much larger, were skewing them).
+- **R8** — `compaction.py`'s `compactions_per_session_mean` now divides
+  by every session, not just the sessions that compacted; the old value
+  is kept as `compactions_per_compacting_session_mean`.
+- **R15** — `usage.py`'s five-hour usage blocks now assign each priced
+  turn to the block containing that turn's own local timestamp, instead
+  of stamping a whole session's turns onto the block its first turn
+  landed in (a session spanning several blocks, e.g. 12+ hours, now
+  splits across all of them).
+- **R19** — stale "WP10 will..." notes in `compaction.py` and
+  `topology.py` rewritten to describe current behaviour: the RE-CACHE
+  join to the shared `recache.py` detector already landed (WP10b); the
+  topology spawn-write/session-baseline tables were never joined against
+  a session's snapshot MCP/plugin counts and no such join is planned.
+- **R23** — `usage.py` now skips bundles with no top-level transcript
+  (an orphaned subagent whose parent session was never discovered) the
+  same way `report.py`'s `build_report` always has, so the two sections'
+  session/turn counts no longer disagree on a corpus containing one.
+
+Also landed alongside the above, same discipline:
+
+- `report.py` — the "min sample" values printed alongside recommendation
+  thresholds are now the ones `recommend()` actually applies
+  (`RecommendThresholds`'s own `min_sessions`/`min_turns`, which can be
+  overridden independently of `Config.min_sessions`/`min_turns`), not
+  `config.min_sessions`/`min_turns` directly.
+- `report.py` — the overview `totals` table gained two rows,
+  `top_level_median_ctx` and `top_level_turns_ctx_ge_200k_pct`, computed
+  from the same top-level-only record set as the R7 fix, giving the
+  "long-context share of recent top-level turns" plan anchor a
+  turn-count-basis, top-level-only figure to check against.
+
+**Note for a follow-up release-prep pass:** `parse.py`'s redaction
+behaviour changed under R4 above in a way that changes parsed output for
+previously-cached transcripts (a path that previously leaked through
+`_redact_paths` is now redacted) — `PARSER_VERSION` in `__init__.py`
+(currently `2`) should be bumped to invalidate stale cache entries, per
+that constant's own doc comment. Not done here: `__init__.py` is outside
+this change's file scope.
+
 ### Documentation
 
 - README rewritten against the code as it actually stands today (WP12b):
