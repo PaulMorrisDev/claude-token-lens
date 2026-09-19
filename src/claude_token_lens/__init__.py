@@ -15,7 +15,14 @@ __version__ = "0.1.0"
 #: both landed on main after wp11-cache branched from 25c68c1 (before
 #: PARSER_VERSION existed), so a cache entry written under the old
 #: parsing behaviour must not be treated as still valid.
-PARSER_VERSION = 2
+#:
+#: Bumped to 3 by f99901f (fix(privacy): redact relative Windows paths
+#: and @-tokens at parse time): ``_redact_paths`` in parse.py now catches
+#: relative ``Users\``/``home/`` paths and any ``@``-bearing token that
+#: previously survived redaction into ``cmd_prefix``, so a digest cached
+#: from before that fix reflects a leakier ``cmd_prefix`` and must be
+#: treated as stale.
+PARSER_VERSION = 3
 
 #: Bump when the model.py contract changes in a way that invalidates the
 #: on-disk digest cache (see model.py's module docstring for the contract
