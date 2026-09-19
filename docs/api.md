@@ -201,6 +201,28 @@ Corpus-wide RE-CACHE breakdown — `Store.recache`.
 
 `data`: `{"by_signature": {"full-expiry": {"turns", "cache_creation_tokens"}, "prefix-invalidated": {...}}}`.
 
+### Report-backed routes: windowing query params
+
+`/api/ttl`, `/api/config-diff`, `/api/recommendations` and
+`/api/report.md`/`.html`/`.json` (below) all accept the same windowing
+query params, mirroring the CLI `report` subcommand's own
+`--days`/`--since`/`--until` (`discovery._resolve_window`'s exact
+resolution):
+
+- **`window_days`** (int, optional) — same as before; defaults to 30
+  when neither `since` nor `until` is given.
+- **`since`** / **`until`** (ISO 8601, optional) — when either is
+  present, `window_days` is *not* defaulted to 30 (matching the CLI's
+  own `--days`/`--since` mutually-exclusive argparse group), so a
+  `since`/`until` request windows the report exactly the way
+  `report --since ... --until ...` does rather than being silently
+  additionally clamped to the last 30 days. A malformed `since`/`until`
+  is a `400 bad_request`. `report.meta.window` in the response is
+  rendered identically to the CLI's own `_window_description` (`"since
+  <since> until <until>"`, `"since the beginning until <until>"`, etc.)
+  so the two are byte-equivalent for the same window, not just
+  numerically equal.
+
 ### `GET /api/ttl`
 
 TTL simulation summary (per agent type: observed vs. simulated 5m/1h
@@ -208,6 +230,9 @@ cost, fidelity, recommendation) — same shape as the CLI's `ttl` section
 tables (`render/json_out.py`'s `Section`/`Table` encoding), sourced by
 re-running `ttl.py`'s simulation over the store's `turns_agg`/
 `recache_turns` rows rather than a fresh parse.
+
+Query: `window_days`, or `since`/`until` (see "Report-backed routes:
+windowing query params" above).
 
 ### `GET /api/compactions`
 
@@ -222,7 +247,9 @@ layers" section: `config_groups`/`config_drift`), computed from the
 latest `snapshots` row per project.
 
 Query: `key` (a specific settings key) or `auto_keys=1` (every managed
-key). Mirrors the CLI's `config-diff` subcommand.
+key), plus `window_days`/`since`/`until` (see "Report-backed routes:
+windowing query params" above). Mirrors the CLI's `config-diff`
+subcommand.
 
 A snapshot taken outside any recognised project (no project slug on
 disk to attribute it to) is still captured — never dropped — under the
@@ -237,6 +264,9 @@ as a user-level configuration layer, not a project's, matching
 The same `Recommendation` list `recommend.recommend()` produces for the
 CLI's `report`, computed from the store's latest snapshot and session
 window rather than a fresh corpus scan.
+
+Query: `window_days`, or `since`/`until` (see "Report-backed routes:
+windowing query params" above).
 
 `data`: `[{"id", "severity", "category", "title", "action", "lever", "scope", "evidence": [[label, value, source_table, row_key], ...]}, ...]` —
 exactly `render/json_out.py`'s existing `Recommendation` encoding.
@@ -270,6 +300,11 @@ Tests bullet requires (`tests/test_service_api.py`, built alongside
 `api.py`). `report.md`/`report.html` set `Content-Type: text/markdown`/
 `text/html` instead of the envelope shape above (the raw rendered
 document, matching the CLI's own stdout for `--html`).
+
+Query: `window_days`, or `since`/`until` (see "Report-backed routes:
+windowing query params" above) — this is what makes `/api/report.json?
+since=...&until=...` byte-equivalent to `report --since ... --until
+...`, not just to `report --days N`.
 
 ## Mutating routes
 
@@ -318,13 +353,16 @@ of this frozen contract who needs to know how the report-backed routes
 implementation had to make a call this document didn't spell out.
 
 **Rebuild, not re-parse.** Every report-backed route rebuilds a
-`Corpus` via `service.rebuild.corpus_from_store(store, days=window_days)`
-(S1-watcher's module — see `service/__init__.py`) and runs it through
-the same `report.build_report()` → `recommend.recommend()` →
+`Corpus` via `service.rebuild.corpus_from_store(store, days=window_days,
+since=since, until=until)` (S1-watcher's module — see
+`service/__init__.py`) and runs it through the same
+`report.build_report()` → `recommend.recommend()` →
 `render/{json_out,markdown,html}.py` pipeline the CLI's own `report`
 subcommand uses. `/api/ttl`, `/api/config-diff` and
 `/api/recommendations` all build the *same* full report for the
-requested `window_days` and read one section/field back out of it
+requested window (`window_days`, or `since`/`until` — see "Report-backed
+routes: windowing query params" above) and read one section/field back
+out of it
 (`/api/ttl` returns the assembled report's `"ttl"` `Section`;
 `/api/config-diff` returns its `"config"` section's
 `config-diff-<key>` table(s) — `report.py`'s own
@@ -340,8 +378,8 @@ an error.
 **Memoization key: `Store.change_token()`.** Rebuilding a full report on
 every request would make every tab switch in the UI (`docs/ui.md`)
 re-parse the whole corpus. The implementation caches the assembled
-`ReportModel` in-process, keyed by `(window_days, change_token)`, where
-`change_token` is `Store.change_token()` (S1-integration fix 1.f) — a
+`ReportModel` in-process, keyed by `(window_days, since, until,
+change_token)`, where `change_token` is `Store.change_token()` (S1-integration fix 1.f) — a
 single string combining `(COUNT(*), MAX(updated_at))` over `transcripts`
 and `(COUNT(*), MAX(ts))` over `snapshots`. A cache hit only requires
 this token to be unchanged since the entry was built; any transcript or
@@ -353,9 +391,9 @@ body on `200` is the renderer's own native output (`render_json`/
 envelope — this is what makes `/api/report.json` byte-equivalent to
 `claude-token-lens report --json` for the same window, and matches this
 document's own "the raw rendered document" language for `.md`/`.html`.
-A request error on one of these three routes (a bad `window_days`, or
-an unexpected exception) still falls back to the normal JSON error
-envelope; only the success path is raw.
+A request error on one of these three routes (a bad `window_days`,
+`since` or `until`, or an unexpected exception) still falls back to the
+normal JSON error envelope; only the success path is raw.
 
 **`GET /api/session/<id>` returns a superset of the listed fields.**
 `Store.session()`'s dict includes `mode_source`/`purpose_source`
@@ -372,6 +410,26 @@ object checks) runs before the response, but both always return `501`
 validator both routes need) does not exist yet at S1-api's own
 delivery time. Swapping the final `_not_implemented(...)` for the real
 read/write is the only change needed once that module lands.
+
+**`report.meta.projects` can differ from the CLI's for the identical
+window (release-verification finding, accepted, not a bug to fix
+here).** The CLI's `--all-projects` passes `build_report` every project
+*directory it resolved on disk* (`discovery`'s own directory scan,
+filtered by `--project-family`/`exclude_projects` but never by whether
+that project has any sessions at all), while a report-backed route
+derives `projects` from `{bundle.slug for bundle in corpus.sessions if
+bundle.slug}` — only projects the store actually has session rows for.
+A project directory that exists under `--projects-root` but has never
+had a single parseable transcript in it (an empty/leftover directory —
+confirmed against a real corpus during v0.2 release verification, e.g.
+a stray directory containing no `.jsonl` files at all) shows up in the
+CLI's `meta.projects` and never in the API's, for *any* window,
+independent of `since`/`until`/`window_days`. Matching this exactly
+would mean a report-backed route reading live directory names from
+`options.projects_root` — a live-filesystem dependency the whole
+store-rebuild design (`service/rebuild.py`'s module docstring) exists
+to avoid, for one purely cosmetic field. Left as-is rather than
+special-cased.
 
 **Static file serving.** `/` and `/static/*` serve
 `service/static/index.html`/assets (the UI package's build output,

@@ -539,6 +539,24 @@ def test_recommendations_route(server):
     assert_privacy(body)
 
 
+def test_ttl_and_recommendations_accept_since_until(server):
+    # Shares _window_query with /api/report.json (already tested for
+    # forwarding/cache-key behaviour above) -- confirm the other
+    # report-backed routes also accept since/until rather than rejecting
+    # them as unknown query params.
+    resp, body = server.get_json("/api/ttl?since=2026-08-01T00:00:00%2B00:00&until=2026-08-31T00:00:00%2B00:00")
+    assert resp.status == 200
+    assert body["ok"] is True
+
+    resp, body = server.get_json("/api/recommendations?since=2026-08-01T00:00:00%2B00:00")
+    assert resp.status == 200
+    assert isinstance(body["data"], list)
+
+    resp, body = server.get_json("/api/ttl?since=not-a-date")
+    assert resp.status == 400
+    assert body["error"]["code"] == "bad_request"
+
+
 def test_config_diff_requires_key_or_auto_keys(server):
     resp, body = server.get_json("/api/config-diff")
     assert resp.status == 400
@@ -659,6 +677,79 @@ def test_report_routes_reject_bad_window_days(server):
     resp, body = server.get_json("/api/report.json?window_days=nope")
     assert resp.status == 400
     assert body["error"]["code"] == "bad_request"
+
+
+def test_report_routes_reject_bad_since_and_until(server):
+    resp, body = server.get_json("/api/report.json?since=not-a-date")
+    assert resp.status == 400
+    assert body["error"]["code"] == "bad_request"
+
+    resp, body = server.get_json("/api/report.json?until=also-not-a-date")
+    assert resp.status == 400
+    assert body["error"]["code"] == "bad_request"
+
+
+def test_report_json_forwards_since_until_to_rebuild_and_ignores_default_window(server, monkeypatch):
+    """Release-verification finding: the report-backed routes only ever
+    accepted ``window_days`` and silently ignored ``since``/``until``,
+    so ``/api/report.json?since=...&until=...`` was byte-identical to a
+    plain ``/api/report.json`` (always the last-30-days window) instead
+    of the CLI's ``report --since ... --until ...`` for the same span --
+    breaking the parity ``docs/api.md`` promises. Confirms ``since``/
+    ``until`` reach ``corpus_from_store`` and that ``window_days`` is
+    *not* defaulted to 30 alongside them (mirrors the CLI's own
+    ``--days``/``--since`` mutually-exclusive argparse group).
+    """
+    calls = []
+    real_corpus = server.corpus
+
+    def recording_corpus_from_store(store, *, days=None, since=None, until=None, window_by="mtime"):
+        calls.append({"days": days, "since": since, "until": until, "window_by": window_by})
+        return real_corpus
+
+    import claude_token_lens.service as service_pkg
+
+    fake = types.ModuleType("claude_token_lens.service.rebuild")
+    fake.corpus_from_store = recording_corpus_from_store
+    monkeypatch.setitem(sys.modules, "claude_token_lens.service.rebuild", fake)
+    monkeypatch.setattr(service_pkg, "rebuild", fake, raising=False)
+
+    resp, raw = server.request(
+        "GET", "/api/report.json?since=2026-08-01T00:00:00%2B00:00&until=2026-08-31T00:00:00%2B00:00"
+    )
+    assert resp.status == 200
+    assert calls == [
+        {
+            "days": None,
+            "since": "2026-08-01T00:00:00+00:00",
+            "until": "2026-08-31T00:00:00+00:00",
+            "window_by": "mtime",
+        }
+    ]
+    body = json.loads(raw)
+    assert body["report"]["meta"]["window"] == "since 2026-08-01T00:00:00+00:00 until 2026-08-31T00:00:00+00:00"
+
+
+def test_report_json_since_until_is_a_separate_cache_key_from_window_days(server, monkeypatch):
+    calls = {"n": 0}
+    real_corpus = server.corpus
+
+    def counting_corpus_from_store(store, *, days=None, since=None, until=None, window_by="mtime"):
+        calls["n"] += 1
+        return real_corpus
+
+    import claude_token_lens.service as service_pkg
+
+    fake = types.ModuleType("claude_token_lens.service.rebuild")
+    fake.corpus_from_store = counting_corpus_from_store
+    monkeypatch.setitem(sys.modules, "claude_token_lens.service.rebuild", fake)
+    monkeypatch.setattr(service_pkg, "rebuild", fake, raising=False)
+
+    resp1, _ = server.request("GET", "/api/report.json")  # default window_days=30
+    resp2, _ = server.request("GET", "/api/report.json?since=2026-08-01T00:00:00%2B00:00")
+    resp3, _ = server.request("GET", "/api/report.json?since=2026-08-01T00:00:00%2B00:00")  # cache hit
+    assert resp1.status == resp2.status == resp3.status == 200
+    assert calls["n"] == 2
 
 
 def test_report_json_is_memoized_per_window(server, monkeypatch):

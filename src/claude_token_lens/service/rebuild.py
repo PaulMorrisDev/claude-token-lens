@@ -38,6 +38,17 @@ What else does NOT round-trip, and why:
   ``report.build_report``'s own code path reads it (grepped: only
   ``corpus.py`` itself references ``.project_dir``), so this is a
   no-op loss, not a reportable one.
+- **A project directory with zero stored sessions.** ``corpus_from_store``
+  has no way to know a project directory exists at all unless the store
+  has at least one session row for it -- an empty (or transcript-less)
+  project directory under ``--projects-root`` that a fresh
+  ``discovery``-based scan would still list is simply absent from a
+  rebuilt ``Corpus``, and therefore from a report-backed route's
+  ``report.meta.projects`` (``docs/api.md``'s "Report routes: how they
+  are computed" section documents this from the API side). Confirmed
+  against a real corpus during v0.2 release verification -- not fixed,
+  since the only way to close it is a live directory read the whole
+  point of this module is to avoid.
 - Everything else on ``TranscriptResult``/``TranscriptMeta`` (including
   the three provenance fields ``schema.py`` singles out as
   store-internal-only — ``path``, seen here only for grouping rows by

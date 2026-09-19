@@ -83,6 +83,7 @@ import mimetypes
 import re
 import threading
 import urllib.parse
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
@@ -172,6 +173,64 @@ def _int_query(
     return value, None
 
 
+def _str_query(query: dict[str, str], key: str) -> str | None:
+    """``query[key]`` as a string, or ``None`` when absent/empty -- the
+    same "empty string means unset" convention ``_int_query`` uses.
+    """
+    raw = query.get(key)
+    return raw if raw else None
+
+
+def _parse_iso8601(value: str) -> bool:
+    try:
+        datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return True
+
+
+def _window_query(
+    query: dict[str, str],
+) -> tuple[tuple[int | None, str | None, str | None], tuple[int, dict] | None]:
+    """Parse the report-backed routes' windowing query params: either
+    ``since``/``until`` (ISO 8601, matching the CLI's own ``report
+    --since``/``--until``, ``discovery._resolve_window``'s resolution)
+    or ``window_days`` -- never both defaulted at once, mirroring the
+    CLI's ``--days``/``--since`` mutually-exclusive argparse group so a
+    ``since``/``until`` request isn't silently also clamped to the
+    routes' usual 30-day default (docs/api.md's "byte-equivalent to the
+    CLI" parity requirement for ``/api/report.*``).
+
+    Returns ``((window_days, since, until), None)`` on success, or
+    ``(None, error)`` -- an already-built ``400 bad_request`` response.
+    """
+    since = _str_query(query, "since")
+    until = _str_query(query, "until")
+    for label, value in (("since", since), ("until", until)):
+        if value is not None and not _parse_iso8601(value):
+            return None, _bad_request(f"{label!r} must be an ISO 8601 timestamp")
+    has_since_until = since is not None or until is not None
+    default_days = None if has_since_until else _DEFAULT_WINDOW_DAYS
+    window_days, err = _int_query(query, "window_days", default_days, minimum=1)
+    if err is not None:
+        return None, err
+    return (window_days, since, until), None
+
+
+def _window_label(window_days: int | None, since: str | None, until: str | None) -> str:
+    """Matches ``cli.py``'s own ``_window_description`` exactly, so
+    ``report.meta.window`` in an API-served report is byte-identical to
+    the CLI's for the same window (see this module's docstring).
+    """
+    if since or until:
+        start = f"since {since}" if since else "since the beginning"
+        end = f"until {until}" if until else "until now"
+        return f"{start} {end}"
+    if window_days:
+        return f"last {window_days} days"
+    return "all time"
+
+
 def _find_section(model, key: str):
     for section in model.sections:
         if section.key == key:
@@ -243,7 +302,7 @@ def make_handler(
         out.sort(key=lambda s: s.ts)
         return out
 
-    def _build_report_model(window_days: int | None):
+    def _build_report_model(window_days: int | None, since: str | None = None, until: str | None = None):
         # Local import: service.rebuild is a sibling work package's
         # module (S1-watcher), not yet present in every checkout this
         # module is imported from -- see this module's docstring.
@@ -251,10 +310,10 @@ def make_handler(
 
         config = load_config(options.config_dir)
         rates = load_pricing(path=config.pricing_path, config_dir=options.config_dir)
-        corpus = rebuild.corpus_from_store(store, days=window_days)
+        corpus = rebuild.corpus_from_store(store, days=window_days, since=since, until=until)
         snaps = _snapshots_from_store()
         projects = tuple(sorted({bundle.slug for bundle in corpus.sessions if bundle.slug}))
-        window = f"last {window_days} days" if window_days else "all time"
+        window = _window_label(window_days, since, until)
         try:
             overrides = load_session_overrides(options.config_dir)
         except ConfigError:
@@ -282,19 +341,24 @@ def make_handler(
             session_overrides=overrides,
         )
 
-    def _get_report_model(window_days: int | None):
+    def _get_report_model(window_days: int | None, since: str | None = None, until: str | None = None):
+        # Cache key widened from a bare window_days to the full
+        # (window_days, since, until) triple so a since/until request
+        # never collides with (or is served from) a plain window_days
+        # entry for the same store change_token.
+        cache_key = (window_days, since, until)
         token = store.change_token()
         with report_lock:
             if report_cache["token"] != token:
                 report_cache["token"] = token
                 report_cache["models"] = {}
-            cached = report_cache["models"].get(window_days)
+            cached = report_cache["models"].get(cache_key)
         if cached is not None:
             return cached
-        model = _build_report_model(window_days)
+        model = _build_report_model(window_days, since, until)
         with report_lock:
             if report_cache["token"] == token:
-                report_cache["models"][window_days] = model
+                report_cache["models"][cache_key] = model
         return model
 
     # -- store-backed routes ---------------------------------------------
@@ -406,22 +470,22 @@ def make_handler(
     # -- report-backed routes ---------------------------------------------
 
     def route_ttl(store, query, body):
-        window_days, err = _int_query(query, "window_days", _DEFAULT_WINDOW_DAYS, minimum=1)
+        window, err = _window_query(query)
         if err is not None:
             return err
-        model = _get_report_model(window_days)
+        model = _get_report_model(*window)
         section = _find_section(model, "ttl")
         return _ok(to_jsonable(section) if section is not None else None)
 
     def route_config_diff(store, query, body):
-        window_days, err = _int_query(query, "window_days", _DEFAULT_WINDOW_DAYS, minimum=1)
+        window, err = _window_query(query)
         if err is not None:
             return err
         key = query.get("key")
         auto_keys = query.get("auto_keys") == "1"
         if not key and not auto_keys:
             return _bad_request("provide 'key' or 'auto_keys=1'")
-        model = _get_report_model(window_days)
+        model = _get_report_model(*window)
         section = _find_section(model, "config")
         tables = section.tables if section is not None else []
         if auto_keys:
@@ -430,18 +494,18 @@ def make_handler(
         return _ok(to_jsonable(table) if table is not None else [])
 
     def route_recommendations(store, query, body):
-        window_days, err = _int_query(query, "window_days", _DEFAULT_WINDOW_DAYS, minimum=1)
+        window, err = _window_query(query)
         if err is not None:
             return err
-        model = _get_report_model(window_days)
+        model = _get_report_model(*window)
         return _ok([to_jsonable(rec) for rec in model.recommendations])
 
     def _render_report(content_type: str, render: Callable[[object], str]):
         def _route(store, query, body):
-            window_days, err = _int_query(query, "window_days", _DEFAULT_WINDOW_DAYS, minimum=1)
+            window, err = _window_query(query)
             if err is not None:
                 return err
-            model = _get_report_model(window_days)
+            model = _get_report_model(*window)
             return ("raw", content_type, render(model))
 
         return _route
