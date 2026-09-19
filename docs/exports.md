@@ -21,19 +21,28 @@ claude-token-lens export --format otel-jsonl --out usage.otel.jsonl
 - **Aggregate-only is the default.** Rows are grouped by
   `(day, project, model, entrypoint, agent_type)` — there is no
   `session_id` column unless you opt in with `--per-session`.
-- **Project slugs are hashed by default whenever aggregate-only is in
-  effect.** A repo/project slug is itself identifying information (it
-  can name a client or an internal codename), so an "aggregate-only"
+- **Project slugs are hashed by default, in every mode — including
+  `--per-session`.** A repo/project slug is itself identifying
+  information (it can name a client or an internal codename), so an
   export that still prints real slugs would leak exactly the kind of
-  detail aggregation is meant to hide. Hashing uses the same salted
-  `sha256(salt + slug)[:12]` construction, and the same
-  `<config_dir>/salt` file, as every other hashed value in this project
-  (`parse.load_or_create_salt`) — so the same slug hashes to the same
-  value across every export and every report run against the same
-  config dir, letting you correlate rows without ever seeing the real
-  name. Pass `--no-hash-slugs` to keep raw slugs, even together with
-  `--aggregate-only` — that combination is honoured as an explicit,
-  informed choice, not the default.
+  detail this tool is meant to protect, whether or not the rows are
+  aggregated. Hashing uses a salted HMAC-SHA256 over the slug (domain-
+  separated with a `slug:` tag, truncated to 12 hex characters), keyed
+  by the same `<config_dir>/salt` file — and the same HMAC-SHA256
+  construction, just a different truncation length and domain tag — as
+  every other hashed value in this project (`parse.load_or_create_salt`,
+  see [SECURITY.md](../SECURITY.md)). The same slug therefore hashes to
+  the same value across every export and every report run against the
+  same config dir, letting you correlate rows without ever seeing the
+  real name. Pass `--no-hash-slugs` to opt out explicitly — see the next
+  point for what that actually prints.
+- **`--no-hash-slugs` is an explicit, informed opt-out, not a return to
+  fully raw slugs.** It replaces just the OS-username segment of a slug
+  (the part shaped like `Users-<name>-` / `home-<name>-`) with
+  `<user>`, printing a one-line warning to stderr naming the risk. The
+  rest of the slug (e.g. the project directory name) is still printed
+  verbatim — this is a deliberate, narrower privacy floor under the
+  opt-out, not a bug.
 - **No text ever leaves in an export.** Every column is a count, a
   token total, or a cost — never a prompt, a tool result, or a file
   path. This is the same guarantee `report`'s own privacy scan enforces
@@ -41,8 +50,8 @@ claude-token-lens export --format otel-jsonl --out usage.otel.jsonl
   export has far fewer fields to begin with.
 - **`--per-session` is an explicit opt-in.** Only pass it when you
   specifically need per-session drill-down (e.g. debugging one person's
-  own usage with their consent) — it exposes `session_id` and, unless
-  you also pass `--hash-slugs`, real project slugs.
+  own usage with their consent) — it exposes `session_id`. Project slugs
+  are still hashed by default in this mode too (see above).
 
 ### `--aggregate-only` / `--hash-slugs` resolution
 
@@ -50,9 +59,9 @@ claude-token-lens export --format otel-jsonl --out usage.otel.jsonl
 | --- | --- | --- |
 | unset (default) | unset (default) | aggregate-only, hashed slugs |
 | `--aggregate-only` | unset | aggregate-only, hashed slugs |
-| `--aggregate-only` | `--no-hash-slugs` | aggregate-only, **raw** slugs |
-| `--per-session` | unset | per-session, **raw** slugs |
-| `--per-session` | `--hash-slugs` | per-session, hashed slugs |
+| `--aggregate-only` | `--no-hash-slugs` | aggregate-only, **username-redacted** slugs |
+| `--per-session` | unset | per-session, **hashed slugs** |
+| `--per-session` | `--no-hash-slugs` | per-session, **username-redacted** slugs |
 
 ### Row grain and columns (`csv-flat` / `json`)
 
@@ -72,6 +81,7 @@ usually wants those as separate dimensions.
 | `turns` | priced turn count in this cell |
 | `input_tokens` | summed input tokens |
 | `cache_write_5m_tokens` / `cache_write_1h_tokens` | summed `ephemeral_5m`/`ephemeral_1h` cache-creation tokens |
+| `cache_write_tokens` | summed **total** cache-creation tokens (see the note below — this is the reconciliation-safe total, not just the sum of the two split columns) |
 | `cache_read_tokens` | summed cache-read tokens |
 | `output_tokens` | summed output tokens |
 | `thinking_tokens` | summed thinking tokens |
@@ -79,6 +89,19 @@ usually wants those as separate dimensions.
 | `recache_turns` | count of turns flagged as a RE-CACHE event (see [README section 5](../README.md#5-re-cache-definitions-and-signatures)) |
 | `recache_cache_creation` | cache-creation tokens summed over just those RE-CACHE turns |
 | `session_id` | (only with `--per-session`) the session's id |
+
+**On older, pre-TTL-split transcripts** (recorded before Claude Code
+split cache-creation tokens into separate 5m/1h counters), a turn can
+carry a real, non-zero cache-creation total with `cache_write_5m_tokens`
+and `cache_write_1h_tokens` both `0` — the split simply wasn't recorded
+yet. Always use `cache_write_tokens` (not the sum of the two split
+columns) when reconciling totals against another format or against
+`report`'s own overview total; the two split columns are provided for
+transcripts where the split *is* known, not as an alternate way to
+recover the total. `--format otel-jsonl`'s `cacheCreation` data point and
+`report`'s own `cache_creation_tokens` overview total both key off the
+same underlying `cache_write_tokens`/`cache_creation_tokens` field, so
+all three agree for the same corpus.
 
 `--format csv-flat` writes these as plain, unformatted CSV (raw numbers,
 no thousands separators or unit suffixes), matching `render/csv_out.py`'s
@@ -94,7 +117,9 @@ OTel integration documents: `claude_code.token.usage` (with an
 `attributes.type` of `input`/`output`/`cacheRead`/`cacheCreation`, plus
 `attributes.model`) and `claude_code.cost.usage` (`attributes.model`
 only). `time_unix_nano` is the UTC instant of local-day start for the day
-the tokens were attributed to.
+the tokens were attributed to. The `cacheCreation` point's value is the
+same total `cache_creation_tokens` figure `csv-flat`'s `cache_write_tokens`
+column and `report`'s overview totals use — see the note above.
 
 **This is an offline approximation, not a live OTel exporter** — there is
 no resource/scope metadata and no real collector transport, and the
@@ -124,7 +149,13 @@ multi-section `report` output:
    `by_entrypoint` tables.
 3. The full `usage` section's own tables (by day/week/month, by project,
    by entrypoint, five-hour blocks, and `cache_ground_truth` when a
-   usage log is available).
+   usage log is available). `cache_ground_truth` is scoped to sessions
+   attributed to the reported month, the same window-scoping this
+   report already applies to every other table — a usage-log row logged
+   for a session outside the month never leaks into an unrelated
+   report, the same way `report`'s own `--days`/`--since`/`--until`
+   scoping keeps `cache_ground_truth` bounded to the requested window
+   there.
 
 Recache/TTL/compaction/topology and the other optimisation-focused
 sections are out of scope for this report — it is a finance artefact,
@@ -139,16 +170,34 @@ started. This is a documented approximation, the same kind `usage.py`'s
 own five-hour-block grid already accepts, to avoid a much larger rewrite
 of every other analytics module's own per-session assumptions.
 
+The default month (when `--month` is omitted) is the previous calendar
+month relative to *now in `config.tz`* — not the machine's own local
+zone. On the 1st of a month, a machine whose own zone is ahead of
+`config.tz` would otherwise silently resolve to the wrong month.
+
+**An empty target month is not an error.** If no session is attributed
+to the requested (or defaulted) month, `monthly-report` still writes
+both files with zeroed finance tables and exits `0` — a reasonable
+choice for an unattended scheduled job, which should not fail just
+because nothing happened that month — but prints a one-line note to
+stderr saying so, so the asymmetry with "no sessions found at all under
+the given project root(s)" (which does exit non-zero) is visible rather
+than silent.
+
 ### Idempotency
 
-The same `(corpus, pricing, config, month)` always produces
-byte-identical `.md`/`.html` files across repeated runs, so it is safe to
-schedule (cron, a CI job, `serve`'s own scheduler once it exists) without
-producing spurious diffs. The only wall-clock value, a "Generated at:
-..." line, is isolated to the last line of the Markdown file and to an
-HTML comment immediately before `</body>` of the HTML file — strip that
-one line/comment before diffing two runs if you need a byte-for-byte
-comparison.
+The same `(corpus, pricing, config, month)` produces `.md`/`.html` files
+that are identical apart from a single trailing "Generated at: ..."
+line (Markdown) or HTML comment immediately before `</body>` (HTML) —
+strip that one line/comment before diffing two runs if you need a
+byte-for-byte comparison without pinning `generated_at`.
+
+For a **genuinely** byte-identical run — no stripping needed — pass a
+fixed `--generated-at` (ISO 8601) or set `SOURCE_DATE_EPOCH`, the same
+reproducible-build convention `export` already offers. This makes it
+safe to schedule (cron, a CI job, `serve`'s own scheduler once it
+exists) with a deterministic timestamp (e.g. the run's own scheduled
+time) without producing spurious diffs even at the byte level.
 
 ### Service entry point (v0.2 `serve --monthly-report DIR`)
 
@@ -161,3 +210,22 @@ contract), resolves the month with `monthly.resolve_month` if the caller
 doesn't already have one, and returns the two paths it wrote (Markdown
 first, then HTML) so the caller can log or serve them without having to
 reconstruct the filenames itself.
+
+## Statusline payload key recording (`statusline-keys.json`)
+
+Several of the field-name fallback chains this module and `statusline.py`
+implement (see the `context_window` fallbacks above, and the
+`prompt_cache` ground-truth fields `statusline.py`'s own module
+docstring documents) are this project's own best reconciliation of
+partially-overlapping, undocumented field-name lists — not a restatement
+of a single published contract. To make the *real* payload shape ground
+truth for future releases rather than relying on research captures going
+stale, every statusline invocation now writes the payload's own key
+names — recursively, dotted (e.g. `context_window.used_tokens`), **names
+only, never values**, capped at 200 names — to
+`<config_dir>/statusline-keys.json`, and only rewrites that file when the
+recorded key set actually differs from what a real invocation just saw.
+This file contains no prompt text, no token counts, no paths, and no
+usernames — only the shape of the payload, which is safe to attach to a
+bug report or commit into a fixture corpus. See also
+[SECURITY.md](../SECURITY.md).

@@ -49,15 +49,26 @@ respects.
   documented, deterministic proxy grid instead); under `"api"` billing
   the table is empty with a one-line note explaining the skip.
 - `cache_ground_truth` (S1-exports) — one row per session: `session_id`,
-  `rows_logged`, `warm_share` (percentage of logged rows where
-  `statusline.py`'s real, non-estimated `prompt_cache.warm` was `true`),
-  `misses` (the peak/max `prompt_cache.misses` observed), `top_miss_causes`
-  (a short `cause:count` summary, e.g. `ttl:2, tools:1`), and
-  `mean_recache_tokens_if_cold`. Built by `statusline.py`'s
-  `build_cache_ground_truth_table` from the usage-log CSV's `cache_*`
-  trailing columns and appended onto this section by `report.build_report`
-  only when it is given `usage_log_rows` (see below) — absent otherwise,
-  same as `context_budget_statusline`.
+  `rows_logged`, `warm_share` (percentage of *logged rows* — statusline
+  refreshes, not wall-clock time — where `statusline.py`'s real,
+  non-estimated `prompt_cache.warm` was `true`; refreshes aren't evenly
+  spaced in time, so this can diverge from the share of wall-clock
+  session time spent warm), `misses` (the peak/max `prompt_cache.misses`
+  observed), `top_miss_causes` (a short `cause:count` summary, e.g.
+  `ttl:2, tools:1`), and `mean_recache_tokens_if_cold`. Built by
+  `statusline.py`'s `build_cache_ground_truth_table` from the usage-log
+  CSV's `cache_*` trailing columns and appended onto this section by
+  `report.build_report` only when it is given `usage_log_rows` (see
+  below) — absent otherwise, same as `context_budget_statusline`.
+  `top_miss_causes` (fix for review finding 5) is read from the wire's
+  own cumulative `prompt_cache.miss_causes` per-cause counts (persisted
+  as the `cache_miss_causes` column) whenever a session's log carries
+  that field, rather than counting the sticky `last_miss_cause` once per
+  logged row — the old approach re-counted one real miss on every quiet
+  subsequent refresh, since `last_miss_cause` stays set until the next
+  miss. Logs with no `cache_miss_causes` data at all (old-format rows)
+  fall back to counting `last_miss_cause` only on a row where
+  `misses` genuinely increased over the previous row for that session.
 
 Every money column's label switches to "Cost (list-price equivalent
 USD)" under subscription billing, and a section note repeats that these
@@ -382,7 +393,11 @@ when the corpus has no top-level transcripts at all.
   passes the resulting rows into `build_report` as `usage_log_rows` —
   so both this table and `cache_ground_truth` above populate for the
   ordinary CLI report too, not only for a caller that constructs
-  `usage_log_rows` itself.
+  `usage_log_rows` itself. These rows are scoped to the report's own
+  `--days`/`--since`/`--until`/`--project` window (fix for review
+  finding 8) — the usage-log CSV can span a session's entire history, so
+  without this scoping a narrow-window report would silently mix in
+  ground-truth rows logged long before or after the reported period.
 
 `recommend.py`'s `baseline-bloat` rule (see
 [Recommendations](#recommendations-recommendpy) below) cites this

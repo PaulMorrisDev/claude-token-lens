@@ -674,28 +674,34 @@ What's implemented today:
 feeds a corpus into existing BI/observability tooling with the same
 privacy posture as the report itself: **aggregate-only is the default**
 (one row per day/project/model/entrypoint/agent-type — no session ids)
-and **project slugs are hashed by default** whenever aggregate-only is in
-effect, via the same salted `sha256` construction (and the same
-`load_or_create_salt`/config-dir salt file) as every other hashed value
-in this project. Per-session detail is opt-in (`--per-session`); raw
-(unhashed) slugs are opt-in (`--no-hash-slugs`, honoured even together
-with `--aggregate-only` as an explicit, informed choice). No prompt text,
-tool output, or file path is ever in an export — every column is a
-count, a token total, or a cost. `otel-jsonl` mirrors Claude Code's own
-OpenTelemetry metric names (`claude_code.token.usage`,
-`claude_code.cost.usage`) as an **offline approximation** for feeding an
-existing collector's dashboards, not a live exporter. Full column
-reference and format details: [`docs/exports.md`](docs/exports.md).
+and **project slugs are hashed by default in every mode**, including
+`--per-session`, via a salted HMAC-SHA256 construction (the same
+HMAC-SHA256 construction, and the same `load_or_create_salt`/config-dir
+salt file, as every other hashed value in this project — just a
+different truncation length and domain-separation tag). Per-session
+detail is opt-in (`--per-session`); the raw-slug opt-out
+(`--no-hash-slugs`, honoured even together with `--aggregate-only` as an
+explicit, informed choice) doesn't print the fully raw slug either — it
+redacts just the OS-username segment (`Users-<name>-`/`home-<name>-` ->
+`<user>`) and warns on stderr. No prompt text, tool output, or file path
+is ever in an export — every column is a count, a token total, or a
+cost. `otel-jsonl` mirrors Claude Code's own OpenTelemetry metric names
+(`claude_code.token.usage`, `claude_code.cost.usage`) as an **offline
+approximation** for feeding an existing collector's dashboards, not a
+live exporter. Full column reference and format details:
+[`docs/exports.md`](docs/exports.md).
 
 `claude-token-lens monthly-report --out DIR [--month YYYY-MM]`
 (S1-exports) writes `DIR/claude-token-lens-YYYY-MM.md` and the matching
-`.html` for one calendar month (default: the previous month) — a short
-finance header (total cost, tokens, sessions, cost by model/project/
-entrypoint, five-hour blocks used under subscription billing) followed by
-the `usage` section, sized for a recurring habit rather than the full
-multi-section report. The same `(corpus, pricing, config, month)` always
-produces byte-identical files (the only wall-clock value is isolated to a
-trailing "Generated at" line/comment), so it is safe to schedule.
+`.html` for one calendar month (default: the previous month, resolved
+against `config.tz`) — a short finance header (total cost, tokens,
+sessions, cost by model/project/entrypoint, five-hour blocks used under
+subscription billing) followed by the `usage` section, sized for a
+recurring habit rather than the full multi-section report. The same
+`(corpus, pricing, config, month)` produces files identical apart from a
+trailing "Generated at" line/comment; pass `--generated-at` (or set
+`SOURCE_DATE_EPOCH`) for a genuinely byte-identical run, so it is safe to
+schedule even when diffing raw bytes.
 
 Together these make claude-token-lens usable as a team tool without
 running claude-token-lens's own modules by hand against each person's own
