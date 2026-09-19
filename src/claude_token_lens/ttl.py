@@ -116,6 +116,14 @@ class TtlThresholds:
     #: blocking.
     switch_pct: float = 0.95
     switch_usd: float = 1.00
+    #: Fix R2: a switch is only ever advised when the simulation backing
+    #: it is trustworthy enough to act on. An agent type's row is
+    #: suppressed (recommendation reads "no material difference
+    #: (suppressed: ...)") whenever its ``fidelity_pct`` exceeds this
+    #: bound, or when the apparent saving (``delta_pct``) doesn't even
+    #: clear the simulation's own fidelity margin -- see
+    #: ``TtlTypeStats.recommendation``.
+    max_fidelity_for_advice_pct: float = 5.0
     #: Near-miss histogram window (seconds) on the "just missed it"
     #: side of each TTL boundary — the hit side uses the same width on
     #: the boundary's other side (see ``_near_miss_bounds``).
@@ -163,6 +171,8 @@ class TtlThresholds:
             kwargs["switch_pct"] = float(data["switch_pct"])
         if "switch_usd" in data:
             kwargs["switch_usd"] = float(data["switch_usd"])
+        if "max_fidelity_for_advice_pct" in data:
+            kwargs["max_fidelity_for_advice_pct"] = float(data["max_fidelity_for_advice_pct"])
         if "near_miss_window_s" in data:
             kwargs["near_miss_window_s"] = float(data["near_miss_window_s"])
         return cls(**kwargs)
@@ -180,6 +190,10 @@ class TtlThresholds:
             "a policy switch is recommended only when the candidate policy costs less than "
             "switch_pct of the observed cost AND saves more than switch_usd — both "
             "conditions, independently blocking.",
+            f"max_fidelity_for_advice_pct = {self.max_fidelity_for_advice_pct:.1f}%: a "
+            "switch is never advised for an agent type whose simulation fidelity exceeds "
+            "this, or whose apparent saving doesn't exceed its own fidelity margin -- the "
+            "row instead reads a suppression reason.",
             f"near_miss_window_s = {self.near_miss_window_s:.0f}s: the near-miss "
             "histogram's window on the \"just missed it\" side of each TTL boundary.",
             f"ctx_floor = {self.ctx_floor:,} tokens, cr_ratio = {self.cr_ratio:.2f}, "
@@ -533,6 +547,25 @@ def dominant_ttl(turns: list[Turn], thresholds: TtlThresholds | None = None) -> 
     if total_1h / total >= th.dominance:
         return "1h"
     return "mixed"
+
+
+def _dominant_policy_from_observed_shares(
+    observed_5m_pct: float, observed_1h_pct: float, thresholds: TtlThresholds | None = None
+) -> str | None:
+    """Fix R2: which policy (if any) already dominates a
+    ``TtlTypeStats`` row's *observed* writes, mirroring
+    :func:`dominant_ttl`'s own ``>= thresholds.dominance``-share call
+    but working from the row's already-aggregated
+    ``observed_5m_pct``/``observed_1h_pct`` rather than raw turns (so
+    ``TtlTypeStats.recommendation`` doesn't need the original turn
+    list). Returns ``None`` when neither side dominates (mirrors
+    ``dominant_ttl``'s "mixed"/"none")."""
+    th = thresholds or _DEFAULT_THRESHOLDS
+    if observed_5m_pct / 100.0 >= th.dominance:
+        return "5m"
+    if observed_1h_pct / 100.0 >= th.dominance:
+        return "1h"
+    return None
 
 
 def normalize_ttl_split(turns: list[Turn], thresholds: TtlThresholds | None = None) -> list[Turn]:
@@ -962,16 +995,44 @@ class TtlTypeStats:
         order and returning on whichever clears the bar first -- the
         old order could recommend a switch to 1h even when 5m was in
         fact the cheaper option, whenever 1h happened to also clear
-        both thresholds. Otherwise "no material difference"."""
+        both thresholds.
+
+        Fix R2: never recommends switching to the policy that already
+        dominates this row's *observed* traffic (see
+        :func:`_dominant_policy_from_observed_shares`) -- that reads
+        back as ``"keep <policy> (already dominant)"`` instead. Nor
+        does it recommend a switch the TTL simulation itself can't
+        vouch for: when ``fidelity_pct`` exceeds
+        ``thresholds.max_fidelity_for_advice_pct``, or the apparent
+        saving (``delta_pct``) doesn't even exceed that row's own
+        ``fidelity_pct`` margin, the row instead states why the advice
+        was suppressed. Otherwise "no material difference"."""
         th = thresholds or _DEFAULT_THRESHOLDS
         if self.cost_observed <= 0:
             return "no material difference"
+
         best_label = self.best_policy
         best_cost = self.best_cost
         saving = self.cost_observed - best_cost
-        if best_cost < self.cost_observed * th.switch_pct and saving > th.switch_usd:
-            return f"switch to {best_label}"
-        return "no material difference"
+        if not (best_cost < self.cost_observed * th.switch_pct and saving > th.switch_usd):
+            return "no material difference"
+
+        dominant = _dominant_policy_from_observed_shares(self.observed_5m_pct, self.observed_1h_pct, th)
+        if dominant == best_label:
+            return f"keep {best_label} (already dominant)"
+
+        fidelity = self.fidelity_pct if self.fidelity_pct is not None else 0.0
+        if fidelity > th.max_fidelity_for_advice_pct:
+            return (
+                f"no material difference (suppressed: simulation fidelity {fidelity:.1f}% "
+                f"exceeds {th.max_fidelity_for_advice_pct:.1f}%)"
+            )
+        if not (self.delta_pct > fidelity):
+            return (
+                f"no material difference (suppressed: {self.delta_pct:.1f}% saving does not "
+                f"exceed {fidelity:.1f}% simulation fidelity)"
+            )
+        return f"switch to {best_label}"
 
     @property
     def lever(self) -> str:
