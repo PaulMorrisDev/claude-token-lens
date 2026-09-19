@@ -13,6 +13,7 @@ except the cache/snapshot/log-usage tests, which need a real
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import re
@@ -194,6 +195,60 @@ def test_allow_titles_flag_was_removed(capsys):
     err = capsys.readouterr().err
     assert "unrecognized arguments" in err
     assert "--allow-titles" in err
+
+
+# -- --quiet / --verbose (Fix R21) ------------------------------------------
+
+
+def test_quiet_and_verbose_are_mutually_exclusive():
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main(["report", "--quiet", "--verbose"])
+    assert exc_info.value.code == 2
+
+
+def test_verbose_prints_corpus_stats_to_stderr(tmp_path, capsys):
+    root = tmp_path / "projects"
+    _write_project(root, "proj-a")
+    exit_code = cli.main(["report", "--projects-root", str(root), "--project", "proj-a", "--verbose"])
+    assert exit_code == 0
+    err = capsys.readouterr().err
+    assert "[corpus]" in err
+
+
+def test_default_verbosity_omits_corpus_stats(tmp_path, capsys):
+    root = tmp_path / "projects"
+    _write_project(root, "proj-a")
+    exit_code = cli.main(["report", "--projects-root", str(root), "--project", "proj-a"])
+    assert exit_code == 0
+    err = capsys.readouterr().err
+    assert "[corpus]" not in err
+
+
+def test_load_corpus_for_args_quiet_suppresses_stats_even_if_verbose_is_also_set(tmp_path, capsys):
+    # Fix R21: --quiet was accepted by argparse but never actually
+    # consulted anywhere in the code -- a silent no-op. argparse's own
+    # mutual-exclusion check keeps a human from passing both flags at
+    # once (covered above), but _load_corpus_for_args's own contract
+    # must not lean on that alone: build a Namespace with both set (as
+    # a caller bypassing argparse could) and confirm --quiet still wins.
+    root = tmp_path / "projects"
+    project_dir = _write_project(root, "proj-a")
+    config = cli.load_config(None)
+    args = argparse.Namespace(
+        no_cache=True,
+        rebuild_cache=False,
+        days=None,
+        since=None,
+        until=None,
+        limit=None,
+        window_by="mtime",
+        jobs=1,
+        verbose=True,
+        quiet=True,
+    )
+    cli._load_corpus_for_args(args, config, root, [project_dir])
+    err = capsys.readouterr().err
+    assert "[corpus]" not in err
 
 
 @pytest.mark.parametrize("command,section_title", [("sessions", "## Sessions"), ("recache", "## Re-cache"), ("ttl", "## TTL"), ("compactions", "## Compactions")])

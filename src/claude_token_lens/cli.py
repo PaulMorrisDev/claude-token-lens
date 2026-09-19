@@ -417,7 +417,15 @@ def _load_corpus_for_args(
         jobs=args.jobs,
         exclude_projects=config.exclude_projects,
     )
-    if args.verbose:
+    # Fix R21: --quiet was accepted by argparse (mutually exclusive with
+    # --verbose) but never actually consulted anywhere -- a silent no-op
+    # flag. The CLI's argparse wiring already keeps a human from passing
+    # both at once, but this function's own contract shouldn't depend on
+    # that: guard explicitly so --quiet reliably suppresses this stderr
+    # diagnostic even if a future caller builds/mutates the Namespace
+    # itself (e.g. a script driving this function directly) rather than
+    # going through argparse's mutual-exclusion check.
+    if args.verbose and not args.quiet:
         _print_corpus_stats(corpus)
     return corpus
 
