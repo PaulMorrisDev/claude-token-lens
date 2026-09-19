@@ -211,6 +211,16 @@ class TopologyStats:
     # (a) downward: spawn write per agent type, session baseline
     spawn_write_by_agent_type: dict[str, list[int]] = field(default_factory=dict)
     session_baseline_writes: list[int] = field(default_factory=list)
+    #: Capture-improvements addition (A7): the spawning top-level turn's
+    #: ``agent_brief_chars`` for each direct spawn (joined via
+    #: ``sub.meta.tool_use_id`` -> ``_tool_use_index_from_turns``, same
+    #: join as the skill roll-up), keyed by agent type. Unlike
+    #: ``spawn_write_by_agent_type`` above (which folds in *every* sub
+    #: regardless of linkage), a sub reached only transitively via
+    #: ``parent_agent_id`` (e.g. a sub-subagent with no ``tool_use_id`` of
+    #: its own, or a turn whose Agent/Task tool_use carried no ``prompt``)
+    #: has nothing to join to and contributes no value here.
+    spawn_brief_chars_by_agent_type: dict[str, list[int]] = field(default_factory=dict)
 
     # (b) upward: Agent/Workflow tool_result totals, per-agent-type proxy
     agent_tool_result_chars: int = 0
@@ -228,6 +238,11 @@ class TopologyStats:
     cost_by_agent_type: dict[str, list[float]] = field(default_factory=dict)
     stopped_by_user_count: int = 0
     total_spawns: int = 0
+    #: Capture-improvements addition (A7): every priced turn's
+    #: ``tool_wait_s`` (see model.py's ``Turn.tool_wait_s`` docstring),
+    #: keyed by agent type -- turns with no tool call (``tool_wait_s is
+    #: None``) contribute nothing.
+    tool_wait_by_agent_type: dict[str, list[float]] = field(default_factory=dict)
 
     # (e) reminder/hook pressure, CACHE_SIGNAL histogram
     reminder_rate_by_kind: dict[str, list[float]] = field(default_factory=dict)
@@ -293,12 +308,38 @@ class TopologyStats:
         baseline_turn = _first_priced_turn(top)
         if baseline_turn is not None:
             self.session_baseline_writes.append(baseline_turn.cache_creation_tokens)
+        # A7: join each sub back to its spawning top-level turn (same
+        # tool_use_id join the skill roll-up uses) to read that turn's
+        # own agent_brief_chars.
+        tool_use_index = _tool_use_index_from_turns(top)
+        turns_by_message_id = {t.message_id: t for t in top.turns if t.message_id}
         for sub in subs:
             first = _first_priced_turn(sub)
             if first is None:
                 continue
             label = _agent_type_label(sub)
             self.spawn_write_by_agent_type.setdefault(label, []).append(first.cache_creation_tokens)
+            brief_chars = self._spawn_brief_chars(sub, tool_use_index, turns_by_message_id)
+            if brief_chars is not None:
+                self.spawn_brief_chars_by_agent_type.setdefault(label, []).append(brief_chars)
+
+    @staticmethod
+    def _spawn_brief_chars(
+        sub: TranscriptResult,
+        tool_use_index: dict[str, tuple[str, str | None]],
+        turns_by_message_id: dict[str, Turn],
+    ) -> int | None:
+        tool_use_id = sub.meta.tool_use_id
+        if not tool_use_id:
+            return None
+        entry = tool_use_index.get(tool_use_id)
+        if entry is None:
+            return None
+        message_id, _skill_at_call_site = entry
+        parent_turn = turns_by_message_id.get(message_id)
+        if parent_turn is None:
+            return None
+        return parent_turn.agent_brief_chars
 
     # -- (b) upward ------------------------------------------------------
 
@@ -373,6 +414,9 @@ class TopologyStats:
             self.spawn_depth_histogram[depth] = self.spawn_depth_histogram.get(depth, 0) + 1
             label = _agent_type_label(sub)
             self.cost_by_agent_type.setdefault(label, []).append(_transcript_cost(sub, rates_lookup))
+            for turn in _priced_turns(sub):
+                if turn.tool_wait_s is not None:
+                    self.tool_wait_by_agent_type.setdefault(label, []).append(turn.tool_wait_s)
             if sub.meta.stopped_by_user:
                 self.stopped_by_user_count += 1
 
@@ -499,9 +543,16 @@ def _build_spawn_write_table(stats: TopologyStats) -> Table:
         Column(key="spawns", label="Spawns", kind="int"),
         Column(key="mean_write", label="Mean spawn write", kind="tokens"),
         Column(key="median_write", label="Median spawn write", kind="tokens"),
+        Column(key="mean_briefing_chars", label="Mean briefing chars", kind="int"),
     ]
     rows = [
-        [agent_type, len(values), _mean(values), _median(values)]
+        [
+            agent_type,
+            len(values),
+            _mean(values),
+            _median(values),
+            _mean(stats.spawn_brief_chars_by_agent_type.get(agent_type, [])),
+        ]
         for agent_type, values in sorted(stats.spawn_write_by_agent_type.items())
     ]
     return Table(
@@ -517,6 +568,10 @@ def _build_spawn_write_table(stats: TopologyStats) -> Table:
             " joined against this table -- there is currently no per-session"
             " link between a spawn's write size and the snapshot in effect"
             " when it happened.",
+            "Mean briefing chars is the spawning turn's own Agent/Task"
+            " tool_use prompt length (Turn.agent_brief_chars), joined by"
+            " tool_use_id -- empty for a spawn reached only transitively"
+            " (no tool_use_id of its own) or whose call carried no prompt.",
         ],
     )
 
@@ -666,9 +721,16 @@ def _build_cost_per_spawn_table(stats: TopologyStats) -> Table:
         Column(key="spawns", label="Spawns", kind="int"),
         Column(key="mean_cost", label="Mean cost/spawn", kind="money"),
         Column(key="median_cost", label="Median cost/spawn", kind="money"),
+        Column(key="mean_tool_wait", label="Mean tool wait", kind="secs"),
     ]
     rows = [
-        [agent_type, len(values), _mean(values), _median(values)]
+        [
+            agent_type,
+            len(values),
+            _mean(values),
+            _median(values),
+            _mean(stats.tool_wait_by_agent_type.get(agent_type, [])),
+        ]
         for agent_type, values in sorted(stats.cost_by_agent_type.items())
     ]
     return Table(
@@ -676,6 +738,11 @@ def _build_cost_per_spawn_table(stats: TopologyStats) -> Table:
         title="Chains: cost per spawn, by agent type",
         columns=columns,
         rows=rows,
+        notes=[
+            "Mean tool wait is the mean Turn.tool_wait_s across that agent"
+            " type's own priced turns: how long its tool calls took to"
+            " answer, not the parent's wait on the whole spawn.",
+        ],
     )
 
 
