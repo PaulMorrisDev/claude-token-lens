@@ -1,15 +1,18 @@
 """CLI wiring tests (WP10c): the argparse skeleton (``--version``, the
-default-subcommand insertion rule, the ``init``/``baseline`` stubs) plus
-real end-to-end tests for every wired subcommand, against synthetic
-projects under ``tmp_path`` built with ``tests/helpers``.
+default-subcommand insertion rule) plus real end-to-end tests for every
+wired subcommand, against synthetic projects under ``tmp_path`` built
+with ``tests/helpers``.
 
-``serve`` (S1-api) is no longer a stub -- ``tests/test_service_api.py``
-and ``tests/test_service_egress.py`` exercise it directly (including
-``cli.main(["serve", "--once", ...])``), so it was removed from
-``STUB_SUBCOMMANDS`` below and from the "unimplemented subcommand exits
-2" subprocess smoke test, which now names ``init`` instead -- the same
-testing intent (an unimplemented subcommand's ``python -m`` invocation
-exits 2) without hanging on ``serve``'s ``serve_forever()``.
+``serve`` (S1-api) and ``init``/``baseline`` (v0.3) are no longer stubs
+-- every subcommand in ``cli.SUBCOMMANDS`` is wired for real now.
+``tests/test_service_api.py``/``tests/test_service_egress.py`` exercise
+``serve`` directly; ``tests/test_onboarding.py``/``tests/test_
+baseline.py`` exercise ``onboarding.py``/``baseline.py`` directly, so
+this file's own ``init``/``baseline`` tests below are thin CLI-wiring
+smoke tests, not full coverage. The "unimplemented subcommand exits 2"
+subprocess smoke test now uses ``scrub-fixture`` with none of its
+required flags -- a real, always-available bad-input case -- since
+there is no longer an actually-unimplemented subcommand to name.
 
 Every test passes ``--projects-root``/``--project`` explicitly rather
 than relying on the autouse ``CLAUDE_CONFIG_DIR``/``HOME`` isolation
@@ -33,13 +36,9 @@ from pathlib import Path
 
 import pytest
 
-from claude_token_lens import __version__, cli
+from claude_token_lens import __version__, cli, discovery
 
 from helpers import assert_privacy, turn_line, write_jsonl
-
-#: Subcommands with no real implementation yet (v0.3 milestone). "serve"
-#: (v0.2) is wired for real as of S1-api -- see module docstring.
-STUB_SUBCOMMANDS = ("init", "baseline")
 
 _GENERATED_AT_RE = re.compile(r"- Generated at:.*")
 
@@ -147,29 +146,91 @@ def test_group_by_accepts_entrypoint(tmp_path, capsys):
     capsys.readouterr()
 
 
-@pytest.mark.parametrize("command", STUB_SUBCOMMANDS)
-def test_planned_stub_exits_2(command, capsys):
-    exit_code = cli.main([command])
-    assert exit_code == 2
-    err = capsys.readouterr().err
-    assert "planned for v0." in err
-    assert command in err
-
-
-@pytest.mark.parametrize("command", STUB_SUBCOMMANDS)
-def test_stub_subcommand_help_text_is_marked_planned(command, capsys):
-    # Fix R25: init/baseline/serve's --help listing used to read as
-    # "planned for v0.3" prose with no visual marker distinguishing a
-    # stub from a real subcommand at a glance in the full listing;
-    # confirm the top-level --help output now leads each with the same
-    # "(planned)" tag the generic not-implemented-yet fallback uses.
+def test_init_and_baseline_are_no_longer_marked_planned(capsys):
+    # v0.3: init/baseline used to read as "(planned) v0.3 milestone" in
+    # the top-level --help listing (fix R25) -- confirm that marker is
+    # gone now that both are wired up for real.
     with pytest.raises(SystemExit) as exc_info:
         cli.main(["--help"])
     assert exc_info.value.code == 0
     out = capsys.readouterr().out
-    lines = [line for line in out.splitlines() if command in line]
-    assert lines, f"{command} not found in --help output"
-    assert any("(planned)" in line for line in lines)
+    for command in ("init", "baseline"):
+        lines = [line for line in out.splitlines() if command in line]
+        assert lines, f"{command} not found in --help output"
+        assert not any("(planned)" in line for line in lines)
+
+
+def test_init_writes_config_and_runs_an_initial_baseline(tmp_path, monkeypatch, capsys):
+    projects_root = tmp_path / "projects"
+    config_dir = tmp_path / "config"
+    real_project_path = tmp_path / "work" / "my-proj"
+    real_project_path.mkdir(parents=True)
+    slug = discovery.slug_for(str(real_project_path))
+    _write_project(projects_root, slug)
+
+    monkeypatch.chdir(real_project_path)
+    exit_code = cli.main(
+        [
+            "init",
+            "--non-interactive",
+            "--no-install",
+            "--config-dir",
+            str(config_dir),
+            "--projects-root",
+            str(projects_root),
+        ]
+    )
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert (config_dir / "config.toml").is_file()
+    assert (config_dir / "projects" / f"{slug}.toml").is_file()
+    assert "Wrote initial baseline" in out
+    assert "Capture window: in progress" in out
+    # The redacted slug appears (never the real "work-my-proj" path
+    # segment) in the "current project" line -- the rest of this
+    # command's output is operational file-path feedback about files it
+    # just wrote under --config-dir (the same convention
+    # snapshot-config/scrub-fixture's own stdout already follows), which
+    # is not the class of content the privacy invariant scopes (project/
+    # session-derived data -- see test_probe_config_renders_markdown_
+    # with_no_raw_paths for that check applied to a command whose whole
+    # contract is never printing a raw path).
+    assert "<user>" in out
+
+
+def test_baseline_list_and_show_round_trip(tmp_path, monkeypatch, capsys):
+    projects_root = tmp_path / "projects"
+    config_dir = tmp_path / "config"
+    _write_project(projects_root, "proj-a")
+
+    exit_code = cli.main(
+        [
+            "baseline",
+            "--finalise",
+            "--config-dir",
+            str(config_dir),
+            "--projects-root",
+            str(projects_root),
+            "--project",
+            "proj-a",
+        ]
+    )
+    assert exit_code == 0
+    capsys.readouterr()
+
+    list_exit_code = cli.main(["baseline", "--list", "--config-dir", str(config_dir)])
+    list_out = capsys.readouterr().out
+    assert list_exit_code == 0
+    lines = [line for line in list_out.splitlines() if line.strip()]
+    assert len(lines) == 1
+    baseline_id = lines[0].split()[0]
+
+    show_exit_code = cli.main(["baseline", "--show", baseline_id, "--config-dir", str(config_dir)])
+    show_out = capsys.readouterr().out
+    assert show_exit_code == 0
+    assert "# Onboarding baseline report" in show_out
+    assert "## Suggested profile" in show_out
+    assert_privacy({"out": show_out})
 
 
 def test_no_argv_with_no_data_exits_1(capsys):
@@ -1103,12 +1164,13 @@ def test_python_dash_m_version_exits_0():
     assert __version__ in result.stdout
 
 
-def test_python_dash_m_unimplemented_subcommand_exits_2():
-    # Was "serve" -- now a real subcommand (S1-api) that would hang in
-    # serve_forever() here instead of exiting; "init" is still a v0.3
-    # stub and keeps this test's original intent. See module docstring.
+def test_python_dash_m_bad_input_exits_2():
+    # v0.3: init/baseline are real subcommands now, so there is no
+    # longer an actually-unimplemented one to name here -- "scrub-
+    # fixture" with none of its required flags is a real, always
+    # available bad-input case instead (see module docstring).
     result = subprocess.run(
-        [sys.executable, "-m", "claude_token_lens", "init"],
+        [sys.executable, "-m", "claude_token_lens", "scrub-fixture"],
         capture_output=True,
         text=True,
         cwd=str(Path(__file__).parent.parent / "src"),
@@ -1135,3 +1197,4 @@ def test_statusline_cli_forwards_config_dir_flag(tmp_path, monkeypatch, capsys):
 
     assert rc == 0
     assert (explicit_config_dir / "usage-log.csv").exists()
+    assert "scrub-fixture" in result.stderr

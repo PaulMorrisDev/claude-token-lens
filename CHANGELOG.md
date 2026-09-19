@@ -39,6 +39,44 @@ A v0.4 backlog, kept here until scheduled into a milestone:
 
 ### Added
 
+- **v0.3 `init`/`baseline` onboarding pair** (`onboarding.py`,
+  `baseline.py`, work package V3-init): `claude-token-lens init
+  [--answers FILE] [--non-interactive] [--no-install]` detects what's
+  already on the machine (config-dir/snapshot/usage-log/project-count
+  facts), asks — or, non-interactively, derives and reports — a short
+  question set (billing mode, excluded projects, settings-overlay
+  usage, shared-project-config, timezone, default apply scope, and the
+  onboarding capture-window length), writes `config.toml` and this
+  project's own `projects/<slug>.toml`, prints the SessionStart
+  hook/statusline install fragments (unless `--no-install`), and runs
+  an initial baseline capture. `claude-token-lens baseline [--days N]
+  [--finalise] [--list] [--show ID]` extracts a JSON baseline record —
+  mode mix, dominant purposes, workstyle archetype, scorecard, a
+  projected caching saving, a suggested profile, and an optional
+  billing-mismatch warning — entirely from an already-built report's
+  own tables (never recomputed independently), stored as plain JSON
+  files under `<config_dir>/baselines/` (no SQLite), plus a
+  four-section Markdown report. `_suggested_profile` applies a
+  majority-overnight override that `profiles.catalogue.suggest()`
+  can never reach on its own, and `_billing_mismatch_warning` flags a
+  subscription-billing config showing an observed 1h TTL on a
+  non-top-level agent type. See
+  [docs/onboarding.md](docs/onboarding.md) for the full contract,
+  including a noted scope gap against `docs/config-layers.md`'s
+  richer "what `init` will ask" preview.
+- **`config.py`: per-project TOML config and a generic config writer**
+  (work package V3-init): a new `ProjectConfig` dataclass and
+  `<config_dir>/projects/<slug>.toml` loading
+  (`load_project_configs`)/writing (`save_project_config`), five new
+  top-level `Config` fields (`capture_window`, `capture_started`,
+  `launch_overlays`, `shared_project_config`, `apply_scope`,
+  `projects`), and `write_config_values`/`_dump_toml_table` — a
+  generic, validate-before-write `config.toml` merger built on the
+  existing hand-rolled TOML value formatter, extended to one level of
+  nested `[section]` tables, falling back to a `config.toml.new`
+  sibling file (leaving the real file untouched) for a shape it can't
+  safely round-trip.
+
 - **v0.3 profile schema, catalogue and diff renderer** (`profiles/`,
   work package V3-profiles): a new `claude_token_lens.profiles`
   package with an allowlist-driven `Profile` schema (`schema.py`) —
@@ -427,6 +465,20 @@ A v0.4 backlog, kept here until scheduled into a milestone:
   intermittently flaky `test_load_or_create_salt_persists_across_calls`.
 
 ### Security
+**`.pyz` zipapp: `_load_snapshot_hook_module` crashed under zipimport**
+(`cli.py`, work package V3-init, found while wiring `init` to the same
+hook loader) — unrelated to the v0.2-exports batch above:
+
+- `importlib.resources.files(...)` returns a `zipfile.Path` inside a
+  built `.pyz`, which `importlib.util.spec_from_file_location` rejects
+  (`TypeError: expected str, bytes or os.PathLike object, not Path`) —
+  this pre-existing bug affected `snapshot-config` and `probe-config`
+  too, but no test exercised either via a built `.pyz` fixture before
+  now. Fixed by reading the hook script's source text and `exec`-ing it
+  into a fresh `types.ModuleType`, which works identically on a normal
+  filesystem install and inside a zip.
+
+### Planned
 
 - Confirmed no route may return `transcripts.path`/`projects.root_path`
   during v0.2 release verification: a full privacy audit of every saved

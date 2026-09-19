@@ -5,17 +5,18 @@ where your tokens go, what your caching configuration costs or saves, and
 which configuration changes to make. Stdlib-only, MIT-licensed, runs
 entirely on your own machine.
 
-**Status: pre-release, v0.1 in progress.** The parsing, pricing, RE-CACHE,
+**Status: pre-release, v0.3 in progress.** The parsing, pricing, RE-CACHE,
 TTL, classification, compaction, config-snapshot, topology, workstyle,
-workflow, phase-split, usage, report-assembly, recommendation and
-scorecard engines are all implemented and covered by tests (993 passing
-at the time of writing). The command-line surface now matches: `report`,
-`sessions`, `recache`, `ttl`, `compactions`, `config-diff`, `log-usage`,
-`pricing-check`, `scrub-fixture`, `probe`, `statusline` and
-`snapshot-config` are real subcommands backed by that engine — see
-[section 2](#2-quick-start) for the full flag reference. `init`,
-`baseline` and `serve` remain registered stubs that print which future
-milestone they're planned for and exit 2 (see the roadmap in
+workflow, phase-split, usage, report-assembly, recommendation, scorecard,
+onboarding and baseline-capture engines are all implemented and covered
+by tests. The command-line surface now matches: `report`, `sessions`,
+`recache`, `ttl`, `compactions`, `config-diff`, `log-usage`,
+`pricing-check`, `scrub-fixture`, `probe`, `statusline`,
+`snapshot-config`, `init` and `baseline` are real subcommands backed by
+that engine — see [section 2](#2-quick-start) for the full flag
+reference and [`docs/onboarding.md`](docs/onboarding.md) for `init`/
+`baseline` specifically. `serve` remains a registered stub that prints
+which future milestone it's planned for and exits 2 (see the roadmap in
 [section 13](#13-licence-contributing-roadmap)). This README describes
 what the code actually does today, not the full plan — see
 [`docs/sections-reference.md`](docs/sections-reference.md) for
@@ -92,6 +93,49 @@ pip install .
 pipx install .
 ```
 
+Then, from the project you want to analyse:
+
+```bash
+claude-token-lens init
+```
+
+`init` is the fastest way to a first report. It detects what's already
+on your machine (existing config, config snapshots, a usage log), asks
+a handful of short questions it genuinely can't infer on its own
+(billing mode, any projects to always exclude, whether you launch
+Claude Code with shared settings overlays, your timezone, a default
+profile-apply scope, and how long to run its onboarding "capture
+window" for — 7 days by default), writes `config.toml`, offers the
+SessionStart hook and statusline `settings.json` fragments to install
+(skip with `--no-install`), and kicks off that capture window with an
+initial baseline for the current project. Answering non-interactively
+(e.g. in a script or CI) is supported too:
+
+```bash
+claude-token-lens init --non-interactive --no-install
+```
+
+— any question not answered from an `--answers FILE` is derived from
+what `init` detected, and `init` prints exactly what it derived and
+why, rather than guessing silently.
+
+Once the capture window has enough data (or immediately with
+`--finalise`), run:
+
+```bash
+claude-token-lens baseline
+```
+
+to get a suggested workstyle profile, a projected caching saving, and
+a few concrete next steps — see [`docs/onboarding.md`](docs/onboarding.md)
+for the full question set, the baseline record's fields, and the
+Markdown report's shape. `claude-token-lens baseline --list` /
+`--show ID` read back a previously captured baseline without
+recapturing anything.
+
+Prefer to skip setup entirely? `claude-token-lens report` (the default
+subcommand — see below) works standalone, with no `init` step at all.
+
 Because the package has no third-party dependencies (`dependencies = []`
 in `pyproject.toml`; `rich` is an optional extra), it can also be built
 into a single-file, dependency-free `.pyz` with the standard library's
@@ -152,9 +196,9 @@ this table only lists what's specific to each one.
 | `statusline` | Claude Code `statusLine` handler — reads a JSON payload from stdin on every refresh (see [section 8](#8-installing-the-sessionstart-hook-and-the-statusline)) | `--print-install-fragment` / `--install` (print the settings.json fragment instead of reading stdin) |
 | `export` | Aggregate, privacy-safe export of a corpus for BI/observability tooling (see [section 10](#10-for-team-leads-and-enterprise) and [`docs/exports.md`](docs/exports.md)) | `--format {csv-flat,json,otel-jsonl}` (default `csv-flat`), `--aggregate-only` / `--per-session` (mutually exclusive, default `--aggregate-only`), `--hash-slugs` / `--no-hash-slugs` (mutually exclusive, default hashed whenever `--aggregate-only` is in effect), `--out PATH` (default: stdout) |
 | `monthly-report` | Write a habit-forming finance summary (cost/tokens by model/project/entrypoint, five-hour blocks under subscription billing) plus the `usage` section for one calendar month, as both Markdown and HTML (see [section 10](#10-for-team-leads-and-enterprise) and [`docs/exports.md`](docs/exports.md)) | `--out DIR` (required), `--month YYYY-MM` (default: the previous calendar month) |
-| `init` | **Planned for v0.3** — prints which milestone it's planned for and exits 2 | none |
-| `baseline` | **Planned for v0.3** — same stub behaviour as `init` | none |
-| `serve` | **Planned for v0.2** — same stub behaviour as `init` | none |
+| `init` | Detect what's already set up, ask (or, non-interactively, derive) a short question set, write `config.toml` and this project's `projects/<slug>.toml`, print the hook/statusline install fragments, and run an initial onboarding baseline — see [`docs/onboarding.md`](docs/onboarding.md) | `--answers FILE` (JSON file supplying any subset of the answers), `--non-interactive` (derive unanswered questions instead of prompting), `--no-install` (skip printing the hook/statusline fragments) |
+| `baseline` | Capture (or list/show) an onboarding baseline: mode mix, dominant purposes, suggested profile, projected saving — see [`docs/onboarding.md`](docs/onboarding.md) | `--finalise` (treat the baseline as final even if the capture window hasn't elapsed), `--list` (list saved baselines), `--show ID` (print a previously saved baseline's report) |
+| `serve` | **Planned for v0.2** — prints which milestone it's planned for and exits 2 | none |
 
 `usage`, `agents`, `workstyle`, `workflows` and `scorecard` are real
 report sections (see [section 6](#6-reading-the-report-sections)) but
@@ -170,7 +214,7 @@ Every subcommand uses the same three codes:
 | --- | --- |
 | `0` | Ok — the subcommand ran and printed its output. |
 | `1` | No data — an empty corpus for the given projects/window, or (for `config-diff`) no config snapshots found. Always paired with a one-line reason on stderr naming the projects root and window. |
-| `2` | Bad input — a `ConfigError`/`PricingError` (e.g. an unreadable `--pricing` file), a bad flag combination argparse itself doesn't already catch, or a not-yet-implemented subcommand (`init`/`baseline`/`serve`, or any unrecognised command). |
+| `2` | Bad input — a `ConfigError`/`PricingError` (e.g. an unreadable `--pricing` file), a bad flag combination argparse itself doesn't already catch, or a not-yet-implemented subcommand (`serve`, or any unrecognised command). |
 
 ### Global flags (`cli.py`)
 
@@ -785,18 +829,20 @@ by hand.
 
 **Roadmap** (see the project plan for full detail; report assembly, the
 recommendation engine and the optimisation scorecard shipped in v0.1 —
-see the Status note above — everything below is still ahead):
+see the Status note above):
 
 - **v0.2** — `claude-token-lens serve` (a local read-only service:
   watcher thread, SQLite store, `http.server` JSON API and a
   dependency-free static web UI), Docker packaging, a live countdown in
   the statusline, an aggregate-only `export` command, and a monthly
-  report.
-- **v0.3** — `init`, a `baseline`/onboarding capture window, a profile
-  schema and catalogue, `apply`/`--revert` for writing a chosen profile
-  into `settings.json`/agent frontmatter, a `compare` command, team
-  aggregate import across machines, and a reconciliation pass against
-  real billing data.
+  report. Still ahead.
+- **v0.3** — a profile schema and catalogue, `init` and a `baseline`/
+  onboarding capture window (all shipped — see
+  [`docs/onboarding.md`](docs/onboarding.md) and
+  [`docs/profiles.md`](docs/profiles.md)); `apply`/`--revert` for
+  writing a chosen profile into `settings.json`/agent frontmatter, a
+  `compare` command, team aggregate import across machines, and a
+  reconciliation pass against real billing data are still ahead.
 
 ## 14. Running the service
 
