@@ -41,6 +41,22 @@ combining four proxies into one defensible single-metric level is a
 product decision better made once real corpora are available to tune
 against; the table only ever shows one representative metric per
 dimension by design (see :func:`build_section`'s docstring).
+
+v3-limits addition: a usage-cap pause forces a full prefix rewrite on
+resume (see ``ttl.py``'s "limit-expiry" branch) regardless of how
+disciplined the session's own cache usage was, so counting that re-cache
+share against ``cache_efficiency`` would penalise an account-level pause
+as if it were a workflow choice. ``ScorecardInputs.limit_recache_share_pct``
+lets report assembly pass the portion of ``recache_share_pct`` already
+known (from ``limits.LimitStats``) to be limit-attributable; when given,
+``_cache_efficiency`` scores the remainder and reports the exclusion in a
+note rather than silently changing the number. Likewise
+``ScorecardInputs.limit_pause_sessions`` (also from ``limits.LimitStats``)
+is surfaced as a ``data_quality`` note when non-zero — a session that hit
+a usage cap has its gap/re-cache measurements pause-discounted elsewhere
+(``classify.py``, ``ttl.py``) rather than excluded, which is worth
+flagging alongside the other data-quality caveats even though it does not
+change the pricing-coverage level itself.
 """
 
 from __future__ import annotations
@@ -173,6 +189,12 @@ class ScorecardInputs:
     recache_share_pct: float | None = None
     cache_hit_ratio_pct: float | None = None
     full_expiry_share_pct: float | None = None
+    #: Portion of ``recache_share_pct`` (percentage points) already known
+    #: to be forced by a usage-limit pause rather than a workflow choice
+    #: (from ``limits.LimitStats``). ``None`` means "not known" -- scored
+    #: on the raw ``recache_share_pct`` as before, same as any other
+    #: unset optional metric.
+    limit_recache_share_pct: float | None = None
 
     # context hygiene
     median_top_level_ctx: float | None = None
@@ -192,6 +214,10 @@ class ScorecardInputs:
     # data quality
     pricing_coverage_pct: float = 100.0
     parse_error_rate_pct: float = 0.0
+    #: Count of sessions with at least one usage-limit pause (from
+    #: ``limits.LimitStats``). Surfaced as a ``data_quality`` note when
+    #: non-zero; does not itself change the pricing-coverage level.
+    limit_pause_sessions: int = 0
 
 
 def _level_lower_is_better(value: float, bounds: tuple[float, float, float, float]) -> int:
@@ -233,13 +259,24 @@ class _DimensionResult:
 def _cache_efficiency(inputs: ScorecardInputs, th: ScorecardThresholds) -> _DimensionResult | None:
     if inputs.recache_share_pct is None:
         return None
-    level = _level_lower_is_better(inputs.recache_share_pct, th.cache_recache_share_pct)
+    value = inputs.recache_share_pct
+    note = None
+    if inputs.limit_recache_share_pct is not None and inputs.limit_recache_share_pct > 0:
+        value = max(0.0, inputs.recache_share_pct - inputs.limit_recache_share_pct)
+        note = (
+            f"{inputs.limit_recache_share_pct:.1f}pp of {inputs.recache_share_pct:.1f}pp "
+            "re-cache share is attributed to usage-limit pauses (a full prefix rewrite "
+            "forced by an account-level cap, not a workflow choice) and excluded from "
+            "this level."
+        )
+    level = _level_lower_is_better(value, th.cache_recache_share_pct)
     return _DimensionResult(
         dimension="cache_efficiency",
         level=level,
         metric="recache_share_pct",
-        value=inputs.recache_share_pct,
+        value=value,
         threshold=f"<= {th.cache_recache_share_pct[5 - level]:.1f}%" if level > 1 else f"> {th.cache_recache_share_pct[-1]:.1f}%",
+        note=note,
     )
 
 
@@ -293,12 +330,21 @@ def _config_fit(inputs: ScorecardInputs, th: ScorecardThresholds) -> _DimensionR
 
 def _data_quality(inputs: ScorecardInputs, th: ScorecardThresholds) -> _DimensionResult:
     level = _level_higher_is_better(inputs.pricing_coverage_pct, th.data_pricing_coverage_pct)
+    note = None
+    if inputs.limit_pause_sessions > 0:
+        plural = "s" if inputs.limit_pause_sessions != 1 else ""
+        note = (
+            f"{inputs.limit_pause_sessions} session{plural} included at least one "
+            "usage-limit pause; behavioural-gap and re-cache measurements for those "
+            "sessions are pause-discounted (see the limits section) rather than excluded."
+        )
     return _DimensionResult(
         dimension="data_quality",
         level=level,
         metric="pricing_coverage_pct",
         value=inputs.pricing_coverage_pct,
         threshold=f">= {th.data_pricing_coverage_pct[5 - level]:.1f}%" if level > 1 else f"< {th.data_pricing_coverage_pct[-1]:.1f}%",
+        note=note,
     )
 
 

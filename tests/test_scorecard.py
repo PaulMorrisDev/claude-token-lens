@@ -233,6 +233,89 @@ def test_thresholds_from_config_accepts_all_default_tuples_unchanged():
     assert th == defaults
 
 
+# -- v3-limits: limit-attributed re-cache / pause-session notes -----------
+
+
+def test_cache_efficiency_excludes_limit_attributed_recache_share_from_level():
+    # 40.0pp raw recache share alone would score level 2 (30.1-50.0 band),
+    # but 35.0pp of it is attributed to usage-limit pauses, leaving 5.0pp
+    # -- level 5.
+    inputs = ScorecardInputs(recache_share_pct=40.0, limit_recache_share_pct=35.0)
+    section = build_section(inputs)
+    dims = {row[0]: row for row in section.tables[0].rows}
+    assert dims["cache_efficiency"][1] == 5
+    assert dims["cache_efficiency"][4] == pytest.approx(5.0)
+    dimensions_table = section.tables[0]
+    assert any("usage-limit pause" in (note or "") for note in dimensions_table.notes)
+
+
+def test_cache_efficiency_clamps_at_zero_when_limit_share_exceeds_raw_share():
+    inputs = ScorecardInputs(recache_share_pct=5.0, limit_recache_share_pct=9.0)
+    section = build_section(inputs)
+    dims = {row[0]: row for row in section.tables[0].rows}
+    assert dims["cache_efficiency"][4] == pytest.approx(0.0)
+    assert dims["cache_efficiency"][1] == 5
+
+
+def test_cache_efficiency_unaffected_when_limit_recache_share_is_none():
+    inputs = ScorecardInputs(recache_share_pct=40.0)
+    section = build_section(inputs)
+    dims = {row[0]: row for row in section.tables[0].rows}
+    assert dims["cache_efficiency"][4] == pytest.approx(40.0)
+    assert dims["cache_efficiency"][1] == 2
+    dimensions_table = section.tables[0]
+    assert not any("usage-limit pause" in (note or "") for note in dimensions_table.notes)
+
+
+def test_cache_efficiency_unaffected_when_limit_recache_share_is_zero():
+    inputs = ScorecardInputs(recache_share_pct=40.0, limit_recache_share_pct=0.0)
+    section = build_section(inputs)
+    dims = {row[0]: row for row in section.tables[0].rows}
+    assert dims["cache_efficiency"][4] == pytest.approx(40.0)
+    assert dims["cache_efficiency"][1] == 2
+
+
+def test_data_quality_notes_limit_pause_session_count_when_nonzero():
+    inputs = ScorecardInputs(pricing_coverage_pct=99.9, limit_pause_sessions=3)
+    section = build_section(inputs)
+    dimensions_table = section.tables[0]
+    assert any(
+        "3 sessions included at least one usage-limit pause" in (note or "")
+        for note in dimensions_table.notes
+    )
+    # A data-quality note never changes the level itself.
+    dims = {row[0]: row for row in dimensions_table.rows}
+    assert dims["data_quality"][1] == 5
+
+
+def test_data_quality_note_uses_singular_session_for_count_of_one():
+    inputs = ScorecardInputs(limit_pause_sessions=1)
+    section = build_section(inputs)
+    dimensions_table = section.tables[0]
+    assert any(
+        "1 session included at least one usage-limit pause" in (note or "")
+        for note in dimensions_table.notes
+    )
+
+
+def test_data_quality_has_no_limit_pause_note_when_zero():
+    inputs = ScorecardInputs()
+    section = build_section(inputs)
+    dimensions_table = section.tables[0]
+    assert not any("usage-limit pause" in (note or "") for note in dimensions_table.notes)
+
+
+def test_scorecard_with_limit_fields_passes_privacy():
+    inputs = ScorecardInputs(
+        recache_share_pct=40.0,
+        limit_recache_share_pct=35.0,
+        pricing_coverage_pct=98.0,
+        limit_pause_sessions=2,
+    )
+    section = build_section(inputs)
+    assert_privacy(section)
+
+
 # -- contract / privacy ---------------------------------------------------
 
 
