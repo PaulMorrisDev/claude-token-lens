@@ -1,0 +1,36 @@
+id = "implementation-heavy"
+name = "Plan high, implement low"
+for = ["implementation", "refactor", "test-triage", "review"]
+archetype = "plan-high-implement-low"
+notes = """
+For the plan-high-implement-low archetype (workstyle.detect_archetype: \
+plans at a higher model tier, then hands implementation to lower-tier \
+model turns or agents once plan mode exits) and the purposes that tend \
+to run this way -- refactor, test-triage, review -- per \
+classify.classify_purpose. agents.topology_spawn_write's mean_write \
+column (recommend.py's spawn-cost rule threshold) is what a per-agent \
+first-turn write cost looks like for an implementer agent; keeping \
+omitClaudeMd explicit (false, i.e. not yet trimmed -- spawn-cost's own \
+rule only recommends flipping it once mean_write actually clears the \
+threshold for a *specific* corpus, which this shipped starting point \
+cannot know in advance) and pinning "experimental.cacheTtl" to 5m \
+matches ttl.ttl_by_agent_type's own per-agent-type lever text \
+("experimental.cacheTtl in <agent>.md") for a short-gap implementer \
+agent, whose turns run close together rather than waiting on a long \
+verification step. subagentPromptCacheTtl is the same 5m as the \
+fallback default for any other agent type this profile does not name \
+individually, per the plan's "per-subagent TTL" owner note (Appendix, \
+"TTL should be chosen per spawned subagent type ... with \
+subagentPromptCacheTtl only as the fallback default").
+"""
+
+[settings]
+effortLevel = "medium"
+subagentPromptCacheTtl = "5m"
+
+[agents.claude-implementer]
+model = "sonnet"
+effort = "medium"
+maxTurns = 60
+omitClaudeMd = false
+"experimental.cacheTtl" = "5m"
