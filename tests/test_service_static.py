@@ -716,6 +716,27 @@ def test_loadinto_render_callbacks_take_data_first_container_second() -> None:
         )
 
 
+def test_render_health_shows_a_logon_banner_when_service_not_registered() -> None:
+    """v3: ``/api/health``'s ``service_registered`` field (see
+    ``docs/api.md``) drives a warning banner in the Overview tab's
+    "Service health" panel -- someone who skipped ``install-service``
+    (or whose registration was later removed) needs to see this in the
+    UI, not just find it by reading a JSON field. Regression-style
+    source check rather than a DOM test, matching this file's other
+    ``renderHealth``/``renderBaseline``-style assertions -- there is no
+    browser in this test process.
+    """
+    app_js = _static_text("app.js")
+    start = app_js.index("function renderHealth(")
+    end = app_js.index("\n  function ", start + 1)
+    render_health_src = app_js[start:end]
+
+    assert "service_registered" in render_health_src, "renderHealth never reads health.service_registered"
+    assert "=== false" in render_health_src, "the banner must be conditional on service_registered === false"
+    assert "install-service" in render_health_src, "the banner text must tell the operator what command to run"
+    assert "cleanupPeriodDays" in render_health_src, "the banner must explain why registration matters (retention)"
+
+
 def test_fixture_server_serves_session_detail(fixture_server: str) -> None:
     status, content_type, body = _get(fixture_server, "/api/session/session-ui-1")
     assert status == 200

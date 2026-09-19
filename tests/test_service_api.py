@@ -349,6 +349,11 @@ def test_health_reports_service_registered_when_a_probe_is_wired_up(tmp_path, mo
         resp, body = handle.get_json("/api/health")
         assert resp.status == 200
         assert body["data"]["service_registered"] is registered_value
+        # v3: the field is a bare boolean -- confirm a wired-up (non-null)
+        # probe result still can't smuggle a path/command string into the
+        # response (see installer.py's module docstring on why api.py
+        # never imports it directly).
+        assert_privacy(body)
     finally:
         handle.close()
         handle.store.close()
