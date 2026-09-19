@@ -306,3 +306,51 @@ that actually delete a row.
   still held open by another process), `--purge` deletes everything it
   can, reports the failure(s) to stderr, and exits with status `1` —
   it never aborts partway through with an unhandled error.
+
+## Performance
+
+S1-perf measured and fixed `serve`'s worst case: a brand-new install's
+very first watcher tick over a large, already-existing `~/.claude/projects`
+corpus (every prior work package's benchmarks used small synthetic
+fixtures or a warm re-run, neither of which this cold-start path looks
+like). Measured against a real corpus (1858 transcript files, 1.6 GB on
+disk, 135 sessions, one consumer-grade multi-core machine, no other
+significant load) on a checkout at each step:
+
+| Step | First tick (cold) | Second tick (warm) | `service.db` size |
+|---|---|---|---|
+| Baseline (pre-S1-perf) | 43.3 s | 3.9 s | 210.0 MB |
+| + item 2 (parallel parse, shared digest cache) | 51.5 s* | 4.1 s | 210.3 MB |
+| + items 3–4 (write batching, `events_agg`, `digest_blob`) | **30.5 s** | 3.6 s | **22.8 MB** |
+
+\* Item 2 alone parallelises the CPU-bound parse phase (`parse_s`
+23.0 s including pool start-up, down from parsing being folded into an
+undifferentiated serial total) but does nothing about write cost —
+its own `store_s` (20.4 s, unbatched per-row `execute()` calls) was
+untouched and dominates, so the tick's wall-clock total was briefly
+*worse* than baseline until items 3–4 landed. Reported here for an
+honest step-by-step record, not as a regression left in the shipped
+code — the four steps landed together on this branch.
+
+Both of this work package's targets are met on this corpus: first tick
+under 60 s (30.5 s, a 30% cut from baseline) and `service.db` under
+80 MB (22.8 MB, a 9x cut). The dominant remaining cold-tick cost is
+`parse_s` (~21 s: JSONL parsing itself, now parallelised up to 4
+workers) — further gains there would mean parsing faster per file, not
+scheduling the same work differently.
+
+Per-tick timing is visible at runtime via `GET /api/health`'s
+`watcher.discovery_s`/`parse_s`/`store_s` (see [docs/api.md](api.md)),
+so a slow tick's dominant phase on your own corpus/hardware doesn't
+have to be guessed at.
+
+Storage-shape changes behind this: `transcripts.digest_blob` (was
+`digest_json`) stores the same per-transcript JSON zlib-compressed;
+`events_agg` (was `events`) stores one row per `(transcript_id, kind,
+subkind)` with `count`/`dropped_tokens_sum`/`duration_ms_sum` instead
+of one row per raw event — a real corpus's `events` table held 231k+
+rows behind zero readers anywhere in this codebase. Neither change
+alters any `/api/*` response body — `tests/test_service_rebuild.py`'s
+`test_api_backing_bodies_survive_a_full_store_rebuild` asserts this by
+serialising every Store-backed route's body through a full
+drop-and-rebuild cycle and diffing the JSON.
