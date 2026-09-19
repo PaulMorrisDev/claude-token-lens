@@ -626,11 +626,17 @@ def build_section(stats: CompactionStats) -> Section:
     )
 
     notes = [
-        "A turn is flagged as a RE-CACHE here using a minimal, standalone "
-        "rule (ctx > 20,000 and cache_read < 20% of ctx) — the same numbers "
-        "WP3's detector uses, but without WP3's full signature "
-        "classification. WP10 will switch this section to the shared "
-        "recache.py detector once WP3 lands.",
+        "Whether the turn right after a compaction is itself a RE-CACHE "
+        "(the next_turn_is_recache field behind the tables above) is "
+        "decided by the shared recache.py detector's full signature "
+        "classification (recache.apply — turn_index > 1, non-synthetic, "
+        "ctx > ctx_floor, cache_read < cr_ratio*ctx), the same detector "
+        "the RE-CACHE section itself uses, so this module's notion of "
+        "\"re-cache\" can't drift from the corpus-wide one. The standalone, "
+        "minimal two-number rule (ctx > 20,000 and cache_read < 20% of "
+        "ctx) in this module's own is_recache_turn helper is no longer "
+        "used here — it's kept only because its own tests exercise it "
+        "directly.",
         "\"Dropped tokens (share of cache_creation)\" divides total dropped "
         "tokens by every priced turn's cache_creation across the whole "
         "corpus, not just turns following a compaction, so it can exceed "

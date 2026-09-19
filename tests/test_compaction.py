@@ -573,7 +573,12 @@ def test_build_section_shape_and_notes(tmp_path, sonnet_rates):
         "compactions_trigger_mix",
         "compactions_per_session",
     ]
-    assert any("WP10" in note for note in section.notes)
+    # R19: this note used to promise a future switch ("WP10 will switch
+    # this section to the shared recache.py detector once WP3 lands"),
+    # stale ever since the WP10b addition described in the module
+    # docstring actually landed that switch. It now describes current
+    # behaviour instead of a pending plan.
+    assert any("recache.py detector" in note for note in section.notes)
 
     summary_table = section.tables[0]
     summary_metrics = {row[0]: row[1] for row in summary_table.rows}
