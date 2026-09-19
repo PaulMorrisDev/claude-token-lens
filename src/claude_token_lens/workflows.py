@@ -45,11 +45,16 @@ derived for it from the file's grandparent directory name.
 from __future__ import annotations
 
 import json
+import statistics
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Sequence
 
-from .model import TranscriptResult, WorkflowRun
+from .model import Column, Section, Table, TranscriptResult, WorkflowRun
 from .pricing import Pricing, price_turn
+
+#: Rows shown in :func:`build_section`'s per-run detail table.
+_PER_RUN_TABLE_LIMIT = 20
 
 
 def _iso_z(dt: datetime) -> str:
@@ -191,4 +196,104 @@ def link_workflow_agents(
     return matched
 
 
-__all__ = ["parse_workflow_file", "link_workflow_agents"]
+# -- report section -----------------------------------------------------
+
+
+def build_section(runs: Sequence[WorkflowRun]) -> Section:
+    """Build the "Workflows" report section (fix item 10): a summary
+    table (run/agent counts, mean cost), a status-mix table, and a
+    per-run detail table capped at ``_PER_RUN_TABLE_LIMIT`` rows, sorted
+    by cost descending.
+
+    Never reads ``phase_titles``, ``script``, or any other field the
+    module docstring flags as carrying prompt/source text — only the
+    counts and identifiers already on ``WorkflowRun``.
+    """
+    total_runs = len(runs)
+    total_agents = sum(r.agent_count for r in runs)
+    total_cost = sum(r.cost for r in runs)
+    costs = [r.cost for r in runs]
+    agent_counts = [r.agent_count for r in runs]
+
+    summary_table = Table(
+        name="workflows_summary",
+        title="Workflow summary",
+        columns=[
+            Column(key="metric", label="Metric", kind="str"),
+            Column(key="value", label="Value", kind="str"),
+        ],
+        rows=[
+            ["Total workflow runs", total_runs],
+            ["Total agents spawned", total_agents],
+            ["Total cost (USD)", total_cost],
+            ["Mean agents per run", statistics.mean(agent_counts) if agent_counts else None],
+            ["Mean cost per run (USD)", statistics.mean(costs) if costs else None],
+        ],
+    )
+
+    status_mix: dict[str, int] = {}
+    for run in runs:
+        key = run.status or "unknown"
+        status_mix[key] = status_mix.get(key, 0) + 1
+    status_table = Table(
+        name="workflows_status_mix",
+        title="Status mix",
+        columns=[
+            Column(key="status", label="Status", kind="str"),
+            Column(key="count", label="Count", kind="int"),
+            Column(key="pct", label="Share", kind="pct"),
+        ],
+        rows=[
+            [status, count, 100.0 * count / total_runs if total_runs else None]
+            for status, count in sorted(status_mix.items(), key=lambda kv: (-kv[1], kv[0]))
+        ],
+    )
+
+    ordered_runs = sorted(runs, key=lambda r: r.cost, reverse=True)
+    detail_rows = [
+        [
+            run.run_id,
+            run.session_id,
+            run.status or "unknown",
+            run.agent_count,
+            run.phases,
+            run.cost,
+            run.started or "",
+            run.finished or "",
+        ]
+        for run in ordered_runs[:_PER_RUN_TABLE_LIMIT]
+    ]
+    detail_notes = []
+    if total_runs > _PER_RUN_TABLE_LIMIT:
+        detail_notes.append(
+            f"Showing the {_PER_RUN_TABLE_LIMIT} costliest of {total_runs} workflow runs."
+        )
+    detail_table = Table(
+        name="workflows_detail",
+        title=f"Top {_PER_RUN_TABLE_LIMIT} workflow runs by cost",
+        columns=[
+            Column(key="run_id", label="Run", kind="str"),
+            Column(key="session_id", label="Session", kind="str"),
+            Column(key="status", label="Status", kind="str"),
+            Column(key="agent_count", label="Agents", kind="int"),
+            Column(key="phases", label="Phases", kind="int"),
+            Column(key="cost", label="Cost", kind="money"),
+            Column(key="started", label="Started", kind="str"),
+            Column(key="finished", label="Finished", kind="str"),
+        ],
+        rows=detail_rows,
+        notes=detail_notes,
+    )
+
+    section_notes = []
+    if not runs:
+        section_notes.append("No workflow runs found in this window.")
+    return Section(
+        key="workflows",
+        title="Workflows",
+        tables=[summary_table, status_table, detail_table],
+        notes=section_notes,
+    )
+
+
+__all__ = ["parse_workflow_file", "link_workflow_agents", "build_section"]

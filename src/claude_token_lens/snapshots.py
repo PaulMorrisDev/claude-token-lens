@@ -36,7 +36,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .model import Column, Table
+from .model import Column, Section, Table
 
 #: Compact UTC hook timestamp, e.g. "20260918T191200Z".
 _HOOK_TS_FORMAT = "%Y%m%dT%H%M%SZ"
@@ -362,6 +362,47 @@ def build_config_diff_table(
     )
 
 
+def _stringify_config_value(value: object) -> str:
+    """Render a flattened config value for use as a table row key (fix
+    item 10). A config value can be a bool, number, string, list, dict,
+    or ``None`` (unset) — never guaranteed str/int the way most other
+    tables' row keys are — so this always returns a non-empty string,
+    rather than passing the raw value through.
+    """
+    if value is None:
+        return "(unset)"
+    return str(value)
+
+
+def build_config_section(
+    sessions_with_metrics: list[dict],
+    snapshots: list[Snapshot],
+    key: str,
+) -> Section:
+    """Wrap :func:`build_config_diff_table` in a "Config diff" report
+    ``Section`` (fix item 10), so a CLI report can list a config-diff
+    table alongside every other section's the same way.
+
+    :func:`build_config_diff_table` itself is unchanged and keeps
+    returning the value column verbatim (whatever type the config
+    literally holds) for callers that already depend on that. This
+    function's own table stringifies that first column instead (see
+    :func:`_stringify_config_value`), so every ``Section``'s ``Table``
+    has a first column usable as a row key regardless of the underlying
+    config value's type.
+    """
+    diff_table = build_config_diff_table(sessions_with_metrics, snapshots, key)
+    rows = [[_stringify_config_value(row[0]), *row[1:]] for row in diff_table.rows]
+    section_table = Table(
+        name=diff_table.name,
+        title=diff_table.title,
+        columns=diff_table.columns,
+        rows=rows,
+        notes=diff_table.notes,
+    )
+    return Section(key="config_diff", title="Config diff", tables=[section_table])
+
+
 __all__ = [
     "Snapshot",
     "load_snapshots",
@@ -371,4 +412,5 @@ __all__ = [
     "diff_keys",
     "co_changed_keys",
     "build_config_diff_table",
+    "build_config_section",
 ]

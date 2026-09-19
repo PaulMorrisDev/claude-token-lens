@@ -18,9 +18,9 @@ like ``sonnet``) and get the same answer ``detect_archetype`` would.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Sequence
+from typing import Sequence, Union
 
-from .model import SessionRecord
+from .model import Column, Section, SessionRecord, Table
 
 #: Tier order, lowest rank first, per the plan: "fable > opus > sonnet >
 #: haiku, resolved from model id substrings and agent_model_alias."
@@ -243,10 +243,78 @@ def describe_archetype(archetype: str) -> str:
     return _ARCHETYPE_DESCRIPTIONS.get(archetype, f"Unrecognised archetype: {archetype!r}.")
 
 
+# -- report section -----------------------------------------------------
+
+
+def build_section(
+    records_or_features: Sequence[Union[SessionRecord, SessionFeatures]],
+) -> Section:
+    """Build the "Workstyle" report section (fix item 10): one row per
+    archetype, with its session count, corpus share, and description.
+
+    Accepts either already-classified ``SessionRecord``s (archetype read
+    straight from ``record.archetype``) or raw ``SessionFeatures``
+    (classified here via :func:`detect_archetype`) — a caller upstream of
+    full ``SessionRecord`` assembly can still get a workstyle table
+    straight from extracted evidence, and one that already has
+    classified records doesn't pay to re-run detection.
+
+    A ``SessionRecord`` with no archetype set (``None`` — not yet
+    classified) is counted in a note rather than a row, the same
+    "don't drop it, don't guess it" posture :func:`corpus_archetype`
+    already takes.
+    """
+    archetypes: list[str | None] = []
+    for item in records_or_features:
+        if isinstance(item, SessionFeatures):
+            archetype, _ = detect_archetype(item)
+        else:
+            archetype = item.archetype
+        archetypes.append(archetype)
+
+    counts: dict[str, int] = {}
+    unclassified = 0
+    for archetype in archetypes:
+        if archetype is None:
+            unclassified += 1
+        else:
+            counts[archetype] = counts.get(archetype, 0) + 1
+
+    total = len(archetypes)
+    rows = [
+        [archetype, count, 100.0 * count / total if total else None, describe_archetype(archetype)]
+        for archetype, count in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    ]
+
+    notes: list[str] = []
+    if unclassified:
+        plural = "s" if unclassified != 1 else ""
+        notes.append(
+            f"{unclassified} session{plural} had no archetype set and are excluded "
+            "from the table above."
+        )
+    if not archetypes:
+        notes.insert(0, "No sessions to classify in this window.")
+
+    table = Table(
+        name="workstyle_archetypes",
+        title="Workstyle archetypes",
+        columns=[
+            Column(key="archetype", label="Archetype", kind="str"),
+            Column(key="sessions", label="Sessions", kind="int"),
+            Column(key="pct", label="Share", kind="pct"),
+            Column(key="description", label="Description", kind="str"),
+        ],
+        rows=rows,
+    )
+    return Section(key="workstyle", title="Workstyle", tables=[table], notes=notes)
+
+
 __all__ = [
     "SessionFeatures",
     "model_tier",
     "detect_archetype",
     "corpus_archetype",
     "describe_archetype",
+    "build_section",
 ]

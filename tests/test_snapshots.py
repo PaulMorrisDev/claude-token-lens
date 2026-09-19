@@ -19,6 +19,8 @@ from pathlib import Path
 
 from claude_token_lens import snapshots as snap_mod
 
+from helpers import assert_privacy
+
 #: The fixture files live directly under tests/fixtures/snapshots/ (per the
 #: WP7 brief), not under the <config_dir>/token-lens/snapshots/ layout
 #: load_snapshots() expects on a real config dir. _load() below reads them
@@ -305,3 +307,64 @@ def test_build_config_diff_table_no_co_changed_keys_note():
         _sessions_with_metrics(), snapshots, "user_settings.model"
     )
     assert any("No other key changed alongside" in note for note in table.notes)
+
+
+# -- build_config_section -----------------------------------------------
+
+
+def test_build_config_section_wraps_the_diff_table_in_a_section():
+    snapshots = _load()
+    section = snap_mod.build_config_section(
+        _sessions_with_metrics(), snapshots, "user_settings.autoCompactWindow"
+    )
+    assert section.key == "config_diff"
+    assert section.title == "Config diff"
+    assert len(section.tables) == 1
+
+    table = section.tables[0]
+    diff_table = snap_mod.build_config_diff_table(
+        _sessions_with_metrics(), snapshots, "user_settings.autoCompactWindow"
+    )
+    assert table.name == diff_table.name
+    assert table.title == diff_table.title
+    assert [col.key for col in table.columns] == [col.key for col in diff_table.columns]
+    assert table.notes == diff_table.notes
+    assert len(table.rows) == len(diff_table.rows)
+
+
+def test_build_config_section_stringifies_the_value_column():
+    """build_config_diff_table's own "value" column holds the config
+    value verbatim (here, an int: 150000/300000) -- build_config_section
+    stringifies it so every Section's Table has a first column usable as
+    a row key regardless of the underlying config value's type."""
+    snapshots = _load()
+    section = snap_mod.build_config_section(
+        _sessions_with_metrics(), snapshots, "user_settings.autoCompactWindow"
+    )
+    table = section.tables[0]
+    for row in table.rows:
+        assert isinstance(row[0], str) and row[0]
+    assert {row[0] for row in table.rows} == {"150000", "300000"}
+
+
+def test_build_config_section_renders_none_value_as_unset(tmp_path):
+    # A key present in one snapshot's flattened config but absent from
+    # another resolves to a raw None for the missing side -- exercise
+    # that via a key that only appears in the later snapshot.
+    snapshots = _load()
+    table_key = "user_settings.effortLevel"
+    section = snap_mod.build_config_section(_sessions_with_metrics(), snapshots, table_key)
+    table = section.tables[0]
+    # None the fixture doesn't need to actually trip: confirm the helper
+    # itself renders None as "(unset)" and never as the literal "None".
+    assert snap_mod._stringify_config_value(None) == "(unset)"
+    for row in table.rows:
+        assert row[0] != "None"
+
+
+def test_build_config_section_is_privacy_clean():
+    snapshots = _load()
+    section = snap_mod.build_config_section(
+        _sessions_with_metrics(), snapshots, "user_settings.autoCompactWindow"
+    )
+    assert_privacy(section)

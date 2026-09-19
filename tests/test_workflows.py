@@ -11,8 +11,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from claude_token_lens import workflows
-from claude_token_lens.model import TranscriptMeta
+from claude_token_lens.model import TranscriptMeta, WorkflowRun
 from claude_token_lens.parse import parse_transcript
 from claude_token_lens.pricing import load_pricing, price_turn
 
@@ -193,3 +195,109 @@ def test_link_workflow_agents_ignores_subs_with_no_path(tmp_path):
 
     assert result == []
     assert run.cost == 0.0
+
+
+# -- build_section --------------------------------------------------------
+
+
+def _runs():
+    return [
+        WorkflowRun(
+            run_id="wf_a",
+            session_id="sess_a",
+            agent_count=3,
+            phases=2,
+            started="2026-09-18T12:00:00.000Z",
+            finished="2026-09-18T12:05:00.000Z",
+            cost=1.5,
+            status="completed",
+        ),
+        WorkflowRun(
+            run_id="wf_b",
+            session_id="sess_b",
+            agent_count=1,
+            phases=1,
+            started="2026-09-18T13:00:00.000Z",
+            finished="2026-09-18T13:01:00.000Z",
+            cost=0.25,
+            status="killed",
+        ),
+    ]
+
+
+def test_build_section_shape_and_summary_totals():
+    section = workflows.build_section(_runs())
+    assert section.key == "workflows"
+    assert section.title == "Workflows"
+    table_names = [t.name for t in section.tables]
+    assert table_names == ["workflows_summary", "workflows_status_mix", "workflows_detail"]
+
+    summary = {row[0]: row[1] for row in section.tables[0].rows}
+    assert summary["Total workflow runs"] == 2
+    assert summary["Total agents spawned"] == 4
+    assert summary["Total cost (USD)"] == pytest.approx(1.75)
+    assert summary["Mean agents per run"] == pytest.approx(2.0)
+    assert summary["Mean cost per run (USD)"] == pytest.approx(0.875)
+
+    assert_privacy(section)
+
+
+def test_build_section_status_mix_counts_each_status():
+    section = workflows.build_section(_runs())
+    status_table = section.tables[1]
+    by_status = {row[0]: row for row in status_table.rows}
+    assert by_status["completed"][1] == 1
+    assert by_status["killed"][1] == 1
+    assert by_status["completed"][2] == pytest.approx(50.0)
+
+
+def test_build_section_status_mix_falls_back_to_unknown():
+    run = WorkflowRun(run_id="wf_no_status", agent_count=1, phases=1, cost=0.0, status=None)
+    section = workflows.build_section([run])
+    status_table = section.tables[1]
+    assert status_table.rows[0][0] == "unknown"
+
+
+def test_build_section_detail_table_sorted_by_cost_descending():
+    section = workflows.build_section(_runs())
+    detail = section.tables[2]
+    assert [row[0] for row in detail.rows] == ["wf_a", "wf_b"]
+    assert detail.rows[0][5] == pytest.approx(1.5)
+
+
+def test_build_section_detail_table_caps_at_limit_with_a_note():
+    runs = [
+        WorkflowRun(run_id=f"wf_{i}", session_id="sess", agent_count=1, phases=1, cost=float(i))
+        for i in range(25)
+    ]
+    section = workflows.build_section(runs)
+    detail = section.tables[2]
+    assert len(detail.rows) == 20
+    assert detail.notes
+    assert "20" in detail.notes[0]
+
+
+def test_build_section_empty_runs_has_no_data_note():
+    section = workflows.build_section([])
+    assert section.tables[0].rows  # summary table still has metric rows
+    assert any("No workflow runs" in note for note in section.notes)
+
+
+def test_build_section_never_reads_phase_titles_or_script_fields():
+    """phase_titles carries WorkflowRun's own titles, which are safe to
+    store on the dataclass (see the module docstring) but build_section
+    still never surfaces them -- only counts and identifiers."""
+    run = WorkflowRun(
+        run_id="wf_titled",
+        session_id="sess",
+        agent_count=1,
+        phases=1,
+        cost=0.0,
+        phase_titles=("a phase title that must not leak into a table cell",),
+    )
+    section = workflows.build_section([run])
+    for table in section.tables:
+        for row in table.rows:
+            for cell in row:
+                assert "phase title" not in str(cell)
+    assert_privacy(section)

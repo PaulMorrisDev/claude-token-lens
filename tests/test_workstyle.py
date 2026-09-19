@@ -6,14 +6,19 @@ the evidence directly (per the plan's test list).
 
 from __future__ import annotations
 
+import pytest
+
 from claude_token_lens.model import SessionRecord
 from claude_token_lens.workstyle import (
     SessionFeatures,
+    build_section,
     corpus_archetype,
     describe_archetype,
     detect_archetype,
     model_tier,
 )
+
+from helpers import assert_privacy
 
 
 # -- model_tier ----------------------------------------------------------
@@ -265,3 +270,72 @@ def test_describe_archetype_covers_all_six_plus_mixed():
 def test_describe_archetype_unrecognised_value_does_not_raise():
     text = describe_archetype("not-a-real-archetype")
     assert "not-a-real-archetype" in text
+
+
+# -- build_section --------------------------------------------------------
+
+
+def test_build_section_counts_and_shares_from_records():
+    records = [
+        SessionRecord(session_id="s1", archetype="workflow-heavy"),
+        SessionRecord(session_id="s2", archetype="workflow-heavy"),
+        SessionRecord(session_id="s3", archetype="chat-only"),
+    ]
+    section = build_section(records)
+    assert section.key == "workstyle"
+    assert section.title == "Workstyle"
+    assert len(section.tables) == 1
+    table = section.tables[0]
+    assert table.name == "workstyle_archetypes"
+    assert [col.key for col in table.columns] == ["archetype", "sessions", "pct", "description"]
+
+    by_archetype = {row[0]: row for row in table.rows}
+    assert by_archetype["workflow-heavy"][1] == 2
+    assert by_archetype["workflow-heavy"][2] == pytest.approx(200.0 / 3.0)
+    assert by_archetype["chat-only"][1] == 1
+    assert isinstance(by_archetype["workflow-heavy"][3], str) and by_archetype["workflow-heavy"][3]
+
+    assert_privacy(section)
+
+
+def test_build_section_accepts_raw_session_features():
+    """A caller with only extracted SessionFeatures (no SessionRecord yet)
+    still gets a workstyle table -- detect_archetype runs internally."""
+    features = [
+        SessionFeatures(top_level_models=("claude-sonnet-5",), spawn_count=0),
+        SessionFeatures(top_level_models=("claude-sonnet-5",), spawn_count=0),
+    ]
+    section = build_section(features)
+    table = section.tables[0]
+    assert sum(row[1] for row in table.rows) == 2
+    assert_privacy(section)
+
+
+def test_build_section_notes_unclassified_records_excluded_from_table():
+    records = [
+        SessionRecord(session_id="s1", archetype="chat-only"),
+        SessionRecord(session_id="s2", archetype=None),
+    ]
+    section = build_section(records)
+    table = section.tables[0]
+    assert len(table.rows) == 1
+    assert table.rows[0][0] == "chat-only"
+    assert any("1 session" in note for note in section.notes)
+
+
+def test_build_section_empty_input_has_a_note_and_no_rows():
+    section = build_section([])
+    table = section.tables[0]
+    assert table.rows == []
+    assert any("No sessions" in note for note in section.notes)
+
+
+def test_build_section_row_keys_are_all_strings():
+    records = [
+        SessionRecord(session_id="s1", archetype="single-model"),
+        SessionRecord(session_id="s2", archetype="mixed"),
+    ]
+    section = build_section(records)
+    for table in section.tables:
+        for row in table.rows:
+            assert isinstance(row[0], str) and row[0]
