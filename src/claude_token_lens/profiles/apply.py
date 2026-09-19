@@ -1,0 +1,686 @@
+"""Applying a profile to a real project (plan Milestone v0.3's ``apply``
+bullet): "host-side only. ``--dry-run`` prints the exact diff. Real apply
+backs up every touched file to ``~/.claude/token-lens/backups/<ts>/``,
+writes the settings overlay to ``~/.claude/settings.json`` (or
+``.claude/settings.local.json`` with ``--project``), patches agent
+frontmatter in place, writes a snapshot stamped with ``profile_id``, and
+prints how to revert (``apply --revert <ts>``)."
+
+This module is the one place in the package that actually touches a
+project's or a user's real files -- ``schema.py``/``diff.py``/
+``catalogue.py`` are all pure/filesystem-free by design (see their own
+module docstrings); this is deliberately the exception, since applying a
+profile is inherently a filesystem-writing operation. ``diff.py``'s
+``diff_against_effective``/``render_unified_diff`` are reused verbatim
+for the dry-run text, so the diff a user sees before applying and the
+diff this module's own :func:`plan_apply` computed to build the write
+plan are provably the same computation, not two independently-maintained
+renderings that could drift apart.
+
+Enterprise-use safety (plan "Enterprise use" section, Risks item 5): a
+project-scoped write (``project-local`` or ``repo``) is refused when its
+target file is already tracked by git, unless ``allow_tracked=True`` is
+given -- this covers both a project's ``.claude/settings.local.json``/
+``.claude/settings.json`` *and* every ``.claude/agents/<name>.md`` file a
+profile would patch, since an agent frontmatter file is exactly as likely
+to be shared with colleagues as ``settings.json`` is (the plan's own risk
+text names both). A managed-settings key is never written regardless of
+scope or flags -- :func:`plan_apply` drops it from the write plan
+entirely (the same exclusion :mod:`diff` already renders as a "managed by
+policy" note).
+
+Deviations from the plan/brief, reported rather than made silently (see
+``schema.py``'s module docstring for this project's convention on this):
+
+- **``snapshots.py`` has no ``effective_agents()`` accessor**, even
+  though ``diff.py``'s own docstring refers to "``snapshots.effective_agents``'
+  per-agent summary" as if one exists. Both ``schema.py`` and ``diff.py``
+  are outside this work package's writable paths, so rather than add the
+  missing function there, :func:`plan_apply` reads the schema-2
+  ``effective_agents`` field directly off the caller's
+  ``snapshots.Snapshot.data`` dict (exactly the shape
+  ``hooks/snapshot-config.py`` writes it in, per
+  ``docs/config-layers.md``'s own "``effective_agents``" section) --
+  ``snapshot.data.get("effective_agents", {})``.
+- **The snapshot :func:`execute` stamps is a minimal marker, not a full
+  schema-2 capture.** Running the real ``hooks/snapshot-config.py`` hook
+  from inside this module would mean either shelling out to a script this
+  package only ever *loads by path* from the CLI's own snapshot-config
+  command (``cli._load_snapshot_hook_module``) or duplicating hundreds of
+  lines of redaction logic that script deliberately keeps standalone.
+  Instead, :func:`execute` writes a small ``{"ts", "schema_version":
+  2, "profile_id"}`` document to ``<config_dir>/snapshots/<ts>.json`` --
+  a real, loadable schema-2 snapshot file (every accessor in
+  ``snapshots.py`` degrades an absent field to ``{}``/``[]`` rather than
+  raising, so this loads cleanly), just a narrower one than the hook's
+  own next run will produce. The next real hook run (which already reads
+  ``<config_dir>/active-profile``, written by this same :func:`execute`)
+  naturally supersedes it with the full capture.
+- **``--force`` recreates a missing agent frontmatter file from
+  scratch.** Patching requires existing text to parse (frontmatter.py's
+  own "refuse rather than guess" contract has nothing to patch without a
+  file), so by default a profile agent key with no corresponding
+  ``<name>.md`` file at the resolved scope is a blocked/refused apply
+  (see "project-local agent refusal" in the work package's test list).
+  ``force=True`` is the documented escape hatch: it writes a brand-new
+  ``---\\n<key>: value\\n...\\n---\\n`` frontmatter block (no body) instead
+  of refusing. This is the one behaviour ``--force`` controls in this
+  module; it has no effect on the git-tracked-file refusal (that is
+  ``--allow-tracked``'s job specifically) or on anything else.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import tempfile
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+
+from .. import snapshots as snapshots_mod
+from .diff import diff_against_effective, render_unified_diff
+from .frontmatter import FrontmatterError, patch_frontmatter
+from .schema import ENV_ALLOWLIST, Profile
+
+__all__ = [
+    "ApplyError",
+    "FileAction",
+    "ApplyPlan",
+    "ApplyResult",
+    "RevertResult",
+    "BackupInfo",
+    "plan_apply",
+    "execute",
+    "revert",
+    "list_backups",
+    "write_launch_overlay",
+    "env_lines_for_profile",
+]
+
+_VALID_SCOPES = ("user", "project-local", "repo")
+
+#: Compact UTC timestamp, matching ``hooks/snapshot-config.py``'s own
+#: ``_TS_FORMAT`` / ``snapshots._HOOK_TS_FORMAT`` so a stamp this module
+#: writes sorts and parses exactly like a real hook snapshot.
+_TS_FORMAT = "%Y%m%dT%H%M%SZ"
+
+_ACTIVE_PROFILE_FILENAME = "active-profile"
+
+
+class ApplyError(Exception):
+    """An apply/revert operation was refused rather than attempted --
+    e.g. a git-tracked target file without ``--allow-tracked``, a missing
+    project agent file without ``--force``, or an unknown ``--revert``
+    timestamp. ``reasons`` carries every refusal message at once (same
+    convention as ``schema.ProfileError.problems``)."""
+
+    def __init__(self, reasons: list[str]) -> None:
+        self.reasons = list(reasons)
+        super().__init__("; ".join(self.reasons) if self.reasons else "apply refused")
+
+
+@dataclass(frozen=True, slots=True)
+class FileAction:
+    """One file :func:`execute` will back up (if it already exists) and
+    then overwrite. ``old_bytes`` is ``None`` when the file does not
+    exist yet -- :func:`revert` deletes it in that case rather than
+    restoring empty content."""
+
+    kind: str  # "settings" | "agent_frontmatter" | "active_profile"
+    path: Path
+    old_bytes: bytes | None
+    new_bytes: bytes
+    tracked: bool
+    agent_name: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ApplyPlan:
+    """Everything :func:`plan_apply` resolved before touching disk:
+    which files would be written and with what content, which rows were
+    dropped because a managed key governs them, the env-var lines to
+    print (never write), the dry-run diff text, and any reason the plan
+    would be refused (:func:`execute` raises :class:`ApplyError` with
+    exactly these reasons rather than writing anything when
+    ``blocked`` is non-empty)."""
+
+    profile_id: str
+    scope: str
+    config_dir: Path
+    actions: tuple[FileAction, ...]
+    skipped_managed: tuple[str, ...]
+    env_lines: tuple[str, ...]
+    diff_text: str
+    blocked: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class ApplyResult:
+    """What :func:`execute` actually did."""
+
+    profile_id: str
+    scope: str
+    ts: str
+    config_dir: Path
+    written: tuple[Path, ...]
+    backup_dir: Path | None
+    snapshot_path: Path
+    active_profile_path: Path
+
+
+@dataclass(frozen=True, slots=True)
+class RevertResult:
+    ts: str
+    config_dir: Path
+    restored: tuple[Path, ...]
+    deleted: tuple[Path, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class BackupInfo:
+    """One row of :func:`list_backups`."""
+
+    ts: str
+    profile_id: str
+    scope: str
+    file_count: int
+
+
+# -- small filesystem helpers -------------------------------------------
+
+
+def _atomic_write_bytes(path: Path, data: bytes) -> None:
+    """Write ``data`` to ``path`` via a temp file + ``os.replace`` in the
+    same directory (same pattern as ``cache.DigestCache.put``), so a
+    crash mid-write never leaves a half-written target for the next
+    reader. Creates ``path``'s parent directories first."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=".tmp-", suffix=path.suffix or ".tmp")
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+        os.replace(tmp_name, path)
+    except BaseException:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
+
+
+def _read_bytes_or_none(path: Path) -> bytes | None:
+    try:
+        return path.read_bytes()
+    except OSError:
+        return None
+
+
+def _is_git_tracked(path: Path) -> bool:
+    """Whether ``path`` is currently tracked by a git repository rooted
+    anywhere above it. Returns ``False`` (never raises) when ``path``'s
+    directory isn't inside a git repo at all, or when ``git`` itself
+    isn't installed -- both degrade to "not tracked" rather than
+    blocking an apply that has no way to actually check (a documented
+    limitation, not a silent guess: an environment with no git available
+    at all is outside what this safety net can cover)."""
+    try:
+        result = subprocess.run(
+            ["git", "ls-files", "--error-unmatch", str(path)],
+            cwd=str(path.parent),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except OSError:
+        return False
+    return result.returncode == 0
+
+
+def _relative_label(path: Path, base: Path | None) -> str:
+    """``path`` rendered relative to ``base`` when possible (``base`` is
+    always a path the caller explicitly supplied -- ``project_path`` or
+    ``home`` -- so printing it back is not a privacy leak, matching this
+    project's "paths explicitly given by the caller print verbatim"
+    convention). Falls back to ``path``'s own name when it isn't under
+    ``base``."""
+    if base is not None:
+        try:
+            return str(path.relative_to(base))
+        except ValueError:
+            pass
+    return path.name
+
+
+# -- managed-key exclusion (mirrors diff.py's private helper) ------------
+#
+# diff.py's _is_agent_key_managed is not exported (this module must not
+# modify diff.py -- see the module docstring's constraints), so the same
+# small rule is duplicated here rather than imported, matching this
+# project's established convention for a helper this short (e.g.
+# cli.py's _priced_turns).
+
+
+def _is_agent_key_managed(key: str, managed_keys: set[str]) -> bool:
+    if key in managed_keys or "agents" in managed_keys:
+        return True
+    if key == "experimental.cacheTtl" and "subagentPromptCacheTtl" in managed_keys:
+        return True
+    return False
+
+
+# -- scope resolution ------------------------------------------------------
+
+
+def _resolve_settings_path(scope: str, project_path: Path | None, home: Path) -> Path:
+    if scope == "user":
+        return home / ".claude" / "settings.json"
+    if project_path is None:
+        raise ValueError(f"scope={scope!r} requires project_path")
+    if scope == "project-local":
+        return project_path / ".claude" / "settings.local.json"
+    return project_path / ".claude" / "settings.json"  # "repo"
+
+
+def _resolve_agents_dir(scope: str, project_path: Path | None, home: Path) -> Path:
+    if scope == "user":
+        return home / ".claude" / "agents"
+    if project_path is None:
+        raise ValueError(f"scope={scope!r} requires project_path")
+    return project_path / ".claude" / "agents"
+
+
+# -- planning ---------------------------------------------------------------
+
+
+def env_lines_for_profile(profile: Profile, managed_keys: set[str]) -> tuple[str, ...]:
+    """One ``NAME=value`` line per non-managed env entry ``profile``
+    names, sorted by :data:`schema.ENV_ALLOWLIST` order -- printed as
+    guidance only. Per the plan's own A7 comment ("names only here;
+    values supplied at apply time") and this module's docstring, an env
+    var is never written to any file -- the caller (``cli._cmd_apply``)
+    prints these lines and the user exports them in their own shell."""
+    return tuple(
+        f"{name}={profile.env[name]}"
+        for name in ENV_ALLOWLIST
+        if name in profile.env and name not in managed_keys
+    )
+
+
+def plan_apply(
+    profile: Profile,
+    *,
+    scope: str,
+    project_path: str | Path | None,
+    config_dir: str | Path,
+    home: str | Path,
+    snapshot: "snapshots_mod.Snapshot | None" = None,
+    allow_tracked: bool = False,
+    force: bool = False,
+) -> ApplyPlan:
+    """Resolve every file :func:`execute` would touch for applying
+    ``profile`` at ``scope``, without writing anything.
+
+    ``scope`` is one of ``"user"`` (``<home>/.claude/settings.json`` +
+    ``<home>/.claude/agents/``), ``"project-local"``
+    (``<project_path>/.claude/settings.local.json`` +
+    ``<project_path>/.claude/agents/``), or ``"repo"``
+    (``<project_path>/.claude/settings.json`` + the same agents dir --
+    an agent's frontmatter file is not itself scope-specific, see
+    ``diff.py``'s own note that "a per-agent row always renders against
+    ``.claude/agents/<name>.md`` regardless of scope"). ``project_path``
+    is required for ``"project-local"``/``"repo"`` and ignored for
+    ``"user"``.
+
+    ``snapshot``, when given, supplies the "current" side of the dry-run
+    diff and the managed-key exclusion (via ``snapshots.effective_config``/
+    ``effective_provenance``/``managed_keys``, plus this module's own read
+    of the schema-2 ``effective_agents`` field -- see the module
+    docstring's deviation note). ``None`` computes the diff against an
+    empty "nothing currently set" baseline and excludes no keys as
+    managed -- a real ``apply`` invocation always has a snapshot; tests
+    exercising a narrower scenario do not have to construct one.
+
+    Every settings/agent-frontmatter key a managed-settings layer
+    governs is silently dropped from the write plan (never blocked --
+    there's nothing wrong with the rest of the apply) and named in
+    ``skipped_managed`` instead. A project-scoped ``FileAction`` whose
+    target is already git-tracked is kept in ``actions`` (so a caller can
+    still show what *would* be written) but also names itself in
+    ``blocked`` unless ``allow_tracked=True`` -- :func:`execute` refuses
+    to write anything at all when ``blocked`` is non-empty. Likewise, a
+    profile agent key whose target ``<name>.md`` file does not exist is
+    blocked unless ``force=True`` (see the module docstring).
+    """
+    if scope not in _VALID_SCOPES:
+        raise ValueError(f"unknown scope: {scope!r} (expected one of {_VALID_SCOPES})")
+
+    config_dir = Path(config_dir)
+    home = Path(home)
+    project_path = Path(project_path) if project_path is not None else None
+    if scope != "user" and project_path is None:
+        raise ValueError(f"scope={scope!r} requires project_path")
+
+    if snapshot is not None:
+        effective = snapshots_mod.effective_config(snapshot)
+        provenance = snapshots_mod.effective_provenance(snapshot)
+        managed_keys = set(snapshots_mod.managed_keys(snapshot))
+        # Deviation (see module docstring): snapshots.py has no
+        # effective_agents() accessor, so this reads the schema-2 field
+        # straight off the snapshot's own data dict.
+        raw_effective_agents = snapshot.data.get("effective_agents")
+        effective_agents = dict(raw_effective_agents) if isinstance(raw_effective_agents, dict) else {}
+    else:
+        effective, provenance, managed_keys, effective_agents = {}, {}, set(), {}
+
+    profile_diff = diff_against_effective(profile, effective, effective_agents, provenance, managed_keys)
+    diff_text = render_unified_diff(profile_diff, scope=scope)
+
+    settings_path = _resolve_settings_path(scope, project_path, home)
+    agents_dir = _resolve_agents_dir(scope, project_path, home)
+
+    actions: list[FileAction] = []
+    skipped_managed: list[str] = []
+    blocked: list[str] = []
+    home_or_project = project_path if project_path is not None else home
+
+    # -- settings overlay --
+    settings_changes = {k: v for k, v in profile.settings.items() if k not in managed_keys}
+    skipped_managed += [f"settings.{k}" for k in profile.settings if k in managed_keys]
+    if settings_changes:
+        old_bytes = _read_bytes_or_none(settings_path)
+        try:
+            existing = json.loads(old_bytes.decode("utf-8")) if old_bytes else {}
+            if not isinstance(existing, dict):
+                raise ValueError("top-level value is not an object")
+        except (ValueError, UnicodeDecodeError) as exc:
+            raise ApplyError([f"{settings_path}: cannot parse as JSON ({exc})"]) from None
+        merged = dict(existing)
+        merged.update(settings_changes)
+        new_bytes = (json.dumps(merged, indent=2) + "\n").encode("utf-8")
+        if new_bytes != (old_bytes or b""):
+            tracked = _is_git_tracked(settings_path) if project_path is not None else False
+            if tracked and not allow_tracked:
+                blocked.append(
+                    f"{_relative_label(settings_path, home_or_project)} is tracked by git; "
+                    "pass --allow-tracked to write it anyway"
+                )
+            actions.append(
+                FileAction(kind="settings", path=settings_path, old_bytes=old_bytes, new_bytes=new_bytes, tracked=tracked)
+            )
+
+    # -- per-agent frontmatter --
+    for agent_name in sorted(profile.agents):
+        agent_settings = profile.agents[agent_name]
+        changes = {k: v for k, v in agent_settings.items() if not _is_agent_key_managed(k, managed_keys)}
+        skipped_managed += [
+            f"agents.{agent_name}.{k}" for k in agent_settings if _is_agent_key_managed(k, managed_keys)
+        ]
+        if not changes:
+            continue
+
+        agent_path = agents_dir / f"{agent_name}.md"
+        old_bytes = _read_bytes_or_none(agent_path)
+        if old_bytes is None:
+            if not force:
+                blocked.append(
+                    f"no agent file found for {agent_name!r} at "
+                    f"{_relative_label(agent_path, home_or_project)}; apply does not create a "
+                    "new agent file (pass --force to create one from scratch)"
+                )
+                continue
+            new_text = _new_frontmatter_text(changes)
+            new_bytes = new_text.encode("utf-8")
+        else:
+            try:
+                old_text = old_bytes.decode("utf-8")
+                new_text = patch_frontmatter(old_text, changes)
+            except (UnicodeDecodeError, FrontmatterError) as exc:
+                raise ApplyError([f"{agent_path}: {exc}"]) from None
+            new_bytes = new_text.encode("utf-8")
+
+        if new_bytes == (old_bytes or b""):
+            continue
+        tracked = _is_git_tracked(agent_path) if project_path is not None else False
+        if tracked and not allow_tracked:
+            blocked.append(
+                f"{_relative_label(agent_path, home_or_project)} is tracked by git; "
+                "pass --allow-tracked to write it anyway"
+            )
+        actions.append(
+            FileAction(
+                kind="agent_frontmatter",
+                path=agent_path,
+                old_bytes=old_bytes,
+                new_bytes=new_bytes,
+                tracked=tracked,
+                agent_name=agent_name,
+            )
+        )
+
+    # -- active-profile marker (config_dir is this tool's own directory,
+    # never git-tracked in practice, so no tracked-file check applies) --
+    active_path = config_dir / _ACTIVE_PROFILE_FILENAME
+    old_active = _read_bytes_or_none(active_path)
+    new_active = (profile.id + "\n").encode("utf-8")
+    if new_active != (old_active or b""):
+        actions.append(
+            FileAction(kind="active_profile", path=active_path, old_bytes=old_active, new_bytes=new_active, tracked=False)
+        )
+
+    env_lines = env_lines_for_profile(profile, managed_keys)
+    skipped_managed += [f"env.{name}" for name in profile.env if name in managed_keys]
+
+    return ApplyPlan(
+        profile_id=profile.id,
+        scope=scope,
+        config_dir=config_dir,
+        actions=tuple(actions),
+        skipped_managed=tuple(sorted(set(skipped_managed))),
+        env_lines=env_lines,
+        diff_text=diff_text,
+        blocked=tuple(blocked),
+    )
+
+
+def _new_frontmatter_text(changes: dict) -> str:
+    """A brand-new ``---``-fenced frontmatter document holding exactly
+    ``changes`` (``--force``'s "create a missing agent file" path -- see
+    the module docstring). Dotted ``"experimental.cacheTtl"`` keys are
+    grouped into nested form, matching ``patch_frontmatter``'s own
+    default when a file has no existing form to follow."""
+    top: dict[str, object] = {}
+    nested: dict[str, dict[str, object]] = {}
+    for key, value in changes.items():
+        if "." in key:
+            parent, _, child = key.partition(".")
+            nested.setdefault(parent, {})[child] = value
+        else:
+            top[key] = value
+
+    lines = ["---"]
+    for key, value in top.items():
+        if isinstance(value, list):
+            rendered = "[" + ", ".join(_frontmatter_scalar(v) for v in value) + "]"
+        else:
+            rendered = _frontmatter_scalar(value)
+        lines.append(f"{key}: {rendered}")
+    for parent, children in nested.items():
+        lines.append(f"{parent}:")
+        for child, value in children.items():
+            lines.append(f"  {child}: {_frontmatter_scalar(value)}")
+    lines.append("---")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _frontmatter_scalar(value: object) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return str(value)
+    text = str(value)
+    if not text or any(ch in text for ch in ':#"\'[]{}') or text != text.strip():
+        return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    return text
+
+
+# -- executing / reverting ---------------------------------------------------
+
+
+def execute(plan: ApplyPlan, *, config_dir: str | Path) -> ApplyResult:
+    """Write every action in ``plan``, after first backing up whatever
+    each target already held. Raises :class:`ApplyError` (writing
+    nothing) when ``plan.blocked`` is non-empty -- callers should check
+    ``plan.blocked`` themselves before deciding to call this at all, but
+    :func:`execute` re-checks so a plan built with ``allow_tracked=False``
+    can never be executed through some other path that forgot to check.
+
+    Every touched file's pre-image is written verbatim (byte for byte)
+    under ``<config_dir>/backups/<ts>/files/`` before the new content is
+    written, with a ``manifest.json`` recording which backup file (or
+    ``null``, meaning "did not exist") corresponds to which target --
+    :func:`revert` replays this manifest to restore the exact prior
+    state. A file whose pre-image is ``None`` is removed by
+    :func:`revert` rather than emptied. Every write is atomic (temp file
+    + ``os.replace``, see :func:`_atomic_write_bytes`) so a crash
+    mid-apply can never leave a target file half-written.
+    """
+    config_dir = Path(config_dir)
+    if plan.blocked:
+        raise ApplyError(list(plan.blocked))
+
+    ts = datetime.now(timezone.utc).strftime(_TS_FORMAT)
+    backup_dir = config_dir / "backups" / ts
+    files_dir = backup_dir / "files"
+
+    manifest_entries = []
+    written: list[Path] = []
+    for i, action in enumerate(plan.actions):
+        backup_rel = None
+        if action.old_bytes is not None:
+            backup_rel = f"{i:04d}.bak"
+            _atomic_write_bytes(files_dir / backup_rel, action.old_bytes)
+        _atomic_write_bytes(action.path, action.new_bytes)
+        written.append(action.path)
+        manifest_entries.append(
+            {
+                "kind": action.kind,
+                "path": str(action.path),
+                "backup": backup_rel,
+                "agent_name": action.agent_name,
+            }
+        )
+
+    manifest = {
+        "ts": ts,
+        "profile_id": plan.profile_id,
+        "scope": plan.scope,
+        "entries": manifest_entries,
+    }
+    manifest_path = backup_dir / "manifest.json"
+    _atomic_write_bytes(manifest_path, (json.dumps(manifest, indent=2) + "\n").encode("utf-8"))
+
+    snapshot_path = config_dir / "snapshots" / f"{ts}.json"
+    stamp = {"ts": ts, "schema_version": 2, "profile_id": plan.profile_id}
+    _atomic_write_bytes(snapshot_path, (json.dumps(stamp, indent=2) + "\n").encode("utf-8"))
+
+    active_profile_path = config_dir / _ACTIVE_PROFILE_FILENAME
+
+    return ApplyResult(
+        profile_id=plan.profile_id,
+        scope=plan.scope,
+        ts=ts,
+        config_dir=config_dir,
+        written=tuple(written),
+        backup_dir=backup_dir if manifest_entries else None,
+        snapshot_path=snapshot_path,
+        active_profile_path=active_profile_path,
+    )
+
+
+def revert(ts: str, *, config_dir: str | Path) -> RevertResult:
+    """Undo exactly the writes :func:`execute` made for backup ``ts``:
+    restore each entry's pre-image byte for byte, or delete the target
+    when its pre-image was ``None`` (it did not exist before that
+    apply). Raises :class:`ApplyError` if no backup manifest exists for
+    ``ts``. Never touches the snapshot stamp :func:`execute` wrote
+    (snapshots accumulate as a history, the same convention every other
+    snapshot in this project follows -- reverting a settings change
+    doesn't erase the historical record that it happened)."""
+    config_dir = Path(config_dir)
+    manifest_path = config_dir / "backups" / ts / "manifest.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except OSError:
+        raise ApplyError([f"no backup found for {ts!r} (looked for {manifest_path})"]) from None
+    except json.JSONDecodeError as exc:
+        raise ApplyError([f"{manifest_path}: cannot parse manifest ({exc})"]) from None
+
+    files_dir = config_dir / "backups" / ts / "files"
+    restored: list[Path] = []
+    deleted: list[Path] = []
+    for entry in manifest.get("entries", []):
+        target = Path(entry["path"])
+        backup_rel = entry.get("backup")
+        if backup_rel is None:
+            try:
+                target.unlink()
+                deleted.append(target)
+            except FileNotFoundError:
+                pass
+        else:
+            data = (files_dir / backup_rel).read_bytes()
+            _atomic_write_bytes(target, data)
+            restored.append(target)
+
+    return RevertResult(ts=ts, config_dir=config_dir, restored=tuple(restored), deleted=tuple(deleted))
+
+
+def list_backups(config_dir: str | Path) -> list[BackupInfo]:
+    """Every backup manifest under ``<config_dir>/backups/``, oldest
+    first (matching ``snapshots.load_snapshots``'s own ascending-by-ts
+    convention). A manifest that can't be read/parsed is skipped rather
+    than raising -- same "degrade around one corrupt file" posture as
+    ``snapshots.load_snapshots``."""
+    backups_dir = Path(config_dir) / "backups"
+    if not backups_dir.is_dir():
+        return []
+    result: list[BackupInfo] = []
+    for ts_dir in sorted(backups_dir.iterdir()):
+        manifest_path = ts_dir / "manifest.json"
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        result.append(
+            BackupInfo(
+                ts=str(manifest.get("ts", ts_dir.name)),
+                profile_id=str(manifest.get("profile_id", "")),
+                scope=str(manifest.get("scope", "")),
+                file_count=len(manifest.get("entries", [])),
+            )
+        )
+    result.sort(key=lambda b: b.ts)
+    return result
+
+
+# -- --launch: a one-session settings overlay, nothing else ------------------
+
+
+def write_launch_overlay(profile: Profile, *, config_dir: str | Path, managed_keys: set[str] | None = None) -> Path:
+    """Write ``<config_dir>/profiles/<id>.settings.json``: a plain
+    ``settings.json``-shaped JSON object holding exactly ``profile``'s
+    non-managed settings keys (never agent-frontmatter or env keys --
+    ``claude --settings <file>`` only ever accepts top-level settings
+    keys, so there is nothing else this overlay could carry). This is
+    the *only* file this function writes -- no backup, no manifest, no
+    active-profile marker, no existing file read or merged -- matching
+    the plan's "``--launch`` instead prints a ``claude --settings
+    <profile-settings.json>`` command" description of a one-off,
+    session-scoped overlay rather than a persisted apply."""
+    managed_keys = managed_keys or set()
+    settings = {k: v for k, v in profile.settings.items() if k not in managed_keys}
+    path = Path(config_dir) / "profiles" / f"{profile.id}.settings.json"
+    _atomic_write_bytes(path, (json.dumps(settings, indent=2) + "\n").encode("utf-8"))
+    return path
