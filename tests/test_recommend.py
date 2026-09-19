@@ -672,15 +672,19 @@ def test_long_context_share_fires_on_huge_context_share():
                 Table(
                     name="recache_huge_context",
                     title="Huge context",
-                    columns=[Column(key="count", label="Count"), Column(key="share_pct", label="Share", kind="pct")],
-                    rows=[[3, 25.0]],
+                    columns=[
+                        Column(key="metric", label="Metric"),
+                        Column(key="count", label="Count"),
+                        Column(key="share_pct", label="Share", kind="pct"),
+                    ],
+                    rows=[["all", 3, 25.0]],
                 )
             ],
         ),
     )
     recs = recommend_fn(r, config=_config(), archetype=None)
     rec = next(rec for rec in recs if rec.id == "long-context-share")
-    assert ("Cache-read volume share from huge-context turns", 25.0, "recache.recache_huge_context", 3) in rec.evidence
+    assert ("Cache-read volume share from huge-context turns", 25.0, "recache.recache_huge_context", "all") in rec.evidence
 
 
 def test_long_context_share_fires_on_p90_ctx():
@@ -728,8 +732,12 @@ def test_long_context_share_does_not_fire_below_both():
                 Table(
                     name="recache_huge_context",
                     title="Huge context",
-                    columns=[Column(key="count", label="Count"), Column(key="share_pct", label="Share", kind="pct")],
-                    rows=[[0, 5.0]],
+                    columns=[
+                        Column(key="metric", label="Metric"),
+                        Column(key="count", label="Count"),
+                        Column(key="share_pct", label="Share", kind="pct"),
+                    ],
+                    rows=[["all", 0, 5.0]],
                 )
             ],
         ),
@@ -752,8 +760,12 @@ def test_baseline_bloat_fires_with_snapshot_evidence():
                 Table(
                     name="topology_session_baseline",
                     title="Session baseline",
-                    columns=[Column(key="sessions", label="Sessions"), Column(key="mean_baseline", label="Mean baseline")],
-                    rows=[[10, 50_000]],
+                    columns=[
+                        Column(key="metric", label="Metric"),
+                        Column(key="sessions", label="Sessions"),
+                        Column(key="mean_baseline", label="Mean baseline"),
+                    ],
+                    rows=[["all", 10, 50_000]],
                 )
             ],
         ),
@@ -767,7 +779,7 @@ def test_baseline_bloat_fires_with_snapshot_evidence():
     rec = next(rec for rec in recs if rec.id == "baseline-bloat")
     assert rec.lever == "mcpServers"
     assert rec.evidence == [
-        ("Mean session baseline (cache-creation)", 50_000, "agents.topology_session_baseline", 10),
+        ("Mean session baseline (cache-creation)", 50_000, "agents.topology_session_baseline", "all"),
     ]
 
 
@@ -782,8 +794,12 @@ def test_baseline_bloat_does_not_fire_without_snapshot():
                 Table(
                     name="topology_session_baseline",
                     title="Session baseline",
-                    columns=[Column(key="sessions", label="Sessions"), Column(key="mean_baseline", label="Mean baseline")],
-                    rows=[[10, 50_000]],
+                    columns=[
+                        Column(key="metric", label="Metric"),
+                        Column(key="sessions", label="Sessions"),
+                        Column(key="mean_baseline", label="Mean baseline"),
+                    ],
+                    rows=[["all", 10, 50_000]],
                 )
             ],
         ),
@@ -803,8 +819,12 @@ def test_baseline_bloat_does_not_fire_with_too_few_mcp_servers():
                 Table(
                     name="topology_session_baseline",
                     title="Session baseline",
-                    columns=[Column(key="sessions", label="Sessions"), Column(key="mean_baseline", label="Mean baseline")],
-                    rows=[[10, 50_000]],
+                    columns=[
+                        Column(key="metric", label="Metric"),
+                        Column(key="sessions", label="Sessions"),
+                        Column(key="mean_baseline", label="Mean baseline"),
+                    ],
+                    rows=[["all", 10, 50_000]],
                 )
             ],
         ),
@@ -825,8 +845,12 @@ def test_baseline_bloat_suppressed_for_chat_only():
                 Table(
                     name="topology_session_baseline",
                     title="Session baseline",
-                    columns=[Column(key="sessions", label="Sessions"), Column(key="mean_baseline", label="Mean baseline")],
-                    rows=[[10, 50_000]],
+                    columns=[
+                        Column(key="metric", label="Metric"),
+                        Column(key="sessions", label="Sessions"),
+                        Column(key="mean_baseline", label="Mean baseline"),
+                    ],
+                    rows=[["all", 10, 50_000]],
                 )
             ],
         ),

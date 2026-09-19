@@ -1,10 +1,18 @@
 """Cross-module contract test (final task of the 12-item review fix list):
 every ``Table`` produced by every ``build_section``/``build_config_section``
 entry point must have a non-empty first column usable as a row key --
-``row[0]`` is a ``str`` or an ``int`` on every row, for every table. A
-report renderer (Markdown/HTML, or a future ``--group-by`` drill-down)
-needs to key off column zero uniformly, without a per-table special case
-for "this one's first column might be ``None``/a float/a tuple".
+``row[0]`` is a non-empty ``str`` on every row, for every table. A report
+renderer (Markdown/HTML, or a future ``--group-by`` drill-down) needs to
+key off column zero uniformly, without a per-table special case for "this
+one's first column might be ``None``/an int/a float/a tuple".
+
+v0.1.1 fix A2: this used to also accept a plain ``int`` row key (excluding
+``bool``), because ``recache.py``'s ``recache_summary``/``recache_huge_context``
+tables each led with a bare numeric count rather than a label. Both now carry
+an explicit leading ``metric`` string column (see ``recache.py``'s module
+docstring), so every table's row key is a genuine label; this contract
+tightens to match and would now catch a future table making the same
+mistake.
 
 Exercises every module that defines one of these entry points as of this
 task: ``classify``, ``compaction``, ``recache``, ``ttl``, ``workstyle``,
@@ -47,20 +55,19 @@ SONNET_RATES = PRICING.resolve_model("claude-sonnet-5")
 
 
 def _assert_row_keys_are_valid(section: Section) -> None:
-    """Every row, in every table, in ``section`` has a non-empty
-    ``str``/``int`` first column. ``bool`` is excluded even though it is
-    technically an ``int`` subclass -- a True/False row key is never
-    what a caller means by "row key"."""
+    """Every row, in every table, in ``section`` has a non-empty ``str``
+    first column (fix A2: an ``int`` row key -- even excluding ``bool``,
+    which was never what a caller meant by "row key" -- is no longer
+    accepted either; see this module's docstring)."""
     for table in section.tables:
         for row in table.rows:
             assert row, f"{section.key}/{table.name}: a row is empty"
             key = row[0]
-            assert isinstance(key, (str, int)) and not isinstance(key, bool), (
+            assert isinstance(key, str), (
                 f"{section.key}/{table.name}: row[0]={key!r} "
-                f"({type(key).__name__}) is not a str/int row key"
+                f"({type(key).__name__}) is not a str row key"
             )
-            if isinstance(key, str):
-                assert key != "", f"{section.key}/{table.name}: row[0] is an empty string"
+            assert key != "", f"{section.key}/{table.name}: row[0] is an empty string"
 
 
 # -- classify.build_section ---------------------------------------------
@@ -377,12 +384,14 @@ def _value_matches_some_cell(value, row: list) -> bool:
 def _assert_recommendation_evidence_is_valid(model: report.ReportModel) -> None:
     for rec in model.recommendations:
         for label, value, source_table, row_key in rec.evidence:
-            assert isinstance(row_key, (str, int)) and not isinstance(row_key, bool), (
+            # Fix A2: str-only row keys (see this module's docstring) --
+            # an evidence tuple's row_key must resolve into a real table
+            # row, and every table row key is now a non-empty str.
+            assert isinstance(row_key, str), (
                 f"{rec.id}: evidence {label!r} row_key={row_key!r} ({type(row_key).__name__}) "
-                "is not a str/int row key"
+                "is not a str row key"
             )
-            if isinstance(row_key, str):
-                assert row_key != "", f"{rec.id}: evidence {label!r} row_key is an empty string"
+            assert row_key != "", f"{rec.id}: evidence {label!r} row_key is an empty string"
             section_key, _, table_name = source_table.partition(".")
             section = next((s for s in model.sections if s.key == section_key), None)
             assert section is not None, f"{rec.id}: no section {section_key!r} for evidence {label!r}"

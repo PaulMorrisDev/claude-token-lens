@@ -243,12 +243,12 @@ def test_recache_by_group_table_rows_sum_to_the_ungrouped_summary(tmp_path):
         corpus, PRICING, Config(), projects=("proj-two",), window="last 7 days", group_by="mode"
     )
     recache_section = next(s for s in report.sections if s.key == "recache")
-    summary_row = recache_section.tables[0].rows[0]  # recache_summary: transcripts, priced_turns, ...
+    summary_row = recache_section.tables[0].rows[0]  # recache_summary: metric, transcripts, priced_turns, ...
     group_table = next(t for t in recache_section.tables if t.name == "recache_by_group")
     assert group_table.rows
-    # group column prepended, so index 1 onward mirrors recache_summary's columns.
-    assert sum(row[1] for row in group_table.rows) == summary_row[0]  # transcripts
-    assert sum(row[2] for row in group_table.rows) == summary_row[1]  # priced_turns
+    # group column prepended, so index 1 onward mirrors recache_summary's columns (metric first).
+    assert sum(row[2] for row in group_table.rows) == summary_row[1]  # transcripts
+    assert sum(row[3] for row in group_table.rows) == summary_row[2]  # priced_turns
 
 
 # -- subscription vs api labelling (delegated to usage.py, exercised here) --
@@ -431,6 +431,6 @@ def test_recache_by_group_agent_matches_recache_by_agent_type_on_real_fixture():
     for row in group_table.rows:
         label = row[0]
         assert label in priced_turns_by_agent_type, f"unexpected group label {label!r}"
-        # group column prepended: row[1]=transcripts, row[2]=priced_turns, row[3]=recache_turns.
-        assert row[2] == priced_turns_by_agent_type[label]
-        assert row[3] == recache_turns_by_agent_type[label]
+        # group column prepended: row[1]=metric, row[2]=transcripts, row[3]=priced_turns, row[4]=recache_turns.
+        assert row[3] == priced_turns_by_agent_type[label]
+        assert row[4] == recache_turns_by_agent_type[label]

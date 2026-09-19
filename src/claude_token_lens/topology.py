@@ -524,11 +524,16 @@ def _build_spawn_write_table(stats: TopologyStats) -> Table:
 def _build_session_baseline_table(stats: TopologyStats) -> Table:
     values = stats.session_baseline_writes
     columns = [
+        # v0.1.1 fix A2: leading string row-key column -- see
+        # recache.py's module docstring for the same fix and rationale;
+        # this table's single row used to start with the bare `sessions`
+        # int count.
+        Column(key="metric", label="Metric", kind="str"),
         Column(key="sessions", label="Sessions", kind="int"),
         Column(key="mean_baseline", label="Mean session baseline", kind="tokens"),
         Column(key="median_baseline", label="Median session baseline", kind="tokens"),
     ]
-    rows = [[len(values), _mean(values), _median(values)]]
+    rows = [["all", len(values), _mean(values), _median(values)]]
     return Table(
         name="topology_session_baseline",
         title="Session baseline: top-level first-turn cache_creation",
@@ -641,10 +646,15 @@ def _build_skills_table(stats: TopologyStats) -> Table:
 
 def _build_spawn_depth_table(stats: TopologyStats) -> Table:
     columns = [
+        # v0.1.1 fix A2: row key must be a str (see recache.py's module
+        # docstring) -- the depth itself is still a genuine per-row key
+        # (unlike recache_summary's bug), just stringified; the column
+        # stays kind="int" since format_cell's "int" formatting accepts
+        # a numeric string just as well as a real int.
         Column(key="depth", label="Spawn depth", kind="int"),
         Column(key="count", label="Count", kind="int"),
     ]
-    rows = [[depth, count] for depth, count in sorted(stats.spawn_depth_histogram.items())]
+    rows = [[str(depth), count] for depth, count in sorted(stats.spawn_depth_histogram.items())]
     mean_spawns_per_session = _mean(stats.spawns_per_session)
     note = f"Sessions seen: {stats.sessions_seen}; total spawns: {stats.total_spawns}"
     if mean_spawns_per_session is not None:

@@ -210,6 +210,7 @@ def test_avoidable_cost_hand_computed_for_sonnet_5_turn():
     stats = _stats_for([turn])
     section = recache.build_section(stats, PRICING, recache.RecacheThresholds())
     summary = _table(section, "recache_summary")
+    assert summary.rows[0][0] == "all"
     avoidable = summary.rows[0][-1]
     assert avoidable == pytest.approx(0.23, abs=1e-9)
 
@@ -265,11 +266,12 @@ def test_huge_context_table_population_is_all_priced_turns():
     section = recache.build_section(stats, PRICING, recache.RecacheThresholds())
     huge_table = _table(section, "recache_huge_context")
     row = huge_table.rows[0]
-    assert row[0] == 1  # huge_ctx_turns
-    assert row[1] == 2  # total_priced_turns
-    assert row[2] == 200_000  # huge_ctx_cache_read_tokens
-    assert row[3] == 200_050  # total_cache_read_tokens
-    assert row[4] == pytest.approx(100.0 * 200_000 / 200_050)
+    assert row[0] == "all"  # metric (row key)
+    assert row[1] == 1  # huge_ctx_turns
+    assert row[2] == 2  # total_priced_turns
+    assert row[3] == 200_000  # huge_ctx_cache_read_tokens
+    assert row[4] == 200_050  # total_cache_read_tokens
+    assert row[5] == pytest.approx(100.0 * 200_000 / 200_050)
 
 
 def test_by_group_filtering():
@@ -284,17 +286,18 @@ def test_by_group_filtering():
 
     section_a = recache.build_section(stats, PRICING, th, group="proj-a")
     summary_a = _table(section_a, "recache_summary")
-    assert summary_a.rows[0][0] == 1  # transcripts folded into this group
-    assert summary_a.rows[0][2] == 1  # recache_turns
+    assert summary_a.rows[0][0] == "all"  # metric (row key)
+    assert summary_a.rows[0][1] == 1  # transcripts folded into this group
+    assert summary_a.rows[0][3] == 1  # recache_turns
 
     section_b = recache.build_section(stats, PRICING, th, group="proj-b")
     summary_b = _table(section_b, "recache_summary")
-    assert summary_b.rows[0][2] == 0
+    assert summary_b.rows[0][3] == 0
 
     section_all = recache.build_section(stats, PRICING, th, group=None)
     summary_all = _table(section_all, "recache_summary")
-    assert summary_all.rows[0][0] == 2
-    assert summary_all.rows[0][2] == 1
+    assert summary_all.rows[0][1] == 2
+    assert summary_all.rows[0][3] == 1
 
 
 # --------------------------------------------------------------------

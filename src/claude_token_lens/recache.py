@@ -49,6 +49,15 @@ Privacy: every field this module reads off a ``Turn`` (tool names, event
 kinds, a ``<=40``-char command prefix, token counts) is already
 privacy-clean per ``model.py``'s contract; this module never adds a new
 field that could hold message text, a full path, or a full command.
+
+v0.1.1 fix A2: ``recache_summary`` and ``recache_huge_context`` are each a
+single-row table whose row used to start with a bare numeric count
+(``transcripts`` / ``len(huge_turns)``) as ``row[0]`` — a table's row-key
+column must be a non-empty string (every other table's row key already is;
+see ``tests/test_recommend_contract.py``), so both now carry an explicit
+leading ``metric`` column, always the literal string ``"all"`` (there is
+only ever one row, covering the whole corpus or the one ``group`` a caller
+filtered to).
 """
 
 from __future__ import annotations
@@ -389,6 +398,7 @@ def _summary_table(
         name="recache_summary",
         title="Re-cache summary",
         columns=[
+            Column(key="metric", label="Metric", kind="str"),
             Column(key="transcripts", label="Transcripts", kind="int"),
             Column(key="priced_turns", label="Priced turns", kind="int"),
             Column(key="recache_turns", label="Re-cache turns", kind="int"),
@@ -400,6 +410,7 @@ def _summary_table(
         ],
         rows=[
             [
+                "all",
                 transcripts,
                 total_priced,
                 total_recache,
@@ -878,6 +889,7 @@ def _huge_context_table(all_turns: list[Turn], th: RecacheThresholds) -> Table:
         name="recache_huge_context",
         title="Huge-context cache-read volume",
         columns=[
+            Column(key="metric", label="Metric", kind="str"),
             Column(key="huge_ctx_turns", label="Turns with ctx >= huge_ctx", kind="int"),
             Column(key="total_priced_turns", label="Total priced turns", kind="int"),
             Column(key="huge_ctx_cache_read_tokens", label="Cache-read tokens from huge-ctx turns", kind="tokens"),
@@ -886,6 +898,7 @@ def _huge_context_table(all_turns: list[Turn], th: RecacheThresholds) -> Table:
         ],
         rows=[
             [
+                "all",
                 len(huge_turns),
                 len(all_turns),
                 huge_cache_read,
