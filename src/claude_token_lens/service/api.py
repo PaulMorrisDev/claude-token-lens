@@ -172,6 +172,10 @@ def _bad_request(message: str) -> tuple[int, dict]:
     return _error(400, "bad_request", message)
 
 
+def _forbidden(message: str) -> tuple[int, dict]:
+    return _error(403, "forbidden", message)
+
+
 def _internal_error(message: str) -> tuple[int, dict]:
     return _error(500, "internal_error", message)
 
@@ -962,12 +966,59 @@ def make_handler(
         def do_OPTIONS(self) -> None:  # noqa: N802 - stdlib method name
             self._method_not_allowed()
 
+        def _reject_cross_site_post(self) -> str | None:
+            """Same-origin guard for every mutating route (review S3):
+            both POST routes this server exposes (``/api/profiles``,
+            ``/api/sessions/<id>/tags``) are, without this check, a
+            preflight-free "simple" request a cross-site page can issue
+            blind -- the response is opaque to it (no CORS headers are
+            ever sent), but a written profile is exactly what ``apply``
+            later reads back. Returns ``None`` to allow the request, or a
+            human-readable reason for the 403 otherwise.
+
+            ``Origin`` is present on every fetch/XHR POST a browser
+            issues (cross-site or not) and is compared against this
+            server's own ``Host`` header -- itself always
+            ``options.bind:options.port`` since nothing here handles TLS,
+            so a straight ``http://`` comparison is exact. Older browsers
+            that omit ``Origin`` on a same-origin POST are still covered
+            by the ``Sec-Fetch-Site`` check below (sent by every current
+            browser); a request with neither header (e.g. a same-machine
+            CLI tool) is allowed, matching this API's existing no-auth,
+            localhost-only posture (``docs/api.md``).
+            """
+            origin = self.headers.get("Origin")
+            if origin is not None:
+                host = self.headers.get("Host")
+                if host is None or origin != f"http://{host}":
+                    return "cross-origin requests are not allowed on this route"
+            sec_fetch_site = self.headers.get("Sec-Fetch-Site")
+            if sec_fetch_site is not None and sec_fetch_site not in ("same-origin", "none"):
+                return "cross-site requests are not allowed on this route"
+            return None
+
         def do_POST(self) -> None:  # noqa: N802 - stdlib method name
             try:
                 length = int(self.headers.get("Content-Length") or 0)
             except ValueError:
                 length = 0
+            # Read (and discard, on rejection) the body unconditionally,
+            # before any check that might return early -- this is an
+            # HTTP/1.1 keep-alive connection, and leaving unread bytes in
+            # the socket would corrupt the next request on the same
+            # connection.
             raw = self.rfile.read(length) if length > 0 else b""
+
+            reason = self._reject_cross_site_post()
+            if reason is not None:
+                self._write_json(*_forbidden(reason))
+                return
+
+            content_type = (self.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+            if content_type != "application/json":
+                self._write_json(*_bad_request("Content-Type must be application/json"))
+                return
+
             body: dict | None = None
             if raw:
                 try:
