@@ -1,0 +1,9 @@
+{
+  "runId": "wf_diversity-000",
+  "timestamp": "2026-09-18T12:00:00.000Z",
+  "agentCount": 1,
+  "phases": [
+    {"title": "Only phase", "detail": "placeholder detail, never read"}
+  ],
+  "status": "completed"
+}

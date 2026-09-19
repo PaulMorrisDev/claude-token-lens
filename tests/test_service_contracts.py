@@ -38,6 +38,23 @@ def test_serve_options_overrides():
     assert options.exclude_projects == ("secret-repo",)
 
 
+def test_serve_options_billing_mode_and_monthly_report_dir_defaults():
+    options = ServeOptions(projects_root=Path("/x"), config_dir=Path("/y"))
+    assert options.billing_mode == "api"
+    assert options.monthly_report_dir is None
+
+
+def test_serve_options_billing_mode_and_monthly_report_dir_overrides():
+    options = ServeOptions(
+        projects_root=Path("/x"),
+        config_dir=Path("/y"),
+        billing_mode="subscription",
+        monthly_report_dir=Path("/reports"),
+    )
+    assert options.billing_mode == "subscription"
+    assert options.monthly_report_dir == Path("/reports")
+
+
 def test_watcher_stats_defaults_are_all_zero_or_empty():
     stats = WatcherStats()
     assert stats.files_scanned == 0
@@ -57,14 +74,17 @@ def test_api_error_to_envelope_shape():
 
 class _FakeWatcher:
     """Minimal stand-in satisfying ``contracts.Watcher``'s three
-    methods, proving the Protocol's signatures are actually callable
-    this way (a Protocol has no runtime enforcement on its own)."""
+    methods plus its ``last_stats`` attribute, proving the Protocol's
+    shape is actually usable this way (a Protocol has no runtime
+    enforcement on its own)."""
 
     def __init__(self) -> None:
         self.started = False
+        self.last_stats: WatcherStats | None = None
 
     def run_once(self) -> WatcherStats:
-        return WatcherStats(files_scanned=1)
+        self.last_stats = WatcherStats(files_scanned=1)
+        return self.last_stats
 
     def start(self) -> None:
         self.started = True
@@ -77,8 +97,10 @@ def test_fake_watcher_satisfies_the_watcher_protocol_shape():
     from claude_token_lens.service.contracts import Watcher
 
     watcher: Watcher = _FakeWatcher()
+    assert watcher.last_stats is None
     stats = watcher.run_once()
     assert stats.files_scanned == 1
+    assert watcher.last_stats is stats
     watcher.start()
     watcher.stop()
 

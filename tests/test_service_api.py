@@ -323,6 +323,70 @@ def test_session_detail(server):
     _assert_no_leak(json.dumps(body).encode("utf-8"))
 
 
+def test_session_detail_has_no_turn_series_without_a_stored_digest(server):
+    # _seed_store's transcript digest_json is the synthetic {"turns": 3}
+    # shape (not a real encode_result payload), so Store.turns_for_session
+    # can't decode it -- route_session must degrade gracefully and simply
+    # omit turn_series/markers rather than 500 or fabricate empty lists.
+    resp, body = server.get_json(f"/api/session/{server.session_id}")
+    assert resp.status == 200
+    assert "turn_series" not in body["data"]
+    assert "markers" not in body["data"]
+
+
+def test_session_detail_turn_series_and_markers(tmp_path, monkeypatch):
+    # Deliverable 1.g: GET /api/session/<id> exposes turn_series/markers
+    # sourced from the top-level transcript's stored digest.
+    from claude_token_lens.cache import encode_result
+    from claude_token_lens.model import EventKind, Turn, TranscriptMeta, TranscriptResult
+
+    corpus = _build_corpus(tmp_path)
+    _install_fake_rebuild(monkeypatch, corpus)
+
+    store = Store(tmp_path / "service.db")
+    store.open()
+    session_id = corpus.sessions[0].session_id
+    store.upsert_session(session_id=session_id, project_slug="proj-a", slug="proj-a")
+
+    result = TranscriptResult(
+        meta=TranscriptMeta(path=_FAKE_PATH, kind="top-level", session_id=session_id),
+        turns=[
+            Turn(turn_index=1, ctx=1000, cache_creation_tokens=500, is_recache=False,
+                 preceding_primary=EventKind.HUMAN_TEXT, human_prompt_chars=42),
+            Turn(turn_index=2, ctx=1500, cache_creation_tokens=0, is_recache=True,
+                 preceding_primary=EventKind.COMPACT_BOUNDARY),
+        ],
+    )
+    store.upsert_transcript(
+        session_id=session_id,
+        path=_FAKE_PATH,
+        kind="top-level",
+        digest_json=json.dumps(encode_result(result)),
+    )
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    options = ServeOptions(projects_root=tmp_path / "projects", config_dir=config_dir)
+    handler_cls = service_api.make_handler(store, options)
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler_cls)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    handle = _ServerHandle(httpd, thread, corpus=corpus, store=store, options=options)
+    try:
+        resp, body = handle.get_json(f"/api/session/{session_id}")
+        assert resp.status == 200
+        assert body["data"]["turn_series"] == [
+            [1, 1000, 500, False, "human_text"],
+            [2, 1500, 0, True, "compact_boundary"],
+        ]
+        assert body["data"]["markers"] == {"compactions": [2], "spawns": [], "human": [1]}
+        assert_privacy(body)
+        _assert_no_leak(json.dumps(body).encode("utf-8"))
+    finally:
+        handle.close()
+        store.close()
+
+
 def test_session_detail_not_found(server):
     resp, body = server.get_json("/api/session/does-not-exist")
     assert resp.status == 404
@@ -560,6 +624,44 @@ def test_report_json_is_memoized_per_window(server, monkeypatch):
     resp3, _ = server.request("GET", "/api/report.json?window_days=7")
     assert resp3.status == 200
     assert calls["n"] == 2
+
+
+def test_report_json_cache_invalidates_when_store_change_token_changes(server, monkeypatch):
+    # Deliverable 1.f: the memo key is Store.change_token(), not the raw
+    # connection object -- mutating the store (even without touching the
+    # window_days cache key) must force a rebuild on the next request.
+    calls = {"n": 0}
+    real_corpus = server.corpus
+
+    def counting_corpus_from_store(store, *, days=None, since=None, until=None, window_by="mtime"):
+        calls["n"] += 1
+        return real_corpus
+
+    import claude_token_lens.service as service_pkg
+
+    fake = types.ModuleType("claude_token_lens.service.rebuild")
+    fake.corpus_from_store = counting_corpus_from_store
+    monkeypatch.setitem(sys.modules, "claude_token_lens.service.rebuild", fake)
+    monkeypatch.setattr(service_pkg, "rebuild", fake, raising=False)
+
+    resp1, _ = server.request("GET", "/api/report.json")
+    assert resp1.status == 200
+    assert calls["n"] == 1
+
+    resp2, _ = server.request("GET", "/api/report.json")
+    assert resp2.status == 200
+    assert calls["n"] == 1  # unchanged store -> cache hit
+
+    server.store.upsert_transcript(
+        session_id=server.session_id,
+        path=_FAKE_PATH + ".new",
+        kind="subagent",
+        digest_json=json.dumps({"turns": 1}),
+    )
+
+    resp3, _ = server.request("GET", "/api/report.json")
+    assert resp3.status == 200
+    assert calls["n"] == 2  # change_token moved -> rebuilt
 
 
 # -- static file serving ------------------------------------------------------

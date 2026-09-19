@@ -19,6 +19,7 @@ import json
 import pytest
 
 from claude_token_lens.service.store import Store
+from helpers import assert_privacy
 
 #: A deliberately distinctive fake local path -- if this string (or the
 #: username segment alone) ever surfaces in a read-query result, the
@@ -164,6 +165,32 @@ def test_migrate_is_idempotent(store: Store) -> None:
     assert store.schema_version() == schema.SCHEMA_VERSION
 
 
+def test_migrate_drops_and_rebuilds_a_stale_store(store: Store) -> None:
+    """A store whose recorded schema_version is older than the running
+    code's is dropped and recreated from scratch on the next open() --
+    the store is a derived cache, so this is safe, and the next watcher
+    tick repopulates it (S1-integration fix 1.b)."""
+    from claude_token_lens.service import schema
+
+    _seed(store)
+    assert store.summary()["sessions"] == 1
+
+    conn = store._connection()
+    conn.execute(
+        "INSERT INTO meta (key, value) VALUES ('schema_version', '0') "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+    )
+    assert store.schema_version() == 0
+
+    store.migrate()
+
+    assert store.schema_version() == schema.SCHEMA_VERSION
+    # The old session/transcript rows are gone -- a fresh, empty store.
+    assert store.summary()["sessions"] == 0
+    assert store.summary()["transcripts"] == 0
+    assert store.known_files() == {}
+
+
 # -- writer round trips --------------------------------------------------
 
 
@@ -285,6 +312,59 @@ def test_snapshots_listing(store: Store) -> None:
     rows = store.snapshots()
     assert len(rows) == 1
     assert rows[0]["schema_version"] == 2
+    assert rows[0]["project_slug"] == "proj-a"
+
+
+def test_snapshots_reports_global_attribution_as_null_project_slug(store: Store) -> None:
+    """A snapshot attributed to Store.GLOBAL_PROJECT_SLUG (the watcher's
+    synthetic attribution for a machine-wide capture with no real
+    per-project identity) is exposed honestly as project_slug=None, never
+    as the internal sentinel string (S1-integration fix 1.c)."""
+    from claude_token_lens.service.store import GLOBAL_PROJECT_SLUG
+
+    assert GLOBAL_PROJECT_SLUG == "__global__"
+    store.upsert_snapshot(
+        project_slug=GLOBAL_PROJECT_SLUG,
+        ts="2026-09-19T00:00:00Z",
+        schema_version=2,
+        digest_json=json.dumps({}),
+    )
+    rows = store.snapshots()
+    assert len(rows) == 1
+    assert rows[0]["project_slug"] is None
+
+
+def test_upsert_snapshot_dedupes_by_natural_key(store: Store) -> None:
+    """Re-ingesting the same (project, ts, schema_version) snapshot
+    updates the existing row instead of creating a duplicate -- the
+    ON CONFLICT dedupe that lets the watcher drop its own pre-check
+    workaround (S1-integration fix 1.b)."""
+    first_id = store.upsert_snapshot(
+        project_slug="proj-a",
+        ts="2026-09-18T12:00:00Z",
+        schema_version=2,
+        digest_json=json.dumps({"a": 1}),
+    )
+    second_id = store.upsert_snapshot(
+        project_slug="proj-a",
+        ts="2026-09-18T12:00:00Z",
+        schema_version=2,
+        digest_json=json.dumps({"a": 2}),
+    )
+    assert first_id == second_id
+    rows = store.snapshots()
+    assert len(rows) == 1
+    assert json.loads(rows[0]["digest_json"]) == {"a": 2}
+
+    # A different schema_version for the same (project, ts) is a distinct
+    # natural key -- a second row, not an update of the first.
+    store.upsert_snapshot(
+        project_slug="proj-a",
+        ts="2026-09-18T12:00:00Z",
+        schema_version=1,
+        digest_json=json.dumps({"a": 1}),
+    )
+    assert len(store.snapshots()) == 2
 
 
 def test_profiles_and_baselines_listing(store: Store) -> None:
@@ -301,6 +381,76 @@ def test_tags_round_trip(store: Store) -> None:
     assert store.tags("session-a") == {"purpose": "refactor-override"}
     store.set_tag("session-a", "purpose", "docs")
     assert store.tags("session-a") == {"purpose": "docs"}
+
+
+# -- change_token ------------------------------------------------------
+
+
+def test_change_token_changes_when_a_transcript_is_added_or_reparsed(store: Store) -> None:
+    before = store.change_token()
+    _seed(store)
+    after_seed = store.change_token()
+    assert after_seed != before
+
+    # A brand-new transcript (distinct natural key) changes the row count,
+    # which the token always reflects regardless of timestamp resolution.
+    store.upsert_transcript(
+        session_id="session-a",
+        path=_FAKE_PATH + ".extra",
+        kind="subagent",
+        digest_json=json.dumps({"turns": 999}),
+    )
+    after_new_transcript = store.change_token()
+    assert after_new_transcript != after_seed
+
+
+def test_change_token_stable_when_nothing_changed(store: Store) -> None:
+    _seed(store)
+    assert store.change_token() == store.change_token()
+
+
+# -- turns_for_session ---------------------------------------------------
+
+
+def test_turns_for_session_returns_none_without_a_top_level_transcript(store: Store) -> None:
+    store.upsert_session(session_id="ghost", project_slug="proj-a", slug="proj-a")
+    assert store.turns_for_session("ghost") is None
+    assert store.turns_for_session("does-not-exist") is None
+
+
+def test_turns_for_session_builds_series_and_markers(store: Store) -> None:
+    from claude_token_lens.cache import encode_result
+    from claude_token_lens.model import EventKind, Turn, TranscriptMeta, TranscriptResult
+
+    result = TranscriptResult(
+        meta=TranscriptMeta(path=_FAKE_PATH, kind="top-level", session_id="session-b"),
+        turns=[
+            Turn(turn_index=0, ctx=0),  # synthetic -- excluded
+            Turn(turn_index=1, ctx=1000, cache_creation_tokens=500, is_recache=False,
+                 preceding_primary=EventKind.HUMAN_TEXT, human_prompt_chars=42),
+            Turn(turn_index=2, ctx=1500, cache_creation_tokens=0, is_recache=True,
+                 preceding_primary=EventKind.COMPACT_BOUNDARY),
+            Turn(turn_index=3, ctx=2000, cache_creation_tokens=300, is_recache=False,
+                 preceding_primary=EventKind.TOOL_RESULT, agent_brief_chars=120),
+        ],
+    )
+    store.upsert_session(session_id="session-b", project_slug="proj-a", slug="proj-a")
+    store.upsert_transcript(
+        session_id="session-b",
+        path=_FAKE_PATH + ".b",
+        kind="top-level",
+        digest_json=json.dumps(encode_result(result)),
+    )
+
+    data = store.turns_for_session("session-b")
+    assert data is not None
+    assert data["turn_series"] == [
+        [1, 1000, 500, False, "human_text"],
+        [2, 1500, 0, True, "compact_boundary"],
+        [3, 2000, 300, False, "tool_result"],
+    ]
+    assert data["markers"] == {"compactions": [2], "spawns": [3], "human": [1]}
+    assert_privacy(data)
 
 
 # -- privacy guard ---------------------------------------------------------
