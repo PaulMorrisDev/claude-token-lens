@@ -161,9 +161,21 @@ def test_init_and_baseline_are_no_longer_marked_planned(capsys):
 
 
 def test_init_writes_config_and_runs_an_initial_baseline(tmp_path, monkeypatch, capsys):
+    # The project directory is nested under an explicit "home-<name>"
+    # segment we control here, rather than tmp_path/"work"/"my-proj"
+    # directly: whether that plain shape happens to carry a
+    # redact_slug-recognised marker depends entirely on where the
+    # *pytest tmp root* itself sits, which varies by platform (Windows:
+    # ".../Users-<real user>/AppData/Local/Temp/...", so an assertion
+    # relying on that only ever passed there; Linux: "/tmp/pytest-of-
+    # <real user>/...", which redact_slug's marker regex does not match
+    # at all). Building the marker explicitly makes the assertion
+    # deterministic on every platform (see the identical fix in
+    # test_onboarding.py::test_run_init_current_project_line_uses_the_
+    # redacted_slug).
     projects_root = tmp_path / "projects"
     config_dir = tmp_path / "config"
-    real_project_path = tmp_path / "work" / "my-proj"
+    real_project_path = tmp_path / "home-reallife-username" / "work" / "my-proj"
     real_project_path.mkdir(parents=True)
     slug = discovery.slug_for(str(real_project_path))
     _write_project(projects_root, slug)
@@ -186,8 +198,8 @@ def test_init_writes_config_and_runs_an_initial_baseline(tmp_path, monkeypatch, 
     assert (config_dir / "projects" / f"{slug}.toml").is_file()
     assert "Wrote initial baseline" in out
     assert "Capture window: in progress" in out
-    # The redacted slug appears (never the real "work-my-proj" path
-    # segment) in the "current project" line -- the rest of this
+    # The redacted slug appears (never the real "home-reallife-username"
+    # path segment) in the "current project" line -- the rest of this
     # command's output is operational file-path feedback about files it
     # just wrote under --config-dir (the same convention
     # snapshot-config/scrub-fixture's own stdout already follows), which
