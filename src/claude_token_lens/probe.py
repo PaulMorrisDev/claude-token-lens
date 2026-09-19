@@ -133,6 +133,51 @@ def probe_paths(paths, result: ProbeResult | None = None) -> ProbeResult:
     return result
 
 
+#: Capture-improvements addition (A6): the four keys ``parse.py`` reads
+#: for literally every line regardless of ``type`` (see its own
+#: ``_BASE_READ_KEYS``) -- duplicated here, not imported, so this
+#: module's core scanning path keeps its documented independence from
+#: ``parse.py`` (see module docstring); only ``compare_with_parser``
+#: itself, which exists purely to describe ``parse.py``'s behaviour,
+#: needs to know about it at all.
+_UNMAPPED_TYPE_READ_KEYS = frozenset({"type", "uuid", "entrypoint", "version"})
+
+
+def compare_with_parser(result: ProbeResult) -> list[str]:
+    """List every ``<line_type>.<key>`` this ``result`` actually saw at
+    least once that ``parse.READ_KEYS`` says ``parse_transcript`` never
+    looks up for that line type -- i.e. real, present data the parser
+    currently throws away. A line type with no ``parse.READ_KEYS`` entry
+    (every type ``events.py`` ignores outright, plus the ``file-history-*``/
+    ``artifact-*`` prefix families) is compared against the four keys
+    ``parse.py`` reads for every line regardless of type, since that's all
+    it ever reads for an ignored type.
+
+    Sorted for stable output. Only key *names* are compared, never values
+    -- consistent with the rest of this module never touching content.
+
+    Imports ``parse`` lazily so this module's core probing functions
+    (``probe_line``/``probe_file``/``probe_paths``) keep working
+    unaffected even if ``parse.py`` itself can't be imported (e.g. it
+    started rejecting a line shape this probe should still describe) --
+    see the module docstring's "deliberately does NOT depend on parse.py".
+    """
+    from . import parse as parse_mod
+
+    unread: list[str] = []
+    for line_type in sorted(result.keys_by_type):
+        read_keys = parse_mod.READ_KEYS.get(line_type, _UNMAPPED_TYPE_READ_KEYS)
+        for key in sorted(result.keys_by_type[line_type]):
+            if key not in read_keys:
+                # Both line_type and key are already individually clipped
+                # to MAX_VALUE_CHARS by probe_line's own _clip() calls, but
+                # concatenating two clipped strings can still exceed the
+                # cap -- re-clip the combined form so this stays as safe
+                # to paste verbatim as every other line this module emits.
+                unread.append(_clip(f"{line_type}.{key}"))
+    return unread
+
+
 def render_probe(result: ProbeResult) -> str:
     """Render ``result`` as plain text suitable for pasting into a bug
     report: counts and key/enum names only, never a value from the
@@ -185,6 +230,15 @@ def render_probe(result: ProbeResult) -> str:
     else:
         lines.append("(none)")
 
+    lines.append("")
+    lines.append("## unread keys (vs parse.py)")
+    unread_keys = compare_with_parser(result)
+    if unread_keys:
+        for entry in unread_keys:
+            lines.append(f"- {entry}")
+    else:
+        lines.append("(none)")
+
     return "\n".join(lines) + "\n"
 
 
@@ -195,4 +249,5 @@ __all__ = [
     "probe_file",
     "probe_paths",
     "render_probe",
+    "compare_with_parser",
 ]

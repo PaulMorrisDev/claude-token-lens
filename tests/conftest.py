@@ -36,3 +36,18 @@ def _isolated_claude_config_dir(tmp_path_factory, monkeypatch):
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(fake_home / ".claude"))
     monkeypatch.setenv("HOME", str(fake_home))
     monkeypatch.setenv("USERPROFILE", str(fake_home))
+
+
+@pytest.fixture(autouse=True)
+def _reset_parse_salt():
+    """Capture-improvements addition (A3): ``parse._SALT`` is deliberately
+    process-wide state (see ``parse.set_salt``'s docstring on why it's a
+    module global rather than a ``parse_transcript`` parameter) -- reset
+    it after every test so one test's ``set_salt`` call can't leak a salt
+    into an unrelated later test. Lazily imports ``parse`` so tests that
+    never touch it pay nothing extra.
+    """
+    yield
+    from claude_token_lens import parse as parse_mod
+
+    parse_mod._SALT = None

@@ -44,6 +44,24 @@ Only numeric digests and short, non-identifying labels:
   `cleanupPeriodDays`, `desktopSessionCleanupPeriodDays`,
   `autoUpdatesChannel`, `alwaysThinkingEnabled`) or a plain `bool`/`int`.
 
+`Turn.read_target_hashes` is the one exception to "no path fragment is
+ever stored", and it is deliberately a one-way hash rather than a
+shortened/redacted string: for every `Read`/`Edit`/`Write`/
+`NotebookEdit` tool call in a turn, `parse.py` stores
+`hmac.new(salt, normcase(path), sha256).hexdigest()[:16]` — a 16-character
+hex digest that lets the *same* file be recognised as re-read across
+turns and sessions (for "which files does this session keep
+re-opening" analytics) without the path itself, or any substring of it,
+ever appearing in a dataclass field, the digest cache, or a rendered
+report. The salt is a random 32-byte value generated once with
+`secrets.token_bytes(32)` and stored at `<config-dir>/salt` (`0600`
+permissions where the OS supports it); without a salt in effect
+(`parse.set_salt` never called), `read_target_hashes` is always empty
+rather than falling back to an unsalted, offline-crackable hash. Because
+the hash is keyed to a salt private to one machine's `<config-dir>`, it
+cannot be correlated against a hash produced on a different machine or
+after the salt file is rotated/deleted.
+
 Message text, tool-result content, file contents, full file paths and
 full shell commands are never written to a dataclass field, the on-disk
 cache, or any rendered output. This is enforced today by

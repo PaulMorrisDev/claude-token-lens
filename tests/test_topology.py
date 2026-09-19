@@ -76,7 +76,13 @@ def _build_scenario(tmp_path: Path):
                 output_tokens=200,
                 effort="high",
                 attributionSkill="grill-me",
-                content=[tool_use_block("Agent", "tu_agentA1", {"subagent_type": "claude-implementer"})],
+                content=[
+                    tool_use_block(
+                        "Agent",
+                        "tu_agentA1",
+                        {"subagent_type": "claude-implementer", "prompt": "please implement grill-me"},
+                    )
+                ],
             ),
             50,
         ),
@@ -91,7 +97,11 @@ def _build_scenario(tmp_path: Path):
                 effort="medium",
                 attributionMcpServer="figma",
                 content=[
-                    tool_use_block("Agent", "tu_agentB1", {"subagent_type": "general-purpose"}),
+                    tool_use_block(
+                        "Agent",
+                        "tu_agentB1",
+                        {"subagent_type": "general-purpose", "prompt": "please handle it"},
+                    ),
                     tool_use_block("Bash", "tu_bash1", {"command": "npm test"}),
                 ],
             ),
@@ -239,6 +249,22 @@ def test_downward_spawn_write_and_session_baseline(tmp_path):
     assert stats.spawn_write_by_agent_type["general-purpose"] == [3000]
 
 
+def test_downward_spawn_brief_chars_by_agent_type(tmp_path):
+    """Capture-improvements A7: the spawning top-level turn's own
+    agent_brief_chars, joined by tool_use_id. top_1's Agent tool_use
+    (spawning agent-a1) carries a 25-char prompt; top_2's (spawning
+    agent-b1) carries a 16-char prompt. agent-a1-child is reached only
+    via parent_agent_id (no tool_use_id of its own) and contributes
+    nothing here, unlike spawn_write_by_agent_type above.
+    """
+    top, subs, pricing = _build_scenario(tmp_path)
+    stats = TopologyStats()
+    stats.add_session("sess-1", top, subs, pricing)
+
+    assert stats.spawn_brief_chars_by_agent_type["claude-implementer"] == [25]
+    assert stats.spawn_brief_chars_by_agent_type["general-purpose"] == [16]
+
+
 # -- (b) upward: Agent/Workflow tool_result, report proxy ----------------
 
 
@@ -355,6 +381,53 @@ def test_chains_cost_by_agent_type(tmp_path):
         sorted([_cost(a1, pricing), _cost(a1_child, pricing)])
     )
     assert costs["general-purpose"][0] == pytest.approx(_cost(b1, pricing))
+
+
+def test_chains_tool_wait_by_agent_type(tmp_path):
+    """Capture-improvements A7: Turn.tool_wait_s, folded per agent type.
+    ``_build_scenario``'s subs make no tool calls at all, so this needs
+    its own small fixture -- one Bash call answered 5s later, then a
+    tool-free second turn (which must contribute nothing, since its own
+    tool_wait_s is None).
+    """
+    sub_lines = [
+        turn_line(
+            message_id="sub_1",
+            timestamp="2026-09-18T12:00:00.000Z",
+            content=[tool_use_block("Bash", "tu_x", {"command": "ls"})],
+        ),
+        user_block_line(
+            [tool_result_block("tu_x", "ok")],
+            timestamp="2026-09-18T12:00:05.000Z",
+        ),
+        turn_line(message_id="sub_2", timestamp="2026-09-18T12:00:07.000Z"),
+    ]
+    sub_path = tmp_path / "agent-x.jsonl"
+    write_jsonl(sub_path, sub_lines)
+    sub = parse_transcript(
+        sub_path,
+        TranscriptMeta(
+            path=str(sub_path),
+            session_id="sess-1",
+            kind="subagent",
+            agent_id="agent-x",
+            agent_type="claude-implementer",
+            tool_use_id="tu_top",
+            spawn_depth=1,
+        ),
+    )
+
+    top_path = tmp_path / "top.jsonl"
+    write_jsonl(top_path, [turn_line(message_id="top_1")])
+    top = parse_transcript(
+        top_path, TranscriptMeta(path=str(top_path), session_id="sess-1", kind="top-level")
+    )
+
+    pricing = load_pricing()
+    stats = TopologyStats()
+    stats.add_session("sess-1", top, [sub], pricing)
+
+    assert stats.tool_wait_by_agent_type["claude-implementer"] == pytest.approx([5.0])
 
 
 # -- (e) reminder/hook pressure, CACHE_SIGNAL histogram ------------------
@@ -487,6 +560,48 @@ def test_build_section_produces_one_table_per_plan_item(tmp_path):
     row = next(r for r in skills_table.rows if r[0] == "grill-me")
     # total_cost column (index 4) == direct_cost (2) + spawned_cost (3).
     assert row[4] == pytest.approx(row[2] + row[3])
+
+
+def test_spawn_write_table_has_mean_briefing_chars_column(tmp_path):
+    """Capture-improvements A7."""
+    top, subs, pricing = _build_scenario(tmp_path)
+    stats = TopologyStats()
+    stats.add_session("sess-1", top, subs, pricing)
+
+    section = build_section(stats)
+    table = next(t for t in section.tables if t.name == "topology_spawn_write")
+    assert [c.key for c in table.columns] == [
+        "agent_type",
+        "spawns",
+        "mean_write",
+        "median_write",
+        "mean_briefing_chars",
+    ]
+    row_by_type = {row[0]: row for row in table.rows}
+    assert row_by_type["claude-implementer"][4] == pytest.approx(25.0)
+    assert row_by_type["general-purpose"][4] == pytest.approx(16.0)
+
+
+def test_cost_per_spawn_table_has_mean_tool_wait_column(tmp_path):
+    """Capture-improvements A7. ``_build_scenario``'s subs make no tool
+    calls, so the column is None throughout here -- the nonzero-value
+    case is covered by test_chains_tool_wait_by_agent_type above.
+    """
+    top, subs, pricing = _build_scenario(tmp_path)
+    stats = TopologyStats()
+    stats.add_session("sess-1", top, subs, pricing)
+
+    section = build_section(stats)
+    table = next(t for t in section.tables if t.name == "topology_cost_per_spawn")
+    assert [c.key for c in table.columns] == [
+        "agent_type",
+        "spawns",
+        "mean_cost",
+        "median_cost",
+        "mean_tool_wait",
+    ]
+    for row in table.rows:
+        assert row[4] is None
 
 
 def test_build_section_empty_stats_never_raises():

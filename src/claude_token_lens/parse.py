@@ -71,7 +71,12 @@ exists.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
+import json
+import os
 import re
+import secrets
 import tempfile
 from dataclasses import dataclass, field, replace
 from datetime import datetime
@@ -90,6 +95,24 @@ _EDIT_TOOL_PATH_KEYS = {
     "Edit": "file_path",
     "Write": "file_path",
     "MultiEdit": "file_path",
+    "NotebookEdit": "notebook_path",
+}
+
+#: Capture-improvements addition (A2): tool_use names whose own ``prompt``
+#: input string is a spawned-agent brief. Only its length is ever kept
+#: (``Turn.agent_brief_chars``) — never the text.
+_AGENT_TOOL_NAMES = ("Agent", "Task")
+
+#: Capture-improvements addition (A3): tool name -> the input key holding
+#: the read/write target path to hash (``Turn.read_target_hashes``).
+#: Deliberately a superset-compatible sibling of ``_EDIT_TOOL_PATH_KEYS``
+#: (adds ``Read``, drops ``MultiEdit`` which has no single top-level path
+#: key) rather than reusing it, since the two fields answer different
+#: questions (edit-location classification vs. read/write-target hashing).
+_READ_TARGET_PATH_KEYS = {
+    "Read": "file_path",
+    "Edit": "file_path",
+    "Write": "file_path",
     "NotebookEdit": "notebook_path",
 }
 
@@ -166,6 +189,93 @@ def _redact_paths(text: str) -> str:
     without_urls = _URL_TOKEN_RE.sub("<url>", text)
     without_at = _AT_TOKEN_RE.sub("<user@host>", without_urls)
     return _ABS_PATH_TOKEN_RE.sub("<path>", without_at)
+
+
+#: Capture-improvements addition (A3): module-level salt used by
+#: ``_read_target_hash``. Threaded through a setter rather than a
+#: ``parse_transcript`` parameter so the function's public signature
+#: stays stable (per this task's contract) while still letting a
+#: ``ProcessPoolExecutor`` worker (spawned fresh under Windows ``spawn``)
+#: initialise it once before parsing any file — see ``set_salt``.
+_SALT: bytes | None = None
+
+_SALT_FILENAME = "salt"
+
+
+def set_salt(salt: bytes) -> None:
+    """Set the process-wide salt used by ``_read_target_hash`` for
+    ``Turn.read_target_hashes``. Must be called once (per process) before
+    ``parse_transcript`` if hashed read targets are wanted — with no salt
+    set, ``Turn.read_target_hashes`` is always empty (see
+    ``_read_target_hash``). A plain module global, not a
+    ``parse_transcript`` argument, so callers running under
+    ``ProcessPoolExecutor`` (``corpus.py``) can initialise each worker
+    process once via an initializer rather than threading the salt
+    through every call.
+    """
+    global _SALT
+    _SALT = salt
+
+
+def _default_token_lens_dir() -> Path:
+    """``$CLAUDE_CONFIG_DIR/token-lens``, else ``~/.claude/token-lens``.
+    Mirrors ``cli.py``'s own ``_resolve_config_dir`` (see its docstring on
+    why each module keeps its own copy of this lookup rather than
+    importing one from another) — this module deliberately doesn't import
+    ``cli.py``/``config.py`` to stay a leaf dependency.
+    """
+    base = os.environ.get("CLAUDE_CONFIG_DIR")
+    root = Path(base) if base else (Path.home() / ".claude")
+    return root / "token-lens"
+
+
+def load_or_create_salt(config_dir: str | Path | None = None) -> bytes:
+    """Load the 32-byte salt at ``<config_dir>/salt``, creating it with
+    ``secrets.token_bytes(32)`` on first use. ``config_dir`` defaults to
+    ``_default_token_lens_dir()``. Best-effort ``chmod 0600`` on the new
+    file (POSIX only — Windows has no equivalent bit, so the ``chmod``
+    call is wrapped and its failure ignored there). Does not call
+    ``set_salt`` itself — the caller decides when the process-wide salt
+    is wired up.
+    """
+    directory = Path(config_dir) if config_dir is not None else _default_token_lens_dir()
+    directory.mkdir(parents=True, exist_ok=True)
+    salt_path = directory / _SALT_FILENAME
+    try:
+        return salt_path.read_bytes()
+    except FileNotFoundError:
+        pass
+    salt = secrets.token_bytes(32)
+    salt_path.write_bytes(salt)
+    try:
+        os.chmod(salt_path, 0o600)
+    except OSError:
+        pass
+    return salt
+
+
+def _normalize_path_for_hash(path_value: str) -> str:
+    """Normalise a tool_use target path before hashing, so the same real
+    location hashes the same way regardless of slash direction or case
+    (Windows paths are case-insensitive) — deliberately *not* resolving
+    against the filesystem (``Path.resolve()``), since this path may not
+    exist on this machine (e.g. a subagent transcript scrubbed for
+    fixtures) and a hash function must never raise on its input.
+    """
+    return path_value.replace("\\", "/").casefold()
+
+
+def _read_target_hash(path_value: str) -> str | None:
+    """Salted HMAC-SHA256 of a normalised read/write target path, truncated
+    to 16 hex chars — ``None`` when no salt has been set yet (see
+    ``set_salt``), so a caller that never wires up hashing simply gets no
+    hashes rather than an unsalted (crackable) one.
+    """
+    if _SALT is None:
+        return None
+    normalized = _normalize_path_for_hash(path_value)
+    digest = hmac.new(_SALT, normalized.encode("utf-8"), hashlib.sha256).hexdigest()
+    return digest[:16]
 
 
 def detect_provider(model_id: str | None) -> str | None:
@@ -268,6 +378,19 @@ class _PendingTurn:
     cmd_prefix: str | None = None
     edit_real_found: bool = False
     edit_scratch_found: bool = False
+    #: Capture-improvements addition (A2, see model.py's ``Turn.
+    #: agent_brief_chars``/``tool_input_chars_by_tool`` docstrings).
+    agent_brief_chars: int | None = None
+    tool_input_chars_by_tool: dict[str, int] = field(default_factory=dict)
+    #: Capture-improvements addition (A3, see model.py's ``Turn.
+    #: read_target_hashes`` docstring).
+    read_target_hashes: list[str] = field(default_factory=list)
+    #: Capture-improvements addition (A1, see model.py's ``Turn.
+    #: tool_result_chars_by_tool``/``tool_wait_s``/``model_latency_s``
+    #: docstrings): populated by ``_accumulate_tool_results`` for
+    #: tool_result lines answering *this* turn's own ``tool_use_ids``.
+    tool_result_chars_by_tool: dict[str, int] = field(default_factory=dict)
+    tool_result_ts_values: list[str] = field(default_factory=list)
 
 
 def _merge_content_blocks(pending: _PendingTurn, content, tool_use_names: dict[str, str]) -> None:
@@ -302,6 +425,28 @@ def _merge_content_blocks(pending: _PendingTurn, content, tool_use_names: dict[s
                     pending.edit_scratch_found = True
                 else:
                     pending.edit_real_found = True
+
+        # A2: agent-brief size -- the Agent/Task tool_use's own `prompt`
+        # input length, never the prompt text itself -- plus a per-tool
+        # total of every tool_use's JSON-encoded input size.
+        if name in _AGENT_TOOL_NAMES:
+            prompt = tool_input.get("prompt")
+            if isinstance(prompt, str) and prompt:
+                pending.agent_brief_chars = (pending.agent_brief_chars or 0) + len(prompt)
+        input_chars = len(json.dumps(tool_input, ensure_ascii=False, default=str))
+        pending.tool_input_chars_by_tool[name] = (
+            pending.tool_input_chars_by_tool.get(name, 0) + input_chars
+        )
+
+        # A3: hash Read/Edit/Write/NotebookEdit targets instead of ever
+        # storing the path itself.
+        read_target_key = _READ_TARGET_PATH_KEYS.get(name)
+        if read_target_key is not None:
+            target_value = tool_input.get(read_target_key)
+            if isinstance(target_value, str) and target_value:
+                hashed = _read_target_hash(target_value)
+                if hashed is not None:
+                    pending.read_target_hashes.append(hashed)
 
 
 def _new_pending(d: dict, tool_use_names: dict[str, str]) -> _PendingTurn:
@@ -410,11 +555,18 @@ def _accumulate_tool_results(
     tool_use_names: dict[str, str],
     tool_result_chars: dict[str, int],
     tool_result_calls: dict[str, int],
+    current: _PendingTurn | None = None,
 ) -> None:
     message = d.get("message")
     content = message.get("content") if isinstance(message, dict) else None
     if not isinstance(content, list):
         return
+    #: A1 addition: this tool_result line's own timestamp, recorded on
+    #: ``current`` only for the tool_use_ids that are actually its own
+    #: (see model.py's ``Turn.tool_wait_s``/``tool_result_chars_by_tool``
+    #: docstrings) -- a tool_result can answer a tool_use from an earlier
+    #: turn, which must not pollute this turn's own timing/composition.
+    ts_raw = d.get("timestamp")
     for block in content:
         if not isinstance(block, dict) or block.get("type") != "tool_result":
             continue
@@ -425,6 +577,16 @@ def _accumulate_tool_results(
         length = _tool_result_length(block.get("content"))
         tool_result_chars[name] = tool_result_chars.get(name, 0) + length
         tool_result_calls[name] = tool_result_calls.get(name, 0) + 1
+        if (
+            current is not None
+            and isinstance(tool_use_id, str)
+            and tool_use_id in current.tool_use_ids
+        ):
+            current.tool_result_chars_by_tool[name] = (
+                current.tool_result_chars_by_tool.get(name, 0) + length
+            )
+            if isinstance(ts_raw, str) and ts_raw:
+                current.tool_result_ts_values.append(ts_raw)
 
 
 def _resolve_preceding_tool(previous_turn: Turn | None) -> tuple[str, str | None]:
@@ -447,6 +609,7 @@ def _finalize_turn(
     previous_non_synthetic_ts: datetime | None,
     priced_turn_count: int,
     diagnostics: Diagnostics,
+    next_ts_raw: str | None = None,
 ) -> tuple[Turn, datetime | None, int]:
     ts_dt = _parse_ts(pending.ts_raw)
     ctx = pending.input_tokens + pending.cache_creation_tokens + pending.cache_read_tokens
@@ -487,6 +650,38 @@ def _finalize_turn(
     preceding_tool, preceding_cmd_prefix = _resolve_preceding_tool(previous_turn)
     preceding_primary = events_mod.primary_kind(pending_events)
 
+    # A1: timing either side of this turn's own tool calls, from the
+    # tool_result timestamp(s) ``_accumulate_tool_results`` recorded onto
+    # this pending turn (see model.py's ``Turn.tool_wait_s``/
+    # ``model_latency_s`` docstrings). Both stay None when this turn made
+    # no tool calls, or a timestamp is missing/unparsable.
+    tool_wait_s: float | None = None
+    model_latency_s: float | None = None
+    if pending.tool_result_ts_values:
+        parsed_result_ts = [
+            parsed for parsed in (_parse_ts(raw) for raw in pending.tool_result_ts_values) if parsed is not None
+        ]
+        if parsed_result_ts:
+            max_tool_result_ts = max(parsed_result_ts)
+            if ts_dt is not None:
+                tool_wait_s = (max_tool_result_ts - ts_dt).total_seconds()
+            next_ts_dt = _parse_ts(next_ts_raw) if next_ts_raw else None
+            if next_ts_dt is not None:
+                model_latency_s = (next_ts_dt - max_tool_result_ts).total_seconds()
+
+    # A4: human-prompt size/paste-flag, from any HUMAN_TEXT event(s) that
+    # preceded this turn (see model.py's ``Turn.human_prompt_chars``/
+    # ``human_prompt_has_paste`` docstrings).
+    human_prompt_chars: int | None = None
+    human_prompt_has_paste = False
+    for pending_event in pending_events:
+        if pending_event.kind != EventKind.HUMAN_TEXT:
+            continue
+        chars = pending_event.size_chars or 0
+        human_prompt_chars = chars if human_prompt_chars is None else human_prompt_chars + chars
+        if pending_event.detail.get("has_paste"):
+            human_prompt_has_paste = True
+
     turn = Turn(
         message_id=pending.message_id,
         request_id=pending.request_id,
@@ -522,6 +717,14 @@ def _finalize_turn(
         preceding_attachment_types=tuple(pending_attachment_types),
         preceding_primary=preceding_primary,
         inference_geo=pending.inference_geo,
+        tool_wait_s=tool_wait_s,
+        model_latency_s=model_latency_s,
+        tool_result_chars_by_tool=dict(pending.tool_result_chars_by_tool),
+        agent_brief_chars=pending.agent_brief_chars,
+        tool_input_chars_by_tool=dict(pending.tool_input_chars_by_tool),
+        read_target_hashes=tuple(pending.read_target_hashes),
+        human_prompt_chars=human_prompt_chars,
+        human_prompt_has_paste=human_prompt_has_paste,
     )
     return turn, new_prev_ts, new_priced_count
 
@@ -619,6 +822,7 @@ def parse_transcript(path: str | Path, meta: TranscriptMeta) -> TranscriptResult
                     previous_non_synthetic_ts,
                     priced_turn_count,
                     diagnostics,
+                    next_ts_raw=d.get("timestamp"),
                 )
                 turns.append(turn)
                 finalized_keys.add(current_key)  # type: ignore[arg-type]
@@ -635,7 +839,7 @@ def parse_transcript(path: str | Path, meta: TranscriptMeta) -> TranscriptResult
             continue
 
         if line_type == "user":
-            _accumulate_tool_results(d, tool_use_names, tool_result_chars, tool_result_calls)
+            _accumulate_tool_results(d, tool_use_names, tool_result_chars, tool_result_calls, current)
         elif line_type == "agent-setting":
             value = d.get("agentSetting")
             if isinstance(value, str) and value:
@@ -714,4 +918,76 @@ def parse_transcript(path: str | Path, meta: TranscriptMeta) -> TranscriptResult
     )
 
 
-__all__ = ["parse_transcript", "detect_provider"]
+#: Capture-improvements addition (A6): top-level keys this module actually
+#: looks up, per raw line ``type``, kept alongside the parser so
+#: ``probe.compare_with_parser`` can audit real transcripts for keys the
+#: parser never reads without re-deriving the parser's own control flow.
+#: Base keys are read for *every* line regardless of type: ``type``/
+#: ``uuid`` (dedup, in ``parse_transcript``'s main loop) and
+#: ``entrypoint``/``version`` (first-seen capture, also in the main loop,
+#: before any type dispatch). A type not listed here (every other
+#: ``events._IGNORABLE_TYPES`` member, plus the ``file-history-*``/
+#: ``artifact-*`` prefix families) is read no further than those four
+#: base keys -- ``classify_line`` returns ``None`` for them before even
+#: computing ``timestamp``/``message``.
+#:
+#: ``user``/``system``/``attachment``/``queue-operation`` all reach
+#: ``classify_line``, which unconditionally reads ``timestamp`` and
+#: ``message`` (via ``_user_str_content``) before any type-specific
+#: check -- except ``attachment``/``queue-operation``, which always
+#: return via their own unconditional catch-all (checks 11 and 10) before
+#: classify_line's later, type-unguarded ``origin`` read; ``system``
+#: (when its ``subtype`` matches none of the earlier checks) and ``user``
+#: can both fall through as far as that ``origin`` read, so both list it.
+_BASE_READ_KEYS = frozenset({"type", "uuid", "entrypoint", "version"})
+
+READ_KEYS: dict[str, frozenset[str]] = {
+    "assistant": _BASE_READ_KEYS
+    | frozenset(
+        {
+            "message",
+            "requestId",
+            "timestamp",
+            "effort",
+            "perTurnEffort",
+            "attributionMcpServer",
+            "attributionMcpTool",
+            "attributionSkill",
+            "isApiErrorMessage",
+        }
+    ),
+    "user": _BASE_READ_KEYS
+    | frozenset(
+        {
+            "timestamp",
+            "message",
+            "isCompactSummary",
+            "toolDenialKind",
+            "origin",
+            "isMeta",
+            "promptSource",
+            "permissionMode",
+        }
+    ),
+    "system": _BASE_READ_KEYS
+    | frozenset(
+        {
+            "timestamp",
+            "message",
+            "subtype",
+            "compactMetadata",
+            "error",
+            "retryAttempt",
+            "originalModel",
+            "fallbackModel",
+            "origin",
+        }
+    ),
+    "attachment": _BASE_READ_KEYS | frozenset({"timestamp", "message", "attachment", "rendered"}),
+    "queue-operation": _BASE_READ_KEYS | frozenset({"timestamp", "message", "operation"}),
+    "agent-setting": _BASE_READ_KEYS | frozenset({"agentSetting"}),
+    "mode": _BASE_READ_KEYS | frozenset({"mode"}),
+}
+
+
+__all__ = ["parse_transcript", "detect_provider", "set_salt", "load_or_create_salt", "READ_KEYS"]

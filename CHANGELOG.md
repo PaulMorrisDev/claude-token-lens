@@ -7,6 +7,77 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Capture-improvements batch** (`PARSER_VERSION` 3 -> 4): seven new
+  additive `Turn` fields, all derived from data the transcript already
+  carries -- no new raw content is ever retained:
+  - `tool_wait_s`/`model_latency_s`: timing either side of a turn's own
+    tool calls, from the timestamps of the tool_result line(s) answering
+    that turn's `tool_use_id`s -- `tool_wait_s` is the harness/tool
+    round-trip, `model_latency_s` is the model's own think time before
+    its next turn. Both `None` when the turn made no tool calls or a
+    timestamp is missing.
+  - `tool_result_chars_by_tool: dict[str, int]`: per-turn breakdown (by
+    tool name) of the same lengths `TranscriptResult.tool_result_chars`
+    already totals for the whole transcript, enabling per-turn context
+    composition.
+  - `agent_brief_chars: int | None` / `tool_input_chars_by_tool: dict[str,
+    int]`: the total length of an `Agent`/`Task` tool_use's own `prompt`
+    input string(s) (never the text itself), and a per-tool total of
+    every tool_use's JSON-encoded input size for the turn.
+  - `read_target_hashes: tuple[str, ...]`: salted HMAC-SHA256 (16 hex
+    chars) of each `Read`/`Edit`/`Write`/`NotebookEdit` tool_use's own
+    target path in the turn -- never the path itself. The salt is a
+    random 32-byte file at `<config_dir>/salt`, created on first use via
+    `parse.load_or_create_salt` (0600 where the OS supports it) and wired
+    into the parser via the new module-level `parse.set_salt`, which
+    keeps `parse_transcript`'s own signature unchanged so a
+    `ProcessPoolExecutor` worker can still initialise it once per
+    process. With no salt set, `read_target_hashes` is always empty.
+  - `human_prompt_chars: int | None` / `human_prompt_has_paste: bool`: on
+    the turn following a HUMAN_TEXT event, the summed length of that
+    event's own text content and whether any of it looks pasted (over
+    2,000 chars, or a `[Pasted text` marker) -- `events.classify_line`
+    now also populates `Event.size_chars`/`detail["has_paste"]` for every
+    HUMAN_TEXT event it emits, which this reads from.
+  - Every new field is covered by `tests/test_capture_improvements.py`
+    (including a same-salt/different-salt stability check for
+    `read_target_hashes` and a scan confirming the hash never contains a
+    path segment) and passes the existing `assert_privacy` scan.
+  - `probe.compare_with_parser(result) -> list[str]`: lists every
+    `<line_type>.<key>` a probed transcript actually carries that
+    `parse.READ_KEYS` (a new, hand-maintained map of the top-level keys
+    `parse_transcript` reads per raw line type) says the parser never
+    looks up -- printed by `probe`'s CLI output under a new "unread keys
+    (vs parse.py)" section. Run once over
+    `tests/fixtures/real/session-a`: the unread keys are almost entirely
+    session/process bookkeeping already captured elsewhere by
+    `discovery.py` (`sessionId`, `parentUuid`, `cwd`, `gitBranch`,
+    `agentId`, `slug`, `userType`) plus a handful of narrower items worth
+    a look for a future batch -- `user.toolUseResult` (a possible
+    alternate/duplicate tool-result representation), `queue-operation.
+    content`/`reason`, and `system.stopReason` (present but empty in
+    every observed line in this fixture, consistent with this batch's
+    decision not to implement the related `TranscriptMeta` fields below).
+  - Investigated but deliberately **not implemented**: the task's
+    suggested `TranscriptMeta.endedReason`/`stopReason`/`maxTurnsReached`
+    additive fields. None of the three keys exist meaningfully in
+    `tests/fixtures/real/session-a` -- every subagent `.meta.json` in
+    that fixture carries only `{agentType, description, model,
+    spawnDepth, toolUseId}`, and the transcript's own `stopReason` field
+    (on `system`/`stop_hook_summary` lines) is present but an empty
+    string across all 104 occurrences, unrelated to subagent completion.
+    Left for a future batch once a fixture that actually populates one of
+    these keys is available.
+  - `topology.py`'s spawn-write table (`topology_spawn_write`) gains a
+    "Mean briefing chars" column (from the new `agent_brief_chars`,
+    joined back to each direct spawn via the same tool_use_id join the
+    skill roll-up uses); the cost-per-spawn table (`topology_cost_per_spawn`)
+    gains a "Mean tool wait" column (mean `tool_wait_s` across that agent
+    type's own priced turns). Existing columns on both tables are
+    unchanged.
+
 ### Planned
 
 - **v0.2** — `claude-token-lens serve` (local read-only service: watcher
