@@ -350,6 +350,38 @@ def test_no_cache_and_warm_cache_give_byte_identical_output(tmp_path, capsys):
     assert cold_output == warm_output
 
 
+# -- _load_snapshots_for_config_dir (Fix R16) --------------------------
+
+
+def _write_snapshot(path: Path, ts: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"ts": ts, "user_settings": {}}), encoding="utf-8")
+
+
+def test_load_snapshots_for_config_dir_finds_the_documented_parent_shape(tmp_path):
+    config_dir = tmp_path / "root" / "token-lens"
+    _write_snapshot(config_dir.parent / "token-lens" / "snapshots" / "a.json", "20200101T000000Z")
+    found = cli._load_snapshots_for_config_dir(config_dir)
+    assert [s.ts for s in found] == ["20200101T000000Z"]
+
+
+def test_load_snapshots_for_config_dir_falls_back_to_treating_it_as_the_hook_base(tmp_path):
+    config_dir = tmp_path / "my-custom-settings"
+    _write_snapshot(config_dir / "token-lens" / "snapshots" / "a.json", "20200101T000000Z")
+    # config_dir.parent (tmp_path) has no "token-lens/snapshots" under
+    # it -- only the config_dir-as-base fallback finds this one.
+    found = cli._load_snapshots_for_config_dir(config_dir)
+    assert [s.ts for s in found] == ["20200101T000000Z"]
+
+
+def test_load_snapshots_for_config_dir_prefers_parent_shape_when_both_exist(tmp_path):
+    config_dir = tmp_path / "root" / "token-lens"
+    _write_snapshot(config_dir.parent / "token-lens" / "snapshots" / "parent.json", "20200101T000000Z")
+    _write_snapshot(config_dir / "token-lens" / "snapshots" / "base.json", "20210101T000000Z")
+    found = cli._load_snapshots_for_config_dir(config_dir)
+    assert [s.ts for s in found] == ["20200101T000000Z"]
+
+
 # -- config-diff --------------------------------------------------------
 
 
@@ -378,6 +410,53 @@ def test_config_diff_renders_a_table(tmp_path, capsys):
             "proj-diff",
             "--config-dir",
             str(config_dir / "token-lens"),
+            "--key",
+            "user_settings.model",
+        ]
+    )
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "Config diff: user_settings.model" in out
+    assert "Sessions" in out
+
+
+def test_config_diff_finds_snapshots_for_a_custom_config_dir_used_as_hook_base(tmp_path, capsys):
+    """Fix R16: snapshots.load_snapshots() always appends
+    "token-lens/snapshots" to whatever base it's given, and
+    _resolve_config_dir() returns an explicit --config-dir as-is (no
+    "token-lens" appended) -- so config_dir.parent only recovers the
+    hook's actual write location when --config-dir happens to end in
+    "token-lens" (as in test_config_diff_renders_a_table above). A user
+    who instead points the *same* --config-dir value at both
+    `snapshot-config` and `config-diff` -- the natural thing to try --
+    gets snapshots written under <that-dir>/token-lens/snapshots
+    (hooks/snapshot-config.py's resolve_config_dir treats an explicit
+    --config-dir as the base). This must also resolve correctly.
+    """
+    root = tmp_path / "projects"
+    _write_project(root, "proj-diff", age_seconds=120)
+
+    config_dir = tmp_path / "my-custom-settings"
+    snapshots_dir = config_dir / "token-lens" / "snapshots"
+    snapshots_dir.mkdir(parents=True, exist_ok=True)
+    (snapshots_dir / "20200101T000000Z.json").write_text(
+        json.dumps({"ts": "20200101T000000Z", "user_settings": {"model": "sonnet"}}),
+        encoding="utf-8",
+    )
+    (snapshots_dir / "20200201T000000Z.json").write_text(
+        json.dumps({"ts": "20200201T000000Z", "user_settings": {"model": "fable"}}),
+        encoding="utf-8",
+    )
+
+    exit_code = cli.main(
+        [
+            "config-diff",
+            "--projects-root",
+            str(root),
+            "--project",
+            "proj-diff",
+            "--config-dir",
+            str(config_dir),
             "--key",
             "user_settings.model",
         ]

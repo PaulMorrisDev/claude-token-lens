@@ -300,6 +300,34 @@ def _resolve_config_dir(cli_arg: str | Path | None) -> Path:
     return root / "token-lens"
 
 
+def _load_snapshots_for_config_dir(config_dir: Path) -> list[snapshots.Snapshot]:
+    """Fix R16: ``snapshots.load_snapshots(base)`` always appends
+    ``token-lens/snapshots`` to whatever base it is given. This
+    module's own ``config_dir`` (see ``_resolve_config_dir`` above) is
+    the directory ``config.toml`` lives in directly, so
+    ``config_dir.parent`` recovers the right base under the *documented*
+    shape (an explicit ``--config-dir`` deliberately pointed at
+    ``<root>/token-lens``, matching the default's own ``root /
+    "token-lens"``) -- this is what the existing config-diff fixtures
+    exercise.
+
+    But ``hooks/snapshot-config.py``'s own ``resolve_config_dir``
+    treats an *explicit* ``--config-dir`` as the base directly (it only
+    appends ``token-lens`` for the no-argument default, same as here).
+    A user who points the *same* literal ``--config-dir`` value at both
+    ``snapshot-config`` and this command -- the natural thing to try --
+    gets snapshots written under ``<that-dir>/token-lens/snapshots``,
+    which ``config_dir.parent`` never finds (it looks one directory too
+    high). Try the documented ``.parent`` shape first, then fall back
+    to treating ``config_dir`` itself as the base, so both conventions
+    resolve to the right snapshots.
+    """
+    found = snapshots.load_snapshots(config_dir.parent)
+    if found:
+        return found
+    return snapshots.load_snapshots(config_dir)
+
+
 def _priced_turns(result: TranscriptResult):
     """Turns that actually got a ``turn_index`` (excludes synthetic and
     missing-usage turns). Deliberately duplicated rather than imported
@@ -468,7 +496,7 @@ def _cmd_report_like(args: argparse.Namespace, include: set[str] | None) -> int:
         )
         return 1
 
-    snaps = snapshots.load_snapshots(config_dir.parent) or None
+    snaps = _load_snapshots_for_config_dir(config_dir) or None
     projects = tuple(p.name for p in project_dirs)
 
     try:
@@ -572,11 +600,12 @@ def _cmd_config_diff(args: argparse.Namespace) -> int:
         )
         return 1
 
-    snaps = snapshots.load_snapshots(config_dir.parent)
+    snaps = _load_snapshots_for_config_dir(config_dir)
     if not snaps:
         print(
             "claude-token-lens config-diff: no config snapshots found under "
-            f"{config_dir.parent / 'token-lens' / 'snapshots'}",
+            f"{config_dir.parent / 'token-lens' / 'snapshots'} or "
+            f"{config_dir / 'token-lens' / 'snapshots'}",
             file=sys.stderr,
         )
         return 1
