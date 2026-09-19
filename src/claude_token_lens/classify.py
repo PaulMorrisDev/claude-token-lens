@@ -637,6 +637,26 @@ def classify_purpose(f: SessionFeatures, thresholds: dict | None = None) -> tupl
     """First-match-wins purpose classification (plan "Classification"
     section, with the brief's ``docs-or-light-edit`` substitution for the
     unreachable path-based "docs" rule — see the module docstring).
+
+    Fix 8: ``agent-fanout`` used to be tested third, ahead of every
+    intent-signature rule (``review``/``test-triage``/``planning``/
+    ``docs-or-light-edit``/``refactor``), so a session that both delegated
+    to subagents *and* carried a clear intent signature (e.g. a review
+    pass that happened to fan a couple of checks out to agents) always
+    lost that signature to the generic "agent-fanout" bucket. Moved to
+    just above the ``general-dev`` catch-all: an intent signature now
+    wins whenever one is present, and ``agent-fanout`` only catches
+    fan-out-heavy sessions that don't otherwise say what they were for.
+
+    ``review`` and ``test-triage`` are also relaxed here: ``review`` used
+    to require zero edits at all (``edit_turns == 0``), missing the
+    common case of a review pass that also lands one or two small fixes;
+    it now tolerates up to 2. ``test-triage`` used to require
+    ``test_tool_hits >= edit_turns`` unconditionally, missing a session
+    that ran many test commands alongside a larger edit count; that
+    comparison is now dropped once ``test_tool_hits`` alone clears 5 —
+    a session hitting test tooling that often is a test-triage session
+    regardless of how much editing happened alongside it.
     """
     t = {**DEFAULT_PURPOSE_THRESHOLDS, **(thresholds or {})}
 
@@ -649,13 +669,12 @@ def classify_purpose(f: SessionFeatures, thresholds: dict | None = None) -> tupl
             "workflow_tool_calls": f.workflow_tool_calls,
         }
 
-    if f.agent_tool_calls >= t["agent_fanout_min_calls"]:
-        return "agent-fanout", {"agent_tool_calls": f.agent_tool_calls}
-
-    if f.review_markers >= 1 and f.edit_turns == 0:
+    if f.review_markers >= 1 and f.edit_turns <= 2:
         return "review", {"review_markers": f.review_markers, "edit_turns": f.edit_turns}
 
-    if f.test_tool_hits >= t["test_triage_min_hits"] and f.test_tool_hits >= f.edit_turns:
+    if f.test_tool_hits >= t["test_triage_min_hits"] and (
+        f.test_tool_hits >= f.edit_turns or f.test_tool_hits >= 5
+    ):
         return "test-triage", {"test_tool_hits": f.test_tool_hits, "edit_turns": f.edit_turns}
 
     if f.plan_mode_events >= 1 and f.edit_turns <= t["planning_max_edit_turns"]:
@@ -678,6 +697,9 @@ def classify_purpose(f: SessionFeatures, thresholds: dict | None = None) -> tupl
 
     if f.edit_turns >= t["refactor_min_edit_turns"] and f.test_tool_hits >= t["refactor_min_test_hits"]:
         return "refactor", {"edit_turns": f.edit_turns, "test_tool_hits": f.test_tool_hits}
+
+    if f.agent_tool_calls >= t["agent_fanout_min_calls"]:
+        return "agent-fanout", {"agent_tool_calls": f.agent_tool_calls}
 
     return "general-dev", {
         "assistant_turns": f.assistant_turns,
@@ -925,9 +947,15 @@ def _per_session_table(records: list[SessionRecord]) -> Table:
     return Table(name="sessions_detail", title="Sessions", columns=columns, rows=rows, notes=notes)
 
 
-def build_section(records: list[SessionRecord]) -> Section:
+def build_section(records: list[SessionRecord], mode_thresholds: dict | None = None) -> Section:
     """Build the "Sessions" report section: summary tables by mode and by
     purpose, plus a per-session detail table capped at 50 rows.
+
+    ``mode_thresholds`` (fix 8) is only consulted for its
+    ``overnight_night_start_hour``/``overnight_night_end_hour`` pair,
+    reported as a section note — a reader looking at the mode breakdown
+    has no other way to tell which local-time window "overnight" actually
+    means without this.
     """
     features_by_id = {
         record.session_id: extract_features(record.top, record.subs, tz=None)
@@ -941,7 +969,16 @@ def build_section(records: list[SessionRecord]) -> Section:
         records, features_by_id, key="purpose", name="sessions_by_purpose", title="Sessions by purpose"
     )
     per_session_table = _per_session_table(records)
-    return Section(key="sessions", title="Sessions", tables=[mode_table, purpose_table, per_session_table])
+    t = {**DEFAULT_MODE_THRESHOLDS, **(mode_thresholds or {})}
+    night_start = t["overnight_night_start_hour"]
+    night_end = t["overnight_night_end_hour"]
+    notes = [f"Overnight window: {night_start:02d}:00-{night_end:02d}:00 local."]
+    return Section(
+        key="sessions",
+        title="Sessions",
+        tables=[mode_table, purpose_table, per_session_table],
+        notes=notes,
+    )
 
 
 __all__ = [

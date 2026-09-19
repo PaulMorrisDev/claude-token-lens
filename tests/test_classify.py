@@ -93,11 +93,16 @@ def test_long_agentic_classifies_as_long_agentic():
     assert "human_prompts" in evidence
 
     # A reasonable companion signal: three separate top-level turns each
-    # spawned exactly one Agent tool call.
+    # spawned exactly one Agent tool call. Fix 8: intent signatures (here,
+    # one review marker with only 2 edit turns) now win over the generic
+    # agent-fanout bucket, so this fixture classifies as "review" even
+    # though it also fanned three calls out to subagents.
     purpose, purpose_evidence = classify.classify_purpose(features)
     assert features.agent_tool_calls == 3
-    assert purpose == "agent-fanout"
-    assert "agent_tool_calls" in purpose_evidence
+    assert features.review_markers == 1
+    assert features.edit_turns == 2
+    assert purpose == "review"
+    assert "review_markers" in purpose_evidence
 
 
 def test_overnight_classifies_as_overnight():
@@ -386,6 +391,24 @@ def test_purpose_agent_fanout():
     assert evidence["agent_tool_calls"] == 3
 
 
+def test_purpose_agent_fanout_loses_to_an_intent_signature():
+    """Fix 8: agent-fanout was tested third, ahead of every intent-signature
+    rule, so heavy fan-out plus a review marker always won as
+    agent-fanout. It's now tested last (just above general-dev), so the
+    more specific "review" signature wins instead."""
+    f = classify.SessionFeatures(agent_tool_calls=3, review_markers=1, edit_turns=0)
+    purpose, evidence = classify.classify_purpose(f)
+    assert purpose == "review"
+    assert evidence["review_markers"] == 1
+
+
+def test_purpose_agent_fanout_still_fires_without_any_intent_signature():
+    f = classify.SessionFeatures(agent_tool_calls=5, edit_turns=8, test_tool_hits=0)
+    purpose, evidence = classify.classify_purpose(f)
+    assert purpose == "agent-fanout"
+    assert evidence["agent_tool_calls"] == 5
+
+
 def test_purpose_review():
     f = classify.SessionFeatures(review_markers=1, edit_turns=0)
     purpose, evidence = classify.classify_purpose(f)
@@ -393,11 +416,43 @@ def test_purpose_review():
     assert evidence["review_markers"] == 1
 
 
+def test_purpose_review_tolerates_up_to_two_edit_turns():
+    """Fix 8: review used to require edit_turns == 0 exactly; a review
+    pass that also lands one or two small fixes now still counts."""
+    f = classify.SessionFeatures(review_markers=1, edit_turns=2)
+    purpose, evidence = classify.classify_purpose(f)
+    assert purpose == "review"
+    assert evidence["edit_turns"] == 2
+
+
+def test_purpose_review_still_excludes_three_or_more_edit_turns():
+    f = classify.SessionFeatures(review_markers=1, edit_turns=3)
+    purpose, _ = classify.classify_purpose(f)
+    assert purpose != "review"
+
+
 def test_purpose_test_triage():
     f = classify.SessionFeatures(test_tool_hits=3, edit_turns=1)
     purpose, evidence = classify.classify_purpose(f)
     assert purpose == "test-triage"
     assert evidence["test_tool_hits"] == 3
+
+
+def test_purpose_test_triage_drops_edit_turns_comparison_at_five_hits():
+    """Fix 8: test_tool_hits >= edit_turns used to be required
+    unconditionally; once test_tool_hits alone reaches 5 that comparison
+    is dropped, so a heavily-edited session with plenty of test activity
+    still classifies as test-triage."""
+    f = classify.SessionFeatures(test_tool_hits=5, edit_turns=10)
+    purpose, evidence = classify.classify_purpose(f)
+    assert purpose == "test-triage"
+    assert evidence["test_tool_hits"] == 5
+
+
+def test_purpose_test_triage_still_requires_hits_ge_edit_turns_below_five():
+    f = classify.SessionFeatures(test_tool_hits=4, edit_turns=5)
+    purpose, _ = classify.classify_purpose(f)
+    assert purpose != "test-triage"
 
 
 def test_purpose_planning():
@@ -619,3 +674,18 @@ def test_build_section_caps_detail_rows_at_fifty_with_a_note():
     assert len(detail.rows) == 50
     assert detail.notes
     assert "50" in detail.notes[0]
+
+
+def test_build_section_notes_report_default_overnight_window():
+    records = _build_all_records()
+    section = classify.build_section(records)
+    assert any("22:00" in note and "07:00" in note for note in section.notes)
+
+
+def test_build_section_notes_report_configured_overnight_window():
+    records = _build_all_records()
+    section = classify.build_section(
+        records,
+        mode_thresholds={"overnight_night_start_hour": 23, "overnight_night_end_hour": 6},
+    )
+    assert any("23:00" in note and "06:00" in note for note in section.notes)
