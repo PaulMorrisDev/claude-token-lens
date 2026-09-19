@@ -219,13 +219,14 @@ Also landed alongside the above, same discipline:
   "long-context share of recent top-level turns" plan anchor a
   turn-count-basis, top-level-only figure to check against.
 
-**Note for a follow-up release-prep pass:** `parse.py`'s redaction
+**Note from the round-3 review, resolved below:** `parse.py`'s redaction
 behaviour changed under R4 above in a way that changes parsed output for
 previously-cached transcripts (a path that previously leaked through
 `_redact_paths` is now redacted) — `PARSER_VERSION` in `__init__.py`
-(currently `2`) should be bumped to invalidate stale cache entries, per
-that constant's own doc comment. Not done here: `__init__.py` is outside
-this change's file scope.
+needed bumping to invalidate stale cache entries, per that constant's
+own doc comment. Not done in round 3: `__init__.py` was outside that
+change's file scope. Done as part of the `0.1.0` release prep (see
+"Release prep" below).
 
 Independent review (round 3) fixes, `cli.py`/`recommend.py`/`ttl.py`:
 
@@ -248,8 +249,56 @@ Independent review (round 3) fixes, `cli.py`/`recommend.py`/`ttl.py`:
 - `init`/`baseline`/`serve`'s `--help` listing now leads with the same
   `(planned)` marker every other not-yet-implemented subcommand uses.
 
+Independent review (round 4) fixes, merged from `fix-review3-a` into
+`main` for this release, plus release-prep work:
+
+- **Release prep.** `PARSER_VERSION` bumped `2` -> `3` in `__init__.py`
+  (parse-time redaction changed under R4 above, invalidating
+  previously-cached digests) and `pyproject.toml`'s version bumped to
+  `0.1.0`, resolving the round-3 follow-up note above.
+- **`cli.py`** — `report --json --patch-set` used to append the
+  patch-set text after the JSON blob, producing invalid JSON on
+  stdout. `--json` now embeds the patch set under a top-level
+  `patch_set` string key instead of printing anything else to stdout;
+  `--html`/`--csv-dir` write a sibling `patch-set.txt` file next to
+  their output; Markdown mode is unchanged (still appends the patch
+  set after the report text).
+- **`recache.py`** — the two "Re-cache primary cause" tables had
+  unstable row order for tied all-zero rows, caused by Python's
+  randomized `StrEnum`/set-iteration hashing. Every sort in
+  `build_section` now ties-break on the row key string, so output is
+  deterministic across runs regardless of `PYTHONHASHSEED`; covered by
+  a determinism test that builds the section twice from shuffled
+  input.
+- **Config-dir semantics** — `hooks/snapshot-config.py`'s
+  `resolve_config_dir` treated an explicit `--config-dir` as the
+  `~/.claude` root and appended `token-lens/snapshots`, while
+  `cli.py`/`snapshots.py` already treated an explicit value as the
+  token-lens directory itself. Reconciled on the majority convention:
+  an explicit `--config-dir X` is the token-lens directory everywhere
+  (`X/snapshots`, `X/cache`, `X/config.toml`, `X/usage-log.csv`);
+  the default remains `~/.claude/token-lens`, honouring
+  `CLAUDE_CONFIG_DIR`. `snapshots.load_snapshots` and the hook script
+  (still standalone, no package import) were both updated, with a new
+  round-trip test: the hook writes a snapshot with `--config-dir tmp`,
+  then `config-diff --auto-keys --config-dir tmp` finds it.
+
 ### Documentation
 
+- Retired stale forward-looking "WP8"/"WP10"/"WP12"/"WP3" notes in
+  `classify.py`, `corpus.py`, and `ttl.py` now that those work
+  packages have landed, replacing them with statements of current
+  fact about what populates each field and why `recache_signature` is
+  still unset in `report.py`'s TTL path today.
+- README's Performance section now carries real timings (`22.1s` cold
+  with `--jobs 1`, `7.6s` warm, `12.6s` warm with `--jobs 4`, measured
+  2026-09-19 on the owner's own live 1.6 GB corpus: 120 sessions,
+  1,644 subagent transcripts, 29 workflow runs, 30-day window)
+  replacing the `<cold>`/`<warm>`/`<jobs4>` placeholders; the TTL
+  section now also documents that `ttl.py` prints per-agent-type
+  simulation fidelity and suppresses TTL-switch advice when the
+  projected saving doesn't clear the simulation's own error margin or
+  fidelity exceeds the configured bound.
 - README rewritten against the code as it actually stands today (WP12b):
   what it measures and cannot (no billing API, user-supplied prices,
   subscription usage-window billing, the JSONL format's observed-not-
