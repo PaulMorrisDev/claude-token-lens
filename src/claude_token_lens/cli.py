@@ -59,6 +59,10 @@ SUBCOMMANDS: tuple[str, ...] = (
     "recache",
     "ttl",
     "limits",
+    "carry",
+    "compaction-sim",
+    "model-swap",
+    "waste",
     "compactions",
     "config-diff",
     "snapshot-config",
@@ -97,6 +101,10 @@ _REPORT_LIKE_SECTIONS: dict[str, str] = {
     "recache": "recache",
     "ttl": "ttl",
     "limits": "limits",
+    "carry": "carry",
+    "compaction-sim": "compaction_sim",
+    "model-swap": "model_swap",
+    "waste": "waste",
     "compactions": "compactions",
 }
 
@@ -764,6 +772,10 @@ def _make_parser() -> argparse.ArgumentParser:
             "recache": "RE-CACHE-only report view",
             "ttl": "TTL break-even-only report view",
             "limits": "usage-limits-only report view",
+            "carry": "context-carry-cost-only report view (cost of carrying tool results across later turns)",
+            "compaction-sim": "autoCompactWindow-sweep-only report view (modelled cost under other window settings)",
+            "model-swap": "model-swap-only report view (modelled saving from a cheaper model tier)",
+            "waste": "wasted-turn-spend-only report view (turns whose output was never used)",
             "compactions": "compactions-only report view",
             "config-diff": "compare sessions grouped by a config key's value",
             "pricing-check": "print the resolved rate card's provenance and rate table",
@@ -1201,10 +1213,13 @@ def _cmd_report_like(args: argparse.Namespace, include: set[str] | None) -> int:
     # record for build_report's own baseline_comparison section. This is
     # a plain-dict/no-Path lookup (baseline_mod.list_baselines/
     # load_baseline), so it's resolved here rather than inside
-    # build_report itself -- report.py must not gain a config_dir/file-IO
-    # dependency just for this one flag (matches the module's own
-    # documented "no config_dir parameter" deviation for session
-    # overrides above). When resolution fails, the section is simply
+    # build_report itself -- this is a separate flag-specific lookup from
+    # the v4-wiring-round ``config_dir`` build_report now does accept
+    # (see report.py's own module docstring's deviation note): that one
+    # is narrowly for waste.WasteStats's own salted session-id hash, not
+    # a general "build_report may now load files itself" opening, so
+    # --baseline's own file lookup still happens here rather than moving
+    # inside build_report. When resolution fails, the section is simply
     # omitted and a note is threaded through as baseline_note instead of
     # erroring -- matches the plan's "when no baseline exists, the
     # section is omitted" wording.
@@ -1243,6 +1258,7 @@ def _cmd_report_like(args: argparse.Namespace, include: set[str] | None) -> int:
             usage_log_rows=usage_log_rows,
             baseline_record=baseline_record,
             baseline_note=baseline_note,
+            config_dir=config_dir,
         )
     except ScorecardError as exc:
         # Fix R20: a misordered [thresholds.scorecard] override in
