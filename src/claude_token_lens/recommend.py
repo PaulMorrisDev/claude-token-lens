@@ -213,15 +213,27 @@ class RecommendThresholds:
     min_turns: int = 200
 
     @classmethod
-    def from_config(cls, data: dict | None) -> "RecommendThresholds":
+    def from_config(cls, data: dict | None, config: "Config | None" = None) -> "RecommendThresholds":
         """Build thresholds from ``config.toml``'s
         ``[thresholds.recommend]`` table (a flat dict of this class's
         field names). Any absent or malformed key keeps this class's
         default; unknown keys are ignored -- same posture as
         ``recache.RecacheThresholds.from_config``/
         ``ttl.TtlThresholds.from_config``.
+
+        Fix R3: when ``config`` is given, ``min_sessions``/``min_turns``
+        default to *its* ``min_sessions``/``min_turns`` rather than this
+        class's own hardcoded 5/200 -- ``report.py``'s header prints
+        ``config.min_sessions``/``config.min_turns``, so without this the
+        two could silently disagree on the very numbers a reader is told
+        gate every recommendation. An explicit ``[thresholds.recommend]``
+        override still wins over both.
         """
-        defaults = cls()
+        base_kwargs = {f: getattr(cls(), f) for f in cls.__dataclass_fields__}
+        if config is not None:
+            base_kwargs["min_sessions"] = config.min_sessions
+            base_kwargs["min_turns"] = config.min_turns
+        defaults = cls(**base_kwargs)
         if not isinstance(data, dict):
             return defaults
         kwargs: dict = {}
@@ -316,6 +328,40 @@ def _meets_min_sample(report: ReportModel, th: RecommendThresholds) -> bool:
     return sessions >= th.min_sessions or priced_turns >= th.min_turns
 
 
+def effective_min_sample(th: RecommendThresholds) -> tuple[int, int]:
+    """Fix R3: ``(sessions, turns)`` -- the minimum-sample numbers ``th``
+    actually gates recommendations on, for a caller (``report.py``'s
+    header) that wants to print the number this module is really using
+    rather than assuming it always equals ``Config.min_sessions``/
+    ``Config.min_turns`` (an explicit ``[thresholds.recommend]``
+    override can deliberately diverge from the config default -- see
+    :meth:`RecommendThresholds.from_config`)."""
+    return (th.min_sessions, th.min_turns)
+
+
+def _row_meets_min_sample(th: RecommendThresholds, spawns: int | None, priced_turns: int | None) -> bool:
+    """Fix R3: per-group analogue of :func:`_meets_min_sample` for a
+    rule that advises on one row of a per-agent-type table (subagent-
+    volume, spawn-cost, ttl-switch, agent-report-size) -- the corpus-
+    wide gate alone doesn't stop a rule from confidently advising on a
+    single-spawn agent type just because the *rest* of the corpus is
+    large enough to clear it. ``spawns``/``priced_turns`` are ``None``
+    when the row's own table doesn't carry that column (an older or
+    hand-built minimal table shape): treated as "can't evaluate this
+    half of the gate" rather than a failing zero, so a table exposing
+    only one of the two still gates on whichever it has. Every caller
+    still applies the corpus-wide :func:`_meets_min_sample` gate too
+    (in :func:`recommend`, before any rule runs) -- this is an
+    additional floor per group, not a replacement for it."""
+    if spawns is None and priced_turns is None:
+        return True
+    if spawns is not None and spawns >= th.min_sessions:
+        return True
+    if priced_turns is not None and priced_turns >= th.min_turns:
+        return True
+    return False
+
+
 # -- scope encoding (see module docstring's WP10-merge update note) --------
 
 #: A per-agent-type TTL lever names the ``.claude/agents/<type>.md``
@@ -365,7 +411,11 @@ def _action_with_scope(action: str, scope: str) -> str:
 
 
 def _rule_ttl_switch(
-    report: ReportModel, config: Config, snapshot: Snapshot | None, archetype: str | None
+    report: ReportModel,
+    config: Config,
+    snapshot: Snapshot | None,
+    archetype: str | None,
+    th: RecommendThresholds,
 ) -> list[Recommendation]:
     if config.provider not in (None, "anthropic"):
         # No [providers.*] capability table exists anywhere in this
@@ -377,6 +427,8 @@ def _rule_ttl_switch(
         return []
     rec_idx = _col_index(table, "recommendation")
     lever_idx = _col_index(table, "lever")
+    spawns_idx = _col_index(table, "spawns")
+    priced_turns_idx = _col_index(table, "priced_turns")
     if rec_idx is None or lever_idx is None:
         return []
     out: list[Recommendation] = []
@@ -384,6 +436,12 @@ def _rule_ttl_switch(
         agent_type = row[0]
         recommendation_text = row[rec_idx]
         if not isinstance(recommendation_text, str) or not recommendation_text.startswith("switch to "):
+            continue
+        # Fix R3: this row's own sample size must also clear the
+        # minimum-sample bar, not just the corpus as a whole.
+        spawns = row[spawns_idx] if spawns_idx is not None and spawns_idx < len(row) else None
+        priced_turns = row[priced_turns_idx] if priced_turns_idx is not None and priced_turns_idx < len(row) else None
+        if not _row_meets_min_sample(th, spawns, priced_turns):
             continue
         target = recommendation_text[len("switch to ") :]
         lever = row[lever_idx]
@@ -567,6 +625,8 @@ def _rule_subagent_volume(report: ReportModel, th: RecommendThresholds, archetyp
     if table is None:
         return []
     cost_idx = _col_index(table, "cost_observed")
+    spawns_idx = _col_index(table, "spawns")
+    priced_turns_idx = _col_index(table, "priced_turns")
     if cost_idx is None:
         return []
     total_cost = sum(row[cost_idx] for row in table.rows if cost_idx < len(row) and isinstance(row[cost_idx], (int, float)))
@@ -580,6 +640,12 @@ def _rule_subagent_volume(report: ReportModel, th: RecommendThresholds, archetyp
         cost = row[cost_idx]
         share_pct = 100.0 * cost / total_cost
         if share_pct <= th.subagent_volume_cost_share_pct:
+            continue
+        # Fix R3: this agent type's own sample size must also clear the
+        # minimum-sample bar, not just the corpus as a whole.
+        spawns = row[spawns_idx] if spawns_idx is not None and spawns_idx < len(row) else None
+        priced_turns = row[priced_turns_idx] if priced_turns_idx is not None and priced_turns_idx < len(row) else None
+        if not _row_meets_min_sample(th, spawns, priced_turns):
             continue
         out.append(
             Recommendation(
@@ -749,11 +815,19 @@ def _rule_agent_report_size(report: ReportModel, th: RecommendThresholds, archet
     table = _table(report, "agents", "topology_report_proxy")
     if table is None:
         return []
+    spawns_idx = _col_index(table, "spawns")
     out: list[Recommendation] = []
     for row in table.rows:
         agent_type = row[0]
         mean_proxy = _cell(report, "agents", "topology_report_proxy", agent_type, "mean_proxy")
         if not isinstance(mean_proxy, (int, float)) or mean_proxy <= th.agent_report_size_tokens:
+            continue
+        # Fix R3: topology_report_proxy has no priced_turns column of
+        # its own; cross-reference ttl_by_agent_type's for the same
+        # agent type (None when absent -- see _row_meets_min_sample).
+        spawns = row[spawns_idx] if spawns_idx is not None and spawns_idx < len(row) else None
+        priced_turns = _cell(report, "ttl", "ttl_by_agent_type", agent_type, "priced_turns")
+        if not _row_meets_min_sample(th, spawns, priced_turns):
             continue
         out.append(
             Recommendation(
@@ -781,11 +855,19 @@ def _rule_spawn_cost(report: ReportModel, th: RecommendThresholds, archetype: st
     table = _table(report, "agents", "topology_spawn_write")
     if table is None:
         return []
+    spawns_idx = _col_index(table, "spawns")
     out: list[Recommendation] = []
     for row in table.rows:
         agent_type = row[0]
         mean_write = _cell(report, "agents", "topology_spawn_write", agent_type, "mean_write")
         if not isinstance(mean_write, (int, float)) or mean_write <= th.spawn_cost_tokens:
+            continue
+        # Fix R3: topology_spawn_write has no priced_turns column of its
+        # own; cross-reference ttl_by_agent_type's for the same agent
+        # type (None when absent -- see _row_meets_min_sample).
+        spawns = row[spawns_idx] if spawns_idx is not None and spawns_idx < len(row) else None
+        priced_turns = _cell(report, "ttl", "ttl_by_agent_type", agent_type, "priced_turns")
+        if not _row_meets_min_sample(th, spawns, priced_turns):
             continue
         out.append(
             Recommendation(
@@ -999,14 +1081,15 @@ def recommend(
     small produces noise, not a recommendation.
     """
     th = thresholds or RecommendThresholds.from_config(
-        config.thresholds.get("recommend") if isinstance(config.thresholds, dict) else None
+        config.thresholds.get("recommend") if isinstance(config.thresholds, dict) else None,
+        config,
     )
 
     if not _meets_min_sample(report, th):
         return []
 
     recs: list[Recommendation] = []
-    recs.extend(_rule_ttl_switch(report, config, snapshot, archetype))
+    recs.extend(_rule_ttl_switch(report, config, snapshot, archetype, th))
     recs.extend(_rule_long_tool_waits(report, th))
     recs.extend(_rule_notification_invalidation(report, th))
     recs.extend(_rule_batch_instructions(report, th))
@@ -1104,6 +1187,7 @@ def render_patch_set(recs: list[Recommendation]) -> str:
 
 __all__ = [
     "RecommendThresholds",
+    "effective_min_sample",
     "recommend",
     "render_patch_set",
 ]

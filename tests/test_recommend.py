@@ -30,7 +30,12 @@ from claude_token_lens.model import (
     Section,
     Table,
 )
-from claude_token_lens.recommend import RecommendThresholds, recommend as recommend_fn, render_patch_set
+from claude_token_lens.recommend import (
+    RecommendThresholds,
+    effective_min_sample,
+    recommend as recommend_fn,
+    render_patch_set,
+)
 from claude_token_lens.snapshots import Snapshot
 
 from helpers import assert_privacy, turn_line, write_jsonl
@@ -258,6 +263,204 @@ def test_ttl_switch_unmanaged_key_has_user_scope():
     assert rec.lever == "promptCacheTtl"
     assert rec.scope == "user"
     assert "managed by policy" not in rec.action
+
+
+# -- R3: per-row minimum-sample gate -----------------------------------
+
+
+def test_ttl_switch_suppressed_for_low_sample_agent_type_despite_corpus_wide_pass():
+    # Corpus-wide gate passes (_base_report's default sessions=10,
+    # priced_turns=400), but this specific agent type only has 1 spawn
+    # / 3 priced turns of its own -- a claude-planner-like row that
+    # should get no per-agent-type advice even though the rest of the
+    # corpus is large enough.
+    r = _base_report()
+    r = _add_section(
+        r,
+        Section(
+            key="ttl",
+            title="TTL",
+            tables=[
+                Table(
+                    name="ttl_by_agent_type",
+                    title="TTL by agent type",
+                    columns=[
+                        Column(key="agent_type", label="Agent type"),
+                        Column(key="cost_observed", label="Cost observed"),
+                        Column(key="fidelity_pct", label="Fidelity"),
+                        Column(key="recommendation", label="Recommendation"),
+                        Column(key="lever", label="Lever"),
+                        Column(key="spawns", label="Spawns"),
+                        Column(key="priced_turns", label="Priced turns"),
+                    ],
+                    rows=[
+                        [
+                            "claude-planner",
+                            10.0,
+                            0.0,
+                            "switch to 1h",
+                            "experimental.cacheTtl in claude-planner.md (or subagentPromptCacheTtl for all subagents)",
+                            1,
+                            3,
+                        ]
+                    ],
+                )
+            ],
+        ),
+    )
+    recs = recommend_fn(r, config=_config(), archetype=None)
+    assert not any(rec.id == "ttl-switch" for rec in recs)
+
+
+def test_subagent_volume_suppressed_for_low_sample_agent_type():
+    r = _base_report()
+    r = _add_section(
+        r,
+        Section(
+            key="ttl",
+            title="TTL",
+            tables=[
+                Table(
+                    name="ttl_by_agent_type",
+                    title="TTL by agent type",
+                    columns=[
+                        Column(key="agent_type", label="Agent type"),
+                        Column(key="cost_observed", label="Cost observed"),
+                        Column(key="fidelity_pct", label="Fidelity"),
+                        Column(key="recommendation", label="Recommendation"),
+                        Column(key="lever", label="Lever"),
+                        Column(key="spawns", label="Spawns"),
+                        Column(key="priced_turns", label="Priced turns"),
+                    ],
+                    rows=[
+                        ["top-level", 40.0, 0.0, "no material difference", "promptCacheTtl", 10, 400],
+                        ["claude-planner", 60.0, 0.0, "no material difference", "promptCacheTtl", 1, 3],
+                    ],
+                )
+            ],
+        ),
+    )
+    recs = recommend_fn(r, config=_config(), archetype=None)
+    assert not any(rec.id == "subagent-volume" for rec in recs)
+
+
+def _report_proxy_report(spawns: int, mean_proxy: float = 12_000) -> ReportModel:
+    r = _base_report()
+    r = _add_section(
+        r,
+        Section(
+            key="agents",
+            title="Agents",
+            tables=[
+                Table(
+                    name="topology_report_proxy",
+                    title="Report proxy",
+                    columns=[
+                        Column(key="agent_type", label="Agent type"),
+                        Column(key="spawns", label="Spawns"),
+                        Column(key="mean_proxy", label="Mean proxy"),
+                    ],
+                    rows=[["claude-planner", spawns, mean_proxy]],
+                )
+            ],
+        ),
+    )
+    return r
+
+
+def test_agent_report_size_suppressed_for_low_sample_via_ttl_cross_reference():
+    # topology_report_proxy has no priced_turns column of its own; the
+    # per-row gate cross-references ttl_by_agent_type's priced_turns
+    # for the same agent type -- absent here, so it stays None and the
+    # gate falls back to the (too-low) own spawns count.
+    r = _report_proxy_report(spawns=1)
+    r = _add_section(
+        r,
+        Section(
+            key="ttl",
+            title="TTL",
+            tables=[_ttl_by_agent_type_table([["claude-planner", 10.0, 0.0, "no material difference", "promptCacheTtl"]])],
+        ),
+    )
+    recs = recommend_fn(r, config=_config(), archetype=None)
+    assert not any(rec.id == "agent-report-size" for rec in recs)
+
+
+def test_agent_report_size_fires_when_cross_referenced_priced_turns_clears_gate():
+    # Same low own-spawns count as above, but this time
+    # ttl_by_agent_type carries a priced_turns figure for the same
+    # agent type that alone clears the minimum-sample bar -- proving
+    # the cross-reference lookup (not just the table's own spawns
+    # column) is actually consulted.
+    r = _report_proxy_report(spawns=1)
+    ttl_table = Table(
+        name="ttl_by_agent_type",
+        title="TTL by agent type",
+        columns=[
+            Column(key="agent_type", label="Agent type"),
+            Column(key="cost_observed", label="Cost observed", kind="money"),
+            Column(key="fidelity_pct", label="Fidelity", kind="pct"),
+            Column(key="recommendation", label="Recommendation"),
+            Column(key="lever", label="Lever"),
+            Column(key="priced_turns", label="Priced turns"),
+        ],
+        rows=[["claude-planner", 10.0, 0.0, "no material difference", "promptCacheTtl", 500]],
+    )
+    r = _add_section(r, Section(key="ttl", title="TTL", tables=[ttl_table]))
+    recs = recommend_fn(r, config=_config(), archetype=None)
+    assert any(rec.id == "agent-report-size" for rec in recs)
+
+
+def test_spawn_cost_suppressed_for_low_sample_via_ttl_cross_reference():
+    r = _base_report()
+    r = _add_section(
+        r,
+        Section(
+            key="agents",
+            title="Agents",
+            tables=[
+                Table(
+                    name="topology_spawn_write",
+                    title="Spawn write",
+                    columns=[
+                        Column(key="agent_type", label="Agent type"),
+                        Column(key="spawns", label="Spawns"),
+                        Column(key="mean_write", label="Mean write"),
+                    ],
+                    rows=[["claude-planner", 1, 50_000]],
+                )
+            ],
+        ),
+    )
+    r = _add_section(
+        r,
+        Section(
+            key="ttl",
+            title="TTL",
+            tables=[_ttl_by_agent_type_table([["claude-planner", 10.0, 0.0, "no material difference", "promptCacheTtl"]])],
+        ),
+    )
+    recs = recommend_fn(r, config=_config(), archetype=None)
+    assert not any(rec.id == "spawn-cost" for rec in recs)
+
+
+def test_from_config_seeds_min_sample_from_config_when_no_explicit_override():
+    cfg = Config(min_sessions=3, min_turns=50)
+    th = RecommendThresholds.from_config(None, cfg)
+    assert th.min_sessions == 3
+    assert th.min_turns == 50
+
+
+def test_from_config_explicit_override_wins_over_config_default():
+    cfg = Config(min_sessions=3, min_turns=50)
+    th = RecommendThresholds.from_config({"min_sessions": 7}, cfg)
+    assert th.min_sessions == 7
+    assert th.min_turns == 50
+
+
+def test_effective_min_sample_reflects_the_thresholds_actually_used():
+    th = RecommendThresholds(min_sessions=9, min_turns=99)
+    assert effective_min_sample(th) == (9, 99)
 
 
 # -- subagent-volume ------------------------------------------------------
