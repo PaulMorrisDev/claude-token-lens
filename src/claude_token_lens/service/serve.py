@@ -21,26 +21,22 @@ Contract notes:
   ``MakeHandler``) -- the plan's "port bound to localhost only" default
   posture needs an explicit opt-in for anything else, and
   ``ServeOptions`` itself carries no such flag.
-- ``contracts.Watcher`` exposes no getter for the *latest* background-
-  thread tick's :class:`~.contracts.WatcherStats` (only ``run_once``,
-  ``start``, ``stop``). ``/api/health`` still needs *some* answer once
-  the watcher is polling on its own thread, so :func:`run` passes
-  ``make_handler`` a ``watcher_stats`` callable that prefers a
-  ``watcher.last_stats`` attribute when the concrete ``FileWatcher``
-  happens to expose one (a common pattern for this kind of poll loop),
-  and otherwise falls back to the stats captured from the synchronous
-  first tick this function always runs before serving. This is an
-  integration assumption for the S1-watcher package to confirm/adjust,
-  not a requirement ``contracts.Watcher`` enforces.
+- ``contracts.Watcher.last_stats`` (S1-integration fix 1.e) is now a
+  documented Protocol attribute a concrete ``Watcher`` must keep current,
+  so ``/api/health`` always has a real answer once the watcher is polling
+  on its own thread: :func:`run` passes ``make_handler`` a
+  ``watcher_stats`` callable that simply reads ``watcher.last_stats``.
+  ``run`` always calls ``watcher.run_once()`` synchronously before
+  serving starts, so by the time any request thread can call
+  ``watcher_stats``, ``last_stats`` is always already populated.
 """
 
 from __future__ import annotations
 
 import sys
-import threading
 from http.server import ThreadingHTTPServer
 
-from .contracts import ServeOptions, WatcherStats
+from .contracts import ServeOptions
 from .store import Store
 
 #: See module docstring's first contract note.
@@ -71,19 +67,7 @@ def run(options: ServeOptions, *, once: bool = False, allow_remote: bool = False
     from .watcher import FileWatcher
 
     watcher = FileWatcher(store, options)
-
-    stats_lock = threading.Lock()
-    first_tick_stats: WatcherStats = WatcherStats()
-
-    def _current_stats() -> WatcherStats:
-        live = getattr(watcher, "last_stats", None)
-        if isinstance(live, WatcherStats):
-            return live
-        with stats_lock:
-            return first_tick_stats
-
-    with stats_lock:
-        first_tick_stats = watcher.run_once()
+    watcher.run_once()
 
     if once:
         store.close()
@@ -106,7 +90,7 @@ def run(options: ServeOptions, *, once: bool = False, allow_remote: bool = False
 
     watcher.start()
     try:
-        handler_cls = make_handler(store, options, watcher_stats=_current_stats)
+        handler_cls = make_handler(store, options, watcher_stats=lambda: watcher.last_stats)
         server = ThreadingHTTPServer((options.bind, options.port), handler_cls)
         host = options.bind if ":" not in options.bind else f"[{options.bind}]"
         print(f"claude-token-lens serve: listening on http://{host}:{server.server_port}")
