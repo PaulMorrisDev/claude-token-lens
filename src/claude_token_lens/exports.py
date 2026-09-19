@@ -4,14 +4,19 @@
 csv-flat|json|otel-jsonl``.
 
 For team leads: aggregate-only is the default (no session ids, no
-per-session rows) and project slugs are hashed by default whenever
-aggregate-only is in effect (see :func:`resolve_export_options`), since
-a bare aggregate-only export that still names every project by its real
-slug leaks a repo name -- and a repo name can itself identify a team or
-a client. Per-person/per-session detail is opt-in (``--per-session``);
-raw slugs are opt-in (``--no-hash-slugs``). No text (prompts, tool
-output, file paths) is ever in an export; every column here is a count,
-a token total or a cost.
+per-session rows) and project slugs are hashed **by default in every
+mode**, whether or not aggregate-only is in effect (see
+:func:`resolve_export_options` -- fix for review finding 2: the *more*
+identifying ``--per-session`` mode must never get *less* protection than
+the default). Per-person/per-session detail is opt-in (``--per-session``).
+Hashing itself is opt-out-able (``--no-hash-slugs``), but that opt-out
+does not print the fully raw slug either: :func:`_redact_slug` still
+replaces the OS-username segment (``Users-<name>-``/``home-<name>-``)
+with ``<user>`` (see that function's docstring), and ``cli.py``'s
+``_cmd_export`` prints a one-line stderr warning naming the residual
+risk (the rest of the path shape/client name is still visible) whenever
+that opt-out is used. No text (prompts, tool output, file paths) is ever
+in an export; every column here is a count, a token total or a cost.
 
 Row grain (``csv-flat``/``json``): one row per (day, project, model,
 entrypoint, agent_type), plus ``session_id`` as an extra grouping
@@ -44,14 +49,28 @@ Formats:
   actually used. This format carries no project/session attribute at
   all (the documented metric names don't have one), so
   ``--aggregate-only``/``--hash-slugs`` don't change its output.
+
+Fix for review finding 7 (cache-creation disagreement): ``csv-flat``/
+``json`` split cache-creation writes into ``cache_write_5m_tokens``/
+``cache_write_1h_tokens`` (from ``Turn.cc_5m``/``Turn.cc_1h``), which are
+both 0 for a pre-TTL-split transcript whose JSONL carried no nested
+``cache_creation`` object (``Turn.ttl_split_unknown`` -- see
+``model.py``) even though the write itself did happen. A trailing
+``cache_write_tokens`` column (from ``Turn.cache_creation_tokens``, the
+turn's own unsplit total) is always present so ``input + cache_write +
+cache_read + output`` is a closed sum regardless of split availability,
+and it matches ``otel-jsonl``'s own ``cacheCreation`` value exactly for
+the same corpus (see the reconciliation test in ``tests/test_exports.py``).
 """
 
 from __future__ import annotations
 
 import csv
 import hashlib
+import hmac
 import io
 import json
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -65,7 +84,10 @@ from .parse import load_or_create_salt
 from .pricing import Pricing, price_turn
 
 #: Fixed CSV/JSON row column order for the aggregate grain (before an
-#: optional trailing "session_id" in per-session mode).
+#: optional trailing "session_id" in per-session mode). ``cache_write_tokens``
+#: (review finding 7) is the turn's own unsplit cache-creation total,
+#: alongside the pre-existing 5m/1h split columns -- see the module
+#: docstring.
 _ROW_FIELDS: tuple[str, ...] = (
     "day",
     "project",
@@ -76,6 +98,7 @@ _ROW_FIELDS: tuple[str, ...] = (
     "input_tokens",
     "cache_write_5m_tokens",
     "cache_write_1h_tokens",
+    "cache_write_tokens",
     "cache_read_tokens",
     "output_tokens",
     "thinking_tokens",
@@ -141,25 +164,70 @@ def resolve_export_options(fmt: str, aggregate_only: bool | None, hash_slugs: bo
     ``--hash-slugs``/``--no-hash-slugs`` flags (each ``None`` until the
     user picks a side -- see ``cli.py``'s ``_add_export_args``) into
     concrete booleans. ``aggregate_only`` defaults to ``True``.
-    ``hash_slugs`` defaults to whatever ``aggregate_only`` resolved to
-    (hashed whenever aggregate-only is in effect, matching the plan's
-    "Aggregation without surveillance" guarantee) unless the caller
-    picked a side explicitly -- an explicit ``--no-hash-slugs`` is
-    honoured even together with ``--aggregate-only``, since that is the
-    exporter's own informed choice, not a default.
+
+    Fix for review finding 2: ``hash_slugs`` now defaults to ``True``
+    **unconditionally**, independent of ``aggregate_only`` -- it used to
+    default to whatever ``aggregate_only`` resolved to, which meant
+    ``--per-session`` (the *more* identifying mode) got *less*
+    protection by default (raw slugs) than the aggregate-only default
+    (hashed slugs). An explicit ``--no-hash-slugs`` is still honoured
+    even together with ``--aggregate-only``, since that is the
+    exporter's own informed choice, not a default -- see
+    :func:`_apply_slug_redaction` for what that opt-out actually emits
+    (not the fully raw slug either).
     """
     resolved_aggregate_only = True if aggregate_only is None else aggregate_only
-    resolved_hash_slugs = resolved_aggregate_only if hash_slugs is None else hash_slugs
+    resolved_hash_slugs = True if hash_slugs is None else hash_slugs
     return ExportOptions(fmt=fmt, aggregate_only=resolved_aggregate_only, hash_slugs=resolved_hash_slugs)
 
 
 def _hash_slug(slug: str, salt: bytes) -> str:
-    """First 12 hex characters of ``sha256(salt + slug)`` -- the same
-    salted-hash construction as ``parse.py``'s own path/session-id
-    hashing, reusing ``parse.load_or_create_salt`` rather than a new
-    salt file (see the plan's "Locate files via ... hashed slugs"
-    guarantee)."""
-    return hashlib.sha256(salt + slug.encode("utf-8")).hexdigest()[:12]
+    """First 12 hex characters of a salted HMAC-SHA256 over the project
+    slug, domain-separated with a ``slug:`` tag.
+
+    Fix for review finding 10: this used to be plain
+    ``sha256(salt + slug)`` -- salted, but not the same *construction*
+    ``parse.py``'s own ``_read_target_hash`` uses (HMAC, not
+    concatenation) despite docs claiming otherwise, and with no domain
+    tag, so unifying the two constructions later would have silently
+    collided this module's project-slug namespace with ``parse.py``'s
+    read-target-path namespace. Genuinely the same construction now
+    (HMAC-SHA256 over the shared ``<config_dir>/salt`` file, via
+    ``parse.load_or_create_salt``), just a different truncation length
+    (12 hex chars here vs. 16 there) and domain tag (``"slug:"`` vs. a
+    raw normalised path), so the two can never collide even if a future
+    change makes both truncate to the same length.
+    """
+    digest = hmac.new(salt, b"slug:" + slug.encode("utf-8"), hashlib.sha256).hexdigest()
+    return digest[:12]
+
+
+#: Fix for review finding 2 (slug redaction fallback): matches the
+#: OS-username segment of a ``discovery.slug_for`` slug right after a
+#: ``Users-``/``home-``/``c-Users-`` anchor (the MSYS/Git-Bash slug shape
+#: prefixes a bare drive letter, e.g. ``c-Users-...``), so it can be
+#: replaced with ``<user>`` -- see :func:`_redact_slug`.
+_SLUG_USER_SEGMENT_RE = re.compile(r"(?i)((?:^|-)(?:c-)?(?:Users|home)-)[A-Za-z0-9_.]+-")
+
+try:
+    # A sibling fix (branch fix-review-service) is adding
+    # discovery.redact_slug with this exact behaviour -- reuse it once it
+    # exists rather than keeping two copies (see the module docstring's
+    # raw-slug decision). Imported lazily via try/except, not at
+    # module-import time unconditionally, so this module still works
+    # standalone before that branch merges.
+    from .discovery import redact_slug as _redact_slug
+except ImportError:  # pragma: no cover - exercised once fix-review-service merges
+
+    def _redact_slug(slug: str) -> str:
+        """Fallback for ``discovery.redact_slug`` (not yet on this
+        branch): replaces the OS-username segment right after a
+        ``Users-``/``home-``/``c-Users-`` anchor with ``<user>``, the
+        same behaviour the sibling fix adds to ``discovery.py``. Drop
+        this fallback once ``discovery.redact_slug`` exists and always
+        imports cleanly.
+        """
+        return _SLUG_USER_SEGMENT_RE.sub(lambda m: f"{m.group(1)}<user>-", slug)
 
 
 # -- csv-flat / json row grain -------------------------------------------
@@ -171,6 +239,7 @@ class _Cell:
     input_tokens: int = 0
     cache_write_5m_tokens: int = 0
     cache_write_1h_tokens: int = 0
+    cache_write_tokens: int = 0
     cache_read_tokens: int = 0
     output_tokens: int = 0
     thinking_tokens: int = 0
@@ -211,6 +280,7 @@ def build_export_rows(corpus: Corpus, pricing: Pricing, config: Config, *, per_s
                 cell.input_tokens += turn.input_tokens
                 cell.cache_write_5m_tokens += turn.cc_5m
                 cell.cache_write_1h_tokens += turn.cc_1h
+                cell.cache_write_tokens += turn.cache_creation_tokens
                 cell.cache_read_tokens += turn.cache_read_tokens
                 cell.output_tokens += turn.output_tokens
                 cell.thinking_tokens += turn.thinking_tokens
@@ -238,6 +308,7 @@ def build_export_rows(corpus: Corpus, pricing: Pricing, config: Config, *, per_s
             "input_tokens": cell.input_tokens,
             "cache_write_5m_tokens": cell.cache_write_5m_tokens,
             "cache_write_1h_tokens": cell.cache_write_1h_tokens,
+            "cache_write_tokens": cell.cache_write_tokens,
             "cache_read_tokens": cell.cache_read_tokens,
             "output_tokens": cell.output_tokens,
             "thinking_tokens": cell.thinking_tokens,
@@ -255,6 +326,19 @@ def _apply_hash_slugs(rows: list[dict], config_dir: str | Path) -> None:
     salt = load_or_create_salt(config_dir)
     for row in rows:
         row["project"] = _hash_slug(row["project"], salt)
+
+
+def _apply_slug_redaction(rows: list[dict]) -> None:
+    """Applied instead of hashing when the caller explicitly opts out
+    with ``--no-hash-slugs`` (review finding 2's raw-slug decision): the
+    project slug still isn't emitted fully raw -- the OS-username
+    segment is replaced with ``<user>`` via :func:`_redact_slug`. The
+    caller (``cli.py``'s ``_cmd_export``) is responsible for the
+    one-line stderr warning naming the residual risk; this function only
+    does the redaction itself.
+    """
+    for row in rows:
+        row["project"] = _redact_slug(row["project"])
 
 
 def render_csv_flat(rows: list[dict], *, per_session: bool) -> str:
@@ -374,6 +458,8 @@ def build_export_text(
     rows = build_export_rows(corpus, pricing, config, per_session=per_session)
     if options.hash_slugs:
         _apply_hash_slugs(rows, config_dir)
+    else:
+        _apply_slug_redaction(rows)
 
     if options.fmt == "csv-flat":
         return render_csv_flat(rows, per_session=per_session)
