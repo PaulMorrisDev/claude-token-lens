@@ -158,7 +158,15 @@ def _last_assistant_ts(transcript_path: str) -> datetime | None:
         return None
 
     text = tail.decode("utf-8", errors="replace")
-    for raw_line in reversed(text.splitlines()):
+    # ``str.split("\n")`` rather than ``str.splitlines()``: JSONL is
+    # newline-delimited by definition, and ``splitlines()`` also breaks on
+    # ``\r``, ``\x0b``, ``\x1c``-``\x1e``, U+2028/U+2029 and friends — any
+    # of which can appear *inside* a JSON string value (e.g. tool output
+    # embedded in a message) without ending the record. Splitting on those
+    # too would shear one JSONL line into several fragments, each of which
+    # then fails to parse as JSON and gets silently skipped, hiding a real
+    # assistant timestamp that happened to sit near such a byte.
+    for raw_line in reversed(text.split("\n")):
         line = raw_line.strip()
         if not line:
             continue
@@ -326,20 +334,47 @@ def print_install_fragment() -> str:
 # -- CLI entry point ------------------------------------------------------
 
 
+def _safe_print(text: str) -> None:
+    """``print()`` that never raises.
+
+    Claude Code reads this process's stdout on every prompt refresh, so a
+    print failure here (a closed/broken pipe if the host is already
+    tearing down, or a console codepage that can't encode a character
+    despite the ``errors="replace"`` reconfiguration below) must not
+    surface as an exception -- that would blank the status line exactly
+    like an unhandled error anywhere else in this module.
+    """
+    try:
+        print(text)
+    except Exception:
+        pass
+
+
 def main(argv: list[str] | None = None) -> int:
     """Read the status-line JSON payload from stdin, print one line, and
     (when ``rate_limits`` is present) append a deduped usage-log row.
     Always exits 0 and never lets an exception escape.
     """
+    try:
+        # Windows consoles / redirected pipes can default to a narrow
+        # codepage (e.g. cp1252) that raises UnicodeEncodeError on
+        # anything outside it. Force UTF-8 with lossy replacement instead
+        # of failing outright; older runtimes without ``reconfigure``
+        # (or a stdout that isn't a real TextIOWrapper, e.g. under some
+        # test harnesses) are tolerated too.
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
     argv = sys.argv[1:] if argv is None else list(argv)
     if argv and argv[0] in ("--print-install-fragment", "--install"):
-        print(print_install_fragment())
+        _safe_print(print_install_fragment())
         return 0
 
     try:
         raw = sys.stdin.read()
     except Exception:
-        print(_FALLBACK_LINE)
+        _safe_print(_FALLBACK_LINE)
         return 0
 
     try:
@@ -355,10 +390,10 @@ def main(argv: list[str] | None = None) -> int:
         now = datetime.now(timezone.utc)
         line = render_status(payload, now, effective_ttl_s)
     except Exception:
-        print(_FALLBACK_LINE)
+        _safe_print(_FALLBACK_LINE)
         return 0
 
-    print(line)
+    _safe_print(line)
 
     try:
         rate_limits = payload.get("rate_limits")

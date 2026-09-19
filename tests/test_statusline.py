@@ -168,6 +168,37 @@ def test_render_status_ttl_reads_only_tail_of_large_transcript(tmp_path):
     assert line == "5m TTL expires in 4m50s"
 
 
+def test_render_status_ttl_survives_unicode_line_separator_inside_a_json_string(tmp_path):
+    """fix(statusline): a U+2028/U+2029 (or bare \\r) embedded in a
+    message string is legal JSON but is treated as a line break by
+    ``str.splitlines()`` -- that would shear the final assistant line's
+    JSON into two unparsable fragments and skip it, wrongly falling back
+    to an older timestamp (or none at all). Scanning with
+    ``str.split("\\n")`` instead must find the correct, newest timestamp.
+    """
+    now = datetime(2026, 9, 18, 12, 0, 0, tzinfo=timezone.utc)
+    old_ts = now - timedelta(seconds=200)
+    new_ts = now - timedelta(seconds=10)
+    transcript = tmp_path / "session.jsonl"
+    with open(transcript, "w", encoding="utf-8") as fh:
+        fh.write(json.dumps({
+            "type": "assistant",
+            "timestamp": old_ts.isoformat().replace("+00:00", "Z"),
+            "message": {"content": "no separators here"},
+        }))
+        fh.write("\n")
+        fh.write(json.dumps({
+            "type": "assistant",
+            "timestamp": new_ts.isoformat().replace("+00:00", "Z"),
+            "message": {"content": "before after"},
+        }))
+        fh.write("\n")
+
+    payload = {"transcript_path": str(transcript)}
+    line = statusline.render_status(payload, now, 300)
+    assert line == "5m TTL expires in 4m50s"  # from new_ts, not old_ts
+
+
 # -- resolve_effective_ttl ----------------------------------------------
 
 
@@ -258,6 +289,47 @@ def test_main_exception_during_stdin_read_falls_back(monkeypatch, capsys):
     rc = statusline.main([])
     assert rc == 0
     assert capsys.readouterr().out.strip() == "token-lens"
+
+
+def test_main_stdout_reconfigure_failure_is_swallowed(monkeypatch, capsys):
+    """A stdout that doesn't support ``reconfigure`` at all (e.g. a plain
+    ``io.StringIO`` swapped in by a stricter test/embedding harness than
+    capsys) must not blank the status line."""
+    class _NoReconfigureStdout(io.StringIO):
+        def reconfigure(self, *args, **kwargs):
+            raise AttributeError("no reconfigure on this stream")
+
+    fake_stdout = _NoReconfigureStdout()
+    monkeypatch.setattr("sys.stdout", fake_stdout)
+    monkeypatch.setattr("sys.stdin", io.StringIO(""))
+    rc = statusline.main([])
+    assert rc == 0
+    assert fake_stdout.getvalue().strip() == "token-lens"
+
+
+def test_main_never_raises_when_print_itself_fails(monkeypatch, capsys):
+    """``_safe_print`` must swallow a broken-pipe-style failure from
+    ``print()`` (e.g. the host already closed stdout) rather than let it
+    escape main() -- the WP6 "never blank the status line" contract
+    applies to the print call itself, not just upstream parsing."""
+    monkeypatch.setattr("sys.stdin", io.StringIO(""))
+
+    def _raising_print(*args, **kwargs):
+        raise BrokenPipeError("downstream closed")
+
+    monkeypatch.setattr("builtins.print", _raising_print)
+    rc = statusline.main([])
+    assert rc == 0
+
+
+def test_safe_print_swallows_any_exception(capsys):
+    class _Boom:
+        def __str__(self):
+            raise ValueError("boom")
+
+    statusline._safe_print(_Boom())  # must not raise
+    statusline._safe_print("fine")
+    assert capsys.readouterr().out.strip() == "fine"
 
 
 # -- print_install_fragment / --install flag ---------------------------------
