@@ -288,6 +288,33 @@ def test_load_or_create_salt_persists_across_calls(tmp_path: Path):
     assert (config_dir / "salt").exists()
 
 
+def test_load_or_create_salt_survives_a_newline_byte(monkeypatch, tmp_path: Path):
+    """Regression test for a real (not merely flaky-test) bug: the file
+    was opened via ``os.open`` without ``os.O_BINARY``, which on Windows
+    defaults to text mode and silently rewrites any ``b"\\n"`` (0x0a)
+    byte to ``b"\\r\\n"`` on write. A genuinely random 32-byte salt hits
+    this on roughly one in eight calls, corrupting the on-disk salt
+    relative to what ``secrets.token_bytes`` actually returned and
+    making ``load_or_create_salt``'s own second, read-back call disagree
+    with the first -- this is what surfaced as an intermittently failing
+    ``test_load_or_create_salt_persists_across_calls`` rather than a
+    test-isolation problem. Pins a salt containing 0x0a (and 0x0d, for
+    good measure) so this reproduces deterministically on every run
+    rather than ~1-in-8 of them.
+    """
+    pinned = bytes(range(32 - 2)) + b"\x0a\x0d"
+    assert len(pinned) == 32
+    monkeypatch.setattr(parse.secrets, "token_bytes", lambda n: pinned)
+
+    config_dir = tmp_path / "token-lens"
+    salt1 = parse.load_or_create_salt(config_dir)
+    assert salt1 == pinned
+    assert (config_dir / "salt").stat().st_size == 32
+
+    salt2 = parse.load_or_create_salt(config_dir)
+    assert salt2 == pinned == salt1
+
+
 @pytest.mark.skipif(os.name == "nt", reason="POSIX-only file mode bits")
 def test_load_or_create_salt_sets_owner_only_perms(tmp_path: Path):
     config_dir = tmp_path / "token-lens"

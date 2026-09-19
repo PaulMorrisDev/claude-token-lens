@@ -201,6 +201,18 @@ _SALT: bytes | None = None
 
 _SALT_FILENAME = "salt"
 
+#: ``0`` on POSIX (no such flag; binary is the only mode ``open()``/
+#: ``os.open()`` ever use there). On Windows, ``os.open()`` without this
+#: flag defaults to *text* mode, which silently rewrites any ``b"\n"``
+#: (0x0a) byte in the data to ``b"\r\n"`` on write -- fatal for a random
+#: 32-byte salt, where roughly one in eight salts contains at least one
+#: 0x0a byte. Omitting it was a real, intermittent bug (not just a flaky
+#: test): the freshly written salt and the salt read back moments later
+#: would silently differ whenever the random salt happened to contain a
+#: newline byte, corrupting every hash taken with it as "the" salt for
+#: this config dir.
+_O_BINARY = getattr(os, "O_BINARY", 0)
+
 
 #: The only valid salt length -- ``secrets.token_bytes(32)``'s own output
 #: size. Enforced by both :func:`set_salt` and :func:`load_or_create_salt`
@@ -278,12 +290,12 @@ def load_or_create_salt(config_dir: str | Path | None = None) -> bytes:
 
     salt = secrets.token_bytes(_SALT_LENGTH_BYTES)
     try:
-        fd = os.open(salt_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        fd = os.open(salt_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _O_BINARY, 0o600)
     except FileExistsError:
         # The file exists but was rejected above (missing/unreadable/wrong
         # length) -- overwrite it in place rather than trying (and racing)
         # to delete-then-recreate it.
-        fd = os.open(salt_path, os.O_WRONLY | os.O_TRUNC)
+        fd = os.open(salt_path, os.O_WRONLY | os.O_TRUNC | _O_BINARY)
     try:
         os.write(fd, salt)
     finally:
