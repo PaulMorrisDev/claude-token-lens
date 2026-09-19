@@ -293,3 +293,40 @@ def test_build_report_against_real_fixture():
     for section in report.sections:
         assert_privacy(section)
     _all_sections_row_keys_are_valid(report.sections)
+
+
+# -- R5: group_by="agent" must key by transcript, not session ---------------
+
+
+@pytestmark_real
+def test_recache_by_group_agent_matches_recache_by_agent_type_on_real_fixture():
+    """Regression test for review finding R5: the group-by re-fold used to
+    key every transcript by its *session's* one dominant group, so every
+    subagent in a session inherited that session's single label even when
+    the session spawned several different agent types. The real fixture's
+    one session spawns claude-implementer/general-purpose/revixo-researcher/
+    verification-runner subagents (plus the top-level transcript), so a
+    correct per-transcript ``group_by="agent"`` re-fold must produce one
+    ``recache_by_group`` row per agent_type -- matching
+    ``recache_by_agent_type`` exactly -- rather than collapsing them all
+    into whichever single agent type the session-keyed lookup used to pick.
+    """
+    corpus = load_corpus([FIXTURE_DIR])
+    report = build_report(
+        corpus, PRICING, Config(), projects=("session-a",), window="real fixture", group_by="agent"
+    )
+    recache_section = next(s for s in report.sections if s.key == "recache")
+    group_table = next(t for t in recache_section.tables if t.name == "recache_by_group")
+    by_agent_type_table = next(t for t in recache_section.tables if t.name == "recache_by_agent_type")
+
+    assert len(by_agent_type_table.rows) > 1  # the fixture spawns several distinct agent types
+    assert len(group_table.rows) == len(by_agent_type_table.rows)
+
+    priced_turns_by_agent_type = {row[0]: row[1] for row in by_agent_type_table.rows}
+    recache_turns_by_agent_type = {row[0]: row[2] for row in by_agent_type_table.rows}
+    for row in group_table.rows:
+        label = row[0]
+        assert label in priced_turns_by_agent_type, f"unexpected group label {label!r}"
+        # group column prepended: row[1]=transcripts, row[2]=priced_turns, row[3]=recache_turns.
+        assert row[2] == priced_turns_by_agent_type[label]
+        assert row[3] == recache_turns_by_agent_type[label]

@@ -399,6 +399,11 @@ def _stringify(value: object) -> str:
 # -- recache group-by breakdown ------------------------------------------
 
 
+#: ``group_by`` values that must be keyed per-*transcript* rather than
+#: per-*session* (see ``_transcript_key_lookup``'s docstring for why).
+_TRANSCRIPT_GROUP_KEYS = frozenset({"agent", "model", "entrypoint"})
+
+
 def _group_key_lookup(records: list[SessionRecord], group_by: str) -> Callable[[TranscriptResult], str]:
     groups = classify.group_sessions(records, group_by)
     label_by_session: dict[str, str] = {}
@@ -408,6 +413,38 @@ def _group_key_lookup(records: list[SessionRecord], group_by: str) -> Callable[[
 
     def _key(result: TranscriptResult) -> str:
         return label_by_session.get(result.meta.session_id, "unknown")
+
+    return _key
+
+
+def _transcript_key_lookup(group_by: str) -> Callable[[TranscriptResult], str]:
+    """Per-*transcript* group-key lookup for ``group_by in
+    _TRANSCRIPT_GROUP_KEYS`` (``"agent"``/``"model"``/``"entrypoint"``).
+
+    ``_group_key_lookup`` labels every transcript in a session with that
+    *session's* one dominant group (``classify.group_sessions`` computes a
+    single label per :class:`SessionRecord`), so a subagent inherits its
+    session's key rather than its own -- fine for ``mode``/``purpose``/
+    ``project`` (genuinely session-level properties) but wrong for
+    ``agent``/``model``/``entrypoint``, which vary *per transcript* within
+    one session (e.g. a session that spawns both a ``claude-implementer``
+    and a ``general-purpose`` subagent has no single "session agent type").
+    This keys each transcript by its own ``TranscriptMeta.agent_type``,
+    dominant model, or ``TranscriptMeta.entrypoint`` instead, matching how
+    :meth:`recache.RecacheStats.add` itself derives ``agent_type`` for the
+    ``recache_by_agent_type`` table (``result.meta.agent_type or
+    "top-level"``) so ``recache_by_group`` (grouped by ``"agent"``) sums to
+    the same per-agent-type totals as that table.
+    """
+
+    def _key(result: TranscriptResult) -> str:
+        if group_by == "agent":
+            return result.meta.agent_type or "top-level"
+        if group_by == "model":
+            return _dominant_transcript_model(result) or "unknown"
+        if group_by == "entrypoint":
+            return result.meta.entrypoint or "unknown"
+        raise ValueError(f"not a transcript-keyed group_by: {group_by!r}")
 
     return _key
 
@@ -576,7 +613,14 @@ def build_report(
         session_recache_cc[record.session_id] = session_recache_cc_tokens
 
     if group_by:
-        rs.group_key = _group_key_lookup(session_records, group_by)
+        # "agent"/"model"/"entrypoint" vary per transcript within a
+        # session (see _transcript_key_lookup's docstring — R5 fix);
+        # everything else (mode/purpose/project/...) is a genuinely
+        # session-level property, so it keeps the session-keyed lookup.
+        if group_by in _TRANSCRIPT_GROUP_KEYS:
+            rs.group_key = _transcript_key_lookup(group_by)
+        else:
+            rs.group_key = _group_key_lookup(session_records, group_by)
         # RecacheStats folds groups in during .add(); since grouping was
         # decided only after the fact (group_key needs every session
         # classified first), re-fold every transcript now that the
