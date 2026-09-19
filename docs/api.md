@@ -312,3 +312,32 @@ the stats captured from the synchronous first tick `run()` always
 performs before serving. This is an integration assumption for
 S1-watcher to confirm or adjust, not a requirement `contracts.Watcher`
 itself enforces.
+## Store rebuild
+
+`GET /api/report.*` above is built from the store instead of a fresh
+parse, via `service/rebuild.py`'s `corpus_from_store(store, *, days=None,
+since=None, until=None, window_by="mtime") -> Corpus`. This is what lets
+a report be served for a session whose transcript file has already been
+removed by Claude Code's own `cleanupPeriodDays` retention: the watcher
+(`service/watcher.py`) folds every parsed transcript's full
+`TranscriptResult` into `transcripts.digest_json` (the same lossless
+encoding `cache.py`'s on-disk digest cache uses), and `corpus_from_store`
+decodes those digests straight back into a `Corpus` shaped exactly as
+`corpus.load_corpus` would have produced from the live files, so
+`report.build_report(corpus, ...)` runs unmodified against either one.
+`days`/`since`/`until`/`window_by` mirror `discovery.find_sessions`'s own
+parameters and windowing semantics.
+
+Two fields do not survive the round trip, both store-schema gaps rather
+than bugs in `corpus_from_store` itself:
+
+- **Workflow runs.** The store has no table for a `<session>/workflows/
+  wf_*.json` run's own cost/phase/status data, so a rebuilt session's
+  `workflows` list is always empty — its report would undercount the
+  `"workflows"`/`"phases"` sections and `overview.workflow_runs` for a
+  session that ran one. Every workflow-nested subagent's own turns,
+  tokens and cost still come through in full, since those are ordinary
+  persisted transcripts.
+- **`SessionBundle.project_dir`.** Always the empty string once rebuilt
+  from the store — nothing in `report.build_report`'s own code path
+  reads it, so this has no effect on any route's output.
