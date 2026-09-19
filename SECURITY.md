@@ -94,12 +94,11 @@ rm -rf ~/.claude/token-lens/cache
 Remove-Item -Recurse -Force "$env:USERPROFILE\.claude\token-lens\cache"
 ```
 
-`cli.py` parses `--rebuild-cache`/`--no-cache` on every subcommand
-already, but as of this writing no subcommand handler acts on them yet
-(`corpus.load_corpus`, the function that actually consults
-`DigestCache`, isn't called from `cli.py` yet — only `pricing-check` and
-`snapshot-config` are wired up; see [README.md](README.md)). Until that
-lands, deleting the cache directory above is the only way to purge it.
+`--rebuild-cache` does this for you (purges the cache, then repopulates
+it as it parses); `--no-cache` skips the cache entirely for that one run
+without deleting anything already on disk. Both are wired through to
+`corpus.load_corpus` for every subcommand that loads a corpus — see
+[README.md](README.md#2-quick-start).
 
 ## Excluding confidential projects
 

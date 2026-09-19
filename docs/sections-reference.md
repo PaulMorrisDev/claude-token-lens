@@ -6,10 +6,52 @@ table each `build_section(...)` function produces today, and expands the
 two topics the README only summarises: the TTL section's utilisation
 metrics, and a worked example against a real, scrubbed transcript.
 
-Nothing here describes an assembled `report` command — there isn't one
-yet (see the README's Status note). Every table below is produced by
-calling the named module's `build_section` function directly against
-`TranscriptResult`/`SessionRecord` objects from `parse_transcript`.
+`report.build_report` assembles every section below (in this same order,
+minus `phases`/`config` when their preconditions aren't met — see the
+README) into one `ReportModel`; `claude-token-lens report` prints it.
+Each section is still independently produced by calling the named
+module's own `build_section` function directly against
+`TranscriptResult`/`SessionRecord` objects from `parse_transcript`, which
+is what every example in this file does.
+
+## `overview` (`report.py`)
+
+- `overview_totals` — corpus-wide totals: sessions, top-level/subagent
+  transcripts, workflow runs, priced turns, the four raw token counts
+  (`input_tokens`, `cache_creation_tokens`, `cache_read_tokens`,
+  `output_tokens`), the two derived totals from
+  [README section 3](../README.md#3-the-two-token-totals)
+  (`usage_tokens`, `new_tokens`), `total_cost_usd`,
+  `cache_read_cost_share_pct` (cache-read cost as a percentage of total
+  cost), and `cache_roi` (from `ttl.py`'s cache-economy totals — see
+  [`ttl_cache_economy`](#ttl-utilisation-metrics) below).
+- `overview_by_model` — the same token/cost breakdown, one row per model
+  id, sorted by cost descending.
+
+## `usage` (`usage.py`)
+
+Finance/enterprise-facing breakdowns by calendar period, project,
+entrypoint, and (subscription billing only) a fixed 5-hour local-calendar
+block grid — see [README section 1](../README.md#1-what-it-is-what-it-measures-and-what-it-cannot)
+for the billing-mode distinction every money column in this section
+respects.
+
+- `usage_by_day` / `usage_by_week` / `usage_by_month` — period x model:
+  turns, tokens, cost. The period key is computed in `config.tz` (falling
+  back to the machine's own local zone).
+- `usage_by_project` — sessions and cost per project slug.
+- `usage_by_entrypoint` — transcripts, turns, tokens, cost per
+  `entrypoint` (e.g. `claude-desktop`, `claude-code`).
+- `usage_five_hour_blocks` — sessions, turns, tokens, cost per fixed
+  00:00/05:00/10:00/15:00/20:00-local block, populated only when
+  `config.billing == "subscription"` (a genuine per-account rolling
+  5-hour window can't be observed from transcripts alone, so this is a
+  documented, deterministic proxy grid instead); under `"api"` billing
+  the table is empty with a one-line note explaining the skip.
+
+Every money column's label switches to "Cost (list-price equivalent
+USD)" under subscription billing, and a section note repeats that these
+are not real invoice lines.
 
 ## `sessions` (`classify.py`)
 
@@ -182,10 +224,10 @@ the agents/skills/workflows it spawns" with numbers only:
   `effort-varied`, `chat-only`, `single-model`), with the evidence
   features that produced it (model-by-role, effort distribution, spawn
   counts, plan-mode-then-lower-model-implementer sequences). First match
-  wins, in the order the module checks them; the recommendation engine
-  this feeds (not yet built) is meant to condition on archetype so an
-  overseer session is never told to "stop spawning agents" and a
-  chat-only session is never told about subagent TTLs.
+  wins, in the order the module checks them; `recommend.py` conditions
+  on this archetype so an overseer session is never told to "stop
+  spawning agents" and a chat-only session is never told about subagent
+  TTLs — see [Recommendations](#recommendations-recommendpy) below.
 
 ## `workflows` (`workflows.py`)
 
@@ -220,8 +262,20 @@ here since a turn usually does one or the other, not both.
   kind (`top-level`/`subagent`/`workflow-agent`).
 - `phases_by_agent_type` — the same, cross-tabbed by agent type.
 
-A DISCOVERY cost share above the module's threshold is the intended
-input to a future `discovery-share` recommendation (not yet built).
+A DISCOVERY cost share above the module's threshold (default 35%, only
+evaluated when `--phases` was given) feeds the `discovery-share`
+recommendation — see [Recommendations](#recommendations-recommendpy)
+below.
+
+## `config` (`report.py` via `snapshots.py`) and `config-diff` (CLI-only)
+
+The assembled report's own `config` section renders one diff table per
+config key that changed across the window's `snapshot-config` snapshots
+(capped at 20 keys — `report._MAX_CONFIG_DIFF_KEYS`), automatically,
+with no key to name. The standalone `claude-token-lens config-diff`
+subcommand, described next, is a separate, narrower consumer of the same
+underlying table function for when you want exactly one key (or every
+changed key) outside a full report run.
 
 ## `config_diff` (`snapshots.py`)
 
@@ -241,10 +295,16 @@ whose timestamp is at or before the session's start; `diff_keys` and
 
 ## `usage_windows` (`tools/log_usage.py`)
 
-Built from `~/.claude/token-lens/usage-log.csv` rows (appended by the
-statusline logger, or by `python -m claude_token_lens.tools.log_usage`
-from a pasted `get_usage` result), deduped by session/reset-time/used
-percentage:
+Not to be confused with the report's own [`usage`](#usage-usagepy)
+section above (`usage.py`, day/week/month/project/entrypoint cost from
+transcripts) — this section is about your Claude Code *subscription's*
+5-hour/7-day plan percentages, from an entirely different data source:
+`~/.claude/token-lens/usage-log.csv` rows appended by the statusline
+logger, or by `python -m claude_token_lens.tools.log_usage` from a
+pasted `get_usage` result, deduped by session/reset-time/used
+percentage. It has a `build_section` function like every other section
+here, but nothing in `report.py`/`cli.py` calls it yet, so it doesn't
+appear in `claude-token-lens report`'s output — call it directly:
 
 - `usage_windows_latest` — per window (`five_hour`/`seven_day`), the
   latest used percentage, its reset time, and sample count. Comes back
@@ -253,8 +313,81 @@ percentage:
   against cumulative new-token volume within a reset period, per window:
   slope (`% per million tokens`), intercept, sample count, and the reset
   period it was fit against. Requires `token_totals_by_window` to be
-  supplied by the caller (there is no `report` command wiring this in
-  yet); skipped with a note when not enough samples exist.
+  supplied by the caller; skipped with a note when not enough samples
+  exist.
+
+## `scorecard` (`scorecard.py`)
+
+Five 1-5 levels (1 poor, 5 excellent) summarising a corpus's cache
+efficiency, context hygiene, agent efficiency, config fit and data
+quality — see [README section 6](../README.md#6-reading-the-report-sections).
+
+- `scorecard_dimensions` — one row per scored dimension: `dimension`,
+  `level` (1-5), `label` (`very poor`/`poor`/`fair`/`good`/`excellent`,
+  from `LEVEL_LABELS`), the one representative `metric` name and its
+  `value`, and the `threshold` band it was scored against. A dimension with
+  nothing to measure in this corpus (e.g. `agent_efficiency` when no
+  session ever spawned an agent) is left out of the table entirely
+  rather than guessing a level.
+- `scorecard_overall` — one row: the minimum level across
+  `cache_efficiency`/`context_hygiene`/`agent_efficiency`/`config_fit`
+  (never an average, and never including `data_quality`, which is
+  reported alongside but deliberately excluded from `overall` — a
+  low-fidelity measurement shouldn't be conflated with a genuinely poor
+  working pattern).
+
+`config_fit` is a proxy: whether a config snapshot covers the window at
+all, and how many keys changed across it, rather than the full
+profile-match the project plan describes (no `profiles.py` module exists
+yet for a session's observed shape to be compared against — see
+`scorecard.py`'s own module docstring for the full deviation note).
+`agent_efficiency` is similarly a proxy: the ratio of the costliest agent
+type's mean cost to the median across agent types.
+
+## Recommendations (`recommend.py`)
+
+Not a `Section`/`Table` like the others — `ReportModel.recommendations`
+is a dedicated `list[Recommendation]` field, rendered by every renderer
+in its own way (a Markdown/HTML block per recommendation; a JSON array;
+excluded from CSV, which is table-shaped only). `recommend.recommend()`
+builds it by reading back cells from the report's own already-rendered
+tables — never a raw accumulator — so every recommendation's evidence
+is guaranteed to cite a real, checkable number. See
+[README section 6](../README.md#the-recommendations-block) for the
+`Recommendation` field table (`id`, `severity`, `category`, `scope`,
+`lever`, `evidence`).
+
+Rules implemented today (each an Appendix A5 rule, `recommend.py`'s
+`_rule_*` functions): `ttl-switch`, `long-tool-waits`,
+`notification-invalidation`, `batch-instructions`, `subagent-volume`,
+`compaction-churn`, `long-context-share`, `cache-read-dominance`,
+`baseline-bloat`, `agent-report-size`, `spawn-cost`, `effort-mismatch`,
+`discovery-share`, `pricing-coverage`, `data-quality` — gated by
+archetype (a `ttl-switch` recommendation for a `chat-only` session's
+subagents is suppressed, since a chat-only session barely has any), a
+minimum-sample size (`min_sessions`/`min_turns` in `config.toml`'s
+`[thresholds]` table), and managed-settings awareness (see
+[README section 10](../README.md#10-for-team-leads-and-enterprise)).
+`report --patch-set` renders the whole set as unified-diff-style text
+via `recommend.render_patch_set`.
+
+## Diagnostics (`ReportModel.diagnostics`)
+
+Also not a `Section`/`Table` — `Diagnostics` (`model.py`) is a
+dataclass of parse-quality counters accumulated across every transcript
+in the corpus, exposed as `ReportModel.diagnostics` and rendered
+directly by every renderer (a dedicated block, not a table). Fields
+include `lines`, `unparsable_lines`, `truncated_final_line`,
+`assistant_lines`, `distinct_turns`, `synthetic_turns`,
+`turns_missing_usage`, `ttl_sum_mismatch`, `late_duplicate_ids`,
+`ignored_line_types` (a count per ignored line type), `oversized_lines`,
+`trailing_events`, `replayed_lines`, `timestamp_parse_failures`,
+`agent_settings`, `modes`, `attachment_catch_all`, and
+`pre_split_turns` (pre-split `cache_creation` reads normalised at parse
+time — see the CHANGELOG). `recommend.py`'s `data-quality` rule reads
+this field directly to decide whether its unparsable-lines/ttl-mismatch
+clauses additionally fire, alongside the `scorecard.dimensions`
+`data_quality` row it cites as evidence.
 
 ## Worked example
 

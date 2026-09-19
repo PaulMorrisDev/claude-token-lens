@@ -7,22 +7,22 @@ entirely on your own machine.
 
 **Status: pre-release, v0.1 in progress.** The parsing, pricing, RE-CACHE,
 TTL, classification, compaction, config-snapshot, topology, workstyle,
-workflow and phase-split engines are implemented and covered by tests
-(868 passing at the time of writing). The command-line surface is not:
-today only `claude-token-lens pricing-check` and `claude-token-lens
-snapshot-config` are wired up; every other subcommand in `cli.py`
-(`report`, `sessions`, `recache`, `ttl`, `compactions`, `config-diff`,
-`log-usage`, `scrub-fixture`, `probe`, `statusline`, `init`, `baseline`,
-`serve`) is a registered stub that prints "not implemented" and exits 2.
-Report assembly (turning the section builders below into one `ReportModel`
-and printing it), the recommendation engine, and the optimisation
-scorecard described in the project plan do not exist yet in this
-codebase. This README describes what the code actually does today, not
-the full plan — see [`docs/sections-reference.md`](docs/sections-reference.md)
-for section-by-section detail and this file's own notes on what's still
+workflow, phase-split, usage, report-assembly, recommendation and
+scorecard engines are all implemented and covered by tests (993 passing
+at the time of writing). The command-line surface now matches: `report`,
+`sessions`, `recache`, `ttl`, `compactions`, `config-diff`, `log-usage`,
+`pricing-check`, `scrub-fixture`, `probe`, `statusline` and
+`snapshot-config` are real subcommands backed by that engine — see
+[section 2](#2-quick-start) for the full flag reference. `init`,
+`baseline` and `serve` remain registered stubs that print which future
+milestone they're planned for and exit 2 (see the roadmap in
+[section 13](#13-licence-contributing-roadmap)). This README describes
+what the code actually does today, not the full plan — see
+[`docs/sections-reference.md`](docs/sections-reference.md) for
+section-by-section detail and this file's own notes on what's still
 missing.
 
-Three things are usable directly today, without the `report` command:
+A few things are also usable directly, outside the `report` command:
 
 - `python -m claude_token_lens.tools.scrub` — turn a real transcript into
   a privacy-scrubbed fixture (see [Privacy and security](#11-privacy-and-security)).
@@ -31,10 +31,12 @@ Three things are usable directly today, without the `report` command:
 - `python -m claude_token_lens.tools.log_usage` — append a `get_usage`
   paste to a local CSV log.
 - Every analytics module (`recache`, `ttl`, `classify`, `compaction`,
-  `snapshots`, `topology`, `workstyle`, `workflows`, `phases`,
-  `pricing`) can be called directly from a Python shell or a short
-  script against your own transcripts; that is how the worked examples
-  in this README were produced.
+  `snapshots`, `topology`, `workstyle`, `workflows`, `phases`, `usage`,
+  `scorecard`, `recommend`, `pricing`) can also be called directly from a
+  Python shell or a short script against your own transcripts, if you
+  want one section or one recommendation in isolation rather than the
+  full report; that is how the worked examples in this README were
+  produced.
 
 ## 1. What it is, what it measures, and what it cannot
 
@@ -59,11 +61,15 @@ What it cannot do:
   being ignored while you're on usage credits. `pricing.toml`-derived
   money columns for a subscription account are a **list-price
   equivalent**: a useful way to compare two configurations against each
-  other, not a real invoice. (`ReportMeta.billing_mode` and
-  `Config.billing` already model `"api"` vs `"subscription"` in
+  other, not a real invoice. `ReportMeta.billing_mode` and
+  `Config.billing` model `"api"` vs `"subscription"` in
   [`model.py`](src/claude_token_lens/model.py) and
-  [`config.py`](src/claude_token_lens/config.py); nothing yet renders a
-  billing-mode-aware report, since report assembly doesn't exist.)
+  [`config.py`](src/claude_token_lens/config.py), and the report is
+  billing-mode aware: the Usage section's "Usage by day/week/month"
+  tables label subscription money columns as list-price-equivalent, and
+  its five-hour usage blocks table is only populated for
+  `billing = "subscription"` — under `"api"` it prints a one-line note
+  explaining the skip instead (see [section 6](#6-reading-the-report-sections)).
 - **The JSONL format is observed, not a published API.** Every field
   name this tool reads was found by inspecting real transcripts, not
   from documentation, and Claude Code's own docs describe the transcript
@@ -93,7 +99,7 @@ own `zipapp` module — useful on a locked-down machine that only has a
 bare Python 3.11+ interpreter:
 
 ```bash
-python -m zipapp src -m "claude_token_lens.cli:main" -o claude-token-lens.pyz
+python -m zipapp src -m "claude_token_lens.__main__:main" -o claude-token-lens.pyz
 ```
 
 Windows:
@@ -103,21 +109,71 @@ py -3 claude-token-lens.pyz report
 ```
 
 This build step is not yet wired into CI or attached to GitHub releases
-— run it yourself for now. `report` above will currently only print
-"not implemented" (see the Status note); it's shown because it's the
-default subcommand. One caveat verified while writing this README:
-`zipapp`'s generated `__main__.py` for a `module:function` target calls
-the function but never wraps it in `sys.exit(...)`, so a `.pyz` build
-always exits 0 even when `main()` returns 1 or 2 — the installed
-console script (`pip install .`) does not have this problem. Don't rely
-on the `.pyz`'s exit code in a script until this is addressed.
+— run it yourself for now. `report` above runs the real report (see the
+Status note) because it's the default subcommand.
 
-<!-- CLI-USAGE: filled by WP10c -->
+**Zipapp exit codes.** Point `zipapp -m` at `claude_token_lens.__main__:main`,
+not at `claude_token_lens.cli:main`. `zipapp`'s own generated bootstrap for
+a `module:function` target never wraps the call in `sys.exit(...)`
+(`import {module}; {module}.{fn}()`, verbatim from `zipapp.MAIN_TEMPLATE`)
+— pointed at `cli:main` directly, that drops every non-zero exit code
+(no-data, bad-input, ...) a caller or CI script depends on.
+[`claude_token_lens/__main__.py`](src/claude_token_lens/__main__.py) exists
+precisely to close this: it's a module whose *import* already calls
+`sys.exit(main())`, so `zipapp`'s generated `import claude_token_lens.__main__`
+line raises `SystemExit` with the real code before the bootstrap's second,
+never-reached line would have swallowed it. Verified by building a `.pyz`
+this way and checking both paths: `--version` exits 0, `serve` (a planned
+stub) exits 2. The installed console script (`pip install .`, which points
+at `cli:main` — see `pyproject.toml`) is unaffected either way, since
+`setuptools`' own console-script wrapper always calls `sys.exit(main())`
+regardless of what module it targets.
+
+### Subcommands
+
+Generated against this branch's `--help` output (`claude-token-lens
+<subcommand> --help` for the authoritative, always-current list). Every
+subcommand also accepts the [global flags](#global-flags-clipy) below;
+this table only lists what's specific to each one.
+
+| Subcommand | What it does | Extra flags |
+| --- | --- | --- |
+| `report` | Full report: every section in [section 6](#6-reading-the-report-sections) (`overview`, `usage`, `sessions`, `recache`, `ttl`, `compactions`, `agents`, `workstyle`, `workflows`, `config` when snapshots exist, `scorecard`, `recommendations`), printed as Markdown by default. This is the default subcommand — `claude-token-lens` with no arguments runs it. | `--json` (print the whole report as JSON instead), `--html PATH` (also write a single-file HTML report), `--csv-dir DIR` (also write one CSV per table plus an index), `--phases` (add the DISCOVERY/IMPLEMENTATION/VERIFICATION phase-split section), `--allow-titles` (include `customTitle`/ai-title text — currently a no-op, see [section 6](#6-reading-the-report-sections)), `--patch-set` (also print the recommendation set as unified-diff-style settings/frontmatter patches) |
+| `sessions` | Focused view: just `overview` + `sessions` | Same output flags as `report` except `--patch-set` (recommendations aren't part of a focused view) |
+| `recache` | Focused view: just `overview` + `recache` | Same as `sessions` |
+| `ttl` | Focused view: just `overview` + `ttl` | Same as `sessions` |
+| `compactions` | Focused view: just `overview` + `compactions` | Same as `sessions` |
+| `config-diff` | Compare sessions grouped by one (or every changed) config key's value, from captured `snapshot-config` snapshots. Prints its own plain-text table(s), independent of `report`'s renderers. | `--key KEY` **or** `--auto-keys` (mutually exclusive, one required): diff one named flattened config key, or every key that changed across the available snapshots |
+| `snapshot-config` | Capture (or print/install) the SessionStart config-snapshot hook — see [section 8](#8-installing-the-sessionstart-hook-and-the-statusline) | `--print-hook` (print the settings.json fragment), `--install-hook` (copy the hook script into `<config-dir>/token-lens/hooks/`), `--managed-path PATH` (override the platform managed-settings.json path) |
+| `log-usage` | Read a pasted `get_usage` JSON payload from stdin and append its rows to the local usage-window CSV log | none beyond the global flags |
+| `pricing-check` | Print the resolved rate card's provenance and rate table, and (with `--models`) how specific model ids resolve against it | `--models ID,ID,...` |
+| `scrub-fixture` | Turn a real `<project_dir>/<session_id>` directory into a privacy-scrubbed test fixture, or verify an already-scrubbed one | `--session-dir PATH --out PATH` (scrub), or `--verify OUT_DIR` (audit an existing scrub), plus optional `--key-seed SEED` (deterministic HMAC key — tests only) |
+| `probe` | Content-free schema histogram (line types, key names, attachment types, `version` values — every string capped at 64 chars) of a project or one transcript file, safe to paste into a bug report | `--file PATH` (probe a single transcript file instead of a project) |
+| `statusline` | Claude Code `statusLine` handler — reads a JSON payload from stdin on every refresh (see [section 8](#8-installing-the-sessionstart-hook-and-the-statusline)) | `--print-install-fragment` / `--install` (print the settings.json fragment instead of reading stdin) |
+| `init` | **Planned for v0.3** — prints which milestone it's planned for and exits 2 | none |
+| `baseline` | **Planned for v0.3** — same stub behaviour as `init` | none |
+| `serve` | **Planned for v0.2** — same stub behaviour as `init` | none |
+
+`usage`, `agents`, `workstyle`, `workflows` and `scorecard` are real
+report sections (see [section 6](#6-reading-the-report-sections)) but
+don't have their own focused subcommand the way `sessions`/`recache`/
+`ttl`/`compactions` do today — get them via `report` (or `report --json`
+and pull out that section).
+
+### Exit codes
+
+Every subcommand uses the same three codes:
+
+| Code | Meaning |
+| --- | --- |
+| `0` | Ok — the subcommand ran and printed its output. |
+| `1` | No data — an empty corpus for the given projects/window, or (for `config-diff`) no config snapshots found. Always paired with a one-line reason on stderr naming the projects root and window. |
+| `2` | Bad input — a `ConfigError`/`PricingError` (e.g. an unreadable `--pricing` file), a bad flag combination argparse itself doesn't already catch, or a not-yet-implemented subcommand (`init`/`baseline`/`serve`, or any unrecognised command). |
 
 ### Global flags (`cli.py`)
 
-These are the flags every subcommand parses today, whether or not that
-subcommand does anything with them yet:
+These are the flags every subcommand parses (the per-subcommand table
+above lists what each one adds on top):
 
 | Flag | Meaning |
 |---|---|
@@ -132,14 +188,31 @@ subcommand does anything with them yet:
 | `--pricing PATH` | use a rate card other than the packaged default / config-dir override |
 | `--config-dir PATH` | override `~/.claude/token-lens` (or `$CLAUDE_CONFIG_DIR/token-lens`) |
 | `--group-by {mode,purpose,agent,project,model,profile}` | grouping axis for tables that support it |
-| `--no-cache` / `--rebuild-cache` | parsed on every subcommand (mutually exclusive), but not yet acted on by any subcommand handler — `corpus.load_corpus`, the function that actually consults the digest cache, isn't called from `cli.py` yet |
-| `--quiet` / `--verbose` | verbosity (mutually exclusive) |
+| `--no-cache` / `--rebuild-cache` | mutually exclusive. `--no-cache` skips the on-disk digest cache entirely; `--rebuild-cache` purges it first, then repopulates as it parses. Both are wired through to `corpus.load_corpus` for every subcommand that loads a corpus. |
+| `--jobs N` | parallel parsing workers (default: 1) |
+| `--quiet` / `--verbose` | verbosity (mutually exclusive); `--verbose` also prints a `[corpus] files=... cache_hits=... cache_misses=... elapsed_s=...` line to stderr |
 | `--version` | print the tool version and exit |
 
-`pricing-check` additionally takes `--models ID,ID,...` to resolve
-specific model ids against the loaded rate card. `snapshot-config`
-additionally takes `--print-hook`, `--install-hook` and `--managed-path`
-— see [section 8](#8-installing-the-sessionstart-hook-and-the-statusline).
+### Performance
+
+Timings against a real 1.6 GB corpus (`~/.claude/projects`, `--all-projects`,
+no window filter), measured on the machine used to write this README:
+
+| Run | Time |
+|---|---|
+| Cold (`--rebuild-cache`, empty digest cache) | `<cold>` s |
+| Warm (unchanged corpus, digest cache populated) | `<warm>` s |
+| Warm, `--jobs 4` | `<jobs4>` s |
+
+The digest cache that makes the warm numbers possible lives under
+`<config-dir>/cache/` (`<config-dir>` defaults to `~/.claude/token-lens`,
+or `$CLAUDE_CONFIG_DIR/token-lens`) — one JSON file per transcript, keyed
+by that transcript's path plus `model.py`'s `SCHEMA_VERSION` and
+`parse.py`'s own `PARSER_VERSION`, so a future release that changes
+either the dataclass contract or the parsing logic invalidates exactly
+the entries it needs to and nothing else (see
+[`cache.py`](src/claude_token_lens/cache.py)). Delete the directory, or
+pass `--rebuild-cache`, to force a full re-parse.
 
 ## 3. The two token totals
 
@@ -261,16 +334,21 @@ cache not been invalidated. Every threshold above is overridable via
 
 ## 6. Reading the report sections
 
-There is no assembled `report` yet (see the Status note above), but
-every section below is implemented as a `build_section(...)` function
-returning a `Section` of `Table`s ([`model.py`](src/claude_token_lens/model.py)),
-fully tested, and runnable today from a short Python script against your
-own transcripts. The table below is what exists; the "not yet built"
-list underneath it is honest about the gap against the full project
-plan.
+`report.build_report` (`report.py`) assembles every section below into
+one `ReportModel`, in the fixed order the table follows, and `claude-token-lens
+report` prints it (Markdown by default; `--json`/`--html`/`--csv-dir` for
+the other renderers — see [section 2](#2-quick-start)). Each section is
+still, independently, a `build_section(...)` function returning a
+`Section` of `Table`s ([`model.py`](src/claude_token_lens/model.py)),
+fully tested and runnable on its own from a short Python script against
+your own transcripts — that direct-call path is how the worked example in
+[`docs/sections-reference.md`](docs/sections-reference.md#worked-example)
+was produced, and is still useful if you want one section in isolation.
 
 | Section key | Title | Module | What it answers |
 |---|---|---|---|
+| `overview` | Overview | `report.py` | corpus-wide totals (sessions, transcripts, turns, the four raw token counts, cost, cache-read cost share, cache ROI) plus a per-model breakdown |
+| `usage` | Usage | `usage.py` | day/week/month/project/entrypoint cost and token breakdowns, plus five-hour usage blocks (subscription billing only — see [section 1](#1-what-it-is-what-it-measures-and-what-it-cannot)) |
 | `sessions` | Sessions | `classify.py` | mode (interactive/long-agentic/overnight/mixed) and purpose (docs/refactor/test-triage/...) per session, with the evidence that produced each classification |
 | `recache` | Re-cache events | `recache.py` | which turns paid to re-write a prefix that should have been a cache hit, why, and what it cost — see section 5 |
 | `ttl` | Cache TTL break-even | `ttl.py` | per agent type: observed cost vs. simulated 5m-only/1h-only cost, plus the utilisation metrics below |
@@ -278,18 +356,52 @@ plan.
 | `agents` | Agents and information flow | `topology.py` | downward cost (briefing/system-prompt writes into each agent type), upward cost (`Agent`/`Workflow` tool-result sizes flowing back), skill roll-ups, spawn-depth chains |
 | `workstyle` | Workstyle | `workstyle.py` | one archetype per session/corpus: `overseer-fanout`, `plan-high-implement-low`, `workflow-heavy`, `effort-varied`, `chat-only`, `single-model`, with the evidence features |
 | `workflows` | Workflows | `workflows.py` | per-run agent count, phase count, duration and cost from `<session>/workflows/wf_*.json` |
-| `phases` | Phases | `phases.py` | cost split across DISCOVERY (read/search only), IMPLEMENTATION (real edits or an ordinary shell command), VERIFICATION (a test/build tool, or a scratch-file edit), OTHER |
-| `config_diff` | Config diff | `snapshots.py` | which config keys changed across a window, and how sessions grouped by one key's value compare, from `hooks/snapshot-config.py`'s captured snapshots |
-| `usage_windows` | Usage windows | `tools/log_usage.py` | your 5-hour/7-day plan usage-window percentages over time, from a `log-usage` paste or the statusline logger, with a token-volume regression per window |
+| `phases` | Phases | `phases.py` | cost split across DISCOVERY (read/search only), IMPLEMENTATION (real edits or an ordinary shell command), VERIFICATION (a test/build tool, or a scratch-file edit), OTHER — only in the report when `--phases` is given |
+| `config` | Config | `report.py` via `snapshots.py` | one diff table per config key that changed across the window's snapshots (capped at 20 keys) — only present when `snapshot-config` snapshots exist for the window |
+| `scorecard` | Scorecard | `scorecard.py` | five 1-5 levels (cache efficiency, context hygiene, agent efficiency, config fit, data quality) plus an overall level (the minimum of the first four, never an average) |
 
-**Not yet built:** an `overview` section, a general day/week/month
-`usage` section (the plan's Finance features), a `scorecard.py`
-optimisation-level module, a `recommend.py` recommendation engine, and
-the `report`/`sessions`/`recache`/`ttl`/`compactions`/`config-diff`
-CLI subcommands that would assemble and print all of the above as one
-document. `Diagnostics` (parse-quality counters: unparsable lines,
-synthetic turns, TTL-sum mismatches, ...) exists as a dataclass on every
-`TranscriptResult` but has no dedicated report section yet either.
+Two further pieces of the report aren't in the table above because
+they aren't `Section`s: **Recommendations** (`recommend.py`) is a
+dedicated `ReportModel.recommendations: list[Recommendation]` field —
+see [the Recommendations block](#the-recommendations-block) below — and
+**Diagnostics** (parse-quality counters: unparsable lines, synthetic
+turns, TTL-sum mismatches, ...) is `ReportModel.diagnostics`, rendered
+directly by every renderer rather than as a table.
+
+Two CLI-only, non-`report` consumers use a different section shape
+entirely: `config-diff --key K` prints one standalone plain-text table
+from `snapshots.build_config_diff_table` (see [section 2](#2-quick-start)
+— it does not go through `build_report`, so it isn't the same code path
+as the report's own `config` section above), and `usage_windows`
+(`tools/log_usage.py`) — your 5-hour/7-day plan usage-window percentages
+over time, from a `log-usage` paste or the statusline logger, with a
+token-volume regression per window — has a `build_section` function but
+nothing in `report.py`/`cli.py` wires it into the assembled report yet;
+call it directly, the same as any other module, until that's closed.
+
+`--allow-titles` is accepted by every report-like subcommand but is
+currently a no-op: nothing in `model.py`/`parse.py`/`events.py` captures
+`customTitle`/ai-title line text anywhere, even conditionally, so there
+is no title data for the flag to gate yet.
+
+### The Recommendations block
+
+`recommend.recommend()` turns the assembled report into a list of
+`Recommendation`s (`model.py`), each with:
+
+| Field | Meaning |
+|---|---|
+| `id` | stable identifier for the rule that fired (e.g. `ttl-switch`, `compaction-churn`) |
+| `severity` | `"info"` \| `"advice"` \| `"action"` |
+| `category` | `"settings"` \| `"workflow"` \| `"data"` |
+| `scope` | where the lever named below applies: `"user"` (`~/.claude/settings.json`), `"repo"` (a project `.claude/settings.json` or agent frontmatter path), or `"managed"` (an org-pushed `managed-settings.json` key the user can't change locally — the action text then also says "raise with your administrator") |
+| `lever` | the bare settings key or frontmatter path the recommendation would change (e.g. `promptCacheTtl`, `experimental.cacheTtl` in `<agent>.md`), or `None` |
+| `evidence` | one or more `(label, value, source_table, row_key)` tuples, each citing a real cell from a table already in the report — a test walks every recommendation this module produces and confirms the value it cites is genuine, not recomputed |
+
+`report --patch-set` renders the whole recommendation set as
+unified-diff-style text (`recommend.render_patch_set`) showing the
+before/after value for each lever, with managed-scope levers marked
+`# managed by policy -- shown for reference only`.
 
 ### The TTL section's utilisation metrics
 
@@ -434,9 +546,10 @@ capturing:
 
 ### Statusline
 
-The statusline is a separate, self-contained entry point — it is *not*
-one of `cli.py`'s stub subcommands (that `statusline` entry still prints
-"not implemented"); invoke the module directly:
+The statusline is a separate, self-contained entry point. Either
+`claude-token-lens statusline --print-install-fragment` (the CLI
+subcommand delegates straight to the module) or invoking the module
+directly work identically:
 
 ```bash
 python -m claude_token_lens.statusline --print-install-fragment
@@ -511,10 +624,12 @@ What's implemented today:
   doesn't exist in this codebase.
 - **Managed settings** are captured by the snapshot hook (see section 8)
   into `managed_settings` (redacted the same as user settings) and
-  `managed_keys` (raw key names only) — the data a future "raise this
-  with your administrator" recommendation would need is already
-  recorded; the recommendation engine that would render it doesn't exist
-  yet (no `recommend.py` in this codebase).
+  `managed_keys` (raw key names only), and `recommend.py` renders them:
+  any recommendation whose lever's settings key appears in a window's
+  `managed_keys` gets `scope: "managed"` and its action text says "this
+  lever is managed by policy, raise with your administrator" instead of
+  proposing a change the user can't actually make locally — see
+  [the Recommendations block](#the-recommendations-block).
 - **Provider detection.** `parse.detect_provider` classifies each turn's
   billing surface from the model id's own shape: an
   `anthropic.`/`us.anthropic.`-prefixed or `-v1:0`-suffixed id is
@@ -552,10 +667,9 @@ never exceed 40 characters, and — via `tests/helpers.assert_privacy` —
 that no field matches a Windows drive path, a POSIX `/home/` path, a
 `\Users\` path, an MSYS drive path, a bare `@`, or a URL.
 
-If you generate your own JSON or HTML output by calling
-`render.json_out`/`render.html` directly (there is no wired `report`
-command to do this for you yet — see section 6), you can run the same
-kind of audit by hand over the file:
+The same audit applies to `report --json`/`report --html PATH` output,
+or to JSON/HTML you generate by calling `render.json_out`/`render.html`
+directly — run it by hand over the file:
 
 ```bash
 grep -RnoE '[^"]{65,}|[A-Za-z]:\\\\|/home/|\\\\Users\\\\|/c/Users/|@' report.json report.html
@@ -607,13 +721,17 @@ has the fixture builders used throughout the test suite
 `assert_privacy`, ...) — start there before writing a new test fixture
 by hand.
 
-**Roadmap** (see the project plan for full detail; nothing below exists
-in this codebase yet):
+**Roadmap** (see the project plan for full detail; report assembly, the
+recommendation engine and the optimisation scorecard shipped in v0.1 —
+see the Status note above — everything below is still ahead):
 
-- **v0.2** — report assembly, the recommendation engine, the
-  optimisation scorecard, `claude-token-lens serve` (a local read-only
-  service: watcher thread, SQLite store, `http.server` JSON API and a
-  dependency-free static web UI), and Docker packaging.
-- **v0.3** — a `baseline`/onboarding capture window, a profile schema
-  and catalogue, and `apply`/`--revert` for writing a chosen profile
-  into `settings.json`/agent frontmatter.
+- **v0.2** — `claude-token-lens serve` (a local read-only service:
+  watcher thread, SQLite store, `http.server` JSON API and a
+  dependency-free static web UI), Docker packaging, a live countdown in
+  the statusline, an aggregate-only `export` command, and a monthly
+  report.
+- **v0.3** — `init`, a `baseline`/onboarding capture window, a profile
+  schema and catalogue, `apply`/`--revert` for writing a chosen profile
+  into `settings.json`/agent frontmatter, a `compare` command, team
+  aggregate import across machines, and a reconciliation pass against
+  real billing data.
