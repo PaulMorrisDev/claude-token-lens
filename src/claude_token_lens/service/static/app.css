@@ -1,0 +1,512 @@
+/* claude-token-lens service UI.
+ *
+ * The :root / dark-mode variable block below is reused verbatim from
+ * src/claude_token_lens/render/html.py's _STYLE (see docs/ui.md), so the
+ * CLI's standalone HTML report and this live UI read as the same
+ * product. Everything after it is UI-only layout (tabs, tiles, the
+ * session timeline) that html.py has no equivalent of.
+ *
+ * No @import, no url(...), no external font or asset of any kind — see
+ * docs/ui.md's Constraints section.
+ */
+
+:root {
+  --bg: #ffffff;
+  --fg: #1a1a1a;
+  --muted: #666666;
+  --border: #d8d8d8;
+  --header-bg: #f2f2f2;
+  --zebra: #f8f8f8;
+  --accent: #2563eb;
+  --bar-bg: #cfe0fb;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #121212;
+    --fg: #e8e8e8;
+    --muted: #a3a3a3;
+    --border: #3a3a3a;
+    --header-bg: #1e1e1e;
+    --zebra: #191919;
+    --accent: #7aa8f7;
+    --bar-bg: #223a5e;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html, body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  line-height: 1.5;
+}
+
+.app-shell {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 1rem 1.25rem 2rem;
+}
+
+.app-header h1 {
+  margin: 0;
+  font-size: 1.5rem;
+}
+
+.app-subtitle {
+  margin: 0.15rem 0 0;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.app-footer {
+  margin-top: auto;
+  padding-top: 1.5rem;
+  color: var(--muted);
+  font-size: 0.8rem;
+  border-top: 1px solid var(--border);
+}
+
+/* -- tabs -------------------------------------------------------- */
+
+.tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  margin: 1rem 0 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.tab {
+  appearance: none;
+  border: 1px solid transparent;
+  border-bottom: none;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  font-size: 0.9rem;
+  padding: 0.5rem 0.85rem;
+  cursor: pointer;
+  border-radius: 6px 6px 0 0;
+}
+
+.tab:hover {
+  background: var(--zebra);
+}
+
+.tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.tab[aria-selected="true"] {
+  border-color: var(--border);
+  background: var(--bg);
+  font-weight: 600;
+  position: relative;
+  top: 1px;
+}
+
+.tabpanels {
+  flex: 1;
+  padding-top: 1.25rem;
+}
+
+.panel:focus-visible {
+  outline: none;
+}
+
+.panel h2 {
+  margin-top: 1.75rem;
+  padding-bottom: 0.25rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.panel h2:first-child {
+  margin-top: 0;
+}
+
+.panel h3 {
+  margin-top: 1.25rem;
+}
+
+/* -- generic notices/loading -------------------------------------- */
+
+.notice {
+  margin: 0.75rem 0;
+  padding: 0.6rem 0.9rem;
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--muted);
+  border-radius: 4px;
+  font-size: 0.9rem;
+}
+
+.notice.error {
+  border-left-color: #c0392b;
+}
+
+.notice code {
+  font-size: 0.85em;
+}
+
+.loading {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+/* -- tables --------------------------------------------------------- */
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0.5rem 0 1rem;
+  font-size: 0.9rem;
+}
+
+th, td {
+  padding: 0.35rem 0.6rem;
+  border: 1px solid var(--border);
+  text-align: left;
+  vertical-align: middle;
+}
+
+thead th {
+  background: var(--header-bg);
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+
+thead th .sort-indicator {
+  color: var(--muted);
+  font-size: 0.75em;
+  margin-left: 0.25em;
+}
+
+tbody tr:nth-child(even) {
+  background: var(--zebra);
+}
+
+tbody tr.clickable {
+  cursor: pointer;
+}
+
+tbody tr.clickable:hover {
+  background: var(--bar-bg);
+}
+
+td.num, th.num {
+  text-align: right;
+}
+
+.bar-cell {
+  display: flex;
+  align-items: center;
+  gap: 0.5em;
+  justify-content: flex-end;
+}
+
+.bar-svg {
+  width: 3.6em;
+  height: 0.8em;
+  flex-shrink: 0;
+}
+
+.notes, .evidence-list {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+/* -- scorecard tiles --------------------------------------------- */
+
+.tiles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin: 0.75rem 0 1.25rem;
+}
+
+.tile {
+  flex: 1 1 160px;
+  min-width: 160px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.75rem 0.9rem;
+  background: var(--zebra);
+}
+
+.tile.tile-overall {
+  border-color: var(--accent);
+}
+
+.tile-dimension {
+  font-size: 0.8rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.tile-level {
+  font-size: 1.7rem;
+  font-weight: 700;
+  line-height: 1.1;
+  margin-top: 0.15rem;
+}
+
+.tile-level .tile-max {
+  font-size: 1rem;
+  color: var(--muted);
+  font-weight: 400;
+}
+
+.tile-label {
+  font-size: 0.85rem;
+  margin-top: 0.1rem;
+}
+
+.tile-threshold {
+  margin-top: 0.4rem;
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.level-5 { color: #1a7f37; }
+.level-4 { color: #2563eb; }
+.level-3 { color: #a06a00; }
+.level-2 { color: #c0392b; }
+.level-1 { color: #8b0000; }
+.level-0 { color: var(--muted); }
+
+@media (prefers-color-scheme: dark) {
+  .level-5 { color: #4ade80; }
+  .level-4 { color: #7aa8f7; }
+  .level-3 { color: #f0b429; }
+  .level-2 { color: #ff6b5e; }
+  .level-1 { color: #ff8a80; }
+}
+
+/* -- stat cards (quick summaries from the narrow routes) ---------- */
+
+.stat-cards {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin: 0.5rem 0 1rem;
+}
+
+.stat-card {
+  flex: 1 1 140px;
+  min-width: 140px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.6rem 0.8rem;
+}
+
+.stat-card .stat-label {
+  font-size: 0.75rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.stat-card .stat-value {
+  font-size: 1.2rem;
+  font-weight: 600;
+}
+
+/* -- recommendation cards ------------------------------------------ */
+
+.rec {
+  margin: 0.75rem 0;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--accent);
+  border-radius: 4px;
+}
+
+.rec-severity-action { border-left-color: #c0392b; }
+.rec-severity-advice { border-left-color: #a06a00; }
+.rec-severity-info { border-left-color: var(--accent); }
+
+.rec-meta {
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.rec pre {
+  background: var(--header-bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.5rem 0.7rem;
+  overflow-x: auto;
+  font-size: 0.8rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.rec-group h3 {
+  margin-bottom: 0.25rem;
+}
+
+/* -- sessions ------------------------------------------------------- */
+
+.pager {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin: 0.5rem 0;
+  font-size: 0.85rem;
+}
+
+.pager button {
+  font: inherit;
+  padding: 0.25rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--fg);
+  cursor: pointer;
+}
+
+.pager button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.session-detail {
+  margin-top: 1rem;
+  padding: 0.85rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--zebra);
+}
+
+.tag-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: end;
+  margin: 0.75rem 0;
+}
+
+.tag-controls label {
+  display: flex;
+  flex-direction: column;
+  font-size: 0.8rem;
+  color: var(--muted);
+  gap: 0.2rem;
+}
+
+.tag-controls select,
+.tag-controls button {
+  font: inherit;
+  padding: 0.3rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--fg);
+}
+
+.tag-controls button {
+  cursor: pointer;
+}
+
+.timeline-svg {
+  width: 100%;
+  height: auto;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+}
+
+.timeline-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.9rem;
+  font-size: 0.78rem;
+  color: var(--muted);
+  margin-top: 0.4rem;
+}
+
+.timeline-legend .swatch {
+  display: inline-block;
+  width: 0.7em;
+  height: 0.7em;
+  border-radius: 50%;
+  margin-right: 0.3em;
+  vertical-align: middle;
+}
+
+.placeholder-box {
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  padding: 1.5rem 1rem;
+  text-align: center;
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+
+/* -- profiles -------------------------------------------------------- */
+
+.profile-list {
+  list-style: none;
+  padding: 0;
+  margin: 0.5rem 0;
+}
+
+.profile-list li {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.5rem 0.75rem;
+  margin-bottom: 0.4rem;
+}
+
+.profile-list button {
+  font: inherit;
+  background: transparent;
+  border: none;
+  color: var(--accent);
+  cursor: pointer;
+  padding: 0;
+  text-decoration: underline;
+}
+
+/* -- diagnostics dataclass block -------------------------------------- */
+
+.diagnostics-list {
+  columns: 2;
+  column-gap: 2rem;
+  list-style: none;
+  padding: 0;
+  font-size: 0.85rem;
+}
+
+@media (max-width: 640px) {
+  .diagnostics-list {
+    columns: 1;
+  }
+}
+
+.diagnostics-list li {
+  break-inside: avoid;
+  padding: 0.15rem 0;
+  border-bottom: 1px dotted var(--border);
+}
+
+@media (max-width: 700px) {
+  .tabs {
+    overflow-x: auto;
+    flex-wrap: nowrap;
+  }
+}

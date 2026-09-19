@@ -107,3 +107,62 @@ a fixture store to assert each tab's initial `fetch` succeeds and its
 rendered DOM contains the expected section headings — no headless
 browser, `urllib.request` plus a minimal DOM-shape string check is
 enough for a stdlib-only test suite.
+
+## Implementation notes (S1-ui)
+
+The UI shipped in `static/index.html` + `app.js` + `app.css` follows
+this document's Constraints, Data flow and Testing sections exactly,
+with two deliberate deviations from the Tabs section above, both taken
+from the more specific S1-ui work-package brief rather than this file:
+
+- **Ten tabs, not nine** — the brief adds a dedicated **Usage** tab
+  (the `usage`/`compactions` sections plus a raw `/api/compactions`
+  list) and folds the **Session** timeline view into the **Sessions**
+  tab (a row click renders the detail inline in the same panel) rather
+  than giving it its own tab. Tab order actually shipped: Overview,
+  Sessions, Cache, TTL, Agents, Config, Profiles, Recommendations,
+  Usage, Diagnostics.
+- **Generic Section/Table rendering** for Cache/TTL/Agents/Config/
+  Usage/Diagnostics is driven by an explicit section-key -> tab map
+  (`recache`/`recache_by_group` -> Cache, `ttl` -> TTL, `agents`/
+  `workflows`/`workstyle` -> Agents, `config`/`scorecard` -> Config,
+  `usage`/`compactions` -> Usage, everything else including `phases`
+  -> Diagnostics) so an unrecognised section key still lands somewhere
+  visible instead of being silently dropped.
+- The test file is `tests/test_service_static.py` (the brief's literal
+  filename), not `tests/test_service_ui.py` as named above — both cover
+  the same ground (egress scan + a fixture-server smoke test); this
+  file's name predates the brief and should be treated as the one that
+  drifted.
+
+**Session timeline placeholder.** `docs/api.md`'s `/api/session/<id>`
+returns session-level totals and a flat `transcripts` list only — there
+is no per-turn context-size series to plot a line from. Rather than
+fabricate one, the Sessions tab's detail view renders an explicit
+`.placeholder-box` reading "timeline needs per-turn data (v0.2.1)" and
+names the missing field. `buildSessionTimeline` already contains the
+inline-SVG line-plus-marker scaffold (re-cache/compaction/spawn/human
+markers) so wiring in a real series later is a data-shape change, not a
+rendering rewrite — it activates automatically if a future response
+carries a `turns`/`turn_series`/`context_series` array.
+
+**Shape-defensive rendering for routes `api.py` hasn't shipped yet.**
+At the time this UI was built, `service/api.py` did not exist (a
+sibling work package's deliverable), so `/api/ttl`, `/api/config-diff`
+and `/api/baseline`'s exact response shapes were pinned only loosely by
+`docs/api.md` ("same shape as ... Section/Table encoding" without a
+worked example). `renderTtlData`/`renderConfigDiff`/`renderBaseline`
+each check for more than one plausible shape (a bare `Section` dict, a
+list of `Table` dicts, or a flat row list) and fall back to a plain
+"no data for this window" notice rather than rendering nothing on a
+mismatch. Once `api.py` lands, the shape it actually returns should be
+confirmed against these functions and the redundant branches trimmed.
+
+**Inline SVG without a namespace-URI literal.** Bar cells and the
+timeline chart are built as HTML strings (e.g. `'<svg viewBox="..."
+class="bar-svg">...'`) assigned via `innerHTML`, relying on HTML5's
+foreign-content parsing to place `<svg>`/`<rect>`/`<polyline>`/etc. in
+the correct namespace — not `document.createElementNS`, which would
+otherwise require embedding the literal
+`http://www.w3.org/2000/svg` namespace URI and trip the "no bare
+`http://`/`https://` literal" rule this same document states above.

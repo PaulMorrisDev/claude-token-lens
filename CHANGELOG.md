@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Service web UI** (`service/static/index.html`/`app.js`/`app.css`,
+  work package S1-ui): a CSP-compliant, framework-free, no-build-step
+  UI with ten keyboard-navigable tabs (Overview, Sessions, Cache, TTL,
+  Agents, Config, Profiles, Recommendations, Usage, Diagnostics)
+  covering every documented `/api/*` route, `prefers-color-scheme`
+  dark/light theming reused from the CLI's standalone HTML report, and
+  inline-SVG scorecard/table bar charts. The session timeline renders
+  an explicit placeholder rather than fabricate data, since
+  `/api/session/<id>` has no per-turn context-size series yet.
 - **Capture-improvements batch** (`PARSER_VERSION` 3 -> 4): seven new
   additive `Turn` fields, all derived from data the transcript already
   carries -- no new raw content is ever retained:
