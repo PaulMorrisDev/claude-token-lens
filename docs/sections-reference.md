@@ -181,6 +181,38 @@ simulation at a transcript's own dominant observed TTL and compare it to
 observed cost; `TtlThresholds.fidelity_warn_pct` (default 10.0) is the
 flag threshold `build_section` applies per agent type.
 
+## `model_swap` (`model_swap.py`)
+
+Full contract: [`docs/model-swap.md`](model-swap.md).
+
+For each agent type (and the top-level conversation), reprices every
+already-observed priced turn at every model `pricing.toml` carries —
+same tokens, same observed 5m/1h cache-write split, same `price_turn`
+the rest of the engine uses — and reports the ceiling saving from
+moving one tier down (fable -> opus -> sonnet -> haiku, via
+`workstyle.model_tier` and `Pricing.aliases`, never a hardcoded id).
+Every figure is a price ceiling at today's usage shape, not a
+prediction: a smaller model may need more turns or fail the task
+outright, and neither possibility is represented here.
+
+- `model_swap_by_agent_type` — spawns, priced turns, unpriced turns
+  (unknown model), observed model, observed cost, a `Cost at
+  <model-id>` column per model in the rate card, the best cheaper
+  alternative (model id and label), and the ceiling saving in USD and
+  %. A row's alternative is empty and its saving `0.0` whenever the
+  observed model is already the cheapest available, its own volumes
+  already beat the next tier down, or the family/tier can't be
+  determined — the table never implies a saving where none exists.
+- `model_swap_summary` — the corpus-wide ceiling if every subagent
+  type currently on Fable or Opus moved one tier down (excludes
+  top-level and any Fable/Opus type already cheaper than its next
+  tier).
+
+The `model-tier` recommendation fires per qualifying row (real cheaper
+alternative, sample and saving thresholds cleared) and names the exact
+lever: `settings.json`'s `"model"` key for the top-level conversation,
+or the subagent's `.claude/agents/<type>.md` frontmatter `model:` line.
+
 ## `limits` (`limits.py`)
 
 Full field-by-field contract: [`docs/limits.md`](limits.md#the-limits-report-section).
