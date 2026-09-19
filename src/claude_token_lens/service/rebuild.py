@@ -17,22 +17,22 @@ reassembles them into the same ``SessionBundle``/``Corpus`` shape
 ``corpus.load_corpus`` would have produced from the live files, so
 ``report.build_report(corpus, ...)`` runs unmodified against either.
 
-What does NOT round-trip, and why (see this work package's final report
-for the same two items, since they're store-schema gaps rather than bugs
-in this module):
+**Workflow runs** (S1-integration fix 1.d): ``SessionBundle.workflows``
+is rebuilt from the ``workflow_runs`` table the watcher now populates
+(``workflows.parse_workflow_file``/``link_workflow_agents``, already
+cost-linked at write time). One deliberate, documented approximation
+survives: ``workflow_runs.phases`` stores only ``WorkflowRun
+.phase_titles`` (names — never ``detail``, which carries workflow
+source/prompt text), so a rebuilt ``WorkflowRun.phases`` count is
+``len(phase_titles)`` rather than the fresh parse's own count of *every*
+phase entry in the run file — the two differ only when some phase entry
+in the original file had no ``title`` at all, which none of this work
+package's fixtures (including the new ``tests/fixtures/diversity/
+workflow-session``) do, so the round-trip test still matches byte for
+byte.
 
-- **Workflow runs.** ``SessionBundle.workflows`` is always empty here —
-  the store schema has no table for ``WorkflowRun`` (cost, phase count/
-  titles, status), so a session that ran a workflow loses that specific
-  data once rebuilt from the store alone. Every other field a workflow
-  run would have contributed to (turns, tokens, cost) still comes
-  through, since those live on the workflow's own agent transcripts,
-  which the store *does* persist — only the ``"workflows"``/``"phases"``
-  report sections and ``overview.workflow_runs`` would undercount for
-  such a session. None of this work package's round-trip fixtures
-  (``tests/fixtures/real/session-a``, ``tests/fixtures/diversity/*``)
-  contain a ``workflows/`` directory, so the round-trip test does not
-  exercise this gap.
+What else does NOT round-trip, and why:
+
 - **``SessionBundle.project_dir``.** Always ``""`` here — nothing in
   ``report.build_report``'s own code path reads it (grepped: only
   ``corpus.py`` itself references ``.project_dir``), so this is a
@@ -52,6 +52,7 @@ import json
 from ..cache import result_from_jsonable
 from ..corpus import Corpus, SessionBundle, _session_sort_key
 from ..discovery import _resolve_window
+from ..model import WorkflowRun
 from .store import Store
 
 
@@ -161,13 +162,38 @@ def corpus_from_store(
             total_files += 1
             total_bytes += row["size_bytes"] or 0
 
+        workflow_rows = conn.execute(
+            "SELECT run_id, agent_count, phases, started, finished, cost, status "
+            "FROM workflow_runs WHERE session_id = ? ORDER BY id",
+            (session_id,),
+        ).fetchall()
+        workflow_runs = []
+        for wrow in workflow_rows:
+            try:
+                phase_titles = tuple(json.loads(wrow["phases"]))
+            except (TypeError, ValueError):
+                phase_titles = ()
+            workflow_runs.append(
+                WorkflowRun(
+                    run_id=wrow["run_id"],
+                    session_id=session_id,
+                    agent_count=wrow["agent_count"],
+                    phases=len(phase_titles),
+                    started=wrow["started"],
+                    finished=wrow["finished"],
+                    cost=wrow["cost"],
+                    status=wrow["status"],
+                    phase_titles=phase_titles,
+                )
+            )
+
         bundles.append(
             SessionBundle(
                 session_id=session_id,
                 slug=slug,
                 top=top,
                 subs=subs,
-                workflows=[],
+                workflows=workflow_runs,
                 project_dir="",
             )
         )
