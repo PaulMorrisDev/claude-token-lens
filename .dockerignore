@@ -1,0 +1,26 @@
+# Deliverable 2.a: keep the build context (and therefore the image)
+# free of anything the running service never needs -- tests, fixtures,
+# local caches, VCS metadata and editor/agent state.
+
+.git/
+.claude/
+
+tests/
+docs/
+
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+*.egg-info/
+build/
+dist/
+*.pyz
+
+.token-lens-cache/
+
+Dockerfile
+docker-compose.yml
+.dockerignore
