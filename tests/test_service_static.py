@@ -630,6 +630,92 @@ def test_app_js_timeline_draws_a_circle_for_a_single_turn_session() -> None:
     assert "<circle" in timeline_src
 
 
+def _split_top_level_args(args_str: str) -> list[str]:
+    """Split a `loadInto(...)` argument string on top-level commas only,
+    so a nested call like `encodeURIComponent(profile.id)` inside one
+    argument doesn't get mistaken for an argument boundary."""
+    parts = []
+    depth = 0
+    current = ""
+    for ch in args_str:
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+        if ch == "," and depth == 0:
+            parts.append(current)
+            current = ""
+        else:
+            current += ch
+    parts.append(current)
+    return parts
+
+
+def _loadinto_named_render_callbacks(app_js: str) -> list[str]:
+    """Every bare identifier passed as `loadInto(container, url, <name>)`'s
+    third argument -- i.e. render callbacks referenced by name, not the
+    inline `function (data, container) {...}` literals `loadInto` is also
+    called with."""
+    names = []
+    for match in re.finditer(r"loadInto\(", app_js):
+        # Skip `function loadInto(container, url, render, options) {...}`
+        # itself -- its own parameter list isn't a call site.
+        if app_js[: match.start()].rstrip().endswith("function"):
+            continue
+        open_paren = match.end() - 1
+        depth = 0
+        i = open_paren
+        while i < len(app_js):
+            if app_js[i] == "(":
+                depth += 1
+            elif app_js[i] == ")":
+                depth -= 1
+                if depth == 0:
+                    break
+            i += 1
+        args = _split_top_level_args(app_js[open_paren + 1 : i])
+        if len(args) >= 3:
+            third = args[2].strip()
+            if re.fullmatch(r"[A-Za-z_$][\w$]*", third):
+                names.append(third)
+    return names
+
+
+def test_loadinto_render_callbacks_take_data_first_container_second() -> None:
+    """Regression test: `loadInto(container, url, render)` (app.js's
+    fetch-and-render helper) always invokes its third argument as
+    `render(data, container)` -- data first, container second. Every
+    named render callback it's called with must declare its parameters
+    in that same order.
+
+    This catches the bug where `renderSummaryCards` declared
+    `(container, summary)` -- the reverse of what `loadInto` actually
+    passes -- so the Overview tab's summary cards received the summary
+    object where `container` was expected and blew up with
+    `container.appendChild is not a function`. Fails against the
+    pre-fix source (`renderSummaryCards(container, summary)`) and
+    passes once the parameter order matches every other callback.
+    """
+    app_js = _static_text("app.js")
+    names = _loadinto_named_render_callbacks(app_js)
+    assert names, "no named render callbacks found -- has loadInto's call pattern changed?"
+
+    bad_first_params = {"container", "target", "panel", "el"}
+    good_second_params = {"container", "target"}
+    for name in names:
+        match = re.search(r"function\s+" + re.escape(name) + r"\s*\(([^)]*)\)", app_js)
+        assert match, f"no declaration found for render callback {name!r}"
+        params = [p.strip() for p in match.group(1).split(",")]
+        assert len(params) >= 2, f"{name}({', '.join(params)}) declares fewer than 2 parameters"
+        assert params[0] not in bad_first_params, (
+            f"{name}'s first parameter is {params[0]!r} -- loadInto calls render(data, container), "
+            f"so the first parameter must be the data argument, not the container"
+        )
+        assert params[1] in good_second_params, (
+            f"{name}'s second parameter is {params[1]!r}, expected one of {sorted(good_second_params)}"
+        )
+
+
 def test_fixture_server_serves_session_detail(fixture_server: str) -> None:
     status, content_type, body = _get(fixture_server, "/api/session/session-ui-1")
     assert status == 200

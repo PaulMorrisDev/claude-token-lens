@@ -589,7 +589,7 @@
     }
   }
 
-  function renderSummaryCards(container, summary) {
+  function renderSummaryCards(summary, container) {
     var cards = el("div", { class: "stat-cards" });
     var items = [
       ["Sessions", thousands(summary.sessions || 0)],

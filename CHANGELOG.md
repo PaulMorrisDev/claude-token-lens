@@ -30,6 +30,11 @@ A v0.4 backlog, kept here until scheduled into a milestone:
 - **Opt-in local path view.** `--show-paths` (local only, never in exports)
   lists the top files by Read tokens, as token-dashboard does.
 
+### Fixed
+
+- Overview tab: summary cards failed to render because the render
+  callback's parameter order was reversed.
+
 ## [0.2.0] - 2026-09-19
 
 ### Added
