@@ -403,6 +403,47 @@ def test_billing_mode_defaults_to_api(tmp_path: Path, store: Store):
     assert row["billing_mode"] == "api"
 
 
+# -- real-time tag overrides (S1-perf item 6) ---------------------------------
+
+
+def test_session_tag_override_is_applied_on_the_next_tick(tmp_path: Path, store: Store):
+    """A ``POST /api/sessions/<id>/tags`` write (``Store.set_tag``) must
+    change ``sessions.mode``/``purpose`` on the very next watcher tick,
+    not only the next time a report is built -- ``api.py``'s
+    ``_build_report_model`` already merged ``store.all_tags()`` into its
+    own overrides, but ``_fold_session`` was still classifying every
+    session with an empty override mapping, so ``/api/sessions`` kept
+    showing the pre-override classification until a full store rebuild.
+    Nothing on disk changes between the two ticks -- ``_scan_session``
+    always re-folds every session every tick regardless of whether its
+    transcript was re-parsed, so this exercises the fix on an otherwise
+    fully cache-hit tick.
+    """
+    root = tmp_path / "projects"
+    _write_session(root, "proj-a", "sess-a1", _two_turns())
+
+    options = _options(tmp_path)
+    watcher = FileWatcher(store, options)
+    watcher.run_once()
+
+    before = store.session("sess-a1")
+    assert before is not None
+    assert before["mode_source"] != "override"
+    assert before["purpose_source"] != "override"
+
+    store.set_tag("sess-a1", "mode", "manual-override-mode")
+    store.set_tag("sess-a1", "purpose", "manual-override-purpose")
+
+    watcher.run_once()
+
+    after = store.session("sess-a1")
+    assert after is not None
+    assert after["mode"] == "manual-override-mode"
+    assert after["mode_source"] == "override"
+    assert after["purpose"] == "manual-override-purpose"
+    assert after["purpose_source"] == "override"
+
+
 # -- last_stats (deliverable 1.e) ---------------------------------------------
 
 
