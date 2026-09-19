@@ -951,45 +951,187 @@ def _scope_and_lever_note(snapshot: Snapshot | None) -> tuple[str, str]:
     return "user", "~/.claude/settings.json"
 
 
+def _table(report: ReportModel, section_key: str, table_name: str):
+    """The raw :class:`Table` for ``section_key``.``table_name``, or
+    ``None`` when either doesn't exist. Added alongside ``_cell`` for the
+    conservative rewrite of :func:`_rule_compaction_window` below (v4
+    wiring round): that rewrite needs whole rows (every candidate
+    window's own compaction count and delta), not one cell at a time, so
+    ``_cell``'s single-value contract doesn't fit -- this is the "small
+    helper" the wiring brief allows adding to this module."""
+    for section in report.sections:
+        if section.key != section_key:
+            continue
+        for table in section.tables:
+            if table.name == table_name:
+                return table
+    return None
+
+
+def _rediscovery_allowance_usd_used(report: ReportModel, thresholds: CompactionSimThresholds) -> float:
+    """The rediscovery allowance :func:`simulate_compaction_windows`
+    actually charged per simulated compaction in this report, read back
+    out of ``build_section``'s own ``"Rediscovery allowance used: $X"``
+    note (the only place that number is rendered -- see
+    ``build_section``'s notes list above). Falls back to
+    ``thresholds.default_rediscovery_allowance_usd`` when the
+    ``compaction_sim`` section or that note isn't present (e.g. a
+    report filtered down to a single other section)."""
+    prefix = "Rediscovery allowance used: $"
+    for section in report.sections:
+        if section.key != "compaction_sim":
+            continue
+        for note in section.notes:
+            if note.startswith(prefix):
+                value_str = note[len(prefix):].split(" ", 1)[0].rstrip(".")
+                try:
+                    return float(value_str)
+                except ValueError:
+                    continue
+    return thresholds.default_rediscovery_allowance_usd
+
+
+def _post_compaction_redundant_reads_mean(report: ReportModel) -> float | None:
+    """This corpus's own mean count of redundant (repeated) reads landing
+    within topology's rediscovery window of a real compaction, per
+    session -- ``topology.py``'s ``topology_redundant_reads`` table's
+    second row (``"...within N turns of a compaction"``), read
+    positionally rather than by its exact wording (which embeds
+    ``topology.py``'s own ``_REDISCOVERY_WINDOW_TURNS`` constant).
+    ``None`` when the ``agents`` section (topology's own) isn't part of
+    this report, or that table has no rows/mean -- the caller then falls
+    back to doubling the flat allowance instead (see this module's
+    docstring's conservative-rule-change note)."""
+    table = _table(report, "agents", "topology_redundant_reads")
+    if table is None or len(table.rows) < 2:
+        return None
+    col = {c.key: i for i, c in enumerate(table.columns)}
+    if "mean_per_session" not in col:
+        return None
+    return table.rows[1][col["mean_per_session"]]
+
+
 def _rule_compaction_window(
     report: ReportModel, thresholds: CompactionSimThresholds, snapshot: Snapshot | None
 ) -> list[Recommendation]:
-    """"compaction-window": recommends the cheapest candidate
-    ``autoCompactWindow`` for the top-level session when it saves more
-    than ``thresholds.switch_pct``/``switch_usd`` over the observed
-    cost -- same evidence-tuple contract as every other rule in
-    ``recommend.py`` (see that module's docstring), reading its evidence
-    back out of this module's own ``compaction_sim_by_agent_type`` table
-    (so a caller must have already added :func:`build_section`'s output
-    to ``report.sections`` -- see this module's docstring's wiring
-    instructions)."""
-    row_key = "top-level"
-    observed_cost = _cell(report, "compaction_sim", "compaction_sim_by_agent_type", row_key, "observed_cost")
-    best_window_label = _cell(report, "compaction_sim", "compaction_sim_by_agent_type", row_key, "best_window")
-    best_cost = _cell(report, "compaction_sim", "compaction_sim_by_agent_type", row_key, "best_cost")
-    saving_usd = _cell(report, "compaction_sim", "compaction_sim_by_agent_type", row_key, "saving_usd")
-    if observed_cost is None or best_cost is None or saving_usd is None or best_window_label is None:
+    """"compaction-window": recommends a *range floor* for
+    ``autoCompactWindow`` -- the smallest candidate window whose modelled
+    per-session compaction count stays at or below 2 and whose modelled
+    saving clears ``thresholds.switch_pct``/``switch_usd`` over the
+    observed cost, once a conservative rediscovery correction has been
+    added on top of the sweep's own flat allowance.
+
+    Conservative rule change (v4 wiring round): the sweep
+    (:func:`simulate_compaction_windows`) charges only one flat
+    rediscovery allowance per simulated compaction, so on a real corpus
+    a small window's modelled saving can look implausibly large (a
+    100,000-token window showing a ~68% saving was the trigger case --
+    not credible once real post-compaction rediscovery is accounted
+    for). This rule -- the arithmetic in ``simulate_compaction_windows``
+    itself is unchanged, out of this wiring's file ownership -- adds its
+    own extra, more conservative rediscovery estimate on top of each
+    candidate window's already-reported saving before deciding whether
+    to recommend it:
+
+    - When this report also carries topology's ``agents`` section, the
+      extra estimate is this corpus's own mean rate of redundant reads
+      landing shortly after a real compaction (``topology_redundant_reads``'
+      second row) multiplied by the flat allowance already used -- i.e.
+      assume each such extra redundant read costs about as much as the
+      one rediscovery event the flat allowance already prices for.
+    - Otherwise (no ``topology_redundant_reads`` data available -- e.g.
+      a report filtered down to only the ``compaction_sim`` section),
+      the extra estimate is simply the flat allowance again, so the
+      total rediscovery cost assumed is *double* the sweep's own flat
+      allowance -- noted as a fallback rather than silently applied.
+
+    A recommendation, when one fires, is phrased as a floor ("at least
+    W"), not a single optimal point -- the correction above is itself a
+    modelled estimate, so naming one exact "best" window the way the
+    previous point-recommendation did would overstate this rule's own
+    precision. Evidence and rule id/category/lever match every other
+    rule in this module/``recommend.py`` (see that module's docstring).
+    """
+    by_window_table = _table(report, "compaction_sim", "compaction_sim_by_window")
+    if by_window_table is None or not by_window_table.rows:
         return []
-    if best_window_label == "none" or not observed_cost:
+    col = {c.key: i for i, c in enumerate(by_window_table.columns)}
+    rows_by_label = {row[col["window"]]: row for row in by_window_table.rows}
+    observed_row = rows_by_label.get("none")
+    if observed_row is None:
         return []
-    pct_ok = best_cost < thresholds.switch_pct * observed_cost
-    usd_ok = saving_usd > thresholds.switch_usd
-    if not (pct_ok and usd_ok):
+    observed_cost = observed_row[col["cost"]]
+    if not observed_cost:
         return []
+
+    allowance_usd = _rediscovery_allowance_usd_used(report, thresholds)
+    redundant_reads_mean = _post_compaction_redundant_reads_mean(report)
+    if redundant_reads_mean is not None:
+        extra_per_compaction_usd = allowance_usd * redundant_reads_mean
+        allowance_source = (
+            f"this corpus's own post-compaction redundant-read rate "
+            f"({redundant_reads_mean:.2f} redundant reads/session, from topology_redundant_reads) "
+            f"applied to the ${allowance_usd:.4f} flat allowance already charged"
+        )
+    else:
+        extra_per_compaction_usd = allowance_usd
+        allowance_source = (
+            f"topology_redundant_reads unavailable in this report, so the ${allowance_usd:.4f} "
+            "flat allowance already charged was doubled as a conservative fallback"
+        )
+
+    chosen: tuple[str, float, float, float] | None = None  # (label, compactions_per_session, raw_saving, adjusted_saving)
+    for window in CANDIDATE_WINDOWS:
+        if window is None:
+            continue
+        label = _window_label(window)
+        row = rows_by_label.get(label)
+        if row is None:
+            continue
+        compactions_per_session = row[col["compactions_per_session"]]
+        delta_usd = row[col["delta_usd"]]
+        if compactions_per_session is None or delta_usd is None:
+            continue
+        if compactions_per_session > 2:
+            continue
+        raw_saving_usd = max(0.0, -delta_usd)
+        adjusted_saving_usd = raw_saving_usd - extra_per_compaction_usd * compactions_per_session
+        pct_ok = adjusted_saving_usd > (1.0 - thresholds.switch_pct) * observed_cost
+        usd_ok = adjusted_saving_usd > thresholds.switch_usd
+        if pct_ok and usd_ok:
+            chosen = (label, compactions_per_session, raw_saving_usd, adjusted_saving_usd)
+            break  # CANDIDATE_WINDOWS (minus None) is ascending -- first hit is the smallest.
+
+    if chosen is None:
+        return []
+    label, compactions_per_session, raw_saving_usd, adjusted_saving_usd = chosen
+
+    fidelity_table = _table(report, "compaction_sim", "compaction_sim_fidelity")
+    has_fidelity_rows = bool(fidelity_table and fidelity_table.rows)
 
     scope, file_note = _scope_and_lever_note(snapshot)
     action = (
-        f"Set autoCompactWindow to {best_window_label} in {file_note}. "
-        f"Projected saving: ${saving_usd:.2f} vs the observed cost of ${observed_cost:.2f}."
+        f"Set autoCompactWindow to at least {label} in {file_note}. This is a modelled, not "
+        f"observed, range floor: smaller windows compact more often, and the sweep's own flat "
+        f"rediscovery allowance likely understates their true cost, so only the smallest window "
+        f"clearing the threshold after a conservative rediscovery correction ({allowance_source}) "
+        f"is named, rather than a single 'best' point. Projected saving at {label}: "
+        f"${adjusted_saving_usd:.2f} vs the observed cost of ${observed_cost:.2f} "
+        f"(raw modelled saving before this correction: ${raw_saving_usd:.2f})."
     )
+    if has_fidelity_rows:
+        action += (
+            " See compaction_sim_fidelity for how well this sweep's modelled costs track this "
+            "corpus's own real observed costs."
+        )
     if scope == "managed":
         action += " This key is managed by policy -- raise with your administrator."
 
     evidence = [
-        _evidence("Observed cost (top-level)", observed_cost, "compaction_sim", "compaction_sim_by_agent_type", row_key),
-        _evidence("Best candidate window", best_window_label, "compaction_sim", "compaction_sim_by_agent_type", row_key),
-        _evidence("Best candidate cost", best_cost, "compaction_sim", "compaction_sim_by_agent_type", row_key),
-        _evidence("Projected saving", saving_usd, "compaction_sim", "compaction_sim_by_agent_type", row_key),
+        _evidence("Observed cost (top-level, window=none)", observed_cost, "compaction_sim", "compaction_sim_by_window", "none"),
+        _evidence(f"Candidate {label}: modelled compactions/session", compactions_per_session, "compaction_sim", "compaction_sim_by_window", label),
+        _evidence(f"Candidate {label}: raw modelled saving (pre-correction)", raw_saving_usd, "compaction_sim", "compaction_sim_by_window", label),
+        _evidence(f"Candidate {label}: modelled saving after rediscovery correction", adjusted_saving_usd, "compaction_sim", "compaction_sim_by_window", label),
     ]
 
     return [
@@ -998,7 +1140,7 @@ def _rule_compaction_window(
             severity="advice",
             category="settings",
             archetypes=(),
-            title=f"Set autoCompactWindow to {best_window_label}",
+            title=f"Set autoCompactWindow to at least {label}",
             action=action,
             lever="autoCompactWindow",
             evidence=evidence,
