@@ -418,6 +418,13 @@ def make_handler(
             window=window,
             snapshots=snaps or None,
             session_overrides=overrides,
+            # v4 wiring round: without this, waste.WasteStats's salted
+            # session-id hash would fall back to report.py's own
+            # temp-directory default (see _default_waste_config_dir) --
+            # harmless, but this service already has a real, legitimate
+            # config_dir of its own, so its salt should live there
+            # alongside its other state rather than in the OS temp dir.
+            config_dir=options.config_dir,
         )
 
     def _get_report_model(window_days: int | None, since: str | None = None, until: str | None = None):
@@ -794,6 +801,38 @@ def make_handler(
         section = _find_section(model, "ttl")
         return _ok(to_jsonable(section) if section is not None else None)
 
+    def route_carry(store, query, body):
+        window, err = _window_query(query)
+        if err is not None:
+            return err
+        model = _get_report_model(*window)
+        section = _find_section(model, "carry")
+        return _ok(to_jsonable(section) if section is not None else None)
+
+    def route_compaction_sim(store, query, body):
+        window, err = _window_query(query)
+        if err is not None:
+            return err
+        model = _get_report_model(*window)
+        section = _find_section(model, "compaction_sim")
+        return _ok(to_jsonable(section) if section is not None else None)
+
+    def route_model_swap(store, query, body):
+        window, err = _window_query(query)
+        if err is not None:
+            return err
+        model = _get_report_model(*window)
+        section = _find_section(model, "model_swap")
+        return _ok(to_jsonable(section) if section is not None else None)
+
+    def route_waste(store, query, body):
+        window, err = _window_query(query)
+        if err is not None:
+            return err
+        model = _get_report_model(*window)
+        section = _find_section(model, "waste")
+        return _ok(to_jsonable(section) if section is not None else None)
+
     def route_config_diff(store, query, body):
         window, err = _window_query(query)
         if err is not None:
@@ -839,6 +878,10 @@ def make_handler(
         "/api/baseline": route_baseline,
         "/api/daily-usage": route_daily_usage,
         "/api/ttl": route_ttl,
+        "/api/carry": route_carry,
+        "/api/compaction-sim": route_compaction_sim,
+        "/api/model-swap": route_model_swap,
+        "/api/waste": route_waste,
         "/api/config-diff": route_config_diff,
         "/api/recommendations": route_recommendations,
         "/api/report.json": _render_report("application/json", lambda model: render_json(model)),

@@ -12,10 +12,15 @@ optionally :class:`phases.PhaseStats`), and assembles their
 ``build_section`` outputs into ``ReportModel.sections`` in a fixed order.
 
 Section order and keys: ``overview``, ``usage``, ``sessions``, ``recache``,
-``ttl``, ``limits``, ``compactions``, ``agents``, ``workstyle``,
+``ttl``, ``limits``, ``carry``, ``compaction_sim``, ``model_swap``,
+``waste``, ``compactions``, ``agents``, ``workstyle``,
 ``workflows``, ``phases`` (only when ``phases=True``), ``config`` (only
 when snapshots are supplied), ``context_budget``, ``scorecard``,
 ``baseline_comparison``
+(v4 wiring round: ``carry``/``compaction_sim``/``model_swap``/``waste``
+are the four v4 analytics modules, wired in here immediately after
+``limits`` -- grouped together, in the same order the wiring brief itself
+lists them, rather than interleaved among the pre-existing sections)
 (v0.3 Task 2 addition, only when a ``baseline_record`` is passed --
 see ``build_report``'s own docstring; deliberately *not* subject to
 ``include`` filtering). ``include``, when given, keeps only sections
@@ -84,17 +89,49 @@ Deviations from the task brief, reported rather than made silently (see
   ``session_overrides=``, so this deviation is closed for the CLI path;
   it remains true only for a caller of ``build_report`` that omits the
   keyword.
+- v4 wiring round: ``build_report`` now *does* take a ``config_dir``
+  keyword after all -- but only for ``waste.WasteStats``'s salted
+  session-id hash (``waste.py``'s own ``load_or_create_salt``), which
+  touches disk (creates/reads a salt file under ``config_dir``) unless
+  told where to look, and otherwise defaults to the real
+  ``~/.claude/token-lens``. This is a narrower purpose than the
+  ``session_overrides``-loading deviation two bullets above still
+  describes -- ``build_report`` still doesn't *load*
+  ``sessions.toml``/``usage-log.csv`` itself, only resolves the waste
+  salt's directory. A caller that omits ``config_dir`` gets
+  ``waste.compute_waste``'s own default (the real ``~/.claude`` salt
+  file) -- every caller in this codebase (``cli.py``, ``service/api.py``)
+  passes its own already-resolved ``config_dir`` explicitly.
 """
 
 from __future__ import annotations
 
 import dataclasses
 import statistics
+import tempfile
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Callable
 
 from . import __version__ as _TOOL_VERSION
-from . import classify, compaction, context_budget, discovery, limits, recache, scorecard, snapshots as snapshots_mod, topology, ttl, workflows, workstyle
+from . import (
+    carry,
+    classify,
+    compaction,
+    compaction_sim,
+    context_budget,
+    discovery,
+    limits,
+    model_swap,
+    recache,
+    scorecard,
+    snapshots as snapshots_mod,
+    topology,
+    ttl,
+    waste,
+    workflows,
+    workstyle,
+)
 from .config import Config
 from .corpus import Corpus, SessionBundle
 from .model import (
@@ -127,6 +164,10 @@ _SECTION_ORDER: tuple[str, ...] = (
     "recache",
     "ttl",
     "limits",
+    "carry",
+    "compaction_sim",
+    "model_swap",
+    "waste",
     "compactions",
     "agents",
     "workstyle",
@@ -142,6 +183,27 @@ _SECTION_ORDER: tuple[str, ...] = (
 #: over a long window against a churning config could otherwise produce
 #: an unbounded number of tables.
 _MAX_CONFIG_DIFF_KEYS = 20
+
+
+def _default_waste_config_dir() -> Path:
+    """Where ``waste.WasteStats``'s salted session-id hash reads/writes
+    its salt file when a caller of :func:`build_report` doesn't supply
+    its own ``config_dir`` -- deliberately *not* ``waste.py``'s own
+    default (the real ``~/.claude/token-lens``, via
+    ``parse.load_or_create_salt``'s own ``config_dir=None`` fallback).
+    ``waste.WasteStats.__init__`` calls ``load_or_create_salt``
+    unconditionally and eagerly (not lazily on first ``.add()``), so
+    every existing caller of ``build_report`` that predates this v4
+    wiring round and doesn't pass ``config_dir`` -- every test in this
+    repo, plus ``baseline.py``'s/``team.py``'s own ``build_report()``
+    call sites -- would otherwise silently create a file in the user's
+    real Claude Code config directory the first time it builds a
+    ``waste`` section, which this project's own privacy convention (and
+    this wiring round's own brief) both rule out. The OS temp directory
+    is used instead, under a fixed subdirectory so repeated calls within
+    one run/process still hash session ids consistently.
+    """
+    return Path(tempfile.gettempdir()) / "claude-token-lens" / "waste-salt-default"
 
 
 def _priced_turns(result: TranscriptResult) -> list[Turn]:
@@ -1016,6 +1078,7 @@ def build_report(
     usage_log_rows: list[dict] | None = None,
     baseline_record: dict | None = None,
     baseline_note: str | None = None,
+    config_dir: str | Path | None = None,
 ) -> ReportModel:
     """Assemble the whole :class:`ReportModel` for ``corpus``. See the
     module docstring for section order/keys and the deviations from the
@@ -1061,6 +1124,19 @@ def build_report(
     (see the module docstring's first deviation note), so ``assumptions``
     is the pragmatic substitute for "a note in Diagnostics says how to
     create one".
+
+    ``config_dir`` (v4 wiring round addition -- see the module docstring's
+    deviation note) is passed straight through to ``waste.WasteStats`` so
+    the ``waste`` section's salted session-id hash reads/creates its salt
+    file under this directory -- privacy scoping, not a data source. When
+    omitted (``None``, the default), :func:`_default_waste_config_dir`'s
+    OS-temp-directory location is used instead of ``waste.py``'s own
+    default (the real ``~/.claude/token-lens``) -- deliberately: every
+    existing caller of ``build_report`` that predates this parameter
+    (every test in this repo, ``baseline.py``, ``team.py``) omits it, and
+    none of them should silently start writing into the user's real
+    Claude Code config directory just because a ``waste`` section is now
+    always part of the assembled report.
     """
     from . import usage as usage_mod  # local import: avoids a cycle risk with any future usage<->report coupling
     from . import statusline as statusline_mod  # local import: same rationale as usage_mod above
@@ -1072,6 +1148,14 @@ def build_report(
     scorecard_th = scorecard.ScorecardThresholds.from_config(
         config.thresholds.get("scorecard") if isinstance(config.thresholds, dict) else None
     )
+    # v4 wiring round: each module's own from_config convention (see
+    # each one's own docstring) -- carry/compaction_sim read config.thresholds
+    # flat, model_swap/waste read a nested sub-key, exactly like
+    # scorecard_th above.
+    carry_th = carry.CarryThresholds.from_config(config.thresholds)
+    compaction_sim_th = compaction_sim.CompactionSimThresholds.from_config(config.thresholds)
+    model_swap_th = model_swap.ModelSwapThresholds.from_config(config.thresholds)
+    waste_th = waste.WasteThresholds.from_config(config.thresholds)
 
     session_overrides = session_overrides or {}
 
@@ -1102,6 +1186,14 @@ def build_report(
     tp = topology.TopologyStats()
     cb = context_budget.ContextBudgetStats()
     ph = PhaseStats() if phases else None
+    # v4 wiring round: waste.WasteStats accumulates per-transcript like
+    # ls/ts/cs above (mirrors that shape); carry/model_swap/compaction_sim
+    # are instead pure, whole-corpus functions (see each one's own
+    # docstring) that need every TranscriptResult at once, so this list
+    # collects them across the loop below for a single post-loop call
+    # each, rather than an incremental .add() per transcript.
+    ws = waste.WasteStats(waste_th, config_dir=config_dir if config_dir is not None else _default_waste_config_dir())
+    all_results: list[TranscriptResult] = []
 
     for bundle in corpus.sessions:
         top = bundle.top
@@ -1151,6 +1243,8 @@ def build_report(
             rs.add(tr, pricing.resolve_model)
             ls.add(tr, pricing.resolve_model)
             ts.add(tr, pricing.resolve_model, ttl_th)
+            ws.add(tr, pricing)
+            all_results.append(tr)
 
             dominant_model = _dominant_transcript_model(tr)
             dominant_rate = pricing.resolve_model(dominant_model) if dominant_model else None
@@ -1276,6 +1370,39 @@ def build_report(
             "compactions_per_session": (total_compactions / n) if n else None,
         }
 
+    # -- v4 wiring round: carry/model_swap/compaction_sim are pure,
+    # whole-corpus functions (see each one's own docstring) run once here
+    # against ``all_results`` (every transcript the main loop above
+    # collected), rather than an incremental per-transcript .add() --------
+
+    carry_stats = carry.compute_carry(all_results, pricing.resolve_model, carry_th)
+    model_swap_stats = model_swap.compute_model_swap(all_results, pricing, model_swap_th)
+
+    # snapshot_windows: dict[session_id, int | None] -- compaction_sim.py's
+    # own docstring's exact recipe: reuse context_budget.py's
+    # session_to_project reverse lookup (built from
+    # ContextBudgetStats.projects[project].session_ids, same as
+    # _build_autocompact_table does), just keyed by session id instead of
+    # project, then read each project's latest snapshot's own
+    # effective_config(...).get("autoCompactWindow").
+    latest_snapshots_by_project = snapshots_mod.latest_snapshot_per_project(snapshots) if snapshots else {}
+    session_to_project = {
+        session_id: project for project, acc in cb.projects.items() for session_id in acc.session_ids
+    }
+    snapshot_windows: dict[str, int | None] = {}
+    for session_id, project in session_to_project.items():
+        snap = latest_snapshots_by_project.get(project)
+        configured_window = None
+        if snap is not None:
+            value = snapshots_mod.effective_config(snap).get("autoCompactWindow")
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                configured_window = value
+        snapshot_windows[session_id] = configured_window
+
+    compaction_sim_stats = compaction_sim.simulate_compaction_windows(
+        all_results, pricing.resolve_model, snapshot_windows, compaction_sim_th
+    )
+
     # -- assemble sections ---------------------------------------------
 
     sections: list[Section] = []
@@ -1322,6 +1449,18 @@ def build_report(
             cross_check_table = limits.csv_cross_check(usage_log_rows, ls, limits_th)
             limits_section = dataclasses.replace(limits_section, tables=[*limits_section.tables, cross_check_table])
         sections.append(limits_section)
+
+    if _want("carry"):
+        sections.append(carry.build_section(carry_stats, carry_th))
+
+    if _want("compaction_sim"):
+        sections.append(compaction_sim.build_section(compaction_sim_stats, compaction_sim_th))
+
+    if _want("model_swap"):
+        sections.append(model_swap.build_section(model_swap_stats, model_swap_th))
+
+    if _want("waste"):
+        sections.append(waste.build_section(ws, waste_th))
 
     if _want("compactions"):
         sections.append(compaction.build_section(cs))
@@ -1409,7 +1548,15 @@ def build_report(
         "min_turns": recommend_min_turns,
     }
 
-    assumptions: list[str] = list(ttl.ASSUMPTIONS) + list(recache.ASSUMPTIONS) + list(limits.ASSUMPTIONS)
+    assumptions: list[str] = (
+        list(ttl.ASSUMPTIONS)
+        + list(recache.ASSUMPTIONS)
+        + list(limits.ASSUMPTIONS)
+        + list(carry.ASSUMPTIONS)
+        + list(compaction_sim.ASSUMPTIONS)
+        + list(model_swap.ASSUMPTIONS)
+        + list(waste.ASSUMPTIONS)
+    )
     if baseline_record is None and baseline_note:
         assumptions.append(baseline_note)
 

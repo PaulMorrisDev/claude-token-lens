@@ -372,3 +372,86 @@ def test_rule_evidence_resolves_against_the_report():
             assert table is not None, f"no table {table_name!r} for evidence {label!r}"
             row = next((r for r in table.rows if r and r[0] == row_key), None)
             assert row is not None, f"no row {row_key!r} in {source_table} for evidence {label!r}"
+
+
+def test_rule_recommends_a_range_floor_not_a_single_best_window():
+    """"compaction-window" now names a floor ("at least W"), not one
+    "best" point -- and the action text says so explicitly."""
+    turns = _synthetic_20_turn_transcript()
+    tr = _top_level_transcript("sess-synthetic", turns)
+    stats = simulate_compaction_windows([tr], SONNET_RATES, {})
+    section = build_section(stats)
+    report = _base_report([section])
+
+    recs = RULES[0](report, CompactionSimThresholds(), None)
+    assert len(recs) == 1
+    rec = recs[0]
+    assert rec.title == "Set autoCompactWindow to at least 100,000"
+    assert "at least 100,000" in rec.action
+    assert "modelled, not observed" in rec.action
+
+
+def test_rule_gates_out_a_candidate_with_more_than_two_compactions_per_session():
+    """A window whose modelled compactions/session exceeds 2 must never
+    be the recommended floor, even if its raw saving alone would have
+    cleared both switch thresholds -- built directly against the
+    ``compaction_sim_by_window`` table rather than a real sweep, since
+    driving the synthetic fixture's own ctx growth past 2 compactions
+    at 100,000 would also change its saving arithmetic."""
+    by_window = model.Table(
+        name="compaction_sim_by_window",
+        title="t",
+        columns=[
+            model.Column(key="window", label="w", kind="str"),
+            model.Column(key="compactions_per_session", label="c", kind="float"),
+            model.Column(key="mean_ctx", label="m", kind="tokens"),
+            model.Column(key="cost", label="cost", kind="money"),
+            model.Column(key="delta_usd", label="d", kind="money"),
+            model.Column(key="delta_pct", label="dp", kind="pct"),
+        ],
+        rows=[
+            ["100,000", 3.0, 50_000, 0.20, -5.0, -71.0],
+            ["150,000", 1.0, 80_000, 3.50, -3.5, -50.0],
+            ["none", 0.0, 200_000, 7.0, 0.0, 0.0],
+        ],
+    )
+    section = model.Section(key="compaction_sim", title="t", tables=[by_window])
+    report = _base_report([section])
+
+    recs = RULES[0](report, CompactionSimThresholds(), None)
+    assert len(recs) == 1
+    assert recs[0].title == "Set autoCompactWindow to at least 150,000"
+
+
+def test_rule_conservative_correction_suppresses_a_100k_recommendation_backed_only_by_a_tiny_allowance():
+    """The trigger case for this rule's conservative rewrite: a corpus
+    with no real ``compact_boundary`` event anywhere (so the sweep's own
+    rediscovery allowance falls back to ``thresholds.default_rediscovery_allowance_usd``
+    exactly, per ``_corpus_rediscovery_allowance``) whose configured
+    default allowance is small enough that window=100,000's raw modelled
+    saving alone would clear both switch thresholds, but doubling that
+    same tiny allowance (the fallback correction, since this report
+    carries no ``agents``/``topology_redundant_reads`` table) pushes the
+    saving below ``switch_usd`` -- so 100,000 must not be recommended.
+
+    By hand, on ``_synthetic_20_turn_transcript`` (window=100,000: one
+    compaction at turn 6; ``observed_cost=1.76``, base cost with a
+    zero allowance = 0.545 -- see
+    ``test_small_window_hand_computed_compaction_count_and_cost``):
+    with ``default_rediscovery_allowance_usd=0.15`` the sweep charges
+    that allowance once (one compaction), so cost = 0.545 + 0.15 = 0.695
+    and raw_saving = 1.76 - 0.695 = 1.065 (> switch_usd=1.00 -- would
+    have fired under the old point-recommendation rule). The
+    conservative correction then subtracts a further
+    0.15 * 1 compaction/session = 0.15, giving an adjusted saving of
+    1.065 - 0.15 = 0.915 (< switch_usd=1.00) -- below threshold.
+    """
+    th = CompactionSimThresholds(default_rediscovery_allowance_usd=0.15)
+    turns = _synthetic_20_turn_transcript()
+    tr = _top_level_transcript("sess-synthetic", turns)
+    stats = simulate_compaction_windows([tr], SONNET_RATES, {}, th)
+    section = build_section(stats, th)
+    report = _base_report([section])
+
+    recs = RULES[0](report, th, None)
+    assert not any(rec.title == "Set autoCompactWindow to at least 100,000" for rec in recs)

@@ -1990,3 +1990,152 @@ def test_real_fixture_recommendation_evidence_resolves(tmp_path: Path):
             assert table is not None, f"{rec.id}: no table {table_name!r} for evidence {label!r}"
             row = next((row for row in table.rows if row and row[0] == row_key), None)
             assert row is not None, f"{rec.id}: no row {row_key!r} in {source_table} for evidence {label!r}"
+
+
+# -- v4 wiring round: carry/compaction_sim/model_swap/waste rules -----------
+
+
+def test_v4_module_rules_fire_via_recommend_and_evidence_resolves(tmp_path: Path):
+    """Extends the evidence-exists walk above to the four v4 analytics
+    modules' own rules (carry/compaction_sim/model_swap/waste -- each
+    carries its own RULES, folded into recommend.recommend() via the
+    recs.extend(...) calls added in this wiring round). A hand-built
+    ReportModel carries each module's real build_section() output, built
+    from small fixtures engineered so every one of the four rules
+    actually fires (each mirrors that module's own test file's own
+    "rule fires" fixture -- test_carry.py/test_compaction_sim.py/
+    test_model_swap.py/test_waste.py), then the same generic
+    evidence-resolves walk as the two tests above runs across every
+    recommendation produced.
+    """
+    from claude_token_lens import carry, compaction_sim, model_swap, waste
+    from claude_token_lens.model import Turn, TranscriptMeta, TranscriptResult
+    from claude_token_lens.parse import parse_transcript
+    from claude_token_lens.pricing import load_pricing
+
+    from helpers import tool_result_block, tool_use_block, user_block_line
+
+    pricing = load_pricing()
+
+    def _turn(**overrides) -> Turn:
+        fields = dict(
+            message_id="msg_1",
+            request_id="req_1",
+            turn_index=1,
+            ts="2026-09-18T12:00:00.000Z",
+            model="claude-sonnet-5",
+            input_tokens=0,
+            cache_creation_tokens=0,
+            cache_read_tokens=0,
+            output_tokens=0,
+            cc_5m=0,
+            cc_1h=0,
+            ctx=0,
+            gap_s=None,
+        )
+        fields.update(overrides)
+        return Turn(**fields)
+
+    # -- carry: several transcripts each carrying one huge Read result
+    # and several later cache-read-only turns, so Read's carry cost
+    # dominates the corpus's cache volume (test_carry.py's own
+    # _heavy_read_corpus fixture).
+    carry_transcripts = []
+    for s in range(6):
+        turns = []
+        for i in range(1, 9):
+            kwargs = dict(turn_index=i, message_id=f"msg_c{s}_{i}")
+            if i == 1:
+                kwargs["tool_result_chars_by_tool"] = {"Read": 80_000}
+            else:
+                kwargs["cache_read_tokens"] = 200
+            turns.append(_turn(**kwargs))
+        carry_transcripts.append(
+            TranscriptResult(
+                meta=TranscriptMeta(path=f"c{s}.jsonl", kind="top-level", session_id=f"carry-sess-{s}"),
+                turns=turns,
+            )
+        )
+    carry_section = carry.build_section(carry.compute_carry(carry_transcripts, pricing.resolve_model))
+
+    # -- compaction_sim: the module's own worked-example fixture (linear
+    # ctx growth, no real compact_boundary event) -- window=100,000 saves
+    # ~69% at the default switch thresholds (docs/compaction-sim.md's
+    # own worked example).
+    k = 20_000
+    cs_turns = [
+        _turn(
+            message_id=f"msg_cs_{i}",
+            request_id=f"req_cs_{i}",
+            turn_index=i,
+            ts=f"2026-09-18T12:{i:02d}:00.000Z",
+            cache_creation_tokens=k,
+            cache_read_tokens=(i - 1) * k,
+            cc_5m=k,
+            cc_1h=0,
+            ctx=i * k,
+        )
+        for i in range(1, 21)
+    ]
+    cs_transcript = TranscriptResult(
+        meta=TranscriptMeta(path="cs.jsonl", kind="top-level", session_id="cs-sess"), turns=cs_turns
+    )
+    compaction_sim_section = compaction_sim.build_section(
+        compaction_sim.simulate_compaction_windows([cs_transcript], pricing.resolve_model, {})
+    )
+
+    # -- model_swap: a top-level session run entirely on Fable, cheap to
+    # swap down a tier (test_model_swap.py's own top-level fixture).
+    ms_transcript = TranscriptResult(
+        meta=TranscriptMeta(path="ms.jsonl", kind="top-level", session_id="ms-sess"),
+        turns=[_turn(model="claude-fable-5-1", input_tokens=1_000_000, output_tokens=1_000_000)],
+    )
+    model_swap_section = model_swap.build_section(model_swap.compute_model_swap([ms_transcript], pricing))
+
+    # -- waste: one tool-error turn dwarfing a tiny useful turn
+    # (test_waste.py's own _built_section_for_high_waste_share fixture).
+    waste_lines = [
+        turn_line(
+            message_id="msg_w1",
+            model="claude-sonnet-5",
+            input_tokens=9_000_000,
+            output_tokens=0,
+            content=[tool_use_block("Bash", "tu_a", {"command": "ls /nope"})],
+        ),
+        user_block_line([tool_result_block("tu_a", "no such directory", is_error=True)]),
+        turn_line(message_id="msg_w2", model="claude-sonnet-5", input_tokens=1_000_000, output_tokens=0),
+    ]
+    waste_path = tmp_path / "waste-session.jsonl"
+    write_jsonl(waste_path, waste_lines)
+    waste_result = parse_transcript(waste_path, TranscriptMeta(path=str(waste_path), session_id="waste-sess"))
+    ws = waste.WasteStats(config_dir=tmp_path / "cfg")
+    ws.add(waste_result, pricing)
+    waste_section = waste.build_section(ws)
+
+    report_model = _base_report(sessions=10, priced_turns=500)
+    for section in (carry_section, compaction_sim_section, model_swap_section, waste_section):
+        _add_section(report_model, section)
+
+    config = Config(
+        thresholds={
+            "carry_share_pct": 1.0,
+            "min_sample_results": 3,
+            "model_swap": {"saving_pct_min": 10.0, "saving_usd_min": 1.0, "min_sessions": 1, "min_turns": 1},
+            "waste": {"share_pct": 1.0, "min_sessions": 1, "min_turns": 1},
+        }
+    )
+    recs = recommend_fn(report_model, config=config, archetype=None)
+
+    found_ids = {rec.id for rec in recs}
+    for expected_id in ("tool-output-carry", "compaction-window", "model-tier", "wasted-turns"):
+        assert expected_id in found_ids, f"expected {expected_id!r} to fire; got {sorted(found_ids)}"
+
+    for rec in recs:
+        for label, value, source_table, row_key in rec.evidence:
+            section_key, table_name = source_table.split(".", 1)
+            section = next((s for s in report_model.sections if s.key == section_key), None)
+            assert section is not None, f"{rec.id}: no section {section_key!r} for evidence {label!r}"
+            table = next((t for t in section.tables if t.name == table_name), None)
+            assert table is not None, f"{rec.id}: no table {table_name!r} for evidence {label!r}"
+            row = next((r for r in table.rows if r and r[0] == row_key), None)
+            assert row is not None, f"{rec.id}: no row {row_key!r} in {source_table} for evidence {label!r}"

@@ -10,7 +10,8 @@ TTL, classification, compaction, config-snapshot, topology, workstyle,
 workflow, phase-split, usage, report-assembly, recommendation, scorecard,
 onboarding and baseline-capture engines are all implemented and covered
 by tests. The command-line surface now matches: `report`, `sessions`,
-`recache`, `ttl`, `limits`, `compactions`, `config-diff`, `log-usage`,
+`recache`, `ttl`, `limits`, `carry`, `compaction-sim`, `model-swap`,
+`waste`, `compactions`, `config-diff`, `log-usage`,
 `pricing-check`, `scrub-fixture`, `probe`, `statusline`,
 `snapshot-config`, `probe-config`, `export`, `monthly-report`, `compare`,
 `reconcile`, `init`, `baseline`, `apply`, `serve`, `install-service`,
@@ -221,11 +222,15 @@ this table only lists what's specific to each one.
 
 | Subcommand | What it does | Extra flags |
 | --- | --- | --- |
-| `report` | Full report: every section in [section 6](#6-reading-the-report-sections) (`overview`, `usage`, `sessions`, `recache`, `ttl`, `limits`, `compactions`, `agents`, `workstyle`, `workflows`, `config` when snapshots exist, `scorecard`, `recommendations`), printed as Markdown by default. This is the default subcommand — `claude-token-lens` with no arguments runs it. | `--json` (print the whole report as JSON instead), `--html PATH` (also write a single-file HTML report), `--csv-dir DIR` (also write one CSV per table plus an index), `--phases` (add the DISCOVERY/IMPLEMENTATION/VERIFICATION phase-split section), `--patch-set` (also print the recommendation set as unified-diff-style settings/frontmatter patches) |
+| `report` | Full report: every section in [section 6](#6-reading-the-report-sections) (`overview`, `usage`, `sessions`, `recache`, `ttl`, `limits`, `carry`, `compaction_sim`, `model_swap`, `waste`, `compactions`, `agents`, `workstyle`, `workflows`, `config` when snapshots exist, `scorecard`, `recommendations`), printed as Markdown by default. This is the default subcommand — `claude-token-lens` with no arguments runs it. | `--json` (print the whole report as JSON instead), `--html PATH` (also write a single-file HTML report), `--csv-dir DIR` (also write one CSV per table plus an index), `--phases` (add the DISCOVERY/IMPLEMENTATION/VERIFICATION phase-split section), `--patch-set` (also print the recommendation set as unified-diff-style settings/frontmatter patches) |
 | `sessions` | Focused view: just `overview` + `sessions` | Same output flags as `report` except `--patch-set` (recommendations aren't part of a focused view) |
 | `recache` | Focused view: just `overview` + `recache` | Same as `sessions` |
 | `ttl` | Focused view: just `overview` + `ttl` | Same as `sessions` |
 | `limits` | Focused view: just `overview` + `limits` (usage-cap pauses, agent terminations, resumes — see [`docs/limits.md`](docs/limits.md)) | Same as `sessions` |
+| `carry` | Focused view: just `overview` + `carry` (cost of re-reading/re-writing a tool result on every later turn it keeps riding along in the cached prefix — see [`docs/carry.md`](docs/carry.md)) | Same as `sessions` |
+| `compaction-sim` | Focused view: just `overview` + `compaction_sim` (modelled cost under other `autoCompactWindow` settings — see [`docs/compaction-sim.md`](docs/compaction-sim.md)) | Same as `sessions` |
+| `model-swap` | Focused view: just `overview` + `model_swap` (ceiling saving from moving a model/subagent type one tier down — see [`docs/model-swap.md`](docs/model-swap.md)) | Same as `sessions` |
+| `waste` | Focused view: just `overview` + `waste` (spend on turns whose output was never used — see [`docs/waste.md`](docs/waste.md)) | Same as `sessions` |
 | `compactions` | Focused view: just `overview` + `compactions` | Same as `sessions` |
 | `config-diff` | Compare sessions grouped by one (or every changed) config key's value, from captured `snapshot-config` snapshots. Prints its own plain-text table(s), independent of `report`'s renderers. | `--key KEY` **or** `--auto-keys` (mutually exclusive, one required): diff one named flattened config key, or every key that changed across the available snapshots |
 | `snapshot-config` | Capture (or print/install) the SessionStart config-snapshot hook — see [section 8](#8-installing-the-sessionstart-hook-and-the-statusline) | `--print-hook` (print the settings.json fragment), `--install-hook` (copy the hook script into `<config-dir>/hooks/`), `--managed-path PATH` (override the platform managed-settings.json path) |
@@ -450,6 +455,10 @@ was produced, and is still useful if you want one section in isolation.
 | `recache` | Re-cache events | `recache.py` | which turns paid to re-write a prefix that should have been a cache hit, why, and what it cost — see section 5 |
 | `ttl` | Cache TTL break-even | `ttl.py` | per agent type: observed cost vs. simulated 5m-only/1h-only cost, plus the utilisation metrics below |
 | `limits` | Usage limits | `limits.py` | usage-cap pauses (5-hour/weekly), harness-forced subagent terminations, and the desktop app's resume pings, as first-class attributable facts instead of behavioural noise — see [`docs/limits.md`](docs/limits.md) |
+| `carry` | Context carry cost per tool | `carry.py` | cost of a tool result riding along in the cached prefix on every turn after the one it entered on, by tool and by agent type, plus the saving a truncation cap would have made — see [`docs/carry.md`](docs/carry.md) |
+| `compaction_sim` | Compaction-window sweep | `compaction_sim.py` | modelled cost under other `autoCompactWindow` settings, a fidelity check against each session's actually-configured window, and a conservative "at least W" recommendation — see [`docs/compaction-sim.md`](docs/compaction-sim.md) |
+| `model_swap` | Model-swap counterfactual | `model_swap.py` | ceiling saving from repricing every already-observed turn one model tier down, per agent type and corpus-wide — see [`docs/model-swap.md`](docs/model-swap.md) |
+| `waste` | Wasted-turn spend | `waste.py` | spend on turns whose output was never used (tool error, interrupt, tool denial, harness-killed subagent), by cause, agent type and top session — see [`docs/waste.md`](docs/waste.md) |
 | `compactions` | Compactions | `compaction.py` | compaction count, trigger mix, pre/post/dropped tokens, and the re-cache cost of the turn right after each compaction |
 | `agents` | Agents and information flow | `topology.py` | downward cost (briefing/system-prompt writes into each agent type), upward cost (`Agent`/`Workflow` tool-result sizes flowing back), skill roll-ups, spawn-depth chains |
 | `workstyle` | Workstyle | `workstyle.py` | one archetype per session/corpus: `overseer-fanout`, `plan-high-implement-low`, `workflow-heavy`, `effort-varied`, `chat-only`, `single-model`, with the evidence features |

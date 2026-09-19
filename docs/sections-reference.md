@@ -181,38 +181,6 @@ simulation at a transcript's own dominant observed TTL and compare it to
 observed cost; `TtlThresholds.fidelity_warn_pct` (default 10.0) is the
 flag threshold `build_section` applies per agent type.
 
-## `model_swap` (`model_swap.py`)
-
-Full contract: [`docs/model-swap.md`](model-swap.md).
-
-For each agent type (and the top-level conversation), reprices every
-already-observed priced turn at every model `pricing.toml` carries —
-same tokens, same observed 5m/1h cache-write split, same `price_turn`
-the rest of the engine uses — and reports the ceiling saving from
-moving one tier down (fable -> opus -> sonnet -> haiku, via
-`workstyle.model_tier` and `Pricing.aliases`, never a hardcoded id).
-Every figure is a price ceiling at today's usage shape, not a
-prediction: a smaller model may need more turns or fail the task
-outright, and neither possibility is represented here.
-
-- `model_swap_by_agent_type` — spawns, priced turns, unpriced turns
-  (unknown model), observed model, observed cost, a `Cost at
-  <model-id>` column per model in the rate card, the best cheaper
-  alternative (model id and label), and the ceiling saving in USD and
-  %. A row's alternative is empty and its saving `0.0` whenever the
-  observed model is already the cheapest available, its own volumes
-  already beat the next tier down, or the family/tier can't be
-  determined — the table never implies a saving where none exists.
-- `model_swap_summary` — the corpus-wide ceiling if every subagent
-  type currently on Fable or Opus moved one tier down (excludes
-  top-level and any Fable/Opus type already cheaper than its next
-  tier).
-
-The `model-tier` recommendation fires per qualifying row (real cheaper
-alternative, sample and saving thresholds cleared) and names the exact
-lever: `settings.json`'s `"model"` key for the top-level conversation,
-or the subagent's `.claude/agents/<type>.md` frontmatter `model:` line.
-
 ## `limits` (`limits.py`)
 
 Full field-by-field contract: [`docs/limits.md`](limits.md#the-limits-report-section).
@@ -253,6 +221,119 @@ count of sessions with at least one pause
 (`ScorecardInputs.limit_pause_sessions`). `recommend.py`'s
 `limit-pressure` rule fires off this section's own `limits_summary`
 counts.
+
+## `carry` (`carry.py`)
+
+Full field-by-field contract: [`docs/carry.md`](carry.md#the-carry-report-section).
+
+Every other section prices a tool result once, at the turn it entered
+context. `carry` prices it again for every later turn it keeps riding
+along inside the cached prefix — re-read at the flat `cache_read` rate,
+or re-written at a `cache_write_5m`/`cache_write_1h` rate on a re-cache
+— until a `COMPACT_BOUNDARY` drops it or the transcript ends.
+
+- `carry_by_tool` — per tool name: carried-result count, tokens
+  entered, mean turns carried, carry tokens, carry cost, and that
+  tool's carry-token share of the corpus's total cache volume (an
+  attribution share, not a partition — rows need not sum to 100%,
+  since one physical cache read carries every still-live result in
+  that turn's prefix at once).
+- `carry_by_agent_type` — the same roll-up keyed by agent type
+  (`"top-level"` for the main session).
+- `carry_top_results` — the single most expensive individual carried
+  results corpus-wide: tool name, agent type, tokens, turns carried,
+  cost — no content, path, or command.
+- `carry_truncation_savings` — for each configured cap in
+  `CarryThresholds.truncation_tokens` (default 2,000 and 8,000 tokens):
+  how many carried results exceed it and the exact tokens/USD saved had
+  every one been capped there, computed by linear scaling rather than
+  re-simulation (carry cost is exactly proportional to a result's own
+  token size for a fixed run of later turns).
+
+`carry.py` never imports or is imported by `recommend.py`; its
+`tool-output-carry` rule lives in `carry.RULES` (same
+`(report, thresholds) -> list[Recommendation]` shape as every baseline
+rule) for a caller to fold into `recommend.recommend()`'s own rule
+list, and it fires whenever a tool's carry-cost share of cache volume
+clears `CarryThresholds.carry_share_pct` (default 25%) on at least
+`min_sample_results` (default 5) carried results — its action names a
+concrete workflow lever (truncate long Bash/PowerShell output, prefer
+`Grep` over `Read`, cap agent report length) and cites the matching
+`carry_truncation_savings` row as the projected saving.
+
+## `compaction_sim` (`compaction_sim.py`)
+
+The `autoCompactWindow` sweep: full write-up and worked example in
+[`docs/compaction-sim.md`](compaction-sim.md).
+
+- `compaction_sim_by_window` — top-level sessions only, one row per
+  candidate window (100k/150k/200k/250k/300k/400k/500k/`none`):
+  simulated compactions per session, mean ctx, total cost, and delta vs.
+  the observed (`none`) cost in USD and percent — **negative delta means
+  cheaper**, the opposite sign convention to `ttl`'s own delta columns
+  (see the module docstring for why).
+- `compaction_sim_by_agent_type` — every agent type's (`"top-level"` and
+  each subagent type) own best candidate window, its cost, the saving
+  vs. observed (0 floor) and a recommendation string naming the window.
+- `compaction_sim_fidelity` — for each top-level session whose project
+  snapshot carries a known configured `autoCompactWindow`: simulating at
+  that same window against the recommendation threshold
+  (`CompactionSimThresholds.fidelity_warn_pct`, default 10%) confirms
+  the model's assumptions hold before trusting its recommendation.
+
+A simulated compaction resets context to this corpus's own observed
+compression ratio (median `postTokens`/`preTokens` across real
+`compact_boundary` events; 0.15 default) and charges a summary-write cost
+(the simulated post-compaction token count, priced as a fresh 5-minute
+cache write) plus a rediscovery allowance (this corpus's own median
+post-compaction re-cache write cost from real events; $0.00 default). A
+real, already-observed compaction is kept as-is under every candidate
+window rather than re-simulated. Recommendation rule: `compaction-window`
+(lever `autoCompactWindow`, category `settings`), gated on the same
+`switch_pct`/`switch_usd` shape as `ttl`'s own switch rule (default >5%
+and >$1.00 cheaper).
+
+> **Note (v4 wiring round):** the paragraph above describes the rule's
+> pre-v4 gating shape. `compaction-window`'s rule function was rewritten
+> to a conservative range/floor recommendation (smallest window with
+> ≤2 compactions/session and a saving that survives a rediscovery
+> estimate derived from `topology_redundant_reads`, phrased "at least
+> W" and citing "modelled, not observed") — this file's scope for this
+> v4 wiring round is section ordering only, so the prose itself has not
+> been updated to match; see `compaction_sim.py`'s own docstring and
+> `docs/compaction-sim.md` for the current behaviour.
+
+## `model_swap` (`model_swap.py`)
+
+Full contract: [`docs/model-swap.md`](model-swap.md).
+
+For each agent type (and the top-level conversation), reprices every
+already-observed priced turn at every model `pricing.toml` carries —
+same tokens, same observed 5m/1h cache-write split, same `price_turn`
+the rest of the engine uses — and reports the ceiling saving from
+moving one tier down (fable -> opus -> sonnet -> haiku, via
+`workstyle.model_tier` and `Pricing.aliases`, never a hardcoded id).
+Every figure is a price ceiling at today's usage shape, not a
+prediction: a smaller model may need more turns or fail the task
+outright, and neither possibility is represented here.
+
+- `model_swap_by_agent_type` — spawns, priced turns, unpriced turns
+  (unknown model), observed model, observed cost, a `Cost at
+  <model-id>` column per model in the rate card, the best cheaper
+  alternative (model id and label), and the ceiling saving in USD and
+  %. A row's alternative is empty and its saving `0.0` whenever the
+  observed model is already the cheapest available, its own volumes
+  already beat the next tier down, or the family/tier can't be
+  determined — the table never implies a saving where none exists.
+- `model_swap_summary` — the corpus-wide ceiling if every subagent
+  type currently on Fable or Opus moved one tier down (excludes
+  top-level and any Fable/Opus type already cheaper than its next
+  tier).
+
+The `model-tier` recommendation fires per qualifying row (real cheaper
+alternative, sample and saving thresholds cleared) and names the exact
+lever: `settings.json`'s `"model"` key for the top-level conversation,
+or the subagent's `.claude/agents/<type>.md` frontmatter `model:` line.
 
 ## `waste` (`waste.py`)
 
@@ -310,38 +391,6 @@ tokens against both the `cache_creation` and `new_tokens`
 write/recache cost aggregates exclude any join to the next turn that
 took longer than 15 minutes (the join is presumed stale, not a genuine
 immediate-post-compaction cost).
-
-## `compaction_sim` (`compaction_sim.py`)
-
-The `autoCompactWindow` sweep: full write-up and worked example in
-[`docs/compaction-sim.md`](compaction-sim.md).
-
-- `compaction_sim_by_window` — top-level sessions only, one row per
-  candidate window (100k/150k/200k/250k/300k/400k/500k/`none`):
-  simulated compactions per session, mean ctx, total cost, and delta vs.
-  the observed (`none`) cost in USD and percent — **negative delta means
-  cheaper**, the opposite sign convention to `ttl`'s own delta columns
-  (see the module docstring for why).
-- `compaction_sim_by_agent_type` — every agent type's (`"top-level"` and
-  each subagent type) own best candidate window, its cost, the saving
-  vs. observed (0 floor) and a recommendation string naming the window.
-- `compaction_sim_fidelity` — for each top-level session whose project
-  snapshot carries a known configured `autoCompactWindow`: simulating at
-  that same window against the recommendation threshold
-  (`CompactionSimThresholds.fidelity_warn_pct`, default 10%) confirms
-  the model's assumptions hold before trusting its recommendation.
-
-A simulated compaction resets context to this corpus's own observed
-compression ratio (median `postTokens`/`preTokens` across real
-`compact_boundary` events; 0.15 default) and charges a summary-write cost
-(the simulated post-compaction token count, priced as a fresh 5-minute
-cache write) plus a rediscovery allowance (this corpus's own median
-post-compaction re-cache write cost from real events; $0.00 default). A
-real, already-observed compaction is kept as-is under every candidate
-window rather than re-simulated. Recommendation rule: `compaction-window`
-(lever `autoCompactWindow`, category `settings`), gated on the same
-`switch_pct`/`switch_usd` shape as `ttl`'s own switch rule (default >5%
-and >$1.00 cheaper).
 
 ## `agents` (`topology.py`)
 

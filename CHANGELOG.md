@@ -53,9 +53,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and a `compaction-window` recommendation naming the cheapest one and
   its projected saving. See [`docs/compaction-sim.md`](docs/compaction-sim.md)
   and the `compaction_sim` entry in
-  [`docs/sections-reference.md`](docs/sections-reference.md). Not yet
-  wired into `report.py`/`cli.py`/`recommend.py` — see the module's own
-  docstring for the exact integration call sites.
+  [`docs/sections-reference.md`](docs/sections-reference.md). Wired into
+  `report.py`/`cli.py`/`recommend.py`/the service and UI in the v4
+  wiring round below.
 - **v4-wasted-turns spend tracking** (`waste.py`, work package
   v4-wasted-turns): prices every turn whose output the user never
   actually benefited from -- a failed tool call, a turn the user
@@ -74,10 +74,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is counted alongside the other causes but never priced -- the harness
   already retried it automatically. Turns following a usage-cap pause
   (`Turn.gap_cause == "limit"`) are excluded outright, since
-  `limits.py` already owns that attribution. Not yet wired into
-  `report.py`/`cli.py`/`recommend.py`/the service -- see
-  [`docs/waste.md`](docs/waste.md) for the exact functions an
-  integrating change should call.
+  `limits.py` already owns that attribution. Wired into
+  `report.py`/`cli.py`/`recommend.py`/the service and UI in the v4
+  wiring round below.
+- **v4 wiring round**: `carry`, `compaction_sim`, `model_swap` and
+  `waste` are now first-class report sections (`_SECTION_ORDER`:
+  ...`limits`, `carry`, `compaction_sim`, `model_swap`, `waste`,
+  `compactions`...), built by `report.build_report` from each module's
+  own `from_config`/`build_section`, with `compaction_sim`'s
+  `snapshot_windows` sourced the same way `context_budget.py` maps a
+  session to its project's latest `autoCompactWindow` snapshot. Their
+  four recommendation rules (`tool-output-carry`, `compaction-window`,
+  `model-tier`, `wasted-turns`) are registered in `recommend.recommend()`
+  alongside the existing baseline rules. New CLI subcommands `carry`,
+  `compaction-sim`, `model-swap`, `waste` (`_REPORT_LIKE_SECTIONS`, same
+  pattern as `limits`). New service routes `/api/carry`,
+  `/api/compaction-sim`, `/api/model-swap`, `/api/waste` (see
+  [`docs/api.md`](docs/api.md)). New UI "Savings" tab holding all four
+  sections' tables (see [`docs/ui.md`](docs/ui.md)).
+  `docs/sections-reference.md`'s section order now matches
+  `report.py`'s assembly order exactly.
+- **`compaction_sim.py`'s `compaction-window` rule, conservatively
+  rewritten**: the window sweep only ever charged a flat rediscovery
+  allowance, so a smaller window always looked cheaper in isolation —
+  against a real corpus this produced an incredible-looking "100k
+  window saves 68%" recommendation. The rule now recommends a *floor*
+  ("set autoCompactWindow to at least W"), not a single "best" point: the
+  smallest candidate window whose simulated compactions-per-session stay
+  at or below 2 and whose saving still clears threshold after subtracting
+  an extra, more conservative rediscovery estimate derived from the
+  corpus's own measured `topology_redundant_reads` (or, when that figure
+  isn't available, simply doubling the flat allowance, and saying so in
+  the note). The action text always says "modelled, not observed" and
+  cites `compaction_sim_fidelity` when it has rows. This is the one
+  change made to the module's own arithmetic during the v4 wiring round
+  (every other module's arithmetic was left untouched).
+- **`report.build_report`** gained an optional `config_dir` keyword,
+  used only to tell `waste.WasteStats` where to read/write its salted
+  session-id-hashing salt file. A caller that omits it (every pre-v4
+  test, `baseline.py`, `team.py`) now falls back to an OS-temp-directory
+  default rather than `waste.py`'s own default of the real
+  `~/.claude/token-lens` — `build_report` must never touch a real user
+  config directory unless a caller explicitly hands it one.
+  `service/api.py` passes its own real `config_dir` so the running
+  service's salt lives alongside its other state as intended.
 
 ### Changed
 

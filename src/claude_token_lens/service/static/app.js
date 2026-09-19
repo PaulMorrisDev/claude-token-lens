@@ -486,6 +486,17 @@
     usage: "usage",
     compactions: "usage",
     phases: "diagnostics",
+    // v4 wiring round: carry/compaction_sim/model_swap/waste each have
+    // their own dedicated report-backed route (/api/carry etc., fetched
+    // directly by the Savings tab below, the same way ttl's own entry
+    // above keeps it off Diagnostics even though nothing ever calls
+    // renderMappedSections(report, "ttl", ...)) -- mapped here purely so
+    // they don't fall through to the Diagnostics tab's default when the
+    // full report.json is walked there.
+    carry: "savings",
+    compaction_sim: "savings",
+    model_swap: "savings",
+    waste: "savings",
   };
 
   function renderMappedSections(report, tabKey, container) {
@@ -1210,21 +1221,57 @@
     });
   }
 
-  function renderTtlData(data, container) {
-    // Defensive: docs/api.md pins this to "the same shape as the CLI's
-    // ttl section tables" but not byte-exactly to Section (a bare
-    // `{tables: [...]}` or a list of Table dicts are both plausible
-    // until service/api.py lands) -- handle each shape rather than
-    // assuming one and rendering nothing on a mismatch.
+  // Shared by every report-backed route that returns a single Section
+  // directly (ttl, and the v4-wiring-round carry/compaction-sim/
+  // model-swap/waste routes below) rather than the full report.json.
+  // Defensive: docs/api.md pins this to "the same shape as the CLI's
+  // ... section tables" but not byte-exactly to Section (a bare
+  // `{tables: [...]}` or a list of Table dicts are both plausible),
+  // and the route returns `null` outright when the section is absent
+  // from the assembled report -- handle each shape rather than
+  // assuming one and rendering nothing on a mismatch.
+  function renderReportBackedSection(data, container, idPrefix, emptyNotice) {
     if (data && Array.isArray(data.tables)) {
-      renderSectionGeneric(container, data, state.currency, "ttl");
+      renderSectionGeneric(container, data, state.currency, idPrefix);
     } else if (Array.isArray(data)) {
       data.forEach(function (table, i) {
-        container.appendChild(renderTable(table, "ttl-" + i, state.currency));
+        container.appendChild(renderTable(table, idPrefix + "-" + i, state.currency));
       });
     } else {
-      container.appendChild(el("p", { class: "notice", text: "No TTL simulation data for this window." }));
+      container.appendChild(el("p", { class: "notice", text: emptyNotice }));
     }
+  }
+
+  function renderTtlData(data, container) {
+    renderReportBackedSection(data, container, "ttl", "No TTL simulation data for this window.");
+  }
+
+  // ======================================================================
+  // Savings tab (v4 wiring round) -- carry, compaction_sim, model_swap
+  // and waste each have their own dedicated report-backed route, same
+  // as ttl above, fetched directly rather than waiting on the full
+  // report.json. The recommendation cards these sections' rules feed
+  // stay on the Recommendations tab, same as every other section --
+  // this tab is the tables only.
+  // ======================================================================
+
+  var SAVINGS_SECTIONS = [
+    { url: "/api/carry", id: "savings-carry", empty: "No context-carry data for this window." },
+    { url: "/api/compaction-sim", id: "savings-compaction-sim", empty: "No compaction-window sweep data for this window." },
+    { url: "/api/model-swap", id: "savings-model-swap", empty: "No model-swap data for this window." },
+    { url: "/api/waste", id: "savings-waste", empty: "No wasted-turn data for this window." },
+  ];
+
+  function renderSavings(panel) {
+    clear(panel);
+    panel.appendChild(el("h2", { text: "Savings" }));
+    SAVINGS_SECTIONS.forEach(function (spec) {
+      var container = el("div", { id: spec.id });
+      panel.appendChild(container);
+      loadInto(container, spec.url, function (data, target) {
+        renderReportBackedSection(data, target, spec.id, spec.empty);
+      });
+    });
   }
 
   // ======================================================================
@@ -1783,6 +1830,7 @@
     sessions: renderSessions,
     cache: renderCache,
     ttl: renderTtl,
+    savings: renderSavings,
     agents: renderAgents,
     config: renderConfig,
     profiles: renderProfiles,
@@ -1791,7 +1839,7 @@
     diagnostics: renderDiagnosticsTab,
   };
 
-  var TAB_ORDER = ["overview", "sessions", "cache", "ttl", "agents", "config", "profiles", "recommendations", "usage", "diagnostics"];
+  var TAB_ORDER = ["overview", "sessions", "cache", "ttl", "savings", "agents", "config", "profiles", "recommendations", "usage", "diagnostics"];
 
   var renderedTabs = {};
 

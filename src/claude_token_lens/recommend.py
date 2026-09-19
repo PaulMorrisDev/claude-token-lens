@@ -119,6 +119,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from . import carry, compaction_sim, model_swap, waste
 from .config import Config
 from .model import Recommendation, ReportModel, Section, Table
 from .snapshots import Snapshot, managed_keys
@@ -1304,6 +1305,20 @@ def recommend(
     if not _meets_min_sample(report, th):
         return []
 
+    # v4 wiring round: each of these four modules carries its own RULES
+    # (and its own from_config-built thresholds) rather than a native
+    # _rule_xxx defined in this file -- see each module's own docstring
+    # ("a caller folds <module>.RULES into recommend.recommend()'s own
+    # rule list"). Built locally here, the same from_config(config.thresholds)
+    # convention every other module's thresholds in this file already use,
+    # rather than threading them through from build_report -- recommend()
+    # already takes ``config`` directly, so there is no need for a second
+    # plumbing path.
+    carry_th = carry.CarryThresholds.from_config(config.thresholds)
+    compaction_sim_th = compaction_sim.CompactionSimThresholds.from_config(config.thresholds)
+    model_swap_th = model_swap.ModelSwapThresholds.from_config(config.thresholds)
+    waste_th = waste.WasteThresholds.from_config(config.thresholds)
+
     recs: list[Recommendation] = []
     recs.extend(_rule_ttl_switch(report, config, snapshot, archetype, th))
     recs.extend(_rule_long_tool_waits(report, th))
@@ -1322,6 +1337,16 @@ def recommend(
     recs.extend(_rule_pricing_coverage(report))
     recs.extend(_rule_data_quality(report, th))
     recs.extend(_rule_limit_pressure(report, th))
+    # v4 wiring round: registered after the four modules' own sections
+    # exist in ``report`` (build_report appends them before calling
+    # recommend() -- see report.py's own docstring), since each rule
+    # reads its evidence back out of its own already-rendered table(s),
+    # the same read-rendered-tables-not-raw-accumulators contract every
+    # rule in this file follows.
+    recs.extend(carry.RULES[0](report, carry_th))
+    recs.extend(compaction_sim.RULES[0](report, compaction_sim_th, snapshot))
+    recs.extend(model_swap.RULES["model-tier"](report, model_swap_th, archetype, snapshot))
+    recs.extend(waste.RULES[0](report, waste_th))
 
     if archetype is not None:
         recs = [r for r in recs if not r.archetypes or archetype in r.archetypes]
