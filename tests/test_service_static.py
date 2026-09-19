@@ -574,6 +574,29 @@ def test_section_tab_map_includes_recache_by_group() -> None:
     )
 
 
+def test_render_baseline_shows_the_project_slug_not_the_raw_row_id() -> None:
+    """Regression test for review nit 27: ``Store.baselines()`` was
+    fixed to join in the owning project's redacted ``slug`` so a caller
+    doesn't have to show the meaningless ``projects.id`` primary key --
+    but ``renderBaseline`` in ``app.js`` kept reading ``row.project_id``
+    for the "Project" column, so the store-side fix never reached the
+    screen: the Baseline table still showed an opaque integer under a
+    "Project" heading. Fails against the pre-fix source (``row.project_id``
+    with no ``row.project_slug`` anywhere in the function) and passes
+    once the column reads ``row.project_slug`` instead.
+    """
+    app_js = _static_text("app.js")
+    start = app_js.index("function renderBaseline(")
+    end = app_js.index("\n  function ", start + 1)
+    render_baseline_src = app_js[start:end]
+    assert "row.project_slug" in render_baseline_src, (
+        "the Project column must render the joined, redacted project_slug"
+    )
+    assert "row.project_id" not in render_baseline_src, (
+        "the Project column must not fall back to the opaque projects.id primary key"
+    )
+
+
 def test_app_js_timeline_never_uses_math_max_apply() -> None:
     """Regression test for review finding 10 (should-fix):
     ``Math.max.apply(null, array)`` spreads ``array`` as individual call

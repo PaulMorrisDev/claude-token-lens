@@ -82,6 +82,27 @@ the hash is keyed to a salt private to one machine's `<config-dir>`, it
 cannot be correlated against a hash produced on a different machine or
 after the salt file is rotated/deleted.
 
+**The `claude-token-lens serve` service's SQLite store**
+(`<config-dir>/service.db`) is a narrow, documented exception to "no
+path fragment is ever stored": `transcripts.path`, `projects.root_path`
+and `profiles.toml_path` hold real local filesystem paths, including
+the machine's username where it appears in a Windows/POSIX home
+directory (`service/schema.py`'s module docstring). They exist purely
+for the watcher's own bookkeeping — deciding what to re-parse and
+where a project's scan root is — and every one of `Store`'s read
+queries (`summary`, `sessions`, `session`, `daily_usage`, `recache`,
+`compactions`, `snapshots`, `tags`) is written to leave them out of its
+result dict entirely, so the `/api/*` routes and the UI never see
+them; `tests/test_service_store.py` asserts this by construction with
+a distinctive fake path round-tripped through every read query.
+`sessions.slug` (Claude Code's own project-slug encoding of the
+project's absolute path, so it also embeds the username) is read out —
+the UI needs some label for "which project" — but every read query
+that selects it passes it through `discovery.redact_slug()` first,
+which replaces the username segment with the literal `<user>` before
+it ever reaches `/api/sessions`, `/api/session/<id>`,
+`/api/report.{json,md,html}`, or the rendered UI.
+
 Message text, tool-result content, file contents, full file paths and
 full shell commands are never written to a dataclass field, the on-disk
 cache, or any rendered output. This is enforced today by

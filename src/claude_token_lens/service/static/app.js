@@ -1249,7 +1249,12 @@
       null,
       rows.map(function (row) {
         return el("tr", null, [
-          el("td", { text: row.project_id || "-" }),
+          // Nit 27: Store.baselines() joins in the owning project's
+          // (redacted) slug specifically so this table doesn't have to
+          // show the meaningless projects.id primary key -- render that
+          // instead of the raw project_id the route used to be the only
+          // thing available here.
+          el("td", { text: row.project_slug || "-" }),
           el("td", { text: row.window_start || "-" }),
           el("td", { text: row.window_end || "-" }),
           el("td", { text: row.archetype || "-" }),
