@@ -1963,6 +1963,14 @@ def _cmd_init(args: argparse.Namespace) -> int:
             # call, same as every other subcommand's own bare print().
             stdin=sys.stdin,
             stdout=sys.stdout,
+            # Fix S6: honour the shared --all-projects/--project/
+            # --project-family selection flags for the initial baseline
+            # capture, the same fallback-to-cwd-slug rule
+            # _resolve_project_dirs_for_args already uses for every
+            # report-like subcommand.
+            all_projects=args.all_projects,
+            project=args.project,
+            project_family=args.project_family,
         )
     except onboarding.OnboardingError as exc:
         print(f"claude-token-lens init: {exc}", file=sys.stderr)
