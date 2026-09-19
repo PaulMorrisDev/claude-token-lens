@@ -14,6 +14,7 @@ other rows of the detection table. This module places them just above
 
 from __future__ import annotations
 
+import re
 from typing import Iterable, Sequence
 
 from .model import Event, EventKind
@@ -184,6 +185,19 @@ def _rendered_size_chars(d: dict) -> int | None:
     return len(rendered) if isinstance(rendered, str) else None
 
 
+#: Matches an opening angle-bracket tag at the very start of a string,
+#: e.g. ``<local-command-stdout>`` -> ``local-command-stdout``. Used only
+#: to label META events with something more specific than "plain" — the
+#: tag name itself is a structural marker, never message text, so it is
+#: privacy-safe to store.
+_LEADING_TAG_RE = re.compile(r"^<\s*/?\s*([A-Za-z][A-Za-z0-9_-]*)")
+
+
+def _leading_tag_name(text: str) -> str | None:
+    match = _LEADING_TAG_RE.match(text)
+    return match.group(1) if match else None
+
+
 def _delta_detail(attachment_type: str, attachment: dict) -> dict:
     keys = _DELTA_COUNT_KEYS.get(attachment_type)
     if keys is None:
@@ -323,16 +337,12 @@ def classify_line(d: dict) -> Event | None:
     if line_type == "attachment":
         return Event(kind=EventKind.ATTACHMENT, subkind=attachment_type, ts=ts, size_chars=size_chars)
 
-    # 12. META
-    if line_type == "user" and d.get("isMeta"):
-        return Event(kind=EventKind.META, subkind=None, ts=ts)
-
-    # 13. TOOL_DENIAL
+    # 12. TOOL_DENIAL
     tool_denial_kind = d.get("toolDenialKind")
     if line_type == "user" and tool_denial_kind:
         return Event(kind=EventKind.TOOL_DENIAL, subkind=tool_denial_kind, ts=ts)
 
-    # 14. TOOL_RESULT
+    # 13. TOOL_RESULT
     if line_type == "user" and _user_has_tool_result(d):
         return Event(kind=EventKind.TOOL_RESULT, subkind=None, ts=ts)
 
@@ -340,15 +350,26 @@ def classify_line(d: dict) -> Event | None:
     origin = origin if isinstance(origin, dict) else None
     origin_kind = origin.get("kind") if origin else None
 
-    # 15. TASK_NOTIFICATION
+    # 14. TASK_NOTIFICATION
     if line_type == "user" and origin_kind == "task-notification":
         return Event(kind=EventKind.TASK_NOTIFICATION, subkind=None, ts=ts)
     if str_content is not None and str_content.startswith("<task-notification"):
         return Event(kind=EventKind.TASK_NOTIFICATION, subkind=None, ts=ts)
 
-    # 16. PEER_MESSAGE
+    # 15. PEER_MESSAGE
     if line_type == "user" and origin_kind == "peer":
         return Event(kind=EventKind.PEER_MESSAGE, subkind=None, ts=ts)
+
+    # 16. META (checked after the four user-line kinds above so a meta
+    # line that also happens to carry a tool result/denial/task-notification/
+    # peer origin is classified as that more specific kind instead).
+    if line_type == "user" and d.get("isMeta"):
+        if origin_kind is not None:
+            meta_subkind = origin_kind
+        else:
+            tag = _leading_tag_name(str_content) if str_content is not None else None
+            meta_subkind = tag if tag is not None else "plain"
+        return Event(kind=EventKind.META, subkind=meta_subkind, ts=ts)
 
     # 17. SLASH_COMMAND
     if str_content is not None and str_content.startswith(_SLASH_COMMAND_PREFIXES):

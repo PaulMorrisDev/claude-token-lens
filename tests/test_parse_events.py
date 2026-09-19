@@ -176,7 +176,30 @@ def test_attachment_catch_all_for_unlisted_type():
 
 def test_meta():
     line = user_str_line("[Image #1]", isMeta=True)
-    assert events.classify_line(line).kind == EventKind.META
+    event = events.classify_line(line)
+    assert event.kind == EventKind.META
+    assert event.subkind == "plain"
+
+
+def test_meta_subkind_uses_origin_kind_when_present():
+    line = user_str_line("(background)", isMeta=True, origin={"kind": "loop"})
+    event = events.classify_line(line)
+    assert event.kind == EventKind.META
+    assert event.subkind == "loop"
+
+
+def test_meta_subkind_uses_leading_tag_name_when_no_origin():
+    line = user_str_line("<system-reminder>ignore this</system-reminder>", isMeta=True)
+    event = events.classify_line(line)
+    assert event.kind == EventKind.META
+    assert event.subkind == "system-reminder"
+
+
+def test_meta_subkind_falls_back_to_plain_without_tag_or_origin():
+    line = user_str_line("just some meta text", isMeta=True)
+    event = events.classify_line(line)
+    assert event.kind == EventKind.META
+    assert event.subkind == "plain"
 
 
 def test_tool_denial():
@@ -186,8 +209,26 @@ def test_tool_denial():
     assert event.subkind == "user-rejected"
 
 
+def test_tool_denial_beats_meta_flag():
+    """Dispatch order (item 7): TOOL_DENIAL is tested before isMeta, so a
+    line that is both a tool denial and flagged isMeta classifies as the
+    more specific TOOL_DENIAL kind."""
+    line = user_str_line("(denied)", isMeta=True, toolDenialKind="user-rejected")
+    event = events.classify_line(line)
+    assert event.kind == EventKind.TOOL_DENIAL
+    assert event.subkind == "user-rejected"
+
+
 def test_tool_result():
     line = user_block_line([{"type": "tool_result", "tool_use_id": "tu1", "content": "ok"}])
+    assert events.classify_line(line).kind == EventKind.TOOL_RESULT
+
+
+def test_tool_result_beats_meta_flag():
+    """Dispatch order (item 7): TOOL_RESULT is tested before isMeta."""
+    line = user_block_line(
+        [{"type": "tool_result", "tool_use_id": "tu1", "content": "ok"}], isMeta=True
+    )
     assert events.classify_line(line).kind == EventKind.TOOL_RESULT
 
 
@@ -201,8 +242,20 @@ def test_task_notification_via_string_prefix():
     assert events.classify_line(line).kind == EventKind.TASK_NOTIFICATION
 
 
+def test_task_notification_beats_meta_flag():
+    """Dispatch order (item 7): TASK_NOTIFICATION is tested before isMeta."""
+    line = user_str_line("(notification)", isMeta=True, origin={"kind": "task-notification"})
+    assert events.classify_line(line).kind == EventKind.TASK_NOTIFICATION
+
+
 def test_peer_message():
     line = user_str_line("hey", origin={"kind": "peer"})
+    assert events.classify_line(line).kind == EventKind.PEER_MESSAGE
+
+
+def test_peer_message_beats_meta_flag():
+    """Dispatch order (item 7): PEER_MESSAGE is tested before isMeta."""
+    line = user_str_line("hey", isMeta=True, origin={"kind": "peer"})
     assert events.classify_line(line).kind == EventKind.PEER_MESSAGE
 
 
