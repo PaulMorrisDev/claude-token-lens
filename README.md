@@ -5,15 +5,16 @@ where your tokens go, what your caching configuration costs or saves, and
 which configuration changes to make. Stdlib-only, MIT-licensed, runs
 entirely on your own machine.
 
-**Status: pre-release, v0.3 in progress.** The parsing, pricing, RE-CACHE,
+**Status: pre-release, v0.3 shipped.** The parsing, pricing, RE-CACHE,
 TTL, classification, compaction, config-snapshot, topology, workstyle,
 workflow, phase-split, usage, report-assembly, recommendation, scorecard,
 onboarding and baseline-capture engines are all implemented and covered
 by tests. The command-line surface now matches: `report`, `sessions`,
 `recache`, `ttl`, `limits`, `compactions`, `config-diff`, `log-usage`,
 `pricing-check`, `scrub-fixture`, `probe`, `statusline`,
-`snapshot-config`, `init`, `baseline`, `serve`, `install-service` and
-`uninstall-service` are real subcommands
+`snapshot-config`, `probe-config`, `export`, `monthly-report`, `compare`,
+`reconcile`, `init`, `baseline`, `apply`, `serve`, `install-service`,
+`uninstall-service`, `import` and `team-report` are real subcommands
 backed by that engine — see [section 2](#2-quick-start) for the full
 flag reference and [`docs/onboarding.md`](docs/onboarding.md) for
 `init`/`baseline` specifically. This README describes what the code
@@ -212,6 +213,7 @@ this table only lists what's specific to each one.
 | `compactions` | Focused view: just `overview` + `compactions` | Same as `sessions` |
 | `config-diff` | Compare sessions grouped by one (or every changed) config key's value, from captured `snapshot-config` snapshots. Prints its own plain-text table(s), independent of `report`'s renderers. | `--key KEY` **or** `--auto-keys` (mutually exclusive, one required): diff one named flattened config key, or every key that changed across the available snapshots |
 | `snapshot-config` | Capture (or print/install) the SessionStart config-snapshot hook — see [section 8](#8-installing-the-sessionstart-hook-and-the-statusline) | `--print-hook` (print the settings.json fragment), `--install-hook` (copy the hook script into `<config-dir>/hooks/`), `--managed-path PATH` (override the platform managed-settings.json path) |
+| `probe-config` | Scan a project's config layers directly from the filesystem, without needing a captured session — the same layered-config view `snapshot-config` captures, on demand (schema 2) | `--project-dir PATH` (project directory to scan; default: the current directory), `--managed-path PATH` (override the platform managed-settings.json path) |
 | `log-usage` | Read a pasted `get_usage` JSON payload from stdin and append its rows to the local usage-window CSV log | none beyond the global flags |
 | `pricing-check` | Print the resolved rate card's provenance and rate table, and (with `--models`) how specific model ids resolve against it | `--models ID,ID,...` |
 | `scrub-fixture` | Turn a real `<project_dir>/<session_id>` directory into a privacy-scrubbed test fixture, or verify an already-scrubbed one | `--session-dir PATH --out PATH` (scrub), or `--verify OUT_DIR` (audit an existing scrub), plus optional `--key-seed SEED` (deterministic HMAC key — tests only) |
@@ -223,7 +225,8 @@ this table only lists what's specific to each one.
 | `team-report` | Cross-machine per-archetype/per-agent-type comparison built from every document already imported into `<config_dir>/team/` (see [section 10](#10-for-team-leads-and-enterprise) and [`docs/team.md`](docs/team.md)) | `--min-sessions N` (default 5), plus the same `--json`/`--html PATH`/`--csv-dir DIR` output flags as `report` |
 | `init` | Detect what's already set up, ask (or, non-interactively, derive) a short question set, write `config.toml` and this project's `projects/<slug>.toml`, print the hook/statusline install fragments, run an initial onboarding baseline, and — as its last step — offer to register the service to run at logon (`docs/deploy.md`) — see [`docs/onboarding.md`](docs/onboarding.md) | `--answers FILE` (JSON file supplying any subset of the answers), `--non-interactive` (derive unanswered questions instead of prompting; derives to *not* installing the service unless `--install-service` is also given), `--no-install` (skip printing the hook/statusline fragments), `--install-service` (register the service without asking), `--no-service` (skip the logon-service step entirely), `--dry-run` (governs only the logon-service step: print its plan without writing/registering anything) |
 | `baseline` | Capture (or list/show) an onboarding baseline: mode mix, dominant purposes, suggested profile, projected saving — see [`docs/onboarding.md`](docs/onboarding.md) | `--finalise` (treat the baseline as final even if the capture window hasn't elapsed), `--list` (list saved baselines), `--show ID` (print a previously saved baseline's report) |
-| `serve` | Run the local JSON API + watcher service (`service/serve.py`) — see [`docs/api.md`](docs/api.md) and [`docs/ui.md`](docs/ui.md) | `--port N` (default 8765), `--bind ADDRESS` (default `127.0.0.1`, loopback only), `--allow-remote` (allow `--bind` to a non-loopback address, refused by default), `--poll-interval SECONDS` (watcher poll interval, default 30), `--retention-days N` (prune sessions older than N days on every poll tick, default: keep forever), `--exclude-project SLUG` (repeatable; project slug never scanned), `--billing-mode {api,subscription}` (stamped onto every session; default: `config.toml`'s `billing`, else `api`), `--monthly-report DIR` (also write a monthly report into DIR on every tick), `--once` (run a single watcher tick, print its stats, and exit instead of serving), `--purge --yes` (delete `<config-dir>/service.db` and its WAL/SHM sidecars, then exit) |
+| `apply` | Apply a catalogue or custom profile's settings/agent/env levers to a project or your user config, with backup/`--revert` — see [section 15](#15-applying-a-profile) and [`docs/profiles.md`](docs/profiles.md) | `PROFILE` (catalogue id or path to a profile TOML file), `--scope {user,project-local,repo}` (default `user`, or `project-local` once `--project-dir` is given), `--project-dir PATH`, `--claude-root PATH` (default: `$CLAUDE_CONFIG_DIR`, else `~/.claude`), `--dry-run`, `--launch` (one-session overlay instead of a persisted apply), `--allow-tracked`, `--force` (create a missing agent file from scratch), `--revert TS`, `--list-backups` |
+| `serve` | Run the local JSON API + watcher service (`service/serve.py`) — see [`docs/api.md`](docs/api.md) and [`docs/ui.md`](docs/ui.md) | `--port N` (default 8765), `--bind ADDRESS` (default `127.0.0.1`, loopback only), `--allow-remote` (allow `--bind` to a non-loopback address, refused by default), `--poll-interval SECONDS` (watcher poll interval, default 30), `--retention-days N` (prune sessions older than N days on every poll tick, default: keep forever), `--exclude-project SLUG` (repeatable; project slug never scanned), `--billing-mode {api,subscription}` (stamped onto every session; default: `config.toml`'s `billing`, else `api`), `--monthly-report DIR` (accepted and carried on `ServeOptions.monthly_report_dir`, but not yet consumed by the watcher tick — run the standalone `monthly-report` subcommand, e.g. from cron, until this is wired up), `--once` (run a single watcher tick, print its stats, and exit instead of serving), `--purge --yes` (delete `<config-dir>/service.db` and its WAL/SHM sidecars, then exit) |
 | `install-service` | Register `claude-token-lens serve` to run at logon for the current platform (Windows Scheduled Task, systemd user unit, or macOS LaunchAgent) — this is what `init`'s last step, and the manual paths in [section 14](#14-running-the-service), both call — see [`docs/deploy.md`](docs/deploy.md) | `--port N` (default 8765), `--bind ADDRESS` (default `127.0.0.1`), `--dry-run` (print exactly what would be written/run, without writing or running anything) |
 | `uninstall-service` | Remove whatever `install-service` (or `init`) registered — deletes the task/unit/agent definition it wrote, using the same per-platform command the manual `Unregister-TokenLensTask.ps1`/`systemctl --user disable`/`launchctl bootout` paths use | `--dry-run` (print what would be removed, without removing anything) |
 | `compare` | A/B compare two arms of sessions (`window:`/`key:`/`profile:`/`project:` specs), stratified by purpose/mode with a minimum-sample gate — see [`docs/compare.md`](docs/compare.md) | `--a SPEC` / `--b SPEC` (required), `--stratify purpose,mode` (default), `--min-sessions N` (default: `config.toml`'s `min_sessions`), plus the same `--json`/`--html PATH`/`--csv-dir DIR` output flags as `report` |
@@ -904,14 +907,20 @@ see the Status note above):
   watcher thread, SQLite store, `http.server` JSON API and a
   dependency-free static web UI), Docker packaging, a live countdown in
   the statusline, an aggregate-only `export` command, and a monthly
-  report. Still ahead.
+  report. Shipped — see [section 14](#14-running-the-service).
 - **v0.3** — a profile schema and catalogue, `init` and a `baseline`/
-  onboarding capture window (all shipped — see
-  [`docs/onboarding.md`](docs/onboarding.md) and
-  [`docs/profiles.md`](docs/profiles.md)); `apply`/`--revert` for
-  writing a chosen profile into `settings.json`/agent frontmatter, a
-  `compare` command, team aggregate import across machines, and a
-  reconciliation pass against real billing data are still ahead.
+  onboarding capture window; `apply`/`--revert` for writing a chosen
+  profile into `settings.json`/agent frontmatter; a `compare` command
+  and a `reconcile` pass against real billing data; and team aggregate
+  import across machines (`import`/`team-report`). Shipped — see
+  [`docs/onboarding.md`](docs/onboarding.md),
+  [`docs/profiles.md`](docs/profiles.md), [section 15](#15-applying-a-profile),
+  [`docs/compare.md`](docs/compare.md) and [`docs/team.md`](docs/team.md).
+- **v0.4 backlog** — a budget-check guardrail (`check --weekly-tokens
+  N --daily-usd N`), anomaly-outlier detection, `serve --monthly-report`
+  actually wired to run on a schedule (the flag exists today but nothing
+  yet consumes it), and an opt-in `--show-paths` local file view. See
+  [CHANGELOG.md](CHANGELOG.md)'s `[0.3.0]` "Planned" notes.
 
 ## 14. Running the service
 
