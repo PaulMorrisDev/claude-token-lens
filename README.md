@@ -10,15 +10,13 @@ TTL, classification, compaction, config-snapshot, topology, workstyle,
 workflow, phase-split, usage, report-assembly, recommendation, scorecard,
 onboarding and baseline-capture engines are all implemented and covered
 by tests. The command-line surface now matches: `report`, `sessions`,
-`recache`, `ttl`, `compactions`, `config-diff`, `log-usage`,
+`recache`, `ttl`, `limits`, `compactions`, `config-diff`, `log-usage`,
 `pricing-check`, `scrub-fixture`, `probe`, `statusline`,
-`snapshot-config`, `init` and `baseline` are real subcommands backed by
-that engine — see [section 2](#2-quick-start) for the full flag
-reference and [`docs/onboarding.md`](docs/onboarding.md) for `init`/
-`baseline` specifically. `serve` remains a registered stub that prints
-which future milestone it's planned for and exits 2 (see the roadmap in
-[section 13](#13-licence-contributing-roadmap)). This README describes
-what the code actually does today, not the full plan — see
+`snapshot-config`, `init`, `baseline` and `serve` are real subcommands
+backed by that engine — see [section 2](#2-quick-start) for the full
+flag reference and [`docs/onboarding.md`](docs/onboarding.md) for
+`init`/`baseline` specifically. This README describes what the code
+actually does today, not the full plan — see
 [`docs/sections-reference.md`](docs/sections-reference.md) for
 section-by-section detail and this file's own notes on what's still
 missing.
@@ -167,8 +165,9 @@ precisely to close this: it's a module whose *import* already calls
 `sys.exit(main())`, so `zipapp`'s generated `import claude_token_lens.__main__`
 line raises `SystemExit` with the real code before the bootstrap's second,
 never-reached line would have swallowed it. Verified by building a `.pyz`
-this way and checking both paths: `--version` exits 0, `serve` (a planned
-stub) exits 2. The installed console script (`pip install .`, which points
+this way and checking both paths: `--version` exits 0, an unrecognised
+subcommand exits 2 (argparse's own `parser.error()` behaviour). The
+installed console script (`pip install .`, which points
 at `cli:main` — see `pyproject.toml`) is unaffected either way, since
 `setuptools`' own console-script wrapper always calls `sys.exit(main())`
 regardless of what module it targets.
@@ -182,10 +181,11 @@ this table only lists what's specific to each one.
 
 | Subcommand | What it does | Extra flags |
 | --- | --- | --- |
-| `report` | Full report: every section in [section 6](#6-reading-the-report-sections) (`overview`, `usage`, `sessions`, `recache`, `ttl`, `compactions`, `agents`, `workstyle`, `workflows`, `config` when snapshots exist, `scorecard`, `recommendations`), printed as Markdown by default. This is the default subcommand — `claude-token-lens` with no arguments runs it. | `--json` (print the whole report as JSON instead), `--html PATH` (also write a single-file HTML report), `--csv-dir DIR` (also write one CSV per table plus an index), `--phases` (add the DISCOVERY/IMPLEMENTATION/VERIFICATION phase-split section), `--allow-titles` (include `customTitle`/ai-title text — currently a no-op, see [section 6](#6-reading-the-report-sections)), `--patch-set` (also print the recommendation set as unified-diff-style settings/frontmatter patches) |
+| `report` | Full report: every section in [section 6](#6-reading-the-report-sections) (`overview`, `usage`, `sessions`, `recache`, `ttl`, `limits`, `compactions`, `agents`, `workstyle`, `workflows`, `config` when snapshots exist, `scorecard`, `recommendations`), printed as Markdown by default. This is the default subcommand — `claude-token-lens` with no arguments runs it. | `--json` (print the whole report as JSON instead), `--html PATH` (also write a single-file HTML report), `--csv-dir DIR` (also write one CSV per table plus an index), `--phases` (add the DISCOVERY/IMPLEMENTATION/VERIFICATION phase-split section), `--allow-titles` (include `customTitle`/ai-title text — currently a no-op, see [section 6](#6-reading-the-report-sections)), `--patch-set` (also print the recommendation set as unified-diff-style settings/frontmatter patches) |
 | `sessions` | Focused view: just `overview` + `sessions` | Same output flags as `report` except `--patch-set` (recommendations aren't part of a focused view) |
 | `recache` | Focused view: just `overview` + `recache` | Same as `sessions` |
 | `ttl` | Focused view: just `overview` + `ttl` | Same as `sessions` |
+| `limits` | Focused view: just `overview` + `limits` (usage-cap pauses, agent terminations, resumes — see [`docs/limits.md`](docs/limits.md)) | Same as `sessions` |
 | `compactions` | Focused view: just `overview` + `compactions` | Same as `sessions` |
 | `config-diff` | Compare sessions grouped by one (or every changed) config key's value, from captured `snapshot-config` snapshots. Prints its own plain-text table(s), independent of `report`'s renderers. | `--key KEY` **or** `--auto-keys` (mutually exclusive, one required): diff one named flattened config key, or every key that changed across the available snapshots |
 | `snapshot-config` | Capture (or print/install) the SessionStart config-snapshot hook — see [section 8](#8-installing-the-sessionstart-hook-and-the-statusline) | `--print-hook` (print the settings.json fragment), `--install-hook` (copy the hook script into `<config-dir>/hooks/`), `--managed-path PATH` (override the platform managed-settings.json path) |
@@ -200,18 +200,15 @@ this table only lists what's specific to each one.
 | `team-report` | Cross-machine per-archetype/per-agent-type comparison built from every document already imported into `<config_dir>/team/` (see [section 10](#10-for-team-leads-and-enterprise) and [`docs/team.md`](docs/team.md)) | `--min-sessions N` (default 5), plus the same `--json`/`--html PATH`/`--csv-dir DIR` output flags as `report` |
 | `init` | Detect what's already set up, ask (or, non-interactively, derive) a short question set, write `config.toml` and this project's `projects/<slug>.toml`, print the hook/statusline install fragments, and run an initial onboarding baseline — see [`docs/onboarding.md`](docs/onboarding.md) | `--answers FILE` (JSON file supplying any subset of the answers), `--non-interactive` (derive unanswered questions instead of prompting), `--no-install` (skip printing the hook/statusline fragments) |
 | `baseline` | Capture (or list/show) an onboarding baseline: mode mix, dominant purposes, suggested profile, projected saving — see [`docs/onboarding.md`](docs/onboarding.md) | `--finalise` (treat the baseline as final even if the capture window hasn't elapsed), `--list` (list saved baselines), `--show ID` (print a previously saved baseline's report) |
-| `serve` | **Planned for v0.2** — prints which milestone it's planned for and exits 2 | none |
+| `serve` | Run the local JSON API + watcher service (`service/serve.py`) — see [`docs/api.md`](docs/api.md) and [`docs/ui.md`](docs/ui.md) | `--port N` (default 8765), `--bind ADDRESS` (default `127.0.0.1`, loopback only), `--allow-remote` (allow `--bind` to a non-loopback address, refused by default), `--poll-interval SECONDS` (watcher poll interval, default 30), `--retention-days N` (prune sessions older than N days on every poll tick, default: keep forever), `--exclude-project SLUG` (repeatable; project slug never scanned), `--billing-mode {api,subscription}` (stamped onto every session; default: `config.toml`'s `billing`, else `api`), `--monthly-report DIR` (also write a monthly report into DIR on every tick), `--once` (run a single watcher tick, print its stats, and exit instead of serving), `--purge --yes` (delete `<config-dir>/service.db` and its WAL/SHM sidecars, then exit) |
 | `compare` | A/B compare two arms of sessions (`window:`/`key:`/`profile:`/`project:` specs), stratified by purpose/mode with a minimum-sample gate — see [`docs/compare.md`](docs/compare.md) | `--a SPEC` / `--b SPEC` (required), `--stratify purpose,mode` (default), `--min-sessions N` (default: `config.toml`'s `min_sessions`), plus the same `--json`/`--html PATH`/`--csv-dir DIR` output flags as `report` |
 | `reconcile` | Compare local usage/cost accounting against an Admin API CSV export, entirely offline — see [`docs/compare.md`](docs/compare.md) | `--admin-csv FILE` (required), `--by {day,model,day,model}` (default `day`), plus the same `--json`/`--html PATH`/`--csv-dir DIR` output flags as `report` (the window comes from the global `--days`/`--since`/`--until` flags, not a separate flag) |
-| `init` | **Planned for v0.3** — prints which milestone it's planned for and exits 2 | none |
-| `baseline` | **Planned for v0.3** — same stub behaviour as `init` | none |
-| `serve` | **Planned for v0.2** — same stub behaviour as `init` | none |
 
 `usage`, `agents`, `workstyle`, `workflows` and `scorecard` are real
 report sections (see [section 6](#6-reading-the-report-sections)) but
 don't have their own focused subcommand the way `sessions`/`recache`/
-`ttl`/`compactions` do today — get them via `report` (or `report --json`
-and pull out that section).
+`ttl`/`limits`/`compactions` do today — get them via `report` (or
+`report --json` and pull out that section).
 
 ### Exit codes
 
@@ -221,7 +218,7 @@ Every subcommand uses the same three codes:
 | --- | --- |
 | `0` | Ok — the subcommand ran and printed its output. |
 | `1` | No data — an empty corpus for the given projects/window, or (for `config-diff`) no config snapshots found. Always paired with a one-line reason on stderr naming the projects root and window. |
-| `2` | Bad input — a `ConfigError`/`PricingError` (e.g. an unreadable `--pricing` file), a bad flag combination argparse itself doesn't already catch, or a not-yet-implemented subcommand (`serve`, or any unrecognised command). |
+| `2` | Bad input — a `ConfigError`/`PricingError` (e.g. an unreadable `--pricing` file), a bad flag combination argparse itself doesn't already catch, or an unrecognised subcommand (argparse's own `choices` list rejects it before `main()`'s own "not implemented" fallback would ever run — every subcommand it allows is a real, implemented one today). |
 
 ### Global flags (`cli.py`)
 
@@ -408,6 +405,7 @@ was produced, and is still useful if you want one section in isolation.
 | `sessions` | Sessions | `classify.py` | mode (interactive/long-agentic/overnight/mixed) and purpose (docs/refactor/test-triage/...) per session, with the evidence that produced each classification |
 | `recache` | Re-cache events | `recache.py` | which turns paid to re-write a prefix that should have been a cache hit, why, and what it cost — see section 5 |
 | `ttl` | Cache TTL break-even | `ttl.py` | per agent type: observed cost vs. simulated 5m-only/1h-only cost, plus the utilisation metrics below |
+| `limits` | Usage limits | `limits.py` | usage-cap pauses (5-hour/weekly), harness-forced subagent terminations, and the desktop app's resume pings, as first-class attributable facts instead of behavioural noise — see [`docs/limits.md`](docs/limits.md) |
 | `compactions` | Compactions | `compaction.py` | compaction count, trigger mix, pre/post/dropped tokens, and the re-cache cost of the turn right after each compaction |
 | `agents` | Agents and information flow | `topology.py` | downward cost (briefing/system-prompt writes into each agent type), upward cost (`Agent`/`Workflow` tool-result sizes flowing back), skill roll-ups, spawn-depth chains |
 | `workstyle` | Workstyle | `workstyle.py` | one archetype per session/corpus: `overseer-fanout`, `plan-high-implement-low`, `workflow-heavy`, `effort-varied`, `chat-only`, `single-model`, with the evidence features |

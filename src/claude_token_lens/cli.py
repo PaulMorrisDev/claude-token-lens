@@ -2221,16 +2221,6 @@ def _cmd_apply(args: argparse.Namespace) -> int:
         suggested = apply_command(
             plan.profile_id, scope, str(project_path) if project_path else None
         )
-        # diff.py is read-only for this work package and its
-        # apply_command() hardcodes "--project" in the suggested
-        # invocation text; this CLI's own flag is "--project-dir" (see
-        # _add_apply_args's docstring for why "--project" was already
-        # taken). Substitute only the flag token immediately after the
-        # profile id -- the one place diff.py inserts it -- never the
-        # path value itself.
-        suggested = suggested.replace(
-            f"apply {plan.profile_id} --project ", f"apply {plan.profile_id} --project-dir "
-        )
         print(suggested)
         return 0
 
