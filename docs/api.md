@@ -202,3 +202,113 @@ inline (plan "Enterprise use"). `POST /api/profiles`/`/tags` never
 write a managed key regardless of what the client sends — that
 validation lives in `apply`/`profiles/schema.py`, not this API, since
 the service itself never calls `apply`.
+
+## Report routes: how they are computed
+
+Implementation notes for `service/api.py` (S1-api), for a future reader
+of this frozen contract who needs to know how the report-backed routes
+(`/api/ttl`, `/api/config-diff`, `/api/recommendations`,
+`/api/report.md`/`.html`/`.json`) get their data, and where the
+implementation had to make a call this document didn't spell out.
+
+**Rebuild, not re-parse.** Every report-backed route rebuilds a
+`Corpus` via `service.rebuild.corpus_from_store(store, days=window_days)`
+(S1-watcher's module — see `service/__init__.py`) and runs it through
+the same `report.build_report()` → `recommend.recommend()` →
+`render/{json_out,markdown,html}.py` pipeline the CLI's own `report`
+subcommand uses. `/api/ttl`, `/api/config-diff` and
+`/api/recommendations` all build the *same* full report for the
+requested `window_days` and read one section/field back out of it
+(`/api/ttl` returns the assembled report's `"ttl"` `Section`;
+`/api/config-diff` returns its `"config"` section's
+`config-diff-<key>` table(s) — `report.py`'s own
+`_build_config_section`, capped at 20 changed keys — rather than
+recomputing `snapshots.build_config_diff_table` a second time with a
+service-specific session-metrics rebuild the way the CLI's own
+`config-diff` subcommand does; `/api/recommendations` returns
+`model.recommendations`) rather than each running an independent,
+narrower computation. A `key` that names a config key which didn't
+change in the requested window returns `{"ok": true, "data": []}`, not
+an error.
+
+**Memoization key: a store-side change token this document doesn't
+name.** Rebuilding a full report on every request would make every tab
+switch in the UI (`docs/ui.md`) re-parse the whole corpus. The
+implementation caches the assembled `ReportModel` in-process, keyed by
+`(window_days, change_token)`, where `change_token` is
+`(COUNT(*), MAX(updated_at))` over the `transcripts` table. **`Store`
+(`service/store.py`) has no public reader for "has anything changed
+since the last report build"** — this is a store reader this work
+package found missing, not something it was free to add (`store.py` is
+outside S1-api's writable paths). The change-token query reads
+`store._connection()` directly, read-only, rather than adding one. A
+future `service/store.py` change could promote this to a named method
+(e.g. `Store.change_token() -> tuple[int, str]`) with no caller-visible
+difference to any route.
+
+**`/api/report.json`/`.md`/`.html` are unwrapped on success.** Their
+body on `200` is the renderer's own native output (`render_json`/
+`render_markdown`/`render_html`), not the `{"ok": ..., "data": ...}`
+envelope — this is what makes `/api/report.json` byte-equivalent to
+`claude-token-lens report --json` for the same window, and matches this
+document's own "the raw rendered document" language for `.md`/`.html`.
+A request error on one of these three routes (a bad `window_days`, or
+an unexpected exception) still falls back to the normal JSON error
+envelope; only the success path is raw.
+
+**`GET /api/session/<id>` returns a superset of the listed fields.**
+`Store.session()`'s dict includes `mode_source`/`purpose_source`
+alongside every field `/api/sessions` lists — a non-breaking addition,
+not a contradiction of the field list above (which describes the
+session-summary fields plus `transcripts`/`tags`, not an exact field
+count), and dropping fields `Store` already computes for no privacy
+reason would only lose information a client might want.
+
+**`/api/profiles/<id>/diff` and `POST /api/profiles` are `501`
+stubs.** Both routes' body-shape validation (unknown-key checks, JSON
+object checks) runs before the response, but both always return `501`
+`not_implemented` — v0.3's `profiles/schema.py` (the profile-file
+validator both routes need) does not exist yet at S1-api's own
+delivery time. Swapping the final `_not_implemented(...)` for the real
+read/write is the only change needed once that module lands.
+
+**Static file serving.** `/` and `/static/*` serve
+`service/static/index.html`/assets (the UI package's build output,
+per `docs/ui.md`) when present, guarded against path traversal
+(`Path.resolve()` plus a parent-containment check — a `..` segment or
+an escaping resolved path is `404`, not an error). `service/static/`
+is empty at S1-api's own delivery time (a sibling work package ships
+its contents), so `/` falls back to a small, non-persisted placeholder
+page generated at request time rather than anything written to disk or
+committed to the repository. `make_handler()` accepts an additional
+keyword-only `static_dir` parameter (default: the package's own
+`service/static/`) so a test can point it at a directory with real
+files without writing into the source tree.
+
+**`make_handler()`/`serve.run()` accept parameters beyond their frozen
+signatures.** `service.contracts.MakeHandler` is `(store, options) ->
+type[BaseHTTPRequestHandler]`; `make_handler()` additionally accepts
+two keyword-only parameters with defaults — `watcher_stats` (a
+zero-argument callable returning the current `WatcherStats`, used by
+`/api/health`) and `static_dir` (above) — which is still a valid
+`MakeHandler` implementation (a Protocol callable is satisfied by
+something that accepts extra optional parameters). Similarly,
+`service.serve.run(options, *, once=False)` gains `allow_remote:
+bool = False`: `ServeOptions` itself carries no such flag, but the
+plan's "port bound to localhost only" default posture needs an
+explicit opt-in for anything else, so `run()` refuses to bind a
+non-loopback `options.bind` unless `allow_remote=True`. `service/serve.py`
+also picks `<config_dir>/service.db` as the SQLite store's filename —
+`ServeOptions` has no field for it, only `config_dir`.
+
+**Watching a background-thread watcher's stats.** `service.contracts.Watcher`
+exposes no getter for the *latest* poll tick once `watcher.start()` has
+handed ticking over to a background thread (only `run_once`/`start`/
+`stop`). `/api/health` still needs some answer once the watcher is
+running unattended, so `serve.run()` passes `make_handler` a
+`watcher_stats` callable that prefers a `watcher.last_stats` attribute
+when the concrete `FileWatcher` happens to expose one, falling back to
+the stats captured from the synchronous first tick `run()` always
+performs before serving. This is an integration assumption for
+S1-watcher to confirm or adjust, not a requirement `contracts.Watcher`
+itself enforces.

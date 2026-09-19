@@ -225,6 +225,54 @@ def _add_statusline_args(sub: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_serve_args(sub: argparse.ArgumentParser) -> None:
+    """Extra flags for the ``serve`` subcommand (v0.2's local JSON API +
+    watcher service, ``service/serve.py``). ``--projects-root`` and
+    ``--config-dir`` are already on the common parser; everything below
+    is serve-only.
+    """
+    sub.add_argument("--port", type=int, default=8765, help="default: 8765")
+    sub.add_argument(
+        "--bind",
+        default="127.0.0.1",
+        metavar="ADDRESS",
+        help="default: 127.0.0.1 (loopback only)",
+    )
+    sub.add_argument(
+        "--allow-remote",
+        action="store_true",
+        help="allow --bind to a non-loopback address (refused by default)",
+    )
+    sub.add_argument(
+        "--poll-interval",
+        type=float,
+        default=30.0,
+        metavar="SECONDS",
+        dest="poll_interval",
+        help="watcher poll interval in seconds (default: 30)",
+    )
+    sub.add_argument(
+        "--retention-days",
+        type=int,
+        default=None,
+        metavar="N",
+        help="prune sessions older than N days on every poll tick (default: keep forever)",
+    )
+    sub.add_argument(
+        "--exclude-project",
+        action="append",
+        default=None,
+        metavar="SLUG",
+        dest="exclude_project",
+        help="repeatable; project slug never scanned",
+    )
+    sub.add_argument(
+        "--once",
+        action="store_true",
+        help="run a single watcher tick and exit instead of serving",
+    )
+
+
 def _add_snapshot_config_args(sub: argparse.ArgumentParser) -> None:
     """Extra flags for the ``snapshot-config`` subcommand only (WP7). Every
     other subcommand stays a bare stub, so this is added just for this one
@@ -310,7 +358,7 @@ def _make_parser() -> argparse.ArgumentParser:
             # readable one at a time via "planned for vX.Y" prose.
             "init": "(planned) v0.3 milestone",
             "baseline": "(planned) v0.3 milestone",
-            "serve": "(planned) v0.2 milestone",
+            "serve": "run the local JSON API + watcher service",
         }.get(name, f"{name} (not implemented yet)")
         sub = subparsers.add_parser(name, parents=[common], help=help_text)
         if name == "pricing-check":
@@ -333,6 +381,8 @@ def _make_parser() -> argparse.ArgumentParser:
             _add_probe_args(sub)
         if name == "statusline":
             _add_statusline_args(sub)
+        if name == "serve":
+            _add_serve_args(sub)
     return parser
 
 
@@ -972,12 +1022,43 @@ def _cmd_pricing_check(args: argparse.Namespace) -> int:
     return 0
 
 
-# -- init / baseline / serve (v0.2/v0.3 stubs) -------------------------------
+# -- init / baseline (v0.3 stubs) / serve (v0.2) -----------------------------
 
 
 def _cmd_planned_stub(command: str, milestone: str) -> int:
     print(f"claude-token-lens {command}: planned for {milestone}", file=sys.stderr)
     return 2
+
+
+def _cmd_serve(args: argparse.Namespace) -> int:
+    """Build ``ServeOptions`` from argv and hand off to
+    ``service.serve.run`` (S1-api). Both ``service.serve`` and
+    ``service.contracts`` are imported here rather than at module load
+    time only to keep this module's own top-level import list free of
+    the ``service`` package for readers who never touch ``serve`` --
+    neither import risks the sibling S1-watcher package: ``serve.py``
+    itself only reaches into ``service.watcher``/``service.rebuild``
+    lazily, inside the functions that need them (see its module
+    docstring).
+    """
+    from .service.contracts import ServeOptions
+    from .service.serve import run as run_serve
+
+    projects_root = Path(args.projects_root) if args.projects_root else discovery.projects_root()
+    config_dir = _resolve_config_dir(args.config_dir)
+    options = ServeOptions(
+        projects_root=projects_root,
+        config_dir=config_dir,
+        port=args.port,
+        bind=args.bind,
+        poll_interval_s=args.poll_interval,
+        retention_days=args.retention_days,
+        exclude_projects=tuple(args.exclude_project or ()),
+    )
+    try:
+        return run_serve(options, once=args.once, allow_remote=args.allow_remote)
+    except KeyboardInterrupt:
+        return 0
 
 
 def _insert_default_subcommand(argv: list[str]) -> list[str]:
@@ -1028,7 +1109,7 @@ def main(argv: list[str] | None = None) -> int:
     if command in ("init", "baseline"):
         return _cmd_planned_stub(command, "v0.3")
     if command == "serve":
-        return _cmd_planned_stub(command, "v0.2")
+        return _cmd_serve(args)
 
     print(f"claude-token-lens {command}: not implemented", file=sys.stderr)
     return 2
