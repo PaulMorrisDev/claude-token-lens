@@ -270,6 +270,48 @@ def test_unknown_route_is_404_not_found(server):
     assert_privacy(body)
 
 
+# -- finding 9: HEAD/PUT/DELETE/PATCH/OPTIONS --------------------------------
+
+
+def test_head_health_matches_get_headers_with_no_body(server):
+    resp, raw = server.request("HEAD", "/api/health")
+    assert resp.status == 200
+    assert resp.getheader("Content-Type") == "application/json"
+    assert resp.getheader("Cache-Control") == "no-store"
+    assert resp.getheader("X-Content-Type-Options") == "nosniff"
+    assert raw == b""
+
+
+def test_head_report_json_returns_the_unwrapped_routes_headers_with_no_body(server):
+    # report.json is the one route with its own content type/envelope
+    # rules (finding 1) -- confirm HEAD threads head_only through that
+    # path too, not just the generic envelope one above.
+    resp, raw = server.request("HEAD", "/api/report.json")
+    assert resp.status == 200
+    assert resp.getheader("Content-Type") == "application/json"
+    assert raw == b""
+
+
+def test_head_static_index_returns_no_body(server):
+    resp, raw = server.request("HEAD", "/")
+    assert resp.status == 200
+    assert resp.getheader("Content-Type", "").startswith("text/html")
+    assert raw == b""
+
+
+@pytest.mark.parametrize("method", ["PUT", "DELETE", "PATCH", "OPTIONS"])
+def test_unsupported_methods_return_405_with_the_usual_envelope(server, method):
+    resp, raw = server.request(method, "/api/health")
+    assert resp.status == 405
+    assert resp.getheader("X-Content-Type-Options") == "nosniff"
+    body = json.loads(raw)
+    assert body == {
+        "ok": False,
+        "error": {"code": "method_not_allowed", "message": f"{method} is not supported on this route"},
+    }
+    assert_privacy(body)
+
+
 # -- store-backed routes ----------------------------------------------------
 
 
