@@ -18,8 +18,9 @@ Two kinds of route:
 
 - **Store-backed** (``/api/health``, ``/api/summary``, ``/api/sessions``,
   ``/api/session/<id>``, ``/api/recache``, ``/api/compactions``,
-  ``/api/profiles``, ``/api/baseline``, the two ``POST`` routes): read
-  straight from ``store``'s own read queries -- cheap, always fresh.
+  ``/api/profiles``, ``/api/baseline``, ``/api/daily-usage``, the two
+  ``POST`` routes): read straight from ``store``'s own read queries --
+  cheap, always fresh.
 - **Report-backed** (``/api/ttl``, ``/api/config-diff``,
   ``/api/recommendations``, ``/api/report.{md,html,json}``): rebuild a
   :class:`~claude_token_lens.corpus.Corpus` from the store's own
@@ -258,6 +259,19 @@ def make_handler(
             overrides = load_session_overrides(options.config_dir)
         except ConfigError:
             overrides = {}
+        # Finding 7: POST /api/sessions/<id>/tags writes to the store's
+        # own session_tags table, but classify.classify_session only ever
+        # reads session_overrides (config.toml's sessions.toml). Without
+        # this merge a tag write was accepted and stored, yet never
+        # changed a single report/UI figure -- merge it into the same
+        # overrides dict classify_session already consumes, with a
+        # store-set tag (the more recently made edit) taking precedence
+        # over a config-file override for the same key.
+        overrides = {sid: dict(entry) for sid, entry in overrides.items()}
+        for session_id, tags in store.all_tags().items():
+            merged = overrides.get(session_id, {})
+            merged.update(tags)
+            overrides[session_id] = merged
         return build_report(
             corpus,
             rates,
@@ -291,6 +305,12 @@ def make_handler(
             "status": "ok",
             "schema_version": store.schema_version() or 0,
             "watcher": to_jsonable(stats),
+            # Finding 3: a transcript whose file has gone missing (past
+            # Claude Code's own cleanupPeriodDays, or simply deleted) is
+            # marked rather than removed -- surfacing the running total
+            # here lets an operator notice a projects-root misconfiguration
+            # (everything suddenly "missing") without it being silent.
+            "transcripts_missing": store.count_missing_transcripts(),
         }
         return _ok(data)
 
@@ -328,6 +348,12 @@ def make_handler(
 
     def route_recache(store, query, body):
         return _ok(store.recache())
+
+    def route_daily_usage(store, query, body):
+        days, err = _int_query(query, "days", 30, minimum=1)
+        if err is not None:
+            return err
+        return _ok(store.daily_usage(days=days))
 
     def route_compactions(store, query, body):
         return _ok(store.compactions())
@@ -426,12 +452,17 @@ def make_handler(
         "/api/compactions": route_compactions,
         "/api/profiles": route_profiles,
         "/api/baseline": route_baseline,
+        "/api/daily-usage": route_daily_usage,
         "/api/ttl": route_ttl,
         "/api/config-diff": route_config_diff,
         "/api/recommendations": route_recommendations,
         "/api/report.json": _render_report("application/json", lambda model: render_json(model)),
-        "/api/report.md": _render_report("text/markdown", render_markdown),
-        "/api/report.html": _render_report("text/html", render_html),
+        # Finding 22: charset was missing on the two text-ish renderers
+        # (application/json has no encoding ambiguity, but text/markdown
+        # and text/html do -- a client/browser guessing the wrong one on
+        # a non-ASCII report is exactly the failure mode this closes).
+        "/api/report.md": _render_report("text/markdown; charset=utf-8", render_markdown),
+        "/api/report.html": _render_report("text/html; charset=utf-8", render_html),
     }
     get_patterns: tuple[tuple[re.Pattern, Callable], ...] = (
         (_SESSION_ID_RE, route_session),
@@ -465,55 +496,60 @@ def make_handler(
             self.send_header("Content-Length", str(length))
             self.end_headers()
 
-        def _write_json(self, status: int, payload: dict) -> None:
+        def _write_json(self, status: int, payload: dict, *, head_only: bool = False) -> None:
             body = json.dumps(payload).encode("utf-8")
             self._write_headers(status, "application/json", len(body))
-            self.wfile.write(body)
+            if not head_only:
+                self.wfile.write(body)
 
-        def _write_text(self, status: int, content_type: str, text: str) -> None:
+        def _write_text(self, status: int, content_type: str, text: str, *, head_only: bool = False) -> None:
             body = text.encode("utf-8")
             self._write_headers(status, content_type, len(body))
-            self.wfile.write(body)
+            if not head_only:
+                self.wfile.write(body)
 
-        def _write_bytes(self, status: int, content_type: str, data: bytes) -> None:
+        def _write_bytes(self, status: int, content_type: str, data: bytes, *, head_only: bool = False) -> None:
             self._write_headers(status, content_type, len(data))
-            self.wfile.write(data)
+            if not head_only:
+                self.wfile.write(data)
 
         # -- static files --------------------------------------------------
 
-        def _serve_index(self) -> None:
+        def _serve_index(self, *, head_only: bool = False) -> None:
             index_path = static_dir / "index.html"
             if static_dir.is_dir() and index_path.is_file():
                 try:
-                    self._write_bytes(200, "text/html", index_path.read_bytes())
+                    self._write_bytes(200, "text/html", index_path.read_bytes(), head_only=head_only)
                     return
                 except OSError:
                     pass
-            self._write_text(200, "text/html", _PLACEHOLDER_INDEX_HTML)
+            self._write_text(200, "text/html", _PLACEHOLDER_INDEX_HTML, head_only=head_only)
 
-        def _serve_static(self, raw_name: str) -> None:
+        def _serve_static(self, raw_name: str, *, head_only: bool = False) -> None:
             name = urllib.parse.unquote(raw_name)
             if not name or ".." in Path(name).parts:
-                self._write_json(*_not_found())
+                self._write_json(*_not_found(), head_only=head_only)
                 return
             try:
                 base = static_dir.resolve()
                 candidate = (static_dir / name).resolve()
             except (OSError, ValueError, RuntimeError):
-                self._write_json(*_not_found())
+                self._write_json(*_not_found(), head_only=head_only)
                 return
             if candidate != base and base not in candidate.parents:
-                self._write_json(*_not_found())
+                self._write_json(*_not_found(), head_only=head_only)
                 return
             if not candidate.is_file():
-                self._write_json(*_not_found())
+                self._write_json(*_not_found(), head_only=head_only)
                 return
             content_type, _encoding = mimetypes.guess_type(str(candidate))
-            self._write_bytes(200, content_type or "application/octet-stream", candidate.read_bytes())
+            self._write_bytes(
+                200, content_type or "application/octet-stream", candidate.read_bytes(), head_only=head_only
+            )
 
         # -- dispatch --------------------------------------------------------
 
-        def _dispatch(self, body: dict | None) -> None:
+        def _dispatch(self, body: dict | None, *, head_only: bool = False) -> None:
             try:
                 split = urllib.parse.urlsplit(self.path)
                 path = split.path
@@ -522,15 +558,17 @@ def make_handler(
                     for k, v in urllib.parse.parse_qs(split.query, keep_blank_values=True).items()
                 }
 
-                if self.command == "GET" and path == "/":
-                    self._serve_index()
+                is_get_like = self.command in ("GET", "HEAD")
+
+                if is_get_like and path == "/":
+                    self._serve_index(head_only=head_only)
                     return
-                if self.command == "GET" and path.startswith("/static/"):
-                    self._serve_static(path[len("/static/") :])
+                if is_get_like and path.startswith("/static/"):
+                    self._serve_static(path[len("/static/") :], head_only=head_only)
                     return
 
                 handler = None
-                if self.command == "GET":
+                if is_get_like:
                     handler = get_routes.get(path)
                     patterns = get_patterns
                 elif self.command == "POST":
@@ -548,21 +586,55 @@ def make_handler(
                             break
 
                 if handler is None:
-                    self._write_json(*_not_found("route not found"))
+                    self._write_json(*_not_found("route not found"), head_only=head_only)
                     return
 
                 result = handler(store, query, body)
                 if isinstance(result, tuple) and len(result) == 3 and result[0] == "raw":
                     _tag, content_type, text = result
-                    self._write_text(200, content_type, text)
+                    self._write_text(200, content_type, text, head_only=head_only)
                     return
                 status, payload = result
-                self._write_json(status, payload)
+                self._write_json(status, payload, head_only=head_only)
             except Exception as exc:  # noqa: BLE001 - last-resort 500, see docs/api.md
-                self._write_json(*_internal_error(f"unexpected error ({type(exc).__name__})"))
+                self._write_json(
+                    *_internal_error(f"unexpected error ({type(exc).__name__})"), head_only=head_only
+                )
+            finally:
+                # nit 30: ThreadingHTTPServer hands each request its own
+                # thread, and Store keeps one sqlite3 connection per
+                # thread (threading.local) -- without this, that
+                # connection is only ever reclaimed when the thread
+                # object itself is garbage collected, letting open
+                # connections/file descriptors pile up under sustained
+                # traffic instead of being released as soon as the
+                # request that opened them finishes.
+                store.close()
+
+        def _method_not_allowed(self) -> None:
+            # Finding 9: PUT/DELETE/PATCH/OPTIONS previously fell through
+            # to BaseHTTPRequestHandler's own default 501 handler, which
+            # never runs through _write_json -- so it carried none of
+            # this API's security headers or {"ok": false, ...} envelope.
+            self._write_json(*_error(405, "method_not_allowed", f"{self.command} is not supported on this route"))
 
         def do_GET(self) -> None:  # noqa: N802 - stdlib method name
             self._dispatch(None)
+
+        def do_HEAD(self) -> None:  # noqa: N802 - stdlib method name
+            self._dispatch(None, head_only=True)
+
+        def do_PUT(self) -> None:  # noqa: N802 - stdlib method name
+            self._method_not_allowed()
+
+        def do_DELETE(self) -> None:  # noqa: N802 - stdlib method name
+            self._method_not_allowed()
+
+        def do_PATCH(self) -> None:  # noqa: N802 - stdlib method name
+            self._method_not_allowed()
+
+        def do_OPTIONS(self) -> None:  # noqa: N802 - stdlib method name
+            self._method_not_allowed()
 
         def do_POST(self) -> None:  # noqa: N802 - stdlib method name
             try:

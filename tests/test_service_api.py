@@ -34,7 +34,7 @@ from pathlib import Path
 import pytest
 
 from claude_token_lens import corpus as corpus_mod
-from claude_token_lens.config import load_config
+from claude_token_lens.config import ConfigError, load_config, load_session_overrides
 from claude_token_lens.pricing import load_pricing
 from claude_token_lens.render.json_out import render_json
 from claude_token_lens.report import build_report
@@ -550,6 +550,19 @@ def test_report_json_matches_cli_json_for_same_corpus(server):
     config = load_config(server.options.config_dir)
     rates = load_pricing(path=config.pricing_path, config_dir=server.options.config_dir)
     projects = tuple(sorted({b.slug for b in server.corpus.sessions if b.slug}))
+    # Mirrors api.py's own _build_report_model: store-set session tags
+    # (review finding 7) must be folded into the overrides the report is
+    # built with, the same way the real route does, or this "expected"
+    # build drifts from `server.store`'s seeded `purpose` tag.
+    try:
+        overrides = load_session_overrides(server.options.config_dir)
+    except ConfigError:
+        overrides = {}
+    overrides = {sid: dict(entry) for sid, entry in overrides.items()}
+    for session_id, tags in server.store.all_tags().items():
+        merged = overrides.get(session_id, {})
+        merged.update(tags)
+        overrides[session_id] = merged
     model = build_report(
         server.corpus,
         rates,
@@ -557,7 +570,7 @@ def test_report_json_matches_cli_json_for_same_corpus(server):
         projects=projects,
         window="last 30 days",
         snapshots=_reconstruct_snapshots(server.store),
-        session_overrides={},
+        session_overrides=overrides,
     )
     expected = json.loads(render_json(model))
     actual = json.loads(raw)
@@ -580,7 +593,7 @@ def test_report_json_is_not_enveloped(server):
 def test_report_md_route(server):
     resp, raw = server.request("GET", "/api/report.md")
     assert resp.status == 200
-    assert resp.getheader("Content-Type") == "text/markdown"
+    assert resp.getheader("Content-Type") == "text/markdown; charset=utf-8"
     assert len(raw) > 0
     _assert_no_leak(raw)
 
@@ -588,7 +601,7 @@ def test_report_md_route(server):
 def test_report_html_route(server):
     resp, raw = server.request("GET", "/api/report.html")
     assert resp.status == 200
-    assert resp.getheader("Content-Type") == "text/html"
+    assert resp.getheader("Content-Type") == "text/html; charset=utf-8"
     assert len(raw) > 0
     _assert_no_leak(raw)
 
