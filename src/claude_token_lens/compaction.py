@@ -19,15 +19,22 @@ RE-CACHE detector (deviation, reported rather than made silently — see
 the plan's WP6 brief asks for "whether that turn was a re-cache per WP3's
 rule re-implemented minimally here as ``ctx > 20k and cache_read <
 0.2*ctx``". WP3 (``recache.py``) has since landed, so :func:`is_recache_turn`
-below (fix item 6) now takes its ctx_floor/cr_ratio pair from
+below (fix item 6) took its ctx_floor/cr_ratio pair from
 ``recache.RecacheThresholds`` instead of an independent hardcoded copy —
 one fewer place the two numbers could drift apart — but it still only
-implements that two-number minimal rule and nothing more: no signature
+implemented that two-number minimal rule and nothing more: no signature
 classification (full-expiry vs prefix-invalidated), no override beyond
-the two shared numbers. **WP10 (report assembly) should replace every
-call site here with the shared ``recache.py`` detector once it's wired
-into report assembly**, so this module's own notion of "re-cache" never
-drifts from the corpus-wide one in the meantime.
+the two shared numbers. **WP10b addition:** :func:`compaction_records_for_transcript`
+now calls :func:`recache.apply` on ``tr`` before correlating turns and
+reads the resulting ``Turn.is_recache`` for ``next_turn_is_recache``,
+instead of calling :func:`is_recache_turn` on the raw next turn — the
+shared detector's full signature classification (``turn_index > 1``,
+non-synthetic, plus the same ctx/cache_read numbers) now decides
+"re-cache" here exactly as it does in the RE-CACHE section itself, so
+this module's notion of "re-cache" can no longer drift from the
+corpus-wide one. :func:`is_recache_turn` itself is left in place (its own
+tests exercise it directly, and nothing else in the codebase besides this
+module and its tests calls it) but is no longer used by this function.
 
 Correlating a compaction to "the following turn": ``Turn`` doesn't carry
 a back-reference to the ``Event`` objects that preceded it (only their
@@ -68,6 +75,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Iterable
 
+from . import recache
 from .model import Column, Event, EventKind, Section, Table, TranscriptResult, Turn
 from .pricing import ModelRates, ResolvedRates, price_turn
 from .recache import RecacheThresholds
@@ -241,8 +249,9 @@ def compaction_records_for_transcript(
     event in ``tr.events``, correlated to the priced turn immediately
     following it (see the module docstring).
 
-    ``thresholds`` (fix item 6) is forwarded to :func:`is_recache_turn`
-    for the ``next_turn_is_recache`` field.
+    ``thresholds`` (fix item 6) is forwarded to :func:`recache.apply` (via
+    :func:`recache.detect`) for the ``next_turn_is_recache`` field — see
+    the module docstring's WP10b addition note.
 
     ``rates`` prices that following turn's observed cache-write split
     (``price_turn``'s default path — ``turn.cc_5m``/``turn.cc_1h``, not a
@@ -272,11 +281,13 @@ def compaction_records_for_transcript(
     is treated as a counter reset: the delta falls back to the raw value
     and the running baseline restarts from it, rather than going negative.
     """
-    priced_turns = _priced_turns(tr)
+    th = thresholds or RecacheThresholds()
+    applied = recache.apply(tr, th)
+    priced_turns = _priced_turns(applied)
     session_id = tr.meta.session_id
     records: list[CompactionRecord] = []
     prev_cumulative_dropped = 0
-    for event, turn_idx in _correlate_compactions_to_turn_index(tr, priced_turns):
+    for event, turn_idx in _correlate_compactions_to_turn_index(applied, priced_turns):
         ratio: float | None = None
         if event.pre_tokens:
             ratio = event.post_tokens / event.pre_tokens if event.post_tokens is not None else None
@@ -297,7 +308,7 @@ def compaction_records_for_transcript(
             next_turn = priced_turns[turn_idx]
             next_cache_creation = next_turn.cache_creation_tokens
             next_write_cost = price_turn(next_turn, rates).cache_write_cost
-            next_is_recache = is_recache_turn(next_turn, thresholds)
+            next_is_recache = next_turn.is_recache
             event_dt = _parse_ts(event.ts)
             turn_dt = _parse_ts(next_turn.ts)
             if event_dt is not None and turn_dt is not None:
@@ -477,9 +488,10 @@ class CompactionStats:
         loosely-joined records (fix item 9: ``join_delta_s`` over 15
         minutes — see :func:`_join_is_tight`).
 
-        ``total_post_compaction_recache_cost`` only counts turns that trip
-        the minimal RE-CACHE heuristic (:func:`is_recache_turn`) — on a
-        real 30-day corpus that heuristic fires for only a small fraction
+        ``total_post_compaction_recache_cost`` only counts turns the
+        shared RE-CACHE detector flags (:func:`recache.apply` — see the
+        module docstring's WP10b addition note) — on a real 30-day corpus
+        that detector fires for only a small fraction
         of post-compaction turns (most turns still hit a warm cache even
         right after a compaction), so that narrower total reads as a few
         dollars while every post-compaction turn's actual cache-write

@@ -336,3 +336,60 @@ def test_build_report_every_section_row_keys_are_all_str_or_int(tmp_path):
     )
     for section in model.sections:
         _assert_row_keys_are_valid(section)
+
+
+# -- recommend.recommend (evidence row-keys resolve into real report rows) --
+#
+# WP10b addition: ``report.build_report`` now also populates
+# ``ReportModel.recommendations`` (recommend.py). Every
+# ``Recommendation.evidence`` tuple is ``(label, value, source_table,
+# row_key)`` where ``row_key`` crosses the same module boundary this
+# file's ``_assert_row_keys_are_valid`` already polices for a ``Table``'s
+# own rows -- so it gets the same str/int-and-non-empty check, plus the
+# stronger check that it actually resolves to a real row in the cited
+# ``<section_key>.<table_name>``.
+
+
+def _assert_recommendation_evidence_is_valid(model: report.ReportModel) -> None:
+    for rec in model.recommendations:
+        for label, value, source_table, row_key in rec.evidence:
+            assert isinstance(row_key, (str, int)) and not isinstance(row_key, bool), (
+                f"{rec.id}: evidence {label!r} row_key={row_key!r} ({type(row_key).__name__}) "
+                "is not a str/int row key"
+            )
+            if isinstance(row_key, str):
+                assert row_key != "", f"{rec.id}: evidence {label!r} row_key is an empty string"
+            section_key, _, table_name = source_table.partition(".")
+            section = next((s for s in model.sections if s.key == section_key), None)
+            assert section is not None, f"{rec.id}: no section {section_key!r} for evidence {label!r}"
+            table = next((t for t in section.tables if t.name == table_name), None)
+            assert table is not None, f"{rec.id}: no table {table_name!r} for evidence {label!r}"
+            row = next((r for r in table.rows if r and r[0] == row_key), None)
+            assert row is not None, f"{rec.id}: row_key {row_key!r} not found in {source_table}"
+
+
+def test_recommend_evidence_row_keys_resolve_into_the_report(tmp_path):
+    project_dir = tmp_path / "proj-recommend-contract"
+    project_dir.mkdir()
+    # 220 priced turns in one session clears the "200 priced turns" half
+    # of recommend.py's minimum-sample gate; heavy cache_read relative to
+    # input/output tokens trips cache-read-dominance, so this isn't a
+    # vacuous walk over an empty recommendations list.
+    lines = [
+        turn_line(
+            timestamp=f"2026-09-{10 + (i % 15):02d}T12:00:00.000Z",
+            input_tokens=100,
+            output_tokens=50,
+            ephemeral_5m_input_tokens=1000,
+            cache_read_input_tokens=5000,
+        )
+        for i in range(220)
+    ]
+    write_jsonl(project_dir / "session-recommend-contract.jsonl", lines)
+
+    corpus = load_corpus([project_dir])
+    model = report.build_report(
+        corpus, PRICING, Config(), projects=("proj-recommend-contract",), window="contract test", phases=True
+    )
+    assert model.recommendations, "expected at least one recommendation from this cache-read-heavy corpus"
+    _assert_recommendation_evidence_is_valid(model)

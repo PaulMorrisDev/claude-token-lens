@@ -1,0 +1,1024 @@
+"""Recommendations (WP10b): turn an assembled :class:`~claude_token_lens.model.ReportModel`
+into a list of actionable :class:`~claude_token_lens.model.Recommendation`\\ s,
+per the project plan's "Recommendations" section and Appendix A5's
+threshold table.
+
+This module deliberately works only from the *rendered* report (the
+``Section``/``Table`` objects already sitting in ``ReportModel.sections``),
+never from a raw accumulator or transcript — the same "cross-module
+metrics are handed in as plain data" convention ``scorecard.py`` already
+follows (see that module's docstring). The payoff is the evidence
+contract every recommendation must honour: each entry in
+``Recommendation.evidence`` is a ``(label, value, source_table, row_key)``
+tuple where ``source_table`` is ``"<section_key>.<table_name>"`` and
+``value`` is the exact cell a report reader would see in that table's
+``row_key`` row -- so a test can walk every recommendation this module
+produces and confirm the number it cites is real, not recomputed. See
+``_cell`` for the lookup this relies on.
+
+Deviations from the plan/brief, reported rather than made silently (see
+``model.py``'s module docstring for this project's convention):
+
+- ``model.py``'s frozen ``Recommendation`` has no ``scope`` field
+  (``"user"``/``"repo"``/``"managed"`` -- plan "Enterprise use" section),
+  and this work package's file list does not include ``model.py``. Scope
+  is encoded as a ``"[managed] "`` prefix on ``Recommendation.lever``
+  instead, added whenever the lever's underlying settings key appears in
+  ``snapshots.managed_keys(snapshot)`` (see ``_apply_scope_prefix``); the
+  ``action`` text then also states "managed by policy, raise with your
+  administrator". A ``Recommendation.scope: str = "user"`` field (values
+  ``"user"``/``"repo"``/``"managed"``) is proposed as an additive
+  ``model.py`` change so this can be a real field instead of a lever
+  prefix -- not made here, per this task's file-list constraint.
+- A5's ``ttl-switch`` clause "suppressed for subagents in subscription
+  mode" is already implemented inside ``ttl.build_section`` itself (the
+  ``recommendation`` cell reads back as ``"no material difference
+  (suppressed: subscription billing)"``), so this module only has to read
+  that cell -- it does not re-implement the suppression. The plan's
+  further "Enterprise use" clause ("TTL rules are suppressed where the
+  [cloud] provider cannot honour 1h") has no supporting capability data
+  anywhere in this codebase (``pricing.py`` has no ``[providers.*]``
+  table, no ``supports_1h_cache`` flag -- confirmed by reading the whole
+  module); lacking that data, this module suppresses every ``ttl-switch``
+  recommendation outright whenever ``config.provider`` is set to anything
+  other than ``"anthropic"``/``None``, as the conservative reading of
+  "cannot confirm 1h works there yet".
+- A5's ``data-quality`` rule ("unparsable > 0.1% of lines, ttl mismatches
+  > 0, fidelity > 10%") only has one of its three inputs backed by a
+  report table: ``ttl_by_agent_type``'s ``fidelity_pct`` column.
+  ``report.py``'s own module docstring explains why parse-quality counters
+  (``ReportModel.diagnostics``) are deliberately *not* rendered as a
+  ``Table`` (the existing renderer contract already covers them from that
+  dedicated field). This module still reads ``report.diagnostics``
+  directly to decide *whether* the unparsable-lines/ttl-mismatch clauses
+  additionally fire, but -- since ``Recommendation.evidence`` can only
+  cite real table cells -- always anchors the evidence list on the
+  ``scorecard.dimensions`` row for ``"data_quality"`` (a table cell that
+  genuinely exists) and states the diagnostics-derived counts in prose in
+  ``action`` instead of fabricating a table citation for them.
+- A5's ``long-context-share`` rule's second clause ("median top-level ctx
+  > 150k") has no table exposing a *median*; ``scorecard.dimensions``'s
+  ``context_hygiene`` row exposes ``p90_top_level_ctx`` instead (the one
+  representative metric ``scorecard.py`` chose for that dimension, per
+  its own docstring). This module uses that p90 figure as the evidence
+  for this clause, which is a stricter (harder-to-clear) proxy for the
+  same "context bloat" concern than the median the plan names.
+- A5's ``baseline-bloat``/``batch-instructions``/``long-tool-waits`` rules
+  each combine a report-table condition with a second condition that has
+  no dedicated table cell (MCP-server/enabled-plugin counts from a config
+  snapshot; mean queue-operations per session; the joint "gap > 300s
+  *and* preceded by Bash/PowerShell" condition split across two
+  independent tables). Each is implemented as documented below, next to
+  its rule function, using the closest available signal; the cited
+  evidence is always a real table cell even where the full joint
+  condition described in the plan can only be approximated.
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass
+
+from .config import Config
+from .model import Recommendation, ReportModel, Section, Table
+from .snapshots import Snapshot, managed_keys
+
+#: Purposes ``classify.classify_purpose`` can return that count as
+#: "docs/general-dev" for the ``effort-mismatch`` rule (plan A5 wording).
+_DOCS_GENERAL_PURPOSES = frozenset({"docs-or-light-edit", "general-dev"})
+
+#: Archetypes that never spawn subagents of their own -- rules whose
+#: advice is about subagent behaviour (TTL-per-agent-type, spawn cost,
+#: agent report size, subagent volume, baseline bloat via MCP prefix
+#: load) are never emitted for these.
+_NO_SUBAGENT_ARCHETYPES = frozenset({"chat-only"})
+
+#: Archetypes for which "stop spawning so much" advice is inappropriate:
+#: an overseer-fanout session's whole point is fanning work out to
+#: subagents, so ``subagent-volume`` (and ``spawn-cost``, which is really
+#: the same "delegation is not free" concern) should not tell it to stop.
+_FANOUT_ARCHETYPES = frozenset({"overseer-fanout"})
+
+#: Every archetype ``workstyle.detect_archetype``/``corpus_archetype`` can
+#: return, used as the default ``archetypes`` tuple (rules with no
+#: specific gating apply to all of them, including ``None``/unclassified
+#: which is represented as the empty tuple meaning "no restriction").
+_ALL_ARCHETYPES: tuple[str, ...] = ()
+
+
+# -- thresholds --------------------------------------------------------------
+
+
+@dataclass(slots=True)
+class RecommendThresholds:
+    """Every tunable number Appendix A5 lists for the recommendation
+    rules, with A5's own defaults. All overridable via ``config.toml``'s
+    ``[thresholds.recommend]`` table -- see :meth:`from_config`.
+    """
+
+    # long-tool-waits: "full-expiry share of re-cache cc > 20% and > 60%
+    # of those turns follow a gap > 300s after Bash/PowerShell".
+    long_tool_waits_full_expiry_share_pct: float = 20.0
+    long_tool_waits_gap_share_pct: float = 60.0
+
+    # notification-invalidation: "TASK_NOTIFICATION primary for > 25% of
+    # prefix-invalidated cc and its share exceeds the all-turns control
+    # share by > 10 points".
+    notification_invalidation_share_pct: float = 25.0
+    notification_invalidation_overrep_points: float = 10.0
+
+    # batch-instructions: "mean queue operations per session > 3 and
+    # queue-preceded turns' re-cache share exceeds control by > 10
+    # points". The mean-queue-ops-per-session half has no report table
+    # (see module docstring); this threshold is still read from config
+    # for forward compatibility but the rule currently fires on the
+    # over-representation half alone.
+    batch_instructions_mean_queue_ops: float = 3.0
+    batch_instructions_overrep_points: float = 10.0
+
+    # subagent-volume: "one agent type > 40% of corpus cost".
+    subagent_volume_cost_share_pct: float = 40.0
+
+    # compaction-churn: ">= 2 compactions per session in any mode, or
+    # dropped tokens > 30% of new tokens".
+    compaction_churn_mean_per_session: float = 2.0
+    compaction_churn_dropped_share_pct: float = 30.0
+
+    # long-context-share: "> 20% of cache_read volume from turns with
+    # ctx >= 200k, or median top-level ctx > 150k" (p90 used as the
+    # median's proxy -- see module docstring).
+    long_context_share_pct: float = 20.0
+    long_context_p90_ctx: float = 150_000.0
+
+    # cache-read-dominance: "cache_read > 50% of cost".
+    cache_read_dominance_pct: float = 50.0
+
+    # baseline-bloat: "top-level first-turn cache_creation > 30k tokens
+    # and snapshot shows >= 5 MCP servers or prefix-loaded tools".
+    baseline_bloat_tokens: float = 30_000.0
+    baseline_bloat_min_mcp_or_plugins: int = 5
+
+    # agent-report-size: "mean Agent tool_result > 8k tokens for an
+    # agent type".
+    agent_report_size_tokens: float = 8_000.0
+
+    # spawn-cost: "mean first-turn write per agent type > 40k tokens".
+    spawn_cost_tokens: float = 40_000.0
+
+    # effort-mismatch: ">= 30% of output tokens are thinking on sessions
+    # whose purpose is docs/general-dev at effort high or above".
+    effort_mismatch_thinking_share_pct: float = 30.0
+
+    # discovery-share: "--phases and DISCOVERY > 35%" (matches
+    # phases.DISCOVERY_SHARE_THRESHOLD's 0.35, expressed here as a pct).
+    discovery_share_pct: float = 35.0
+
+    # data-quality: "unparsable > 0.1% of lines, ttl mismatches > 0,
+    # fidelity > 10%".
+    data_quality_unparsable_pct: float = 0.1
+    data_quality_fidelity_pct: float = 10.0
+
+    #: Minimum sample before ANY rule fires: 5 sessions OR 200 priced
+    #: turns in the group (plan A5's closing line). Mirrors
+    #: ``Config.min_sessions``/``Config.min_turns`` -- kept here too so a
+    #: caller overriding ``[thresholds.recommend]`` can tune it
+    #: independently of the corpus-wide config default.
+    min_sessions: int = 5
+    min_turns: int = 200
+
+    @classmethod
+    def from_config(cls, data: dict | None) -> "RecommendThresholds":
+        """Build thresholds from ``config.toml``'s
+        ``[thresholds.recommend]`` table (a flat dict of this class's
+        field names). Any absent or malformed key keeps this class's
+        default; unknown keys are ignored -- same posture as
+        ``recache.RecacheThresholds.from_config``/
+        ``ttl.TtlThresholds.from_config``.
+        """
+        defaults = cls()
+        if not isinstance(data, dict):
+            return defaults
+        kwargs: dict = {}
+        for f in defaults.__dataclass_fields__:
+            if f in data:
+                raw = data[f]
+                default_value = getattr(defaults, f)
+                try:
+                    kwargs[f] = type(default_value)(raw)
+                except (TypeError, ValueError):
+                    continue
+        if not kwargs:
+            return defaults
+        return cls(**{**{f: getattr(defaults, f) for f in defaults.__dataclass_fields__}, **kwargs})
+
+
+# -- report lookup helpers ----------------------------------------------------
+
+
+def _section(report: ReportModel, key: str) -> Section | None:
+    for section in report.sections:
+        if section.key == key:
+            return section
+    return None
+
+
+def _table(report: ReportModel, section_key: str, table_name: str) -> Table | None:
+    section = _section(report, section_key)
+    if section is None:
+        return None
+    for table in section.tables:
+        if table.name == table_name:
+            return table
+    return None
+
+
+def _col_index(table: Table, column_key: str) -> int | None:
+    for idx, column in enumerate(table.columns):
+        if column.key == column_key:
+            return idx
+    return None
+
+
+def _row(table: Table, row_key) -> list | None:
+    for row in table.rows:
+        if row and row[0] == row_key:
+            return row
+    return None
+
+
+def _cell(report: ReportModel, section_key: str, table_name: str, row_key, column_key: str):
+    """Look up one cell, returning ``None`` when the section/table/row/
+    column doesn't exist (a caller treats that as "condition can't be
+    evaluated", never as a false ``0``)."""
+    table = _table(report, section_key, table_name)
+    if table is None:
+        return None
+    row = _row(table, row_key)
+    if row is None:
+        return None
+    idx = _col_index(table, column_key)
+    if idx is None or idx >= len(row):
+        return None
+    return row[idx]
+
+
+def _evidence(label: str, value, section_key: str, table_name: str, row_key) -> tuple:
+    """One ``Recommendation.evidence`` tuple: ``source_table`` is
+    ``"<section_key>.<table_name>"`` and ``row_key`` is exactly
+    ``row_key`` -- both per the evidence contract this module's docstring
+    describes."""
+    return (label, value, f"{section_key}.{table_name}", row_key)
+
+
+# -- minimum sample gate -------------------------------------------------
+
+
+def _corpus_sessions_and_priced_turns(report: ReportModel) -> tuple[int, int]:
+    """Total sessions and total priced turns for the whole report, read
+    from ``overview.totals`` (a single-row-per-metric table built once
+    per report, so this is O(1) rather than summing a per-group table)."""
+    sessions = _cell(report, "overview", "totals", "sessions", "value")
+    priced_turns = _cell(report, "overview", "totals", "priced_turns", "value")
+    return (
+        int(sessions) if isinstance(sessions, (int, float)) else 0,
+        int(priced_turns) if isinstance(priced_turns, (int, float)) else 0,
+    )
+
+
+def _meets_min_sample(report: ReportModel, th: RecommendThresholds) -> bool:
+    sessions, priced_turns = _corpus_sessions_and_priced_turns(report)
+    return sessions >= th.min_sessions or priced_turns >= th.min_turns
+
+
+# -- scope encoding (see module docstring's proposed-contract-change note) --
+
+
+def _lever_managed_keys(lever: str) -> tuple[str, ...]:
+    """Top-level ``managed-settings.json`` key name(s) that would govern
+    ``lever`` if an administrator locked it down -- the candidates
+    ``snapshots.managed_keys(snapshot)`` is checked against."""
+    if lever == "promptCacheTtl":
+        return ("promptCacheTtl",)
+    if "subagentPromptCacheTtl" in lever or "experimental.cacheTtl" in lever:
+        return ("subagentPromptCacheTtl", "agents")
+    if lever in ("omitClaudeMd", "skills", "autoCompactWindow", "effortLevel"):
+        return (lever,)
+    return (lever,)
+
+
+def _apply_scope_prefix(lever: str | None, snapshot: Snapshot | None) -> tuple[str | None, bool]:
+    """Returns ``(lever, is_managed)``. When ``snapshot`` is given and any
+    of ``lever``'s underlying settings keys appears in
+    ``snapshots.managed_keys(snapshot)``, ``lever`` gains a ``"[managed] "``
+    prefix (the scope encoding this module's docstring describes)."""
+    if lever is None or snapshot is None:
+        return lever, False
+    keys = set(managed_keys(snapshot))
+    if not keys:
+        return lever, False
+    if any(k in keys for k in _lever_managed_keys(lever)):
+        return f"[managed] {lever}", True
+    return lever, False
+
+
+def _action_with_scope(action: str, is_managed: bool) -> str:
+    if is_managed:
+        return f"{action} This lever is managed by policy, raise with your administrator."
+    return action
+
+
+# -- individual rules ---------------------------------------------------
+
+
+def _rule_ttl_switch(
+    report: ReportModel, config: Config, snapshot: Snapshot | None, archetype: str | None
+) -> list[Recommendation]:
+    if config.provider not in (None, "anthropic"):
+        # No [providers.*] capability table exists anywhere in this
+        # codebase (see module docstring) -- suppress outright rather
+        # than guess whether this provider honours a 1h TTL.
+        return []
+    table = _table(report, "ttl", "ttl_by_agent_type")
+    if table is None:
+        return []
+    rec_idx = _col_index(table, "recommendation")
+    lever_idx = _col_index(table, "lever")
+    if rec_idx is None or lever_idx is None:
+        return []
+    out: list[Recommendation] = []
+    for row in table.rows:
+        agent_type = row[0]
+        recommendation_text = row[rec_idx]
+        if not isinstance(recommendation_text, str) or not recommendation_text.startswith("switch to "):
+            continue
+        target = recommendation_text[len("switch to ") :]
+        lever = row[lever_idx]
+        lever, is_managed = _apply_scope_prefix(lever, snapshot)
+        action = _action_with_scope(
+            f"Switch {agent_type}'s prompt cache TTL to {target}.", is_managed
+        )
+        out.append(
+            Recommendation(
+                id="ttl-switch",
+                severity="action",
+                category="settings",
+                archetypes=_ALL_ARCHETYPES,
+                title=f"Cache TTL is a poor fit for {agent_type}",
+                action=action,
+                lever=lever,
+                evidence=[
+                    _evidence("TTL recommendation", recommendation_text, "ttl", "ttl_by_agent_type", agent_type),
+                ],
+            )
+        )
+    return out
+
+
+def _rule_long_tool_waits(report: ReportModel, th: RecommendThresholds) -> list[Recommendation]:
+    summary = _table(report, "recache", "recache_summary")
+    if summary is None or not summary.rows:
+        return []
+    summary_row_key = summary.rows[0][0]
+    total_recache_cc = _cell(report, "recache", "recache_summary", summary_row_key, "recache_cc_tokens")
+    if not total_recache_cc:
+        return []
+    full_expiry_cc = _cell(report, "recache", "recache_signature_split", "full-expiry", "cc_tokens")
+    if full_expiry_cc is None:
+        return []
+    full_expiry_share_pct = 100.0 * full_expiry_cc / total_recache_cc if total_recache_cc else 0.0
+    if full_expiry_share_pct <= th.long_tool_waits_full_expiry_share_pct:
+        return []
+
+    # "> 60% of those turns follow a gap > 300s after Bash/PowerShell":
+    # approximated as the combined Bash+PowerShell share of re-cache
+    # turns (recache_preceding_tool) intersected with the combined
+    # >5-minute-gap share of re-cache turns (recache_gap_buckets) -- the
+    # two tables closest to this joint condition (see module docstring).
+    tool_table = _table(report, "recache", "recache_preceding_tool")
+    gap_table = _table(report, "recache", "recache_gap_buckets")
+    if tool_table is None or gap_table is None:
+        return []
+    bash_share = _cell(report, "recache", "recache_preceding_tool", "Bash", "share_pct_turns") or 0.0
+    pwsh_share = _cell(report, "recache", "recache_preceding_tool", "PowerShell", "share_pct_turns") or 0.0
+    tool_share = bash_share + pwsh_share
+    long_gap_share = 0.0
+    for bucket in (">60m", "15-60m", "5-15m"):
+        long_gap_share += _cell(report, "recache", "recache_gap_buckets", bucket, "share_pct_turns") or 0.0
+    combined_share = min(tool_share, long_gap_share)
+    if combined_share <= th.long_tool_waits_gap_share_pct:
+        return []
+
+    return [
+        Recommendation(
+            id="long-tool-waits",
+            severity="advice",
+            category="workflow",
+            archetypes=_ALL_ARCHETYPES,
+            title="Long tool waits are expiring the cache",
+            action=(
+                "Batch instructions before a long-running Bash/PowerShell command so the "
+                "prefix survives the wait, or shorten the wait itself."
+            ),
+            lever=None,
+            evidence=[
+                _evidence("Full-expiry cache-creation tokens", full_expiry_cc, "recache", "recache_signature_split", "full-expiry"),
+                _evidence("Bash re-cache turn share", bash_share, "recache", "recache_preceding_tool", "Bash"),
+                _evidence("PowerShell re-cache turn share", pwsh_share, "recache", "recache_preceding_tool", "PowerShell"),
+            ],
+        )
+    ]
+
+
+def _rule_notification_invalidation(report: ReportModel, th: RecommendThresholds) -> list[Recommendation]:
+    row_key = "task_notification"
+    share_pct = _cell(report, "recache", "recache_primary_cause_prefix_invalidated", row_key, "cc_share_pct")
+    if share_pct is None or share_pct <= th.notification_invalidation_share_pct:
+        return []
+    over_rep = _cell(
+        report, "recache", "recache_primary_cause_prefix_invalidated", row_key, "over_representation_points_tokens"
+    )
+    if over_rep is None or over_rep <= th.notification_invalidation_overrep_points:
+        return []
+    return [
+        Recommendation(
+            id="notification-invalidation",
+            severity="advice",
+            category="workflow",
+            archetypes=_ALL_ARCHETYPES,
+            title="Task notifications are invalidating the cache prefix",
+            action=(
+                "Reduce how often a subagent's task-notification lands mid-conversation, or "
+                "batch notifications so fewer of them arrive while the parent's cache prefix "
+                "is still warm."
+            ),
+            lever=None,
+            evidence=[
+                _evidence(
+                    "TASK_NOTIFICATION share of prefix-invalidated cc",
+                    share_pct,
+                    "recache",
+                    "recache_primary_cause_prefix_invalidated",
+                    row_key,
+                ),
+                _evidence(
+                    "Over-representation vs all-turns control",
+                    over_rep,
+                    "recache",
+                    "recache_primary_cause_prefix_invalidated",
+                    row_key,
+                ),
+            ],
+        )
+    ]
+
+
+def _rule_batch_instructions(report: ReportModel, th: RecommendThresholds) -> list[Recommendation]:
+    # The mean-queue-ops-per-session half of this rule has no report
+    # table (see module docstring); this rule fires on the
+    # over-representation half alone.
+    row_key = "queue_operation"
+    over_rep = _cell(report, "recache", "recache_primary_cause", row_key, "over_representation_points_tokens")
+    if over_rep is None or over_rep <= th.batch_instructions_overrep_points:
+        return []
+    share_pct = _cell(report, "recache", "recache_primary_cause", row_key, "cc_share_pct")
+    return [
+        Recommendation(
+            id="batch-instructions",
+            severity="advice",
+            category="workflow",
+            archetypes=_ALL_ARCHETYPES,
+            title="Queued instructions are re-writing the cache prefix",
+            action=(
+                "Batch queued instructions into a single message instead of sending them one "
+                "at a time, so each doesn't force its own cache re-write."
+            ),
+            lever=None,
+            evidence=[
+                _evidence(
+                    "Over-representation vs all-turns control",
+                    over_rep,
+                    "recache",
+                    "recache_primary_cause",
+                    row_key,
+                ),
+                _evidence("Queue-preceded share of re-cache cc", share_pct, "recache", "recache_primary_cause", row_key),
+            ],
+        )
+    ]
+
+
+def _rule_subagent_volume(report: ReportModel, th: RecommendThresholds, archetype: str | None) -> list[Recommendation]:
+    if archetype in _FANOUT_ARCHETYPES:
+        # An overseer-fanout session's whole point is fanning work out;
+        # "stop spawning so much" is not appropriate advice for it.
+        return []
+    table = _table(report, "ttl", "ttl_by_agent_type")
+    if table is None:
+        return []
+    cost_idx = _col_index(table, "cost_observed")
+    if cost_idx is None:
+        return []
+    total_cost = sum(row[cost_idx] for row in table.rows if cost_idx < len(row) and isinstance(row[cost_idx], (int, float)))
+    if not total_cost:
+        return []
+    out: list[Recommendation] = []
+    for row in table.rows:
+        agent_type = row[0]
+        if agent_type == "top-level":
+            continue
+        cost = row[cost_idx]
+        share_pct = 100.0 * cost / total_cost
+        if share_pct <= th.subagent_volume_cost_share_pct:
+            continue
+        out.append(
+            Recommendation(
+                id="subagent-volume",
+                severity="advice",
+                category="workflow",
+                archetypes=_ALL_ARCHETYPES,
+                title=f"{agent_type} dominates subagent cost",
+                action=(
+                    f"Review why {agent_type} accounts for most of the corpus's subagent "
+                    "spend -- fewer spawns, a cheaper model, or a tighter brief before "
+                    "spawning it."
+                ),
+                lever=None,
+                evidence=[
+                    _evidence("Share of corpus cost", share_pct, "ttl", "ttl_by_agent_type", agent_type),
+                ],
+            )
+        )
+    return out
+
+
+def _rule_compaction_churn(report: ReportModel, th: RecommendThresholds, snapshot: Snapshot | None) -> list[Recommendation]:
+    mean_per_session = _cell(report, "compactions", "compactions_summary", "Compactions per session (mean)", "value")
+    dropped_share_row_key = "Dropped tokens (share of new_tokens: input+cache_creation)"
+    dropped_share_pct = _cell(report, "compactions", "compactions_summary", dropped_share_row_key, "value")
+
+    fires_on_mean = isinstance(mean_per_session, (int, float)) and mean_per_session >= th.compaction_churn_mean_per_session
+    fires_on_dropped = isinstance(dropped_share_pct, (int, float)) and dropped_share_pct > th.compaction_churn_dropped_share_pct
+    if not (fires_on_mean or fires_on_dropped):
+        return []
+
+    lever, is_managed = _apply_scope_prefix("autoCompactWindow", snapshot)
+    evidence = []
+    if fires_on_mean:
+        evidence.append(
+            _evidence("Compactions per session (mean)", mean_per_session, "compactions", "compactions_summary", "Compactions per session (mean)")
+        )
+    if fires_on_dropped:
+        evidence.append(
+            _evidence("Dropped-token share of new tokens", dropped_share_pct, "compactions", "compactions_summary", dropped_share_row_key)
+        )
+    return [
+        Recommendation(
+            id="compaction-churn",
+            severity="advice",
+            category="settings",
+            archetypes=_ALL_ARCHETYPES,
+            title="Compaction is running often enough to matter",
+            action=_action_with_scope(
+                "Raise autoCompactWindow so compaction fires less often, or reduce session length "
+                "between compactions.",
+                is_managed,
+            ),
+            lever=lever,
+            evidence=evidence,
+        )
+    ]
+
+
+def _rule_long_context_share(report: ReportModel, th: RecommendThresholds, snapshot: Snapshot | None) -> list[Recommendation]:
+    huge_table = _table(report, "recache", "recache_huge_context")
+    row_key = huge_table.rows[0][0] if huge_table and huge_table.rows else None
+    share_pct = _cell(report, "recache", "recache_huge_context", row_key, "share_pct") if row_key is not None else None
+    p90_ctx = _cell(report, "scorecard", "dimensions", "context_hygiene", "value")
+
+    fires_on_share = isinstance(share_pct, (int, float)) and share_pct > th.long_context_share_pct
+    fires_on_p90 = isinstance(p90_ctx, (int, float)) and p90_ctx > th.long_context_p90_ctx
+    if not (fires_on_share or fires_on_p90):
+        return []
+
+    lever, is_managed = _apply_scope_prefix("autoCompactWindow", snapshot)
+    evidence = []
+    if fires_on_share:
+        evidence.append(_evidence("Cache-read volume share from huge-context turns", share_pct, "recache", "recache_huge_context", row_key))
+    if fires_on_p90:
+        evidence.append(_evidence("p90 top-level context size (proxy for median)", p90_ctx, "scorecard", "dimensions", "context_hygiene"))
+    return [
+        Recommendation(
+            id="long-context-share",
+            severity="advice",
+            category="settings",
+            archetypes=_ALL_ARCHETYPES,
+            title="Top-level context is running large",
+            action=_action_with_scope(
+                "Trim what stays resident in the top-level conversation -- compact sooner, or "
+                "move exploration into a subagent whose context is discarded when it finishes.",
+                is_managed,
+            ),
+            lever=lever,
+            evidence=evidence,
+        )
+    ]
+
+
+def _rule_cache_read_dominance(report: ReportModel, th: RecommendThresholds) -> list[Recommendation]:
+    share_pct = _cell(report, "overview", "totals", "cache_read_cost_share_pct", "value")
+    if not isinstance(share_pct, (int, float)) or share_pct <= th.cache_read_dominance_pct:
+        return []
+    return [
+        Recommendation(
+            id="cache-read-dominance",
+            severity="info",
+            category="workflow",
+            archetypes=_ALL_ARCHETYPES,
+            title="Cache reads already dominate spend",
+            action=(
+                "Most of this corpus's cost is already cheap cache-read traffic -- there is "
+                "little further caching upside here; look at cache-creation drivers instead."
+            ),
+            lever=None,
+            evidence=[
+                _evidence("Cache-read share of cost", share_pct, "overview", "totals", "cache_read_cost_share_pct"),
+            ],
+        )
+    ]
+
+
+def _rule_baseline_bloat(
+    report: ReportModel, th: RecommendThresholds, snapshot: Snapshot | None, archetype: str | None
+) -> list[Recommendation]:
+    if archetype in _NO_SUBAGENT_ARCHETYPES:
+        return []
+    baseline_table = _table(report, "agents", "topology_session_baseline")
+    if baseline_table is None or not baseline_table.rows:
+        return []
+    row_key = baseline_table.rows[0][0]
+    mean_baseline = _cell(report, "agents", "topology_session_baseline", row_key, "mean_baseline")
+    if not isinstance(mean_baseline, (int, float)) or mean_baseline <= th.baseline_bloat_tokens:
+        return []
+    if snapshot is None:
+        return []
+    mcp_servers = snapshot.data.get("mcp_servers") or {}
+    enabled_plugins = snapshot.data.get("enabled_plugins") or {}
+    prefix_count = len(mcp_servers) + len(enabled_plugins)
+    if prefix_count < th.baseline_bloat_min_mcp_or_plugins:
+        return []
+    return [
+        Recommendation(
+            id="baseline-bloat",
+            severity="advice",
+            category="settings",
+            archetypes=_ALL_ARCHETYPES,
+            title="The session baseline is large before any work happens",
+            action=(
+                "Review which MCP servers and tool schemas load by default -- disabling unused "
+                "ones shrinks every session's first-turn cache write."
+            ),
+            lever="mcpServers",
+            evidence=[
+                _evidence("Mean session baseline (cache-creation)", mean_baseline, "agents", "topology_session_baseline", row_key),
+            ],
+        )
+    ]
+
+
+def _rule_agent_report_size(report: ReportModel, th: RecommendThresholds, archetype: str | None) -> list[Recommendation]:
+    if archetype in _NO_SUBAGENT_ARCHETYPES:
+        return []
+    table = _table(report, "agents", "topology_report_proxy")
+    if table is None:
+        return []
+    out: list[Recommendation] = []
+    for row in table.rows:
+        agent_type = row[0]
+        mean_proxy = _cell(report, "agents", "topology_report_proxy", agent_type, "mean_proxy")
+        if not isinstance(mean_proxy, (int, float)) or mean_proxy <= th.agent_report_size_tokens:
+            continue
+        out.append(
+            Recommendation(
+                id="agent-report-size",
+                severity="advice",
+                category="workflow",
+                archetypes=_ALL_ARCHETYPES,
+                title=f"{agent_type}'s reports come back large",
+                action=(
+                    f"Ask {agent_type} to report back more concisely -- a shorter report "
+                    "costs less to fold into the parent's cache."
+                ),
+                lever=None,
+                evidence=[
+                    _evidence("Mean report proxy (output tokens)", mean_proxy, "agents", "topology_report_proxy", agent_type),
+                ],
+            )
+        )
+    return out
+
+
+def _rule_spawn_cost(report: ReportModel, th: RecommendThresholds, archetype: str | None) -> list[Recommendation]:
+    if archetype in _NO_SUBAGENT_ARCHETYPES:
+        return []
+    table = _table(report, "agents", "topology_spawn_write")
+    if table is None:
+        return []
+    out: list[Recommendation] = []
+    for row in table.rows:
+        agent_type = row[0]
+        mean_write = _cell(report, "agents", "topology_spawn_write", agent_type, "mean_write")
+        if not isinstance(mean_write, (int, float)) or mean_write <= th.spawn_cost_tokens:
+            continue
+        out.append(
+            Recommendation(
+                id="spawn-cost",
+                severity="advice",
+                category="settings",
+                archetypes=_ALL_ARCHETYPES,
+                title=f"Spawning {agent_type} is expensive before it does any work",
+                action=(
+                    f"Trim {agent_type}'s briefing -- omitClaudeMd or a narrower skills set "
+                    "cuts what has to be written into its cache on the very first turn."
+                ),
+                lever="omitClaudeMd",
+                evidence=[
+                    _evidence("Mean first-turn write", mean_write, "agents", "topology_spawn_write", agent_type),
+                ],
+            )
+        )
+    return out
+
+
+def _rule_effort_mismatch(report: ReportModel, th: RecommendThresholds) -> list[Recommendation]:
+    purpose_table = _table(report, "sessions", "sessions_by_purpose")
+    effort_table = _table(report, "agents", "topology_effort_tokens")
+    if purpose_table is None or effort_table is None:
+        return []
+    sessions_idx = _col_index(purpose_table, "sessions")
+    if sessions_idx is None:
+        return []
+    docs_purpose_rows = [
+        (row[0], row[sessions_idx])
+        for row in purpose_table.rows
+        if row and row[0] in _DOCS_GENERAL_PURPOSES and sessions_idx < len(row)
+    ]
+    if not docs_purpose_rows:
+        return []
+    thinking_share = _cell(report, "agents", "topology_effort_tokens", "high", "thinking_share")
+    if not isinstance(thinking_share, (int, float)) or thinking_share <= th.effort_mismatch_thinking_share_pct:
+        return []
+    evidence = [_evidence("High-effort thinking share of output", thinking_share, "agents", "topology_effort_tokens", "high")]
+    for purpose, sessions in docs_purpose_rows:
+        evidence.append(_evidence(f"{purpose} sessions in corpus", sessions, "sessions", "sessions_by_purpose", purpose))
+    return [
+        Recommendation(
+            id="effort-mismatch",
+            severity="advice",
+            category="settings",
+            archetypes=_ALL_ARCHETYPES,
+            title="High effort is being spent on light editing work",
+            action=(
+                "Lower effortLevel for docs/general-dev sessions -- thinking tokens dominate "
+                "output there without a matching increase in edit complexity."
+            ),
+            lever="effortLevel",
+            evidence=evidence,
+        )
+    ]
+
+
+def _rule_discovery_share(report: ReportModel, th: RecommendThresholds) -> list[Recommendation]:
+    share_pct = _cell(report, "phases", "phases_summary", "discovery", "cost_share_pct")
+    if not isinstance(share_pct, (int, float)) or share_pct <= th.discovery_share_pct:
+        return []
+    return [
+        Recommendation(
+            id="discovery-share",
+            severity="advice",
+            category="workflow",
+            archetypes=_ALL_ARCHETYPES,
+            title="Discovery is a large share of the work",
+            action=(
+                "Front-load exploration into a briefing or a cached reference doc so future "
+                "sessions spend less time re-discovering the same ground."
+            ),
+            lever=None,
+            evidence=[
+                _evidence("DISCOVERY cost share", share_pct, "phases", "phases_summary", "discovery"),
+            ],
+        )
+    ]
+
+
+def _rule_pricing_coverage(report: ReportModel) -> list[Recommendation]:
+    coverage_pct = report.meta.pricing.coverage_pct
+    unknown_table = _table(report, "usage", "pricing_unknown_models")
+    if coverage_pct >= 100.0 and (unknown_table is None or not unknown_table.rows):
+        return []
+    dq_value = _cell(report, "scorecard", "dimensions", "data_quality", "value")
+    if dq_value is None:
+        return []
+    return [
+        Recommendation(
+            id="pricing-coverage",
+            severity="info",
+            category="data",
+            archetypes=_ALL_ARCHETYPES,
+            title="Some usage could not be priced",
+            action=(
+                "Add the unpriced model id(s) to pricing.toml so the report's cost figures "
+                "cover the whole corpus."
+            ),
+            lever=None,
+            evidence=[
+                _evidence("Pricing coverage (data-quality dimension)", dq_value, "scorecard", "dimensions", "data_quality"),
+            ],
+        )
+    ]
+
+
+def _rule_data_quality(report: ReportModel, th: RecommendThresholds) -> list[Recommendation]:
+    table = _table(report, "ttl", "ttl_by_agent_type")
+    fidelity_row_key = None
+    fidelity_value = None
+    if table is not None:
+        idx = _col_index(table, "fidelity_pct")
+        if idx is not None:
+            for row in table.rows:
+                if idx < len(row) and isinstance(row[idx], (int, float)) and row[idx] > th.data_quality_fidelity_pct:
+                    fidelity_row_key = row[0]
+                    fidelity_value = row[idx]
+                    break
+
+    diagnostics = report.diagnostics
+    unparsable_pct = (
+        100.0 * diagnostics.unparsable_lines / diagnostics.lines if diagnostics.lines else 0.0
+    )
+    fires_on_unparsable = unparsable_pct > th.data_quality_unparsable_pct
+    fires_on_ttl_mismatch = diagnostics.ttl_sum_mismatch > 0
+    fires_on_fidelity = fidelity_row_key is not None
+
+    if not (fires_on_unparsable or fires_on_ttl_mismatch or fires_on_fidelity):
+        return []
+
+    dq_value = _cell(report, "scorecard", "dimensions", "data_quality", "value")
+    if dq_value is None:
+        return []
+
+    notes = []
+    if fires_on_unparsable:
+        notes.append(f"{unparsable_pct:.2f}% of lines were unparsable")
+    if fires_on_ttl_mismatch:
+        notes.append(f"{diagnostics.ttl_sum_mismatch} turn(s) had a cc_5m + cc_1h mismatch")
+    if fires_on_fidelity:
+        notes.append(f"{fidelity_row_key}'s TTL simulation fidelity exceeded the warning threshold")
+
+    evidence = [_evidence("Pricing coverage (data-quality dimension)", dq_value, "scorecard", "dimensions", "data_quality")]
+    if fires_on_fidelity:
+        evidence.append(_evidence("TTL simulation fidelity", fidelity_value, "ttl", "ttl_by_agent_type", fidelity_row_key))
+
+    return [
+        Recommendation(
+            id="data-quality",
+            severity="info",
+            category="data",
+            archetypes=_ALL_ARCHETYPES,
+            title="Some numbers in this report carry a data-quality caveat",
+            action="Treat this report's figures with caution: " + "; ".join(notes) + ".",
+            lever=None,
+            evidence=evidence,
+        )
+    ]
+
+
+# -- entry point --------------------------------------------------------
+
+
+def recommend(
+    report: ReportModel,
+    *,
+    config: Config,
+    archetype: str | None,
+    snapshot: Snapshot | None = None,
+    thresholds: RecommendThresholds | None = None,
+) -> list[Recommendation]:
+    """Every Appendix A5 recommendation rule this module implements,
+    evaluated against ``report`` (an already-assembled
+    :class:`~claude_token_lens.model.ReportModel`) and filtered to the
+    rules whose ``archetypes`` gating admits ``archetype`` (a rule with an
+    empty ``archetypes`` tuple applies to every archetype, including
+    ``None``).
+
+    Returns ``[]`` immediately if the corpus doesn't meet the minimum
+    sample (5 sessions or 200 priced turns, plan A5's closing line) --
+    every rule below is a comparison across a group, and a group this
+    small produces noise, not a recommendation.
+    """
+    th = thresholds or RecommendThresholds.from_config(
+        config.thresholds.get("recommend") if isinstance(config.thresholds, dict) else None
+    )
+
+    if not _meets_min_sample(report, th):
+        return []
+
+    recs: list[Recommendation] = []
+    recs.extend(_rule_ttl_switch(report, config, snapshot, archetype))
+    recs.extend(_rule_long_tool_waits(report, th))
+    recs.extend(_rule_notification_invalidation(report, th))
+    recs.extend(_rule_batch_instructions(report, th))
+    recs.extend(_rule_subagent_volume(report, th, archetype))
+    recs.extend(_rule_compaction_churn(report, th, snapshot))
+    recs.extend(_rule_long_context_share(report, th, snapshot))
+    recs.extend(_rule_cache_read_dominance(report, th))
+    recs.extend(_rule_baseline_bloat(report, th, snapshot, archetype))
+    recs.extend(_rule_agent_report_size(report, th, archetype))
+    recs.extend(_rule_spawn_cost(report, th, archetype))
+    recs.extend(_rule_effort_mismatch(report, th))
+    if _section(report, "phases") is not None:
+        recs.extend(_rule_discovery_share(report, th))
+    recs.extend(_rule_pricing_coverage(report))
+    recs.extend(_rule_data_quality(report, th))
+
+    if archetype is not None:
+        recs = [r for r in recs if not r.archetypes or archetype in r.archetypes]
+
+    return recs
+
+
+# -- patch-set rendering --------------------------------------------------
+
+_AGENT_LEVER_RE = re.compile(r"experimental\.cacheTtl in ([^.]+)\.md")
+_TTL_TARGET_RE = re.compile(r"\bto (1h|5m)\b")
+
+
+def render_patch_set(recs: list[Recommendation]) -> str:
+    """A unified-diff-style text of the settings/frontmatter changes
+    ``recs`` imply: ``experimental.cacheTtl: 5m|1h`` per
+    ``.claude/agents/<agent_type>.md`` for a per-agent TTL switch, and a
+    bare settings-key stanza (no path -- see module docstring) for
+    top-level settings levers. Contains no path other than
+    ``.claude/agents/<agent_type>.md``.
+    """
+    lines: list[str] = []
+    seen_agent_files: set[str] = set()
+    seen_settings_keys: set[str] = set()
+
+    for rec in recs:
+        lever = rec.lever
+        if not lever:
+            continue
+        bare_lever = lever[len("[managed] ") :] if lever.startswith("[managed] ") else lever
+        is_managed = lever.startswith("[managed] ")
+
+        agent_match = _AGENT_LEVER_RE.search(bare_lever)
+        if agent_match:
+            agent_type = agent_match.group(1)
+            path = f".claude/agents/{agent_type}.md"
+            if path in seen_agent_files:
+                continue
+            seen_agent_files.add(path)
+            target_match = _TTL_TARGET_RE.search(rec.action)
+            target = target_match.group(1) if target_match else "5m|1h"
+            lines.append(f"--- {path}")
+            lines.append(f"+++ {path}")
+            if is_managed:
+                lines.append("# managed by policy -- shown for reference only")
+            lines.append("-experimental.cacheTtl: (unset)")
+            lines.append(f"+experimental.cacheTtl: {target}")
+            lines.append("")
+            continue
+
+        if bare_lever == "promptCacheTtl":
+            if bare_lever in seen_settings_keys:
+                continue
+            seen_settings_keys.add(bare_lever)
+            target_match = _TTL_TARGET_RE.search(rec.action)
+            target = target_match.group(1) if target_match else "5m|1h"
+            lines.append("--- settings (user)")
+            lines.append("+++ settings (user)")
+            if is_managed:
+                lines.append("# managed by policy -- shown for reference only")
+            lines.append("-promptCacheTtl: (unset)")
+            lines.append(f"+promptCacheTtl: {target}")
+            lines.append("")
+            continue
+
+        if bare_lever in seen_settings_keys:
+            continue
+        seen_settings_keys.add(bare_lever)
+        lines.append("--- settings (user)")
+        lines.append("+++ settings (user)")
+        if is_managed:
+            lines.append("# managed by policy -- shown for reference only")
+        lines.append(f"-{bare_lever}: (unchanged)")
+        lines.append(f"+{bare_lever}: (see recommendation action)")
+        lines.append("")
+
+    return "\n".join(lines).rstrip("\n") + ("\n" if lines else "")
+
+
+__all__ = [
+    "RecommendThresholds",
+    "recommend",
+    "render_patch_set",
+]

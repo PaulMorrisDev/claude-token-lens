@@ -17,6 +17,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   archetype counts, workflow-run summaries, and the config diff table,
   matching the pattern already used by `classify`/`compaction`/`recache`/
   `ttl`.
+- `recommend.py` (WP10b): `recommend()` turns an assembled `ReportModel`
+  into evidence-backed `Recommendation`s, implementing every Appendix A5
+  rule (`ttl-switch`, `long-tool-waits`, `notification-invalidation`,
+  `batch-instructions`, `subagent-volume`, `compaction-churn`,
+  `long-context-share`, `cache-read-dominance`, `baseline-bloat`,
+  `agent-report-size`, `spawn-cost`, `effort-mismatch`,
+  `discovery-share`, `pricing-coverage`, `data-quality`) with archetype
+  gating, a minimum-sample gate, and managed-settings-aware scope
+  encoding; `render_patch_set()` renders the settings/frontmatter changes
+  a recommendation set implies as unified-diff-style text.
+- `report.build_report` now accepts `session_overrides` and populates
+  `ReportModel.recommendations` via `recommend.recommend()`, using the
+  corpus's own archetype and latest config snapshot.
 
 ### Fixed
 
@@ -99,6 +112,10 @@ one-commit-per-fix / green-tests discipline:
 - `parse.py` — pre-split `cache_creation` reads are now treated as a
   format difference (`Diagnostics.pre_split_turns`) and normalized via
   `ttl.normalize_ttl_split`, rather than silently mis-parsed.
+- `compaction.py` — turns are now marked re-cache via the shared
+  `recache.apply()` detector instead of a separate internal
+  `is_recache_turn()` heuristic, so compaction's RE-CACHE-flagged
+  write-cost figures use the same signature logic as every other module.
 
 ### Documentation
 

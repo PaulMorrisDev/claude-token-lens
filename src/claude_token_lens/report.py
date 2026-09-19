@@ -90,6 +90,7 @@ from .model import (
 from .phases import PhaseStats
 from .phases import build_section as build_phases_section
 from .pricing import Pricing, PricingCoverage, price_turn
+from .recommend import recommend
 from .snapshots import Snapshot
 
 #: Fixed section order (before ``include`` filtering). Matches the task
@@ -444,10 +445,22 @@ def build_report(
     snapshots: list[Snapshot] | None = None,
     allow_titles: bool = False,
     include: set[str] | None = None,
+    session_overrides: dict | None = None,
 ) -> ReportModel:
     """Assemble the whole :class:`ReportModel` for ``corpus``. See the
     module docstring for section order/keys and the deviations from the
     task brief this function documents rather than silently resolves.
+
+    ``session_overrides`` (WP10b addition) is the ``sessions.toml``-shaped
+    dict ``config.load_session_overrides`` produces (session id ->
+    ``{"mode": ..., "purpose": ...}``), passed straight through to
+    :func:`classify.classify_session`. ``build_report`` still has no
+    ``config_dir`` parameter of its own (see the module docstring's
+    deviation note above), so it still cannot *load* the overrides file
+    itself -- a caller that wants overrides applied loads it via
+    ``config.load_session_overrides`` and passes the result here.
+    Defaults to ``{}`` when omitted, matching the previous hardcoded
+    behaviour exactly.
     """
     from . import usage as usage_mod  # local import: avoids a cycle risk with any future usage<->report coupling
 
@@ -458,9 +471,7 @@ def build_report(
         config.thresholds.get("scorecard") if isinstance(config.thresholds, dict) else None
     )
 
-    # No config_dir is passed to build_report, so sessions.toml overrides
-    # cannot be loaded here (see module docstring's deviation note).
-    session_overrides: dict = {}
+    session_overrides = session_overrides or {}
 
     session_records: list[SessionRecord] = []
     session_cost: dict[str, float] = {}
@@ -686,7 +697,22 @@ def build_report(
         assumptions=assumptions,
     )
 
-    return ReportModel(meta=meta, sections=sections, recommendations=[], diagnostics=diagnostics)
+    report_model = ReportModel(meta=meta, sections=sections, recommendations=[], diagnostics=diagnostics)
+
+    # WP10b: recommendations are computed from the already-assembled
+    # report (see recommend.py's module docstring for why it works from
+    # rendered tables rather than the raw accumulators above), using the
+    # corpus's majority archetype and the latest config snapshot (if any)
+    # as of "now" -- a per-session snapshot join is not attempted here,
+    # matching how ``_build_config_section``/``_build_scorecard_section``
+    # already treat ``snapshots`` as a single corpus-wide input.
+    corpus_archetype, _archetype_evidence = workstyle.corpus_archetype(session_records)
+    latest_snapshot = snapshots[-1] if snapshots else None
+    report_model.recommendations = recommend(
+        report_model, config=config, archetype=corpus_archetype, snapshot=latest_snapshot
+    )
+
+    return report_model
 
 
 def _build_scorecard_section(
