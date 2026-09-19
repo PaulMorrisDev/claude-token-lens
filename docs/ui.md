@@ -78,14 +78,29 @@ this order:
    key, and which projects share an identical effective config. A
    snapshot with no project attribution (`project_slug: null`, see
    `docs/api.md`) is shown as a user-level layer rather than a project's.
-7. **Profiles** — `/api/profiles` (list) and `/api/profiles/<id>/diff`
-   (detail view): every recommendation card in this tab that has a
-   `lever` shows the exact settings/frontmatter change *and* the host
-   command to apply it (plan: "the host command to apply it") —
-   `apply <profile> --project PATH` or `apply <profile> --launch`'s
-   printed `claude --settings ...` command, taken verbatim from the
-   diff route's `apply_command` field. The UI never runs that command
-   itself.
+   A "Latest baseline" panel below the drift table renders
+   `/api/baseline` (v0.3): the capture window's one-line status
+   (`capture_status.summary`), the latest capture (or "no baseline
+   captured yet"), and every past capture in a history table — with a
+   "capture window open: provisional" notice whenever
+   `capture_status.started && !capture_status.complete`.
+7. **Profiles** — `/api/profiles` (v0.3: the catalogue's seven shipped
+   profiles plus every user profile, each tagged `source`) and
+   `/api/profiles/<id>/diff` (detail view, real as of v0.3): the entry
+   matching the latest baseline's `suggested_profile_id` is marked
+   "suggested by your latest baseline" in the list. The diff view shows
+   the settings/per-agent/environment overlays as tables (current vs.
+   proposed, and where each currently lives), the full unified diff
+   text, and the host command to apply it *and* the `--launch`
+   one-session-overlay alternative — both taken verbatim from the diff
+   route's `apply_command`/`launch_command` fields in a code block with
+   a copy button. The UI never runs either command itself, and never
+   fills in a project directory on the user's behalf (`docs/api.md`'s
+   own note on why that route never accepts one). A minimal form below
+   the diff view ("Save as a new user profile": id, name, a JSON
+   settings-overlay textarea) posts to `POST /api/profiles` and shows
+   the server's validation error inline on `400`/`409` rather than
+   failing silently.
 8. **Recommendations** — `/api/recommendations`: one card per
    `Recommendation`, grouped by `severity`. Every card shows its
    evidence line(s) (`label: formatted value (table, row)`, same
@@ -94,6 +109,9 @@ this order:
    diff-plus-command treatment as the Profiles tab; a `scope: "managed"`
    card instead shows "managed by policy, raise with your
    administrator" in place of an apply command (plan "Enterprise use").
+   The same "capture window open: provisional" notice as the Config
+   tab's baseline panel appears above the list while a capture window is
+   in progress (`/api/baseline`'s `capture_status`).
 9. **Usage** — the `usage`/`compactions` report sections plus a raw
    `/api/compactions` list, its own dedicated tab rather than folded
    into Diagnostics.
@@ -171,17 +189,20 @@ limit on a session with tens of thousands of turns. A session over
 server-side (`truncated: true`, `docs/api.md`); the timeline shows a
 note saying so rather than presenting the thinned-out chart as complete.
 
-**Shape-defensive rendering for routes `api.py` hasn't shipped yet.**
-At the time this UI was built, `service/api.py` did not exist (a
+**Shape-defensive rendering for routes `api.py` hadn't shipped yet.**
+At the time this UI was first built, `service/api.py` did not exist (a
 sibling work package's deliverable), so `/api/ttl`, `/api/config-diff`
 and `/api/baseline`'s exact response shapes were pinned only loosely by
 `docs/api.md` ("same shape as ... Section/Table encoding" without a
-worked example). `renderTtlData`/`renderConfigDiff`/`renderBaseline`
-each check for more than one plausible shape (a bare `Section` dict, a
-list of `Table` dicts, or a flat row list) and fall back to a plain
-"no data for this window" notice rather than rendering nothing on a
-mismatch. Once `api.py` lands, the shape it actually returns should be
-confirmed against these functions and the redundant branches trimmed.
+worked example). `renderTtlData`/`renderConfigDiff` still check for
+more than one plausible shape (a bare `Section` dict, a list of `Table`
+dicts, or a flat row list) and fall back to a plain "no data for this
+window" notice rather than rendering nothing on a mismatch — this is
+still live for those two routes. `renderBaseline`'s own defensive
+branch was trimmed once v0.3's `api.py` landed with a confirmed,
+frozen shape (`{"baseline", "history", "capture_status"}` —
+`docs/api.md`); it now reads that shape directly rather than guessing
+at a bare list vs. a single object.
 
 **Inline SVG without a namespace-URI literal.** Bar cells and the
 timeline chart are built as HTML strings (e.g. `'<svg viewBox="..."
