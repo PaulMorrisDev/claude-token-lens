@@ -112,6 +112,10 @@ one-commit-per-fix / green-tests discipline:
 - `parse.py` — pre-split `cache_creation` reads are now treated as a
   format difference (`Diagnostics.pre_split_turns`) and normalized via
   `ttl.normalize_ttl_split`, rather than silently mis-parsed.
+- `compaction.py` — turns are now marked re-cache via the shared
+  `recache.apply()` detector instead of a separate internal
+  `is_recache_turn()` heuristic, so compaction's RE-CACHE-flagged
+  write-cost figures use the same signature logic as every other module.
 
 ### Planned
 
