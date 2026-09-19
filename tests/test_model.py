@@ -10,7 +10,9 @@ from claude_token_lens import model
 from claude_token_lens.render import escape_md, format_cell
 
 # Appendix A2's detection table, plus SCHEDULED_TASK from A1: the full set
-# of EventKind members the WP0 brief calls out by name.
+# of EventKind members the WP0 brief calls out by name. v3-limits adds
+# LIMIT_HIT/LIMIT_RESUME/AGENT_TERMINATED (see model.py's module
+# docstring's "Usage-limits batch" section).
 A2_EVENT_KIND_NAMES = {
     "COMPACT_BOUNDARY",
     "COMPACT_SUMMARY",
@@ -33,6 +35,9 @@ A2_EVENT_KIND_NAMES = {
     "INTERRUPT",
     "HUMAN_TEXT",
     "UNKNOWN",
+    "LIMIT_HIT",
+    "LIMIT_RESUME",
+    "AGENT_TERMINATED",
 }
 
 
