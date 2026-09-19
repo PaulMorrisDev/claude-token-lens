@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import re
 from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import pytest
 
@@ -231,15 +232,46 @@ def test_write_monthly_report_no_sessions_in_month_still_writes_files(tmp_path):
 # -- review finding 12: resolve_month uses config.tz, not the machine zone --
 
 
+def _tzdata_has(name: str) -> bool:
+    """Mirrors ``tests/test_classify.py``'s own helper: some machines
+    (a bare Windows install without the ``tzdata`` package) have no
+    source ``zoneinfo`` can resolve a named zone from at all."""
+    try:
+        ZoneInfo(name)
+        return True
+    except ZoneInfoNotFoundError:
+        return False
+
+
 def test_resolve_month_default_uses_given_tz_not_machine_zone():
     """A UTC 'now' of 2026-09-01T00:30 is still August in a tz well
     behind UTC (America/Los_Angeles, UTC-7 in September) -- resolve_month
     must use the *given* tz's previous month, not the machine's own
-    zone's. Regression test for review finding 12."""
+    zone's. Regression test for review finding 12.
+
+    Both assertions below need real zoneinfo data to resolve the named
+    zones; where it's unavailable (see ``_tzdata_has``), resolve_month's
+    own documented fallback applies instead (same as an unresolvable tz
+    string), so the assertion is against that fallback value rather than
+    skipped outright.
+    """
     now_utc = datetime(2026, 9, 1, 0, 30, tzinfo=timezone.utc)
-    assert monthly.resolve_month(None, "America/Los_Angeles", now=now_utc) == "2026-08"
-    # A tz well ahead of UTC has already turned into September.
-    assert monthly.resolve_month(None, "Pacific/Kiritimati", now=now_utc) == "2026-08"
+    machine_zone_result = monthly.resolve_month(None, None, now=now_utc)
+
+    # America/Los_Angeles is UTC-7 in September, so this instant is still
+    # 2026-08-31 there: the *current* local month is August, and the
+    # previous one -- what resolve_month must return -- is July.
+    if _tzdata_has("America/Los_Angeles"):
+        assert monthly.resolve_month(None, "America/Los_Angeles", now=now_utc) == "2026-07"
+    else:
+        assert monthly.resolve_month(None, "America/Los_Angeles", now=now_utc) == machine_zone_result
+
+    # Pacific/Kiritimati (UTC+14) has already turned into September, so
+    # its previous month is August.
+    if _tzdata_has("Pacific/Kiritimati"):
+        assert monthly.resolve_month(None, "Pacific/Kiritimati", now=now_utc) == "2026-08"
+    else:
+        assert monthly.resolve_month(None, "Pacific/Kiritimati", now=now_utc) == machine_zone_result
 
 
 def test_resolve_month_default_with_no_tz_falls_back_to_machine_zone(monkeypatch):

@@ -34,6 +34,13 @@ A v0.4 backlog, kept here until scheduled into a milestone:
 
 - Overview tab: summary cards failed to render because the render
   callback's parameter order was reversed.
+- Test suite: three tests only passed on Windows by coincidence and
+  failed on Linux CI — a redacted-slug assertion that depended on the
+  shape of the platform's own temp directory, a resolve-month timezone
+  test with an arithmetically wrong expected value (masked on Windows by
+  a missing-tzdata fallback), and a `~/.claude.json` path-matching test
+  that assumed case-insensitive filesystems everywhere. No production
+  behaviour changed.
 
 ## [0.2.0] - 2026-09-19
 

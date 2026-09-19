@@ -883,11 +883,21 @@ Project override body.
 def test_claude_json_matches_project_by_normcase_realpath(home, project):
     """~/.claude.json's own project keys are observed on real machines to
     hold the same directory under several spellings (forward slashes,
-    backslashes, drive-letter case) -- confirm the match survives a
-    differently-cased/slashed key, and that the raw matching key itself
-    never appears in the snapshot."""
+    backslashes, drive-letter case, a trailing separator) -- confirm the
+    match survives a differently-spelled key, and that the raw matching
+    key itself never appears in the snapshot.
+
+    Drive-letter/backslash case only exists on Windows, and a case
+    variant is only ever the *same* path there too: ``os.path.normcase``
+    is the identity function on a case-sensitive filesystem (Linux/most
+    POSIX), where ``FOO`` and ``foo`` are genuinely different paths, so
+    only fold the key's case when normcase itself would fold it.
+    """
     config_dir = home / ".claude" / "token-lens"
-    weird_key = str(project).replace("\\", "/").upper()
+    weird_key = str(project).replace("\\", "/") + "/"
+    if os.path.normcase("A") == os.path.normcase("a"):
+        # normcase actually folds case here (Windows) -- exercise that too.
+        weird_key = weird_key.upper()
     dot_claude_json = {
         "numStartups": 42,
         "autoUpdates": True,
