@@ -267,7 +267,8 @@ Corpus-wide RE-CACHE breakdown — `Store.recache`.
 
 ### Report-backed routes: windowing query params
 
-`/api/ttl`, `/api/config-diff`, `/api/recommendations` and
+`/api/ttl`, `/api/carry`, `/api/compaction-sim`, `/api/model-swap`,
+`/api/waste`, `/api/config-diff`, `/api/recommendations` and
 `/api/report.md`/`.html`/`.json` (below) all accept the same windowing
 query params, mirroring the CLI `report` subcommand's own
 `--days`/`--since`/`--until` (`discovery._resolve_window`'s exact
@@ -294,6 +295,52 @@ cost, fidelity, recommendation) — same shape as the CLI's `ttl` section
 tables (`render/json_out.py`'s `Section`/`Table` encoding), sourced by
 re-running `ttl.py`'s simulation over the store's `turns_agg`/
 `recache_turns` rows rather than a fresh parse.
+
+Query: `window_days`, or `since`/`until` (see "Report-backed routes:
+windowing query params" above).
+
+### `GET /api/carry`
+
+Context carry-cost summary (per tool and per agent type: carried-result
+count, tokens entered, mean turns carried, carry tokens/cost, cache-volume
+share; plus the top individually-carried results and the truncation-cap
+savings table) — same shape as the CLI's `carry` section tables, sourced
+from the assembled report's `"carry"` section (`carry.py`).
+
+Query: `window_days`, or `since`/`until` (see "Report-backed routes:
+windowing query params" above).
+
+### `GET /api/compaction-sim`
+
+`autoCompactWindow` sweep summary (per candidate window: simulated
+compactions/session, mean ctx, total cost and delta vs. observed; plus
+the per-agent-type best window and the fidelity check against each
+session's actually-configured window) — same shape as the CLI's
+`compaction-sim` section tables, sourced from the assembled report's
+`"compaction_sim"` section (`compaction_sim.py`).
+
+Query: `window_days`, or `since`/`until` (see "Report-backed routes:
+windowing query params" above).
+
+### `GET /api/model-swap`
+
+Model-swap counterfactual summary (per agent type: observed cost, cost
+at every model the rate card carries, the best cheaper alternative and
+the ceiling saving; plus the corpus-wide summary if every eligible
+Fable/Opus subagent type moved one tier down) — same shape as the CLI's
+`model-swap` section tables, sourced from the assembled report's
+`"model_swap"` section (`model_swap.py`).
+
+Query: `window_days`, or `since`/`until` (see "Report-backed routes:
+windowing query params" above).
+
+### `GET /api/waste`
+
+Wasted-turn spend summary (total wasted turns/cost and their share of
+the corpus, a per-cause breakdown with each cause's lever, a
+per-agent-type roll-up, and the top wasted-cost sessions by a salted
+session hash) — same shape as the CLI's `waste` section tables, sourced
+from the assembled report's `"waste"` section (`waste.py`).
 
 Query: `window_days`, or `since`/`until` (see "Report-backed routes:
 windowing query params" above).
@@ -479,7 +526,8 @@ the service itself never calls `apply`.
 
 Implementation notes for `service/api.py` (S1-api), for a future reader
 of this frozen contract who needs to know how the report-backed routes
-(`/api/ttl`, `/api/config-diff`, `/api/recommendations`,
+(`/api/ttl`, `/api/carry`, `/api/compaction-sim`, `/api/model-swap`,
+`/api/waste`, `/api/config-diff`, `/api/recommendations`,
 `/api/report.md`/`.html`/`.json`) get their data, and where the
 implementation had to make a call this document didn't spell out.
 
@@ -489,12 +537,17 @@ since=since, until=until)` (S1-watcher's module — see
 `service/__init__.py`) and runs it through the same
 `report.build_report()` → `recommend.recommend()` →
 `render/{json_out,markdown,html}.py` pipeline the CLI's own `report`
-subcommand uses. `/api/ttl`, `/api/config-diff` and
+subcommand uses. `/api/ttl`, `/api/carry`, `/api/compaction-sim`,
+`/api/model-swap`, `/api/waste`, `/api/config-diff` and
 `/api/recommendations` all build the *same* full report for the
 requested window (`window_days`, or `since`/`until` — see "Report-backed
 routes: windowing query params" above) and read one section/field back
 out of it
 (`/api/ttl` returns the assembled report's `"ttl"` `Section`;
+`/api/carry`, `/api/compaction-sim`, `/api/model-swap` and `/api/waste`
+likewise each return their own like-named `Section` (`"carry"`,
+`"compaction_sim"`, `"model_swap"`, `"waste"`) — all four `null` rather
+than an error when the section is absent from the assembled report;
 `/api/config-diff` returns its `"config"` section's
 `config-diff-<key>` table(s) — `report.py`'s own
 `_build_config_section`, capped at 20 changed keys — rather than
@@ -505,6 +558,14 @@ service-specific session-metrics rebuild the way the CLI's own
 narrower computation. A `key` that names a config key which didn't
 change in the requested window returns `{"ok": true, "data": []}`, not
 an error.
+
+`_build_report_model` also passes `config_dir=options.config_dir` to
+`build_report()` (v4 wiring round) so that `waste.py`'s salted
+session-id hash reads/writes its salt file inside this service's own
+`config_dir` rather than falling back to `report.py`'s
+`_default_waste_config_dir()` OS-temp-directory default — the fallback
+exists only for callers (tests, `baseline.py`, `team.py`) that never
+had a `config_dir` of their own to give it.
 
 **Memoization key: `Store.change_token()`.** Rebuilding a full report on
 every request would make every tab switch in the UI (`docs/ui.md`)
