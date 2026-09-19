@@ -153,6 +153,19 @@ Query: `window_days` (int, optional).
 
 `data`: `{"window_days": int|null, "sessions": int, "transcripts": int, "total_cost": float, "total_tokens": int}`.
 
+With `window_days` given, a session qualifies for the window by its
+*top-level transcript's* `mtime` — the same `window_by="mtime"` rule
+`discovery.find_sessions`/`corpus.load_corpus`/
+`service.rebuild.corpus_from_store` already share — and every
+transcript belonging to a qualifying session (top-level and every
+subagent) counts once the session itself qualifies. This is the same
+windowing the CLI's `report` overview section uses, so
+`sessions`/`transcripts` here always agree with a fresh
+`report --days <window_days>`'s own `sessions`/
+`top_level_transcripts + subagent_transcripts` totals for the identical
+window (v0.3 fix — this route used to window `sessions` by the session
+row's own `last_ts` and never window `transcripts` at all).
+
 ### `GET /api/sessions`
 
 Recent sessions — `Store.sessions`.
