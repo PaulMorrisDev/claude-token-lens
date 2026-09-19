@@ -551,7 +551,11 @@ def _preceding_tool_table(
         tools, lambda t: t.preceding_tool, all_turns, recache_turns, total_recache, total_priced, total_cc_recache, total_cc_all
     )
     rows = [[tool, *stats_by_tool[tool]] for tool in tools]
-    rows.sort(key=lambda row: row[5], reverse=True)  # cc_tokens
+    # Fix recache/deterministic-order: tie-break on the row key string
+    # (row[0]) so tied rows (e.g. all-zero cc_tokens) sort the same way
+    # every run, not by whatever order a set comprehension upstream
+    # happened to iterate in.
+    rows.sort(key=lambda row: (row[5], row[0]), reverse=True)  # cc_tokens
     return Table(
         name="recache_preceding_tool",
         title="Re-cache by preceding tool",
@@ -586,7 +590,9 @@ def _top_command_prefix_table(recache_turns: list[Turn], limit: int = 12) -> Tab
             continue
         cc_by_prefix[prefix] = cc_by_prefix.get(prefix, 0) + t.cache_creation_tokens
         turns_by_prefix[prefix] = turns_by_prefix.get(prefix, 0) + 1
-    top = sorted(cc_by_prefix.items(), key=lambda kv: kv[1], reverse=True)[:limit]
+    # Fix recache/deterministic-order: tie-break on the prefix string
+    # itself so tied cc_tokens totals sort deterministically.
+    top = sorted(cc_by_prefix.items(), key=lambda kv: (kv[1], kv[0]), reverse=True)[:limit]
     rows = [[prefix, turns_by_prefix[prefix], cc] for prefix, cc in top]
     return Table(
         name="recache_top_command_prefixes",
@@ -641,7 +647,10 @@ def _primary_cause_table(
                 round(cost_by_primary.get(primary, 0.0), 6),
             ]
         )
-    rows.sort(key=lambda row: row[5], reverse=True)  # cc_tokens
+    # Fix recache/deterministic-order: tie-break on the row key string
+    # (row[0], preceding_primary.value) -- primaries above is built from a
+    # set union, whose iteration order isn't guaranteed stable across runs.
+    rows.sort(key=lambda row: (row[5], row[0]), reverse=True)  # cc_tokens
     return Table(
         name="recache_primary_cause",
         title="Re-cache primary cause",
@@ -712,7 +721,9 @@ def _primary_cause_prefix_invalidated_table(
                 cc_share - ctrl_cc_share,
             ]
         )
-    rows.sort(key=lambda row: row[4], reverse=True)  # cc_tokens
+    # Fix recache/deterministic-order: tie-break on the row key string
+    # (row[0]), same reasoning as _primary_cause_table above.
+    rows.sort(key=lambda row: (row[4], row[0]), reverse=True)  # cc_tokens
     return Table(
         name="recache_primary_cause_prefix_invalidated",
         title="Re-cache primary cause (prefix-invalidated only)",
@@ -760,7 +771,9 @@ def _cooccurrence_table(
                 _pct(control_count, total_priced),
             ]
         )
-    rows.sort(key=lambda row: row[1], reverse=True)
+    # Fix recache/deterministic-order: tie-break on the row key string
+    # (row[0], event kind).
+    rows.sort(key=lambda row: (row[1], row[0]), reverse=True)
     return Table(
         name="recache_event_cooccurrence",
         title="Re-cache event co-occurrence",
@@ -790,7 +803,14 @@ def _attachment_subsplit_table(recache_turns: list[Turn]) -> Table:
         for atype in set(t.preceding_attachment_types):
             turns_by_type[atype] = turns_by_type.get(atype, 0) + 1
             cc_by_type[atype] = cc_by_type.get(atype, 0) + t.cache_creation_tokens
-    rows = sorted(([atype, turns_by_type[atype], cc_by_type[atype]] for atype in turns_by_type), key=lambda row: row[2], reverse=True)
+    # Fix recache/deterministic-order: tie-break on the row key string
+    # (row[0], attachment type) -- turns_by_type is built by iterating a
+    # per-turn set(), whose iteration order isn't guaranteed stable.
+    rows = sorted(
+        ([atype, turns_by_type[atype], cc_by_type[atype]] for atype in turns_by_type),
+        key=lambda row: (row[2], row[0]),
+        reverse=True,
+    )
     return Table(
         name="recache_attachment_subsplit",
         title="Prefix-invalidated attachment types",
@@ -828,7 +848,9 @@ def _by_agent_type_table(records: list[_Record]) -> Table:
                 round(cost, 6),
             ]
         )
-    rows.sort(key=lambda row: row[4], reverse=True)
+    # Fix recache/deterministic-order: tie-break on the row key string
+    # (row[0], agent_type).
+    rows.sort(key=lambda row: (row[4], row[0]), reverse=True)
     return Table(
         name="recache_by_agent_type",
         title="Re-cache by agent type",

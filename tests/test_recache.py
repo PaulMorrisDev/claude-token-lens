@@ -14,6 +14,7 @@ Two styles of fixture are used, matching the rest of the suite:
 
 from __future__ import annotations
 
+import random
 import re
 from pathlib import Path
 
@@ -417,3 +418,87 @@ def test_apply_sets_is_recache_and_signature_on_qualifying_turns():
     # apply() never mutates the input.
     assert t2.is_recache is False
     assert t2.recache_signature is None
+
+
+# --------------------------------------------------------------------
+# build_section: deterministic row order (fix recache/deterministic-order)
+# --------------------------------------------------------------------
+
+
+def test_build_section_row_order_is_stable_across_shuffled_input():
+    """Several tables in build_section (notably the two "Re-cache primary
+    cause" tables and the attachment sub-split table) group rows by a
+    key collected via a set/dict built while iterating turns, then sort
+    by a numeric column. When every group ties on that numeric column
+    (e.g. all-zero cache-creation tokens), the pre-fix sort fell back on
+    whatever order the set/dict happened to iterate in -- which isn't
+    guaranteed stable across runs (Python's string hashing is
+    randomized per process). Feeding build_section the exact same turns
+    in two different orders must now still produce byte-identical row
+    order in every table.
+    """
+    primaries = [
+        EventKind.API_ERROR,
+        EventKind.HOOK_OUTPUT,
+        EventKind.REMINDER,
+        EventKind.META,
+        EventKind.TOOL_DENIAL,
+    ]
+    turns = [
+        _turn(
+            message_id=f"m{i}",
+            turn_index=i + 2,
+            preceding_primary=primary,
+            preceding_attachment_types=(f"attach-{i}",),
+            ctx=30_000,
+            cache_read_tokens=2_500,  # prefix-invalidated: >= full_expiry_cr, < cr_ratio * ctx
+            cache_creation_tokens=5_000,  # tied across every row below
+        )
+        for i, primary in enumerate(primaries)
+    ]
+
+    shuffled = turns[:]
+    random.Random(20260919).shuffle(shuffled)
+    assert [t.message_id for t in shuffled] != [t.message_id for t in turns]  # sanity: order genuinely differs
+
+    section_a = recache.build_section(_stats_for(turns), PRICING, recache.RecacheThresholds())
+    section_b = recache.build_section(_stats_for(shuffled), PRICING, recache.RecacheThresholds())
+
+    tables_a = {t.name: t for t in section_a.tables}
+    tables_b = {t.name: t for t in section_b.tables}
+    assert tables_a.keys() == tables_b.keys()
+    for name in tables_a:
+        assert tables_a[name].rows == tables_b[name].rows, f"{name} row order differs across shuffled input"
+
+    # And the tied rows are genuinely present (not accidentally filtered
+    # out), so this test would actually catch a regression.
+    primary_cause = tables_a["recache_primary_cause"]
+    assert len({row[0] for row in primary_cause.rows} & {p.value for p in primaries}) == len(primaries)
+    prefix_invalidated = tables_a["recache_primary_cause_prefix_invalidated"]
+    assert len({row[0] for row in prefix_invalidated.rows} & {p.value for p in primaries}) == len(primaries)
+    attachment_subsplit = tables_a["recache_attachment_subsplit"]
+    assert len(attachment_subsplit.rows) == len(primaries)
+
+
+def test_build_section_row_order_matches_string_tiebreak_for_tied_primaries():
+    """Pin the exact tie-break rule (fix recache/deterministic-order):
+    when cache-creation tokens tie, rows sort by the row-key string,
+    descending (matching the numeric column's ``reverse=True``) -- not
+    merely *some* stable-but-arbitrary order.
+    """
+    primaries = [EventKind.API_ERROR, EventKind.HOOK_OUTPUT, EventKind.REMINDER]
+    turns = [
+        _turn(
+            message_id=f"m{i}",
+            turn_index=i + 2,
+            preceding_primary=primary,
+            ctx=30_000,
+            cache_read_tokens=2_500,
+            cache_creation_tokens=5_000,
+        )
+        for i, primary in enumerate(primaries)
+    ]
+    section = recache.build_section(_stats_for(turns), PRICING, recache.RecacheThresholds())
+    primary_cause = _table(section, "recache_primary_cause")
+    tied_labels = [row[0] for row in primary_cause.rows if row[0] in {p.value for p in primaries}]
+    assert tied_labels == sorted((p.value for p in primaries), reverse=True)
