@@ -1,0 +1,137 @@
+"""Tests for ``profiles/catalogue.py``: the seven shipped starting-point
+profiles and :func:`suggest`'s deterministic archetype/purpose mapping.
+"""
+
+from __future__ import annotations
+
+import tomllib
+from pathlib import Path
+
+import pytest
+
+from claude_token_lens.profiles.catalogue import (
+    CATALOGUE_IDS,
+    UNREACHABLE_BY_SUGGEST,
+    get,
+    list_profiles,
+    suggest,
+)
+from claude_token_lens.profiles.schema import ARCHETYPES, dump_profile, loads_profile, validate
+
+EXPECTED_IDS = (
+    "interactive-chat",
+    "discovery-scrape",
+    "planning-requirements",
+    "implementation-heavy",
+    "overseer-fanout",
+    "overnight-batch",
+    "workflow-ultracode",
+)
+
+
+def test_catalogue_ids_are_exactly_the_seven_the_plan_names():
+    assert CATALOGUE_IDS == EXPECTED_IDS
+
+
+def test_list_profiles_returns_all_seven_in_order():
+    profiles = list_profiles()
+    assert [p.id for p in profiles] == list(EXPECTED_IDS)
+
+
+@pytest.mark.parametrize("profile_id", EXPECTED_IDS)
+def test_every_catalogue_file_is_a_valid_profile(profile_id):
+    """Loads each catalogue file through the real validator (not just
+    ``load_profile``, which already validates -- this asserts zero
+    problems explicitly, per the deliverable's own wording)."""
+    profile = get(profile_id)
+    assert profile is not None
+    assert profile.id == profile_id
+    # Re-parse the raw TOML and validate the dict directly too, so a
+    # hand-edited catalogue file that somehow bypassed load_profile's own
+    # validate() call (it can't, but this is the explicit check the
+    # deliverable asks for) is still covered.
+    raw = tomllib.loads(
+        (Path(profile.source_path)).read_text(encoding="utf-8") if profile.source_path else ""
+    )
+    assert validate(raw) == []
+
+
+@pytest.mark.parametrize("profile_id", EXPECTED_IDS)
+def test_every_catalogue_profile_has_an_archetype_and_justification_notes(profile_id):
+    profile = get(profile_id)
+    assert profile.archetype in ARCHETYPES
+    assert profile.notes.strip(), f"{profile_id} has no justification notes"
+    assert profile.for_, f"{profile_id} has no 'for' task types"
+
+
+@pytest.mark.parametrize("profile_id", EXPECTED_IDS)
+def test_every_catalogue_profile_round_trips_through_dump_and_load(profile_id):
+    original = get(profile_id)
+    dumped = dump_profile(original)
+    reloaded = loads_profile(dumped)
+    assert reloaded == original
+
+
+def test_get_returns_none_for_unknown_id():
+    assert get("not-a-real-profile") is None
+
+
+def test_overnight_batch_is_never_returned_by_suggest():
+    """See catalogue.py's module docstring: suggest()'s signature has no
+    session-mode input, and overnight-batch's justification is entirely
+    mode-based, so it is unreachable through suggest() by design."""
+    assert UNREACHABLE_BY_SUGGEST == "overnight-batch"
+    seen = set()
+    for archetype in (*ARCHETYPES, None):
+        for purposes in (
+            [],
+            ["local-llm-pipeline"],
+            ["workflow-run"],
+            ["agent-fanout"],
+            ["refactor"],
+            ["test-triage"],
+            ["review"],
+            ["planning"],
+            ["docs-or-light-edit"],
+            ["general-dev"],
+        ):
+            seen.add(suggest(archetype, purposes))
+    assert "overnight-batch" not in seen
+
+
+# -- suggest(): at least six archetype/purpose combinations -----------------
+
+
+@pytest.mark.parametrize(
+    ("archetype", "purposes", "expected"),
+    [
+        ("chat-only", [], "interactive-chat"),
+        ("single-model", ["local-llm-pipeline"], "discovery-scrape"),
+        ("single-model", ["planning"], "planning-requirements"),
+        ("plan-high-implement-low", [], "implementation-heavy"),
+        ("plan-high-implement-low", ["refactor"], "implementation-heavy"),
+        ("overseer-fanout", ["agent-fanout"], "overseer-fanout"),
+        ("workflow-heavy", ["workflow-run"], "workflow-ultracode"),
+        ("mixed", ["docs-or-light-edit"], "interactive-chat"),
+        (None, [], "interactive-chat"),
+    ],
+)
+def test_suggest_archetype_purpose_combinations(archetype, purposes, expected):
+    assert suggest(archetype, purposes) == expected
+
+
+def test_suggest_prefers_the_first_matching_purpose_in_list_order():
+    # "local-llm-pipeline" appears before "planning" in the purposes list
+    # -- suggest() must honour the caller's own dominant-purpose ordering
+    # rather than some internal priority of its own.
+    assert suggest("single-model", ["local-llm-pipeline", "planning"]) == "discovery-scrape"
+    assert suggest("single-model", ["planning", "local-llm-pipeline"]) == "planning-requirements"
+
+
+def test_suggest_falls_back_to_archetype_default_when_no_purpose_matches():
+    assert suggest("overseer-fanout", ["some-unknown-purpose"]) == "overseer-fanout"
+
+
+def test_suggest_is_deterministic():
+    for _ in range(5):
+        assert suggest("plan-high-implement-low", ["refactor", "test-triage"]) == "implementation-heavy"
