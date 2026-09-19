@@ -1,0 +1,31 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  pyz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build the single-file .pyz
+        run: python scripts/build-pyz.py
+
+      - name: Smoke-test the .pyz
+        run: python dist/claude-token-lens.pyz --version
+
+      - name: Attach to the GitHub release
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        with:
+          files: dist/claude-token-lens.pyz
+          generate_release_notes: true

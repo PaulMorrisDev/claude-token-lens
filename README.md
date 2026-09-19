@@ -170,9 +170,12 @@ Windows:
 py -3 claude-token-lens.pyz report
 ```
 
-This build step is not yet wired into CI or attached to GitHub releases
-— run it yourself for now. `report` above runs the real report (see the
-Status note) because it's the default subcommand.
+**Single-file download.** Every tagged release (`vX.Y.Z`) attaches a
+pre-built `claude-token-lens.pyz` to its GitHub Release page — grab it
+from [the Releases page](https://github.com/PaulMorrisDev/claude-token-lens/releases)
+and skip the build step above entirely; `.github/workflows/release.yml`
+builds and smoke-tests it on every tag push. `report` above runs the
+real report (see the Status note) because it's the default subcommand.
 
 **Zipapp exit codes.** Point `zipapp -m` at `claude_token_lens.__main__:main`,
 not at `claude_token_lens.cli:main`. `zipapp`'s own generated bootstrap for
