@@ -4,12 +4,12 @@ claude-token-lens is a local, read-only analytics tool. This document is
 a sign-off checklist for a corporate security review, written to be
 verifiable against the code rather than taken on trust.
 
-**Status note:** only the CLI's `pricing-check` and `snapshot-config`
-subcommands are wired up today; report assembly and the
-`serve`/Docker service described in the project plan do not exist in
-this codebase yet (see [README.md](README.md)'s Status note). Every
-guarantee below describes what the *current* code does — it will be
-extended, never weakened, as those pieces land.
+**Status note:** every guarantee below describes what the *current*
+code does, verifiable against it rather than taken on trust. This
+includes the `claude-token-lens serve` service (watcher, SQLite store,
+JSON API, static web UI) and its deployment artefacts — see
+[README.md's "Running the service"](README.md#14-running-the-service)
+and [docs/deploy.md](docs/deploy.md).
 
 ## What is read
 
@@ -107,13 +107,35 @@ opt-in extra for nicer terminal output, not a networking dependency.
 Pricing comes from a user-edited local `pricing.toml`, never a live
 lookup — there is no code path that could fetch it.
 
-This is currently a structural guarantee (nothing to call out to,
-because there is no networking code), not yet an automated test — there
-is no `serve`/service surface in this codebase to test the egress of.
-**The planned v0.2 service** (`claude-token-lens serve`: a local
-`http.server` API and static UI) will add an automated egress test
-before it ships, asserting no outbound connection is ever opened and
-that its HTTP bind is `127.0.0.1`-only.
+For the CLI's analytics/report subcommands this is a structural
+guarantee: nothing to call out to, because there is no networking code
+at all. **The `claude-token-lens serve` service** (a local
+`http.server` API and static UI, `src/claude_token_lens/service/`) does
+open one socket — its own local HTTP bind, `127.0.0.1`-only unless you
+pass `--allow-remote` — but never initiates a connection of its own.
+This is an automated, always-on guarantee, not just documentation:
+`tests/test_service_egress.py` monkeypatches `socket.socket.connect`
+for the lifetime of a real running server and asserts every recorded
+connection target is the test client's own loopback address, so any
+future change that adds an outbound call fails the suite. It has also
+been verified against the built Docker image directly, independent of
+the Python-level test: run with `--network none` (no network namespace
+connectivity beyond loopback at all), the service still answers
+`/api/health` correctly from inside the container — see
+[docs/deploy.md](docs/deploy.md#verifying-no-egress) for the exact
+commands. The Docker image adds defence in depth on top of that
+guarantee (non-root user, read-only root filesystem, `cap_drop:
+[ALL]`, `no-new-privileges`); the native Windows Scheduled Task and
+systemd hosting paths are scoped instead by OS-level permissions
+(`-RunLevel Limited`, `ProtectHome=read-only` plus a carved-out
+`ReadWritePaths`) rather than a container boundary — detail on all
+three in [docs/deploy.md](docs/deploy.md).
+
+The service's on-disk SQLite store (`<config-dir>/service.db`) is
+always a derived cache rebuilt from the same transcripts the CLI
+already reads, never a second source of truth — `claude-token-lens
+serve --purge` deletes it safely at any time (it prints exactly which
+files it will delete and requires `--yes` before doing so).
 
 ## Digest cache
 

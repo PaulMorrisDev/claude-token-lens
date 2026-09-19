@@ -271,6 +271,33 @@ def _add_serve_args(sub: argparse.ArgumentParser) -> None:
         action="store_true",
         help="run a single watcher tick and exit instead of serving",
     )
+    sub.add_argument(
+        "--billing-mode",
+        choices=("api", "subscription"),
+        default=None,
+        dest="billing_mode",
+        metavar="{api,subscription}",
+        help="stamped onto every session (default: 'billing' from "
+        "<config-dir>/config.toml, else 'api')",
+    )
+    sub.add_argument(
+        "--monthly-report",
+        default=None,
+        metavar="DIR",
+        dest="monthly_report_dir",
+        help="directory a monthly report is written into (default: none)",
+    )
+    sub.add_argument(
+        "--purge",
+        action="store_true",
+        help="delete <config-dir>/service.db (and its WAL/SHM sidecars) and exit; "
+        "requires --yes",
+    )
+    sub.add_argument(
+        "--yes",
+        action="store_true",
+        help="confirm a destructive flag such as --purge (no interactive prompt)",
+    )
 
 
 def _add_snapshot_config_args(sub: argparse.ArgumentParser) -> None:
@@ -1030,6 +1057,39 @@ def _cmd_planned_stub(command: str, milestone: str) -> int:
     return 2
 
 
+def _cmd_serve_purge(config_dir: Path, *, confirmed: bool) -> int:
+    """``serve --purge`` (S1-integration fix 2.e): delete
+    ``<config-dir>/service.db`` and its WAL/SHM sidecars. The store is
+    always a derived cache (never source of truth -- see
+    ``service/store.py``'s module docstring), so this is safe: the next
+    ``serve`` run simply rebuilds it from the transcripts on disk.
+    Always prints exactly what it would delete; only actually deletes
+    when ``confirmed`` (``--yes``) is set.
+    """
+    from .service.serve import STORE_FILENAME
+
+    db_path = config_dir / STORE_FILENAME
+    candidates = [db_path, db_path.with_name(db_path.name + "-wal"), db_path.with_name(db_path.name + "-shm")]
+    existing = [p for p in candidates if p.exists()]
+
+    if not existing:
+        print(f"claude-token-lens serve --purge: nothing to delete ({db_path} does not exist)")
+        return 0
+
+    print("claude-token-lens serve --purge: will delete:")
+    for path in existing:
+        print(f"  {path}")
+
+    if not confirmed:
+        print("Re-run with --yes to actually delete these files.", file=sys.stderr)
+        return 2
+
+    for path in existing:
+        path.unlink()
+    print(f"Deleted {len(existing)} file(s).")
+    return 0
+
+
 def _cmd_serve(args: argparse.Namespace) -> int:
     """Build ``ServeOptions`` from argv and hand off to
     ``service.serve.run`` (S1-api). Both ``service.serve`` and
@@ -1040,12 +1100,30 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     itself only reaches into ``service.watcher``/``service.rebuild``
     lazily, inside the functions that need them (see its module
     docstring).
+
+    ``--billing-mode`` (S1-integration fix 1.a) defaults to
+    ``config.toml``'s own ``billing`` setting (itself defaulting to
+    ``"api"``) when not given on the command line, so a subscription
+    user only has to say so once, in one place.
     """
+    config_dir = _resolve_config_dir(args.config_dir)
+
+    if args.purge:
+        return _cmd_serve_purge(config_dir, confirmed=args.yes)
+
     from .service.contracts import ServeOptions
     from .service.serve import run as run_serve
 
     projects_root = Path(args.projects_root) if args.projects_root else discovery.projects_root()
-    config_dir = _resolve_config_dir(args.config_dir)
+    if args.billing_mode is not None:
+        billing_mode = args.billing_mode
+    else:
+        try:
+            billing_mode = load_config(config_dir).billing
+        except ConfigError as exc:
+            print(f"claude-token-lens serve: {exc}", file=sys.stderr)
+            return 2
+    monthly_report_dir = Path(args.monthly_report_dir) if args.monthly_report_dir else None
     options = ServeOptions(
         projects_root=projects_root,
         config_dir=config_dir,
@@ -1054,6 +1132,8 @@ def _cmd_serve(args: argparse.Namespace) -> int:
         poll_interval_s=args.poll_interval,
         retention_days=args.retention_days,
         exclude_projects=tuple(args.exclude_project or ()),
+        billing_mode=billing_mode,
+        monthly_report_dir=monthly_report_dir,
     )
     try:
         return run_serve(options, once=args.once, allow_remote=args.allow_remote)

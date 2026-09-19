@@ -327,10 +327,180 @@ def test_snapshot_ingestion_is_deduped_across_ticks(tmp_path: Path, store: Store
     assert len(rows) == 2
     schema_versions = sorted(r["schema_version"] for r in rows)
     assert schema_versions == [1, 2]
+    # Snapshots carry no project slug of their own -- the watcher files
+    # them under the global/machine-wide attribution, which Store.snapshots()
+    # reports honestly as a null project_slug (deliverable 1.c).
+    assert all(r["project_slug"] is None for r in rows)
 
     # A second tick over the same two files must not duplicate them.
     watcher.run_once()
     assert len(store.snapshots()) == 2
+
+
+# -- billing_mode wiring (deliverable 1.a) -----------------------------------
+
+
+def test_billing_mode_is_stamped_onto_sessions_from_options(tmp_path: Path, store: Store):
+    root = tmp_path / "projects"
+    _write_session(root, "proj-a", "sess-a1", _two_turns())
+
+    options = _options(tmp_path, billing_mode="subscription")
+    watcher = FileWatcher(store, options)
+    watcher.run_once()
+
+    row = store._connection().execute(
+        "SELECT billing_mode FROM sessions WHERE id = ?", ("sess-a1",)
+    ).fetchone()
+    assert row["billing_mode"] == "subscription"
+
+
+def test_billing_mode_defaults_to_api(tmp_path: Path, store: Store):
+    root = tmp_path / "projects"
+    _write_session(root, "proj-a", "sess-a1", _two_turns())
+
+    options = _options(tmp_path)
+    watcher = FileWatcher(store, options)
+    watcher.run_once()
+
+    row = store._connection().execute(
+        "SELECT billing_mode FROM sessions WHERE id = ?", ("sess-a1",)
+    ).fetchone()
+    assert row["billing_mode"] == "api"
+
+
+# -- last_stats (deliverable 1.e) ---------------------------------------------
+
+
+def test_last_stats_is_none_before_run_once_and_set_after(tmp_path: Path, store: Store):
+    root = tmp_path / "projects"
+    _write_session(root, "proj-a", "sess-a1", _two_turns())
+
+    options = _options(tmp_path)
+    watcher = FileWatcher(store, options)
+    assert watcher.last_stats is None
+
+    stats = watcher.run_once()
+    assert watcher.last_stats is stats
+    assert watcher.last_stats.files_parsed == 1
+
+    stats2 = watcher.run_once()
+    assert watcher.last_stats is stats2
+    assert watcher.last_stats is not stats
+
+
+# -- workflow run persistence (deliverable 1.d) -------------------------------
+
+
+def _write_workflow(
+    root: Path,
+    slug: str,
+    session_id: str,
+    run_id: str,
+    body: dict,
+    agent_lines: list[dict] | None = None,
+) -> Path:
+    workflows_dir = root / slug / session_id / "workflows"
+    workflows_dir.mkdir(parents=True, exist_ok=True)
+    run_path = workflows_dir / f"{run_id}.json"
+    run_path.write_text(json.dumps(body), encoding="utf-8")
+    mtime = _backdated(_STABLE_AGE_S)
+    os.utime(run_path, (mtime, mtime))
+    if agent_lines is not None:
+        agent_dir = root / slug / session_id / "subagents" / "workflows" / run_id
+        agent_dir.mkdir(parents=True, exist_ok=True)
+        agent_path = agent_dir / "agent-1.jsonl"
+        write_jsonl(agent_path, agent_lines)
+        (agent_dir / "agent-1.meta.json").write_text(
+            json.dumps({"agentType": "claude-implementer"}), encoding="utf-8"
+        )
+        os.utime(agent_path, (mtime, mtime))
+        os.utime(agent_dir / "agent-1.meta.json", (mtime, mtime))
+    return run_path
+
+
+def test_workflow_run_is_parsed_and_persisted(tmp_path: Path, store: Store):
+    root = tmp_path / "projects"
+    _write_session(root, "proj-a", "sess-a1", _two_turns())
+    _write_workflow(
+        root,
+        "proj-a",
+        "sess-a1",
+        "wf_test-000",
+        {
+            "runId": "wf_test-000",
+            "timestamp": "2026-09-18T12:00:00.000Z",
+            "agentCount": 1,
+            "phases": [{"title": "Only phase", "detail": "never read"}],
+            "status": "completed",
+        },
+        agent_lines=[turn_line(timestamp="2026-09-18T12:00:10.000Z", input_tokens=50, output_tokens=5)],
+    )
+
+    options = _options(tmp_path)
+    watcher = FileWatcher(store, options)
+    stats = watcher.run_once()
+    assert_privacy(stats)
+    assert stats.errors == 0
+
+    row = store._connection().execute(
+        "SELECT session_id, run_id, agent_count, phases, started, status FROM workflow_runs"
+    ).fetchone()
+    assert row is not None
+    assert row["session_id"] == "sess-a1"
+    assert row["run_id"] == "wf_test-000"
+    assert row["agent_count"] == 1
+    assert json.loads(row["phases"]) == ["Only phase"]
+    assert row["started"] == "2026-09-18T12:00:00.000Z"
+    assert row["status"] == "completed"
+
+
+def test_malformed_workflow_file_never_raises_and_still_upserts(tmp_path: Path, store: Store):
+    root = tmp_path / "projects"
+    _write_session(root, "proj-a", "sess-a1", _two_turns())
+    # Genuinely invalid JSON -- parse_workflow_file's own documented
+    # tolerant-parsing posture (never raises) is what's under test here,
+    # not the watcher's own try/except.
+    workflows_dir = root / "proj-a" / "sess-a1" / "workflows"
+    workflows_dir.mkdir(parents=True, exist_ok=True)
+    bad_path = workflows_dir / "wf_bad-000.json"
+    bad_path.write_text("{not valid json", encoding="utf-8")
+    mtime = _backdated(_STABLE_AGE_S)
+    os.utime(bad_path, (mtime, mtime))
+
+    options = _options(tmp_path)
+    watcher = FileWatcher(store, options)
+    stats = watcher.run_once()
+    assert_privacy(stats)
+    assert stats.errors == 0
+
+    row = store._connection().execute(
+        "SELECT run_id, agent_count, phases, status FROM workflow_runs"
+    ).fetchone()
+    assert row is not None
+    assert row["run_id"] == "wf_bad-000"  # falls back to the filename stem
+    assert row["agent_count"] == 0
+    assert json.loads(row["phases"]) == []
+    assert row["status"] is None
+
+
+def test_workflow_run_is_deduped_across_ticks(tmp_path: Path, store: Store):
+    root = tmp_path / "projects"
+    _write_session(root, "proj-a", "sess-a1", _two_turns())
+    _write_workflow(
+        root,
+        "proj-a",
+        "sess-a1",
+        "wf_test-001",
+        {"runId": "wf_test-001", "agentCount": 0, "phases": [], "status": "completed"},
+    )
+
+    options = _options(tmp_path)
+    watcher = FileWatcher(store, options)
+    watcher.run_once()
+    watcher.run_once()
+
+    count = store._connection().execute("SELECT COUNT(*) FROM workflow_runs").fetchone()[0]
+    assert count == 1
 
 
 # -- start()/stop() lifecycle -------------------------------------------------

@@ -1,0 +1,64 @@
+# claude-token-lens service (deliverable 2.b -- see docs/deploy.md for
+# the full deployment picture and the egress-verification smoke test
+# this compose file is meant to pass: `docker run --network none ...`
+# must still be able to serve `/api/health` from the store alone).
+
+services:
+  token-lens:
+    build: .
+    container_name: claude-token-lens
+    restart: unless-stopped
+
+    volumes:
+      # Read-only bind of the real Claude Code config directory -- the
+      # service only ever reads transcripts under here, never writes
+      # (docs/api.md's "Local only" guarantee extends to the
+      # filesystem: read-only at the mount level enforces it even if a
+      # future bug tried to write).
+      #
+      # Modern Docker Compose (v2+, verified against v5.4.0) expands a
+      # leading `~` in a bind mount's source path to the *host* user's
+      # home directory -- `docker compose config` is the way to check
+      # this actually resolved to the right path before `up`. Prefer
+      # setting CLAUDE_HOME explicitly regardless (e.g. in a `.env` file
+      # next to this compose file) if that resolution is ever in doubt,
+      # or on an older Compose that doesn't expand `~` at all.
+      #
+      # Windows example (Docker Desktop): CLAUDE_HOME=C:/Users/<you>/.claude
+      - ${CLAUDE_HOME:-~/.claude}:/data/claude:ro
+      # The service's own SQLite store (service.db) and any monthly
+      # reports -- a named volume, not a bind mount, since nothing
+      # outside the container needs to read this directly.
+      - token-lens-data:/data/token-lens
+
+    ports:
+      # Loopback-only on the host, regardless of --bind 0.0.0.0 inside
+      # the container (see Dockerfile's own comment on why the
+      # container itself must bind 0.0.0.0) -- the service is never
+      # exposed beyond the host it runs on unless the operator
+      # deliberately changes this.
+      - "127.0.0.1:8765:8765"
+
+    # Hardening (deliverable 2.b): a compromised process inside this
+    # container can neither escalate privileges, keep capabilities it
+    # doesn't need, nor write anywhere but the two mounts above and
+    # /tmp.
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+    # Explicit rather than relying on the (identical) default, because
+    # the alternative an operator might reach for -- `network_mode:
+    # none` -- would also block the one connection this service is
+    # supposed to accept: the published port above. `none` is right for
+    # the docs/deploy.md egress *test* (proving no outbound connection
+    # is possible even with a network namespace present), wrong for
+    # actually serving requests.
+    network_mode: bridge
+
+volumes:
+  token-lens-data:

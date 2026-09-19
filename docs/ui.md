@@ -37,38 +37,43 @@ inline SVG charts, `prefers-color-scheme` dark."
 
 One page (`index.html`), one `<nav>` of tabs, each rendering from its
 own `/api/*` route(s) so a tab's data can be refetched independently
-(a background poll re-renders only the active tab). Order matches the
-plan's Milestone v0.2 bullet:
+(a background poll re-renders only the active tab). Ten tabs ship, in
+this order:
 
 1. **Overview** — `/api/summary` + the corpus-wide totals table also
    shown by the CLI's `report` overview section. The window selector
    (7/30/90 days / all time) re-fetches `summary`/`daily_usage` with a
    new `window_days`.
 2. **Sessions** — `/api/sessions`, a sortable table (client-side sort,
-   same click-to-sort pattern as `render/html.py`'s `_SCRIPT`) linking
-   each row to its Session tab.
-3. **Session** (timeline view — feature #5, pulled into v0.2) —
-   `/api/session/<id>`: an inline-SVG context-size-over-turns line with
-   markers for re-cache, compaction, spawn and human-message events
-   (from that session's `transcripts`/`compactions`); clicking a turn
-   marker shows its context composition (feature #1) and the events
-   immediately preceding it. This is the tab feature #5's "root-causing
-   one expensive session" answers.
-4. **Cache** — `/api/recache`: the full-expiry vs. prefix-invalidated
+   same click-to-sort pattern as `render/html.py`'s `_SCRIPT`); a row
+   click renders that session's detail inline in the same panel rather
+   than switching to a separate tab (feature #5, "root-causing one
+   expensive session", folded into Sessions rather than given its own
+   tab). The detail view fetches `/api/session/<id>` and renders an
+   inline-SVG context-size-over-turns timeline from its `turn_series`/
+   `markers` fields (`docs/api.md`) — markers for re-cache, compaction,
+   spawn and human-message events; clicking a turn marker shows its
+   context composition (feature #1) and the events immediately
+   preceding it. A session with no stored top-level transcript digest
+   yet shows an explicit "no per-turn data for this session" notice
+   instead of a chart.
+3. **Cache** — `/api/recache`: the full-expiry vs. prefix-invalidated
    breakdown, same figures as the CLI's `recache` subcommand.
-5. **TTL** — `/api/ttl`: per-agent-type observed/simulated cost, the
+4. **TTL** — `/api/ttl`: per-agent-type observed/simulated cost, the
    5m/1h recommendation and its fidelity — same figures as the CLI's
    `ttl` subcommand, including the fidelity-exceeds-bound suppression
    note.
-6. **Agents** — per-agent-type cost/turn/spawn-depth breakdown (from
+5. **Agents** — per-agent-type cost/turn/spawn-depth breakdown (from
    `/api/summary` and `/api/sessions` grouped client-side by
    `agent_type`, avoiding a dedicated route for a shape the existing
    ones already carry).
-7. **Config** — `/api/config-diff`: `effective_config`/`config_layers`/
+6. **Config** — `/api/config-diff`: `effective_config`/`config_layers`/
    `config_groups`/`config_drift` (plan "Configuration layers and
    per-project effective config" section) — which layer supplied each
-   key, and which projects share an identical effective config.
-8. **Profiles** — `/api/profiles` (list) and `/api/profiles/<id>/diff`
+   key, and which projects share an identical effective config. A
+   snapshot with no project attribution (`project_slug: null`, see
+   `docs/api.md`) is shown as a user-level layer rather than a project's.
+7. **Profiles** — `/api/profiles` (list) and `/api/profiles/<id>/diff`
    (detail view): every recommendation card in this tab that has a
    `lever` shows the exact settings/frontmatter change *and* the host
    command to apply it (plan: "the host command to apply it") —
@@ -76,7 +81,7 @@ plan's Milestone v0.2 bullet:
    printed `claude --settings ...` command, taken verbatim from the
    diff route's `apply_command` field. The UI never runs that command
    itself.
-9. **Recommendations** — `/api/recommendations`: one card per
+8. **Recommendations** — `/api/recommendations`: one card per
    `Recommendation`, grouped by `severity`. Every card shows its
    evidence line(s) (`label: formatted value (table, row)`, same
    formatting `render/tables.py::format_evidence_value` gives the CLI's
@@ -84,6 +89,9 @@ plan's Milestone v0.2 bullet:
    diff-plus-command treatment as the Profiles tab; a `scope: "managed"`
    card instead shows "managed by policy, raise with your
    administrator" in place of an apply command (plan "Enterprise use").
+9. **Usage** — the `usage`/`compactions` report sections plus a raw
+   `/api/compactions` list, its own dedicated tab rather than folded
+   into Diagnostics.
 10. **Diagnostics** — parse-quality counters (`Diagnostics` dataclass
     fields), aggregated corpus-wide from the store — same figures as
     the CLI report's Diagnostics section, so a user comparing the UI
@@ -111,40 +119,38 @@ enough for a stdlib-only test suite.
 ## Implementation notes (S1-ui)
 
 The UI shipped in `static/index.html` + `app.js` + `app.css` follows
-this document's Constraints, Data flow and Testing sections exactly,
-with two deliberate deviations from the Tabs section above, both taken
-from the more specific S1-ui work-package brief rather than this file:
+this document's Constraints, Data flow and Testing sections exactly —
+the Tabs section above now describes the shipped ten-tab structure
+directly (reconciled by S1-integration; it previously described a
+nine-tab plan with two footnoted deviations, which was corrected in
+place rather than left as a drifted historical record). One naming note
+remains:
 
-- **Ten tabs, not nine** — the brief adds a dedicated **Usage** tab
-  (the `usage`/`compactions` sections plus a raw `/api/compactions`
-  list) and folds the **Session** timeline view into the **Sessions**
-  tab (a row click renders the detail inline in the same panel) rather
-  than giving it its own tab. Tab order actually shipped: Overview,
-  Sessions, Cache, TTL, Agents, Config, Profiles, Recommendations,
-  Usage, Diagnostics.
-- **Generic Section/Table rendering** for Cache/TTL/Agents/Config/
-  Usage/Diagnostics is driven by an explicit section-key -> tab map
-  (`recache`/`recache_by_group` -> Cache, `ttl` -> TTL, `agents`/
-  `workflows`/`workstyle` -> Agents, `config`/`scorecard` -> Config,
-  `usage`/`compactions` -> Usage, everything else including `phases`
-  -> Diagnostics) so an unrecognised section key still lands somewhere
-  visible instead of being silently dropped.
-- The test file is `tests/test_service_static.py` (the brief's literal
-  filename), not `tests/test_service_ui.py` as named above — both cover
-  the same ground (egress scan + a fixture-server smoke test); this
-  file's name predates the brief and should be treated as the one that
-  drifted.
+- The test file is `tests/test_service_static.py` (the S1-ui brief's
+  literal filename), not `tests/test_service_ui.py` as an earlier draft
+  of this document named it — both cover the same ground (egress scan +
+  a fixture-server smoke test); this document's own filename reference
+  was the one that drifted, not the test suite.
 
-**Session timeline placeholder.** `docs/api.md`'s `/api/session/<id>`
-returns session-level totals and a flat `transcripts` list only — there
-is no per-turn context-size series to plot a line from. Rather than
-fabricate one, the Sessions tab's detail view renders an explicit
-`.placeholder-box` reading "timeline needs per-turn data (v0.2.1)" and
-names the missing field. `buildSessionTimeline` already contains the
-inline-SVG line-plus-marker scaffold (re-cache/compaction/spawn/human
-markers) so wiring in a real series later is a data-shape change, not a
-rendering rewrite — it activates automatically if a future response
-carries a `turns`/`turn_series`/`context_series` array.
+**Generic Section/Table rendering** for Cache/TTL/Agents/Config/Usage/
+Diagnostics is driven by an explicit section-key -> tab map
+(`recache`/`recache_by_group` -> Cache, `ttl` -> TTL, `agents`/
+`workflows`/`workstyle` -> Agents, `config`/`scorecard` -> Config,
+`usage`/`compactions` -> Usage, everything else including `phases` ->
+Diagnostics) so an unrecognised section key still lands somewhere
+visible instead of being silently dropped.
+
+**Session timeline (S1-integration fix 1.g).** `/api/session/<id>` now
+carries `turn_series`/`markers` (`docs/api.md`) whenever the watcher has
+stored a top-level transcript digest for that session.
+`buildSessionTimeline`/`findPerTurnSeries` consume exactly that shape —
+`turn_series` as `[turn_index, ctx, cache_creation_tokens, is_recache,
+preceding_primary]` rows, `markers` as turn-index lists keyed by
+`compactions`/`spawns`/`human` — replacing the placeholder box this
+document previously described. A session with no stored digest yet
+(e.g. ingested before the watcher parsed a top-level transcript, or a
+digest that failed to decode) still falls back to an explicit "no
+per-turn data for this session" notice rather than a fabricated curve.
 
 **Shape-defensive rendering for routes `api.py` hasn't shipped yet.**
 At the time this UI was built, `service/api.py` did not exist (a

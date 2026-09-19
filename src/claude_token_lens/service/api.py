@@ -37,22 +37,14 @@ Two kinds of route:
 Contract notes / deviations (reported here rather than silently, per this
 project's convention -- see e.g. ``report.py``'s own module docstring):
 
-- ``Store`` has no public reader exposing "has anything changed since the
-  last report build". Rather than add one (out of this work package's
-  writable paths -- ``store.py`` isn't listed), :func:`_change_token`
-  reads ``transcripts``'s row count and max ``updated_at`` directly via
-  ``store._connection()``. This is the store's own private connection
-  handle, used read-only and never for anything the public API doesn't
-  already expose elsewhere; a future ``store.py`` change could promote
-  this to a named method (e.g. ``Store.change_token()``) without any
-  caller-visible difference here.
 - ``GET /api/session/<id>`` returns ``Store.session()``'s dict verbatim,
   which includes ``mode_source``/``purpose_source`` alongside the fields
-  ``docs/api.md`` lists for ``/api/sessions``. This is a superset, not a
-  contradiction -- ``docs/api.md`` describes it as "the session-summary
-  fields above, plus transcripts ... and tags", not an exact field
-  count, and dropping fields ``Store`` already computes for no privacy
-  reason would only lose information a client might want.
+  ``docs/api.md`` lists for ``/api/sessions``, plus (S1-integration fix
+  1.g) ``turn_series``/``markers`` from ``Store.turns_for_session``. This
+  is a superset, not a contradiction -- ``docs/api.md`` describes it as
+  "the session-summary fields above, plus transcripts ... and tags", not
+  an exact field count, and dropping fields ``Store`` already computes
+  for no privacy reason would only lose information a client might want.
 - ``GET/POST /api/profiles/<id>/diff`` and ``POST /api/profiles`` always
   return ``501 not_implemented`` -- v0.3's ``profiles/schema.py`` (the
   profile-file validator both routes depend on) does not exist yet. The
@@ -228,15 +220,6 @@ def make_handler(
 
     # -- report building / caching --------------------------------------
 
-    def _change_token() -> tuple[int, str]:
-        # No public Store reader exposes a change indicator -- see this
-        # module's docstring's first deviation note.
-        conn = store._connection()
-        row = conn.execute(
-            "SELECT COUNT(*), COALESCE(MAX(updated_at), '') FROM transcripts"
-        ).fetchone()
-        return (int(row[0]), str(row[1]))
-
     def _snapshots_from_store() -> list[Snapshot]:
         out: list[Snapshot] = []
         for row in store.snapshots():
@@ -246,6 +229,15 @@ def make_handler(
                 data = {}
             if not isinstance(data, dict):
                 data = {}
+            # S1-integration fix 1.c: Store.snapshots() now reports the
+            # snapshot's real project attribution (None for a machine-
+            # wide capture, never a project-specific one). Injecting it
+            # here lets snapshots.py's own _project_label() (which reads
+            # data["project_slug"]) tell a genuinely project-scoped
+            # snapshot apart from one that only ever applies at the
+            # user/global layer, without this work package touching that
+            # frozen module.
+            data["project_slug"] = row.get("project_slug")
             out.append(Snapshot(path=Path(""), ts=row["ts"], data=data))
         out.sort(key=lambda s: s.ts)
         return out
@@ -277,7 +269,7 @@ def make_handler(
         )
 
     def _get_report_model(window_days: int | None):
-        token = _change_token()
+        token = store.change_token()
         with report_lock:
             if report_cache["token"] != token:
                 report_cache["token"] = token
@@ -294,7 +286,7 @@ def make_handler(
     # -- store-backed routes ---------------------------------------------
 
     def route_health(store, query, body):
-        stats = watcher_stats() if watcher_stats is not None else WatcherStats()
+        stats = (watcher_stats() if watcher_stats is not None else None) or WatcherStats()
         data = {
             "status": "ok",
             "schema_version": store.schema_version() or 0,
@@ -322,6 +314,16 @@ def make_handler(
         result = store.session(session_id)
         if result is None:
             return _not_found("session not found")
+        # S1-integration fix 1.g: per-turn context/cache series for the
+        # session-timeline chart, sourced from the top-level transcript's
+        # stored digest -- see Store.turns_for_session's own docstring
+        # for the exact shape. None (no stored top-level transcript --
+        # shouldn't normally happen for a session store.session() found)
+        # simply omits both keys rather than sending an empty shape.
+        turns = store.turns_for_session(session_id)
+        if turns is not None:
+            result["turn_series"] = turns["turn_series"]
+            result["markers"] = turns["markers"]
         return _ok(result)
 
     def route_recache(store, query, body):

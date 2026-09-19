@@ -30,39 +30,21 @@ rule restated from ``service/__init__.py``'s module docstring: no stat,
 log line or exception message that escapes this module may ever contain
 a path or transcript text).
 
-Two contract gaps discovered while implementing this against the frozen
-``service/contracts.py``/``service/schema.py`` files (neither file is
-writable from here — see this work package's brief — so both are worked
-around rather than fixed in place; also called out in the work package's
-final report):
+S1-integration closed every contract gap this module originally
+documented here (``ServeOptions.billing_mode``, ``Store.upsert_snapshot``
+de-duplication, ``WorkflowRun`` persistence) — see ``service/contracts.py``,
+``service/schema.py`` and ``service/store.py`` for the resulting shapes.
+One attribution choice remains, carried over unchanged:
 
-- ``ServeOptions`` has no ``billing_mode`` field, yet ``sessions
-  .billing_mode`` (schema.py) and ``GET /api/sessions``'s ``billing_mode``
-  column (docs/api.md) both expect a per-session value. There is nowhere
-  to read a billing mode from at the watcher level, so every session is
-  stamped with :data:`_DEFAULT_BILLING_MODE` ("api", ``Config``'s own
-  default) until ``ServeOptions`` grows a field for it.
-- ``Store.upsert_snapshot`` always ``INSERT``s a new row — there is no
-  ``ON CONFLICT`` de-duplication by ``ts`` the way every other
-  ``upsert_*`` method has by its own natural key. Re-ingesting the same
-  on-disk snapshot file every tick would otherwise create a duplicate row
-  per tick forever. :meth:`_scan_snapshots` works around this by reading
-  ``Store.snapshots()`` first and skipping any ``ts`` already present,
-  which also survives a watcher restart (not just a re-tick within one
-  process), unlike an in-memory "already ingested" set would.
 - The snapshot-config hook (``hooks/snapshot-config.py``) writes one
   global ``<config_dir>/snapshots/<ts>.json`` per machine, never one per
   project (only a redacted ``cwd_hash`` survives on the snapshot itself,
   never a usable project slug) — but ``Store.upsert_snapshot`` requires a
   ``project_slug``. Every snapshot is attributed to the synthetic project
-  slug :data:`_GLOBAL_PROJECT_SLUG` rather than fabricating a false
-  per-project association.
-- The store schema has no table for ``WorkflowRun`` (cost/phases/status
-  of a ``<session>/workflows/wf_*.json`` run). Those files are discovered
-  (for parity with ``discovery.py``'s four shapes and counted in
-  ``WatcherStats.files_scanned``) but never parsed or persisted — see
-  ``service/rebuild.py``'s module docstring for the corresponding
-  round-trip loss this causes.
+  slug ``store.GLOBAL_PROJECT_SLUG`` rather than fabricating a false
+  per-project association; ``Store.snapshots()`` maps that sentinel back
+  to a ``None`` ``project_slug`` for any reader, so the attribution is
+  never mistaken for a real project.
 """
 
 from __future__ import annotations
@@ -72,7 +54,7 @@ import threading
 import time
 from pathlib import Path
 
-from .. import PARSER_VERSION, classify, discovery, recache, workstyle
+from .. import PARSER_VERSION, classify, discovery, recache, workflows as workflows_mod, workstyle
 from ..cache import DigestCache, encode_result, result_from_jsonable
 from ..compaction import compaction_records_for_transcript
 from ..model import TranscriptMeta, TranscriptResult
@@ -81,7 +63,7 @@ from ..pricing import Pricing, PricingError, load_pricing, price_turn
 from ..report import _dominant_transcript_model, _extract_workstyle_features
 from .. import snapshots as snapshots_mod
 from .contracts import ServeOptions, WatcherStats
-from .store import Store
+from .store import GLOBAL_PROJECT_SLUG, Store
 
 #: A file whose mtime is under this many seconds old is assumed to still
 #: be an active Claude Code session (same convention/value as
@@ -89,15 +71,6 @@ from .store import Store
 #: this module never has to import ``cache.DigestCache`` just for the
 #: constant).
 LIVE_FILE_WINDOW_S = 60.0
-
-#: See the module docstring's contract-gap note: ``ServeOptions`` carries
-#: no billing mode, so every watcher-upserted session gets ``Config``'s
-#: own default until that's fixed.
-_DEFAULT_BILLING_MODE = "api"
-
-#: See the module docstring's contract-gap note: the snapshot-config hook
-#: writes one global snapshot directory, never one per project.
-_GLOBAL_PROJECT_SLUG = "__global__"
 
 
 def _now_iso() -> str:
@@ -304,6 +277,11 @@ class FileWatcher:
         self._stop_event = threading.Event()
         self._lifecycle_lock = threading.Lock()
 
+        #: ``contracts.Watcher.last_stats`` -- the most recent
+        #: :meth:`run_once` tick's stats, kept up to date so
+        #: ``serve.run`` never has to guess (S1-integration fix 1.e).
+        self.last_stats: WatcherStats | None = None
+
     # -- contracts.Watcher ------------------------------------------------
 
     def run_once(self) -> WatcherStats:
@@ -317,6 +295,7 @@ class FileWatcher:
             stats.error_messages = stats.error_messages + (f"tick failed: {type(exc).__name__}",)
         stats.duration_s = time.monotonic() - t0
         stats.finished_at = _now_iso()
+        self.last_stats = stats
         return stats
 
     def start(self) -> None:
@@ -419,10 +398,31 @@ class FileWatcher:
                 stats.error_messages = stats.error_messages + (f"subagent parse error: {type(exc).__name__}",)
                 continue
 
-        # Workflow run files: discovered for parity with discovery.py's four
-        # shapes, counted, never parsed -- see the module docstring's
-        # contract-gap note (no store table exists for WorkflowRun data).
-        stats.files_scanned += len(discovery.find_workflows(project_dir, session_id))
+        # Workflow run files (S1-integration fix 1.d): parsed via the
+        # same workflows.py functions corpus.load_corpus uses, linked to
+        # this session's already-collected subagent transcripts (subs
+        # already includes any workflow-nested agents -- see
+        # discovery.find_subagents's own docstring), and persisted so
+        # service/rebuild.py can read them back into
+        # SessionBundle.workflows.
+        for workflow_path in discovery.find_workflows(project_dir, session_id):
+            stats.files_scanned += 1
+            try:
+                run = workflows_mod.parse_workflow_file(workflow_path)
+                workflows_mod.link_workflow_agents(run, subs, self._pricing)
+                self.store.upsert_workflow_run(
+                    session_id=session_id,
+                    run_id=run.run_id,
+                    agent_count=run.agent_count,
+                    phase_titles=list(run.phase_titles),
+                    started=run.started,
+                    finished=run.finished,
+                    cost=run.cost,
+                    status=run.status,
+                )
+            except Exception as exc:
+                stats.errors += 1
+                stats.error_messages = stats.error_messages + (f"workflow parse error: {type(exc).__name__}",)
 
         try:
             self._fold_session(session_id, slug, project_dir, top_result, subs, stats)
@@ -585,7 +585,7 @@ class FileWatcher:
             purpose=classification.purpose,
             purpose_source=classification.purpose_source,
             entrypoint=record.entrypoint,
-            billing_mode=_DEFAULT_BILLING_MODE,
+            billing_mode=self.options.billing_mode,
             snapshot_id=snapshot_id,
             profile_id=None,
             total_cost=total_cost,
@@ -594,36 +594,37 @@ class FileWatcher:
         stats.sessions_upserted += 1
 
     def _scan_snapshots(self, stats: WatcherStats) -> None:
-        """Ingest every ``options.config_dir/snapshots/*.json`` file not
-        already present in the store (by ``ts``) — see the module
-        docstring's contract-gap note on why de-duplication happens here
-        rather than in ``Store.upsert_snapshot`` itself. Populates
+        """Ingest every ``options.config_dir/snapshots/*.json`` file this
+        tick, unconditionally -- ``Store.upsert_snapshot`` now dedupes by
+        its own natural key ``(project_id, ts, schema_version)`` (schema
+        v2's ``ON CONFLICT``), so re-ingesting an already-known snapshot
+        on a later tick just updates its existing row rather than growing
+        a duplicate one (S1-integration fix 1.b; this replaces the
+        previous pre-check-and-skip workaround against
+        ``Store.snapshots()``). Populates
         :attr:`_loaded_snapshots`/:attr:`_snapshot_ids_by_ts` for
-        :meth:`_fold_session`'s ``snapshot_id`` lookup regardless of
-        whether anything new was ingested this tick.
+        :meth:`_fold_session`'s ``snapshot_id`` lookup.
         """
         loaded = snapshots_mod.load_snapshots(self.options.config_dir)
         self._loaded_snapshots = loaded
 
-        existing = {row["ts"]: row["id"] for row in self.store.snapshots()}
+        ids_by_ts: dict[str, int] = {}
         for snap in loaded:
-            if snap.ts in existing:
-                continue
             try:
                 digest_json = json.dumps(snapshots_mod.flatten_snapshot(snap), sort_keys=True)
                 schema_version = int(snap.data.get("schema", 1)) if isinstance(snap.data, dict) else 1
                 new_id = self.store.upsert_snapshot(
-                    project_slug=_GLOBAL_PROJECT_SLUG,
+                    project_slug=GLOBAL_PROJECT_SLUG,
                     project_root_path="",
                     ts=snap.ts,
                     schema_version=schema_version,
                     digest_json=digest_json,
                 )
-                existing[snap.ts] = new_id
+                ids_by_ts[snap.ts] = new_id
             except Exception as exc:
                 stats.errors += 1
                 stats.error_messages = stats.error_messages + (f"snapshot ingest error: {type(exc).__name__}",)
-        self._snapshot_ids_by_ts = existing
+        self._snapshot_ids_by_ts = ids_by_ts
 
 
 __all__ = ["FileWatcher", "LIVE_FILE_WINDOW_S"]

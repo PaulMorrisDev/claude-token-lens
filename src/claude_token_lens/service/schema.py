@@ -43,12 +43,24 @@ query) that none of them ever surface it.
 for snapshots/baselines) — numeric digests and short enum-like strings
 only, already subject to ``model.py``'s own no-message-text contract
 before it ever reaches this schema.
+
+Version 2 (S1-integration): ``snapshots`` gains a ``(project_id, ts,
+schema_version)`` unique key so ``Store.upsert_snapshot`` can dedupe via
+``ON CONFLICT`` the same way every other ``upsert_*`` method already
+does, retiring the watcher's own pre-check-and-skip workaround; and a new
+``workflow_runs`` table stores ``<session>/workflows/wf_*.json`` run data
+(``workflows.py``'s ``WorkflowRun``, minus ``phase_titles``' sibling
+``detail`` text) so ``service/rebuild.py`` can read it back into
+``SessionBundle.workflows`` instead of always reporting an empty list.
+A store opened against an older ``schema_version`` is dropped and
+rebuilt from scratch (see ``Store.migrate``) — the next watcher tick
+repopulates it, since ``known_files()`` is empty again.
 """
 
 from __future__ import annotations
 
 #: Bump when a table or index below changes shape. See module docstring.
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 CREATE_META = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -183,14 +195,19 @@ CREATE TABLE IF NOT EXISTS compactions (
 """
 
 #: One row per captured config snapshot (``snapshots.py``'s ``Snapshot``,
-#: already flattened/redacted before it ever reaches this table).
+#: already flattened/redacted before it ever reaches this table). The
+#: natural key is ``(project_id, ts, schema_version)`` (v2) -- the same
+#: snapshot file re-ingested on a later watcher tick updates its own row
+#: via ``Store.upsert_snapshot``'s ``ON CONFLICT`` rather than growing a
+#: new one each tick.
 CREATE_SNAPSHOTS = """
 CREATE TABLE IF NOT EXISTS snapshots (
     id             INTEGER PRIMARY KEY,
     project_id     INTEGER REFERENCES projects(id),
     ts             TEXT NOT NULL,
     schema_version INTEGER NOT NULL,
-    digest_json    TEXT NOT NULL
+    digest_json    TEXT NOT NULL,
+    UNIQUE (project_id, ts, schema_version)
 );
 """
 
@@ -232,6 +249,36 @@ CREATE TABLE IF NOT EXISTS baselines (
 );
 """
 
+#: One row per ``<session>/workflows/wf_*.json`` run (v2, S1-integration),
+#: written by the watcher via ``workflows.parse_workflow_file``/
+#: ``link_workflow_agents`` and read back by ``service/rebuild.py`` into
+#: ``SessionBundle.workflows``. ``phases`` is a JSON array of phase
+#: *names only* (``WorkflowRun.phase_titles`` -- never ``detail``, which
+#: carries workflow source/prompt text, see ``workflows.py``'s module
+#: docstring); a rebuilt ``WorkflowRun.phases`` count is therefore
+#: ``len(phase_titles)``, which can undercount a fresh parse's own
+#: ``phases`` if any phase entry in the original file lacked a ``title``
+#: (documented deviation, not fixed here -- see ``service/rebuild.py``).
+#: ``status`` is stored even though it isn't named in the work package's
+#: column list, because without it a rebuilt ``WorkflowRun`` can't match
+#: a fresh parse's ``build_section`` status-mix table byte-for-byte.
+CREATE_WORKFLOW_RUNS = """
+CREATE TABLE IF NOT EXISTS workflow_runs (
+    id            INTEGER PRIMARY KEY,
+    session_id    TEXT NOT NULL REFERENCES sessions(id),
+    run_id        TEXT NOT NULL,
+    agent_count   INTEGER NOT NULL DEFAULT 0,
+    phases        TEXT NOT NULL DEFAULT '[]',
+    started       TEXT,
+    finished      TEXT,
+    cost          REAL NOT NULL DEFAULT 0,
+    status        TEXT,
+    updated_at    TEXT NOT NULL,
+    UNIQUE (session_id, run_id)
+);
+CREATE INDEX IF NOT EXISTS idx_workflow_runs_session_id ON workflow_runs(session_id);
+"""
+
 #: Raw ``get_usage`` snapshots logged by ``log-usage`` (5-hour/weekly
 #: window utilisation), kept verbatim as JSON for the Usage tab's
 #: window-overlay view.
@@ -262,6 +309,7 @@ ALL_STATEMENTS: tuple[str, ...] = (
     CREATE_SESSION_TAGS,
     CREATE_PROFILES,
     CREATE_BASELINES,
+    CREATE_WORKFLOW_RUNS,
     CREATE_USAGE_LOG,
 )
 
@@ -279,6 +327,7 @@ __all__ = [
     "CREATE_SESSION_TAGS",
     "CREATE_PROFILES",
     "CREATE_BASELINES",
+    "CREATE_WORKFLOW_RUNS",
     "CREATE_USAGE_LOG",
     "ALL_STATEMENTS",
 ]
