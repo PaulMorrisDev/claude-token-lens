@@ -17,6 +17,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   archetype counts, workflow-run summaries, and the config diff table,
   matching the pattern already used by `classify`/`compaction`/`recache`/
   `ttl`.
+- `recommend.py` (WP10b): `recommend()` turns an assembled `ReportModel`
+  into evidence-backed `Recommendation`s, implementing every Appendix A5
+  rule (`ttl-switch`, `long-tool-waits`, `notification-invalidation`,
+  `batch-instructions`, `subagent-volume`, `compaction-churn`,
+  `long-context-share`, `cache-read-dominance`, `baseline-bloat`,
+  `agent-report-size`, `spawn-cost`, `effort-mismatch`,
+  `discovery-share`, `pricing-coverage`, `data-quality`) with archetype
+  gating, a minimum-sample gate, and managed-settings-aware scope
+  encoding; `render_patch_set()` renders the settings/frontmatter changes
+  a recommendation set implies as unified-diff-style text.
 
 ### Fixed
 
