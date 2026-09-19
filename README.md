@@ -196,6 +196,8 @@ this table only lists what's specific to each one.
 | `statusline` | Claude Code `statusLine` handler — reads a JSON payload from stdin on every refresh (see [section 8](#8-installing-the-sessionstart-hook-and-the-statusline)) | `--print-install-fragment` / `--install` (print the settings.json fragment instead of reading stdin) |
 | `export` | Aggregate, privacy-safe export of a corpus for BI/observability tooling (see [section 10](#10-for-team-leads-and-enterprise) and [`docs/exports.md`](docs/exports.md)) | `--format {csv-flat,json,otel-jsonl}` (default `csv-flat`), `--aggregate-only` / `--per-session` (mutually exclusive, default `--aggregate-only`), `--hash-slugs` / `--no-hash-slugs` (mutually exclusive, default hashed whenever `--aggregate-only` is in effect), `--out PATH` (default: stdout) |
 | `monthly-report` | Write a habit-forming finance summary (cost/tokens by model/project/entrypoint, five-hour blocks under subscription billing) plus the `usage` section for one calendar month, as both Markdown and HTML (see [section 10](#10-for-team-leads-and-enterprise) and [`docs/exports.md`](docs/exports.md)) | `--out DIR` (required), `--month YYYY-MM` (default: the previous calendar month) |
+| `import` | Validate and copy one or more `export --aggregate` team documents into `<config_dir>/team/` for `team-report` (see [section 10](#10-for-team-leads-and-enterprise) and [`docs/team.md`](docs/team.md)) | `FILE...` (one or more team-document paths); exits 2 with the reason on the first invalid file |
+| `team-report` | Cross-machine per-archetype/per-agent-type comparison built from every document already imported into `<config_dir>/team/` (see [section 10](#10-for-team-leads-and-enterprise) and [`docs/team.md`](docs/team.md)) | `--min-sessions N` (default 5), plus the same `--json`/`--html PATH`/`--csv-dir DIR` output flags as `report` |
 | `init` | Detect what's already set up, ask (or, non-interactively, derive) a short question set, write `config.toml` and this project's `projects/<slug>.toml`, print the hook/statusline install fragments, and run an initial onboarding baseline — see [`docs/onboarding.md`](docs/onboarding.md) | `--answers FILE` (JSON file supplying any subset of the answers), `--non-interactive` (derive unanswered questions instead of prompting), `--no-install` (skip printing the hook/statusline fragments) |
 | `baseline` | Capture (or list/show) an onboarding baseline: mode mix, dominant purposes, suggested profile, projected saving — see [`docs/onboarding.md`](docs/onboarding.md) | `--finalise` (treat the baseline as final even if the capture window hasn't elapsed), `--list` (list saved baselines), `--show ID` (print a previously saved baseline's report) |
 | `serve` | **Planned for v0.2** — prints which milestone it's planned for and exits 2 | none |
@@ -757,6 +759,45 @@ running claude-token-lens's own modules by hand against each person's own
 `~/.claude/projects` — see [`docs/exports.md`](docs/exports.md) for the
 full picture, including the entry point (`monthly.write_monthly_report`)
 the v0.2 service wires up to its own `--monthly-report DIR` flag.
+
+### For team leads: cross-machine comparison (v0.3)
+
+`claude-token-lens export --aggregate` / `import` / `team-report`
+(v0.3 Task 1) let a team lead compare archetypes and agent-type usage
+across several people's machines, with the same privacy floor as
+everything else in this project:
+
+- **Aggregate only.** Each team member's document holds per-group sums
+  and means (by archetype, mode, purpose, agent type, model) plus
+  scorecard levels — never a session id, never per-session rows.
+- **Hashed, not named.** A stable-but-non-reversible `machine_id` (a
+  salted HMAC over the hostname) identifies "the same machine across
+  two imports" without naming it; project slugs appear only as the
+  same kind of hash, and only when the person exporting explicitly
+  passes `--include-projects`.
+- **Opt-in per person.** Nobody's usage reaches a team report unless
+  they run `export --aggregate` themselves and hand the file over —
+  there is no automatic collection or upload.
+- **No text, ever.** Same guarantee as every other export/report
+  surface in this project: every field is a count, a percentage, a
+  cost or a level, never a prompt or a tool result.
+
+```bash
+# each team member:
+claude-token-lens export --aggregate --out my-machine.json
+
+# the team lead:
+claude-token-lens import my-machine.json colleague-a.json colleague-b.json
+claude-token-lens team-report
+```
+
+`team-report` renders per-archetype and per-agent-type comparison
+tables with one column per machine (its short hashed id, never a
+hostname), gated by the same minimum-sample rule the rest of this
+project uses (5 sessions per cell; below that a cell reads `n<5`), and
+carries an "observed, not controlled" note — a difference between
+machines may reflect different work, not a settings difference. Full
+flow and field reference: [`docs/team.md`](docs/team.md).
 
 ## 11. Privacy and security
 
