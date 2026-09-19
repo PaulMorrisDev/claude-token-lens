@@ -323,6 +323,107 @@ def test_report_html_writes_a_file_with_no_external_references(tmp_path, capsys)
     assert "<script src" not in html
 
 
+def _force_patch_set_text(monkeypatch, text: str = "--- a/settings.json\n+++ b/settings.json\n") -> None:
+    """Force ``recommend.render_patch_set`` to return ``text`` regardless
+    of whether the tiny synthetic fixture actually earns any
+    recommendations -- the patch-set-placement tests below care about
+    *where* the text lands for each output mode, not about which
+    recommendation rules fire.
+    """
+    from claude_token_lens import recommend
+
+    monkeypatch.setattr(recommend, "render_patch_set", lambda recs: text)
+
+
+def test_report_json_patch_set_is_embedded_as_a_json_key_not_appended(tmp_path, capsys, monkeypatch):
+    # Fix cli/patch-set-json: `--json --patch-set` used to print the
+    # patch-set text as trailing lines after the JSON blob, so
+    # `json.loads` on stdout would raise. It must now be valid JSON
+    # with the patch set embedded under a top-level "patch_set" key,
+    # and nothing else printed to stdout.
+    patch_text = "--- a/settings.json\n+++ b/settings.json\n"
+    _force_patch_set_text(monkeypatch, patch_text)
+    root = tmp_path / "projects"
+    _write_project(root, "proj-a")
+    exit_code = cli.main(
+        ["report", "--projects-root", str(root), "--project", "proj-a", "--json", "--patch-set"]
+    )
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    payload = json.loads(out)  # would raise if anything trailed the JSON blob
+    assert payload["patch_set"] == patch_text
+
+
+def test_report_json_without_patch_set_flag_omits_the_key(tmp_path, capsys, monkeypatch):
+    _force_patch_set_text(monkeypatch)
+    root = tmp_path / "projects"
+    _write_project(root, "proj-a")
+    exit_code = cli.main(["report", "--projects-root", str(root), "--project", "proj-a", "--json"])
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert "patch_set" not in payload
+
+
+def test_report_html_patch_set_writes_a_sibling_file(tmp_path, capsys, monkeypatch):
+    patch_text = "--- a/settings.json\n+++ b/settings.json\n"
+    _force_patch_set_text(monkeypatch, patch_text)
+    root = tmp_path / "projects"
+    _write_project(root, "proj-a")
+    html_path = tmp_path / "out" / "report.html"
+    html_path.parent.mkdir(parents=True, exist_ok=True)
+    exit_code = cli.main(
+        ["report", "--projects-root", str(root), "--project", "proj-a", "--html", str(html_path), "--patch-set"]
+    )
+    assert exit_code == 0
+    capsys.readouterr()
+    assert html_path.exists()
+    assert (html_path.parent / "patch-set.txt").read_text(encoding="utf-8") == patch_text
+
+
+def test_report_csv_dir_patch_set_writes_a_file_in_the_dir(tmp_path, capsys, monkeypatch):
+    patch_text = "--- a/settings.json\n+++ b/settings.json\n"
+    _force_patch_set_text(monkeypatch, patch_text)
+    root = tmp_path / "projects"
+    _write_project(root, "proj-a")
+    csv_dir = tmp_path / "csvs"
+    exit_code = cli.main(
+        ["report", "--projects-root", str(root), "--project", "proj-a", "--csv-dir", str(csv_dir), "--patch-set"]
+    )
+    assert exit_code == 0
+    capsys.readouterr()
+    assert (csv_dir / "patch-set.txt").read_text(encoding="utf-8") == patch_text
+
+
+def test_report_markdown_patch_set_keeps_appending_to_stdout(tmp_path, capsys, monkeypatch):
+    patch_text = "--- a/settings.json\n+++ b/settings.json\n"
+    _force_patch_set_text(monkeypatch, patch_text)
+    root = tmp_path / "projects"
+    _write_project(root, "proj-a")
+    exit_code = cli.main(
+        ["report", "--projects-root", str(root), "--project", "proj-a", "--patch-set"]
+    )
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert out.rstrip("\n").endswith(patch_text.rstrip("\n"))
+
+
+def test_report_patch_set_flag_with_no_recommendations_prints_nothing_extra(tmp_path, capsys, monkeypatch):
+    root = tmp_path / "projects"
+    _write_project(root, "proj-a")
+
+    baseline_exit = cli.main(["report", "--projects-root", str(root), "--project", "proj-a"])
+    assert baseline_exit == 0
+    baseline_out = _strip_generated_at(capsys.readouterr().out)
+
+    _force_patch_set_text(monkeypatch, "")
+    exit_code = cli.main(
+        ["report", "--projects-root", str(root), "--project", "proj-a", "--patch-set"]
+    )
+    assert exit_code == 0
+    out = _strip_generated_at(capsys.readouterr().out)
+    assert out == baseline_out
+
+
 def test_report_phases_flag_adds_phases_section(tmp_path, capsys):
     root = tmp_path / "projects"
     _write_project(root, "proj-a")

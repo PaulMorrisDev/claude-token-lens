@@ -265,6 +265,20 @@ def test_json_none_and_dangerous_strings_survive(report_model):
     assert _find_value(payload, _XSS_CELL)
 
 
+def test_json_patch_set_kwarg_adds_top_level_key(report_model):
+    # Fix cli/patch-set-json: render_json embeds the patch set as its own
+    # top-level string key rather than the CLI printing it as trailing
+    # text after the blob (which broke json.loads on `--json --patch-set`).
+    text = render_json(report_model, patch_set="--- a/settings.json\n+++ b/settings.json\n")
+    payload = json.loads(text)
+    assert payload["patch_set"] == "--- a/settings.json\n+++ b/settings.json\n"
+
+
+def test_json_without_patch_set_kwarg_omits_the_key(report_model):
+    payload = json.loads(render_json(report_model))
+    assert "patch_set" not in payload
+
+
 # -- csv -----------------------------------------------------------------
 
 

@@ -493,29 +493,53 @@ def _print_table(table, currency: str) -> None:
 # -- report-like subcommands (report/sessions/recache/ttl/compactions) -----
 
 
+def _render_patch_set_text(model, args: argparse.Namespace) -> str | None:
+    """The recommendation patch-set text for ``--patch-set``, or ``None``
+    when the flag wasn't passed or ``recommend`` (an optional dependency,
+    see the module docstring) isn't importable. Computed once and reused
+    across whichever output modes are active, since where it lands
+    differs per mode -- see ``_emit_report_outputs``.
+    """
+    if not getattr(args, "patch_set", False):
+        return None
+    if importlib.util.find_spec("claude_token_lens.recommend") is None:
+        return None
+    from . import recommend  # local import: optional dependency, see module docstring
+
+    return recommend.render_patch_set(model.recommendations)
+
+
 def _emit_report_outputs(model, args: argparse.Namespace) -> None:
+    # Fix cli/patch-set-json: with --json, the patch set used to be
+    # printed as trailing text *after* the JSON blob, which made
+    # `--json --patch-set` together produce output no `json.loads`
+    # could parse. Each output mode now gets the patch set through its
+    # own channel: embedded as a JSON string key for --json, a sibling
+    # `patch-set.txt` file for --html/--csv-dir (a file has no "after
+    # the blob" to corrupt), and unchanged trailing stdout text for the
+    # default Markdown mode.
+    patch_text = _render_patch_set_text(model, args)
+
     if getattr(args, "json", False):
-        print(render_json(model))
+        print(render_json(model, patch_set=patch_text))
     else:
         text = render_markdown(model)
         print(text, end="")
+        if patch_text:
+            print()
+            print(patch_text)
 
     html_path = getattr(args, "html", None)
     if html_path:
         Path(html_path).write_text(render_html(model), encoding="utf-8")
+        if patch_text:
+            Path(html_path).parent.joinpath("patch-set.txt").write_text(patch_text, encoding="utf-8")
 
     csv_dir = getattr(args, "csv_dir", None)
     if csv_dir:
         write_csv_dir(model, csv_dir)
-
-    if getattr(args, "patch_set", False):
-        if importlib.util.find_spec("claude_token_lens.recommend") is not None:
-            from . import recommend  # local import: optional dependency, see module docstring
-
-            patch_text = recommend.render_patch_set(model.recommendations)
-            if patch_text:
-                print()
-                print(patch_text)
+        if patch_text:
+            Path(csv_dir).joinpath("patch-set.txt").write_text(patch_text, encoding="utf-8")
 
 
 def _cmd_report_like(args: argparse.Namespace, include: set[str] | None) -> int:

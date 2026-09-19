@@ -53,16 +53,24 @@ def to_jsonable(value):
     return value
 
 
-def render_json(model: ReportModel) -> str:
+def render_json(model: ReportModel, *, patch_set: str | None = None) -> str:
     """Render ``model`` as a JSON string: ``{"schema_version": 1,
     "tool_version": ..., "report": {...}}``, keys sorted, 2-space
     indent.
+
+    ``patch_set``, when not ``None``, is embedded verbatim as a
+    top-level ``"patch_set"`` string key. This is how the CLI's
+    ``--json --patch-set`` combination stays valid JSON (fix
+    cli/patch-set-json): the patch set used to be printed as trailing
+    text after the JSON blob, which no ``json.loads`` could parse.
     """
     payload = {
         "schema_version": SCHEMA_VERSION,
         "tool_version": model.meta.tool_version,
         "report": to_jsonable(model),
     }
+    if patch_set is not None:
+        payload["patch_set"] = patch_set
     return json.dumps(payload, sort_keys=True, indent=2)
 
 
