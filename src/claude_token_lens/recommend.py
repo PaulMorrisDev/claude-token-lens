@@ -19,17 +19,20 @@ produces and confirm the number it cites is real, not recomputed. See
 Deviations from the plan/brief, reported rather than made silently (see
 ``model.py``'s module docstring for this project's convention):
 
-- ``model.py``'s frozen ``Recommendation`` has no ``scope`` field
-  (``"user"``/``"repo"``/``"managed"`` -- plan "Enterprise use" section),
-  and this work package's file list does not include ``model.py``. Scope
-  is encoded as a ``"[managed] "`` prefix on ``Recommendation.lever``
-  instead, added whenever the lever's underlying settings key appears in
-  ``snapshots.managed_keys(snapshot)`` (see ``_apply_scope_prefix``); the
-  ``action`` text then also states "managed by policy, raise with your
-  administrator". A ``Recommendation.scope: str = "user"`` field (values
-  ``"user"``/``"repo"``/``"managed"``) is proposed as an additive
-  ``model.py`` change so this can be a real field instead of a lever
-  prefix -- not made here, per this task's file-list constraint.
+- WP10-merge update: ``model.py``'s ``Recommendation`` now carries a real
+  ``scope: str = "user"`` field (``"user"``/``"repo"``/``"managed"`` --
+  plan "Enterprise use" section), proposed by both WP10b and WP10c
+  independently and added when their branches merged. This module sets
+  it directly (see ``_lever_scope``) instead of the ``"[managed] "``
+  string prefix on ``Recommendation.lever`` an earlier revision used as
+  a workaround while ``model.py`` was outside this work package's file
+  list: ``lever`` is now always the bare settings key / frontmatter
+  path, and ``scope`` carries what used to be prefix-encoded. ``scope``
+  is ``"repo"`` for a per-agent frontmatter lever (``.claude/agents/
+  <type>.md``, which lives in the repo), else ``"user"`` -- upgraded to
+  ``"managed"`` when the lever's underlying settings key appears in
+  ``snapshots.managed_keys(snapshot)``, in which case ``action`` also
+  states "managed by policy, raise with your administrator".
 - A5's ``ttl-switch`` clause "suppressed for subagents in subscription
   mode" is already implemented inside ``ttl.build_section`` itself (the
   ``recommendation`` cell reads back as ``"no material difference
@@ -290,7 +293,14 @@ def _meets_min_sample(report: ReportModel, th: RecommendThresholds) -> bool:
     return sessions >= th.min_sessions or priced_turns >= th.min_turns
 
 
-# -- scope encoding (see module docstring's proposed-contract-change note) --
+# -- scope encoding (see module docstring's WP10-merge update note) --------
+
+#: A per-agent-type TTL lever names the ``.claude/agents/<type>.md``
+#: frontmatter path it would edit -- see ``ttl.TtlTypeStats.lever``. That
+#: file lives in the repo, so this lever's default scope is "repo" rather
+#: than "user". Shared with ``render_patch_set``, which uses the same
+#: pattern to find the agent type for the diff header.
+_AGENT_LEVER_RE = re.compile(r"experimental\.cacheTtl in ([^.]+)\.md")
 
 
 def _lever_managed_keys(lever: str) -> tuple[str, ...]:
@@ -306,23 +316,24 @@ def _lever_managed_keys(lever: str) -> tuple[str, ...]:
     return (lever,)
 
 
-def _apply_scope_prefix(lever: str | None, snapshot: Snapshot | None) -> tuple[str | None, bool]:
-    """Returns ``(lever, is_managed)``. When ``snapshot`` is given and any
+def _lever_scope(lever: str | None, snapshot: Snapshot | None) -> tuple[str | None, str]:
+    """Returns ``(lever, scope)`` -- ``lever`` unchanged (bare, never
+    prefixed). ``scope`` is ``"repo"`` when ``lever`` is a per-agent
+    frontmatter path, else ``"user"``; upgraded to ``"managed"`` when any
     of ``lever``'s underlying settings keys appears in
-    ``snapshots.managed_keys(snapshot)``, ``lever`` gains a ``"[managed] "``
-    prefix (the scope encoding this module's docstring describes)."""
-    if lever is None or snapshot is None:
-        return lever, False
-    keys = set(managed_keys(snapshot))
-    if not keys:
-        return lever, False
-    if any(k in keys for k in _lever_managed_keys(lever)):
-        return f"[managed] {lever}", True
-    return lever, False
+    ``snapshots.managed_keys(snapshot)``."""
+    if lever is None:
+        return lever, "user"
+    scope = "repo" if _AGENT_LEVER_RE.search(lever) else "user"
+    if snapshot is not None:
+        keys = set(managed_keys(snapshot))
+        if keys and any(k in keys for k in _lever_managed_keys(lever)):
+            scope = "managed"
+    return lever, scope
 
 
-def _action_with_scope(action: str, is_managed: bool) -> str:
-    if is_managed:
+def _action_with_scope(action: str, scope: str) -> str:
+    if scope == "managed":
         return f"{action} This lever is managed by policy, raise with your administrator."
     return action
 
@@ -353,9 +364,9 @@ def _rule_ttl_switch(
             continue
         target = recommendation_text[len("switch to ") :]
         lever = row[lever_idx]
-        lever, is_managed = _apply_scope_prefix(lever, snapshot)
+        lever, scope = _lever_scope(lever, snapshot)
         action = _action_with_scope(
-            f"Switch {agent_type}'s prompt cache TTL to {target}.", is_managed
+            f"Switch {agent_type}'s prompt cache TTL to {target}.", scope
         )
         out.append(
             Recommendation(
@@ -366,6 +377,7 @@ def _rule_ttl_switch(
                 title=f"Cache TTL is a poor fit for {agent_type}",
                 action=action,
                 lever=lever,
+                scope=scope,
                 evidence=[
                     _evidence("TTL recommendation", recommendation_text, "ttl", "ttl_by_agent_type", agent_type),
                 ],
@@ -561,7 +573,7 @@ def _rule_compaction_churn(report: ReportModel, th: RecommendThresholds, snapsho
     if not (fires_on_mean or fires_on_dropped):
         return []
 
-    lever, is_managed = _apply_scope_prefix("autoCompactWindow", snapshot)
+    lever, scope = _lever_scope("autoCompactWindow", snapshot)
     evidence = []
     if fires_on_mean:
         evidence.append(
@@ -581,9 +593,10 @@ def _rule_compaction_churn(report: ReportModel, th: RecommendThresholds, snapsho
             action=_action_with_scope(
                 "Raise autoCompactWindow so compaction fires less often, or reduce session length "
                 "between compactions.",
-                is_managed,
+                scope,
             ),
             lever=lever,
+            scope=scope,
             evidence=evidence,
         )
     ]
@@ -600,7 +613,7 @@ def _rule_long_context_share(report: ReportModel, th: RecommendThresholds, snaps
     if not (fires_on_share or fires_on_p90):
         return []
 
-    lever, is_managed = _apply_scope_prefix("autoCompactWindow", snapshot)
+    lever, scope = _lever_scope("autoCompactWindow", snapshot)
     evidence = []
     if fires_on_share:
         evidence.append(_evidence("Cache-read volume share from huge-context turns", share_pct, "recache", "recache_huge_context", row_key))
@@ -616,9 +629,10 @@ def _rule_long_context_share(report: ReportModel, th: RecommendThresholds, snaps
             action=_action_with_scope(
                 "Trim what stays resident in the top-level conversation -- compact sooner, or "
                 "move exploration into a subagent whose context is discarded when it finishes.",
-                is_managed,
+                scope,
             ),
             lever=lever,
+            scope=scope,
             evidence=evidence,
         )
     ]
@@ -946,8 +960,10 @@ def recommend(
 
 
 # -- patch-set rendering --------------------------------------------------
+#
+# ``_AGENT_LEVER_RE`` is defined in the scope-encoding section above and
+# shared here.
 
-_AGENT_LEVER_RE = re.compile(r"experimental\.cacheTtl in ([^.]+)\.md")
 _TTL_TARGET_RE = re.compile(r"\bto (1h|5m)\b")
 
 
@@ -964,11 +980,10 @@ def render_patch_set(recs: list[Recommendation]) -> str:
     seen_settings_keys: set[str] = set()
 
     for rec in recs:
-        lever = rec.lever
-        if not lever:
+        bare_lever = rec.lever
+        if not bare_lever:
             continue
-        bare_lever = lever[len("[managed] ") :] if lever.startswith("[managed] ") else lever
-        is_managed = lever.startswith("[managed] ")
+        is_managed = rec.scope == "managed"
 
         agent_match = _AGENT_LEVER_RE.search(bare_lever)
         if agent_match:

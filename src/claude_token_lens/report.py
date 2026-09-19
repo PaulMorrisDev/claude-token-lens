@@ -56,10 +56,15 @@ Deviations from the task brief, reported rather than made silently (see
 - ``build_report`` has no ``config_dir`` parameter, so per-session
   ``sessions.toml`` overrides (``config.load_session_overrides``) cannot
   be resolved and loaded here; ``classify.classify_session`` is called
-  with an empty ``overrides`` dict. A caller that wants overrides applied
-  loads them itself and would need a small signature addition to pass
-  them through — noted as a proposed contract change rather than made
-  silently (``build_report`` cannot invent a config directory to read).
+  with an empty ``overrides`` dict unless a caller passes its own
+  ``session_overrides`` (see ``build_report``'s own docstring — WP10b
+  added that parameter as the proposed fix for this). WP10-merge: ``cli.py``
+  is now that caller — every ``report``/``sessions``/``recache``/``ttl``/
+  ``compactions`` subcommand loads ``<config_dir>/sessions.toml`` via
+  ``config.load_session_overrides(config_dir)`` and passes the result as
+  ``session_overrides=``, so this deviation is closed for the CLI path;
+  it remains true only for a caller of ``build_report`` that omits the
+  keyword.
 """
 
 from __future__ import annotations

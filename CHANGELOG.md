@@ -46,6 +46,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   print which future milestone they're planned for. Added `--jobs` to
   the global flag set. `__main__.py` makes `python -m claude_token_lens`
   (and a `python -m zipapp`-built `.pyz`) propagate the real exit code.
+- `Recommendation.scope: str = "user"` (`"user"` | `"repo"` | `"managed"`,
+  plan "Enterprise use" section) lands as a real `model.py` field on the
+  wp10b/wp10c merge, replacing the `"[managed] "` string prefix on
+  `Recommendation.lever` that `recommend.py` used as a workaround while
+  `model.py` was outside its work package's file list. `render/
+  markdown.py` and `render/html.py` show it alongside `Lever:`;
+  `render/json_out.py` emits it automatically (generic dataclass-field
+  serialisation). `cli.py`'s report-like subcommands now also load
+  `<config_dir>/sessions.toml` via `config.load_session_overrides` and
+  pass it to `report.build_report(session_overrides=...)`, closing the
+  gap `report.py`'s module docstring flagged (WP10a had no `config_dir`
+  parameter to load it from).
 
 ### Fixed
 

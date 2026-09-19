@@ -282,7 +282,7 @@ def _recommendations_html(model: ReportModel) -> str:
         parts.append(f"<h3>[{_esc(rec.severity)}] {_esc(rec.title)}</h3>")
         parts.append(f"<p>Action: {_esc(rec.action)}</p>")
         if rec.lever:
-            parts.append(f"<p>Lever: {_esc(rec.lever)}</p>")
+            parts.append(f"<p>Lever: {_esc(rec.lever)} (scope: {_esc(rec.scope)})</p>")
         if rec.evidence:
             parts.append('<p>Evidence:</p><ul class="evidence-list">')
             for label, value, source_table, row_key in rec.evidence:

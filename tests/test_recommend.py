@@ -216,7 +216,7 @@ def test_ttl_switch_allowed_for_anthropic_and_none_provider():
         assert any(rec.id == "ttl-switch" for rec in recs), provider
 
 
-def test_ttl_switch_managed_key_gains_prefix_and_action_text():
+def test_ttl_switch_managed_key_gains_managed_scope_and_action_text():
     r = _base_report()
     r = _add_section(
         r,
@@ -233,11 +233,12 @@ def test_ttl_switch_managed_key_gains_prefix_and_action_text():
     snapshot = Snapshot(path=Path("snap.json"), ts="20260918T000000Z", data={"managed_keys": ["promptCacheTtl"]})
     recs = recommend_fn(r, config=_config(), archetype=None, snapshot=snapshot)
     rec = next(rec for rec in recs if rec.id == "ttl-switch")
-    assert rec.lever == "[managed] promptCacheTtl"
+    assert rec.lever == "promptCacheTtl"
+    assert rec.scope == "managed"
     assert "managed by policy" in rec.action
 
 
-def test_ttl_switch_unmanaged_key_has_no_prefix():
+def test_ttl_switch_unmanaged_key_has_user_scope():
     r = _base_report()
     r = _add_section(
         r,
@@ -255,6 +256,7 @@ def test_ttl_switch_unmanaged_key_has_no_prefix():
     recs = recommend_fn(r, config=_config(), archetype=None, snapshot=snapshot)
     rec = next(rec for rec in recs if rec.id == "ttl-switch")
     assert rec.lever == "promptCacheTtl"
+    assert rec.scope == "user"
     assert "managed by policy" not in rec.action
 
 
@@ -417,7 +419,8 @@ def test_compaction_churn_managed_lever():
     snapshot = Snapshot(path=Path("s.json"), ts="20260918T000000Z", data={"managed_keys": ["autoCompactWindow"]})
     recs = recommend_fn(r, config=_config(), archetype=None, snapshot=snapshot)
     rec = next(rec for rec in recs if rec.id == "compaction-churn")
-    assert rec.lever == "[managed] autoCompactWindow"
+    assert rec.lever == "autoCompactWindow"
+    assert rec.scope == "managed"
     assert "managed by policy" in rec.action
 
 
@@ -1288,7 +1291,7 @@ def test_render_patch_set_top_level_prompt_cache_ttl_lever():
 
 
 def test_render_patch_set_managed_lever_gets_reference_only_comment():
-    rec = dataclasses.replace(_make_recommendation(), lever="[managed] autoCompactWindow", action="Raise it.")
+    rec = dataclasses.replace(_make_recommendation(), lever="autoCompactWindow", scope="managed", action="Raise it.")
     text = render_patch_set([rec])
     assert "# managed by policy -- shown for reference only" in text
     assert "autoCompactWindow" in text

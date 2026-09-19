@@ -31,7 +31,7 @@ from pathlib import Path
 from . import __version__, classify, discovery, probe as probe_mod, recache, snapshots
 from . import statusline as statusline_mod
 from .cache import DigestCache
-from .config import Config, ConfigError, load_config
+from .config import Config, ConfigError, load_config, load_session_overrides
 from .corpus import Corpus, load_corpus
 from .model import EventKind, TranscriptResult
 from .pricing import Pricing, PricingError, load_pricing, price_turn
@@ -463,6 +463,12 @@ def _cmd_report_like(args: argparse.Namespace, include: set[str] | None) -> int:
     snaps = snapshots.load_snapshots(config_dir.parent) or None
     projects = tuple(p.name for p in project_dirs)
 
+    try:
+        session_overrides = load_session_overrides(config_dir)
+    except ConfigError as exc:
+        print(f"claude-token-lens {command}: {exc}", file=sys.stderr)
+        return 2
+
     model = build_report(
         corpus,
         rates,
@@ -474,6 +480,7 @@ def _cmd_report_like(args: argparse.Namespace, include: set[str] | None) -> int:
         snapshots=snaps,
         allow_titles=getattr(args, "allow_titles", False),
         include=include,
+        session_overrides=session_overrides,
     )
     _emit_report_outputs(model, args)
     return 0

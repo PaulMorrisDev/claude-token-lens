@@ -123,7 +123,7 @@ def _render_recommendations(model: ReportModel) -> list[str]:
         lines.append(f"Action: {rec.action}")
         if rec.lever:
             lines.append("")
-            lines.append(f"Lever: {rec.lever}")
+            lines.append(f"Lever: {rec.lever} (scope: {rec.scope})")
         if rec.evidence:
             lines.append("")
             lines.append("Evidence:")
