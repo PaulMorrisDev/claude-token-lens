@@ -516,6 +516,17 @@ def test_recommendation_no_material_difference_when_observed_cost_zero():
     assert s.recommendation() == "no material difference"
 
 
+def test_recommendation_picks_cheaper_policy_not_first_checked_order():
+    # cost_all_1h (91.0) clears both switch thresholds on its own
+    # (cheaper than 95% of observed, saves > $1), but cost_all_5m (80.0)
+    # is cheaper still. The old implementation checked 1h before 5m and
+    # returned on the first policy to clear the bar, so it would wrongly
+    # recommend "switch to 1h" here instead of the actually-cheaper 5m.
+    s = _stats(cost_observed=100.0, cost_all_5m=80.0, cost_all_1h=91.0)
+    assert s.best_policy == "5m"
+    assert s.recommendation() == "switch to 5m"
+
+
 def test_lever_text_top_level_vs_subagent():
     top = _stats(10.0, 10.0, 9.0, key="top-level")
     sub = _stats(10.0, 10.0, 9.0, key="claude-implementer")

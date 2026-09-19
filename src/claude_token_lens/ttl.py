@@ -949,20 +949,28 @@ class TtlTypeStats:
 
     def recommendation(self, thresholds: "TtlThresholds | None" = None) -> str:
         """Plan Appendix A4's recommendation rule: switch only when the
-        candidate policy is both > ``thresholds.switch_pct`` cheaper AND
-        saves > ``thresholds.switch_usd`` — each threshold independently
-        blocking (fix item 6: config-driven via ``TtlThresholds``,
-        defaulting to :data:`_DEFAULT_THRESHOLDS`, in place of two
-        hardcoded module constants). 1h is checked first (matching the
-        plan's own pseudocode order), then 5m; otherwise "no material
-        difference"."""
+        cheaper of the two fixed policies (:attr:`best_policy`/
+        :attr:`best_cost`) is both > ``thresholds.switch_pct`` cheaper
+        AND saves > ``thresholds.switch_usd`` than what was actually
+        observed — each threshold independently blocking (fix item 6:
+        config-driven via ``TtlThresholds``, defaulting to
+        :data:`_DEFAULT_THRESHOLDS`, in place of two hardcoded module
+        constants).
+
+        Fix R1: always compares against the genuinely cheaper policy
+        (``best_policy``) rather than checking 1h then 5m in a fixed
+        order and returning on whichever clears the bar first -- the
+        old order could recommend a switch to 1h even when 5m was in
+        fact the cheaper option, whenever 1h happened to also clear
+        both thresholds. Otherwise "no material difference"."""
         th = thresholds or _DEFAULT_THRESHOLDS
         if self.cost_observed <= 0:
             return "no material difference"
-        for policy_cost, label in ((self.cost_all_1h, "1h"), (self.cost_all_5m, "5m")):
-            saving = self.cost_observed - policy_cost
-            if policy_cost < self.cost_observed * th.switch_pct and saving > th.switch_usd:
-                return f"switch to {label}"
+        best_label = self.best_policy
+        best_cost = self.best_cost
+        saving = self.cost_observed - best_cost
+        if best_cost < self.cost_observed * th.switch_pct and saving > th.switch_usd:
+            return f"switch to {best_label}"
         return "no material difference"
 
     @property
