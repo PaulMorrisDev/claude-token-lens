@@ -17,12 +17,27 @@ extended, never weakened, as those pieces land.
   <session>.jsonl`, `<session>/subagents/agent-*.jsonl` (+ sibling
   `.meta.json`), and `<session>/workflows/wf_*.json`.
 - Claude Code configuration, via the `SessionStart` snapshot hook
-  (`hooks/snapshot-config.py`): user and project `settings*.json` files,
-  the platform's system-wide `managed-settings.json` (if present), agent
-  frontmatter (`.claude/agents/*.md`), MCP server names, and enabled
-  plugin names.
-- Environment variable **names** matching `ANTHROPIC_*` / `CLAUDE_*` —
-  never their values.
+  (`hooks/snapshot-config.py`): user and project `settings*.json` files
+  (including `.claude/settings.local.json`), the platform's system-wide
+  `managed-settings.json` (if present), agent frontmatter
+  (`.claude/agents/*.md`), MCP server names, and enabled plugin names.
+- Environment variable **names** matching `ANTHROPIC_*` / `CLAUDE_*` /
+  `OTEL_*` (plus a short fixed list of irregularly-named levers) —
+  never their values, with one exception: `MAX_THINKING_TOKENS`,
+  `MAX_MCP_OUTPUT_TOKENS`, `BASH_MAX_OUTPUT_LENGTH`, and
+  `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` are numeric caps, not secrets, so
+  their integer value is recorded alongside the name.
+- (Schema 2 — see [`docs/config-layers.md`](docs/config-layers.md) for
+  the full field list) `~/.claude.json`, the CLI's own per-machine state
+  file: matched to the current project by
+  `os.path.normcase(os.path.realpath(...))` — the raw matching key is
+  never stored — yielding MCP server/plugin names, small counts, and
+  numeric per-project session totals (a cross-check against this tool's
+  own accounting for the same session, joined by session id, never
+  message text); and byte counts, file counts, and names only (never
+  content) for the CLAUDE.md family, `.claude/rules/`,
+  `.claude/commands/`, skills, `.mcp.json`, output styles, auto-memory,
+  and installed plugins.
 
 Nothing outside these locations is read, and nothing is ever written to
 except claude-token-lens's own on-disk digest cache, config-snapshot
@@ -40,9 +55,14 @@ Only numeric digests and short, non-identifying labels:
   `dict(n)`, `list(n)`, `str(len)` — used by the config-snapshot hook for
   every settings/frontmatter value that isn't one of the small set of
   named-safe keys (`model`, `effortLevel`, `outputStyle`,
-  `autoCompactWindow`, `promptCacheTtl`, `subagentPromptCacheTtl`,
-  `cleanupPeriodDays`, `desktopSessionCleanupPeriodDays`,
-  `autoUpdatesChannel`, `alwaysThinkingEnabled`) or a plain `bool`/`int`.
+  `autoCompactWindow`, `autoCompactEnabled`, `promptCacheTtl`,
+  `subagentPromptCacheTtl`, `cleanupPeriodDays`,
+  `desktopSessionCleanupPeriodDays`, `autoUpdatesChannel`,
+  `alwaysThinkingEnabled`) or a plain `bool`/`int`. Two further keys get
+  their own safe summary shape instead of a raw value: `statusLine`
+  (a bare present/absent boolean, never the command it runs) and
+  `modelPricing` (a present flag plus the model ids it overrides, never
+  the overridden numbers).
 
 `Turn.read_target_hashes` is the one exception to "no path fragment is
 ever stored", and it is deliberately a one-way hash rather than a

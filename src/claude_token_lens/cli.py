@@ -56,6 +56,7 @@ SUBCOMMANDS: tuple[str, ...] = (
     "compactions",
     "config-diff",
     "snapshot-config",
+    "probe-config",
     "log-usage",
     "pricing-check",
     "scrub-fixture",
@@ -248,6 +249,37 @@ def _add_snapshot_config_args(sub: argparse.ArgumentParser) -> None:
         help="override the platform managed-settings.json path (fix 7; "
         "default is the platform's own policy-file location)",
     )
+    sub.add_argument(
+        "--project-dir",
+        metavar="PATH",
+        default=None,
+        help="run the hook for this project directory instead of the current one "
+        "(schema 2, plan 'Configuration layers' section). Named --project-dir, "
+        "not --project, because the common --project flag already means "
+        "'a repeatable project slug to filter by'.",
+    )
+
+
+def _add_probe_config_args(sub: argparse.ArgumentParser) -> None:
+    """Flags for the ``probe-config`` subcommand (schema 2): the same scan
+    ``snapshot-config`` does, for an arbitrary project directory, without a
+    session and without writing anything.
+    """
+    sub.add_argument(
+        "--project-dir",
+        metavar="PATH",
+        default=None,
+        help="project directory to scan (default: the current directory). Named "
+        "--project-dir, not --project, because the common --project flag "
+        "already means 'a repeatable project slug to filter by'.",
+    )
+    sub.add_argument(
+        "--managed-path",
+        metavar="PATH",
+        default=None,
+        help="override the platform managed-settings.json path (default is the "
+        "platform's own policy-file location)",
+    )
 
 
 def _make_parser() -> argparse.ArgumentParser:
@@ -266,6 +298,7 @@ def _make_parser() -> argparse.ArgumentParser:
             "ttl": "TTL break-even-only report view",
             "compactions": "compactions-only report view",
             "config-diff": "compare sessions grouped by a config key's value",
+            "probe-config": "scan a project's config layers without a session (schema 2)",
             "log-usage": "append a pasted get_usage JSON payload to the usage log",
             "probe": "content-free schema histogram of a project or file",
             "statusline": "Claude Code statusLine handler (reads stdin JSON)",
@@ -288,6 +321,8 @@ def _make_parser() -> argparse.ArgumentParser:
             )
         if name == "snapshot-config":
             _add_snapshot_config_args(sub)
+        if name == "probe-config":
+            _add_probe_config_args(sub)
         if name in _REPORT_LIKE_COMMANDS:
             _add_report_output_args(sub, allow_patch_set=(name == "report"))
         if name == "config-diff":
@@ -838,13 +873,59 @@ def _cmd_snapshot_config(args: argparse.Namespace) -> int:
         )
         return 0
 
-    path, _written = hook.snapshot_and_get_path(
-        config_dir, os.getcwd(), managed_path=args.managed_path
-    )
+    cwd = getattr(args, "project_dir", None) or os.getcwd()
+    path, _written = hook.snapshot_and_get_path(config_dir, cwd, managed_path=args.managed_path)
     if path is None:
         print("No snapshot written and none exists yet.", file=sys.stderr)
         return 1
     print(path)
+    return 0
+
+
+# -- probe-config (schema 2) --------------------------------------------------
+
+
+def _render_probe_config_markdown(snapshot: dict) -> str:
+    """The layers + effective-config tables as Markdown -- no paths, only
+    hashes and the project slug (schema 2's own privacy posture; see
+    ``hooks/snapshot-config.py``'s module docstring).
+    """
+    snap = snapshots.Snapshot(path=Path("-"), ts=str(snapshot.get("ts", "")), data=snapshot)
+    project_slug = snapshot.get("project_slug") or "(unknown project)"
+
+    lines: list[str] = [f"# Config probe: {project_slug}", ""]
+
+    lines += ["## Settings layers", "", "| Layer | Present | Content hash |", "| --- | --- | --- |"]
+    layer_map = snapshots.layers(snap)
+    for layer_name in snapshots.SETTINGS_LAYER_NAMES:
+        layer_info = layer_map.get(layer_name) or {}
+        present = "yes" if layer_info.get("present") else "no"
+        content_hash = layer_info.get("content_hash") or "-"
+        lines.append(f"| {layer_name} | {present} | {content_hash} |")
+    lines.append("")
+
+    lines += ["## Effective config", "", "| Key | Value | Source layer |", "| --- | --- | --- |"]
+    effective = snapshots.effective_config(snap)
+    provenance = snapshots.effective_provenance(snap)
+    for key in sorted(effective):
+        lines.append(f"| {key} | {effective[key]} | {provenance.get(key, '')} |")
+    if not effective:
+        lines.append("| *(no settings layer defines any allowlisted key)* | | |")
+    lines.append("")
+
+    return "\n".join(lines)
+
+
+def _cmd_probe_config(args: argparse.Namespace) -> int:
+    """Run the hook's own scan for a project directory without a session
+    and without writing anything (schema 2, plan "Configuration layers"
+    section): ``snapshot-config`` captures and persists; this only prints.
+    """
+    hook = _load_snapshot_hook_module()
+    config_dir = hook.resolve_config_dir(args.config_dir)
+    project_path = getattr(args, "project_dir", None) or os.getcwd()
+    snapshot = hook.build_snapshot({}, project_path, config_dir, managed_path=args.managed_path)
+    print(_render_probe_config_markdown(snapshot))
     return 0
 
 
@@ -928,6 +1009,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_pricing_check(args)
     if command == "snapshot-config":
         return _cmd_snapshot_config(args)
+    if command == "probe-config":
+        return _cmd_probe_config(args)
     if command == "report":
         return _cmd_report_like(args, include=None)
     if command in _REPORT_LIKE_SECTIONS:

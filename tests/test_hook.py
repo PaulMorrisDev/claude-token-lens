@@ -176,7 +176,9 @@ def test_hook_writes_redacted_snapshot(tmp_path, home, project):
 
     # Non-allowlisted dict/str values reduced to shape markers.
     assert user_settings["permissions"] == "dict(2)"
-    assert user_settings["statusLine"] == "dict(2)"
+    # statusLine gets its own summary shape (schema 2): present/absent only,
+    # never the command it runs -- see redact_settings_value's special case.
+    assert user_settings["statusLine"] is True
 
     # MCP server names only, plus enabled/disabled lists.
     assert snapshot["mcp_servers"]["names"] == ["filesystem", "github"]
@@ -268,7 +270,7 @@ def test_print_flag_emits_json_without_writing(tmp_path, home, project):
     )
     assert result.returncode == 0
     payload = json.loads(result.stdout)
-    assert payload["schema"] == 1
+    assert payload["schema"] == 2
     assert not (config_dir / "snapshots").exists()
 
 
@@ -410,6 +412,537 @@ def test_managed_settings_default_windows_path_honours_programdata_env(tmp_path,
     snapshot = _latest_snapshot(config_dir)
     assert snapshot["managed_settings"]["effortLevel"] == "high"
     assert snapshot["managed_keys"] == ["effortLevel"]
+
+
+
+# -- schema 2: widened settings allowlist (coordinator addition) ------------
+
+
+def test_autocompact_enabled_and_model_pricing_kept_safe(home, project):
+    """autoCompactEnabled is a plain safe-allowlist boolean; modelPricing
+    reduces to a present flag plus the model ids it overrides -- never the
+    overridden numbers themselves (the whole point of pricing.toml staying
+    user-editable and out of the tool's own reporting)."""
+    config_dir = home / ".claude" / "token-lens"
+    settings_path = home / ".claude" / "settings.json"
+    settings = json.loads(settings_path.read_text(encoding="utf-8"))
+    settings["autoCompactEnabled"] = False
+    settings["modelPricing"] = {
+        "claude-sonnet-5": {"input": 3.0, "output": 15.0},
+        "claude-fable-5.1": {"input": 9.99, "output": 42.0},
+    }
+    settings_path.write_text(json.dumps(settings), encoding="utf-8")
+
+    stdin = json.dumps({"session_id": "s", "cwd": str(project)})
+    result = _run_hook(config_dir=config_dir, cwd=project, stdin_text=stdin)
+    assert result.returncode == 0
+
+    snapshot = _latest_snapshot(config_dir)
+    raw_text = json.dumps(snapshot)
+    user_settings = snapshot["user_settings"]
+    assert user_settings["autoCompactEnabled"] is False
+    assert user_settings["modelPricing"] == {
+        "present": True,
+        "model_ids": ["claude-fable-5.1", "claude-sonnet-5"],
+    }
+    # The overridden numbers themselves must never appear anywhere.
+    assert "3.0" not in raw_text
+    assert "15.0" not in raw_text
+    assert "9.99" not in raw_text
+    assert "42.0" not in raw_text
+
+
+def test_model_pricing_absent_reduces_to_not_present():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("snapshot_config_hook", _HOOK_PATH)
+    hook = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(hook)
+    assert hook._redact_model_pricing(None) == {"present": False, "model_ids": []}
+    assert hook._redact_model_pricing({}) == {"present": False, "model_ids": []}
+
+
+def test_desktop_session_cleanup_period_days_kept_verbatim(home, project):
+    config_dir = home / ".claude" / "token-lens"
+    settings_path = home / ".claude" / "settings.json"
+    settings = json.loads(settings_path.read_text(encoding="utf-8"))
+    settings["desktopSessionCleanupPeriodDays"] = 45
+    settings_path.write_text(json.dumps(settings), encoding="utf-8")
+
+    stdin = json.dumps({"session_id": "s", "cwd": str(project)})
+    result = _run_hook(config_dir=config_dir, cwd=project, stdin_text=stdin)
+    assert result.returncode == 0
+    snapshot = _latest_snapshot(config_dir)
+    assert snapshot["user_settings"]["desktopSessionCleanupPeriodDays"] == 45
+
+
+# -- schema 2: widened env-name allowlist + numeric caps (coordinator) ------
+
+
+def test_widened_env_names_are_captured_by_name_only(home, project):
+    config_dir = home / ".claude" / "token-lens"
+    stdin = json.dumps({"session_id": "s", "cwd": str(project)})
+    result = _run_hook(
+        config_dir=config_dir,
+        cwd=project,
+        stdin_text=stdin,
+        extra_env={
+            "CLAUDE_CODE_SUBAGENT_MODEL": "haiku",
+            "CLAUDE_CODE_SUBAGENT_MODEL_FORCE": "1",
+            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+            "ANTHROPIC_DEFAULT_OPUS_MODEL": "claude-opus-x",
+            "ANTHROPIC_DEFAULT_SONNET_MODEL": "claude-sonnet-x",
+            "ANTHROPIC_DEFAULT_HAIKU_MODEL": "claude-haiku-x",
+            "ANTHROPIC_DEFAULT_FABLE_MODEL": "claude-fable-x",
+            "CLAUDE_CODE_USE_BEDROCK": "1",
+            "CLAUDE_CODE_USE_VERTEX": "1",
+            "CLAUDE_CODE_USE_FOUNDRY": "1",
+            "OTEL_SERVICE_NAME": "claude-code",
+            "OTEL_EXPORTER_OTLP_ENDPOINT": "http://localhost:4317",
+            "DISABLE_NON_ESSENTIAL_MODEL_CALLS": "1",
+        },
+    )
+    assert result.returncode == 0
+    snapshot_path = sorted((config_dir / "snapshots").glob("*.json"))[-1]
+    raw_text = snapshot_path.read_text(encoding="utf-8")
+    snapshot = json.loads(raw_text)
+
+    for name in (
+        "CLAUDE_CODE_SUBAGENT_MODEL",
+        "CLAUDE_CODE_SUBAGENT_MODEL_FORCE",
+        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL",
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+        "ANTHROPIC_DEFAULT_FABLE_MODEL",
+        "CLAUDE_CODE_USE_BEDROCK",
+        "CLAUDE_CODE_USE_VERTEX",
+        "CLAUDE_CODE_USE_FOUNDRY",
+        "OTEL_SERVICE_NAME",
+        "OTEL_EXPORTER_OTLP_ENDPOINT",
+        "DISABLE_NON_ESSENTIAL_MODEL_CALLS",
+    ):
+        assert name in snapshot["env_names"], name
+
+    # Values (model ids, endpoint URL) must never appear in the written file.
+    for leaked_value in ("claude-opus-x", "claude-sonnet-x", "claude-haiku-x", "claude-fable-x", "localhost:4317"):
+        assert leaked_value not in raw_text
+
+
+def test_env_numeric_caps_record_the_integer_value(home, project):
+    config_dir = home / ".claude" / "token-lens"
+    stdin = json.dumps({"session_id": "s", "cwd": str(project)})
+    result = _run_hook(
+        config_dir=config_dir,
+        cwd=project,
+        stdin_text=stdin,
+        extra_env={
+            "MAX_THINKING_TOKENS": "50000",
+            "MAX_MCP_OUTPUT_TOKENS": "100000",
+            "BASH_MAX_OUTPUT_LENGTH": "20000",
+            "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "80",
+        },
+    )
+    assert result.returncode == 0
+    snapshot = _latest_snapshot(config_dir)
+    assert snapshot["env_numeric_caps"] == {
+        "MAX_THINKING_TOKENS": 50000,
+        "MAX_MCP_OUTPUT_TOKENS": 100000,
+        "BASH_MAX_OUTPUT_LENGTH": 20000,
+        "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": 80,
+    }
+    # The names are also still recorded in the general env-names list.
+    for name in snapshot["env_numeric_caps"]:
+        assert name in snapshot["env_names"]
+
+
+def test_env_numeric_cap_non_numeric_value_is_skipped(home, project):
+    config_dir = home / ".claude" / "token-lens"
+    stdin = json.dumps({"session_id": "s", "cwd": str(project)})
+    result = _run_hook(
+        config_dir=config_dir,
+        cwd=project,
+        stdin_text=stdin,
+        extra_env={"MAX_THINKING_TOKENS": "not-a-number"},
+    )
+    assert result.returncode == 0
+    snapshot = _latest_snapshot(config_dir)
+    assert "MAX_THINKING_TOKENS" not in snapshot["env_numeric_caps"]
+    # Still recorded by name even though the value couldn't be parsed.
+    assert "MAX_THINKING_TOKENS" in snapshot["env_names"]
+
+
+def test_env_numeric_caps_absent_when_unset(home, project):
+    config_dir = home / ".claude" / "token-lens"
+    stdin = json.dumps({"session_id": "s", "cwd": str(project)})
+    result = _run_hook(config_dir=config_dir, cwd=project, stdin_text=stdin)
+    assert result.returncode == 0
+    snapshot = _latest_snapshot(config_dir)
+    assert snapshot["env_numeric_caps"] == {}
+
+
+# -- schema 2: project slug --------------------------------------------------
+
+
+def test_project_slug_is_non_alnum_substituted_cwd(home, project):
+    config_dir = home / ".claude" / "token-lens"
+    stdin = json.dumps({"session_id": "s", "cwd": str(project)})
+    result = _run_hook(config_dir=config_dir, cwd=project, stdin_text=stdin)
+    assert result.returncode == 0
+    snapshot = _latest_snapshot(config_dir)
+    slug = snapshot["project_slug"]
+    assert slug
+    # Never a raw path separator or drive-letter colon in the slug.
+    assert "/" not in slug
+    assert "\\" not in slug
+    assert ":" not in slug
+
+
+def test_project_slug_honours_project_dir_name_env_override(home, project):
+    config_dir = home / ".claude" / "token-lens"
+    stdin = json.dumps({"session_id": "s", "cwd": str(project)})
+    result = _run_hook(
+        config_dir=config_dir,
+        cwd=project,
+        stdin_text=stdin,
+        extra_env={"CLAUDE_CODE_PROJECT_DIR_NAME": "my-fixed-slug"},
+    )
+    assert result.returncode == 0
+    snapshot = _latest_snapshot(config_dir)
+    assert snapshot["project_slug"] == "my-fixed-slug"
+
+
+# -- schema 2: settings layers / effective config / provenance --------------
+
+
+def test_settings_layers_presence_and_precedence(tmp_path, home, project):
+    config_dir = home / ".claude" / "token-lens"
+    managed_path = tmp_path / "managed-settings.json"
+    managed_path.write_text(json.dumps({"effortLevel": "low"}), encoding="utf-8")
+
+    (project / ".claude" / "settings.local.json").write_text(
+        json.dumps({"effortLevel": "high", "model": "opus"}), encoding="utf-8"
+    )
+    # project/.claude/settings.json (project_shared) already written by
+    # _build_project() with {"model": "sonnet", ...}.
+
+    stdin = json.dumps({"session_id": "s", "cwd": str(project)})
+    result = _run_hook(
+        config_dir=config_dir,
+        cwd=project,
+        stdin_text=stdin,
+        extra_args=["--managed-path", str(managed_path)],
+    )
+    assert result.returncode == 0
+    snapshot = _latest_snapshot(config_dir)
+
+    layers = snapshot["settings_layers"]
+    assert set(layers) == {"managed", "project_local", "project_shared", "user"}
+    assert layers["managed"]["present"] is True
+    assert layers["project_local"]["present"] is True
+    assert layers["project_shared"]["present"] is True
+    assert layers["user"]["present"] is True
+    # Never a raw path -- only a hash.
+    for layer in layers.values():
+        assert layer["source_path_hash"].startswith("sha256:")
+
+    # Precedence high to low: managed > project_local > project_shared > user.
+    # "effortLevel" is set by managed (low) and project_local (high) ->
+    # managed wins.
+    assert snapshot["effective"]["effortLevel"] == "low"
+    assert snapshot["effective_provenance"]["effortLevel"] == "managed"
+    # "model" is set by project_local (opus), project_shared (sonnet) and
+    # user (fable[1m]) but not managed -> project_local wins.
+    assert snapshot["effective"]["model"] == "opus"
+    assert snapshot["effective_provenance"]["model"] == "project_local"
+
+
+def test_settings_layer_absent_when_file_missing(home, project):
+    # project has no settings.local.json in the base fixture.
+    config_dir = home / ".claude" / "token-lens"
+    stdin = json.dumps({"session_id": "s", "cwd": str(project)})
+    result = _run_hook(config_dir=config_dir, cwd=project, stdin_text=stdin)
+    assert result.returncode == 0
+    snapshot = _latest_snapshot(config_dir)
+    assert snapshot["settings_layers"]["project_local"]["present"] is False
+    assert snapshot["settings_layers"]["project_local"]["content_hash"] is None
+
+
+def test_settings_layer_permissions_and_hooks_are_counts_only(home, project):
+    config_dir = home / ".claude" / "token-lens"
+    settings_path = home / ".claude" / "settings.json"
+    settings = json.loads(settings_path.read_text(encoding="utf-8"))
+    settings["permissions"] = {
+        "allow": ["Bash(git *)", "Read(**)"],
+        "deny": ["Bash(curl *)"],
+        "ask": [],
+        "defaultMode": "acceptEdits",
+    }
+    settings["hooks"] = {
+        "SessionStart": [{"hooks": [{"type": "command", "command": "echo hi"}]}],
+        "PreToolUse": [{"hooks": [{"type": "command", "command": "a"}]}, {"hooks": [{"type": "command", "command": "b"}]}],
+    }
+    settings_path.write_text(json.dumps(settings), encoding="utf-8")
+
+    stdin = json.dumps({"session_id": "s", "cwd": str(project)})
+    result = _run_hook(config_dir=config_dir, cwd=project, stdin_text=stdin)
+    assert result.returncode == 0
+    snapshot = _latest_snapshot(config_dir)
+    raw_text = json.dumps(snapshot)
+
+    user_layer = snapshot["settings_layers"]["user"]
+    assert user_layer["permissions"] == {
+        "allow_count": 2,
+        "deny_count": 1,
+        "ask_count": 0,
+        "default_mode": "acceptEdits",
+    }
+    assert user_layer["hooks"] == {"SessionStart": 1, "PreToolUse": 2}
+    assert "Bash(curl" not in raw_text
+    assert "echo hi" not in raw_text
+
+
+# -- schema 2: effective_agents -----------------------------------------------
+
+
+def test_effective_agents_reduced_shape(home, project):
+    config_dir = home / ".claude" / "token-lens"
+    stdin = json.dumps({"session_id": "s", "cwd": str(project)})
+    result = _run_hook(config_dir=config_dir, cwd=project, stdin_text=stdin)
+    assert result.returncode == 0
+    snapshot = _latest_snapshot(config_dir)
+
+    effective_agents = snapshot["effective_agents"]
+    verifier = effective_agents["verification-runner"]
+    assert verifier == {
+        "source": "user",
+        "experimental_cache_ttl": "1h",
+        "model": "sonnet",
+        "effort": "medium",
+        "max_turns": 80,
+    }
+    implementer = effective_agents["claude-implementer"]
+    assert implementer["experimental_cache_ttl"] is None
+
+
+def test_project_agent_shadows_user_agent_of_the_same_name(home, project):
+    config_dir = home / ".claude" / "token-lens"
+    project_agents_dir = project / ".claude" / "agents"
+    project_agents_dir.mkdir(parents=True)
+    (project_agents_dir / "claude-implementer.md").write_text(
+        """---
+name: claude-implementer
+description: A project-level override of the same agent name.
+model: fable
+effort: high
+maxTurns: 40
+---
+
+Project override body.
+""",
+        encoding="utf-8",
+    )
+
+    stdin = json.dumps({"session_id": "s", "cwd": str(project)})
+    result = _run_hook(config_dir=config_dir, cwd=project, stdin_text=stdin)
+    assert result.returncode == 0
+    snapshot = _latest_snapshot(config_dir)
+
+    agents = snapshot["agents"]
+    implementer = agents["claude-implementer"]
+    assert implementer["source"] == "project"
+    assert implementer["shadowed_by_project"] is True
+    assert implementer["model"] == "fable"
+
+    verifier = agents["verification-runner"]
+    assert verifier["source"] == "user"
+    assert "shadowed_by_project" not in verifier
+
+    content_layers = snapshot["content_layers"]
+    assert content_layers["agents_summary"]["count"] == 2
+    assert content_layers["agents_summary"]["user_count"] == 1
+    assert content_layers["agents_summary"]["project_count"] == 1
+    assert content_layers["agents_summary"]["shadowed_count"] == 1
+
+
+# -- schema 2: ~/.claude.json cross-check ------------------------------------
+
+
+def test_claude_json_matches_project_by_normcase_realpath(home, project):
+    """~/.claude.json's own project keys are observed on real machines to
+    hold the same directory under several spellings (forward slashes,
+    backslashes, drive-letter case) -- confirm the match survives a
+    differently-cased/slashed key, and that the raw matching key itself
+    never appears in the snapshot."""
+    config_dir = home / ".claude" / "token-lens"
+    weird_key = str(project).replace("\\", "/").upper()
+    dot_claude_json = {
+        "numStartups": 42,
+        "autoUpdates": True,
+        "projects": {
+            weird_key: {
+                "mcpServers": {"filesystem": {}},
+                "enabledMcpjsonServers": ["filesystem"],
+                "disabledMcpjsonServers": [],
+                "allowedTools": ["Bash", "Read", "Edit"],
+                "hasTrustDialogAccepted": True,
+                "lastCost": 1.23,
+                "lastDuration": 4567,
+                "lastAPIDuration": 4000,
+                "lastTotalInputTokens": 1000,
+                "lastTotalOutputTokens": 200,
+                "lastTotalCacheCreationInputTokens": 50,
+                "lastTotalCacheReadInputTokens": 500,
+                "lastSessionId": "11111111-1111-1111-1111-111111111111",
+                "lastLinesAdded": 10,
+                "lastLinesRemoved": 3,
+            }
+        },
+    }
+    (home / ".claude.json").write_text(json.dumps(dot_claude_json), encoding="utf-8")
+
+    stdin = json.dumps({"session_id": "s", "cwd": str(project)})
+    result = _run_hook(config_dir=config_dir, cwd=project, stdin_text=stdin)
+    assert result.returncode == 0
+    snapshot = _latest_snapshot(config_dir)
+    raw_text = json.dumps(snapshot)
+
+    claude_json = snapshot["claude_json"]
+    assert claude_json["matched"] is True
+    assert claude_json["mcp_servers"] == ["filesystem"]
+    assert claude_json["allowed_tools_count"] == 3
+    assert claude_json["has_trust_dialog_accepted"] is True
+    assert claude_json["last_session"]["lastCost"] == 1.23
+    assert claude_json["last_session"]["lastSessionId"] == "11111111-1111-1111-1111-111111111111"
+    assert claude_json["top_level"]["num_projects"] == 1
+    assert claude_json["top_level"]["scalars"]["numStartups"] == 42
+    assert claude_json["top_level"]["scalars"]["autoUpdates"] is True
+
+    # The raw project-key spelling (a path) must never be recorded verbatim.
+    assert weird_key not in raw_text
+
+
+def test_claude_json_no_matching_project_entry(home, project):
+    config_dir = home / ".claude" / "token-lens"
+    (home / ".claude.json").write_text(
+        json.dumps({"projects": {"/some/other/project": {}}}), encoding="utf-8"
+    )
+    stdin = json.dumps({"session_id": "s", "cwd": str(project)})
+    result = _run_hook(config_dir=config_dir, cwd=project, stdin_text=stdin)
+    assert result.returncode == 0
+    snapshot = _latest_snapshot(config_dir)
+    assert snapshot["claude_json"]["matched"] is False
+
+
+def test_claude_json_missing_file_degrades_cleanly(home, project):
+    config_dir = home / ".claude" / "token-lens"
+    stdin = json.dumps({"session_id": "s", "cwd": str(project)})
+    result = _run_hook(config_dir=config_dir, cwd=project, stdin_text=stdin)
+    assert result.returncode == 0
+    snapshot = _latest_snapshot(config_dir)
+    assert snapshot["claude_json"] == {"matched": False}
+
+
+def test_claude_json_corrupt_file_never_raises(home, project):
+    config_dir = home / ".claude" / "token-lens"
+    (home / ".claude.json").write_text("{not valid json!!!", encoding="utf-8")
+    stdin = json.dumps({"session_id": "s", "cwd": str(project)})
+    result = _run_hook(config_dir=config_dir, cwd=project, stdin_text=stdin)
+    assert result.returncode == 0
+    snapshot = _latest_snapshot(config_dir)
+    assert snapshot["claude_json"] == {"matched": False}
+
+
+# -- schema 2: content layers -------------------------------------------------
+
+
+def test_content_layers_claude_md_rules_commands_and_skills(home, project):
+    config_dir = home / ".claude" / "token-lens"
+
+    (home / ".claude" / "CLAUDE.md").write_text("user memory " * 5, encoding="utf-8")
+    (project / "CLAUDE.md").write_text("project root memory " * 3, encoding="utf-8")
+    (project / "CLAUDE.local.md").write_text("local only", encoding="utf-8")
+
+    nested_dir = project / "sub" / "deeper"
+    nested_dir.mkdir(parents=True)
+    (nested_dir / "CLAUDE.md").write_text("nested memory", encoding="utf-8")
+    # A directory the walk must skip.
+    skipped_dir = project / "node_modules" / "pkg"
+    skipped_dir.mkdir(parents=True)
+    (skipped_dir / "CLAUDE.md").write_text("must not be counted", encoding="utf-8")
+
+    rules_dir = project / ".claude" / "rules"
+    rules_dir.mkdir(parents=True)
+    (rules_dir / "one.md").write_text("rule one", encoding="utf-8")
+    (rules_dir / "two.md").write_text("rule two", encoding="utf-8")
+
+    commands_dir = project / ".claude" / "commands" / "nested"
+    commands_dir.mkdir(parents=True)
+    (commands_dir / "cmd.md").write_text("command body", encoding="utf-8")
+
+    project_skill_dir = project / ".claude" / "skills" / "my-skill"
+    project_skill_dir.mkdir(parents=True)
+    (project_skill_dir / "SKILL.md").write_text("skill body", encoding="utf-8")
+
+    stdin = json.dumps({"session_id": "s", "cwd": str(project)})
+    result = _run_hook(config_dir=config_dir, cwd=project, stdin_text=stdin)
+    assert result.returncode == 0
+    snapshot = _latest_snapshot(config_dir)
+    content = snapshot["content_layers"]
+    raw_text = json.dumps(snapshot)
+
+    claude_md = content["claude_md"]
+    assert claude_md["user_bytes"] == len("user memory " * 5)
+    assert claude_md["project_root_bytes"] == len("project root memory " * 3)
+    assert claude_md["project_local_bytes"] == len("local only")
+    assert claude_md["nested_count"] == 1
+    assert claude_md["nested_bytes"] == len("nested memory")
+
+    assert content["rules"] == {"count": 2, "bytes": len("rule one") + len("rule two")}
+    assert content["commands"] == {"count": 1, "bytes": len("command body")}
+    assert content["skills"]["project"]["names"] == ["my-skill"]
+    assert content["skills"]["project"]["total_bytes"] == len("skill body")
+
+    # Never raw content, only sizes/counts/names.
+    assert "project root memory" not in raw_text
+    assert "rule one" not in raw_text
+    assert "command body" not in raw_text
+    assert "skill body" not in raw_text
+    assert "must not be counted" not in raw_text
+
+
+def test_content_layers_mcp_json_and_claude_config_dir_flag(home, project):
+    config_dir = home / ".claude" / "token-lens"
+    (project / ".mcp.json").write_text(
+        json.dumps({"mcpServers": {"stripe": {}, "sentry": {}}}), encoding="utf-8"
+    )
+
+    stdin = json.dumps({"session_id": "s", "cwd": str(project)})
+    result = _run_hook(
+        config_dir=config_dir,
+        cwd=project,
+        stdin_text=stdin,
+        extra_env={"CLAUDE_CONFIG_DIR": str(home / ".claude")},
+    )
+    assert result.returncode == 0
+    snapshot = _latest_snapshot(config_dir)
+    content = snapshot["content_layers"]
+    assert content["mcp_json"] == {"present": True, "names": ["sentry", "stripe"]}
+    assert content["claude_config_dir_set"] is True
+
+
+def test_content_layers_absent_content_degrades_to_zero_counts(home, project):
+    config_dir = home / ".claude" / "token-lens"
+    stdin = json.dumps({"session_id": "s", "cwd": str(project)})
+    result = _run_hook(config_dir=config_dir, cwd=project, stdin_text=stdin)
+    assert result.returncode == 0
+    snapshot = _latest_snapshot(config_dir)
+    content = snapshot["content_layers"]
+    assert content["rules"] == {"count": 0, "bytes": 0}
+    assert content["commands"] == {"count": 0, "bytes": 0}
+    assert content["mcp_json"] == {"present": False, "names": []}
+    assert content["managed_mcp_present"] is False
+    assert content["memory"] == {"present": False, "files": 0, "bytes": 0}
 
 
 def test_min_interval_zero_always_writes_even_with_identical_content(home, project):

@@ -49,6 +49,55 @@ say "this lever is managed by policy" for any recommendation whose key
 appears there — the key name alone ("permissions", "model", ...) carries no
 content to redact. ``--managed-path`` overrides the platform default, for
 tests and for the rare machine whose policy file lives somewhere else.
+
+Schema 2 (owner request, plan "Configuration layers" section, additive over
+schema 1 — :func:`~claude_token_lens.snapshots.load_snapshots` still loads
+schema-1 files unchanged) adds, on top of every schema-1 field above:
+
+- ``project_slug`` — the same slug algorithm as
+  ``discovery.slug_for`` (duplicated here rather than imported, since this
+  script stays standalone stdlib), used to locate this project's auto-memory
+  directory and as a human-readable (not path-shaped) project identifier.
+- ``settings_layers`` — one entry per settings layer (``managed``,
+  ``project_local`` i.e. ``.claude/settings.local.json``, ``project_shared``
+  i.e. ``.claude/settings.json``, ``user`` i.e. ``~/.claude/settings.json``),
+  precedence high to low in that order, each with ``present``,
+  ``source_path_hash``, ``content_hash``, the existing allowlist-redacted
+  settings, and purpose-built summaries a report needs directly:
+  ``env_names`` (the settings ``env`` block, names only), ``permissions``
+  (allow/deny/ask *counts* plus ``default_mode``), ``hooks`` (event name ->
+  entry count), ``enabled_plugins``, and the named safe scalars
+  (``model``, ``effort_level``, ``always_thinking_enabled``,
+  ``auto_compact_window``, ``prompt_cache_ttl``, ``subagent_prompt_cache_ttl``,
+  ``cleanup_period_days``, ``output_style``, ``statusline_present``).
+- ``effective`` / ``effective_provenance`` — every :data:`SETTINGS_SUMMARY_KEYS`
+  key's value (the same allowlist/redaction :func:`redact_settings_value`
+  already applies — ``statusLine`` and ``modelPricing`` included, each
+  reduced to their own safe summary shape rather than a raw value) merged
+  across the four settings layers in precedence order, with
+  ``effective_provenance[key]`` naming which layer supplied it.
+- ``effective_agents`` — every agent name -> ``{source, experimental_cache_ttl,
+  model, effort, max_turns}``, derived from ``agents`` (which schema 2 also
+  extends with a ``source`` ("user"/"project") and, on a name clash, a
+  ``shadowed_by_project`` flag on the project entry that won the merge).
+- ``claude_json`` — a redacted read of ``~/.claude.json`` (the CLI's own
+  per-machine state file, not a Claude Code settings file): the entry
+  matching this session's project directory, found by comparing
+  ``os.path.normcase(os.path.realpath(...))`` on both sides so the same
+  physical directory is recognised under any of the drive-letter-case /
+  slash-style key spellings ``~/.claude.json`` is observed to use — the raw
+  matching key itself is never stored. Records MCP server/plugin *names*,
+  small counts, and (if present) the numeric ``last*`` per-project session
+  totals — a cross-check against this tool's own accounting for the same
+  session, never message text.
+- ``content_layers`` — sizes, counts and names only (never content) for the
+  CLAUDE.md family (user, project root/local, and a bounded walk of nested
+  ``CLAUDE.md`` files), ``.claude/rules/*.md``, ``.claude/commands/**/*.md``,
+  project and user skills (``.claude/skills/*/SKILL.md`` — names + bytes),
+  a rollup of the ``agents`` dict's own source/shadow flags, the project's
+  ``.mcp.json`` server names, whether a ``managed-mcp.json`` exists, output
+  style names, this project's auto-memory byte/file count, installed plugin
+  names and marketplace count, and whether ``CLAUDE_CONFIG_DIR`` is set.
 """
 
 from __future__ import annotations
@@ -57,6 +106,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import sys
 from datetime import datetime, timezone
@@ -74,6 +124,7 @@ SAFE_SETTINGS_KEYS = frozenset(
         "effortLevel",
         "outputStyle",
         "autoCompactWindow",
+        "autoCompactEnabled",
         "promptCacheTtl",
         "subagentPromptCacheTtl",
         "cleanupPeriodDays",
@@ -82,6 +133,24 @@ SAFE_SETTINGS_KEYS = frozenset(
         "alwaysThinkingEnabled",
     }
 )
+
+#: Settings keys that need their own summary shape rather than either a
+#: verbatim pass-through or the fully-generic ``dict(n)``/``str(len)``
+#: marker: ``statusLine`` reduces to a present/absent boolean (a report only
+#: ever needs "is a statusline configured", never the command it runs), and
+#: ``modelPricing`` reduces to a present flag plus the model ids it overrides
+#: (never the overridden numbers, which are exactly the sort of "silently
+#: adopt whatever the file says" figure the report's own pricing.toml
+#: exists to keep user-editable and out of code). Handled in
+#: :func:`redact_settings_value` ahead of the plain allowlist check.
+_STATUS_LINE_KEY = "statusLine"
+_MODEL_PRICING_KEY = "modelPricing"
+
+#: Every settings key with special handling, allowlisted or summarised
+#: (never the generic ``dict(n)``/``str(len)`` shape marker) -- used to
+#: build ``effective``/``effective_provenance`` (schema 2), which merges
+#: exactly these keys across the settings layers.
+SETTINGS_SUMMARY_KEYS = SAFE_SETTINGS_KEYS | {_STATUS_LINE_KEY, _MODEL_PRICING_KEY}
 
 #: Agent frontmatter keys kept verbatim (everything under "experimental."
 #: is also kept — see ``redact_agent_frontmatter``). ``description`` is
@@ -103,9 +172,67 @@ AGENT_KEEP_KEYS = frozenset(
     }
 )
 
-SCHEMA_VERSION = 1
+#: Schema 2 is additive over schema 1 (every schema-1 field keeps the same
+#: name and shape); see the module docstring's "Schema 2" section for the
+#: new top-level keys. ``snapshots.load_snapshots`` loads either.
+SCHEMA_VERSION = 2
 
 _TS_FORMAT = "%Y%m%dT%H%M%SZ"
+
+#: discovery.slug_for's own algorithm, duplicated (not imported -- this
+#: script stays standalone stdlib, see the module docstring).
+_SLUG_NON_ALNUM_RE = re.compile(r"[^A-Za-z0-9]")
+_SLUG_MAX_CHARS = 200
+_SLUG_HASH_HEX_CHARS = 8
+
+#: Directory names skipped by the bounded nested-CLAUDE.md walk (never
+#: worth descending into: VCS metadata, dependency/venv trees, build output).
+_CLAUDE_MD_WALK_SKIP_DIRS = frozenset({".git", "node_modules", ".venv", "bin", "obj"})
+_CLAUDE_MD_WALK_MAX_DEPTH = 6
+_CLAUDE_MD_WALK_MAX_DIRS = 5000
+
+#: Env var name prefixes captured (names only, values never recorded) --
+#: widened from ANTHROPIC_*/CLAUDE_* to also cover OpenTelemetry config
+#: (plan "Enterprise use" section's OTel-compatible export already reads
+#: OTEL_* by name; the snapshot recording OTEL_* names lets a report note
+#: telemetry is configured at all).
+_ENV_NAME_PREFIXES = ("ANTHROPIC_", "CLAUDE_", "OTEL_")
+
+#: Individual env var names captured that don't share one of the prefixes
+#: above (documented Claude Code levers with irregular names).
+_ENV_EXTRA_NAMES = frozenset(
+    {
+        "MAX_THINKING_TOKENS",
+        "DISABLE_NON_ESSENTIAL_MODEL_CALLS",
+        "MAX_MCP_OUTPUT_TOKENS",
+        "BASH_MAX_OUTPUT_LENGTH",
+    }
+)
+
+#: Of the names above (plus CLAUDE_AUTOCOMPACT_PCT_OVERRIDE, already covered
+#: by the CLAUDE_ prefix), these four are numeric *caps* rather than
+#: secrets or content, so the integer value itself is recorded alongside
+#: the name -- everything else stays names-only.
+_ENV_NUMERIC_CAP_NAMES = frozenset(
+    {
+        "MAX_THINKING_TOKENS",
+        "MAX_MCP_OUTPUT_TOKENS",
+        "BASH_MAX_OUTPUT_LENGTH",
+        "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE",
+    }
+)
+
+#: Settings layers, precedence high to low (plan "Configuration layers"
+#: section). Matches the ``scope`` vocabulary CLAUDE.md/A6 use elsewhere
+#: (user/project-local/repo/managed) with "repo" spelled ``project_shared``
+#: here since that's the file's own name (``settings.json``, checked in and
+#: shared with colleagues) rather than the apply-time scope label.
+SETTINGS_LAYER_ORDER: tuple[str, ...] = (
+    "managed",
+    "project_local",
+    "project_shared",
+    "user",
+)
 
 
 # -- config dir / small file reads --------------------------------------
@@ -194,7 +321,21 @@ def _redact_generic(value):
     return value
 
 
+def _redact_model_pricing(value) -> dict:
+    """``modelPricing`` reduces to whether it's set at all and which model
+    ids it overrides -- never the overridden numbers themselves (see
+    ``_MODEL_PRICING_KEY``'s note above ``SETTINGS_SUMMARY_KEYS``).
+    """
+    if not isinstance(value, dict) or not value:
+        return {"present": False, "model_ids": []}
+    return {"present": True, "model_ids": sorted(str(k) for k in value)}
+
+
 def redact_settings_value(key: str, value):
+    if key == _STATUS_LINE_KEY:
+        return bool(value)
+    if key == _MODEL_PRICING_KEY:
+        return _redact_model_pricing(value)
     if key in SAFE_SETTINGS_KEYS:
         return value
     return _redact_generic(value)
@@ -311,9 +452,11 @@ def parse_frontmatter(text: str) -> dict:
     return result
 
 
-def _load_agents(agents_dir: Path) -> dict:
+def _load_agents(agents_dir: Path, source: str) -> dict:
     """Every ``*.md`` directly under ``agents_dir``, keyed by its frontmatter
-    ``name`` (falling back to the filename stem), redacted per-field.
+    ``name`` (falling back to the filename stem), redacted per-field, each
+    tagged with ``source`` (schema 2: "user" or "project" -- which of the
+    two agent directories it came from, before any project-wins merge).
     """
     result: dict = {}
     if not agents_dir.is_dir():
@@ -327,8 +470,26 @@ def _load_agents(agents_dir: Path) -> dict:
         if not parsed:
             continue
         name = parsed.get("name") or md_path.stem
-        result[str(name)] = redact_agent_frontmatter(parsed)
+        entry = redact_agent_frontmatter(parsed)
+        entry["source"] = source
+        result[str(name)] = entry
     return result
+
+
+def _merge_agents(user_agents: dict, project_agents: dict) -> dict:
+    """Project agents win on a name clash (matching Claude Code's own
+    resolution order), same as schema 1's plain ``dict.update``. Schema 2
+    additionally flags the winning entry ``shadowed_by_project`` so a
+    report can say "N agents are shadowed" without re-deriving it from two
+    separate directory listings.
+    """
+    merged = dict(user_agents)
+    for name, entry in project_agents.items():
+        if name in merged:
+            entry = dict(entry)
+            entry["shadowed_by_project"] = True
+        merged[name] = entry
+    return merged
 
 
 # -- hashing / timestamps ---------------------------------------------------
@@ -358,6 +519,494 @@ def _content_hash(snapshot: dict) -> str:
     }
     encoded = json.dumps(payload, sort_keys=True, default=str).encode("utf-8")
     return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
+
+
+# -- schema 2: project slug --------------------------------------------------
+
+
+def _project_slug(cwd: str) -> str:
+    """``discovery.slug_for``'s own algorithm (non-alphanumeric -> ``-``,
+    truncated to 200 chars plus an 8-hex hash when longer), duplicated
+    rather than imported -- see the module docstring. Honours
+    ``CLAUDE_CODE_PROJECT_DIR_NAME`` the same way ``slug_for`` does. The
+    slug is deliberately not treated as a raw path needing a hash: it's
+    already the on-disk directory name every transcript under
+    ``~/.claude/projects/<slug>/`` uses, and its non-alnum substitution
+    means it no longer contains a drive-letter-colon or path separator
+    (the project's privacy scan's own allowance -- see the WP7 brief).
+    """
+    project_dir_name = os.environ.get("CLAUDE_CODE_PROJECT_DIR_NAME")
+    if project_dir_name:
+        return project_dir_name
+    raw = str(cwd)
+    slug = _SLUG_NON_ALNUM_RE.sub("-", raw)
+    if len(slug) <= _SLUG_MAX_CHARS:
+        return slug
+    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:_SLUG_HASH_HEX_CHARS]
+    return f"{slug[:_SLUG_MAX_CHARS]}-{digest}"
+
+
+# -- schema 2: settings layers ------------------------------------------------
+
+
+def _extract_enabled_plugins(raw_settings: dict) -> list[str]:
+    raw = raw_settings.get("enabledPlugins")
+    if isinstance(raw, dict):
+        return sorted(str(k) for k in raw)
+    if isinstance(raw, list):
+        return sorted(str(x) for x in raw)
+    return []
+
+
+def _permissions_summary(raw_settings: dict) -> dict:
+    """Rule *counts* (never the rules themselves -- a Bash allowlist entry
+    is exactly the kind of content this hook must not record) plus
+    ``defaultMode``, which is a small enum-like string already safe to
+    keep verbatim (same posture as the settings allowlist).
+    """
+    perms = raw_settings.get("permissions")
+    if not isinstance(perms, dict):
+        return {"allow_count": 0, "deny_count": 0, "ask_count": 0, "default_mode": None}
+
+    def _count(key: str) -> int:
+        value = perms.get(key)
+        return len(value) if isinstance(value, list) else 0
+
+    default_mode = perms.get("defaultMode")
+    return {
+        "allow_count": _count("allow"),
+        "deny_count": _count("deny"),
+        "ask_count": _count("ask"),
+        "default_mode": default_mode if isinstance(default_mode, str) else None,
+    }
+
+
+def _hooks_summary(raw_settings: dict) -> dict:
+    """Hook *counts* per event name -- never the commands a hook runs."""
+    hooks = raw_settings.get("hooks")
+    if not isinstance(hooks, dict):
+        return {}
+    out: dict = {}
+    for event_name, entries in hooks.items():
+        if isinstance(entries, list):
+            out[str(event_name)] = len(entries)
+    return out
+
+
+def summarize_settings_layer(raw_settings: dict | None, path: Path, present: bool) -> dict:
+    """One :data:`SETTINGS_LAYER_ORDER` entry: presence, hashed source path
+    (never the raw path), a content hash (so two layers/machines can be
+    compared for equality without diffing raw JSON), the existing
+    allowlist-redacted settings (``redacted``), and the purpose-built
+    summaries a report needs directly without re-deriving them from
+    ``redacted`` (env names, permission/hook counts, plugin names, and the
+    named safe scalars).
+    """
+    raw_settings = raw_settings or {}
+    content_hash = None
+    if present:
+        encoded = json.dumps(raw_settings, sort_keys=True, default=str)
+        content_hash = _sha256_prefixed(encoded)
+
+    env_block = raw_settings.get("env")
+    env_names = sorted(str(k) for k in env_block) if isinstance(env_block, dict) else []
+
+    return {
+        "present": present,
+        "source_path_hash": _sha256_prefixed(str(path)),
+        "content_hash": content_hash,
+        "redacted": redact_settings(raw_settings),
+        "env_names": env_names,
+        "permissions": _permissions_summary(raw_settings),
+        "hooks": _hooks_summary(raw_settings),
+        "enabled_plugins": _extract_enabled_plugins(raw_settings),
+        "model": raw_settings.get("model"),
+        "effort_level": raw_settings.get("effortLevel"),
+        "always_thinking_enabled": raw_settings.get("alwaysThinkingEnabled"),
+        "auto_compact_window": raw_settings.get("autoCompactWindow"),
+        "prompt_cache_ttl": raw_settings.get("promptCacheTtl"),
+        "subagent_prompt_cache_ttl": raw_settings.get("subagentPromptCacheTtl"),
+        "cleanup_period_days": raw_settings.get("cleanupPeriodDays"),
+        "output_style": raw_settings.get("outputStyle"),
+        "statusline_present": bool(raw_settings.get("statusLine")),
+    }
+
+
+def _settings_layer_path(layer: str, cwd_path: Path, claude_root: Path, managed_path: Path) -> Path:
+    return {
+        "managed": managed_path,
+        "project_local": cwd_path / ".claude" / "settings.local.json",
+        "project_shared": cwd_path / ".claude" / "settings.json",
+        "user": claude_root / "settings.json",
+    }[layer]
+
+
+def build_settings_layers(
+    cwd_path: Path, claude_root: Path, managed_path: Path, raw_settings_by_layer: dict[str, dict]
+) -> dict:
+    """Every :data:`SETTINGS_LAYER_ORDER` entry, keyed by layer name.
+    ``raw_settings_by_layer`` supplies the already-read raw dict for any
+    layer the caller has read for its own purposes (schema 1's
+    ``user_settings_raw``/``managed_settings_raw``), so the file is never
+    read from disk twice.
+    """
+    layers: dict = {}
+    for layer in SETTINGS_LAYER_ORDER:
+        path = _settings_layer_path(layer, cwd_path, claude_root, managed_path)
+        raw = raw_settings_by_layer.get(layer)
+        layers[layer] = summarize_settings_layer(raw, path, present=raw is not None)
+    return layers
+
+
+def build_effective_settings(raw_settings_by_layer: dict[str, dict]) -> tuple[dict, dict]:
+    """Merge :data:`SETTINGS_SUMMARY_KEYS` across the settings layers in
+    :data:`SETTINGS_LAYER_ORDER` precedence (high to low): the first layer
+    (in that order) that defines a key wins. Returns ``(effective,
+    provenance)`` where ``provenance[key]`` names the winning layer.
+    Values go through :func:`redact_settings_value` exactly as the
+    per-layer ``redacted`` dict does, so ``statusLine``/``modelPricing``
+    still resolve to their safe summary shape here too.
+    """
+    effective: dict = {}
+    provenance: dict = {}
+    for key in sorted(SETTINGS_SUMMARY_KEYS):
+        for layer in SETTINGS_LAYER_ORDER:
+            raw = raw_settings_by_layer.get(layer)
+            if raw and key in raw:
+                effective[key] = redact_settings_value(key, raw[key])
+                provenance[key] = layer
+                break
+    return effective, provenance
+
+
+def build_effective_agents(agents: dict) -> dict:
+    """``agents`` (already source/shadow-tagged by :func:`_merge_agents`)
+    reduced to the handful of fields a TTL/model/effort recommendation
+    actually keys off, one entry per agent name.
+    """
+    return {
+        name: {
+            "source": entry.get("source"),
+            "experimental_cache_ttl": entry.get("experimental.cacheTtl"),
+            "model": entry.get("model"),
+            "effort": entry.get("effort"),
+            "max_turns": entry.get("maxTurns"),
+        }
+        for name, entry in agents.items()
+    }
+
+
+# -- schema 2: ~/.claude.json cross-check ------------------------------------
+
+#: The per-project ``last*`` session-statistics keys this hook records if
+#: present (checked against a real ~/.claude.json on this machine -- see
+#: the module docstring). Every value here is a number or (``lastSessionId``)
+#: an opaque id, never text.
+_CLAUDE_JSON_LAST_SESSION_KEYS: tuple[str, ...] = (
+    "lastCost",
+    "lastDuration",
+    "lastAPIDuration",
+    "lastTotalInputTokens",
+    "lastTotalOutputTokens",
+    "lastTotalCacheCreationInputTokens",
+    "lastTotalCacheReadInputTokens",
+    "lastSessionId",
+    "lastLinesAdded",
+    "lastLinesRemoved",
+)
+
+
+def _normcase_realpath(path_str: str) -> str:
+    """Never raises: a ``~/.claude.json`` project key or a live ``cwd`` can
+    both be arbitrary strings, and this only ever feeds an equality check.
+    """
+    try:
+        return os.path.normcase(os.path.realpath(path_str))
+    except (OSError, ValueError):
+        return os.path.normcase(path_str)
+
+
+def _find_claude_json_project_entry(dot_claude_json: dict, cwd_path: Path) -> dict | None:
+    """The ``projects`` entry matching ``cwd_path``, found by comparing
+    ``normcase(realpath(...))`` on every key -- ``~/.claude.json`` is
+    observed to hold the same directory under several spellings at once
+    (forward slashes, backslashes, drive-letter case). The raw matching key
+    is deliberately never returned or stored (fix: raw paths never
+    recorded) -- only the entry's own values.
+    """
+    projects = dot_claude_json.get("projects")
+    if not isinstance(projects, dict):
+        return None
+    target = _normcase_realpath(str(cwd_path))
+    best: dict | None = None
+    for raw_key, entry in projects.items():
+        if not isinstance(entry, dict):
+            continue
+        if _normcase_realpath(str(raw_key)) != target:
+            continue
+        if best is None or entry.get("lastSessionId"):
+            best = entry
+    return best
+
+
+def build_claude_json_section(cwd_path: Path) -> dict:
+    """A redacted read of ``~/.claude.json`` (the CLI's own per-machine
+    state file -- distinct from any Claude Code *settings* file): whether
+    this project has an entry at all, its MCP server/plugin names and
+    small counts, and its ``last*`` session totals if present -- a
+    cross-check against this tool's own accounting for the same session
+    (joined later by ``lastSessionId``). Degrades to ``{"matched": False}``
+    on a missing, unreadable or malformed file, or one with no matching
+    project entry -- never raises.
+    """
+    dot_claude_json = _read_json_dict(Path.home() / ".claude.json")
+    if dot_claude_json is None:
+        return {"matched": False}
+
+    entry = _find_claude_json_project_entry(dot_claude_json, cwd_path)
+
+    result: dict = {"matched": entry is not None}
+    if entry is not None:
+        mcp_servers = entry.get("mcpServers")
+        result["mcp_servers"] = sorted(mcp_servers.keys()) if isinstance(mcp_servers, dict) else []
+        enabled = entry.get("enabledMcpjsonServers")
+        result["enabled_mcpjson_servers"] = (
+            sorted(str(x) for x in enabled) if isinstance(enabled, list) else []
+        )
+        disabled = entry.get("disabledMcpjsonServers")
+        result["disabled_mcpjson_servers"] = (
+            sorted(str(x) for x in disabled) if isinstance(disabled, list) else []
+        )
+        allowed_tools = entry.get("allowedTools")
+        result["allowed_tools_count"] = len(allowed_tools) if isinstance(allowed_tools, list) else 0
+        result["has_trust_dialog_accepted"] = bool(entry.get("hasTrustDialogAccepted"))
+
+        last_session: dict = {}
+        for key in _CLAUDE_JSON_LAST_SESSION_KEYS:
+            if key not in entry:
+                continue
+            value = entry[key]
+            if key == "lastSessionId":
+                if isinstance(value, str):
+                    last_session[key] = value
+            elif isinstance(value, bool):
+                continue  # not one of the documented numeric fields
+            elif isinstance(value, (int, float)):
+                last_session[key] = value
+        if last_session:
+            result["last_session"] = last_session
+
+    projects = dot_claude_json.get("projects")
+    top_level_scalars: dict = {}
+    for key, value in dot_claude_json.items():
+        if key == "projects":
+            continue
+        if isinstance(value, bool) or isinstance(value, (int, float)):
+            top_level_scalars[key] = value
+        elif isinstance(value, str):
+            top_level_scalars[key] = f"str({len(value)})"
+        # dict/list top-level fields (oauthAccount, tipsHistory, ...) are
+        # skipped entirely: unpredictable shape that can hold identity data,
+        # unlike the small fixed set of per-project fields handled above.
+    result["top_level"] = {
+        "num_projects": len(projects) if isinstance(projects, dict) else 0,
+        "scalars": top_level_scalars,
+    }
+    return result
+
+
+# -- schema 2: content layers -------------------------------------------------
+
+
+def _file_bytes(path: Path) -> int | None:
+    try:
+        return path.stat().st_size
+    except OSError:
+        return None
+
+
+def _count_bytes_for_glob(base: Path, pattern: str) -> tuple[int, int]:
+    if not base.is_dir():
+        return 0, 0
+    count = 0
+    total = 0
+    try:
+        paths = list(base.glob(pattern))
+    except OSError:
+        return 0, 0
+    for candidate in paths:
+        try:
+            if candidate.is_file():
+                count += 1
+                total += candidate.stat().st_size
+        except OSError:
+            continue
+    return count, total
+
+
+def _walk_nested_claude_md(root: Path) -> tuple[int, int]:
+    """Bounded walk for nested ``CLAUDE.md`` files below (not including)
+    ``root`` itself -- the project root's own ``CLAUDE.md``/``CLAUDE.local.md``
+    are recorded separately. Depth-limited to
+    :data:`_CLAUDE_MD_WALK_MAX_DEPTH` and :data:`_CLAUDE_MD_WALK_MAX_DIRS`
+    directories visited, skipping :data:`_CLAUDE_MD_WALK_SKIP_DIRS`, so a
+    huge or symlink-cyclic tree can't make a session start hang.
+    """
+    count = 0
+    total_bytes = 0
+    visited_dirs = 0
+    stack: list[tuple[Path, int]] = [(root, 0)]
+    while stack:
+        if visited_dirs >= _CLAUDE_MD_WALK_MAX_DIRS:
+            break
+        current, depth = stack.pop()
+        visited_dirs += 1
+        try:
+            entries = list(current.iterdir())
+        except OSError:
+            continue
+        for entry in entries:
+            try:
+                if entry.is_dir():
+                    if entry.name in _CLAUDE_MD_WALK_SKIP_DIRS:
+                        continue
+                    if depth < _CLAUDE_MD_WALK_MAX_DEPTH:
+                        stack.append((entry, depth + 1))
+                elif depth > 0 and entry.name == "CLAUDE.md" and entry.is_file():
+                    count += 1
+                    total_bytes += entry.stat().st_size
+            except OSError:
+                continue
+    return count, total_bytes
+
+
+def _skills_summary(skills_dir: Path) -> dict:
+    """Skill *names* (the directory name under ``skills/``, already an
+    identifier rather than content -- same posture as an agent name) plus
+    the total bytes of their ``SKILL.md`` files. A skill directory without
+    a ``SKILL.md`` is not a skill Claude Code will load, so it's excluded.
+    """
+    names: list[str] = []
+    total_bytes = 0
+    if not skills_dir.is_dir():
+        return {"names": names, "total_bytes": total_bytes}
+    try:
+        entries = sorted(skills_dir.iterdir())
+    except OSError:
+        entries = []
+    for entry in entries:
+        try:
+            if not entry.is_dir():
+                continue
+            skill_md = entry / "SKILL.md"
+            if skill_md.is_file():
+                names.append(entry.name)
+                total_bytes += skill_md.stat().st_size
+        except OSError:
+            continue
+    return {"names": names, "total_bytes": total_bytes}
+
+
+def _plugins_summary(claude_root: Path) -> dict:
+    plugins_dir = claude_root / "plugins"
+    names: list[str] = []
+    marketplaces = 0
+    if plugins_dir.is_dir():
+        try:
+            names = sorted(entry.name for entry in plugins_dir.iterdir() if entry.is_dir())
+        except OSError:
+            names = []
+        marketplaces_dir = plugins_dir / "marketplaces"
+        if marketplaces_dir.is_dir():
+            try:
+                marketplaces = sum(1 for entry in marketplaces_dir.iterdir() if entry.is_dir())
+            except OSError:
+                marketplaces = 0
+    # "marketplaces" is itself a plugin-manager bookkeeping directory, not
+    # an installed plugin -- excluded from the installed-plugin name list.
+    names = [name for name in names if name != "marketplaces"]
+    return {"names": names, "marketplaces": marketplaces}
+
+
+def _memory_summary(claude_root: Path, project_slug: str) -> dict:
+    """This project's auto-memory directory (``MEMORY.md`` plus the
+    individual per-topic leaf files it indexes) -- byte/file count only,
+    never content.
+    """
+    memory_dir = claude_root / "projects" / project_slug / "memory"
+    if not memory_dir.is_dir():
+        return {"present": False, "files": 0, "bytes": 0}
+    files = 0
+    total_bytes = 0
+    try:
+        candidates = list(memory_dir.rglob("*.md"))
+    except OSError:
+        candidates = []
+    for path in candidates:
+        try:
+            if path.is_file():
+                files += 1
+                total_bytes += path.stat().st_size
+        except OSError:
+            continue
+    return {"present": files > 0, "files": files, "bytes": total_bytes}
+
+
+def build_content_layers(cwd_path: Path, claude_root: Path, project_slug: str, agents: dict) -> dict:
+    """Sizes, counts and names only (never content) for every content
+    layer the plan's "Configuration layers" section lists: the CLAUDE.md
+    family, rules, commands, skills, an agents source/shadow rollup, the
+    project's own ``.mcp.json``, a ``managed-mcp.json`` presence check,
+    output style names, this project's auto-memory footprint, installed
+    plugin names/marketplace count, and whether ``CLAUDE_CONFIG_DIR`` is
+    set at all (never its value, which is a path).
+    """
+    nested_count, nested_bytes = _walk_nested_claude_md(cwd_path)
+    rules_count, rules_bytes = _count_bytes_for_glob(cwd_path / ".claude" / "rules", "*.md")
+    commands_count, commands_bytes = _count_bytes_for_glob(cwd_path / ".claude" / "commands", "**/*.md")
+
+    mcp_json = _read_json_dict(cwd_path / ".mcp.json")
+    mcp_json_names: list[str] = []
+    if mcp_json is not None:
+        servers = mcp_json.get("mcpServers")
+        if isinstance(servers, dict):
+            mcp_json_names = sorted(str(k) for k in servers)
+
+    output_styles_dir = claude_root / "output-styles"
+    output_style_names: list[str] = []
+    if output_styles_dir.is_dir():
+        try:
+            output_style_names = sorted(p.stem for p in output_styles_dir.glob("*.md"))
+        except OSError:
+            output_style_names = []
+
+    return {
+        "claude_md": {
+            "user_bytes": _file_bytes(claude_root / "CLAUDE.md"),
+            "project_root_bytes": _file_bytes(cwd_path / "CLAUDE.md"),
+            "project_local_bytes": _file_bytes(cwd_path / "CLAUDE.local.md"),
+            "nested_count": nested_count,
+            "nested_bytes": nested_bytes,
+        },
+        "rules": {"count": rules_count, "bytes": rules_bytes},
+        "commands": {"count": commands_count, "bytes": commands_bytes},
+        "skills": {
+            "project": _skills_summary(cwd_path / ".claude" / "skills"),
+            "user": _skills_summary(claude_root / "skills"),
+        },
+        "agents_summary": {
+            "count": len(agents),
+            "user_count": sum(1 for a in agents.values() if a.get("source") == "user"),
+            "project_count": sum(1 for a in agents.values() if a.get("source") == "project"),
+            "shadowed_count": sum(1 for a in agents.values() if a.get("shadowed_by_project")),
+        },
+        "mcp_json": {"present": mcp_json is not None, "names": mcp_json_names},
+        "managed_mcp_present": (claude_root / "managed-mcp.json").is_file(),
+        "output_styles": output_style_names,
+        "memory": _memory_summary(claude_root, project_slug),
+        "plugins": _plugins_summary(claude_root),
+        "claude_config_dir_set": bool(os.environ.get("CLAUDE_CONFIG_DIR")),
+    }
 
 
 # -- snapshot assembly -------------------------------------------------------
@@ -411,18 +1060,27 @@ def build_snapshot(
     claude_version = os.environ.get("CLAUDE_CODE_VERSION") or None
     profile_id = _read_active_profile(config_dir)
 
-    user_settings_raw = _read_json_dict(claude_root / "settings.json") or {}
+    # Kept as the raw ``dict | None`` (never defaulted to ``{}``) alongside
+    # the schema-1 ``or {}`` convenience variable below it, since schema 2's
+    # settings-layer presence flag needs to distinguish "file exists and is
+    # an empty object" from "file doesn't exist" -- something ``or {}``
+    # collapses into the same value.
+    user_settings_raw_or_none = _read_json_dict(claude_root / "settings.json")
+    user_settings_raw = user_settings_raw_or_none or {}
     user_settings = redact_settings(user_settings_raw)
 
     resolved_managed_path = Path(managed_path) if managed_path else default_managed_settings_path()
-    managed_settings_raw = _read_json_dict(resolved_managed_path) or {}
+    managed_settings_raw_or_none = _read_json_dict(resolved_managed_path)
+    managed_settings_raw = managed_settings_raw_or_none or {}
     managed_settings = redact_settings(managed_settings_raw)
     managed_keys = sorted(managed_settings_raw.keys())
 
     project_settings: dict = {}
+    project_settings_raw: dict[str, dict | None] = {}
     for name in ("settings.json", "settings.local.json"):
         path = cwd_path / ".claude" / name
         data = _read_json_dict(path)
+        project_settings_raw[name] = data
         if data is not None:
             project_settings[_sha256_hex(str(path))] = redact_settings(data)
 
@@ -454,23 +1112,41 @@ def build_snapshot(
         else [],
     }
 
-    enabled_plugins_raw = user_settings_raw.get("enabledPlugins")
-    if isinstance(enabled_plugins_raw, dict):
-        enabled_plugins = sorted(str(k) for k in enabled_plugins_raw)
-    elif isinstance(enabled_plugins_raw, list):
-        enabled_plugins = sorted(str(x) for x in enabled_plugins_raw)
-    else:
-        enabled_plugins = []
+    enabled_plugins = _extract_enabled_plugins(user_settings_raw)
 
-    agents: dict = {}
-    agents.update(_load_agents(claude_root / "agents"))
-    agents.update(_load_agents(cwd_path / ".claude" / "agents"))
+    user_agents = _load_agents(claude_root / "agents", source="user")
+    project_agents = _load_agents(cwd_path / ".claude" / "agents", source="project")
+    agents = _merge_agents(user_agents, project_agents)
 
     env_names = sorted(
         name
         for name in os.environ
-        if name.startswith("ANTHROPIC_") or name.startswith("CLAUDE_")
+        if name.startswith(_ENV_NAME_PREFIXES) or name in _ENV_EXTRA_NAMES
     )
+    env_numeric_caps: dict = {}
+    for name in sorted(_ENV_NUMERIC_CAP_NAMES):
+        raw_value = os.environ.get(name)
+        if raw_value is None:
+            continue
+        try:
+            env_numeric_caps[name] = int(raw_value)
+        except ValueError:
+            continue
+
+    # Schema 2: settings layers / effective config / effective agents.
+    raw_settings_by_layer = {
+        "managed": managed_settings_raw_or_none,
+        "project_local": project_settings_raw.get("settings.local.json"),
+        "project_shared": project_settings_raw.get("settings.json"),
+        "user": user_settings_raw_or_none,
+    }
+    settings_layers = build_settings_layers(cwd_path, claude_root, resolved_managed_path, raw_settings_by_layer)
+    effective, effective_provenance = build_effective_settings(raw_settings_by_layer)
+    effective_agents = build_effective_agents(agents)
+
+    project_slug = _project_slug(cwd)
+    claude_json_section = build_claude_json_section(cwd_path)
+    content_layers = build_content_layers(cwd_path, claude_root, project_slug, agents)
 
     snapshot = {
         "schema": SCHEMA_VERSION,
@@ -489,6 +1165,15 @@ def build_snapshot(
         "enabled_plugins": enabled_plugins,
         "agents": agents,
         "env_names": env_names,
+        "env_numeric_caps": env_numeric_caps,
+        # -- schema 2 additions (additive; see module docstring) --
+        "project_slug": project_slug,
+        "settings_layers": settings_layers,
+        "effective": effective,
+        "effective_provenance": effective_provenance,
+        "effective_agents": effective_agents,
+        "claude_json": claude_json_section,
+        "content_layers": content_layers,
     }
     snapshot["content_hash"] = _content_hash(snapshot)
     return snapshot

@@ -26,7 +26,7 @@ import pytest
 
 from claude_token_lens import __version__, cli
 
-from helpers import turn_line, write_jsonl
+from helpers import assert_privacy, turn_line, write_jsonl
 
 #: Subcommands with no real implementation yet (v0.2/v0.3 milestones).
 STUB_SUBCOMMANDS = ("init", "baseline", "serve")
@@ -185,6 +185,114 @@ def test_snapshot_config_print_hook_exits_0(capsys):
     exit_code = cli.main(["snapshot-config", "--print-hook"])
     assert exit_code == 0
     capsys.readouterr()
+
+
+# -- snapshot-config --project-dir / probe-config (schema 2) ----------------
+#
+# --project-dir (not --project) is deliberate: the common parser already
+# defines a repeatable --project meaning "a project slug to filter a
+# report by" (see _build_common_parser); a single directory-path override
+# for these two subcommands needed its own name to avoid a silent
+# argparse option-string collision (both flags are otherwise attached to
+# every subcommand via parents=[common]).
+
+
+def test_snapshot_config_project_dir_runs_the_hook_for_an_explicit_directory(tmp_path, capsys):
+    project = tmp_path / "some-project"
+    (project / ".claude").mkdir(parents=True)
+    (project / ".claude" / "settings.json").write_text(
+        json.dumps({"model": "opus"}), encoding="utf-8"
+    )
+    config_dir = tmp_path / "token-lens"
+
+    exit_code = cli.main(
+        [
+            "snapshot-config",
+            "--config-dir",
+            str(config_dir),
+            "--project-dir",
+            str(project),
+        ]
+    )
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    snapshot_path = Path(out.strip())
+    assert snapshot_path.exists()
+    snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    assert snapshot["project_settings"]
+    project_entry = next(iter(snapshot["project_settings"].values()))
+    assert project_entry["model"] == "opus"
+
+
+def test_snapshot_config_without_project_dir_uses_cwd(tmp_path, capsys, monkeypatch):
+    project = tmp_path / "cwd-project"
+    project.mkdir(parents=True)
+    config_dir = tmp_path / "token-lens"
+    monkeypatch.chdir(project)
+
+    exit_code = cli.main(["snapshot-config", "--config-dir", str(config_dir)])
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    snapshot = json.loads(Path(out.strip()).read_text(encoding="utf-8"))
+    # cwd_hash is a hash, not the raw path -- just confirm a snapshot was
+    # actually produced for *some* cwd rather than failing outright.
+    assert snapshot["cwd_hash"].startswith("sha256:")
+
+
+def test_probe_config_renders_markdown_with_no_raw_paths(tmp_path, capsys):
+    project = tmp_path / "probe-project"
+    (project / ".claude").mkdir(parents=True)
+    (project / ".claude" / "settings.json").write_text(
+        json.dumps({"model": "sonnet", "effortLevel": "high"}), encoding="utf-8"
+    )
+    config_dir = tmp_path / "token-lens"
+
+    exit_code = cli.main(
+        [
+            "probe-config",
+            "--config-dir",
+            str(config_dir),
+            "--project-dir",
+            str(project),
+        ]
+    )
+    assert exit_code == 0
+    out = capsys.readouterr().out
+
+    assert out.startswith("# Config probe:")
+    assert "## Settings layers" in out
+    assert "## Effective config" in out
+    assert "| model | sonnet |" in out
+    assert "project_shared" in out  # the layer name, not a raw path
+
+    assert_privacy(out)
+    # Never write a snapshot file to disk -- probe-config only prints.
+    assert not (config_dir / "snapshots").exists()
+
+
+def test_probe_config_defaults_to_the_current_directory(tmp_path, capsys, monkeypatch):
+    project = tmp_path / "cwd-probe-project"
+    project.mkdir(parents=True)
+    config_dir = tmp_path / "token-lens"
+    monkeypatch.chdir(project)
+
+    exit_code = cli.main(["probe-config", "--config-dir", str(config_dir)])
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert out.startswith("# Config probe:")
+
+
+def test_probe_config_no_effective_keys_notes_it(tmp_path, capsys):
+    project = tmp_path / "empty-project"
+    project.mkdir(parents=True)
+    config_dir = tmp_path / "token-lens"
+
+    exit_code = cli.main(
+        ["probe-config", "--config-dir", str(config_dir), "--project-dir", str(project)]
+    )
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "no settings layer defines any allowlisted key" in out
 
 
 # -- report / sessions / recache / ttl / compactions -------------------------

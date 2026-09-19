@@ -1,14 +1,29 @@
-"""Config-snapshot loading, joining and diffing (WP7).
+"""Config-snapshot loading, joining and diffing (WP7; schema 2 additions
+per the plan's "Configuration layers and per-project effective config"
+section).
 
 Reads the JSON files written by ``hooks/snapshot-config.py`` (see that
 module's docstring and plan Appendix A6 for the on-disk shape) and answers
-two questions a report needs:
+several questions a report needs:
 
 - Which snapshot was current when a given session started
   (:func:`snapshot_for`)?
 - Which config keys actually changed across a window, and — for one chosen
   key — how do sessions grouped by that key's value compare
   (:func:`diff_keys`, :func:`co_changed_keys`, :func:`build_config_diff_table`)?
+- (schema 2) What is the *effective* merged config for a project right now,
+  and which layer supplied each key (:func:`effective_config`,
+  :func:`layers`, :func:`build_effective_config_table`)?
+- (schema 2) Which projects share an identical effective config
+  (:func:`build_config_groups_table`), and which sessions' *observed*
+  behaviour (a caller-computed dominant model/TTL-mix/effort) disagrees
+  with what their snapshot says should be in effect
+  (:func:`detect_drift`, :func:`build_config_drift_table`) — a mismatch
+  implies a shell-profile env var or a ``--settings`` overlay the hook
+  cannot see.
+- (schema 2) Does ``~/.claude.json``'s own per-project ``last*`` session
+  total agree with this tool's own accounting for the same session
+  (:func:`claude_json_cross_check`)?
 
 Deviation from the plan, reported rather than made silently (see
 ``model.py``'s module docstring for the project's convention on this): the
@@ -20,7 +35,21 @@ each session's start time — the function cannot do the join described
 takes ``snapshots`` as an explicit third parameter throughout (matching
 ``diff_keys`` and ``co_changed_keys``, which already take snapshots
 directly) rather than reaching out to load them itself, so every function
-here stays a pure function of its arguments.
+here stays a pure function of its arguments. The schema-2 additions keep
+the same convention: :func:`build_config_drift_table` and
+:func:`claude_json_cross_check` take the caller's already-computed
+"observed" values (from real ``Turn``/``SessionRecord`` data) as plain
+dicts rather than reaching into the parser themselves.
+
+Project identity for the schema-2 multi-project tables
+(:func:`build_effective_config_table`, :func:`build_config_layers_table`,
+:func:`build_config_groups_table`) comes from each snapshot's own
+``project_slug`` field (the hook's cwd at capture time) rather than a
+caller-supplied project argument — a single ``<config-dir>/snapshots/``
+directory accumulates snapshots from every project the hook has ever run
+in, exactly like ``~/.claude/projects/`` itself. A schema-1 snapshot (no
+``project_slug`` field) collapses into one ``"(unknown project)"`` bucket
+per :func:`_project_label`.
 
 This module may import from the rest of the package (unlike the standalone
 hook script) — it reuses :class:`~claude_token_lens.model.Table` and
@@ -30,6 +59,7 @@ through the same renderers as every other report table.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import statistics
 from dataclasses import dataclass, field
@@ -57,6 +87,13 @@ _CONFIG_SECTIONS = (
     "agents",
     "env_names",
 )
+
+#: Schema 2's settings layers, precedence high to low -- matches
+#: ``hooks/snapshot-config.py``'s own ``SETTINGS_LAYER_ORDER`` (duplicated
+#: rather than imported: that script stays standalone stdlib and this
+#: module is the one importing side of that relationship, not the other
+#: way around -- see the hook's module docstring).
+SETTINGS_LAYER_NAMES: tuple[str, ...] = ("managed", "project_local", "project_shared", "user")
 
 
 @dataclass(slots=True)
@@ -187,6 +224,347 @@ def managed_keys(snapshot: Snapshot) -> list[str]:
     if not isinstance(keys, list):
         return []
     return [str(k) for k in keys]
+
+
+# -- schema 2: effective config / layers / project grouping -----------------
+
+
+def effective_config(snapshot: Snapshot) -> dict:
+    """Schema 2's ``effective`` field: every documented settings lever's
+    value, merged across the settings layers in precedence order (see
+    ``hooks/snapshot-config.py``'s ``build_effective_settings``). ``{}`` for
+    a schema-1 snapshot, which predates the settings-layer merge — a fresh
+    snapshot is needed to get effective config for that project.
+    """
+    value = snapshot.data.get("effective")
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def effective_provenance(snapshot: Snapshot) -> dict:
+    """Schema 2's ``effective_provenance`` field: ``{key: layer_name}`` for
+    every key in :func:`effective_config`. ``{}`` for a schema-1 snapshot.
+    """
+    value = snapshot.data.get("effective_provenance")
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def layers(snapshot: Snapshot) -> dict:
+    """Schema 2's ``settings_layers`` field: ``{layer_name: {present,
+    source_path_hash, content_hash, ...}}`` for each of ``managed``,
+    ``project_local``, ``project_shared``, ``user`` (precedence high to
+    low). ``{}`` for a schema-1 snapshot.
+    """
+    value = snapshot.data.get("settings_layers")
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _project_label(snapshot: Snapshot) -> str:
+    """The project identity a schema-2 snapshot's own ``project_slug``
+    names, or a fixed placeholder for a schema-1 snapshot (which predates
+    that field) — see the module docstring's "Project identity" note.
+    """
+    slug = snapshot.data.get("project_slug")
+    return str(slug) if isinstance(slug, str) and slug else "(unknown project)"
+
+
+def latest_snapshot_per_project(snapshots: list[Snapshot]) -> dict[str, Snapshot]:
+    """The most recent snapshot for each project represented in
+    ``snapshots`` (grouped by :func:`_project_label`). Relies on
+    ``snapshots`` already being ascending by ``ts`` — :func:`load_snapshots`'
+    own contract — so simply keeping the last one seen per project is
+    correct without a separate sort/max step.
+    """
+    latest: dict[str, Snapshot] = {}
+    for snap in snapshots:
+        latest[_project_label(snap)] = snap
+    return latest
+
+
+def _hash_effective_config(effective: dict) -> str:
+    encoded = json.dumps(effective, sort_keys=True, default=str).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def build_effective_config_table(snapshots: list[Snapshot]) -> Table:
+    """One row per (project, key) for every project's *latest* effective
+    config: the value currently in effect and which settings layer
+    supplied it. Empty (no rows) if no snapshot carries schema 2's
+    ``effective`` field yet.
+    """
+    latest = latest_snapshot_per_project(snapshots)
+    rows: list[list] = []
+    for project in sorted(latest):
+        snap = latest[project]
+        eff = effective_config(snap)
+        prov = effective_provenance(snap)
+        for key in sorted(eff):
+            rows.append([project, key, _stringify_config_value(eff[key]), prov.get(key, "")])
+
+    notes: list[str] = []
+    if snapshots and not rows:
+        notes.append(
+            "No schema-2 effective config found in any supplied snapshot "
+            "(capture a fresh snapshot with the current hook to populate this table)."
+        )
+    return Table(
+        name="effective-config",
+        title="Effective config",
+        columns=[
+            Column(key="project", label="Project", kind="str"),
+            Column(key="key", label="Key", kind="str"),
+            Column(key="value", label="Value", kind="str"),
+            Column(key="provenance", label="Source layer", kind="str"),
+        ],
+        rows=rows,
+        notes=notes,
+    )
+
+
+def build_config_layers_table(snapshots: list[Snapshot]) -> Table:
+    """One row per (project, settings layer): whether that layer file is
+    present, plus a repeated per-project content-layer summary (agent
+    count, skill count, rules count, total CLAUDE.md bytes, command count,
+    MCP server count) so a reader sees a project's whole config footprint
+    without cross-referencing a second table.
+    """
+    latest = latest_snapshot_per_project(snapshots)
+    rows: list[list] = []
+    for project in sorted(latest):
+        snap = latest[project]
+        layer_map = layers(snap)
+        content = snap.data.get("content_layers")
+        content = content if isinstance(content, dict) else {}
+
+        agents_summary = content.get("agents_summary") or {}
+        skills = content.get("skills") or {}
+        project_skills = (skills.get("project") or {}).get("names") or []
+        user_skills = (skills.get("user") or {}).get("names") or []
+        rules = content.get("rules") or {}
+        commands = content.get("commands") or {}
+        claude_md = content.get("claude_md") or {}
+        claude_md_bytes = sum(
+            value
+            for value in (
+                claude_md.get("user_bytes"),
+                claude_md.get("project_root_bytes"),
+                claude_md.get("project_local_bytes"),
+                claude_md.get("nested_bytes"),
+            )
+            if isinstance(value, (int, float))
+        )
+        mcp_servers = snap.data.get("mcp_servers")
+        mcp_names = (mcp_servers or {}).get("names") or []
+
+        for layer_name in SETTINGS_LAYER_NAMES:
+            layer_info = layer_map.get(layer_name) or {}
+            rows.append(
+                [
+                    project,
+                    layer_name,
+                    bool(layer_info.get("present")),
+                    agents_summary.get("count", 0),
+                    len(project_skills) + len(user_skills),
+                    rules.get("count", 0),
+                    claude_md_bytes,
+                    commands.get("count", 0),
+                    len(mcp_names),
+                ]
+            )
+
+    return Table(
+        name="config-layers",
+        title="Config layers",
+        columns=[
+            Column(key="project", label="Project", kind="str"),
+            Column(key="layer", label="Layer", kind="str"),
+            Column(key="present", label="Present", kind="str"),
+            Column(key="agents", label="Agents", kind="int"),
+            Column(key="skills", label="Skills", kind="int"),
+            Column(key="rules", label="Rules", kind="int"),
+            Column(key="claude_md_bytes", label="CLAUDE.md bytes", kind="int"),
+            Column(key="commands", label="Commands", kind="int"),
+            Column(key="mcp_servers", label="MCP servers", kind="int"),
+        ],
+        rows=rows,
+        notes=[],
+    )
+
+
+def build_config_groups_table(
+    snapshots: list[Snapshot], sessions_with_metrics: list[dict] | None = None
+) -> Table:
+    """Projects grouped by an identical *current* effective config (each
+    project's latest snapshot), with an optional session count per group
+    when ``sessions_with_metrics`` (the same ``{session_id, first_ts, ...}``
+    shape :func:`build_config_diff_table` takes) is supplied — a session is
+    attributed to whichever project its own :func:`snapshot_for` join
+    resolves to, independent of which exact snapshot it joined (only that
+    snapshot's project matters for this count).
+    """
+    latest = latest_snapshot_per_project(snapshots)
+
+    session_counts: dict[str, int] = {}
+    if sessions_with_metrics:
+        for session in sessions_with_metrics:
+            snap = snapshot_for(session.get("first_ts"), snapshots)
+            if snap is None:
+                continue
+            project = _project_label(snap)
+            session_counts[project] = session_counts.get(project, 0) + 1
+
+    groups: dict[str, dict] = {}
+    for project in sorted(latest):
+        snap = latest[project]
+        config_hash = _hash_effective_config(effective_config(snap))
+        bucket = groups.setdefault(config_hash, {"projects": [], "sessions": 0})
+        bucket["projects"].append(project)
+        bucket["sessions"] += session_counts.get(project, 0)
+
+    rows: list[list] = []
+    for config_hash in sorted(groups, key=lambda h: (-len(groups[h]["projects"]), h)):
+        bucket = groups[config_hash]
+        rows.append(
+            [config_hash[:12], len(bucket["projects"]), ", ".join(sorted(bucket["projects"])), bucket["sessions"]]
+        )
+
+    return Table(
+        name="config-groups",
+        title="Config groups",
+        columns=[
+            Column(key="config_hash", label="Effective-config hash", kind="str"),
+            Column(key="project_count", label="Projects", kind="int"),
+            Column(key="projects", label="Project list", kind="str"),
+            Column(key="sessions", label="Sessions", kind="int"),
+        ],
+        rows=rows,
+        notes=[],
+    )
+
+
+# -- schema 2: drift detection ------------------------------------------------
+
+
+def detect_drift(snapshot: Snapshot, observed: dict) -> list[tuple[str, object, object]]:
+    """Every key present in both ``snapshot``'s merged
+    :func:`effective_config` and the caller's ``observed`` dict (its own
+    computed dominant model / observed TTL mix / effort mode from real
+    ``Turn``/``SessionRecord`` data — this module never touches turn data
+    itself) whose values disagree, as ``(key, snapshot_value,
+    observed_value)`` triples. A mismatch implies a shell-profile env var
+    or a ``--settings`` one-launch overlay the hook cannot see (plan
+    "Configuration layers" section) — evidence, not proof. A key in
+    ``observed`` that the snapshot doesn't have an effective value for is
+    silently skipped: there's nothing to compare it against.
+    """
+    eff = effective_config(snapshot)
+    mismatches: list[tuple[str, object, object]] = []
+    for key, observed_value in observed.items():
+        if key not in eff:
+            continue
+        if _hashable(eff[key]) != _hashable(observed_value):
+            mismatches.append((key, eff[key], observed_value))
+    return mismatches
+
+
+def build_config_drift_table(sessions_with_observed: list[dict], snapshots: list[Snapshot]) -> Table:
+    """``sessions_with_observed`` entries: ``{"session_id", "first_ts",
+    "observed": {key: value, ...}}``. One row per (session, key) where the
+    session's joined snapshot's effective value disagrees with what was
+    observed; a session predating every snapshot is skipped and counted in
+    a note (same convention as :func:`build_config_diff_table`).
+    """
+    rows: list[list] = []
+    excluded = 0
+    for session in sessions_with_observed:
+        observed = session.get("observed") or {}
+        snap = snapshot_for(session.get("first_ts"), snapshots)
+        if snap is None:
+            excluded += 1
+            continue
+        for key, snap_value, observed_value in detect_drift(snap, observed):
+            rows.append(
+                [
+                    str(session.get("session_id", "")),
+                    key,
+                    _stringify_config_value(snap_value),
+                    _stringify_config_value(observed_value),
+                ]
+            )
+
+    notes: list[str] = []
+    if excluded:
+        plural = "s" if excluded != 1 else ""
+        notes.append(
+            f"{excluded} session{plural} predate the earliest config snapshot and were skipped."
+        )
+    if not rows:
+        notes.append("No drift detected between snapshot effective config and observed session values.")
+
+    return Table(
+        name="config-drift",
+        title="Config drift",
+        columns=[
+            Column(key="session_id", label="Session", kind="str"),
+            Column(key="key", label="Key", kind="str"),
+            Column(key="snapshot_value", label="Snapshot value", kind="str"),
+            Column(key="observed_value", label="Observed value", kind="str"),
+        ],
+        rows=rows,
+        notes=notes,
+    )
+
+
+# -- schema 2: ~/.claude.json cross-check ------------------------------------
+
+#: ``claude_json.last_session`` key -> the matching observed-totals key the
+#: caller's ``observed_session_totals`` dict is expected to use (see
+#: :func:`claude_json_cross_check`).
+_CLAUDE_JSON_CROSS_CHECK_FIELDS: tuple[tuple[str, str], ...] = (
+    ("lastTotalInputTokens", "input_tokens"),
+    ("lastTotalOutputTokens", "output_tokens"),
+    ("lastTotalCacheCreationInputTokens", "cache_creation_tokens"),
+    ("lastTotalCacheReadInputTokens", "cache_read_tokens"),
+    ("lastCost", "cost"),
+)
+
+
+def claude_json_cross_check(snapshot: Snapshot, observed_session_totals: dict) -> dict:
+    """Compare ``~/.claude.json``'s per-project ``last_session`` numbers
+    (schema 2's ``claude_json`` field) against this tool's own totals for
+    the same session, joined by ``lastSessionId`` -- comparison only
+    happens when ``observed_session_totals["session_id"]`` matches, since
+    the two sides otherwise describe different sessions entirely.
+
+    ``observed_session_totals``: ``{"session_id", "input_tokens",
+    "output_tokens", "cache_creation_tokens", "cache_read_tokens", "cost"}``
+    -- whatever subset the caller has; a field missing on either side is
+    skipped rather than reported as a difference.
+
+    Returns ``{"matched": bool, "differences": {field: (claude_json_value,
+    observed_value)}}`` -- ``matched`` is ``False`` (and ``differences``
+    empty) whenever the snapshot has no ``claude_json.last_session`` at
+    all, or its ``lastSessionId`` doesn't equal the observed session id.
+    """
+    claude_json = snapshot.data.get("claude_json")
+    claude_json = claude_json if isinstance(claude_json, dict) else {}
+    last_session = claude_json.get("last_session")
+    last_session = last_session if isinstance(last_session, dict) else {}
+
+    last_session_id = last_session.get("lastSessionId")
+    observed_session_id = observed_session_totals.get("session_id")
+    if not last_session_id or last_session_id != observed_session_id:
+        return {"matched": False, "differences": {}}
+
+    differences: dict[str, tuple] = {}
+    for claude_json_key, observed_key in _CLAUDE_JSON_CROSS_CHECK_FIELDS:
+        if claude_json_key not in last_session or observed_key not in observed_session_totals:
+            continue
+        claude_json_value = last_session[claude_json_key]
+        observed_value = observed_session_totals[observed_key]
+        if claude_json_value != observed_value:
+            differences[observed_key] = (claude_json_value, observed_value)
+
+    return {"matched": True, "differences": differences}
 
 
 def _hashable(value):
@@ -387,6 +765,9 @@ def build_config_section(
     sessions_with_metrics: list[dict],
     snapshots: list[Snapshot],
     key: str,
+    *,
+    include_effective: bool = False,
+    sessions_with_observed: list[dict] | None = None,
 ) -> Section:
     """Wrap :func:`build_config_diff_table` in a "Config diff" report
     ``Section`` (fix item 10), so a CLI report can list a config-diff
@@ -399,6 +780,18 @@ def build_config_section(
     :func:`_stringify_config_value`), so every ``Section``'s ``Table``
     has a first column usable as a row key regardless of the underlying
     config value's type.
+
+    Schema 2 additions (both optional and off by default, so an existing
+    caller passing only the three positional arguments gets exactly the
+    one table it always has):
+
+    - ``include_effective=True`` appends :func:`build_effective_config_table`,
+      :func:`build_config_layers_table` and :func:`build_config_groups_table`
+      (the last also folded ``sessions_with_metrics`` in for its session
+      counts).
+    - ``sessions_with_observed`` (the ``{"session_id", "first_ts",
+      "observed": {...}}`` shape :func:`build_config_drift_table` takes),
+      when given, appends a config-drift table.
     """
     diff_table = build_config_diff_table(sessions_with_metrics, snapshots, key)
     rows = [[_stringify_config_value(row[0]), *row[1:]] for row in diff_table.rows]
@@ -409,7 +802,14 @@ def build_config_section(
         rows=rows,
         notes=diff_table.notes,
     )
-    return Section(key="config_diff", title="Config diff", tables=[section_table])
+    tables = [section_table]
+    if include_effective:
+        tables.append(build_effective_config_table(snapshots))
+        tables.append(build_config_layers_table(snapshots))
+        tables.append(build_config_groups_table(snapshots, sessions_with_metrics))
+    if sessions_with_observed:
+        tables.append(build_config_drift_table(sessions_with_observed, snapshots))
+    return Section(key="config_diff", title="Config diff", tables=tables)
 
 
 __all__ = [
@@ -422,4 +822,16 @@ __all__ = [
     "co_changed_keys",
     "build_config_diff_table",
     "build_config_section",
+    # schema 2
+    "SETTINGS_LAYER_NAMES",
+    "effective_config",
+    "effective_provenance",
+    "layers",
+    "latest_snapshot_per_project",
+    "build_effective_config_table",
+    "build_config_layers_table",
+    "build_config_groups_table",
+    "detect_drift",
+    "build_config_drift_table",
+    "claude_json_cross_check",
 ]
