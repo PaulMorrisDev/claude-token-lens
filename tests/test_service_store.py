@@ -266,6 +266,35 @@ def test_remove_missing_marks_transcripts_not_in_known_set(store: Store) -> None
     assert store.count_missing_transcripts() == 1
 
 
+def test_missing_transcript_survives_until_retention_prune_deletes_it(store: Store) -> None:
+    """Regression test for review finding 3 (blocking): the store must
+    outlive Claude Code's own ``cleanupPeriodDays`` retention. A
+    transcript whose file has vanished is marked (``missing_since``), not
+    deleted -- it keeps serving reports/rebuild regardless of how long
+    ago it went missing, until its *session* actually ages past
+    ``--retention-days``/``--purge``. Fails against a pre-fix
+    ``remove_missing`` that deleted the row outright.
+    """
+    _seed(store)
+    store.remove_missing({_FAKE_PATH})  # subagent path dropped -> marked missing
+    assert store.count_missing_transcripts() == 1
+    assert store.session("session-a") is not None
+
+    # A generous retention window leaves a recently active session
+    # (missing transcript or not) untouched.
+    removed = store.retention_prune(retention_days=3650)
+    assert removed == 0
+    assert store.session("session-a") is not None
+    assert store.count_missing_transcripts() == 1
+
+    # Only once the session itself ages past the retention window does
+    # the row -- and its missing transcript -- actually get deleted.
+    removed = store.retention_prune(retention_days=0)
+    assert removed == 1
+    assert store.session("session-a") is None
+    assert store.count_missing_transcripts() == 0
+
+
 def test_retention_prune_removes_old_sessions(store: Store) -> None:
     _seed(store)
     store.upsert_session(
@@ -465,6 +494,52 @@ def test_turns_for_session_builds_series_and_markers(store: Store) -> None:
 
 
 # -- privacy guard ---------------------------------------------------------
+
+
+def test_slug_username_segment_is_redacted_from_every_read_query(store: Store) -> None:
+    """Regression test for review finding 6 (should-fix): a project slug
+    is derived from Claude Code's own project-directory naming, which
+    embeds the caller's OS username -- a ``C:\\Users\\someone\\repo``
+    project directory becomes the slug ``"C--Users-someone-repo"``. Every
+    read query returning a slug/``project_slug`` must redact that
+    username segment to ``"<user>"`` before it leaves the store layer.
+    Fails against a pre-fix store that returned the raw slug unchanged.
+    """
+    raw_slug = "C--Users-someone-repo"
+    store.upsert_session(
+        session_id="session-user",
+        project_slug=raw_slug,
+        project_root_path=_FAKE_ROOT,
+        slug=raw_slug,
+        first_ts="2026-09-18T12:00:00Z",
+        last_ts="2026-09-18T13:00:00Z",
+    )
+    store.upsert_snapshot(
+        project_slug=raw_slug,
+        project_root_path=_FAKE_ROOT,
+        ts="2026-09-18T12:30:00Z",
+        schema_version=2,
+        digest_json=json.dumps({}),
+    )
+    store.record_baseline(
+        project_slug=raw_slug,
+        project_root_path=_FAKE_ROOT,
+        window_start="2026-09-11T00:00:00Z",
+        window_end="2026-09-18T00:00:00Z",
+        archetype="plan-high-implement-low",
+        digest_json=json.dumps({"sessions": 1}),
+    )
+
+    outputs = {
+        "sessions": store.sessions(),
+        "session": store.session("session-user"),
+        "snapshots": store.snapshots(),
+        "baselines": store.baselines(),
+    }
+    blob = json.dumps(outputs, default=str)
+    assert "someone" not in blob, f"raw username segment leaked into a read-query result: {blob}"
+    assert raw_slug not in blob, f"unredacted slug leaked into a read-query result: {blob}"
+    assert "<user>" in blob, "redact_slug should have substituted the <user> placeholder"
 
 
 def test_no_local_path_leaks_from_any_read_query(store: Store) -> None:

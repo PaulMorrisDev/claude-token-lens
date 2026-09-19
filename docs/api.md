@@ -95,7 +95,17 @@ not listed here returns `404` with `error.code: "not_found"`.
 Liveness/diagnostics probe (also the Docker healthcheck target — plan:
 "healthcheck on `/api/health`"). Never fails once the process is up.
 
-`data`: `{"status": "ok", "schema_version": int, "watcher": WatcherStats-as-dict}`.
+`data`: `{"status": "ok", "schema_version": int, "transcripts_missing": int, "watcher": WatcherStats-as-dict}`.
+
+`transcripts_missing` (review finding 3) is `Store.count_missing_transcripts()`
+— the current count of transcript rows whose backing file the watcher
+can no longer find on disk. A transcript in this state is *marked*, not
+deleted: its `digest_json` keeps serving `report.*`/rebuild until it is
+actually removed by `--retention-days`/`serve --purge` (see "Retention
+and purge" in [docs/deploy.md](deploy.md)). This is also why a report
+can still include a session whose transcript file Claude Code's own
+`cleanupPeriodDays` retention has already removed — see "Store rebuild"
+below.
 
 ### `GET /api/summary`
 
@@ -372,6 +382,16 @@ decodes those digests straight back into a `Corpus` shaped exactly as
 `report.build_report(corpus, ...)` runs unmodified against either one.
 `days`/`since`/`until`/`window_by` mirror `discovery.find_sessions`'s own
 parameters and windowing semantics.
+
+**A file Claude Code removed is marked, not deleted, in the store**
+(review finding 3). `Store.remove_missing` notices its transcript is no
+longer on disk and sets `transcripts.missing_since`; the row and its
+`digest_json` are left alone, so `corpus_from_store` keeps including it
+exactly like a transcript that is still there, and clears the mark again
+if a file at the same path reappears. Only `--retention-days`/`serve
+--purge` (see [docs/deploy.md](deploy.md)) actually delete a row — the
+service store is designed to outlive Claude Code's own retention window,
+not mirror it.
 
 **Workflow runs round-trip (S1-integration fix 1.d).** The watcher
 persists each `<session>/workflows/wf_*.json` run to a `workflow_runs`

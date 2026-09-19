@@ -257,10 +257,23 @@ verified locally as part of S1-integration.
 
 ## Retention and purge
 
+A transcript file the watcher can no longer find on disk (removed by
+Claude Code's own `cleanupPeriodDays`, or by hand) is never deleted from
+the store on the spot — `Store.remove_missing` only marks its
+`missing_since` timestamp (clearing it again if a file at the same path
+reappears). `report.*`/the UI keep including it exactly like a
+transcript still on disk (`GET /api/health`'s `transcripts_missing`
+reports the current count; see [docs/api.md](api.md)). The service
+store is deliberately designed to outlive Claude Code's own retention
+window, not mirror it — the two options below are the *only* things
+that actually delete a row.
+
 - **`--retention-days N`** (existing `serve` flag): every watcher poll
   tick prunes sessions whose transcripts were all last active more than
-  `N` days ago (`Store.retention_prune`). Off by default — nothing is
-  ever pruned unless you opt in.
+  `N` days ago (`Store.retention_prune`) — this is what actually deletes
+  a marked-missing (or still-present) transcript's row, not the
+  missing-file check itself. Off by default — nothing is ever pruned
+  unless you opt in.
 - **`serve --purge`** (deliverable 2.e): deletes `<config-dir>/service.db`
   and its `-wal`/`-shm` sidecars, then exits — never starts the watcher
   or API. Always prints exactly which files it would delete first; only

@@ -32,6 +32,18 @@ never the source of truth, and the next watcher tick repopulates it
 because ``known_files()`` is empty again. There is still no in-place
 ``ALTER TABLE`` migration path -- this drop-and-rebuild is the only one.
 
+A transcript whose file disappears from disk (review finding 3: "the
+store must outlive Claude Code's own ``cleanupPeriodDays``") is never
+deleted by the watcher's own poll tick -- ``remove_missing`` only marks
+its ``missing_since`` timestamp (clearing it again if the file
+reappears with the same path). Every read query that returns
+transcripts (``session``) includes a missing-but-not-yet-pruned
+transcript by default, same as one still on disk, so its stored
+``digest_json`` keeps serving reports/rebuild until the row is actually
+removed by ``retention_prune`` or ``claude-token-lens serve --purge``.
+``count_missing_transcripts`` is the one query that reports the current
+total, for ``/api/health``.
+
 ``GLOBAL_PROJECT_SLUG`` is the synthetic project slug the watcher
 attributes a machine-wide config snapshot to when the snapshot itself
 carries no per-project identity (``hooks/snapshot-config.py`` writes one
