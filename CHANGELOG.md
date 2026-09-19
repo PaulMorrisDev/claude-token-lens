@@ -170,13 +170,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `context_window_autocompact_threshold`) to the usage-log CSV whenever
   the payload's `context_window` carries numeric fields -- old-format
   (six-column) rows are still read without error.
+- **S1-exports**: real `prompt_cache` cache ground truth in the
+  statusline, an aggregate-only `export` command, and a scheduled
+  `monthly-report`.
+  - **Statusline cache segment** (`statusline.py`) now renders real
+    ground truth instead of a guessed hit ratio: `cache warm 5m 03:12`
+    (a `MM:SS` countdown to `prompt_cache.expires_at`) while warm, or
+    `cache cold` with an optional `recache ~12k tokens` hint once
+    expired; falls back to an estimate (`cache est ...`) only when the
+    payload carries no usable `prompt_cache`, now driven by a
+    transcript-derived TTL hint
+    (`message.usage.cache_creation.ephemeral_1h_input_tokens`) rather
+    than the caller-supplied TTL value. The numeric `prompt_cache`
+    fields are appended to the usage-log CSV as six further trailing
+    columns (15 columns total), feeding a new `cache_ground_truth` table
+    in the `usage` section (`statusline.build_cache_ground_truth_table`,
+    wired in by `report.build_report` via `usage_log_rows`).
+  - **`report`/`sessions`/`recache`/`ttl`/`compactions`** now load
+    `<config_dir>/usage-log.csv`, when present, with a tolerant reader
+    and pass the rows into `build_report` as `usage_log_rows` — so
+    `context_budget_statusline` and `cache_ground_truth` populate for
+    the ordinary CLI report, not only for a caller that builds
+    `usage_log_rows` itself.
+  - **`claude-token-lens export --format csv-flat|json|otel-jsonl`**
+    (`exports.py`): a privacy-safe, aggregate-only-by-default export for
+    BI/observability tooling — one row per
+    `day`/`project`/`model`/`entrypoint`/`agent_type` (`--per-session`
+    opts into a `session_id` column), project slugs hashed by default
+    whenever aggregate-only is in effect (`--no-hash-slugs` to opt out),
+    reusing the existing salted-hash construction and salt file. The
+    `otel-jsonl` format mirrors Claude Code's own OpenTelemetry metric
+    names (`claude_code.token.usage`, `claude_code.cost.usage`) as an
+    offline approximation. See [`docs/exports.md`](docs/exports.md).
+  - **`claude-token-lens monthly-report --out DIR [--month YYYY-MM]`**
+    (`monthly.py`): writes `claude-token-lens-YYYY-MM.md`/`.html` for one
+    calendar month (default: the previous month) — a finance header
+    (cost/tokens by model/project/entrypoint, five-hour blocks under
+    subscription billing) plus the `usage` section. The same inputs
+    always produce byte-identical files (idempotent), and
+    `monthly.write_monthly_report` is the entry point the v0.2 service
+    will wire up to `serve --monthly-report DIR`.
 
 ### Planned
 
 - **v0.2** — `claude-token-lens serve` (local read-only service: watcher
   thread, SQLite store, `http.server` JSON API, dependency-free static
-  web UI), Docker packaging, a live TTL countdown in the statusline, an
-  aggregate-only `export` command, and a monthly report.
+  web UI), Docker packaging, and a live TTL countdown in the statusline.
 - **v0.3** — `init`, a `baseline`/onboarding capture window, a profile
   schema and catalogue, `apply`/`--revert` for writing a chosen profile
   into `settings.json`/agent frontmatter, a `compare` command, a team
