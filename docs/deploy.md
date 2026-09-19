@@ -11,6 +11,108 @@ All three run the exact same `claude-token-lens serve` command
 underneath; they differ only in how that process is started, kept
 running, and sandboxed by the host.
 
+## The installer: `install-service`/`uninstall-service`
+
+`src/claude_token_lens/installer.py` (v3) drives Path 1 and Path 2
+below from Python, so `claude-token-lens init`'s last step, and the
+standalone `install-service` subcommand, don't require you to copy a
+script or a unit file by hand. It exists for one reason: Claude Code
+deletes a project's own transcripts after `cleanupPeriodDays`, and this
+project's store is only ever fed by a *running* `serve` watcher — a
+service that only starts when someone remembers to run it manually
+loses that history the moment the underlying JSONL files are cleaned
+up. Only a continuously running, logon-registered service actually
+keeps it.
+
+```bash
+claude-token-lens install-service                     # register for this platform
+claude-token-lens install-service --dry-run           # print the plan only — writes/runs nothing
+claude-token-lens install-service --port 9000 --bind 127.0.0.1
+claude-token-lens uninstall-service                   # remove whatever was registered
+claude-token-lens uninstall-service --dry-run
+```
+
+**Safety posture** (see the module's own docstring for the full
+rationale): building a plan (`plan_service_install`) never has a side
+effect — no file write, no `subprocess` call — which is what makes
+`--dry-run` and this module's entire test suite possible without ever
+touching a real Scheduled Task, systemd unit or LaunchAgent. Every
+side-effecting call goes through an injected `runner` (default
+`subprocess.run`), and `dry_run=True` always means "print exactly what
+would happen, then stop" on every platform. `install`/`uninstall` print
+every file they are about to write and every command they are about to
+run *before* doing either.
+
+**What each platform's plan actually does:**
+
+- **Windows:** builds and runs one PowerShell `-Command` script that
+  chains `New-ScheduledTaskAction` (`-AtLogOn`, scoped to
+  `$env:USERDOMAIN\$env:USERNAME`), `New-ScheduledTaskPrincipal`
+  (`-RunLevel Limited` — no admin rights), `New-ScheduledTaskSettingsSet`
+  (`-ExecutionTimeLimit ([TimeSpan]::Zero)`, since `serve` runs
+  indefinitely) and `Register-ScheduledTask -TaskName ClaudeTokenLens`.
+  The action runs `pythonw.exe` beside the running interpreter when it
+  exists (no console window at logon), else `python.exe`. Writes no
+  file of its own — the task definition lives entirely in Task
+  Scheduler's own store. This is the same task Path 1 below registers
+  by hand; `Unregister-ScheduledTask -TaskName ClaudeTokenLens` removes
+  it.
+- **Linux:** writes `~/.config/systemd/user/claude-token-lens.service`
+  (the same hardening as `scripts/systemd/claude-token-lens.service` —
+  see Path 2 below — but with `ExecStart`/`ReadWritePaths` filled in
+  with this call's real, absolute `config_dir` rather than `%h`), then
+  runs `systemctl --user daemon-reload` followed by `systemctl --user
+  enable --now claude-token-lens.service`. Prints a note to also run
+  `loginctl enable-linger $USER` once, for a headless server with no
+  interactive session. `uninstall-service` runs `systemctl --user
+  disable --now` and deletes the unit file.
+- **macOS:** writes `~/Library/LaunchAgents/com.claude-token-lens.plist`
+  (`RunAtLoad`/`KeepAlive` both true) and runs `launchctl bootstrap
+  gui/<uid>  <path-to-plist>`. `uninstall-service` runs `launchctl
+  bootout gui/<uid>/com.claude-token-lens` and deletes the plist.
+
+**Running from a `.pyz`:** if the current process was itself launched
+from a `.pyz` archive (`detect_pyz_path`, a real zip-file check on
+`sys.argv[0]`, not just a filename check), the registered action
+re-invokes that same archive (`pythonw.exe <path-to-pyz> serve ...`)
+instead of `python -m claude_token_lens serve ...` — so `install-service`
+run from a `dist/claude-token-lens.pyz` build (see "Distribution
+without pip" below) registers a service that keeps using that exact
+archive.
+
+**Checking registration:** `is_registered()` runs the platform's own
+query command (`schtasks /Query /TN ClaudeTokenLens`, `systemctl --user
+is-enabled claude-token-lens`, or `launchctl print
+gui/<uid>/com.claude-token-lens`) and returns `True`/`False` when it
+got a clear answer, or `None` when the probe itself couldn't run (an
+unsupported platform, the query tool missing, or a timeout) — `None`
+always means "unknown", never "not registered". `install-service`/
+`init` call this once, a short delay after a successful install, and
+also do a best-effort `GET /api/health` against the newly-registered
+port to report whether the service is already answering. `GET
+/api/health` itself exposes the same probe as `service_registered:
+true|false|null`, cached for ten minutes per running `serve` process so
+routine polling doesn't shell out on every request (see
+[`docs/api.md`](api.md)) — the dashboard's Overview tab shows a banner
+when it comes back `false`.
+
+**Uninstalling:** `claude-token-lens uninstall-service` is the
+inverse of `install-service` — it runs the platform's own removal
+command (`Unregister-ScheduledTask`/`systemctl --user disable
+--now`/`launchctl bootout`) and deletes any file `install-service`
+wrote (the systemd unit or the LaunchAgent plist; Windows writes no
+file of its own). It is best-effort past the printed plan: a command or
+file removal that fails is reported and the rest still runs, rather
+than aborting partway through, the same posture as
+`Unregister-TokenLensTask.ps1`/`serve --purge`.
+
+Nothing above replaces the hand-run paths below — `install-service`
+deliberately mirrors their exact flags/hardening choices rather than
+inventing new ones, and Path 1/Path 2 remain the copy-pasteable
+mechanism for anyone who'd rather run (or audit) the commands
+themselves. `install-service` has no equivalent for Docker (Path 3) —
+use Compose's own restart policy there.
+
 ## Path 1: Windows Scheduled Task (native, no admin rights)
 
 ```powershell

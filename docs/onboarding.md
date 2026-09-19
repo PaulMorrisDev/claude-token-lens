@@ -9,16 +9,21 @@ writes `config.toml`, and starts an "onboarding capture window";
 JSON record plus a four-section Markdown report, citing only numbers
 the report itself already computed.
 
-Neither command touches `profiles/apply.py` or the `service/` package
-(both out of this work package's scope) or SQLite — a baseline is one
-JSON file under `<config_dir>/baselines/<id>.json` (plus a sibling
-`<id>.md`), the same "plain files under the config dir" posture
-`config.py` already uses for `config.toml`/`sessions.toml`.
+Neither `onboarding.py` nor `baseline.py` touches `profiles/apply.py`,
+the `service/` package, or SQLite — a baseline is one JSON file under
+`<config_dir>/baselines/<id>.json` (plus a sibling `<id>.md`), the same
+"plain files under the config dir" posture `config.py` already uses for
+`config.toml`/`sessions.toml`. `onboarding.run_init` itself still only
+ever prints install fragments, never installs anything (step 4 below)
+— the v3 "run the service at logon?" step described below is
+deliberately implemented in `cli.py` (`_cmd_init_service_step`), not
+folded into `onboarding.py`, so that boundary keeps holding.
 
 ## `init`
 
 ```
 claude-token-lens init [--answers FILE] [--non-interactive] [--no-install]
+                        [--install-service | --no-service] [--dry-run]
 ```
 
 1. **Detect** what's already on the machine (`onboarding.detect` ->
@@ -49,6 +54,25 @@ claude-token-lens init [--answers FILE] [--non-interactive] [--no-install]
 5. **Run an initial baseline** for the current project (unless no
    project directory has ever been recorded for it yet) and print the
    capture-window status (`baseline.format_capture_status`).
+6. **Offer to register the service at logon** (v3, `cli.py`'s
+   `_cmd_init_service_step` — see [`docs/deploy.md`](deploy.md)).
+   `--no-service` skips this step entirely (prints "Service-at-logon
+   step skipped (--no-service)."), with no question and no install.
+   Otherwise: `--install-service` installs without asking; under
+   `--non-interactive` (and without `--install-service`) the derived
+   default is *not* to install (`(derived) run_service: not given on
+   the command line; used default False (pass --install-service to
+   install non-interactively)` — installing a background service is
+   never assumed on someone's behalf); otherwise it's an interactive
+   prompt (`Run the service at logon? (y/n) [y]:`, blank/`y`/`yes`
+   accepts). Declining prints "Service not installed. Run
+   'claude-token-lens install-service' any time to add it later."
+   Accepting calls `installer.plan_service_install`/`installer.install`
+   exactly like the standalone `install-service` subcommand, honours
+   `init`'s own `--dry-run` (which governs only this step —
+   `config.toml` is still written either way), and, once installed for
+   real, probes `is_registered()` and one `GET /api/health` after a
+   short delay to report whether the service is already up.
 
 ### The question set
 

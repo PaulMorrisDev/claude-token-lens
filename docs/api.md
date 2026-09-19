@@ -122,7 +122,18 @@ not listed here returns `404` with `error.code: "not_found"`.
 Liveness/diagnostics probe (also the Docker healthcheck target — plan:
 "healthcheck on `/api/health`"). Never fails once the process is up.
 
-`data`: `{"status": "ok", "schema_version": int, "transcripts_missing": int, "watcher": WatcherStats-as-dict}`.
+`data`: `{"status": "ok", "schema_version": int, "transcripts_missing": int, "watcher": WatcherStats-as-dict, "service_registered": true|false|null}`.
+
+`service_registered` (v3) is whether `serve` is currently registered to
+start at logon/boot (`claude-token-lens install-service` — see
+[docs/deploy.md](deploy.md)): `true`/`false` when the platform's own
+query command (`schtasks`/`systemctl --user is-enabled`/`launchctl
+print`) ran and gave a clear answer, `null` when it couldn't be run at
+all (no probe wired up — e.g. `serve --once` — an unsupported platform,
+or the query tool itself missing). `null` always means "unknown", never
+"not registered". Computed at most once every ten minutes and cached
+in-process — the probe shells out to a real system command, so a UI
+polling `/api/health` doesn't spawn one on every refresh.
 
 `transcripts_missing` (review finding 3) is `Store.count_missing_transcripts()`
 — the current count of transcript rows whose backing file the watcher

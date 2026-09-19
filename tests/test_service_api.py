@@ -221,8 +221,12 @@ class _ServerHandle:
         self.thread.join(timeout=5)
 
 
-@pytest.fixture
-def server(tmp_path, monkeypatch):
+def _start_server(tmp_path, monkeypatch, **handler_kwargs) -> _ServerHandle:
+    """Shared setup behind the ``server`` fixture below -- factored out
+    so a test that needs a non-default ``make_handler`` keyword (e.g.
+    v3's ``service_registered``) can build its own handle without
+    duplicating this whole sequence.
+    """
     corpus = _build_corpus(tmp_path)
     _install_fake_rebuild(monkeypatch, corpus)
 
@@ -234,18 +238,24 @@ def server(tmp_path, monkeypatch):
     config_dir.mkdir()
     options = ServeOptions(projects_root=tmp_path / "projects", config_dir=config_dir)
 
-    handler_cls = service_api.make_handler(store, options)
+    handler_cls = service_api.make_handler(store, options, **handler_kwargs)
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler_cls)
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
 
     handle = _ServerHandle(httpd, thread, corpus=corpus, store=store, options=options)
     handle.session_id = session_id
+    return handle
+
+
+@pytest.fixture
+def server(tmp_path, monkeypatch):
+    handle = _start_server(tmp_path, monkeypatch)
     try:
         yield handle
     finally:
         handle.close()
-        store.close()
+        handle.store.close()
 
 
 def _assert_no_leak(raw: bytes) -> None:
@@ -324,8 +334,53 @@ def test_health(server):
     assert body["data"]["status"] == "ok"
     assert body["data"]["schema_version"] >= 1
     assert "watcher" in body["data"]
+    # v3: no `service_registered` probe was wired up (the `server`
+    # fixture calls make_handler with no extra kwargs), so this must be
+    # null ("unknown"), never folded into false.
+    assert body["data"]["service_registered"] is None
     assert_privacy(body)
     _assert_no_leak(json.dumps(body).encode("utf-8"))
+
+
+@pytest.mark.parametrize("registered_value", [True, False])
+def test_health_reports_service_registered_when_a_probe_is_wired_up(tmp_path, monkeypatch, registered_value):
+    handle = _start_server(tmp_path, monkeypatch, service_registered=lambda: registered_value)
+    try:
+        resp, body = handle.get_json("/api/health")
+        assert resp.status == 200
+        assert body["data"]["service_registered"] is registered_value
+        # v3: the field is a bare boolean -- confirm a wired-up (non-null)
+        # probe result still can't smuggle a path/command string into the
+        # response (see installer.py's module docstring on why api.py
+        # never imports it directly).
+        assert_privacy(body)
+    finally:
+        handle.close()
+        handle.store.close()
+
+
+def test_health_caches_the_service_registered_probe_for_ten_minutes(tmp_path, monkeypatch):
+    calls = []
+
+    def probe():
+        calls.append(1)
+        return True
+
+    fake_time = {"now": 1_000.0}
+    monkeypatch.setattr(service_api.time, "monotonic", lambda: fake_time["now"])
+
+    handle = _start_server(tmp_path, monkeypatch, service_registered=probe)
+    try:
+        handle.get_json("/api/health")
+        handle.get_json("/api/health")
+        assert len(calls) == 1  # second request within the TTL is served from cache
+
+        fake_time["now"] += service_api._SERVICE_REGISTERED_CACHE_TTL_S + 1
+        handle.get_json("/api/health")
+        assert len(calls) == 2  # cache expired -- probed again
+    finally:
+        handle.close()
+        handle.store.close()
 
 
 def test_summary(server):

@@ -693,6 +693,16 @@
 
   function renderHealth(health, container) {
     var watcher = health.watcher || {};
+    if (health.service_registered === false) {
+      container.appendChild(
+        el("div", { class: "notice error", role: "alert" }, [
+          el("p", {
+            text:
+              "The service is not registered to start at logon; history older than cleanupPeriodDays will be lost after a reboot. Run: claude-token-lens install-service",
+          }),
+        ])
+      );
+    }
     var lines = [
       "status: " + (health.status || "unknown"),
       "schema version: " + (health.schema_version === undefined ? "-" : health.schema_version),
