@@ -266,14 +266,39 @@ def test_main_full_payload_prints_line_and_logs_usage_row(monkeypatch, capsys, t
     csv_path = config_dir / "usage-log.csv"
     assert csv_path.exists()
     rows = log_usage.load_usage_log(csv_path)
-    assert len(rows) == 1
+    # S1-context-budget addition: a payload whose context_window also
+    # carries used_tokens now logs a *second*, independent
+    # "context_window" ground-truth row alongside the rate_limits row --
+    # see statusline.py's module docstring.
+    assert len(rows) == 2
     assert rows[0]["window"] == "five_hour"
+    assert rows[1]["window"] == "context_window"
 
 
-def test_main_no_rate_limits_does_not_create_usage_log(monkeypatch, capsys, tmp_path):
+def test_main_no_rate_limits_still_logs_context_window_row(monkeypatch, capsys, tmp_path):
+    """S1-context-budget: a payload with no ``rate_limits`` at all still
+    gets its own ``context_window`` row logged, independently of the
+    rate_limits-driven append -- see statusline.py's module docstring."""
     config_dir = tmp_path / "token-lens"
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
     payload = {"context_window": {"used_tokens": 1000}}
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
+    rc = statusline.main([])
+    assert rc == 0
+    csv_path = config_dir / "usage-log.csv"
+    assert csv_path.exists()
+
+    from claude_token_lens import context_budget
+
+    rows = context_budget.load_context_window_rows(csv_path)
+    assert len(rows) == 1
+    assert rows[0]["context_window_used_tokens"] == 1000
+
+
+def test_main_no_context_window_and_no_rate_limits_does_not_create_usage_log(monkeypatch, capsys, tmp_path):
+    config_dir = tmp_path / "token-lens"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+    payload = {}
     monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
     rc = statusline.main([])
     assert rc == 0
