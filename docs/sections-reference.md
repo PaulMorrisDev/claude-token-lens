@@ -375,14 +375,22 @@ for the full grammar). A session can match both arms, neither, or
 exactly one — the specs are independent membership tests, not a
 partition.
 
-- `compare_overview` — nine headline metrics (sessions, priced turns,
-  total cost, new tokens, cache-read share, re-cache share, compactions
-  per session, median session span, mean first-turn cache-creation
-  write), one row per metric, Arm A/Arm B/delta/delta-%% pre-formatted as
-  display text rather than raw numbers (see the module docstring: the
-  `Table` contract's one-`kind`-per-column rule can't otherwise fit five
-  different metric kinds in one narrow table). A `sample_ok` column
-  (`yes`/`no`) flags whether *both* arms cleared `--min-sessions`.
+- `compare_overview` — twelve metrics, one row per metric, Arm A/Arm
+  B/delta/delta-%% pre-formatted as display text rather than raw numbers
+  (see the module docstring: the `Table` contract's one-`kind`-per-column
+  rule can't otherwise fit five different metric kinds in one narrow
+  table). The headline nine are per-session means or ratios — sessions,
+  priced turns per session, cost per session, new tokens per session,
+  cache-read share, re-cache share, compactions per session, median
+  session span, mean first-turn cache-creation write — so a delta
+  reflects a real behavioural difference rather than one arm simply
+  having more sessions than the other (review finding S4: arm *totals*
+  used to lead the table, so a bigger arm always showed a large delta
+  regardless of any per-session change). The three arm totals (priced
+  turns, cost, new tokens) are kept as separate rows labelled "...
+  (informational)" further down the table rather than dropped. A
+  `sample_ok` column (`yes`/`no`) flags whether *both* arms cleared
+  `--min-sessions`.
 - `compare_by_stratum` — the same two arms split by `--stratify`
   (`purpose`, `mode`, or both — default `purpose,mode`), with a reduced,
   raw-valued metric set (session counts, cost, new tokens, cache-read
