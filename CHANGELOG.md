@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-19
+
 ### Added
 
 - **Release CI (`.github/workflows/release.yml`)**: on every `v*` tag
@@ -82,6 +84,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and the capture-window status line); the Recommendations tab shows
   the same "capture window open: provisional" notice while a capture
   window is in progress.
+- **v0.3 team aggregate: `export --aggregate`, `import`, `team-report`**
+  (`team.py`, v0.3 Task 1): `claude-token-lens export --aggregate
+  [--include-projects]` writes one machine's own team document — tool
+  version, generated-at, a stable-but-non-reversible `machine_id`
+  (salted HMAC-SHA256 over the hostname, same construction/domain-tag
+  separation convention as `exports._hash_slug`), the report window,
+  and per-group aggregates only (sessions, priced turns, tokens by
+  kind, cost, re-cache share, compaction rate, TTL mix, mean spawn
+  write, mean report size) across five axes — archetype, mode,
+  purpose, agent type, model — plus the corpus-wide scorecard levels.
+  No session id ever; a project slug appears only as its hash, and
+  only with `--include-projects`. `claude-token-lens import FILE...`
+  schema-checks each document (`team.validate_team_document`: an
+  explicit key allowlist, no string over 64 characters) before copying
+  it into `<config_dir>/team/<machine_id>-<generated_at>.json`,
+  exiting 2 with the reason on the first invalid file and writing
+  nothing for the rest of the batch. `claude-token-lens team-report
+  [--json|--html|--csv-dir]` keeps the latest document per machine and
+  renders per-archetype and per-agent-type comparison tables across
+  machines (a machine's short hashed id as the column key, never a
+  hostname), gated by a minimum-sample rule (5 sessions per cell;
+  below that a cell reads `n<5`), with an "observed, not controlled"
+  note. See [docs/team.md](docs/team.md) and the README's "For team
+  leads" section.
+- **v0.3 baseline comparison in the report** (`report.py`/`baseline.py`,
+  v0.3 Task 2): `report --baseline <id|latest>` (and every report-like
+  subcommand — `sessions`/`recache`/`ttl`/`compactions` — that builds
+  the same `ReportModel`) adds a `## Baseline comparison` section:
+  cost per session, re-cache share, compactions per session, session
+  baseline size, TTL mix (top-level and per agent type), mean spawn
+  write per agent type, and scorecard level per dimension, each shown
+  as baseline value / current value / delta / delta %, plus a
+  per-mode breakdown table (cost/re-cache/compactions only) when the
+  baseline recorded a mode mix, gated by the same 5-session minimum
+  the rest of the codebase uses. Unresolvable (`--baseline
+  does-not-exist`) or absent (`--baseline latest` with nothing saved)
+  baselines omit the section and add a note to `## Assumptions`
+  instead of failing the run. `baseline.build_baseline`'s own record
+  gained the matching fields (`cost_per_session`,
+  `recache_share_pct`, `compactions_per_session`, `ttl_mix_top_level`,
+  `ttl_mix_by_agent_type`, `session_baseline_size`,
+  `mean_spawn_write_by_agent_type`, `scorecard_dimensions`,
+  `by_mode`), extracted from an already-built report's own tables via
+  new shared functions in `report.py` (`overview_metric`,
+  `recache_share_pct_metric`, `compactions_per_session_metric`,
+  `ttl_mix_by_agent_type_metric`, `session_baseline_size_metric`,
+  `mean_spawn_write_by_agent_type_metric`,
+  `scorecard_dimensions_metric`) — never independently recomputed. See
+  [docs/onboarding.md](docs/onboarding.md)'s baseline-record table.
 
 ### Fixed
 
@@ -244,84 +295,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `serve` is meant to run indefinitely and Task Scheduler's own default
   72-hour limit would otherwise kill it after three days. See
   [`docs/deploy.md`](docs/deploy.md).
-
-### Planned
-
-- **v0.3** — `init` (first-run onboarding), a `baseline` capture window, a
-  profile schema/catalogue, `apply`/`--revert` for writing a chosen
-  profile into `settings.json`/agent frontmatter, a `compare` command,
-  a reconciliation pass against real billing data, and a team aggregate
-  command that imports several machines' hashed-slug exports into one
-  store for per-archetype comparisons across people (no text ever — for
-  team leads on the work machine).
-
-A v0.4 backlog, kept here until scheduled into a milestone:
-
-- **Budget check.** `check --weekly-tokens N --daily-usd N` exits non-zero
-  when exceeded; UI banner; uses `log-usage` window data when present.
-  Guardrail for overnight runs.
-- **Anomaly outliers.** Sessions or spawns whose cost is more than 3 median
-  absolute deviations from their mode/purpose group, with the composition
-  table attached. Catches runaway agents.
-- **Scheduled reports.** `serve --weekly-report DIR` writes the Markdown/HTML
-  report every Monday for sharing. Habit-forming review.
-- **Opt-in local path view.** `--show-paths` (local only, never in exports)
-  lists the top files by Read tokens, as token-dashboard does.
-
-### Added
-
-- **v0.3 team aggregate: `export --aggregate`, `import`, `team-report`**
-  (`team.py`, v0.3 Task 1): `claude-token-lens export --aggregate
-  [--include-projects]` writes one machine's own team document — tool
-  version, generated-at, a stable-but-non-reversible `machine_id`
-  (salted HMAC-SHA256 over the hostname, same construction/domain-tag
-  separation convention as `exports._hash_slug`), the report window,
-  and per-group aggregates only (sessions, priced turns, tokens by
-  kind, cost, re-cache share, compaction rate, TTL mix, mean spawn
-  write, mean report size) across five axes — archetype, mode,
-  purpose, agent type, model — plus the corpus-wide scorecard levels.
-  No session id ever; a project slug appears only as its hash, and
-  only with `--include-projects`. `claude-token-lens import FILE...`
-  schema-checks each document (`team.validate_team_document`: an
-  explicit key allowlist, no string over 64 characters) before copying
-  it into `<config_dir>/team/<machine_id>-<generated_at>.json`,
-  exiting 2 with the reason on the first invalid file and writing
-  nothing for the rest of the batch. `claude-token-lens team-report
-  [--json|--html|--csv-dir]` keeps the latest document per machine and
-  renders per-archetype and per-agent-type comparison tables across
-  machines (a machine's short hashed id as the column key, never a
-  hostname), gated by a minimum-sample rule (5 sessions per cell;
-  below that a cell reads `n<5`), with an "observed, not controlled"
-  note. See [docs/team.md](docs/team.md) and the README's "For team
-  leads" section.
-- **v0.3 baseline comparison in the report** (`report.py`/`baseline.py`,
-  v0.3 Task 2): `report --baseline <id|latest>` (and every report-like
-  subcommand — `sessions`/`recache`/`ttl`/`compactions` — that builds
-  the same `ReportModel`) adds a `## Baseline comparison` section:
-  cost per session, re-cache share, compactions per session, session
-  baseline size, TTL mix (top-level and per agent type), mean spawn
-  write per agent type, and scorecard level per dimension, each shown
-  as baseline value / current value / delta / delta %, plus a
-  per-mode breakdown table (cost/re-cache/compactions only) when the
-  baseline recorded a mode mix, gated by the same 5-session minimum
-  the rest of the codebase uses. Unresolvable (`--baseline
-  does-not-exist`) or absent (`--baseline latest` with nothing saved)
-  baselines omit the section and add a note to `## Assumptions`
-  instead of failing the run. `baseline.build_baseline`'s own record
-  gained the matching fields (`cost_per_session`,
-  `recache_share_pct`, `compactions_per_session`, `ttl_mix_top_level`,
-  `ttl_mix_by_agent_type`, `session_baseline_size`,
-  `mean_spawn_write_by_agent_type`, `scorecard_dimensions`,
-  `by_mode`), extracted from an already-built report's own tables via
-  new shared functions in `report.py` (`overview_metric`,
-  `recache_share_pct_metric`, `compactions_per_session_metric`,
-  `ttl_mix_by_agent_type_metric`, `session_baseline_size_metric`,
-  `mean_spawn_write_by_agent_type_metric`,
-  `scorecard_dimensions_metric`) — never independently recomputed. See
-  [docs/onboarding.md](docs/onboarding.md)'s baseline-record table.
-
-### Fixed
-
 - Overview tab: summary cards failed to render because the render
   callback's parameter order was reversed.
 - Test suite: three tests only passed on Windows by coincidence and
@@ -408,6 +381,34 @@ A v0.4 backlog, kept here until scheduled into a milestone:
   `custom:<8 hex chars>` with the same salted-HMAC construction as
   `machine_id`/project slugs before a team document is ever written.
   See [`docs/team.md`](docs/team.md)'s privacy-guarantees list.
+- **Version stayed `0.2.0` throughout the v0.3 release** (review
+  finding S5, `pyproject.toml`, `src/claude_token_lens/__init__.py`,
+  `service/api.py`): it reached user-visible output — the report's
+  "Tool version" line and every team document's `tool_version` field
+  (`exports.py`/`team.py`, both already derived from `__version__` and
+  so needed no code change) — and the HTTP `Server` response header,
+  which was a hardcoded literal. Bumped to `0.3.0`; the `Server` header
+  is now built from `__version__` (`claude-token-lens/{major}.{minor}`)
+  so it can't go stale on a future release again.
+
+### Planned
+
+A v0.4 backlog, kept here until scheduled into a milestone:
+
+- **Budget check.** `check --weekly-tokens N --daily-usd N` exits non-zero
+  when exceeded; UI banner; uses `log-usage` window data when present.
+  Guardrail for overnight runs.
+- **Anomaly outliers.** Sessions or spawns whose cost is more than 3 median
+  absolute deviations from their mode/purpose group, with the composition
+  table attached. Catches runaway agents.
+- **Scheduled reports.** `serve --monthly-report DIR` exists and is
+  threaded onto `ServeOptions.monthly_report_dir`, but nothing consumes
+  it yet — no watcher tick actually renders a report on that schedule.
+  Wire a month-boundary check into the watcher's poll loop that calls
+  `monthly.write_monthly_report` when the directory is set. Habit-forming
+  review.
+- **Opt-in local path view.** `--show-paths` (local only, never in exports)
+  lists the top files by Read tokens, as token-dashboard does.
 
 ## [0.2.0] - 2026-09-19
 
