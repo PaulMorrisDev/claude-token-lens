@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import importlib.resources
 import importlib.util
+import json
 import os
 import sys
 import types
@@ -74,6 +75,8 @@ SUBCOMMANDS: tuple[str, ...] = (
     "baseline",
     "apply",
     "serve",
+    "import",
+    "team-report",
 )
 
 DEFAULT_SUBCOMMAND = "report"
@@ -179,6 +182,18 @@ def _add_report_output_args(sub: argparse.ArgumentParser, *, allow_patch_set: bo
         "--phases",
         action="store_true",
         help="add the DISCOVERY/IMPLEMENTATION/VERIFICATION phase-split section",
+    )
+    # v0.3 Task 2: --baseline is deliberately on _add_report_output_args
+    # itself (not gated behind a keyword-only flag the way --patch-set
+    # is via allow_patch_set) so every report-like subcommand
+    # (report/sessions/recache/ttl/compactions) accepts it uniformly --
+    # see report.build_report's own docstring for why the resulting
+    # baseline_comparison section bypasses --group-by-style include
+    # filtering rather than silently vanishing on a focused subcommand.
+    sub.add_argument(
+        "--baseline",
+        metavar="ID|latest",
+        help="add a baseline_comparison section against a saved `baseline` record",
     )
     # Fix R17: --allow-titles was removed -- report.py's own module
     # docstring documents that its allow_titles parameter is a
@@ -348,6 +363,27 @@ def _add_export_args(sub: argparse.ArgumentParser) -> None:
         help="override --format json's meta.generated_at (also honours the "
         "SOURCE_DATE_EPOCH env var) so the export is byte-reproducible "
         "(nit 21/19: it wasn't wired up to the CLI before)",
+    )
+    # v0.3 Task 1: a team-aggregate document is a different shape from
+    # every other --format (per-group sums, never a session id or a
+    # per-session row), so it's its own flag rather than a --format
+    # choice -- --aggregate-only/--per-session/--hash-slugs (which
+    # govern the *per-session* export shapes) have no effect on it, and
+    # --format itself is ignored (a team document is always JSON) since
+    # it has no CSV/OTel analogue.
+    sub.add_argument(
+        "--aggregate",
+        action="store_true",
+        help="write a team-aggregate JSON document (see `import`/`team-report`, "
+        "docs/team.md) instead of a per-project export; aggregate-only and "
+        "hashed by construction",
+    )
+    sub.add_argument(
+        "--include-projects",
+        action="store_true",
+        dest="include_projects",
+        help="with --aggregate, add a 'projects' list of hashed project slugs "
+        "(default: omitted -- opt in per person)",
     )
 
 
@@ -610,6 +646,38 @@ def _add_probe_config_args(sub: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_import_args(sub: argparse.ArgumentParser) -> None:
+    """Flags for the ``import`` subcommand (v0.3 Task 1): one or more
+    already-built team-aggregate documents (``export --aggregate``'s own
+    output) to validate and copy into ``<config_dir>/team/``.
+    """
+    sub.add_argument(
+        "files", nargs="+", metavar="FILE", help="team-aggregate JSON document(s) to import"
+    )
+
+
+def _add_team_report_args(sub: argparse.ArgumentParser) -> None:
+    """Flags for the ``team-report`` subcommand (v0.3 Task 1): reads
+    only already-imported documents under ``<config_dir>/team/`` (see
+    ``import``), so it needs no project/window selection of its own --
+    just the shared output flags. Deviation (report, don't silently
+    resolve): the plan's ``[--md|--json|--html]`` gets no explicit
+    ``--md`` switch -- "no output flag" already means Markdown for
+    every other report-like/compare-like subcommand in this CLI
+    (``_add_compare_output_args``), so adding one here would be the one
+    inconsistent flag in the whole surface.
+    """
+    _add_compare_output_args(sub)
+    sub.add_argument(
+        "--min-sessions",
+        type=int,
+        default=5,
+        metavar="N",
+        help="minimum sessions required in a machine's own group row before a "
+        "team-report cell shows a number rather than 'n<N' (default: 5)",
+    )
+
+
 def _make_parser() -> argparse.ArgumentParser:
     common = _build_common_parser()
     parser = argparse.ArgumentParser(prog="claude-token-lens")
@@ -635,17 +703,12 @@ def _make_parser() -> argparse.ArgumentParser:
             "compare": "A/B compare two arms of sessions (window/key/profile/project), stratified by purpose+mode",
             "reconcile": "compare local usage/cost accounting against an Admin API CSV export, offline",
             "scrub-fixture": "scrub a real session into a privacy-safe test fixture",
-            # Fix R25: lead with the same "(planned)" marker the plain
-            # "not implemented yet" fallback below uses for every other
-            # stub, so a subcommand listing (``--help``) makes stub
-            # commands visually scannable as a group instead of only
-            # readable one at a time via "planned for vX.Y" prose.
-            "init": "(planned) v0.3 milestone",
-            "baseline": "(planned) v0.3 milestone",
             "apply": "apply a profile's settings/agent/env levers to a project or your user config",
             "init": "detect + ask (or derive) config, write config.toml, run an initial baseline",
             "baseline": "capture/list/show an onboarding baseline (mode mix, suggested profile, projected saving)",
             "serve": "run the local JSON API + watcher service",
+            "import": "validate and copy team-aggregate document(s) into <config_dir>/team/",
+            "team-report": "cross-machine comparison built from every imported team document",
         }.get(name, f"{name} (not implemented yet)")
         sub = subparsers.add_parser(name, parents=[common], help=help_text)
         if name == "pricing-check":
@@ -684,6 +747,10 @@ def _make_parser() -> argparse.ArgumentParser:
             _add_init_args(sub)
         if name == "baseline":
             _add_baseline_args(sub)
+        if name == "import":
+            _add_import_args(sub)
+        if name == "team-report":
+            _add_team_report_args(sub)
     return parser
 
 
@@ -1026,6 +1093,37 @@ def _cmd_report_like(args: argparse.Namespace, include: set[str] | None) -> int:
             and _usage_log_row_in_window(row, since_dt, until_dt)
         ]
 
+    # v0.3 Task 2: --baseline <id|latest> resolves a saved baseline.py
+    # record for build_report's own baseline_comparison section. This is
+    # a plain-dict/no-Path lookup (baseline_mod.list_baselines/
+    # load_baseline), so it's resolved here rather than inside
+    # build_report itself -- report.py must not gain a config_dir/file-IO
+    # dependency just for this one flag (matches the module's own
+    # documented "no config_dir parameter" deviation for session
+    # overrides above). When resolution fails, the section is simply
+    # omitted and a note is threaded through as baseline_note instead of
+    # erroring -- matches the plan's "when no baseline exists, the
+    # section is omitted" wording.
+    baseline_record = None
+    baseline_note = None
+    baseline_arg = getattr(args, "baseline", None)
+    if baseline_arg:
+        if baseline_arg == "latest":
+            saved = baseline_mod.list_baselines(config_dir)
+            baseline_record = saved[-1] if saved else None
+            if baseline_record is None:
+                baseline_note = (
+                    "--baseline latest requested but no baseline has been saved yet -- run "
+                    "`claude-token-lens baseline` first."
+                )
+        else:
+            baseline_record = baseline_mod.load_baseline(config_dir, baseline_arg)
+            if baseline_record is None:
+                baseline_note = (
+                    f"--baseline {baseline_arg!r} requested but no such baseline was found -- run "
+                    "`claude-token-lens baseline --list` to see what's saved."
+                )
+
     try:
         model = build_report(
             corpus,
@@ -1039,6 +1137,8 @@ def _cmd_report_like(args: argparse.Namespace, include: set[str] | None) -> int:
             include=include,
             session_overrides=session_overrides,
             usage_log_rows=usage_log_rows,
+            baseline_record=baseline_record,
+            baseline_note=baseline_note,
         )
     except ScorecardError as exc:
         # Fix R20: a misordered [thresholds.scorecard] override in
@@ -1462,6 +1562,36 @@ def _cmd_export(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 1
+
+    if args.aggregate:
+        from . import team as team_mod
+
+        if args.aggregate_only is not None or args.hash_slugs is not None:
+            print(
+                f"claude-token-lens {command}: --aggregate-only/--per-session and "
+                "--hash-slugs/--no-hash-slugs have no effect with --aggregate (a "
+                "team document is aggregate-only and hashes project slugs by "
+                "construction)",
+                file=sys.stderr,
+            )
+        snaps = snapshots.load_snapshots(config_dir) or None
+        document = team_mod.build_team_aggregate(
+            corpus,
+            rates,
+            config,
+            config_dir,
+            window=window,
+            projects=tuple(p.name for p in project_dirs),
+            include_projects=args.include_projects,
+            snapshots=snaps,
+            generated_at=_resolve_generated_at(args),
+        )
+        text = json.dumps(document, indent=2, sort_keys=True) + "\n"
+        if args.out:
+            Path(args.out).write_text(text, encoding="utf-8")
+        else:
+            sys.stdout.write(text)
+        return 0
 
     options = exports_mod.resolve_export_options(args.format, args.aggregate_only, args.hash_slugs)
 
@@ -1889,6 +2019,79 @@ def _cmd_baseline(args: argparse.Namespace) -> int:
     return 0
 
 
+# -- team aggregate import / team-report (v0.3 Task 1) -----------------------
+
+
+def _cmd_import(args: argparse.Namespace) -> int:
+    """``import FILE...``: validate every file first (schema/length
+    allowlist -- :func:`team.validate_team_document`), then copy each
+    into ``<config_dir>/team/<machine_id>-<generated_at>.json``. Exits 2
+    on the first invalid file, naming it and the reason, per the plan's
+    own "schema-checked ... exit 2 with the reason" contract; nothing is
+    written for *any* file once one has failed, so a bad batch never
+    partially imports.
+    """
+    from . import team as team_mod
+
+    config_dir = _resolve_config_dir(args.config_dir)
+
+    documents: list[tuple[str, dict]] = []
+    for file_arg in args.files:
+        path = Path(file_arg)
+        try:
+            raw = path.read_text(encoding="utf-8")
+        except OSError as exc:
+            print(f"claude-token-lens import: cannot read {file_arg}: {exc}", file=sys.stderr)
+            return 2
+        try:
+            doc = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            print(f"claude-token-lens import: {file_arg} is not valid JSON: {exc}", file=sys.stderr)
+            return 2
+        reason = team_mod.validate_team_document(doc)
+        if reason is not None:
+            print(f"claude-token-lens import: {file_arg} rejected: {reason}", file=sys.stderr)
+            return 2
+        documents.append((file_arg, doc))
+
+    for file_arg, doc in documents:
+        saved_path = team_mod.save_team_document(config_dir, doc)
+        print(f"Imported {file_arg} -> {saved_path}")
+    return 0
+
+
+def _cmd_team_report(args: argparse.Namespace) -> int:
+    """``team-report``: the cross-machine comparison built from every
+    document already imported into ``<config_dir>/team/`` (see
+    ``import``). Reads no project/session data of its own at all --
+    only the already-aggregated, already-privacy-checked documents on
+    disk.
+    """
+    from . import team as team_mod
+
+    config_dir = _resolve_config_dir(args.config_dir)
+    documents = team_mod.load_latest_team_documents(config_dir)
+    if not documents:
+        print(
+            f"claude-token-lens team-report: no team documents under {config_dir / 'team'} -- "
+            "run `claude-token-lens import <file>...` first",
+            file=sys.stderr,
+        )
+        return 1
+
+    section = team_mod.build_team_report_section(documents, min_sessions=args.min_sessions)
+    machine_ids = sorted({str(doc.get("machine_id", "?")) for doc in documents})
+
+    meta = ReportMeta(
+        tool_version=__version__,
+        generated_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.") + "000Z",
+        window=f"{len(documents)} machine(s): {', '.join(machine_ids)}",
+    )
+    model = ReportModel(meta=meta, sections=[section], recommendations=[], diagnostics=Diagnostics())
+    _emit_report_outputs(model, args)
+    return 0
+
+
 # -- apply (v0.3 milestone) ---------------------------------------------------
 
 
@@ -2200,8 +2403,6 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_reconcile(args)
     if command == "scrub-fixture":
         return _cmd_scrub_fixture(args)
-    if command in ("init", "baseline"):
-        return _cmd_planned_stub(command, "v0.3")
     if command == "apply":
         return _cmd_apply(args)
     if command == "init":
@@ -2210,6 +2411,10 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_baseline(args)
     if command == "serve":
         return _cmd_serve(args)
+    if command == "import":
+        return _cmd_import(args)
+    if command == "team-report":
+        return _cmd_team_report(args)
 
     print(f"claude-token-lens {command}: not implemented", file=sys.stderr)
     return 2

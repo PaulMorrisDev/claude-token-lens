@@ -130,6 +130,52 @@ format carries no project/session dimension at all (the documented
 metric names don't have one), so `--aggregate-only`/`--hash-slugs` have
 no effect on it.
 
+### `--aggregate` (team documents)
+
+```bash
+claude-token-lens export --aggregate --out my-machine.json
+claude-token-lens export --aggregate --include-projects --out my-machine.json
+```
+
+`--aggregate` writes a different, fixed shape from every other
+`--format`: a **team document** (`src/claude_token_lens/team.py`), built
+for `claude-token-lens import`/`team-report` on a team lead's machine
+rather than a BI pipeline. It is always JSON regardless of `--format`,
+and `--aggregate-only`/`--per-session`/`--hash-slugs`/`--no-hash-slugs`
+have no effect on it — a team document is aggregate-only and hashes
+project slugs by construction, the same way `--format otel-jsonl`
+ignores those flags for its own reason.
+
+A team document carries:
+
+- `tool_version`, `generated_at`, `window`.
+- `machine_id` — a stable-but-non-reversible id for this machine: the
+  first 12 hex characters of a salted HMAC-SHA256 over the machine's
+  hostname (`platform.node()`), keyed by the same `<config_dir>/salt`
+  file every other hashed value in this project uses, with its own
+  `machine:` domain tag so its namespace can never collide with the
+  project-slug namespace `_hash_slug` uses for `--hash-slugs` above.
+  Stable across runs on the same machine and config dir; never reveals
+  or reverses to the hostname.
+- `by_archetype`, `by_mode`, `by_purpose`, `by_agent_type`, `by_model`
+  — one row per group value on each axis: `sessions`, `priced_turns`,
+  `tokens` (input/cache_creation/cache_read/output), `cost_usd`,
+  `recache_share_pct`, `compaction_rate`, `ttl_mix` (`5m_pct`/`1h_pct`),
+  `mean_spawn_write`, `mean_report_size`. Never a session id, never a
+  slug.
+- `scorecard` — the corpus-wide scorecard level (1-5) per dimension,
+  read from the same `scorecard` section every report renders (never
+  independently recomputed).
+- `projects` — present **only** with `--include-projects`: a sorted
+  list of hashed project slugs (the same `_hash_slug` construction
+  `--hash-slugs` uses above), never the plaintext slug. Omitted by
+  default — this is opt-in per person, on top of the aggregate's
+  already-hashed-or-absent posture.
+
+See [docs/team.md](team.md) for the full `export --aggregate` ->
+`import` -> `team-report` flow, and the README's "For team leads"
+section for the guarantees in one place.
+
 ## `claude-token-lens monthly-report`
 
 ```bash

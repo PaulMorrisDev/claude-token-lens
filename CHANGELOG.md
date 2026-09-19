@@ -95,6 +95,58 @@ A v0.4 backlog, kept here until scheduled into a milestone:
 - **Opt-in local path view.** `--show-paths` (local only, never in exports)
   lists the top files by Read tokens, as token-dashboard does.
 
+### Added
+
+- **v0.3 team aggregate: `export --aggregate`, `import`, `team-report`**
+  (`team.py`, v0.3 Task 1): `claude-token-lens export --aggregate
+  [--include-projects]` writes one machine's own team document — tool
+  version, generated-at, a stable-but-non-reversible `machine_id`
+  (salted HMAC-SHA256 over the hostname, same construction/domain-tag
+  separation convention as `exports._hash_slug`), the report window,
+  and per-group aggregates only (sessions, priced turns, tokens by
+  kind, cost, re-cache share, compaction rate, TTL mix, mean spawn
+  write, mean report size) across five axes — archetype, mode,
+  purpose, agent type, model — plus the corpus-wide scorecard levels.
+  No session id ever; a project slug appears only as its hash, and
+  only with `--include-projects`. `claude-token-lens import FILE...`
+  schema-checks each document (`team.validate_team_document`: an
+  explicit key allowlist, no string over 64 characters) before copying
+  it into `<config_dir>/team/<machine_id>-<generated_at>.json`,
+  exiting 2 with the reason on the first invalid file and writing
+  nothing for the rest of the batch. `claude-token-lens team-report
+  [--json|--html|--csv-dir]` keeps the latest document per machine and
+  renders per-archetype and per-agent-type comparison tables across
+  machines (a machine's short hashed id as the column key, never a
+  hostname), gated by a minimum-sample rule (5 sessions per cell;
+  below that a cell reads `n<5`), with an "observed, not controlled"
+  note. See [docs/team.md](docs/team.md) and the README's "For team
+  leads" section.
+- **v0.3 baseline comparison in the report** (`report.py`/`baseline.py`,
+  v0.3 Task 2): `report --baseline <id|latest>` (and every report-like
+  subcommand — `sessions`/`recache`/`ttl`/`compactions` — that builds
+  the same `ReportModel`) adds a `## Baseline comparison` section:
+  cost per session, re-cache share, compactions per session, session
+  baseline size, TTL mix (top-level and per agent type), mean spawn
+  write per agent type, and scorecard level per dimension, each shown
+  as baseline value / current value / delta / delta %, plus a
+  per-mode breakdown table (cost/re-cache/compactions only) when the
+  baseline recorded a mode mix, gated by the same 5-session minimum
+  the rest of the codebase uses. Unresolvable (`--baseline
+  does-not-exist`) or absent (`--baseline latest` with nothing saved)
+  baselines omit the section and add a note to `## Assumptions`
+  instead of failing the run. `baseline.build_baseline`'s own record
+  gained the matching fields (`cost_per_session`,
+  `recache_share_pct`, `compactions_per_session`, `ttl_mix_top_level`,
+  `ttl_mix_by_agent_type`, `session_baseline_size`,
+  `mean_spawn_write_by_agent_type`, `scorecard_dimensions`,
+  `by_mode`), extracted from an already-built report's own tables via
+  new shared functions in `report.py` (`overview_metric`,
+  `recache_share_pct_metric`, `compactions_per_session_metric`,
+  `ttl_mix_by_agent_type_metric`, `session_baseline_size_metric`,
+  `mean_spawn_write_by_agent_type_metric`,
+  `scorecard_dimensions_metric`) — never independently recomputed. See
+  [docs/onboarding.md](docs/onboarding.md)'s baseline-record table.
+
 ### Fixed
 
 - Overview tab: summary cards failed to render because the render

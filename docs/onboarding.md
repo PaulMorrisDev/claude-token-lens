@@ -130,6 +130,34 @@ only cite the report's own tables" convention `recommend.py`'s
 | `suggested_profile` / `suggested_profile_reason` | see below |
 | `billing_mismatch_warning` | see below |
 | `projects` | project directory names, redacted (`discovery.redact_slug`) |
+| `cost_per_session` | `overview` section's `totals` table, `total_cost_usd` ÷ `sessions_analysed` |
+| `recache_share_pct` | `recache` section's `recache_summary` table (`report.recache_share_pct_metric`) |
+| `compactions_per_session` | `compactions` section's `compactions_summary` table (`report.compactions_per_session_metric`) |
+| `ttl_mix_top_level` / `ttl_mix_by_agent_type` | `ttl` section's `ttl_by_agent_type` table (`report.ttl_mix_by_agent_type_metric`) |
+| `session_baseline_size` | `agents` section's `topology_session_baseline` table (`report.session_baseline_size_metric`) |
+| `mean_spawn_write_by_agent_type` | `agents` section's `topology_spawn_write` table (`report.mean_spawn_write_by_agent_type_metric`) |
+| `scorecard_dimensions` | `scorecard` section's `dimensions` table (`report.scorecard_dimensions_metric`) |
+| `by_mode` | cost/re-cache/compactions per session, recomputed once per distinct mode over a session-filtered sub-corpus (see below) |
+
+These nine fields (v0.3 Task 2) feed `report --baseline <id|latest>`'s
+`## Baseline comparison` section (see the main README and
+[docs/exports.md](docs/exports.md) for the wider export surface).
+`report.py` and `baseline.py` share the same extraction functions
+(defined once in `report.py`, imported by `baseline.py`) rather than
+duplicating them, since both sides need identical logic — one for a
+saved baseline, one for the current window — and `baseline.py` already
+imports one-way from `report.py`.
+
+`by_mode` is deliberately narrower than the other eight fields: it
+covers only cost per session, re-cache share and compactions per
+session, computed by re-running `build_report` once per distinct
+`mode` value present in the corpus (`baseline._by_mode_metrics`), over
+a session-filtered sub-corpus for that mode. TTL mix, session baseline
+size, mean spawn write and scorecard levels are **not** broken out by
+mode, because `topology.TopologyStats`/`ttl.TtlStats` accumulate flat
+lists/dicts with no per-session id retained — stratifying those would
+need changes to those modules, which is out of this work package's
+writable surface.
 
 ### Suggested profile, and the overnight-batch override
 
