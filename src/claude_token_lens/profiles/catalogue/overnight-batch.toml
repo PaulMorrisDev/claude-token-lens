@@ -1,0 +1,33 @@
+id = "overnight-batch"
+name = "Overnight batch"
+for = ["overnight-run", "unattended-batch"]
+archetype = "overseer-fanout"
+notes = """
+For classify.classify_mode's "overnight" mode (span > 4 hours and the \
+maximum human gap > 60 minutes -- an unattended run, not a session mode \
+this package's suggest() can currently detect on its own; see \
+catalogue.py's module docstring for why suggest() cannot reach this \
+entry deterministically yet). An unattended run's own gaps are exactly \
+the long, human-absent stretches ttl.ttl_by_agent_type's \
+gaps_over_1h/gap_p90_s columns measure, so long-running verification-style \
+agents are pinned to a 1h "experimental.cacheTtl" and \
+subagentPromptCacheTtl defaults the same way for every other spawned \
+type -- the plan's per-subagent-TTL owner note again, but this time the \
+*fallback* itself is 1h because an overnight corpus's typical gap \
+profile is the one case where that default direction is right, not 5m. \
+autoCompactWindow is raised toward the settings allowlist's own maximum \
+headroom so a many-hour run compacts less often (recommend.py's \
+compaction-churn rule reads compactions.compactions_summary's \
+"Compactions per session (mean)"/dropped-token-share rows for exactly \
+this concern), and cleanupPeriodDays is left at Claude Code's own \
+default window so an overnight run's transcripts survive long enough \
+for the next day's report to see them.
+"""
+
+[settings]
+subagentPromptCacheTtl = "1h"
+autoCompactWindow = 300000
+cleanupPeriodDays = 30
+
+[agents.verification-runner]
+"experimental.cacheTtl" = "1h"
