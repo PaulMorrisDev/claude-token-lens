@@ -1,7 +1,15 @@
 """CLI wiring tests (WP10c): the argparse skeleton (``--version``, the
-default-subcommand insertion rule, the ``init``/``baseline``/``serve``
-stubs) plus real end-to-end tests for every wired subcommand, against
-synthetic projects under ``tmp_path`` built with ``tests/helpers``.
+default-subcommand insertion rule, the ``init``/``baseline`` stubs) plus
+real end-to-end tests for every wired subcommand, against synthetic
+projects under ``tmp_path`` built with ``tests/helpers``.
+
+``serve`` (S1-api) is no longer a stub -- ``tests/test_service_api.py``
+and ``tests/test_service_egress.py`` exercise it directly (including
+``cli.main(["serve", "--once", ...])``), so it was removed from
+``STUB_SUBCOMMANDS`` below and from the "unimplemented subcommand exits
+2" subprocess smoke test, which now names ``init`` instead -- the same
+testing intent (an unimplemented subcommand's ``python -m`` invocation
+exits 2) without hanging on ``serve``'s ``serve_forever()``.
 
 Every test passes ``--projects-root``/``--project`` explicitly rather
 than relying on the autouse ``CLAUDE_CONFIG_DIR``/``HOME`` isolation
@@ -28,8 +36,9 @@ from claude_token_lens import __version__, cli
 
 from helpers import turn_line, write_jsonl
 
-#: Subcommands with no real implementation yet (v0.2/v0.3 milestones).
-STUB_SUBCOMMANDS = ("init", "baseline", "serve")
+#: Subcommands with no real implementation yet (v0.3 milestone). "serve"
+#: (v0.2) is wired for real as of S1-api -- see module docstring.
+STUB_SUBCOMMANDS = ("init", "baseline")
 
 _GENERATED_AT_RE = re.compile(r"- Generated at:.*")
 
@@ -986,11 +995,14 @@ def test_python_dash_m_version_exits_0():
 
 
 def test_python_dash_m_unimplemented_subcommand_exits_2():
+    # Was "serve" -- now a real subcommand (S1-api) that would hang in
+    # serve_forever() here instead of exiting; "init" is still a v0.3
+    # stub and keeps this test's original intent. See module docstring.
     result = subprocess.run(
-        [sys.executable, "-m", "claude_token_lens", "serve"],
+        [sys.executable, "-m", "claude_token_lens", "init"],
         capture_output=True,
         text=True,
         cwd=str(Path(__file__).parent.parent / "src"),
     )
     assert result.returncode == 2
-    assert "serve" in result.stderr
+    assert "init" in result.stderr
