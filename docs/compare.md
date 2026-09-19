@@ -50,6 +50,31 @@ sibling `profiles/` package (out of scope for this work package) wires
 that field up; until then, a `profile:` arm always selects an empty
 group.
 
+### Overview metrics: per-session means vs totals (review finding S4)
+
+`compare_overview`'s headline rows are **per-session means** — cost per
+session, new tokens per session (input + cache-creation), and priced
+turns per session — not arm totals. This matters because the two arms
+of a comparison very rarely have the same number of matched sessions:
+before this fix, `compare_overview` reported raw arm totals for cost,
+new tokens and priced turns, so an arm with (say) twice as many sessions
+as the other always showed a roughly 100% higher "cost"/"new tokens"
+figure even when nothing about the two arms' sessions actually differed
+per-session. That headline delta was dominated by arm size, not by the
+config/profile/window difference the comparison was meant to isolate.
+
+The raw arm totals are still reported — as separate rows labelled
+"Total cost (informational)", "Total new tokens (informational)" and
+"Total priced turns (informational)" further down the table — so the
+aggregate figures are not lost, only no longer presented as if they were
+a rate comparable across arms of different sizes. `compare_by_stratum`'s
+cost/new-tokens columns are per-session means for the same reason.
+
+The remaining headline metrics (`sessions` itself, cache-read share,
+re-cache share, compactions per session, median session span, mean
+first-turn cache-creation write) were already session-count-independent
+and are unchanged.
+
 ### Stratification and the minimum-sample gate
 
 `--stratify` (default `purpose,mode`) splits `compare_by_stratum` by

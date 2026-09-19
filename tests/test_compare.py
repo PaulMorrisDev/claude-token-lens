@@ -174,10 +174,16 @@ def test_compare_window_arms_basic_overview(tmp_path):
     assert sessions_row[1] == "1" and sessions_row[2] == "1"
     assert sessions_row[5] == "yes"  # sample_ok, min_sessions=1 and both arms have 1
 
-    new_tokens_row = rows_by_metric["New tokens (input + cache-creation)"]
+    # One session per arm, so the per-session mean equals the arm total.
+    new_tokens_row = rows_by_metric["New tokens per session (input + cache-creation)"]
     # Arm A: 1000 + 200 = 1200; Arm B: 2000 + 400 = 2400 -> +100.0%
     assert "1,200" in new_tokens_row[1] or "1200" in new_tokens_row[1]
     assert "+100.0%" == new_tokens_row[4]
+
+    # The raw arm totals are still reported, separately and clearly labelled.
+    total_new_tokens_row = rows_by_metric["Total new tokens (informational)"]
+    assert "1,200" in total_new_tokens_row[1] or "1200" in total_new_tokens_row[1]
+    assert "+100.0%" == total_new_tokens_row[4]
 
     # Every arm's exact selection rule must be reproduced in the notes.
     assert any("window:2026-08-01..2026-08-31" in n for n in overview.notes)
@@ -204,6 +210,70 @@ def test_compare_overview_sample_ok_no_below_min_sessions(tmp_path):
     for row in overview.rows:
         assert row[5] == "no"
     assert "Arm A=1 session(s), Arm B=1 session(s)" in overview.notes[-1]
+
+
+def test_compare_overview_means_are_unaffected_by_arm_size(tmp_path):
+    """Review finding S4 regression: arm A has 5 sessions and arm B has 10
+    *identical* sessions (same per-session token/cost shape). Before the
+    fix, ``cost``/``new_tokens``/``priced_turns`` were arm totals, so arm
+    B's headline numbers looked 100% higher purely because it has twice
+    the sessions -- not because anything about the work differed. The
+    per-session-mean rows must show a 0% delta; only the informational
+    totals rows are allowed to show the arm-size-driven +100%.
+    """
+    root = tmp_path / "projects"
+    project_dir = root / "proj"
+    project_dir.mkdir(parents=True)
+    for i in range(5):
+        _write_session(
+            project_dir,
+            f"aug-{i}",
+            f"2026-08-{10 + i:02d}T10:00:00.000Z",
+            input_tokens=1000,
+            cache_creation_input_tokens=200,
+            cache_read_input_tokens=50,
+            output_tokens=100,
+        )
+    for i in range(10):
+        _write_session(
+            project_dir,
+            f"sep-{i}",
+            f"2026-09-{1 + i:02d}T10:00:00.000Z",
+            input_tokens=1000,
+            cache_creation_input_tokens=200,
+            cache_read_input_tokens=50,
+            output_tokens=100,
+        )
+    corpus = load_corpus([project_dir])
+
+    arm_a = compare_mod.parse_arm_spec("window:2026-08-01..2026-08-31")
+    arm_b = compare_mod.parse_arm_spec("window:2026-09-01..2026-09-30")
+    section = compare_mod.compare(corpus, PRICING, CONFIG, arm_a=arm_a, arm_b=arm_b, min_sessions=1)
+
+    overview = _table(section, "compare_overview")
+    rows_by_metric = {row[0]: row for row in overview.rows}
+
+    sessions_row = rows_by_metric["Sessions"]
+    assert sessions_row[1] == "5" and sessions_row[2] == "10"
+
+    for label in (
+        "Cost per session",
+        "New tokens per session (input + cache-creation)",
+        "Priced turns per session",
+    ):
+        row = rows_by_metric[label]
+        # Identical per-session shape in both arms -> a flat 0% delta,
+        # regardless of arm A having 5 sessions and arm B having 10.
+        # (Floating-point division can land on -0.0 as well as 0.0.)
+        assert row[4] in ("0.0%", "-0.0%"), f"{label}: expected a 0% delta, got {row[4]!r}"
+
+    for label in (
+        "Total cost (informational)",
+        "Total new tokens (informational)",
+        "Total priced turns (informational)",
+    ):
+        row = rows_by_metric[label]
+        assert row[4] == "+100.0%", f"{label}: expected the totals to still show arm-size-driven +100%, got {row[4]!r}"
 
 
 def test_compare_window_arm_excludes_out_of_range_session(tmp_path):
