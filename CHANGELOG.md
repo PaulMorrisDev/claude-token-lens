@@ -15,9 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Agents, Config, Profiles, Recommendations, Usage, Diagnostics)
   covering every documented `/api/*` route, `prefers-color-scheme`
   dark/light theming reused from the CLI's standalone HTML report, and
-  inline-SVG scorecard/table bar charts. The session timeline renders
-  an explicit placeholder rather than fabricate data, since
-  `/api/session/<id>` has no per-turn context-size series yet.
+  inline-SVG scorecard/table bar charts. The session timeline now
+  renders a real per-turn context/cache-creation series with
+  compaction/spawn/human markers (see the S1-integration entry below
+  for `turn_series`/`markers`), replacing the placeholder this shipped
+  with initially.
 - **Capture-improvements batch** (`PARSER_VERSION` 3 -> 4): seven new
   additive `Turn` fields, all derived from data the transcript already
   carries -- no new raw content is ever retained:
@@ -149,13 +151,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   transcript files on disk, so a report can still be built for a session
   after Claude Code's own `cleanupPeriodDays` retention has removed its
   transcript.
+- **Service integration (S1-integration)** — reconciled the seams the
+  S0/S1-watcher/S1-api/S1-ui work packages documented against each
+  other, and shipped the v0.2 deployment artefacts:
+  - **Store schema v2**: `Store.upsert_snapshot` now dedupes by its
+    natural key (`project_id`, `ts`, `schema_version`) via `ON CONFLICT
+    DO UPDATE`, backed by a new unique index; `Store.migrate()`
+    drop-and-rebuilds the store whenever a stored schema version is
+    older than the code's, since the store is always a derived cache.
+    Snapshots without a project slug keep their `__global__`
+    attribution but `Store.snapshots()` now reports `project_slug` as
+    `null` for them, and `/api/config-diff` treats those rows as
+    user-level layers rather than a fabricated project.
+  - **`workflow_runs` table**: the watcher now persists
+    `<session>/workflows/*.json` via a new `workflows.py`, and
+    `rebuild.corpus_from_store` reads them back into
+    `SessionBundle.workflows`, closing the round-trip loss S1-watcher
+    flagged (covered by a new `workflow-session` fixture).
+  - **`ServeOptions.billing_mode`/`monthly_report_dir`**: `serve` gains
+    `--billing-mode {api,subscription}` (defaulted from
+    `<config-dir>/config.toml` when present) and `--monthly-report
+    DIR`; the watcher stamps `sessions.billing_mode` from it.
+  - **`Watcher.last_stats`**: the `contracts.Watcher` protocol now
+    exposes the watcher's own last-tick stats directly, so `serve.run`
+    no longer has to guess at them.
+  - **`Store.change_token()`**: `api.py`'s report-model memo now
+    invalidates on this instead of reaching into `store._connection()`.
+  - **Session timeline data**: `GET /api/session/<id>` gains
+    `turn_series` (per-turn context size, cache-creation tokens, RE-CACHE
+    flag, preceding-primary flag) and `markers` (compaction/spawn/human
+    turn indices), documented in `docs/api.md`; `static/app.js`'s
+    `buildSessionTimeline` consumes this directly, replacing the
+    placeholder chart S1-ui shipped with. `docs/ui.md`'s tab list is
+    reconciled with the ten tabs `index.html` actually ships.
+  - **CLI**: `serve --purge` (with `--yes`) deletes
+    `<config-dir>/service.db` and its `-wal`/`-shm` sidecars after
+    printing what it will delete.
+  - **Deployment**: a hardened `Dockerfile`
+    (non-root, `HEALTHCHECK` via stdlib `urllib`, no curl/wget) and
+    `docker-compose.yml` (read-only config bind, named data volume,
+    loopback-only port, `read_only` root filesystem, `cap_drop: [ALL]`,
+    `no-new-privileges`); a Windows Scheduled Task pair
+    (`scripts/windows/Register-TokenLensTask.ps1`/
+    `Unregister-TokenLensTask.ps1`, `-RunLevel Limited`, PowerShell
+    5.1-compatible); a systemd user unit
+    (`scripts/systemd/claude-token-lens.service`,
+    `ProtectHome=read-only` plus a carved-out `ReadWritePaths`); and
+    `scripts/build-pyz.py`, a dependency-free `.pyz` build targeting
+    `claude_token_lens.__main__:main` so real exit codes propagate. See
+    [docs/deploy.md](docs/deploy.md).
 
 ### Planned
 
 - **v0.2** — `claude-token-lens serve` (local read-only service: watcher
   thread, SQLite store, `http.server` JSON API, dependency-free static
-  web UI), Docker packaging, a live TTL countdown in the statusline, an
-  aggregate-only `export` command, and a monthly report.
+  web UI), Docker packaging, the Windows Scheduled Task/systemd hosting
+  paths and the `.pyz` build all shipped (see the S1-integration entry
+  above and [docs/deploy.md](docs/deploy.md)); a live TTL countdown in
+  the statusline, an aggregate-only `export` command, and a monthly
+  report remain planned.
 - **v0.3** — `init`, a `baseline`/onboarding capture window, a profile
   schema and catalogue, `apply`/`--revert` for writing a chosen profile
   into `settings.json`/agent frontmatter, a `compare` command, a team
