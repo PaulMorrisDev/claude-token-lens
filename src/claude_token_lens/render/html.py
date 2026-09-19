@@ -27,7 +27,7 @@ import dataclasses
 import html as _html
 
 from ..model import Diagnostics, ReportModel, Table
-from .tables import format_cell
+from .tables import format_cell, format_evidence_value
 
 #: Column kinds that read as quantities: right-aligned, sortable numerically.
 _NUMERIC_KINDS = frozenset({"int", "float", "pct", "money", "tokens", "secs"})
@@ -276,6 +276,7 @@ def _sections_html(model: ReportModel) -> str:
 def _recommendations_html(model: ReportModel) -> str:
     if not model.recommendations:
         return "<p>None.</p>"
+    currency = model.meta.pricing.currency
     parts = []
     for rec in model.recommendations:
         parts.append('<article class="rec">')
@@ -286,7 +287,11 @@ def _recommendations_html(model: ReportModel) -> str:
         if rec.evidence:
             parts.append('<p>Evidence:</p><ul class="evidence-list">')
             for label, value, source_table, row_key in rec.evidence:
-                text = f"{label}: {value} (table {source_table}, row {row_key})"
+                # Fix A3: format the cited value using its home table
+                # column's kind, same as the Markdown renderer -- see
+                # render/tables.py's module docstring.
+                formatted = format_evidence_value(model, value, source_table, row_key, currency)
+                text = f"{label}: {formatted} (table {source_table}, row {row_key})"
                 parts.append(f"<li>{_esc(text)}</li>")
             parts.append("</ul>")
         parts.append("</article>")

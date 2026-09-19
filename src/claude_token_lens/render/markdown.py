@@ -20,7 +20,7 @@ from __future__ import annotations
 import dataclasses
 
 from ..model import Diagnostics, ReportModel, Table
-from .tables import escape_md, format_cell
+from .tables import escape_md, format_cell, format_evidence_value
 
 #: Column kinds that read as quantities and so are right-aligned by
 #: default in a pipe table, unless the column overrides ``align``.
@@ -113,6 +113,7 @@ def _render_sections(model: ReportModel) -> list[str]:
 
 
 def _render_recommendations(model: ReportModel) -> list[str]:
+    currency = model.meta.pricing.currency
     lines = ["## Recommendations", ""]
     if not model.recommendations:
         lines.append("None.")
@@ -128,7 +129,12 @@ def _render_recommendations(model: ReportModel) -> list[str]:
             lines.append("")
             lines.append("Evidence:")
             for label, value, source_table, row_key in rec.evidence:
-                lines.append(f"- {label}: {value} (table {source_table}, row {row_key})")
+                # Fix A3: format the cited value using its home table
+                # column's kind (e.g. "63.7%", "47,345 tokens") instead
+                # of printing the raw float -- see render/tables.py's
+                # module docstring.
+                formatted = format_evidence_value(model, value, source_table, row_key, currency)
+                lines.append(f"- {label}: {formatted} (table {source_table}, row {row_key})")
         lines.append("")
     return lines
 

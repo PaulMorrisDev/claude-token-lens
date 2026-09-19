@@ -4,9 +4,29 @@
 Markdown, JSON, CSV and HTML renderers all agree on numeric formatting
 (thousands separators, decimal places, unit suffixes). Renderers must not
 format numbers themselves — they call ``format_cell`` per ``Column.kind``.
+
+v0.1.1 fix A3: a ``Recommendation.evidence`` tuple (``label, value,
+source_table, row_key``) carries no column reference of its own, so the
+Markdown/HTML renderers used to print its raw ``value`` unformatted --
+``63.749066571507974`` rather than ``63.7%``, ``47345.372881355936``
+rather than ``47,345`` (a "tokens"-kind cell). :func:`resolve_evidence_column_kind` looks
+the cited ``source_table``/``row_key`` up in the ``ReportModel`` the
+evidence came from and finds which of that row's columns actually holds
+``value`` (the same value-to-cell match ``tests/test_recommend_contract.
+py``'s own evidence check already relies on), so
+:func:`format_evidence_value` can format it exactly as it appears in its
+home table. The JSON renderer is deliberately untouched -- it serialises
+``Recommendation.evidence`` as raw dataclass data via ``to_jsonable``
+(rounded floats only), never through ``format_cell``, so a JSON consumer
+still gets the exact number rather than a display string.
 """
 
 from __future__ import annotations
+
+import typing
+
+if typing.TYPE_CHECKING:
+    from ..model import ReportModel
 
 _KINDS = ("str", "int", "float", "pct", "money", "tokens", "secs")
 
@@ -66,6 +86,59 @@ def format_cell(value, kind: str, currency: str = "USD") -> str:
     raise AssertionError("unreachable")  # pragma: no cover
 
 
+def _evidence_cell_matches(cell, value) -> bool:
+    """Whether a table cell and an evidence tuple's cited value are "the
+    same" number/string, tolerating the usual int/float and str/number
+    crossings a value can pick up on its way from analytics code into a
+    ``Recommendation.evidence`` tuple. Mirrors ``tests/
+    test_recommend_contract.py``'s own ``_value_matches_some_cell``."""
+    if isinstance(cell, bool) or isinstance(value, bool):
+        return cell is value
+    if isinstance(cell, (int, float)) and isinstance(value, (int, float)):
+        try:
+            return abs(float(cell) - float(value)) < 1e-9
+        except (TypeError, ValueError):
+            return False
+    return cell == value or str(cell) == str(value)
+
+
+def resolve_evidence_column_kind(model: "ReportModel", source_table: str, row_key, value) -> str:
+    """The ``Column.kind`` of whichever column in ``model``'s
+    ``<section_key>.<table_name>`` (``source_table``) row ``row_key``
+    actually holds ``value`` — the column-formatting information a
+    ``Recommendation.evidence`` tuple doesn't carry directly (see this
+    module's docstring). Falls back to ``"str"`` (format_cell's plain
+    ``str()`` path — safe for any value, including one that fails to
+    resolve) whenever the section, table, row or a matching cell can't be
+    found, so a stale or hand-built evidence tuple degrades to an
+    unformatted-but-correct string rather than raising.
+    """
+    section_key, _, table_name = source_table.partition(".")
+    for section in model.sections:
+        if section.key != section_key:
+            continue
+        for table in section.tables:
+            if table.name != table_name:
+                continue
+            for row in table.rows:
+                if not row or row[0] != row_key:
+                    continue
+                for cell, column in zip(row, table.columns):
+                    if _evidence_cell_matches(cell, value):
+                        return column.kind
+    return "str"
+
+
+def format_evidence_value(model: "ReportModel", value, source_table: str, row_key, currency: str = "USD") -> str:
+    """Render one ``Recommendation.evidence`` value exactly as it reads in
+    its home table: resolve the cited column's ``kind`` (see
+    :func:`resolve_evidence_column_kind`) and format ``value`` through
+    :func:`format_cell` with it.
+    """
+    kind = resolve_evidence_column_kind(model, source_table, row_key, value)
+    return format_cell(value, kind, currency)
+
+
 def escape_md(cell) -> str:
     """Escape a table cell for embedding in a Markdown table.
 
@@ -81,4 +154,9 @@ def escape_md(cell) -> str:
     return text
 
 
-__all__ = ["format_cell", "escape_md"]
+__all__ = [
+    "format_cell",
+    "escape_md",
+    "resolve_evidence_column_kind",
+    "format_evidence_value",
+]

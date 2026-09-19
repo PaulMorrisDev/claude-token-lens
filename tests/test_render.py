@@ -120,7 +120,10 @@ def report_model() -> ReportModel:
             title="Switch claude-implementer to 5m TTL",
             action="Set subagentPromptCacheTtl to 5m.",
             lever="subagentPromptCacheTtl",
-            evidence=[("Turns", 7, "overview", "claude-implementer")],
+            # source_table correctly identifies "usage" (section key) +
+            # "overview" (table name); row 7's own column is "int"-kind,
+            # so this cites a value whose formatted and raw text agree.
+            evidence=[("Turns", 7, "usage.overview", "claude-implementer")],
         ),
         Recommendation(
             id="cache-read-dominance",
@@ -128,7 +131,22 @@ def report_model() -> ReportModel:
             category="workflow",
             title="Cache reads dominate cost",
             action="No action needed; monitor.",
-            evidence=[("Hit ratio", 87.654, "cache", 0)],
+            # Fix A3: row_key 87.654 is this table's own row[0] (a float,
+            # since the "cache" table has no string row key -- the point
+            # here is purely to demonstrate pct-kind formatting), and the
+            # cited value 87.654 resolves to the "hit_ratio" (pct) column.
+            evidence=[("Hit ratio", 87.654, "usage.cache", 87.654)],
+        ),
+        Recommendation(
+            id="baseline-bloat",
+            severity="advice",
+            category="settings",
+            title="Evidence tokens-kind formatting demonstration",
+            action="No action needed; formatting check only.",
+            # Fix A3: resolves against agent_detail's "tokens"-kind column
+            # -- same thousands-separated text format_cell already gives
+            # that column in its own table.
+            evidence=[("Tokens", _TOKENS_RAW, "agents.agent_detail", _TOKENS_RAW)],
         ),
     ]
 
@@ -218,8 +236,16 @@ def test_markdown_recommendations_section(report_model):
     assert "Action: Set subagentPromptCacheTtl to 5m." in md
     assert "Lever: subagentPromptCacheTtl" in md
     assert "Evidence:" in md
-    assert "- Turns: 7 (table overview, row claude-implementer)" in md
-    assert "- Hit ratio: 87.654 (table cache, row 0)" in md
+    # Fix A3: evidence values are formatted using the cited column's kind
+    # rather than printed raw -- "Turns" resolves to an int-kind cell (its
+    # formatted and raw text happen to agree), "Hit ratio" resolves to a
+    # pct-kind cell (87.654 -> "87.7%"), and the third recommendation's
+    # "Tokens" evidence resolves to a tokens-kind cell (thousands
+    # separator, same as format_cell's own "tokens" contract -- see
+    # render/tables.py's format_cell docstring).
+    assert "- Turns: 7 (table usage.overview, row claude-implementer)" in md
+    assert "- Hit ratio: 87.7% (table usage.cache, row 87.654)" in md
+    assert f"- Tokens: {_TOKENS_FORMATTED} (table agents.agent_detail, row {_TOKENS_RAW})" in md
 
 
 def test_markdown_diagnostics_section(report_model):
@@ -388,6 +414,15 @@ def test_html_pct_bar_is_capped_at_100(report_model):
     out = render_html(report_model)
     assert 'class="bar" style="width:87.7%"' in out
     assert "width:100" not in out  # no value in the fixture actually exceeds 100
+
+
+def test_html_evidence_values_formatted_by_cited_column_kind(report_model):
+    # Fix A3: same demonstration as
+    # test_markdown_recommendations_section, for the HTML renderer.
+    out = render_html(report_model)
+    assert "Turns: 7 (table usage.overview, row claude-implementer)" in out
+    assert "Hit ratio: 87.7% (table usage.cache, row 87.654)" in out
+    assert f"Tokens: {_TOKENS_FORMATTED} (table agents.agent_detail, row {_TOKENS_RAW})" in out
 
 
 def test_html_is_well_formed_top_level_structure(report_model):
