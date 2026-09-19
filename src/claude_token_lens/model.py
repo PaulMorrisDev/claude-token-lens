@@ -111,6 +111,45 @@ Discovery fix (workflow-nested subagents), also additive:
   directory a workflow-nested subagent lives under (see
   ``workflows.py``'s module docstring on this layout), set by
   ``discovery.load_meta``. ``None`` for every other transcript kind.
+
+Capture-improvements batch (all additive, all defaulted -- see
+``parse.py``'s module docstring for how each is computed):
+
+- ``Turn.tool_wait_s: float | None = None`` / ``Turn.model_latency_s:
+  float | None = None`` -- timing either side of this turn's own tool
+  calls: ``tool_wait_s`` is how long the harness/tool took to answer
+  (last tool_result timestamp minus this turn's own), ``model_latency_s``
+  is how long the model then took to respond (the next turn's timestamp
+  minus that same last tool_result timestamp). Both ``None`` when this
+  turn made no tool calls, or the relevant timestamp is missing/
+  unparsable, or (for ``model_latency_s``) there is no next turn.
+- ``Turn.tool_result_chars_by_tool: dict = {}`` -- tool name -> total
+  chars of tool_result content answering *this* turn's own tool_use_ids
+  (a per-turn breakdown of the same lengths ``TranscriptResult.
+  tool_result_chars`` totals for the whole transcript), so per-turn
+  context composition is computable.
+- ``Turn.agent_brief_chars: int | None = None`` -- total length of the
+  ``prompt`` input string(s) of every ``Agent``/``Task`` tool_use block
+  in this turn (the brief handed to a spawned agent) -- never the prompt
+  text itself. ``None`` when this turn spawned no agent.
+- ``Turn.tool_input_chars_by_tool: dict = {}`` -- tool name -> total
+  chars of every tool_use block's JSON-encoded ``input`` in this turn
+  (size only, via ``json.dumps`` on the already-parsed input -- the
+  input itself is never retained).
+- ``Turn.read_target_hashes: tuple[str, ...] = ()`` -- one salted HMAC-
+  SHA256 hash (16 hex chars) per ``Read``/``Edit``/``Write``/
+  ``NotebookEdit`` tool_use's own target path in this turn, via
+  ``parse.set_salt``/``parse.load_or_create_salt`` -- never the path
+  itself, and empty for every turn until a salt has been set in this
+  process (see ``parse.py``'s docstring on why the salt is threaded
+  through a module-level setter rather than a ``parse_transcript``
+  parameter).
+- ``Turn.human_prompt_chars: int | None = None`` / ``Turn.
+  human_prompt_has_paste: bool = False`` -- on the turn that follows a
+  HUMAN_TEXT event: the summed length of that event's (or events') own
+  text content, and whether any of it looks pasted (>2,000 chars, or
+  contains a ``[Pasted text`` marker). ``human_prompt_chars`` is
+  ``None`` when no HUMAN_TEXT event precedes this turn.
 """
 
 from __future__ import annotations
@@ -245,6 +284,31 @@ class Turn:
     #: ``dominant_ttl`` (or "5m" when that's "mixed"/"none") before
     #: replaying any policy - see ``ttl.normalize_ttl_split``.
     ttl_split_unknown: bool = False
+
+    #: Capture-improvements addition (see module docstring): timing either
+    #: side of this turn's own tool calls.
+    tool_wait_s: float | None = None
+    model_latency_s: float | None = None
+    #: Capture-improvements addition (see module docstring): tool name ->
+    #: total chars of tool_result content answering this turn's own
+    #: tool_use_ids.
+    tool_result_chars_by_tool: dict = field(default_factory=dict)
+    #: Capture-improvements addition (see module docstring): total length
+    #: of this turn's Agent/Task tool_use ``prompt`` input string(s).
+    agent_brief_chars: int | None = None
+    #: Capture-improvements addition (see module docstring): tool name ->
+    #: total chars of this turn's own tool_use ``input`` (JSON-encoded
+    #: size only; the input itself is never retained).
+    tool_input_chars_by_tool: dict = field(default_factory=dict)
+    #: Capture-improvements addition (see module docstring): salted
+    #: HMAC-SHA256 hashes (16 hex chars each) of this turn's own
+    #: Read/Edit/Write/NotebookEdit target paths - never the paths
+    #: themselves. See ``parse.set_salt``/``parse.load_or_create_salt``.
+    read_target_hashes: tuple[str, ...] = ()
+    #: Capture-improvements addition (see module docstring): set on the
+    #: turn that follows a HUMAN_TEXT event.
+    human_prompt_chars: int | None = None
+    human_prompt_has_paste: bool = False
 
 
 @dataclass(slots=True)

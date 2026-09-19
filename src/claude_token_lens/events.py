@@ -198,6 +198,38 @@ def _leading_tag_name(text: str) -> str | None:
     return match.group(1) if match else None
 
 
+#: Capture-improvements addition (A4, see model.py's ``Turn.
+#: human_prompt_chars``/``human_prompt_has_paste`` docstrings): a text
+#: block at or beyond this length is treated as pasted, same as the
+#: ``[Pasted text`` marker Claude Code's own composer inserts.
+_PASTE_CHAR_THRESHOLD = 2000
+_PASTE_MARKER = "[Pasted text"
+
+
+def _human_text_metrics(d: dict, str_content: str | None) -> tuple[int, bool]:
+    """Chars and paste-flag for a HUMAN_TEXT line's own text content (A4):
+    sums the plain string content, or every ``text`` block's length for a
+    list-content line, and flags a paste when any one text block exceeds
+    ``_PASTE_CHAR_THRESHOLD`` chars or contains ``_PASTE_MARKER`` — never
+    retaining the text itself.
+    """
+    texts: list[str] = []
+    if str_content is not None:
+        texts.append(str_content)
+    else:
+        message = d.get("message")
+        content = message.get("content") if isinstance(message, dict) else None
+        if isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    text = block.get("text")
+                    if isinstance(text, str):
+                        texts.append(text)
+    total_chars = sum(len(text) for text in texts)
+    has_paste = any(len(text) > _PASTE_CHAR_THRESHOLD or _PASTE_MARKER in text for text in texts)
+    return total_chars, has_paste
+
+
 def _delta_detail(attachment_type: str, attachment: dict) -> dict:
     keys = _DELTA_COUNT_KEYS.get(attachment_type)
     if keys is None:
@@ -391,9 +423,15 @@ def classify_line(d: dict) -> Event | None:
     if line_type == "user" and (
         origin_kind == "human" or d.get("promptSource") is not None or d.get("permissionMode") is not None
     ):
-        return Event(kind=EventKind.HUMAN_TEXT, subkind=None, ts=ts)
+        human_chars, has_paste = _human_text_metrics(d, str_content)
+        return Event(
+            kind=EventKind.HUMAN_TEXT, subkind=None, ts=ts, size_chars=human_chars, detail={"has_paste": has_paste}
+        )
     if line_type == "user" and (str_content is not None or _user_has_text_or_image_list(d)):
-        return Event(kind=EventKind.HUMAN_TEXT, subkind=None, ts=ts)
+        human_chars, has_paste = _human_text_metrics(d, str_content)
+        return Event(
+            kind=EventKind.HUMAN_TEXT, subkind=None, ts=ts, size_chars=human_chars, detail={"has_paste": has_paste}
+        )
 
     # 21. UNKNOWN
     return Event(kind=EventKind.UNKNOWN, subkind=None, ts=ts)
