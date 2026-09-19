@@ -468,6 +468,7 @@ def _rule_ttl_switch(
                 action=action,
                 lever=lever,
                 scope=scope,
+                agent_type=agent_type,
                 evidence=[
                     _evidence("TTL recommendation", recommendation_text, "ttl", "ttl_by_agent_type", agent_type),
                 ],
@@ -669,6 +670,7 @@ def _rule_subagent_volume(report: ReportModel, th: RecommendThresholds, archetyp
                     "before spawning it."
                 ),
                 lever=None,
+                agent_type=agent_type,
                 evidence=[
                     # Fix R11: cite the real cost_observed cell -- there is
                     # no "share of corpus cost" column on ttl_by_agent_type
@@ -850,6 +852,7 @@ def _rule_agent_report_size(report: ReportModel, th: RecommendThresholds, archet
                     "costs less to fold into the parent's cache."
                 ),
                 lever=None,
+                agent_type=agent_type,
                 evidence=[
                     _evidence("Mean report proxy (output tokens)", mean_proxy, "agents", "topology_report_proxy", agent_type),
                 ],
@@ -890,6 +893,14 @@ def _rule_spawn_cost(report: ReportModel, th: RecommendThresholds, archetype: st
                     "cuts what has to be written into its cache on the very first turn."
                 ),
                 lever="omitClaudeMd",
+                # Fix R13: omitClaudeMd is per-agent frontmatter (each
+                # .claude/agents/<type>.md has its own copy), not a
+                # top-level settings key, so this is "repo" scope the
+                # same way a per-agent TTL lever is -- it was previously
+                # left at the "user" default because _lever_scope() only
+                # ever saw the TTL-switch lever text.
+                scope="repo",
+                agent_type=agent_type,
                 evidence=[
                     _evidence("Mean first-turn write", mean_write, "agents", "topology_spawn_write", agent_type),
                 ],
@@ -1131,14 +1142,26 @@ _TTL_TARGET_RE = re.compile(r"\bto (1h|5m)\b")
 
 def render_patch_set(recs: list[Recommendation]) -> str:
     """A unified-diff-style text of the settings/frontmatter changes
-    ``recs`` imply: ``experimental.cacheTtl: 5m|1h`` per
-    ``.claude/agents/<agent_type>.md`` for a per-agent TTL switch, and a
-    bare settings-key stanza (no path -- see module docstring) for
-    top-level settings levers. Contains no path other than
+    ``recs`` imply: one ``.claude/agents/<agent_type>.md`` stanza per
+    agent type -- merging every per-agent lever for that same agent
+    (e.g. both a TTL switch and ``omitClaudeMd``) into a single diff --
+    and a bare settings-key stanza (no path -- see module docstring)
+    for genuine top-level settings levers. Contains no path other than
     ``.claude/agents/<agent_type>.md``.
+
+    Fix R13: agent routing now prefers ``rec.agent_type`` (set by every
+    per-agent-type rule) over sniffing the agent name back out of
+    ``lever``'s text with ``_AGENT_LEVER_RE`` -- the regex only ever
+    matched the TTL-switch lever's specific wording, so a per-agent
+    lever like spawn-cost's ``omitClaudeMd`` used to fall through to
+    the generic top-level "settings (user)" stanza even though it is
+    genuinely per-agent frontmatter. The regex is kept as a fallback
+    for recommendations that don't set ``agent_type`` explicitly.
     """
     lines: list[str] = []
-    seen_agent_files: set[str] = set()
+    # agent_type -> ordered {settings_key: rendered_value}, plus whether
+    # any lever contributing to it is managed.
+    agent_stanzas: dict[str, dict] = {}
     seen_settings_keys: set[str] = set()
 
     for rec in recs:
@@ -1148,21 +1171,25 @@ def render_patch_set(recs: list[Recommendation]) -> str:
         is_managed = rec.scope == "managed"
 
         agent_match = _AGENT_LEVER_RE.search(bare_lever)
-        if agent_match:
+        # "top-level" is the main session, not a subagent -- its levers
+        # (e.g. promptCacheTtl) are genuine top-level settings keys, so
+        # only route on agent_type when it names an actual subagent.
+        agent_type = rec.agent_type if rec.agent_type not in (None, "top-level") else None
+        if agent_type is None and agent_match:
             agent_type = agent_match.group(1)
-            path = f".claude/agents/{agent_type}.md"
-            if path in seen_agent_files:
-                continue
-            seen_agent_files.add(path)
-            target_match = _TTL_TARGET_RE.search(rec.action)
-            target = target_match.group(1) if target_match else "5m|1h"
-            lines.append(f"--- {path}")
-            lines.append(f"+++ {path}")
+
+        if agent_type is not None:
+            stanza = agent_stanzas.setdefault(agent_type, {"managed": False, "keys": {}})
             if is_managed:
-                lines.append("# managed by policy -- shown for reference only")
-            lines.append("-experimental.cacheTtl: (unset)")
-            lines.append(f"+experimental.cacheTtl: {target}")
-            lines.append("")
+                stanza["managed"] = True
+            if agent_match or bare_lever == "experimental.cacheTtl":
+                target_match = _TTL_TARGET_RE.search(rec.action)
+                target = target_match.group(1) if target_match else "5m|1h"
+                stanza["keys"]["experimental.cacheTtl"] = target
+            elif bare_lever == "omitClaudeMd":
+                stanza["keys"]["omitClaudeMd"] = "true"
+            else:
+                stanza["keys"].setdefault(bare_lever, "(see recommendation action)")
             continue
 
         if bare_lever == "promptCacheTtl":
@@ -1191,6 +1218,19 @@ def render_patch_set(recs: list[Recommendation]) -> str:
         lines.append(f"+{bare_lever}: (see recommendation action)")
         lines.append("")
 
+    agent_lines: list[str] = []
+    for agent_type, stanza in agent_stanzas.items():
+        path = f".claude/agents/{agent_type}.md"
+        agent_lines.append(f"--- {path}")
+        agent_lines.append(f"+++ {path}")
+        if stanza["managed"]:
+            agent_lines.append("# managed by policy -- shown for reference only")
+        for key, value in stanza["keys"].items():
+            agent_lines.append(f"-{key}: (unset)")
+            agent_lines.append(f"+{key}: {value}")
+        agent_lines.append("")
+
+    lines = agent_lines + lines
     return "\n".join(lines).rstrip("\n") + ("\n" if lines else "")
 
 

@@ -1661,6 +1661,58 @@ def test_render_patch_set_skips_recommendations_with_no_lever():
     assert text == ""
 
 
+def test_render_patch_set_routes_omit_claude_md_to_the_agent_file_not_settings():
+    # Fix R13: omitClaudeMd (spawn-cost's lever) is per-agent
+    # frontmatter, not a top-level settings key -- it must not fall
+    # into the generic "settings (user)" stanza.
+    rec = dataclasses.replace(
+        _make_recommendation(),
+        lever="omitClaudeMd",
+        agent_type="claude-implementer",
+        action="Trim claude-implementer's briefing.",
+    )
+    text = render_patch_set([rec])
+    assert "--- .claude/agents/claude-implementer.md" in text
+    assert "+omitClaudeMd: true" in text
+    assert "settings (user)" not in text
+
+
+def test_render_patch_set_merges_multiple_levers_for_the_same_agent_into_one_stanza():
+    # Fix R13: a TTL switch and an omitClaudeMd recommendation for the
+    # *same* agent type must produce one merged diff for that agent's
+    # file, not two separate "--- .claude/agents/..." stanzas.
+    ttl_rec = dataclasses.replace(
+        _make_recommendation(id="ttl"),
+        lever="experimental.cacheTtl in claude-implementer.md (or subagentPromptCacheTtl for all subagents)",
+        agent_type="claude-implementer",
+        action="Switch claude-implementer's prompt cache TTL to 1h.",
+    )
+    briefing_rec = dataclasses.replace(
+        _make_recommendation(id="spawn"),
+        lever="omitClaudeMd",
+        agent_type="claude-implementer",
+        action="Trim claude-implementer's briefing.",
+    )
+    text = render_patch_set([ttl_rec, briefing_rec])
+    assert text.count("--- .claude/agents/claude-implementer.md") == 1
+    assert "+experimental.cacheTtl: 1h" in text
+    assert "+omitClaudeMd: true" in text
+
+
+def test_render_patch_set_top_level_agent_type_stays_a_settings_key_not_a_file():
+    # agent_type="top-level" is the main session, not a subagent --
+    # it must still render as the bare settings-key stanza.
+    rec = dataclasses.replace(
+        _make_recommendation(),
+        lever="promptCacheTtl",
+        agent_type="top-level",
+        action="Switch top-level's prompt cache TTL to 5m.",
+    )
+    text = render_patch_set([rec])
+    assert "--- settings (user)" in text
+    assert ".claude/agents/" not in text
+
+
 def _make_recommendation(**overrides):
     from claude_token_lens.model import Recommendation
 
