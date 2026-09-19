@@ -68,6 +68,23 @@ GAP_BUCKETS: tuple[str, ...] = ("<1m", "1-5m", "5-15m", "15-60m", ">60m", "unkno
 #: The two re-cache signatures, in report order.
 SIGNATURES: tuple[str, ...] = ("full-expiry", "prefix-invalidated")
 
+#: This module's own detection/costing assumptions, printed verbatim in
+#: the report's "## Assumptions" block (``ReportMeta.assumptions`` —
+#: see ``report.py``) alongside ``ttl.ASSUMPTIONS``.
+ASSUMPTIONS: tuple[str, ...] = (
+    "a turn's own ctx/cache_read_tokens fields are the whole story: a "
+    "large context with a low cache-read ratio is treated as a re-cache "
+    "regardless of what caused it",
+    "the first priced turn of a transcript is never itself a re-cache "
+    "(nothing existed to invalidate yet)",
+    "a flagged turn's signature (full-expiry vs prefix-invalidated) is "
+    "decided purely by cache_read_tokens against full_expiry_cr, not by "
+    "the actual elapsed TTL window",
+    "avoidable cost is computed by re-pricing the same turn as if its "
+    "cache-creation tokens had instead been a cache read, holding every "
+    "other component of the turn fixed",
+)
+
 
 @dataclass(slots=True)
 class RecacheThresholds:
@@ -865,6 +882,7 @@ def _huge_context_table(all_turns: list[Turn], th: RecacheThresholds) -> Table:
 __all__ = [
     "GAP_BUCKETS",
     "SIGNATURES",
+    "ASSUMPTIONS",
     "RecacheThresholds",
     "detect",
     "apply",
