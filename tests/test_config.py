@@ -128,6 +128,54 @@ def test_exclude_projects_non_string_item_raises_config_error(tmp_path):
         load_config(config_dir=token_lens_dir)
 
 
+# --------------------------------------------------------------------
+# load_config: [savers] table (v4-saver-roi)
+# --------------------------------------------------------------------
+
+
+def test_savers_defaults_to_empty_list():
+    assert Config().savers == []
+
+
+def test_savers_parses_names_list(tmp_path):
+    token_lens_dir = tmp_path / "token-lens"
+    token_lens_dir.mkdir()
+    (token_lens_dir / "config.toml").write_text(
+        '[savers]\nnames = ["my-mcp-server", "acme-optimizer"]\n', encoding="utf-8"
+    )
+    config = load_config(config_dir=token_lens_dir)
+    assert config.savers == ["my-mcp-server", "acme-optimizer"]
+
+
+def test_savers_missing_table_defaults_to_empty_list(tmp_path):
+    token_lens_dir = tmp_path / "token-lens"
+    token_lens_dir.mkdir()
+    (token_lens_dir / "config.toml").write_text('min_sessions = 12\n', encoding="utf-8")
+    config = load_config(config_dir=token_lens_dir)
+    assert config.savers == []
+
+
+def test_savers_wrong_type_raises_config_error(tmp_path):
+    token_lens_dir = tmp_path / "token-lens"
+    token_lens_dir.mkdir()
+    (token_lens_dir / "config.toml").write_text('savers = "not-a-table"\n', encoding="utf-8")
+    with pytest.raises(ConfigError, match="savers"):
+        load_config(config_dir=token_lens_dir)
+
+
+def test_savers_names_non_string_item_raises_config_error(tmp_path):
+    token_lens_dir = tmp_path / "token-lens"
+    token_lens_dir.mkdir()
+    (token_lens_dir / "config.toml").write_text('[savers]\nnames = ["ok", 5]\n', encoding="utf-8")
+    with pytest.raises(ConfigError, match="savers.names"):
+        load_config(config_dir=token_lens_dir)
+
+
+def test_describe_shows_savers_when_set():
+    config = Config(savers=["my-mcp-server"])
+    assert any("savers" in line and "my-mcp-server" in line for line in config.describe())
+
+
 def test_retention_days_defaults_to_none():
     assert Config().retention_days is None
 
