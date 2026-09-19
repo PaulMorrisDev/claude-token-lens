@@ -294,3 +294,8 @@ that actually delete a row.
   run simply rebuilds it from the transcripts already on disk, the same
   way a schema-version bump's drop-and-rebuild migration
   (`Store.migrate()`) does.
+
+  If one of the files cannot be deleted (for example a `-wal` sidecar
+  still held open by another process), `--purge` deletes everything it
+  can, reports the failure(s) to stderr, and exits with status `1` —
+  it never aborts partway through with an unhandled error.
