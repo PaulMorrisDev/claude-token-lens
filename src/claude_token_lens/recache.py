@@ -50,6 +50,25 @@ kinds, a ``<=40``-char command prefix, token counts) is already
 privacy-clean per ``model.py``'s contract; this module never adds a new
 field that could hold message text, a full path, or a full command.
 
+Usage-limits batch (v3-limits): a re-cache turn whose ``Turn.gap_cause ==
+"limit"`` (the gap to the previous turn spanned a usage-cap pause -- see
+model.py's/parse.py's module docstrings) gets the signature
+``"limit-expiry"`` instead of full-expiry/prefix-invalidated -- checked
+first in :func:`detect`, since the cache genuinely had nothing left to
+hit (same shape as full-expiry) but the cause was an external pause, not
+a caching problem. :func:`build_section` shows it as its own row in
+``recache_signature_split`` (summary/signature-split tables still use the
+*full* re-cache population, so total avoidable cost is never hidden) but
+excludes it from every behavioural cause-attribution table (gap buckets,
+preceding tool, top command prefixes, primary cause, event
+co-occurrence, by-agent-type) via a ``behavioural_turns``/
+``behavioural_records`` population computed once at the top of
+:func:`build_section` -- a usage-cap pause isn't a caching behaviour to
+diagnose. ``recommend.py``'s ``_rule_long_tool_waits``/
+``_rule_notification_invalidation`` read exactly these behavioural
+tables, so they automatically ignore limit-induced turns with no changes
+of their own needed.
+
 v0.2.0 fix A2: ``recache_summary`` and ``recache_huge_context`` are each a
 single-row table whose row used to start with a bare numeric count
 (``transcripts`` / ``len(huge_turns)``) as ``row[0]`` — a table's row-key
@@ -74,8 +93,10 @@ from .pricing import ModelRates, Pricing, ResolvedRates, price_turn
 #: parse failure — see parse.py's ``Diagnostics.timestamp_parse_failures``).
 GAP_BUCKETS: tuple[str, ...] = ("<1m", "1-5m", "5-15m", "15-60m", ">60m", "unknown")
 
-#: The two re-cache signatures, in report order.
-SIGNATURES: tuple[str, ...] = ("full-expiry", "prefix-invalidated")
+#: The re-cache signatures, in report order. "limit-expiry" (usage-limits
+#: addition, see module docstring) is checked first in detect() and takes
+#: priority over the other two.
+SIGNATURES: tuple[str, ...] = ("full-expiry", "prefix-invalidated", "limit-expiry")
 
 #: This module's own detection/costing assumptions, printed verbatim in
 #: the report's "## Assumptions" block (``ReportMeta.assumptions`` —
@@ -183,7 +204,13 @@ def detect(turns: Sequence[Turn], th: RecacheThresholds) -> list[Turn]:
             continue
         if turn.cache_read_tokens >= th.cr_ratio * turn.ctx:
             continue
-        signature = "full-expiry" if turn.cache_read_tokens < th.full_expiry_cr else "prefix-invalidated"
+        if turn.gap_cause == "limit":
+            # Usage-limits addition (see module docstring): the cache had
+            # nothing left to hit because a usage-cap pause intervened,
+            # not because of ordinary TTL expiry or an invalidation.
+            signature = "limit-expiry"
+        else:
+            signature = "full-expiry" if turn.cache_read_tokens < th.full_expiry_cr else "prefix-invalidated"
         detected.append(dataclasses.replace(turn, is_recache=True, recache_signature=signature))
     return detected
 
@@ -364,15 +391,26 @@ def build_section(stats: RecacheStats, pricing: Pricing, th: RecacheThresholds, 
 
     prefix_invalidated_turns = [t for t in recache_turns if t.recache_signature == "prefix-invalidated"]
 
+    # Usage-limits addition (see module docstring): the behavioural
+    # population feeds every cause-attribution table -- a usage-cap pause
+    # isn't a caching behaviour to diagnose, so it's excluded here while
+    # still counted (and shown as its own signature row) above.
+    behavioural_records = [r for r in recache_records if r.turn.recache_signature != "limit-expiry"]
+    behavioural_turns = [r.turn for r in behavioural_records]
+    total_behavioural = len(behavioural_turns)
+    total_cc_behavioural = sum(t.cache_creation_tokens for t in behavioural_turns)
+
     tables = [
         _summary_table(transcripts, total_priced, total_recache, total_cc_recache, total_cc_all, total_avoidable),
         _signature_table(recache_turns, recache_records),
-        _gap_bucket_table(all_turns, recache_turns, total_cc_recache, total_cc_all, total_priced),
-        _preceding_tool_table(all_turns, recache_turns, total_cc_recache, total_cc_all, total_priced),
-        _top_command_prefix_table(recache_turns),
-        _primary_cause_table(all_turns, recache_turns, recache_records, total_recache, total_priced, total_cc_recache, total_cc_all),
+        _gap_bucket_table(all_turns, behavioural_turns, total_cc_behavioural, total_cc_all, total_priced),
+        _preceding_tool_table(all_turns, behavioural_turns, total_cc_behavioural, total_cc_all, total_priced),
+        _top_command_prefix_table(behavioural_turns),
+        _primary_cause_table(
+            all_turns, behavioural_turns, behavioural_records, total_behavioural, total_priced, total_cc_behavioural, total_cc_all
+        ),
         _primary_cause_prefix_invalidated_table(all_turns, prefix_invalidated_turns, total_priced, total_cc_all),
-        _cooccurrence_table(all_turns, recache_turns, total_recache, total_priced),
+        _cooccurrence_table(all_turns, behavioural_turns, total_behavioural, total_priced),
         _attachment_subsplit_table(recache_turns),
         _by_agent_type_table(records),
         _huge_context_table(all_turns, th),
@@ -456,7 +494,11 @@ def _signature_table(recache_turns: list[Turn], recache_records: list[_Record]) 
             "prefix-invalidated: cache_read_tokens is between "
             "full_expiry_cr and cr_ratio * ctx (a partial hit, so the TTL "
             "had not expired but something upstream of the cached prefix "
-            "changed anyway).",
+            "changed anyway). limit-expiry: the gap to the previous turn "
+            "spanned a usage-cap pause (Turn.gap_cause == 'limit') -- "
+            "shown here but excluded from every other table's "
+            "cause-attribution (gap bucket, preceding tool, top command "
+            "prefixes, primary cause, event co-occurrence, by-agent-type).",
         ],
     )
 
@@ -846,9 +888,17 @@ def _by_agent_type_table(records: list[_Record]) -> Table:
     rows = []
     for agent_type in agent_types:
         agent_all = [r.turn for r in records if r.agent_type == agent_type]
-        agent_recache = [t for t in agent_all if t.is_recache]
+        # Usage-limits addition (see module docstring): limit-expiry
+        # turns are excluded from this behavioural recache/cost count
+        # (priced_turns above is unaffected -- every priced turn for this
+        # agent still counts there).
+        agent_recache = [t for t in agent_all if t.is_recache and t.recache_signature != "limit-expiry"]
         cc = sum(t.cache_creation_tokens for t in agent_recache)
-        cost = sum(r.avoidable_cost for r in records if r.agent_type == agent_type)
+        cost = sum(
+            r.avoidable_cost
+            for r in records
+            if r.agent_type == agent_type and r.turn.recache_signature != "limit-expiry"
+        )
         rows.append(
             [
                 agent_type,
