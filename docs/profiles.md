@@ -381,9 +381,25 @@ claude-token-lens apply <profile> [--scope user|project-local|repo]
 
 | `--scope` | Settings file written | Agent files written |
 |---|---|---|
-| `user` (default with no `--project-dir`) | `~/.claude/settings.json` | `~/.claude/agents/<name>.md` |
+| `user` (default with no `--project-dir`) | `<claude-root>/settings.json` | `<claude-root>/agents/<name>.md` |
 | `project-local` (default once `--project-dir` is given) | `<project>/.claude/settings.local.json` | `<project>/.claude/agents/<name>.md` |
 | `repo` | `<project>/.claude/settings.json` | `<project>/.claude/agents/<name>.md` |
+
+### `<claude-root>`: the real Claude Code directory, resolved independently of `--config-dir`
+
+`user` scope targets `<claude-root>`, resolved by `cli._resolve_claude_root`
+in this order: the explicit `--claude-root PATH` flag, else
+`$CLAUDE_CONFIG_DIR`, else `~/.claude`. This is *not* derived from
+`--config-dir`/`config_dir` (this tool's own `token-lens` subdirectory,
+which may be pointed anywhere) — the two started out coincidentally
+related (`config_dir` used to default to `<claude-root>/token-lens`,
+so `config_dir.parent` happened to equal `<claude-root>`), but deriving
+one from the other broke the moment `--config-dir` pointed somewhere
+else, silently targeting `<config-dir-parent>/.claude/settings.json`
+instead of the real Claude Code config and leaving user-scope agent
+patches unable to find any agent file at all. `plan_apply`'s
+`claude_root` parameter and `--claude-root` exist precisely so the two
+directories are never conflated again.
 
 An agent's frontmatter file is not itself scope-specific — the same
 `.claude/agents/<name>.md` is patched regardless of which settings
@@ -404,15 +420,45 @@ resolved for `snapshot-config`/`probe-config` — it is spelled
 
 ### `--dry-run`: the diff, never a write
 
-`--dry-run` prints exactly the text `diff.render_unified_diff` would
-render for this profile/scope/effective-config combination (see
-"Diffing a profile against a project's effective config" above —
-`plan_apply` calls the same `diff_against_effective`/
-`render_unified_diff` functions to build this text, so the preview and
-the real write plan are provably one computation, not two that could
-drift apart), followed by any managed-key notes, the env-var export
-lines, and the exact command to run for real. Nothing is written to
-disk.
+`--dry-run` prints a real unified diff of every file `plan_apply`
+would write, followed by any managed-key notes, the env-var export
+lines, and the exact command to run for real. When the plan is
+non-empty but `plan.blocked` is not (see "Git-tracked files" and
+"Missing agent files" below), `--dry-run` instead prints each blocked
+reason to stderr and exits `2` — the same outcome the real apply would
+hit, surfaced before the user runs it for real, rather than a
+misleadingly clean-looking `0` exit for a preview whose apply would
+actually refuse. Nothing is written to disk either way.
+
+This diff text (`apply.render_plan_diff`) is built from the exact same
+`actions` list `execute()` writes from — each action already carries
+the target file's *real current bytes* (`old_bytes`, read from disk
+when `plan_apply` was called) and the *real merged bytes* it would
+write (`new_bytes`) — so the preview is provably a diff of the real
+before/after files, not a second, independent computation that could
+drift from what a real apply does. An earlier version instead built
+the dry-run text from `diff.diff_against_effective`/
+`render_unified_diff` against the caller's *snapshot* of the effective
+config — a value that can already be stale by the time `apply` runs
+(an agent file edited by hand since the snapshot was taken, for
+example), so the preview could show a change against a value the file
+no longer has, or hide a change the file already needs. `diff.py`'s
+functions are unaffected by this fix and remain in use elsewhere (the
+service's `GET /api/profiles/<id>/diff` route, which has no local
+files to read from and genuinely needs the snapshot-based diff).
+
+### Settings file formatting: indentation and line endings preserved
+
+Rewriting a settings JSON file detects the existing file's indent
+width (2 vs 4 spaces, sniffed from its first indented line) and line
+ending (`\r\n` vs `\n`, sniffed from whether `\r\n` appears at all) and
+reproduces both in the merged output, rather than always emitting
+`json.dumps`'s own 2-space/`\n` default. A file that doesn't exist yet
+falls back to 2 spaces and `\n`. Agent frontmatter files always
+preserved their own indentation/line endings already
+(`frontmatter.patch_frontmatter` only ever rewrites the specific lines
+it patches); this fix brings the settings-file writer in line with
+that same "never reformat what you didn't touch" convention.
 
 ### Backups and `--revert`
 
@@ -465,14 +511,19 @@ by policy, raise with your administrator" note — the same exclusion
 
 ### Git-tracked files: refused unless `--allow-tracked`
 
-A project-scoped write (`project-local` or `repo`) whose target file —
-a settings file or an agent's frontmatter file — is already tracked by
-git is refused by default (an apply changing a file colleagues share
-through version control should be a deliberate, reviewed choice, not a
-side effect of running a profile). `--allow-tracked` opts in. This
-check never applies to `user` scope or to the config directory's own
-files (backups, the active-profile marker, snapshot stamps), none of
-which are ever expected to live in a project's repository.
+A write whose target file — a settings file or an agent's frontmatter
+file — is already tracked by git is refused by default (an apply
+changing a file colleagues share through version control, or that the
+user themselves keeps under version control, should be a deliberate,
+reviewed choice, not a side effect of running a profile). `--allow-tracked`
+opts in. This check applies at every scope, including `user`: a
+`~/.claude` kept in a personal dotfiles repository is just as much a
+tracked target as a project's `.claude/settings.json`, and is refused
+the same way — an earlier version only ever consulted git status for
+project scope, silently overwriting a tracked user-scope file. The
+check never applies to the config directory's own files (backups, the
+active-profile marker, snapshot stamps), none of which are ever
+expected to live in a project's or the user's repository.
 
 ### Missing agent files: refused unless `--force`
 

@@ -64,6 +64,22 @@ DEFAULT_CAPTURE_WINDOW_DAYS = 7
 _TRUE_STRINGS = frozenset({"y", "yes", "true", "1", "on"})
 
 
+def _relative_label(path: Path, base: Path) -> str:
+    """``path`` rendered relative to ``base`` when possible, matching
+    ``profiles.apply._relative_label``'s convention: ``base`` (here,
+    always ``config_dir``, a path the caller explicitly supplied via
+    ``--config-dir`` or its documented default) is not itself a privacy
+    leak, so printing paths *relative to it* keeps the "Wrote ..."
+    confirmation messages useful without ever putting a raw absolute
+    filesystem path (home directory, username, drive letter) on stdout.
+    Falls back to ``path``'s own name when it isn't under ``base``.
+    """
+    try:
+        return str(path.relative_to(base))
+    except ValueError:
+        return path.name
+
+
 class OnboardingError(Exception):
     """An ``--answers`` file could not be read or is not valid JSON.
     Same "stand-alone, user-facing" convention as
@@ -366,6 +382,9 @@ def run_init(
     stdin: IO[str] = sys.stdin,
     stdout: IO[str] = sys.stdout,
     now: datetime | None = None,
+    all_projects: bool = False,
+    project: list[str] | None = None,
+    project_family: str | None = None,
 ) -> int:
     """Run the whole ``init`` flow: detect, ask/derive, write
     ``config.toml``/``projects/<slug>.toml``, print the install step,
@@ -374,6 +393,17 @@ def run_init(
     malformed ``--answers`` file or a ``config.toml`` shape
     :func:`~claude_token_lens.config.write_config_values` can't
     validate).
+
+    ``all_projects``/``project``/``project_family`` mirror
+    ``cli._resolve_project_dirs_for_args``'s own selection flags and
+    fallback rule (fix S6): the baseline capture used to always scan
+    only the current directory's own slug regardless of these -- a user
+    running ``init --all-projects`` from a fresh directory silently got
+    no baseline at all, even though the CLI's own subparser already
+    accepted (and printed as ``detection.project_count``) the wider
+    selection. ``config.toml``/``projects/<slug>.toml`` are still always
+    written for the *current* project -- these flags affect only which
+    project(s) the initial baseline is built from.
     """
     now = now or datetime.now(timezone.utc)
     config_dir = Path(config_dir)
@@ -424,7 +454,7 @@ def run_init(
         stdout.write(f"claude-token-lens init: {exc}\n")
         return 2
 
-    stdout.write(f"Wrote {written_path}\n")
+    stdout.write(f"Wrote {_relative_label(written_path, config_dir)}\n")
     if written_path.name == "config.toml.new":
         stdout.write(
             "(the existing config.toml had a shape init could not merge automatically -- "
@@ -439,7 +469,7 @@ def run_init(
     )
     project_slug = discovery.slug_for(os.getcwd())
     project_path = save_project_config(config_dir, project_slug, project_config)
-    stdout.write(f"Wrote {project_path}\n\n")
+    stdout.write(f"Wrote {_relative_label(project_path, config_dir)}\n\n")
 
     if no_install:
         stdout.write("Install step skipped (--no-install).\n\n")
@@ -453,9 +483,14 @@ def run_init(
         stdout.write(statusline_fragment.rstrip("\n") + "\n\n")
 
     config = load_config(config_dir)
+    baseline_slugs = list(project) if project else None
+    if not all_projects and not project_family and not baseline_slugs:
+        baseline_slugs = [project_slug]
     project_dirs = discovery.resolve_project_dirs(
         projects_root_path,
-        slugs=[project_slug],
+        slugs=baseline_slugs,
+        all_projects=all_projects,
+        family_regex=project_family,
         exclude_projects=config.exclude_projects,
     )
     if not project_dirs:
@@ -479,7 +514,7 @@ def run_init(
             )
             report_markdown = baseline_mod.render_onboarding_report(record)
             baseline_path = baseline_mod.save_baseline(config_dir, record, report_markdown)
-            stdout.write(f"Wrote initial baseline {baseline_path}\n")
+            stdout.write(f"Wrote initial baseline {_relative_label(baseline_path, config_dir)}\n")
             stdout.write(f"Sessions analysed: {record['sessions_analysed']}\n")
 
     status = baseline_mod.capture_status(config, now=now)

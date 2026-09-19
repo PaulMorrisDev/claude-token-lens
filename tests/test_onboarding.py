@@ -237,6 +237,7 @@ def test_run_init_writes_config_and_project_files(tmp_path, monkeypatch):
     real_project_path, projects_root, slug = _make_project(tmp_path)
     monkeypatch.chdir(real_project_path)
     config_dir = tmp_path / "config"
+    stdout = io.StringIO()
 
     rc = onboarding.run_init(
         config_dir=config_dir,
@@ -246,15 +247,156 @@ def test_run_init_writes_config_and_project_files(tmp_path, monkeypatch):
         hook_fragment="HOOK",
         statusline_fragment="STATUSLINE",
         stdin=io.StringIO(""),
-        stdout=io.StringIO(),
+        stdout=stdout,
     )
     assert rc == 0
+    project_toml_path = config_dir / "projects" / f"{slug}.toml"
     assert (config_dir / "config.toml").is_file()
-    assert (config_dir / "projects" / f"{slug}.toml").is_file()
+    assert project_toml_path.is_file()
 
     config = load_config(config_dir)
     assert config.capture_window == onboarding.DEFAULT_CAPTURE_WINDOW_DAYS
     assert config.capture_started is not None
+
+    # Fix N3: assert_privacy_deep was imported but never actually called
+    # anywhere in this file -- the privacy assertion its import implies
+    # was never run against init's own written output. Exercise it here
+    # against everything init writes/prints: the written config.toml,
+    # the written projects/<slug>.toml, and stdout.
+    assert_privacy_deep(
+        {
+            "config_toml": (config_dir / "config.toml").read_text(encoding="utf-8"),
+            "project_toml": project_toml_path.read_text(encoding="utf-8"),
+            "stdout": stdout.getvalue(),
+        }
+    )
+
+
+# --------------------------------------------------------------------
+# Fix S6: run_init's initial baseline capture used to be hard-wired to
+# the cwd project's own slug, ignoring --all-projects/--project/
+# --project-family entirely. Each test below builds two synthetic
+# project directories -- the cwd project (no sessions of its own) and a
+# second, unrelated project (with sessions) -- and checks that the
+# baseline only picks up the second project's sessions when a selector
+# says to include it.
+# --------------------------------------------------------------------
+
+
+def test_run_init_default_baseline_is_scoped_to_the_cwd_project_only(tmp_path, monkeypatch):
+    real_project_path, projects_root, _slug = _make_project(tmp_path, name="my-proj")
+    _other_project_path, _projects_root2, other_slug = _make_project(tmp_path, name="other-proj")
+    write_jsonl(
+        projects_root / other_slug / "session-1.jsonl",
+        [turn_line(input_tokens=100 + i, output_tokens=20 + i) for i in range(3)],
+    )
+    monkeypatch.chdir(real_project_path)
+    config_dir = tmp_path / "config"
+    stdout = io.StringIO()
+
+    rc = onboarding.run_init(
+        config_dir=config_dir,
+        projects_root_path=projects_root,
+        non_interactive=True,
+        no_install=True,
+        hook_fragment="HOOK",
+        statusline_fragment="STATUSLINE",
+        stdin=io.StringIO(""),
+        stdout=stdout,
+    )
+    assert rc == 0
+    records = list_baselines(config_dir)
+    assert len(records) == 1
+    # my-proj has no sessions of its own -- the other project's 3
+    # sessions must not leak into the default (cwd-only) baseline.
+    assert records[0]["sessions_analysed"] == 0
+
+
+def test_run_init_all_projects_includes_other_projects_baseline(tmp_path, monkeypatch):
+    real_project_path, projects_root, _slug = _make_project(tmp_path, name="my-proj")
+    _other_project_path, _projects_root2, other_slug = _make_project(tmp_path, name="other-proj")
+    for i in range(3):
+        write_jsonl(
+            projects_root / other_slug / f"session-{i}.jsonl",
+            [turn_line(input_tokens=100 + i, output_tokens=20 + i)],
+        )
+    monkeypatch.chdir(real_project_path)
+    config_dir = tmp_path / "config"
+    stdout = io.StringIO()
+
+    rc = onboarding.run_init(
+        config_dir=config_dir,
+        projects_root_path=projects_root,
+        non_interactive=True,
+        no_install=True,
+        hook_fragment="HOOK",
+        statusline_fragment="STATUSLINE",
+        stdin=io.StringIO(""),
+        stdout=stdout,
+        all_projects=True,
+    )
+    assert rc == 0
+    records = list_baselines(config_dir)
+    assert len(records) == 1
+    assert records[0]["sessions_analysed"] == 3
+
+
+def test_run_init_project_flag_selects_named_project_only(tmp_path, monkeypatch):
+    real_project_path, projects_root, _slug = _make_project(tmp_path, name="my-proj")
+    _other_project_path, _projects_root2, other_slug = _make_project(tmp_path, name="other-proj")
+    for i in range(2):
+        write_jsonl(
+            projects_root / other_slug / f"session-{i}.jsonl",
+            [turn_line(input_tokens=100 + i, output_tokens=20 + i)],
+        )
+    monkeypatch.chdir(real_project_path)
+    config_dir = tmp_path / "config"
+    stdout = io.StringIO()
+
+    rc = onboarding.run_init(
+        config_dir=config_dir,
+        projects_root_path=projects_root,
+        non_interactive=True,
+        no_install=True,
+        hook_fragment="HOOK",
+        statusline_fragment="STATUSLINE",
+        stdin=io.StringIO(""),
+        stdout=stdout,
+        project=[other_slug],
+    )
+    assert rc == 0
+    records = list_baselines(config_dir)
+    assert len(records) == 1
+    assert records[0]["sessions_analysed"] == 2
+
+
+def test_run_init_project_family_regex_selects_matching_projects(tmp_path, monkeypatch):
+    real_project_path, projects_root, _slug = _make_project(tmp_path, name="my-proj")
+    _other_project_path, _projects_root2, other_slug = _make_project(tmp_path, name="other-proj")
+    for i in range(5):
+        write_jsonl(
+            projects_root / other_slug / f"session-{i}.jsonl",
+            [turn_line(input_tokens=100 + i, output_tokens=20 + i)],
+        )
+    monkeypatch.chdir(real_project_path)
+    config_dir = tmp_path / "config"
+    stdout = io.StringIO()
+
+    rc = onboarding.run_init(
+        config_dir=config_dir,
+        projects_root_path=projects_root,
+        non_interactive=True,
+        no_install=True,
+        hook_fragment="HOOK",
+        statusline_fragment="STATUSLINE",
+        stdin=io.StringIO(""),
+        stdout=stdout,
+        project_family="other-proj",
+    )
+    assert rc == 0
+    records = list_baselines(config_dir)
+    assert len(records) == 1
+    assert records[0]["sessions_analysed"] == 5
 
 
 def test_run_init_no_install_skips_fragments(tmp_path, monkeypatch):

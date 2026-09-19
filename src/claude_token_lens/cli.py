@@ -598,6 +598,16 @@ def _add_apply_args(sub: argparse.ArgumentParser) -> None:
         help="project directory for a project-local/repo scope",
     )
     sub.add_argument(
+        "--claude-root",
+        metavar="PATH",
+        default=None,
+        dest="claude_root",
+        help="the Claude Code directory holding settings.json/agents/ for user scope "
+        "(default: $CLAUDE_CONFIG_DIR, else ~/.claude -- see cli._resolve_claude_root; "
+        "deliberately independent of --config-dir, which is this tool's own directory "
+        "and may be pointed anywhere)",
+    )
+    sub.add_argument(
         "--dry-run", action="store_true", help="print the diff and how to apply it, without writing anything"
     )
     sub.add_argument(
@@ -841,6 +851,31 @@ def _resolve_config_dir(cli_arg: str | Path | None) -> Path:
     base = os.environ.get("CLAUDE_CONFIG_DIR")
     root = Path(base) if base else (Path.home() / ".claude")
     return root / "token-lens"
+
+
+def _resolve_claude_root(cli_arg: str | Path | None) -> Path:
+    """The Claude Code root directory: the one that directly holds
+    ``settings.json`` and ``agents/``. ``--claude-root`` wins; else
+    ``$CLAUDE_CONFIG_DIR``; else ``~/.claude``.
+
+    Fix B3: deliberately NOT derived from ``_resolve_config_dir``'s
+    result. ``apply`` used to compute ``home = config_dir.parent``,
+    which happens to equal this exact directory only when ``config_dir``
+    took its own untouched default (``<claude-root>/token-lens``) --
+    ``--config-dir``/``config.toml`` can point this tool's own
+    token-lens directory anywhere, at which point ``.parent`` is just
+    some unrelated directory. With the (also then-wrong) default,
+    ``apply``'s ``home`` ended up equal to the Claude root itself, and
+    ``profiles.apply._resolve_settings_path`` appended another
+    ``.claude/`` on top of it -- so a user-scope apply silently wrote
+    ``<claude-root>/.claude/settings.json`` (``~/.claude/.claude/settings.json``
+    in the default layout) while printing "Applied ..." and leaving the
+    real ``~/.claude/settings.json`` untouched.
+    """
+    if cli_arg:
+        return Path(cli_arg)
+    base = os.environ.get("CLAUDE_CONFIG_DIR")
+    return Path(base) if base else (Path.home() / ".claude")
 
 
 def _priced_turns(result: TranscriptResult):
@@ -2028,6 +2063,14 @@ def _cmd_init(args: argparse.Namespace) -> int:
             # call, same as every other subcommand's own bare print().
             stdin=sys.stdin,
             stdout=sys.stdout,
+            # Fix S6: honour the shared --all-projects/--project/
+            # --project-family selection flags for the initial baseline
+            # capture, the same fallback-to-cwd-slug rule
+            # _resolve_project_dirs_for_args already uses for every
+            # report-like subcommand.
+            all_projects=args.all_projects,
+            project=args.project,
+            project_family=args.project_family,
         )
     except onboarding.OnboardingError as exc:
         print(f"claude-token-lens init: {exc}", file=sys.stderr)
@@ -2375,18 +2418,21 @@ def _cmd_apply(args: argparse.Namespace) -> int:
     ``apply`` bullet -- see ``profiles/apply.py``'s module docstring for
     the full resolution/backup/revert contract this delegates to).
 
-    Exit codes: 0 success (including ``--dry-run``/``--list-backups``/a
-    successful ``--revert``), 1 a refused operation (a git-tracked
-    target without ``--allow-tracked``, a missing agent file without
-    ``--force``, or an existing file this command cannot parse), 2 bad
-    input (an unrecognised profile, a scope/``--project`` mismatch, or
-    an unknown ``--revert`` timestamp).
+    Exit codes: 0 success (``--list-backups``, a successful ``--revert``,
+    or a ``--dry-run`` whose plan is not blocked), 1 a refused *real*
+    apply (a git-tracked target without ``--allow-tracked``, a missing
+    agent file without ``--force``, or an existing file this command
+    cannot parse), 2 bad input (an unrecognised profile, a scope/
+    ``--project`` mismatch, an unknown ``--revert`` timestamp) -- fix
+    S1: also a ``--dry-run`` whose plan *would* be refused, so the dry
+    run a user runs specifically to find out whether an apply will work
+    doesn't print a clean diff and exit 0 for one that wouldn't.
     """
     from .profiles import apply as apply_mod
 
     command = "apply"
     config_dir = _resolve_config_dir(args.config_dir)
-    home = config_dir.parent
+    claude_root = _resolve_claude_root(args.claude_root)
 
     if args.list_backups:
         backups = apply_mod.list_backups(config_dir)
@@ -2444,7 +2490,7 @@ def _cmd_apply(args: argparse.Namespace) -> int:
             scope=scope,
             project_path=project_path,
             config_dir=config_dir,
-            home=home,
+            claude_root=claude_root,
             snapshot=latest_snapshot,
             allow_tracked=args.allow_tracked,
             force=args.force,
@@ -2467,6 +2513,13 @@ def _cmd_apply(args: argparse.Namespace) -> int:
             print("Environment variables (set these yourself; never written to any file):")
             for line in plan.env_lines:
                 print(f"  export {line}")
+        if plan.blocked:
+            # Fix S1: a real apply of this plan would refuse -- say so
+            # here too, rather than printing a clean diff and exiting 0
+            # as if the apply would succeed.
+            for reason in plan.blocked:
+                print(f"claude-token-lens {command}: would be refused: {reason}", file=sys.stderr)
+            return 2
         suggested = apply_command(
             plan.profile_id, scope, str(project_path) if project_path else None
         )

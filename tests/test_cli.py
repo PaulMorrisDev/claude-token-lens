@@ -199,15 +199,104 @@ def test_init_writes_config_and_runs_an_initial_baseline(tmp_path, monkeypatch, 
     assert "Wrote initial baseline" in out
     assert "Capture window: in progress" in out
     # The redacted slug appears (never the real "home-reallife-username"
-    # path segment) in the "current project" line -- the rest of this
-    # command's output is operational file-path feedback about files it
-    # just wrote under --config-dir (the same convention
-    # snapshot-config/scrub-fixture's own stdout already follows), which
-    # is not the class of content the privacy invariant scopes (project/
-    # session-derived data -- see test_probe_config_renders_markdown_
-    # with_no_raw_paths for that check applied to a command whose whole
-    # contract is never printing a raw path).
+    # path segment) in the "current project" line. Fix N3:
+    # onboarding.py used to print the "Wrote ..." confirmation lines as
+    # full absolute paths under config_dir; they're now relative to it,
+    # so the absolute config_dir path itself never appears in stdout
+    # (the projects/<slug>.toml filename below is still slug-derived
+    # and thus not redacted -- that's the pre-existing, unrelated
+    # file-naming convention, not the leak N3 is about).
     assert "<user>" in out
+    assert str(config_dir) not in out
+
+
+# --------------------------------------------------------------------
+# apply (fix B3): cli._resolve_claude_root, exercised only at this
+# level -- tests/test_profiles_apply.py always passes claude_root=
+# explicitly to plan_apply, so it can never catch a bug in how cli.py
+# itself resolves that value. The old ``home = config_dir.parent``
+# computation happened to be right only when --config-dir took its own
+# untouched default; these tests deliberately point --config-dir
+# somewhere unrelated (as a user legitimately can) while the autouse
+# CLAUDE_CONFIG_DIR fixture (tests/conftest.py) supplies the real
+# Claude root, so a regression back to the old computation fails them.
+# --------------------------------------------------------------------
+
+
+def _write_profile_toml(path: Path, *, settings: dict | None = None, agents: dict | None = None) -> None:
+    lines = [f'id = "{path.stem}"']
+    if settings:
+        lines.append("[settings]")
+        for key, value in settings.items():
+            lines.append(f'{key} = "{value}"')
+    if agents:
+        for agent_name, agent_settings in agents.items():
+            lines.append(f"[agents.{agent_name}]")
+            for key, value in agent_settings.items():
+                lines.append(f'{key} = "{value}"')
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def test_cmd_apply_user_scope_resolves_claude_root_independently_of_config_dir(tmp_path):
+    claude_root = Path(os.environ["CLAUDE_CONFIG_DIR"])
+    config_dir = tmp_path / "somewhere" / "else" / "token-lens"
+    profile_path = tmp_path / "sample.toml"
+    _write_profile_toml(profile_path, settings={"effortLevel": "high"})
+
+    exit_code = cli.main(["apply", str(profile_path), "--config-dir", str(config_dir)])
+    assert exit_code == 0
+
+    settings_path = claude_root / "settings.json"
+    assert settings_path.is_file()
+    assert json.loads(settings_path.read_text(encoding="utf-8")) == {"effortLevel": "high"}
+    # The bug's own symptom (fix B3): a nested .claude/.claude/ never
+    # gets created under the real Claude root.
+    assert not (claude_root / ".claude").exists()
+
+
+def test_cmd_apply_user_scope_agent_patch_finds_claude_root_agents_file(tmp_path):
+    claude_root = Path(os.environ["CLAUDE_CONFIG_DIR"])
+    config_dir = tmp_path / "somewhere" / "else" / "token-lens"
+    agents_dir = claude_root / "agents"
+    agents_dir.mkdir(parents=True)
+    (agents_dir / "reviewer.md").write_text("---\nmodel: opus\n---\n\nBody.\n", encoding="utf-8")
+    profile_path = tmp_path / "sample.toml"
+    _write_profile_toml(profile_path, agents={"reviewer": {"model": "sonnet"}})
+
+    exit_code = cli.main(["apply", str(profile_path), "--config-dir", str(config_dir)])
+    assert exit_code == 0
+    assert "model: sonnet" in (agents_dir / "reviewer.md").read_text(encoding="utf-8")
+
+
+def test_cmd_apply_claude_root_flag_overrides_default(tmp_path):
+    explicit_root = tmp_path / "explicit-claude-root"
+    config_dir = tmp_path / "token-lens"
+    profile_path = tmp_path / "sample.toml"
+    _write_profile_toml(profile_path, settings={"effortLevel": "high"})
+
+    exit_code = cli.main(
+        ["apply", str(profile_path), "--config-dir", str(config_dir), "--claude-root", str(explicit_root)]
+    )
+    assert exit_code == 0
+    assert (explicit_root / "settings.json").is_file()
+    # Never touches the env-derived default root when --claude-root is given.
+    assert not (Path(os.environ["CLAUDE_CONFIG_DIR"]) / "settings.json").exists()
+
+
+def test_cmd_apply_dry_run_exits_nonzero_when_plan_would_be_refused(tmp_path, capsys):
+    """Fix S1: a --dry-run whose real apply would refuse (here: a
+    profile naming an agent with no corresponding file, and no
+    --force) must say so and exit non-zero, not print a clean diff and
+    exit 0 as if the apply would succeed."""
+    config_dir = tmp_path / "token-lens"
+    profile_path = tmp_path / "sample.toml"
+    _write_profile_toml(profile_path, agents={"ghost": {"model": "opus"}})
+
+    exit_code = cli.main(["apply", str(profile_path), "--config-dir", str(config_dir), "--dry-run"])
+    err = capsys.readouterr().err
+    assert exit_code == 2
+    assert "would be refused" in err
+    assert "no agent file found" in err
 
 
 def test_baseline_list_and_show_round_trip(tmp_path, monkeypatch, capsys):

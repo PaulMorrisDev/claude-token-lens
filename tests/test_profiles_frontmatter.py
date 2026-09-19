@@ -97,6 +97,43 @@ name: claude-implementer
 Body.
 """
 
+# Fix S8: a YAML block scalar ("|" literal style) used for a multi-line
+# description -- the review's exact repro shape, including a blank line
+# and a line containing a colon inside the block (which must not be
+# mistaken for a fresh top-level key).
+BLOCK_SCALAR = """---
+name: claude-implementer
+description: |
+  Line one of the description.
+
+  Line two: contains a colon, which must not be mistaken for a key.
+model: sonnet
+---
+Body.
+"""
+
+# The folded ("&gt;") style, plus a chomping indicator ("|-"), covering the
+# rest of the shapes _BLOCK_SCALAR_RE matches.
+BLOCK_SCALAR_FOLDED = """---
+name: claude-implementer
+description: >
+  Folded line one.
+  Folded line two.
+model: sonnet
+---
+Body.
+"""
+
+BLOCK_SCALAR_STRIP_CHOMPED = """---
+name: claude-implementer
+description: |-
+  Line one.
+  Line two.
+model: sonnet
+---
+Body.
+"""
+
 
 CONSTRUCT_FIXTURES = {
     "plain_scalar": PLAIN_SCALAR,
@@ -109,6 +146,9 @@ CONSTRUCT_FIXTURES = {
     "nested_mapping": NESTED_MAPPING,
     "with_comments": WITH_COMMENTS,
     "no_matching_key": NO_MATCHING_KEY,
+    "block_scalar": BLOCK_SCALAR,
+    "block_scalar_folded": BLOCK_SCALAR_FOLDED,
+    "block_scalar_strip_chomped": BLOCK_SCALAR_STRIP_CHOMPED,
 }
 
 
@@ -159,6 +199,43 @@ def test_parse_with_comments_ignores_comment_lines():
 
 def test_parse_no_frontmatter_block_returns_empty_dict():
     assert parse_frontmatter("no frontmatter here\n") == {}
+
+
+# --------------------------------------------------------------------
+# Fix S8: YAML block scalars ("|"/">" ) are opaque preserved blocks --
+# the parser must not refuse the file outright, and must still see the
+# top-level scalar keys before and after the block.
+# --------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "text", [BLOCK_SCALAR, BLOCK_SCALAR_FOLDED, BLOCK_SCALAR_STRIP_CHOMPED]
+)
+def test_parse_block_scalar_is_skipped_but_surrounding_keys_still_parse(text):
+    parsed = parse_frontmatter(text)
+    assert parsed["name"] == "claude-implementer"
+    assert parsed["model"] == "sonnet"
+    assert "description" not in parsed
+
+
+def test_patch_around_block_scalar_preserves_it_byte_identically():
+    out = patch_frontmatter(BLOCK_SCALAR, {"model": "opus"})
+    # Every line of the block scalar -- including the blank line and the
+    # line containing a colon -- must survive completely unchanged.
+    assert "description: |\n" in out
+    assert "  Line one of the description.\n" in out
+    assert "\n\n" in out
+    assert "  Line two: contains a colon, which must not be mistaken for a key.\n" in out
+    # Byte-identical apart from the patched "model" line.
+    assert out == BLOCK_SCALAR.replace("model: sonnet\n", "model: opus\n")
+    assert parse_frontmatter(out)["model"] == "opus"
+
+
+def test_patch_raises_on_block_scalar_as_patch_target():
+    # description's existing value is a block scalar; patch_frontmatter
+    # must refuse rather than guess how to collapse it to a plain scalar.
+    with pytest.raises(FrontmatterError):
+        patch_frontmatter(BLOCK_SCALAR, {"description": "One line now."})
 
 
 # --------------------------------------------------------------------
