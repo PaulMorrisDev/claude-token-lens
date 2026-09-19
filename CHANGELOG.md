@@ -262,6 +262,99 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `monthly.write_monthly_report` is the entry point the v0.2 service
     will wire up to `serve --monthly-report DIR`.
 
+### Fixed
+
+v0.2-exports code review fixes (`export`, `monthly-report`, statusline
+ground truth) — see the review verdict: "do not tag v0.2.0 yet" until
+these landed.
+
+- **Blocking: `export --format csv-flat` doubled every CRLF line ending
+  on Windows.** `csv.DictWriter`'s dialect already terminates rows with
+  `\r\n`; writing that through a text-mode handle with default newline
+  translation doubled every `\r`, corrupting the file for BI/pandas
+  import (roughly half the rows read back blank). `--out` and stdout are
+  now both opened/wrapped with `newline=""`.
+- **Blocking: `--per-session` used to default to raw (unhashed) project
+  slugs.** `resolve_export_options`'s `hash_slugs` default used to track
+  whatever `--aggregate-only`/`--per-session` resolved to, so the
+  *more* identifying mode got *less* protection by default. `hash_slugs`
+  now defaults to `True` unconditionally. `--no-hash-slugs` is still an
+  explicit opt-out, but no longer prints the fully raw slug either — it
+  redacts just the OS-username segment (`Users-<name>-`/`home-<name>-`
+  -> `<user>`) and warns on stderr naming the risk.
+  `tests/helpers.assert_privacy` gained a slug-shaped-username check
+  that fails on any unredacted `Users-`/`home-`-anchored segment
+  anywhere in a scanned string.
+- **Statusline hardening.** The assembled status line is now bounded to
+  120 characters (truncating the cache segment first, or dropping it
+  entirely if that still doesn't fit) and never emits a second line;
+  every echoed string field (`ttl`, miss-cause tokens) is sanitised to
+  `[A-Za-z0-9_.-]` and capped at 16 characters; a non-numeric
+  `expires_at`/`recache_tokens_if_cold` is treated as absent; an
+  `expires_at` above `1e11` is treated as epoch milliseconds; and the
+  warm countdown renders `expiring` instead of a clock-skew-stuck
+  `00:00` once past zero.
+- **`top_miss_causes` no longer double-counts a sticky field.** It now
+  reads the wire's own cumulative `prompt_cache.miss_causes` per-cause
+  counts (persisted as a new `cache_miss_causes` usage-log column)
+  instead of incrementing a counter for the sticky
+  `prompt_cache.last_miss_cause` once per logged row, which re-counted
+  one real miss on every quiet subsequent refresh. Falls back to
+  counting `last_miss_cause` only on a genuine `cache_misses` increase
+  for logs with no `cache_miss_causes` data.
+  `build_cache_ground_truth_table`'s notes now also clarify that
+  `warm_share` is a share of logged rows, not of wall-clock session
+  time.
+- **The usage-log CSV header is now upgraded in place, once, when a
+  legacy file has fewer columns than the current writer expects** — read
+  all rows, pad short ones, and rewrite atomically (temp file +
+  `os.replace`) rather than silently misaligning columns forever.
+  `tools.log_usage.load_usage_log` also now reads with
+  `restkey="_extra"` as defence in depth against a stray `None` key.
+- **csv-flat/otel-jsonl cache-creation totals now agree, including for
+  pre-TTL-split transcripts.** Both formats (and `report`'s own overview
+  total) now key off the same `cache_creation_tokens` total rather than
+  the 5m/1h split, which can legitimately be `0`/`0` on an
+  older transcript recorded before the split existed even though real
+  cache-creation tokens were spent. A new `cache_write_tokens` csv-flat
+  column carries this total explicitly.
+- **`cache_ground_truth` now respects the report's own window/project
+  scope**, instead of including every ground-truth row ever logged for
+  every session regardless of `--days`/`--since`/`--until`/`--project`.
+  The monthly report applies the equivalent month-scoping.
+- **`monthly-report` can now actually produce the `cache_ground_truth`
+  table `docs/exports.md` already promised.** `write_monthly_report`
+  gained a `usage_log_rows` parameter (loaded from
+  `<config-dir>/usage-log.csv` by `cli.py`, same as the `report`
+  command) — previously the parameter didn't exist, so the promise could
+  never be kept regardless of what was on disk.
+- **`context_window` field-name fallbacks widened.** The `used_tokens`,
+  `total_input_tokens`, and `current_usage.{input_tokens,
+  cache_creation_input_tokens, cache_read_input_tokens}` sum are now all
+  tried in that order for "used tokens"; `context_window_size`,
+  `total_tokens`, and `size` for the window size;
+  `used_percentage`/`100 - remaining_percentage` for the percentage.
+  Every statusline invocation also now records the payload's own key
+  names (recursively, dotted, names only, capped at 200) to
+  `<config-dir>/statusline-keys.json` when they differ from what is
+  stored, so the real payload shape becomes ground truth going forward.
+- **`monthly-report`'s "byte-identical" idempotency claim is now
+  actually true when it matters.** Repeated runs were only identical
+  "apart from one Generated-at line/comment", contradicting the module's
+  own literal wording. `write_monthly_report` gained a `generated_at`
+  parameter (wired to `monthly-report --generated-at`/
+  `SOURCE_DATE_EPOCH`, shared with `export`'s existing
+  reproducible-build support) for a genuinely byte-identical run.
+- **`resolve_month`'s "previous calendar month" default now uses
+  `config.tz`**, not the machine's own local zone — on the 1st of a
+  month the two could disagree about which month "previous" means.
+- Hash construction and "byte-identical" documentation corrections in
+  `docs/exports.md`, `SECURITY.md`, and `README.md` (the docs claimed
+  the project-slug hash used the same construction as `parse.py`'s own
+  read-target-path hash, which it didn't until this pass — it now
+  genuinely does, via HMAC-SHA256 with a distinct domain tag and
+  truncation length so the two can never collide).
+
 ### Planned
 
 - **v0.2** — `claude-token-lens serve` (local read-only service: watcher
