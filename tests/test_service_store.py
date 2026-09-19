@@ -1,0 +1,334 @@
+"""Round-trip and privacy tests for ``service.store.Store`` against a
+synthetic corpus (two sessions, a top-level + a subagent transcript
+each, turns_agg/recache_turns/compactions/events rows, a snapshot, a
+profile and a baseline).
+
+The path-leak guard (``test_no_local_path_leaks_from_any_read_query``)
+is the sharpest test in this file: it upserts a transcript whose
+``path`` is a deliberately distinctive, real-looking Windows path, then
+walks the JSON-serialised output of every read query and asserts that
+exact string never appears anywhere in it — the concrete regression
+``service/schema.py``'s and ``service/__init__.py``'s privacy-rule
+docstrings warn against.
+"""
+
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from claude_token_lens.service.store import Store
+
+#: A deliberately distinctive fake local path -- if this string (or the
+#: username segment alone) ever surfaces in a read-query result, the
+#: store has leaked a local filesystem path into API-facing data.
+_FAKE_PATH = r"C:\Users\definitely-not-a-real-person\.claude\projects\proj-a\session-a.jsonl"
+_FAKE_SUB_PATH = r"C:\Users\definitely-not-a-real-person\.claude\projects\proj-a\session-a\subagents\agent-1.jsonl"
+_FAKE_ROOT = r"C:\Users\definitely-not-a-real-person\.claude\projects\proj-a"
+_FAKE_PROFILE_PATH = r"C:\Users\definitely-not-a-real-person\.claude\token-lens\profiles\p1.toml"
+
+
+@pytest.fixture
+def store() -> Store:
+    s = Store(":memory:")
+    s.open()
+    return s
+
+
+def _seed(store: Store) -> None:
+    snapshot_id = store.upsert_snapshot(
+        project_slug="proj-a",
+        project_root_path=_FAKE_ROOT,
+        ts="2026-09-18T12:00:00Z",
+        schema_version=2,
+        digest_json=json.dumps({"agents": {"claude-implementer": True}}),
+    )
+    store.upsert_session(
+        session_id="session-a",
+        project_slug="proj-a",
+        project_root_path=_FAKE_ROOT,
+        slug="proj-a",
+        first_ts="2026-09-18T12:00:00Z",
+        last_ts="2026-09-18T13:00:00Z",
+        span_s=3600.0,
+        archetype="plan-high-implement-low",
+        mode="agentic",
+        mode_source="tool-signature",
+        purpose="refactor",
+        purpose_source="intent-signature",
+        entrypoint="cli",
+        billing_mode="subscription",
+        snapshot_id=snapshot_id,
+        profile_id="p1",
+        total_cost=1.23,
+        total_tokens=45000,
+    )
+    store.upsert_transcript(
+        session_id="session-a",
+        path=_FAKE_PATH,
+        kind="top-level",
+        agent_id=None,
+        agent_type=None,
+        spawn_depth=0,
+        parent_agent_id=None,
+        mtime_ns=123,
+        size_bytes=456,
+        parser_version=3,
+        digest_json=json.dumps({"turns": 10}),
+        turns_agg=[
+            {
+                "day": "2026-09-18",
+                "model": "claude-sonnet-5",
+                "turns": 10,
+                "input_tokens": 1000,
+                "cache_creation_tokens": 500,
+                "cache_read_tokens": 2000,
+                "output_tokens": 300,
+                "thinking_tokens": 50,
+                "cc_5m": 0,
+                "cc_1h": 500,
+                "cost": 1.0,
+            }
+        ],
+        recache_turns=[
+            {
+                "turn_index": 3,
+                "signature": "full-expiry",
+                "cache_creation_tokens": 500,
+                "preceding_primary": "HUMAN_TEXT",
+                "gap_s": 400.0,
+            }
+        ],
+        events=[{"kind": "COMPACT_BOUNDARY", "subkind": None, "ts": "2026-09-18T12:30:00Z"}],
+        compactions=[
+            {
+                "ts": "2026-09-18T12:30:00Z",
+                "pre_tokens": 180000,
+                "post_tokens": 40000,
+                "dropped_tokens": 140000,
+                "trigger": "auto",
+                "join_delta_s": 5.0,
+            }
+        ],
+    )
+    store.upsert_transcript(
+        session_id="session-a",
+        path=_FAKE_SUB_PATH,
+        kind="subagent",
+        agent_id="agent-1",
+        agent_type="claude-implementer",
+        spawn_depth=1,
+        parent_agent_id=None,
+        mtime_ns=789,
+        size_bytes=1011,
+        parser_version=3,
+        digest_json=json.dumps({"turns": 5}),
+        turns_agg=[
+            {
+                "day": "2026-09-18",
+                "model": "claude-sonnet-5",
+                "turns": 5,
+                "input_tokens": 200,
+                "cache_creation_tokens": 100,
+                "cache_read_tokens": 400,
+                "output_tokens": 60,
+                "thinking_tokens": 0,
+                "cc_5m": 100,
+                "cc_1h": 0,
+                "cost": 0.23,
+            }
+        ],
+    )
+    store.upsert_profile(profile_id="p1", name="implementation-heavy", toml_path=_FAKE_PROFILE_PATH)
+    store.record_baseline(
+        project_slug="proj-a",
+        project_root_path=_FAKE_ROOT,
+        window_start="2026-09-11T00:00:00Z",
+        window_end="2026-09-18T00:00:00Z",
+        archetype="plan-high-implement-low",
+        digest_json=json.dumps({"sessions": 12}),
+    )
+    store.set_tag("session-a", "purpose", "refactor-override")
+
+
+# -- migrate / schema --------------------------------------------------
+
+
+def test_migrate_is_idempotent(store: Store) -> None:
+    from claude_token_lens.service import schema
+
+    assert store.schema_version() == schema.SCHEMA_VERSION
+    store.migrate()
+    store.migrate()
+    assert store.schema_version() == schema.SCHEMA_VERSION
+
+
+# -- writer round trips --------------------------------------------------
+
+
+def test_upsert_session_round_trips(store: Store) -> None:
+    _seed(store)
+    result = store.session("session-a")
+    assert result is not None
+    assert result["archetype"] == "plan-high-implement-low"
+    assert result["total_cost"] == pytest.approx(1.23)
+    assert result["total_tokens"] == 45000
+    assert result["profile_id"] == "p1"
+
+
+def test_upsert_transcript_is_idempotent_on_path(store: Store) -> None:
+    _seed(store)
+    # Re-upserting the same path (a re-parse after the file changed)
+    # must update in place, not create a second transcript row.
+    store.upsert_transcript(
+        session_id="session-a",
+        path=_FAKE_PATH,
+        kind="top-level",
+        mtime_ns=999,
+        size_bytes=999,
+        parser_version=3,
+        digest_json=json.dumps({"turns": 11}),
+    )
+    detail = store.session("session-a")
+    assert len(detail["transcripts"]) == 2  # top-level + subagent, not 3
+
+
+def test_upsert_transcript_replaces_child_rows_wholesale(store: Store) -> None:
+    _seed(store)
+    # A re-parse with a different recache_turns set must replace, not
+    # accumulate alongside, the previous set.
+    store.upsert_transcript(
+        session_id="session-a",
+        path=_FAKE_PATH,
+        kind="top-level",
+        digest_json=json.dumps({"turns": 10}),
+        recache_turns=[
+            {"turn_index": 7, "signature": "prefix-invalidated", "cache_creation_tokens": 10},
+        ],
+    )
+    recache = store.recache()
+    assert "full-expiry" not in recache["by_signature"]
+    assert recache["by_signature"]["prefix-invalidated"]["turns"] == 1
+
+
+def test_known_files_reports_every_transcript(store: Store) -> None:
+    _seed(store)
+    files = store.known_files()
+    assert files[_FAKE_PATH] == (123, 456)
+    assert files[_FAKE_SUB_PATH] == (789, 1011)
+
+
+def test_remove_missing_deletes_transcripts_not_in_known_set(store: Store) -> None:
+    _seed(store)
+    removed = store.remove_missing({_FAKE_PATH})  # subagent path dropped
+    assert removed == 1
+    detail = store.session("session-a")
+    assert len(detail["transcripts"]) == 1
+    assert detail["transcripts"][0]["kind"] == "top-level"
+
+
+def test_retention_prune_removes_old_sessions(store: Store) -> None:
+    _seed(store)
+    store.upsert_session(
+        session_id="session-old",
+        project_slug="proj-a",
+        slug="proj-a",
+        first_ts="2000-01-01T00:00:00Z",
+        last_ts="2000-01-01T01:00:00Z",
+    )
+    removed = store.retention_prune(retention_days=30)
+    assert removed == 1
+    assert store.session("session-old") is None
+    assert store.session("session-a") is not None
+
+
+# -- read queries --------------------------------------------------------
+
+
+def test_summary_totals(store: Store) -> None:
+    _seed(store)
+    summary = store.summary()
+    assert summary["sessions"] == 1
+    assert summary["transcripts"] == 2
+    assert summary["total_cost"] == pytest.approx(1.23)
+    assert summary["total_tokens"] == 45000
+
+
+def test_sessions_listing_has_no_transcripts_key(store: Store) -> None:
+    _seed(store)
+    rows = store.sessions()
+    assert len(rows) == 1
+    assert rows[0]["id"] == "session-a"
+    assert "transcripts" not in rows[0]
+
+
+def test_daily_usage_aggregates_across_transcripts(store: Store) -> None:
+    _seed(store)
+    rows = store.daily_usage(days=30)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["day"] == "2026-09-18"
+    assert row["turns"] == 15  # 10 top-level + 5 subagent
+    assert row["input_tokens"] == 1200
+
+
+def test_compactions_listing(store: Store) -> None:
+    _seed(store)
+    rows = store.compactions()
+    assert len(rows) == 1
+    assert rows[0]["dropped_tokens"] == 140000
+
+
+def test_snapshots_listing(store: Store) -> None:
+    _seed(store)
+    rows = store.snapshots()
+    assert len(rows) == 1
+    assert rows[0]["schema_version"] == 2
+
+
+def test_profiles_and_baselines_listing(store: Store) -> None:
+    _seed(store)
+    profiles = store.profiles()
+    assert profiles == [{"id": "p1", "name": "implementation-heavy", "updated_at": profiles[0]["updated_at"]}]
+    baselines = store.baselines()
+    assert len(baselines) == 1
+    assert baselines[0]["archetype"] == "plan-high-implement-low"
+
+
+def test_tags_round_trip(store: Store) -> None:
+    _seed(store)
+    assert store.tags("session-a") == {"purpose": "refactor-override"}
+    store.set_tag("session-a", "purpose", "docs")
+    assert store.tags("session-a") == {"purpose": "docs"}
+
+
+# -- privacy guard ---------------------------------------------------------
+
+
+def test_no_local_path_leaks_from_any_read_query(store: Store) -> None:
+    _seed(store)
+
+    outputs = {
+        "summary": store.summary(),
+        "sessions": store.sessions(),
+        "session": store.session("session-a"),
+        "daily_usage": store.daily_usage(),
+        "recache": store.recache(),
+        "compactions": store.compactions(),
+        "snapshots": store.snapshots(),
+        "profiles": store.profiles(),
+        "baselines": store.baselines(),
+        "tags": store.tags("session-a"),
+    }
+    blob = json.dumps(outputs, default=str)
+    for needle in (_FAKE_PATH, _FAKE_SUB_PATH, _FAKE_ROOT, _FAKE_PROFILE_PATH, "definitely-not-a-real-person"):
+        assert needle not in blob, f"{needle!r} leaked into read-query output"
+
+    # known_files() is explicitly local-only -- confirm it DOES carry the
+    # path (proving the guard above isn't vacuously passing because no
+    # method ever stored the path at all).
+    assert _FAKE_PATH in store.known_files()
+
+
+__all__: list[str] = []
