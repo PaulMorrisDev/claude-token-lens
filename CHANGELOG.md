@@ -133,6 +133,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   exercised by that contract test for the first time. Row key is now a
   zero-padded `"00"`-`"23"` string; `Column.kind` updated from `"int"`
   to `"str"` to match.
+- **`scripts/windows/Register-TokenLensTask.ps1`: registering the
+  Scheduled Task failed with "Access is denied" for a non-admin
+  user** — `New-ScheduledTaskTrigger -AtLogOn` with no `-User` creates
+  an *any-user* logon trigger, which Task Scheduler treats as
+  machine-wide and refuses to register without admin rights, even
+  though the task's own `-Principal` was already scoped to the current
+  account with `-RunLevel Limited`. The trigger now also carries
+  `-User "$env:USERDOMAIN\$env:USERNAME"`, scoping it to this one
+  account's logons; the `schtasks /create` fallback mirrors this with
+  `/RU "$env:USERDOMAIN\$env:USERNAME" /IT`. Also added
+  `-ExecutionTimeLimit ([TimeSpan]::Zero)` to the task settings, since
+  `serve` is meant to run indefinitely and Task Scheduler's own default
+  72-hour limit would otherwise kill it after three days. See
+  [`docs/deploy.md`](docs/deploy.md).
 
 ### Planned
 

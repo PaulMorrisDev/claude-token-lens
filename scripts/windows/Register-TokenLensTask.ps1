@@ -102,7 +102,14 @@ Write-Host "  run level:     Limited (no admin rights requested or required)"
 $registered = $false
 try {
     $action = New-ScheduledTaskAction -Execute $pythonw -Argument $argumentList
-    $trigger = New-ScheduledTaskTrigger -AtLogOn
+    # Fix: an -AtLogOn trigger with no -User fires on *any* user's
+    # logon, which Task Scheduler treats as a machine-wide trigger and
+    # refuses to register without admin rights -- even though the
+    # -Principal below already scopes who the task actually runs as.
+    # Passing the same "DOMAIN\user" identity to the trigger itself
+    # scopes the trigger to this one account's logons, which a Limited
+    # (non-admin) principal is allowed to register.
+    $trigger = New-ScheduledTaskTrigger -AtLogOn -User "$env:USERDOMAIN\$env:USERNAME"
     # Review finding 14: a bare $env:USERNAME is ambiguous as a
     # -UserId on a domain-joined machine (Task Scheduler needs to
     # resolve it to one SID, and an unqualified name can match a
@@ -113,7 +120,10 @@ try {
     # unambiguously, the same "DOMAIN\user" form Task Scheduler's own UI
     # displays a principal as.
     $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive -RunLevel Limited
-    $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
+    # -ExecutionTimeLimit ([TimeSpan]::Zero) means "no time limit" --
+    # without it Task Scheduler's own default (72 hours) kills this
+    # long-running serve process after three days.
+    $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero)
 
     Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
     $registered = $true
@@ -139,9 +149,15 @@ if (-not $registered) {
     # not just PowerShell's own backtick-quote) makes the single /TR
     # argument round-trip intact through both parsing layers.
     $trArg = ("`"$pythonw`" $argumentList") -replace '"', '\"'
+    # /RU + /IT mirror the -User on the Register-ScheduledTask trigger
+    # above: /RU scopes the ONLOGON trigger to this one account (a
+    # bare ONLOGON with no /RU fires on any user's logon, which
+    # schtasks likewise refuses to create without admin rights), and
+    # /IT ("interactive token") is required whenever /RU names the
+    # currently-running user without also supplying /RP a password.
     $schtasksArgs = @(
         "/Create", "/TN", $TaskName, "/TR", $trArg, "/SC", "ONLOGON",
-        "/RL", "LIMITED", "/F"
+        "/RL", "LIMITED", "/RU", "$env:USERDOMAIN\$env:USERNAME", "/IT", "/F"
     )
     & schtasks.exe @schtasksArgs
     if ($LASTEXITCODE -ne 0) {

@@ -27,7 +27,17 @@ pythonw -m claude_token_lens serve --projects-root "$env:USERPROFILE\.claude\pro
   rights requested or required. The service only ever reads
   `%USERPROFILE%\.claude\projects` and reads/writes
   `%USERPROFILE%\.claude\token-lens`; nothing it does needs elevation.
+  The logon trigger itself is also scoped to that one account (via
+  `-User "DOMAIN\user"` on `New-ScheduledTaskTrigger`, and `/RU`/`/IT`
+  on the `schtasks` fallback) — an unscoped "any user logs on"
+  trigger is treated as machine-wide and Task Scheduler refuses to
+  register it without admin rights, even though the task's own
+  principal is already limited to this account.
 - **`pythonw`, not `python`** — no console window appears at logon.
+- **No execution time limit** — the settings pass
+  `-ExecutionTimeLimit ([TimeSpan]::Zero)`, since `serve` is meant to
+  run indefinitely and Task Scheduler's own default (72 hours) would
+  otherwise kill it after three days.
 - **Falls back to `schtasks /create`** automatically if the
   `ScheduledTasks` PowerShell module is unavailable (some locked-down
   corporate images restrict it even for non-admin users).
