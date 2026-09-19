@@ -424,6 +424,29 @@ that actually delete a row.
   can, reports the failure(s) to stderr, and exits with status `1` —
   it never aborts partway through with an unhandled error.
 
+## Re-parsing after a parser upgrade
+
+Each watcher tick decides whether to re-parse a transcript from its
+`(mtime_ns, size_bytes)` against `Store.known_files()`, but a file that
+hasn't changed on disk can still be *stale* relative to the code: every
+stored transcript also carries the `parser_version` it was parsed
+under (`claude_token_lens.PARSER_VERSION`, bumped whenever a code
+release adds or changes what the parser derives from a transcript —
+see `CHANGELOG.md`'s "Fixed"/"Changed" entries for the version
+history). A file whose `(mtime_ns, size_bytes)` are unchanged but whose
+stored `parser_version` predates the one now running is re-parsed on
+the very next tick regardless, so a parser upgrade actually reaches
+every already-stored transcript rather than only the ones that happen
+to change again afterwards. This reuses the on-disk digest cache under
+`<config-dir>/cache/` (already keyed on `parser_version` — see
+`cache.py`), so the rebuild costs one cold-ish tick per transcript on
+the tick right after an upgrade, then nothing on every later tick.
+`GET /api/health`'s `watcher.files_reparsed_stale_parser` (see
+[docs/api.md](api.md)) counts how many transcripts this tick re-parsed
+for exactly this reason, so an operator can watch the post-upgrade
+rebuild happen rather than having to infer it from a slower-than-usual
+tick.
+
 ## Performance
 
 S1-perf measured and fixed `serve`'s worst case: a brand-new install's

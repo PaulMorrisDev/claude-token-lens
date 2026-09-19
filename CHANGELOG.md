@@ -143,6 +143,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   recommends keeping or disabling a saver based on that net saving. See
   [`docs/savers.md`](docs/savers.md).
 
+### Fixed
+
+- **The watcher never re-parsed a transcript whose file hadn't changed
+  but whose stored `parser_version` had fallen behind** (`watcher.py`
+  `FileWatcher._resolve`/`_needs_parse_this_tick`, `store.py`
+  `Store.known_files`) — the re-parse decision compared only
+  `(mtime_ns, size_bytes)` against `Store.known_files()`, so a
+  `PARSER_VERSION` bump (e.g. 5 -> 6, above) only reached a transcript
+  the next time its file actually changed; an untouched file kept
+  serving fields computed under the old parser indefinitely.
+  `known_files()` now also returns each transcript's stored
+  `parser_version`, and the watcher treats a mismatch against the
+  running `PARSER_VERSION` as needing a re-parse even when the file
+  itself is unchanged, reusing the on-disk digest cache (already keyed
+  on `parser_version`) so the rebuild costs one cold-ish tick per
+  transcript, then nothing. A new `files_reparsed_stale_parser`
+  `WatcherStats` counter (surfaced in `/api/health`'s `watcher` block)
+  lets an operator see the rebuild actually happen.
+
 ## [0.3.0] - 2026-09-19
 
 ### Added
