@@ -150,6 +150,8 @@ this table only lists what's specific to each one.
 | `scrub-fixture` | Turn a real `<project_dir>/<session_id>` directory into a privacy-scrubbed test fixture, or verify an already-scrubbed one | `--session-dir PATH --out PATH` (scrub), or `--verify OUT_DIR` (audit an existing scrub), plus optional `--key-seed SEED` (deterministic HMAC key — tests only) |
 | `probe` | Content-free schema histogram (line types, key names, attachment types, `version` values — every string capped at 64 chars) of a project or one transcript file, safe to paste into a bug report | `--file PATH` (probe a single transcript file instead of a project) |
 | `statusline` | Claude Code `statusLine` handler — reads a JSON payload from stdin on every refresh (see [section 8](#8-installing-the-sessionstart-hook-and-the-statusline)) | `--print-install-fragment` / `--install` (print the settings.json fragment instead of reading stdin) |
+| `export` | Aggregate, privacy-safe export of a corpus for BI/observability tooling (see [section 10](#10-for-team-leads-and-enterprise) and [`docs/exports.md`](docs/exports.md)) | `--format {csv-flat,json,otel-jsonl}` (default `csv-flat`), `--aggregate-only` / `--per-session` (mutually exclusive, default `--aggregate-only`), `--hash-slugs` / `--no-hash-slugs` (mutually exclusive, default hashed whenever `--aggregate-only` is in effect), `--out PATH` (default: stdout) |
+| `monthly-report` | Write a habit-forming finance summary (cost/tokens by model/project/entrypoint, five-hour blocks under subscription billing) plus the `usage` section for one calendar month, as both Markdown and HTML (see [section 10](#10-for-team-leads-and-enterprise) and [`docs/exports.md`](docs/exports.md)) | `--out DIR` (required), `--month YYYY-MM` (default: the previous calendar month) |
 | `init` | **Planned for v0.3** — prints which milestone it's planned for and exits 2 | none |
 | `baseline` | **Planned for v0.3** — same stub behaviour as `init` | none |
 | `serve` | **Planned for v0.2** — same stub behaviour as `init` | none |
@@ -581,14 +583,31 @@ POSIX (Linux/macOS):
 
 On every status-line refresh, Claude Code writes a JSON payload to this
 script's stdin; the statusline reads `context_window.used_tokens` (a
-compact `ctx NNk` figure), `prompt_cache` (a cache hit-ratio percentage),
-`rate_limits.{five_hour,seven_day}.used_percentage` (plan usage-window
-percentages — also appended to `~/.claude/token-lens/usage-log.csv`,
-deduped by session/reset-time/percentage), and the last 64 KB of
-`transcript_path` (never the whole file) to compute seconds remaining
-before the current TTL entry expires. It never raises: any failure
-anywhere in that path falls back to printing a minimal `token-lens` line
-rather than blanking the status bar.
+compact `ctx NNk` figure), `prompt_cache` (real cache ground truth — see
+below), `rate_limits.{five_hour,seven_day}.used_percentage` (plan
+usage-window percentages — also appended to
+`~/.claude/token-lens/usage-log.csv`, deduped by session/reset-time/
+percentage), and the last 64 KB of `transcript_path` (never the whole
+file) as a fallback TTL hint when no usable `prompt_cache` is present. It
+never raises: any failure anywhere in that path falls back to printing a
+minimal `token-lens` line rather than blanking the status bar.
+
+**Cache segment.** When the payload carries a real `prompt_cache` object,
+the line prints ground truth, not an estimate: `cache warm 5m 03:12` (a
+`MM:SS` countdown to `prompt_cache.expires_at`) while warm, or
+`cache cold` with an optional trailing `recache ~12k tokens` hint (from
+`prompt_cache.recache_tokens_if_cold`) once it has expired. With no
+usable `prompt_cache` at all, the line falls back to an estimate labelled
+`cache est`, whose TTL is read from the transcript's own last assistant
+line (a positive `message.usage.cache_creation.ephemeral_1h_input_tokens`
+implies a 1h TTL, else 5m) rather than guessed. The whole line stays
+under 120 characters and never prints message text. The numeric
+`prompt_cache` fields (`warm`, TTL, expiry, misses, miss cause,
+recache-if-cold tokens) are also appended to `usage-log.csv` as six
+trailing columns, so `claude-token-lens report` can render a
+`cache_ground_truth` table (see
+[`docs/sections-reference.md`](docs/sections-reference.md)) summarising
+real cache-warmth across sessions instead of a live-only estimate.
 
 ## 9. Windows notes
 
@@ -649,12 +668,40 @@ What's implemented today:
   per-provider rate override in `pricing.toml` — every provider is
   currently priced against the same Anthropic-direct rate card.
 
-What's planned but not yet built: an aggregate-only `export` command
-(per-archetype/purpose/agent-type rollups with slugs hashed, no session
-ids) — there is no `export` subcommand or module in this codebase yet.
-Until it exists, the only "team" workflow available is running
-claude-token-lens's own modules locally against each person's own
-`~/.claude/projects`.
+### Exports and scheduled reports
+
+`claude-token-lens export --format csv-flat|json|otel-jsonl` (S1-exports)
+feeds a corpus into existing BI/observability tooling with the same
+privacy posture as the report itself: **aggregate-only is the default**
+(one row per day/project/model/entrypoint/agent-type — no session ids)
+and **project slugs are hashed by default** whenever aggregate-only is in
+effect, via the same salted `sha256` construction (and the same
+`load_or_create_salt`/config-dir salt file) as every other hashed value
+in this project. Per-session detail is opt-in (`--per-session`); raw
+(unhashed) slugs are opt-in (`--no-hash-slugs`, honoured even together
+with `--aggregate-only` as an explicit, informed choice). No prompt text,
+tool output, or file path is ever in an export — every column is a
+count, a token total, or a cost. `otel-jsonl` mirrors Claude Code's own
+OpenTelemetry metric names (`claude_code.token.usage`,
+`claude_code.cost.usage`) as an **offline approximation** for feeding an
+existing collector's dashboards, not a live exporter. Full column
+reference and format details: [`docs/exports.md`](docs/exports.md).
+
+`claude-token-lens monthly-report --out DIR [--month YYYY-MM]`
+(S1-exports) writes `DIR/claude-token-lens-YYYY-MM.md` and the matching
+`.html` for one calendar month (default: the previous month) — a short
+finance header (total cost, tokens, sessions, cost by model/project/
+entrypoint, five-hour blocks used under subscription billing) followed by
+the `usage` section, sized for a recurring habit rather than the full
+multi-section report. The same `(corpus, pricing, config, month)` always
+produces byte-identical files (the only wall-clock value is isolated to a
+trailing "Generated at" line/comment), so it is safe to schedule.
+
+Together these make claude-token-lens usable as a team tool without
+running claude-token-lens's own modules by hand against each person's own
+`~/.claude/projects` — see [`docs/exports.md`](docs/exports.md) for the
+full picture, including the entry point (`monthly.write_monthly_report`)
+the v0.2 service wires up to its own `--monthly-report DIR` flag.
 
 ## 11. Privacy and security
 

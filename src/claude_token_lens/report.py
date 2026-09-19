@@ -537,6 +537,7 @@ def build_report(
     allow_titles: bool = False,
     include: set[str] | None = None,
     session_overrides: dict | None = None,
+    usage_log_rows: list[dict] | None = None,
 ) -> ReportModel:
     """Assemble the whole :class:`ReportModel` for ``corpus``. See the
     module docstring for section order/keys and the deviations from the
@@ -552,8 +553,23 @@ def build_report(
     ``config.load_session_overrides`` and passes the result here.
     Defaults to ``{}`` when omitted, matching the previous hardcoded
     behaviour exactly.
+
+    ``usage_log_rows`` (S1-exports addition) is the usage-log CSV's
+    ground-truth trailing-column rows, e.g. from
+    ``statusline.load_usage_log_ground_truth`` -- a caller (``cli.py``'s
+    ``report`` command) loads ``<config_dir>/usage-log.csv`` when it
+    exists and passes the result here. It reaches two places: forwarded
+    unchanged to :func:`context_budget.build_section`'s own
+    ``usage_log_rows`` parameter, and used to append a ``cache_ground_truth``
+    table onto the ``usage`` section via ``dataclasses.replace`` -- the
+    table builder lives in ``statusline.py``, not ``usage.py``, because
+    ``usage.py`` is not writable for this work package (see
+    ``statusline.build_cache_ground_truth_table``'s own docstring).
+    Defaults to ``None`` (no rows), which behaves exactly as it did
+    before this parameter existed.
     """
     from . import usage as usage_mod  # local import: avoids a cycle risk with any future usage<->report coupling
+    from . import statusline as statusline_mod  # local import: same rationale as usage_mod above
 
     recache_th = recache.RecacheThresholds.from_config(config.thresholds)
     ttl_th = ttl.TtlThresholds.from_config(config.thresholds)
@@ -730,7 +746,17 @@ def build_report(
         )
 
     if _want("usage"):
-        sections.append(usage_mod.build_section(corpus, pricing, config))
+        usage_section = usage_mod.build_section(corpus, pricing, config)
+        if usage_log_rows:
+            # S1-exports: usage.py itself is not writable for this work
+            # package, so the cache_ground_truth table is appended here
+            # via dataclasses.replace rather than added inside
+            # usage.build_section -- the same pattern _build_recache_section
+            # already uses above to bolt an extra table onto a Section it
+            # doesn't own the construction of.
+            cache_table = statusline_mod.build_cache_ground_truth_table(usage_log_rows)
+            usage_section = dataclasses.replace(usage_section, tables=[*usage_section.tables, cache_table])
+        sections.append(usage_section)
 
     if _want("sessions"):
         sections.append(classify.build_section(session_records, mode_thresholds))
@@ -776,7 +802,7 @@ def build_report(
         sections.append(_build_config_section(sessions_with_metrics, snapshots))
 
     if _want("context_budget"):
-        sections.append(context_budget.build_section(cb, snapshots=snapshots, usage_log_rows=None))
+        sections.append(context_budget.build_section(cb, snapshots=snapshots, usage_log_rows=usage_log_rows))
 
     if _want("scorecard"):
         sections.append(_build_scorecard_section(rs, ts, tp, cs, pricing_coverage, diagnostics, session_records, snapshots, config, scorecard_th))

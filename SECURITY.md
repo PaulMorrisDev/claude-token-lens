@@ -172,6 +172,42 @@ output. A malformed regex in the list is skipped, never fatal.
 exclude_projects = ["^confidential-", "client-acme$"]
 ```
 
+## Aggregate exports (`export`, `monthly-report`)
+
+`claude-token-lens export` (`src/claude_token_lens/exports.py`) and
+`claude-token-lens monthly-report` (`src/claude_token_lens/monthly.py`)
+read the same in-memory corpus every other subcommand does — no
+additional file access, no network access — and write only counts, token
+totals, and costs; never a prompt, a tool result, or a file path.
+
+- **Aggregate-only by default.** `export` defaults to one row per
+  `(day, project, model, entrypoint, agent_type)`; `session_id` is only
+  present when the caller explicitly passes `--per-session`
+  (`exports.resolve_export_options`).
+- **Project slugs are hashed by default whenever aggregate-only is in
+  effect**, using the same salted `sha256(salt + slug)[:12]`
+  construction and the same `<config-dir>/salt` file described under
+  "What is stored" above (`parse.load_or_create_salt`, reused rather
+  than a second salt) — never an unsalted hash, and never the raw slug
+  unless `--no-hash-slugs` is passed explicitly. `--no-hash-slugs`
+  together with `--aggregate-only` is honoured as the caller's own
+  informed choice, not a default.
+- **`otel-jsonl` carries no project/session attribute at all** — the
+  OpenTelemetry metric names it mirrors (`claude_code.token.usage`,
+  `claude_code.cost.usage`) don't have one, so `--aggregate-only`/
+  `--hash-slugs` are moot for that format.
+- **`monthly-report` never lowers the bar.** It calls `report.build_report`
+  over a month-filtered corpus and inherits that function's own privacy
+  properties; it adds no session ids, slugs, or text of its own — only
+  numeric finance totals.
+
+`tests/test_exports.py` exercises this with `tests/helpers.assert_privacy`
+against the fully rendered export text (not just the in-memory rows) in
+every format, plus explicit checks that no real session id string is
+present in an aggregate-only export and that no raw slug string is
+present when `--hash-slugs` is in effect. Full column-by-column detail:
+[`docs/exports.md`](docs/exports.md).
+
 ## Reporting a vulnerability
 
 Please open a private security advisory on the GitHub repository (or,

@@ -66,6 +66,66 @@ companion, in ``context_budget.py`` — not this module, which is
 write-only) tolerates that by treating a short row as carrying no
 context-window data rather than raising.
 
+S1-exports addition: real ``prompt_cache`` ground truth. A research pass
+against Claude Code v2.1.251+/v2.1.260+ confirmed the shape the plan's
+own worked example (``cache 92%``) could only guess at — this module now
+prefers that ground truth over the old estimate, and only falls back to
+the estimate when a payload carries no usable ``prompt_cache``:
+
+- **Fields used, confirmed from the research capture**: ``warm`` (bool),
+  ``ttl`` (``"5m"``/``"1h"``), ``expires_at`` (epoch seconds), ``misses``
+  (a running counter), ``last_miss_cause.causes`` (a list of strings,
+  first element used), ``recache_tokens_if_cold``. ``miss_causes`` is
+  accepted on the wire but not currently rendered or logged (no column
+  needs it yet). Other confirmed-but-unused fields (``caching_observed``,
+  ``requests``, ``expected_rebuilds``, ``hit_ratio``, ``cache_write_tokens``,
+  ``miss_recache_tokens``, ``last_miss_at``) are simply ignored.
+- **Line segment**: ``cache warm 5m 03:12`` (a ``MM:SS`` countdown to
+  ``expires_at``) when warm, else ``cache cold`` with an optional
+  trailing ``recache ~12k tokens`` when ``recache_tokens_if_cold`` is
+  present. When the payload carries no usable ``prompt_cache`` at all,
+  falls back to the old estimate, now labelled ``cache est`` and driven
+  by a *transcript-derived* TTL hint rather than the ``effective_ttl_s``
+  argument's own numeric value (see :func:`_fmt_cache_estimate`'s
+  deviation note below) — ``effective_ttl_s`` is kept only as an on/off
+  gate (``None`` disables the estimate segment entirely), preserving
+  ``resolve_effective_ttl``'s existing meaning for every other caller.
+- **Deviation (mapping choice, not published anywhere)**: the short
+  cause tokens logged in ``cache_last_miss_cause`` are this module's own
+  allowlist over the documented ``last_miss_cause.causes`` enum —
+  ``tools_changed`` -> ``"tools"``, ``system_prompt_changed`` ->
+  ``"sysprompt"``, ``ttl_expired_5m`` -> ``"ttl"``, ``likely_server_side``
+  -> ``"server"``, anything else -> ``"other"``.
+- **Estimate's TTL hint (not a deviation -- confirmed against this
+  codebase's own parser)**: with no ``prompt_cache`` at all, the
+  estimate's TTL is read from the transcript's own last assistant line
+  rather than guessed from config/payload: a positive
+  ``message.usage.cache_creation.ephemeral_1h_input_tokens`` implies 1h,
+  else 5m. This exact nesting (``d["message"]["usage"]["cache_creation"]
+  ["ephemeral_1h_input_tokens"]``) is what ``parse.py``'s own
+  ``_new_pending`` already reads to populate ``Turn.cc_1h`` (see its
+  comment there), so this is read straight off a real, already-parsed
+  transcript field rather than guessed.
+- **Trailing CSV columns 10-15** (after the three S1-context-budget
+  columns above, so the file now has 15 columns total): ``cache_warm``
+  (``0``/``1``), ``cache_ttl_s``, ``cache_expires_in_s`` (computed at
+  log time, so it is *not* part of the dedupe key below), ``cache_misses``,
+  ``cache_last_miss_cause`` (the short token above), and
+  ``cache_recache_tokens_if_cold``. A row is written when *either* the
+  context-window values or the cache values (or both) are present and
+  differ from the last ground-truth row already on file; per the task
+  spec, a change in ``cache_warm`` or ``cache_misses`` alone now also
+  counts as "differs" even if the context-window columns are unchanged
+  (see :func:`_last_context_window_key`).
+- :func:`load_usage_log_ground_truth` is the tolerant reader for *both*
+  generations of trailing columns at once (unlike
+  ``context_budget.load_context_window_rows``, which only ever needed
+  the context-window ones): it is what ``cli.py``'s ``report`` command
+  and :func:`build_cache_ground_truth_table` (the ``usage`` section's
+  new ``cache_ground_truth`` table, wired in by ``report.py`` via
+  ``dataclasses.replace`` since ``usage.py`` itself is not writable for
+  this work package) both use.
+
 Never raises: :func:`main` wraps every step that touches the outside
 world (stdin, the filesystem, config) in ``try``/``except Exception`` and
 falls back to a minimal ``token-lens`` line on any failure, per the WP6
@@ -85,6 +145,7 @@ import tomllib
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .model import Column, Table
 from .tools import log_usage
 
 #: Printed by main() on any failure, and returned by render_status() when
@@ -114,40 +175,128 @@ def _fmt_ctx(context_window: object) -> str | None:
     return f"ctx {round(used / 1000.0)}k"
 
 
-def _fmt_cache(prompt_cache: object) -> str | None:
-    """"cache NN%": the prefix-cache hit ratio.
+#: Allowlist mapping ``last_miss_cause.causes[0]`` -> the short token
+#: logged/rendered for it; anything else (including a value not in this
+#: map) becomes "other". This mapping is this module's own choice (see
+#: the module docstring's deviation note), not published anywhere.
+_MISS_CAUSE_ALLOWLIST = {
+    "tools_changed": "tools",
+    "system_prompt_changed": "sysprompt",
+    "ttl_expired_5m": "ttl",
+    "likely_server_side": "server",
+}
 
-    Deviation (reported rather than made silently, see ``model.py``'s
-    module docstring for this project's convention): the plan names
-    ``prompt_cache`` as a stdin field without publishing its shape. This
-    accepts a direct ``hit_percentage``/``hit_rate`` (the latter treated
-    as a 0-1 fraction) if present, else computes
-    ``cache_read / (cache_read + cache_creation + input)`` from whichever
-    of ``cache_read_tokens``/``cache_creation_tokens``/``input_tokens`` are
-    present — this module's own reasonable guess, to be corrected against
-    a real payload sample.
+
+def _map_miss_cause(cause: object) -> str | None:
+    if not isinstance(cause, str) or not cause:
+        return None
+    return _MISS_CAUSE_ALLOWLIST.get(cause, "other")
+
+
+def _numeric(value: object) -> float | None:
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return None
+    return float(value)
+
+
+def _format_mmss(seconds: float) -> str:
+    total = max(0, int(round(seconds)))
+    minutes, secs = divmod(total, 60)
+    return f"{minutes:02d}:{secs:02d}"
+
+
+def _fmt_cache_ground_truth(prompt_cache: dict, now: datetime) -> str | None:
+    """"cache warm 5m 03:12" / "cache cold recache ~12k tokens": the real
+    ``prompt_cache`` ground truth (see the module docstring). Returns
+    ``None`` when ``prompt_cache`` doesn't carry a boolean ``warm`` at
+    all, so callers can fall back to the estimate instead.
     """
-    if not isinstance(prompt_cache, dict):
+    warm = prompt_cache.get("warm")
+    if not isinstance(warm, bool):
         return None
-    hit_pct = prompt_cache.get("hit_percentage")
-    if isinstance(hit_pct, (int, float)) and not isinstance(hit_pct, bool):
-        return f"cache {round(hit_pct)}%"
-    hit_rate = prompt_cache.get("hit_rate")
-    if isinstance(hit_rate, (int, float)) and not isinstance(hit_rate, bool):
-        return f"cache {round(hit_rate * 100)}%"
 
-    read = prompt_cache.get("cache_read_tokens")
-    creation = prompt_cache.get("cache_creation_tokens")
-    if not (isinstance(read, (int, float)) and isinstance(creation, (int, float))):
+    if not warm:
+        segment = "cache cold"
+        recache = _numeric(prompt_cache.get("recache_tokens_if_cold"))
+        if recache is not None:
+            segment += f" recache ~{round(recache / 1000.0)}k tokens"
+        return segment
+
+    ttl_raw = prompt_cache.get("ttl")
+    if isinstance(ttl_raw, str) and ttl_raw:
+        ttl_label = ttl_raw
+    else:
+        parsed = _parse_ttl_value(ttl_raw)
+        ttl_label = _TTL_LABELS.get(parsed, f"{parsed}s") if parsed is not None else "?"
+
+    expires_at = _numeric(prompt_cache.get("expires_at"))
+    if expires_at is None:
+        return f"cache warm {ttl_label}"
+    now_ts = (now if now.tzinfo is not None else now.replace(tzinfo=timezone.utc)).timestamp()
+    remaining = expires_at - now_ts
+    return f"cache warm {ttl_label} {_format_mmss(remaining)}"
+
+
+def _ttl_hint_from_assistant_line(d: dict) -> int:
+    """1h (3600) when the given last-assistant-line dict reports a
+    positive ``message.usage.cache_creation.ephemeral_1h_input_tokens``,
+    else 5m (300) -- see the module docstring's deviation note about this
+    nesting."""
+    message = d.get("message")
+    usage = message.get("usage") if isinstance(message, dict) else None
+    cache_creation = usage.get("cache_creation") if isinstance(usage, dict) else None
+    ephemeral_1h = cache_creation.get("ephemeral_1h_input_tokens") if isinstance(cache_creation, dict) else None
+    value = _numeric(ephemeral_1h)
+    if value is not None and value > 0:
+        return 3600
+    return _DEFAULT_TTL_S
+
+
+def _fmt_cache_estimate(payload: dict, now: datetime, effective_ttl_s: int | None) -> str | None:
+    """"cache est 5m 04:12": the pre-ground-truth fallback, used only
+    when the payload carries no usable ``prompt_cache`` (see
+    :func:`_fmt_cache_ground_truth`). ``effective_ttl_s`` is an on/off
+    gate only (``None`` skips this segment entirely) -- the countdown's
+    own TTL comes from :func:`_ttl_hint_from_assistant_line` instead, per
+    the module docstring's deviation note.
+    """
+    if effective_ttl_s is None:
         return None
-    if isinstance(read, bool) or isinstance(creation, bool):
+    transcript_path = payload.get("transcript_path")
+    if not isinstance(transcript_path, str) or not transcript_path:
         return None
-    input_tokens = prompt_cache.get("input_tokens")
-    input_val = input_tokens if isinstance(input_tokens, (int, float)) and not isinstance(input_tokens, bool) else 0
-    denom = read + creation + input_val
-    if denom <= 0:
+    d = _last_assistant_line(transcript_path)
+    if d is None:
         return None
-    return f"cache {round(100.0 * read / denom)}%"
+    ts_raw = d.get("timestamp")
+    if not isinstance(ts_raw, str) or not ts_raw:
+        return None
+    try:
+        last_ts = datetime.fromisoformat(ts_raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if last_ts.tzinfo is None:
+        last_ts = last_ts.replace(tzinfo=timezone.utc)
+    now_utc = now if now.tzinfo is not None else now.replace(tzinfo=timezone.utc)
+
+    ttl_hint_s = _ttl_hint_from_assistant_line(d)
+    label = _TTL_LABELS.get(ttl_hint_s, f"{ttl_hint_s}s")
+    remaining = ttl_hint_s - (now_utc - last_ts).total_seconds()
+    if remaining <= 0:
+        return f"cache est {label} expired"
+    return f"cache est {label} {_format_mmss(remaining)}"
+
+
+def _fmt_cache_segment(payload: dict, now: datetime, effective_ttl_s: int | None) -> str | None:
+    """The single cache/TTL segment: ground truth when the payload
+    carries a usable ``prompt_cache``, else the transcript-derived
+    estimate (see the module docstring)."""
+    prompt_cache = payload.get("prompt_cache")
+    if isinstance(prompt_cache, dict):
+        ground_truth = _fmt_cache_ground_truth(prompt_cache, now)
+        if ground_truth is not None:
+            return ground_truth
+    return _fmt_cache_estimate(payload, now, effective_ttl_s)
 
 
 def _fmt_rate(rate_limits: object, key: str, label: str) -> str | None:
@@ -179,9 +328,9 @@ def _windows_long_path(path: Path) -> str:
     return "\\\\?\\" + resolved
 
 
-def _last_assistant_ts(transcript_path: str) -> datetime | None:
-    """The last ``type=assistant`` line's ``timestamp`` found by scanning
-    only the final ``_TAIL_BYTES`` of ``transcript_path``, backwards. A
+def _last_assistant_line(transcript_path: str) -> dict | None:
+    """The last ``type=assistant`` line, parsed, found by scanning only
+    the final ``_TAIL_BYTES`` of ``transcript_path``, backwards. A
     truncated first line inside that tail window (the seek landed mid
     line) simply fails to parse as JSON and is skipped like any other bad
     line — if no assistant line is found in the tail at all, this returns
@@ -216,41 +365,22 @@ def _last_assistant_ts(transcript_path: str) -> datetime | None:
             continue
         if not isinstance(d, dict) or d.get("type") != "assistant":
             continue
-        ts_raw = d.get("timestamp")
-        if not isinstance(ts_raw, str) or not ts_raw:
-            continue
-        try:
-            return datetime.fromisoformat(ts_raw.replace("Z", "+00:00"))
-        except ValueError:
-            continue
+        return d
     return None
 
 
-def _format_duration(seconds: float) -> str:
-    total = max(0, int(round(seconds)))
-    minutes, secs = divmod(total, 60)
-    if minutes:
-        return f"{minutes}m{secs:02d}s"
-    return f"{secs}s"
-
-
-def _fmt_ttl(payload: dict, now: datetime, effective_ttl_s: int | None) -> str | None:
-    if effective_ttl_s is None:
+def _last_assistant_ts(transcript_path: str) -> datetime | None:
+    """The last assistant line's ``timestamp``, via :func:`_last_assistant_line`."""
+    d = _last_assistant_line(transcript_path)
+    if d is None:
         return None
-    transcript_path = payload.get("transcript_path")
-    if not isinstance(transcript_path, str) or not transcript_path:
+    ts_raw = d.get("timestamp")
+    if not isinstance(ts_raw, str) or not ts_raw:
         return None
-    last_ts = _last_assistant_ts(transcript_path)
-    if last_ts is None:
+    try:
+        return datetime.fromisoformat(ts_raw.replace("Z", "+00:00"))
+    except ValueError:
         return None
-    if last_ts.tzinfo is None:
-        last_ts = last_ts.replace(tzinfo=timezone.utc)
-    now_utc = now if now.tzinfo is not None else now.replace(tzinfo=timezone.utc)
-    remaining = effective_ttl_s - (now_utc - last_ts).total_seconds()
-    label = _TTL_LABELS.get(effective_ttl_s, f"{effective_ttl_s}s")
-    if remaining <= 0:
-        return f"{label} TTL expired"
-    return f"{label} TTL expires in {_format_duration(remaining)}"
 
 
 # -- effective TTL resolution ---------------------------------------------
@@ -313,11 +443,14 @@ def resolve_effective_ttl(payload: dict, config_dir: Path | None = None) -> int:
 
 
 def render_status(payload: dict, now: datetime, effective_ttl_s: int | None) -> str:
-    """Build the one-line status text, e.g. ``ctx 143k | cache 92% | 5m
-    TTL expires in 4m12s | 5h 37% | 7d 12%``. Every segment is optional —
-    a missing/malformed field simply drops its segment rather than
-    raising. Returns :data:`_FALLBACK_LINE` when nothing at all could be
-    rendered (an (almost) empty payload).
+    """Build the one-line status text, e.g. ``ctx 143k | cache warm 5m
+    03:12 | 5h 37% | 7d 12%`` (ground truth) or ``ctx 143k | cache est 5m
+    04:12 | 5h 37% | 7d 12%`` (estimate fallback, no ``prompt_cache`` on
+    the payload). Every segment is optional — a missing/malformed field
+    simply drops its segment rather than raising. Never prints message
+    text; kept under 120 characters by construction (each segment is a
+    handful of tokens). Returns :data:`_FALLBACK_LINE` when nothing at
+    all could be rendered (an (almost) empty payload).
     """
     if not isinstance(payload, dict):
         payload = {}
@@ -326,12 +459,9 @@ def render_status(payload: dict, now: datetime, effective_ttl_s: int | None) -> 
     ctx_seg = _fmt_ctx(payload.get("context_window"))
     if ctx_seg:
         segments.append(ctx_seg)
-    cache_seg = _fmt_cache(payload.get("prompt_cache"))
+    cache_seg = _fmt_cache_segment(payload, now, effective_ttl_s)
     if cache_seg:
         segments.append(cache_seg)
-    ttl_seg = _fmt_ttl(payload, now, effective_ttl_s)
-    if ttl_seg:
-        segments.append(ttl_seg)
     five_h_seg = _fmt_rate(payload.get("rate_limits"), "five_hour", "5h")
     if five_h_seg:
         segments.append(five_h_seg)
@@ -379,12 +509,6 @@ def print_install_fragment() -> str:
 _CONTEXT_WINDOW_SENTINEL = "context_window"
 
 
-def _numeric(value: object) -> float | None:
-    if not isinstance(value, (int, float)) or isinstance(value, bool):
-        return None
-    return float(value)
-
-
 def _context_window_size(context_window: dict) -> float | None:
     size = _numeric(context_window.get("context_window_size"))
     if size is not None:
@@ -423,6 +547,41 @@ def _context_window_row_values(payload: dict) -> tuple[str, float | None, float,
     return (session_id, used_percentage, used_tokens, size, autocompact)
 
 
+# -- cache ground-truth trailing columns (S1-exports) -----------------------
+
+
+def _cache_row_values(
+    payload: dict,
+) -> tuple[float | None, int | None, float | None, float | None, str | None, float | None] | None:
+    """``(warm, ttl_s, expires_at, misses, last_miss_cause, recache_tokens_if_cold)``
+    from ``payload["prompt_cache"]``, or ``None`` when there is nothing at
+    all worth logging (``prompt_cache`` missing/not a dict, or every one
+    of these fields absent). ``warm`` is kept as ``0.0``/``1.0`` (not a
+    bool) so it slots into the same numeric CSV/dedupe-key handling as
+    every other value here.
+    """
+    prompt_cache = payload.get("prompt_cache")
+    if not isinstance(prompt_cache, dict):
+        return None
+
+    warm_raw = prompt_cache.get("warm")
+    warm = 1.0 if warm_raw is True else (0.0 if warm_raw is False else None)
+    ttl_s = _parse_ttl_value(prompt_cache.get("ttl"))
+    expires_at = _numeric(prompt_cache.get("expires_at"))
+    misses = _numeric(prompt_cache.get("misses"))
+    last_miss_cause = None
+    causes_holder = prompt_cache.get("last_miss_cause")
+    if isinstance(causes_holder, dict):
+        causes = causes_holder.get("causes")
+        if isinstance(causes, list) and causes:
+            last_miss_cause = _map_miss_cause(causes[0])
+    recache_tokens_if_cold = _numeric(prompt_cache.get("recache_tokens_if_cold"))
+
+    if warm is None and ttl_s is None and expires_at is None and misses is None and last_miss_cause is None and recache_tokens_if_cold is None:
+        return None
+    return (warm, ttl_s, expires_at, misses, last_miss_cause, recache_tokens_if_cold)
+
+
 def _parse_csv_number(text: str | None) -> float | None:
     if not text:
         return None
@@ -435,7 +594,10 @@ def _parse_csv_number(text: str | None) -> float | None:
 def _last_context_window_key(csv_path: Path) -> tuple | None:
     """The dedupe key of the last row in ``csv_path`` whose ``window``
     column is :data:`_CONTEXT_WINDOW_SENTINEL`, or ``None`` if the file
-    doesn't exist or carries no such row yet."""
+    doesn't exist or carries no such row yet. Columns 9 (``cache_warm``)
+    and 12 (``cache_misses``) are included per the S1-exports spec: a
+    change in either alone counts as a new row even when every
+    context-window column stays the same (see the module docstring)."""
     if not csv_path.exists():
         return None
     last_key: tuple | None = None
@@ -452,6 +614,8 @@ def _last_context_window_key(csv_path: Path) -> tuple | None:
                     _parse_csv_number(row[6]) if len(row) > 6 else None,
                     _parse_csv_number(row[7]) if len(row) > 7 else None,
                     _parse_csv_number(row[8]) if len(row) > 8 else None,
+                    _parse_csv_number(row[9]) if len(row) > 9 else None,
+                    _parse_csv_number(row[12]) if len(row) > 12 else None,
                 )
     except OSError:
         return None
@@ -459,17 +623,37 @@ def _last_context_window_key(csv_path: Path) -> tuple | None:
 
 
 def _append_context_window_row(csv_path: Path, payload: dict, now: datetime) -> None:
-    """Append one ``context_window`` ground-truth row to ``csv_path`` (see
-    the module docstring for the trailing-column contract), skipping it
-    when it is identical to the last such row already on file.
+    """Append one ground-truth row to ``csv_path`` (see the module
+    docstring for the full trailing-column contract): context-window
+    values, cache values, or both. Skipped entirely when neither is
+    present, and deduped against the last such row already on file.
     """
-    values = _context_window_row_values(payload)
-    if values is None:
+    context_values = _context_window_row_values(payload)
+    cache_values = _cache_row_values(payload)
+    if context_values is None and cache_values is None:
         return
-    session_id, used_percentage, used_tokens, size, autocompact = values
-    key = (session_id, used_percentage, used_tokens, size, autocompact)
+
+    if context_values is not None:
+        _, used_percentage, used_tokens, size, autocompact = context_values
+    else:
+        used_percentage = used_tokens = size = autocompact = None
+    if cache_values is not None:
+        cache_warm, cache_ttl_s, cache_expires_at, cache_misses, cache_last_miss_cause, cache_recache = cache_values
+    else:
+        cache_warm = cache_ttl_s = cache_expires_at = cache_misses = cache_recache = None
+        cache_last_miss_cause = None
+
+    session_id = payload.get("session_id")
+    session_id = session_id if isinstance(session_id, str) else ""
+
+    key = (session_id, used_percentage, used_tokens, size, autocompact, cache_warm, cache_misses)
     if key == _last_context_window_key(csv_path):
         return
+
+    cache_expires_in_s: float | None = None
+    if cache_expires_at is not None:
+        now_ts = (now if now.tzinfo is not None else now.replace(tzinfo=timezone.utc)).timestamp()
+        cache_expires_in_s = cache_expires_at - now_ts
 
     is_new_file = not csv_path.exists()
     csv_path.parent.mkdir(parents=True, exist_ok=True)
@@ -484,6 +668,12 @@ def _append_context_window_row(csv_path: Path, payload: dict, now: datetime) -> 
                     "context_window_used_tokens",
                     "context_window_size",
                     "context_window_autocompact_threshold",
+                    "cache_warm",
+                    "cache_ttl_s",
+                    "cache_expires_in_s",
+                    "cache_misses",
+                    "cache_last_miss_cause",
+                    "cache_recache_tokens_if_cold",
                 ]
             )
         writer.writerow(
@@ -494,11 +684,148 @@ def _append_context_window_row(csv_path: Path, payload: dict, now: datetime) -> 
                 used_percentage if used_percentage is not None else "",
                 "",
                 "statusline",
-                used_tokens,
+                used_tokens if used_tokens is not None else "",
                 size if size is not None else "",
                 autocompact if autocompact is not None else "",
+                "" if cache_warm is None else int(cache_warm),
+                cache_ttl_s if cache_ttl_s is not None else "",
+                cache_expires_in_s if cache_expires_in_s is not None else "",
+                cache_misses if cache_misses is not None else "",
+                cache_last_miss_cause or "",
+                cache_recache if cache_recache is not None else "",
             ]
         )
+
+
+def load_usage_log_ground_truth(csv_path: str | Path) -> list[dict]:
+    """Tolerant reader for *every* ground-truth trailing column this
+    module writes -- both the S1-context-budget ``context_window_*``
+    columns and the S1-exports ``cache_*`` columns -- as one dict per
+    row: ``{"session_id", "context_window_used_percentage",
+    "context_window_used_tokens", "context_window_size",
+    "context_window_autocompact_threshold", "cache_warm", "cache_ttl_s",
+    "cache_expires_in_s", "cache_misses", "cache_last_miss_cause",
+    "cache_recache_tokens_if_cold"}``.
+
+    Unlike :func:`context_budget.load_context_window_rows` (which only
+    ever needed the context-window columns, and so skips a row lacking a
+    numeric ``used_tokens``), this reader surfaces *any* ground-truth
+    row -- context-only, cache-only, or both -- since ``cli.py``'s
+    ``report`` command and :func:`build_cache_ground_truth_table` both
+    need the cache-only rows a context-focused reader would drop. A
+    missing column (an old-format row, or a row written before the
+    cache columns existed) simply yields ``None`` for that key, matching
+    ``context_budget.load_context_window_rows``'s own "short row -> no
+    data, not an error" contract. Returns ``[]`` when the file doesn't
+    exist.
+    """
+    csv_path = Path(csv_path)
+    if not csv_path.exists():
+        return []
+
+    rows: list[dict] = []
+    with open(csv_path, "r", encoding="utf-8", newline="") as fh:
+        reader = csv.reader(fh)
+        header = next(reader, None)
+        if header is None:
+            return []
+        for raw in reader:
+            if len(raw) < 3 or raw[2] != _CONTEXT_WINDOW_SENTINEL:
+                continue
+
+            def _at(index: int) -> float | None:
+                return _parse_csv_number(raw[index]) if len(raw) > index else None
+
+            cache_warm_raw = _at(9)
+            cause_raw = raw[13].strip() if len(raw) > 13 and raw[13].strip() else None
+            rows.append(
+                {
+                    "session_id": raw[1] if len(raw) > 1 else "",
+                    "context_window_used_percentage": _at(3),
+                    "context_window_used_tokens": _at(6),
+                    "context_window_size": _at(7),
+                    "context_window_autocompact_threshold": _at(8),
+                    "cache_warm": None if cache_warm_raw is None else bool(cache_warm_raw),
+                    "cache_ttl_s": _at(10),
+                    "cache_expires_in_s": _at(11),
+                    "cache_misses": _at(12),
+                    "cache_last_miss_cause": cause_raw,
+                    "cache_recache_tokens_if_cold": _at(14),
+                }
+            )
+    return rows
+
+
+def build_cache_ground_truth_table(usage_log_rows: list[dict] | None) -> Table:
+    """Per-session ``cache_ground_truth`` table (registered by
+    ``report.py`` next to the ``usage`` section, since ``usage.py`` is
+    not writable for this work package -- see the module docstring):
+    rows logged, warm share, peak miss counter, top miss causes, and
+    mean recache-if-cold tokens, all built from
+    :func:`load_usage_log_ground_truth`'s rows. A row lacking any cache
+    data at all (``cache_warm`` is ``None``) is excluded -- it has
+    nothing to contribute here even if it carries context-window data.
+    """
+    per_session: dict[str, dict] = {}
+    for row in usage_log_rows or []:
+        if row.get("cache_warm") is None:
+            continue
+        session_id = row.get("session_id") or ""
+        bucket = per_session.setdefault(
+            session_id,
+            {"rows": 0, "warm": 0, "misses_max": 0.0, "cause_counts": {}, "recache_values": []},
+        )
+        bucket["rows"] += 1
+        if row.get("cache_warm"):
+            bucket["warm"] += 1
+        misses = row.get("cache_misses")
+        if isinstance(misses, (int, float)):
+            bucket["misses_max"] = max(bucket["misses_max"], misses)
+        cause = row.get("cache_last_miss_cause")
+        if cause:
+            bucket["cause_counts"][cause] = bucket["cause_counts"].get(cause, 0) + 1
+        recache = row.get("cache_recache_tokens_if_cold")
+        if isinstance(recache, (int, float)):
+            bucket["recache_values"].append(recache)
+
+    rows_out: list[list] = []
+    for session_id, bucket in sorted(per_session.items()):
+        rows_count = bucket["rows"]
+        warm_share = (100.0 * bucket["warm"] / rows_count) if rows_count else 0.0
+        top_causes = sorted(bucket["cause_counts"].items(), key=lambda kv: (-kv[1], kv[0]))[:3]
+        top_causes_str = ", ".join(f"{cause}:{count}" for cause, count in top_causes)
+        recache_values = bucket["recache_values"]
+        mean_recache = (sum(recache_values) / len(recache_values)) if recache_values else None
+        rows_out.append(
+            [
+                session_id,
+                rows_count,
+                warm_share,
+                int(bucket["misses_max"]),
+                top_causes_str,
+                mean_recache,
+            ]
+        )
+
+    return Table(
+        name="cache_ground_truth",
+        title="Cache ground truth (from statusline)",
+        columns=[
+            Column(key="session_id", label="Session", kind="str"),
+            Column(key="rows_logged", label="Rows logged", kind="int"),
+            Column(key="warm_share", label="Warm share", kind="pct"),
+            Column(key="misses", label="Misses", kind="int"),
+            Column(key="top_miss_causes", label="Top miss causes", kind="str"),
+            Column(key="mean_recache_tokens_if_cold", label="Mean recache-if-cold", kind="tokens"),
+        ],
+        rows=rows_out,
+        notes=[
+            "Built from the statusline's prompt_cache ground-truth trailing "
+            "columns in the usage-log CSV (see statusline.py's module "
+            "docstring); sessions with no logged cache data are absent "
+            "from this table.",
+        ],
+    )
 
 
 # -- CLI entry point ------------------------------------------------------
@@ -593,4 +920,6 @@ __all__ = [
     "resolve_effective_ttl",
     "print_install_fragment",
     "main",
+    "load_usage_log_ground_truth",
+    "build_cache_ground_truth_table",
 ]

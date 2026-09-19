@@ -62,6 +62,8 @@ SUBCOMMANDS: tuple[str, ...] = (
     "scrub-fixture",
     "probe",
     "statusline",
+    "export",
+    "monthly-report",
     "init",
     "baseline",
     "serve",
@@ -225,6 +227,64 @@ def _add_statusline_args(sub: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_export_args(sub: argparse.ArgumentParser) -> None:
+    """Flags for the ``export`` subcommand (S1-exports, plan "Feeds
+    existing tooling" / "Aggregation without surveillance"): aggregate-only
+    and hashed by default, per-session and raw slugs are opt-in.
+    """
+    sub.add_argument(
+        "--format",
+        choices=("csv-flat", "json", "otel-jsonl"),
+        default="csv-flat",
+        help="export format (default: csv-flat)",
+    )
+    aggregate = sub.add_mutually_exclusive_group()
+    aggregate.add_argument(
+        "--aggregate-only",
+        action="store_true",
+        dest="aggregate_only",
+        default=None,
+        help="no session ids, no per-session rows (default)",
+    )
+    aggregate.add_argument(
+        "--per-session",
+        action="store_false",
+        dest="aggregate_only",
+        help="opt in to per-session rows (includes session ids)",
+    )
+    hash_slugs = sub.add_mutually_exclusive_group()
+    hash_slugs.add_argument(
+        "--hash-slugs",
+        action="store_true",
+        dest="hash_slugs",
+        default=None,
+        help="replace project slugs with a salted hash (default when --aggregate-only)",
+    )
+    hash_slugs.add_argument(
+        "--no-hash-slugs",
+        action="store_false",
+        dest="hash_slugs",
+        help="keep raw project slugs, even together with --aggregate-only "
+        "(an explicit, informed choice -- not the default)",
+    )
+    sub.add_argument("--out", metavar="PATH", help="write to PATH instead of stdout")
+
+
+def _add_monthly_report_args(sub: argparse.ArgumentParser) -> None:
+    """Flags for the ``monthly-report`` subcommand (S1-exports, plan
+    "Finance" / feature 10 promoted to v0.2 ``serve --monthly-report``).
+    """
+    sub.add_argument(
+        "--out", metavar="DIR", required=True, help="directory to write the Markdown/HTML report into"
+    )
+    sub.add_argument(
+        "--month",
+        metavar="YYYY-MM",
+        default=None,
+        help="calendar month to report on (default: the previous calendar month)",
+    )
+
+
 def _add_serve_args(sub: argparse.ArgumentParser) -> None:
     """Extra flags for the ``serve`` subcommand (v0.2's local JSON API +
     watcher service, ``service/serve.py``). ``--projects-root`` and
@@ -377,6 +437,8 @@ def _make_parser() -> argparse.ArgumentParser:
             "log-usage": "append a pasted get_usage JSON payload to the usage log",
             "probe": "content-free schema histogram of a project or file",
             "statusline": "Claude Code statusLine handler (reads stdin JSON)",
+            "export": "export digests as csv-flat, json or otel-jsonl (aggregate-only by default)",
+            "monthly-report": "write a monthly Markdown/HTML finance report",
             "scrub-fixture": "scrub a real session into a privacy-safe test fixture",
             # Fix R25: lead with the same "(planned)" marker the plain
             # "not implemented yet" fallback below uses for every other
@@ -408,6 +470,10 @@ def _make_parser() -> argparse.ArgumentParser:
             _add_probe_args(sub)
         if name == "statusline":
             _add_statusline_args(sub)
+        if name == "export":
+            _add_export_args(sub)
+        if name == "monthly-report":
+            _add_monthly_report_args(sub)
         if name == "serve":
             _add_serve_args(sub)
     return parser
@@ -663,6 +729,16 @@ def _cmd_report_like(args: argparse.Namespace, include: set[str] | None) -> int:
         print(f"claude-token-lens {command}: {exc}", file=sys.stderr)
         return 2
 
+    # S1-exports: when the statusline has been logging ground truth
+    # (context_window/cache) into <config_dir>/usage-log.csv, feed those
+    # rows into build_report -- statusline.load_usage_log_ground_truth is
+    # the tolerant reader that copes with both an old-format file (no
+    # cache_* columns yet) and a new one, per its own docstring.
+    usage_log_csv_path = config_dir / "usage-log.csv"
+    usage_log_rows = (
+        statusline_mod.load_usage_log_ground_truth(usage_log_csv_path) if usage_log_csv_path.exists() else None
+    )
+
     try:
         model = build_report(
             corpus,
@@ -675,6 +751,7 @@ def _cmd_report_like(args: argparse.Namespace, include: set[str] | None) -> int:
             snapshots=snaps,
             include=include,
             session_overrides=session_overrides,
+            usage_log_rows=usage_log_rows,
         )
     except ScorecardError as exc:
         # Fix R20: a misordered [thresholds.scorecard] override in
@@ -889,6 +966,92 @@ def _cmd_probe(args: argparse.Namespace) -> int:
 def _cmd_statusline(args: argparse.Namespace) -> int:
     forward = ["--print-install-fragment"] if getattr(args, "print_install_fragment", False) else []
     return statusline_mod.main(forward)
+
+
+# -- export / monthly-report (S1-exports) ------------------------------------
+
+
+def _cmd_export(args: argparse.Namespace) -> int:
+    from . import exports as exports_mod
+
+    command = "export"
+    config, rates, config_dir, err = _load_config_and_pricing(args)
+    if err is not None:
+        return err
+
+    root, project_dirs = _resolve_project_dirs_for_args(args, config)
+    window = _window_description(args)
+    if not project_dirs:
+        print(
+            f"claude-token-lens {command}: no matching project directories under {root}",
+            file=sys.stderr,
+        )
+        return 1
+
+    corpus = _load_corpus_for_args(args, config, config_dir, project_dirs)
+    if not corpus.sessions:
+        print(
+            f"claude-token-lens {command}: no sessions found under {root} for window {window!r}",
+            file=sys.stderr,
+        )
+        return 1
+
+    options = exports_mod.resolve_export_options(args.format, args.aggregate_only, args.hash_slugs)
+    text = exports_mod.build_export_text(corpus, rates, config, config_dir, options, window=window)
+
+    if args.out:
+        Path(args.out).write_text(text, encoding="utf-8")
+    else:
+        sys.stdout.write(text)
+        if not text.endswith("\n"):
+            sys.stdout.write("\n")
+    return 0
+
+
+def _cmd_monthly_report(args: argparse.Namespace) -> int:
+    from . import monthly as monthly_mod
+
+    command = "monthly-report"
+    config, rates, config_dir, err = _load_config_and_pricing(args)
+    if err is not None:
+        return err
+
+    root, project_dirs = _resolve_project_dirs_for_args(args, config)
+    if not project_dirs:
+        print(
+            f"claude-token-lens {command}: no matching project directories under {root}",
+            file=sys.stderr,
+        )
+        return 1
+
+    try:
+        month = monthly_mod.resolve_month(args.month)
+    except ValueError as exc:
+        print(f"claude-token-lens {command}: {exc}", file=sys.stderr)
+        return 2
+
+    # The monthly report always covers exactly the calendar month itself
+    # (never --days/--since/--until, which are for the other report-like
+    # subcommands): load the whole corpus for the project(s) and let
+    # monthly.write_monthly_report do its own month-window filtering
+    # against each turn's local timestamp, the same way build_report's
+    # own --days/--since/--until filtering happens at discovery.load_corpus
+    # time rather than post-hoc -- here there is no discovery-level
+    # equivalent for "one specific calendar month", so the filtering
+    # happens inside monthly.py itself instead.
+    corpus = _load_corpus_for_args(args, config, config_dir, project_dirs)
+    if not corpus.sessions:
+        print(
+            f"claude-token-lens {command}: no sessions found under {root}",
+            file=sys.stderr,
+        )
+        return 1
+
+    out_dir = Path(args.out)
+    paths = monthly_mod.write_monthly_report(corpus, rates, config, month, out_dir)
+    for path in paths:
+        print(str(path))
+    return 0
 
 
 def _cmd_scrub_fixture(args: argparse.Namespace) -> int:
@@ -1184,6 +1347,10 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_probe(args)
     if command == "statusline":
         return _cmd_statusline(args)
+    if command == "export":
+        return _cmd_export(args)
+    if command == "monthly-report":
+        return _cmd_monthly_report(args)
     if command == "scrub-fixture":
         return _cmd_scrub_fixture(args)
     if command in ("init", "baseline"):

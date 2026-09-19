@@ -48,6 +48,16 @@ respects.
   5-hour window can't be observed from transcripts alone, so this is a
   documented, deterministic proxy grid instead); under `"api"` billing
   the table is empty with a one-line note explaining the skip.
+- `cache_ground_truth` (S1-exports) — one row per session: `session_id`,
+  `rows_logged`, `warm_share` (percentage of logged rows where
+  `statusline.py`'s real, non-estimated `prompt_cache.warm` was `true`),
+  `misses` (the peak/max `prompt_cache.misses` observed), `top_miss_causes`
+  (a short `cause:count` summary, e.g. `ttl:2, tools:1`), and
+  `mean_recache_tokens_if_cold`. Built by `statusline.py`'s
+  `build_cache_ground_truth_table` from the usage-log CSV's `cache_*`
+  trailing columns and appended onto this section by `report.build_report`
+  only when it is given `usage_log_rows` (see below) — absent otherwise,
+  same as `context_budget_statusline`.
 
 Every money column's label switches to "Cost (list-price equivalent
 USD)" under subscription billing, and a section note repeats that these
@@ -367,9 +377,12 @@ when the corpus has no top-level transcripts at all.
   get there — `python -m claude_token_lens.statusline` appends them to
   the same usage-log CSV `usage_windows` already reads, as three new
   trailing columns old-format rows simply don't have). Empty with a note
-  otherwise — `report.build_report` has no `config_dir` to load that CSV
-  from today, so this table is only ever populated by a caller that
-  supplies `usage_log_rows` directly, not by `claude-token-lens report`.
+  otherwise. `claude-token-lens report` (S1-exports) now loads
+  `<config_dir>/usage-log.csv`, when present, with a tolerant reader and
+  passes the resulting rows into `build_report` as `usage_log_rows` —
+  so both this table and `cache_ground_truth` above populate for the
+  ordinary CLI report too, not only for a caller that constructs
+  `usage_log_rows` itself.
 
 `recommend.py`'s `baseline-bloat` rule (see
 [Recommendations](#recommendations-recommendpy) below) cites this
