@@ -49,21 +49,25 @@ One attribution choice remains, carried over unchanged:
 
 from __future__ import annotations
 
+import concurrent.futures
 import json
+import os
 import threading
 import time
+import zlib
 from pathlib import Path
 
 from .. import PARSER_VERSION, classify, discovery, recache, workflows as workflows_mod, workstyle
 from ..cache import DigestCache, encode_result, result_from_jsonable
 from ..compaction import compaction_records_for_transcript
+from ..corpus import _parse_worker
 from ..model import TranscriptMeta, TranscriptResult
 from ..parse import parse_transcript
 from ..pricing import Pricing, PricingError, load_pricing, price_turn
 from ..report import _dominant_transcript_model, _extract_workstyle_features
 from .. import snapshots as snapshots_mod
 from .contracts import ServeOptions, WatcherStats
-from .store import GLOBAL_PROJECT_SLUG, Store
+from .store import GLOBAL_PROJECT_SLUG, Store, decode_digest_blob
 
 #: A file whose mtime is under this many seconds old is assumed to still
 #: be an active Claude Code session (same convention/value as
@@ -71,6 +75,21 @@ from .store import GLOBAL_PROJECT_SLUG, Store
 #: this module never has to import ``cache.DigestCache`` just for the
 #: constant).
 LIVE_FILE_WINDOW_S = 60.0
+
+#: S1-perf item 2: a tick whose :meth:`FileWatcher._collect_parse_candidates`
+#: pool is larger than this is worth the ``ProcessPoolExecutor`` start-up
+#: cost; a smaller tick (the common case once the corpus is warm -- most
+#: ticks touch only the handful of sessions actively being written)
+#: parses sequentially exactly as before, at whatever single-file latency
+#: that already has.
+_PARALLEL_PARSE_THRESHOLD = 50
+
+#: Same cap ``cli.py``'s own ``--jobs`` default guidance and
+#: ``corpus.load_corpus`` use elsewhere in this project -- more workers
+#: than CPUs just adds context-switch overhead for CPU-bound JSONL
+#: parsing, and a huge machine gains nothing past 4 for a tick-sized
+#: (not whole-corpus) batch.
+_MAX_PARSE_WORKERS = 4
 
 
 def _now_iso() -> str:
@@ -206,15 +225,27 @@ def _build_recache_turns(result: TranscriptResult, thresholds: recache.RecacheTh
 
 
 def _build_events(result: TranscriptResult) -> list[dict]:
+    """One aggregate row per ``(kind, subkind)`` (S1-perf item 4) --
+    ``events_agg.count``/``dropped_tokens_sum``/``duration_ms_sum``,
+    rather than one row per raw ``Event`` -- no reader anywhere in this
+    codebase used per-event detail (``store.py`` has no ``events()``
+    read method, and neither ``api.py`` nor ``rebuild.py`` ever queries
+    the table), so this is the exact same information any caller could
+    ever get back out, at a small fraction of the row count. ``ts`` is
+    intentionally dropped: aggregating necessarily collapses it (an
+    aggregate row spans every occurrence's own timestamp), and nothing
+    read it back either.
+    """
+    aggregates: dict[tuple[str, str | None], dict[str, int]] = {}
+    for event in result.events:
+        key = (event.kind.value, event.subkind)
+        agg = aggregates.setdefault(key, {"count": 0, "dropped_tokens_sum": 0, "duration_ms_sum": 0})
+        agg["count"] += 1
+        agg["dropped_tokens_sum"] += event.dropped_tokens or 0
+        agg["duration_ms_sum"] += event.duration_ms or 0
     return [
-        {
-            "kind": event.kind.value,
-            "subkind": event.subkind,
-            "ts": event.ts,
-            "dropped_tokens": event.dropped_tokens,
-            "duration_ms": event.duration_ms,
-        }
-        for event in result.events
+        {"kind": kind, "subkind": subkind, **agg}
+        for (kind, subkind), agg in aggregates.items()
     ]
 
 
@@ -328,23 +359,70 @@ class FileWatcher:
             self.run_once()
             self._stop_event.wait(self.options.poll_interval_s)
 
+    # -- per-tick timing helpers (S1-perf item 5) ---------------------------
+
+    def _time_discovery(self, stats: WatcherStats, fn, *args, **kwargs):
+        """Call ``fn(*args, **kwargs)``, adding the elapsed wall-clock
+        time to ``stats.discovery_s`` regardless of whether ``fn`` raises
+        (the caller's own try/except still sees the exception -- this
+        never swallows one, it only makes sure the time already spent is
+        recorded before it propagates)."""
+        t0 = time.monotonic()
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            stats.discovery_s += time.monotonic() - t0
+
+    def _time_store(self, stats: WatcherStats, fn, *args, **kwargs):
+        """``Store`` counterpart to :meth:`_time_discovery` -- every
+        ``Store`` reader/writer call this module makes goes through this
+        (or :meth:`_parse`'s own ``parse_s`` timing) so ``stats.store_s``
+        covers the whole tick's database time, not just its writes."""
+        t0 = time.monotonic()
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            stats.store_s += time.monotonic() - t0
+
     # -- per-tick algorithm -------------------------------------------------
 
     def _run_once(self, stats: WatcherStats) -> None:
         self._scan_snapshots(stats)
 
-        known = self.store.known_files()
+        known = self._time_store(stats, self.store.known_files)
         seen_paths: set[str] = set()
 
-        project_dirs = discovery.resolve_project_dirs(
+        project_dirs = self._time_discovery(
+            stats,
+            discovery.resolve_project_dirs,
             self.options.projects_root,
             all_projects=True,
             exclude_projects=list(self.options.exclude_projects),
         )
+
+        # S1-perf item 2: bulk-parse this tick's pending transcripts in a
+        # process pool ahead of the per-session loop below, so that
+        # loop's own sequential _resolve/_parse calls resolve as on-disk
+        # cache hits instead of each doing its own single-file parse. A
+        # no-op (falls through to the loop's existing sequential
+        # behaviour) whenever there's no cache configured or too little
+        # pending work to justify a pool.
+        self._prewarm_cache(project_dirs, known, stats)
+
+        # Finding 7/S1-perf item 6: real-time tag overrides -- a POST
+        # /api/sessions/<id>/tags write must change sessions.mode/purpose
+        # on the very next tick, not only the next report rebuild (see
+        # _fold_session's own docstring note below). Fetched once per
+        # tick, not once per session, since classify.classify_session's
+        # own overrides.get(session_id, {}) already does the per-session
+        # lookup into this whole-store dict.
+        all_tags = self._time_store(stats, self.store.all_tags)
+
         for project_dir in project_dirs:
             slug = project_dir.name
-            for top_path in discovery.find_sessions(project_dir):
-                self._scan_session(project_dir, slug, top_path, known, seen_paths, stats)
+            top_paths = self._time_discovery(stats, discovery.find_sessions, project_dir)
+            for top_path in top_paths:
+                self._scan_session(project_dir, slug, top_path, known, seen_paths, stats, all_tags)
 
         if not project_dirs:
             # Finding 3 (second failure mode): an empty project_dirs list
@@ -360,12 +438,156 @@ class FileWatcher:
                 "projects root returned no projects; skipped missing check",
             )
         else:
-            stats.files_removed = self.store.remove_missing(seen_paths)
+            stats.files_removed = self._time_store(stats, self.store.remove_missing, seen_paths)
 
         stats.transcripts_missing = self.store.count_missing_transcripts()
 
         if self.options.retention_days is not None:
-            self.store.retention_prune(self.options.retention_days)
+            self._time_store(stats, self.store.retention_prune, self.options.retention_days)
+
+    # -- S1-perf item 2: bulk parallel prewarm -------------------------------
+
+    def _needs_parse_this_tick(
+        self, path_str: str, meta: TranscriptMeta, known: dict[str, tuple[int, int]]
+    ) -> bool:
+        """A read-only predicate mirroring :meth:`_resolve`'s own new/
+        changed/live decision table (see that method's docstring) --
+        used only by :meth:`_collect_parse_candidates` to decide which
+        paths are worth bulk-parsing in parallel ahead of the main
+        per-session loop. Never mutates ``_pending_stabilize`` or any
+        ``stats`` counter -- :meth:`_resolve` remains the sole authority
+        on what actually gets parsed and recorded this tick; a mismatch
+        between the two here only costs efficiency (a file prewarmed
+        that ``_resolve`` decides not to re-parse after all, or vice
+        versa), never correctness.
+        """
+        prior = known.get(path_str)
+        never_seen = prior is None
+        changed = never_seen or (meta.mtime_ns, meta.size_bytes) != prior
+        forced = path_str in self._pending_stabilize
+        live = self._is_live(meta.mtime_ns)
+
+        if not changed and not forced:
+            return False
+        if live and not never_seen and not forced:
+            return False
+        return True
+
+    def _collect_parse_candidates(
+        self, project_dirs: list[Path], known: dict[str, tuple[int, int]]
+    ) -> list[tuple[str, TranscriptMeta]]:
+        """Every top-level/subagent transcript path
+        :meth:`_needs_parse_this_tick` says needs a fresh parse this
+        tick, across every ``project_dirs`` entry -- the candidate pool
+        :meth:`_prewarm_cache` bulk-parses in a process pool when it's
+        large enough to be worth the pool start-up cost.
+
+        Walks the same ``discovery.find_sessions``/``find_subagents``
+        shapes the main per-session loop walks again afterwards (a
+        second, redundant filesystem walk) -- cheap relative to a full
+        ``parse_transcript`` call, and far simpler than threading a
+        shared discovery result through both this prewarm pass and the
+        loop's own per-file error-handling/session-folding, which needs
+        the untouched per-session traversal :meth:`_scan_session` already
+        implements. Never raises -- an ``OSError``/other failure walking
+        one project directory's sessions or subagents is silently
+        skipped here (the main loop's own try/except around the
+        identical calls records it properly-scoped).
+        """
+        candidates: list[tuple[str, TranscriptMeta]] = []
+        for project_dir in project_dirs:
+            slug = project_dir.name
+            try:
+                top_paths = discovery.find_sessions(project_dir)
+            except OSError:
+                continue
+            for top_path in top_paths:
+                session_id = top_path.stem
+                top_meta = _build_top_meta(top_path, session_id, slug)
+                if self._needs_parse_this_tick(str(top_path), top_meta, known):
+                    candidates.append((str(top_path), top_meta))
+                try:
+                    subagent_entries = discovery.find_subagents(project_dir, session_id)
+                except OSError:
+                    continue
+                for jsonl_path, _raw_meta in subagent_entries:
+                    sub_path_str = str(jsonl_path)
+                    try:
+                        sub_meta = discovery.load_meta(jsonl_path.with_name(jsonl_path.stem + ".meta.json"))
+                    except Exception:
+                        continue
+                    if self._needs_parse_this_tick(sub_path_str, sub_meta, known):
+                        candidates.append((sub_path_str, sub_meta))
+        return candidates
+
+    def _prewarm_cache(
+        self, project_dirs: list[Path], known: dict[str, tuple[int, int]], stats: WatcherStats
+    ) -> None:
+        """Parse this tick's pending transcripts in a
+        ``ProcessPoolExecutor`` and prime ``self.cache`` with the
+        results, so the per-session loop below's own sequential
+        ``_resolve``/``_parse`` calls resolve as on-disk cache hits
+        instead of each doing its own single-file parse (S1-perf item 2:
+        a cold first tick over a large corpus is otherwise entirely
+        single-threaded). A no-op when this watcher has no
+        ``DigestCache`` configured (``serve.run`` always passes one --
+        see ``service/serve.py`` -- but tests that construct
+        ``FileWatcher(store, options)`` directly, without a cache,
+        deliberately keep the fully sequential path), when the pending
+        pool is at or below :data:`_PARALLEL_PARSE_THRESHOLD`, or on a
+        single-CPU machine (a pool would only add overhead there).
+
+        Never raises: a worker's parse failure is silently skipped here
+        (never cached) -- the per-session loop's own ``_resolve``/
+        ``_parse`` call for that same path then hits a cache miss and
+        re-parses it in-process, surfacing the exact same, correctly
+        path-free, properly-scoped error message
+        (top-level/subagent/workflow) the loop has always produced.
+        Re-parsing a handful of bad files twice is a non-issue; silently
+        losing per-file error attribution would not be.
+        """
+        if self.cache is None:
+            return
+
+        t_discover = time.monotonic()
+        candidates = self._collect_parse_candidates(project_dirs, known)
+        stats.discovery_s += time.monotonic() - t_discover
+
+        if len(candidates) <= _PARALLEL_PARSE_THRESHOLD:
+            return
+
+        t_parse = time.monotonic()
+        try:
+            pending: list[tuple[str, TranscriptMeta]] = []
+            for path_str, meta in candidates:
+                try:
+                    hit = self.cache.get(path_str, meta)
+                except Exception:
+                    hit = None
+                if hit is None:
+                    pending.append((path_str, meta))
+
+            if pending:
+                workers = min(_MAX_PARSE_WORKERS, os.cpu_count() or 1)
+                if workers > 1:
+                    with concurrent.futures.ProcessPoolExecutor(max_workers=workers) as executor:
+                        future_map = {
+                            executor.submit(_parse_worker, path, meta): (path, meta) for path, meta in pending
+                        }
+                        for future in concurrent.futures.as_completed(future_map):
+                            path, meta = future_map[future]
+                            try:
+                                result = future.result()
+                            except Exception:
+                                continue
+                            try:
+                                self.cache.put(path, meta, result)
+                            except OSError:
+                                continue
+        except Exception:
+            pass
+        finally:
+            stats.parse_s += time.monotonic() - t_parse
 
     def _scan_session(
         self,
@@ -375,6 +597,7 @@ class FileWatcher:
         known: dict[str, tuple[int, int]],
         seen_paths: set[str],
         stats: WatcherStats,
+        all_tags: dict[str, dict[str, str]],
     ) -> None:
         session_id = top_path.stem
         stats.files_scanned += 1
@@ -399,10 +622,14 @@ class FileWatcher:
         # It's only reached once the top-level file itself resolved
         # successfully, so a session whose one-and-only top-level file
         # never parses still never gets a row at all (nothing to fold).
-        self.store.upsert_session(session_id=session_id, project_slug=slug, project_root_path=str(project_dir), slug=slug)
+        self._time_store(
+            stats,
+            self.store.upsert_session,
+            session_id=session_id, project_slug=slug, project_root_path=str(project_dir), slug=slug,
+        )
 
         if top_was_parsed:
-            self._upsert_transcript_row(session_id, top_path_str, top_meta, top_result)
+            self._upsert_transcript_row(session_id, top_path_str, top_meta, top_result, stats)
 
         subs: list[TranscriptResult] = []
         try:
@@ -415,7 +642,9 @@ class FileWatcher:
             # Materializing the listing up front brings that failure
             # under the same per-session error handling as everything
             # else in this method.
-            subagent_entries = list(discovery.find_subagents(project_dir, session_id))
+            subagent_entries = self._time_discovery(
+                stats, lambda: list(discovery.find_subagents(project_dir, session_id))
+            )
         except OSError as exc:
             stats.errors += 1
             stats.error_messages = stats.error_messages + (f"subagent discovery error: {type(exc).__name__}",)
@@ -428,7 +657,7 @@ class FileWatcher:
                 sub_meta = discovery.load_meta(jsonl_path.with_name(jsonl_path.stem + ".meta.json"))
                 sub_result, sub_was_parsed = self._resolve(sub_path_str, sub_meta, known, stats)
                 if sub_was_parsed:
-                    self._upsert_transcript_row(session_id, sub_path_str, sub_meta, sub_result)
+                    self._upsert_transcript_row(session_id, sub_path_str, sub_meta, sub_result, stats)
                 subs.append(sub_result)
             except Exception as exc:
                 stats.errors += 1
@@ -443,7 +672,9 @@ class FileWatcher:
         # service/rebuild.py can read them back into
         # SessionBundle.workflows.
         try:
-            workflow_paths = list(discovery.find_workflows(project_dir, session_id))
+            workflow_paths = self._time_discovery(
+                stats, lambda: list(discovery.find_workflows(project_dir, session_id))
+            )
         except OSError as exc:
             stats.errors += 1
             stats.error_messages = stats.error_messages + (f"workflow discovery error: {type(exc).__name__}",)
@@ -453,7 +684,9 @@ class FileWatcher:
             try:
                 run = workflows_mod.parse_workflow_file(workflow_path)
                 workflows_mod.link_workflow_agents(run, subs, self._pricing)
-                self.store.upsert_workflow_run(
+                self._time_store(
+                    stats,
+                    self.store.upsert_workflow_run,
                     session_id=session_id,
                     run_id=run.run_id,
                     agent_count=run.agent_count,
@@ -468,7 +701,7 @@ class FileWatcher:
                 stats.error_messages = stats.error_messages + (f"workflow parse error: {type(exc).__name__}",)
 
         try:
-            self._fold_session(session_id, slug, project_dir, top_result, subs, stats)
+            self._fold_session(session_id, slug, project_dir, top_result, subs, stats, all_tags)
         except Exception as exc:
             stats.errors += 1
             stats.error_messages = stats.error_messages + (f"session fold error: {type(exc).__name__}",)
@@ -510,7 +743,7 @@ class FileWatcher:
         live = self._is_live(meta.mtime_ns)
 
         if not changed and not forced:
-            existing = self._load_existing(path_str)
+            existing = self._load_existing(path_str, stats)
             if existing is not None:
                 return existing, False
             # No prior digest despite a known_files entry -- shouldn't
@@ -518,13 +751,13 @@ class FileWatcher:
 
         elif live and not never_seen and not forced:
             stats.files_skipped_live += 1
-            existing = self._load_existing(path_str)
+            existing = self._load_existing(path_str, stats)
             if existing is not None:
                 return existing, False
             # Fall through to parse: known_files() said we'd seen this
             # path before, but there's no digest to reuse.
 
-        result = self._parse(path_str, meta)
+        result = self._parse(path_str, meta, stats)
         if live:
             self._pending_stabilize.add(path_str)
         else:
@@ -536,36 +769,47 @@ class FileWatcher:
         age_s = self._now() - (mtime_ns / 1_000_000_000)
         return age_s < LIVE_FILE_WINDOW_S
 
-    def _parse(self, path_str: str, meta: TranscriptMeta) -> TranscriptResult:
-        if self.cache is not None:
-            hit = self.cache.get(path_str, meta)
-            if hit is not None:
-                return hit
-        result = parse_transcript(path_str, meta)
-        if self.cache is not None:
-            self.cache.put(path_str, meta, result)
-        return result
+    def _parse(self, path_str: str, meta: TranscriptMeta, stats: WatcherStats) -> TranscriptResult:
+        t0 = time.monotonic()
+        try:
+            if self.cache is not None:
+                hit = self.cache.get(path_str, meta)
+                if hit is not None:
+                    return hit
+            result = parse_transcript(path_str, meta)
+            if self.cache is not None:
+                self.cache.put(path_str, meta, result)
+            return result
+        finally:
+            stats.parse_s += time.monotonic() - t0
 
-    def _load_existing(self, path_str: str) -> TranscriptResult | None:
+    def _load_existing(self, path_str: str, stats: WatcherStats) -> TranscriptResult | None:
         """The already-stored ``TranscriptResult`` for ``path_str``, decoded
-        from its ``transcripts.digest_json`` column — the same encoding
-        ``cache.py`` uses (see :func:`~claude_token_lens.cache.encode_result`),
-        so this is a lossless round trip, not a re-parse."""
-        row = self.store._connection().execute(
-            "SELECT digest_json FROM transcripts WHERE path = ?", (path_str,)
-        ).fetchone()
+        from its ``transcripts.digest_blob`` column (zlib-compressed, S1-perf
+        item 4 -- see :func:`~claude_token_lens.service.store.decode_digest_blob`)
+        — the same encoding ``cache.py`` uses (see
+        :func:`~claude_token_lens.cache.encode_result`), so this is a
+        lossless round trip, not a re-parse."""
+        row = self._time_store(
+            stats,
+            lambda: self.store._connection().execute(
+                "SELECT digest_blob FROM transcripts WHERE path = ?", (path_str,)
+            ).fetchone(),
+        )
         if row is None:
             return None
         try:
-            return result_from_jsonable(json.loads(row["digest_json"]))
-        except (KeyError, TypeError, ValueError):
+            return result_from_jsonable(json.loads(decode_digest_blob(row["digest_blob"])))
+        except (KeyError, TypeError, ValueError, zlib.error):
             return None
 
     def _upsert_transcript_row(
-        self, session_id: str, path_str: str, meta: TranscriptMeta, result: TranscriptResult
+        self, session_id: str, path_str: str, meta: TranscriptMeta, result: TranscriptResult, stats: WatcherStats
     ) -> None:
         digest_json = json.dumps(encode_result(result))
-        self.store.upsert_transcript(
+        self._time_store(
+            stats,
+            self.store.upsert_transcript,
             session_id=session_id,
             path=path_str,
             kind=meta.kind,
@@ -591,8 +835,20 @@ class FileWatcher:
         top: TranscriptResult,
         subs: list[TranscriptResult],
         stats: WatcherStats,
+        all_tags: dict[str, dict[str, str]],
     ) -> None:
-        classification = classify.classify_session(top, subs, {}, None, workflows=0, entrypoint=top.meta.entrypoint)
+        # S1-perf item 6: apply real-time ``POST /api/sessions/<id>/tags``
+        # overrides on the watcher path too, not only when a report is
+        # built (``api.py``'s ``_build_report_model`` already merged
+        # ``store.all_tags()`` into its own overrides -- this was the gap
+        # that left ``/api/sessions`` showing the pre-override
+        # mode/purpose until a full rebuild). Config-file
+        # ``sessions.toml`` overrides are deliberately out of scope here,
+        # exactly as before this fix (the watcher has never consulted
+        # them) -- only the store-tag gap is closed.
+        classification = classify.classify_session(
+            top, subs, all_tags, None, workflows=0, entrypoint=top.meta.entrypoint
+        )
         record = classify.build_session_record(top, subs, [], classification, slug)
         features = _extract_workstyle_features(top, subs, [])
         archetype, _evidence = workstyle.detect_archetype(features)
@@ -614,7 +870,9 @@ class FileWatcher:
             if snap is not None:
                 snapshot_id = self._snapshot_ids_by_ts.get(snap.ts)
 
-        self.store.upsert_session(
+        self._time_store(
+            stats,
+            self.store.upsert_session,
             session_id=session_id,
             project_slug=slug,
             project_root_path=str(project_dir),
@@ -678,7 +936,9 @@ class FileWatcher:
             try:
                 digest_json = json.dumps(snapshots_mod.flatten_snapshot(snap), sort_keys=True)
                 schema_version = int(snap.data.get("schema", 1)) if isinstance(snap.data, dict) else 1
-                new_id = self.store.upsert_snapshot(
+                new_id = self._time_store(
+                    stats,
+                    self.store.upsert_snapshot,
                     project_slug=GLOBAL_PROJECT_SLUG,
                     project_root_path="",
                     ts=snap.ts,

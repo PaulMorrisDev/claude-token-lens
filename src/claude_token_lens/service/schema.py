@@ -37,12 +37,14 @@ result dicts entirely, and ``tests/test_service_store.py`` asserts by
 construction (a distinctive fake path round-tripped through every read
 query) that none of them ever surface it.
 
-``digest_json`` columns (``transcripts.digest_json``,
+``digest_json``/``digest_blob`` columns (``transcripts.digest_blob``,
 ``snapshots.digest_json``, ``baselines.digest_json``) hold the output of
 ``cache.encode_result`` (or the equivalent flattened/redacted encoding
 for snapshots/baselines) — numeric digests and short enum-like strings
 only, already subject to ``model.py``'s own no-message-text contract
-before it ever reaches this schema.
+before it ever reaches this schema. ``transcripts.digest_blob`` (v4)
+holds that same JSON zlib-compressed rather than as plain text; see the
+"Version 4" paragraph below.
 
 Version 2 (S1-integration): ``snapshots`` gains a ``(project_id, ts,
 schema_version)`` unique key so ``Store.upsert_snapshot`` can dedupe via
@@ -66,12 +68,30 @@ reappears), so its stored ``digest_json`` keeps serving reports and
 A store opened against an older ``schema_version`` is dropped and
 rebuilt from scratch (see ``Store.migrate``) — the next watcher tick
 repopulates it, since ``known_files()`` is empty again.
+
+Version 4 (S1-perf): a real corpus's ``events`` table dwarfed every
+other table combined (231k+ rows for under 2k transcripts, one row per
+structural event with no per-row reader anywhere in this codebase --
+``store.py`` has no ``events()`` read method and neither ``api.py`` nor
+``rebuild.py`` ever queries it) purely to let ``Store`` insert then
+immediately discard per-event detail no consumer wanted. Renamed to
+``events_agg`` and collapsed to one row per ``(transcript_id, kind,
+subkind)`` with ``count``/``dropped_tokens_sum``/``duration_ms_sum``
+instead of one row per event -- ``recache_turns`` is untouched because
+``Store.recache`` genuinely reads it per-row. Separately,
+``transcripts.digest_json`` (a full per-transcript JSON blob needed
+verbatim by ``service/rebuild.py``'s round trip, and by far the
+store's largest single column) is now stored zlib-compressed as
+``transcripts.digest_blob`` -- ``snapshots.digest_json`` and
+``baselines.digest_json`` are untouched (both empty in every real
+corpus observed; compressing a column nothing populates buys nothing).
+See ``Store.encode_digest_blob``/``decode_digest_blob``.
 """
 
 from __future__ import annotations
 
 #: Bump when a table or index below changes shape. See module docstring.
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 CREATE_META = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -125,8 +145,10 @@ CREATE INDEX IF NOT EXISTS idx_sessions_slug_first_ts ON sessions(slug, first_ts
 #: ``missing_since`` (v3) is NULL while the watcher can still find the
 #: file on disk; set to the timestamp the watcher first noticed it gone,
 #: cleared again if it reappears. A missing transcript's row (and its
-#: stored ``digest_json``) is kept, not deleted -- see
-#: ``Store.remove_missing``.
+#: stored ``digest_blob``) is kept, not deleted -- see
+#: ``Store.remove_missing``. ``digest_blob`` (v4, renamed from
+#: ``digest_json``) is the same JSON payload zlib-compressed -- see
+#: ``Store.encode_digest_blob``/``decode_digest_blob``.
 CREATE_TRANSCRIPTS = """
 CREATE TABLE IF NOT EXISTS transcripts (
     id              INTEGER PRIMARY KEY,
@@ -140,7 +162,7 @@ CREATE TABLE IF NOT EXISTS transcripts (
     mtime_ns        INTEGER NOT NULL,
     size_bytes      INTEGER NOT NULL,
     parser_version  INTEGER NOT NULL,
-    digest_json     TEXT NOT NULL,
+    digest_blob     BLOB NOT NULL,
     missing_since   TEXT,
     updated_at      TEXT NOT NULL
 );
@@ -184,16 +206,26 @@ CREATE TABLE IF NOT EXISTS recache_turns (
 """
 
 #: Non-priced structural events (``Event``), content-free (kind/subkind
-#: only — never the attachment/tool content itself).
+#: only — never the attachment/tool content itself). v4 (S1-perf):
+#: aggregated to one row per ``(transcript_id, kind, subkind)`` rather
+#: than one row per event -- see the module docstring's "Version 4"
+#: paragraph for why (no reader anywhere used per-row event data).
+#: ``count`` is the number of events folded into this row;
+#: ``dropped_tokens_sum``/``duration_ms_sum`` are the sum of each
+#: event's own (possibly ``NULL``, treated as 0) field. The ``UNIQUE``
+#: constraint is informational -- ``Store.upsert_transcript`` builds
+#: already-distinct aggregates in Python before inserting, so it's
+#: never relied on via ``ON CONFLICT``.
 CREATE_EVENTS = """
-CREATE TABLE IF NOT EXISTS events (
-    id             INTEGER PRIMARY KEY,
-    transcript_id  INTEGER NOT NULL REFERENCES transcripts(id),
-    kind           TEXT NOT NULL,
-    subkind        TEXT,
-    ts             TEXT,
-    dropped_tokens INTEGER,
-    duration_ms    INTEGER
+CREATE TABLE IF NOT EXISTS events_agg (
+    id                 INTEGER PRIMARY KEY,
+    transcript_id      INTEGER NOT NULL REFERENCES transcripts(id),
+    kind               TEXT NOT NULL,
+    subkind            TEXT,
+    count              INTEGER NOT NULL DEFAULT 0,
+    dropped_tokens_sum INTEGER NOT NULL DEFAULT 0,
+    duration_ms_sum    INTEGER NOT NULL DEFAULT 0,
+    UNIQUE (transcript_id, kind, subkind)
 );
 """
 

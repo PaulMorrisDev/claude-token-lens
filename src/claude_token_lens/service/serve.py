@@ -36,6 +36,7 @@ from __future__ import annotations
 import sys
 from http.server import ThreadingHTTPServer
 
+from ..cache import DigestCache
 from .contracts import ServeOptions
 from .store import Store
 
@@ -69,7 +70,15 @@ def run(options: ServeOptions, *, once: bool = False, allow_remote: bool = False
     # imports cleanly in a checkout where watcher.py hasn't landed yet.
     from .watcher import FileWatcher
 
-    watcher = FileWatcher(store, options)
+    # S1-perf item 2: share the on-disk digest cache with the CLI's own
+    # ``load_corpus``/``--jobs`` path (``<config_dir>/cache``, the same
+    # directory ``cache.DigestCache`` always resolves to for a given
+    # ``config_dir``) so a transcript parsed by one is a cache hit for
+    # the other, and so the watcher's own bulk-prewarm pool
+    # (``FileWatcher._prewarm_cache``) has somewhere to persist parsed
+    # results across ticks.
+    cache = DigestCache(options.config_dir)
+    watcher = FileWatcher(store, options, cache=cache)
     watcher.run_once()
 
     if once:

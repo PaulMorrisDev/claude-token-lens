@@ -39,7 +39,7 @@ its ``missing_since`` timestamp (clearing it again if the file
 reappears with the same path). Every read query that returns
 transcripts (``session``) includes a missing-but-not-yet-pruned
 transcript by default, same as one still on disk, so its stored
-``digest_json`` keeps serving reports/rebuild until the row is actually
+``digest_blob`` keeps serving reports/rebuild until the row is actually
 removed by ``retention_prune`` or ``claude-token-lens serve --purge``.
 ``count_missing_transcripts`` is the one query that reports the current
 total, for ``/api/health``.
@@ -62,6 +62,7 @@ import re
 import sqlite3
 import threading
 import time
+import zlib
 from pathlib import Path
 
 from . import schema
@@ -87,6 +88,25 @@ _CREATE_TABLE_RE = re.compile(r"CREATE TABLE IF NOT EXISTS\s+(\w+)")
 
 def _now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def encode_digest_blob(digest_json: str) -> bytes:
+    """Compress a ``cache.encode_result``-shaped JSON string for storage
+    in ``transcripts.digest_blob`` (S1-perf item 4). A per-transcript
+    digest is mostly repeated key names across thousands of ``Turn``/
+    ``Event`` entries, which zlib compresses well; this is the single
+    largest column in the store on a real corpus, so this is the
+    largest single contributor to S1-perf's store-size target."""
+    return zlib.compress(digest_json.encode("utf-8"))
+
+
+def decode_digest_blob(blob: bytes) -> str:
+    """Inverse of :func:`encode_digest_blob` — every reader of
+    ``transcripts.digest_blob`` (``Store.turns_for_session``,
+    ``watcher.py``'s ``_load_existing``, ``rebuild.py``) goes through
+    this rather than calling ``zlib.decompress`` directly, so the one
+    compression format is defined in one place."""
+    return zlib.decompress(blob).decode("utf-8")
 
 
 @contextlib.contextmanager
@@ -159,6 +179,19 @@ class Store:
             conn.execute("PRAGMA foreign_keys = ON")
             if self.path != ":memory:":
                 conn.execute("PRAGMA journal_mode = WAL")
+                # S1-perf item 3: NORMAL still fsyncs at every checkpoint
+                # (durable against an application crash) but no longer at
+                # every transaction commit as FULL does -- WAL mode's own
+                # documented safety guarantee ("consistent after a crash,
+                # perhaps missing the last few committed transactions")
+                # is an acceptable trade for a store that's a rebuildable
+                # cache over transcripts still on disk (module docstring),
+                # never the source of truth, in exchange for a large cut
+                # in per-transaction write latency. temp_store=MEMORY
+                # keeps SQLite's own internal temp b-trees (e.g. for a
+                # multi-column ON CONFLICT upsert) off disk entirely.
+                conn.execute("PRAGMA synchronous = NORMAL")
+                conn.execute("PRAGMA temp_store = MEMORY")
             self._local.conn = conn
         return conn
 
@@ -314,10 +347,59 @@ class Store:
         compactions: list[dict] | None = None,
     ) -> int:
         """Insert or update one transcript row, replacing its
-        ``turns_agg``/``recache_turns``/``events``/``compactions`` child
-        rows wholesale (a re-parse always supersedes the previous
+        ``turns_agg``/``recache_turns``/``events_agg``/``compactions``
+        child rows wholesale (a re-parse always supersedes the previous
         breakdown for that file). Returns the transcript's row id.
+
+        S1-perf item 3: every child row's value tuple (minus the
+        ``transcript_id`` it's keyed on, not known until the parent
+        ``INSERT ... ON CONFLICT`` above runs) is built here, before the
+        write transaction opens -- the ``.get()``/default-filling work
+        for a transcript with thousands of turns is pure Python, not
+        I/O, and doing it while the write lock (``BEGIN IMMEDIATE``) is
+        held only extends how long every other connection blocks on it
+        for no benefit. The transaction itself then does only the
+        parent upsert, the four child-table deletes, and one
+        ``executemany`` per child table -- a single prepared statement
+        executed once per row via the C sqlite3 module, rather than
+        ``execute()`` (a fresh Python-level call, parameter binding and
+        round trip) per row.
         """
+        turns_agg_rows = [
+            (
+                row["day"], row["model"], row.get("turns", 0),
+                row.get("input_tokens", 0), row.get("cache_creation_tokens", 0),
+                row.get("cache_read_tokens", 0), row.get("output_tokens", 0),
+                row.get("thinking_tokens", 0), row.get("cc_5m", 0),
+                row.get("cc_1h", 0), row.get("cost", 0.0),
+            )
+            for row in turns_agg or []
+        ]
+        recache_turns_rows = [
+            (
+                row["turn_index"], row["signature"],
+                row.get("cache_creation_tokens", 0),
+                row.get("preceding_primary"), row.get("gap_s"),
+            )
+            for row in recache_turns or []
+        ]
+        events_agg_rows = [
+            (row["kind"], row.get("subkind"), row["count"], row["dropped_tokens_sum"], row["duration_ms_sum"])
+            for row in events or []
+        ]
+        compactions_rows = [
+            (
+                row["ts"], row.get("pre_tokens"),
+                row.get("post_tokens"), row.get("dropped_tokens"),
+                row.get("trigger"), row.get("join_delta_s"),
+            )
+            for row in compactions or []
+        ]
+        # S1-perf item 4: compressed here, outside the write transaction,
+        # for the same reason the child-row tuples above are -- zlib is
+        # pure CPU work with no need for the write lock held while it runs.
+        digest_blob = encode_digest_blob(digest_json)
+
         conn = self._connection()
         with _transaction(conn):
             conn.execute(
@@ -325,7 +407,7 @@ class Store:
                 INSERT INTO transcripts (
                     session_id, path, kind, agent_id, agent_type, spawn_depth,
                     parent_agent_id, mtime_ns, size_bytes, parser_version,
-                    digest_json, missing_since, updated_at
+                    digest_blob, missing_since, updated_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
                 ON CONFLICT(path) DO UPDATE SET
                     session_id = excluded.session_id,
@@ -337,14 +419,14 @@ class Store:
                     mtime_ns = excluded.mtime_ns,
                     size_bytes = excluded.size_bytes,
                     parser_version = excluded.parser_version,
-                    digest_json = excluded.digest_json,
+                    digest_blob = excluded.digest_blob,
                     missing_since = NULL,
                     updated_at = excluded.updated_at
                 """,
                 (
                     session_id, path, kind, agent_id, agent_type, spawn_depth,
                     parent_agent_id, mtime_ns, size_bytes, parser_version,
-                    digest_json, _now(),
+                    digest_blob, _now(),
                 ),
             )
             transcript_id = int(
@@ -352,10 +434,10 @@ class Store:
             )
             conn.execute("DELETE FROM turns_agg WHERE transcript_id = ?", (transcript_id,))
             conn.execute("DELETE FROM recache_turns WHERE transcript_id = ?", (transcript_id,))
-            conn.execute("DELETE FROM events WHERE transcript_id = ?", (transcript_id,))
+            conn.execute("DELETE FROM events_agg WHERE transcript_id = ?", (transcript_id,))
             conn.execute("DELETE FROM compactions WHERE transcript_id = ?", (transcript_id,))
-            for row in turns_agg or []:
-                conn.execute(
+            if turns_agg_rows:
+                conn.executemany(
                     """
                     INSERT INTO turns_agg (
                         transcript_id, day, model, turns, input_tokens,
@@ -363,52 +445,36 @@ class Store:
                         thinking_tokens, cc_5m, cc_1h, cost
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (
-                        transcript_id, row["day"], row["model"], row.get("turns", 0),
-                        row.get("input_tokens", 0), row.get("cache_creation_tokens", 0),
-                        row.get("cache_read_tokens", 0), row.get("output_tokens", 0),
-                        row.get("thinking_tokens", 0), row.get("cc_5m", 0),
-                        row.get("cc_1h", 0), row.get("cost", 0.0),
-                    ),
+                    [(transcript_id, *row) for row in turns_agg_rows],
                 )
-            for row in recache_turns or []:
-                conn.execute(
+            if recache_turns_rows:
+                conn.executemany(
                     """
                     INSERT INTO recache_turns (
                         transcript_id, turn_index, signature,
                         cache_creation_tokens, preceding_primary, gap_s
                     ) VALUES (?, ?, ?, ?, ?, ?)
                     """,
-                    (
-                        transcript_id, row["turn_index"], row["signature"],
-                        row.get("cache_creation_tokens", 0),
-                        row.get("preceding_primary"), row.get("gap_s"),
-                    ),
+                    [(transcript_id, *row) for row in recache_turns_rows],
                 )
-            for row in events or []:
-                conn.execute(
+            if events_agg_rows:
+                conn.executemany(
                     """
-                    INSERT INTO events (transcript_id, kind, subkind, ts, dropped_tokens, duration_ms)
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    INSERT INTO events_agg (
+                        transcript_id, kind, subkind, count, dropped_tokens_sum, duration_ms_sum
+                    ) VALUES (?, ?, ?, ?, ?, ?)
                     """,
-                    (
-                        transcript_id, row["kind"], row.get("subkind"), row.get("ts"),
-                        row.get("dropped_tokens"), row.get("duration_ms"),
-                    ),
+                    [(transcript_id, *row) for row in events_agg_rows],
                 )
-            for row in compactions or []:
-                conn.execute(
+            if compactions_rows:
+                conn.executemany(
                     """
                     INSERT INTO compactions (
                         transcript_id, ts, pre_tokens, post_tokens, dropped_tokens,
                         trigger, join_delta_s
                     ) VALUES (?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (
-                        transcript_id, row["ts"], row.get("pre_tokens"),
-                        row.get("post_tokens"), row.get("dropped_tokens"),
-                        row.get("trigger"), row.get("join_delta_s"),
-                    ),
+                    [(transcript_id, *row) for row in compactions_rows],
                 )
         return transcript_id
 
@@ -611,7 +677,7 @@ class Store:
                     transcript_id = trow["id"]
                     conn.execute("DELETE FROM turns_agg WHERE transcript_id = ?", (transcript_id,))
                     conn.execute("DELETE FROM recache_turns WHERE transcript_id = ?", (transcript_id,))
-                    conn.execute("DELETE FROM events WHERE transcript_id = ?", (transcript_id,))
+                    conn.execute("DELETE FROM events_agg WHERE transcript_id = ?", (transcript_id,))
                     conn.execute("DELETE FROM compactions WHERE transcript_id = ?", (transcript_id,))
                 conn.execute("DELETE FROM transcripts WHERE session_id = ?", (session_id,))
                 conn.execute("DELETE FROM workflow_runs WHERE session_id = ?", (session_id,))
@@ -677,7 +743,7 @@ class Store:
 
     def turns_for_session(self, session_id: str) -> dict | None:
         """Per-turn ``ctx``/cache/marker series for one session's
-        top-level transcript, decoded from its stored ``digest_json``
+        top-level transcript, decoded from its stored ``digest_blob``
         (the same lossless ``cache.result_from_jsonable`` decode
         ``service/rebuild.py`` uses) -- never re-parses a file, never
         exposes ``path`` or any other store-internal column. ``None``
@@ -706,14 +772,14 @@ class Store:
         thinned-out chart as if it were the complete picture.
         """
         row = self._connection().execute(
-            "SELECT digest_json FROM transcripts WHERE session_id = ? AND kind = 'top-level'",
+            "SELECT digest_blob FROM transcripts WHERE session_id = ? AND kind = 'top-level'",
             (session_id,),
         ).fetchone()
         if row is None:
             return None
         try:
-            result = result_from_jsonable(json.loads(row["digest_json"]))
-        except (KeyError, TypeError, ValueError):
+            result = result_from_jsonable(json.loads(decode_digest_blob(row["digest_blob"])))
+        except (KeyError, TypeError, ValueError, zlib.error):
             return None
 
         turn_series: list[list] = []
@@ -987,4 +1053,4 @@ class Store:
         )
 
 
-__all__ = ["Store"]
+__all__ = ["Store", "encode_digest_blob", "decode_digest_blob"]

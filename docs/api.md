@@ -126,12 +126,24 @@ Liveness/diagnostics probe (also the Docker healthcheck target — plan:
 `transcripts_missing` (review finding 3) is `Store.count_missing_transcripts()`
 — the current count of transcript rows whose backing file the watcher
 can no longer find on disk. A transcript in this state is *marked*, not
-deleted: its `digest_json` keeps serving `report.*`/rebuild until it is
+deleted: its `digest_blob` keeps serving `report.*`/rebuild until it is
 actually removed by `--retention-days`/`serve --purge` (see "Retention
 and purge" in [docs/deploy.md](deploy.md)). This is also why a report
 can still include a session whose transcript file Claude Code's own
 `cleanupPeriodDays` retention has already removed — see "Store rebuild"
 below.
+
+`watcher` (S1-perf) additionally carries a per-tick timing breakdown of
+its own `duration_s`: `discovery_s` (filesystem walk + diffing against
+the store's known files), `parse_s` (cache lookups, on-miss parsing,
+and the parallel bulk-prewarm pool's own wall-clock time — see
+"Performance" in [docs/deploy.md](deploy.md)) and `store_s` (every
+SQLite reader/writer call the tick made). The three don't sum to
+exactly `duration_s` — session/workflow folding and fixed per-tick
+overhead are counted in none of them — but each is a real,
+non-overlapping measurement of its own phase, so a slow tick's
+dominant cost is visible here rather than only as one opaque total.
+See `service/contracts.py`'s `WatcherStats` for the exact field list.
 
 ### `GET /api/summary`
 
@@ -407,9 +419,10 @@ since=None, until=None, window_by="mtime") -> Corpus`. This is what lets
 a report be served for a session whose transcript file has already been
 removed by Claude Code's own `cleanupPeriodDays` retention: the watcher
 (`service/watcher.py`) folds every parsed transcript's full
-`TranscriptResult` into `transcripts.digest_json` (the same lossless
-encoding `cache.py`'s on-disk digest cache uses), and `corpus_from_store`
-decodes those digests straight back into a `Corpus` shaped exactly as
+`TranscriptResult` into `transcripts.digest_blob` (the same lossless
+JSON encoding `cache.py`'s on-disk digest cache uses, zlib-compressed
+before storage — S1-perf), and `corpus_from_store` decodes those
+digests straight back into a `Corpus` shaped exactly as
 `corpus.load_corpus` would have produced from the live files, so
 `report.build_report(corpus, ...)` runs unmodified against either one.
 `days`/`since`/`until`/`window_by` mirror `discovery.find_sessions`'s own
@@ -418,7 +431,7 @@ parameters and windowing semantics.
 **A file Claude Code removed is marked, not deleted, in the store**
 (review finding 3). `Store.remove_missing` notices its transcript is no
 longer on disk and sets `transcripts.missing_since`; the row and its
-`digest_json` are left alone, so `corpus_from_store` keeps including it
+`digest_blob` are left alone, so `corpus_from_store` keeps including it
 exactly like a transcript that is still there, and clears the mark again
 if a file at the same path reappears. Only `--retention-days`/`serve
 --purge` (see [docs/deploy.md](deploy.md)) actually delete a row — the

@@ -114,6 +114,27 @@ class WatcherStats:
     #: never a traceback or a file path — see ``service/__init__.py``'s
     #: privacy-rule docstring.
     error_messages: tuple[str, ...] = ()
+    #: S1-perf timing breakdown of this tick's ``duration_s``, so a slow
+    #: tick's dominant cost is externally visible rather than only the
+    #: single total (``/api/health``, ``docs/api.md``). The three don't
+    #: exactly sum to ``duration_s`` -- session/workflow folding and the
+    #: fixed per-tick overhead (snapshot scanning, missing-file bookkeeping)
+    #: are counted in none of them -- but each is a real, non-overlapping
+    #: wall-clock measurement of its own named phase.
+    #:
+    #: ``discovery_s``: time spent walking the filesystem to find project
+    #: dirs/sessions/subagents (``discovery.py``) and diffing them against
+    #: ``Store.known_files()``, including the S1-perf bulk-parse
+    #: candidate scan (see ``watcher.py``'s ``_prewarm_cache``).
+    #: ``parse_s``: time spent inside ``FileWatcher._parse`` (cache
+    #: lookups and, on a miss, ``parse.parse_transcript``) plus the
+    #: parallel prewarm pool's own wall-clock time when it runs.
+    #: ``store_s``: time spent inside ``Store`` writer calls
+    #: (``upsert_session``/``upsert_transcript``/``upsert_workflow_run``/
+    #: ``upsert_snapshot``/``remove_missing``/``retention_prune``).
+    discovery_s: float = 0.0
+    parse_s: float = 0.0
+    store_s: float = 0.0
 
 
 @dataclass(slots=True)

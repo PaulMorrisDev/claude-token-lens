@@ -24,7 +24,7 @@ Two kinds of route:
 - **Report-backed** (``/api/ttl``, ``/api/config-diff``,
   ``/api/recommendations``, ``/api/report.{md,html,json}``): rebuild a
   :class:`~claude_token_lens.corpus.Corpus` from the store's own
-  ``transcripts.digest_json`` rows via ``service.rebuild.corpus_from_store``
+  ``transcripts.digest_blob`` rows via ``service.rebuild.corpus_from_store``
   (a sibling package's module -- imported lazily, inside the function
   that needs it, per this work package's brief, so this module still
   imports cleanly before that module exists) and run it through the same

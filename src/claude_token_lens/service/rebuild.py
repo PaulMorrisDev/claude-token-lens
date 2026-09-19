@@ -5,9 +5,10 @@ files on disk.
 This is what lets the store outlive Claude Code's own
 ``cleanupPeriodDays`` transcript retention: once ``FileWatcher`` (see
 ``service/watcher.py``) has folded a transcript's
-``TranscriptResult`` into ``transcripts.digest_json`` (via
-``cache.encode_result`` — the exact same encoding
-``cache.DigestCache`` uses on disk, per that column's own docstring in
+``TranscriptResult`` into ``transcripts.digest_blob`` (via
+``cache.encode_result`` then ``store.encode_digest_blob`` — the exact
+same JSON encoding ``cache.DigestCache`` uses on disk, zlib-compressed
+before storage, per that column's own docstring in
 ``service/schema.py``), the original ``.jsonl`` file is no longer needed
 to answer a report query against that window: :func:`corpus_from_store`
 decodes every stored digest back into a full ``TranscriptResult``
@@ -41,8 +42,8 @@ What else does NOT round-trip, and why:
   the three provenance fields ``schema.py`` singles out as
   store-internal-only — ``path``, seen here only for grouping rows by
   ``session_id``/``kind``, never copied into a rebuilt dataclass field)
-  round-trips exactly, because ``digest_json`` already *is* the encoded
-  form of the whole dataclass, not a lossy summary of it.
+  round-trips exactly, because ``digest_blob`` already *is* the encoded
+  (compressed) form of the whole dataclass, not a lossy summary of it.
 """
 
 from __future__ import annotations
@@ -53,7 +54,7 @@ from ..cache import result_from_jsonable
 from ..corpus import Corpus, SessionBundle, _session_sort_key
 from ..discovery import _resolve_window
 from ..model import WorkflowRun
-from .store import Store
+from .store import Store, decode_digest_blob
 
 
 def _window_ts(top_row, window_by: str):
@@ -80,7 +81,7 @@ def _window_ts(top_row, window_by: str):
             return None
         return datetime.fromtimestamp(mtime_ns / 1_000_000_000, tz=timezone.utc)
     if window_by == "timestamp":
-        top = result_from_jsonable(json.loads(top_row["digest_json"]))
+        top = result_from_jsonable(json.loads(decode_digest_blob(top_row["digest_blob"])))
         for turn in top.turns:
             if turn.ts:
                 from datetime import datetime
@@ -131,7 +132,7 @@ def corpus_from_store(
         slug = session_row["slug"]
 
         transcript_rows = conn.execute(
-            "SELECT kind, digest_json, mtime_ns, size_bytes FROM transcripts "
+            "SELECT kind, digest_blob, mtime_ns, size_bytes FROM transcripts "
             "WHERE session_id = ? ORDER BY id",
             (session_id,),
         ).fetchall()
@@ -151,9 +152,9 @@ def corpus_from_store(
             if until_dt is not None and window_ts > until_dt:
                 continue
 
-        top = result_from_jsonable(json.loads(top_row["digest_json"]))
+        top = result_from_jsonable(json.loads(decode_digest_blob(top_row["digest_blob"])))
         subs = [
-            result_from_jsonable(json.loads(row["digest_json"]))
+            result_from_jsonable(json.loads(decode_digest_blob(row["digest_blob"])))
             for row in transcript_rows
             if row["kind"] != "top-level"
         ]
