@@ -211,6 +211,32 @@ def test_scorecard_ctx_stats_use_top_level_transcripts_only(tmp_path, monkeypatc
     assert inputs.p90_top_level_ctx == pytest.approx(200.0)
 
 
+def test_overview_long_context_share_is_top_level_turn_count_basis(tmp_path):
+    """Coordinator follow-up to R7: the overview's "long-context share of
+    recent top-level turns" verification anchor needs a turn-count-basis,
+    top-level-only stat to check against. Top-level ctx values
+    [50_000, 100_000, 250_000, 300_000] -> median 175_000.0, and 2 of 4
+    (50%) are >= huge_ctx (200_000). A subagent turn with an even bigger
+    ctx must not shift either figure.
+    """
+    project_dir = tmp_path / "proj-ctx2"
+    project_dir.mkdir()
+    _write_session_with_ctx_values(
+        project_dir,
+        "session-ctx2",
+        top_ctx_values=[50_000, 100_000, 250_000, 300_000],
+        sub_ctx_values=[900_000],
+    )
+
+    corpus = load_corpus([project_dir])
+    report = build_report(corpus, PRICING, Config(), projects=("proj-ctx2",), window="w")
+    overview = next(s for s in report.sections if s.key == "overview")
+    totals = {row[0]: row[1] for row in overview.tables[0].rows}
+
+    assert totals["top_level_median_ctx"] == pytest.approx(175_000.0)
+    assert totals["top_level_turns_ctx_ge_200k_pct"] == pytest.approx(50.0)
+
+
 def test_recache_by_group_table_rows_sum_to_the_ungrouped_summary(tmp_path):
     corpus = _two_session_corpus(tmp_path)
     report = build_report(

@@ -295,7 +295,12 @@ class _OverviewAcc:
     by_model: dict[str, _ModelCell] = dataclasses.field(default_factory=dict)
 
 
-def _build_overview_section(acc: _OverviewAcc, cache_economy_totals: dict) -> Section:
+def _build_overview_section(
+    acc: _OverviewAcc,
+    cache_economy_totals: dict,
+    top_level_median_ctx: float | None,
+    top_level_turns_ctx_ge_200k_pct: float | None,
+) -> Section:
     usage_tokens = acc.input_tokens + acc.cache_creation_tokens + acc.cache_read_tokens + acc.output_tokens
     new_tokens = acc.input_tokens + acc.cache_creation_tokens + acc.output_tokens
     cache_read_cost_share = 100.0 * acc.cache_read_cost / acc.total_cost if acc.total_cost else None
@@ -322,6 +327,14 @@ def _build_overview_section(acc: _OverviewAcc, cache_economy_totals: dict) -> Se
             ["total_cost_usd", acc.total_cost],
             ["cache_read_cost_share_pct", cache_read_cost_share],
             ["cache_roi", cache_economy_totals.get("cache_roi", 0.0)],
+            # Top-level-only (agent_type == "top-level") ctx stats -- see
+            # _top_level_ctx_values's docstring for why subagent transcripts
+            # are excluded. Added so the "long-context share of recent
+            # top-level turns" verification anchor has a turn-count-basis,
+            # top-level-only table to check against (a subagent's ctx runs
+            # far larger and would otherwise skew this upward).
+            ["top_level_median_ctx", top_level_median_ctx],
+            ["top_level_turns_ctx_ge_200k_pct", top_level_turns_ctx_ge_200k_pct],
         ],
     )
 
@@ -652,6 +665,18 @@ def build_report(
     cache_economy_totals["net_saving_usd"] = total_net_saving
     cache_economy_totals["cache_roi"] = total_net_saving / total_write_usd if total_write_usd > 0 else 0.0
 
+    # -- top-level-only ctx stats (R7 + coordinator follow-up): computed
+    # once here, off the final ``rs`` (post group-by re-fold, if any),
+    # and reused by both the overview totals table and the scorecard's
+    # context-hygiene dimension. See _top_level_ctx_values's docstring.
+    top_level_ctx_values = _top_level_ctx_values(rs)
+    top_level_median_ctx = statistics.median(top_level_ctx_values) if top_level_ctx_values else None
+    top_level_turns_ctx_ge_200k_pct = (
+        100.0 * sum(1 for c in top_level_ctx_values if c >= recache_th.huge_ctx) / len(top_level_ctx_values)
+        if top_level_ctx_values
+        else None
+    )
+
     # -- assemble sections ---------------------------------------------
 
     sections: list[Section] = []
@@ -660,7 +685,11 @@ def build_report(
         return include is None or key in include
 
     if _want("overview"):
-        sections.append(_build_overview_section(overview, cache_economy_totals))
+        sections.append(
+            _build_overview_section(
+                overview, cache_economy_totals, top_level_median_ctx, top_level_turns_ctx_ge_200k_pct
+            )
+        )
 
     if _want("usage"):
         sections.append(usage_mod.build_section(corpus, pricing, config))
