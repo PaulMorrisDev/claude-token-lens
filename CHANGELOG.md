@@ -17,6 +17,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   archetype counts, workflow-run summaries, and the config diff table,
   matching the pattern already used by `classify`/`compaction`/`recache`/
   `ttl`.
+- CLI wiring (WP10c): `report`/`sessions`/`recache`/`ttl`/`compactions` are
+  now real, backed by `report.build_report` (the four focused subcommands
+  via `include={"overview", <section>}`), with shared `--json`/`--html`/
+  `--csv-dir`/`--phases`/`--allow-titles` output flags and `--patch-set`
+  on `report` (a no-op until `recommend.py` lands, guarded by
+  `importlib.util.find_spec`). `config-diff --key K|--auto-keys` is its
+  own standalone consumer of `snapshots.build_config_diff_table`.
+  `log-usage`, `scrub-fixture` and `statusline` delegate to their
+  existing modules; `probe` (new `probe.py`) is a content-free schema
+  histogram (line types, key names, attachment types, system subtypes,
+  `version` field values -- every recorded string capped at 64 chars) of
+  a project or a single transcript file, for pasting into a bug report
+  without leaking transcript content. `init`/`baseline`/`serve` now
+  print which future milestone they're planned for. Added `--jobs` to
+  the global flag set. `__main__.py` makes `python -m claude_token_lens`
+  (and a `python -m zipapp`-built `.pyz`) propagate the real exit code.
 
 ### Fixed
 
