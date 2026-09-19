@@ -959,12 +959,18 @@
     var humanTurns = toTurnIndexSet(markers.human);
 
     var width = 640, height = 180, padding = 28;
-    var maxCtx = Math.max.apply(
-      null,
-      series.map(function (t) {
-        return t[1] || 0;
-      })
-    ).valueOf() || 1;
+    // Finding 10: this used to compute the max via Math.max, spreading
+    // the whole per-turn array as individual call arguments -- a
+    // session with tens of thousands of turns could blow the engine's
+    // argument-count/call-stack limit ("Maximum call stack size
+    // exceeded"). A plain loop has no such limit (also cheaper: no
+    // intermediate array allocation).
+    var maxCtx = 0;
+    for (var mi = 0; mi < series.length; mi++) {
+      var ctxValue = series[mi][1] || 0;
+      if (ctxValue > maxCtx) maxCtx = ctxValue;
+    }
+    maxCtx = maxCtx || 1;
     var n = series.length;
     var points = series.map(function (t, i) {
       var x = padding + (n > 1 ? (i / (n - 1)) * (width - 2 * padding) : 0);
@@ -990,15 +996,25 @@
         escapeHtml("Context size over turns for session " + session.id) +
         '">'
     );
-    svgParts.push(
-      '<polyline points="' +
-        points
-          .map(function (p) {
-            return p[0].toFixed(1) + "," + p[1].toFixed(1);
-          })
-          .join(" ") +
-        '" fill="none" stroke="var(--accent)" stroke-width="1.5"></polyline>'
-    );
+    if (points.length > 1) {
+      svgParts.push(
+        '<polyline points="' +
+          points
+            .map(function (p) {
+              return p[0].toFixed(1) + "," + p[1].toFixed(1);
+            })
+            .join(" ") +
+          '" fill="none" stroke="var(--accent)" stroke-width="1.5"></polyline>'
+      );
+    } else if (points.length === 1) {
+      // Finding 11: a single-turn session has exactly one point, and a
+      // <polyline> needs at least two to draw anything -- it silently
+      // rendered nothing at all. Draw the one point as a dot instead.
+      svgParts.push(
+        '<circle cx="' + points[0][0].toFixed(1) + '" cy="' + points[0][1].toFixed(1) +
+          '" r="3" fill="var(--accent)"></circle>'
+      );
+    }
     series.forEach(function (turn, i) {
       var turnIndex = turn[0];
       var isRecache = turn[3];
@@ -1032,6 +1048,14 @@
       legend.appendChild(el("span", null, [swatch, document.createTextNode(kind)]));
     });
     wrap.appendChild(legend);
+    if (session.truncated) {
+      // Finding 11: /api/session/<id> downsamples turn_series above
+      // Store.MAX_TURN_SERIES_POINTS -- say so rather than silently
+      // showing a thinned-out chart as the complete picture.
+      wrap.appendChild(
+        el("p", { class: "notes", text: "This session has many turns; the chart above is downsampled (every marked turn is kept)." })
+      );
+    }
     return wrap;
   }
 

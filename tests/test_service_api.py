@@ -422,6 +422,7 @@ def test_session_detail_turn_series_and_markers(tmp_path, monkeypatch):
             [2, 1500, 0, True, "compact_boundary"],
         ]
         assert body["data"]["markers"] == {"compactions": [2], "spawns": [], "human": [1]}
+        assert body["data"]["truncated"] is False
         assert_privacy(body)
         _assert_no_leak(json.dumps(body).encode("utf-8"))
     finally:

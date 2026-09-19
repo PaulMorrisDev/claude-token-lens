@@ -490,7 +490,54 @@ def test_turns_for_session_builds_series_and_markers(store: Store) -> None:
         [3, 2000, 300, False, "tool_result"],
     ]
     assert data["markers"] == {"compactions": [2], "spawns": [3], "human": [1]}
+    assert data["truncated"] is False
     assert_privacy(data)
+
+
+def test_turns_for_session_downsamples_above_the_point_cap(store: Store) -> None:
+    """Regression test for review finding 11 (should-fix): a very long
+    session's turn_series must be capped at
+    ``Store.MAX_TURN_SERIES_POINTS`` rather than shipping every single
+    turn to the browser (the original unbounded list is also what fed
+    app.js's ``Math.max.apply`` -- finding 10). Every marker turn must
+    still survive the downsampling.
+    """
+    from claude_token_lens.cache import encode_result
+    from claude_token_lens.model import EventKind, Turn, TranscriptMeta, TranscriptResult
+
+    total_turns = Store.MAX_TURN_SERIES_POINTS + 500
+    marker_turn_index = total_turns - 1  # deliberately outside any stride sample
+    turns = []
+    for i in range(1, total_turns + 1):
+        is_marker = i == marker_turn_index
+        turns.append(
+            Turn(
+                turn_index=i,
+                ctx=i * 10,
+                preceding_primary=EventKind.COMPACT_BOUNDARY if is_marker else None,
+            )
+        )
+    result = TranscriptResult(
+        meta=TranscriptMeta(path=_FAKE_PATH, kind="top-level", session_id="session-huge"),
+        turns=turns,
+    )
+    store.upsert_session(session_id="session-huge", project_slug="proj-a", slug="proj-a")
+    store.upsert_transcript(
+        session_id="session-huge",
+        path=_FAKE_PATH + ".huge",
+        kind="top-level",
+        digest_json=json.dumps(encode_result(result)),
+    )
+
+    data = store.turns_for_session("session-huge")
+    assert data is not None
+    assert data["truncated"] is True
+    assert len(data["turn_series"]) <= Store.MAX_TURN_SERIES_POINTS
+    # markers are always computed from the full turn list, never thinned.
+    assert data["markers"]["compactions"] == [marker_turn_index]
+    # the marker turn itself must survive into the downsampled series.
+    kept_turn_indices = {row[0] for row in data["turn_series"]}
+    assert marker_turn_index in kept_turn_indices
 
 
 # -- privacy guard ---------------------------------------------------------

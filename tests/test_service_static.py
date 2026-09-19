@@ -518,6 +518,39 @@ def test_app_js_load_report_accepts_the_unwrapped_report_json_shape() -> None:
     )
 
 
+def test_app_js_timeline_never_uses_math_max_apply() -> None:
+    """Regression test for review finding 10 (should-fix):
+    ``Math.max.apply(null, array)`` spreads ``array`` as individual call
+    arguments -- a session with tens of thousands of turns can exceed the
+    engine's call-stack/argument-count limit. Fails against the pre-fix
+    source (which used exactly this pattern in
+    ``buildSessionTimeline``) and passes once it's replaced with a plain
+    loop.
+    """
+    app_js = _static_text("app.js")
+    assert "Math.max.apply" not in app_js
+    assert ".apply(" not in app_js
+
+
+def test_app_js_timeline_draws_a_circle_for_a_single_turn_session() -> None:
+    """Regression test for review finding 11 (should-fix): a session with
+    exactly one priced turn produces a single point, and an SVG
+    ``<polyline>`` needs at least two points to render anything -- a
+    single-turn session's chart silently rendered nothing at all. Fails
+    against the pre-fix source (a single unconditional ``<polyline>``
+    push, no ``points.length`` branch) and passes once
+    ``buildSessionTimeline`` draws a ``<circle>`` for the one-point case.
+    """
+    app_js = _static_text("app.js")
+    start = app_js.index("function buildSessionTimeline(")
+    end = app_js.index("\n  function ", start + 1)
+    timeline_src = app_js[start:end]
+    assert "points.length === 1" in timeline_src or "points.length == 1" in timeline_src, (
+        "buildSessionTimeline must special-case a single-point series"
+    )
+    assert "<circle" in timeline_src
+
+
 def test_fixture_server_serves_session_detail(fixture_server: str) -> None:
     status, content_type, body = _get(fixture_server, "/api/session/session-ui-1")
     assert status == 200

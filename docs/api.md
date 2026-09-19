@@ -145,10 +145,16 @@ shape, no client-side reconstruction needed:
 - `markers`: `{"compactions": [turn_index, ...], "spawns": [turn_index, ...], "human": [turn_index, ...]}`
   — turn indices where a compaction boundary, an agent spawn
   (`agent_brief_chars` set), or a human prompt (`human_prompt_chars`
-  set) preceded that turn.
+  set) preceded that turn. Always computed from every priced turn, never
+  thinned by the downsampling below.
+- `truncated`: `bool` (review finding 11) — `true` when the session has
+  more than `Store.MAX_TURN_SERIES_POINTS` (5,000) priced turns and
+  `turn_series` above was downsampled to that cap (every marker turn is
+  kept; the rest are evenly sampled across the full session). `false`
+  for every session at or under the cap.
 
-Both fields are omitted entirely (never present as an empty list) when
-no top-level transcript digest is stored yet, or the stored digest
+All three fields are omitted entirely (never present as an empty list)
+when no top-level transcript digest is stored yet, or the stored digest
 can't be decoded — never fabricated.
 
 ### `GET /api/recache`

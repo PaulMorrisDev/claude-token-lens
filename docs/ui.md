@@ -151,6 +151,15 @@ document previously described. A session with no stored digest yet
 (e.g. ingested before the watcher parsed a top-level transcript, or a
 digest that failed to decode) still falls back to an explicit "no
 per-turn data for this session" notice rather than a fabricated curve.
+A single-turn session (exactly one point) draws as a dot rather than a
+`<polyline>`, which needs at least two points to render anything
+(review finding 11). The chart's maximum-context axis scale is computed
+with a plain loop rather than `Math.max.apply` (review finding 10),
+which could otherwise exceed the engine's call-stack/argument-count
+limit on a session with tens of thousands of turns. A session over
+`Store.MAX_TURN_SERIES_POINTS` turns has its `turn_series` downsampled
+server-side (`truncated: true`, `docs/api.md`); the timeline shows a
+note saying so rather than presenting the thinned-out chart as complete.
 
 **Shape-defensive rendering for routes `api.py` hasn't shipped yet.**
 At the time this UI was built, `service/api.py` did not exist (a

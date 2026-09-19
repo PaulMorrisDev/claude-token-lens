@@ -669,6 +669,12 @@ class Store:
             f"{session_tags_row[0]}:{session_tags_row[1]}"
         )
 
+    #: Review finding 11: an extreme-length session's turn_series could
+    #: otherwise ship tens of thousands of points to the browser (and,
+    #: pre-finding-10-fix, feed a huge array into `Math.max.apply` there).
+    #: Above this many priced turns, turns_for_session() downsamples.
+    MAX_TURN_SERIES_POINTS = 5000
+
     def turns_for_session(self, session_id: str) -> dict | None:
         """Per-turn ``ctx``/cache/marker series for one session's
         top-level transcript, decoded from its stored ``digest_json``
@@ -680,14 +686,24 @@ class Store:
         ``turn_series``: one ``[turn_index, ctx, cache_creation_tokens,
         is_recache, preceding_primary]`` row per priced turn
         (``turn_index > 0``), ``preceding_primary`` rendered as its
-        enum's ``.value`` string (or ``None``).
+        enum's ``.value`` string (or ``None``) -- downsampled to at most
+        :data:`MAX_TURN_SERIES_POINTS` rows for a very long session
+        (review finding 11), keeping every marked turn (see
+        ``markers`` below) and evenly striding through the remainder to
+        fill the rest of the budget, so the shape of the series survives
+        even when most of its raw points are dropped.
 
         ``markers``: ``{"compactions": [...], "spawns": [...], "human":
         [...]}`` -- the turn indices whose ``preceding_primary`` is
         ``compact_boundary``, whose ``agent_brief_chars`` is set (an
         Agent/Task tool call was made from that turn), or whose
         ``human_prompt_chars`` is set (a human message preceded that
-        turn), respectively.
+        turn), respectively. Always computed from the *full* turn list,
+        never from the downsampled ``turn_series``.
+
+        ``truncated``: ``True`` when ``turn_series`` was downsampled --
+        the UI uses this to say so rather than silently showing a
+        thinned-out chart as if it were the complete picture.
         """
         row = self._connection().execute(
             "SELECT digest_json FROM transcripts WHERE session_id = ? AND kind = 'top-level'",
@@ -718,9 +734,39 @@ class Store:
             if turn.human_prompt_chars is not None:
                 human.append(turn.turn_index)
 
+        truncated = False
+        total_points = len(turn_series)
+        if total_points > self.MAX_TURN_SERIES_POINTS:
+            marker_turns = set(compactions) | set(spawns) | set(human)
+            keep = {i for i, row_ in enumerate(turn_series) if row_[0] in marker_turns}
+            budget = self.MAX_TURN_SERIES_POINTS - len(keep)
+            if budget > 0:
+                # Evenly spaced indices across the *full* range, computed
+                # with a float step rather than an integer stride -- an
+                # integer `total_points // budget` floors to 1 whenever
+                # budget is more than half of total_points, which would
+                # select every single index and then have the later
+                # `[:MAX_TURN_SERIES_POINTS]` truncation cut off
+                # everything past the cap, silently dropping any marker
+                # turn that happens to sit later in the series (the bug
+                # this comment replaces).
+                step = total_points / budget
+                for k in range(budget):
+                    idx = min(int(k * step), total_points - 1)
+                    keep.add(idx)
+            kept_indices = sorted(keep)
+            if len(kept_indices) > self.MAX_TURN_SERIES_POINTS:
+                # Pathological case: marker turns alone already exceed
+                # the cap. Truncate rather than silently exceed it --
+                # there is no marker-preserving way to shrink further.
+                kept_indices = kept_indices[: self.MAX_TURN_SERIES_POINTS]
+            turn_series = [turn_series[i] for i in kept_indices]
+            truncated = True
+
         return {
             "turn_series": turn_series,
             "markers": {"compactions": compactions, "spawns": spawns, "human": human},
+            "truncated": truncated,
         }
 
     def summary(self, *, window_days: int | None = None) -> dict:

@@ -344,6 +344,10 @@ def make_handler(
         if turns is not None:
             result["turn_series"] = turns["turn_series"]
             result["markers"] = turns["markers"]
+            # Finding 11: a very long session's turn_series is
+            # downsampled server-side; tell the UI so it can say so
+            # rather than silently rendering a thinned-out chart.
+            result["truncated"] = turns["truncated"]
         return _ok(result)
 
     def route_recache(store, query, body):
