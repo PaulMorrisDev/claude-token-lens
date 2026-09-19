@@ -59,6 +59,20 @@ Deviations from the plan/brief, reported rather than made silently (see
   ``scorecard.dimensions`` row for ``"data_quality"`` (a table cell that
   genuinely exists) and states the diagnostics-derived counts in prose in
   ``action`` instead of fabricating a table citation for them.
+- A5's ``effort-mismatch`` rule ("thinking share high on docs/general-dev
+  sessions") wants the high-effort thinking share computed *for those
+  sessions specifically*, but no report table joins
+  ``topology_effort_tokens``'s per-effort-level thinking share to
+  ``sessions_by_purpose``'s per-purpose session counts -- they're
+  independent group-bys (one by effort level, one by purpose) with no
+  shared key exposed anywhere in this codebase. This rule instead
+  compares the corpus-wide high-effort thinking share against the mere
+  presence of docs/general-dev sessions in the corpus, which can over-
+  or under-state the mismatch for a corpus whose docs/general-dev
+  sessions don't run at high effort (or vice versa). Both the action
+  text and the evidence list disclose this: the evidence separately
+  cites the (unjoined) thinking-share and session-count cells rather
+  than implying a single joined metric.
 - A5's ``long-context-share`` rule's second clause ("median top-level ctx
   > 150k") has no table exposing a *median*; ``scorecard.dimensions``'s
   ``context_hygiene`` row exposes ``p90_top_level_ctx`` instead (the one
@@ -794,6 +808,11 @@ def _rule_spawn_cost(report: ReportModel, th: RecommendThresholds, archetype: st
 
 
 def _rule_effort_mismatch(report: ReportModel, th: RecommendThresholds) -> list[Recommendation]:
+    """Fix R22 (see module docstring's deviations list): the corpus-wide
+    high-effort thinking share and the docs/general-dev session counts
+    below are read from two independent group-bys with no report table
+    joining them by session -- this is an approximation, not a per-
+    session join, and both ``action`` and the module docstring say so."""
     purpose_table = _table(report, "sessions", "sessions_by_purpose")
     effort_table = _table(report, "agents", "topology_effort_tokens")
     if purpose_table is None or effort_table is None:
@@ -823,7 +842,9 @@ def _rule_effort_mismatch(report: ReportModel, th: RecommendThresholds) -> list[
             title="High effort is being spent on light editing work",
             action=(
                 "Lower effortLevel for docs/general-dev sessions -- thinking tokens dominate "
-                "output there without a matching increase in edit complexity."
+                "output there without a matching increase in edit complexity. (Approximation: "
+                "the thinking share is corpus-wide, not joined to these specific sessions -- "
+                "no report table links effort level to session purpose.)"
             ),
             lever="effortLevel",
             evidence=evidence,

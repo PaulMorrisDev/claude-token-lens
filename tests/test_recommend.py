@@ -801,6 +801,11 @@ def test_effort_mismatch_fires_with_evidence_per_purpose_row():
     assert ("docs-or-light-edit sessions in corpus", 4, "sessions.sessions_by_purpose", "docs-or-light-edit") in rec.evidence
     assert ("general-dev sessions in corpus", 3, "sessions.sessions_by_purpose", "general-dev") in rec.evidence
     assert len(rec.evidence) == 3
+    # R22: this rule can't join the thinking-share group-by to the
+    # purpose group-by by session (no report table carries both), so
+    # the approximation is disclosed in the action text rather than
+    # presented as a genuine per-session join.
+    assert "not joined" in rec.action or "Approximation" in rec.action
 
 
 def test_effort_mismatch_does_not_fire_without_docs_purposes():
