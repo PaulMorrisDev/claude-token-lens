@@ -46,12 +46,24 @@ project's convention -- see e.g. ``report.py``'s own module docstring):
   "the session-summary fields above, plus transcripts ... and tags", not
   an exact field count, and dropping fields ``Store`` already computes
   for no privacy reason would only lose information a client might want.
-- ``GET/POST /api/profiles/<id>/diff`` and ``POST /api/profiles`` always
-  return ``501 not_implemented`` -- v0.3's ``profiles/schema.py`` (the
-  profile-file validator both routes depend on) does not exist yet. The
-  envelope/validation plumbing (body-shape checks) still runs before the
-  501 is returned, so the route is easy to finish once that module
-  lands: swap the final ``_not_implemented(...)`` for the real read/write.
+- ``GET /api/profiles/<id>/diff`` renders the real
+  ``profiles/diff.py`` computation (v0.3) against the store's own
+  *latest* recorded config snapshot (``snapshots.effective_config`` and
+  friends) -- not a per-project selection, since config-diff/ttl/
+  recommendations are already computed the same window-wide,
+  not-per-project way elsewhere in this module. A store with no
+  snapshot at all diffs against an empty effective config (nothing
+  currently set, nothing managed) and adds a note saying so, rather
+  than erroring.
+- ``POST /api/profiles`` validates the body via
+  ``profiles.schema.load_dict`` (v0.3), writes
+  ``<config_dir>/profiles/<id>.toml`` atomically (temp file +
+  ``os.replace``, this module's own convention -- see ``cache.py``'s
+  ``DigestCache.put``), and re-ingests it into the store immediately
+  (rather than waiting for the watcher's next tick) so the response's
+  own ``GET /api/profiles`` reflects the write straight away. A
+  catalogue id can never be created or overwritten this way -- ``409``
+  regardless of ``?replace=1``.
 - ``GET /api/report.json``/``.md``/``.html`` are **not** wrapped in the
   ``{"ok": ..., "data": ...}`` envelope on success -- their body is the
   renderer's own native output (``render_json``/``render_markdown``/
@@ -78,9 +90,12 @@ project's convention -- see e.g. ``report.py``'s own module docstring):
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import json
 import mimetypes
+import os
 import re
+import tempfile
 import threading
 import urllib.parse
 from datetime import datetime
@@ -88,8 +103,13 @@ from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
+from .. import baseline as baseline_mod
+from .. import snapshots as snapshots_mod
 from ..config import ConfigError, load_config, load_session_overrides
 from ..pricing import load_pricing
+from ..profiles import catalogue as profile_catalogue
+from ..profiles import diff as profile_diff_mod
+from ..profiles import schema as profile_schema
 from ..render.html import render_html
 from ..render.json_out import render_json, to_jsonable
 from ..render.markdown import render_markdown
@@ -124,6 +144,12 @@ _PLACEHOLDER_INDEX_HTML = (
 _SESSION_ID_RE = re.compile(r"^/api/session/([^/]+)$")
 _SESSION_TAGS_RE = re.compile(r"^/api/sessions/([^/]+)/tags$")
 _PROFILE_DIFF_RE = re.compile(r"^/api/profiles/([^/]+)/diff$")
+
+#: ``profiles.diff``'s own ``_VALID_SCOPES`` -- duplicated rather than
+#: imported (that name is private) so a scope query param can be
+#: validated with a clear 400 before ever reaching ``diff.py``/
+#: ``apply_command``, which both raise ``ValueError`` on an unknown one.
+_VALID_PROFILE_SCOPES = ("user", "project-local", "repo")
 
 
 # -- envelope helpers ---------------------------------------------------
@@ -426,17 +452,115 @@ def make_handler(
     def route_compactions(store, query, body):
         return _ok(store.compactions())
 
+    def _latest_baseline_row(store) -> dict | None:
+        rows = store.baselines()
+        if not rows:
+            return None
+        # Store.baselines() is already ordered by created_at ascending
+        # (its own ``ORDER BY b.created_at``) -- the last row is the
+        # most recent capture across every project, matching "the latest
+        # stored baseline digest" (singular) this route now returns.
+        return rows[-1]
+
     def route_profiles(store, query, body):
-        return _ok(store.profiles())
+        # v0.3: catalogue profiles are shipped package data, never rows
+        # in the store (service/watcher.py's _scan_profiles never
+        # ingests a catalogue id) -- merged in here at query time instead,
+        # each tagged with which of the two it came from.
+        catalogue_entries = [
+            {
+                "id": p.id,
+                "name": p.name or p.id,
+                "source": "catalogue",
+                "archetype": p.archetype,
+                "for": list(p.for_),
+                "updated_at": None,
+            }
+            for p in profile_catalogue.list_profiles()
+        ]
+        user_entries = [
+            {
+                "id": row["id"],
+                "name": row["name"],
+                "source": "user",
+                "archetype": None,
+                "for": [],
+                "updated_at": row["updated_at"],
+            }
+            for row in store.profiles()
+        ]
+
+        suggested_profile_id = None
+        latest_baseline = _latest_baseline_row(store)
+        if latest_baseline is not None:
+            try:
+                record = json.loads(latest_baseline["digest_json"])
+            except (TypeError, ValueError, json.JSONDecodeError):
+                record = {}
+            if isinstance(record, dict):
+                suggested_profile_id = record.get("suggested_profile")
+
+        return _ok(
+            {
+                "profiles": catalogue_entries + user_entries,
+                "suggested_profile_id": suggested_profile_id,
+            }
+        )
 
     def route_baseline(store, query, body):
-        latest: dict[object, dict] = {}
-        for row in store.baselines():
-            project_id = row["project_id"]
-            current = latest.get(project_id)
-            if current is None or row["created_at"] > current["created_at"]:
-                latest[project_id] = row
-        return _ok(list(latest.values()))
+        # v0.3: pair the latest capture with the onboarding capture
+        # window's own status (baseline.capture_status) so the UI can
+        # mark a recommendation/diff built from it as provisional --
+        # config.toml is read the same way _build_report_model already
+        # does for every report-backed route (never guarded there
+        # either: an unreadable config.toml is a genuine 500, not
+        # something this route should mask).
+        config = load_config(options.config_dir)
+        status = baseline_mod.capture_status(config)
+
+        latest_row = _latest_baseline_row(store)
+        latest: dict | None = None
+        if latest_row is not None:
+            try:
+                record = json.loads(latest_row["digest_json"])
+            except (TypeError, ValueError, json.JSONDecodeError):
+                record = None
+            latest = {
+                "id": latest_row["id"],
+                "project_slug": latest_row["project_slug"],
+                "window_start": latest_row["window_start"],
+                "window_end": latest_row["window_end"],
+                "archetype": latest_row["archetype"],
+                "created_at": latest_row["created_at"],
+                "record": record if isinstance(record, dict) else None,
+            }
+
+        history = [
+            {
+                "id": row["id"],
+                "project_slug": row["project_slug"],
+                "window_start": row["window_start"],
+                "window_end": row["window_end"],
+                "archetype": row["archetype"],
+                "created_at": row["created_at"],
+            }
+            for row in reversed(store.baselines())
+        ]
+
+        return _ok(
+            {
+                "baseline": latest,
+                "history": history,
+                "capture_status": {
+                    "started": status.started,
+                    "window_days": status.window_days,
+                    "elapsed_days": status.elapsed_days,
+                    "remaining_days": status.remaining_days,
+                    "complete": status.complete,
+                    "summary": baseline_mod.format_capture_status(status),
+                },
+            }
+        )
 
     def route_set_tag(store, query, body):
         session_id = query.get("id", "")
@@ -453,19 +577,148 @@ def make_handler(
         store.set_tag(session_id, key, value)
         return _ok({"session_id": session_id, "tags": store.tags(session_id)})
 
-    # -- v0.3-dependent routes (plumbing now, 501 until profiles/schema.py) --
+    # -- v0.3 profile routes -----------------------------------------------
+
+    def _load_profile_by_id(profile_id: str):
+        """``Profile`` for ``profile_id`` -- a catalogue id first (shipped
+        package data, cheap to check), then a user profile written under
+        ``<config_dir>/profiles/<id>.toml`` (the one path
+        ``route_profiles_post``/``_scan_profiles`` ever write a user
+        profile to -- see that route's own docstring). ``None`` if
+        neither exists, or the on-disk file no longer parses (never lets
+        a malformed file 500 the route -- this project's usual "skip,
+        don't crash" posture for a foreign/edited-by-hand file)."""
+        if profile_id in profile_catalogue.CATALOGUE_IDS:
+            return profile_catalogue.get(profile_id)
+        path = Path(options.config_dir) / "profiles" / f"{profile_id}.toml"
+        if not path.is_file():
+            return None
+        try:
+            return profile_schema.load_profile(path)
+        except (OSError, profile_schema.ProfileError, ValueError):
+            return None
 
     def route_profile_diff(store, query, body):
-        return _not_implemented(
-            "profile diff rendering needs v0.3's profiles/schema.py, not yet available"
+        profile_id = query.get("id", "")
+        profile = _load_profile_by_id(profile_id)
+        if profile is None:
+            return _not_found(f"unknown profile: {profile_id!r}")
+
+        scope = query.get("scope") or "user"
+        if scope not in _VALID_PROFILE_SCOPES:
+            return _bad_request(f"'scope' must be one of {_VALID_PROFILE_SCOPES}")
+
+        notes: list[str] = []
+        snaps = _snapshots_from_store()
+        snapshot = snaps[-1] if snaps else None
+        if snapshot is not None:
+            effective = snapshots_mod.effective_config(snapshot)
+            provenance = snapshots_mod.effective_provenance(snapshot)
+            managed_keys = set(snapshots_mod.managed_keys(snapshot))
+            # Deviation (mirrors profiles/apply.py's own, documented
+            # deviation note): snapshots.py has no effective_agents()
+            # accessor, so the schema-2 field is read straight off the
+            # snapshot's own data dict.
+            raw_effective_agents = snapshot.data.get("effective_agents")
+            effective_agents = dict(raw_effective_agents) if isinstance(raw_effective_agents, dict) else {}
+        else:
+            effective, provenance, managed_keys, effective_agents = {}, {}, set(), {}
+            notes.append("no config snapshot recorded yet; diff computed against an empty effective config")
+
+        profile_diff = profile_diff_mod.diff_against_effective(
+            profile, effective, effective_agents, provenance, managed_keys
+        )
+        diff_text = profile_diff_mod.render_unified_diff(profile_diff, scope=scope)
+        # project_path is deliberately never accepted from the client here
+        # (unlike diff.py's own apply_command signature) -- this route's
+        # response is API/UI output, and this project's privacy rule
+        # forbids a raw filesystem path in any of it; a project-scoped
+        # apply command is rendered without --project-dir, exactly as
+        # apply_command's own docstring describes for "project_path
+        # omitted" (the user fills it in themselves when they run it).
+        apply_cmd, launch_cmd = profile_diff_mod.apply_command(profile.id, scope).split("\n", 1)
+
+        def _row(row) -> dict:
+            return {
+                "key": row.key,
+                "current_value": row.current_value,
+                "current_provenance": row.current_provenance,
+                "proposed_value": row.proposed_value,
+                "target_file": row.target_file,
+                "managed": row.managed,
+            }
+
+        settings_rows = [_row(r) for r in profile_diff.rows if r.key.startswith("settings.")]
+        agent_rows = [_row(r) for r in profile_diff.rows if r.key.startswith("agents.")]
+        env_rows = [_row(r) for r in profile_diff.rows if r.key.startswith("env.")]
+
+        return _ok(
+            {
+                "profile_id": profile.id,
+                "scope": scope,
+                "diff": diff_text,
+                "settings": settings_rows,
+                "agents": agent_rows,
+                "env": env_rows,
+                "apply_command": apply_cmd,
+                "launch_command": launch_cmd,
+                "notes": notes,
+            }
         )
 
     def route_profiles_post(store, query, body):
         if not isinstance(body, dict):
             return _bad_request("request body must be a JSON object")
-        return _not_implemented(
-            "profile creation needs v0.3's profiles/schema.py, not yet available"
+
+        try:
+            profile = profile_schema.load_dict(body)
+        except profile_schema.ProfileError as exc:
+            return _bad_request("; ".join(exc.problems))
+
+        if profile.id in profile_catalogue.CATALOGUE_IDS:
+            return _error(409, "conflict", f"{profile.id!r} is a reserved catalogue profile id")
+
+        profiles_dir = Path(options.config_dir) / "profiles"
+        target_path = profiles_dir / f"{profile.id}.toml"
+        replace = query.get("replace") == "1"
+        if target_path.is_file() and not replace:
+            return _error(
+                409, "conflict", f"profile {profile.id!r} already exists (pass ?replace=1 to overwrite)"
+            )
+
+        profiles_dir.mkdir(parents=True, exist_ok=True)
+        text = profile_schema.dump_profile(profile)
+        # Atomic write: temp file in the same directory + os.replace,
+        # this module's own convention for "never leave a half-written
+        # file behind" (mirrors cache.py's DigestCache.put).
+        fd, tmp_name = tempfile.mkstemp(dir=str(profiles_dir), prefix=f".{profile.id}-", suffix=".toml.tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(text)
+            os.replace(tmp_name, target_path)
+        except BaseException:
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
+            raise
+
+        content_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        store.upsert_profile(
+            profile_id=profile.id,
+            name=profile.name or profile.id,
+            toml_path=str(target_path),
+            content_hash=content_hash,
         )
+
+        stored = next((row for row in store.profiles() if row["id"] == profile.id), None)
+        data = {
+            "id": profile.id,
+            "name": profile.name or profile.id,
+            "source": "user",
+            "updated_at": stored["updated_at"] if stored is not None else None,
+        }
+        return 201, {"ok": True, "data": data}
 
     # -- report-backed routes ---------------------------------------------
 

@@ -9,7 +9,7 @@ this test patched only ``connect``, which would have missed a future
 change that dialled out via one of the others) for the lifetime of a
 real test server, recording every address/host it is ever asked to
 reach, while a test client exercises every ``/api/*`` route
-(store-backed, report-backed, the two mutating routes, the v0.3 stub
+(store-backed, report-backed, the two mutating routes, the v0.3 profile
 routes, and static/traversal). ``sendto``/``sendmsg`` (UDP) are not
 patched: ``http.server``'s handler is always built on a ``SOCK_STREAM``
 listening socket, so this service has no code path that could reach
@@ -194,7 +194,7 @@ def test_no_connect_call_ever_targets_a_non_loopback_address(tmp_path, monkeypat
         status = _request(port, "POST", f"/api/sessions/{session_id}/tags", {"key": "mode", "value": "interactive"})
         assert status == 200
         status = _request(port, "POST", "/api/profiles", {"id": "p2", "name": "x"})
-        assert status == 501
+        assert status == 201
     finally:
         httpd.shutdown()
         httpd.server_close()
