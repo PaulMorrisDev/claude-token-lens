@@ -463,6 +463,13 @@ class Recommendation:
     lever: str | None = None  # settings key / frontmatter path / None
     #: list of (label, value, source_table, row_key)
     evidence: list = field(default_factory=list)
+    #: WP10-merge addition (additive, defaulted): where ``lever`` applies —
+    #: "user" (``~/.claude/settings.json``), "repo" (project
+    #: ``.claude/settings.json`` / frontmatter), or "managed" (an
+    #: org-pushed managed-settings key, which the user cannot change
+    #: locally). Replaces the earlier ``"[managed] "`` string prefix on
+    #: ``title`` that ``recommend.py`` used to encode the same fact.
+    scope: str = "user"
 
 
 @dataclass(slots=True)
