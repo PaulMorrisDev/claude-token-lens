@@ -318,16 +318,24 @@ def apply_command(profile_id: str, scope: str, project_path: str | None = None) 
 
     Privacy: when ``project_path`` is omitted, nothing in the returned
     text is an absolute path -- a ``project-local``/``repo`` scope with
-    no ``project_path`` simply omits ``--project`` (matching ``apply``'s
-    own documented default of the current working directory). When
-    ``project_path`` is given it is printed exactly as given, and
-    nowhere else in the output."""
+    no ``project_path`` simply omits ``--project-dir`` (matching
+    ``apply``'s own documented default of the current working
+    directory). When ``project_path`` is given it is printed exactly as
+    given, and nowhere else in the output.
+
+    The flag is ``--project-dir``, not ``--project``: the CLI's common
+    ``--project`` flag (every subcommand) already means "a repeatable
+    project slug to filter a report by", so ``apply`` names its own
+    project-directory argument ``--project-dir`` instead
+    (``cli.py``'s ``_add_apply_args`` docstring) -- this function must
+    mirror that exactly, since its output is printed verbatim as the
+    command a user or the service UI would actually run."""
     if scope not in _VALID_SCOPES:
         raise ValueError(f"unknown scope: {scope!r} (expected one of {_VALID_SCOPES})")
 
     args = ["claude-token-lens", "apply", profile_id]
     if scope in ("project-local", "repo") and project_path:
-        args += ["--project", project_path]
+        args += ["--project-dir", project_path]
     if scope == "repo":
         args.append("--allow-tracked")
     apply_cmd = " ".join(args)

@@ -268,7 +268,7 @@ an agent's `.claude/agents/<name>.md`, or the env-var note), while
 to *write* the proposed change" — a project's current provenance for
 a key and the scope the caller is applying it at are independent
 (a value currently set in user settings can still be targeted at
-`project-local` by an `apply --project`). Neither the plan text nor
+`project-local` by an `apply --project-dir`). Neither the plan text nor
 the brief fully specified this split; it is recorded here rather than
 left implicit, per this project's "report deviations" convention.
 
@@ -278,21 +278,30 @@ left implicit, per this project's "report deviations" convention.
 apply_command(profile_id: str, scope: "user" | "project-local" | "repo", project_path: str | None = None) -> str
 ```
 
-Two lines: the exact `claude-token-lens apply <id> [--project <path>]
-[--allow-tracked]` invocation (`--project` only appears when
+Two lines: the exact `claude-token-lens apply <id> [--project-dir <path>]
+[--allow-tracked]` invocation (`--project-dir` only appears when
 `project_path` is given; `--allow-tracked` is only added for
 `scope="repo"`, matching that scope writing a version-controlled
 `.claude/settings.json`), and the `--launch` one-session-overlay
 alternative, `claude --settings <config-dir>/profiles/<id>.settings.json`.
 Raises `ValueError` for an unrecognised `scope`.
 
+The flag is `--project-dir`, not `--project`: every subcommand already
+has its own `--project` flag (repeatable, filters a report by project
+slug), so `apply`'s project-*directory* argument is deliberately named
+`--project-dir` instead (`cli.py`'s `_add_apply_args` docstring) — a
+v0.3 fix; an earlier version of both this function and this document
+printed the wrong flag.
+
 **Privacy:** when `project_path` is omitted, nothing in the returned
 text is an absolute path — a `project-local`/`repo` scope with no
-`project_path` simply omits `--project` (matching `apply`'s own
+`project_path` simply omits `--project-dir` (matching `apply`'s own
 documented default of the current working directory). When
 `project_path` is given, it is printed exactly as given, and nowhere
 else in the output. `<config-dir>` in the `--launch` line is always a
-literal placeholder, never a real path.
+literal placeholder, never a real path. `service/api.py`'s
+`GET /api/profiles/<id>/diff` route never passes a `project_path` at
+all — see `docs/api.md`'s note on that route for why.
 
 ## What a profile cannot do
 
