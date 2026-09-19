@@ -467,7 +467,22 @@ def test_run_init_current_project_line_uses_the_redacted_slug(tmp_path, monkeypa
     # to appear -- that's the point of a slug); this pins the "current
     # project" line to exactly what detect()/redact_slug produce, rather
     # than a stronger guarantee redact_slug doesn't make.
-    real_project_path, projects_root, slug = _make_project(tmp_path, name="secret-client-name")
+    #
+    # The project directory is nested under a "home-<name>" segment we
+    # control here rather than relying on _make_project's plain
+    # tmp_path/"work"/name shape: whether that shape happens to carry a
+    # redactable marker depends entirely on where the *pytest tmp root*
+    # itself sits, which varies by platform (Windows: ".../Users-<real
+    # user>/AppData/Local/Temp/...", so the old "Users-<user>" assertion
+    # only ever passed there; Linux: "/tmp/pytest-of-<real user>/...",
+    # which redact_slug's marker regex does not match at all). Building
+    # the marker explicitly makes the assertion deterministic on every
+    # platform.
+    real_project_path = tmp_path / "home-reallife-username" / "work" / "secret-client-name"
+    real_project_path.mkdir(parents=True)
+    slug = discovery.slug_for(str(real_project_path))
+    projects_root = tmp_path / "projects"
+    (projects_root / slug).mkdir(parents=True)
     monkeypatch.chdir(real_project_path)
     stdout = io.StringIO()
 
@@ -484,4 +499,5 @@ def test_run_init_current_project_line_uses_the_redacted_slug(tmp_path, monkeypa
     out = stdout.getvalue()
     expected_slug = discovery.redact_slug(slug)
     assert f"- current project: {expected_slug}" in out
-    assert "Users-<user>" in expected_slug
+    assert "home-<user>" in expected_slug
+    assert "reallife-username" not in expected_slug
