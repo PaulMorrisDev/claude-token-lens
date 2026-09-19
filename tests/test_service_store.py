@@ -15,6 +15,7 @@ docstrings warn against.
 from __future__ import annotations
 
 import json
+import sqlite3
 
 import pytest
 
@@ -154,6 +155,348 @@ def _seed(store: Store) -> None:
 
 
 # -- migrate / schema --------------------------------------------------
+
+#: The exact v0.2.0 (schema version 4) DDL, taken verbatim from
+#: ``git show v0.2.0:src/claude_token_lens/service/schema.py`` --
+#: ``profiles``/``baselines`` are one version *before* v5's
+#: ``content_hash``/``record_id`` columns. Used only by
+#: :func:`test_migrate_upgrades_a_v4_store_without_losing_rows` (review
+#: B2) to build a store shaped exactly like a real upgrade would find
+#: one, without depending on git tag history being available at test
+#: time.
+_V4_STATEMENTS: tuple[str, ...] = (
+    """
+    CREATE TABLE IF NOT EXISTS meta (
+        key   TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS projects (
+        id         INTEGER PRIMARY KEY,
+        slug       TEXT NOT NULL UNIQUE,
+        root_path  TEXT NOT NULL,
+        first_seen TEXT NOT NULL,
+        last_seen  TEXT NOT NULL
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS snapshots (
+        id             INTEGER PRIMARY KEY,
+        project_id     INTEGER REFERENCES projects(id),
+        ts             TEXT NOT NULL,
+        schema_version INTEGER NOT NULL,
+        digest_json    TEXT NOT NULL,
+        UNIQUE (project_id, ts, schema_version)
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS sessions (
+        id              TEXT PRIMARY KEY,
+        project_id      INTEGER NOT NULL REFERENCES projects(id),
+        slug            TEXT NOT NULL,
+        first_ts        TEXT,
+        last_ts         TEXT,
+        span_s          REAL NOT NULL DEFAULT 0,
+        archetype       TEXT,
+        mode            TEXT,
+        mode_source     TEXT,
+        purpose         TEXT,
+        purpose_source  TEXT,
+        entrypoint      TEXT,
+        billing_mode    TEXT,
+        snapshot_id     INTEGER REFERENCES snapshots(id),
+        profile_id      TEXT,
+        total_cost      REAL NOT NULL DEFAULT 0,
+        total_tokens    INTEGER NOT NULL DEFAULT 0,
+        updated_at      TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_sessions_slug_first_ts ON sessions(slug, first_ts);
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS transcripts (
+        id              INTEGER PRIMARY KEY,
+        session_id      TEXT NOT NULL REFERENCES sessions(id),
+        path            TEXT NOT NULL UNIQUE,
+        kind            TEXT NOT NULL,
+        agent_id        TEXT,
+        agent_type      TEXT,
+        spawn_depth     INTEGER NOT NULL DEFAULT 0,
+        parent_agent_id TEXT,
+        mtime_ns        INTEGER NOT NULL,
+        size_bytes      INTEGER NOT NULL,
+        parser_version  INTEGER NOT NULL,
+        digest_blob     BLOB NOT NULL,
+        missing_since   TEXT,
+        updated_at      TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_transcripts_session_id ON transcripts(session_id);
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS turns_agg (
+        id                     INTEGER PRIMARY KEY,
+        transcript_id          INTEGER NOT NULL REFERENCES transcripts(id),
+        day                    TEXT NOT NULL,
+        model                  TEXT NOT NULL,
+        turns                  INTEGER NOT NULL DEFAULT 0,
+        input_tokens           INTEGER NOT NULL DEFAULT 0,
+        cache_creation_tokens  INTEGER NOT NULL DEFAULT 0,
+        cache_read_tokens      INTEGER NOT NULL DEFAULT 0,
+        output_tokens          INTEGER NOT NULL DEFAULT 0,
+        thinking_tokens        INTEGER NOT NULL DEFAULT 0,
+        cc_5m                  INTEGER NOT NULL DEFAULT 0,
+        cc_1h                  INTEGER NOT NULL DEFAULT 0,
+        cost                   REAL NOT NULL DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_turns_agg_day ON turns_agg(day);
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS recache_turns (
+        id                     INTEGER PRIMARY KEY,
+        transcript_id          INTEGER NOT NULL REFERENCES transcripts(id),
+        turn_index             INTEGER NOT NULL,
+        signature              TEXT NOT NULL,
+        cache_creation_tokens  INTEGER NOT NULL DEFAULT 0,
+        preceding_primary      TEXT,
+        gap_s                  REAL
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS events_agg (
+        id                 INTEGER PRIMARY KEY,
+        transcript_id      INTEGER NOT NULL REFERENCES transcripts(id),
+        kind               TEXT NOT NULL,
+        subkind            TEXT,
+        count              INTEGER NOT NULL DEFAULT 0,
+        dropped_tokens_sum INTEGER NOT NULL DEFAULT 0,
+        duration_ms_sum    INTEGER NOT NULL DEFAULT 0,
+        UNIQUE (transcript_id, kind, subkind)
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS compactions (
+        id             INTEGER PRIMARY KEY,
+        transcript_id  INTEGER NOT NULL REFERENCES transcripts(id),
+        ts             TEXT NOT NULL,
+        pre_tokens     INTEGER,
+        post_tokens    INTEGER,
+        dropped_tokens INTEGER,
+        trigger        TEXT,
+        join_delta_s   REAL
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS session_tags (
+        session_id TEXT NOT NULL REFERENCES sessions(id),
+        key        TEXT NOT NULL,
+        value      TEXT NOT NULL,
+        set_at     TEXT NOT NULL,
+        PRIMARY KEY (session_id, key)
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS profiles (
+        id         TEXT PRIMARY KEY,
+        name       TEXT NOT NULL,
+        toml_path  TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS baselines (
+        id           INTEGER PRIMARY KEY,
+        project_id   INTEGER REFERENCES projects(id),
+        window_start TEXT NOT NULL,
+        window_end   TEXT NOT NULL,
+        archetype    TEXT,
+        digest_json  TEXT NOT NULL,
+        created_at   TEXT NOT NULL
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS workflow_runs (
+        id            INTEGER PRIMARY KEY,
+        session_id    TEXT NOT NULL REFERENCES sessions(id),
+        run_id        TEXT NOT NULL,
+        agent_count   INTEGER NOT NULL DEFAULT 0,
+        phases        TEXT NOT NULL DEFAULT '[]',
+        started       TEXT,
+        finished      TEXT,
+        cost          REAL NOT NULL DEFAULT 0,
+        status        TEXT,
+        updated_at    TEXT NOT NULL,
+        UNIQUE (session_id, run_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_workflow_runs_session_id ON workflow_runs(session_id);
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS usage_log (
+        id              INTEGER PRIMARY KEY,
+        ts              TEXT NOT NULL,
+        window_start    TEXT,
+        window_end      TEXT,
+        utilization_pct REAL,
+        raw_json        TEXT NOT NULL
+    );
+    """,
+)
+
+
+def _build_v4_store(path: str) -> None:
+    """Create a SQLite file at ``path`` shaped exactly like a v0.2.0
+    store (schema version 4), with one row in every table."""
+    conn = sqlite3.connect(path)
+    try:
+        for statement in _V4_STATEMENTS:
+            conn.executescript(statement)
+        conn.execute("INSERT INTO meta (key, value) VALUES ('schema_version', '4')")
+        conn.execute(
+            "INSERT INTO projects (id, slug, root_path, first_seen, last_seen) "
+            "VALUES (1, 'proj-a', '/root/proj-a', 't', 't')"
+        )
+        conn.execute(
+            "INSERT INTO snapshots (id, project_id, ts, schema_version, digest_json) "
+            "VALUES (1, 1, 't', 1, '{}')"
+        )
+        conn.execute(
+            "INSERT INTO sessions (id, project_id, slug, updated_at) "
+            "VALUES ('session-a', 1, 'proj-a', 't')"
+        )
+        conn.execute(
+            "INSERT INTO transcripts "
+            "(id, session_id, path, kind, mtime_ns, size_bytes, parser_version, digest_blob, updated_at) "
+            "VALUES (1, 'session-a', '/root/proj-a/session-a.jsonl', 'top', 1, 1, 1, x'', 't')"
+        )
+        conn.execute(
+            "INSERT INTO turns_agg (id, transcript_id, day, model) VALUES (1, 1, '2026-01-01', 'm')"
+        )
+        conn.execute(
+            "INSERT INTO recache_turns (id, transcript_id, turn_index, signature) "
+            "VALUES (1, 1, 0, 'sig')"
+        )
+        conn.execute("INSERT INTO events_agg (id, transcript_id, kind) VALUES (1, 1, 'k')")
+        conn.execute("INSERT INTO compactions (id, transcript_id, ts) VALUES (1, 1, 't')")
+        conn.execute(
+            "INSERT INTO session_tags (session_id, key, value, set_at) "
+            "VALUES ('session-a', 'mode', 'agentic', 't')"
+        )
+        conn.execute(
+            "INSERT INTO profiles (id, name, toml_path, updated_at) VALUES ('p1', 'P1', '/x/p1.toml', 't')"
+        )
+        conn.execute(
+            "INSERT INTO baselines (id, project_id, window_start, window_end, digest_json, created_at) "
+            "VALUES (1, 1, 't', 't', '{}', 't')"
+        )
+        conn.execute(
+            "INSERT INTO workflow_runs (id, session_id, run_id, updated_at) "
+            "VALUES (1, 'session-a', 'wf-1', 't')"
+        )
+        conn.execute(
+            "INSERT INTO usage_log (id, ts, raw_json) VALUES (1, 't', '{}')"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_migrate_upgrades_a_v4_store_without_losing_rows(tmp_path) -> None:
+    """Review B2: opening a v0.2.0 (schema version 4) store under the
+    current code must migrate additively, not drop every table. Every
+    row inserted under the old schema must still be there afterwards,
+    and the two new v5 columns must exist."""
+    from claude_token_lens.service import schema
+
+    db_path = tmp_path / "v4.db"
+    _build_v4_store(str(db_path))
+
+    store = Store(str(db_path))
+    store.open()
+    try:
+        assert store.schema_version() == schema.SCHEMA_VERSION
+
+        conn = store._connection()
+        for table in (
+            "projects",
+            "snapshots",
+            "sessions",
+            "transcripts",
+            "turns_agg",
+            "recache_turns",
+            "events_agg",
+            "compactions",
+            "session_tags",
+            "profiles",
+            "baselines",
+            "workflow_runs",
+            "usage_log",
+        ):
+            count = conn.execute(f"SELECT COUNT(*) AS n FROM {table}").fetchone()["n"]
+            assert count == 1, f"{table} lost its row(s) across the v4 -> v5 migration"
+
+        profile_columns = {row["name"] for row in conn.execute("PRAGMA table_info(profiles)")}
+        assert "content_hash" in profile_columns
+        baseline_columns = {row["name"] for row in conn.execute("PRAGMA table_info(baselines)")}
+        assert {"record_id", "content_hash"} <= baseline_columns
+
+        # The migrated row's new columns take the documented default,
+        # never NULL/missing.
+        profile_row = conn.execute("SELECT content_hash FROM profiles WHERE id = 'p1'").fetchone()
+        assert profile_row["content_hash"] == ""
+        baseline_row = conn.execute("SELECT record_id, content_hash FROM baselines WHERE id = 1").fetchone()
+        assert baseline_row["record_id"] is None
+        assert baseline_row["content_hash"] == ""
+
+        # The record_id uniqueness that CREATE_BASELINES declares
+        # directly for a fresh table is present via the ladder's index
+        # too -- a second NULL is fine (SQLite never treats NULLs as
+        # conflicting), but a duplicate non-NULL value is rejected.
+        conn.execute(
+            "INSERT INTO baselines (id, project_id, window_start, window_end, digest_json, "
+            "record_id, content_hash, created_at) VALUES (2, 1, 't', 't', '{}', 'rid-1', '', 't')"
+        )
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT INTO baselines (id, project_id, window_start, window_end, digest_json, "
+                "record_id, content_hash, created_at) VALUES (3, 1, 't', 't', '{}', 'rid-1', '', 't')"
+            )
+    finally:
+        store.close()
+
+
+def test_migrate_backs_up_and_rebuilds_a_newer_than_code_store(tmp_path) -> None:
+    """Review B2: a recorded schema_version newer than the running
+    code's own is the one case (besides "no ladder step") a migration
+    genuinely can't serve -- but the old file must be copied aside
+    first, never just silently dropped."""
+    from claude_token_lens.service import schema
+
+    db_path = tmp_path / "newer.db"
+    store = Store(str(db_path))
+    store.open()
+    _seed(store)
+    assert store.summary()["sessions"] == 1
+    store.close()
+
+    newer_version = schema.SCHEMA_VERSION + 1
+    conn = sqlite3.connect(str(db_path))
+    conn.execute(
+        "INSERT INTO meta (key, value) VALUES ('schema_version', ?) "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (str(newer_version),),
+    )
+    conn.commit()
+    conn.close()
+
+    reopened = Store(str(db_path))
+    reopened.open()
+    try:
+        assert reopened.schema_version() == schema.SCHEMA_VERSION
+        assert reopened.summary()["sessions"] == 0
+
+        backup_path = db_path.with_name(db_path.name + f".bak-{newer_version}")
+        assert backup_path.exists(), "no backup was made before the newer-than-code store was rebuilt"
+    finally:
+        reopened.close()
 
 
 def test_migrate_is_idempotent(store: Store) -> None:
