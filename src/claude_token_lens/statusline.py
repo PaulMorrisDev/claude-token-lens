@@ -27,6 +27,45 @@ required keys):
   backwards) to find the last assistant turn's timestamp, for the TTL
   countdown.
 
+S1-context-budget addition: when the payload's ``context_window`` object
+also carries a numeric ``used_tokens``, this module appends a *second*,
+independent row to the same usage-log CSV that :mod:`tools.log_usage`
+already writes ``rate_limits`` rows to — the statusline payload is the
+only place this tool ever sees the model's own live context-window
+accounting (used tokens, the window's size, and wherever the payload
+names its autocompact threshold), and :mod:`context_budget`'s
+``context_budget_statusline``/``context_budget_autocompact`` tables need
+it as ground truth alongside their own chars/4 estimates.
+
+Rather than changing :data:`tools.log_usage.CSV_FIELDS` (a fixed
+six-column contract other readers already depend on), this module
+appends three new **trailing** columns directly with the stdlib
+``csv`` module, in this fixed order, after the existing six
+(``logged_at, session_id, window, used_percentage, resets_at, source``):
+
+7. ``context_window_used_tokens`` -- ``context_window.used_tokens``.
+8. ``context_window_size`` -- ``context_window.context_window_size``,
+   falling back to ``context_window.total_tokens`` (the payload's own
+   size key is not documented; both spellings are accepted).
+9. ``context_window_autocompact_threshold`` -- the first numeric field
+   on ``context_window`` whose key contains ``"autocompact"``
+   (case-insensitive; the exact key name isn't documented either).
+
+The row's own ``window`` column is the sentinel ``"context_window"`` (never
+one of :data:`tools.log_usage.WINDOW_NAMES`, so a plain
+``log_usage.load_usage_log`` read of the file is unaffected) and its
+``used_percentage`` column carries ``context_window.used_percentage``
+when present. A row is appended only when it differs from the last
+``"context_window"`` row already in the file (same dedupe intent as
+``log_usage.append_rows``, reimplemented locally since that function's
+own dedupe key doesn't cover these new columns).
+
+A file written before this addition existed has only six columns per
+row; :func:`context_budget.load_context_window_rows` (the read-side
+companion, in ``context_budget.py`` — not this module, which is
+write-only) tolerates that by treating a short row as carrying no
+context-window data rather than raising.
+
 Never raises: :func:`main` wraps every step that touches the outside
 world (stdin, the filesystem, config) in ``try``/``except Exception`` and
 falls back to a minimal ``token-lens`` line on any failure, per the WP6
@@ -38,6 +77,7 @@ start).
 
 from __future__ import annotations
 
+import csv
 import json
 import os
 import sys
@@ -331,6 +371,136 @@ def print_install_fragment() -> str:
     )
 
 
+# -- context-window trailing columns (S1-context-budget) -------------------
+
+#: Sentinel ``window`` value for a context-window row, distinct from
+#: every name in ``log_usage.WINDOW_NAMES`` so a plain
+#: ``log_usage.load_usage_log`` read of the file skips these rows.
+_CONTEXT_WINDOW_SENTINEL = "context_window"
+
+
+def _numeric(value: object) -> float | None:
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return None
+    return float(value)
+
+
+def _context_window_size(context_window: dict) -> float | None:
+    size = _numeric(context_window.get("context_window_size"))
+    if size is not None:
+        return size
+    return _numeric(context_window.get("total_tokens"))
+
+
+def _autocompact_field(context_window: dict) -> float | None:
+    """The first numeric value on ``context_window`` whose key contains
+    "autocompact" (case-insensitive) -- the payload's own key name for
+    this isn't documented (see the module docstring's deviation note)."""
+    for key in sorted(context_window):
+        if "autocompact" not in key.lower():
+            continue
+        value = _numeric(context_window.get(key))
+        if value is not None:
+            return value
+    return None
+
+
+def _context_window_row_values(payload: dict) -> tuple[str, float | None, float, float | None, float | None] | None:
+    """``(session_id, used_percentage, used_tokens, size, autocompact)``,
+    or ``None`` when ``context_window`` is missing/not a dict, or its
+    ``used_tokens`` isn't numeric (nothing worth logging otherwise)."""
+    context_window = payload.get("context_window")
+    if not isinstance(context_window, dict):
+        return None
+    used_tokens = _numeric(context_window.get("used_tokens"))
+    if used_tokens is None:
+        return None
+    session_id = payload.get("session_id")
+    session_id = session_id if isinstance(session_id, str) else ""
+    used_percentage = _numeric(context_window.get("used_percentage"))
+    size = _context_window_size(context_window)
+    autocompact = _autocompact_field(context_window)
+    return (session_id, used_percentage, used_tokens, size, autocompact)
+
+
+def _parse_csv_number(text: str | None) -> float | None:
+    if not text:
+        return None
+    try:
+        return float(text)
+    except (TypeError, ValueError):
+        return None
+
+
+def _last_context_window_key(csv_path: Path) -> tuple | None:
+    """The dedupe key of the last row in ``csv_path`` whose ``window``
+    column is :data:`_CONTEXT_WINDOW_SENTINEL`, or ``None`` if the file
+    doesn't exist or carries no such row yet."""
+    if not csv_path.exists():
+        return None
+    last_key: tuple | None = None
+    try:
+        with open(csv_path, "r", encoding="utf-8", newline="") as fh:
+            reader = csv.reader(fh)
+            next(reader, None)  # header
+            for row in reader:
+                if len(row) < 3 or row[2] != _CONTEXT_WINDOW_SENTINEL:
+                    continue
+                last_key = (
+                    row[1] if len(row) > 1 else "",
+                    _parse_csv_number(row[3]) if len(row) > 3 else None,
+                    _parse_csv_number(row[6]) if len(row) > 6 else None,
+                    _parse_csv_number(row[7]) if len(row) > 7 else None,
+                    _parse_csv_number(row[8]) if len(row) > 8 else None,
+                )
+    except OSError:
+        return None
+    return last_key
+
+
+def _append_context_window_row(csv_path: Path, payload: dict, now: datetime) -> None:
+    """Append one ``context_window`` ground-truth row to ``csv_path`` (see
+    the module docstring for the trailing-column contract), skipping it
+    when it is identical to the last such row already on file.
+    """
+    values = _context_window_row_values(payload)
+    if values is None:
+        return
+    session_id, used_percentage, used_tokens, size, autocompact = values
+    key = (session_id, used_percentage, used_tokens, size, autocompact)
+    if key == _last_context_window_key(csv_path):
+        return
+
+    is_new_file = not csv_path.exists()
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+    logged_at = now.isoformat().replace("+00:00", "Z")
+
+    with open(csv_path, "a", encoding="utf-8", newline="") as fh:
+        writer = csv.writer(fh)
+        if is_new_file:
+            writer.writerow(
+                list(log_usage.CSV_FIELDS)
+                + [
+                    "context_window_used_tokens",
+                    "context_window_size",
+                    "context_window_autocompact_threshold",
+                ]
+            )
+        writer.writerow(
+            [
+                logged_at,
+                session_id,
+                _CONTEXT_WINDOW_SENTINEL,
+                used_percentage if used_percentage is not None else "",
+                "",
+                "statusline",
+                used_tokens,
+                size if size is not None else "",
+                autocompact if autocompact is not None else "",
+            ]
+        )
+
+
 # -- CLI entry point ------------------------------------------------------
 
 
@@ -402,6 +572,12 @@ def main(argv: list[str] | None = None) -> int:
             if rows:
                 csv_path = config_dir / "usage-log.csv"
                 log_usage.append_rows(csv_path, rows, source="statusline")
+    except Exception:
+        pass
+
+    try:
+        context_window_csv_path = config_dir / "usage-log.csv"
+        _append_context_window_row(context_window_csv_path, payload, datetime.now(timezone.utc))
     except Exception:
         pass
 

@@ -853,6 +853,48 @@ def _rule_baseline_bloat(
     prefix_count = len(mcp_servers) + len(enabled_plugins)
     if prefix_count < th.baseline_bloat_min_mcp_or_plugins:
         return []
+
+    # Prefer the sized context-budget buckets over the plain
+    # cache-creation count when that section is present -- it names
+    # *where* the baseline goes rather than just how big it is.
+    evidence = [
+        _evidence("Mean session baseline (cache-creation)", mean_baseline, "agents", "topology_session_baseline", row_key),
+    ]
+    biggest_bucket_label: str | None = None
+    cb_table = _table(report, "context_budget", "context_budget_baseline")
+    if cb_table is not None:
+        cb_row_key = next((row[0] for row in cb_table.rows if row[0] == "all"), None)
+        if cb_row_key is not None:
+            bucket_columns = (
+                ("human_prompt_est", "human prompt"),
+                ("skills_listing_est", "skills listing"),
+                ("memory_files_est", "memory files"),
+                ("custom_agents_est", "custom agents"),
+                ("system_prompt_and_tools_est", "system prompt and tools"),
+            )
+            sized_evidence = []
+            best_label = None
+            best_value = None
+            for column_key, label in bucket_columns:
+                value = _cell(report, "context_budget", "context_budget_baseline", cb_row_key, column_key)
+                if not isinstance(value, (int, float)):
+                    continue
+                sized_evidence.append(
+                    _evidence(f"Estimated {label} (est)", value, "context_budget", "context_budget_baseline", cb_row_key)
+                )
+                if best_value is None or value > best_value:
+                    best_value, best_label = value, label
+            if sized_evidence:
+                evidence = sized_evidence
+                biggest_bucket_label = best_label
+
+    action = (
+        "Review which MCP servers and tool schemas load by default -- disabling unused "
+        "ones shrinks every session's first-turn cache write."
+    )
+    if biggest_bucket_label:
+        action += f" The largest estimated share of that baseline is {biggest_bucket_label}."
+
     return [
         Recommendation(
             id="baseline-bloat",
@@ -860,14 +902,9 @@ def _rule_baseline_bloat(
             category="settings",
             archetypes=_ALL_ARCHETYPES,
             title="The session baseline is large before any work happens",
-            action=(
-                "Review which MCP servers and tool schemas load by default -- disabling unused "
-                "ones shrinks every session's first-turn cache write."
-            ),
+            action=action,
             lever="mcpServers",
-            evidence=[
-                _evidence("Mean session baseline (cache-creation)", mean_baseline, "agents", "topology_session_baseline", row_key),
-            ],
+            evidence=evidence,
         )
     ]
 

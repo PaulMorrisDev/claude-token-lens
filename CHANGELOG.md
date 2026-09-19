@@ -150,6 +150,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   after Claude Code's own `cleanupPeriodDays` retention has removed its
   transcript.
 
+- **S1-context-budget**: new `context_budget.py` section (`Section(key="context_budget")`)
+  answering "do we track preloaded skills, the system prompt, and the
+  autocompact buffer?" -- `context_budget_baseline` (per-project measured
+  mean/median first-turn `cache_creation` next to labelled `(est)`
+  buckets for human prompt, skills listing, memory files, custom agents,
+  MCP tools and a residual system-prompt-and-tools share, from
+  characters/bytes divided by 4), `context_budget_autocompact` (the
+  configured `autoCompactWindow` vs. the observed effective threshold --
+  median `compactMetadata.preTokens` over `trigger == "auto"`
+  compactions, a new `compaction.effective_autocompact_threshold` helper
+  -- the implied buffer, and a >10% drift flag), and
+  `context_budget_statusline` (real, non-estimated ground truth once a
+  usage-log row carries `context_window` fields). `recommend.py`'s
+  `baseline-bloat` rule now cites this section's sized buckets as its
+  evidence and names the largest one in its action text when the section
+  is present. `statusline.py` appends three new trailing columns
+  (`context_window_used_tokens`, `context_window_size`,
+  `context_window_autocompact_threshold`) to the usage-log CSV whenever
+  the payload's `context_window` carries numeric fields -- old-format
+  (six-column) rows are still read without error.
+
 ### Planned
 
 - **v0.2** — `claude-token-lens serve` (local read-only service: watcher
