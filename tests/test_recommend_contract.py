@@ -12,13 +12,21 @@ task: ``classify``, ``compaction``, ``recache``, ``ttl``, ``workstyle``,
 that produces at least one real (non-empty) row per table where the
 module's own logic allows it, following the same ``_turn``/``write_jsonl``
 construction patterns already used in each module's own test file.
+
+WP10a addition: ``report.build_report``, ``usage.build_section`` and
+``scorecard.build_section`` (and, transitively through ``build_report``,
+every section ``report.py`` assembles, including ``topology``'s and
+``phases``'s, which had no dedicated check here before) are exercised the
+same way.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from claude_token_lens import classify, compaction, recache, snapshots, ttl, workflows, workstyle
+from claude_token_lens import classify, compaction, recache, report, scorecard, snapshots, ttl, usage, workflows, workstyle
+from claude_token_lens.config import Config
+from claude_token_lens.corpus import load_corpus
 from claude_token_lens.model import (
     Classification,
     EventKind,
@@ -263,3 +271,68 @@ def test_snapshots_build_config_section_row_keys_are_all_str_or_int(tmp_path):
     ]
     section = snapshots.build_config_section(sessions_with_metrics, snaps, "user_settings.model")
     _assert_row_keys_are_valid(section)
+
+
+# -- usage.build_section ---------------------------------------------------
+
+
+def test_usage_build_section_row_keys_are_all_str_or_int(tmp_path):
+    project_dir = tmp_path / "proj-usage"
+    project_dir.mkdir()
+    write_jsonl(
+        project_dir / "session-usage.jsonl",
+        [turn_line(timestamp="2026-09-18T12:00:00.000Z", input_tokens=100, output_tokens=20)],
+    )
+    corpus = load_corpus([project_dir])
+    section = usage.build_section(corpus, PRICING, Config())
+    _assert_row_keys_are_valid(section)
+
+
+# -- scorecard.build_section ------------------------------------------------
+
+
+def test_scorecard_build_section_row_keys_are_all_str_or_int():
+    inputs = scorecard.ScorecardInputs(
+        recache_share_pct=10.0,
+        p90_top_level_ctx=60_000,
+        has_spawns=True,
+        agent_cost_variance_ratio=1.4,
+        has_snapshot=True,
+        changed_config_keys=2,
+        pricing_coverage_pct=98.0,
+    )
+    section = scorecard.build_section(inputs)
+    _assert_row_keys_are_valid(section)
+
+
+# -- report.build_report (every assembled section) --------------------------
+
+
+def test_build_report_every_section_row_keys_are_all_str_or_int(tmp_path):
+    project_dir = tmp_path / "proj-report"
+    project_dir.mkdir()
+    write_jsonl(
+        project_dir / "session-report.jsonl",
+        [
+            turn_line(
+                timestamp="2026-09-18T12:00:00.000Z",
+                input_tokens=100,
+                output_tokens=20,
+                ephemeral_5m_input_tokens=1000,
+                cache_read_input_tokens=100,
+            )
+        ],
+    )
+    agent_dir = project_dir / "session-report" / "subagents"
+    agent_dir.mkdir(parents=True)
+    write_jsonl(agent_dir / "agent-report.jsonl", [turn_line(input_tokens=50, output_tokens=10)])
+    (agent_dir / "agent-report.meta.json").write_text(
+        '{"agentType": "claude-implementer", "model": "claude-sonnet-5"}', encoding="utf-8"
+    )
+
+    corpus = load_corpus([project_dir])
+    model = report.build_report(
+        corpus, PRICING, Config(), projects=("proj-report",), window="contract test", phases=True
+    )
+    for section in model.sections:
+        _assert_row_keys_are_valid(section)
