@@ -100,6 +100,34 @@ one-commit-per-fix / green-tests discipline:
   format difference (`Diagnostics.pre_split_turns`) and normalized via
   `ttl.normalize_ttl_split`, rather than silently mis-parsed.
 
+### Documentation
+
+- README rewritten against the code as it actually stands today (WP12b):
+  what it measures and cannot (no billing API, user-supplied prices,
+  subscription usage-window billing, the JSONL format's observed-not-
+  published status and its two stable alternatives), the two token
+  totals with a worked example, how Claude Code's prompt cache and its
+  5m/1h TTL levers work, the RE-CACHE definitions and signatures, a
+  section-by-section report reading guide (moved into
+  `docs/sections-reference.md` once it grew past README-length) with a
+  real worked example generated from `tests/fixtures/real/session-a`,
+  the TTL simulation assumptions verbatim from `ttl.ASSUMPTIONS`,
+  SessionStart-hook and statusline installation fragments generated
+  from the code (not hand-typed), Windows-specific notes, an honest
+  team/enterprise section naming what's implemented (`exclude_projects`,
+  `retention_days`, managed-settings capture, Bedrock/Vertex provider
+  detection) versus only planned (Foundry detection, per-provider
+  pricing, an `export` command), prior-art credits, and licence/
+  contributing/roadmap. `SECURITY.md` rewritten as a corporate-review
+  sign-off checklist, correcting an earlier claim that an automated
+  egress test already exists (it doesn't — there is no `serve` surface
+  yet to test; the guarantee today is structural: no networking library
+  is imported anywhere in the codebase) and clarifying that
+  `--no-cache`/`--rebuild-cache` are parsed but not yet acted on by any
+  CLI subcommand. Both files are written to match the CLI's actual
+  current state: only `pricing-check` and `snapshot-config` are wired
+  up; every other subcommand is a stub.
+
 ### Planned
 
 The following are a v0.4 backlog, kept here until they are scheduled into a
