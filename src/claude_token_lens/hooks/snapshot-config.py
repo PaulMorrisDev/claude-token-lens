@@ -13,9 +13,11 @@ Contract (Appendix A6, refined by the WP7 brief):
 - Reads the SessionStart hook JSON from stdin: ``session_id``, ``cwd``,
   ``transcript_path``, ``source``. Stdin may be empty or malformed; both are
   tolerated (treated as ``{}``).
-- Resolves the config directory: ``CLAUDE_CONFIG_DIR`` env var, else
-  ``~/.claude``.
-- Writes ``<config>/token-lens/snapshots/<UTC compact ts>.json`` (e.g.
+- Resolves the config (token-lens) directory: ``--config-dir`` wins and
+  IS that directory directly; else ``<CLAUDE_CONFIG_DIR or ~/.claude>/
+  token-lens`` (see :func:`resolve_config_dir`; ``settings.json``/
+  ``agents/`` are read from its parent, the ``~/.claude`` root).
+- Writes ``<config_dir>/snapshots/<UTC compact ts>.json`` (e.g.
   ``20260918T191200Z.json``).
 - Never lets a broken Python block a session: always exits 0. On success it
   prints nothing; on any exception it writes one line to stderr and still
@@ -110,13 +112,27 @@ _TS_FORMAT = "%Y%m%dT%H%M%SZ"
 
 
 def resolve_config_dir(cli_arg: str | None = None) -> Path:
-    """``--config-dir`` wins; else ``CLAUDE_CONFIG_DIR``; else ``~/.claude``."""
+    """``--config-dir`` wins -- and IS the token-lens directory itself,
+    directly containing ``snapshots/``, ``hooks/`` and ``active-profile``
+    -- else ``<CLAUDE_CONFIG_DIR or ~/.claude>/token-lens``.
+
+    Fix config-dir: this used to treat an explicit ``--config-dir`` as
+    the ``~/.claude`` root itself (appending ``token-lens/`` for every
+    subpath internally), which disagreed with ``cli.py``'s
+    ``_resolve_config_dir`` and ``snapshots.load_snapshots`` -- both of
+    which have always treated an explicit ``--config-dir`` as the
+    token-lens directory directly. A user pointing the same
+    ``--config-dir`` value at both this hook and the CLI got snapshots
+    written one directory level away from where the CLI looked for
+    them. Every caller in this file that needs the ``~/.claude`` root
+    itself (for ``settings.json``/``agents/``, which live one level up
+    from token-lens) now reaches it via the returned path's ``.parent``.
+    """
     if cli_arg:
         return Path(cli_arg)
     env = os.environ.get("CLAUDE_CONFIG_DIR")
-    if env:
-        return Path(env)
-    return Path.home() / ".claude"
+    root = Path(env) if env else (Path.home() / ".claude")
+    return root / "token-lens"
 
 
 def default_managed_settings_path() -> Path:
@@ -150,7 +166,7 @@ def _read_json_dict(path: Path) -> dict | None:
 
 
 def _read_active_profile(config_dir: Path) -> str | None:
-    path = config_dir / "token-lens" / "active-profile"
+    path = config_dir / "active-profile"
     try:
         text = path.read_text(encoding="utf-8")
     except OSError:
@@ -375,6 +391,10 @@ def build_snapshot(
     """Build the full A6-shaped snapshot dict (unwritten) for the given
     hook stdin payload, cwd override and resolved config directory.
 
+    ``config_dir`` is the token-lens directory (see
+    :func:`resolve_config_dir`); ``settings.json``/``agents/`` live one
+    level up, at ``config_dir.parent`` (the ``~/.claude`` root).
+
     ``managed_path`` overrides the platform default from
     :func:`default_managed_settings_path` (used by tests and by the
     ``--managed-path`` CLI flag); it is read even if missing, since most
@@ -386,11 +406,12 @@ def build_snapshot(
     source = stdin_data.get("source")
     cwd = cwd_override or stdin_data.get("cwd") or os.getcwd()
     cwd_path = Path(cwd)
+    claude_root = config_dir.parent
 
     claude_version = os.environ.get("CLAUDE_CODE_VERSION") or None
     profile_id = _read_active_profile(config_dir)
 
-    user_settings_raw = _read_json_dict(config_dir / "settings.json") or {}
+    user_settings_raw = _read_json_dict(claude_root / "settings.json") or {}
     user_settings = redact_settings(user_settings_raw)
 
     resolved_managed_path = Path(managed_path) if managed_path else default_managed_settings_path()
@@ -442,7 +463,7 @@ def build_snapshot(
         enabled_plugins = []
 
     agents: dict = {}
-    agents.update(_load_agents(config_dir / "agents"))
+    agents.update(_load_agents(claude_root / "agents"))
     agents.update(_load_agents(cwd_path / ".claude" / "agents"))
 
     env_names = sorted(
@@ -477,7 +498,7 @@ def build_snapshot(
 
 
 def _snapshots_dir(config_dir: Path) -> Path:
-    return config_dir / "token-lens" / "snapshots"
+    return config_dir / "snapshots"
 
 
 def _find_latest_snapshot(snapshots_dir: Path) -> Path | None:
@@ -539,11 +560,12 @@ def snapshot_and_get_path(
 
 
 def install_hook(config_dir: Path) -> Path:
-    """Copy this script into ``<config_dir>/token-lens/hooks/``. Never
+    """Copy this script into ``<config_dir>/hooks/`` (``config_dir`` is
+    the token-lens directory -- see :func:`resolve_config_dir`). Never
     touches settings.json — pair with ``hook_fragment_text()`` for the
     fragment the user pastes in themselves.
     """
-    dest_dir = config_dir / "token-lens" / "hooks"
+    dest_dir = config_dir / "hooks"
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest = dest_dir / "snapshot-config.py"
     shutil.copy2(Path(__file__).resolve(), dest)

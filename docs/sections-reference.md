@@ -69,8 +69,9 @@ are not real invoice lines.
   (`sessions.toml` override vs. rule-derived).
 
 Per-session `mode`/`purpose` overrides live in
-`<config-dir>/token-lens/sessions.toml` and always win over the rule
-engine (`config.load_session_overrides`).
+`<config-dir>/sessions.toml` (`<config-dir>` defaults to
+`~/.claude/token-lens`) and always win over the rule engine
+(`config.load_session_overrides`).
 
 ## `recache` (`recache.py`)
 

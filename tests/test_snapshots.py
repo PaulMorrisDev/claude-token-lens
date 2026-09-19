@@ -22,12 +22,13 @@ from claude_token_lens import snapshots as snap_mod
 from helpers import assert_privacy
 
 #: The fixture files live directly under tests/fixtures/snapshots/ (per the
-#: WP7 brief), not under the <config_dir>/token-lens/snapshots/ layout
-#: load_snapshots() expects on a real config dir. _load() below reads them
-#: straight off disk into Snapshot objects for the join/diff/table tests;
-#: test_load_snapshots_* separately proves load_snapshots() itself walks
-#: that <config_dir>/token-lens/snapshots/ layout correctly, using a copy
-#: of these same fixture files.
+#: WP7 brief), not under the <config_dir>/snapshots/ layout load_snapshots()
+#: expects on a real config dir (config_dir being the token-lens directory
+#: itself -- see load_snapshots's docstring, fix config-dir). _load() below
+#: reads them straight off disk into Snapshot objects for the join/diff/table
+#: tests; test_load_snapshots_* separately proves load_snapshots() itself
+#: walks that <config_dir>/snapshots/ layout correctly, using a copy of
+#: these same fixture files.
 _FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures" / "snapshots"
 
 
@@ -41,7 +42,11 @@ def _load() -> list[snap_mod.Snapshot]:
 
 
 def _copy_fixtures_into_config_dir(config_dir: Path) -> None:
-    snapshots_dir = config_dir / "token-lens" / "snapshots"
+    # Fix config-dir: config_dir is the token-lens directory itself
+    # (matching every caller's convention now -- see load_snapshots's
+    # docstring), so snapshots live directly under it, not nested one
+    # more "token-lens" level down.
+    snapshots_dir = config_dir / "snapshots"
     snapshots_dir.mkdir(parents=True)
     for path in _FIXTURES_DIR.glob("*.json"):
         shutil.copy2(path, snapshots_dir / path.name)
@@ -65,7 +70,7 @@ def test_load_snapshots_missing_dir_returns_empty_list(tmp_path):
 
 
 def test_load_snapshots_skips_malformed_file(tmp_path):
-    snapshots_dir = tmp_path / "token-lens" / "snapshots"
+    snapshots_dir = tmp_path / "snapshots"
     snapshots_dir.mkdir(parents=True)
     (snapshots_dir / "20260901T000000Z.json").write_text(
         "not valid json", encoding="utf-8"

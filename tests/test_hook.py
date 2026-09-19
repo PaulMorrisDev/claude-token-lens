@@ -110,8 +110,8 @@ def _run_hook(
     # its own) instead of the real machine's home, so the hook's "~/.claude
     # .json if readable" MCP-server read can never pick up the real user's
     # config and break test determinism.
-    env["HOME"] = str(config_dir.parent)
-    env["USERPROFILE"] = str(config_dir.parent)
+    env["HOME"] = str(config_dir.parent.parent)
+    env["USERPROFILE"] = str(config_dir.parent.parent)
     if extra_env:
         env.update(extra_env)
 
@@ -132,7 +132,7 @@ def _run_hook(
 
 
 def _latest_snapshot(config_dir: Path) -> dict:
-    snapshots_dir = config_dir / "token-lens" / "snapshots"
+    snapshots_dir = config_dir / "snapshots"
     files = sorted(snapshots_dir.glob("*.json"))
     assert files, f"no snapshot written under {snapshots_dir}"
     return json.loads(files[-1].read_text(encoding="utf-8"))
@@ -149,7 +149,7 @@ def project(tmp_path):
 
 
 def test_hook_writes_redacted_snapshot(tmp_path, home, project):
-    config_dir = home / ".claude"
+    config_dir = home / ".claude" / "token-lens"
     stdin = json.dumps(
         {
             "session_id": "sess-1",
@@ -199,7 +199,7 @@ def test_hook_writes_redacted_snapshot(tmp_path, home, project):
 
 
 def test_hook_flattens_nested_agent_frontmatter(home, project):
-    config_dir = home / ".claude"
+    config_dir = home / ".claude" / "token-lens"
     stdin = json.dumps({"session_id": "s", "cwd": str(project)})
     result = _run_hook(config_dir=config_dir, cwd=project, stdin_text=stdin)
     assert result.returncode == 0
@@ -223,12 +223,12 @@ def test_hook_flattens_nested_agent_frontmatter(home, project):
 
 
 def test_env_names_only_never_values(home, project):
-    config_dir = home / ".claude"
+    config_dir = home / ".claude" / "token-lens"
     stdin = json.dumps({"session_id": "s", "cwd": str(project)})
     result = _run_hook(config_dir=config_dir, cwd=project, stdin_text=stdin)
     assert result.returncode == 0
 
-    snapshot_path = sorted((config_dir / "token-lens" / "snapshots").glob("*.json"))[-1]
+    snapshot_path = sorted((config_dir / "snapshots").glob("*.json"))[-1]
     raw_text = snapshot_path.read_text(encoding="utf-8")
     snapshot = json.loads(raw_text)
 
@@ -243,7 +243,7 @@ def test_env_names_only_never_values(home, project):
 
 
 def test_exit_zero_on_malformed_stdin(home, project):
-    config_dir = home / ".claude"
+    config_dir = home / ".claude" / "token-lens"
     result = _run_hook(
         config_dir=config_dir, cwd=project, stdin_text="{not valid json!!!"
     )
@@ -252,13 +252,13 @@ def test_exit_zero_on_malformed_stdin(home, project):
 
 
 def test_exit_zero_on_empty_stdin(home, project):
-    config_dir = home / ".claude"
+    config_dir = home / ".claude" / "token-lens"
     result = _run_hook(config_dir=config_dir, cwd=project, stdin_text="")
     assert result.returncode == 0
 
 
 def test_print_flag_emits_json_without_writing(tmp_path, home, project):
-    config_dir = home / ".claude"
+    config_dir = home / ".claude" / "token-lens"
     stdin = json.dumps({"session_id": "s", "cwd": str(project)})
     result = _run_hook(
         config_dir=config_dir,
@@ -269,16 +269,16 @@ def test_print_flag_emits_json_without_writing(tmp_path, home, project):
     assert result.returncode == 0
     payload = json.loads(result.stdout)
     assert payload["schema"] == 1
-    assert not (config_dir / "token-lens" / "snapshots").exists()
+    assert not (config_dir / "snapshots").exists()
 
 
 def test_min_interval_skips_identical_content(home, project):
-    config_dir = home / ".claude"
+    config_dir = home / ".claude" / "token-lens"
     stdin = json.dumps({"session_id": "s1", "cwd": str(project)})
 
     first = _run_hook(config_dir=config_dir, cwd=project, stdin_text=stdin)
     assert first.returncode == 0
-    snapshots_dir = config_dir / "token-lens" / "snapshots"
+    snapshots_dir = config_dir / "snapshots"
     assert len(list(snapshots_dir.glob("*.json"))) == 1
 
     # A different session_id (which is excluded from content_hash) run
@@ -291,18 +291,18 @@ def test_min_interval_skips_identical_content(home, project):
 
 
 def test_content_change_writes_a_second_snapshot(home, project):
-    config_dir = home / ".claude"
+    config_dir = home / ".claude" / "token-lens"
     stdin = json.dumps({"session_id": "s1", "cwd": str(project)})
 
     first = _run_hook(config_dir=config_dir, cwd=project, stdin_text=stdin)
     assert first.returncode == 0
-    snapshots_dir = config_dir / "token-lens" / "snapshots"
+    snapshots_dir = config_dir / "snapshots"
     assert len(list(snapshots_dir.glob("*.json"))) == 1
 
     # Change the underlying config, then bypass the min-interval wait with
     # --min-interval 0 to prove a genuinely different config always writes
     # (the interval alone must never suppress a real content change).
-    settings_path = config_dir / "settings.json"
+    settings_path = config_dir.parent / "settings.json"
     settings = json.loads(settings_path.read_text(encoding="utf-8"))
     settings["effortLevel"] = "low"
     settings_path.write_text(json.dumps(settings), encoding="utf-8")
@@ -326,7 +326,7 @@ def test_content_change_writes_a_second_snapshot(home, project):
 
 
 def test_managed_settings_captured_and_redacted_with_keys_recorded(tmp_path, home, project):
-    config_dir = home / ".claude"
+    config_dir = home / ".claude" / "token-lens"
     managed_path = tmp_path / "managed-settings.json"
     managed_settings = {
         "model": "sonnet",
@@ -355,7 +355,7 @@ def test_managed_settings_captured_and_redacted_with_keys_recorded(tmp_path, hom
 
 
 def test_managed_settings_absent_file_degrades_to_empty(tmp_path, home, project):
-    config_dir = home / ".claude"
+    config_dir = home / ".claude" / "token-lens"
     stdin = json.dumps({"session_id": "s", "cwd": str(project)})
     # Point --managed-path at a file that doesn't exist -- must never fail
     # the hook, and must degrade to an empty dict/list.
@@ -376,7 +376,7 @@ def test_managed_settings_default_platform_path_used_when_no_override(home, proj
     # Without --managed-path, the hook falls back to the platform default
     # (default_managed_settings_path()); on a machine with no such file it
     # must still degrade cleanly rather than erroring.
-    config_dir = home / ".claude"
+    config_dir = home / ".claude" / "token-lens"
     stdin = json.dumps({"session_id": "s", "cwd": str(project)})
     result = _run_hook(config_dir=config_dir, cwd=project, stdin_text=stdin)
     assert result.returncode == 0
@@ -398,7 +398,7 @@ def test_managed_settings_default_windows_path_honours_programdata_env(tmp_path,
         json.dumps({"effortLevel": "high"}), encoding="utf-8"
     )
 
-    config_dir = home / ".claude"
+    config_dir = home / ".claude" / "token-lens"
     stdin = json.dumps({"session_id": "s", "cwd": str(project)})
     result = _run_hook(
         config_dir=config_dir,
@@ -413,7 +413,7 @@ def test_managed_settings_default_windows_path_honours_programdata_env(tmp_path,
 
 
 def test_min_interval_zero_always_writes_even_with_identical_content(home, project):
-    config_dir = home / ".claude"
+    config_dir = home / ".claude" / "token-lens"
     stdin = json.dumps({"session_id": "s1", "cwd": str(project)})
 
     first = _run_hook(config_dir=config_dir, cwd=project, stdin_text=stdin)
@@ -428,5 +428,5 @@ def test_min_interval_zero_always_writes_even_with_identical_content(home, proje
         extra_args=["--min-interval", "0"],
     )
     assert second.returncode == 0
-    snapshots_dir = config_dir / "token-lens" / "snapshots"
+    snapshots_dir = config_dir / "snapshots"
     assert len(list(snapshots_dir.glob("*.json"))) == 2

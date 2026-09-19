@@ -72,13 +72,22 @@ class Snapshot:
 
 
 def load_snapshots(config_dir: Path | str) -> list[Snapshot]:
-    """Every ``*.json`` file under ``<config_dir>/token-lens/snapshots/``,
-    parsed and sorted ascending by ``ts``. Unreadable or malformed files are
-    skipped rather than raising — a report must degrade gracefully around
-    one corrupt snapshot, the way the transcript parser tolerates bad
-    lines.
+    """Every ``*.json`` file under ``<config_dir>/snapshots/``, parsed and
+    sorted ascending by ``ts``. Unreadable or malformed files are skipped
+    rather than raising — a report must degrade gracefully around one
+    corrupt snapshot, the way the transcript parser tolerates bad lines.
+
+    Fix config-dir: ``config_dir`` is the token-lens directory itself
+    (matching every other module's convention — ``config.py``'s
+    ``config.toml``, ``cache.py``'s ``cache/``, ``tools/log_usage.py``'s
+    ``usage-log.csv`` — and ``hooks/snapshot-config.py``'s own
+    ``--config-dir``), not the ``~/.claude`` root one level up. This
+    used to disagree with the hook, which wrote snapshots under
+    ``<config_dir>/token-lens/snapshots/`` for an *explicit*
+    ``--config-dir`` — see ``cli.py``'s old ``_load_snapshots_for_config_dir``
+    R16 dual-fallback, no longer needed now both sides agree.
     """
-    snapshots_dir = Path(config_dir) / "token-lens" / "snapshots"
+    snapshots_dir = Path(config_dir) / "snapshots"
     if not snapshots_dir.is_dir():
         return []
 

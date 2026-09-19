@@ -144,7 +144,7 @@ this table only lists what's specific to each one.
 | `ttl` | Focused view: just `overview` + `ttl` | Same as `sessions` |
 | `compactions` | Focused view: just `overview` + `compactions` | Same as `sessions` |
 | `config-diff` | Compare sessions grouped by one (or every changed) config key's value, from captured `snapshot-config` snapshots. Prints its own plain-text table(s), independent of `report`'s renderers. | `--key KEY` **or** `--auto-keys` (mutually exclusive, one required): diff one named flattened config key, or every key that changed across the available snapshots |
-| `snapshot-config` | Capture (or print/install) the SessionStart config-snapshot hook — see [section 8](#8-installing-the-sessionstart-hook-and-the-statusline) | `--print-hook` (print the settings.json fragment), `--install-hook` (copy the hook script into `<config-dir>/token-lens/hooks/`), `--managed-path PATH` (override the platform managed-settings.json path) |
+| `snapshot-config` | Capture (or print/install) the SessionStart config-snapshot hook — see [section 8](#8-installing-the-sessionstart-hook-and-the-statusline) | `--print-hook` (print the settings.json fragment), `--install-hook` (copy the hook script into `<config-dir>/hooks/`), `--managed-path PATH` (override the platform managed-settings.json path) |
 | `log-usage` | Read a pasted `get_usage` JSON payload from stdin and append its rows to the local usage-window CSV log | none beyond the global flags |
 | `pricing-check` | Print the resolved rate card's provenance and rate table, and (with `--models`) how specific model ids resolve against it | `--models ID,ID,...` |
 | `scrub-fixture` | Turn a real `<project_dir>/<session_id>` directory into a privacy-scrubbed test fixture, or verify an already-scrubbed one | `--session-dir PATH --out PATH` (scrub), or `--verify OUT_DIR` (audit an existing scrub), plus optional `--key-seed SEED` (deterministic HMAC key — tests only) |
@@ -467,7 +467,7 @@ interpreter. Installed and run today via the working `snapshot-config`
 CLI subcommand:
 
 ```bash
-claude-token-lens snapshot-config --install-hook   # copies the script into <config-dir>/token-lens/hooks/
+claude-token-lens snapshot-config --install-hook   # copies the script into <config-dir>/hooks/
 claude-token-lens snapshot-config --print-hook      # prints the settings.json fragment below
 ```
 
@@ -517,7 +517,7 @@ The hook always exits 0 and prints nothing on success (or a single
 stderr line on failure) so a broken Python can never block a session
 start. It writes one snapshot JSON file per run (skipped when an
 unchanged snapshot already exists within `--min-interval`, default 300s)
-to `<config-dir>/token-lens/snapshots/<UTC compact timestamp>.json`,
+to `<config-dir>/snapshots/<UTC compact timestamp>.json`,
 capturing:
 
 - **Environment variable names only, never values**, for every name
