@@ -404,6 +404,10 @@ def test_compaction_stats_aggregates_over_fixture_a(tmp_path, sonnet_rates):
     assert stats.total_sessions == 1
     assert stats.sessions_with_compaction == 1
     assert stats.compactions_per_session_mean == pytest.approx(2.0)
+    # total_sessions == sessions_with_compaction here, so the R8 fix
+    # (dividing by total_sessions) and the old compacting-sessions-only
+    # denominator agree.
+    assert stats.compactions_per_compacting_session_mean == pytest.approx(2.0)
     assert stats.compactions_per_session_max == 2
     assert stats.trigger_mix == {"auto": 1, "manual": 1}
     assert stats.pre_median == pytest.approx(75000.0)
@@ -534,11 +538,14 @@ def test_compaction_stats_sessions_without_compaction_are_not_counted(tmp_path, 
     )
     assert stats.total_sessions == 2
     assert stats.sessions_with_compaction == 1
-    # Only the session with a compaction contributes to the per-session
-    # mean/max (the brief lists "sessions with >=1 compaction" as its own
-    # separate metric, so a zero-compaction session shouldn't silently
-    # drag this one toward zero).
-    assert stats.compactions_per_session_mean == pytest.approx(2.0)
+    # R8 fix: compactions_per_session_mean now divides by every session
+    # folded in (total_sessions=2), not just the compacting one, so the
+    # zero-compaction session pulls the mean down to 1.0 (2 compactions /
+    # 2 sessions) instead of silently vanishing from the denominator.
+    assert stats.compactions_per_session_mean == pytest.approx(1.0)
+    # The old (compacting-sessions-only) denominator is kept as its own
+    # stat: 2 compactions / 1 compacting session = 2.0.
+    assert stats.compactions_per_compacting_session_mean == pytest.approx(2.0)
 
 
 def test_per_session_summary_sorted_by_dropped_tokens_desc(tmp_path, sonnet_rates):
