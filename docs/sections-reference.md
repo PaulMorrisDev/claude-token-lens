@@ -322,6 +322,75 @@ README's [installation section](../README.md#8-installing-the-sessionstart-hook-
 whose timestamp is at or before the session's start; `diff_keys` and
 `co_changed_keys` are the lower-level functions this table is built from.
 
+## `compare` (`compare.py`) — CLI-only
+
+`claude-token-lens compare --a <spec> --b <spec>` (v0.3 "Feature
+expansion" item 6). Not part of `report.build_report`'s fixed section
+list — a standalone comparison of two independently-selected arms of
+sessions, each named by a `window:<since>..<until>`, `key:<key>=<value>`
+(a flattened `snapshots.flatten_snapshot` key), `profile:<id>`, or
+`project:<slug>[,<slug>...]` spec (see [`docs/compare.md`](compare.md)
+for the full grammar). A session can match both arms, neither, or
+exactly one — the specs are independent membership tests, not a
+partition.
+
+- `compare_overview` — nine headline metrics (sessions, priced turns,
+  total cost, new tokens, cache-read share, re-cache share, compactions
+  per session, median session span, mean first-turn cache-creation
+  write), one row per metric, Arm A/Arm B/delta/delta-%% pre-formatted as
+  display text rather than raw numbers (see the module docstring: the
+  `Table` contract's one-`kind`-per-column rule can't otherwise fit five
+  different metric kinds in one narrow table). A `sample_ok` column
+  (`yes`/`no`) flags whether *both* arms cleared `--min-sessions`.
+- `compare_by_stratum` — the same two arms split by `--stratify`
+  (`purpose`, `mode`, or both — default `purpose,mode`), with a reduced,
+  raw-valued metric set (session counts, cost, new tokens, cache-read
+  share) so this table's own CSV/JSON export stays numeric. A stratum
+  below `--min-sessions` in either arm shows its session counts only,
+  every metric cell blank, and a note explaining the suppression.
+- `compare_co_changed` — only populated when *both* arms are
+  `key:`-selected: the other flattened config keys that differed between
+  each arm's "representative" snapshot (the snapshot most of that arm's
+  sessions actually joined to), excluding the arm's own compared key.
+  Empty with an explanatory note for any other arm-kind combination.
+
+Every table's notes always carry the plan's "observed, not controlled"
+caveat (Risks and gaps item 2: correlation is not causation) plus each
+arm's own exact selection rule, so a delta is never presented as
+evidence the arm's own setting *caused* it. The `profile:<id>` arm form
+is implemented and tested, but as of this work package nothing in the
+shipped codebase populates `SessionRecord.profile_id` yet, so it
+currently matches zero sessions in any real corpus until the sibling
+`profiles/` package ships that wiring.
+
+## `reconcile` (`reconcile.py`) — CLI-only
+
+`claude-token-lens reconcile --admin-csv <file> [--by day|model|day,model]`
+(plan "Enterprise use"/"Finance"). Also not part of the assembled
+report — an entirely offline comparison of this tool's own per-turn
+accounting against a CSV export you already pulled from the Anthropic
+Console/Admin API. No network call is ever made.
+
+- `reconcile_by_period` — one row per distinct day (and/or model, per
+  `--by`), each token metric (input, cache-creation, cache-read, output)
+  and cost as four columns (local, Admin, delta, delta as a percentage
+  of the Admin figure — delta is always local minus Admin), plus a fixed
+  `TOTAL` row. `--days`/`--since`/`--until` (the same common-parser flags
+  every other subcommand uses) restrict both the local and the Admin
+  side to the same window before grouping.
+
+The Admin CSV's header row is mapped tolerantly (see
+[`docs/compare.md`](compare.md#admin-csv-column-mapping) for the exact
+mapping table) — every header spelling and the `_5m`/`_1h`
+cache-creation-split convention are this module's own assumption, not
+confirmed against Anthropic's published export schema. A column the
+mapper can't place is listed, not silently dropped, in a section note;
+another note always lists the fixed set of reasons a correct local
+figure and a correct Admin figure can still legitimately differ
+(subscription usage having no Admin cost, a shared API key used by
+other tools, workspace filters on the Admin export, UTC-day-boundary
+disagreement, and an unknown model priced at zero locally).
+
 ## `usage_windows` (`tools/log_usage.py`)
 
 Not to be confused with the report's own [`usage`](#usage-usagepy)
