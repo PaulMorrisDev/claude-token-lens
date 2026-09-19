@@ -32,7 +32,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import available_timezones
 
-from . import __version__, baseline as baseline_mod, classify, discovery, onboarding
+from . import __version__, baseline as baseline_mod, classify, discovery, installer as installer_mod, onboarding
 from . import probe as probe_mod, recache, snapshots
 from . import statusline as statusline_mod
 from .cache import DigestCache
@@ -76,6 +76,8 @@ SUBCOMMANDS: tuple[str, ...] = (
     "baseline",
     "apply",
     "serve",
+    "install-service",
+    "uninstall-service",
     "import",
     "team-report",
 )
@@ -488,6 +490,40 @@ def _add_serve_args(sub: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_install_service_args(sub: argparse.ArgumentParser) -> None:
+    """Extra flags for ``install-service`` (v3): register ``serve`` to
+    start at logon/boot. ``--projects-root``/``--config-dir`` are
+    already on the common parser.
+    """
+    sub.add_argument("--port", type=int, default=8765, help="default: 8765 (must match how you run 'serve')")
+    sub.add_argument(
+        "--bind",
+        default="127.0.0.1",
+        metavar="ADDRESS",
+        help="default: 127.0.0.1 (loopback only)",
+    )
+    sub.add_argument(
+        "--dry-run",
+        action="store_true",
+        dest="dry_run",
+        help="print exactly what would be written/run, without writing or running anything",
+    )
+
+
+def _add_uninstall_service_args(sub: argparse.ArgumentParser) -> None:
+    """Extra flags for ``uninstall-service`` (v3): the inverse of
+    ``install-service``. Takes no ``--port``/``--bind`` -- removing a
+    registration never depends on them (see
+    ``installer.InstallPlan.uninstall_commands``/``uninstall_files``).
+    """
+    sub.add_argument(
+        "--dry-run",
+        action="store_true",
+        dest="dry_run",
+        help="print exactly what would be run/removed, without running or removing anything",
+    )
+
+
 def _add_snapshot_config_args(sub: argparse.ArgumentParser) -> None:
     """Extra flags for the ``snapshot-config`` subcommand only (WP7). Every
     other subcommand stays a bare stub, so this is added just for this one
@@ -611,6 +647,29 @@ def _add_init_args(sub: argparse.ArgumentParser) -> None:
         action="store_true",
         help="skip printing the SessionStart hook / statusLine install fragments",
     )
+    service_group = sub.add_mutually_exclusive_group()
+    service_group.add_argument(
+        "--install-service",
+        action="store_true",
+        dest="install_service",
+        help="register 'serve' to start at logon/boot without asking (also the "
+        "--non-interactive default, which is otherwise 'no')",
+    )
+    service_group.add_argument(
+        "--no-service",
+        action="store_true",
+        dest="no_service",
+        help="skip init's final 'run the service at logon?' step entirely -- no "
+        "question asked, nothing installed",
+    )
+    sub.add_argument(
+        "--dry-run",
+        action="store_true",
+        dest="dry_run",
+        help="print the service-install plan without writing or running anything "
+        "(only affects the logon-service step -- config.toml/the initial baseline "
+        "are still written)",
+    )
 
 
 def _add_baseline_args(sub: argparse.ArgumentParser) -> None:
@@ -710,6 +769,8 @@ def _make_parser() -> argparse.ArgumentParser:
             "init": "detect + ask (or derive) config, write config.toml, run an initial baseline",
             "baseline": "capture/list/show an onboarding baseline (mode mix, suggested profile, projected saving)",
             "serve": "run the local JSON API + watcher service",
+            "install-service": "register 'serve' to start at logon/boot (Scheduled Task / systemd user unit / LaunchAgent)",
+            "uninstall-service": "remove a logon/boot registration made by install-service (or by init)",
             "import": "validate and copy team-aggregate document(s) into <config_dir>/team/",
             "team-report": "cross-machine comparison built from every imported team document",
         }.get(name, f"{name} (not implemented yet)")
@@ -746,6 +807,10 @@ def _make_parser() -> argparse.ArgumentParser:
             _add_reconcile_args(sub)
         if name == "serve":
             _add_serve_args(sub)
+        if name == "install-service":
+            _add_install_service_args(sub)
+        if name == "uninstall-service":
+            _add_uninstall_service_args(sub)
         if name == "init":
             _add_init_args(sub)
         if name == "baseline":
@@ -1943,7 +2008,7 @@ def _cmd_init(args: argparse.Namespace) -> int:
     statusline_fragment = statusline_mod.print_install_fragment()
 
     try:
-        return onboarding.run_init(
+        rc = onboarding.run_init(
             config_dir=config_dir,
             projects_root_path=projects_root_path,
             answers_path=args.answers,
@@ -1967,6 +2032,186 @@ def _cmd_init(args: argparse.Namespace) -> int:
     except onboarding.OnboardingError as exc:
         print(f"claude-token-lens init: {exc}", file=sys.stderr)
         return 2
+
+    if rc != 0:
+        return rc
+
+    # v3: init's final step -- offer to register `serve` at logon, kept
+    # a separate function (rather than folded into onboarding.run_init's
+    # own Q&A) so onboarding.py stays free of installer.py's real
+    # subprocess/file-write side effects, the same "onboarding.py never
+    # itself installs anything" boundary its module docstring already
+    # draws for the hook/statusLine fragments above.
+    return _cmd_init_service_step(args, config_dir=config_dir, projects_root_path=projects_root_path)
+
+
+def _cmd_init_service_step(
+    args: argparse.Namespace,
+    *,
+    config_dir: Path,
+    projects_root_path: Path,
+    stdin=None,
+    stdout=None,
+) -> int:
+    """``init``'s final step (v3): "Run the service at logon?" --
+    default yes when asked interactively; under ``--non-interactive``
+    the derived default is no, *unless* ``--install-service`` was
+    given; ``--no-service`` skips the step entirely (no question, no
+    install). ``stdin``/``stdout`` default to the live ``sys.stdin``/
+    ``sys.stdout`` at call time, same reasoning as ``_cmd_init``'s own
+    comment above -- resolved here (not as a bound default argument) so
+    a test's ``capsys``/piped-stdin fixture is always the one actually
+    read.
+    """
+    stdin = stdin if stdin is not None else sys.stdin
+    stdout = stdout if stdout is not None else sys.stdout
+
+    if args.no_service:
+        stdout.write("Service-at-logon step skipped (--no-service).\n")
+        return 0
+
+    if args.install_service:
+        should_install = True
+    elif args.non_interactive:
+        should_install = False
+        stdout.write(
+            "(derived) run_service: not given on the command line; used default False "
+            "(pass --install-service to install non-interactively)\n"
+        )
+    else:
+        stdout.write("Run the service at logon? (y/n) [y]: ")
+        stdout.flush()
+        raw = (stdin.readline() or "").strip().lower()
+        should_install = raw in ("", "y", "yes")
+
+    if not should_install:
+        stdout.write(
+            "Service not installed. Run 'claude-token-lens install-service' any time to add it later.\n"
+        )
+        return 0
+
+    plan = installer_mod.plan_service_install(sys.executable, projects_root_path, config_dir)
+    try:
+        installer_mod.install(plan, dry_run=args.dry_run)
+    except installer_mod.InstallerError as exc:
+        print(f"claude-token-lens init: {exc}", file=sys.stderr)
+        return 2
+
+    if not args.dry_run:
+        _probe_service_after_install(plan.platform)
+
+    return 0
+
+
+#: Short pause (seconds) before probing a just-installed service, so a
+#: platform that starts it immediately on install (systemd's
+#: ``enable --now``, launchd's ``bootstrap`` with ``RunAtLoad``) has a
+#: moment to actually come up before ``/api/health`` is hit. Windows'
+#: Scheduled Task is logon-triggered, not started by registration
+#: itself, so this probe is expected to (and does) report "not
+#: responding yet" there -- see ``_probe_service_after_install``'s
+#: printed message for that case.
+_POST_INSTALL_PROBE_DELAY_S = 1.0
+
+
+def _http_health_ok(url: str) -> bool:
+    """Best-effort ``GET <url>/api/health``: ``True`` only on a real
+    ``200`` with a JSON ``ok: true`` body, ``False`` for absolutely any
+    failure (connection refused, timeout, non-200, malformed body) --
+    never raises. A short timeout (this is a one-shot post-install
+    courtesy check, not a readiness gate anything blocks on).
+    """
+    import urllib.error
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(f"{url}/api/health", timeout=2) as resp:
+            if resp.status != 200:
+                return False
+            body = json.loads(resp.read().decode("utf-8"))
+    except (OSError, urllib.error.URLError, ValueError):
+        return False
+    return bool(body.get("ok"))
+
+
+def _probe_service_after_install(
+    platform: str,
+    *,
+    bind: str = "127.0.0.1",
+    port: int = 8765,
+    is_registered_fn=None,
+    health_check=None,
+    sleep_fn=None,
+) -> None:
+    """Print a short "is it actually working" summary right after
+    :func:`installer.install` returns: :func:`installer.is_registered`
+    (per-platform probe) and one ``/api/health`` hit. Every dependency
+    is an injectable keyword-only parameter (default: the real thing)
+    purely so tests never have to monkeypatch ``time.sleep``/spawn a
+    real HTTP server/shell out to ``schtasks``/``systemctl``/
+    ``launchctl`` to exercise this function.
+    """
+    import time as time_mod
+
+    is_registered_fn = is_registered_fn or (lambda: installer_mod.is_registered(platform))
+    health_check = health_check or _http_health_ok
+    sleep_fn = sleep_fn or time_mod.sleep
+
+    sleep_fn(_POST_INSTALL_PROBE_DELAY_S)
+
+    registered = is_registered_fn()
+    if registered is True:
+        print("claude-token-lens: confirmed -- the service is registered to start at logon.")
+    elif registered is False:
+        print("claude-token-lens: the service registration could not be confirmed -- check the output above.")
+    else:
+        print("claude-token-lens: service registration status could not be determined on this platform.")
+
+    url = f"http://{bind}:{port}"
+    if health_check(url):
+        print(f"claude-token-lens: the service is already responding at {url}")
+    else:
+        print(
+            f"claude-token-lens: not responding yet (this is normal on Windows, which starts the "
+            f"task at your next logon). Once it's running, open {url}"
+        )
+
+
+def _cmd_install_service(args: argparse.Namespace) -> int:
+    """``install-service`` (v3): register ``serve`` to start at
+    logon/boot, for anyone who skipped it during ``init`` (or ran
+    ``init`` before this milestone existed).
+    """
+    config_dir = _resolve_config_dir(args.config_dir)
+    projects_root_path = Path(args.projects_root) if args.projects_root else discovery.projects_root()
+
+    try:
+        plan = installer_mod.plan_service_install(
+            sys.executable, projects_root_path, config_dir, port=args.port, bind=args.bind
+        )
+        installer_mod.install(plan, dry_run=args.dry_run)
+    except installer_mod.InstallerError as exc:
+        print(f"claude-token-lens install-service: {exc}", file=sys.stderr)
+        return 2
+
+    if not args.dry_run:
+        _probe_service_after_install(plan.platform, bind=args.bind, port=args.port)
+
+    return 0
+
+
+def _cmd_uninstall_service(args: argparse.Namespace) -> int:
+    """``uninstall-service`` (v3): remove a registration made by
+    ``install-service`` or by ``init``'s own logon-service step.
+    ``--port``/``--bind`` don't apply here -- removing a registration
+    never depends on them (see
+    ``installer.InstallPlan.uninstall_commands``/``uninstall_files``).
+    """
+    config_dir = _resolve_config_dir(args.config_dir)
+    projects_root_path = Path(args.projects_root) if args.projects_root else discovery.projects_root()
+
+    plan = installer_mod.plan_service_install(sys.executable, projects_root_path, config_dir)
+    return installer_mod.uninstall(plan, dry_run=args.dry_run)
 
 
 def _cmd_baseline(args: argparse.Namespace) -> int:
@@ -2404,6 +2649,10 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_baseline(args)
     if command == "serve":
         return _cmd_serve(args)
+    if command == "install-service":
+        return _cmd_install_service(args)
+    if command == "uninstall-service":
+        return _cmd_uninstall_service(args)
     if command == "import":
         return _cmd_import(args)
     if command == "team-report":
