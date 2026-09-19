@@ -912,43 +912,54 @@
     return select;
   }
 
-  // The per-turn series (context size, re-cache/compaction/spawn/human
-  // markers by turn index) that a real timeline needs is not part of
-  // `/api/session/<id>` today (see docs/api.md) -- only session-level
-  // totals and a flat transcripts list. Rather than fabricate a curve
-  // from aggregate numbers, this looks for an explicit per-turn field
-  // (`turns` / `turn_series` / `context_series`) in case a future
-  // service version adds one, and falls back to a clearly labelled
-  // placeholder otherwise -- never invented data.
+  // `/api/session/<id>` (S1-integration fix 1.g, see docs/api.md) adds
+  // `turn_series`: a list of `[turn_index, ctx, cache_creation_tokens,
+  // is_recache, preceding_primary]` per priced turn of the session's
+  // top-level transcript, plus `markers`: `{compactions, spawns,
+  // human}`, each a list of turn_index values. It's absent (rather
+  // than an empty list) whenever the store has no stored top-level
+  // transcript digest to source it from -- e.g. a session ingested
+  // before the watcher parsed a top-level transcript, or one whose
+  // digest failed to decode -- so this still falls back to a clearly
+  // labelled placeholder rather than inventing a curve.
   function findPerTurnSeries(session) {
-    var candidates = ["turns", "turn_series", "context_series"];
-    for (var i = 0; i < candidates.length; i++) {
-      var value = session[candidates[i]];
-      if (Array.isArray(value) && value.length) return value;
-    }
-    return null;
+    var series = session.turn_series;
+    return Array.isArray(series) && series.length ? series : null;
+  }
+
+  function toTurnIndexSet(list) {
+    var set = {};
+    (list || []).forEach(function (turnIndex) {
+      set[turnIndex] = true;
+    });
+    return set;
   }
 
   function buildSessionTimeline(session) {
     var series = findPerTurnSeries(session);
     if (!series) {
       return el("div", { class: "placeholder-box" }, [
-        el("p", { text: "timeline needs per-turn data (v0.2.1)" }),
-        el("p", { class: "notes", text: "/api/session/<id> currently returns session-level totals and a flat transcript list only — no per-turn context-size series to plot a line from yet." }),
+        el("p", { text: "no per-turn data for this session" }),
+        el("p", { class: "notes", text: "/api/session/<id> only returns turn_series once the watcher has stored this session's top-level transcript digest." }),
       ]);
     }
+
+    var markers = session.markers || {};
+    var compactionTurns = toTurnIndexSet(markers.compactions);
+    var spawnTurns = toTurnIndexSet(markers.spawns);
+    var humanTurns = toTurnIndexSet(markers.human);
 
     var width = 640, height = 180, padding = 28;
     var maxCtx = Math.max.apply(
       null,
       series.map(function (t) {
-        return t.ctx || 0;
+        return t[1] || 0;
       })
     ).valueOf() || 1;
     var n = series.length;
     var points = series.map(function (t, i) {
       var x = padding + (n > 1 ? (i / (n - 1)) * (width - 2 * padding) : 0);
-      var y = height - padding - ((t.ctx || 0) / maxCtx) * (height - 2 * padding);
+      var y = height - padding - ((t[1] || 0) / maxCtx) * (height - 2 * padding);
       return [x, y];
     });
 
@@ -980,13 +991,15 @@
         '" fill="none" stroke="var(--accent)" stroke-width="1.5"></polyline>'
     );
     series.forEach(function (turn, i) {
+      var turnIndex = turn[0];
+      var isRecache = turn[3];
       var kinds = [];
-      if (turn.is_recache) kinds.push("recache");
-      if (turn.compaction) kinds.push("compaction");
-      if (turn.spawn) kinds.push("spawn");
-      if (turn.human_prompt_chars) kinds.push("human");
+      if (isRecache) kinds.push("recache");
+      if (compactionTurns[turnIndex]) kinds.push("compaction");
+      if (spawnTurns[turnIndex]) kinds.push("spawn");
+      if (humanTurns[turnIndex]) kinds.push("human");
       kinds.forEach(function (kind) {
-        var label = escapeHtml("Turn " + (turn.turn_index || i + 1) + ": " + kind);
+        var label = escapeHtml("Turn " + (turnIndex || i + 1) + ": " + kind);
         svgParts.push(
           '<circle cx="' +
             points[i][0].toFixed(1) +

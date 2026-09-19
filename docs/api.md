@@ -59,6 +59,31 @@ the CLI, extended to the service: a test (`tests/test_service_egress.py`,
 built alongside `api.py`) asserts no `socket.connect` call targets
 anything outside the bound address for the lifetime of a test server.
 
+## `serve` command-line flags
+
+Flags beyond `--projects-root`/`--config-dir`/`--port`/`--bind`/
+`--allow-remote`/`--poll-interval`/`--retention-days`/`--exclude-project`/
+`--once` (see `--help`):
+
+- **`--billing-mode {api,subscription}`** (S1-integration fix 1.a) is
+  stamped onto every session's `billing_mode` field (see `/api/sessions`
+  above). Defaults to `<config-dir>/config.toml`'s own `billing` setting
+  when omitted (itself defaulting to `"api"` — `config.py`'s `Config.billing`),
+  so a subscription user only has to say so once, in one place, rather
+  than on every `serve` invocation.
+- **`--monthly-report DIR`** sets `ServeOptions.monthly_report_dir`, a
+  directory a monthly report is written into. `None` (the default) means
+  no monthly report is written.
+- **`--purge`** deletes `<config-dir>/service.db` and its `-wal`/`-shm`
+  sidecars and exits (S1-integration fix 2.e) — never starts the watcher
+  or the API. Always prints exactly which files it would delete first;
+  only actually deletes them when `--yes` is also given. Safe at any
+  time: the store is always a derived cache (`service/store.py`'s module
+  docstring), so the next `serve` run simply rebuilds it from the
+  transcripts already on disk. Exits `2` (and deletes nothing) if
+  `--yes` is missing, `0` otherwise (including when there is nothing to
+  delete).
+
 ## Routes
 
 All `GET` routes accept query-string parameters; all `POST` routes
@@ -97,6 +122,25 @@ if `<id>` is unknown.
 `{"id", "kind", "agent_id", "agent_type", "spawn_depth", "parent_agent_id"}`
 — no `path`) and `tags` (`{key: value}`).
 
+If the session has a stored top-level transcript digest, `data` also
+carries `turn_series` and `markers` (S1-integration fix 1.g), sourced
+from `Store.turns_for_session` — the timeline chart's exact input
+shape, no client-side reconstruction needed:
+
+- `turn_series`: a list of `[turn_index, ctx, cache_creation_tokens,
+  is_recache, preceding_primary]` per priced turn (`turn_index >= 1`),
+  in turn order. `preceding_primary` is the `EventKind` string value
+  (`"human_text"`, `"compact_boundary"`, `"tool_result"`, ...) of the
+  event immediately preceding that turn.
+- `markers`: `{"compactions": [turn_index, ...], "spawns": [turn_index, ...], "human": [turn_index, ...]}`
+  — turn indices where a compaction boundary, an agent spawn
+  (`agent_brief_chars` set), or a human prompt (`human_prompt_chars`
+  set) preceded that turn.
+
+Both fields are omitted entirely (never present as an empty list) when
+no top-level transcript digest is stored yet, or the stored digest
+can't be decoded — never fabricated.
+
 ### `GET /api/recache`
 
 Corpus-wide RE-CACHE breakdown — `Store.recache`.
@@ -125,6 +169,14 @@ latest `snapshots` row per project.
 
 Query: `key` (a specific settings key) or `auto_keys=1` (every managed
 key). Mirrors the CLI's `config-diff` subcommand.
+
+A snapshot taken outside any recognised project (no project slug on
+disk to attribute it to) is still captured — never dropped — under the
+store's internal global/machine-wide bucket, but `Store.snapshots()`
+reports its `project_slug` as `null` rather than a synthetic project
+name (S1-integration fix 1.c). This route treats a `null`-slug snapshot
+as a user-level configuration layer, not a project's, matching
+`snapshots.py`'s own "(unknown project)" label for it.
 
 ### `GET /api/recommendations`
 
@@ -231,20 +283,15 @@ narrower computation. A `key` that names a config key which didn't
 change in the requested window returns `{"ok": true, "data": []}`, not
 an error.
 
-**Memoization key: a store-side change token this document doesn't
-name.** Rebuilding a full report on every request would make every tab
-switch in the UI (`docs/ui.md`) re-parse the whole corpus. The
-implementation caches the assembled `ReportModel` in-process, keyed by
-`(window_days, change_token)`, where `change_token` is
-`(COUNT(*), MAX(updated_at))` over the `transcripts` table. **`Store`
-(`service/store.py`) has no public reader for "has anything changed
-since the last report build"** — this is a store reader this work
-package found missing, not something it was free to add (`store.py` is
-outside S1-api's writable paths). The change-token query reads
-`store._connection()` directly, read-only, rather than adding one. A
-future `service/store.py` change could promote this to a named method
-(e.g. `Store.change_token() -> tuple[int, str]`) with no caller-visible
-difference to any route.
+**Memoization key: `Store.change_token()`.** Rebuilding a full report on
+every request would make every tab switch in the UI (`docs/ui.md`)
+re-parse the whole corpus. The implementation caches the assembled
+`ReportModel` in-process, keyed by `(window_days, change_token)`, where
+`change_token` is `Store.change_token()` (S1-integration fix 1.f) — a
+single string combining `(COUNT(*), MAX(updated_at))` over `transcripts`
+and `(COUNT(*), MAX(ts))` over `snapshots`. A cache hit only requires
+this token to be unchanged since the entry was built; any transcript or
+snapshot insert/update moves it, forcing a rebuild on the next request.
 
 **`/api/report.json`/`.md`/`.html` are unwrapped on success.** Their
 body on `200` is the renderer's own native output (`render_json`/
@@ -302,16 +349,14 @@ also picks `<config_dir>/service.db` as the SQLite store's filename —
 `ServeOptions` has no field for it, only `config_dir`.
 
 **Watching a background-thread watcher's stats.** `service.contracts.Watcher`
-exposes no getter for the *latest* poll tick once `watcher.start()` has
-handed ticking over to a background thread (only `run_once`/`start`/
-`stop`). `/api/health` still needs some answer once the watcher is
-running unattended, so `serve.run()` passes `make_handler` a
-`watcher_stats` callable that prefers a `watcher.last_stats` attribute
-when the concrete `FileWatcher` happens to expose one, falling back to
-the stats captured from the synchronous first tick `run()` always
-performs before serving. This is an integration assumption for
-S1-watcher to confirm or adjust, not a requirement `contracts.Watcher`
-itself enforces.
+documents `last_stats: WatcherStats | None` (S1-integration fix 1.e) as
+a Protocol attribute every concrete `Watcher` keeps current — `FileWatcher`
+sets it at the end of every `run_once()`, including the ones its own
+background poll thread runs after `start()`. `/api/health` always has a
+real answer: `serve.run()` passes `make_handler` a `watcher_stats`
+callable that simply reads `watcher.last_stats`, no fallback guesswork
+needed, since `run()` always calls `watcher.run_once()` synchronously
+once before serving starts.
 ## Store rebuild
 
 `GET /api/report.*` above is built from the store instead of a fresh
@@ -328,16 +373,21 @@ decodes those digests straight back into a `Corpus` shaped exactly as
 `days`/`since`/`until`/`window_by` mirror `discovery.find_sessions`'s own
 parameters and windowing semantics.
 
-Two fields do not survive the round trip, both store-schema gaps rather
-than bugs in `corpus_from_store` itself:
+**Workflow runs round-trip (S1-integration fix 1.d).** The watcher
+persists each `<session>/workflows/wf_*.json` run to a `workflow_runs`
+table (`run_id`, `agent_count`, `phases` — phase *titles* only, never
+`detail` — `started`, `finished`, `cost`, `status`), and
+`corpus_from_store` reads it back into `SessionBundle.workflows`, so a
+rebuilt report's `"workflows"`/`"phases"` sections and
+`overview.workflow_runs` match a fresh parse. One approximation:
+`WorkflowRun.phases` (an int count) is reconstructed as
+`len(phase_titles)`, which can differ from a fresh parse's raw phase
+count if some phase entries in the source JSON lack a `title` — an
+accepted, documented trade-off (`service/schema.py`'s
+`CREATE_WORKFLOW_RUNS` comment), not a privacy or correctness concern.
 
-- **Workflow runs.** The store has no table for a `<session>/workflows/
-  wf_*.json` run's own cost/phase/status data, so a rebuilt session's
-  `workflows` list is always empty — its report would undercount the
-  `"workflows"`/`"phases"` sections and `overview.workflow_runs` for a
-  session that ran one. Every workflow-nested subagent's own turns,
-  tokens and cost still come through in full, since those are ordinary
-  persisted transcripts.
-- **`SessionBundle.project_dir`.** Always the empty string once rebuilt
-  from the store — nothing in `report.build_report`'s own code path
-  reads it, so this has no effect on any route's output.
+One field still does not survive the round trip, a store-schema gap
+rather than a bug in `corpus_from_store` itself: **`SessionBundle.project_dir`**
+is always the empty string once rebuilt from the store — nothing in
+`report.build_report`'s own code path reads it, so this has no effect
+on any route's output.
