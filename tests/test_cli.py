@@ -1176,7 +1176,7 @@ def test_python_dash_m_bad_input_exits_2():
         cwd=str(Path(__file__).parent.parent / "src"),
     )
     assert result.returncode == 2
-    assert "init" in result.stderr
+    assert "scrub-fixture" in result.stderr
 
 
 def test_statusline_cli_forwards_config_dir_flag(tmp_path, monkeypatch, capsys):
@@ -1197,4 +1197,3 @@ def test_statusline_cli_forwards_config_dir_flag(tmp_path, monkeypatch, capsys):
 
     assert rc == 0
     assert (explicit_config_dir / "usage-log.csv").exists()
-    assert "scrub-fixture" in result.stderr

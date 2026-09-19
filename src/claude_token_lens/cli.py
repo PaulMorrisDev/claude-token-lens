@@ -2200,8 +2200,6 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_reconcile(args)
     if command == "scrub-fixture":
         return _cmd_scrub_fixture(args)
-    if command in ("init", "baseline"):
-        return _cmd_planned_stub(command, "v0.3")
     if command == "apply":
         return _cmd_apply(args)
     if command == "init":
