@@ -202,6 +202,14 @@ _SALT: bytes | None = None
 _SALT_FILENAME = "salt"
 
 
+#: The only valid salt length -- ``secrets.token_bytes(32)``'s own output
+#: size. Enforced by both :func:`set_salt` and :func:`load_or_create_salt`
+#: (fix #4): a shorter salt collapses HMAC-SHA256's effective key space and
+#: a longer one is simply not what this module ever writes, so either is
+#: treated as a corrupted/foreign file rather than accepted silently.
+_SALT_LENGTH_BYTES = 32
+
+
 def set_salt(salt: bytes) -> None:
     """Set the process-wide salt used by ``_read_target_hash`` for
     ``Turn.read_target_hashes``. Must be called once (per process) before
@@ -212,7 +220,14 @@ def set_salt(salt: bytes) -> None:
     ``ProcessPoolExecutor`` (``corpus.py``) can initialise each worker
     process once via an initializer rather than threading the salt
     through every call.
+
+    Raises ``ValueError`` if ``salt`` is not exactly
+    :data:`_SALT_LENGTH_BYTES` long (fix #4) — an unsalted-strength hash
+    from a truncated or foreign salt is worse than no hash at all (see
+    ``_read_target_hash``'s own "``None`` rather than unsalted" contract).
     """
+    if len(salt) != _SALT_LENGTH_BYTES:
+        raise ValueError(f"salt must be {_SALT_LENGTH_BYTES} bytes, got {len(salt)}")
     global _SALT
     _SALT = salt
 
@@ -232,21 +247,47 @@ def _default_token_lens_dir() -> Path:
 def load_or_create_salt(config_dir: str | Path | None = None) -> bytes:
     """Load the 32-byte salt at ``<config_dir>/salt``, creating it with
     ``secrets.token_bytes(32)`` on first use. ``config_dir`` defaults to
-    ``_default_token_lens_dir()``. Best-effort ``chmod 0600`` on the new
-    file (POSIX only — Windows has no equivalent bit, so the ``chmod``
-    call is wrapped and its failure ignored there). Does not call
-    ``set_salt`` itself — the caller decides when the process-wide salt
-    is wired up.
+    ``_default_token_lens_dir()``. Does not call ``set_salt`` itself — the
+    caller decides when the process-wide salt is wired up.
+
+    Fix #4: any read failure — not just a missing file (``PermissionError``,
+    ``IsADirectoryError``, a dead network mount, ...) — is treated as "no
+    salt yet" rather than propagating and crashing the caller, and a salt
+    file whose length is not exactly :data:`_SALT_LENGTH_BYTES` (a
+    zero-byte file from an interrupted first write, a truncated sync, a
+    hand-edited file) is likewise treated as absent and regenerated —
+    returning it unsalted would defeat the whole hashing mechanism (a
+    zero-length salt makes ``_read_target_hash`` produce a plain,
+    rainbow-table-able HMAC). The replacement file is created via
+    ``os.open`` with ``O_CREAT`` and mode ``0o600`` together, so a
+    brand-new file is never briefly world-readable between creation and a
+    separate ``chmod`` call; ``chmod`` still runs afterwards (best-effort,
+    ignored on Windows, which has no equivalent bit) to cover the
+    overwrite-an-existing-but-invalid-file branch, where ``O_CREAT``'s mode
+    argument has no effect on an already-existing inode's permissions.
     """
     directory = Path(config_dir) if config_dir is not None else _default_token_lens_dir()
     directory.mkdir(parents=True, exist_ok=True)
     salt_path = directory / _SALT_FILENAME
     try:
-        return salt_path.read_bytes()
-    except FileNotFoundError:
-        pass
-    salt = secrets.token_bytes(32)
-    salt_path.write_bytes(salt)
+        existing = salt_path.read_bytes()
+    except OSError:
+        existing = None
+    if existing is not None and len(existing) == _SALT_LENGTH_BYTES:
+        return existing
+
+    salt = secrets.token_bytes(_SALT_LENGTH_BYTES)
+    try:
+        fd = os.open(salt_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        # The file exists but was rejected above (missing/unreadable/wrong
+        # length) -- overwrite it in place rather than trying (and racing)
+        # to delete-then-recreate it.
+        fd = os.open(salt_path, os.O_WRONLY | os.O_TRUNC)
+    try:
+        os.write(fd, salt)
+    finally:
+        os.close(fd)
     try:
         os.chmod(salt_path, 0o600)
     except OSError:
