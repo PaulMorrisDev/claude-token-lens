@@ -146,6 +146,22 @@ def test_planned_stub_exits_2(command, capsys):
     assert command in err
 
 
+@pytest.mark.parametrize("command", STUB_SUBCOMMANDS)
+def test_stub_subcommand_help_text_is_marked_planned(command, capsys):
+    # Fix R25: init/baseline/serve's --help listing used to read as
+    # "planned for v0.3" prose with no visual marker distinguishing a
+    # stub from a real subcommand at a glance in the full listing;
+    # confirm the top-level --help output now leads each with the same
+    # "(planned)" tag the generic not-implemented-yet fallback uses.
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main(["--help"])
+    assert exc_info.value.code == 0
+    out = capsys.readouterr().out
+    lines = [line for line in out.splitlines() if command in line]
+    assert lines, f"{command} not found in --help output"
+    assert any("(planned)" in line for line in lines)
+
+
 def test_no_argv_with_no_data_exits_1(capsys):
     # The autouse fixture points HOME/CLAUDE_CONFIG_DIR at an empty tmp
     # dir, so the default "report" subcommand's default project (this

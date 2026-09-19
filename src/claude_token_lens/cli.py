@@ -269,9 +269,14 @@ def _make_parser() -> argparse.ArgumentParser:
             "probe": "content-free schema histogram of a project or file",
             "statusline": "Claude Code statusLine handler (reads stdin JSON)",
             "scrub-fixture": "scrub a real session into a privacy-safe test fixture",
-            "init": "planned for v0.3",
-            "baseline": "planned for v0.3",
-            "serve": "planned for v0.2",
+            # Fix R25: lead with the same "(planned)" marker the plain
+            # "not implemented yet" fallback below uses for every other
+            # stub, so a subcommand listing (``--help``) makes stub
+            # commands visually scannable as a group instead of only
+            # readable one at a time via "planned for vX.Y" prose.
+            "init": "(planned) v0.3 milestone",
+            "baseline": "(planned) v0.3 milestone",
+            "serve": "(planned) v0.2 milestone",
         }.get(name, f"{name} (not implemented yet)")
         sub = subparsers.add_parser(name, parents=[common], help=help_text)
         if name == "pricing-check":
