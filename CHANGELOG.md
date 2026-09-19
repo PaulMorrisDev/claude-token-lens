@@ -9,6 +9,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Cross-platform service installer (`install-service`/
+  `uninstall-service`, and `init`'s new logon-service step)**
+  (`src/claude_token_lens/installer.py`, work package v3): registers
+  `claude-token-lens serve` to run continuously from logon/boot, so
+  history isn't lost the first time Claude Code's own
+  `cleanupPeriodDays` cleans up a transcript that no watcher was
+  running to see. Windows registers a `-RunLevel Limited` Scheduled
+  Task (no admin rights) via inline PowerShell cmdlets; Linux writes a
+  hardened `~/.config/systemd/user/claude-token-lens.service` unit and
+  runs `systemctl --user enable --now`; macOS writes a LaunchAgent
+  plist and runs `launchctl bootstrap`. Building a plan
+  (`plan_service_install`) never has a side effect, so `--dry-run`
+  (on both the new subcommands and `init` itself) always prints
+  exactly what would be written/run without touching the machine, and
+  every real write/run goes through an injectable `runner` so the test
+  suite never shells out to `schtasks`/`systemctl`/`launchctl`/
+  `powershell.exe` for real. Running from a `.pyz` build registers an
+  action that re-invokes that same archive. `claude-token-lens init`
+  now finishes with a "Run the service at logon?" question (default
+  yes; `--install-service`/`--no-service` to answer up front; derives
+  to *not* installing under `--non-interactive` unless
+  `--install-service` is also given), after which it probes
+  `is_registered()` and `GET /api/health` once and prints the dashboard
+  URL. `GET /api/health` gains a `service_registered: true|false|null`
+  field (`null` when the probe can't run at all), cached for ten
+  minutes per running `serve` process; the dashboard's Overview tab
+  shows a banner when it comes back `false`. See
+  [`docs/deploy.md`](docs/deploy.md).
 - **Service: baseline and profile ingestion, and the real `/api/profiles*`
   routes** (`service/watcher.py`, `service/store.py`, `service/api.py`,
   work package V3-service): the watcher now ingests every

@@ -12,7 +12,8 @@ onboarding and baseline-capture engines are all implemented and covered
 by tests. The command-line surface now matches: `report`, `sessions`,
 `recache`, `ttl`, `limits`, `compactions`, `config-diff`, `log-usage`,
 `pricing-check`, `scrub-fixture`, `probe`, `statusline`,
-`snapshot-config`, `init`, `baseline` and `serve` are real subcommands
+`snapshot-config`, `init`, `baseline`, `serve`, `install-service` and
+`uninstall-service` are real subcommands
 backed by that engine — see [section 2](#2-quick-start) for the full
 flag reference and [`docs/onboarding.md`](docs/onboarding.md) for
 `init`/`baseline` specifically. This README describes what the code
@@ -89,25 +90,44 @@ What it cannot do:
 pip install .
 # or, isolated from your other Python environments:
 pipx install .
+# or, with no pip at all — see "Other ways to run the service" below:
+# python -m zipapp src -m "claude_token_lens.__main__:main" -o claude-token-lens.pyz
 ```
 
 Then, from the project you want to analyse:
 
 ```bash
 claude-token-lens init
+# then open http://127.0.0.1:8765
 ```
 
-`init` is the fastest way to a first report. It detects what's already
-on your machine (existing config, config snapshots, a usage log), asks
-a handful of short questions it genuinely can't infer on its own
-(billing mode, any projects to always exclude, whether you launch
-Claude Code with shared settings overlays, your timezone, a default
-profile-apply scope, and how long to run its onboarding "capture
-window" for — 7 days by default), writes `config.toml`, offers the
-SessionStart hook and statusline `settings.json` fragments to install
-(skip with `--no-install`), and kicks off that capture window with an
-initial baseline for the current project. Answering non-interactively
-(e.g. in a script or CI) is supported too:
+`init` is the fastest way to a first report, and the fastest way to a
+live dashboard. It detects what's already on your machine (existing
+config, config snapshots, a usage log), asks a handful of short
+questions it genuinely can't infer on its own (billing mode, any
+projects to always exclude, whether you launch Claude Code with shared
+settings overlays, your timezone, a default profile-apply scope, and
+how long to run its onboarding "capture window" for — 7 days by
+default), writes `config.toml`, offers the SessionStart hook and
+statusline `settings.json` fragments to install (skip with
+`--no-install`), kicks off that capture window with an initial baseline
+for the current project, and — as its last step — offers to register
+`claude-token-lens serve` to run at logon (`y` by default; skip with
+`--no-service`, or answer up front with `--install-service`). Say yes
+and http://127.0.0.1:8765 is already live by the time `init` exits.
+
+This last step matters for a reason that's easy to miss: Claude Code
+itself deletes transcripts older than `cleanupPeriodDays`, so the only
+way to keep that history around for `report`/`baseline`/the dashboard
+above is a watcher that's actually running when a transcript would
+otherwise be cleaned up — not just running the one time you happened to
+invoke a subcommand. See [section 14](#14-running-the-service) for what
+the registration step actually does on each platform, and
+[`docs/deploy.md`](docs/deploy.md) for the full detail (including
+`install-service --dry-run` to preview it and `uninstall-service` to
+remove it).
+
+Answering non-interactively (e.g. in a script or CI) is supported too:
 
 ```bash
 claude-token-lens init --non-interactive --no-install
@@ -198,9 +218,11 @@ this table only lists what's specific to each one.
 | `monthly-report` | Write a habit-forming finance summary (cost/tokens by model/project/entrypoint, five-hour blocks under subscription billing) plus the `usage` section for one calendar month, as both Markdown and HTML (see [section 10](#10-for-team-leads-and-enterprise) and [`docs/exports.md`](docs/exports.md)) | `--out DIR` (required), `--month YYYY-MM` (default: the previous calendar month) |
 | `import` | Validate and copy one or more `export --aggregate` team documents into `<config_dir>/team/` for `team-report` (see [section 10](#10-for-team-leads-and-enterprise) and [`docs/team.md`](docs/team.md)) | `FILE...` (one or more team-document paths); exits 2 with the reason on the first invalid file |
 | `team-report` | Cross-machine per-archetype/per-agent-type comparison built from every document already imported into `<config_dir>/team/` (see [section 10](#10-for-team-leads-and-enterprise) and [`docs/team.md`](docs/team.md)) | `--min-sessions N` (default 5), plus the same `--json`/`--html PATH`/`--csv-dir DIR` output flags as `report` |
-| `init` | Detect what's already set up, ask (or, non-interactively, derive) a short question set, write `config.toml` and this project's `projects/<slug>.toml`, print the hook/statusline install fragments, and run an initial onboarding baseline — see [`docs/onboarding.md`](docs/onboarding.md) | `--answers FILE` (JSON file supplying any subset of the answers), `--non-interactive` (derive unanswered questions instead of prompting), `--no-install` (skip printing the hook/statusline fragments) |
+| `init` | Detect what's already set up, ask (or, non-interactively, derive) a short question set, write `config.toml` and this project's `projects/<slug>.toml`, print the hook/statusline install fragments, run an initial onboarding baseline, and — as its last step — offer to register the service to run at logon (`docs/deploy.md`) — see [`docs/onboarding.md`](docs/onboarding.md) | `--answers FILE` (JSON file supplying any subset of the answers), `--non-interactive` (derive unanswered questions instead of prompting; derives to *not* installing the service unless `--install-service` is also given), `--no-install` (skip printing the hook/statusline fragments), `--install-service` (register the service without asking), `--no-service` (skip the logon-service step entirely), `--dry-run` (governs only the logon-service step: print its plan without writing/registering anything) |
 | `baseline` | Capture (or list/show) an onboarding baseline: mode mix, dominant purposes, suggested profile, projected saving — see [`docs/onboarding.md`](docs/onboarding.md) | `--finalise` (treat the baseline as final even if the capture window hasn't elapsed), `--list` (list saved baselines), `--show ID` (print a previously saved baseline's report) |
 | `serve` | Run the local JSON API + watcher service (`service/serve.py`) — see [`docs/api.md`](docs/api.md) and [`docs/ui.md`](docs/ui.md) | `--port N` (default 8765), `--bind ADDRESS` (default `127.0.0.1`, loopback only), `--allow-remote` (allow `--bind` to a non-loopback address, refused by default), `--poll-interval SECONDS` (watcher poll interval, default 30), `--retention-days N` (prune sessions older than N days on every poll tick, default: keep forever), `--exclude-project SLUG` (repeatable; project slug never scanned), `--billing-mode {api,subscription}` (stamped onto every session; default: `config.toml`'s `billing`, else `api`), `--monthly-report DIR` (also write a monthly report into DIR on every tick), `--once` (run a single watcher tick, print its stats, and exit instead of serving), `--purge --yes` (delete `<config-dir>/service.db` and its WAL/SHM sidecars, then exit) |
+| `install-service` | Register `claude-token-lens serve` to run at logon for the current platform (Windows Scheduled Task, systemd user unit, or macOS LaunchAgent) — this is what `init`'s last step, and the manual paths in [section 14](#14-running-the-service), both call — see [`docs/deploy.md`](docs/deploy.md) | `--port N` (default 8765), `--bind ADDRESS` (default `127.0.0.1`), `--dry-run` (print exactly what would be written/run, without writing or running anything) |
+| `uninstall-service` | Remove whatever `install-service` (or `init`) registered — deletes the task/unit/agent definition it wrote, using the same per-platform command the manual `Unregister-TokenLensTask.ps1`/`systemctl --user disable`/`launchctl bootout` paths use | `--dry-run` (print what would be removed, without removing anything) |
 | `compare` | A/B compare two arms of sessions (`window:`/`key:`/`profile:`/`project:` specs), stratified by purpose/mode with a minimum-sample gate — see [`docs/compare.md`](docs/compare.md) | `--a SPEC` / `--b SPEC` (required), `--stratify purpose,mode` (default), `--min-sessions N` (default: `config.toml`'s `min_sessions`), plus the same `--json`/`--html PATH`/`--csv-dir DIR` output flags as `report` |
 | `reconcile` | Compare local usage/cost accounting against an Admin API CSV export, entirely offline — see [`docs/compare.md`](docs/compare.md) | `--admin-csv FILE` (required), `--by {day,model,day,model}` (default `day`), plus the same `--json`/`--html PATH`/`--csv-dir DIR` output flags as `report` (the window comes from the global `--days`/`--since`/`--until` flags, not a separate flag) |
 
@@ -901,33 +923,68 @@ claude-token-lens serve --projects-root ~/.claude/projects --config-dir ~/.claud
 # then open http://127.0.0.1:8765
 ```
 
-Three ways to keep it running continuously, in the order this project
-recommends them (native first, Docker last) — full detail, including
-what each path can/cannot touch and how to verify no egress, is in
-[docs/deploy.md](docs/deploy.md):
+Running it once by hand, like this, is fine for a quick look, but it
+only lasts until you close the terminal — and Claude Code deletes
+transcripts older than `cleanupPeriodDays` on its own, so history you
+haven't captured yet is gone for good once that happens. `init`'s last
+step (or the standalone `install-service` subcommand) registers
+`serve` to run continuously from logon instead, so nothing has to be
+started by hand:
 
-- **Windows, no admin rights:**
-  `powershell -ExecutionPolicy Bypass -File scripts\windows\Register-TokenLensTask.ps1`
-  registers a logon-triggered Scheduled Task (`-RunLevel Limited`).
-  Remove it with `Unregister-TokenLensTask.ps1`.
-- **Linux/macOS, no root:**
-  `systemctl --user enable --now claude-token-lens.service` after
-  copying `scripts/systemd/claude-token-lens.service` to
-  `~/.config/systemd/user/` — a hardened user unit
-  (`ProtectHome=read-only` plus a carved-out `ReadWritePaths` for its
-  own data directory).
-- **Docker:** `docker compose up -d` builds and runs the hardened image
-  in this repository's `Dockerfile`/`docker-compose.yml` (non-root
-  user, read-only root filesystem, `cap_drop: [ALL]`, loopback-only
-  published port).
+```bash
+claude-token-lens install-service          # registers it for this platform
+claude-token-lens install-service --dry-run  # preview the plan first, writes/runs nothing
+claude-token-lens uninstall-service         # removes it again
+```
 
-No `pip install`? `python scripts/build-pyz.py` produces a single
-dependency-free `dist/claude-token-lens.pyz` you can copy anywhere and
-run with `python dist/claude-token-lens.pyz serve ...`.
+`install-service` detects the platform and does one of the following —
+full detail, including what each path can/cannot touch and how to
+verify no egress, is in [docs/deploy.md](docs/deploy.md):
+
+- **Windows:** registers a logon-triggered Scheduled Task
+  (`-RunLevel Limited`, no admin rights required).
+- **Linux:** writes `~/.config/systemd/user/claude-token-lens.service`
+  and runs `systemctl --user enable --now` (a hardened user unit —
+  `ProtectHome=read-only` plus a carved-out `ReadWritePaths` for its
+  own data directory). Prints a `loginctl enable-linger` note for
+  headless servers with no interactive session.
+- **macOS:** writes `~/Library/LaunchAgents/com.claude-token-lens.plist`
+  and runs `launchctl bootstrap`.
+
+`claude-token-lens serve`'s own `GET /api/health` reports whether the
+service is currently registered (`service_registered: true|false|null`
+— see [`docs/api.md`](docs/api.md)), and the dashboard's Overview tab
+shows a banner if it isn't.
 
 The store is always a derived cache, never source of truth: delete and
 rebuild it any time with `claude-token-lens serve --purge --yes`, and
 prune old sessions automatically with `--retention-days N`.
+
+### Other ways to run the service
+
+Prefer to wire it up yourself, or run somewhere `install-service`
+doesn't support? These are the exact mechanisms `install-service` uses
+under the hood, runnable directly:
+
+- **Windows, no admin rights:**
+  `powershell -ExecutionPolicy Bypass -File scripts\windows\Register-TokenLensTask.ps1`
+  registers the same Scheduled Task by hand. Remove it with
+  `Unregister-TokenLensTask.ps1`.
+- **Linux/macOS, no root:**
+  `systemctl --user enable --now claude-token-lens.service` after
+  copying `scripts/systemd/claude-token-lens.service` to
+  `~/.config/systemd/user/`.
+- **Docker:** `docker compose up -d` builds and runs the hardened image
+  in this repository's `Dockerfile`/`docker-compose.yml` (non-root
+  user, read-only root filesystem, `cap_drop: [ALL]`, loopback-only
+  published port). `install-service` does not manage Docker containers
+  — use Compose's own restart policy for "start on boot" here.
+
+No `pip install`? `python scripts/build-pyz.py` produces a single
+dependency-free `dist/claude-token-lens.pyz` you can copy anywhere and
+run with `python dist/claude-token-lens.pyz serve ...` (or
+`... install-service`, which builds a Scheduled Task/unit/agent action
+that re-invokes the very same `.pyz` — see `docs/deploy.md`).
 
 ## 15. Applying a profile
 
