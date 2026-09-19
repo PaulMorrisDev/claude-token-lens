@@ -744,3 +744,44 @@ see the Status note above — everything below is still ahead):
   into `settings.json`/agent frontmatter, a `compare` command, team
   aggregate import across machines, and a reconciliation pass against
   real billing data.
+
+## 14. Running the service
+
+`claude-token-lens serve` runs a local watcher thread, a SQLite store,
+a read-only JSON API and a dependency-free static web UI, so you can
+keep a live dashboard open instead of re-running `report` by hand. It
+never opens an outbound connection and binds to `127.0.0.1` unless you
+explicitly pass `--allow-remote` (see [SECURITY.md](SECURITY.md)).
+
+```bash
+claude-token-lens serve --projects-root ~/.claude/projects --config-dir ~/.claude/token-lens
+# then open http://127.0.0.1:8765
+```
+
+Three ways to keep it running continuously, in the order this project
+recommends them (native first, Docker last) — full detail, including
+what each path can/cannot touch and how to verify no egress, is in
+[docs/deploy.md](docs/deploy.md):
+
+- **Windows, no admin rights:**
+  `powershell -ExecutionPolicy Bypass -File scripts\windows\Register-TokenLensTask.ps1`
+  registers a logon-triggered Scheduled Task (`-RunLevel Limited`).
+  Remove it with `Unregister-TokenLensTask.ps1`.
+- **Linux/macOS, no root:**
+  `systemctl --user enable --now claude-token-lens.service` after
+  copying `scripts/systemd/claude-token-lens.service` to
+  `~/.config/systemd/user/` — a hardened user unit
+  (`ProtectHome=read-only` plus a carved-out `ReadWritePaths` for its
+  own data directory).
+- **Docker:** `docker compose up -d` builds and runs the hardened image
+  in this repository's `Dockerfile`/`docker-compose.yml` (non-root
+  user, read-only root filesystem, `cap_drop: [ALL]`, loopback-only
+  published port).
+
+No `pip install`? `python scripts/build-pyz.py` produces a single
+dependency-free `dist/claude-token-lens.pyz` you can copy anywhere and
+run with `python dist/claude-token-lens.pyz serve ...`.
+
+The store is always a derived cache, never source of truth: delete and
+rebuild it any time with `claude-token-lens serve --purge --yes`, and
+prune old sessions automatically with `--retention-days N`.
