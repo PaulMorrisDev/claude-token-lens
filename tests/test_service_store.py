@@ -246,13 +246,24 @@ def test_known_files_reports_every_transcript(store: Store) -> None:
     assert files[_FAKE_SUB_PATH] == (789, 1011)
 
 
-def test_remove_missing_deletes_transcripts_not_in_known_set(store: Store) -> None:
+def test_remove_missing_marks_transcripts_not_in_known_set(store: Store) -> None:
+    # Review finding 3: the store must outlive `cleanupPeriodDays` --
+    # `remove_missing` only marks a vanished transcript's `missing_since`,
+    # it never deletes the row. Only `retention_prune`/`--purge` do that.
     _seed(store)
-    removed = store.remove_missing({_FAKE_PATH})  # subagent path dropped
-    assert removed == 1
+    newly_missing = store.remove_missing({_FAKE_PATH})  # subagent path dropped
+    assert newly_missing == 1
+    assert store.count_missing_transcripts() == 1
     detail = store.session("session-a")
-    assert len(detail["transcripts"]) == 1
-    assert detail["transcripts"][0]["kind"] == "top-level"
+    # Both transcripts are still present -- a reader must include a
+    # missing-but-not-yet-pruned transcript by default.
+    assert len(detail["transcripts"]) == 2
+    kinds = {trow["kind"] for trow in detail["transcripts"]}
+    assert kinds == {"top-level", "subagent"}
+    # Calling it again with the same known set is a no-op: already-missing
+    # rows don't get re-marked or double-counted.
+    assert store.remove_missing({_FAKE_PATH}) == 0
+    assert store.count_missing_transcripts() == 1
 
 
 def test_retention_prune_removes_old_sessions(store: Store) -> None:
