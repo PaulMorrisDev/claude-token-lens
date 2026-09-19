@@ -28,23 +28,19 @@ def _write_transcript(path: Path, assistant_ts_iso: str) -> None:
 
 def test_render_status_full_payload_matches_plan_example(tmp_path):
     now = datetime(2026, 9, 18, 12, 5, 0, tzinfo=timezone.utc)
-    # 4m12s = 252s remaining out of a 300s TTL means the last assistant
-    # turn was 48s before `now`.
-    last_ts = now - timedelta(seconds=48)
-    transcript = tmp_path / "session.jsonl"
-    _write_transcript(transcript, last_ts.isoformat().replace("+00:00", "Z"))
+    # 4m12s = 252s remaining.
+    expires_at = now.timestamp() + 252
 
     payload = {
         "context_window": {"used_tokens": 143000},
-        "prompt_cache": {"hit_percentage": 92},
-        "transcript_path": str(transcript),
+        "prompt_cache": {"warm": True, "ttl": "5m", "expires_at": expires_at},
         "rate_limits": {
             "five_hour": {"used_percentage": 37},
             "seven_day": {"used_percentage": 12},
         },
     }
     line = statusline.render_status(payload, now, 300)
-    assert line == "ctx 143k | cache 92% | 5m TTL expires in 4m12s | 5h 37% | 7d 12%"
+    assert line == "ctx 143k | cache warm 5m 04:12 | 5h 37% | 7d 12%"
 
 
 def test_render_status_minimal_payload_falls_back():
@@ -71,22 +67,28 @@ def test_render_status_ctx_tolerates_missing_used_tokens():
     assert statusline.render_status({"context_window": "not a dict"}, now, 300) == "token-lens"
 
 
-def test_render_status_cache_hit_rate_fraction_variant():
+def test_render_status_cache_warm_without_expires_at_omits_countdown():
     now = datetime(2026, 9, 18, 12, 0, 0, tzinfo=timezone.utc)
-    payload = {"prompt_cache": {"hit_rate": 0.87}}
-    assert statusline.render_status(payload, now, 300) == "cache 87%"
+    payload = {"prompt_cache": {"warm": True, "ttl": "5m"}}
+    assert statusline.render_status(payload, now, 300) == "cache warm 5m"
 
 
-def test_render_status_cache_computed_from_token_counts():
+def test_render_status_cache_warm_1h_countdown():
     now = datetime(2026, 9, 18, 12, 0, 0, tzinfo=timezone.utc)
-    payload = {
-        "prompt_cache": {
-            "cache_read_tokens": 900,
-            "cache_creation_tokens": 100,
-            "input_tokens": 0,
-        }
-    }
-    assert statusline.render_status(payload, now, 300) == "cache 90%"
+    payload = {"prompt_cache": {"warm": True, "ttl": "1h", "expires_at": now.timestamp() + 3570}}
+    assert statusline.render_status(payload, now, 300) == "cache warm 1h 59:30"
+
+
+def test_render_status_cache_cold_with_recache_hint():
+    now = datetime(2026, 9, 18, 12, 0, 0, tzinfo=timezone.utc)
+    payload = {"prompt_cache": {"warm": False, "recache_tokens_if_cold": 12345}}
+    assert statusline.render_status(payload, now, 300) == "cache cold recache ~12k tokens"
+
+
+def test_render_status_cache_cold_without_recache_hint():
+    now = datetime(2026, 9, 18, 12, 0, 0, tzinfo=timezone.utc)
+    payload = {"prompt_cache": {"warm": False}}
+    assert statusline.render_status(payload, now, 300) == "cache cold"
 
 
 def test_render_status_rate_limits_tolerate_missing_window():
@@ -108,22 +110,33 @@ def test_render_status_effective_ttl_none_skips_ttl_segment(tmp_path):
 
 def test_render_status_ttl_expired_when_past_ttl(tmp_path):
     now = datetime(2026, 9, 18, 12, 10, 0, tzinfo=timezone.utc)
-    last_ts = now - timedelta(seconds=600)  # 10 minutes ago, TTL is 5m
+    last_ts = now - timedelta(seconds=600)  # 10 minutes ago, default estimate TTL is 5m
     transcript = tmp_path / "session.jsonl"
     _write_transcript(transcript, last_ts.isoformat().replace("+00:00", "Z"))
     payload = {"transcript_path": str(transcript)}
     line = statusline.render_status(payload, now, 300)
-    assert line == "5m TTL expired"
+    assert line == "cache est 5m expired"
 
 
-def test_render_status_ttl_1h_label(tmp_path):
+def test_render_status_ttl_1h_label_from_transcript_ephemeral_hint(tmp_path):
+    """No ``prompt_cache`` on the payload falls back to the estimate,
+    whose TTL is read from the transcript's own last assistant line
+    (``message.usage.cache_creation.ephemeral_1h_input_tokens > 0``
+    implies 1h) rather than from ``effective_ttl_s`` (kept only as an
+    on/off gate -- see statusline.py's module docstring)."""
     now = datetime(2026, 9, 18, 12, 0, 0, tzinfo=timezone.utc)
     last_ts = now - timedelta(seconds=30)
     transcript = tmp_path / "session.jsonl"
-    _write_transcript(transcript, last_ts.isoformat().replace("+00:00", "Z"))
+    with open(transcript, "w", encoding="utf-8") as fh:
+        fh.write(json.dumps({
+            "type": "assistant",
+            "timestamp": last_ts.isoformat().replace("+00:00", "Z"),
+            "message": {"usage": {"cache_creation": {"ephemeral_1h_input_tokens": 500, "ephemeral_5m_input_tokens": 0}}},
+        }))
+        fh.write("\n")
     payload = {"transcript_path": str(transcript)}
-    line = statusline.render_status(payload, now, 3600)
-    assert line == "1h TTL expires in 59m30s"
+    line = statusline.render_status(payload, now, 300)
+    assert line == "cache est 1h 59:30"
 
 
 def test_render_status_ttl_missing_transcript_path_skips_segment():
@@ -165,7 +178,7 @@ def test_render_status_ttl_reads_only_tail_of_large_transcript(tmp_path):
 
     payload = {"transcript_path": str(transcript)}
     line = statusline.render_status(payload, now, 300)
-    assert line == "5m TTL expires in 4m50s"
+    assert line == "cache est 5m 04:50"
 
 
 def test_render_status_ttl_survives_unicode_line_separator_inside_a_json_string(tmp_path):
@@ -196,7 +209,7 @@ def test_render_status_ttl_survives_unicode_line_separator_inside_a_json_string(
 
     payload = {"transcript_path": str(transcript)}
     line = statusline.render_status(payload, now, 300)
-    assert line == "5m TTL expires in 4m50s"  # from new_ts, not old_ts
+    assert line == "cache est 5m 04:50"  # from new_ts, not old_ts
 
 
 # -- resolve_effective_ttl ----------------------------------------------
@@ -384,3 +397,216 @@ def test_main_install_flag_alias(monkeypatch, capsys):
     rc = statusline.main(["--install"])
     assert rc == 0
     assert "statusLine" in capsys.readouterr().out
+
+
+# -- S1-exports: cache trailing CSV columns ----------------------------------
+
+
+def test_append_context_window_row_writes_cache_columns(tmp_path):
+    csv_path = tmp_path / "usage-log.csv"
+    payload = {
+        "session_id": "sess_cache",
+        "prompt_cache": {
+            "warm": True,
+            "ttl": "5m",
+            "expires_at": 1_800_000_300,
+            "misses": 2,
+            "last_miss_cause": {"causes": ["tools_changed"]},
+            "recache_tokens_if_cold": 4000,
+        },
+    }
+    now = datetime.fromtimestamp(1_800_000_000, tz=timezone.utc)
+    statusline._append_context_window_row(csv_path, payload, now)
+
+    with open(csv_path, encoding="utf-8", newline="") as fh:
+        header = fh.readline().strip().split(",")
+    assert header[:6] == list(statusline.log_usage.CSV_FIELDS)
+    assert header[9:] == [
+        "cache_warm",
+        "cache_ttl_s",
+        "cache_expires_in_s",
+        "cache_misses",
+        "cache_last_miss_cause",
+        "cache_recache_tokens_if_cold",
+    ]
+
+    rows = statusline.load_usage_log_ground_truth(csv_path)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["session_id"] == "sess_cache"
+    assert row["cache_warm"] is True
+    assert row["cache_ttl_s"] == 300
+    assert row["cache_expires_in_s"] == 300  # expires_at - now, both fixed above
+    assert row["cache_misses"] == 2
+    assert row["cache_last_miss_cause"] == "tools"
+    assert row["cache_recache_tokens_if_cold"] == 4000
+    # A cache-only row carries no context-window data.
+    assert row["context_window_used_tokens"] is None
+
+
+def test_append_context_window_row_cache_only_payload_still_writes(tmp_path):
+    """A payload with prompt_cache but no context_window at all must
+    still get a row -- the "should I log?" gate is broadened to context
+    OR cache data present, per the module docstring."""
+    csv_path = tmp_path / "usage-log.csv"
+    payload = {"session_id": "s1", "prompt_cache": {"warm": False}}
+    now = datetime(2026, 9, 18, tzinfo=timezone.utc)
+    statusline._append_context_window_row(csv_path, payload, now)
+    assert csv_path.exists()
+    rows = statusline.load_usage_log_ground_truth(csv_path)
+    assert len(rows) == 1
+    assert rows[0]["cache_warm"] is False
+
+
+def test_append_context_window_row_dedupes_on_cache_warm_change(tmp_path):
+    """Per the task spec, a change in cache_warm alone counts as a new
+    row even when the context-window columns are unchanged."""
+    csv_path = tmp_path / "usage-log.csv"
+    now = datetime(2026, 9, 18, tzinfo=timezone.utc)
+    base = {"session_id": "s1", "context_window": {"used_tokens": 100}}
+
+    statusline._append_context_window_row(csv_path, {**base, "prompt_cache": {"warm": True}}, now)
+    statusline._append_context_window_row(csv_path, {**base, "prompt_cache": {"warm": True}}, now)
+    rows = statusline.load_usage_log_ground_truth(csv_path)
+    assert len(rows) == 1  # identical repeat is deduped
+
+    statusline._append_context_window_row(csv_path, {**base, "prompt_cache": {"warm": False}}, now)
+    rows = statusline.load_usage_log_ground_truth(csv_path)
+    assert len(rows) == 2  # cache_warm changed -> new row despite identical context columns
+
+
+def test_append_context_window_row_dedupes_on_cache_misses_change(tmp_path):
+    csv_path = tmp_path / "usage-log.csv"
+    now = datetime(2026, 9, 18, tzinfo=timezone.utc)
+    base = {"session_id": "s1", "context_window": {"used_tokens": 100}}
+
+    statusline._append_context_window_row(csv_path, {**base, "prompt_cache": {"warm": True, "misses": 1}}, now)
+    statusline._append_context_window_row(csv_path, {**base, "prompt_cache": {"warm": True, "misses": 2}}, now)
+    rows = statusline.load_usage_log_ground_truth(csv_path)
+    assert len(rows) == 2
+
+
+def test_load_usage_log_ground_truth_tolerates_old_9_column_rows(tmp_path):
+    """A file written by S1-context-budget alone (9 columns, no cache_*
+    trailing columns yet) must be tolerated: cache fields simply read as
+    ``None``."""
+    csv_path = tmp_path / "usage-log.csv"
+    now = datetime(2026, 9, 18, tzinfo=timezone.utc)
+    statusline._append_context_window_row(
+        csv_path, {"session_id": "old", "context_window": {"used_tokens": 55}}, now
+    )
+    rows = statusline.load_usage_log_ground_truth(csv_path)
+    assert len(rows) == 1
+    assert rows[0]["session_id"] == "old"
+    assert rows[0]["context_window_used_tokens"] == 55
+    assert rows[0]["cache_warm"] is None
+    assert rows[0]["cache_misses"] is None
+
+
+def test_load_usage_log_ground_truth_missing_file_returns_empty(tmp_path):
+    assert statusline.load_usage_log_ground_truth(tmp_path / "does-not-exist.csv") == []
+
+
+def test_load_usage_log_ground_truth_ignores_non_ground_truth_rows(tmp_path):
+    from claude_token_lens.tools import log_usage as log_usage_mod
+
+    csv_path = tmp_path / "usage-log.csv"
+    log_usage_mod.append_rows(
+        csv_path,
+        [{"session_id": "s1", "window": "five_hour", "used_percentage": 42.0, "resets_at": ""}],
+        source="statusline",
+    )
+    assert statusline.load_usage_log_ground_truth(csv_path) == []
+
+
+# -- S1-exports: build_cache_ground_truth_table ------------------------------
+
+
+def test_build_cache_ground_truth_table_empty_rows():
+    table = statusline.build_cache_ground_truth_table(None)
+    assert table.name == "cache_ground_truth"
+    assert table.rows == []
+    table2 = statusline.build_cache_ground_truth_table([])
+    assert table2.rows == []
+
+
+def test_build_cache_ground_truth_table_excludes_rows_without_cache_data():
+    rows = [{"session_id": "s1", "cache_warm": None}]
+    table = statusline.build_cache_ground_truth_table(rows)
+    assert table.rows == []
+
+
+def test_build_cache_ground_truth_table_summarises_per_session():
+    rows = [
+        {"session_id": "s1", "cache_warm": True, "cache_misses": 1, "cache_last_miss_cause": None, "cache_recache_tokens_if_cold": None},
+        {"session_id": "s1", "cache_warm": False, "cache_misses": 2, "cache_last_miss_cause": "ttl", "cache_recache_tokens_if_cold": 1000},
+        {"session_id": "s1", "cache_warm": False, "cache_misses": 3, "cache_last_miss_cause": "ttl", "cache_recache_tokens_if_cold": 3000},
+        {"session_id": "s2", "cache_warm": True, "cache_misses": 0, "cache_last_miss_cause": None, "cache_recache_tokens_if_cold": None},
+    ]
+    table = statusline.build_cache_ground_truth_table(rows)
+    by_session = {row[0]: row for row in table.rows}
+
+    s1 = by_session["s1"]
+    assert s1[1] == 3  # rows_logged
+    assert round(s1[2], 3) == round(100.0 / 3, 3)  # warm_share: 1 of 3 warm
+    assert s1[3] == 3  # misses: peak counter
+    assert s1[4] == "ttl:2"
+    assert s1[5] == 2000  # mean of 1000 and 3000
+
+    s2 = by_session["s2"]
+    assert s2[1] == 1
+    assert s2[2] == 100.0
+    assert s2[5] is None  # no recache values logged
+
+
+# -- S1-exports (deliverable 2): report.build_report renders old + new format CSVs --
+
+
+def test_report_cli_renders_with_old_and_new_format_usage_log(tmp_path):
+    """cli.py's ``report`` command loads <config_dir>/usage-log.csv when
+    present and passes it through to build_report -- both an old-format
+    (S1-context-budget only, no cache_* columns) and a new-format
+    (with cache_* columns) row must render the usage and context_budget
+    tables without error."""
+    from helpers import turn_line, write_jsonl
+
+    from claude_token_lens import cli as cli_mod
+
+    projects_root = tmp_path / "projects"
+    project_dir = projects_root / "proj-a"
+    project_dir.mkdir(parents=True)
+    write_jsonl(
+        project_dir / "session-1.jsonl",
+        [turn_line(input_tokens=100 + i, output_tokens=20, cache_read_input_tokens=10) for i in range(3)],
+    )
+
+    config_dir = tmp_path / "token-lens"
+    config_dir.mkdir()
+
+    now = datetime(2026, 9, 18, tzinfo=timezone.utc)
+    # Old-format row (S1-context-budget: 9 columns, no cache_* columns).
+    statusline._append_context_window_row(
+        config_dir / "usage-log.csv", {"session_id": "old-sess", "context_window": {"used_tokens": 1000}}, now
+    )
+    # New-format row (S1-exports: adds the 6 cache_* trailing columns).
+    statusline._append_context_window_row(
+        config_dir / "usage-log.csv",
+        {
+            "session_id": "new-sess",
+            "context_window": {"used_tokens": 2000},
+            "prompt_cache": {"warm": True, "ttl": "5m", "misses": 1},
+        },
+        now,
+    )
+
+    rc = cli_mod.main(
+        [
+            "report",
+            "--projects-root",
+            str(projects_root),
+            "--all-projects",
+            "--config-dir",
+            str(config_dir),
+        ]
+    )
+    assert rc == 0
