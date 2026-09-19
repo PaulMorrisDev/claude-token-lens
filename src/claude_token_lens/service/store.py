@@ -555,34 +555,84 @@ class Store:
             ).fetchone()
             return int(row["id"])
 
-    def upsert_profile(self, *, profile_id: str, name: str, toml_path: str) -> None:
-        """Insert or update one profile's index row (v0.3's
-        ``profiles/<id>.toml``, tracked here from v0.2)."""
+    def upsert_profile(
+        self, *, profile_id: str, name: str, toml_path: str, content_hash: str | None = None
+    ) -> None:
+        """Insert or update one *user* profile's index row (v0.3's
+        ``<config_dir>/profiles/<id>.toml`` -- never a catalogue id, see
+        ``schema.CREATE_PROFILES``'s docstring).
+
+        ``content_hash`` (v5), when given, makes a repeat call a true
+        no-op (no write at all, so ``updated_at`` doesn't churn) when it
+        matches the row already on file -- ``watcher._scan_profiles``'s
+        own dedup, so re-ingesting an unchanged profile file on every
+        poll tick never touches the database. ``None`` (the default,
+        also every pre-v0.3 caller/test fixture) always writes, matching
+        this method's original always-upsert behaviour exactly.
+        """
         conn = self._connection()
+        if content_hash is not None:
+            existing = conn.execute(
+                "SELECT content_hash FROM profiles WHERE id = ?", (profile_id,)
+            ).fetchone()
+            if existing is not None and existing["content_hash"] == content_hash:
+                return
         # A single statement is already atomic under autocommit -- no
         # explicit transaction wrapper needed (see _transaction's own
         # docstring; this isn't one of the multi-statement writers finding
         # 2/5 is about).
         conn.execute(
-            "INSERT INTO profiles (id, name, toml_path, updated_at) VALUES (?, ?, ?, ?) "
+            "INSERT INTO profiles (id, name, toml_path, content_hash, updated_at) VALUES (?, ?, ?, ?, ?) "
             "ON CONFLICT(id) DO UPDATE SET name = excluded.name, toml_path = excluded.toml_path, "
-            "updated_at = excluded.updated_at",
-            (profile_id, name, toml_path, _now()),
+            "content_hash = excluded.content_hash, updated_at = excluded.updated_at",
+            (profile_id, name, toml_path, content_hash or "", _now()),
         )
 
     def record_baseline(
         self, *, project_slug: str, project_root_path: str = "", window_start: str,
         window_end: str, archetype: str | None, digest_json: str,
+        record_id: str | None = None, content_hash: str | None = None,
     ) -> int:
-        """Insert one baseline-capture row. Returns the baseline's row
-        id."""
+        """Insert one baseline-capture row. Returns the baseline's row id.
+
+        ``record_id``/``content_hash`` (v5), when both given, dedupe the
+        same way :meth:`upsert_profile` does: ``watcher._scan_baselines``
+        passes the baseline JSON record's own ``id`` field as
+        ``record_id`` and a hash of the record's own content as
+        ``content_hash`` -- re-ingesting the same (immutable-once-written)
+        baseline file on a later tick with an unchanged hash is a no-op
+        (the existing row's id is returned, nothing is written); a
+        changed hash for the same ``record_id`` updates the existing row
+        in place rather than growing a duplicate. Omitting either (every
+        pre-v0.3 caller/test fixture) always inserts a new row, matching
+        this method's original behaviour exactly.
+        """
         conn = self._connection()
         with _transaction(conn):
             project_id = self._upsert_project(conn, project_slug, project_root_path)
+            if record_id is not None:
+                existing = conn.execute(
+                    "SELECT id, content_hash FROM baselines WHERE record_id = ?", (record_id,)
+                ).fetchone()
+                if existing is not None:
+                    if existing["content_hash"] == (content_hash or ""):
+                        return int(existing["id"])
+                    conn.execute(
+                        "UPDATE baselines SET project_id = ?, window_start = ?, window_end = ?, "
+                        "archetype = ?, digest_json = ?, content_hash = ? WHERE id = ?",
+                        (
+                            project_id, window_start, window_end, archetype, digest_json,
+                            content_hash or "", existing["id"],
+                        ),
+                    )
+                    return int(existing["id"])
             cursor = conn.execute(
-                "INSERT INTO baselines (project_id, window_start, window_end, archetype, digest_json, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (project_id, window_start, window_end, archetype, digest_json, _now()),
+                "INSERT INTO baselines (project_id, window_start, window_end, archetype, digest_json, "
+                "record_id, content_hash, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    project_id, window_start, window_end, archetype, digest_json,
+                    record_id, content_hash or "", _now(),
+                ),
             )
             return int(cursor.lastrowid)
 

@@ -86,12 +86,27 @@ store's largest single column) is now stored zlib-compressed as
 ``baselines.digest_json`` are untouched (both empty in every real
 corpus observed; compressing a column nothing populates buys nothing).
 See ``Store.encode_digest_blob``/``decode_digest_blob``.
+
+Version 5 (v0.3 baseline/profile ingestion): the watcher now ingests
+``<config_dir>/baselines/*.json`` and ``<config_dir>/profiles/*.toml``
+into ``baselines``/``profiles`` on every tick (see ``watcher.py``'s
+``_scan_baselines``/``_scan_profiles``), content-hash deduped so a
+repeat tick over an unchanged file is a no-op write. ``profiles`` gains
+``content_hash`` (the ingested file's own text, hashed); ``baselines``
+gains ``record_id`` (the baseline JSON record's own ``id`` field --
+its natural, stable identity, distinct from this table's unrelated
+autoincrement ``id`` primary key) and ``content_hash``. Both default to
+``''``/``NULL`` for a row from before this version, which the
+drop-and-rebuild-on-version-mismatch policy above makes moot in
+practice: a store opened under an older recorded ``schema_version`` is
+dropped and recreated from scratch before any row like that could
+exist.
 """
 
 from __future__ import annotations
 
 #: Bump when a table or index below changes shape. See module docstring.
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 CREATE_META = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -273,19 +288,39 @@ CREATE TABLE IF NOT EXISTS session_tags (
 );
 """
 
-#: Index of profile files on disk (v0.3's ``profiles/<id>.toml``, tracked
-#: here from v0.2 so the service can list/diff them). ``toml_path`` is
-#: local-store-only (see module docstring).
+#: Index of *user* profile files on disk (v0.3's ``<config_dir>/
+#: profiles/<id>.toml``, tracked here from v0.2 so the service can
+#: list/diff them). ``toml_path`` is local-store-only (see module
+#: docstring). Catalogue profiles (``profiles.catalogue.CATALOGUE_IDS``)
+#: are never rows here -- they are shipped, static package data with no
+#: on-disk mtime/content of the user's own to track, so ``/api/profiles``
+#: (``service/api.py``) merges them in at query time instead, tagging
+#: each with its own ``source``. ``content_hash`` (v5) is the ingested
+#: file's own text, hashed -- ``watcher._scan_profiles`` compares it
+#: against the stored value before writing, so a repeat tick over an
+#: unchanged file is a no-op (no ``updated_at`` churn).
 CREATE_PROFILES = """
 CREATE TABLE IF NOT EXISTS profiles (
-    id         TEXT PRIMARY KEY,
-    name       TEXT NOT NULL,
-    toml_path  TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    id            TEXT PRIMARY KEY,
+    name          TEXT NOT NULL,
+    toml_path     TEXT NOT NULL,
+    content_hash  TEXT NOT NULL DEFAULT '',
+    updated_at    TEXT NOT NULL
 );
 """
 
-#: One row per captured baseline window (``claude-token-lens baseline``).
+#: One row per captured baseline window (``claude-token-lens baseline``,
+#: ingested from ``<config_dir>/baselines/*.json`` by
+#: ``watcher._scan_baselines``). ``record_id`` (v5) is the baseline JSON
+#: record's own ``id`` field (``baseline.py``'s ``uuid.uuid4().hex[:12]``)
+#: -- a stable natural key distinct from this table's own unrelated
+#: autoincrement ``id`` -- so re-ingesting the same (immutable) baseline
+#: file on a later tick updates its existing row via
+#: ``Store.record_baseline``'s own ``content_hash`` comparison rather
+#: than growing a duplicate one. ``NULL``/non-unique for a hand-inserted
+#: test row that predates ingestion (see module docstring's "Version 5"
+#: paragraph) -- SQLite's ``UNIQUE`` never treats two ``NULL``s as
+#: conflicting, so that stays safe.
 CREATE_BASELINES = """
 CREATE TABLE IF NOT EXISTS baselines (
     id           INTEGER PRIMARY KEY,
@@ -294,6 +329,8 @@ CREATE TABLE IF NOT EXISTS baselines (
     window_end   TEXT NOT NULL,
     archetype    TEXT,
     digest_json  TEXT NOT NULL,
+    record_id    TEXT UNIQUE,
+    content_hash TEXT NOT NULL DEFAULT '',
     created_at   TEXT NOT NULL
 );
 """
