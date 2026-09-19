@@ -38,8 +38,8 @@ from .cache import DigestCache
 from .config import Config, ConfigError, load_config, load_session_overrides
 from .corpus import Corpus, load_corpus
 from .parse import load_or_create_salt
-from .model import EventKind, TranscriptResult
-from .pricing import Pricing, PricingError, load_pricing, price_turn
+from .model import Diagnostics, EventKind, PricingMeta, ReportMeta, ReportModel, TranscriptResult
+from .pricing import Pricing, PricingCoverage, PricingError, load_pricing, price_turn
 from .render.csv_out import write_csv_dir
 from .render.html import render_html
 from .render.json_out import render_json
@@ -68,6 +68,8 @@ SUBCOMMANDS: tuple[str, ...] = (
     "statusline",
     "export",
     "monthly-report",
+    "compare",
+    "reconcile",
     "init",
     "baseline",
     "apply",
@@ -202,6 +204,67 @@ def _add_config_diff_args(sub: argparse.ArgumentParser) -> None:
         action="store_true",
         help="diff every config key that changed across the available snapshots",
     )
+
+
+def _add_compare_output_args(sub: argparse.ArgumentParser) -> None:
+    """``--json``/``--html``/``--csv-dir`` only -- ``compare`` has no
+    ``--phases``/``--patch-set`` concept, so it doesn't share
+    ``_add_report_output_args`` wholesale.
+    """
+    sub.add_argument(
+        "--json", action="store_true", help="print the comparison as JSON instead of Markdown"
+    )
+    sub.add_argument(
+        "--html", metavar="PATH", help="also write a single-file HTML comparison to PATH"
+    )
+    sub.add_argument(
+        "--csv-dir", metavar="DIR", help="also write one CSV file per table (plus an index) to DIR"
+    )
+
+
+def _add_compare_args(sub: argparse.ArgumentParser) -> None:
+    sub.add_argument(
+        "--a",
+        required=True,
+        metavar="SPEC",
+        dest="arm_a",
+        help="arm A selector: window:<since>..<until>, key:<key>=<value>, profile:<id>, or project:<slug>[,<slug>...]",
+    )
+    sub.add_argument(
+        "--b",
+        required=True,
+        metavar="SPEC",
+        dest="arm_b",
+        help="arm B selector, same grammar as --a",
+    )
+    sub.add_argument(
+        "--stratify",
+        default="purpose,mode",
+        metavar="KEY,KEY",
+        help="comma-separated stratification keys (purpose, mode; default: purpose,mode)",
+    )
+    sub.add_argument(
+        "--min-sessions",
+        type=int,
+        default=None,
+        metavar="N",
+        help="minimum sessions required per arm (per stratum) before a row counts as sample_ok "
+        "(default: config.toml's min_sessions, itself 5)",
+    )
+    _add_compare_output_args(sub)
+
+
+def _add_reconcile_args(sub: argparse.ArgumentParser) -> None:
+    sub.add_argument(
+        "--admin-csv", required=True, metavar="FILE", help="path to an Admin API usage/cost export CSV"
+    )
+    sub.add_argument(
+        "--by",
+        default="day",
+        choices=("day", "model", "day,model"),
+        help="grouping for the reconciliation table (default: day)",
+    )
+    _add_compare_output_args(sub)
 
 
 def _add_scrub_fixture_args(sub: argparse.ArgumentParser) -> None:
@@ -569,6 +632,8 @@ def _make_parser() -> argparse.ArgumentParser:
             "statusline": "Claude Code statusLine handler (reads stdin JSON)",
             "export": "export digests as csv-flat, json or otel-jsonl (aggregate-only by default)",
             "monthly-report": "write a monthly Markdown/HTML finance report",
+            "compare": "A/B compare two arms of sessions (window/key/profile/project), stratified by purpose+mode",
+            "reconcile": "compare local usage/cost accounting against an Admin API CSV export, offline",
             "scrub-fixture": "scrub a real session into a privacy-safe test fixture",
             # Fix R25: lead with the same "(planned)" marker the plain
             # "not implemented yet" fallback below uses for every other
@@ -609,6 +674,10 @@ def _make_parser() -> argparse.ArgumentParser:
             _add_export_args(sub)
         if name == "monthly-report":
             _add_monthly_report_args(sub)
+        if name == "compare":
+            _add_compare_args(sub)
+        if name == "reconcile":
+            _add_reconcile_args(sub)
         if name == "serve":
             _add_serve_args(sub)
         if name == "init":
@@ -1100,6 +1169,176 @@ def _cmd_config_diff(args: argparse.Namespace) -> int:
     for table in tables:
         _print_table(table, rates.currency)
         print()
+    return 0
+
+
+# -- compare / reconcile (V3-compare) ----------------------------------------
+
+
+def _wrap_section_as_report(
+    section, rates: Pricing, config: Config, projects: tuple[str, ...], window: str, coverage_pct: float
+) -> ReportModel:
+    """Wrap one already-built :class:`~claude_token_lens.model.Section`
+    (``compare``'s or ``reconcile``'s) in a minimal
+    :class:`~claude_token_lens.model.ReportModel` so it can go out
+    through the same Markdown/JSON/CSV/HTML renderers ``report``/
+    ``sessions``/``recache``/etc. use via :func:`_emit_report_outputs`,
+    rather than each having its own bespoke renderer. ``report.py``'s own
+    ``build_report`` is not reusable here (it always assembles the whole
+    fixed section list from a live corpus scan; a single already-built
+    ``Section`` has nowhere to plug in), so this mirrors its ``meta``
+    construction by hand instead.
+    """
+    meta = ReportMeta(
+        tool_version=__version__,
+        generated_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.") + "000Z",
+        window=window,
+        projects=tuple(sorted({discovery.redact_slug(p) for p in projects})),
+        pricing=PricingMeta(
+            path=rates.path,
+            version=rates.version,
+            sha8=rates.sha8,
+            currency=rates.currency,
+            coverage_pct=coverage_pct,
+        ),
+        thresholds={},
+        billing_mode=config.billing,
+        assumptions=[],
+    )
+    return ReportModel(meta=meta, sections=[section], recommendations=[], diagnostics=Diagnostics())
+
+
+def _cmd_compare(args: argparse.Namespace) -> int:
+    from . import compare as compare_mod
+
+    config, rates, config_dir, err = _load_config_and_pricing(args)
+    if err is not None:
+        return err
+
+    try:
+        arm_a = compare_mod.parse_arm_spec(args.arm_a)
+        arm_b = compare_mod.parse_arm_spec(args.arm_b)
+    except ValueError as exc:
+        print(f"claude-token-lens compare: {exc}", file=sys.stderr)
+        return 2
+
+    stratify_by = tuple(s.strip() for s in args.stratify.split(",") if s.strip())
+    bad_keys = [k for k in stratify_by if k not in ("purpose", "mode")]
+    if bad_keys:
+        print(
+            f"claude-token-lens compare: bad --stratify key(s) {bad_keys}: expected purpose and/or mode",
+            file=sys.stderr,
+        )
+        return 2
+    min_sessions = args.min_sessions if args.min_sessions is not None else config.min_sessions
+
+    root, project_dirs = _resolve_project_dirs_for_args(args, config)
+    window = _window_description(args)
+    if not project_dirs:
+        print(f"claude-token-lens compare: no matching project directories under {root}", file=sys.stderr)
+        return 1
+
+    corpus = _load_corpus_for_args(args, config, config_dir, project_dirs)
+    if not corpus.sessions:
+        print(f"claude-token-lens compare: no sessions found under {root} for window {window!r}", file=sys.stderr)
+        return 1
+
+    snaps = snapshots.load_snapshots(config_dir) or None
+
+    try:
+        session_overrides = load_session_overrides(config_dir)
+    except ConfigError as exc:
+        print(f"claude-token-lens compare: {exc}", file=sys.stderr)
+        return 2
+
+    # Fewer than min_sessions in either arm is not an error (plan's
+    # minimum-sample gate is a caveat on the reading, not a reason to
+    # refuse to show data): compare() always returns a full overview with
+    # sample_ok="no" on every row instead, and the CLI still exits 0.
+    section = compare_mod.compare(
+        corpus,
+        rates,
+        config,
+        arm_a=arm_a,
+        arm_b=arm_b,
+        stratify_by=stratify_by,
+        min_sessions=min_sessions,
+        snapshots=snaps,
+        session_overrides=session_overrides,
+    )
+
+    coverage = PricingCoverage()
+    for bundle in corpus.sessions:
+        if bundle.top is None:
+            continue
+        for tr in [bundle.top, *bundle.subs]:
+            for turn in _priced_turns(tr):
+                coverage.add(turn, price_turn(turn, rates.resolve_model(turn.model)))
+
+    model = _wrap_section_as_report(
+        section, rates, config, tuple(p.name for p in project_dirs), window, coverage.coverage_pct
+    )
+    _emit_report_outputs(model, args)
+    return 0
+
+
+def _cmd_reconcile(args: argparse.Namespace) -> int:
+    from . import reconcile as reconcile_mod
+    from .discovery import _resolve_window
+
+    config, rates, config_dir, err = _load_config_and_pricing(args)
+    if err is not None:
+        return err
+
+    try:
+        admin_result = reconcile_mod.parse_admin_csv(args.admin_csv)
+    except reconcile_mod.ReconcileError as exc:
+        print(f"claude-token-lens reconcile: {exc}", file=sys.stderr)
+        return 2
+
+    by = tuple(args.by.split(","))
+
+    root, project_dirs = _resolve_project_dirs_for_args(args, config)
+    window = _window_description(args)
+    if not project_dirs:
+        print(f"claude-token-lens reconcile: no matching project directories under {root}", file=sys.stderr)
+        return 1
+
+    corpus = _load_corpus_for_args(args, config, config_dir, project_dirs)
+    if not corpus.sessions:
+        print(f"claude-token-lens reconcile: no sessions found under {root} for window {window!r}", file=sys.stderr)
+        return 1
+
+    since_dt, until_dt = _resolve_window(args.days, args.since, args.until)
+    since = since_dt.astimezone(timezone.utc).date().isoformat() if since_dt else None
+    until = until_dt.astimezone(timezone.utc).date().isoformat() if until_dt else None
+
+    section = reconcile_mod.reconcile(
+        corpus,
+        rates,
+        config,
+        admin_rows=admin_result.rows,
+        unmapped_headers=admin_result.unmapped_headers,
+        by=by,
+        since=since,
+        until=until,
+    )
+
+    coverage = PricingCoverage()
+    for bundle in corpus.sessions:
+        if bundle.top is None:
+            continue
+        for tr in [bundle.top, *bundle.subs]:
+            for turn in _priced_turns(tr):
+                coverage.add(turn, price_turn(turn, rates.resolve_model(turn.model)))
+
+    model = _wrap_section_as_report(
+        section, rates, config, tuple(p.name for p in project_dirs), window, coverage.coverage_pct
+    )
+    _emit_report_outputs(model, args)
+    # Exit 0 whenever the admin CSV parsed, regardless of how large the
+    # reconciliation deltas turn out to be -- only a parse failure (caught
+    # above) is a bad-input exit.
     return 0
 
 
@@ -1955,6 +2194,10 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_export(args)
     if command == "monthly-report":
         return _cmd_monthly_report(args)
+    if command == "compare":
+        return _cmd_compare(args)
+    if command == "reconcile":
+        return _cmd_reconcile(args)
     if command == "scrub-fixture":
         return _cmd_scrub_fixture(args)
     if command in ("init", "baseline"):

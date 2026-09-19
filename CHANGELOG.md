@@ -131,6 +131,26 @@ A v0.4 backlog, kept here until scheduled into a milestone:
   [README.md's "Applying a profile"](README.md#15-applying-a-profile),
   and [SECURITY.md](SECURITY.md#applying-a-profile-the-one-command-that-writes-outside-config-dir)
   for full detail.
+- **`compare` subcommand** (`compare.py`, work package V3-compare, plan
+  "Feature expansion" item 6): A/B compare two arms of sessions, each
+  independently selected by a `window:<since>..<until>`,
+  `key:<key>=<value>` (a flattened config-snapshot key), `profile:<id>`,
+  or `project:<slug>[,<slug>...]` spec, stratified by purpose/mode with
+  a minimum-sample gate (`--min-sessions`, default 5). Every table
+  carries an "observed, not controlled" note plus each arm's exact
+  selection rule (plan "Risks and gaps" item 2: correlation is not
+  causation), and a dedicated `compare_co_changed` table surfaces other
+  config keys that changed alongside a `key:`-selected pair of arms. See
+  [`docs/compare.md`](docs/compare.md).
+- **`reconcile` subcommand** (`reconcile.py`, work package V3-compare,
+  plan "Enterprise use"/"Finance"): offline-only comparison of this
+  tool's own per-turn accounting against an Admin API usage/cost export
+  CSV (`--admin-csv FILE`, grouped `--by day|model|day,model`), via a
+  tolerant header mapper that recognises several plausible Admin export
+  column spellings (including `_5m`/`_1h` cache-creation splits and
+  `cost_cents`) and reports any column it couldn't place. A parse
+  failure names only the 1-based bad-line number, never the row's own
+  content. See [`docs/compare.md`](docs/compare.md).
 - **Service web UI** (`service/static/index.html`/`app.js`/`app.css`,
   work package S1-ui): a CSP-compliant, framework-free, no-build-step
   UI with ten keyboard-navigable tabs (Overview, Sessions, Cache, TTL,
