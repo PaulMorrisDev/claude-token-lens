@@ -24,18 +24,24 @@ five-hour-block grid already accepts for a similar reason (no exact
 per-turn slicing without touching every other section's own per-session
 assumptions).
 
-Idempotency: the same ``(corpus, pricing, config, month)`` must produce
-byte-identical files across repeated runs (the acceptance criterion),
-so the report body carries no wall-clock value anywhere -- unlike
+Idempotency: the same ``(corpus, pricing, config, month)`` produces
+files identical apart from a single trailing "Generated at: ..." line
+(Markdown) / HTML comment before ``</body>`` -- the report body itself
+carries no other wall-clock value anywhere, unlike
 ``render/markdown.py``/``render/html.py``'s own ``render_markdown``/
 ``render_html``, which bake ``model.meta.generated_at`` into a bullet
 near the top and are therefore *not* used here. This module renders its
 own compact tables (via ``render.tables.format_cell``/``escape_md``,
-the same formatting primitives every other renderer already shares) and
-places the *only* wall-clock value, a "Generated at: ..." line, as the
-last line of the Markdown file and inside an HTML comment immediately
-before ``</body>`` of the HTML file -- a test asserting idempotency
-strips that one line/comment before comparing.
+the same formatting primitives every other renderer already shares).
+Fix for review finding 11: a *genuinely* byte-identical run (not merely
+"apart from one line") is available by passing a fixed
+``generated_at`` string to :func:`write_monthly_report` -- wired to
+``monthly-report --generated-at``/``SOURCE_DATE_EPOCH`` by ``cli.py``,
+the same reproducible-build convention ``export`` already offers (see
+``exports.build_export_text``'s own ``generated_at`` parameter). A test
+asserting the "apart from one line" idempotency still strips that one
+line/comment before comparing, since a caller that doesn't pin
+``generated_at`` gets the previous behaviour.
 
 Entry point for the service (S1-integration): ``write_monthly_report``
 is the function the sibling package's ``service.serve`` wires up to
@@ -51,7 +57,7 @@ import dataclasses
 import html as _html_mod
 import re
 from calendar import monthrange
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -67,15 +73,30 @@ _MONTH_RE = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
 _NUMERIC_KINDS = frozenset({"int", "float", "pct", "money", "tokens", "secs"})
 
 
-def resolve_month(month_str: str | None) -> str:
+def resolve_month(month_str: str | None, tz: str | None = None, *, now: datetime | None = None) -> str:
     """``month_str`` validated as ``YYYY-MM``, or (when ``None``/empty)
     the previous calendar month relative to today, in ``YYYY-MM`` form.
     Raises ``ValueError`` with a one-line, CLI-printable reason on a
     malformed value.
+
+    Fix for review finding 12: the "previous month" default used to be
+    computed from ``date.today()`` -- the machine's own local zone --
+    while every other month/day bucketing in this module (and in
+    ``usage.py``/``classify.py``) uses ``config.tz``. On the 1st of a
+    month, a user whose ``config.tz`` is behind the machine's own zone
+    got a report for the wrong month, silently (an empty/partial month
+    still writes files and exits 0 -- see nit 17). ``tz`` (typically
+    ``config.tz``, threaded in from ``cli.py``'s ``_cmd_monthly_report``)
+    is now used the same way :func:`_to_local` resolves every other
+    timestamp in this module, falling back to the machine's own zone
+    when absent or unresolvable -- unchanged default behaviour for a
+    caller that doesn't pass it. ``now``, accepted for tests, defaults to
+    the current instant.
     """
     if not month_str:
-        today = date.today()
-        year, month = today.year, today.month
+        current = (now or datetime.now(timezone.utc))
+        current = _to_local(current if current.tzinfo else current.replace(tzinfo=timezone.utc), tz)
+        year, month = current.year, current.month
         if month == 1:
             return f"{year - 1:04d}-12"
         return f"{year:04d}-{month - 1:02d}"
@@ -271,17 +292,57 @@ def _render_month_html(month: str, tables: list[Table], currency: str, generated
 # -- top-level entry point ------------------------------------------------
 
 
-def write_monthly_report(corpus: Corpus, pricing: Pricing, config: Config, month: str, out_dir: str | Path) -> list[Path]:
+def write_monthly_report(
+    corpus: Corpus,
+    pricing: Pricing,
+    config: Config,
+    month: str,
+    out_dir: str | Path,
+    usage_log_rows: list[dict] | None = None,
+    generated_at: str | None = None,
+) -> list[Path]:
     """Write ``claude-token-lens-<month>.md`` and ``.html`` into
     ``out_dir`` (created if absent) for the given ``month`` (``YYYY-MM``,
     see :func:`resolve_month`). Returns the two paths written, in that
     order.
+
+    ``usage_log_rows`` (fix for review finding 9): ``docs/exports.md``
+    promises the monthly report's ``usage`` section carries
+    ``cache_ground_truth`` "when a usage log is available", but this
+    function used to call ``build_report`` without ever passing
+    ``usage_log_rows`` at all, so the table could never appear -- the
+    promise was unkeepable regardless of what was on disk. A caller
+    (``cli.py``'s ``_cmd_monthly_report``) now loads
+    ``<config_dir>/usage-log.csv`` the same way ``_cmd_report_like``
+    already does and passes the rows here; they are scoped down to just
+    this month's sessions (mirroring finding 8's project/window scoping
+    for the ordinary ``report`` command) before reaching
+    :func:`~claude_token_lens.report.build_report`.
+
+    ``generated_at`` (fix for review finding 11): the module docstring's
+    "byte-identical across repeated runs" claim was only true modulo the
+    one "Generated at: ..." line/comment -- contradicting its own next
+    clause, which a strict reading of "byte-identical" doesn't allow.
+    Mirroring ``exports.build_export_text``'s own ``generated_at``
+    parameter, passing a fixed value here (wired to ``--generated-at``/
+    ``SOURCE_DATE_EPOCH`` by ``cli.py``'s ``_cmd_monthly_report``, same
+    as the ``export`` command) now makes the output genuinely
+    byte-identical, not merely "identical apart from one line". Defaults
+    to ``datetime.now().astimezone().isoformat()`` when omitted,
+    preserving the previous behaviour for any other caller.
     """
     filtered = filter_corpus_to_month(corpus, month, config.tz)
     projects = tuple(sorted({b.slug for b in filtered.sessions if b.slug}))
     year, month_num = (int(part) for part in month.split("-"))
     days_in_month = monthrange(year, month_num)[1]
     window = f"{month}-01 to {month}-{days_in_month:02d} (calendar month)"
+
+    month_session_ids = {b.session_id for b in filtered.sessions}
+    scoped_usage_log_rows = (
+        [row for row in usage_log_rows if row.get("session_id") in month_session_ids]
+        if usage_log_rows
+        else None
+    )
 
     model = build_report(
         filtered,
@@ -290,6 +351,7 @@ def write_monthly_report(corpus: Corpus, pricing: Pricing, config: Config, month
         projects=projects,
         window=window,
         include={"usage"},
+        usage_log_rows=scoped_usage_log_rows,
     )
 
     by_month_table = _find_table(model, "usage", "by_month")
@@ -328,7 +390,8 @@ def write_monthly_report(corpus: Corpus, pricing: Pricing, config: Config, month
 
     out_path = Path(out_dir)
     out_path.mkdir(parents=True, exist_ok=True)
-    generated_at = datetime.now().astimezone().isoformat()
+    if generated_at is None:
+        generated_at = datetime.now().astimezone().isoformat()
 
     md_path = out_path / f"claude-token-lens-{month}.md"
     html_path = out_path / f"claude-token-lens-{month}.html"
