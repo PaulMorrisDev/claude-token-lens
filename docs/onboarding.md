@@ -1,5 +1,9 @@
 # v0.3 onboarding: `init` and `baseline`
 
+Never run `init` on this machine before? [`docs/first-run.md`](first-run.md)
+is the short walkthrough, including what each question below actually
+means in one line. This document is the full reference.
+
 `claude-token-lens init` (`src/claude_token_lens/onboarding.py`) and
 `claude-token-lens baseline` (`src/claude_token_lens/baseline.py`) are
 the plan's "Milestone v0.3" onboarding pair: `init` asks (or derives) a

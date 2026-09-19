@@ -1,5 +1,10 @@
 # Deploying the service
 
+First time on this machine? [`docs/first-run.md`](first-run.md) is the
+short, numbered walkthrough (install, `init`, confirm the service
+actually registered, uninstall); this document is the full reference
+for every hosting path it links to.
+
 `claude-token-lens serve` (`docs/api.md`) needs to run *somewhere*
 continuously to keep its store fresh and its JSON API/web UI
 (`docs/ui.md`) reachable. This document covers the three supported
