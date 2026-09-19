@@ -165,6 +165,41 @@ def _dominant_transcript_model(tr: TranscriptResult) -> str | None:
     return max(counts.items(), key=lambda kv: (kv[1], kv[0]))[0]
 
 
+def _recommend_min_sample_values(config: Config) -> tuple[int, int]:
+    """The min-sample values ``recommend()`` actually gates recommendations
+    on, for display in the report's thresholds header -- NOT
+    ``config.min_sessions``/``config.min_turns`` directly.
+    ``recommend.RecommendThresholds`` has its own ``min_sessions``/
+    ``min_turns`` defaults, independently overridable via
+    ``config.thresholds["recommend"]`` (a ``[thresholds.recommend]`` TOML
+    table distinct from the top-level ``Config.min_sessions``/
+    ``min_turns``), so printing the ``Config`` fields verbatim can show a
+    stale number when a corpus's ``[thresholds.recommend]`` overrides
+    them. Prefers ``recommend.effective_min_sample(th)`` when that
+    function exists (a future recommend.py addition this module doesn't
+    own and can't rely on), otherwise reads ``RecommendThresholds``'s own
+    resolved fields directly; falls back to the ``Config`` fields only if
+    ``recommend.RecommendThresholds`` itself isn't importable.
+    """
+    from . import recommend as recommend_mod
+
+    recommend_th_cls = getattr(recommend_mod, "RecommendThresholds", None)
+    if recommend_th_cls is None:
+        return config.min_sessions, config.min_turns
+
+    recommend_th = recommend_th_cls.from_config(
+        config.thresholds.get("recommend") if isinstance(config.thresholds, dict) else None
+    )
+
+    effective_min_sample = getattr(recommend_mod, "effective_min_sample", None)
+    if effective_min_sample is not None:
+        result = effective_min_sample(recommend_th)
+        if isinstance(result, tuple) and len(result) == 2:
+            return result
+
+    return recommend_th.min_sessions, recommend_th.min_turns
+
+
 def _merge_diagnostics(acc: Diagnostics, d: Diagnostics) -> None:
     """Fold one transcript's :class:`Diagnostics` into the running
     corpus-wide total: sum every int counter, merge every dict counter
@@ -742,6 +777,7 @@ def build_report(
 
     # -- meta -------------------------------------------------------------
 
+    recommend_min_sessions, recommend_min_turns = _recommend_min_sample_values(config)
     thresholds_dict: dict = {
         "recache": {
             "ctx_floor": recache_th.ctx_floor,
@@ -752,8 +788,11 @@ def build_report(
         "ttl": dataclasses.asdict(ttl_th) if dataclasses.is_dataclass(ttl_th) else {},
         "classify_mode": mode_thresholds,
         "classify_purpose": purpose_thresholds,
-        "min_sessions": config.min_sessions,
-        "min_turns": config.min_turns,
+        # The min-sample gate recommend() actually applies, NOT
+        # config.min_sessions/config.min_turns directly -- see
+        # _recommend_min_sample_values's docstring (min-sample header fix).
+        "min_sessions": recommend_min_sessions,
+        "min_turns": recommend_min_turns,
     }
 
     assumptions: list[str] = list(ttl.ASSUMPTIONS) + list(recache.ASSUMPTIONS)

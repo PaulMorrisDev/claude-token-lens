@@ -321,6 +321,26 @@ def test_report_meta_is_fully_populated(tmp_path):
     assert meta.generated_at.endswith("Z")
 
 
+def test_thresholds_min_sample_reflects_recommend_overrides_not_config_defaults(tmp_path):
+    """Regression test for the min-sample header fix: the thresholds
+    header used to print ``config.min_sessions``/``config.min_turns``
+    directly, but ``recommend.RecommendThresholds`` has its own
+    independently overridable ``min_sessions``/``min_turns`` (via
+    ``[thresholds.recommend]``), which is what ``recommend()`` actually
+    gates on. A config that leaves the top-level fields at their defaults
+    but overrides ``[thresholds.recommend]`` must show the *override* in
+    the header, not the stale top-level default.
+    """
+    corpus = _two_session_corpus(tmp_path)
+    config = Config(thresholds={"recommend": {"min_sessions": 42, "min_turns": 4242}})
+    assert config.min_sessions == 5  # top-level default, deliberately left untouched
+    assert config.min_turns == 200
+
+    report = build_report(corpus, PRICING, config, projects=("proj-two",), window="w")
+    assert report.meta.thresholds["min_sessions"] == 42
+    assert report.meta.thresholds["min_turns"] == 4242
+
+
 # -- smoke: full render through every renderer -------------------------
 
 
