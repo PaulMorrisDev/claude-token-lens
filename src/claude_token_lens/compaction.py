@@ -104,6 +104,28 @@ def _join_is_tight(record: CompactionRecord) -> bool:
     return record.join_delta_s is None or record.join_delta_s <= _MAX_JOIN_DELTA_S
 
 
+def effective_autocompact_threshold(records: Iterable[CompactionRecord]) -> float | None:
+    """The observed effective autocompact threshold: the median
+    ``pre_tokens`` across every ``records`` entry whose ``trigger`` is
+    exactly ``"auto"`` (a manual/unknown-trigger compaction says nothing
+    about where the harness itself decided to fire, so it's excluded).
+    ``None`` when no auto-triggered record carries a ``pre_tokens`` value
+    at all -- deliberately not ``0``, which would misleadingly read as
+    "compacts almost immediately".
+
+    S1-context-budget addition: this is the "new ``compaction.py``
+    helper" the context-budget work package asks for, kept as a
+    standalone function (rather than a ``CompactionStats`` property) so a
+    caller building a *per-project* breakdown (``context_budget.py``, one
+    ``CompactionStats``-shaped list of records per project rather than
+    one corpus-wide accumulator) can call it directly against its own
+    project-scoped record list without needing a whole second
+    ``CompactionStats`` instance per project.
+    """
+    values = [r.pre_tokens for r in records if r.trigger == "auto" and r.pre_tokens is not None]
+    return statistics.median(values) if values else None
+
+
 def is_recache_turn(turn: Turn, thresholds: RecacheThresholds | None = None) -> bool:
     """Minimal RE-CACHE test: a large context whose cache-read share is
     small, i.e. the turn looks like it re-sent most of its prefix as a
@@ -732,6 +754,7 @@ __all__ = [
     "CompactionRecord",
     "compaction_records_for_transcript",
     "CompactionStats",
+    "effective_autocompact_threshold",
     "build_section",
     "RediscoveryWindow",
     "rediscovery",
