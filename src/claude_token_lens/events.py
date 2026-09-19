@@ -10,6 +10,35 @@ precedence text (``LOCAL_COMMAND`` and ``META``) but are exercised by
 other rows of the detection table. This module places them just above
 ``UNKNOWN`` at the bottom of ``PRECEDENCE`` (lowest precedence, below
 ``API_ERROR``) — a documented judgement call, not a plan restatement.
+
+Usage-limits batch (v3-limits, see model.py's module docstring for the
+new ``EventKind``/``Turn``/``Diagnostics`` fields this adds): three new
+rows in the detection table, inserted ahead of the more generic row they
+would otherwise fall into --
+
+- ``AGENT_TERMINATED`` is checked before ``TASK_NOTIFICATION`` (13.5):
+  the "Agent terminated early due to ..." lines are shaped exactly like
+  a task-notification (same ``origin.kind``/``<task-notification`` tag)
+  but report a more specific harness event.
+- ``LIMIT_RESUME`` is checked before ``HUMAN_TEXT`` (19.5): the desktop
+  app's automatic resume ping is a human-origin, ``promptSource: "sdk"``
+  line, which would otherwise match the generic HUMAN_TEXT row.
+- ``LIMIT_HIT`` is *not* produced by :func:`classify_line` at all --
+  the "You've hit your session/weekly limit" text lives on a synthetic
+  *assistant* line (``model: "<synthetic>"``), and assistant lines are
+  never events (see this function's docstring). ``parse.py`` classifies
+  that text via :func:`classify_synthetic_text` and synthesises the
+  ``LIMIT_HIT`` event itself once it knows the turn is synthetic.
+  :func:`classify_synthetic_text` and :func:`parse_limit_reset_clause`
+  live here anyway, alongside every other piece of text-shape knowledge.
+
+Both new precedence entries (``LIMIT_HIT``, ``LIMIT_RESUME``) rank above
+``INTERRUPT`` in ``PRECEDENCE`` per the v3-limits brief: a usage-cap
+pause is a stronger explanation for a gap than a plain interrupt.
+``AGENT_TERMINATED`` ranks just above ``TASK_NOTIFICATION`` (a judgement
+call, not part of the brief's explicit precedence list — a terminated
+subagent is a more specific/important signal than a generic
+notification, but not as strong as an interrupt or a human message).
 """
 
 from __future__ import annotations
@@ -230,6 +259,113 @@ def _human_text_metrics(d: dict, str_content: str | None) -> tuple[int, bool]:
     return total_chars, has_paste
 
 
+#: Usage-limits addition (see module docstring): the six known synthetic
+#: assistant texts, matched by ordered startswith/substring checks
+#: verified against the real corpus. Never stored -- only the resulting
+#: enum-like label survives onto ``Turn.synthetic_kind``.
+_SESSION_LIMIT_PREFIX = "You've hit your session limit"
+_WEEKLY_LIMIT_PREFIX = "You've hit your weekly limit"
+_OVERLOADED_PREFIX = "API Error: 529"
+_AUTOCOMPACT_THRASH_PREFIX = "Autocompact is thrashing"
+
+
+def classify_synthetic_text(text: str | None) -> str:
+    """Classify a synthetic assistant line's own text into one of six
+    enum values: ``session_limit``, ``weekly_limit``, ``overloaded``,
+    ``unsupported_model``, ``autocompact_thrash``, or (anything else,
+    including no text at all) ``other_api_error``.
+    """
+    if not isinstance(text, str):
+        return "other_api_error"
+    if text.startswith(_SESSION_LIMIT_PREFIX):
+        return "session_limit"
+    if text.startswith(_WEEKLY_LIMIT_PREFIX):
+        return "weekly_limit"
+    if text.startswith(_OVERLOADED_PREFIX):
+        return "overloaded"
+    if text.startswith("API Error:") and "does not support" in text:
+        return "unsupported_model"
+    if text.startswith(_AUTOCOMPACT_THRASH_PREFIX):
+        return "autocompact_thrash"
+    return "other_api_error"
+
+
+#: Usage-limits addition (see module docstring): the "resets H[:MM]am|pm
+#: (IANA tz)" clause trailing a session/weekly-limit synthetic text.
+_LIMIT_RESET_RE = re.compile(r"resets\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)\s*\(([^)]+)\)", re.IGNORECASE)
+#: Single-slash IANA zone names only (e.g. ``Europe/London``) -- a
+#: multi-part name like ``America/Argentina/Buenos_Aires`` is deliberately
+#: excluded rather than guessed at (see model.py's module docstring).
+_IANA_TZ_RE = re.compile(r"^[A-Za-z_]+/[A-Za-z_]+$")
+
+
+def parse_limit_reset_clause(text: str | None) -> tuple[int | None, str | None]:
+    """Parse a synthetic limit-hit line's trailing "resets ..." clause
+    into ``(reset_minutes_of_day, reset_tz)``. ``reset_tz`` is ``None``
+    unless the parenthesised zone name matches the single-slash IANA
+    form. Returns ``(None, None)`` when ``text`` doesn't carry a
+    matching clause at all.
+    """
+    if not isinstance(text, str):
+        return None, None
+    match = _LIMIT_RESET_RE.search(text)
+    if not match:
+        return None, None
+    hour_raw, minute_raw, meridiem, tz_raw = match.groups()
+    try:
+        hour = int(hour_raw)
+        minute = int(minute_raw) if minute_raw else 0
+    except ValueError:
+        return None, None
+    if not (1 <= hour <= 12) or not (0 <= minute <= 59):
+        return None, None
+    hour24 = hour % 12
+    if meridiem.lower() == "pm":
+        hour24 += 12
+    minutes_of_day = hour24 * 60 + minute
+    tz = tz_raw if _IANA_TZ_RE.match(tz_raw) else None
+    return minutes_of_day, tz
+
+
+#: Usage-limits addition (see module docstring): the desktop app's
+#: automatic resume ping after a usage-limit pause.
+_LIMIT_RESUME_PREFIX = "I hit my usage limit while you were working, but it has reset now"
+
+#: Usage-limits addition (see module docstring): a subagent killed
+#: mid-task by the harness, and the structured "error type X" clause
+#: used to tell a usage-limit kill apart from any other reason.
+_TERMINATED_EARLY_MARKER = "terminated early due to"
+_ERROR_TYPE_RE = re.compile(r"error type ([a-zA-Z_]+)")
+
+
+def _agent_terminated_subkind(text: str) -> str:
+    match = _ERROR_TYPE_RE.search(text)
+    if match and match.group(1).lower() == "rate_limit":
+        return "rate_limit"
+    return "other"
+
+
+def _first_user_text(d: dict, str_content: str | None) -> str | None:
+    """The first text a ``type=user`` line carries, for structural
+    prefix/substring matching only -- never stored on any ``Event`` (see
+    SECURITY.md). Handles both a plain-string ``message.content`` and a
+    list of content blocks (mixed shapes observed in the real corpus for
+    task-notification and resume-prompt lines, unlike the always
+    list-shaped ``isApiErrorMessage`` lines).
+    """
+    if str_content is not None:
+        return str_content
+    message = d.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    if isinstance(content, list):
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                text = block.get("text")
+                if isinstance(text, str):
+                    return text
+    return None
+
+
 def _delta_detail(attachment_type: str, attachment: dict) -> dict:
     keys = _DELTA_COUNT_KEYS.get(attachment_type)
     if keys is None:
@@ -262,6 +398,9 @@ def classify_line(d: dict) -> Event | None:
 
     ts = d.get("timestamp")
     str_content = _user_str_content(d)
+    origin = d.get("origin")
+    origin = origin if isinstance(origin, dict) else None
+    origin_kind = origin.get("kind") if origin else None
 
     # 1. COMPACT_BOUNDARY
     if line_type == "system" and d.get("subtype") == "compact_boundary":
@@ -293,6 +432,12 @@ def classify_line(d: dict) -> Event | None:
             detail["status"] = error.get("status")
         if d.get("retryAttempt") is not None:
             detail["retryAttempt"] = d.get("retryAttempt")
+        # Usage-limits addition (see module docstring): retryInMs/source
+        # alongside the existing status/retryAttempt.
+        if d.get("retryInMs") is not None:
+            detail["retryInMs"] = d.get("retryInMs")
+        if d.get("source") is not None:
+            detail["source"] = d.get("source")
         return Event(kind=EventKind.API_ERROR, subkind="api_error", ts=ts, detail=detail)
 
     # 4. MODEL_FALLBACK
@@ -378,14 +523,20 @@ def classify_line(d: dict) -> Event | None:
     if line_type == "user" and _user_has_tool_result(d):
         return Event(kind=EventKind.TOOL_RESULT, subkind=None, ts=ts)
 
-    origin = d.get("origin")
-    origin = origin if isinstance(origin, dict) else None
-    origin_kind = origin.get("kind") if origin else None
+    is_task_notification_line = line_type == "user" and (
+        origin_kind == "task-notification" or (str_content is not None and str_content.startswith("<task-notification"))
+    )
+
+    # 13.5. AGENT_TERMINATED (usage-limits addition, see module docstring:
+    # checked before TASK_NOTIFICATION so a terminated-early notification
+    # is classified as this more specific kind instead of the generic one).
+    if is_task_notification_line:
+        text = _first_user_text(d, str_content)
+        if text is not None and _TERMINATED_EARLY_MARKER in text:
+            return Event(kind=EventKind.AGENT_TERMINATED, subkind=_agent_terminated_subkind(text), ts=ts)
 
     # 14. TASK_NOTIFICATION
-    if line_type == "user" and origin_kind == "task-notification":
-        return Event(kind=EventKind.TASK_NOTIFICATION, subkind=None, ts=ts)
-    if str_content is not None and str_content.startswith("<task-notification"):
+    if is_task_notification_line:
         return Event(kind=EventKind.TASK_NOTIFICATION, subkind=None, ts=ts)
 
     # 15. PEER_MESSAGE
@@ -419,6 +570,18 @@ def classify_line(d: dict) -> Event | None:
     if line_type == "user" and _user_has_interrupt_text_block(d):
         return Event(kind=EventKind.INTERRUPT, subkind=None, ts=ts)
 
+    # 19.5. LIMIT_RESUME (usage-limits addition, see module docstring:
+    # checked before HUMAN_TEXT so the desktop app's automatic resume
+    # ping -- a human-origin, promptSource:"sdk" line -- is classified as
+    # this more specific kind instead of the generic one. Ignores the
+    # queue-operation/last-prompt variants of similar text: those are a
+    # different top-level ``type``, already filtered out at the top of
+    # this function.)
+    if line_type == "user" and d.get("promptSource") == "sdk" and origin_kind == "human":
+        text = _first_user_text(d, str_content)
+        if text is not None and text.startswith(_LIMIT_RESUME_PREFIX):
+            return Event(kind=EventKind.LIMIT_RESUME, subkind=None, ts=ts)
+
     # 20. HUMAN_TEXT
     if line_type == "user" and (
         origin_kind == "human" or d.get("promptSource") is not None or d.get("permissionMode") is not None
@@ -448,9 +611,18 @@ PRECEDENCE: tuple[EventKind, ...] = (
     EventKind.COMPACT_SUMMARY,
     EventKind.MODEL_FALLBACK,
     EventKind.CACHE_SIGNAL,  # high band: model, thinking_stripped, ultra_effort_*
+    # Usage-limits addition (see module docstring): ranked above INTERRUPT
+    # per the v3-limits brief -- a usage-cap pause outranks a plain
+    # interrupt as the explanation for a gap.
+    EventKind.LIMIT_HIT,
+    EventKind.LIMIT_RESUME,
     EventKind.INTERRUPT,
     EventKind.HUMAN_TEXT,
     EventKind.PEER_MESSAGE,
+    # Usage-limits addition: not ranked by the plan (it predates this
+    # kind); placed just above TASK_NOTIFICATION -- a documented
+    # judgement call, see module docstring.
+    EventKind.AGENT_TERMINATED,
     EventKind.TASK_NOTIFICATION,
     EventKind.SCHEDULED_TASK,
     EventKind.SLASH_COMMAND,
@@ -473,9 +645,12 @@ _PRECEDENCE_SUBKIND_FILTER: tuple[frozenset[str] | None, ...] = (
     None,
     None,
     _CACHE_SIGNAL_HIGH_SUBKINDS,
+    None,  # LIMIT_HIT
+    None,  # LIMIT_RESUME
     None,
     None,
     None,
+    None,  # AGENT_TERMINATED
     None,
     None,
     None,
@@ -520,4 +695,10 @@ def primary_kind(events: Iterable[Event] | Sequence[Event]) -> EventKind:
     return best.kind if best is not None else EventKind.UNKNOWN
 
 
-__all__ = ["classify_line", "PRECEDENCE", "primary_kind"]
+__all__ = [
+    "classify_line",
+    "PRECEDENCE",
+    "primary_kind",
+    "classify_synthetic_text",
+    "parse_limit_reset_clause",
+]

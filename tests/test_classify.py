@@ -262,6 +262,114 @@ def test_multi_day_span_threshold_is_overridable():
     assert evidence["multi_day"] is True
 
 
+# --------------------------------------------------------------------
+# Usage-limits addition (v3-limits): pause discounting
+# --------------------------------------------------------------------
+
+
+def test_pause_overlap_seconds_sums_overlapping_intervals():
+    from datetime import datetime, timezone
+
+    start = datetime(2026, 9, 18, 10, 0, tzinfo=timezone.utc)
+    end = datetime(2026, 9, 18, 14, 0, tzinfo=timezone.utc)
+    intervals = [
+        (datetime(2026, 9, 18, 9, 0, tzinfo=timezone.utc), datetime(2026, 9, 18, 11, 0, tzinfo=timezone.utc)),
+        (datetime(2026, 9, 18, 12, 0, tzinfo=timezone.utc), datetime(2026, 9, 18, 13, 0, tzinfo=timezone.utc)),
+        (datetime(2026, 9, 18, 20, 0, tzinfo=timezone.utc), datetime(2026, 9, 18, 21, 0, tzinfo=timezone.utc)),
+    ]
+    # Overlaps: [10:00-11:00] = 1h, [12:00-13:00] = 1h, third interval
+    # doesn't overlap [10:00, 14:00] at all.
+    assert classify._pause_overlap_seconds(start, end, intervals) == pytest.approx(2 * 3600)
+
+
+def test_pause_overlap_seconds_zero_when_no_overlap():
+    from datetime import datetime, timezone
+
+    start = datetime(2026, 9, 18, 10, 0, tzinfo=timezone.utc)
+    end = datetime(2026, 9, 18, 11, 0, tzinfo=timezone.utc)
+    intervals = [(datetime(2026, 9, 18, 20, 0, tzinfo=timezone.utc), datetime(2026, 9, 18, 21, 0, tzinfo=timezone.utc))]
+    assert classify._pause_overlap_seconds(start, end, intervals) == 0.0
+
+
+def test_median_and_max_gap_discounts_overlapping_pause():
+    from datetime import datetime, timezone
+
+    stamps = [
+        datetime(2026, 9, 18, 10, 0, tzinfo=timezone.utc),
+        datetime(2026, 9, 18, 15, 0, tzinfo=timezone.utc),  # 5h raw gap
+    ]
+    # A 4-hour usage-cap pause sits entirely inside that gap.
+    intervals = [(datetime(2026, 9, 18, 10, 30, tzinfo=timezone.utc), datetime(2026, 9, 18, 14, 30, tzinfo=timezone.utc))]
+    median, max_gap = classify._median_and_max_gap(stamps, intervals)
+    assert median == pytest.approx(3600.0)  # 5h - 4h
+    assert max_gap == pytest.approx(3600.0)
+
+
+def test_median_and_max_gap_without_pause_intervals_is_unchanged():
+    from datetime import datetime, timezone
+
+    stamps = [
+        datetime(2026, 9, 18, 10, 0, tzinfo=timezone.utc),
+        datetime(2026, 9, 18, 12, 0, tzinfo=timezone.utc),
+    ]
+    median, max_gap = classify._median_and_max_gap(stamps)
+    assert median == pytest.approx(2 * 3600)
+    assert max_gap == pytest.approx(2 * 3600)
+
+
+def test_classify_mode_overnight_uses_effective_span_not_raw_span():
+    """A session whose raw span clears overnight_span_s only because of a
+    usage-cap pause must not fire overnight once limit_pause_s discounts
+    it back under the threshold.
+    """
+    f = classify.SessionFeatures(
+        span_s=6 * 3600,
+        limit_pause_s=5 * 3600,  # effective_span_s = 1h, well under the 4h default
+        human_gap_max_s=90 * 60,
+        night_turn_share=0.5,
+    )
+    mode, evidence = classify.classify_mode(f)
+    assert mode != "overnight"
+
+
+def test_classify_mode_overnight_still_fires_when_effective_span_clears_threshold():
+    f = classify.SessionFeatures(
+        span_s=10 * 3600,
+        limit_pause_s=3 * 3600,  # effective_span_s = 7h, still > the 4h default
+        human_gap_max_s=90 * 60,
+        night_turn_share=0.5,
+    )
+    mode, evidence = classify.classify_mode(f)
+    assert mode == "overnight"
+    assert evidence["span_s"] == pytest.approx(10 * 3600)
+    assert evidence["effective_span_s"] == pytest.approx(7 * 3600)
+
+
+def test_extract_features_limit_pause_s_from_synthetic_fixture(tmp_path: Path):
+    lines = [
+        turn_line(message_id="msg_1", input_tokens=10, timestamp="2026-09-18T12:00:00.000Z"),
+        turn_line(
+            message_id="msg_synth",
+            model="<synthetic>",
+            isApiErrorMessage=True,
+            input_tokens=0,
+            output_tokens=0,
+            content=[{"type": "text", "text": "You've hit your session limit · resets 3pm (Europe/London)"}],
+            timestamp="2026-09-18T12:00:05.000Z",
+        ),
+        turn_line(message_id="msg_2", input_tokens=10, timestamp="2026-09-18T15:00:10.000Z"),
+    ]
+    path = tmp_path / "session.jsonl"
+    write_jsonl(path, lines)
+    top = parse_transcript(path, TranscriptMeta(path=str(path), session_id="sess1"))
+
+    features = classify.extract_features(top, [], tz=None)
+    # The pause runs from msg_1's own ts (12:00:00) to msg_2's ts
+    # (15:00:10), matching Turn.gap_s on the post-pause turn exactly.
+    assert features.limit_pause_s == pytest.approx(3 * 3600 + 10)
+    assert features.span_s == pytest.approx(3 * 3600 + 10)
+
+
 def test_night_window_wraps_midnight():
     assert classify._in_night_window(23, 22, 7) is True
     assert classify._in_night_window(3, 22, 7) is True

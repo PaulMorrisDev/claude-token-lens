@@ -79,6 +79,7 @@ ASSUMPTIONS: list[str] = [
     "reads are priced at the flat cache_read rate",
     "compaction shrink clamps write at 0",
     "gap is measured from the start of one request to the start of the next",
+    "a gap spanning a usage-limit pause (Turn.gap_cause == \"limit\") forces a full rewrite under every policy, counted separately from the behavioural gaps > 5 min / > 60 min columns",
 ]
 
 #: TTL policy identifiers, in the seconds form ``price_turn``'s
@@ -370,11 +371,24 @@ def _recache_classification(t: Turn, th: TtlThresholds | None = None) -> str | N
 
     ``th`` (fix item 6) defaults to :data:`_DEFAULT_THRESHOLDS` --
     ``recache.py``'s own documented defaults — when omitted.
+
+    Usage-limits addition (v3-limits): the fallback also mirrors
+    ``recache.detect``'s "limit-expiry" override -- a qualifying turn
+    whose ``gap_cause == "limit"`` (the gap spanned a usage-cap pause,
+    see model.py's/parse.py's module docstrings) classifies as
+    "limit-expiry" rather than full-expiry/prefix-invalidated, checked
+    before the fallback's own cache_read_tokens comparison. Since the
+    real report pipeline feeds this function turns whose
+    ``recache_signature`` is uniformly ``None`` (see above), this
+    fallback branch -- not ``t.recache_signature``'s own value -- is
+    what actually classifies a limit-induced re-cache in practice.
     """
     th = th or _DEFAULT_THRESHOLDS
     if t.recache_signature is not None:
         return t.recache_signature
     if t.turn_index > 1 and t.ctx > th.ctx_floor and t.cache_read_tokens < th.cr_ratio * t.ctx:
+        if t.gap_cause == "limit":
+            return "limit-expiry"
         return "full-expiry" if t.cache_read_tokens < th.full_expiry_cr else "prefix-invalidated"
     return None
 
@@ -463,10 +477,18 @@ def simulate(
     unpriced_turns = 0
     for i, t in enumerate(priced):
         c = t.cache_read_tokens + t.cache_creation_tokens
+        classification = _recache_classification(t, th) if i > 0 else None
         if i == 0:
             read, write = 0, c
-        elif _recache_classification(t, th) == "prefix-invalidated":
+        elif classification == "prefix-invalidated":
             read, write = t.cache_read_tokens, t.cache_creation_tokens
+        elif classification == "limit-expiry":
+            # Usage-limits addition (see model.py's/parse.py's module
+            # docstrings): a gap spanning a usage-cap pause is an
+            # unavoidable full rewrite under every policy -- identical
+            # under POLICY_5M and POLICY_1H, so it never changes which
+            # policy wins.
+            read, write = 0, c
         elif t.gap_s is None:
             read, write = t.cache_read_tokens, t.cache_creation_tokens
             unsimulatable += 1
@@ -713,6 +735,10 @@ class _RawAccumulator:
     cc_1h_tokens: int = 0
     gaps_over_5m: int = 0
     gaps_over_1h: int = 0
+    #: Usage-limits addition (see model.py's/parse.py's module
+    #: docstrings): gaps whose Turn.gap_cause == "limit" -- counted
+    #: separately from, and excluded from, gaps_over_5m/gaps_over_1h.
+    limit_gaps: int = 0
     gap_values: list[float] = field(default_factory=list)
     gap_buckets: dict[str, int] = field(
         default_factory=lambda: {key: 0 for key, _label, _lo, _hi in _GAP_BUCKETS}
@@ -827,6 +853,10 @@ class TtlTypeStats:
     #: Fix item 2: priced turns whose model the rates lookup could not
     #: resolve, priced at zero rather than silently vanishing from cost.
     unpriced_turns: int = 0
+    #: Usage-limits addition (see model.py's/parse.py's module
+    #: docstrings): gaps whose Turn.gap_cause == "limit" -- counted
+    #: separately from, and excluded from, gaps_over_5m/gaps_over_1h.
+    limit_gaps: int = 0
 
     # -- item 1: wasted writes -----------------------------------------
     waste_writes: int = 0
@@ -1202,12 +1232,24 @@ class TtlStats:
             # i == 0 branch) — never counted as an "unknown gap" turn.
             if i > 0 and t.gap_s is not None:
                 gap = t.gap_s
-                acc.gap_values.append(gap)
-                acc.gap_buckets[_bucket_for(gap)] += 1
-                if gap > POLICY_5M:
-                    acc.gaps_over_5m += 1
-                if gap > POLICY_1H:
-                    acc.gaps_over_1h += 1
+                if t.gap_cause == "limit":
+                    # Usage-limits addition (see model.py's/parse.py's
+                    # module docstrings): a usage-cap pause is an
+                    # external, unavoidable gap, not the behavioural
+                    # "gaps > 5 min / > 60 min" this section reports on
+                    # -- counted separately instead, and excluded from
+                    # gap_values/gap_buckets too (a multi-hour pause
+                    # would otherwise dominate the median/p90 and the
+                    # >60m bucket with a number that says nothing about
+                    # working pattern).
+                    acc.limit_gaps += 1
+                else:
+                    acc.gap_values.append(gap)
+                    acc.gap_buckets[_bucket_for(gap)] += 1
+                    if gap > POLICY_5M:
+                        acc.gaps_over_5m += 1
+                    if gap > POLICY_1H:
+                        acc.gaps_over_1h += 1
 
                 # Item 3: break-even in-window share, weighted by the
                 # prefix size C of the turn that *follows* this gap.
@@ -1406,6 +1448,7 @@ class TtlStats:
                 cost_all_1h=acc.cost_all_1h,
                 unsimulatable=acc.unsimulatable,
                 unpriced_turns=acc.unpriced_turns,
+                limit_gaps=acc.limit_gaps,
                 fidelity_pct=fidelity_pct,
                 gap_buckets=dict(acc.gap_buckets),
                 waste_writes=acc.waste_writes,
@@ -1525,6 +1568,7 @@ def build_section(
         Column(key="observed_1h_pct", label="Observed 1h share", kind="pct"),
         Column(key="gaps_over_5m", label="Gaps > 5 min", kind="int"),
         Column(key="gaps_over_1h", label="Gaps > 60 min", kind="int"),
+        Column(key="limit_gaps", label="Limit gaps", kind="int"),
         Column(key="gap_p50_s", label="Gap p50", kind="secs"),
         Column(key="gap_p90_s", label="Gap p90", kind="secs"),
         Column(key="cost_observed", label="Cost (observed)", kind="money"),
@@ -1569,6 +1613,7 @@ def build_section(
                 row_stats.observed_1h_pct,
                 row_stats.gaps_over_5m,
                 row_stats.gaps_over_1h,
+                row_stats.limit_gaps,
                 row_stats.gap_p50_s,
                 row_stats.gap_p90_s,
                 row_stats.cost_observed,

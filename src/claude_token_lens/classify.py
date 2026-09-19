@@ -66,6 +66,22 @@ Two features the brief calls out with an explicit instruction to skip:
   value (falling back to ``"unknown"`` only for a session with none
   recorded) rather than always returning a single bucket.
 
+Usage-limits batch (v3-limits) addition: a usage-cap pause (``limits.
+limit_pause_intervals``, itself read straight off ``Turn.gap_cause ==
+"limit"``/``Turn.gap_s`` -- see ``limits.py``'s module docstring) should
+never read as real idle/overnight time. Two places discount it, both
+``top``-only for the same reason every other gap/span signal here is:
+``_median_and_max_gap`` now takes an optional ``pause_intervals``
+parameter that subtracts any overlapping pause duration from each
+consecutive HUMAN_TEXT gap before computing median/max (so
+``human_gap_median_s``/``human_gap_max_s`` themselves are already
+net-of-pause by the time ``extract_features`` returns), and
+``SessionFeatures.limit_pause_s`` (the pauses' own total duration) is
+subtracted from ``span_s`` inside ``classify_mode``'s overnight rule
+only (as ``effective_span_s`` — ``span_s`` itself is left alone since
+other consumers, and the multi-day flag below, want the session's real
+wall-clock extent).
+
 Timezone conversion (``start_local_hour``/``end_local_hour``) uses
 ``zoneinfo.ZoneInfo``. On a machine with no system tz database and no
 ``tzdata`` package installed (a bare Windows install, common on this
@@ -87,6 +103,7 @@ from datetime import datetime
 from typing import Iterable
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from . import limits
 from .model import (
     Classification,
     Column,
@@ -264,6 +281,13 @@ class SessionFeatures:
     #: is a poor sample) can still clearly be "worked overnight" if the
     #: one big idle gap itself sat in the night hours.
     long_gap_in_night: bool = False
+    #: Usage-limits addition (v3-limits): total seconds of ``top``'s own
+    #: usage-cap pauses (``limits.limit_pause_intervals``) that overlap
+    #: the gaps between consecutive HUMAN_TEXT timestamps -- see
+    #: ``_median_and_max_gap``'s ``pause_intervals`` parameter and
+    #: ``classify_mode``'s overnight rule, both of which subtract this so
+    #: a usage-cap pause is never mistaken for real idle/overnight time.
+    limit_pause_s: float = 0.0
 
 
 # -- Timestamp / timezone helpers -------------------------------------------
@@ -321,10 +345,44 @@ def _human_text_timestamps(top: TranscriptResult) -> list[datetime]:
     return stamps
 
 
-def _median_and_max_gap(stamps: list[datetime]) -> tuple[float | None, float | None]:
+def _pause_overlap_seconds(
+    start: datetime, end: datetime, intervals: list[tuple[datetime, datetime]]
+) -> float:
+    """Total seconds of ``[start, end]`` covered by any interval in
+    ``intervals`` (usage-limits addition, v3-limits). Intervals are
+    assumed non-overlapping with each other (each comes from a distinct
+    turn's own gap -- see ``limits.limit_pause_intervals``), so their
+    individual overlaps with ``[start, end]`` are simply summed rather
+    than merged first.
+    """
+    total = 0.0
+    for p_start, p_end in intervals:
+        overlap = min(end, p_end) - max(start, p_start)
+        if overlap.total_seconds() > 0:
+            total += overlap.total_seconds()
+    return total
+
+
+def _median_and_max_gap(
+    stamps: list[datetime], pause_intervals: list[tuple[datetime, datetime]] | None = None
+) -> tuple[float | None, float | None]:
+    """Median/max gap between consecutive ``stamps``.
+
+    ``pause_intervals`` (usage-limits addition, v3-limits): when given,
+    each consecutive gap has any overlapping usage-cap pause duration
+    (:func:`_pause_overlap_seconds`) subtracted before the median/max is
+    computed -- a gap that was mostly a 5-hour usage-cap pause should not
+    read as a real multi-hour idle gap. Clamped at 0 so a gap can never
+    go negative.
+    """
     if len(stamps) < 2:
         return None, None
-    gaps = [(later - earlier).total_seconds() for earlier, later in zip(stamps, stamps[1:])]
+    gaps = []
+    for earlier, later in zip(stamps, stamps[1:]):
+        gap = (later - earlier).total_seconds()
+        if pause_intervals:
+            gap = max(0.0, gap - _pause_overlap_seconds(earlier, later, pause_intervals))
+        gaps.append(gap)
     return statistics.median(gaps), max(gaps)
 
 
@@ -455,7 +513,13 @@ def extract_features(
     night_end_hour = t["overnight_night_end_hour"]
 
     human_stamps = _human_text_timestamps(top)
-    human_gap_median_s, human_gap_max_s = _median_and_max_gap(human_stamps)
+    # Usage-limits addition (v3-limits): discount usage-cap pauses from
+    # every human-to-human gap before computing median/max (see
+    # limits.limit_pause_intervals's own module-docstring rationale for
+    # why this is top-only, matching every other top-only signal here).
+    pause_intervals = limits.limit_pause_intervals(top)
+    human_gap_median_s, human_gap_max_s = _median_and_max_gap(human_stamps, pause_intervals)
+    limit_pause_s = sum((end - start).total_seconds() for start, end in pause_intervals)
 
     first_ts, last_ts = _ts_range(all_transcripts)
     span_s = _span_seconds(first_ts, last_ts)
@@ -556,6 +620,7 @@ def extract_features(
         end_local_hour=end_local_hour,
         night_turn_share=night_turn_share,
         long_gap_in_night=long_gap_in_night,
+        limit_pause_s=limit_pause_s,
     )
 
 
@@ -578,17 +643,31 @@ def classify_mode(f: SessionFeatures, thresholds: dict | None = None) -> tuple[s
     exceeds ``multi_day_span_s``, whichever mode it lands on gets
     ``mode_evidence["multi_day"] = True`` merged in, so a report can tell
     "genuinely overnight" apart from "just a very long-running session".
+
+    Usage-limits addition (v3-limits): the span side of the check
+    compares against ``effective_span_s = max(0.0, f.span_s -
+    f.limit_pause_s)`` rather than ``f.span_s`` directly -- a session
+    that merely spanned a long usage-cap pause (paused at 11pm, resumed
+    at 6am with zero actual overnight work) should not read as
+    overnight purely because the pause made its raw span long.
+    ``f.human_gap_max_s`` is unaffected here (``extract_features``
+    already discounted pause overlap from every gap via
+    ``_median_and_max_gap``'s ``pause_intervals`` parameter). Both
+    ``span_s`` and ``effective_span_s`` are recorded in the evidence
+    dict so a report can show the discount was applied.
     """
     t = {**DEFAULT_MODE_THRESHOLDS, **(thresholds or {})}
+    effective_span_s = max(0.0, f.span_s - f.limit_pause_s)
 
     if (
-        f.span_s > t["overnight_span_s"]
+        effective_span_s > t["overnight_span_s"]
         and f.human_gap_max_s is not None
         and f.human_gap_max_s > t["overnight_gap_s"]
         and (f.night_turn_share >= t["overnight_night_turn_share"] or f.long_gap_in_night)
     ):
         return "overnight", {
             "span_s": f.span_s,
+            "effective_span_s": effective_span_s,
             "human_gap_max_s": f.human_gap_max_s,
             "night_turn_share": f.night_turn_share,
             "long_gap_in_night": f.long_gap_in_night,

@@ -737,6 +737,7 @@ def test_build_section_table_shape_and_columns():
         "observed_1h_pct",
         "gaps_over_5m",
         "gaps_over_1h",
+        "limit_gaps",
         "gap_p50_s",
         "gap_p90_s",
         "cost_observed",

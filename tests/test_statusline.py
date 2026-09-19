@@ -97,6 +97,53 @@ def test_render_status_rate_limits_tolerate_missing_window():
     assert statusline.render_status(payload, now, 300) == "5h 10%"
 
 
+# -- v3-limits: near-cap "!" warning marker ----------------------------------
+
+
+def test_render_status_rate_segment_gets_warning_marker_at_90_pct():
+    now = datetime(2026, 9, 18, 12, 0, 0, tzinfo=timezone.utc)
+    payload = {"rate_limits": {"five_hour": {"used_percentage": 92}}}
+    assert statusline.render_status(payload, now, 300) == "5h 92%!"
+
+
+def test_render_status_rate_segment_no_warning_marker_below_90_pct():
+    now = datetime(2026, 9, 18, 12, 0, 0, tzinfo=timezone.utc)
+    payload = {"rate_limits": {"five_hour": {"used_percentage": 89}}}
+    assert statusline.render_status(payload, now, 300) == "5h 89%"
+
+
+def test_render_status_rate_segment_warning_marker_at_exactly_90_pct():
+    now = datetime(2026, 9, 18, 12, 0, 0, tzinfo=timezone.utc)
+    payload = {"rate_limits": {"seven_day": {"used_percentage": 90}}}
+    assert statusline.render_status(payload, now, 300) == "7d 90%!"
+
+
+def test_render_status_both_rate_segments_can_carry_warning_markers():
+    now = datetime(2026, 9, 18, 12, 0, 0, tzinfo=timezone.utc)
+    payload = {
+        "rate_limits": {
+            "five_hour": {"used_percentage": 100},
+            "seven_day": {"used_percentage": 95},
+        }
+    }
+    assert statusline.render_status(payload, now, 300) == "5h 100%! | 7d 95%!"
+
+
+def test_render_status_line_length_stays_within_bound_with_warning_markers():
+    now = datetime(2026, 9, 18, 12, 5, 0, tzinfo=timezone.utc)
+    payload = {
+        "context_window": {"used_tokens": 143000},
+        "prompt_cache": {"warm": True, "ttl": "5m", "expires_at": now.timestamp() + 252},
+        "rate_limits": {
+            "five_hour": {"used_percentage": 100},
+            "seven_day": {"used_percentage": 95},
+        },
+    }
+    line = statusline.render_status(payload, now, 300)
+    assert len(line) <= statusline._MAX_LINE_LEN
+    assert line.endswith("5h 100%! | 7d 95%!")
+
+
 def test_render_status_effective_ttl_none_skips_ttl_segment(tmp_path):
     now = datetime(2026, 9, 18, 12, 0, 0, tzinfo=timezone.utc)
     transcript = tmp_path / "session.jsonl"
@@ -286,6 +333,82 @@ def test_main_full_payload_prints_line_and_logs_usage_row(monkeypatch, capsys, t
     assert len(rows) == 2
     assert rows[0]["window"] == "five_hour"
     assert rows[1]["window"] == "context_window"
+
+
+# -- v3-limits: tagging an exhausted usage-log row as "limit_hit" -----------
+
+
+def test_tag_limit_hit_rows_overrides_source_at_100_pct():
+    rows = [{"window": "five_hour", "used_percentage": 100.0, "source": "statusline"}]
+    tagged = statusline._tag_limit_hit_rows(rows)
+    assert tagged[0]["source"] == "limit_hit"
+
+
+def test_tag_limit_hit_rows_overrides_source_above_100_pct():
+    rows = [{"window": "seven_day", "used_percentage": 103.0, "source": "statusline"}]
+    tagged = statusline._tag_limit_hit_rows(rows)
+    assert tagged[0]["source"] == "limit_hit"
+
+
+def test_tag_limit_hit_rows_leaves_source_below_100_pct():
+    rows = [{"window": "five_hour", "used_percentage": 99.9, "source": "statusline"}]
+    tagged = statusline._tag_limit_hit_rows(rows)
+    assert tagged[0]["source"] == "statusline"
+
+
+def test_tag_limit_hit_rows_ignores_non_cap_windows():
+    # spend_limit is a WINDOW_NAMES entry but not one of the two
+    # account-wide-pause windows limits.py cross-checks against.
+    rows = [{"window": "spend_limit", "used_percentage": 100.0, "source": "statusline"}]
+    tagged = statusline._tag_limit_hit_rows(rows)
+    assert tagged[0]["source"] == "statusline"
+
+
+def test_tag_limit_hit_rows_does_not_mutate_input_rows():
+    original = {"window": "five_hour", "used_percentage": 100.0, "source": "statusline"}
+    rows = [original]
+    statusline._tag_limit_hit_rows(rows)
+    assert original["source"] == "statusline"
+
+
+def test_tag_limit_hit_rows_tolerates_non_numeric_used_percentage():
+    rows = [{"window": "five_hour", "used_percentage": None, "source": "statusline"}]
+    tagged = statusline._tag_limit_hit_rows(rows)
+    assert tagged[0]["source"] == "statusline"
+
+
+def test_main_full_window_logs_limit_hit_source(monkeypatch, capsys, tmp_path):
+    config_dir = tmp_path / "token-lens"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+    payload = {"rate_limits": {"five_hour": {"used_percentage": 100}}}
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
+    rc = statusline.main([])
+    assert rc == 0
+
+    from claude_token_lens.tools import log_usage
+
+    csv_path = config_dir / "usage-log.csv"
+    rows = log_usage.load_usage_log(csv_path)
+    five_hour_rows = [r for r in rows if r["window"] == "five_hour"]
+    assert len(five_hour_rows) == 1
+    assert five_hour_rows[0]["source"] == "limit_hit"
+
+
+def test_main_partial_window_keeps_statusline_source(monkeypatch, capsys, tmp_path):
+    config_dir = tmp_path / "token-lens"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+    payload = {"rate_limits": {"five_hour": {"used_percentage": 50}}}
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
+    rc = statusline.main([])
+    assert rc == 0
+
+    from claude_token_lens.tools import log_usage
+
+    csv_path = config_dir / "usage-log.csv"
+    rows = log_usage.load_usage_log(csv_path)
+    five_hour_rows = [r for r in rows if r["window"] == "five_hour"]
+    assert len(five_hour_rows) == 1
+    assert five_hour_rows[0]["source"] == "statusline"
 
 
 def test_main_explicit_config_dir_flag_wins_over_env_var(monkeypatch, capsys, tmp_path):

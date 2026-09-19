@@ -30,7 +30,13 @@ __version__ = "0.2.0"
 #: ``read_target_hashes``, ``human_prompt_chars``/``human_prompt_has_paste``
 #: -- see model.py's module docstring), none of which a pre-batch digest
 #: cache entry ever computed, so it must not be treated as still valid.
-PARSER_VERSION = 4
+#:
+#: Bumped to 5 by the v3-limits batch: parse.py now detects usage-limit
+#: pauses (LIMIT_HIT/LIMIT_RESUME/AGENT_TERMINATED events,
+#: Turn.synthetic_kind, Turn.gap_cause -- see model.py's module
+#: docstring), none of which a pre-batch digest cache entry ever
+#: computed, so it must not be treated as still valid.
+PARSER_VERSION = 5
 
 #: Bump when the model.py contract changes in a way that invalidates the
 #: on-disk digest cache (see model.py's module docstring for the contract

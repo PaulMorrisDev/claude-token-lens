@@ -67,6 +67,24 @@ turn is known) is left as-is, never overwritten by the scan — except
 ``provider``, where the transcript's own per-turn model is the more
 authoritative source and takes precedence once a turn with a model
 exists.
+
+Usage-limits batch (v3-limits, see model.py's/events.py's module
+docstrings): a synthetic assistant line's own text is classified with
+``events.classify_synthetic_text``/``events.parse_limit_reset_clause``
+in ``_new_pending`` and stored on ``Turn.synthetic_kind``. For the two
+kinds that mean a usage cap was hit (``session_limit``/``weekly_limit``),
+``parse_transcript``'s main loop synthesises a ``LIMIT_HIT`` event itself
+right after ``current`` is set (the synthetic text lives on an
+*assistant* line, and assistant lines never reach ``events.classify_line``
+— see that module's docstring) and appends it to both ``events`` and
+``events_since_current``, so — per the two-buffer scheme above — it
+correctly precedes the *next* turn, not the synthetic line's own. The
+reset instant (``Event.detail["reset_ts"]``) prefers the line's own
+``quotaLimits.resetsAt`` epoch (see :func:`_limit_reset_ts`); the
+parsed local-time-plus-zone clause is only a fallback for the ~24% of
+limit-hit lines that don't carry ``quotaLimits``. ``Turn.gap_cause`` is
+set to ``"limit"`` in ``_finalize_turn`` whenever a ``LIMIT_HIT``/
+``LIMIT_RESUME`` event precedes that turn.
 """
 
 from __future__ import annotations
@@ -79,7 +97,7 @@ import re
 import secrets
 import tempfile
 from dataclasses import dataclass, field, replace
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from . import events as events_mod
@@ -117,6 +135,11 @@ _READ_TARGET_PATH_KEYS = {
 }
 
 _CMD_PREFIX_MAX_CHARS = 40
+
+#: Usage-limits addition (see module docstring): event kinds whose
+#: presence among a turn's preceding events marks its gap as a usage-cap
+#: pause rather than idle/behavioural time (``Turn.gap_cause``).
+_LIMIT_GAP_KINDS = (EventKind.LIMIT_HIT, EventKind.LIMIT_RESUME)
 
 #: Absolute-path token shapes to redact out of a command prefix before it
 #: is truncated (privacy criterion: zero drive letters/usernames in
@@ -367,6 +390,70 @@ def _parse_ts(ts_raw: str) -> datetime | None:
         return None
 
 
+def _synthetic_text(content: object) -> str | None:
+    """The text of a synthetic assistant line's ``message.content``,
+    which the real corpus always shows as a list of content blocks (a
+    plain string is tolerated defensively but not observed) -- for
+    classification only, never retained.
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                text = block.get("text")
+                if isinstance(text, str):
+                    return text
+    return None
+
+
+def _limit_reset_ts(
+    d: dict, ts_dt: datetime | None, minutes_of_day: int | None, reset_tz: str | None
+) -> str | None:
+    """UTC ISO timestamp of a limit-hit's reset. Prefers the line's own
+    ``quotaLimits.resetsAt`` (a precise Unix epoch, UTC) -- present on
+    only around three-quarters of limit-hit lines in the sampled corpus
+    -- over reconstructing one from the parsed local-time-of-day clause
+    plus ``reset_tz``, which needs ``zoneinfo`` to resolve the zone (may
+    be unavailable, e.g. missing tzdata on a bare Windows install) and a
+    reference date (this line's own timestamp, in that zone) to anchor
+    "today" vs. "tomorrow". Returns ``None`` when neither source is
+    usable.
+    """
+    quota_limits = d.get("quotaLimits")
+    if isinstance(quota_limits, dict):
+        resets_at = quota_limits.get("resetsAt")
+        if isinstance(resets_at, (int, float)) and not isinstance(resets_at, bool):
+            try:
+                return (
+                    datetime.fromtimestamp(float(resets_at), tz=timezone.utc)
+                    .isoformat()
+                    .replace("+00:00", "Z")
+                )
+            except (OverflowError, OSError, ValueError):
+                pass
+
+    if minutes_of_day is None or reset_tz is None or ts_dt is None:
+        return None
+    try:
+        from zoneinfo import ZoneInfo
+
+        zone = ZoneInfo(reset_tz)
+    except Exception:
+        # Missing tzdata, or a name zoneinfo doesn't recognise -- never
+        # let this fall through to an exception escaping the parser.
+        return None
+    try:
+        local_ts = ts_dt.astimezone(zone)
+        reset_hour, reset_minute = divmod(minutes_of_day, 60)
+        candidate = local_ts.replace(hour=reset_hour, minute=reset_minute, second=0, microsecond=0)
+        if candidate <= local_ts:
+            candidate = candidate + timedelta(days=1)
+        return candidate.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    except Exception:
+        return None
+
+
 def _turn_key(d: dict) -> str:
     """The grouping key for one assistant line: ``message.id``, falling
     back to ``requestId``, then ``uuid``. Prefixed by source so the three
@@ -444,6 +531,12 @@ class _PendingTurn:
     #: tool_result lines answering *this* turn's own ``tool_use_ids``.
     tool_result_chars_by_tool: dict[str, int] = field(default_factory=dict)
     tool_result_ts_values: list[str] = field(default_factory=list)
+    #: Usage-limits addition (see module docstring): set only when
+    #: ``is_synthetic`` is True.
+    synthetic_kind: str | None = None
+    reset_minutes_of_day: int | None = None
+    reset_tz: str | None = None
+    reset_ts: str | None = None
 
 
 def _merge_content_blocks(pending: _PendingTurn, content, tool_use_names: dict[str, str]) -> None:
@@ -517,6 +610,16 @@ def _new_pending(d: dict, tool_use_names: dict[str, str]) -> _PendingTurn:
     model = message.get("model")
     pending.model = model if isinstance(model, str) else ""
     pending.is_synthetic = pending.model == "<synthetic>" or bool(d.get("isApiErrorMessage"))
+    if pending.is_synthetic:
+        # Usage-limits addition (see module docstring): classify the
+        # synthetic text and, for a usage-cap hit, its reset clause.
+        text = _synthetic_text(message.get("content"))
+        pending.synthetic_kind = events_mod.classify_synthetic_text(text)
+        if pending.synthetic_kind in ("session_limit", "weekly_limit"):
+            minutes_of_day, reset_tz = events_mod.parse_limit_reset_clause(text)
+            pending.reset_minutes_of_day = minutes_of_day
+            pending.reset_tz = reset_tz
+            pending.reset_ts = _limit_reset_ts(d, _parse_ts(pending.ts_raw), minutes_of_day, reset_tz)
     effort = d.get("effort")
     pending.effort = effort if isinstance(effort, str) else None
     per_turn_effort = d.get("perTurnEffort")
@@ -735,6 +838,15 @@ def _finalize_turn(
         if pending_event.detail.get("has_paste"):
             human_prompt_has_paste = True
 
+    # Usage-limits addition (see module docstring): a limit-hit/resume
+    # among the events preceding this turn means the gap to the previous
+    # turn was (at least in part) a usage-cap pause, not idle time.
+    gap_cause = (
+        "limit"
+        if any(pending_event.kind in _LIMIT_GAP_KINDS for pending_event in pending_events)
+        else None
+    )
+
     turn = Turn(
         message_id=pending.message_id,
         request_id=pending.request_id,
@@ -778,6 +890,8 @@ def _finalize_turn(
         read_target_hashes=tuple(pending.read_target_hashes),
         human_prompt_chars=human_prompt_chars,
         human_prompt_has_paste=human_prompt_has_paste,
+        synthetic_kind=pending.synthetic_kind,
+        gap_cause=gap_cause,
     )
     return turn, new_prev_ts, new_priced_count
 
@@ -889,6 +1003,29 @@ def parse_transcript(path: str | Path, meta: TranscriptMeta) -> TranscriptResult
             attachments_since_current = []
             current = _new_pending(d, tool_use_names)
             current_key = key
+            # Usage-limits addition (see module docstring): a usage-cap
+            # hit lives on the synthetic assistant line's own text, which
+            # never reaches events.classify_line (assistant lines aren't
+            # events) -- synthesise the LIMIT_HIT event here instead, and
+            # route it through events_since_current so it precedes the
+            # *next* turn per the two-buffer scheme, not this synthetic one.
+            if current.synthetic_kind in ("session_limit", "weekly_limit"):
+                limit_detail: dict = {}
+                if current.reset_minutes_of_day is not None:
+                    limit_detail["reset_minutes_of_day"] = current.reset_minutes_of_day
+                if current.reset_tz is not None:
+                    limit_detail["reset_tz"] = current.reset_tz
+                if current.reset_ts is not None:
+                    limit_detail["reset_ts"] = current.reset_ts
+                limit_event = Event(
+                    kind=EventKind.LIMIT_HIT,
+                    subkind=current.synthetic_kind,
+                    ts=current.ts_raw or None,
+                    detail=limit_detail,
+                )
+                events.append(limit_event)
+                events_since_current.append(limit_event)
+                diagnostics.limit_hits += 1
             continue
 
         if line_type == "user":
@@ -921,6 +1058,14 @@ def parse_transcript(path: str | Path, meta: TranscriptMeta) -> TranscriptResult
             diagnostics.attachment_catch_all[subkind] = (
                 diagnostics.attachment_catch_all.get(subkind, 0) + 1
             )
+        # Usage-limits addition (see module docstring): LIMIT_RESUME and
+        # AGENT_TERMINATED both reach here via events_mod.classify_line
+        # (unlike LIMIT_HIT, synthesised above from a synthetic assistant
+        # line).
+        if event.kind == EventKind.LIMIT_RESUME:
+            diagnostics.limit_resumes += 1
+        elif event.kind == EventKind.AGENT_TERMINATED:
+            diagnostics.agents_terminated += 1
 
     if current is not None:
         turn, previous_non_synthetic_ts, priced_turn_count = _finalize_turn(
@@ -1007,6 +1152,7 @@ READ_KEYS: dict[str, frozenset[str]] = {
             "attributionMcpTool",
             "attributionSkill",
             "isApiErrorMessage",
+            "quotaLimits",
         }
     ),
     "user": _BASE_READ_KEYS
@@ -1031,6 +1177,8 @@ READ_KEYS: dict[str, frozenset[str]] = {
             "compactMetadata",
             "error",
             "retryAttempt",
+            "retryInMs",
+            "source",
             "originalModel",
             "fallbackModel",
             "origin",

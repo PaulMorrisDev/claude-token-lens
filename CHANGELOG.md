@@ -71,6 +71,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   filter). Fixed in `apply_command` and its docstring, and in
   `docs/profiles.md`'s own description of the two-line invocation it
   returns, which had the same stale flag.
+- **v3-limits usage-limit tracking** (`limits.py`, work package v3-limits):
+  a 5-hour/weekly usage-cap pause, a harness-forced early subagent
+  termination, and the desktop app's resume ping are now first-class,
+  attributable facts instead of behavioural noise. New `limits` report
+  section (`limits_summary`, `limits_hits_by_kind`,
+  `limits_agent_terminated`, `limits_pauses`,
+  `limits_reset_hour_histogram`, `limits_by_agent_type`,
+  `limits_csv_cross_check`) plus `limit_pause_intervals`/`limit_markers`
+  for other consumers. Attribution threaded through:
+  `classify.py` (`SessionFeatures.limit_pause_s`; pause time discounted
+  out of gap/span statistics and the overnight-mode check),
+  `recommend.py` (new `limit-pressure` rule), `scorecard.py`
+  (`ScorecardInputs.limit_recache_share_pct`/`limit_pause_sessions`
+  exclude pause-forced re-cache from the `cache_efficiency` level and
+  note affected sessions under `data_quality`), and `statusline.py` (a
+  `5h`/`7d` segment gets a `!` warning marker at >=90% used, and a
+  `usage-log.csv` row for an exhausted `five_hour`/`seven_day` window is
+  tagged `source=limit_hit`). See [`docs/limits.md`](docs/limits.md).
 
 ### Planned
 
