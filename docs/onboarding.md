@@ -1,0 +1,191 @@
+# v0.3 onboarding: `init` and `baseline`
+
+`claude-token-lens init` (`src/claude_token_lens/onboarding.py`) and
+`claude-token-lens baseline` (`src/claude_token_lens/baseline.py`) are
+the plan's "Milestone v0.3" onboarding pair: `init` asks (or derives) a
+handful of questions this codebase genuinely cannot infer on its own,
+writes `config.toml`, and starts an "onboarding capture window";
+`baseline` turns whatever corpus has accumulated since then into a
+JSON record plus a four-section Markdown report, citing only numbers
+the report itself already computed.
+
+Neither command touches `profiles/apply.py` or the `service/` package
+(both out of this work package's scope) or SQLite — a baseline is one
+JSON file under `<config_dir>/baselines/<id>.json` (plus a sibling
+`<id>.md`), the same "plain files under the config dir" posture
+`config.py` already uses for `config.toml`/`sessions.toml`.
+
+## `init`
+
+```
+claude-token-lens init [--answers FILE] [--non-interactive] [--no-install]
+```
+
+1. **Detect** what's already on the machine (`onboarding.detect` ->
+   `Detection`): whether `<config_dir>` exists yet, how many config
+   snapshots and whether a usage-log CSV are already on file, the
+   current project's (redacted) slug, and how many projects are
+   discoverable at all under the projects root. Printed verbatim so the
+   next step's questions have visible context, and never itself
+   containing a raw path or session content — only a redacted slug
+   (`discovery.redact_slug`) and counts.
+2. **Ask** (`onboarding.gather_answers` -> `Answers`) the "Asked, not
+   guessed" question set below. Resolution order per question:
+   - a value named in `--answers FILE` (a flat JSON object) wins;
+   - otherwise, interactive stdin prompting (default shown in
+     brackets, blank input accepts it);
+   - otherwise, under `--non-interactive`, a derived default is used
+     and the derivation is printed as `(derived) <key>: ...` — nothing
+     is guessed silently.
+3. **Write** `config.toml` (`config.write_config_values` — merges into
+   an existing file key-by-key, `.toml.new` fallback if the merged
+   shape can't be round-tripped) and this project's own
+   `<config_dir>/projects/<slug>.toml` (`config.save_project_config`).
+4. **Print the install step.** Nothing is written to `settings.json`
+   automatically: `init` prints the SessionStart hook fragment
+   (`hooks/snapshot-config.py`'s own `hook_fragment_text()`) and the
+   statusLine fragment (`statusline.print_install_fragment()`) for the
+   user to merge in themselves, or skips this with `--no-install`.
+5. **Run an initial baseline** for the current project (unless no
+   project directory has ever been recorded for it yet) and print the
+   capture-window status (`baseline.format_capture_status`).
+
+### The question set
+
+| Key | Asked as | Feeds |
+|---|---|---|
+| `billing` | Billing mode (api/subscription) | `config.billing` |
+| `exclude_projects` | Comma-separated slugs to always exclude | `config.exclude_projects` |
+| `launch_overlays` | Do you launch Claude Code with `--settings`/`CLAUDE_CONFIG_DIR` overlays rather than each project's own settings files? | `config.launch_overlays` and this project's `projects/<slug>.toml` |
+| `shared_project_config` | Are this project's agents/skills shared with colleagues? | `config.shared_project_config` and this project's `projects/<slug>.toml` |
+| `tz` | Timezone (IANA name, blank for local) | `config.tz` |
+| `apply_scope` | Default scope for applying a profile (user/project-local/repo) | `config.apply_scope` and this project's `projects/<slug>.toml` |
+| `capture_window` | Onboarding capture window length in days | `config.capture_window` (default 7) |
+
+`config.capture_started` is always set to the current UTC timestamp by
+`init` itself — it isn't a question.
+
+**Scope note** (docs vs. code): `docs/config-layers.md`'s "What `init`
+(v0.3) will ask" section previews a richer detection step (per-key
+settings-layer provenance, agent-inheritance/`shadowed_by_project`
+status, `.mcp.json` presence, CLAUDE.md/rules footprint,
+`~/.claude.json` trust-dialog state). This work package's `Detection`
+covers the config-dir/snapshot/usage-log/project-count facts above only
+— the deeper per-project settings-layer scan that section previews
+would need a snapshot (or a fresh `probe-config`-style scan) folded
+into `detect()`, which is a reasonable follow-on but not implemented
+here. Flagged rather than silently narrowed, per this project's
+"report a deviation, don't paper over it" convention (see
+`profiles/catalogue.py`'s own such note).
+
+### `--answers FILE`
+
+A flat JSON object naming any subset of the keys above (any key it
+omits falls back to interactive prompting, or a derived default under
+`--non-interactive`):
+
+```json
+{
+  "billing": "subscription",
+  "exclude_projects": ["work-thing"],
+  "launch_overlays": false,
+  "shared_project_config": true,
+  "tz": "Europe/London",
+  "apply_scope": "repo",
+  "capture_window": 14
+}
+```
+
+## `baseline`
+
+```
+claude-token-lens baseline [--days N] [--finalise] [--list] [--show ID]
+```
+
+With no flags: builds a report over the given window (or all time),
+extracts a baseline record from it, saves `<config_dir>/baselines/
+<id>.json` (+ `<id>.md`), and prints the Markdown report.
+`--list`/`--show ID` read back what's already saved instead of
+capturing anything new.
+
+A baseline built before the `init`-started capture window has finished
+is **provisional** (`record.provisional == true`) unless `--finalise`
+is given, or the window has already elapsed on its own
+(`baseline.capture_status`).
+
+### What's in a baseline record
+
+Every field is read straight out of the already-built `ReportModel`'s
+own tables — never recomputed independently (the same "never fabricate,
+only cite the report's own tables" convention `recommend.py`'s
+`Recommendation.evidence` contract already enforces):
+
+| Field | Source |
+|---|---|
+| `mode_mix` | `sessions` section's `sessions_by_mode` table |
+| `dominant_purposes` | `sessions` section's `sessions_by_purpose` table (top 3) |
+| `archetype` | `workstyle` section's `workstyle_archetypes` table (top row) |
+| `scorecard_overall` / `scorecard_label` | `scorecard` section's `overall` table |
+| `projected_saving_usd` | sum of the `ttl` section's `ttl_by_agent_type` table's `saving_usd` column |
+| `suggested_profile` / `suggested_profile_reason` | see below |
+| `billing_mismatch_warning` | see below |
+| `projects` | project directory names, redacted (`discovery.redact_slug`) |
+
+### Suggested profile, and the overnight-batch override
+
+`profiles.catalogue.suggest(archetype, purposes)` can never return
+`"overnight-batch"` by construction — its signature has no session
+*mode* parameter (see `profiles/catalogue.py`'s
+`UNREACHABLE_BY_SUGGEST`). Since a majority-overnight corpus is exactly
+the case that profile exists for, `baseline._suggested_profile` applies
+the override itself, directly from the corpus's own `sessions_by_mode`
+table: when at least half of the corpus's sessions are classified
+`mode=overnight`, the suggestion is `"overnight-batch"` regardless of
+what `suggest()` would otherwise say, with the reason string citing the
+exact count. Below that share, `catalogue.suggest()` is called
+normally.
+
+Applying the suggested profile automatically is out of this work
+package's scope (`profiles/apply.py` doesn't exist in this repo yet) —
+the report names the profile id and reason only.
+
+### Billing-mismatch warning
+
+A subagent's 1-hour cache TTL is documented as not actually taking
+effect under subscription billing (only the top-level conversation
+gets 1h there). So when `config.billing == "subscription"` and any
+non-top-level row in `ttl_by_agent_type` shows `observed_1h_pct` above
+`baseline.BILLING_MISMATCH_THRESHOLD_PCT` (5.0), the record's
+`billing_mismatch_warning` names the agent type and percentage —
+observing a 1h TTL happening somewhere it's supposed to be impossible
+is evidence the stated `billing` value may actually be `"api"`. This is
+a heuristic (documented as such in `baseline.py`'s module docstring),
+not a locked plan rule — the plan describes the suppression behaviour
+but not an exact cross-check threshold.
+
+### The four-section report
+
+`baseline.render_onboarding_report` always produces exactly these
+headings, in order: **Summary**, **Suggested profile**, **Projected
+saving**, **Next steps**. "Projected saving" is always the
+`projected_saving_usd` figure above with a one-line citation back to
+the `ttl_by_agent_type` table it was summed from — never a number
+computed any other way.
+
+## Privacy
+
+Every baseline field that could carry a filesystem path is redacted
+before it is ever written to disk or printed
+(`discovery.redact_slug`); nothing here reads message text, tool output,
+or raw session content. `tests/test_baseline.py` and
+`tests/test_onboarding.py` run every constructed record and rendered
+report through `tests/helpers.assert_privacy_deep`.
+
+`init`'s own CLI feedback (`Wrote <path>` lines confirming where it just
+saved `config.toml`/`projects/<slug>.toml`/a baseline) is the one
+exception: those are the tool's own operational file locations under
+`--config-dir` on the user's own machine, the same class of message
+`snapshot-config --install-hook`/`scrub-fixture --out` already print —
+not project- or session-derived content, so it is outside the privacy
+scan's scope (see `tests/test_cli.py`'s `test_init_writes_config_and_
+runs_an_initial_baseline` for the line this distinction is pinned on).
