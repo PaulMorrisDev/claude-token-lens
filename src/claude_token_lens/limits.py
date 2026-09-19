@@ -578,12 +578,12 @@ def _pause_table(rows: list[LimitTypeStats]) -> Table:
 
 def _reset_hour_table(counts: dict[int, int]) -> Table:
     total = sum(counts.values())
-    rows = [[hour, counts.get(hour, 0), _pct(counts.get(hour, 0), total)] for hour in range(24)]
+    rows = [[f"{hour:02d}", counts.get(hour, 0), _pct(counts.get(hour, 0), total)] for hour in range(24)]
     return Table(
         name="limits_reset_hour_histogram",
         title="Limit resets by local hour of day",
         columns=[
-            Column(key="local_hour", label="Local hour", kind="int"),
+            Column(key="local_hour", label="Local hour", kind="str"),
             Column(key="resets", label="Resets", kind="int"),
             Column(key="share_pct", label="Share", kind="pct"),
         ],

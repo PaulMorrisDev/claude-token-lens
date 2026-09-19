@@ -125,6 +125,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--retention-days`, `--exclude-project`, `--billing-mode`,
   `--monthly-report`, `--once`, `--purge --yes`) instead of the old
   "prints which milestone it's planned for and exits 2" stub text.
+- **`limits.py`: `limits_reset_hour_histogram` used a bare `int` local
+  hour (0-23) as its row key** — every other table's first column is a
+  non-empty `str` label (the cross-module row-key contract in
+  `tests/test_recommend_contract.py`), a mismatch this table was never
+  caught on until `limits` was actually wired into `report.py` and
+  exercised by that contract test for the first time. Row key is now a
+  zero-padded `"00"`-`"23"` string; `Column.kind` updated from `"int"`
+  to `"str"` to match.
 
 ### Planned
 
