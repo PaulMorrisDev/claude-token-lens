@@ -968,7 +968,11 @@ class FileWatcher:
                 continue
 
             try:
-                digest_json = json.dumps(snapshots_mod.flatten_snapshot(snap), sort_keys=True)
+                # The snapshot's own (hook-redacted) document, not its
+                # flattened sections: api.py rebuilds a Snapshot from this,
+                # and effective_config/managed_keys/effective_agents read
+                # top-level fields that flattening dropped.
+                digest_json = json.dumps(snap.data, sort_keys=True, default=str)
                 schema_version = int(snap.data.get("schema", 1)) if isinstance(snap.data, dict) else 1
                 new_id = self._time_store(
                     stats,

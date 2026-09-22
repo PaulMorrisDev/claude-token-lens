@@ -258,8 +258,8 @@ CREATE TABLE IF NOT EXISTS compactions (
 );
 """
 
-#: One row per captured config snapshot (``snapshots.py``'s ``Snapshot``,
-#: already flattened/redacted before it ever reaches this table). The
+#: One row per captured config snapshot: the ``Snapshot``'s own document
+#: (``Snapshot.data``, already redacted by the hook that wrote it). The
 #: natural key is ``(project_id, ts, schema_version)`` (v2) -- the same
 #: snapshot file re-ingested on a later watcher tick updates its own row
 #: via ``Store.upsert_snapshot``'s ``ON CONFLICT`` rather than growing a

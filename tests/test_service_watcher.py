@@ -632,6 +632,27 @@ def test_snapshot_ingestion_is_deduped_across_ticks(tmp_path: Path, store: Store
     assert len(store.snapshots()) == 2
 
 
+
+def test_stored_snapshot_keeps_the_fields_its_accessors_read(tmp_path: Path, store: Store):
+    # api.py rebuilds a Snapshot from the stored digest; effective config,
+    # managed keys and effective agents must survive the round trip.
+    options = _options(tmp_path)
+    path = _write_snapshot(options.config_dir, "20260918T130000Z", schema=2)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data.update(effective={"effortLevel": "high"}, managed_keys=["model"], effective_agents={"rev": {"effort": "low"}})
+    path.write_text(json.dumps(data), encoding="utf-8")
+    FileWatcher(store, options).run_once()
+
+    from claude_token_lens import snapshots as snapshots_mod
+    from claude_token_lens.snapshots import Snapshot
+
+    stored = json.loads(store.snapshots()[0]["digest_json"])
+    snap = Snapshot(path=Path(""), ts="20260918T130000Z", data=stored)
+    assert snapshots_mod.effective_config(snap) == {"effortLevel": "high"}
+    assert snapshots_mod.managed_keys(snap) == ["model"]
+    assert stored["effective_agents"] == {"rev": {"effort": "low"}}
+
+
 # -- billing_mode wiring (deliverable 1.a) -----------------------------------
 
 

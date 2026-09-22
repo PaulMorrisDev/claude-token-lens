@@ -156,6 +156,8 @@ _PLACEHOLDER_INDEX_HTML = (
 _SESSION_ID_RE = re.compile(r"^/api/session/([^/]+)$")
 _SESSION_TAGS_RE = re.compile(r"^/api/sessions/([^/]+)/tags$")
 _PROFILE_DIFF_RE = re.compile(r"^/api/profiles/([^/]+)/diff$")
+_PROFILE_RE = re.compile(r"^/api/profiles/([^/]+)$")
+_SESSION_EXPLAIN_RE = re.compile(r"^/api/session/([^/]+)/explain$")
 
 #: ``profiles.diff``'s own ``_VALID_SCOPES`` -- duplicated rather than
 #: imported (that name is private) so a scope query param can be
@@ -777,10 +779,129 @@ def make_handler(
             }
         )
 
+    def route_profile_schema(store, query, body):
+        """Every key a profile may set, with its type, allowed values and
+        plain-English text, for the dashboard's profile form."""
+        from ..fixes import LEVER_LABELS, SETTING_TEXT
+
+        def _lever(key, spec) -> dict:
+            what, tradeoff, caveat = SETTING_TEXT.get(key, ("", "", ""))
+            return {
+                "key": key,
+                "label": LEVER_LABELS.get(key, key),
+                "kind": spec.kind,
+                "values": list(spec.values) if spec.values else None,
+                "min": spec.min,
+                "max": spec.max,
+                "description": what,
+                "tradeoff": " ".join(t for t in (tradeoff, caveat) if t),
+            }
+
+        return _ok(
+            {
+                "settings": [_lever(k, v) for k, v in profile_schema.SETTINGS_ALLOWLIST.items()],
+                "agents": [_lever(k, v) for k, v in profile_schema.AGENT_ALLOWLIST.items()],
+                "env": sorted(profile_schema.ENV_ALLOWLIST),
+                "archetypes": list(profile_schema.ARCHETYPES),
+                "scopes": [
+                    {"key": "user", "label": "Your user settings, every project"},
+                    {"key": "project-local", "label": "This project, on your machine only"},
+                    {"key": "repo", "label": "This project, shared with everyone who works in it"},
+                ],
+            }
+        )
+
+    def route_profile(store, query, body):
+        profile_id = query.get("id", "")
+        profile = _load_profile_by_id(profile_id)
+        if profile is None:
+            return _not_found(f"unknown profile: {profile_id!r}")
+        setting_count = len(profile.settings) + sum(len(v) for v in profile.agents.values()) + len(profile.env)
+        return _ok(
+            {
+                "id": profile.id,
+                "name": profile.name or profile.id,
+                "source": "catalogue" if profile_id in profile_catalogue.CATALOGUE_IDS else "user",
+                "archetype": profile.archetype,
+                "for": list(profile.for_),
+                "notes": profile.notes,
+                "settings": dict(profile.settings),
+                "agents": {name: dict(keys) for name, keys in profile.agents.items()},
+                "env": dict(profile.env),
+                "setting_count": setting_count,
+            }
+        )
+
+    def route_session_explain(store, query, body):
+        from .explain import explain_session
+        from ..units import Units
+
+        session_id = query.get("id", "")
+        detail = store.session(session_id)
+        if detail is None:
+            return _not_found("session not found")
+        config = load_config(options.config_dir)
+        rates = load_pricing(path=config.pricing_path, config_dir=options.config_dir)
+        units = Units(billing_mode=config.billing, currency=rates.currency)
+        explained = explain_session(
+            detail, store.session_parts(session_id), rates, units, store.median_session_cost()
+        )
+        return _ok({"session_id": session_id, **explained})
+
+    def route_profiles_from_current(store, query, body):
+        """Save the latest snapshot's effective config as a user
+        profile: allowlisted keys only, managed keys left out and listed
+        so the UI can say so. Writes only this tool's own profile store,
+        never Claude Code's config."""
+        body = body if isinstance(body, dict) else {}
+        snaps = _snapshots_from_store()
+        if not snaps:
+            return _error(409, "conflict", "no config snapshot recorded yet; run claude-token-lens snapshot-config")
+        snapshot = snaps[-1]
+        effective = snapshots_mod.effective_config(snapshot)
+        managed = set(snapshots_mod.managed_keys(snapshot))
+        raw_agents = snapshot.data.get("effective_agents")
+        effective_agents = raw_agents if isinstance(raw_agents, dict) else {}
+
+        def _valid(doc: dict) -> bool:
+            # One key at a time, so one out-of-range value drops only itself.
+            return profile_schema.validate({"id": "x", **doc}) == []
+
+        settings = {
+            key: effective[key]
+            for key in profile_schema.SETTINGS_ALLOWLIST
+            if key in effective and key not in managed and effective[key] is not None
+            and _valid({"settings": {key: effective[key]}})
+        }
+        agents: dict = {}
+        for name, fields in effective_agents.items():
+            if not isinstance(fields, dict):
+                continue
+            kept = {
+                key: fields[key]
+                for key in profile_schema.AGENT_ALLOWLIST
+                if fields.get(key) is not None and _valid({"agents": {str(name): {key: fields[key]}}})
+            }
+            if kept:
+                agents[str(name)] = kept
+        doc = {
+            "id": body.get("id") or "my-current-settings",
+            "name": body.get("name") or "My current settings",
+            "settings": settings,
+            "agents": agents,
+            "notes": f"Saved from the config snapshot taken {snapshot.ts}.",
+        }
+        status, payload = _save_user_profile(store, doc, replace=query.get("replace") == "1")
+        if status == 201:
+            payload["data"]["skipped_managed"] = sorted(k for k in profile_schema.SETTINGS_ALLOWLIST if k in managed)
+        return status, payload
+
     def route_profiles_post(store, query, body):
         if not isinstance(body, dict):
             return _bad_request("request body must be a JSON object")
+        return _save_user_profile(store, body, replace=query.get("replace") == "1")
 
+    def _save_user_profile(store, body: dict, *, replace: bool):
         try:
             profile = profile_schema.load_dict(body)
         except profile_schema.ProfileError as exc:
@@ -791,7 +912,6 @@ def make_handler(
 
         profiles_dir = Path(options.config_dir) / "profiles"
         target_path = profiles_dir / f"{profile.id}.toml"
-        replace = query.get("replace") == "1"
         if target_path.is_file() and not replace:
             return _error(
                 409, "conflict", f"profile {profile.id!r} already exists (pass ?replace=1 to overwrite)"
@@ -935,6 +1055,7 @@ def make_handler(
         "/api/config-diff": route_config_diff,
         "/api/recommendations": route_recommendations,
         "/api/diagnostics": route_diagnostics,
+        "/api/profile-schema": route_profile_schema,
         "/api/report.json": _render_report("application/json", lambda model: render_json(model)),
         # Finding 22: charset was missing on the two text-ish renderers
         # (application/json has no encoding ambiguity, but text/markdown
@@ -945,10 +1066,13 @@ def make_handler(
     }
     get_patterns: tuple[tuple[re.Pattern, Callable], ...] = (
         (_SESSION_ID_RE, route_session),
+        (_SESSION_EXPLAIN_RE, route_session_explain),
         (_PROFILE_DIFF_RE, route_profile_diff),
+        (_PROFILE_RE, route_profile),
     )
     post_routes: dict[str, Callable] = {
         "/api/profiles": route_profiles_post,
+        "/api/profiles/from-current": route_profiles_from_current,
     }
     post_patterns: tuple[tuple[re.Pattern, Callable], ...] = (
         (_SESSION_TAGS_RE, route_set_tag),

@@ -940,6 +940,84 @@ class Store:
     #: Above this many priced turns, turns_for_session() downsamples.
     MAX_TURN_SERIES_POINTS = 5000
 
+    def session_parts(self, session_id: str) -> dict:
+        """What one session's cost is made of, for
+        ``GET /api/session/<id>/explain``: token and cost totals per
+        (transcript kind, agent type) and per model, cache rebuilds per
+        signature, and the number of conversation summaries. Aggregates
+        only -- no paths, no content."""
+        conn = self._connection()
+        by_agent = conn.execute(
+            """
+            SELECT t.kind AS kind, t.agent_type AS agent_type,
+                   COUNT(DISTINCT t.id) AS runs,
+                   COALESCE(SUM(a.turns), 0) AS turns,
+                   COALESCE(SUM(a.input_tokens), 0) AS input_tokens,
+                   COALESCE(SUM(a.cache_creation_tokens), 0) AS cache_creation_tokens,
+                   COALESCE(SUM(a.cache_read_tokens), 0) AS cache_read_tokens,
+                   COALESCE(SUM(a.output_tokens), 0) AS output_tokens,
+                   COALESCE(SUM(a.cost), 0) AS cost
+            FROM transcripts t LEFT JOIN turns_agg a ON a.transcript_id = t.id
+            WHERE t.session_id = ?
+            GROUP BY t.kind, t.agent_type
+            ORDER BY cost DESC
+            """,
+            (session_id,),
+        ).fetchall()
+        by_model = conn.execute(
+            """
+            SELECT a.model AS model,
+                   SUM(a.turns) AS turns,
+                   SUM(a.input_tokens) AS input_tokens,
+                   SUM(a.cache_creation_tokens) AS cache_creation_tokens,
+                   SUM(a.cc_5m) AS cc_5m,
+                   SUM(a.cc_1h) AS cc_1h,
+                   SUM(a.cache_read_tokens) AS cache_read_tokens,
+                   SUM(a.output_tokens) AS output_tokens,
+                   SUM(a.cost) AS cost
+            FROM turns_agg a JOIN transcripts t ON a.transcript_id = t.id
+            WHERE t.session_id = ?
+            GROUP BY a.model
+            ORDER BY cost DESC
+            """,
+            (session_id,),
+        ).fetchall()
+        rebuilds = conn.execute(
+            """
+            SELECT r.signature AS signature, COUNT(*) AS turns,
+                   COALESCE(SUM(r.cache_creation_tokens), 0) AS tokens
+            FROM recache_turns r JOIN transcripts t ON r.transcript_id = t.id
+            WHERE t.session_id = ?
+            GROUP BY r.signature
+            ORDER BY tokens DESC
+            """,
+            (session_id,),
+        ).fetchall()
+        compactions = conn.execute(
+            "SELECT COUNT(*) FROM compactions c JOIN transcripts t ON c.transcript_id = t.id WHERE t.session_id = ?",
+            (session_id,),
+        ).fetchone()[0]
+        return {
+            "by_agent": [dict(row) for row in by_agent],
+            "by_model": [dict(row) for row in by_model],
+            "rebuilds": [dict(row) for row in rebuilds],
+            "compactions": int(compactions or 0),
+        }
+
+    def median_session_cost(self) -> float | None:
+        """The median ``total_cost`` over sessions with any cost, or
+        ``None`` when there are none."""
+        costs = [
+            row[0]
+            for row in self._connection().execute(
+                "SELECT total_cost FROM sessions WHERE total_cost > 0 ORDER BY total_cost"
+            ).fetchall()
+        ]
+        if not costs:
+            return None
+        mid = len(costs) // 2
+        return costs[mid] if len(costs) % 2 else (costs[mid - 1] + costs[mid]) / 2
+
     def turns_for_session(self, session_id: str) -> dict | None:
         """Per-turn ``ctx``/cache/marker series for one session's
         top-level transcript, decoded from its stored ``digest_blob``

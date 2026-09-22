@@ -1347,3 +1347,75 @@ def test_allowed_host_names_add_specific_binds_and_extra_names():
     extra = ServeOptions(projects_root=Path("p"), config_dir=Path("c"), allowed_hosts=("Lens.Local",))
     assert "lens.local" in allowed_host_names(extra)
     assert "lens.local" not in allowed_host_names(base)
+
+
+# -- readability P6: profile schema, one profile, session explain, from-current --
+
+
+def test_profile_schema_lists_every_allowlisted_key_in_plain_words(server):
+    resp, payload = server.get_json("/api/profile-schema")
+    assert resp.status == 200
+    data = payload["data"]
+    assert {lever["key"] for lever in data["settings"]} == set(profile_schema.SETTINGS_ALLOWLIST)
+    assert {lever["key"] for lever in data["agents"]} == set(profile_schema.AGENT_ALLOWLIST)
+    effort = next(lever for lever in data["settings"] if lever["key"] == "effortLevel")
+    assert effort["label"] == "Effort level"
+    assert effort["values"] == ["low", "medium", "high", "max"]
+    assert effort["description"]
+    assert all(lever["description"] for lever in data["settings"] + data["agents"])
+    assert [scope["key"] for scope in data["scopes"]] == ["user", "project-local", "repo"]
+
+
+def test_profile_route_returns_a_catalogue_profile_and_404s_unknown(server):
+    profile_id = profile_catalogue.list_profiles()[0].id
+    resp, payload = server.get_json(f"/api/profiles/{profile_id}")
+    assert resp.status == 200
+    assert payload["data"]["id"] == profile_id
+    assert payload["data"]["source"] == "catalogue"
+    assert payload["data"]["setting_count"] >= 1
+    resp, _payload = server.get_json("/api/profiles/no-such-profile")
+    assert resp.status == 404
+
+
+def test_session_explain_gives_template_sentences(server):
+    resp, raw = server.request("GET", f"/api/session/{server.session_id}/explain")
+    assert resp.status == 200
+    _assert_no_leak(raw)
+    data = json.loads(raw)["data"]
+    assert data["headline"].startswith("This session cost ")
+    assert "3 replies" in data["headline"]
+    text = " ".join(data["sentences"])
+    assert "No subagents ran" in text
+    assert "The cache was rebuilt once" in text
+    assert "summarised the conversation once" in text
+    parts = {row["part"]: row for row in data["cost_split"]}
+    assert set(parts) == {"cache_read", "cache_write", "output", "input"}
+    assert round(sum(row["share_pct"] for row in data["cost_split"])) == 100
+    resp, _raw = server.request("GET", "/api/session/unknown/explain")
+    assert resp.status == 404
+
+
+def test_profiles_from_current_saves_allowlisted_non_managed_keys(server):
+    server.store.upsert_snapshot(
+        project_slug="proj-a",
+        project_root_path=_FAKE_ROOT,
+        ts="2026-09-19T12:00:00Z",
+        schema_version=2,
+        digest_json=json.dumps(
+            {
+                "effective": {"effortLevel": "high", "model": "opus", "permissions": {"allow": []}},
+                "managed_keys": ["model"],
+                "effective_agents": {"reviewer": {"effort": "low", "color": "blue"}},
+            }
+        ),
+    )
+    resp, payload = server.post_json("/api/profiles/from-current", {"name": "Mine"})
+    assert resp.status == 201, payload
+    assert payload["data"]["id"] == "my-current-settings"
+    assert payload["data"]["skipped_managed"] == ["model"]
+    resp, payload = server.get_json("/api/profiles/my-current-settings")
+    assert payload["data"]["settings"] == {"effortLevel": "high"}
+    assert payload["data"]["agents"] == {"reviewer": {"effort": "low"}}
+    # A second save without replace=1 is a conflict, not an overwrite.
+    resp, _payload = server.post_json("/api/profiles/from-current", {})
+    assert resp.status == 409

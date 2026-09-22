@@ -87,6 +87,91 @@ SETTING_TEXT: dict[str, tuple[str, str, str]] = {
     ),
 }
 
+SETTING_TEXT.update(
+    {
+        "effort": (
+            "How hard this agent thinks before replying. Thinking is billed as output.",
+            "Lower effort can miss things on hard problems.",
+            "",
+        ),
+        "maxTurns": (
+            "The most replies this agent may take before it has to stop and report back.",
+            "An agent that hits the limit stops mid-task and returns what it has.",
+            "",
+        ),
+        "memory": (
+            "Which persistent memory this agent reads and writes between runs.",
+            "Memory adds to what the agent is sent on every run.",
+            "",
+        ),
+        "skills": (
+            "The skills loaded into this agent when it starts, in full.",
+            "Every listed skill is sent on every spawn, whether the task needs it or not.",
+            "",
+        ),
+        "outputStyle": (
+            "The output style Claude uses for replies, such as concise or explanatory.",
+            "A terser style gives less explanation.",
+            "",
+        ),
+        "enabledPlugins": (
+            "The plugins turned on for Claude Code.",
+            "Each plugin can add skills, agents, hooks and MCP servers, which are sent on every session.",
+            "",
+        ),
+        "disabledMcpjsonServers": (
+            "MCP servers from the project's .mcp.json that are turned off.",
+            "Claude can't call tools from servers you turn off.",
+            "",
+        ),
+        "enabledMcpjsonServers": (
+            "MCP servers from the project's .mcp.json that are turned on.",
+            "Every enabled server's tool list is sent with each session.",
+            "",
+        ),
+        "alwaysThinkingEnabled": (
+            "Whether Claude always thinks before replying.",
+            "Thinking is billed as output, so replies cost more.",
+            "",
+        ),
+        "autoCompactEnabled": (
+            "Whether Claude Code summarises the conversation automatically when it grows too large.",
+            "With it off, a long session keeps growing until you run /compact or start a new one.",
+            "",
+        ),
+        "cleanupPeriodDays": (
+            "How many days Claude Code keeps conversation logs before deleting them.",
+            "Logs older than this are gone, including from this tool's reports.",
+            "",
+        ),
+    }
+)
+
+#: Short names for every allowlisted key, for forms and tables.
+LEVER_LABELS = {
+    "model": "Model",
+    "effortLevel": "Effort level",
+    "effort": "Effort level",
+    "autoCompactWindow": "Summarise the conversation at (tokens)",
+    "autoCompactEnabled": "Summarise the conversation automatically",
+    "outputStyle": "Output style",
+    "promptCacheTtl": "Main session cache lifetime",
+    "subagentPromptCacheTtl": "Subagent cache lifetime",
+    "experimental.cacheTtl": "Cache lifetime",
+    "enabledPlugins": "Plugins turned on",
+    "disabledMcpjsonServers": "Project MCP servers turned off",
+    "enabledMcpjsonServers": "Project MCP servers turned on",
+    "alwaysThinkingEnabled": "Always think before replying",
+    "cleanupPeriodDays": "Keep conversation logs for (days)",
+    "maxTurns": "Most replies per run",
+    "omitClaudeMd": "Leave out CLAUDE.md files",
+    "memory": "Memory",
+    "tools": "Tools it may use",
+    "disallowedTools": "Tools it may not use",
+    "skills": "Skills loaded at start",
+    "mcpServers": "MCP servers it may use",
+}
+
 _SCOPE_WHERE = {
     "user": ("~/.claude/agents/{agent}.md", "your own agent file, used in every project"),
     "repo": (".claude/agents/{agent}.md", "this project's agent file, used by everyone who works in it"),
@@ -310,4 +395,4 @@ def attach_fixes(recommendations: list[Recommendation]) -> None:
         rec.fixes = build_fixes(rec)
 
 
-__all__ = ["SETTING_TEXT", "attach_fixes", "build_fix", "build_fixes", "command_for", "explainer_for", "prompt_for"]
+__all__ = ["LEVER_LABELS", "SETTING_TEXT", "attach_fixes", "build_fix", "build_fixes", "command_for", "explainer_for", "prompt_for"]
