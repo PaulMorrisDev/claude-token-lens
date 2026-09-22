@@ -706,6 +706,17 @@ def test_profile_diff_for_catalogue_profile_against_latest_snapshot(server):
     _assert_no_leak(json.dumps(body).encode("utf-8"))
 
 
+def test_profile_diff_rows_say_where_each_change_lands_and_come_with_a_prompt(server):
+    resp, body = server.get_json("/api/profiles/interactive-chat/diff?scope=project-local")
+    assert resp.status == 200
+    data = body["data"]
+    row = data["settings"][0]
+    assert row["label"] and row["setting"] and row["agent"] is None
+    assert row["where"] == ".claude/settings.local.json"
+    assert data["dry_run_command"] == data["apply_command"] + " --dry-run"
+    assert "settings profile" in data["prompt"] and "show me the diff" in data["prompt"]
+
+
 def test_profile_diff_notes_missing_snapshot_when_store_has_none(tmp_path, monkeypatch):
     corpus = _build_corpus(tmp_path)
     _install_fake_rebuild(monkeypatch, corpus)
@@ -1408,6 +1419,15 @@ def test_profiles_from_current_saves_allowlisted_non_managed_keys(server):
                 "effective_agents": {"reviewer": {"effort": "low", "color": "blue"}},
             }
         ),
+    )
+    # A later apply stamp (active-profile marker) records no settings and
+    # must not hide the real snapshot before it.
+    server.store.upsert_snapshot(
+        project_slug="proj-a",
+        project_root_path=_FAKE_ROOT,
+        ts="2026-09-19T13:00:00Z",
+        schema_version=2,
+        digest_json=json.dumps({"ts": "2026-09-19T13:00:00Z", "schema_version": 2, "profile_id": "x"}),
     )
     resp, payload = server.post_json("/api/profiles/from-current", {"name": "Mine"})
     assert resp.status == 201, payload

@@ -314,7 +314,7 @@ def test_write_monthly_report_includes_cache_ground_truth_when_usage_log_rows_gi
         corpus, PRICING, Config(), "2026-09", out_dir, usage_log_rows=usage_log_rows
     )
     text = md_path.read_text(encoding="utf-8")
-    assert "Cache ground truth" in text or "cache_ground_truth" in text.lower()
+    assert "Cache health per session, from your statusline" in text
 
 
 def test_write_monthly_report_scopes_usage_log_rows_to_sessions_in_month(tmp_path):

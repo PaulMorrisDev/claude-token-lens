@@ -47,7 +47,18 @@ def _broken(good: str) -> str:
 def _write_snapshot(config_dir, ts: str) -> None:
     snaps = config_dir / "snapshots"
     snaps.mkdir(parents=True, exist_ok=True)
-    (snaps / "s.json").write_text(json.dumps({"ts": ts}), encoding="utf-8")
+    (snaps / "s.json").write_text(json.dumps({"ts": ts, "effective": {}}), encoding="utf-8")
+
+
+def test_an_apply_stamp_is_not_a_hook_snapshot(tmp_path):
+    # apply marks the active profile with a config-free stamp; it says
+    # nothing about whether the hook still runs.
+    config_dir, _good = _claude_dir(tmp_path)
+    _write_snapshot(config_dir, "2026-09-10T12:00:00Z")
+    (config_dir / "snapshots" / "stamp.json").write_text(
+        json.dumps({"ts": "2026-09-22T11:00:00Z", "schema_version": 2, "profile_id": "lean"}), encoding="utf-8"
+    )
+    assert hook_health.check(config_dir, now=NOW).last_snapshot_days == pytest.approx(12.0)
 
 
 def test_good_hook_is_ok(tmp_path):

@@ -357,6 +357,63 @@ def prompt_for(rec: Recommendation, change: SettingChange) -> str:
     return "\n".join(lines)
 
 
+#: Where a profile's change lands, per ``apply`` scope: settings file,
+#: agent file (``{agent}`` filled in), and who it affects.
+PROFILE_SCOPE_WHERE = {
+    "user": ("~/.claude/settings.json", "~/.claude/agents/{agent}.md", "you, in every project"),
+    "project-local": (
+        ".claude/settings.local.json",
+        ".claude/agents/{agent}.md",
+        "this project, on your machine only",
+    ),
+    "repo": (".claude/settings.json", ".claude/agents/{agent}.md", "everyone who works in this project"),
+}
+
+
+def profile_change_where(key: str, scope: str) -> str:
+    """The file a profile diff row's dotted ``key`` (``settings.<name>``,
+    ``agents.<agent>.<name>`` or ``env.<NAME>``) is written to under
+    ``scope``."""
+    settings_path, agent_path, _ = PROFILE_SCOPE_WHERE.get(scope, PROFILE_SCOPE_WHERE["user"])
+    if key.startswith("agents."):
+        return agent_path.format(agent=key.split(".")[1])
+    if key.startswith("env."):
+        return f"{settings_path} (env block)"
+    return settings_path
+
+
+def profile_prompt(name: str, rows: list[dict], scope: str) -> str:
+    """A self-contained prompt asking Claude to make a profile's changes
+    by hand: one line per changed, unmanaged key, naming the file, the
+    old and the new value."""
+    _, _, who = PROFILE_SCOPE_WHERE.get(scope, PROFILE_SCOPE_WHERE["user"])
+    lines = [f'I want to apply the settings profile "{name}" to Claude Code. It affects {who}. Make these changes:']
+    for row in rows:
+        if row.get("managed") or row.get("current_value") == row.get("proposed_value"):
+            continue
+        key = row["key"]
+        parts = key.split(".")
+        where = profile_change_where(key, scope)
+        if key.startswith("agents."):
+            field = f"{'.'.join(parts[2:])} in the frontmatter"
+        elif key.startswith("env."):
+            field = f"the environment variable {parts[1]}"
+        else:
+            field = ".".join(parts[1:])
+        lines.append(
+            f"- In {where}, set {field} to {json.dumps(row.get('proposed_value'))} "
+            f"(now: {_human(row.get('current_value'))})."
+        )
+    if len(lines) == 1:
+        return f'The settings profile "{name}" matches your current settings; there is nothing to change.'
+    lines.append(
+        "If an agent file doesn't exist, the agent is built into Claude Code: say so and don't create one. "
+        "Before saving, restate the changes and show me the diff. Claude Code will ask my permission to "
+        "edit files under .claude; that is expected. Change nothing else."
+    )
+    return "\n".join(lines)
+
+
 def build_fix(rec: Recommendation, change: SettingChange) -> dict:
     return {
         "key": change.key,
@@ -395,4 +452,16 @@ def attach_fixes(recommendations: list[Recommendation]) -> None:
         rec.fixes = build_fixes(rec)
 
 
-__all__ = ["LEVER_LABELS", "SETTING_TEXT", "attach_fixes", "build_fix", "build_fixes", "command_for", "explainer_for", "prompt_for"]
+__all__ = [
+    "LEVER_LABELS",
+    "PROFILE_SCOPE_WHERE",
+    "SETTING_TEXT",
+    "attach_fixes",
+    "build_fix",
+    "build_fixes",
+    "command_for",
+    "explainer_for",
+    "profile_change_where",
+    "profile_prompt",
+    "prompt_for",
+]

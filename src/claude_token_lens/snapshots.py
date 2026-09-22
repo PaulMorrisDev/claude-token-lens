@@ -108,11 +108,21 @@ class Snapshot:
 # -- loading ----------------------------------------------------------------
 
 
+def records_config(data: dict) -> bool:
+    """``True`` when a snapshot document records any config. ``apply``'s
+    active-profile stamp (``{"ts", "schema_version", "profile_id"}``)
+    records none; read as a snapshot it would look like every setting
+    had been removed, so config diffs, the scorecard's change count and
+    each session's "config at the time" would all read it wrong."""
+    return any(key in data for key in (*_CONFIG_SECTIONS, "effective", "settings_layers"))
+
+
 def load_snapshots(config_dir: Path | str) -> list[Snapshot]:
     """Every ``*.json`` file under ``<config_dir>/snapshots/``, parsed and
     sorted ascending by ``ts``. Unreadable or malformed files are skipped
     rather than raising — a report must degrade gracefully around one
     corrupt snapshot, the way the transcript parser tolerates bad lines.
+    ``apply``'s active-profile stamps are skipped too (:func:`records_config`).
 
     Fix config-dir: ``config_dir`` is the token-lens directory itself
     (matching every other module's convention — ``config.py``'s
@@ -135,6 +145,8 @@ def load_snapshots(config_dir: Path | str) -> list[Snapshot]:
         except (OSError, json.JSONDecodeError):
             continue
         if not isinstance(data, dict):
+            continue
+        if not records_config(data):
             continue
         ts = data.get("ts") or path.stem
         result.append(Snapshot(path=path, ts=str(ts), data=data))
@@ -926,6 +938,7 @@ def build_config_section(
 __all__ = [
     "Snapshot",
     "load_snapshots",
+    "records_config",
     "snapshot_for",
     "flatten_snapshot",
     "managed_keys",

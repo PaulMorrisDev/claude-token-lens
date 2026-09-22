@@ -59,7 +59,7 @@ def test_detect_counts_projects_and_snapshots_and_usage_log(tmp_path):
     (config_dir / "usage-log.csv").write_text("session_id\n", encoding="utf-8")
     snapshots_dir = config_dir / "snapshots"
     snapshots_dir.mkdir()
-    (snapshots_dir / "one.json").write_text(json.dumps({"ts": "2026-09-19T00:00:00Z"}), encoding="utf-8")
+    (snapshots_dir / "one.json").write_text(json.dumps({"ts": "2026-09-19T00:00:00Z", "effective": {}}), encoding="utf-8")
 
     detection = onboarding.detect(config_dir, projects_root)
     assert detection.config_dir_exists is True

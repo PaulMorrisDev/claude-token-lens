@@ -67,7 +67,8 @@ Deviations from the plan/brief, reported rather than made silently (see
   raising, so this loads cleanly), just a narrower one than the hook's
   own next run will produce. The next real hook run (which already reads
   ``<config_dir>/active-profile``, written by this same :func:`execute`)
-  naturally supersedes it with the full capture.
+  naturally supersedes it with the full capture. Readers that need
+  config skip the stamp (``snapshots.records_config``).
 - **``--force`` recreates a missing agent frontmatter file from
   scratch.** Patching requires existing text to parse (frontmatter.py's
   own "refuse rather than guess" contract has nothing to patch without a

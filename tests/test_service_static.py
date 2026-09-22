@@ -40,6 +40,7 @@ from claude_token_lens import helptext
 from claude_token_lens.config import Config
 from claude_token_lens.corpus import load_corpus
 from claude_token_lens.pricing import load_pricing
+from claude_token_lens.profiles import schema as profile_schema
 from claude_token_lens.report import build_report
 from claude_token_lens.render.json_out import render_json, to_jsonable
 from claude_token_lens.service.store import Store
@@ -418,6 +419,13 @@ def _build_fixture_data(tmp_path: Path) -> tuple[dict, dict]:
 
     canned["/api/recommendations"] = [to_jsonable(rec) for rec in report.recommendations]
     canned["/api/diagnostics"] = to_jsonable(helptext.diagnostics_table(report.diagnostics))
+    canned["/api/profile-schema"] = {
+        "settings": [{"key": key, "label": key, "kind": spec.kind} for key, spec in profile_schema.SETTINGS_ALLOWLIST.items()],
+        "agents": [{"key": key, "label": key, "kind": spec.kind} for key, spec in profile_schema.AGENT_ALLOWLIST.items()],
+        "env": sorted(profile_schema.ENV_ALLOWLIST),
+        "archetypes": list(profile_schema.ARCHETYPES),
+        "scopes": [{"key": "user", "label": "Your user settings, every project"}],
+    }
 
     return canned, sessions_map
 

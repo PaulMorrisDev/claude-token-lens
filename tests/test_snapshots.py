@@ -732,3 +732,21 @@ def test_snapshot_for_with_project_key_ignores_other_projects():
     assert snap_mod.snapshot_for("2026-09-12T00:00:00Z", snaps, "slug:aaa") is legacy
     assert snap_mod.snapshot_for("2026-09-12T00:00:00Z", [mine, other], "slug:aaa") is mine
     assert snap_mod.snapshot_for("2026-09-12T00:00:00Z", snaps) is other
+
+
+def test_load_snapshots_skips_apply_stamps_that_record_no_config(tmp_path):
+    import json as _json
+
+    from claude_token_lens.snapshots import diff_keys, load_snapshots
+
+    snaps_dir = tmp_path / "snapshots"
+    snaps_dir.mkdir()
+    full = {"ts": "20260901T000000Z", "schema_version": 2, "user_settings": {"model": "opus"}, "effective": {"model": "opus"}}
+    stamp = {"ts": "20260902T000000Z", "schema_version": 2, "profile_id": "lean"}
+    (snaps_dir / "a.json").write_text(_json.dumps(full), encoding="utf-8")
+    (snaps_dir / "b.json").write_text(_json.dumps(stamp), encoding="utf-8")
+    (snaps_dir / "c.json").write_text(_json.dumps({**full, "ts": "20260903T000000Z"}), encoding="utf-8")
+    loaded = load_snapshots(tmp_path)
+    assert [s.ts for s in loaded] == ["20260901T000000Z", "20260903T000000Z"]
+    # Without the stamp nothing looks changed.
+    assert diff_keys(loaded) == {}

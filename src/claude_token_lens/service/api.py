@@ -404,10 +404,23 @@ def make_handler(
             # snapshot apart from one that only ever applies at the
             # user/global layer, without this work package touching that
             # frozen module.
+            if not snapshots_mod.records_config(data):
+                continue  # apply's active-profile stamp: no config in it
             data["project_slug"] = row.get("project_slug")
             out.append(Snapshot(path=Path(""), ts=row["ts"], data=data))
         out.sort(key=lambda s: s.ts)
         return out
+
+    def _latest_config_snapshot() -> Snapshot | None:
+        """The newest snapshot that records settings. ``apply`` also
+        writes a ``{ts, schema_version, profile_id}`` stamp into the
+        snapshots folder to mark the active profile; that stamp carries
+        no config, so reading "now" from it would show every key unset."""
+        snaps = _snapshots_from_store()
+        for snapshot in reversed(snaps):
+            if isinstance(snapshot.data.get("effective"), dict):
+                return snapshot
+        return snaps[-1] if snaps else None
 
     def _build_report_model(window_days: int | None, since: str | None = None, until: str | None = None):
         # Local import: service.rebuild is a sibling work package's
@@ -722,8 +735,7 @@ def make_handler(
             return _bad_request(f"'scope' must be one of {_VALID_PROFILE_SCOPES}")
 
         notes: list[str] = []
-        snaps = _snapshots_from_store()
-        snapshot = snaps[-1] if snaps else None
+        snapshot = _latest_config_snapshot()
         if snapshot is not None:
             effective = snapshots_mod.effective_config(snapshot)
             provenance = snapshots_mod.effective_provenance(snapshot)
@@ -751,9 +763,19 @@ def make_handler(
         # omitted" (the user fills it in themselves when they run it).
         apply_cmd, launch_cmd = profile_diff_mod.apply_command(profile.id, scope).split("\n", 1)
 
+        from ..fixes import LEVER_LABELS, SETTING_TEXT, profile_change_where, profile_prompt
+
         def _row(row) -> dict:
+            parts = row.key.split(".")
+            # agents.<agent>.<key>; the key itself may be dotted (experimental.cacheTtl).
+            name = ".".join(parts[2:]) if row.key.startswith("agents.") else ".".join(parts[1:])
             return {
                 "key": row.key,
+                "setting": name,
+                "agent": parts[1] if row.key.startswith("agents.") else None,
+                "label": LEVER_LABELS.get(name, name),
+                "description": SETTING_TEXT.get(name, ("", "", ""))[0],
+                "where": profile_change_where(row.key, scope),
                 "current_value": row.current_value,
                 "current_provenance": row.current_provenance,
                 "proposed_value": row.proposed_value,
@@ -774,7 +796,9 @@ def make_handler(
                 "agents": agent_rows,
                 "env": env_rows,
                 "apply_command": apply_cmd,
+                "dry_run_command": f"{apply_cmd} --dry-run",
                 "launch_command": launch_cmd,
+                "prompt": profile_prompt(profile.name or profile.id, settings_rows + agent_rows + env_rows, scope),
                 "notes": notes,
             }
         )
@@ -854,10 +878,9 @@ def make_handler(
         so the UI can say so. Writes only this tool's own profile store,
         never Claude Code's config."""
         body = body if isinstance(body, dict) else {}
-        snaps = _snapshots_from_store()
-        if not snaps:
+        snapshot = _latest_config_snapshot()
+        if snapshot is None or not isinstance(snapshot.data.get("effective"), dict):
             return _error(409, "conflict", "no config snapshot recorded yet; run claude-token-lens snapshot-config")
-        snapshot = snaps[-1]
         effective = snapshots_mod.effective_config(snapshot)
         managed = set(snapshots_mod.managed_keys(snapshot))
         raw_agents = snapshot.data.get("effective_agents")
