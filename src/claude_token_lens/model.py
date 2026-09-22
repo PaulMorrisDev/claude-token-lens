@@ -660,6 +660,14 @@ class SettingChange:
     #: writing a same-named agent file, which needs judgement, so it is
     #: offered as a prompt only.
     new_agent_file: bool = False
+    #: Where this one change is made, when it differs from the
+    #: recommendation's own ``scope`` (a recommendation that groups
+    #: several agents, some user-level and some project-level).
+    scope: str = ""
+    #: This change's own share of the saving, when the recommendation
+    #: groups several changes; the explainer falls back to the
+    #: recommendation's ``estimated_saving``.
+    saving: str = ""
 
 
 @dataclass(slots=True)
@@ -703,6 +711,9 @@ class Recommendation:
     estimated_saving: str = ""
     #: How ``estimated_saving`` was worked out, for the explainer.
     saving_basis: str = ""
+    #: The saving as a number (USD at list price), used only to order
+    #: recommendations of the same severity; ``None`` when not estimated.
+    saving_usd: float | None = None
     why: str = ""
     #: ``fixes.build_fix`` output per change, filled by ``report.build_report``:
     #: dicts with ``explainer`` (list of (heading, text)), ``command`` and

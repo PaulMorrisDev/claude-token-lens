@@ -52,6 +52,39 @@ SETTING_TEXT: dict[str, tuple[str, str, str]] = {
         "The agent can't use any tool missing from the list, for example to edit a file.",
         "",
     ),
+    "model": (
+        "Which Claude model does the work. Smaller models cost less per token.",
+        "A smaller model may need more replies for the same task, or get some tasks wrong. Try it on a few "
+        "tasks and compare the results before keeping it.",
+        "",
+    ),
+    "autoCompactWindow": (
+        "How large the conversation may grow, in tokens, before Claude Code replaces it with a summary. "
+        "Every reply re-reads the whole conversation, so a smaller window means cheaper replies.",
+        "A summary drops detail. After one, Claude may re-read files or lose track of earlier decisions.",
+        "",
+    ),
+    "effortLevel": (
+        "How hard Claude thinks before replying. Thinking is billed as output.",
+        "Lower effort can miss things on hard problems. You can raise it for one task with /effort.",
+        "",
+    ),
+    "promptCacheTtl": (
+        "How long the main session's cache is kept between replies: 5 minutes or 1 hour.",
+        "A 1-hour cache costs more to write, so it only pays off when you often pause for more than 5 minutes.",
+        "A 1-hour lifetime is ignored while a Pro or Max plan is using extra usage credits.",
+    ),
+    "subagentPromptCacheTtl": (
+        "How long every subagent's cache is kept between replies: 5 minutes or 1 hour.",
+        "A 1-hour cache costs more to write, so it only pays off when subagents often wait more than 5 minutes.",
+        "A 1-hour lifetime is ignored while a Pro or Max plan is using extra usage credits.",
+    ),
+    "experimental.cacheTtl": (
+        "How long this agent's cache is kept between replies: 5 minutes or 1 hour.",
+        "A 1-hour cache costs more to write, so it only pays off when this agent often waits more than 5 minutes.",
+        "Needs Claude Code 2.1.248 or later. A 1-hour lifetime is ignored while a Pro or Max plan is using "
+        "extra usage credits.",
+    ),
 }
 
 _SCOPE_WHERE = {
@@ -73,6 +106,21 @@ _WORKFLOW_PROMPTS = {
         "files or into a skill they load on demand. Keep rules every agent needs where they are. "
         "Show me the proposed moves and the diff before changing anything. Claude Code will ask my "
         "permission before editing files under .claude."
+    ),
+    "baseline-bloat": (
+        "Every Claude Code session I start loads a large context before my first message: {title_lower}. "
+        "Please list the MCP servers and plugins I have enabled (in ~/.claude/settings.json, this project's "
+        ".claude/settings.json and .mcp.json), say which ones this project doesn't seem to use, and propose "
+        "turning those off for this project only. Show me the proposed change before making it. Claude Code "
+        "will ask my permission before editing files under .claude."
+    ),
+    "agent-report-size": (
+        "{agent} sends back long final reports, and each one stays in my main session's context. Please "
+        "read {agent}'s agent file (~/.claude/agents/{agent}.md or .claude/agents/{agent}.md) and propose "
+        "one or two lines for its prompt asking for a short report: findings, file paths and next steps, "
+        "not the working. If {agent} has no agent file (it is built into Claude Code), propose a sentence I "
+        "can add to the task prompts I send it instead. Show me the diff before saving. Claude Code will ask "
+        "my permission before editing files under .claude."
     ),
 }
 
@@ -114,7 +162,13 @@ def _cli_value(value) -> str:
     return str(value)
 
 
+_MANAGED_WHERE = ("your organisation's managed settings", "set by policy; only your administrator can change it")
+
+
 def _where(change: SettingChange, scope: str) -> tuple[str, str]:
+    scope = change.scope or scope
+    if scope == "managed":
+        return _MANAGED_WHERE
     if change.target == "agent":
         path, who = _SCOPE_WHERE.get(scope, _SCOPE_WHERE["user"])
         return path.format(agent=change.agent), who
@@ -124,7 +178,8 @@ def _where(change: SettingChange, scope: str) -> tuple[str, str]:
 def command_for(change: SettingChange, scope: str) -> str | None:
     """The ``apply --set`` line for ``change`` (dry run first), or
     ``None`` when the value needs judgement or a new agent file."""
-    if change.value is None or change.new_agent_file:
+    scope = change.scope or scope
+    if change.value is None or change.new_agent_file or scope == "managed":
         return None
     parts = ["claude-token-lens", "apply", "--set", f"{change.key}={_cli_value(change.value)}"]
     if change.target == "agent" and change.agent:
@@ -153,8 +208,9 @@ def explainer_for(rec: Recommendation, change: SettingChange) -> list[tuple[str,
         )
     else:
         where = f"{path}: {who}."
-    effect = rec.estimated_saving or "Not estimated: this part isn't measured on its own."
-    if rec.estimated_saving and rec.saving_basis:
+    saving = change.saving or rec.estimated_saving
+    effect = saving or "Not estimated: this part isn't measured on its own."
+    if saving and rec.saving_basis:
         effect += " " + rec.saving_basis
     if change.unconfirmed:
         effect += " Claude Code's docs don't confirm this effect, so check the numbers after the change."
@@ -175,6 +231,12 @@ def explainer_for(rec: Recommendation, change: SettingChange) -> list[tuple[str,
 
 
 def prompt_for(rec: Recommendation, change: SettingChange) -> str:
+    if (change.scope or rec.scope) == "managed":
+        return (
+            f"My organisation's managed settings lock {change.key}, so I can't change it myself. Draft a short "
+            f"request to my administrator to set {change.key} to {_after(change)}, saying why: "
+            f"{rec.why or rec.title} Keep it under 120 words and don't change any files."
+        )
     path, _ = _where(change, rec.scope)
     subject = f"the {change.agent} agent" if change.target == "agent" else "my Claude Code settings"
     prepare = _PREPARE.get(change.key, "").format(agent=change.agent, path=path)
@@ -236,7 +298,9 @@ def build_fixes(rec: Recommendation) -> list[dict]:
             "explainer": [],
             "command": None,
             "command_warning": "",
-            "prompt": template.format(title_lower=rec.title[:1].lower() + rec.title[1:]),
+            "prompt": template.format(
+                title_lower=rec.title[:1].lower() + rec.title[1:], agent=rec.agent_type or "this agent"
+            ),
         }
     ]
 

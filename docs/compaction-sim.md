@@ -44,9 +44,10 @@ exceeded, and costs:
    `next_turn_write_cost` on a recache-flagged record); $0.00 default
    when this corpus has none.
 
-Every turn after a compaction (real or simulated) has its cache-write and
-cache-read volumes scaled down by `simulated ctx / observed ctx`, until
-the next compaction. Candidate windows swept:
+Every turn after a simulated compaction has the tokens that summary
+dropped taken out of its context and cache reads (and out of its cache
+writes once the reads are used up), until the next compaction; content
+added after the summary is kept whole. A real compaction resets this. Candidate windows swept:
 `100k, 150k, 200k, 250k, 300k, 400k, 500k, none` (`none` = never
 auto-compact; a real compaction already in the transcript is still kept
 under this row — see the "no candidate window" identity below).
@@ -86,16 +87,19 @@ A 20-turn synthetic transcript with linearly growing context (20,000
 new tokens written per turn, everything earlier read back from cache —
 `tests/test_compaction_sim.py`'s `_synthetic_20_turn_transcript`, priced
 at the packaged Sonnet 5 rates) costs **$1.76** with no compaction at
-all (`window=none`). Under `window=100,000`, one compaction fires at
-turn 6 (context first exceeds 100,000 there), and the total drops to
-**$0.545** — a **$1.215 saving (69% cheaper)**, comfortably clearing the
-default switch thresholds. The full turn-by-turn arithmetic is spelled
-out in that test file's docstrings.
+all (`window=none`). Under `window=100,000`, compactions fire at turns
+6, 11 and 16 (each time the context, grown by 20,000 a turn since the
+last summary, passes 100,000 again), and the total drops to
+**$1.138** — a **$0.622 saving (35% cheaper)**. That is three summaries
+a session, so the rule skips 100,000 and names 150,000 (two summaries,
+$0.501 saved) as the floor, once the saving clears the switch
+thresholds. The full turn-by-turn arithmetic is spelled out in that test
+file's docstrings.
 
 ## The "no candidate window" identity
 
 `window=None` never opens the synthetic-compaction guard, so the
-per-transcript scale factor never leaves `1.0` — every turn is priced
+per-transcript dropped-token offset never leaves `0` — every turn is priced
 via its own unmodified, real values, including any real compaction
 already in the transcript. The `window=None` row is therefore *exactly*
 the transcript's true observed cost; no separate "observed cost" code
@@ -114,9 +118,12 @@ Printed verbatim in the report section's own notes (`ASSUMPTIONS`):
 - A simulated compaction also charges a rediscovery allowance — this
   corpus's own median post-compaction re-cache write cost ($0.00
   default, noted).
-- Every later turn's cache volumes scale down by
-  `(simulated ctx / observed ctx)` until the next compaction, real or
-  simulated.
+- Every later turn's context and cache reads shrink by the tokens the
+  simulated summary dropped (its cache writes too, once the reads are
+  used up), until the next compaction, real or simulated. Content added
+  after the summary is kept whole. (Earlier versions
+  scaled later turns down by the compression ratio instead, which also shrank new
+  content and so overstated savings at small windows.)
 - A real, observed compaction already in a transcript is kept as-is
   under every candidate window — never re-simulated, never removed.
 - `delta_usd = candidate_cost - observed_cost` (see the sign-convention

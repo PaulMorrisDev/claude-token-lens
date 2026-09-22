@@ -88,8 +88,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `scorecard`); the Config tab renders its tables once; the Cache tab
   explains the limit-expiry cause; tabs are renamed "Cache lifetime
   (TTL)" and "Data quality"; each tab has one heading and an intro.
+- **Recommendations are written in plain words** by a new pass,
+  `advice.py`, run at the end of `recommend()`: each card has a plain
+  title, a `why` sentence, an action, and (where a setting is involved)
+  `changes` with the current value, so it comes with an explainer, a
+  command and a prompt. Cards that disagreed are consolidated:
+  `compaction-window` replaces `compaction-churn` and takes the setting
+  from `long-context-share`, and is dropped when `autoCompactWindow` is
+  already at or below its floor; the per-agent `model-tier` cards merge
+  into one with a change per agent type (as the `haiku`/`sonnet`/`opus`
+  alias), skipping workflow subagents and forks. `spawn-cost` no longer
+  fires for agents no file can change. Cards are ordered by severity,
+  then by estimated saving (`Recommendation.saving_usd`). A setting
+  locked by managed policy gets a prompt that drafts a request to your
+  administrator instead of a command. The rules' ids, evidence and JSON
+  keys are unchanged.
+- `data-quality` fires on cache-write mismatches only when they are a
+  real share of replies (the same bar as unreadable lines), not on a
+  single odd reply.
 
 ### Fixed
+
+- The auto-compact simulation (`compaction_sim`) shrank everything a
+  session added after a simulated summary by the compression ratio, so
+  context grew far too slowly afterwards and small windows looked much
+  cheaper than they are. It now removes only the tokens the summary
+  dropped. On the worked example the 100,000 saving falls from 69% to
+  35%, and the recommended floor moves to 150,000.
 
 - Attachment sizes are measured from the fields real transcripts carry
   (`skill_listing.content`, `instructions.files[]`,

@@ -1544,7 +1544,15 @@ def _rule_data_quality(report: ReportModel, th: RecommendThresholds) -> list[Rec
         100.0 * diagnostics.unparsable_lines / diagnostics.lines if diagnostics.lines else 0.0
     )
     fires_on_unparsable = unparsable_pct > th.data_quality_unparsable_pct
-    fires_on_ttl_mismatch = diagnostics.ttl_sum_mismatch > 0
+    # A handful of odd replies is noise; only a real share of them is a
+    # caveat worth a card (same bar as unreadable lines).
+    priced_turns = _cell(report, "overview", "totals", "priced_turns", "value")
+    mismatch_pct = (
+        100.0 * diagnostics.ttl_sum_mismatch / priced_turns
+        if isinstance(priced_turns, (int, float)) and priced_turns
+        else 0.0
+    )
+    fires_on_ttl_mismatch = mismatch_pct > th.data_quality_unparsable_pct
     fires_on_fidelity = fidelity_row_key is not None
 
     if not (fires_on_unparsable or fires_on_ttl_mismatch or fires_on_fidelity):
@@ -1556,11 +1564,13 @@ def _rule_data_quality(report: ReportModel, th: RecommendThresholds) -> list[Rec
 
     notes = []
     if fires_on_unparsable:
-        notes.append(f"{unparsable_pct:.2f}% of lines were unparsable")
+        notes.append(f"{unparsable_pct:.2f}% of log lines could not be read")
     if fires_on_ttl_mismatch:
-        notes.append(f"{diagnostics.ttl_sum_mismatch} turn(s) had a cc_5m + cc_1h mismatch")
+        notes.append(
+            f"{mismatch_pct:.2f}% of replies reported cache writes that don't add up across the two cache lifetimes"
+        )
     if fires_on_fidelity:
-        notes.append(f"{fidelity_row_key}'s TTL simulation fidelity exceeded the warning threshold")
+        notes.append(f"the cache lifetime replay for {fidelity_row_key} fits its real cost poorly")
 
     evidence = [_evidence("Pricing coverage (data-quality dimension)", dq_value, "scorecard", "dimensions", "data_quality")]
     if fires_on_fidelity:
@@ -1709,7 +1719,9 @@ def recommend(
     if archetype is not None:
         recs = [r for r in recs if not r.archetypes or archetype in r.archetypes]
 
-    return recs
+    from . import advice  # imported here: advice imports this module
+
+    return advice.finish(recs, report, snapshot, units)
 
 
 # -- patch-set rendering --------------------------------------------------

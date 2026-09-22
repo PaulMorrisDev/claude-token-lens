@@ -123,24 +123,24 @@ def test_window_none_has_zero_synthetic_compactions_and_matches_true_observed_co
 
 
 def test_small_window_hand_computed_compaction_count_and_cost():
-    """window=100,000 on the same 20-turn transcript triggers exactly
-    one synthetic compaction, at turn 6 (ctx=120,000 > 100,000; turn 5's
-    ctx=100,000 does not trigger, since the guard is a strict ">").
-    With no real compact_boundary event anywhere in this corpus, the
-    compression ratio and rediscovery allowance both fall back to their
-    defaults (0.15, $0.00).
+    """window=100,000 on the same 20-turn transcript (turn i has
+    ctx = i*20,000: a 20,000-token write plus the rest read) triggers
+    three synthetic compactions. With no real compact_boundary event
+    anywhere in this corpus, the compression ratio and rediscovery
+    allowance both fall back to their defaults (0.15, $0.00). Each
+    summary removes ``ctx - post`` tokens from every later turn's cache
+    reads; the 20,000 tokens each later turn adds are kept whole.
 
-    By hand (see this module's docstring for the full derivation):
-      turns 1-5 (unscaled):  0.05, 0.054, 0.058, 0.062, 0.066  -> 0.29
-      turn 6 (compaction):   write_cost(120,000*0.15=18,000 @ 2.5/1e6)
-                             = 0.045; turn's own (zeroed-cache) cost = 0
-                             (input/output are 0) -> 0.045
-      turns 7-20 (scale=0.15): cost_i = 0.0075 + read_i*0.2/1e6 where
-                             read_i = (i-1)*20,000*0.15, an arithmetic
-                             sequence from 0.0111 (turn 7) to 0.0189
-                             (turn 20), 14 terms -> 14*(0.0111+0.0189)/2
-                             = 0.21
-      total = 0.29 + 0.045 + 0.21 = 0.545
+    By hand (write 2.5/1e6, read 0.2/1e6 per token):
+      turns 1-5 (as observed):        0.05 .. 0.066            -> 0.29
+      turn 6 (ctx 120,000 > 100,000): summary write 18,000     -> 0.045
+      turns 7-10: write 20,000 + read 18,000/38,000/58,000/78,000
+                                     0.0536+0.0576+0.0616+0.0656 -> 0.2384
+      turn 11 (context 118,000):      summary write 17,700     -> 0.04425
+      turns 12-15: reads 17,700 .. 77,700                      -> 0.23816
+      turn 16 (context 117,700):      summary write 17,655     -> 0.0441375
+      turns 17-20: reads 17,655 .. 77,655                      -> 0.238124
+      total = 1.1380715
     """
     turns = _synthetic_20_turn_transcript()
     tr = _top_level_transcript("sess-synthetic", turns)
@@ -148,14 +148,14 @@ def test_small_window_hand_computed_compaction_count_and_cost():
     rows = {r.window: r for r in stats.by_window("top-level")}
 
     row = rows[100_000]
-    assert row.compactions == 1
-    assert row.cost == pytest.approx(0.545)
+    assert row.compactions == 3
+    assert row.cost == pytest.approx(1.1380715)
     assert row.observed_cost == pytest.approx(1.76)
     # Sign convention: candidate - observed, negative = cheaper.
-    assert row.delta_usd == pytest.approx(0.545 - 1.76)
+    assert row.delta_usd == pytest.approx(1.1380715 - 1.76)
     assert row.delta_usd < 0
-    assert row.saving_usd == pytest.approx(1.76 - 0.545)
-    assert row.delta_pct == pytest.approx(100.0 * (0.545 - 1.76) / 1.76)
+    assert row.saving_usd == pytest.approx(1.76 - 1.1380715)
+    assert row.delta_pct == pytest.approx(100.0 * (1.1380715 - 1.76) / 1.76)
 
 
 def test_every_candidate_window_present_and_ordered():
@@ -314,6 +314,11 @@ def _base_report(sections: list[model.Section]) -> ReportModel:
     return ReportModel(meta=ReportMeta(), sections=sections, recommendations=[])
 
 
+#: The synthetic transcript costs 1.76 USD in all, so the rule tests
+#: lower the default 1 USD bar; nothing else changes.
+_SMALL_FIXTURE_TH = CompactionSimThresholds(switch_usd=0.1)
+
+
 def test_rule_fires_when_saving_clears_both_thresholds():
     turns = _synthetic_20_turn_transcript()
     tr = _top_level_transcript("sess-synthetic", turns)
@@ -321,14 +326,16 @@ def test_rule_fires_when_saving_clears_both_thresholds():
     section = build_section(stats)
     report = _base_report([section])
 
-    recs = RULES[0](report, CompactionSimThresholds(), None)
+    recs = RULES[0](report, _SMALL_FIXTURE_TH, None)
     assert len(recs) == 1
     rec = recs[0]
     assert rec.id == "compaction-window"
     assert rec.category == "settings"
     assert rec.lever == "autoCompactWindow"
     assert rec.scope == "user"
-    assert "100,000" in rec.action
+    # 100,000 would summarise 3 times a session; 150,000 is the smallest
+    # window with at most 2.
+    assert "150,000" in rec.action
     assert_privacy(rec)
 
 
@@ -361,7 +368,7 @@ def test_rule_evidence_resolves_against_the_report():
     section = build_section(stats)
     report = _base_report([section])
 
-    recs = RULES[0](report, CompactionSimThresholds(), None)
+    recs = RULES[0](report, _SMALL_FIXTURE_TH, None)
     assert recs, "expected the rule to fire on this fixture"
     for rec in recs:
         for label, value, source_table, row_key in rec.evidence:
@@ -383,11 +390,11 @@ def test_rule_recommends_a_range_floor_not_a_single_best_window():
     section = build_section(stats)
     report = _base_report([section])
 
-    recs = RULES[0](report, CompactionSimThresholds(), None)
+    recs = RULES[0](report, _SMALL_FIXTURE_TH, None)
     assert len(recs) == 1
     rec = recs[0]
-    assert rec.title == "Set autoCompactWindow to at least 100,000"
-    assert "at least 100,000" in rec.action
+    assert rec.title == "Set autoCompactWindow to at least 150,000"
+    assert "at least 150,000" in rec.action
     assert "modelled, not observed" in rec.action
 
 

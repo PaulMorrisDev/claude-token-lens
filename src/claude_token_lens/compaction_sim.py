@@ -36,10 +36,13 @@ simulates): Claude Code auto-compacts a session once its context reaches
 
 :func:`simulate_compaction_windows` replays every transcript's priced
 turns, in order, against each of :data:`CANDIDATE_WINDOWS`: whenever the
-running (possibly already-scaled-down) context would exceed the candidate
+running (possibly already-shrunk) context would exceed the candidate
 window, a simulated compaction is inserted -- charging the summary write
-plus the rediscovery allowance, and scaling every later turn's cache
-volumes down by the corpus's own observed compression ratio. A **real**
+plus the rediscovery allowance, and removing the tokens the summary
+dropped (context times one minus the corpus's own observed compression
+ratio) from every later turn's context and cache reads. Content added
+after the summary is kept whole: a later turn carries ``postTokens`` plus
+whatever the conversation grew by since, not a scaled-down copy of it. A **real**
 observed compaction already recorded in the transcript's own events is
 kept as-is under every candidate window (its real cost, not a synthetic
 one) -- a policy sweep asks "what would happen on top of what already
@@ -59,7 +62,7 @@ a uniform "candidate minus observed" avoids re-deriving the sign per row.
 
 **The "no candidate window" identity**: ``window=None`` never triggers a
 synthetic compaction (the ``window is not None`` guard never opens), so
-the per-transcript scale factor never leaves ``1.0`` and every turn is
+the per-transcript dropped-token offset never leaves ``0`` and every turn is
 priced via its own unmodified, real values -- ``simulate_compaction_windows``'s
 ``window=None`` row is therefore *exactly* the transcript's true observed
 cost, including every real compaction that already happened in it. This
@@ -145,8 +148,10 @@ ASSUMPTIONS: list[str] = [
     "a simulated compaction also charges a rediscovery allowance -- this "
     "corpus's own median post-compaction re-cache write cost from real "
     "compact_boundary events; $0.00 (noted) when this corpus has none",
-    "every later turn's cache volumes scale down by (simulated ctx / "
-    "observed ctx) until the next compaction, real or simulated",
+    "every later turn's context and cache reads shrink by the tokens the "
+    "simulated summary dropped (cache writes once reads are used up), "
+    "until the next compaction, real or simulated; growth after the "
+    "summary is kept whole",
     "a real, observed compaction already in a transcript is kept as-is "
     "under every candidate window -- never re-simulated, never removed",
     "delta_usd = candidate_cost - observed_cost throughout this module: "
@@ -416,33 +421,34 @@ def _write_cost(turn: Turn, rates: RatesArg, tokens: float) -> float:
     ).cache_write_cost
 
 
-def _scaled_cost(turn: Turn, rates: RatesArg, scale: float, *, zero_cache: bool) -> float:
-    """Price ``turn`` with its ``ctx``/cache-token fields scaled by
-    ``scale``. ``zero_cache=True`` additionally zeroes every cache-token
-    field (used on a simulated compaction's own triggering turn, whose
-    real cache volumes are charged separately as the summary write plus
-    rediscovery allowance -- never both, see the module docstring)."""
+def _shrunk_cost(turn: Turn, rates: RatesArg, dropped: float, *, zero_cache: bool) -> float:
+    """Price ``turn`` with ``dropped`` tokens taken out of its context:
+    out of its cache reads first (the dropped history is the old, cached
+    part of the prefix), then out of its cache writes once the reads are
+    used up (a turn that re-cached its whole prefix). ``zero_cache=True``
+    additionally zeroes every cache-token field (used on a simulated
+    compaction's own triggering turn, whose real cache volumes are
+    charged separately as the summary write plus rediscovery allowance --
+    never both, see the module docstring)."""
+    ctx = max(0, int(round(turn.ctx - dropped)))
     if zero_cache:
-        scaled = replace(
-            turn,
-            ctx=int(round(turn.ctx * scale)),
-            cache_creation_tokens=0,
-            cache_read_tokens=0,
-            cc_5m=0,
-            cc_1h=0,
-        )
-    elif scale == 1.0:
-        scaled = turn
+        shrunk = replace(turn, ctx=ctx, cache_creation_tokens=0, cache_read_tokens=0, cc_5m=0, cc_1h=0)
+    elif dropped <= 0:
+        shrunk = turn
     else:
-        scaled = replace(
+        read = max(0, int(round(turn.cache_read_tokens - dropped)))
+        from_writes = max(0.0, dropped - turn.cache_read_tokens)
+        write = turn.cache_creation_tokens
+        keep = max(0.0, (write - from_writes) / write) if write else 1.0
+        shrunk = replace(
             turn,
-            ctx=int(round(turn.ctx * scale)),
-            cache_creation_tokens=int(round(turn.cache_creation_tokens * scale)),
-            cache_read_tokens=int(round(turn.cache_read_tokens * scale)),
-            cc_5m=int(round(turn.cc_5m * scale)),
-            cc_1h=int(round(turn.cc_1h * scale)),
+            ctx=ctx,
+            cache_read_tokens=read,
+            cache_creation_tokens=int(round(write * keep)),
+            cc_5m=int(round(turn.cc_5m * keep)),
+            cc_1h=int(round(turn.cc_1h * keep)),
         )
-    return price_turn(scaled, rates).total
+    return price_turn(shrunk, rates).total
 
 
 def _replay_transcript(
@@ -456,8 +462,8 @@ def _replay_transcript(
     """Walk ``priced_turns`` in order under candidate ``window``. See the
     module docstring's algorithm description and its "no candidate
     window" identity (``window=None`` reproduces the true observed cost
-    exactly, since ``scale`` then never leaves 1.0)."""
-    scale = 1.0
+    exactly, since ``dropped`` then never leaves 0)."""
+    dropped = 0.0  # tokens simulated summaries have taken out of the context
     cost = 0.0
     compactions = 0
     ctx_sum = 0.0
@@ -468,24 +474,24 @@ def _replay_transcript(
             # A real compact_boundary event already reset context here --
             # the turn's own observed values already reflect what
             # actually happened, so it is priced as-is (never re-scaled,
-            # never double-charged) and any earlier synthetic scale-down
+            # never double-charged) and any earlier synthetic summary
             # is superseded.
-            scale = 1.0
+            dropped = 0.0
             compactions += real_count
             cost += price_turn(turn, rates).total
             sim_ctx = float(turn.ctx)
         else:
-            sim_ctx = turn.ctx * scale
+            sim_ctx = max(0.0, turn.ctx - dropped)
             if window is not None and sim_ctx > window:
                 post_tokens_sim = sim_ctx * compression_ratio
                 cost += _write_cost(turn, rates, post_tokens_sim)
                 cost += rediscovery_allowance_usd
                 compactions += 1
-                scale = (post_tokens_sim / turn.ctx) if turn.ctx > 0 else scale
-                cost += _scaled_cost(turn, rates, scale, zero_cache=True)
-                sim_ctx = turn.ctx * scale
+                dropped = turn.ctx - post_tokens_sim
+                cost += _shrunk_cost(turn, rates, dropped, zero_cache=True)
+                sim_ctx = post_tokens_sim
             else:
-                cost += _scaled_cost(turn, rates, scale, zero_cache=False)
+                cost += _shrunk_cost(turn, rates, dropped, zero_cache=False)
         ctx_sum += sim_ctx
     return _ReplayResult(cost=cost, compactions=compactions, ctx_sum=ctx_sum, turns=len(priced_turns))
 

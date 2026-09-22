@@ -207,7 +207,7 @@ def test_ttl_switch_suppressed_for_non_top_level_row_when_chat_only():
     recs = recommend_fn(r, config=_config(), archetype="chat-only")
     ttl_recs = [rec for rec in recs if rec.id == "ttl-switch"]
     assert len(ttl_recs) == 1
-    assert ttl_recs[0].title == "Cache TTL is a poor fit for top-level"
+    assert ttl_recs[0].agent_type == "top-level"
 
 
 def test_ttl_switch_suppressed_for_non_anthropic_provider():
@@ -266,7 +266,7 @@ def test_ttl_switch_managed_key_gains_managed_scope_and_action_text():
     rec = next(rec for rec in recs if rec.id == "ttl-switch")
     assert rec.lever == "promptCacheTtl"
     assert rec.scope == "managed"
-    assert "managed by policy" in rec.action
+    assert "administrator" in rec.action
 
 
 def test_ttl_switch_unmanaged_key_has_user_scope():
@@ -288,7 +288,7 @@ def test_ttl_switch_unmanaged_key_has_user_scope():
     rec = next(rec for rec in recs if rec.id == "ttl-switch")
     assert rec.lever == "promptCacheTtl"
     assert rec.scope == "user"
-    assert "managed by policy" not in rec.action
+    assert "administrator" not in rec.action
 
 
 # -- R3: per-row minimum-sample gate -----------------------------------
@@ -518,7 +518,7 @@ def test_subagent_volume_fires_above_threshold():
     assert rec.evidence == [
         ("Cost (observed)", 60.0, "ttl.ttl_by_agent_type", "claude-implementer"),
     ]
-    assert "60.0%" in rec.action
+    assert "60.0%" in rec.why
 
 
 def test_subagent_volume_does_not_fire_below_threshold():
@@ -655,7 +655,7 @@ def test_compaction_churn_managed_lever():
     rec = next(rec for rec in recs if rec.id == "compaction-churn")
     assert rec.lever == "autoCompactWindow"
     assert rec.scope == "managed"
-    assert "managed by policy" in rec.action
+    assert "administrator" in rec.action
 
 
 # -- long-context-share ---------------------------------------------------
@@ -1020,7 +1020,7 @@ def test_spawn_cost_emits_workflow_advice_with_no_lever_for_builtin_agent_type()
     rec = next(rec for rec in recs if rec.id == "spawn-cost")
     assert rec.lever is None
     assert rec.category == "workflow"
-    assert "briefing you pass in the Agent prompt" in rec.action
+    assert "task prompt you send it" in rec.action
     text = render_patch_set([rec])
     assert text == ""
 
@@ -1135,7 +1135,7 @@ def test_effort_mismatch_fires_with_evidence_per_purpose_row():
     # purpose group-by by session (no report table carries both), so
     # the approximation is disclosed in the action text rather than
     # presented as a genuine per-session join.
-    assert "not joined" in rec.action or "Approximation" in rec.action
+    assert "not only the light ones" in rec.changes[0].note
 
 
 def test_effort_mismatch_does_not_fire_without_docs_purposes():
@@ -1394,7 +1394,7 @@ def test_data_quality_fires_on_unparsable_lines():
     )
     recs = recommend_fn(r, config=_config(), archetype=None)
     rec = next(rec for rec in recs if rec.id == "data-quality")
-    assert "unparsable" in rec.action
+    assert "could not be read" in rec.why
 
 
 def test_data_quality_fires_on_ttl_mismatch():
@@ -2059,8 +2059,7 @@ def test_v4_module_rules_fire_via_recommend_and_evidence_resolves(tmp_path: Path
     carry_section = carry.build_section(carry.compute_carry(carry_transcripts, pricing.resolve_model))
 
     # -- compaction_sim: the module's own worked-example fixture (linear
-    # ctx growth, no real compact_boundary event) -- window=100,000 saves
-    # ~69% at the default switch thresholds (docs/compaction-sim.md's
+    # ctx growth, no real compact_boundary event; docs/compaction-sim.md's
     # own worked example).
     k = 20_000
     cs_turns = [
@@ -2077,11 +2076,16 @@ def test_v4_module_rules_fire_via_recommend_and_evidence_resolves(tmp_path: Path
         )
         for i in range(1, 21)
     ]
-    cs_transcript = TranscriptResult(
-        meta=TranscriptMeta(path="cs.jsonl", kind="top-level", session_id="cs-sess"), turns=cs_turns
-    )
+    # Five copies, so the modelled saving at 150,000 (about 0.50 USD per
+    # session) clears the default 1 USD bar.
+    cs_transcripts = [
+        TranscriptResult(
+            meta=TranscriptMeta(path=f"cs{n}.jsonl", kind="top-level", session_id=f"cs-sess-{n}"), turns=cs_turns
+        )
+        for n in range(5)
+    ]
     compaction_sim_section = compaction_sim.build_section(
-        compaction_sim.simulate_compaction_windows([cs_transcript], pricing.resolve_model, {})
+        compaction_sim.simulate_compaction_windows(cs_transcripts, pricing.resolve_model, {})
     )
 
     # -- model_swap: a top-level session run entirely on Fable, cheap to
