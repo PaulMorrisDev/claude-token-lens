@@ -275,6 +275,11 @@ td.num, th.num {
   margin-top: 0.1rem;
 }
 
+.tile-metric {
+  margin-top: 0.3rem;
+  font-size: 0.8rem;
+}
+
 .tile-threshold {
   margin-top: 0.4rem;
   font-size: 0.75rem;
@@ -311,6 +316,12 @@ td.num, th.num {
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 0.6rem 0.8rem;
+}
+
+.stat-card .stat-hint {
+  margin-top: 0.2rem;
+  font-size: 0.75rem;
+  color: var(--muted);
 }
 
 .stat-card .stat-label {
@@ -371,6 +382,27 @@ td.num, th.num {
   margin-top: 0.75rem;
   padding-top: 0.5rem;
   border-top: 1px solid var(--border);
+}
+
+details.fix > summary, .rec-evidence > summary {
+  cursor: pointer;
+  color: var(--accent);
+  font-size: 0.85rem;
+  font-weight: 600;
+  width: fit-content;
+}
+
+details.fix > summary:focus-visible, .rec-evidence > summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+details.fix[open] > summary {
+  margin-bottom: 0.4rem;
+}
+
+.rec-evidence {
+  margin-top: 0.6rem;
 }
 
 .fix h5 {
@@ -721,4 +753,15 @@ td.num, th.num {
 .value-label {
   text-decoration: underline dotted var(--muted);
   text-underline-offset: 2px;
+}
+
+tr.row-group th {
+  padding-top: 0.8rem;
+  text-align: left;
+  font-size: 0.8rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  background: transparent;
 }

@@ -264,10 +264,9 @@ def _cache_efficiency(inputs: ScorecardInputs, th: ScorecardThresholds) -> _Dime
     if inputs.limit_recache_share_pct is not None and inputs.limit_recache_share_pct > 0:
         value = max(0.0, inputs.recache_share_pct - inputs.limit_recache_share_pct)
         note = (
-            f"{inputs.limit_recache_share_pct:.1f}pp of {inputs.recache_share_pct:.1f}pp "
-            "re-cache share is attributed to usage-limit pauses (a full prefix rewrite "
-            "forced by an account-level cap, not a workflow choice) and excluded from "
-            "this level."
+            f"Cache efficiency leaves out {inputs.limit_recache_share_pct:.1f} of the "
+            f"{inputs.recache_share_pct:.1f} percentage points of cache rebuilds: those came "
+            "after a usage-limit pause, which you can't avoid."
         )
     level = _level_lower_is_better(value, th.cache_recache_share_pct)
     return _DimensionResult(
@@ -303,7 +302,8 @@ def _agent_efficiency(inputs: ScorecardInputs, th: ScorecardThresholds) -> _Dime
         metric="agent_cost_variance_ratio",
         value=inputs.agent_cost_variance_ratio,
         threshold=f"<= {th.agent_cost_variance_ratio[5 - level]:.2f}x" if level > 1 else f"> {th.agent_cost_variance_ratio[-1]:.2f}x",
-        note="Ratio of the costliest agent type's mean cost to the median across agent types.",
+        note="Subagent cost balance compares the average run of your costliest agent type "
+        "with the typical agent type.",
     )
 
 
@@ -315,8 +315,8 @@ def _config_fit(inputs: ScorecardInputs, th: ScorecardThresholds) -> _DimensionR
             metric="changed_config_keys",
             value=0,
             threshold="no config snapshot available",
-            note="No config snapshot covers this window, so config stability could not be"
-            " measured; scored as no observed instability rather than penalised.",
+            note="No settings snapshot covers this window, so config stability can't be "
+            "measured. It is rated as stable rather than marked down.",
         )
     level = _level_lower_is_better(inputs.changed_config_keys, th.config_changed_keys)
     return _DimensionResult(
@@ -324,7 +324,7 @@ def _config_fit(inputs: ScorecardInputs, th: ScorecardThresholds) -> _DimensionR
         level=level,
         metric="changed_config_keys",
         value=inputs.changed_config_keys,
-        threshold=f"<= {th.config_changed_keys[5 - level]:.0f} keys" if level > 1 else f"> {th.config_changed_keys[-1]:.0f} keys",
+        threshold=f"<= {th.config_changed_keys[5 - level]:.0f} settings" if level > 1 else f"> {th.config_changed_keys[-1]:.0f} settings",
     )
 
 
@@ -334,9 +334,9 @@ def _data_quality(inputs: ScorecardInputs, th: ScorecardThresholds) -> _Dimensio
     if inputs.limit_pause_sessions > 0:
         plural = "s" if inputs.limit_pause_sessions != 1 else ""
         note = (
-            f"{inputs.limit_pause_sessions} session{plural} included at least one "
-            "usage-limit pause; behavioural-gap and re-cache measurements for those "
-            "sessions are pause-discounted (see the limits section) rather than excluded."
+            f"{inputs.limit_pause_sessions} session{plural} hit a usage limit and paused. "
+            "Waits and cache rebuilds caused by those pauses are counted separately "
+            "(see Usage limits), not left out."
         )
     return _DimensionResult(
         dimension="data_quality",
@@ -415,12 +415,12 @@ def build_section(inputs: ScorecardInputs, thresholds: ScorecardThresholds | Non
     )
 
     notes = [
-        "Overall is the minimum of cache efficiency, context hygiene, agent "
-        "efficiency and config fit — never an average. Data quality is "
-        "reported alongside but excluded from overall.",
+        "Overall is the lowest of cache efficiency, context size, subagent cost "
+        "balance and config stability, not an average. Data quality is shown "
+        "but not counted.",
     ]
     if agent_result is None:
-        notes.append("Agent efficiency is omitted: this corpus never spawned a subagent.")
+        notes.append("Subagent cost balance is not rated: no subagents ran in this window.")
 
     return Section(
         key="scorecard",

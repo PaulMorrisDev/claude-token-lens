@@ -630,13 +630,15 @@ class FileWatcher:
         # can be written. This placeholder (bare session/project identity
         # only) is deliberately minimal -- ``_fold_session`` below always
         # overwrites it with the fully computed record once classification
-        # and cost are known, via the same idempotent ``upsert_session``.
+        # and cost are known. It is insert-only (``ensure_session``): an
+        # existing row keeps its totals while this session's subagents
+        # are re-parsed, so the dashboard's cost never dips mid-scan.
         # It's only reached once the top-level file itself resolved
         # successfully, so a session whose one-and-only top-level file
         # never parses still never gets a row at all (nothing to fold).
         self._time_store(
             stats,
-            self.store.upsert_session,
+            self.store.ensure_session,
             session_id=session_id, project_slug=slug, project_root_path=str(project_dir), slug=slug,
         )
 

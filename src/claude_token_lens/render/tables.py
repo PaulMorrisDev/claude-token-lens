@@ -150,6 +150,44 @@ def format_evidence_value(model: "ReportModel", value, source_table: str, row_ke
     return format_cell(value, kind, currency)
 
 
+#: ``Recommendation.severity`` and ``.scope`` in plain words; app.js keeps
+#: the same wording (``SEVERITY_LABELS``/``SCOPE_LABELS``).
+SEVERITY_LABELS = {"action": "Do this", "advice": "Worth considering", "info": "For your information"}
+SCOPE_LABELS = {
+    "user": "your user settings, every project",
+    "repo": "this project's settings or agent files",
+    "managed": "set by your organisation's policy",
+}
+
+
+def fix_subject(fix: dict) -> str:
+    """``": model for reviewer"``: what one ``fixes.build_fix`` entry
+    changes, for its heading. The main session's ``model`` says so, since
+    a bare "model" reads as every agent's. app.js has the same rule."""
+    key = fix.get("key")
+    if not key:
+        return ""
+    if fix.get("agent"):
+        return f": {key} for {fix['agent']}"
+    return f": {key} for your main session" if key == "model" else f": {key}"
+
+
+def evidence_source(model: "ReportModel", source_table: str, row_key) -> str:
+    """Where an evidence value comes from, as the reader sees it: the
+    home table's title and the row's display label, falling back to the
+    raw names when the table isn't in ``model``."""
+    section_key, _, table_name = source_table.partition(".")
+    for section in model.sections:
+        if section.key != section_key:
+            continue
+        for table in section.tables:
+            if table.name == table_name:
+                labels = table.value_labels or {}
+                row_label = labels.get(row_key, row_key) if isinstance(row_key, str) else row_key
+                return f"from {table.title or source_table}, {row_label}"
+    return f"from {source_table}, {row_key}"
+
+
 def display_cell(value, column, table, currency: str = "USD") -> str:
     """``format_cell`` plus the table's display labels
     (``Table.value_labels``, e.g. "top-level" -> "Main session"). Only
@@ -159,6 +197,19 @@ def display_cell(value, column, table, currency: str = "USD") -> str:
     if isinstance(value, str) and value in labels:
         return labels[value]
     return format_cell(value, column.kind, currency)
+
+
+def display_row(row, table, currency: str = "USD") -> list[str]:
+    """:func:`display_cell` for a whole row, using ``Table.row_kinds``
+    for the row's "str"-kind cells when it names the row."""
+    row_kind = table.row_kinds.get(row[0]) if row and isinstance(row[0], str) else None
+    out = []
+    for i, (value, column) in enumerate(zip(row, table.columns)):
+        if row_kind and i > 0 and column.kind == "str" and isinstance(value, (int, float)) and not isinstance(value, bool):
+            out.append(format_cell(value, row_kind, currency))
+        else:
+            out.append(display_cell(value, column, table, currency))
+    return out
 
 
 def help_parts(help_) -> list[tuple[str, str]]:

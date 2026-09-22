@@ -27,7 +27,7 @@ import dataclasses
 import html as _html
 
 from ..model import Diagnostics, ReportModel, Table
-from .tables import display_cell, format_evidence_value, help_parts
+from .tables import SCOPE_LABELS, SEVERITY_LABELS, display_cell, fix_subject, evidence_source, format_evidence_value, help_parts
 
 #: Column kinds that read as quantities: right-aligned, sortable numerically.
 _NUMERIC_KINDS = frozenset({"int", "float", "pct", "money", "tokens", "secs"})
@@ -317,9 +317,7 @@ def _sections_html(model: ReportModel) -> str:
 def _fix_html(fix: dict) -> str:
     """One ``fixes.build_fix`` entry, collapsed: explainer, prompt and
     (for a plain setting) the dry-run command."""
-    subject = ""
-    if fix.get("key"):
-        subject = f": {fix['key']}" + (f" for {fix['agent']}" if fix.get("agent") else "")
+    subject = fix_subject(fix)
     parts = [f'<details class="help"><summary>{_esc("How to make this change" + subject)}</summary>']
     if fix.get("explainer"):
         parts.append("<dl>")
@@ -344,26 +342,27 @@ def _recommendations_html(model: ReportModel) -> str:
     parts = []
     for rec in model.recommendations:
         parts.append('<article class="rec">')
-        parts.append(f"<h3>[{_esc(rec.severity)}] {_esc(rec.title)}</h3>")
+        parts.append(f"<h3>{_esc(SEVERITY_LABELS.get(rec.severity, rec.severity))}: {_esc(rec.title)}</h3>")
         if rec.why:
             parts.append(f"<p>{_esc(rec.why)}</p>")
-        parts.append(f"<p>Action: {_esc(rec.action)}</p>")
+        parts.append(f"<p>What to do: {_esc(rec.action)}</p>")
         if rec.estimated_saving:
             parts.append(f"<p><strong>Estimated saving:</strong> {_esc(rec.estimated_saving)}</p>")
-        if rec.lever:
-            parts.append(f"<p>Lever: {_esc(rec.lever)} (scope: {_esc(rec.scope)})</p>")
+        if rec.lever and not rec.fixes:
+            scope = SCOPE_LABELS.get(rec.scope, rec.scope)
+            parts.append(f"<p>Setting to change: {_esc(rec.lever)} ({_esc(scope)})</p>")
         if rec.scope != "managed":
             parts.extend(_fix_html(fix) for fix in rec.fixes)
         if rec.evidence:
-            parts.append('<p>Evidence:</p><ul class="evidence-list">')
+            parts.append('<details><summary>The numbers behind this</summary><ul class="evidence-list">')
             for label, value, source_table, row_key in rec.evidence:
                 # Fix A3: format the cited value using its home table
                 # column's kind, same as the Markdown renderer -- see
                 # render/tables.py's module docstring.
                 formatted = format_evidence_value(model, value, source_table, row_key, currency)
-                text = f"{label}: {formatted} (table {source_table}, row {row_key})"
+                text = f"{label}: {formatted} ({evidence_source(model, source_table, row_key)})"
                 parts.append(f"<li>{_esc(text)}</li>")
-            parts.append("</ul>")
+            parts.append("</ul></details>")
         parts.append("</article>")
     return "".join(parts)
 

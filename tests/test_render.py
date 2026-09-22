@@ -232,10 +232,10 @@ def test_markdown_notes_render_as_bullets(report_model):
 def test_markdown_recommendations_section(report_model):
     md = render_markdown(report_model)
     assert "## Recommendations" in md
-    assert "### [action] Switch claude-implementer to 5m TTL" in md
-    assert "Action: Set subagentPromptCacheTtl to 5m." in md
-    assert "Lever: subagentPromptCacheTtl" in md
-    assert "Evidence:" in md
+    assert "### Do this: Switch claude-implementer to 5m TTL" in md
+    assert "What to do: Set subagentPromptCacheTtl to 5m." in md
+    assert "Setting to change: subagentPromptCacheTtl" in md
+    assert "The numbers behind this:" in md
     # Fix A3: evidence values are formatted using the cited column's kind
     # rather than printed raw -- "Turns" resolves to an int-kind cell (its
     # formatted and raw text happen to agree), "Hit ratio" resolves to a
@@ -243,9 +243,9 @@ def test_markdown_recommendations_section(report_model):
     # "Tokens" evidence resolves to a tokens-kind cell (thousands
     # separator, same as format_cell's own "tokens" contract -- see
     # render/tables.py's format_cell docstring).
-    assert "- Turns: 7 (table usage.overview, row claude-implementer)" in md
-    assert "- Hit ratio: 87.7% (table usage.cache, row 87.654)" in md
-    assert f"- Tokens: {_TOKENS_FORMATTED} (table agents.agent_detail, row {_TOKENS_RAW})" in md
+    assert "- Turns: 7 (from Overview, claude-implementer)" in md
+    assert "- Hit ratio: 87.7% (from Cache, 87.654)" in md
+    assert f"- Tokens: {_TOKENS_FORMATTED} (from Agent detail, {_TOKENS_RAW})" in md
 
 
 def test_markdown_diagnostics_section(report_model):
@@ -420,9 +420,9 @@ def test_html_evidence_values_formatted_by_cited_column_kind(report_model):
     # Fix A3: same demonstration as
     # test_markdown_recommendations_section, for the HTML renderer.
     out = render_html(report_model)
-    assert "Turns: 7 (table usage.overview, row claude-implementer)" in out
-    assert "Hit ratio: 87.7% (table usage.cache, row 87.654)" in out
-    assert f"Tokens: {_TOKENS_FORMATTED} (table agents.agent_detail, row {_TOKENS_RAW})" in out
+    assert "Turns: 7 (from Overview, claude-implementer)" in out
+    assert "Hit ratio: 87.7% (from Cache, 87.654)" in out
+    assert f"Tokens: {_TOKENS_FORMATTED} (from Agent detail, {_TOKENS_RAW})" in out
 
 
 def test_html_is_well_formed_top_level_structure(report_model):
@@ -451,3 +451,23 @@ def test_same_numeric_cell_agrees_across_formats(report_model, tmp_path):
     # ...and CSV carries only the raw, unformatted value.
     assert str(_TOKENS_RAW) in csv_text
     assert _TOKENS_FORMATTED not in csv_text
+
+
+def test_markdown_metric_table_groups_rows_and_formats_each_by_its_kind():
+    from claude_token_lens.model import Column, Table
+    from claude_token_lens.render.markdown import _render_table
+
+    table = Table(
+        name="totals",
+        title="Totals",
+        columns=[Column(key="metric", label="What"), Column(key="value", label="Amount")],
+        rows=[["sessions", 1234], ["share_pct", 65.194], ["cost", 12.5]],
+        row_groups={"sessions": "Activity", "share_pct": "Cost"},
+        row_kinds={"sessions": "int", "share_pct": "pct", "cost": "money"},
+    )
+    lines = _render_table(table, "USD")
+    assert "| **Activity** |  |" in lines
+    assert "| sessions | 1,234 |" in lines
+    assert "| **Cost** |  |" in lines
+    assert "| share_pct | 65.2% |" in lines
+    assert "| cost | 12.50 USD |" in lines

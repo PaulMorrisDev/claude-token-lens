@@ -80,6 +80,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Recommendations in plain words.** Severity reads "Do this",
+  "Worth considering" or "For your information"; cards say who a
+  change is for and "What to do", fold multiple fixes, and put the
+  evidence under "Show the numbers behind this", citing the table
+  title and row label. Markdown and HTML reports use the same wording.
+- **Totals for the window grouped and labelled with units**
+  (Activity, Tokens, Cost, Context size) via display-only
+  `Table.row_groups`/`row_kinds`; numbers in mixed metric tables get
+  thousands separators.
+- **Scorecard tiles explain themselves**: what each area measures,
+  which way is better, and what the next rating needs, in words
+  rather than threshold keys.
 - CLI and dashboard wording: section, table and column titles are
   plainer; the Markdown and HTML reports show readable row labels. JSON
   and CSV output keep the raw keys and values.
@@ -109,6 +121,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Dashboard cost no longer dips while the service rescans.** The
+  watcher's placeholder session row (written before a session's
+  subagents are parsed) reset the session's stored cost and tokens to
+  zero until the fold finished, so a large session could briefly vanish
+  from the totals. It is now insert-only (`Store.ensure_session`).
 - **Context budget never found a project's settings snapshot.** The
   config hook stores `project_slug` as a hash (`slug:<12 hex>`), but
   `context_budget.py` looked snapshots up by the readable slug, so

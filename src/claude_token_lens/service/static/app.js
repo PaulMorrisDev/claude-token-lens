@@ -427,7 +427,7 @@
 
     var tbody = el("tbody");
     tableEl.appendChild(tbody);
-    renderTableBody(table.rows, table.columns, tbody, currency, maxima, table.value_labels);
+    renderTableBody(table.rows, table.columns, tbody, currency, maxima, table.value_labels, table.row_groups, table.row_kinds);
     if (helpButtons.length) wrap.appendChild(colHelp);
     wrap.appendChild(tableEl);
 
@@ -449,12 +449,23 @@
   // "top-level" -> "Main session"). The raw value stays in the cell's
   // title and data-raw, so the key the CLI/JSON/CSV use is one hover or
   // one inspect away.
-  function renderTableBody(rows, columns, tbody, currency, maxima, valueLabels) {
+  // rowGroups (Table.row_groups): a heading row wherever the group
+  // changes. Only in the table's own order; a sorted table drops them.
+  function renderTableBody(rows, columns, tbody, currency, maxima, valueLabels, rowGroups, rowKinds) {
     clear(tbody);
+    var group = null;
     rows.forEach(function (row) {
+      var rowGroup = rowGroups && typeof row[0] === "string" ? rowGroups[row[0]] : null;
+      if (rowGroup && rowGroup !== group) {
+        group = rowGroup;
+        tbody.appendChild(el("tr", { class: "row-group" }, [el("th", { scope: "colgroup", colSpan: columns.length, text: group })]));
+      }
       var tr = el("tr");
+      // Table.row_kinds: how to format this row's "str" cells.
+      var rowKind = rowKinds && typeof row[0] === "string" ? rowKinds[row[0]] : null;
       row.forEach(function (value, i) {
         var column = columns[i] || { kind: "str" };
+        if (rowKind && i > 0 && column.kind === "str" && typeof value === "number") column = { kind: rowKind };
         var isNumeric = !!NUMERIC_KINDS[column.kind];
         var td = el("td", { class: isNumeric ? "num" : null, "data-sort": cellSortValue(value) });
         var display = formatCell(value, column.kind, currency);
@@ -512,7 +523,7 @@
       }
       return ascending ? cmp : -cmp;
     });
-    renderTableBody(rows, table.columns, tableEl.querySelector("tbody"), currency, maxima, table.value_labels);
+    renderTableBody(rows, table.columns, tableEl.querySelector("tbody"), currency, maxima, table.value_labels, null, table.row_kinds);
   }
 
   // Tables by dashboard placement (helptext.py's table audit): "keep"
@@ -681,6 +692,51 @@
     { label: "All time", value: "" },
   ];
 
+  // Each scorecard area as a sentence about its number, plus which way is
+  // better and why (scorecard.py's metrics; helptext.py's "dimensions").
+  var DIMENSION_TEXT = {
+    cache_efficiency: {
+      sentence: function (v) {
+        return formatCell(v, "pct") + " of cache writes rebuilt context that had expired or changed.";
+      },
+      better: "Lower is better: a rebuild pays again for context you already had. Usage-limit pauses are left out.",
+    },
+    context_hygiene: {
+      sentence: function (v) {
+        return "9 in 10 main session replies carried less than " + formatCell(v, "tokens") + " tokens of context.";
+      },
+      better: "Lower is better: every reply pays to re-read its whole context.",
+    },
+    agent_efficiency: {
+      sentence: function (v) {
+        return "Your costliest agent type costs " + formatCell(v, "str") + " times as much per run as a typical one.";
+      },
+      better: "Lower is better: a big gap points to one agent type worth trimming.",
+    },
+    config_fit: {
+      sentence: function (v) {
+        return formatCell(v, "int") + (v === 1 ? " setting" : " settings") + " changed during this window.";
+      },
+      better: "Fewer is better: frequent changes make before-and-after comparisons unreliable.",
+    },
+    data_quality: {
+      sentence: function (v) {
+        return formatCell(v, "pct") + " of tokens have a known price.";
+      },
+      better: "Higher is better: tokens without a price count as free, so costs read low.",
+    },
+  };
+
+  // "<= 5.0%" -> "at most 5.0%", "> 3.00x" -> "over 3.00 times".
+  function boundInWords(bound) {
+    return String(bound)
+      .replace(/^<=\s*/, "at most ")
+      .replace(/^>=\s*/, "at least ")
+      .replace(/^>\s*/, "over ")
+      .replace(/^<\s*/, "under ")
+      .replace(/(\d)x$/, "$1 times");
+  }
+
   function renderScorecardTiles(container, scorecardSection) {
     var tiles = el("div", { class: "tiles" });
     if (!scorecardSection) {
@@ -694,19 +750,33 @@
       return t.name === "overall";
     })[0];
 
+    var labels = (dimTable && dimTable.value_labels) || {};
+    function plain(raw) {
+      return labels[raw] || String(raw).replace(/_/g, " ");
+    }
+    var scored = [];
     (dimTable ? dimTable.rows : []).forEach(function (row) {
       // [dimension, level, label, metric, value, threshold]
       var dimension = row[0], level = row[1], label = row[2], metric = row[3], value = row[4], threshold = row[5];
       var tile = el("div", { class: "tile" });
-      tile.appendChild(el("div", { class: "tile-dimension", text: String(dimension).replace(/_/g, " ") }));
+      tile.appendChild(el("div", { class: "tile-dimension", text: plain(dimension) }));
       tile.appendChild(
         el("div", { class: "tile-level level-" + level }, [
           document.createTextNode(String(level)),
           el("span", { class: "tile-max", text: " / 5" }),
         ])
       );
-      tile.appendChild(el("div", { class: "tile-label", text: label + " (" + metric + ": " + formatCell(value, "float") + ")" }));
-      if (threshold) tile.appendChild(el("div", { class: "tile-threshold", text: threshold }));
+      tile.appendChild(el("div", { class: "tile-label", text: plain(label) }));
+      var copy = DIMENSION_TEXT[dimension];
+      var sentence = copy && typeof value === "number" && threshold !== "no config snapshot available" ? copy.sentence(value) : plain(threshold || metric);
+      tile.appendChild(el("div", { class: "tile-metric", text: sentence }));
+      if (copy) tile.appendChild(el("div", { class: "tile-threshold", text: copy.better }));
+      if (threshold && threshold !== "no config snapshot available") {
+        tile.appendChild(
+          el("div", { class: "tile-threshold", text: (level === 1 ? "Rated 1 because it is " : "Needed for this rating: ") + boundInWords(threshold) })
+        );
+      }
+      scored.push({ dimension: dimension, level: level });
       tiles.appendChild(tile);
     });
 
@@ -721,7 +791,19 @@
           el("span", { class: "tile-max", text: " / 5" }),
         ])
       );
-      overallTile.appendChild(el("div", { class: "tile-label", text: overallRow[2] || LEVEL_LABELS[overallLevel] || "unmeasured" }));
+      overallTile.appendChild(el("div", { class: "tile-label", text: plain(overallRow[2] || LEVEL_LABELS[overallLevel] || "unmeasured") }));
+      // Overall is the lowest rated area, data quality aside (scorecard.py).
+      var lowest = scored.filter(function (d) {
+        return d.dimension !== "data_quality" && d.level === overallLevel;
+      });
+      if (lowest.length) {
+        overallTile.appendChild(
+          el("div", {
+            class: "tile-metric",
+            text: "Your lowest area: " + lowest.map(function (d) { return plain(d.dimension); }).join(", ") + ". Start there.",
+          })
+        );
+      }
       tiles.appendChild(overallTile);
     }
 
@@ -741,17 +823,19 @@
 
   function renderSummaryCards(summary, container) {
     var cards = el("div", { class: "stat-cards" });
+    // [label, value, what it counts]
     var items = [
-      ["Sessions", thousands(summary.sessions || 0)],
-      ["Transcripts", thousands(summary.transcripts || 0)],
-      ["Total cost", formatCell(summary.total_cost, "money", state.currency)],
-      ["Total tokens", formatCell(summary.total_tokens, "tokens")],
+      ["Sessions", thousands(summary.sessions || 0), "Conversations you started."],
+      ["Transcripts", thousands(summary.transcripts || 0), "One per session and one per subagent run."],
+      ["Cost", formatCell(summary.total_cost, "money", state.currency), "At list price for the tokens used."],
+      ["Tokens", formatCell(summary.total_tokens, "tokens"), "Every token, including cheap cache reads."],
     ];
-    items.forEach(function (pair) {
+    items.forEach(function (item) {
       cards.appendChild(
         el("div", { class: "stat-card" }, [
-          el("div", { class: "stat-label", text: pair[0] }),
-          el("div", { class: "stat-value", text: pair[1] }),
+          el("div", { class: "stat-label", text: item[0] }),
+          el("div", { class: "stat-value", text: item[1] }),
+          el("div", { class: "stat-hint", text: item[2] }),
         ])
       );
     });
@@ -1794,6 +1878,7 @@
   // ======================================================================
 
   var SEVERITY_ORDER = ["action", "advice", "info"];
+  var SEVERITY_LABELS = { action: "Do this", advice: "Worth considering", info: "For your information" };
 
   function renderRecommendations(panel) {
     clear(panel);
@@ -1849,13 +1934,20 @@
       var group = bySeverity[severity];
       if (!group || !group.length) return;
       var groupEl = el("div", { class: "rec-group" });
-      groupEl.appendChild(el("h3", { text: severity + " (" + group.length + ")" }));
+      groupEl.appendChild(el("h3", { text: (SEVERITY_LABELS[severity] || severity) + " (" + group.length + ")" }));
       group.forEach(function (rec) {
         groupEl.appendChild(renderRecommendationCard(rec, report));
       });
       container.appendChild(groupEl);
     });
   }
+
+  // Recommendation.agent_type values that are not agent names.
+  var AGENT_LABELS = {
+    "top-level": "Your main session",
+    unknown: "Subagents with no recorded type",
+    "workflow-subagent": "Workflow subagents",
+  };
 
   // Recommendation.scope, in plain words.
   var SCOPE_LABELS = {
@@ -1883,10 +1975,18 @@
 
   // One fixes.build_fix entry: the plain explainer, then the prompt
   // for Claude and (for a plain setting) the dry-run command.
-  function renderFix(fix) {
-    var box = el("div", { class: "fix" });
+  function fixTitle(fix) {
+    // Same rule as render/tables.py's fix_subject.
+    if (!fix.key) return "What you're changing";
+    var who = fix.agent ? " for " + fix.agent : fix.key === "model" ? " for your main session" : "";
+    return "What you're changing: " + fix.key + who;
+  }
+
+  function renderFix(fix, collapsed) {
+    var box = el(collapsed ? "details" : "div", { class: "fix" });
+    if (collapsed) box.appendChild(el("summary", { text: fixTitle(fix) }));
     if (fix.explainer && fix.explainer.length) {
-      box.appendChild(el("h5", { text: "What you're changing" + (fix.key ? ": " + fix.key + (fix.agent ? " for " + fix.agent : "") : "") }));
+      if (!collapsed) box.appendChild(el("h5", { text: fixTitle(fix) }));
       var list = el("dl", { class: "fix-explainer" });
       fix.explainer.forEach(function (pair) {
         list.appendChild(el("dt", { text: pair[0] }));
@@ -1912,9 +2012,11 @@
   function renderRecommendationCard(rec, report) {
     var card = el("article", { class: "rec rec-severity-" + rec.severity });
     card.appendChild(el("h4", { text: rec.title }));
-    card.appendChild(el("div", { class: "rec-meta", text: "category: " + rec.category + (rec.agent_type ? " · agent type: " + rec.agent_type : "") }));
+    if (rec.agent_type) {
+      card.appendChild(el("div", { class: "rec-meta", text: "For: " + (AGENT_LABELS[rec.agent_type] || rec.agent_type) }));
+    }
     if (rec.why) card.appendChild(el("p", { class: "rec-why", text: rec.why }));
-    card.appendChild(el("p", { text: "Action: " + rec.action }));
+    card.appendChild(el("p", { text: "What to do: " + rec.action }));
     if (rec.estimated_saving) {
       card.appendChild(el("p", { class: "rec-saving", text: "Estimated saving: " + rec.estimated_saving }));
     }
@@ -1926,20 +2028,23 @@
       card.appendChild(el("p", { text: "Setting to change: " + rec.lever + " (" + (SCOPE_LABELS[rec.scope] || rec.scope) + ")" }));
     }
     if (rec.scope !== "managed") {
+      // Several changes: one collapsed block each, so the card stays short.
       fixes.forEach(function (fix) {
-        card.appendChild(renderFix(fix));
+        card.appendChild(renderFix(fix, fixes.length > 1));
       });
     }
 
     if (rec.evidence && rec.evidence.length) {
-      card.appendChild(el("p", { text: "Evidence:" }));
+      var evidence = el("details", { class: "rec-evidence" });
+      evidence.appendChild(el("summary", { text: "Show the numbers behind this" }));
       var list = el("ul", { class: "evidence-list" });
       rec.evidence.forEach(function (tuple) {
         var label = tuple[0], value = tuple[1], sourceTable = tuple[2], rowKey = tuple[3];
         var formatted = report ? formatEvidenceValue(report, value, sourceTable, rowKey, state.currency) : String(value);
         list.appendChild(el("li", { text: label + ": " + formatted + " (" + evidenceSource(report, sourceTable, rowKey) + ")" }));
       });
-      card.appendChild(list);
+      evidence.appendChild(list);
+      card.appendChild(evidence);
     }
     return card;
   }

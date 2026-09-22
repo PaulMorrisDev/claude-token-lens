@@ -22,7 +22,7 @@ from __future__ import annotations
 import dataclasses
 
 from ..model import Diagnostics, ReportModel, Table
-from .tables import display_cell, escape_md, format_evidence_value, help_parts
+from .tables import SCOPE_LABELS, SEVERITY_LABELS, display_cell, display_row, fix_subject, escape_md, evidence_source, format_evidence_value, help_parts
 
 #: Column kinds that read as quantities and so are right-aligned by
 #: default in a pipe table, unless the column overrides ``align``.
@@ -94,11 +94,13 @@ def _render_table(table: Table, currency: str, explain: bool = False) -> list[st
     divider = "| " + " | ".join(_alignment_marker(a) for a in aligns) + " |"
     lines.append(header)
     lines.append(divider)
+    group = None
     for row in table.rows:
-        cells = [
-            escape_md(display_cell(value, column, table, currency))
-            for value, column in zip(row, table.columns)
-        ]
+        row_group = table.row_groups.get(row[0]) if row and isinstance(row[0], str) else None
+        if row_group and row_group != group:
+            group = row_group
+            lines.append("| " + " | ".join([f"**{escape_md(group)}**"] + [""] * (len(table.columns) - 1)) + " |")
+        cells = [escape_md(text) for text in display_row(row, table, currency)]
         lines.append("| " + " | ".join(cells) + " |")
     if table.notes:
         lines.append("")
@@ -134,7 +136,7 @@ def _render_fix(fix: dict) -> list[str]:
     Claude and, for a plain setting, the dry-run command."""
     lines: list[str] = []
     if fix.get("explainer"):
-        subject = f": {fix['key']}" + (f" for {fix['agent']}" if fix.get("agent") else "") if fix.get("key") else ""
+        subject = fix_subject(fix)
         lines += ["", f"What you're changing{subject}:", ""]
         lines += [f"- **{heading}.** {text}" for heading, text in fix["explainer"]]
     lines += ["", "Ask Claude to do it:", "", "```text", fix["prompt"], "```"]
@@ -158,31 +160,31 @@ def _render_recommendations(model: ReportModel) -> list[str]:
         lines.append("None.")
         return lines
     for rec in model.recommendations:
-        lines.append(f"### [{rec.severity}] {rec.title}")
+        lines.append(f"### {SEVERITY_LABELS.get(rec.severity, rec.severity)}: {rec.title}")
         lines.append("")
         if rec.why:
             lines.append(rec.why)
             lines.append("")
-        lines.append(f"Action: {rec.action}")
+        lines.append(f"What to do: {rec.action}")
         if rec.estimated_saving:
             lines.append("")
             lines.append(f"Estimated saving: {rec.estimated_saving}")
-        if rec.lever:
+        if rec.lever and not rec.fixes:
             lines.append("")
-            lines.append(f"Lever: {rec.lever} (scope: {rec.scope})")
+            lines.append(f"Setting to change: {rec.lever} ({SCOPE_LABELS.get(rec.scope, rec.scope)})")
         if rec.scope != "managed":
             for fix in rec.fixes:
                 lines.extend(_render_fix(fix))
         if rec.evidence:
             lines.append("")
-            lines.append("Evidence:")
+            lines.append("The numbers behind this:")
             for label, value, source_table, row_key in rec.evidence:
                 # Fix A3: format the cited value using its home table
                 # column's kind (e.g. "63.7%", "47,345 tokens") instead
                 # of printing the raw float -- see render/tables.py's
                 # module docstring.
                 formatted = format_evidence_value(model, value, source_table, row_key, currency)
-                lines.append(f"- {label}: {formatted} (table {source_table}, row {row_key})")
+                lines.append(f"- {label}: {formatted} ({evidence_source(model, source_table, row_key)})")
         lines.append("")
     return lines
 

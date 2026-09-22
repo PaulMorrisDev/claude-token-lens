@@ -393,6 +393,21 @@ class Store:
         row = conn.execute("SELECT id FROM projects WHERE slug = ?", (slug,)).fetchone()
         return int(row["id"])
 
+    def ensure_session(self, *, session_id: str, project_slug: str, project_root_path: str = "", slug: str = "") -> None:
+        """Create a bare session row if none exists yet, leaving an
+        existing row (and its folded totals) untouched. The watcher calls
+        this before writing a session's transcript rows (a foreign key
+        needs the session), so a dashboard read mid-scan never sees the
+        session's cost and tokens reset to zero."""
+        conn = self._connection()
+        with _transaction(conn):
+            project_id = self._upsert_project(conn, project_slug, project_root_path)
+            conn.execute(
+                "INSERT INTO sessions (id, project_id, slug, updated_at) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(id) DO NOTHING",
+                (session_id, project_id, slug or project_slug, _now()),
+            )
+
     def upsert_session(
         self,
         *,

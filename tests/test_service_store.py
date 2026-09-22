@@ -614,6 +614,18 @@ def test_upsert_session_round_trips(store: Store) -> None:
     assert result["profile_id"] == "p1"
 
 
+def test_ensure_session_keeps_existing_totals(store: Store) -> None:
+    # The watcher's placeholder write runs before a session's subagents
+    # are re-parsed; it must not zero the folded totals meanwhile.
+    _seed(store)
+    store.ensure_session(session_id="session-a", project_slug="proj-a", slug="proj-a")
+    result = store.session("session-a")
+    assert result["total_cost"] == pytest.approx(1.23)
+    assert result["total_tokens"] == 45000
+    store.ensure_session(session_id="session-new", project_slug="proj-a", slug="proj-a")
+    assert store.session("session-new")["total_cost"] == 0
+
+
 def test_upsert_transcript_is_idempotent_on_path(store: Store) -> None:
     _seed(store)
     # Re-upserting the same path (a re-parse after the file changed)

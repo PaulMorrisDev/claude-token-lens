@@ -629,6 +629,14 @@ class Table:
     notes: list[str] = field(default_factory=list)
     help: Help | None = None
     value_labels: dict[str, str] = field(default_factory=dict)
+    #: Display only: first-column row key -> the heading of the group the
+    #: row starts or belongs to, for a long "metric / value" table whose
+    #: rows mix counts, tokens and money. Consecutive rows share a group.
+    row_groups: dict[str, str] = field(default_factory=dict)
+    #: Display only: first-column row key -> the ``Column.kind`` to format
+    #: that row's "str"-kind cells with (a "metric / value" table whose one
+    #: value column holds counts, tokens, money and percentages).
+    row_kinds: dict[str, str] = field(default_factory=dict)
     #: One of :data:`DASHBOARD_PLACEMENTS`.
     dashboard: str = "keep"
 

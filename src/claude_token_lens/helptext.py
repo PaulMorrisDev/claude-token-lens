@@ -207,6 +207,8 @@ class TableCopy:
     help: Help | None = None
     columns: dict[str, tuple[str, str]] = field(default_factory=dict)
     value_labels: dict[str, str] = field(default_factory=dict)
+    row_groups: dict[str, str] = field(default_factory=dict)
+    row_kinds: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -821,33 +823,54 @@ TABLE_COPY: dict[str, TableCopy] = {
     "totals": TableCopy(
         title="Totals for the window",
         help=Help(
-            shows="One row per total: sessions, subagent runs, replies, tokens by type, and cost.",
+            shows="Totals for the window in four groups: activity (counts of sessions, runs and replies), "
+            "tokens, cost, and context size. Each row names its unit.",
             read="\"All tokens\" counts cache reads; \"New tokens\" leaves them out and is closer to the work "
             "done. A cache payback above 0 means caching saved more than it cost.",
             act="If many main session replies carry over 200,000 tokens of context, clear or summarise long "
             "sessions sooner.",
         ),
         columns={
-            "metric": ("What", "What is counted."),
-            "value": ("Amount", "The total for the window. The unit is in the row name."),
+            "metric": ("What", "What is counted, with its unit."),
+            "value": ("Amount", "The total for the window, in the unit the row names."),
         },
         value_labels={
-            "sessions": "Sessions",
-            "top_level_transcripts": "Main sessions",
-            "subagent_transcripts": "Subagent runs",
-            "workflow_runs": "Workflow runs",
-            "priced_turns": "Replies with token counts",
-            "input_tokens": "Input tokens, not cached",
-            "cache_creation_tokens": "Cache write tokens",
-            "cache_read_tokens": "Cache read tokens",
-            "output_tokens": "Output tokens, including thinking",
-            "usage_tokens": "All tokens, including cache reads",
-            "new_tokens": "New tokens: everything except cache reads",
+            "sessions": "Sessions (count)",
+            "top_level_transcripts": "Main sessions (count)",
+            "subagent_transcripts": "Subagent runs (count)",
+            "workflow_runs": "Workflow runs (count)",
+            "priced_turns": "Model replies (count)",
+            "input_tokens": "Input, not cached (tokens)",
+            "cache_creation_tokens": "Written to the cache (tokens)",
+            "cache_read_tokens": "Read from the cache (tokens)",
+            "output_tokens": "Output, including thinking (tokens)",
+            "usage_tokens": "All tokens, including cache reads (tokens)",
+            "new_tokens": "New tokens: everything except cache reads (tokens)",
             "total_cost_usd": "Total cost at list price (USD)",
             "cache_read_cost_share_pct": "Share of cost from cache reads (%)",
-            "cache_roi": "Cache payback: net saving per 1 USD of cache writes",
-            "top_level_median_ctx": "Typical main session context per reply (tokens)",
+            "cache_roi": "Cache payback: net saving per 1 USD of cache writes (USD)",
+            "top_level_median_ctx": "Context of a typical main session reply (tokens)",
             "top_level_turns_ctx_ge_200k_pct": "Main session replies with over 200,000 tokens of context (%)",
+        },
+        row_kinds={
+            **{key: "int" for key in ("sessions", "top_level_transcripts", "subagent_transcripts", "workflow_runs", "priced_turns")},
+            **{
+                key: "tokens"
+                for key in (
+                    "input_tokens", "cache_creation_tokens", "cache_read_tokens", "output_tokens",
+                    "usage_tokens", "new_tokens", "top_level_median_ctx",
+                )
+            },
+            "total_cost_usd": "money",
+            "cache_read_cost_share_pct": "pct",
+            "cache_roi": "float",
+            "top_level_turns_ctx_ge_200k_pct": "pct",
+        },
+        row_groups={
+            "sessions": "Activity",
+            "input_tokens": "Tokens",
+            "total_cost_usd": "Cost",
+            "top_level_median_ctx": "Context size",
         },
     ),
     "by_model": TableCopy(
@@ -1073,7 +1096,7 @@ TABLE_COPY: dict[str, TableCopy] = {
             "config_fit": "Config stability",
             "data_quality": "Data quality",
             "recache_share_pct": "Cache writes that were rebuilds, excluding usage-limit pauses (%)",
-            "p90_top_level_ctx": "Main session context that 9 in 10 replies stay under (tokens)",
+            "p90_top_level_ctx": "Context size that 9 in 10 main session replies stay under (tokens)",
             "agent_cost_variance_ratio": "Cost per run of the costliest agent type, versus the typical type (times)",
             "changed_config_keys": "Settings changed during the window (count)",
             "pricing_coverage_pct": "Tokens with a known price (%)",
@@ -2153,6 +2176,21 @@ TABLE_COPY: dict[str, TableCopy] = {
                 "Of that, replies that rebuilt most of the cache"
             ),
         },
+        row_kinds={
+            "Sessions with >=1 compaction": "int",
+            "Total sessions": "int",
+            "Compactions per session (mean)": "float",
+            "Compactions per compacting session (mean)": "float",
+            "Compactions per session (max)": "int",
+            "Pre-compaction tokens (median)": "tokens",
+            "Post-compaction tokens (median)": "tokens",
+            "Dropped tokens (total)": "tokens",
+            "Dropped tokens (share of cache_creation)": "pct",
+            "Dropped tokens (share of new_tokens: input+cache_creation)": "pct",
+            "Mean duration (ms)": "int",
+            "Total post-compaction write cost (USD)": "money",
+            "Total post-compaction RE-CACHE-flagged write cost (USD)": "money",
+        },
     ),
     "compactions_trigger_mix": TableCopy(
         title="What started each summary",
@@ -2807,6 +2845,10 @@ def _apply_table_copy(table: Table, copy: TableCopy | None, billing_mode: str) -
             table.help = copy.help
         if copy.value_labels:
             table.value_labels = dict(copy.value_labels)
+        if copy.row_groups:
+            table.row_groups = dict(copy.row_groups)
+        if copy.row_kinds:
+            table.row_kinds = dict(copy.row_kinds)
     for column in table.columns:
         label, help_text = ("", "")
         if copy is not None:

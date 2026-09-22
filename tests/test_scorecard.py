@@ -116,7 +116,7 @@ def test_agent_efficiency_is_omitted_when_corpus_never_spawned():
     section = build_section(inputs)
     dims = {row[0] for row in section.tables[0].rows}
     assert "agent_efficiency" not in dims
-    assert any("never spawned" in note for note in section.notes)
+    assert any("no subagents ran" in note for note in section.notes)
 
 
 def test_config_fit_scores_five_when_no_snapshot_available():
@@ -125,7 +125,7 @@ def test_config_fit_scores_five_when_no_snapshot_available():
     dims = {row[0]: row for row in section.tables[0].rows}
     assert dims["config_fit"][1] == 5
     dimensions_table = section.tables[0]
-    assert any("No config snapshot" in (note or "") for note in dimensions_table.notes)
+    assert any("No settings snapshot" in (note or "") for note in dimensions_table.notes)
 
 
 def test_dimensions_with_none_metric_are_skipped_entirely():
@@ -280,7 +280,7 @@ def test_data_quality_notes_limit_pause_session_count_when_nonzero():
     section = build_section(inputs)
     dimensions_table = section.tables[0]
     assert any(
-        "3 sessions included at least one usage-limit pause" in (note or "")
+        "3 sessions hit a usage limit and paused" in (note or "")
         for note in dimensions_table.notes
     )
     # A data-quality note never changes the level itself.
@@ -293,7 +293,7 @@ def test_data_quality_note_uses_singular_session_for_count_of_one():
     section = build_section(inputs)
     dimensions_table = section.tables[0]
     assert any(
-        "1 session included at least one usage-limit pause" in (note or "")
+        "1 session hit a usage limit and paused" in (note or "")
         for note in dimensions_table.notes
     )
 
