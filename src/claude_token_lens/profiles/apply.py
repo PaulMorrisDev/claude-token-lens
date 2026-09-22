@@ -84,6 +84,7 @@ Deviations from the plan/brief, reported rather than made silently (see
 from __future__ import annotations
 
 import difflib
+import hashlib
 import json
 import os
 import subprocess
@@ -93,7 +94,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .. import snapshots as snapshots_mod
-from .frontmatter import FrontmatterError, patch_frontmatter
+from .frontmatter import FrontmatterError, parse_frontmatter, patch_frontmatter
 from .schema import ENV_ALLOWLIST, Profile
 
 __all__ = [
@@ -110,6 +111,8 @@ __all__ = [
     "write_launch_overlay",
     "env_lines_for_profile",
     "render_plan_diff",
+    "action_changes",
+    "explain_plan",
 ]
 
 _VALID_SCOPES = ("user", "project-local", "repo")
@@ -650,6 +653,105 @@ def _frontmatter_scalar(value: object) -> str:
     return text
 
 
+# -- what changes, in words -------------------------------------------------
+
+
+def _flatten(value: dict, prefix: str = "") -> dict:
+    """``{"a": {"b": 1}}`` -> ``{"a.b": 1}``: settings keys as the
+    allowlist and the frontmatter parser name them."""
+    out: dict = {}
+    for key, item in value.items():
+        name = f"{prefix}{key}"
+        if isinstance(item, dict) and item:
+            out.update(_flatten(item, name + "."))
+        else:
+            out[name] = item
+    return out
+
+
+def _parsed(action: FileAction, data: bytes | None) -> dict:
+    if data is None:
+        return {}
+    text = data.decode("utf-8", errors="replace")
+    try:
+        if action.kind == "settings":
+            loaded = json.loads(text) if text.strip() else {}
+            return _flatten(loaded) if isinstance(loaded, dict) else {}
+        if action.kind == "agent_frontmatter":
+            return parse_frontmatter(text)
+    except (json.JSONDecodeError, FrontmatterError):
+        return {}
+    return {}
+
+
+def action_changes(action: FileAction) -> list[dict]:
+    """The keys ``action`` changes, each as ``{"key", "agent", "old",
+    "new"}`` (``None``: not set). Recorded in the backup manifest and
+    used by :func:`explain_plan`; the active-profile marker has none."""
+    if action.kind not in ("settings", "agent_frontmatter"):
+        return []
+    before = _parsed(action, action.old_bytes)
+    after = _parsed(action, action.new_bytes)
+    changes = []
+    for key in sorted(set(before) | set(after)):
+        if before.get(key) != after.get(key):
+            changes.append({"key": key, "agent": action.agent_name, "old": before.get(key), "new": after.get(key)})
+    return changes
+
+
+#: ``scope`` in plain words, for :func:`explain_plan`.
+_SCOPE_WORDS = {
+    "user": "your user settings, used in every project",
+    "project-local": "this project, on your machine only",
+    "repo": "this project's shared settings, used by everyone who works in it",
+}
+
+
+def _words(value) -> str:
+    if value is None:
+        return "not set"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (list, tuple)):
+        return ", ".join(str(v) for v in value) if value else "(empty list)"
+    return str(value)
+
+
+def explain_plan(plan: ApplyPlan) -> list[str]:
+    """What applying ``plan`` changes, in plain words: per key, what it
+    controls, now and after, where and who it affects, the trade-off,
+    and how to undo it. ``apply`` prints this before its diff (dry run)
+    and before writing."""
+    from ..fixes import SETTING_TEXT
+
+    lines: list[str] = []
+    for action in plan.actions:
+        changes = action_changes(action)
+        if not changes:
+            continue
+        if action.kind == "agent_frontmatter":
+            where = f"{action.path} (the {action.agent_name} agent's file)"
+        else:
+            where = f"{action.path} ({_SCOPE_WORDS.get(plan.scope, plan.scope)})"
+        for change in changes:
+            subject = f"{change['key']} for {change['agent']}" if change["agent"] else change["key"]
+            what, tradeoff, caveat = SETTING_TEXT.get(change["key"], ("", "", ""))
+            lines.append(f"Change: {subject}")
+            if what:
+                lines.append(f"  What it controls: {what}")
+            lines.append(f"  Now: {_words(change['old'])}. After: {_words(change['new'])}.")
+            lines.append(f"  Where: {where}")
+            notes = " ".join(t for t in (tradeoff, caveat) if t)
+            if notes:
+                lines.append(f"  Trade-off: {notes}")
+            lines.append("  Undo: run the apply --revert command printed after the change is made.")
+    return lines
+
+
+def _sha256(data: bytes | None) -> str | None:
+    return hashlib.sha256(data).hexdigest() if data is not None else None
+
+
 # -- executing / reverting ---------------------------------------------------
 
 
@@ -710,6 +812,10 @@ def execute(plan: ApplyPlan, *, config_dir: str | Path) -> ApplyResult:
                 "path": str(action.path),
                 "backup": backup_rel,
                 "agent_name": action.agent_name,
+                # What changed, and the written file's hash, so revert
+                # can tell when the file was edited afterwards.
+                "changes": action_changes(action),
+                "new_sha256": _sha256(action.new_bytes),
             }
         )
 
@@ -740,7 +846,7 @@ def execute(plan: ApplyPlan, *, config_dir: str | Path) -> ApplyResult:
     )
 
 
-def revert(ts: str, *, config_dir: str | Path) -> RevertResult:
+def revert(ts: str, *, config_dir: str | Path, ignore_changes: bool = False) -> RevertResult:
     """Undo exactly the writes :func:`execute` made for backup ``ts``:
     restore each entry's pre-image byte for byte, or delete the target
     when its pre-image was ``None`` (it did not exist before that
@@ -748,7 +854,13 @@ def revert(ts: str, *, config_dir: str | Path) -> RevertResult:
     ``ts``. Never touches the snapshot stamp :func:`execute` wrote
     (snapshots accumulate as a history, the same convention every other
     snapshot in this project follows -- reverting a settings change
-    doesn't erase the historical record that it happened)."""
+    doesn't erase the historical record that it happened).
+
+    A target whose content no longer matches the hash recorded when it
+    was written (edited since, by you or Claude Code) is refused with
+    :class:`ApplyError`, restoring nothing, unless ``ignore_changes``
+    is given: restoring the backup would silently discard those edits.
+    Manifests written before hashes were recorded skip this check."""
     config_dir = Path(config_dir)
     manifest_path = config_dir / "backups" / ts / "manifest.json"
     try:
@@ -759,6 +871,17 @@ def revert(ts: str, *, config_dir: str | Path) -> RevertResult:
         raise ApplyError([f"{manifest_path}: cannot parse manifest ({exc})"]) from None
 
     files_dir = config_dir / "backups" / ts / "files"
+    if not ignore_changes:
+        edited = [
+            entry["path"]
+            for entry in manifest.get("entries", [])
+            if "new_sha256" in entry and _sha256(_read_bytes_or_none(Path(entry["path"]))) != entry["new_sha256"]
+        ]
+        if edited:
+            raise ApplyError(
+                [f"{path} changed after this apply; reverting would discard those edits" for path in edited]
+                + ["run again with --ignore-changes to restore the backup anyway"]
+            )
     restored: list[Path] = []
     deleted: list[Path] = []
     for entry in manifest.get("entries", []):

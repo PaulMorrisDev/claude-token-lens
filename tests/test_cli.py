@@ -1597,3 +1597,31 @@ def test_statusline_cli_forwards_config_dir_flag(tmp_path, monkeypatch, capsys):
 
     assert rc == 0
     assert (explicit_config_dir / "usage-log.csv").exists()
+
+
+def test_cmd_apply_set_explains_the_change_then_reverts(tmp_path, capsys):
+    claude_root = tmp_path / "claude"
+    config_dir = tmp_path / "tl"
+    claude_root.mkdir()
+    settings = claude_root / "settings.json"
+    settings.write_text('{"effortLevel": "high"}', encoding="utf-8")
+    base = ["apply", "--set", "effortLevel=medium", "--config-dir", str(config_dir), "--claude-root", str(claude_root)]
+
+    assert cli.main([*base, "--dry-run"]) == 0
+    out = capsys.readouterr().out
+    assert "Change: effortLevel" in out
+    assert "What it controls: How hard Claude thinks" in out
+    assert "Now: high. After: medium." in out
+    assert json.loads(settings.read_text(encoding="utf-8")) == {"effortLevel": "high"}
+
+    assert cli.main(base) == 0
+    out = capsys.readouterr().out
+    assert "Change: effortLevel" in out
+    ts = re.search(r"To revert: claude-token-lens apply --revert (\S+)", out).group(1)
+    assert json.loads(settings.read_text(encoding="utf-8")) == {"effortLevel": "medium"}
+
+    settings.write_text('{"effortLevel": "low"}', encoding="utf-8")
+    assert cli.main(["apply", "--revert", ts, "--config-dir", str(config_dir)]) == 2
+    assert "--ignore-changes" in capsys.readouterr().err
+    assert cli.main(["apply", "--revert", ts, "--ignore-changes", "--config-dir", str(config_dir)]) == 0
+    assert json.loads(settings.read_text(encoding="utf-8")) == {"effortLevel": "high"}

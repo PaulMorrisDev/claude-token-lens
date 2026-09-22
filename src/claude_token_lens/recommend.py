@@ -1732,6 +1732,17 @@ def recommend(
 _TTL_TARGET_RE = re.compile(r"\bto (1h|5m)\b")
 
 
+def _patch_value(value, missing: str) -> str:
+    """A ``SettingChange`` value as ``render_patch_set`` prints it."""
+    if value is None:
+        return missing
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (list, tuple)):
+        return "[" + ", ".join(str(v) for v in value) + "]"
+    return str(value)
+
+
 def render_patch_set(recs: list[Recommendation]) -> str:
     """A unified-diff-style text of the settings/frontmatter changes
     ``recs`` imply: one ``.claude/agents/<agent_type>.md`` stanza per
@@ -1757,6 +1768,36 @@ def render_patch_set(recs: list[Recommendation]) -> str:
     seen_settings_keys: set[str] = set()
 
     for rec in recs:
+        if rec.changes:
+            # Readability P5: a recommendation that names its concrete
+            # edits (``SettingChange``) renders those -- key, the value in
+            # effect now and the value it proposes -- instead of guessing
+            # them back out of ``lever``/``action`` text.
+            for change in rec.changes:
+                scope = change.scope or rec.scope
+                old_text = _patch_value(change.current, "(unset)")
+                new_text = (
+                    _patch_value(change.value, "(unset)")
+                    if change.value is not None
+                    else f"(your choice: {change.suggested or 'see recommendation'})"
+                )
+                if change.target == "agent" and change.agent:
+                    stanza = agent_stanzas.setdefault(change.agent, {"managed": False, "keys": {}})
+                    stanza["managed"] = stanza["managed"] or scope == "managed"
+                    stanza["keys"][change.key] = (old_text, new_text)
+                    continue
+                if change.key in seen_settings_keys:
+                    continue
+                seen_settings_keys.add(change.key)
+                label = f"settings ({'repo' if scope == 'repo' else 'user'})"
+                lines.append(f"--- {label}")
+                lines.append(f"+++ {label}")
+                if scope == "managed":
+                    lines.append("# managed by policy -- shown for reference only")
+                lines.append(f"-{change.key}: {old_text}")
+                lines.append(f"+{change.key}: {new_text}")
+                lines.append("")
+            continue
         bare_lever = rec.lever
         if not bare_lever:
             continue
@@ -1818,8 +1859,9 @@ def render_patch_set(recs: list[Recommendation]) -> str:
         if stanza["managed"]:
             agent_lines.append("# managed by policy -- shown for reference only")
         for key, value in stanza["keys"].items():
-            agent_lines.append(f"-{key}: (unset)")
-            agent_lines.append(f"+{key}: {value}")
+            old_text, new_text = value if isinstance(value, tuple) else ("(unset)", value)
+            agent_lines.append(f"-{key}: {old_text}")
+            agent_lines.append(f"+{key}: {new_text}")
         agent_lines.append("")
 
     lines = agent_lines + lines

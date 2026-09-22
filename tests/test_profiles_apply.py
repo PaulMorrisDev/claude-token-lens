@@ -642,8 +642,55 @@ def test_execute_avoids_backup_collision_within_the_same_second(tmp_path, monkey
     assert manifest_a["profile_id"] == "sample"
     assert manifest_b["profile_id"] == "other"
 
-    revert_a = apply_mod.revert(result_a.ts, config_dir=config_dir)
+    # B rewrote the files A wrote, so reverting A alone is refused unless
+    # the caller accepts discarding B's edits.
+    with pytest.raises(apply_mod.ApplyError, match="--ignore-changes"):
+        apply_mod.revert(result_a.ts, config_dir=config_dir)
+    revert_a = apply_mod.revert(result_a.ts, config_dir=config_dir, ignore_changes=True)
     assert revert_a.deleted or revert_a.restored
+
+
+def test_manifest_records_changes_and_revert_refuses_edited_file(tmp_path):
+    claude_root = tmp_path / "home" / ".claude"
+    config_dir = claude_root / "token-lens"
+    claude_root.mkdir(parents=True)
+    settings = claude_root / "settings.json"
+    settings.write_text('{"effortLevel": "low", "theme": "dark"}', encoding="utf-8")
+    plan = apply_mod.plan_apply(
+        _profile(settings={"effortLevel": "high"}), scope="user", project_path=None,
+        config_dir=config_dir, claude_root=claude_root,
+    )
+    explanation = "\n".join(apply_mod.explain_plan(plan))
+    assert "Change: effortLevel" in explanation
+    assert "Now: low. After: high." in explanation
+    assert "Undo:" in explanation
+    result = apply_mod.execute(plan, config_dir=config_dir)
+    manifest = json.loads((result.backup_dir / "manifest.json").read_text(encoding="utf-8"))
+    entry = next(e for e in manifest["entries"] if e["kind"] == "settings")
+    assert entry["changes"] == [{"key": "effortLevel", "agent": None, "old": "low", "new": "high"}]
+    assert len(entry["new_sha256"]) == 64
+
+    settings.write_text('{"effortLevel": "high", "theme": "light"}', encoding="utf-8")
+    with pytest.raises(apply_mod.ApplyError, match="changed after this apply"):
+        apply_mod.revert(result.ts, config_dir=config_dir)
+    assert "light" in settings.read_text(encoding="utf-8")  # nothing restored
+    apply_mod.revert(result.ts, config_dir=config_dir, ignore_changes=True)
+    assert json.loads(settings.read_text(encoding="utf-8")) == {"effortLevel": "low", "theme": "dark"}
+
+
+def test_revert_of_an_old_manifest_without_hashes_still_works(tmp_path):
+    config_dir = tmp_path / "tl"
+    target = tmp_path / "settings.json"
+    target.write_text("{}", encoding="utf-8")
+    backup = config_dir / "backups" / "20260101T000000Z"
+    (backup / "files").mkdir(parents=True)
+    (backup / "files" / "0000.bak").write_text('{"a": 1}', encoding="utf-8")
+    (backup / "manifest.json").write_text(json.dumps({
+        "ts": "20260101T000000Z", "profile_id": "p", "scope": "user",
+        "entries": [{"kind": "settings", "path": str(target), "backup": "0000.bak", "agent_name": None}],
+    }), encoding="utf-8")
+    apply_mod.revert("20260101T000000Z", config_dir=config_dir)
+    assert target.read_text(encoding="utf-8") == '{"a": 1}'
 
 
 def test_list_backups_skips_unparseable_manifest(tmp_path):

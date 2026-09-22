@@ -2143,3 +2143,24 @@ def test_v4_module_rules_fire_via_recommend_and_evidence_resolves(tmp_path: Path
             assert table is not None, f"{rec.id}: no table {table_name!r} for evidence {label!r}"
             row = next((r for r in table.rows if r and r[0] == row_key), None)
             assert row is not None, f"{rec.id}: no row {row_key!r} in {source_table} for evidence {label!r}"
+
+
+def test_render_patch_set_prefers_setting_changes_with_now_and_after():
+    from claude_token_lens.model import SettingChange
+
+    rec = dataclasses.replace(
+        _make_recommendation(),
+        lever="omitClaudeMd",
+        changes=[
+            SettingChange(target="agent", key="omitClaudeMd", agent="reviewer", value=True, current=False),
+            SettingChange(target="agent", key="tools", agent="reviewer", suggested="only the tools it uses"),
+            SettingChange(key="autoCompactWindow", value=120000),
+        ],
+    )
+    text = render_patch_set([rec])
+    assert "--- .claude/agents/reviewer.md" in text
+    assert "-omitClaudeMd: false" in text
+    assert "+omitClaudeMd: true" in text
+    assert "+tools: (your choice: only the tools it uses)" in text
+    assert "-autoCompactWindow: (unset)" in text
+    assert "+autoCompactWindow: 120000" in text

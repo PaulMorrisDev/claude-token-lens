@@ -662,6 +662,12 @@ def _add_apply_args(sub: argparse.ArgumentParser) -> None:
         "--revert", metavar="TS", default=None, help="undo a previous apply, named by its backup timestamp"
     )
     sub.add_argument(
+        "--ignore-changes",
+        action="store_true",
+        dest="ignore_changes",
+        help="with --revert: restore the backup even if the file was edited after the apply",
+    )
+    sub.add_argument(
         "--force",
         action="store_true",
         help="create a missing agent frontmatter file from scratch instead of refusing",
@@ -2553,7 +2559,9 @@ def _cmd_apply(args: argparse.Namespace) -> int:
 
     if args.revert:
         try:
-            result = apply_mod.revert(args.revert, config_dir=config_dir)
+            result = apply_mod.revert(
+                args.revert, config_dir=config_dir, ignore_changes=getattr(args, "ignore_changes", False)
+            )
         except apply_mod.ApplyError as exc:
             print(f"claude-token-lens {command}: {exc}", file=sys.stderr)
             return 2
@@ -2620,9 +2628,14 @@ def _cmd_apply(args: argparse.Namespace) -> int:
         print(f"claude-token-lens {command}: {exc}", file=sys.stderr)
         return 1
 
+    explanation = apply_mod.explain_plan(plan)
     if args.dry_run:
         from .profiles.diff import apply_command
 
+        for line in explanation:
+            print(line)
+        if explanation:
+            print()
         print(plan.diff_text if plan.diff_text else "No changes to apply.")
         if plan.skipped_managed:
             for key in plan.skipped_managed:
@@ -2652,6 +2665,8 @@ def _cmd_apply(args: argparse.Namespace) -> int:
             print(f"claude-token-lens {command}: refused: {reason}", file=sys.stderr)
         return 1
 
+    for line in explanation:
+        print(line)
     result = apply_mod.execute(plan, config_dir=config_dir)
     print(f"Applied {plan.profile_id} ({scope}).")
     for path in result.written:

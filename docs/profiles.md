@@ -375,7 +375,7 @@ claude-token-lens apply --set KEY=VALUE [--set ...] [--agent NAME]
                                    [--project-dir PATH]
                                    [--dry-run] [--launch]
                                    [--allow-tracked] [--force]
-                                   [--revert TS] [--list-backups]
+                                   [--revert TS [--ignore-changes]] [--list-backups]
 ```
 
 `<profile>` is a catalogue id or a path to a profile TOML file.
@@ -483,7 +483,17 @@ on its next run).
 
 `claude-token-lens apply --revert <ts>` restores every file from that
 apply's manifest to its exact pre-apply state — byte for byte, deleting
-a file the apply had created rather than emptying it. `--list-backups`
+a file the apply had created rather than emptying it. The manifest
+also records, per file, the keys changed (old and new values) and the
+SHA-256 of the content written. If a file no longer matches that hash
+(you or Claude Code edited it since), `--revert` refuses and restores
+nothing, because restoring would discard those edits; `--ignore-changes`
+restores the backup anyway. Manifests from before hashes were recorded
+revert without the check.
+
+Both `--dry-run` and a real apply first print each change in words:
+what the setting controls, its value now and after, which file and who
+it affects, the trade-off, and how to undo it. `--list-backups`
 prints every previous apply's timestamp, profile id, scope, and file
 count, oldest first.
 
