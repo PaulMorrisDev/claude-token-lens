@@ -1453,7 +1453,13 @@ def build_report(
         sections.append(classify.build_section(session_records, mode_thresholds))
 
     if _want("recache"):
-        sections.append(_build_recache_section(rs, pricing, recache_th, group_by))
+        recache_section = _build_recache_section(rs, pricing, recache_th, group_by)
+        # Claude Code's own diagnosis of the main session's cache misses
+        # (statusline ``prompt_cache``), next to the inferred causes.
+        measured = statusline_mod.build_measured_miss_causes_table(usage_log_rows)
+        if measured is not None:
+            recache_section = dataclasses.replace(recache_section, tables=[*recache_section.tables, measured])
+        sections.append(recache_section)
 
     if _want("ttl"):
         sections.append(ttl.build_section(ts, billing_mode=config.billing, thresholds=ttl_th))

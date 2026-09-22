@@ -223,3 +223,19 @@ def test_every_diagnostics_field_has_a_plain_label():
     assert by_key["modes"] == "plan: 2"
     assert by_key["truncated_final_line"] == "yes"
     assert table.value_labels["lines"] == "Lines read"
+
+
+def test_usage_log_tables_have_help_and_measured_causes_sit_on_the_cache_tab(tmp_path):
+    project_dir = tmp_path / "proj"
+    project_dir.mkdir()
+    rows = [{"session_id": "s1", "cache_warm": False, "cache_misses": 2, "cache_miss_causes": "tools:2"}]
+    model = build_report(
+        load_corpus([project_dir]), load_pricing(), Config(), projects=("proj",), window="w", usage_log_rows=rows
+    )
+    tables = {t.name: (s.key, t) for s in model.sections for t in s.tables}
+    section_key, measured = tables["measured_miss_causes"]
+    assert section_key == "recache"
+    for name in ("measured_miss_causes", "cache_ground_truth"):
+        table = tables[name][1]
+        assert table.help and table.help.shows, name
+        assert all(c.help for c in table.columns), name

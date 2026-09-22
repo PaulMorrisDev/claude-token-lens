@@ -1310,6 +1310,112 @@ def build_cache_ground_truth_table(usage_log_rows: list[dict] | None) -> Table:
     )
 
 
+#: Short miss-cause tokens (``_MISS_CAUSE_ALLOWLIST``) in plain words.
+MISS_CAUSE_LABELS = {
+    "tools": "Tool list changed",
+    "sysprompt": "System prompt changed",
+    "ttl": "Cache expired (5-minute lifetime)",
+    "server": "Likely on Anthropic's side",
+    "other": "Other",
+}
+
+
+def usage_log_row_in_window(row: dict, since_dt, until_dt) -> bool:
+    """``True`` when a usage-log row's own ``logged_at`` falls inside
+    ``[since_dt, until_dt]`` (either bound ``None`` means unbounded on
+    that side). A row with no parseable ``logged_at`` is kept only when
+    no window filter is active at all."""
+    if since_dt is None and until_dt is None:
+        return True
+    logged_at_raw = row.get("logged_at")
+    if not logged_at_raw:
+        return False
+    try:
+        logged_at = datetime.fromisoformat(str(logged_at_raw).replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if since_dt is not None and logged_at < since_dt:
+        return False
+    if until_dt is not None and logged_at > until_dt:
+        return False
+    return True
+
+
+def scoped_usage_log_rows(csv_path: str | Path, session_ids: set[str], since_dt, until_dt) -> list[dict] | None:
+    """:func:`load_usage_log_ground_truth` rows for ``session_ids`` inside
+    the window, or ``None`` when there is no usage log. The CLI's
+    ``report`` and the dashboard both scope the log this way, so the
+    statusline's figures cover the same sessions as the rest of the
+    report."""
+    csv_path = Path(csv_path)
+    if not csv_path.exists():
+        return None
+    return [
+        row
+        for row in load_usage_log_ground_truth(csv_path)
+        if row.get("session_id") in session_ids and usage_log_row_in_window(row, since_dt, until_dt)
+    ]
+
+
+def _final_miss_causes(usage_log_rows: list[dict] | None) -> dict[str, dict[str, int]]:
+    """Per session, the cause counts Claude Code itself reported: the
+    last row's cumulative ``cache_miss_causes``, else one count per
+    increase of ``cache_misses`` using ``cache_last_miss_cause`` (the
+    same rule as :func:`build_cache_ground_truth_table`)."""
+    per_session: dict[str, dict] = {}
+    for row in usage_log_rows or []:
+        session_id = row.get("session_id") or ""
+        bucket = per_session.setdefault(session_id, {"cumulative": None, "fallback": {}, "prev": None})
+        misses = row.get("cache_misses")
+        if row.get("cache_miss_causes"):
+            bucket["cumulative"] = row["cache_miss_causes"]
+        else:
+            cause = row.get("cache_last_miss_cause")
+            if cause and isinstance(misses, (int, float)) and (bucket["prev"] is None or misses > bucket["prev"]):
+                bucket["fallback"][cause] = bucket["fallback"].get(cause, 0) + 1
+        if isinstance(misses, (int, float)):
+            bucket["prev"] = misses
+    return {
+        session_id: (_parse_cause_counts(b["cumulative"]) if b["cumulative"] else b["fallback"])
+        for session_id, b in per_session.items()
+    }
+
+
+def build_measured_miss_causes_table(usage_log_rows: list[dict] | None) -> Table | None:
+    """``measured_miss_causes``: the main session's cache misses by the
+    cause Claude Code itself diagnosed (the statusline's
+    ``prompt_cache``), summed over the sessions in the report. Shown on
+    the Cache tab next to the causes this tool infers from transcripts.
+    ``None`` when the log carries no cause data."""
+    totals: dict[str, int] = {}
+    sessions: dict[str, int] = {}
+    for counts in _final_miss_causes(usage_log_rows).values():
+        for cause, count in counts.items():
+            if count <= 0:
+                continue
+            totals[cause] = totals.get(cause, 0) + count
+            sessions[cause] = sessions.get(cause, 0) + 1
+    if not totals:
+        return None
+    all_misses = sum(totals.values())
+    rows = [
+        [cause, count, 100.0 * count / all_misses, sessions[cause]]
+        for cause, count in sorted(totals.items(), key=lambda kv: (-kv[1], kv[0]))
+    ]
+    return Table(
+        name="measured_miss_causes",
+        title="Cache misses Claude Code measured",
+        columns=[
+            Column(key="cause", label="Cause", kind="str"),
+            Column(key="misses", label="Misses", kind="int"),
+            Column(key="share_pct", label="Share", kind="pct"),
+            Column(key="sessions", label="Sessions", kind="int"),
+        ],
+        rows=rows,
+        value_labels=dict(MISS_CAUSE_LABELS),
+    )
+
+
 # -- payload key-name recording ---------------------------------------------
 
 #: Hard cap on the number of dotted key names recorded per invocation
@@ -1536,5 +1642,8 @@ __all__ = [
     "main",
     "load_usage_log_ground_truth",
     "build_cache_ground_truth_table",
+    "build_measured_miss_causes_table",
+    "scoped_usage_log_rows",
+    "usage_log_row_in_window",
     "record_payload_keys",
 ]

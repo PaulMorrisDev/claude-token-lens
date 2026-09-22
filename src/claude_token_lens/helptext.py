@@ -59,6 +59,7 @@ PLACEMENT: dict[str, str] = {
     "recache_huge_context": "advanced",
     "recache_by_group": "advanced",
     "cache_ground_truth": "advanced",
+    "measured_miss_causes": "keep",
     # cache lifetime
     "ttl_by_agent_type": "keep",
     "ttl_gap_distribution": "advanced",
@@ -1670,6 +1671,44 @@ TABLE_COPY: dict[str, TableCopy] = {
             "share_pct": ("Share of cache reads", "Cache reads from huge contexts as a share of all cache reads."),
         },
         value_labels={"all": "All replies"},
+    ),
+    "measured_miss_causes": TableCopy(
+        title="Cache misses Claude Code measured (main session)",
+        help=Help(
+            shows="Why the main session's cache missed, as Claude Code itself diagnosed it. Your statusline "
+            "logs these while you work. Subagents are not included.",
+            read="These are measured, not inferred. Compare them with \"What happened just before each cache "
+            "rebuild\": where the two disagree, trust this table.",
+            act="If a changed tool list or system prompt leads, stop switching MCP servers, plugins or modes in "
+            "the middle of a session. If expiry leads, see the cache lifetime tab.",
+        ),
+        columns={
+            "cause": ("", "The cause Claude Code reported for the miss."),
+            "misses": ("", "Cache misses with this cause."),
+            "share_pct": ("Share of misses", "This cause's misses as a share of all measured misses."),
+            "sessions": ("", "Sessions with at least one miss from this cause."),
+        },
+    ),
+    "cache_ground_truth": TableCopy(
+        title="Cache health per session, from your statusline",
+        help=Help(
+            shows="For each session your statusline logged, how often the main session's cache was warm, how "
+            "many misses Claude Code counted, and their top causes.",
+            read="Warm share counts statusline refreshes, not minutes, so one long cold pause can hide behind "
+            "many quick warm refreshes.",
+            act="",
+        ),
+        columns={
+            "session_id": ("", "The session's id."),
+            "rows_logged": ("Refreshes logged", "Statusline refreshes logged for this session."),
+            "warm_share": ("", "Refreshes that found a warm cache, as a share of all refreshes."),
+            "misses": ("", "Cache misses Claude Code counted in this session."),
+            "top_miss_causes": ("", "Up to three causes Claude Code reported, with their counts."),
+            "mean_recache_tokens_if_cold": (
+                "Tokens to rebuild if cold",
+                "On average, how many tokens a miss would have written again.",
+            ),
+        },
     ),
     "recache_by_group": TableCopy(
         title="Cache rebuilds by group",

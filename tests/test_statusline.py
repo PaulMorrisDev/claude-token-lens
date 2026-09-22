@@ -1213,3 +1213,42 @@ def test_main_records_payload_keys(monkeypatch, capsys, tmp_path):
     assert keys_path.exists()
     data = json.loads(keys_path.read_text(encoding="utf-8"))
     assert "context_window.used_tokens" in data["keys"]
+
+
+# -- measured cache-miss causes (Cache tab) ----------------------------------
+
+
+def test_build_measured_miss_causes_table_sums_final_counts_per_session():
+    rows = [
+        # s1 carries the cumulative field: only its last value counts.
+        {"session_id": "s1", "cache_warm": True, "cache_misses": 1, "cache_miss_causes": "ttl:1"},
+        {"session_id": "s1", "cache_warm": False, "cache_misses": 3, "cache_miss_causes": "tools:1;ttl:2"},
+        # s2 has only the sticky last cause: one count per increase.
+        {"session_id": "s2", "cache_warm": False, "cache_misses": 1, "cache_last_miss_cause": "ttl"},
+        {"session_id": "s2", "cache_warm": False, "cache_misses": 1, "cache_last_miss_cause": "ttl"},
+        {"session_id": "s2", "cache_warm": False, "cache_misses": 2, "cache_last_miss_cause": "sysprompt"},
+    ]
+    table = statusline.build_measured_miss_causes_table(rows)
+    by_cause = {row[0]: row for row in table.rows}
+    assert by_cause["ttl"][1] == 3 and by_cause["ttl"][3] == 2
+    assert by_cause["tools"][1] == 1 and by_cause["sysprompt"][1] == 1
+    assert round(sum(row[2] for row in table.rows), 6) == 100.0
+    assert table.rows[0][0] == "ttl"  # most misses first
+    assert table.value_labels["ttl"].startswith("Cache expired")
+
+
+def test_build_measured_miss_causes_table_is_none_without_cause_data():
+    assert statusline.build_measured_miss_causes_table(None) is None
+    assert statusline.build_measured_miss_causes_table([{"session_id": "s1", "cache_warm": True, "cache_misses": 0}]) is None
+
+
+def test_scoped_usage_log_rows_filters_sessions_and_window(tmp_path):
+    assert statusline.scoped_usage_log_rows(tmp_path / "missing.csv", {"s1"}, None, None) is None
+    rows = [
+        {"session_id": "s1", "logged_at": "2026-09-20T10:00:00Z"},
+        {"session_id": "s1", "logged_at": "2026-09-01T10:00:00Z"},
+        {"session_id": "other", "logged_at": "2026-09-20T10:00:00Z"},
+    ]
+    since = datetime(2026, 9, 10, tzinfo=timezone.utc)
+    kept = [r for r in rows if r["session_id"] in {"s1"} and statusline.usage_log_row_in_window(r, since, None)]
+    assert kept == [rows[0]]

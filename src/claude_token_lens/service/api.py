@@ -436,6 +436,19 @@ def make_handler(
             merged = overrides.get(session_id, {})
             merged.update(tags)
             overrides[session_id] = merged
+        # The statusline's usage log (usage limits, Claude Code's own
+        # cache-miss causes), scoped to this window's sessions exactly as
+        # the CLI's report does.
+        from .. import statusline as statusline_mod
+        from ..discovery import _resolve_window
+
+        since_dt, until_dt = _resolve_window(window_days, since, until)
+        usage_log_rows = statusline_mod.scoped_usage_log_rows(
+            Path(options.config_dir) / "usage-log.csv",
+            {bundle.session_id for bundle in corpus.sessions},
+            since_dt,
+            until_dt,
+        )
         return build_report(
             corpus,
             rates,
@@ -444,6 +457,7 @@ def make_handler(
             window=window,
             snapshots=snaps or None,
             session_overrides=overrides,
+            usage_log_rows=usage_log_rows,
             # v4 wiring round: without this, waste.WasteStats's salted
             # session-id hash would fall back to report.py's own
             # temp-directory default (see _default_waste_config_dir) --

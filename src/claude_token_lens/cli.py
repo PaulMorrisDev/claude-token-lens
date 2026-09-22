@@ -1112,31 +1112,6 @@ def _resolve_generated_at(args: argparse.Namespace) -> str | None:
 # -- report-like subcommands (report/sessions/recache/ttl/compactions) -----
 
 
-def _usage_log_row_in_window(row: dict, since_dt, until_dt) -> bool:
-    """``True`` when a usage-log ground-truth row's own ``logged_at``
-    falls inside ``[since_dt, until_dt]`` (either bound ``None`` means
-    unbounded on that side) -- part of the fix for review finding 8, see
-    :func:`_cmd_report_like`. A row with no parseable ``logged_at`` is
-    kept only when there is no window filter active at all (nothing to
-    exclude it for), matching this project's usual "unparseable ->
-    excluded only when it would otherwise matter" posture.
-    """
-    if since_dt is None and until_dt is None:
-        return True
-    logged_at_raw = row.get("logged_at")
-    if not logged_at_raw:
-        return False
-    try:
-        logged_at = datetime.fromisoformat(str(logged_at_raw).replace("Z", "+00:00"))
-    except ValueError:
-        return False
-    if since_dt is not None and logged_at < since_dt:
-        return False
-    if until_dt is not None and logged_at > until_dt:
-        return False
-    return True
-
-
 def _render_patch_set_text(model, args: argparse.Namespace) -> str | None:
     """The recommendation patch-set text for ``--patch-set``, or ``None``
     when the flag wasn't passed or ``recommend`` (an optional dependency,
@@ -1236,20 +1211,12 @@ def _cmd_report_like(args: argparse.Namespace, include: set[str] | None) -> int:
     # logged_at (discovery._resolve_window is the same resolution
     # discovery.find_sessions itself uses -- see service/rebuild.py for
     # existing precedent importing this private helper cross-module).
-    usage_log_csv_path = config_dir / "usage-log.csv"
-    usage_log_rows = None
-    if usage_log_csv_path.exists():
-        from .discovery import _resolve_window
+    from .discovery import _resolve_window
 
-        raw_usage_log_rows = statusline_mod.load_usage_log_ground_truth(usage_log_csv_path)
-        known_session_ids = {b.session_id for b in corpus.sessions}
-        since_dt, until_dt = _resolve_window(args.days, args.since, args.until)
-        usage_log_rows = [
-            row
-            for row in raw_usage_log_rows
-            if row.get("session_id") in known_session_ids
-            and _usage_log_row_in_window(row, since_dt, until_dt)
-        ]
+    since_dt, until_dt = _resolve_window(args.days, args.since, args.until)
+    usage_log_rows = statusline_mod.scoped_usage_log_rows(
+        config_dir / "usage-log.csv", {b.session_id for b in corpus.sessions}, since_dt, until_dt
+    )
 
     # v0.3 Task 2: --baseline <id|latest> resolves a saved baseline.py
     # record for build_report's own baseline_comparison section. This is
