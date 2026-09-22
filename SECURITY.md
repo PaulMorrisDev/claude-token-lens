@@ -8,7 +8,7 @@ verifiable against the code rather than taken on trust.
 code does, verifiable against it rather than taken on trust. This
 includes the `claude-token-lens serve` service (watcher, SQLite store,
 JSON API, static web UI) and its deployment artefacts — see
-[README.md's "Running the service"](README.md#14-running-the-service)
+[README.md's "Running the service"](README.md#10-running-the-service)
 and [docs/deploy.md](docs/deploy.md).
 
 ## What is read
@@ -161,7 +161,10 @@ override: writing to a project file already tracked by git
 (`--allow-tracked`), and creating an agent frontmatter file that
 doesn't exist yet (`--force`). Every write is preceded by a
 byte-for-byte backup, so any apply can be undone exactly with
-`claude-token-lens apply --revert <ts>`. Full detail:
+`claude-token-lens apply --revert <ts>`. A revert checks each file's
+hash against the one `apply` recorded and refuses, restoring nothing,
+if a file was edited after the apply, so it never silently discards
+later changes; `--ignore-changes` overrides that. Full detail:
 [docs/profiles.md#applying-a-profile](docs/profiles.md#applying-a-profile).
 
 ## No outbound network calls
@@ -213,6 +216,17 @@ address, or a name you added with `serve --allowed-host` gets `403`
 before any route runs. See
 [docs/api.md](docs/api.md#host-allowlist-dns-rebinding).
 
+The dashboard never changes your Claude Code configuration. A
+recommendation or profile gives you a prompt to paste into Claude Code
+(which asks your permission before editing anything under `.claude`)
+and a `claude-token-lens apply ... --dry-run` command to run yourself.
+The service's few write routes touch only its own files: session tags
+in the store, and user profiles under `<config-dir>/profiles/`
+(`POST /api/profiles`, and `POST /api/profiles/from-current`, which
+saves a copy of your current settings there). Both refuse to overwrite
+an existing profile unless asked to with `?replace=1`, and neither can
+create or change a shipped catalogue profile.
+
 The service's on-disk SQLite store (`<config-dir>/service.db`) is
 always a derived cache rebuilt from the same transcripts the CLI
 already reads, never a second source of truth — `claude-token-lens
@@ -240,7 +254,7 @@ Remove-Item -Recurse -Force "$env:USERPROFILE\.claude\token-lens\cache"
 it as it parses); `--no-cache` skips the cache entirely for that one run
 without deleting anything already on disk. Both are wired through to
 `corpus.load_corpus` for every subcommand that loads a corpus — see
-[README.md](README.md#2-quick-start).
+[README.md](README.md#2-installing-and-first-run).
 
 ## Excluding confidential projects
 

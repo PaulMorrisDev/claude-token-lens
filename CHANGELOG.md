@@ -9,6 +9,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Start here** on the Overview tab: the three most important
+  recommendations for the selected window, with why and the estimated
+  saving, and any scorecard area rated poor or worse.
+- **"Why was this session expensive?"** in each session's detail:
+  template sentences and a cost split from
+  `GET /api/session/<id>/explain` (`service/explain.py`,
+  `Store.session_parts`, `Store.median_session_cost`). No LLM.
+- **Profiles tab redesigned.** Cards show "Suggested for you",
+  built-in or yours, and which settings a profile changes. The detail
+  table reads Setting / Now / After / Set in, marks settings locked by
+  policy or already set, and ends with "Ask Claude to do it" (a
+  prompt), "Or run this command" (`apply <id> --dry-run`) and "Or try
+  it for one session". A form editor built from the schema ("Start
+  from", settings, per-agent fields, JSON as an escape hatch) and
+  "Save my current settings as a profile" write only to this tool's own
+  profile store.
+- **Glossary tab**, whose wording the README's glossary is generated
+  from.
+- New read-only routes `GET /api/profile-schema` (every allowlisted
+  key with label, type, allowed values, description and trade-off) and
+  `GET /api/profiles/<id>`, and `POST /api/profiles/from-current`,
+  which saves the latest snapshot's allowlisted, non-managed settings as
+  a user profile (`409` when no snapshot records config).
+- `GET /api/profiles/<id>/diff` rows carry `setting`, `agent`, `label`,
+  `description` and `where`; the response adds `dry_run_command` and a
+  `prompt` (`fixes.profile_prompt`) that names each file, setting and
+  value.
+- **Cache misses Claude Code measured**: a `measured_miss_causes`
+  table on the Cache tab lists the main session's misses by the cause
+  Claude Code reported through the statusline, next to the
+  transcript-inferred causes.
+- `apply` and `apply --dry-run` explain each change (what the setting
+  controls, now and after, where, the trade-off, how to undo it).
+  Backup manifests record each key's old and new value and the SHA-256
+  of what was written; `apply --revert` refuses, restoring nothing,
+  when a file changed since, unless `--ignore-changes`.
 - **Readable dashboard and reports** (readability stage 1). Every table
   and section can carry plain-English help (`Column.help`,
   `Table.help`/`value_labels`/`dashboard`, `Section.intro`/`help`, all
@@ -80,6 +116,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **README restructured**: a plain description, a three-step quick
+  start, what each tab answers, acting on a recommendation, and a
+  glossary, then the reference sections (renumbered). The token totals,
+  how caching works, cache rebuild definitions and the TTL simulation
+  assumptions moved to [`docs/concepts.md`](docs/concepts.md); links
+  across the docs are updated.
+- `render_patch_set` renders a recommendation's `changes` with current
+  and proposed values instead of guessing from the lever text.
+- The dashboard subtitle says what the tool is for; the Cache tab's
+  statusline table is titled "Cache health per session, from your
+  statusline". CLI wording changed; JSON and CSV keys are unchanged.
 - **Recommendations in plain words.** Severity reads "Do this",
   "Worth considering" or "For your information"; cards say who a
   change is for and "What to do", fold multiple fixes, and put the
@@ -121,6 +168,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **An apply stamp was read as the latest config snapshot.** `apply`
+  writes a small `{ts, schema_version, profile_id}` record into the
+  snapshot directory; every reader took it for a snapshot with no
+  settings, so the scorecard counted every setting as changed, profile
+  diffs showed empty "Now" values, "save my current settings" saved
+  nothing, and hook health dated the last snapshot from the apply. New
+  `snapshots.records_config` skips records that hold no config.
+- **The dashboard never saw the statusline usage log**: it now passes
+  the log into its report, scoped to the window's sessions like the CLI
+  (`statusline.scoped_usage_log_rows`).
+- **Stored snapshots lost their config.** The watcher stored snapshots
+  flattened, so the service's rebuilt snapshots had no effective
+  config, managed keys or agents. It now stores the hook's own
+  (redacted) document.
 - **Dashboard cost no longer dips while the service rescans.** The
   watcher's placeholder session row (written before a session's
   subagents are parsed) reset the session's stored cost and tokens to
@@ -848,7 +909,7 @@ A v0.4 backlog, kept here until scheduled into a milestone:
   the target directory for `project-local`/`repo` scope, matching the
   identical collision `snapshot-config`/`probe-config` resolve the same
   way. See [docs/profiles.md#applying-a-profile](docs/profiles.md#applying-a-profile),
-  [README.md's "Applying a profile"](README.md#15-applying-a-profile),
+  [README.md's "Applying a profile"](README.md#11-applying-a-profile),
   and [SECURITY.md](SECURITY.md#applying-a-profile-the-one-command-that-writes-outside-config-dir)
   for full detail.
 - **`compare` subcommand** (`compare.py`, work package V3-compare, plan

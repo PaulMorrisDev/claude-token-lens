@@ -9,7 +9,7 @@ document's own verification pass (three install routes, `init`,
 nothing here is aspirational.
 
 If you're comfortable with the tool already, [section 2 of the
-README](../README.md#2-quick-start) is the fast path. This document is
+README](../README.md#2-installing-and-first-run) is the fast path. This document is
 for the first five minutes on a machine you've never run it on before.
 
 ## 0. Check Python

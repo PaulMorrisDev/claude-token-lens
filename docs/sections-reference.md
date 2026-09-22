@@ -1,7 +1,7 @@
 # Report sections, in detail
 
 This file is the field-by-field companion to
-[`README.md`](../README.md#6-reading-the-report-sections). It lists every
+[`README.md`](../README.md#3-reading-the-report-sections). It lists every
 table each `build_section(...)` function produces today, and expands the
 two topics the README only summarises: the TTL section's utilisation
 metrics, and a worked example against a real, scrubbed transcript.
@@ -20,7 +20,7 @@ is what every example in this file does.
   transcripts, workflow runs, priced turns, the four raw token counts
   (`input_tokens`, `cache_creation_tokens`, `cache_read_tokens`,
   `output_tokens`), the two derived totals from
-  [README section 3](../README.md#3-the-two-token-totals)
+  [README section 3](concepts.md#1-the-two-token-totals)
   (`usage_tokens`, `new_tokens`), `total_cost_usd`,
   `cache_read_cost_share_pct` (cache-read cost as a percentage of total
   cost), and `cache_roi` (from `ttl.py`'s cache-economy totals — see
@@ -96,7 +96,7 @@ Per-session `mode`/`purpose` overrides live in
 
 ## `recache` (`recache.py`)
 
-Definitions: [README section 5](../README.md#5-re-cache-definitions-and-signatures).
+Definitions: [README section 5](concepts.md#3-cache-rebuild-definitions-and-signatures).
 
 - `recache_summary` — transcripts, priced turns, re-cache turns and
   share, cache-creation tokens (re-cache vs. all), avoidable cost.
@@ -133,7 +133,7 @@ Definitions: [README section 5](../README.md#5-re-cache-definitions-and-signatur
 
 ## `ttl` (`ttl.py`)
 
-Simulation assumptions: [README section 7](../README.md#7-ttl-simulation-assumptions).
+Simulation assumptions: [README section 7](concepts.md#4-ttl-simulation-assumptions).
 
 - `ttl_by_agent_type` — per agent type and `"top-level"`: spawns, priced
   turns, observed 5m/1h mix, gaps > 5min, gaps > 60min, cost observed /
@@ -503,7 +503,7 @@ changed key) outside a full report run.
 ## `config_diff` (`snapshots.py`)
 
 Reads the JSON files `hooks/snapshot-config.py` writes (see the
-README's [installation section](../README.md#8-installing-the-sessionstart-hook-and-the-statusline)).
+README's [installation section](../README.md#4-installing-the-sessionstart-hook-and-the-statusline)).
 
 - `config_diff` (the section's one table) — per distinct value of one
   chosen config key across a window: sessions, turns, cost, cost per
@@ -832,7 +832,7 @@ id — never repeating that recommendation's own numbers.
 
 Five 1-5 levels (1 poor, 5 excellent) summarising a corpus's cache
 efficiency, context hygiene, agent efficiency, config fit and data
-quality — see [README section 6](../README.md#6-reading-the-report-sections).
+quality — see [README section 6](../README.md#3-reading-the-report-sections).
 
 - `scorecard_dimensions` — one row per scored dimension: `dimension`,
   `level` (1-5), `label` (`very poor`/`poor`/`fair`/`good`/`excellent`,
@@ -882,7 +882,7 @@ archetype (a `ttl-switch` recommendation for a `chat-only` session's
 subagents is suppressed, since a chat-only session barely has any), a
 minimum-sample size (`min_sessions`/`min_turns` in `config.toml`'s
 `[thresholds]` table), and managed-settings awareness (see
-[README section 10](../README.md#10-for-team-leads-and-enterprise)).
+[README section 10](../README.md#6-for-team-leads-and-enterprise)).
 `report --patch-set` renders the whole set as unified-diff-style text
 via `recommend.render_patch_set`.
 

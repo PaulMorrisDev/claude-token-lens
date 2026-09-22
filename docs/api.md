@@ -276,6 +276,26 @@ All four fields are omitted entirely (never present as an empty list)
 when no top-level transcript digest is stored yet, or the stored digest
 can't be decoded — never fabricated.
 
+### `GET /api/session/<id>/explain`
+
+"Why was this session expensive?" for the session detail view
+(`service/explain.py`). Every sentence is a fixed template filled with
+this session's own aggregates from `Store.session_parts`; no model is
+asked. `404` if `<id>` is unknown.
+
+`data`: `{"session_id": str, "headline": str, "sentences": [str, ...], "cost_split": [{"part", "label", "cost", "share_pct"}, ...]}`.
+
+- `headline`: the session's cost (in the billing mode's units), replies
+  and tokens.
+- `sentences`: how it compares with your median session, which part of
+  the cost led and what that means, how much went on subagents and the
+  costliest agent type, cache rebuilds and their commonest cause, and
+  conversation summaries. A sentence is left out when its data is.
+- `cost_split`: `part` is `cache_read`, `cache_write`, `output` or
+  `input`, always in that order. `cost` is at list price from the rate
+  card, whatever the billing mode; models the rate card doesn't know
+  are left out.
+
 ### `GET /api/recache`
 
 Corpus-wide RE-CACHE breakdown — `Store.recache`.
@@ -438,6 +458,28 @@ timestamp). `suggested_profile_id` is the latest recorded baseline's own
 `suggested_profile` field (`null` if no baseline has been captured yet),
 so the UI can mark that entry in the list without a second round trip.
 
+### `GET /api/profile-schema`
+
+Every key a profile may set, for the dashboard's profile form.
+
+`data`: `{"settings": [Lever, ...], "agents": [Lever, ...], "env": [str, ...], "archetypes": [str, ...], "scopes": [{"key", "label"}, ...]}`,
+where a `Lever` is `{"key", "label", "kind", "values", "min", "max", "description", "tradeoff"}`.
+`kind` is `str`, `enum`, `int`, `bool` or `list[str]`; `values` is the
+allowed list for an `enum` (else `null`), `min`/`max` the range for an
+`int`. `label`, `description` and `tradeoff` come from
+`fixes.LEVER_LABELS`/`fixes.SETTING_TEXT`, the same text the
+recommendation explainers use. `env` lists the environment variable
+names a profile may set (`profiles.schema.ENV_ALLOWLIST`).
+
+### `GET /api/profiles/<id>`
+
+One profile's contents. `404` if `<id>` names neither a catalogue id
+nor an existing `<config_dir>/profiles/<id>.toml`.
+
+`data`: `{"id", "name", "source": "catalogue"|"user", "archetype", "for": [str, ...], "notes", "settings": {key: value}, "agents": {name: {key: value}}, "env": {NAME: value}, "setting_count": int}`.
+`setting_count` counts settings, agent keys and environment variables
+together.
+
 ### `GET /api/profiles/<id>/diff`
 
 The real diff (v0.3, `profiles.diff.diff_against_effective`/
@@ -459,14 +501,32 @@ service's privacy rule forbids regardless of who supplied it — so a
 `project-local`/`repo` scope's `apply_command` always omits
 `--project-dir`; fill it in yourself when you run the command.
 
-`data`: `{"profile_id": str, "scope": str, "diff": str, "settings": [DiffRow, ...], "agents": [DiffRow, ...], "env": [DiffRow, ...], "apply_command": str, "launch_command": str, "notes": [str, ...]}`,
-where a `DiffRow` is `{"key", "current_value", "current_provenance", "proposed_value", "target_file", "managed"}`
+`data`: `{"profile_id": str, "scope": str, "diff": str, "settings": [DiffRow, ...], "agents": [DiffRow, ...], "env": [DiffRow, ...], "apply_command": str, "dry_run_command": str, "launch_command": str, "prompt": str, "notes": [str, ...]}`,
+where a `DiffRow` is `{"key", "setting", "agent", "label", "description", "where", "current_value", "current_provenance", "proposed_value", "target_file", "managed"}`
 (`profiles.diff.DiffRow`'s own fields, split by key prefix into the
 three lists rather than left as one flat `rows` array — `settings.*` /
-`agents.<name>.*` / `env.*`). `apply_command`/`launch_command` are the
-two lines `profiles.diff.apply_command` returns, split apart — the
-exact host-side `claude-token-lens apply` invocation and the
-`--launch` one-session-overlay alternative respectively.
+`agents.<name>.*` / `env.*`). The display fields: `setting` is the key
+without its prefix (dotted agent keys such as `experimental.cacheTtl`
+stay whole), `agent` the agent's name for an `agents.*` row (else
+`null`), `label`/`description` its plain name and what it controls, and
+`where` the file the change is written to under the chosen `scope`
+(`fixes.profile_change_where`). `target_file` is where the key is set
+today.
+
+`apply_command`/`launch_command` are the two lines
+`profiles.diff.apply_command` returns, split apart — the exact
+host-side `claude-token-lens apply` invocation and the `--launch`
+one-session-overlay alternative respectively. `dry_run_command` is
+`apply_command` plus `--dry-run`, which the dashboard shows first.
+`prompt` (`fixes.profile_prompt`) asks Claude to make the same changes
+by hand: one line per changed, unmanaged key, naming the file and the
+old and new values, and asking Claude to show the diff before saving.
+
+"Latest snapshot" here and in `POST /api/profiles/from-current` means
+the newest snapshot that records config: `apply` writes a
+`{ts, schema_version, profile_id}` stamp into the snapshots folder to
+mark the active profile, and the service skips those stamps
+(`snapshots.records_config`) wherever it reads snapshots.
 
 ### `GET /api/baseline`
 
@@ -504,8 +564,8 @@ since=...&until=...` byte-equivalent to `report --since ... --until
 
 ## Mutating routes
 
-The only two routes that write anything, both scoped to a single row
-and never touching `~/.claude` proper (plan: "neither touches
+The only routes that write anything, each scoped to a single row or
+file and never touching `~/.claude` proper (plan: "neither touches
 `~/.claude` proper"):
 
 ### `POST /api/sessions/<id>/tags`
@@ -546,6 +606,29 @@ Query: `replace` — `1` allows overwriting an existing *user* profile's
 file (never a catalogue one).
 
 `data`: `{"id": str, "name": str, "source": "user", "updated_at": str}` — `201` on success.
+
+### `POST /api/profiles/from-current`
+
+Saves your current settings as a user profile ("Save my current
+settings as a profile" on the Profiles tab). It reads the latest config
+snapshot's `effective` settings and `effective_agents`, keeps only the
+keys a profile may set (each checked on its own with
+`profiles.schema.validate`, so one out-of-range value drops only
+itself), leaves out keys your organisation's managed settings control,
+and writes the result exactly as `POST /api/profiles` does. It writes
+only this tool's own profile folder, never Claude Code's config.
+
+Body (optional): `{"id": str, "name": str}`. Defaults:
+`my-current-settings` and "My current settings".
+
+Query: `replace` — `1` overwrites an earlier save with the same `id`.
+Without it, a second save is `409` (`error.code: "conflict"`, message
+"... already exists ..."); the dashboard then asks before replacing.
+`409` also when no config snapshot has been recorded yet.
+
+`data`: the `POST /api/profiles` result plus `skipped_managed`: the
+allowlisted setting names left out because managed settings control
+them. `201` on success.
 
 ## Managed-settings routes
 

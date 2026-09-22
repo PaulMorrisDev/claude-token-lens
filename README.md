@@ -1,9 +1,131 @@
 # claude-token-lens
 
-Config-aware token and prompt-cache analytics for Claude Code transcripts:
-where your tokens go, what your caching configuration costs or saves, and
-which configuration changes to make. Stdlib-only, MIT-licensed, runs
-entirely on your own machine.
+claude-token-lens shows where your Claude Code tokens and money go, and
+what to change to spend less. It reads the transcripts Claude Code
+already keeps on your machine, works out what each session, subagent and
+cache rebuild cost, and suggests setting changes with the trade-offs
+spelled out. Nothing leaves your machine: no network calls, no
+telemetry. It never changes your Claude Code settings on its own; every
+change is a prompt you give Claude or a command you run.
+
+## Quick start
+
+1. **Install** (Python 3.11 or later; nothing else):
+
+   ```bash
+   pip install git+https://github.com/PaulMorrisDev/claude-token-lens
+   ```
+
+   No pip or network on this machine? Download `claude-token-lens.pyz`
+   from the Releases page instead; [`docs/first-run.md`](docs/first-run.md)
+   walks through every route.
+
+2. **Set up**, from any project folder:
+
+   ```bash
+   claude-token-lens init
+   ```
+
+   It asks a few questions (for example, whether you use a Pro or Max
+   plan) and offers to start the dashboard every time you log on.
+
+3. **Open the dashboard** at http://127.0.0.1:8765 and read
+   **Start here** on the Overview tab.
+
+Prefer the terminal? `claude-token-lens report` prints the same analysis
+as Markdown, with no setup at all.
+
+## What each tab answers
+
+| Tab | The question it answers |
+|---|---|
+| Overview | How much did I use, and what should I look at first? |
+| Sessions | Which sessions cost the most? Pick one to see why it was expensive. |
+| Cache | When did Claude Code rebuild the prompt cache, and what caused it? |
+| Cache lifetime (TTL) | Would a 1-hour cache lifetime have paid for itself? |
+| Savings | What would shorter tool output, earlier summaries, cheaper models or fewer wasted replies save? |
+| Agents | What do my subagents cost, what are they given when they start, and what do they send back? |
+| Config | What are my settings, and did changing them change my costs? |
+| Profiles | How does a ready-made group of settings differ from mine? Save and compare your own. |
+| Recommendations | What exactly should I change, where, and what is the trade-off? |
+| Usage | How is my usage spread over days, projects and five-hour blocks? |
+| Data quality | Could every transcript be read and priced? |
+| Glossary | What does a term on the dashboard mean? |
+
+Amounts follow your billing mode. On a Pro or Max plan, savings are a
+share of your usage limits once your statusline has logged enough
+usage-limit readings, and list-price equivalents (what the tokens would
+cost at Anthropic's published prices) until then. On pay-per-token
+billing they are what you pay.
+
+## Acting on a recommendation
+
+Each recommendation card explains the change before offering it: what
+the setting controls, its value now and after, which file it is written
+to and who that affects, the expected effect, the trade-off, and how to
+undo it. Then it gives you two ways to make the change:
+
+- **Ask Claude to do it.** Copy the prompt into Claude Code. It names
+  the file, the setting and the value, says why, and asks Claude to
+  restate the change and show you the diff before saving. Claude Code
+  asks your permission before editing files under `.claude`; that is
+  expected.
+- **Or run the command.** For a plain setting the card shows a command
+  such as:
+
+  ```bash
+  claude-token-lens apply --set effortLevel=medium --scope user --dry-run
+  ```
+
+  `--dry-run` explains the change and prints the diff without writing
+  anything. Run it again without `--dry-run` to make the change: the
+  file is backed up first, and the output ends with the exact
+  `claude-token-lens apply --revert <TS>` command that undoes it. A
+  revert refuses to run if the file was edited after the change (so it
+  can't throw away your later edits) unless you add `--ignore-changes`.
+
+Profiles on the Profiles tab work the same way, for several settings at
+once: a prompt, `claude-token-lens apply <profile> --dry-run`, or a
+one-session trial that writes nothing. See [section 11](#11-applying-a-profile)
+and [`docs/profiles.md`](docs/profiles.md).
+
+## Glossary
+
+- **Session**: One conversation with Claude Code, from start to exit. Resuming it continues the same session.
+- **Main session**: The conversation you type into, as opposed to the subagents it starts.
+- **Subagent**: A separate Claude that your session starts for one task, such as a search or a review. It has its own context and reports back when done.
+- **Transcript**: The log file Claude Code writes for a session or a subagent run. Everything here is read from these files on your machine.
+- **Reply**: One response from Claude, including any tool calls it makes. Every reply is billed for the whole context it reads.
+- **Token**: The unit models read and write, roughly three quarters of a word. Prices are per million tokens.
+- **Context**: Everything Claude reads on a reply: system prompt, tools, CLAUDE.md files and the conversation so far.
+- **Startup context**: What Claude reads before your first message, or before a subagent's task: system prompt, tool list, CLAUDE.md files, skills and more.
+- **Prompt cache**: A copy of the start of the context kept on Anthropic's side, so the next reply can re-read it cheaply instead of paying full price.
+- **Cache read**: Re-reading context from the prompt cache. About a tenth of the normal input price.
+- **Cache write**: Putting context into the prompt cache. Costs more than normal input: 1.25 times for a 5-minute lifetime, 2 times for 1 hour.
+- **Cache rebuild**: Writing context to the cache again because the cached copy expired or something early in the conversation changed.
+- **Cache lifetime (TTL)**: How long the prompt cache stays warm after a reply: 5 minutes by default, or 1 hour. A pause longer than this means a rebuild.
+- **Conversation summary**: When the context gets too large, Claude Code replaces the conversation so far with a summary. Also called compaction.
+- **List price**: Anthropic's published price per token. On a Pro or Max plan you don't pay this; it is shown to compare costs.
+- **Usage limits**: On a Pro or Max plan, the share of your five-hour and weekly allowance you have used.
+- **Billing mode**: Whether amounts are shown for a Pro or Max plan (a share of your usage limits when there are enough readings, otherwise a list-price equivalent) or as money for pay-per-token billing.
+- **Effort level**: How hard Claude thinks before replying. Thinking is billed as output, the most expensive token type.
+- **Scorecard**: Five areas rated 1 (very poor) to 5 (excellent), each from one number in your data.
+- **Recommendation**: A change worth making, with what it changes, the trade-off, a prompt you can give Claude and a command you can run.
+- **Profile**: A named group of settings you can compare with yours, try for one session, or apply.
+- **Scope**: Where a change is written: your user settings (every project), this project on your machine only, or this project for everyone.
+- **Managed setting**: A setting your organisation's policy controls. Only your administrator can change it.
+- **Snapshot**: A record of your Claude Code settings at one moment, taken so changes can be compared over time.
+
+## Reference
+
+The rest of this file is reference material. The concepts behind the
+numbers (the two token totals, how Claude Code's prompt cache works,
+what counts as a cache rebuild, and what the cache-lifetime simulation
+assumes) are in [`docs/concepts.md`](docs/concepts.md).
+
+## 1. What it is, what it measures, and what it cannot
+
+### Status
 
 **Status: pre-release, v0.3 shipped.** The parsing, pricing, RE-CACHE,
 TTL, classification, compaction, config-snapshot, topology, workstyle,
@@ -16,7 +138,7 @@ by tests. The command-line surface now matches: `report`, `sessions`,
 `snapshot-config`, `probe-config`, `export`, `monthly-report`, `compare`,
 `reconcile`, `init`, `baseline`, `apply`, `serve`, `install-service`,
 `uninstall-service`, `import` and `team-report` are real subcommands
-backed by that engine — see [section 2](#2-quick-start) for the full
+backed by that engine — see [section 2](#2-installing-and-first-run) for the full
 flag reference and [`docs/onboarding.md`](docs/onboarding.md) for
 `init`/`baseline` specifically. This README describes what the code
 actually does today, not the full plan — see
@@ -27,9 +149,9 @@ missing.
 A few things are also usable directly, outside the `report` command:
 
 - `python -m claude_token_lens.tools.scrub` — turn a real transcript into
-  a privacy-scrubbed fixture (see [Privacy and security](#11-privacy-and-security)).
+  a privacy-scrubbed fixture (see [Privacy and security](#7-privacy-and-security)).
 - `python -m claude_token_lens.statusline` — a live Claude Code status
-  line (see [Installing the hook and statusline](#8-installing-the-sessionstart-hook-and-the-statusline)).
+  line (see [Installing the hook and statusline](#4-installing-the-sessionstart-hook-and-the-statusline)).
 - `python -m claude_token_lens.tools.log_usage` — append a `get_usage`
   paste to a local CSV log.
 - Every analytics module (`recache`, `ttl`, `classify`, `compaction`,
@@ -40,7 +162,7 @@ A few things are also usable directly, outside the `report` command:
   full report; that is how the worked examples in this README were
   produced.
 
-## 1. What it is, what it measures, and what it cannot
+### What it reads, and what it cannot do
 
 claude-token-lens reads Claude Code's local JSONL transcripts
 (`~/.claude/projects/<slug>/<session>.jsonl`, plus
@@ -71,7 +193,7 @@ What it cannot do:
   tables label subscription money columns as list-price-equivalent, and
   its five-hour usage blocks table is only populated for
   `billing = "subscription"` — under `"api"` it prints a one-line note
-  explaining the skip instead (see [section 6](#6-reading-the-report-sections)).
+  explaining the skip instead (see [section 3](#3-reading-the-report-sections)).
   `billing` in `config.toml` is `"auto"` by default: subscription once
   the usage log holds a usage-limit reading (Claude Code only reports
   usage limits to Pro and Max plans), `"api"` otherwise. Set
@@ -82,7 +204,7 @@ What it cannot do:
   from documentation, and Claude Code's own docs describe the transcript
   format as internal and unstable. The parser tolerates unknown line
   types and fields rather than failing on them (see
-  [Windows notes](#9-windows-notes) and `Diagnostics.ignored_line_types`),
+  [Windows notes](#5-windows-notes) and `Diagnostics.ignored_line_types`),
   but a future Claude Code release can still change field names under
   it. Two integration points *are* documented and stable, and are the
   better choice if you need a durable contract instead of a
@@ -91,7 +213,7 @@ What it cannot do:
   and `claude_code.cost.usage`), and `claude -p --output-format json`
   for scripted single-shot invocations.
 
-## 2. Quick start
+## 2. Installing and first run
 
 New to this tool, or on a locked-down work machine? [`docs/first-run.md`](docs/first-run.md)
 walks through all three install routes end to end: download the
@@ -138,7 +260,7 @@ itself deletes transcripts older than `cleanupPeriodDays`, so the only
 way to keep that history around for `report`/`baseline`/the dashboard
 above is a watcher that's actually running when a transcript would
 otherwise be cleaned up — not just running the one time you happened to
-invoke a subcommand. See [section 14](#14-running-the-service) for what
+invoke a subcommand. See [section 10](#10-running-the-service) for what
 the registration step actually does on each platform, and
 [`docs/deploy.md`](docs/deploy.md) for the full detail (including
 `install-service --dry-run` to preview it and `uninstall-service` to
@@ -221,7 +343,7 @@ this table only lists what's specific to each one.
 
 | Subcommand | What it does | Extra flags |
 | --- | --- | --- |
-| `report` | Full report: every section in [section 6](#6-reading-the-report-sections) (`overview`, `usage`, `sessions`, `recache`, `ttl`, `limits`, `carry`, `compaction_sim`, `model_swap`, `waste`, `compactions`, `agents`, `workstyle`, `workflows`, `config` when snapshots exist, `scorecard`, `recommendations`), printed as Markdown by default. This is the default subcommand — `claude-token-lens` with no arguments runs it. | `--json` (print the whole report as JSON instead), `--html PATH` (also write a single-file HTML report), `--csv-dir DIR` (also write one CSV per table plus an index), `--phases` (add the DISCOVERY/IMPLEMENTATION/VERIFICATION phase-split section), `--patch-set` (also print the recommendation set as unified-diff-style settings/frontmatter patches), `--explain` (add each section's and table's "what it shows / how to read it" help to the Markdown) |
+| `report` | Full report: every section in [section 3](#3-reading-the-report-sections) (`overview`, `usage`, `sessions`, `recache`, `ttl`, `limits`, `carry`, `compaction_sim`, `model_swap`, `waste`, `compactions`, `agents`, `workstyle`, `workflows`, `config` when snapshots exist, `scorecard`, `recommendations`), printed as Markdown by default. This is the default subcommand — `claude-token-lens` with no arguments runs it. | `--json` (print the whole report as JSON instead), `--html PATH` (also write a single-file HTML report), `--csv-dir DIR` (also write one CSV per table plus an index), `--phases` (add the DISCOVERY/IMPLEMENTATION/VERIFICATION phase-split section), `--patch-set` (also print the recommendation set as unified-diff-style settings/frontmatter patches), `--explain` (add each section's and table's "what it shows / how to read it" help to the Markdown) |
 | `sessions` | Focused view: just `overview` + `sessions` | Same output flags as `report` except `--patch-set` (recommendations aren't part of a focused view) |
 | `recache` | Focused view: just `overview` + `recache` | Same as `sessions` |
 | `ttl` | Focused view: just `overview` + `ttl` | Same as `sessions` |
@@ -232,28 +354,28 @@ this table only lists what's specific to each one.
 | `waste` | Focused view: just `overview` + `waste` (spend on turns whose output was never used — see [`docs/waste.md`](docs/waste.md)) | Same as `sessions` |
 | `compactions` | Focused view: just `overview` + `compactions` | Same as `sessions` |
 | `config-diff` | Compare sessions grouped by one (or every changed) config key's value, from captured `snapshot-config` snapshots. Prints its own plain-text table(s), independent of `report`'s renderers. | `--key KEY` **or** `--auto-keys` (mutually exclusive, one required): diff one named flattened config key, or every key that changed across the available snapshots |
-| `snapshot-config` | Capture (or print/install) the SessionStart config-snapshot hook — see [section 8](#8-installing-the-sessionstart-hook-and-the-statusline) | `--print-hook` (print the settings.json fragment), `--install-hook` (copy the hook script into `<config-dir>/hooks/`), `--managed-path PATH` (override the platform managed-settings.json path) |
+| `snapshot-config` | Capture (or print/install) the SessionStart config-snapshot hook — see [section 4](#4-installing-the-sessionstart-hook-and-the-statusline) | `--print-hook` (print the settings.json fragment), `--install-hook` (copy the hook script into `<config-dir>/hooks/`), `--managed-path PATH` (override the platform managed-settings.json path) |
 | `probe-config` | Scan a project's config layers directly from the filesystem, without needing a captured session — the same layered-config view `snapshot-config` captures, on demand (schema 2) | `--project-dir PATH` (project directory to scan; default: the current directory), `--managed-path PATH` (override the platform managed-settings.json path) |
 | `log-usage` | Read a pasted `get_usage` JSON payload from stdin and append its rows to the local usage-window CSV log | none beyond the global flags |
 | `pricing-check` | Print the resolved rate card's provenance and rate table, and (with `--models`) how specific model ids resolve against it | `--models ID,ID,...` |
 | `scrub-fixture` | Turn a real `<project_dir>/<session_id>` directory into a privacy-scrubbed test fixture, or verify an already-scrubbed one | `--session-dir PATH --out PATH` (scrub), or `--verify OUT_DIR` (audit an existing scrub), plus optional `--key-seed SEED` (deterministic HMAC key — tests only) |
 | `probe` | Content-free schema histogram (line types, key names, attachment types, `version` values — every string capped at 64 chars) of a project or one transcript file, safe to paste into a bug report | `--file PATH` (probe a single transcript file instead of a project) |
-| `statusline` | Claude Code `statusLine` handler — reads a JSON payload from stdin on every refresh (see [section 8](#8-installing-the-sessionstart-hook-and-the-statusline)) | `--print-install-fragment` / `--install` (print the settings.json fragment instead of reading stdin) |
-| `export` | Aggregate, privacy-safe export of a corpus for BI/observability tooling (see [section 10](#10-for-team-leads-and-enterprise) and [`docs/exports.md`](docs/exports.md)) | `--format {csv-flat,json,otel-jsonl}` (default `csv-flat`), `--aggregate-only` / `--per-session` (mutually exclusive, default `--aggregate-only`), `--hash-slugs` / `--no-hash-slugs` (mutually exclusive, default hashed whenever `--aggregate-only` is in effect), `--out PATH` (default: stdout) |
-| `monthly-report` | Write a habit-forming finance summary (cost/tokens by model/project/entrypoint, five-hour blocks under subscription billing) plus the `usage` section for one calendar month, as both Markdown and HTML (see [section 10](#10-for-team-leads-and-enterprise) and [`docs/exports.md`](docs/exports.md)) | `--out DIR` (required), `--month YYYY-MM` (default: the previous calendar month) |
-| `import` | Validate and copy one or more `export --aggregate` team documents into `<config_dir>/team/` for `team-report` (see [section 10](#10-for-team-leads-and-enterprise) and [`docs/team.md`](docs/team.md)) | `FILE...` (one or more team-document paths); exits 2 with the reason on the first invalid file |
-| `team-report` | Cross-machine per-archetype/per-agent-type comparison built from every document already imported into `<config_dir>/team/` (see [section 10](#10-for-team-leads-and-enterprise) and [`docs/team.md`](docs/team.md)) | `--min-sessions N` (default 5), plus the same `--json`/`--html PATH`/`--csv-dir DIR` output flags as `report` |
+| `statusline` | Claude Code `statusLine` handler — reads a JSON payload from stdin on every refresh (see [section 4](#4-installing-the-sessionstart-hook-and-the-statusline)) | `--print-install-fragment` / `--install` (print the settings.json fragment instead of reading stdin) |
+| `export` | Aggregate, privacy-safe export of a corpus for BI/observability tooling (see [section 6](#6-for-team-leads-and-enterprise) and [`docs/exports.md`](docs/exports.md)) | `--format {csv-flat,json,otel-jsonl}` (default `csv-flat`), `--aggregate-only` / `--per-session` (mutually exclusive, default `--aggregate-only`), `--hash-slugs` / `--no-hash-slugs` (mutually exclusive, default hashed whenever `--aggregate-only` is in effect), `--out PATH` (default: stdout) |
+| `monthly-report` | Write a habit-forming finance summary (cost/tokens by model/project/entrypoint, five-hour blocks under subscription billing) plus the `usage` section for one calendar month, as both Markdown and HTML (see [section 6](#6-for-team-leads-and-enterprise) and [`docs/exports.md`](docs/exports.md)) | `--out DIR` (required), `--month YYYY-MM` (default: the previous calendar month) |
+| `import` | Validate and copy one or more `export --aggregate` team documents into `<config_dir>/team/` for `team-report` (see [section 6](#6-for-team-leads-and-enterprise) and [`docs/team.md`](docs/team.md)) | `FILE...` (one or more team-document paths); exits 2 with the reason on the first invalid file |
+| `team-report` | Cross-machine per-archetype/per-agent-type comparison built from every document already imported into `<config_dir>/team/` (see [section 6](#6-for-team-leads-and-enterprise) and [`docs/team.md`](docs/team.md)) | `--min-sessions N` (default 5), plus the same `--json`/`--html PATH`/`--csv-dir DIR` output flags as `report` |
 | `init` | Detect what's already set up, ask (or, non-interactively, derive) a short question set, write `config.toml` and this project's `projects/<slug>.toml`, print the hook/statusline install fragments, run an initial onboarding baseline, and — as its last step — offer to register the service to run at logon (`docs/deploy.md`) — see [`docs/onboarding.md`](docs/onboarding.md) | `--answers FILE` (JSON file supplying any subset of the answers), `--non-interactive` (derive unanswered questions instead of prompting; derives to *not* installing the service unless `--install-service` is also given), `--no-install` (skip printing the hook/statusline fragments), `--install-service` (register the service without asking), `--no-service` (skip the logon-service step entirely), `--dry-run` (governs only the logon-service step: print its plan without writing/registering anything), `--repair-hook` (fix a SessionStart hook command whose path a single backslash in JSON broke, without asking; `settings.json` is backed up first) |
 | `baseline` | Capture (or list/show) an onboarding baseline: mode mix, dominant purposes, suggested profile, projected saving — see [`docs/onboarding.md`](docs/onboarding.md) | `--finalise` (treat the baseline as final even if the capture window hasn't elapsed), `--list` (list saved baselines), `--show ID` (print a previously saved baseline's report) |
-| `apply` | Apply a catalogue or custom profile's settings/agent/env levers to a project or your user config, with backup/`--revert` — see [section 15](#15-applying-a-profile) and [`docs/profiles.md`](docs/profiles.md) | `PROFILE` (catalogue id or path to a profile TOML file), or `--set KEY=VALUE` (repeatable; one allowlisted setting, no profile needed) with `--agent NAME` for agent frontmatter, `--scope {user,project-local,repo}` (default `user`, or `project-local` once `--project-dir` is given), `--project-dir PATH`, `--claude-root PATH` (default: `$CLAUDE_CONFIG_DIR`, else `~/.claude`), `--dry-run`, `--launch` (one-session overlay instead of a persisted apply), `--allow-tracked`, `--force` (create a missing agent file from scratch), `--revert TS`, `--ignore-changes` (with `--revert`), `--list-backups` |
+| `apply` | Apply a catalogue or custom profile's settings/agent/env levers to a project or your user config, with backup/`--revert` — see [section 11](#11-applying-a-profile) and [`docs/profiles.md`](docs/profiles.md) | `PROFILE` (catalogue id or path to a profile TOML file), or `--set KEY=VALUE` (repeatable; one allowlisted setting, no profile needed) with `--agent NAME` for agent frontmatter, `--scope {user,project-local,repo}` (default `user`, or `project-local` once `--project-dir` is given), `--project-dir PATH`, `--claude-root PATH` (default: `$CLAUDE_CONFIG_DIR`, else `~/.claude`), `--dry-run`, `--launch` (one-session overlay instead of a persisted apply), `--allow-tracked`, `--force` (create a missing agent file from scratch), `--revert TS`, `--ignore-changes` (with `--revert`), `--list-backups` |
 | `serve` | Run the local JSON API + watcher service (`service/serve.py`) — see [`docs/api.md`](docs/api.md) and [`docs/ui.md`](docs/ui.md) | `--port N` (default 8765), `--bind ADDRESS` (default `127.0.0.1`, loopback only), `--allow-remote` (allow `--bind` to a non-loopback address, refused by default), `--poll-interval SECONDS` (watcher poll interval, default 30), `--retention-days N` (prune sessions older than N days on every poll tick; default: `config.toml`'s `retention_days`, else keep forever), `--exclude-project SLUG` (repeatable; project slug never scanned), `--billing-mode {api,subscription}` (stamped onto every session; default: `config.toml`'s `billing`, resolved as for `report`), `--allowed-host NAME` (repeatable; an extra host name the dashboard answers to — every other `Host` header gets `403`, see [`docs/api.md`](docs/api.md#host-allowlist-dns-rebinding)), `--monthly-report DIR` (accepted and carried on `ServeOptions.monthly_report_dir`, but not yet consumed by the watcher tick — run the standalone `monthly-report` subcommand, e.g. from cron, until this is wired up), `--once` (run a single watcher tick, print its stats, and exit instead of serving), `--purge --yes` (delete `<config-dir>/service.db` and its WAL/SHM sidecars, then exit) |
-| `install-service` | Register `claude-token-lens serve` to run at logon for the current platform (Windows Scheduled Task, systemd user unit, or macOS LaunchAgent) — this is what `init`'s last step, and the manual paths in [section 14](#14-running-the-service), both call — see [`docs/deploy.md`](docs/deploy.md) | `--port N` (default 8765), `--bind ADDRESS` (default `127.0.0.1`), `--dry-run` (print exactly what would be written/run, without writing or running anything) |
+| `install-service` | Register `claude-token-lens serve` to run at logon for the current platform (Windows Scheduled Task, systemd user unit, or macOS LaunchAgent) — this is what `init`'s last step, and the manual paths in [section 10](#10-running-the-service), both call — see [`docs/deploy.md`](docs/deploy.md) | `--port N` (default 8765), `--bind ADDRESS` (default `127.0.0.1`), `--dry-run` (print exactly what would be written/run, without writing or running anything) |
 | `uninstall-service` | Remove whatever `install-service` (or `init`) registered — deletes the task/unit/agent definition it wrote, using the same per-platform command the manual `Unregister-TokenLensTask.ps1`/`systemctl --user disable`/`launchctl bootout` paths use | `--dry-run` (print what would be removed, without removing anything) |
 | `compare` | A/B compare two arms of sessions (`window:`/`key:`/`profile:`/`project:` specs), stratified by purpose/mode with a minimum-sample gate — see [`docs/compare.md`](docs/compare.md) | `--a SPEC` / `--b SPEC` (required), `--stratify purpose,mode` (default), `--min-sessions N` (default: `config.toml`'s `min_sessions`), plus the same `--json`/`--html PATH`/`--csv-dir DIR` output flags as `report` |
 | `reconcile` | Compare local usage/cost accounting against an Admin API CSV export, entirely offline — see [`docs/compare.md`](docs/compare.md) | `--admin-csv FILE` (required), `--by {day,model,"day,model"}` (default `day`), plus the same `--json`/`--html PATH`/`--csv-dir DIR` output flags as `report` (the window comes from the global `--days`/`--since`/`--until` flags, not a separate flag) |
 
 `usage`, `agents`, `workstyle`, `workflows` and `scorecard` are real
-report sections (see [section 6](#6-reading-the-report-sections)) but
+report sections (see [section 3](#3-reading-the-report-sections)) but
 don't have their own focused subcommand the way `sessions`/`recache`/
 `ttl`/`limits`/`compactions` do today — get them via `report` (or
 `report --json` and pull out that section).
@@ -315,130 +437,12 @@ the entries it needs to and nothing else (see
 [`cache.py`](src/claude_token_lens/cache.py)). Delete the directory, or
 pass `--rebuild-cache`, to force a full re-parse.
 
-## 3. The two token totals
-
-Every priced `Turn` (see `model.py`) carries four raw token counts:
-`input_tokens`, `cache_creation_tokens`, `cache_read_tokens` and
-`output_tokens`. Two different totals matter, and confusing them is the
-single easiest way to misread a Claude Code session's cost:
-
-- **Usage tokens** — everything a turn actually processed:
-  `input_tokens + cache_creation_tokens + cache_read_tokens +
-  output_tokens`. This is what gets billed for that specific API call,
-  and it repeats every time the same content is resent as part of a
-  growing context.
-- **New tokens** — `input_tokens + cache_creation_tokens`
-  (`compaction.new_tokens(turn)`): tokens that entered the context for
-  the *first* time on this turn, whether typed by you, generated by the
-  model, or newly written into the prompt cache. Content already served
-  from a warm cache entry (`cache_read_tokens`) is deliberately excluded,
-  because it was not new — it was a cheap re-read of something already
-  paid for.
-
-**Worked example.** Say a tool call reads a 5,000-token file once, early
-in a session, and the file's contents stay in context (via the prompt
-cache) for the next 99 turns:
-
-- **New tokens** for that file: 5,000 — charged once, as
-  `cache_creation_tokens` on the turn that first read it.
-- **Usage tokens** attributable to that file across the session: roughly
-  5,000 × 100 = 500,000 — the same 5,000 tokens are re-processed as
-  `cache_read_tokens` (much cheaper per token, but not free) on every one
-  of the following 99 turns, because Claude Code resends the whole
-  context on every turn.
-
-A report that only prints usage tokens makes a session look far more
-expensive to *write* than it actually was; a report that only prints new
-tokens hides how much volume the cache is carrying. `compaction.py`'s
-dropped-token accounting and `ttl.py`'s simulations both use *new*
-tokens as the denominator for exactly this reason — see
-[section 7](#7-ttl-simulation-assumptions).
-
-## 4. How caching works in Claude Code
-
-Claude Code's prompt cache works on **prefixes**: the system prompt,
-`CLAUDE.md`, tool schemas, skill listings and the growing conversation
-history form a layered prefix, and a cache write is billed once per
-layer per TTL entry. A cache entry has a time-to-live: **5 minutes by
-default**, with a documented **1-hour opt-in** available at three levels:
-
-- `promptCacheTtl` in `settings.json` — the main conversation.
-- `subagentPromptCacheTtl` in `settings.json` — the default for every
-  spawned subagent that doesn't set its own.
-- `experimental.cacheTtl` in an individual agent's frontmatter (e.g.
-  `.claude/agents/verification-runner.md`) — overrides the subagent
-  default for that one agent type.
-- The equivalent environment variables `CLAUDE_CODE_PROMPT_CACHE_TTL`
-  and `CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL`.
-
-A cached prefix survives as long as nothing upstream of it changes and
-the entry hasn't expired. What invalidates it, as observed and encoded
-in [`events.py`](src/claude_token_lens/events.py)'s `EventKind` table:
-a compaction (`COMPACT_BOUNDARY`/`COMPACT_SUMMARY`), a model switch
-(`MODEL_FALLBACK`), the `CACHE_SIGNAL` family (a model change, thinking
-being stripped, entering/exiting ultra-effort, a change to the set of
-deferred or prefix-loaded tool schemas, an MCP-instructions delta, an
-agent-listing delta, entering/exiting plan mode or auto mode, an output
-style change) — and, simply, the TTL running out between two turns.
-`recache.py` (see [section 5](#5-re-cache-definitions-and-signatures))
-is the module that detects when one of these actually cost you money.
-
-Subagents each get **their own cache** — a subagent's first turn always
-pays a fresh write for its own briefing and system prompt, independent
-of whatever the parent conversation's cache state is; `topology.py`
-measures this as each agent type's mean first-turn `cache_creation`.
-
-Two practical consequences worth designing around:
-
-- A 1-hour TTL is **ignored while the account is on usage credits**
-  (subscription billing) rather than an API key — per Claude Code's own
-  documentation. Recommending a 1h switch for a subscription account's
-  subagents would recommend a lever that does nothing.
-- TTL should be chosen **per spawned agent type**, not globally.
-  `ttl.py`'s `TtlStats` is keyed by agent type for exactly this reason:
-  a long-wait agent (one that sits idle while you read a build or test
-  result — a verifier) tends to benefit from 1h, because its gaps
-  regularly exceed 5 minutes; a short-gap agent (an implementer you're
-  actively steering, turn after turn within seconds) rarely benefits,
-  because its cache almost never has time to expire under 5m anyway.
-
-## 5. RE-CACHE definitions and signatures
-
-A turn is a **re-cache** ([`recache.py`](src/claude_token_lens/recache.py))
-when all of the following hold:
-
-- it is not the transcript's first priced turn,
-- its context (`ctx`) exceeds `ctx_floor` (default 20,000 tokens), and
-- the fraction of that context actually served from cache read falls
-  below `cr_ratio` (default 0.2, i.e. less than 20% of context came from
-  a cache hit) —
-
-in other words: the model had to pay to write most of its own context
-again, instead of reading a warm cache entry, for no correctness reason.
-Every re-cache turn is assigned one of two **signatures**:
-
-- **`full-expiry`** — `cache_read_tokens` is below `full_expiry_cr`
-  (default 2,000 tokens): the cache entry had essentially nothing left
-  to hit, consistent with its TTL having simply run out since the
-  previous turn.
-- **`prefix-invalidated`** — `cache_read_tokens` sits between
-  `full_expiry_cr` and `cr_ratio × ctx`: there was a partial hit, so the
-  TTL had *not* expired, but something upstream of the cached prefix
-  changed anyway (a notification, an attachment, a model switch, a
-  compaction, ...) and broke it regardless.
-
-A re-cache turn's **avoidable cost** is what its own cache-creation
-tokens cost at the write rate they were actually billed at, minus what
-those same tokens would have cost at the flat cache-read rate had the
-cache not been invalidated. Every threshold above is overridable via
-`config.toml`'s `[thresholds]` table (`RecacheThresholds.from_config`).
-
-## 6. Reading the report sections
+## 3. Reading the report sections
 
 `report.build_report` (`report.py`) assembles every section below into
 one `ReportModel`, in the fixed order the table follows, and `claude-token-lens
 report` prints it (Markdown by default; `--json`/`--html`/`--csv-dir` for
-the other renderers — see [section 2](#2-quick-start)). Each section is
+the other renderers — see [section 2](#2-installing-and-first-run)). Each section is
 still, independently, a `build_section(...)` function returning a
 `Section` of `Table`s ([`model.py`](src/claude_token_lens/model.py)),
 fully tested and runnable on its own from a short Python script against
@@ -451,7 +455,7 @@ was produced, and is still useful if you want one section in isolation.
 | `overview` | Overview | `report.py` | corpus-wide totals (sessions, transcripts, turns, the four raw token counts, cost, cache-read cost share, cache ROI) plus a per-model breakdown |
 | `usage` | Usage | `usage.py` | day/week/month/project/entrypoint cost and token breakdowns, plus five-hour usage blocks (subscription billing only — see [section 1](#1-what-it-is-what-it-measures-and-what-it-cannot)) |
 | `sessions` | Sessions | `classify.py` | mode (interactive/long-agentic/overnight/mixed) and purpose (docs/refactor/test-triage/...) per session, with the evidence that produced each classification |
-| `recache` | Re-cache events | `recache.py` | which turns paid to re-write a prefix that should have been a cache hit, why, and what it cost — see section 5 |
+| `recache` | Re-cache events | `recache.py` | which turns paid to re-write a prefix that should have been a cache hit, why, and what it cost — see [`docs/concepts.md`](docs/concepts.md#3-cache-rebuild-definitions-and-signatures) |
 | `ttl` | Cache TTL break-even | `ttl.py` | per agent type: observed cost vs. simulated 5m-only/1h-only cost, plus the utilisation metrics below |
 | `limits` | Usage limits | `limits.py` | usage-cap pauses (5-hour/weekly), harness-forced subagent terminations, and the desktop app's resume pings, as first-class attributable facts instead of behavioural noise — see [`docs/limits.md`](docs/limits.md) |
 | `carry` | Context carry cost per tool | `carry.py` | cost of a tool result riding along in the cached prefix on every turn after the one it entered on, by tool and by agent type, plus the saving a truncation cap would have made — see [`docs/carry.md`](docs/carry.md) |
@@ -476,7 +480,7 @@ directly by every renderer rather than as a table.
 
 Two CLI-only, non-`report` consumers use a different section shape
 entirely: `config-diff --key K` prints one standalone plain-text table
-from `snapshots.build_config_diff_table` (see [section 2](#2-quick-start)
+from `snapshots.build_config_diff_table` (see [section 2](#2-installing-and-first-run)
 — it does not go through `build_report`, so it isn't the same code path
 as the report's own `config` section above), and `usage_windows`
 (`tools/log_usage.py`) — your 5-hour/7-day plan usage-window percentages
@@ -548,35 +552,7 @@ invented. The same file also lists the remaining tables each section
 produces (gap buckets, primary-cause attribution, per-agent-type
 breakdowns, trigger mix, and so on) and how to read each column.
 
-## 7. TTL simulation assumptions
-
-Printed verbatim from `ttl.ASSUMPTIONS` — this is exactly what the 5m/1h
-break-even simulation assumes, stated so a reader can judge for
-themselves where the model might not hold for their own working style:
-
-- content is TTL-invariant
-- cacheable prefix `C_i = cache_read_i + cache_creation_i`
-- a hit refreshes TTL so survival depends only on `gap_s`
-- prefix-invalidated turns keep their observed split under every policy
-  (no double counting)
-- reads are priced at the flat cache_read rate
-- compaction shrink clamps write at 0
-- gap is measured from the start of one request to the start of the next
-
-A per-transcript **fidelity self-check** replays the simulation at the
-transcript's own dominant observed TTL and compares it to the actually
-observed cost; `ttl.build_section` flags any agent type whose fidelity
-error exceeds 10% (`TtlThresholds.fidelity_warn_pct`), so a report never
-presents a simulated number as trustworthy when the model's own
-assumptions demonstrably don't fit that agent type's transcripts. That
-same fidelity is printed per agent type in the `ttl_by_agent_type` table,
-and a TTL-switch recommendation is suppressed for an agent type whenever
-its projected saving doesn't clear the simulation's own fidelity margin,
-or whenever its fidelity exceeds `TtlThresholds.max_fidelity_for_advice_pct`
-(5% by default) — the tool would rather stay silent than recommend a
-policy change it can't back with a trustworthy number.
-
-## 8. Installing the SessionStart hook and the statusline
+## 4. Installing the SessionStart hook and the statusline
 
 ### SessionStart config-capture hook
 
@@ -718,7 +694,7 @@ trailing columns, so `claude-token-lens report` can render a
 [`docs/sections-reference.md`](docs/sections-reference.md)) summarising
 real cache-warmth across sessions instead of a live-only estimate.
 
-## 9. Windows notes
+## 5. Windows notes
 
 - **Slug case variants.** A project slug is derived from the working
   directory (`discovery.slug_for`); the projects directory is
@@ -747,7 +723,7 @@ real cache-warmth across sessions instead of a live-only estimate.
   *current* project directory only, independently of whether
   `CLAUDE_CONFIG_DIR` also moved the whole tree.
 
-## 10. For team leads and enterprise
+## 6. For team leads and enterprise
 
 What's implemented today:
 
@@ -759,7 +735,7 @@ What's implemented today:
   sessions `serve` keeps in its local store (`service.db`); older ones
   are pruned on every poll tick. `serve --retention-days N` overrides it
   for one run. Unset means keep forever.
-- **Managed settings** are captured by the snapshot hook (see section 8)
+- **Managed settings** are captured by the snapshot hook (see [section 4](#4-installing-the-sessionstart-hook-and-the-statusline))
   into `managed_settings` (redacted the same as user settings) and
   `managed_keys` (raw key names only), and `recommend.py` renders them:
   any recommendation whose lever's settings key appears in a window's
@@ -857,7 +833,7 @@ carries an "observed, not controlled" note — a difference between
 machines may reflect different work, not a settings difference. Full
 flow and field reference: [`docs/team.md`](docs/team.md).
 
-## 11. Privacy and security
+## 7. Privacy and security
 
 See [SECURITY.md](SECURITY.md) for the full sign-off checklist. In
 short: every dataclass field is length-capped and shape-checked so
@@ -888,7 +864,7 @@ grep -RnoE '[^"]{65,}|[A-Za-z]:\\\\|/home/|\\\\Users\\\\|/c/Users/|@' report.jso
 Treat any hit as a bug and open an issue with the field name (never the
 value).
 
-## 12. Prior art and credits
+## 8. Prior art and credits
 
 - **[nateherkai/token-dashboard](https://github.com/nateherkai/token-dashboard)**
   — the closest prior art: stdlib Python + SQLite + a web UI, dedupes by
@@ -913,7 +889,7 @@ value).
   analytics tool: it explains *why* a session cost what it did (caching,
   config, workstyle) rather than watching the live burn rate.
 
-## 13. Licence, contributing, roadmap
+## 9. Licence, contributing, roadmap
 
 **Licence:** MIT — see [LICENSE](LICENSE).
 
@@ -939,14 +915,14 @@ see the Status note above):
   watcher thread, SQLite store, `http.server` JSON API and a
   dependency-free static web UI), Docker packaging, a live countdown in
   the statusline, an aggregate-only `export` command, and a monthly
-  report. Shipped — see [section 14](#14-running-the-service).
+  report. Shipped — see [section 10](#10-running-the-service).
 - **v0.3** — a profile schema and catalogue, `init` and a `baseline`/
   onboarding capture window; `apply`/`--revert` for writing a chosen
   profile into `settings.json`/agent frontmatter; a `compare` command
   and a `reconcile` pass against real billing data; and team aggregate
   import across machines (`import`/`team-report`). Shipped — see
   [`docs/onboarding.md`](docs/onboarding.md),
-  [`docs/profiles.md`](docs/profiles.md), [section 15](#15-applying-a-profile),
+  [`docs/profiles.md`](docs/profiles.md), [section 11](#11-applying-a-profile),
   [`docs/compare.md`](docs/compare.md) and [`docs/team.md`](docs/team.md).
 - **v0.4 backlog** — a budget-check guardrail (`check --weekly-tokens
   N --daily-usd N`), anomaly-outlier detection, `serve --monthly-report`
@@ -954,7 +930,7 @@ see the Status note above):
   yet consumes it), and an opt-in `--show-paths` local file view. See
   [CHANGELOG.md](CHANGELOG.md)'s `[0.3.0]` "Planned" notes.
 
-## 14. Running the service
+## 10. Running the service
 
 `claude-token-lens serve` runs a local watcher thread, a SQLite store,
 a read-only JSON API and a dependency-free static web UI, so you can
@@ -1030,7 +1006,7 @@ run with `python dist/claude-token-lens.pyz serve ...` (or
 `... install-service`, which builds a Scheduled Task/unit/agent action
 that re-invokes the very same `.pyz` — see `docs/deploy.md`).
 
-## 15. Applying a profile
+## 11. Applying a profile
 
 `claude-token-lens apply` writes one of the seven shipped catalogue
 profiles (or your own profile TOML file) into `settings.json`/agent

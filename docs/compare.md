@@ -5,7 +5,7 @@ assembled `report`: `compare` (plan "Feature expansion" item 6, A/B
 compare) and `reconcile` (plan "Enterprise use"/"Finance", Admin API
 reconciliation). Both build one `Section` from an already-loaded corpus
 and print it through the same Markdown/JSON/CSV/HTML renderers `report`
-uses — see [`docs/sections-reference.md`](sections-reference.md#compare-comparepy-cli-only)
+uses — see [`docs/sections-reference.md`](sections-reference.md#compare-comparepy--cli-only)
 for the exact table/column reference. This file covers the arm-spec
 grammar, the stratification rule, the "observed, not controlled" stance,
 and the Admin CSV column mapping (including which column names are

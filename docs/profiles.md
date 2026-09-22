@@ -6,9 +6,24 @@ renderer for a **profile**: a small, allowlisted bundle of Claude Code
 settings/agent-frontmatter/environment-variable levers that a user can
 apply to a project. This document is the frozen contract for the
 package — a later work package wires `cli.py`'s `apply`/`init`/
-`baseline` subcommands and the two `/api/profiles*` routes
-(`docs/api.md`) against it; nothing in `profiles/` touches those files
-itself.
+`baseline` subcommands and the `/api/profiles*` and
+`/api/profile-schema` routes (`docs/api.md`) against it; nothing in
+`profiles/` touches those files itself.
+
+## On the dashboard
+
+The Profiles tab shows one card per profile with the settings it
+changes by their plain labels. Opening one shows a table of Setting /
+Now / After / Set in for the scope you pick, then three ways to use it:
+a prompt that asks Claude to make the changes and show you the diff
+first (`fixes.profile_prompt`), the `claude-token-lens apply <id>
+--dry-run` command, and a one-session `--launch` trial that writes
+nothing. "Save my current settings as a profile" saves your latest
+config snapshot's allowlisted, non-managed values as a user profile
+(`POST /api/profiles/from-current`), and "Make your own profile" is a
+form built from `GET /api/profile-schema`. None of these change your
+Claude Code config; only running the command, or Claude acting on the
+prompt with your permission, does.
 
 A profile only ever names a lever this project can already trace back
 to a real, observable effect in a report — never an invented setting —

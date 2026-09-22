@@ -37,7 +37,7 @@ inline SVG charts, `prefers-color-scheme` dark."
 
 One page (`index.html`), one `<nav>` of tabs, each rendering from its
 own `/api/*` route(s) so a tab's data can be refetched independently
-(a background poll re-renders only the active tab). Eleven tabs ship,
+(a background poll re-renders only the active tab). Twelve tabs ship,
 in this order:
 
 1. **Overview** — `/api/summary` + the corpus-wide totals table also
@@ -48,7 +48,12 @@ in this order:
    report-derived) track the selector instead of staying pinned to
    whichever window first populated them (review finding 21) --
    `loadReport()`'s in-memory cache is keyed by the requested
-   `window_days` for exactly this reason.
+   `window_days` for exactly this reason. **Start here**, above the
+   totals, lists the three most important items from
+   `/api/recommendations` for the same window (most severe first, each
+   with its severity in plain words, `why` and estimated saving, and a
+   button to the Recommendations tab), then every scorecard area rated
+   poor or worse, each as a sentence about its number.
 2. **Sessions** — `/api/sessions`, a sortable table (client-side sort,
    same click-to-sort pattern as `render/html.py`'s `_SCRIPT`); a row
    click renders that session's detail inline in the same panel rather
@@ -65,6 +70,9 @@ in this order:
    fourth marker kind, `limit_markers`, in the blank strip above the
    context line rather than on the line itself — see "Session timeline"
    below for why they're positioned by timestamp instead of turn index.
+   Above the timeline, **Why was this session expensive?** renders
+   `/api/session/<id>/explain`: the headline, its sentences, and the
+   cost split as a small table with share bars.
 3. **Cache** — `/api/recache`: cache rebuilds by cause (expired while
    idle, invalidated by a change, expired during a usage-limit pause —
    `recache.SIGNATURES`), plus the `recache`/`limits` report sections.
@@ -104,23 +112,30 @@ in this order:
    captured yet"), and every past capture in a history table — with a
    "capture window open: provisional" notice whenever
    `capture_status.started && !capture_status.complete`.
-8. **Profiles** — `/api/profiles` (v0.3: the catalogue's seven shipped
-   profiles plus every user profile, each tagged `source`) and
-   `/api/profiles/<id>/diff` (detail view, real as of v0.3): the entry
-   matching the latest baseline's `suggested_profile_id` is marked
-   "suggested by your latest baseline" in the list. The diff view shows
-   the settings/per-agent/environment overlays as tables (current vs.
-   proposed, and where each currently lives), the full unified diff
-   text, and the host command to apply it *and* the `--launch`
-   one-session-overlay alternative — both taken verbatim from the diff
-   route's `apply_command`/`launch_command` fields in a code block with
-   a copy button. The UI never runs either command itself, and never
+8. **Profiles** — one card per profile from `/api/profiles` (the
+   catalogue's seven shipped profiles plus every user profile): name,
+   "Built in" or "Yours", who it is for, and "Changes N settings: ..."
+   listed by their plain labels (from `/api/profiles/<id>` and
+   `/api/profile-schema`). The card matching the latest baseline's
+   `suggested_profile_id` carries a "Suggested for you" badge. "Show what
+   it changes" opens the detail view from `/api/profiles/<id>/diff`,
+   with a scope picker in plain words: one table of Setting / Now /
+   After / Set in (unchanged and policy-locked rows are greyed and say
+   so), then "Ask Claude to do it" (the route's `prompt`), "Or run this
+   command" (`dry_run_command`) and "Or try it for one session"
+   (`launch_command`), each with a Copy button, and the unified diff in
+   a collapsed block. The UI never runs a command itself, and never
    fills in a project directory on the user's behalf (`docs/api.md`'s
-   own note on why that route never accepts one). A minimal form below
-   the diff view ("Save as a new user profile": id, name, a JSON
-   settings-overlay textarea) posts to `POST /api/profiles` and shows
-   the server's validation error inline on `400`/`409` rather than
-   failing silently.
+   own note on why that route never accepts one).
+   "Save my current settings as a profile" posts to
+   `POST /api/profiles/from-current`; if a copy already exists it asks
+   before replacing it. "Make your own profile" is a form built from
+   `/api/profile-schema`: "Start from" any profile, one field per
+   setting (a select for fixed values and on/off, a number box with
+   the allowed range, or a comma-separated list), an "Add an agent"
+   block per agent, and "Edit as JSON instead" as an escape hatch. It
+   posts to `POST /api/profiles` and shows the server's validation
+   error inline.
 9. **Recommendations** — `/api/recommendations`: one card per
    `Recommendation`, grouped by `severity`. Every card shows its
    evidence line(s) (`label: formatted value (from <table title>,
@@ -144,6 +159,9 @@ in this order:
     it means (`helptext.diagnostics_table`) — same figures as the CLI
     report's Diagnostics section, so a user comparing the UI against a
     CLI run for the same window sees identical numbers.
+12. **Glossary** — the `GLOSSARY` constant in `app.js`: each term the
+    dashboard uses, in plain English. The README's glossary is the same
+    list, word for word.
 
 ## Help and labels
 
@@ -191,7 +209,7 @@ enough for a stdlib-only test suite.
 
 The UI shipped in `static/index.html` + `app.js` + `app.css` follows
 this document's Constraints, Data flow and Testing sections exactly —
-the Tabs section above now describes the shipped eleven-tab structure
+the Tabs section above now describes the shipped twelve-tab structure
 directly (reconciled by S1-integration; it previously described a
 nine-tab plan with two footnoted deviations, which was corrected in
 place rather than left as a drifted historical record; the Savings tab

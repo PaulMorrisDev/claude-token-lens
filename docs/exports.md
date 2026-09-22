@@ -86,7 +86,7 @@ usually wants those as separate dimensions.
 | `output_tokens` | summed output tokens |
 | `thinking_tokens` | summed thinking tokens |
 | `cost` | summed cost (list-price equivalent USD under subscription billing, same convention as every other cost column in this project) |
-| `recache_turns` | count of turns flagged as a RE-CACHE event (see [README section 5](../README.md#5-re-cache-definitions-and-signatures)) |
+| `recache_turns` | count of turns flagged as a RE-CACHE event (see [README section 5](concepts.md#3-cache-rebuild-definitions-and-signatures)) |
 | `recache_cache_creation` | cache-creation tokens summed over just those RE-CACHE turns |
 | `session_id` | (only with `--per-session`) the session's id |
 
