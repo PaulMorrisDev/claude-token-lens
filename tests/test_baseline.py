@@ -566,3 +566,24 @@ def test_list_baselines_sorted_oldest_first_and_skips_malformed(tmp_path):
 
     records = baseline.list_baselines(config_dir)
     assert [r["id"] for r in records] == ["a", "b"]
+
+
+def test_build_baseline_does_not_count_orphan_subagent_bundles_as_sessions(tmp_path, monkeypatch):
+    from claude_token_lens.corpus import SessionBundle
+
+    project_dir = tmp_path / "projects" / "orphan-proj"
+    project_dir.mkdir(parents=True)
+    _write_session(project_dir, "session-1", n_turns=2)
+    real_load = baseline.load_corpus
+
+    def load_with_orphan(*args, **kwargs):
+        corpus = real_load(*args, **kwargs)
+        # A subagent bundle whose parent session was never discovered.
+        corpus.sessions.append(SessionBundle(session_id="gone", slug="orphan-proj", top=None, subs=[]))
+        return corpus
+
+    monkeypatch.setattr(baseline, "load_corpus", load_with_orphan)
+    record, _model = baseline.build_baseline(
+        config=Config(), pricing=PRICING, config_dir=tmp_path / "config", project_dirs=[project_dir]
+    )
+    assert record["sessions_analysed"] == 1

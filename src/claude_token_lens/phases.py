@@ -63,7 +63,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Sequence
 
-from .model import Column, Section, Table, TranscriptResult, Turn
+from .model import Column, Section, Table, TranscriptResult, Turn, agent_type_label
 from .pricing import Pricing, price_turn
 
 PHASE_DISCOVERY = "discovery"
@@ -173,7 +173,7 @@ class PhaseStats:
         kind)``) and ``by_agent_type`` (keyed by ``(phase, agent type)``).
         """
         kind = result.meta.kind or "top-level"
-        agent_type = result.meta.agent_type or "unknown"
+        agent_type = agent_type_label(result)
         for turn in _priced_turns(result):
             phase = classify_turn_phase(turn)
             resolved = rates_lookup.resolve_model(turn.model)

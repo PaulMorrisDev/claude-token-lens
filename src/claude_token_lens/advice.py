@@ -34,7 +34,7 @@ from .units import NO_LIMIT_SHARE_HINT, Units
 
 #: Agent types Claude Code starts itself (workflow scripts, forks): no
 #: agent file can change them, so no per-agent change is offered.
-NOT_OVERRIDABLE = frozenset({"workflow-subagent", "fork", "(unknown)"})
+NOT_OVERRIDABLE = frozenset({"workflow-subagent", "fork", "unknown", "(unknown)"})
 
 _PERIOD = "over the period in this report"
 _UNKNOWN = "unknown (no config snapshot yet)"

@@ -195,14 +195,16 @@ def test_by_kind_and_by_agent_type_breakdowns():
 
     assert stats.by_kind[(phases.PHASE_DISCOVERY, "top-level")].turns == 1
     assert stats.by_kind[(phases.PHASE_IMPLEMENTATION, "subagent")].turns == 1
-    assert stats.by_agent_type[(phases.PHASE_DISCOVERY, "unknown")].turns == 1
+    assert stats.by_agent_type[(phases.PHASE_DISCOVERY, "top-level")].turns == 1
     assert stats.by_agent_type[(phases.PHASE_IMPLEMENTATION, "implementer")].turns == 1
 
 
-def test_agent_type_defaults_to_unknown_when_unset():
+def test_agent_type_is_top_level_for_main_and_unknown_for_untyped_subagent():
     pricing = load_pricing()
     stats = phases.PhaseStats()
     stats.add_transcript(_result("top-level", None, [_turn(1, tool_names=("Read",))]), pricing)
+    stats.add_transcript(_result("subagent", None, [_turn(1, tool_names=("Read",))]), pricing)
+    assert (phases.PHASE_DISCOVERY, "top-level") in stats.by_agent_type
     assert (phases.PHASE_DISCOVERY, "unknown") in stats.by_agent_type
 
 

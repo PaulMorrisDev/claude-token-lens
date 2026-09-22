@@ -616,3 +616,19 @@ def test_recache_by_group_agent_matches_recache_by_agent_type_on_real_fixture():
         # group column prepended: row[1]=metric, row[2]=transcripts, row[3]=priced_turns, row[4]=recache_turns.
         assert row[3] == priced_turns_by_agent_type[label]
         assert row[4] == recache_turns_by_agent_type[label]
+
+
+def test_limit_recache_share_counts_only_limit_expiry_rebuilds():
+    from claude_token_lens.model import Turn
+    from claude_token_lens.report import _recache_shares
+
+    turns = [
+        Turn(cache_creation_tokens=100, is_recache=True, recache_signature="limit-expiry", gap_cause="limit"),
+        # After a limit pause, but the cache survived: not a rebuild.
+        Turn(cache_creation_tokens=300, gap_cause="limit"),
+        Turn(cache_creation_tokens=600),
+    ]
+    recache_share, limit_share = _recache_shares(turns)
+    assert recache_share == 10.0
+    assert limit_share == 10.0
+    assert _recache_shares([]) == (None, None)

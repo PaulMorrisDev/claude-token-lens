@@ -1360,6 +1360,7 @@ def _build_session_metrics(
             {
                 "session_id": record.session_id,
                 "first_ts": record.first_ts,
+                "project_key": snapshots.snapshot_project_key(bundle.slug),
                 "turns": turns,
                 "cost": cost,
                 "recache_cc": recache_cc,

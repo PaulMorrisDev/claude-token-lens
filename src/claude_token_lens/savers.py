@@ -376,7 +376,7 @@ def _build_session_aggs(
             continue
         transcripts = [record.top, *record.subs]
 
-        joined = snapshots_mod.snapshot_for(record.first_ts, snapshots) if record.first_ts and snapshots else None
+        joined = snapshots_mod.snapshot_for(record.first_ts, snapshots, record.project_key) if record.first_ts and snapshots else None
         present: set[str] = set()
         if joined is not None:
             mcp_servers = joined.data.get("mcp_servers")

@@ -166,9 +166,15 @@ def _parse_ts(ts: str | None) -> datetime | None:
     return None
 
 
-def snapshot_for(session_first_ts: str, snapshots: list[Snapshot]) -> Snapshot | None:
+def snapshot_for(
+    session_first_ts: str, snapshots: list[Snapshot], project_key: str | None = None
+) -> Snapshot | None:
     """The latest snapshot with ``ts <= session_first_ts``, or ``None`` if
     the session predates every snapshot (or its timestamp is unparsable).
+
+    With ``project_key`` (see :func:`snapshot_project_key`), only that
+    project's snapshots and snapshots with no project (schema 1) count,
+    so a session is never joined to another project's settings.
     """
     target = _parse_ts(session_first_ts)
     if target is None:
@@ -177,6 +183,8 @@ def snapshot_for(session_first_ts: str, snapshots: list[Snapshot]) -> Snapshot |
     best: Snapshot | None = None
     best_dt: datetime | None = None
     for snap in snapshots:
+        if project_key is not None and snap.data.get("project_slug") not in (None, "", project_key):
+            continue
         dt = _parse_ts(snap.ts)
         if dt is None or dt > target:
             continue
@@ -265,6 +273,22 @@ def _project_label(snapshot: Snapshot) -> str:
     """
     slug = snapshot.data.get("project_slug")
     return str(slug) if isinstance(slug, str) and slug else "(unknown project)"
+
+
+#: The config hook stores ``project_slug`` as ``"slug:" + sha256(raw
+#: slug)[:12]`` (``hooks/snapshot-config.py``'s ``_redact_slug``), never
+#: the readable slug. Duplicated here, like the hook duplicates
+#: ``discovery.slug_for``.
+_SNAPSHOT_SLUG_PREFIX = "slug"
+_SNAPSHOT_SLUG_HEX_CHARS = 12
+
+
+def snapshot_project_key(raw_slug: str) -> str:
+    """The ``project_slug`` a snapshot taken in the project whose
+    ``~/.claude/projects/`` directory is ``raw_slug`` carries, so report
+    code keyed by transcript slug can find that project's snapshot."""
+    digest = hashlib.sha256(raw_slug.encode("utf-8")).hexdigest()[:_SNAPSHOT_SLUG_HEX_CHARS]
+    return f"{_SNAPSHOT_SLUG_PREFIX}:{digest}"
 
 
 def latest_snapshot_per_project(snapshots: list[Snapshot]) -> dict[str, Snapshot]:
@@ -406,7 +430,7 @@ def build_config_groups_table(
     session_counts: dict[str, int] = {}
     if sessions_with_metrics:
         for session in sessions_with_metrics:
-            snap = snapshot_for(session.get("first_ts"), snapshots)
+            snap = snapshot_for(session.get("first_ts"), snapshots, session.get("project_key"))
             if snap is None:
                 continue
             project = _project_label(snap)
@@ -517,7 +541,7 @@ def build_config_drift_table(
     excluded = 0
     for session in sessions_with_observed:
         observed = session.get("observed") or {}
-        snap = snapshot_for(session.get("first_ts"), snapshots)
+        snap = snapshot_for(session.get("first_ts"), snapshots, session.get("project_key"))
         if snap is None:
             excluded += 1
             continue
@@ -743,7 +767,7 @@ def build_config_diff_table(
     excluded = 0
 
     for session in sessions_with_metrics:
-        snap = snapshot_for(session.get("first_ts"), snapshots)
+        snap = snapshot_for(session.get("first_ts"), snapshots, session.get("project_key"))
         if snap is None:
             excluded += 1
             continue

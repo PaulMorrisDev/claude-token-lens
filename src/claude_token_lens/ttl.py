@@ -1273,13 +1273,15 @@ class TtlStats:
                     acc.near_5m_hit += 1
                 elif near_5m_miss[0] < gap <= near_5m_miss[1]:
                     acc.near_5m_miss += 1
-                    acc.near_5m_miss_tokens += t.cache_creation_tokens
+                    # Tokens on the same basis as the USD figure: the
+                    # prefix a just-missed wait had to rewrite.
+                    acc.near_5m_miss_tokens += c_i
                     acc.near_5m_miss_usd += _write_cost(t, turn_rates, POLICY_5M, c_i)
                 if near_1h_hit[0] <= gap <= near_1h_hit[1]:
                     acc.near_1h_hit += 1
                 elif near_1h_miss[0] < gap <= near_1h_miss[1]:
                     acc.near_1h_miss += 1
-                    acc.near_1h_miss_tokens += t.cache_creation_tokens
+                    acc.near_1h_miss_tokens += c_i
                     acc.near_1h_miss_usd += _write_cost(t, turn_rates, POLICY_5M, c_i)
 
             # Fix (independent-review item 5): 1h premium waste vs 5m
@@ -1793,14 +1795,15 @@ def build_section(
     )
 
     # -- Item 4: near-miss histogram ---------------------------------------
+    b5_hit, b5_miss, b1_hit, b1_miss = _near_miss_bounds(th)
     near_miss_columns = [
         Column(key="agent_type", label="Agent type", kind="str"),
-        Column(key="near_5m_hit", label="5m near-miss, hit (240-300s)", kind="int"),
-        Column(key="near_5m_miss", label="5m near-miss, missed (300-360s)", kind="int"),
+        Column(key="near_5m_hit", label=f"5m near-miss, hit ({b5_hit[0]:.0f}-{b5_hit[1]:.0f}s)", kind="int"),
+        Column(key="near_5m_miss", label=f"5m near-miss, missed ({b5_miss[0]:.0f}-{b5_miss[1]:.0f}s)", kind="int"),
         Column(key="near_5m_miss_tokens", label="5m just-missed rewrite tokens", kind="tokens"),
         Column(key="near_5m_miss_usd", label="5m just-missed rewrite USD", kind="money"),
-        Column(key="near_1h_hit", label="1h near-miss, hit (3540-3600s)", kind="int"),
-        Column(key="near_1h_miss", label="1h near-miss, missed (3600-3660s)", kind="int"),
+        Column(key="near_1h_hit", label=f"1h near-miss, hit ({b1_hit[0]:.0f}-{b1_hit[1]:.0f}s)", kind="int"),
+        Column(key="near_1h_miss", label=f"1h near-miss, missed ({b1_miss[0]:.0f}-{b1_miss[1]:.0f}s)", kind="int"),
         Column(key="near_1h_miss_tokens", label="1h just-missed rewrite tokens", kind="tokens"),
         Column(key="near_1h_miss_usd", label="1h just-missed rewrite USD", kind="money"),
     ]

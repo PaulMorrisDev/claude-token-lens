@@ -1167,6 +1167,7 @@ def build_report(
 
     session_records: list[SessionRecord] = []
     session_cost: dict[str, float] = {}
+    session_snapshot_key: dict[str, str] = {}
     session_cc_total: dict[str, int] = {}
     session_recache_cc: dict[str, int] = {}
     #: v0.3 Task 2: session -> classification.mode, so a baseline
@@ -1227,6 +1228,8 @@ def build_report(
         )
         record = classify.build_session_record(top, subs, bundle.workflows, classification, slug)
         session_mode[record.session_id] = classification.mode
+        record.project_key = snapshots_mod.snapshot_project_key(bundle.slug)
+        session_snapshot_key[record.session_id] = record.project_key
 
         features = _extract_workstyle_features(top, subs, bundle.workflows)
         archetype, _evidence = workstyle.detect_archetype(features)
@@ -1291,7 +1294,7 @@ def build_report(
                 session_cc_total_tokens += turn.cache_creation_tokens
 
         tp.add_session(record.session_id, top, list(subs), pricing)
-        cb.add_session(slug, top)
+        cb.add_session(slug, top, raw_slug=bundle.slug)
         # The spawning turn's context size, joined by tool_use_id, lets
         # add_subagent tell a fork (which inherits that context) from a
         # fresh spawn.
@@ -1501,6 +1504,7 @@ def build_report(
             {
                 "session_id": record.session_id,
                 "first_ts": record.first_ts,
+                "project_key": session_snapshot_key.get(record.session_id),
                 "turns": len(record.top.turns) + sum(len(s.turns) for s in record.subs) if record.top else 0,
                 "cost": session_cost.get(record.session_id, 0.0),
                 "recache_cc": session_recache_cc.get(record.session_id, 0),
@@ -1517,6 +1521,7 @@ def build_report(
             {
                 "session_id": record.session_id,
                 "first_ts": record.first_ts,
+                "project_key": session_snapshot_key.get(record.session_id),
                 "observed": {"model": session_observed_model[record.session_id]},
             }
             for record in session_records
@@ -1658,6 +1663,23 @@ def _top_level_ctx_values(rs: recache.RecacheStats) -> list[int]:
     return sorted(r.turn.ctx for r in rs.records if r.agent_type == "top-level" and r.turn.ctx)
 
 
+def _recache_shares(all_turns: list[Turn]) -> tuple[float | None, float | None]:
+    """``(recache_share_pct, limit_recache_share_pct)``: rebuilt cache
+    writes as a share of all cache writes, and the part of that share a
+    usage-limit pause forced (limits.py) rather than a workflow choice --
+    excluded from the cache_efficiency level rather than scored as one
+    (see scorecard.ScorecardInputs.limit_recache_share_pct's docstring).
+    Only rebuilds count towards the second: a turn after a limit pause
+    whose cache survived is not part of the first either."""
+    total_cc_all = sum(t.cache_creation_tokens for t in all_turns)
+    if not total_cc_all:
+        return None, None
+    recache_turns = [t for t in all_turns if t.is_recache]
+    total_cc_recache = sum(t.cache_creation_tokens for t in recache_turns)
+    total_cc_limit = sum(t.cache_creation_tokens for t in recache_turns if t.recache_signature == "limit-expiry")
+    return 100.0 * total_cc_recache / total_cc_all, 100.0 * total_cc_limit / total_cc_all
+
+
 def _build_scorecard_section(
     rs: recache.RecacheStats,
     ls: limits.LimitStats,
@@ -1672,17 +1694,8 @@ def _build_scorecard_section(
     th: scorecard.ScorecardThresholds,
 ) -> Section:
     all_turns = [r.turn for r in rs.records]
-    recache_turns = [t for t in all_turns if t.is_recache]
     total_cc_all = sum(t.cache_creation_tokens for t in all_turns)
-    total_cc_recache = sum(t.cache_creation_tokens for t in recache_turns)
-    recache_share_pct = 100.0 * total_cc_recache / total_cc_all if total_cc_all else None
-
-    # Portion of recache_share_pct already known to be forced by a
-    # usage-limit pause (limits.py) rather than a workflow choice --
-    # excluded from the cache_efficiency level rather than scored as one
-    # (see scorecard.ScorecardInputs.limit_recache_share_pct's docstring).
-    total_cc_limit = sum(t.cache_creation_tokens for t in all_turns if t.gap_cause == "limit")
-    limit_recache_share_pct = 100.0 * total_cc_limit / total_cc_all if total_cc_all else None
+    recache_share_pct, limit_recache_share_pct = _recache_shares(all_turns)
 
     total_read = sum(t.cache_read_tokens for t in all_turns)
     total_input = sum(t.input_tokens for t in all_turns)

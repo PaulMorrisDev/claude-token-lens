@@ -109,6 +109,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Context budget never found a project's settings snapshot.** The
+  config hook stores `project_slug` as a hash (`slug:<12 hex>`), but
+  `context_budget.py` looked snapshots up by the readable slug, so
+  CLAUDE.md, agent-list and MCP estimates, the auto-compact setting and
+  its drift check were always blank. New `snapshots.snapshot_project_key`
+  computes the hook's key.
+- **Sessions were joined to other projects' snapshots.**
+  `snapshots.snapshot_for` takes an optional `project_key` and ignores
+  snapshots from other projects (schema-1 snapshots with no project
+  still match). Config diff, config drift, `compare` and `savers` pass it.
+- **Subagents with no recorded type were counted as the main session**
+  in carry, waste, cache rebuilds and limits; phases filed the main
+  session under "unknown". All now use `model.agent_type_label`:
+  `top-level` for the main session, `unknown` for an untyped subagent.
+- `model_swap`: the unpriced-turns note now says those turns are still
+  priced at the alternatives (so the saving is understated), and the
+  lever for a built-in agent says to create an overriding agent file;
+  workflow, fork and untyped subagents have none.
+- Baseline `cost_per_session` no longer counts orphaned subagent bundles
+  as sessions.
+- Mixed "metric / value" tables (overview totals, compactions summary)
+  show numbers with separators and at most 2 decimals instead of raw
+  floats.
+- TTL near-miss column labels follow `near_miss_window_s`, and the
+  just-missed token count uses the same basis as its cost (the context
+  rewritten).
+- The scorecard's usage-limit share of cache rebuilds counted every
+  write after a limit pause; it now counts only limit-expiry rebuilds.
+
 - The auto-compact simulation (`compaction_sim`) shrank everything a
   session added after a simulated summary by the compression ratio, so
   context grew far too slowly afterwards and small windows looked much

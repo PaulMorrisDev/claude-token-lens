@@ -479,6 +479,17 @@ class Diagnostics:
     agents_terminated: int = 0
 
 
+
+def agent_type_label(result: "TranscriptResult") -> str:
+    """How every per-agent table names a transcript's agent: ``"top-level"``
+    for the main conversation, else the recorded agent type, or
+    ``"unknown"`` for a subagent that recorded none (never
+    ``"top-level"``, so untyped subagent cost is not filed under the main
+    session)."""
+    if result.meta.kind == "top-level":
+        return "top-level"
+    return result.meta.agent_type or "unknown"
+
 @dataclass(slots=True)
 class TranscriptResult:
     """The parsed output of one transcript file: its turns and events plus
@@ -547,6 +558,9 @@ class SessionRecord:
     #: Batch C addition (see module docstring): carried through from
     #: ``top.meta.entrypoint`` by ``classify.build_session_record``.
     entrypoint: str | None = None
+    #: The key this session's project's config snapshots carry (see
+    #: ``snapshots.snapshot_project_key``); set by the report builder.
+    project_key: str | None = None
 
 
 @dataclass(slots=True)

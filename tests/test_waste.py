@@ -603,3 +603,10 @@ def test_rule_evidence_cites_real_table_cells(tmp_path: Path):
         cited = _table(next(s for s in report.sections if s.key == section_key), table_name)
         row = next(r for r in cited.rows if r[0] == row_key)
         assert value in row, f"{label}: {value!r} not found in row {row!r} for {source_table}/{row_key}"
+
+
+def test_untyped_subagent_is_not_filed_under_top_level():
+    from claude_token_lens.model import TranscriptMeta, TranscriptResult, agent_type_label
+
+    assert agent_type_label(TranscriptResult(meta=TranscriptMeta(kind="subagent"))) == "unknown"
+    assert agent_type_label(TranscriptResult(meta=TranscriptMeta(kind="top-level"))) == "top-level"

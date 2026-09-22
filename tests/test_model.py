@@ -112,6 +112,12 @@ def test_format_cell_str():
     assert format_cell("hello", "str") == "hello"
 
 
+def test_format_cell_str_numbers_in_a_metric_table_are_readable():
+    assert format_cell(1234567, "str") == "1,234,567"
+    assert format_cell(63.749066571507974, "str") == "63.75"
+    assert format_cell(12.0, "str") == "12"
+
+
 def test_format_cell_int_has_thousands_separator():
     assert format_cell(1234567, "int") == "1,234,567"
 

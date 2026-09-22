@@ -78,7 +78,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Callable, Sequence
 
-from .model import Column, Event, EventKind, Section, Table, TranscriptResult, Turn
+from .model import Column, Event, EventKind, Section, Table, TranscriptResult, Turn, agent_type_label
 from .pricing import ModelRates, Pricing, ResolvedRates, price_turn
 
 #: This module's own reporting/cross-check assumptions, printed verbatim
@@ -337,7 +337,7 @@ class LimitStats:
         limit-turn cost columns stay at zero.
         """
         self.transcripts += 1
-        agent_type = result.meta.agent_type or "top-level"
+        agent_type = agent_type_label(result)
         acc = self._acc(agent_type)
         acc.transcripts += 1
 

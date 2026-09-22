@@ -287,6 +287,9 @@ class _ProjectAcc:
     skills_listing_est_tokens: list[float] = field(default_factory=list)
     compaction_records: list[compaction.CompactionRecord] = field(default_factory=list)
     session_ids: list[str] = field(default_factory=list)
+    #: The key this project's config snapshots are stored under (see
+    #: ``snapshots.snapshot_project_key``); ``None`` when unknown.
+    snapshot_key: str | None = None
 
 
 #: Parts of a subagent's startup context, in display order. Each is
@@ -465,7 +468,7 @@ class ContextBudgetStats:
             if tool_names <= _READ_ONLY_TOOLS:
                 acc.read_only_spawns += 1
 
-    def add_session(self, project: str, top: TranscriptResult) -> None:
+    def add_session(self, project: str, top: TranscriptResult, raw_slug: str | None = None) -> None:
         """Fold one session's top-level transcript into ``project``'s
         running totals. Only the top-level transcript is read -- the
         context-budget baseline is specifically about what a session
@@ -474,6 +477,8 @@ class ContextBudgetStats:
         ``topology``'s downward/spawn-write table).
         """
         acc = self.projects.setdefault(project, _ProjectAcc(project=project))
+        if raw_slug and acc.snapshot_key is None:
+            acc.snapshot_key = snapshots_mod.snapshot_project_key(raw_slug)
         acc.sessions += 1
         if top.meta.session_id:
             acc.session_ids.append(top.meta.session_id)
@@ -647,6 +652,14 @@ def _baseline_row(
     ]
 
 
+def _snapshot_for_project(latest_snapshots: dict[str, Snapshot], acc: _ProjectAcc) -> Snapshot | None:
+    """The project's latest snapshot: by its hashed snapshot key, falling
+    back to the readable slug (older snapshots and hand-built tests)."""
+    if acc.snapshot_key and acc.snapshot_key in latest_snapshots:
+        return latest_snapshots[acc.snapshot_key]
+    return latest_snapshots.get(acc.project)
+
+
 def _build_baseline_table(stats: ContextBudgetStats, latest_snapshots: dict[str, Snapshot]) -> Table:
     columns = [
         Column(key="project", label="Project", kind="str"),
@@ -674,7 +687,7 @@ def _build_baseline_table(stats: ContextBudgetStats, latest_snapshots: dict[str,
         all_skills.extend(acc.skills_listing_est_tokens)
         all_sessions += acc.sessions
 
-        snapshot = latest_snapshots.get(project)
+        snapshot = _snapshot_for_project(latest_snapshots, acc)
         rows.append(
             _baseline_row(project, acc.sessions, acc.baseline_writes, acc.human_prompt_est_tokens,
                           acc.skills_listing_est_tokens, snapshot)
@@ -739,7 +752,7 @@ def _build_autocompact_table(
     rows: list[list] = []
     for project in sorted(stats.projects):
         acc = stats.projects[project]
-        snapshot = latest_snapshots.get(project)
+        snapshot = _snapshot_for_project(latest_snapshots, acc)
 
         configured_window = None
         if snapshot is not None:

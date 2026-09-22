@@ -1004,7 +1004,7 @@ _SKIPS_CLAUDE_MD = frozenset({"Explore", "Plan"})
 
 #: Agent types started by Claude Code itself (workflow scripts, forks)
 #: rather than by name, so no agent file can override them.
-_NOT_OVERRIDABLE = frozenset({"workflow-subagent", "fork", "(unknown)"})
+_NOT_OVERRIDABLE = frozenset({"workflow-subagent", "fork", "unknown", "(unknown)"})
 
 #: ``SettingChange.current`` when there is no config snapshot to read it from.
 _CURRENT_UNKNOWN = "unknown (no config snapshot yet)"

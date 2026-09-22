@@ -425,7 +425,9 @@ def build_baseline(
     # v0.3 Task 2: metrics report.py's own baseline_comparison section
     # will later diff a fresh window against -- see module docstring's
     # addition note for why the extraction functions live in report.py.
-    sessions_analysed = len(corpus.sessions)
+    # Orphan bundles (subagent transcripts whose session file is gone) add
+    # cost but are not sessions, the same way build_report skips them.
+    sessions_analysed = sum(1 for bundle in corpus.sessions if bundle.top is not None)
     total_cost = overview_metric(model.sections, "total_cost_usd")
     cost_per_session = (total_cost / sessions_analysed) if total_cost is not None and sessions_analysed else 0.0
     recache_share_pct = recache_share_pct_metric(model.sections)

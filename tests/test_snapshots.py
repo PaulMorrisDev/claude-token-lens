@@ -722,3 +722,13 @@ def test_build_config_section_without_new_kwargs_stays_one_table():
         _sessions_with_metrics(), snapshots, "user_settings.autoCompactWindow"
     )
     assert len(section.tables) == 1
+
+
+def test_snapshot_for_with_project_key_ignores_other_projects():
+    mine = snap_mod.Snapshot(path=None, ts="20260901T000000Z", data={"project_slug": "slug:aaa"})
+    other = snap_mod.Snapshot(path=None, ts="20260910T000000Z", data={"project_slug": "slug:bbb"})
+    legacy = snap_mod.Snapshot(path=None, ts="20260905T000000Z", data={})
+    snaps = [mine, legacy, other]
+    assert snap_mod.snapshot_for("2026-09-12T00:00:00Z", snaps, "slug:aaa") is legacy
+    assert snap_mod.snapshot_for("2026-09-12T00:00:00Z", [mine, other], "slug:aaa") is mine
+    assert snap_mod.snapshot_for("2026-09-12T00:00:00Z", snaps) is other

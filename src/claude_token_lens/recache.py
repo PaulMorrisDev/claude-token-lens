@@ -99,7 +99,7 @@ import dataclasses
 from dataclasses import dataclass
 from typing import Callable, Sequence
 
-from .model import Column, EventKind, Section, Table, TranscriptResult, Turn
+from .model import Column, EventKind, Section, Table, TranscriptResult, Turn, agent_type_label
 from .pricing import ModelRates, Pricing, ResolvedRates, price_turn
 
 #: Bucket labels, in report order. "unknown" covers a turn with no
@@ -362,7 +362,7 @@ class RecacheStats:
         self.transcripts += 1
         group = self.group_key(result) if self.group_key is not None else "all"
         self.transcripts_by_group[group] = self.transcripts_by_group.get(group, 0) + 1
-        agent_type = result.meta.agent_type or "top-level"
+        agent_type = agent_type_label(result)
 
         recache_by_id = {t.message_id: t for t in detect(result.turns, self.th)}
         for turn in result.turns:

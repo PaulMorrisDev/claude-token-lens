@@ -496,3 +496,20 @@ def test_real_fixture_renders_without_error():
     assert section.key == "context_budget"
     assert len(section.tables) == 3
     assert_privacy(section)
+
+
+def test_baseline_table_finds_the_snapshot_by_its_hashed_project_key(tmp_path):
+    from claude_token_lens import snapshots as snap_mod
+
+    top = _build_session(tmp_path, "s1", session_id="sess_1", baseline_cache_creation=50_000)
+    stats = context_budget.ContextBudgetStats()
+    stats.add_session("C--Users-<user>-proj", top, raw_slug="C--Users-alice-proj")
+    snapshot = _snapshot(
+        snap_mod.snapshot_project_key("C--Users-alice-proj"),
+        content_layers={"agents_summary": {"count": 2}},
+    )
+    section = context_budget.build_section(stats, snapshots=[snapshot])
+    table = next(t for t in section.tables if t.name == "context_budget_baseline")
+    col = {c.key: i for i, c in enumerate(table.columns)}
+    row = next(r for r in table.rows if r[col["project"]] == "C--Users-<user>-proj")
+    assert row[col["custom_agents_est"]] == pytest.approx(2 * 60)

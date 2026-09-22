@@ -120,7 +120,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Sequence
 
-from .model import Column, EventKind, Recommendation, ReportModel, Section, Table, TranscriptResult, Turn
+from .model import Column, EventKind, Recommendation, ReportModel, Section, Table, TranscriptResult, Turn, agent_type_label
 from .parse import load_or_create_salt
 from .pricing import Pricing, price_turn
 
@@ -314,7 +314,7 @@ class WasteStats:
             self.pricing_currency = rates.currency
             self.pricing_sha8 = rates.sha8
 
-        agent_type = result.meta.agent_type or "top-level"
+        agent_type = agent_type_label(result)
         session_id = result.meta.session_id
         session_key = _hash_session_id(session_id, self._salt) if session_id else None
         transcript_truncated = result.meta.kind != "top-level" and bool(result.meta.stopped_by_user)

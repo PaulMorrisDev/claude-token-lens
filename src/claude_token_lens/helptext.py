@@ -187,7 +187,7 @@ COMMON_COLUMN_HELP: dict[str, str] = {
     "agent_type": "The subagent type, as named in its agent file or by Claude Code for built-in agents.",
     "spawns": "How many times this agent type was started in the window.",
     "turns": "How many model replies this covers.",
-    "priced_turns": "Model replies with a known price.",
+    "priced_turns": "Model replies with token counts. A reply from a model with no known price still counts; it is priced at zero.",
     "sessions": "How many sessions this covers.",
     "transcripts": "How many conversation logs this covers: one per main session and one per subagent run.",
     "cost": "Cost at list prices for the window.",
@@ -1259,7 +1259,7 @@ TABLE_COPY: dict[str, TableCopy] = {
         columns={
             "dimension": (
                 "Agent type",
-                "The subagent type. The main session is listed with subagents that have no type.",
+                "The subagent type, or the main session.",
             ),
             "phase": ("", "The phase, judged from the tools the reply called."),
             "turns": ("Replies", "Model replies in this phase."),
@@ -1269,7 +1269,8 @@ TABLE_COPY: dict[str, TableCopy] = {
             "cost": ("", "Cost at list prices for this phase."),
         },
         value_labels={
-            "unknown": "Main session, and subagents with no type",
+            "top-level": "Main session",
+            "unknown": "Subagent (type not recorded)",
             "discovery": "Exploring",
             "implementation": "Building",
             "verification": "Checking",
@@ -1620,7 +1621,7 @@ TABLE_COPY: dict[str, TableCopy] = {
                 "What these rebuilds cost above reading the same tokens from the cache.",
             ),
         },
-        value_labels={"top-level": "Main session"},
+        value_labels={"top-level": "Main session", "unknown": "Subagent (type not recorded)"},
     ),
     "recache_huge_context": TableCopy(
         title="Cache reads from very large contexts",
@@ -1895,8 +1896,9 @@ TABLE_COPY: dict[str, TableCopy] = {
     "ttl_near_miss": TableCopy(
         title="Waits that just made or just missed the cache",
         help=Help(
-            shows="Waits that ended within a minute either side of the 5-minute and 1-hour limits.",
-            read="A \"just missed\" wait lost the cache by less than a minute and rebuilt the whole context. "
+            shows="Waits that ended just either side of the 5-minute and 1-hour limits: within the near-miss "
+            "window, which is 1 minute unless you changed it in config.toml.",
+            read="A \"just missed\" wait lost the cache by a small margin and rebuilt the whole context. "
             "Many of these mean a slightly quicker reply would have saved the rebuild.",
             act="If many waits just miss 5 minutes, reply a little sooner, or use the status line countdown to "
             "see when the cache will expire.",
@@ -1905,20 +1907,20 @@ TABLE_COPY: dict[str, TableCopy] = {
             "agent_type": ("", "The subagent type, or the main session."),
             "near_5m_hit": (
                 "Just made 5 minutes",
-                "Waits in the last minute before 5 minutes. The cache was still there.",
+                "Waits that ended just before 5 minutes. The cache was still there.",
             ),
             "near_5m_miss": (
                 "Just missed 5 minutes",
-                "Waits in the first minute after 5 minutes. The cache had expired.",
+                "Waits that ended just after 5 minutes. The cache had expired.",
             ),
-            "near_5m_miss_tokens": ("Tokens written after just missing 5 minutes", "Cache writes on those replies."),
+            "near_5m_miss_tokens": ("Tokens rewritten after just missing 5 minutes", "The context rewritten on those replies."),
             "near_5m_miss_usd": (
                 "Cost of just missing 5 minutes",
                 "Rewriting the whole context on those replies, at the 5-minute write price.",
             ),
-            "near_1h_hit": ("Just made 1 hour", "Waits in the last minute before 1 hour. The cache was still there."),
-            "near_1h_miss": ("Just missed 1 hour", "Waits in the first minute after 1 hour. The cache had expired."),
-            "near_1h_miss_tokens": ("Tokens written after just missing 1 hour", "Cache writes on those replies."),
+            "near_1h_hit": ("Just made 1 hour", "Waits that ended just before 1 hour. The cache was still there."),
+            "near_1h_miss": ("Just missed 1 hour", "Waits that ended just after 1 hour. The cache had expired."),
+            "near_1h_miss_tokens": ("Tokens rewritten after just missing 1 hour", "The context rewritten on those replies."),
             "near_1h_miss_usd": (
                 "Cost of just missing 1 hour",
                 "Rewriting the whole context on those replies, at the 5-minute write price.",
@@ -2099,7 +2101,7 @@ TABLE_COPY: dict[str, TableCopy] = {
                 "What those cache writes cost in full.",
             ),
         },
-        value_labels={"top-level": "Main session"},
+        value_labels={"top-level": "Main session", "unknown": "Subagent (type not recorded)"},
     ),
     "limits_csv_cross_check": TableCopy(
         title="Usage log compared with conversation logs",
@@ -2244,7 +2246,7 @@ TABLE_COPY: dict[str, TableCopy] = {
                 "Kept tokens as a share of every token read from or written to the cache.",
             ),
         },
-        value_labels={"top-level": "Main session"},
+        value_labels={"top-level": "Main session", "unknown": "Subagent (type not recorded)"},
     ),
     "carry_top_results": TableCopy(
         title="Most expensive single tool outputs",
@@ -2263,7 +2265,7 @@ TABLE_COPY: dict[str, TableCopy] = {
             "turns_carried": ("Replies kept for", "Later replies it stayed in context for."),
             "carry_cost_usd": ("Cost of keeping it", "Cache read and cache write cost of keeping it, at list price."),
         },
-        value_labels={"top-level": "Main session"},
+        value_labels={"top-level": "Main session", "unknown": "Subagent (type not recorded)"},
     ),
     "carry_truncation_savings": TableCopy(
         title="Saving if large tool outputs were capped",
@@ -2509,7 +2511,7 @@ TABLE_COPY: dict[str, TableCopy] = {
             "share_of_cost_pct": ("Share of all cost", "Against all cost in the window."),
             "tokens": ("Wasted tokens", "All tokens of those replies."),
         },
-        value_labels={"top-level": "Main session"},
+        value_labels={"top-level": "Main session", "unknown": "Subagent (type not recorded)"},
     ),
     "waste_top_sessions": TableCopy(
         title="Sessions with the most wasted cost",

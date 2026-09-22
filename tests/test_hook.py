@@ -1096,3 +1096,15 @@ def test_min_interval_zero_always_writes_even_with_identical_content(home, proje
     assert second.returncode == 0
     snapshots_dir = config_dir / "snapshots"
     assert len(list(snapshots_dir.glob("*.json"))) == 2
+
+
+def test_snapshot_project_key_matches_the_hooks_stored_slug():
+    import importlib.util
+
+    from claude_token_lens import snapshots as snap_mod
+
+    spec = importlib.util.spec_from_file_location("snapshot_config_hook", _HOOK_PATH)
+    hook = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(hook)
+    raw = hook._project_slug("/home/alice/my-project")
+    assert snap_mod.snapshot_project_key(raw) == hook._redact_slug(raw)

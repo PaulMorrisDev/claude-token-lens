@@ -94,7 +94,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Callable
 
-from .model import Column, EventKind, Recommendation, ReportModel, Section, Table, TranscriptResult, Turn
+from .model import Column, EventKind, Recommendation, ReportModel, Section, Table, TranscriptResult, Turn, agent_type_label
 from .pricing import ModelRates, ResolvedRates, price_turn
 
 #: No tokenizer is run over transcript content (privacy rule); tool-result
@@ -344,7 +344,7 @@ def _extract_results(result: TranscriptResult, lookup: RatesLookup) -> list[Carr
     priced = _priced_turns(result.turns)
     if not priced:
         return []
-    agent_type = result.meta.agent_type or "top-level"
+    agent_type = agent_type_label(result)
     boundary_indices = _boundary_turn_indices(priced)
     last_index = priced[-1].turn_index
     by_index = {t.turn_index: t for t in priced}

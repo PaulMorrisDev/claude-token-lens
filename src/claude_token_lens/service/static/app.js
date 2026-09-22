@@ -125,6 +125,10 @@
     if (COLUMN_KINDS.indexOf(kind) === -1) kind = "str";
     switch (kind) {
       case "str":
+        // A mixed "metric / value" table: numbers read with separators.
+        if (typeof value === "number" && isFinite(value)) {
+          return value.toLocaleString("en-US", { maximumFractionDigits: 2 });
+        }
         return String(value);
       case "int":
       case "tokens":

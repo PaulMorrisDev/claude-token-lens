@@ -117,7 +117,7 @@ from dataclasses import dataclass, field
 from typing import Callable, Sequence
 
 from . import workstyle
-from .model import Column, Recommendation, ReportModel, Section, Table, TranscriptResult, Turn
+from .model import Column, Recommendation, ReportModel, Section, Table, TranscriptResult, Turn, agent_type_label
 from .pricing import Pricing, price_turn
 from .snapshots import Snapshot, managed_keys
 
@@ -165,9 +165,7 @@ def _agent_type_label(result: TranscriptResult) -> str:
     """"top-level" for the main conversation, else the recorded agent
     type (or "unknown") -- exactly ``TtlStats.add``'s own keying, so a
     corpus fed to both modules always agrees on group boundaries."""
-    if result.meta.kind == "top-level":
-        return "top-level"
-    return result.meta.agent_type or "unknown"
+    return agent_type_label(result)
 
 
 def _dominant_label(counts: dict[str, int]) -> str | None:
@@ -439,6 +437,21 @@ def compute_model_swap(
 # -- report section --------------------------------------------------------------
 
 
+def _lever_label(key: str) -> str:
+    """Where this row's model is set. A built-in agent has no file to
+    edit, so it takes a new same-named agent file; Claude Code picks the
+    model for workflow, fork and untyped subagents."""
+    from .recommend import _BUILTIN_AGENT_TYPES
+
+    if key == "top-level":
+        return "model (settings.json)"
+    if key in ("unknown", "fork", "workflow-subagent"):
+        return "none (Claude Code picks)"
+    if key in _BUILTIN_AGENT_TYPES:
+        return f"model in a new {key}.md (overrides the built-in)"
+    return f"model in {key}.md"
+
+
 def build_section(stats: ModelSwapStats, thresholds: ModelSwapThresholds | None = None) -> Section:
     """Render a finished :class:`ModelSwapStats` as the report's
     ``model_swap`` section: ``model_swap_by_agent_type`` (one row per
@@ -479,7 +492,7 @@ def build_section(stats: ModelSwapStats, thresholds: ModelSwapThresholds | None 
     for key in sorted(stats.by_key):
         row_stats = stats.by_key[key]
         verdict = row_stats.tier_verdict
-        lever = "model (settings.json)" if key == "top-level" else f"model in {key}.md"
+        lever = _lever_label(key)
         row = [
             row_stats.key,
             row_stats.spawns,
@@ -556,8 +569,9 @@ def build_section(stats: ModelSwapStats, thresholds: ModelSwapThresholds | None 
     if any_unpriced:
         notes.append(
             "At least one agent type has priced turns whose observed model this pricing file "
-            "doesn't resolve (see its own \"Unpriced turns\" column) -- those turns price at "
-            "zero and are excluded from both the observed cost and every alternative-model cost."
+            "doesn't resolve (see its own \"Unpriced turns\" column) -- those turns count as "
+            "zero in the observed cost but are still priced at every alternative model, so "
+            "that agent type's saving is understated."
         )
     notes.append(f"Thresholds: {' '.join(th.describe())}")
 

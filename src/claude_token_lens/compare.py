@@ -235,6 +235,7 @@ class _SessionMetrics:
     mode: str
     purpose: str
     profile_id: str | None
+    project_key: str | None = None
     priced_turns: int = 0
     cost: float = 0.0
     input_tokens: int = 0
@@ -291,6 +292,7 @@ def _collect_session_metrics(
             mode=classification.mode,
             purpose=classification.purpose,
             profile_id=record.profile_id,
+            project_key=snapshots_mod.snapshot_project_key(bundle.slug),
         )
 
         first_priced = _priced_turns(bundle.top)
@@ -675,7 +677,7 @@ def compare(
     snapshot_by_session: dict[str, Snapshot | None] = {}
     if snapshots:
         for m in metrics:
-            snapshot_by_session[m.session_id] = snapshots_mod.snapshot_for(m.first_ts, snapshots) if m.first_ts else None
+            snapshot_by_session[m.session_id] = snapshots_mod.snapshot_for(m.first_ts, snapshots, m.project_key) if m.first_ts else None
 
     group_a = [m for m in metrics if _session_matches(m, arm_a, snapshot_by_session)]
     group_b = [m for m in metrics if _session_matches(m, arm_b, snapshot_by_session)]
