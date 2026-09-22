@@ -121,6 +121,9 @@ from . import (
     compaction_sim,
     context_budget,
     discovery,
+    elasticity,
+    fixes,
+    helptext,
     limits,
     model_swap,
     recache,
@@ -128,6 +131,7 @@ from . import (
     snapshots as snapshots_mod,
     topology,
     ttl,
+    units as units_mod,
     waste,
     workflows,
     workstyle,
@@ -154,6 +158,7 @@ from .pricing import Pricing, PricingCoverage, price_turn
 from .recommend import recommend
 from .render.tables import format_cell
 from .snapshots import Snapshot
+from .tools import log_usage
 
 #: Fixed section order (before ``include`` filtering). Matches the task
 #: brief exactly, minus "diagnostics" (see module docstring).
@@ -169,6 +174,7 @@ _SECTION_ORDER: tuple[str, ...] = (
     "model_swap",
     "waste",
     "compactions",
+    "agent_startup",
     "agents",
     "workstyle",
     "workflows",
@@ -1286,6 +1292,16 @@ def build_report(
 
         tp.add_session(record.session_id, top, list(subs), pricing)
         cb.add_session(slug, top)
+        # The spawning turn's context size, joined by tool_use_id, lets
+        # add_subagent tell a fork (which inherits that context) from a
+        # fresh spawn.
+        spawn_ctx = {
+            tool_use_id: turn.ctx for tr in transcripts for turn in tr.turns for tool_use_id in turn.tool_use_ids
+        }
+        for sub in subs:
+            cb.add_subagent(
+                sub, spawn_ctx.get(sub.meta.tool_use_id) if sub.meta.tool_use_id else None, pricing
+            )
 
         session_cost[record.session_id] = session_cost_total
         session_cc_total[record.session_id] = session_cc_total_tokens
@@ -1465,6 +1481,9 @@ def build_report(
     if _want("compactions"):
         sections.append(compaction.build_section(cs))
 
+    if _want("agent_startup"):
+        sections.append(context_budget.build_startup_section(cb))
+
     if _want("agents"):
         sections.append(topology.build_section(tp))
 
@@ -1579,6 +1598,7 @@ def build_report(
         ),
         thresholds=thresholds_dict,
         billing_mode=config.billing,
+        billing_source=config.billing_source,
         assumptions=assumptions,
     )
 
@@ -1594,10 +1614,33 @@ def build_report(
     corpus_archetype, _archetype_evidence = workstyle.corpus_archetype(session_records)
     latest_snapshot = snapshots[-1] if snapshots else None
     report_model.recommendations = recommend(
-        report_model, config=config, archetype=corpus_archetype, snapshot=latest_snapshot
+        report_model,
+        config=config,
+        archetype=corpus_archetype,
+        snapshot=latest_snapshot,
+        units=_report_units(corpus, pricing, config, config_dir),
     )
+    fixes.attach_fixes(report_model.recommendations)
+    # Display copy last: it never touches table names, column keys or row
+    # values, so recommend() above sees exactly what the builders emitted.
+    helptext.annotate(report_model)
 
     return report_model
+
+
+def _report_units(corpus: Corpus, pricing: Pricing, config: Config, config_dir) -> units_mod.Units:
+    """How amounts are phrased for this report's billing mode. For a
+    subscription with a usage log, fit how much of the weekly limit a
+    list-price dollar is worth (``elasticity``); the fit refuses itself
+    when there are too few readings, and amounts fall back to list-price
+    equivalents."""
+    fitted = None
+    if config.billing == "subscription" and config_dir is not None:
+        usage_rows = log_usage.load_usage_log(Path(config_dir) / "usage-log.csv")
+        if usage_rows:
+            results = [tr for bundle in corpus.sessions for tr in ([bundle.top] if bundle.top else []) + bundle.subs]
+            fitted = elasticity.compute_elasticity(usage_rows, results, pricing)
+    return units_mod.Units(billing_mode=config.billing, currency=pricing.currency, elasticity=fitted)
 
 
 def _top_level_ctx_values(rs: recache.RecacheStats) -> list[int]:

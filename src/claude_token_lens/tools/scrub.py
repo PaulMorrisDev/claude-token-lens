@@ -383,6 +383,14 @@ def scrub_line(d: dict, hmac_key: bytes) -> dict:
     rendered = d.get("rendered")
     if isinstance(rendered, str):
         out["rendered"] = _x_run(rendered)
+    elif isinstance(rendered, list):
+        # Real lines carry ``rendered`` as ``[{"content": str}, ...]``;
+        # keep each block's length so ``Event.size_chars`` still works.
+        out["rendered"] = [
+            {"content": _x_run(block["content"])}
+            for block in rendered
+            if isinstance(block, dict) and isinstance(block.get("content"), str)
+        ]
 
     for key, value in d.items():
         if key in _ALREADY_HANDLED_TOP_LEVEL_KEYS:

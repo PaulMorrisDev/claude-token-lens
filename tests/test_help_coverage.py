@@ -1,0 +1,242 @@
+"""``helptext.py``: every table has a dashboard placement, the sections
+that have been rewritten carry help on every kept table and column, and
+the copy follows ``docs/writing-help.md`` (no internal names, no banned
+terms).
+
+``NOT_YET_COVERED`` is a shrinking allowlist: sections still waiting for
+their plain-English copy. A section that becomes fully covered fails the
+test until it is removed from the list, so the list can only shrink.
+"""
+
+from __future__ import annotations
+
+import ast
+import re
+from pathlib import Path
+
+import pytest
+
+from claude_token_lens import helptext
+from claude_token_lens.config import Config
+from claude_token_lens.corpus import load_corpus
+from claude_token_lens.model import DASHBOARD_PLACEMENTS
+from claude_token_lens.pricing import load_pricing
+from claude_token_lens.report import build_report
+
+SRC = Path(__file__).resolve().parent.parent / "src" / "claude_token_lens"
+
+#: Sections whose tables don't have help yet. Remove a key once its copy
+#: is written in ``helptext.py``.
+NOT_YET_COVERED = {
+    "overview",
+    "usage",
+    "sessions",
+    "recache",
+    "ttl",
+    "limits",
+    "carry",
+    "compaction_sim",
+    "model_swap",
+    "waste",
+    "compactions",
+    "config",
+    "context_budget",
+    "scorecard",
+    "phases",
+    "baseline_comparison",
+}
+
+#: Words the house style replaces (see the "Words to use" table).
+BANNED = re.compile(r"\b(re-?cache[sd]?|top-level|briefing|cache_creation|cache_read|attribution_\w+|per_turn_\w+)\b", re.I)
+SNAKE_CASE = re.compile(r"\b[a-z]+_[a-z0-9_]+\b")
+
+
+def _static_table_names() -> set[str]:
+    """Every literal table name a builder passes as ``Table(name=...)`` or
+    as the first argument of a ``_build_*_table`` helper."""
+    names: set[str] = set()
+    for path in SRC.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func.id if isinstance(node.func, ast.Name) else getattr(node.func, "attr", "")
+            if func == "Table":
+                for kw in node.keywords:
+                    if kw.arg == "name" and isinstance(kw.value, ast.Constant) and isinstance(kw.value.value, str):
+                        names.add(kw.value.value)
+            elif func.startswith("_build_") and func.endswith("_table") and node.args:
+                first = node.args[0]
+                if isinstance(first, ast.Constant) and isinstance(first.value, str):
+                    names.add(first.value)
+    return names
+
+
+def test_every_table_has_a_placement():
+    names = _static_table_names()
+    assert names, "the scan found no tables"
+    unplaced = sorted(
+        n for n in names if n not in helptext.PLACEMENT and not any(n.startswith(p) for p, _ in helptext.PLACEMENT_PREFIXES)
+    )
+    assert unplaced == [], f"add these tables to helptext.PLACEMENT: {unplaced}"
+
+
+def _source_strings() -> set[str]:
+    """Every string literal in the package outside ``helptext.py``: table
+    names that are built at run time still appear as a literal."""
+    found: set[str] = set()
+    for path in SRC.rglob("*.py"):
+        if path.name == "helptext.py":
+            continue
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                found.add(node.value)
+    return found
+
+
+def test_placements_are_valid_and_refer_to_real_tables():
+    names = _static_table_names() | _source_strings()
+    assert all(p in DASHBOARD_PLACEMENTS for p in helptext.PLACEMENT.values())
+    assert all(p in DASHBOARD_PLACEMENTS for _, p in helptext.PLACEMENT_PREFIXES)
+    stale = sorted(n for n in helptext.PLACEMENT if n not in names)
+    assert stale == [], f"helptext.PLACEMENT names tables no builder emits: {stale}"
+    assert sorted(n for n in helptext.TABLE_COPY if n not in names) == []
+
+
+def _copy_strings():
+    for key, copy in helptext.SECTION_COPY.items():
+        yield f"section {key}", copy.title
+        yield f"section {key}", copy.intro
+        if copy.help:
+            yield from ((f"section {key}", s) for s in (copy.help.shows, copy.help.read, copy.help.act))
+    for name, copy in helptext.TABLE_COPY.items():
+        yield f"table {name}", copy.title
+        if copy.help:
+            yield from ((f"table {name}", s) for s in (copy.help.shows, copy.help.read, copy.help.act))
+        for col, (label, help_text) in copy.columns.items():
+            yield f"{name}.{col}", label
+            yield f"{name}.{col}", help_text
+        for raw, label in copy.value_labels.items():
+            yield f"{name} value {raw}", label
+    for col, help_text in helptext.COMMON_COLUMN_HELP.items():
+        yield f"common {col}", help_text
+
+
+@pytest.mark.parametrize("where,text", [pair for pair in _copy_strings() if pair[1]])
+def test_copy_has_no_internal_names_or_banned_terms(where, text):
+    assert not SNAKE_CASE.search(text), f"{where}: internal name in {text!r}"
+    assert not BANNED.search(text), f"{where}: banned term in {text!r}"
+
+
+@pytest.fixture(scope="module")
+def report(tmp_path_factory):
+    project_dir = tmp_path_factory.mktemp("help") / "proj"
+    project_dir.mkdir()
+    return build_report(load_corpus([project_dir]), load_pricing(), Config(), projects=("proj",), window="w")
+
+
+def test_covered_sections_have_help_on_every_kept_table_and_column(report):
+    missing: list[str] = []
+    for section in report.sections:
+        if section.key in NOT_YET_COVERED:
+            continue
+        for table in section.tables:
+            assert table.dashboard == helptext.placement_for(table.name)
+            if table.dashboard == "report":
+                continue
+            if table.help is None or not table.help.shows:
+                missing.append(f"{table.name}: no help")
+            missing.extend(f"{table.name}.{c.key}: no column help" for c in table.columns if not c.help)
+    assert missing == []
+
+
+def test_not_yet_covered_list_only_shrinks(report):
+    done = []
+    for section in report.sections:
+        if section.key not in NOT_YET_COVERED:
+            continue
+        kept = [t for t in section.tables if t.dashboard != "report"]
+        if kept and all(t.help and t.help.shows and all(c.help for c in t.columns) for t in kept):
+            done.append(section.key)
+    assert done == [], f"remove from NOT_YET_COVERED: {done}"
+
+
+def test_annotate_keeps_names_keys_and_rows(report):
+    # The annotated report still carries the raw table names recommend()
+    # and the JSON/CSV exports use.
+    names = {t.name for s in report.sections for t in s.tables}
+    assert "topology_spawn_write" in names
+    assert "recache_summary" in names
+    spawn = next(t for s in report.sections for t in s.tables if t.name == "topology_spawn_write")
+    assert [c.key for c in spawn.columns][:2] == ["agent_type", "spawns"]
+
+
+def test_subscription_money_columns_say_list_price(tmp_path):
+    project_dir = tmp_path / "proj"
+    project_dir.mkdir()
+    sub = build_report(load_corpus([project_dir]), load_pricing(), Config(billing="subscription"), projects=("proj",), window="w")
+    money = [c for s in sub.sections for t in s.tables for c in t.columns if c.kind == "money"]
+    assert money and all("list price" in c.help for c in money)
+
+
+def _labelled_model():
+    from claude_token_lens.model import Column, Help, ReportModel, Section, Table
+
+    table = Table(
+        name="t",
+        title="Things",
+        columns=[Column(key="transcript_kind", label="Kind", kind="str", help="Main session or subagents.")],
+        rows=[["top-level"]],
+        help=Help(shows="Each row is a kind.", read="Bigger is more.", act=""),
+        value_labels={"top-level": "Main session"},
+    )
+    return ReportModel(sections=[Section(key="s", title="Section", tables=[table], intro="An intro.")])
+
+
+def test_markdown_labels_values_and_explains_only_on_request():
+    from claude_token_lens.render.markdown import render_markdown
+
+    model = _labelled_model()
+    plain = render_markdown(model)
+    assert "| Main session |" in plain and "top-level" not in plain
+    assert "What it shows" not in plain and "An intro." not in plain
+    explained = render_markdown(model, explain=True)
+    assert "**What it shows.** Each row is a kind." in explained
+    assert "When to act" not in explained  # empty parts are left out
+    assert "- Kind: Main session or subagents." in explained
+    assert "An intro." in explained
+
+
+def test_html_help_is_collapsed_and_json_csv_keep_raw_values(tmp_path):
+    import json
+
+    from claude_token_lens.render.csv_out import write_csv_dir
+    from claude_token_lens.render.html import render_html
+    from claude_token_lens.render.json_out import render_json
+
+    model = _labelled_model()
+    html = render_html(model)
+    assert '<details class="help"><summary>How to read this</summary>' in html
+    assert "Main session" in html
+    table = json.loads(render_json(model))["report"]["sections"][0]["tables"][0]
+    assert table["rows"] == [["top-level"]]
+    assert table["value_labels"] == {"top-level": "Main session"}
+    write_csv_dir(model, tmp_path)
+    assert "top-level" in "".join(p.read_text(encoding="utf-8") for p in tmp_path.glob("*.csv"))
+
+
+def test_every_diagnostics_field_has_a_plain_label():
+    import dataclasses
+
+    from claude_token_lens.model import Diagnostics
+
+    fields = {f.name for f in dataclasses.fields(Diagnostics)}
+    assert set(helptext.DIAGNOSTIC_LABELS) == fields
+    for key, (label, meaning) in helptext.DIAGNOSTIC_LABELS.items():
+        assert label and meaning, key
+        assert not SNAKE_CASE.search(label + " " + meaning), key
+    table = helptext.diagnostics_table(Diagnostics(modes={"plan": 2}, truncated_final_line=True))
+    by_key = {row[0]: row[1] for row in table.rows}
+    assert by_key["modes"] == "plan: 2"
+    assert by_key["truncated_final_line"] == "yes"
+    assert table.value_labels["lines"] == "Lines read"

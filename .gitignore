@@ -19,3 +19,6 @@ tests/fixtures/_private/
 
 # Agent worktrees (created per concurrent-writer session; never committed)
 .claude/worktrees/
+
+# Playwright MCP screenshots and snapshots
+.playwright-mcp/

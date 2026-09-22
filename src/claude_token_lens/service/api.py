@@ -107,6 +107,7 @@ from typing import TYPE_CHECKING, Callable
 
 from .. import __version__ as _TOOL_VERSION
 from .. import baseline as baseline_mod
+from .. import helptext, hook_health
 from .. import snapshots as snapshots_mod
 from ..config import ConfigError, load_config, load_session_overrides
 from ..pricing import load_pricing
@@ -280,6 +281,31 @@ def _find_section(model, key: str):
 
 
 # -- make_handler ---------------------------------------------------------
+
+
+#: Host names every request may carry in its ``Host`` header.
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+#: Wildcard binds: never a name a browser should be sending as ``Host``.
+_WILDCARD_BINDS = frozenset({"0.0.0.0", "::", ""})
+
+
+def allowed_host_names(options: ServeOptions) -> frozenset[str]:
+    """The ``Host`` names this server answers to: loopback, the bind
+    address when it's a specific one, and ``options.allowed_hosts``.
+    Lower-cased, without port or IPv6 brackets."""
+    names = set(_LOOPBACK_HOSTS)
+    if options.bind not in _WILDCARD_BINDS:
+        names.add(options.bind.lower())
+    names.update(h.strip().lower().strip("[]") for h in options.allowed_hosts if h.strip())
+    return frozenset(names)
+
+
+def _host_name(header: str) -> str:
+    """``Host`` header value -> host name, without port or brackets."""
+    value = header.strip().lower()
+    if value.startswith("["):
+        return value[1 : value.find("]")] if "]" in value else value[1:]
+    return value.rsplit(":", 1)[0] if value.count(":") == 1 else value
 
 
 def make_handler(
@@ -849,6 +875,14 @@ def make_handler(
         table = next((t for t in tables if t.name == f"config-diff-{key}"), None)
         return _ok(to_jsonable(table) if table is not None else [])
 
+    def route_diagnostics(store, query, body):
+        window, err = _window_query(query)
+        if err is not None:
+            return err
+        model = _get_report_model(*window)
+        hook = hook_health.check(options.config_dir)
+        return _ok(to_jsonable(helptext.diagnostics_table(model.diagnostics, hook=hook)))
+
     def route_recommendations(store, query, body):
         window, err = _window_query(query)
         if err is not None:
@@ -865,6 +899,8 @@ def make_handler(
             return ("raw", content_type, render(model))
 
         return _route
+
+    host_names = allowed_host_names(options)
 
     # -- routing tables -----------------------------------------------------
 
@@ -884,6 +920,7 @@ def make_handler(
         "/api/waste": route_waste,
         "/api/config-diff": route_config_diff,
         "/api/recommendations": route_recommendations,
+        "/api/diagnostics": route_diagnostics,
         "/api/report.json": _render_report("application/json", lambda model: render_json(model)),
         # Finding 22: charset was missing on the two text-ish renderers
         # (application/json has no encoding ambiguity, but text/markdown
@@ -980,7 +1017,24 @@ def make_handler(
 
         # -- dispatch --------------------------------------------------------
 
+        def _host_allowed(self) -> bool:
+            """DNS-rebinding guard: a page on attacker.example that
+            re-resolves its own name to 127.0.0.1 reaches this server as
+            same-origin, but its requests still carry ``Host:
+            attacker.example``. Only names in :func:`allowed_host_names`
+            are answered. A request without ``Host`` (HTTP/1.0, not a
+            browser) is allowed."""
+            host = self.headers.get("Host")
+            return host is None or _host_name(host) in host_names
+
         def _dispatch(self, body: dict | None, *, head_only: bool = False) -> None:
+            if not self._host_allowed():
+                self._write_json(
+                    *_forbidden("this Host is not allowed; start serve with --allowed-host NAME to add it"),
+                    head_only=head_only,
+                )
+                store.close()
+                return
             try:
                 split = urllib.parse.urlsplit(self.path)
                 path = split.path
@@ -1111,6 +1165,8 @@ def make_handler(
             raw = self.rfile.read(length) if length > 0 else b""
 
             reason = self._reject_cross_site_post()
+            if reason is None and not self._host_allowed():
+                reason = "this Host is not allowed; start serve with --allowed-host NAME to add it"
             if reason is not None:
                 self._write_json(*_forbidden(reason))
                 return

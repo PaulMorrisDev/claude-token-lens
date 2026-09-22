@@ -43,6 +43,7 @@ notification, but not as strong as an interrupt or a human message).
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Iterable, Sequence
 
@@ -209,9 +210,115 @@ def _user_has_tool_result(d: dict) -> bool:
     return any(isinstance(block, dict) and block.get("type") == "tool_result" for block in content)
 
 
-def _rendered_size_chars(d: dict) -> int | None:
+#: attachment.type -> the raw attachment fields holding the text the
+#: model is shown, used when a line carries no ``rendered`` field (e.g.
+#: ~15% of real ``skill_listing`` lines). Lengths only -- never stored.
+_CONTENT_SIZE_FIELDS = {
+    "skill_listing": ("content",),
+    "deferred_tools_delta": ("addedLines",),
+    "mcp_instructions_delta": ("addedBlocks",),
+    "agent_listing_delta": ("addedLines",),
+    "hook_additional_context": ("content",),
+    "hook_system_message": ("content",),
+    "hook_success": ("content",),
+    "total_tokens_reminder": ("text",),
+    "batching_reminder_sent": ("text",),
+    "silent_turn_reminder": ("text",),
+    "model": ("text",),
+    "queued_command": ("prompt",),
+    "edited_text_file": ("snippet",),
+    "plan_file_reference": ("planContent",),
+    "directory": ("content",),
+}
+
+
+def _text_chars(value: object) -> int:
+    """Summed length of a string, or of every string in a list."""
+    if isinstance(value, str):
+        return len(value)
+    if isinstance(value, list):
+        return sum(len(item) for item in value if isinstance(item, str))
+    return 0
+
+
+def _attachment_content_chars(attachment: dict) -> int | None:
+    """Size of an attachment measured from its own content fields, for a
+    line with no ``rendered`` field. ``None`` for a type with no known
+    content field."""
+    attachment_type = attachment.get("type")
+    if attachment_type == "instructions":
+        files = attachment.get("files")
+        if not isinstance(files, list):
+            return None
+        return sum(_text_chars(f.get("content")) for f in files if isinstance(f, dict))
+    if attachment_type == "nested_memory":
+        content = attachment.get("content")
+        return _text_chars(content.get("content")) if isinstance(content, dict) else None
+    fields = _CONTENT_SIZE_FIELDS.get(attachment_type)
+    if fields is None:
+        return None
+    present = [attachment[field] for field in fields if field in attachment]
+    if not present:
+        return None
+    return sum(_text_chars(value) for value in present)
+
+
+def _rendered_size_chars(d: dict, attachment: dict) -> int | None:
+    """Length of the text an attachment line puts in front of the model.
+
+    Real transcripts carry it as a top-level ``rendered`` list of
+    ``{"content": str}`` blocks (a bare string is accepted too, for older
+    lines). Without ``rendered``, falls back to the attachment's own
+    content fields (:func:`_attachment_content_chars`).
+    """
     rendered = d.get("rendered")
-    return len(rendered) if isinstance(rendered, str) else None
+    if isinstance(rendered, str):
+        return len(rendered)
+    if isinstance(rendered, list):
+        blocks = [block.get("content") for block in rendered if isinstance(block, dict)]
+        texts = [text for text in blocks if isinstance(text, str)]
+        if texts:
+            return sum(len(text) for text in texts)
+    return _attachment_content_chars(attachment)
+
+
+#: ``instructions.files[].type`` values kept as ``Event.detail`` keys
+#: (a fixed label set, never a path) so startup context can be split by
+#: where each instruction file comes from.
+_INSTRUCTION_FILE_TYPES = frozenset({"User", "Project", "Local", "AutoMem", "Managed"})
+
+
+def _instructions_detail(attachment: dict) -> dict:
+    """Chars per instruction-file type (``User``/``Project``/...), plus a
+    file count. Unknown types are summed under ``Other``."""
+    files = attachment.get("files")
+    if not isinstance(files, list):
+        return {}
+    by_type: dict[str, int] = {}
+    count = 0
+    for entry in files:
+        if not isinstance(entry, dict):
+            continue
+        count += 1
+        file_type = entry.get("type")
+        label = file_type if file_type in _INSTRUCTION_FILE_TYPES else "Other"
+        by_type[label] = by_type.get(label, 0) + _text_chars(entry.get("content"))
+    return {"count": count, "chars_by_type": by_type}
+
+
+def _prompt_snapshot_detail(attachment: dict) -> dict:
+    """Sizes of the system prompt and tool definitions a ``prompt_snapshot``
+    records. The snapshot is not itself sent as a message, so these sit in
+    ``Event.detail`` rather than ``Event.size_chars`` (which feeds the
+    injected-attachment totals)."""
+    detail: dict = {"system_chars": _text_chars(attachment.get("systemPrompt"))}
+    tools = attachment.get("tools")
+    if isinstance(tools, list) and tools:
+        detail["tool_count"] = len(tools)
+        detail["tools_chars"] = sum(
+            len(json.dumps(tool, separators=(",", ":"), ensure_ascii=False)) for tool in tools if isinstance(tool, dict)
+        )
+    return detail
 
 
 #: Matches an opening angle-bracket tag at the very start of a string,
@@ -373,10 +480,15 @@ def _delta_detail(attachment_type: str, attachment: dict) -> dict:
     added_key, removed_key = keys
     added = attachment.get(added_key)
     removed = attachment.get(removed_key)
-    return {
+    detail = {
         "added": len(added) if isinstance(added, list) else 0,
         "removed": len(removed) if isinstance(removed, list) else 0,
     }
+    if attachment_type == "deferred_tools_delta" and isinstance(added, list):
+        # How many of the added deferred tools come from MCP servers
+        # (``mcp__<server>__<tool>`` names) -- a count, never the names.
+        detail["mcp_added"] = sum(1 for name in added if isinstance(name, str) and name.startswith("mcp__"))
+    return detail
 
 
 def classify_line(d: dict) -> Event | None:
@@ -463,7 +575,7 @@ def classify_line(d: dict) -> Event | None:
         if isinstance(raw_attachment, dict):
             attachment = raw_attachment
             attachment_type = attachment.get("type")
-        size_chars = _rendered_size_chars(d)
+        size_chars = _rendered_size_chars(d, attachment)
 
     # 6. HOOK_OUTPUT
     if line_type == "system" and d.get("subtype") == "stop_hook_summary":
@@ -500,6 +612,14 @@ def classify_line(d: dict) -> Event | None:
             # and aren't needed for anything WP1 computes.
             if isinstance(names, list):
                 detail["count"] = len(names)
+        elif attachment_type == "skill_listing":
+            if isinstance(attachment.get("skillCount"), int):
+                detail["count"] = attachment["skillCount"]
+        elif attachment_type == "instructions":
+            detail = _instructions_detail(attachment)
+        elif attachment_type == "prompt_snapshot":
+            detail = _prompt_snapshot_detail(attachment)
+            size_chars = None
         return Event(
             kind=EventKind.CONTEXT_INJECT, subkind=attachment_type, ts=ts, size_chars=size_chars, detail=detail
         )

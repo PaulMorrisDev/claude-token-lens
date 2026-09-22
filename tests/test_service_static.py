@@ -36,6 +36,7 @@ from pathlib import Path
 
 import pytest
 
+from claude_token_lens import helptext
 from claude_token_lens.config import Config
 from claude_token_lens.corpus import load_corpus
 from claude_token_lens.pricing import load_pricing
@@ -416,6 +417,7 @@ def _build_fixture_data(tmp_path: Path) -> tuple[dict, dict]:
     canned["/api/config-diff"] = to_jsonable(config_section) if config_section is not None else {"tables": []}
 
     canned["/api/recommendations"] = [to_jsonable(rec) for rec in report.recommendations]
+    canned["/api/diagnostics"] = to_jsonable(helptext.diagnostics_table(report.diagnostics))
 
     return canned, sessions_map
 
@@ -799,3 +801,37 @@ def test_fixture_server_404s_unknown_session(fixture_server: str) -> None:
     envelope = json.loads(body)
     assert envelope["ok"] is False
     assert envelope["error"]["code"] == "not_found"
+
+
+def _js_object_keys(app_js: str, var_name: str) -> dict[str, str]:
+    start = app_js.index("var " + var_name)
+    end = app_js.index("};", start) + 2
+    return dict(re.findall(r'^\s*"?([a-z_]+)"?\s*:\s*"([^"]*)"', app_js[start:end], re.MULTILINE))
+
+
+def test_every_report_section_is_mapped_to_a_tab() -> None:
+    """A section missing from SECTION_TAB_MAP silently lands on the Data
+    quality tab; every section report.py can emit must be placed on
+    purpose, and on a tab that exists."""
+    from claude_token_lens.report import _SECTION_ORDER
+
+    app_js = _static_text("app.js")
+    mapping = _js_object_keys(app_js, "SECTION_TAB_MAP")
+    tab_order = re.findall(r'"([a-z]+)"', re.search(r"var TAB_ORDER\s*=\s*\[[^\]]+\];", app_js).group(0))
+    unmapped = [key for key in _SECTION_ORDER if key != "overview" and key not in mapping]
+    assert unmapped == []
+    assert all(tab in tab_order for tab in mapping.values())
+
+
+def test_tab_titles_match_the_tab_buttons() -> None:
+    """Each tab's one h2 (TAB_TITLES) reads the same as its button, and
+    every tab has an intro line."""
+    app_js = _static_text("app.js")
+    html = _static_text("index.html")
+    titles = _js_object_keys(app_js, "TAB_TITLES")
+    intros = _js_object_keys(app_js, "TAB_INTROS")
+    buttons = dict(re.findall(r'data-tab="([a-z]+)">([^<]+)</button>', html))
+    assert titles == buttons
+    assert set(intros) == set(buttons)
+    # One h2 per tab: tabHeading is the only place a tab panel gets one.
+    assert app_js.count('el("h2"') == 1

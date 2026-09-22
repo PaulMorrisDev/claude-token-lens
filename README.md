@@ -72,6 +72,11 @@ What it cannot do:
   its five-hour usage blocks table is only populated for
   `billing = "subscription"` — under `"api"` it prints a one-line note
   explaining the skip instead (see [section 6](#6-reading-the-report-sections)).
+  `billing` in `config.toml` is `"auto"` by default: subscription once
+  the usage log holds a usage-limit reading (Claude Code only reports
+  usage limits to Pro and Max plans), `"api"` otherwise. Set
+  `billing = "subscription"` or `"api"` to choose yourself. The report
+  header and the dashboard's Overview say which mode is in use and why.
 - **The JSONL format is observed, not a published API.** Every field
   name this tool reads was found by inspecting real transcripts, not
   from documentation, and Claude Code's own docs describe the transcript
@@ -105,12 +110,6 @@ pip install git+https://github.com/PaulMorrisDev/claude-token-lens
 # or, no pip at all: download claude-token-lens.pyz from the Releases page and run
 #   py -3 claude-token-lens.pyz --version
 ```
-
-Then run `PYTHONPATH=src C:\Dev\claude-token-lens\.venv\Scripts\python.exe -m pytest -q -p no:cacheprovider tests/test_readme.py tests/test_docs.py` if those files exist (otherwise run `-k readme`), and commit with the message:
-
-docs(readme): point Quick start at the first-run guide and list all install routes
-
-Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 
 Then, from the project you want to analyse:
 
@@ -222,7 +221,7 @@ this table only lists what's specific to each one.
 
 | Subcommand | What it does | Extra flags |
 | --- | --- | --- |
-| `report` | Full report: every section in [section 6](#6-reading-the-report-sections) (`overview`, `usage`, `sessions`, `recache`, `ttl`, `limits`, `carry`, `compaction_sim`, `model_swap`, `waste`, `compactions`, `agents`, `workstyle`, `workflows`, `config` when snapshots exist, `scorecard`, `recommendations`), printed as Markdown by default. This is the default subcommand — `claude-token-lens` with no arguments runs it. | `--json` (print the whole report as JSON instead), `--html PATH` (also write a single-file HTML report), `--csv-dir DIR` (also write one CSV per table plus an index), `--phases` (add the DISCOVERY/IMPLEMENTATION/VERIFICATION phase-split section), `--patch-set` (also print the recommendation set as unified-diff-style settings/frontmatter patches) |
+| `report` | Full report: every section in [section 6](#6-reading-the-report-sections) (`overview`, `usage`, `sessions`, `recache`, `ttl`, `limits`, `carry`, `compaction_sim`, `model_swap`, `waste`, `compactions`, `agents`, `workstyle`, `workflows`, `config` when snapshots exist, `scorecard`, `recommendations`), printed as Markdown by default. This is the default subcommand — `claude-token-lens` with no arguments runs it. | `--json` (print the whole report as JSON instead), `--html PATH` (also write a single-file HTML report), `--csv-dir DIR` (also write one CSV per table plus an index), `--phases` (add the DISCOVERY/IMPLEMENTATION/VERIFICATION phase-split section), `--patch-set` (also print the recommendation set as unified-diff-style settings/frontmatter patches), `--explain` (add each section's and table's "what it shows / how to read it" help to the Markdown) |
 | `sessions` | Focused view: just `overview` + `sessions` | Same output flags as `report` except `--patch-set` (recommendations aren't part of a focused view) |
 | `recache` | Focused view: just `overview` + `recache` | Same as `sessions` |
 | `ttl` | Focused view: just `overview` + `ttl` | Same as `sessions` |
@@ -244,14 +243,14 @@ this table only lists what's specific to each one.
 | `monthly-report` | Write a habit-forming finance summary (cost/tokens by model/project/entrypoint, five-hour blocks under subscription billing) plus the `usage` section for one calendar month, as both Markdown and HTML (see [section 10](#10-for-team-leads-and-enterprise) and [`docs/exports.md`](docs/exports.md)) | `--out DIR` (required), `--month YYYY-MM` (default: the previous calendar month) |
 | `import` | Validate and copy one or more `export --aggregate` team documents into `<config_dir>/team/` for `team-report` (see [section 10](#10-for-team-leads-and-enterprise) and [`docs/team.md`](docs/team.md)) | `FILE...` (one or more team-document paths); exits 2 with the reason on the first invalid file |
 | `team-report` | Cross-machine per-archetype/per-agent-type comparison built from every document already imported into `<config_dir>/team/` (see [section 10](#10-for-team-leads-and-enterprise) and [`docs/team.md`](docs/team.md)) | `--min-sessions N` (default 5), plus the same `--json`/`--html PATH`/`--csv-dir DIR` output flags as `report` |
-| `init` | Detect what's already set up, ask (or, non-interactively, derive) a short question set, write `config.toml` and this project's `projects/<slug>.toml`, print the hook/statusline install fragments, run an initial onboarding baseline, and — as its last step — offer to register the service to run at logon (`docs/deploy.md`) — see [`docs/onboarding.md`](docs/onboarding.md) | `--answers FILE` (JSON file supplying any subset of the answers), `--non-interactive` (derive unanswered questions instead of prompting; derives to *not* installing the service unless `--install-service` is also given), `--no-install` (skip printing the hook/statusline fragments), `--install-service` (register the service without asking), `--no-service` (skip the logon-service step entirely), `--dry-run` (governs only the logon-service step: print its plan without writing/registering anything) |
+| `init` | Detect what's already set up, ask (or, non-interactively, derive) a short question set, write `config.toml` and this project's `projects/<slug>.toml`, print the hook/statusline install fragments, run an initial onboarding baseline, and — as its last step — offer to register the service to run at logon (`docs/deploy.md`) — see [`docs/onboarding.md`](docs/onboarding.md) | `--answers FILE` (JSON file supplying any subset of the answers), `--non-interactive` (derive unanswered questions instead of prompting; derives to *not* installing the service unless `--install-service` is also given), `--no-install` (skip printing the hook/statusline fragments), `--install-service` (register the service without asking), `--no-service` (skip the logon-service step entirely), `--dry-run` (governs only the logon-service step: print its plan without writing/registering anything), `--repair-hook` (fix a SessionStart hook command whose path a single backslash in JSON broke, without asking; `settings.json` is backed up first) |
 | `baseline` | Capture (or list/show) an onboarding baseline: mode mix, dominant purposes, suggested profile, projected saving — see [`docs/onboarding.md`](docs/onboarding.md) | `--finalise` (treat the baseline as final even if the capture window hasn't elapsed), `--list` (list saved baselines), `--show ID` (print a previously saved baseline's report) |
-| `apply` | Apply a catalogue or custom profile's settings/agent/env levers to a project or your user config, with backup/`--revert` — see [section 15](#15-applying-a-profile) and [`docs/profiles.md`](docs/profiles.md) | `PROFILE` (catalogue id or path to a profile TOML file), `--scope {user,project-local,repo}` (default `user`, or `project-local` once `--project-dir` is given), `--project-dir PATH`, `--claude-root PATH` (default: `$CLAUDE_CONFIG_DIR`, else `~/.claude`), `--dry-run`, `--launch` (one-session overlay instead of a persisted apply), `--allow-tracked`, `--force` (create a missing agent file from scratch), `--revert TS`, `--list-backups` |
-| `serve` | Run the local JSON API + watcher service (`service/serve.py`) — see [`docs/api.md`](docs/api.md) and [`docs/ui.md`](docs/ui.md) | `--port N` (default 8765), `--bind ADDRESS` (default `127.0.0.1`, loopback only), `--allow-remote` (allow `--bind` to a non-loopback address, refused by default), `--poll-interval SECONDS` (watcher poll interval, default 30), `--retention-days N` (prune sessions older than N days on every poll tick, default: keep forever), `--exclude-project SLUG` (repeatable; project slug never scanned), `--billing-mode {api,subscription}` (stamped onto every session; default: `config.toml`'s `billing`, else `api`), `--monthly-report DIR` (accepted and carried on `ServeOptions.monthly_report_dir`, but not yet consumed by the watcher tick — run the standalone `monthly-report` subcommand, e.g. from cron, until this is wired up), `--once` (run a single watcher tick, print its stats, and exit instead of serving), `--purge --yes` (delete `<config-dir>/service.db` and its WAL/SHM sidecars, then exit) |
+| `apply` | Apply a catalogue or custom profile's settings/agent/env levers to a project or your user config, with backup/`--revert` — see [section 15](#15-applying-a-profile) and [`docs/profiles.md`](docs/profiles.md) | `PROFILE` (catalogue id or path to a profile TOML file), or `--set KEY=VALUE` (repeatable; one allowlisted setting, no profile needed) with `--agent NAME` for agent frontmatter, `--scope {user,project-local,repo}` (default `user`, or `project-local` once `--project-dir` is given), `--project-dir PATH`, `--claude-root PATH` (default: `$CLAUDE_CONFIG_DIR`, else `~/.claude`), `--dry-run`, `--launch` (one-session overlay instead of a persisted apply), `--allow-tracked`, `--force` (create a missing agent file from scratch), `--revert TS`, `--list-backups` |
+| `serve` | Run the local JSON API + watcher service (`service/serve.py`) — see [`docs/api.md`](docs/api.md) and [`docs/ui.md`](docs/ui.md) | `--port N` (default 8765), `--bind ADDRESS` (default `127.0.0.1`, loopback only), `--allow-remote` (allow `--bind` to a non-loopback address, refused by default), `--poll-interval SECONDS` (watcher poll interval, default 30), `--retention-days N` (prune sessions older than N days on every poll tick; default: `config.toml`'s `retention_days`, else keep forever), `--exclude-project SLUG` (repeatable; project slug never scanned), `--billing-mode {api,subscription}` (stamped onto every session; default: `config.toml`'s `billing`, resolved as for `report`), `--allowed-host NAME` (repeatable; an extra host name the dashboard answers to — every other `Host` header gets `403`, see [`docs/api.md`](docs/api.md#host-allowlist-dns-rebinding)), `--monthly-report DIR` (accepted and carried on `ServeOptions.monthly_report_dir`, but not yet consumed by the watcher tick — run the standalone `monthly-report` subcommand, e.g. from cron, until this is wired up), `--once` (run a single watcher tick, print its stats, and exit instead of serving), `--purge --yes` (delete `<config-dir>/service.db` and its WAL/SHM sidecars, then exit) |
 | `install-service` | Register `claude-token-lens serve` to run at logon for the current platform (Windows Scheduled Task, systemd user unit, or macOS LaunchAgent) — this is what `init`'s last step, and the manual paths in [section 14](#14-running-the-service), both call — see [`docs/deploy.md`](docs/deploy.md) | `--port N` (default 8765), `--bind ADDRESS` (default `127.0.0.1`), `--dry-run` (print exactly what would be written/run, without writing or running anything) |
 | `uninstall-service` | Remove whatever `install-service` (or `init`) registered — deletes the task/unit/agent definition it wrote, using the same per-platform command the manual `Unregister-TokenLensTask.ps1`/`systemctl --user disable`/`launchctl bootout` paths use | `--dry-run` (print what would be removed, without removing anything) |
 | `compare` | A/B compare two arms of sessions (`window:`/`key:`/`profile:`/`project:` specs), stratified by purpose/mode with a minimum-sample gate — see [`docs/compare.md`](docs/compare.md) | `--a SPEC` / `--b SPEC` (required), `--stratify purpose,mode` (default), `--min-sessions N` (default: `config.toml`'s `min_sessions`), plus the same `--json`/`--html PATH`/`--csv-dir DIR` output flags as `report` |
-| `reconcile` | Compare local usage/cost accounting against an Admin API CSV export, entirely offline — see [`docs/compare.md`](docs/compare.md) | `--admin-csv FILE` (required), `--by {day,model,day,model}` (default `day`), plus the same `--json`/`--html PATH`/`--csv-dir DIR` output flags as `report` (the window comes from the global `--days`/`--since`/`--until` flags, not a separate flag) |
+| `reconcile` | Compare local usage/cost accounting against an Admin API CSV export, entirely offline — see [`docs/compare.md`](docs/compare.md) | `--admin-csv FILE` (required), `--by {day,model,"day,model"}` (default `day`), plus the same `--json`/`--html PATH`/`--csv-dir DIR` output flags as `report` (the window comes from the global `--days`/`--since`/`--until` flags, not a separate flag) |
 
 `usage`, `agents`, `workstyle`, `workflows` and `scorecard` are real
 report sections (see [section 6](#6-reading-the-report-sections)) but
@@ -504,6 +503,14 @@ is no title data for the flag to gate yet.
 | `scope` | where the lever named below applies: `"user"` (`~/.claude/settings.json`), `"repo"` (a project `.claude/settings.json` or agent frontmatter path), or `"managed"` (an org-pushed `managed-settings.json` key the user can't change locally — the action text then also says "raise with your administrator") |
 | `lever` | the bare settings key or frontmatter path the recommendation would change (e.g. `promptCacheTtl`, `experimental.cacheTtl` in `<agent>.md`), or `None` |
 | `evidence` | one or more `(label, value, source_table, row_key)` tuples, each citing a real cell from a table already in the report — a test walks every recommendation this module produces and confirms the value it cites is genuine, not recomputed |
+| `why` | one plain sentence on why it matters |
+| `estimated_saving` / `saving_basis` | the saving phrased for your billing mode (`units.py`), and how it was worked out |
+| `changes` | the concrete edits proposed: `SettingChange` (`target` `settings`/`agent`, `key`, `agent`, `value` or a `suggested` description when the value needs your judgement, `current`, `note`, `unconfirmed`, `new_agent_file`) |
+| `fixes` | per change, from `fixes.py`: a six-part `explainer`, an `apply --set ... --dry-run` `command` (when the value is known), a `command_warning` when the command alone isn't enough, and a `prompt` to give Claude |
+
+The dashboard never changes your Claude Code config. Each change comes
+with the prompt and, for a plain setting, the command; the command's
+`--dry-run` shows the diff first, and a real run prints how to undo it.
 
 `report --patch-set` renders the whole recommendation set as
 unified-diff-style text (`recommend.render_patch_set`) showing the
@@ -748,10 +755,10 @@ What's implemented today:
   matching projects from discovery entirely — for a confidential repo
   you never want scanned, not just hidden from output. A malformed regex
   is skipped, never fatal.
-- **`retention_days`** (`config.toml`, an integer) is read and validated
-  as a setting for the eventual local SQLite store's own retention
-  policy; nothing enforces it yet, since that store (the v0.2 service)
-  doesn't exist in this codebase.
+- **`retention_days`** (`config.toml`, an integer) is how many days of
+  sessions `serve` keeps in its local store (`service.db`); older ones
+  are pruned on every poll tick. `serve --retention-days N` overrides it
+  for one run. Unset means keep forever.
 - **Managed settings** are captured by the snapshot hook (see section 8)
   into `managed_settings` (redacted the same as user settings) and
   `managed_keys` (raw key names only), and `recommend.py` renders them:
@@ -1043,6 +1050,9 @@ claude-token-lens apply --revert 20260919T100252Z
 
 # One-session overlay instead of a persisted apply:
 claude-token-lens apply interactive-chat --launch
+
+# One setting, no profile (the command a recommendation card shows):
+claude-token-lens apply --set omitClaudeMd=true --agent code-reviewer --scope user --dry-run
 ```
 
 | Flag | Meaning |
@@ -1055,6 +1065,8 @@ claude-token-lens apply interactive-chat --launch
 | `--force` | Create a missing `.claude/agents/<name>.md` file from scratch instead of refusing |
 | `--revert TS` | Undo a previous apply, byte for byte, named by the timestamp `apply` printed at the time |
 | `--list-backups` | List previous applies (timestamp, profile, scope, file count) and exit |
+| `--set KEY=VALUE` | Change one allowlisted key instead of applying a profile (repeatable). Lists are comma-separated (`tools=Read,Grep`), booleans `true`/`false`. Validated like a profile; recorded as profile `one-off`; never marks a profile active |
+| `--agent NAME` | With `--set`: change `.claude/agents/NAME.md` frontmatter instead of `settings.json` |
 
 Every real apply backs up whatever it overwrites first, so `--revert`
 always restores the exact prior state; a managed-settings key is never

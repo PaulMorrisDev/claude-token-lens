@@ -359,6 +359,56 @@ td.num, th.num {
   margin-bottom: 0.25rem;
 }
 
+.rec-why {
+  margin: 0.25rem 0;
+}
+
+.rec-saving {
+  font-weight: 600;
+}
+
+.fix {
+  margin-top: 0.75rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--border);
+}
+
+.fix h5 {
+  margin: 0.6rem 0 0.3rem;
+  font-size: 0.85rem;
+}
+
+.fix-warning {
+  margin: 0.3rem 0;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.fix-explainer {
+  display: grid;
+  grid-template-columns: minmax(9rem, max-content) 1fr;
+  gap: 0.25rem 0.75rem;
+  margin: 0;
+  font-size: 0.85rem;
+}
+
+.fix-explainer dt {
+  color: var(--muted);
+}
+
+.fix-explainer dd {
+  margin: 0;
+}
+
+@media (max-width: 600px) {
+  .fix-explainer {
+    grid-template-columns: 1fr;
+  }
+  .fix-explainer dd {
+    margin-bottom: 0.4rem;
+  }
+}
+
 /* -- sessions ------------------------------------------------------- */
 
 .pager {
@@ -575,4 +625,100 @@ td.num, th.num {
     overflow-x: auto;
     flex-wrap: nowrap;
   }
+}
+
+/* -- plain-English help (helptext.py) --------------------------------- */
+
+.tab-intro, .section-intro {
+  margin: 0.25rem 0 0.75rem;
+  color: var(--muted);
+  max-width: 70ch;
+}
+
+.panel h3.section-title {
+  margin-top: 2rem;
+  padding-bottom: 0.2rem;
+  border-bottom: 1px solid var(--border);
+  font-size: 1.15rem;
+}
+
+.table-wrap h4 {
+  margin: 1.25rem 0 0.25rem;
+  font-size: 1rem;
+}
+
+.how-to-read, .advanced-detail {
+  margin: 0.4rem 0 0.6rem;
+  font-size: 0.9rem;
+}
+
+.how-to-read summary, .advanced-detail > summary {
+  cursor: pointer;
+  color: var(--accent);
+  width: fit-content;
+}
+
+.how-to-read summary:focus-visible, .advanced-detail > summary:focus-visible, .col-help-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.how-to-read dl {
+  margin: 0.4rem 0 0;
+  padding: 0.5rem 0.8rem;
+  border-left: 3px solid var(--border);
+  max-width: 75ch;
+}
+
+.how-to-read dt {
+  font-weight: 600;
+}
+
+.how-to-read dd {
+  margin: 0 0 0.4rem;
+}
+
+.advanced-detail {
+  margin-top: 1rem;
+  padding: 0.25rem 0.75rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.advanced-detail > summary {
+  font-weight: 600;
+}
+
+.col-help-btn {
+  margin-left: 0.3em;
+  width: 1.4em;
+  height: 1.4em;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: var(--bg);
+  color: var(--muted);
+  font-size: 0.75rem;
+  line-height: 1;
+  cursor: pointer;
+  vertical-align: middle;
+}
+
+.col-help-btn[aria-expanded="true"] {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.col-help {
+  margin: 0.25rem 0 0.4rem;
+  padding: 0.35rem 0.6rem;
+  border-left: 3px solid var(--accent);
+  background: var(--zebra);
+  font-size: 0.85rem;
+  max-width: 75ch;
+}
+
+.value-label {
+  text-decoration: underline dotted var(--muted);
+  text-underline-offset: 2px;
 }

@@ -31,9 +31,11 @@ concrete, constructible contract (proposed here, not silently changed):
 WP1 (parse.py, events.py, jsonl.py, discovery.py) additions, all with
 defaults so every existing call site keeps working:
 
-- ``Event.size_chars: int | None`` — length of an attachment line's
-  ``rendered`` field, when present. Requested by the WP1 brief for
-  CONTEXT_INJECT/REMINDER/CACHE_SIGNAL/HOOK_OUTPUT/ATTACHMENT sizing.
+- ``Event.size_chars: int | None`` — length of the text an attachment
+  line puts in front of the model: its ``rendered`` blocks, else its own
+  content fields (``events._rendered_size_chars``). Requested by the WP1
+  brief for CONTEXT_INJECT/REMINDER/CACHE_SIGNAL/HOOK_OUTPUT/ATTACHMENT
+  sizing. ``None`` for ``prompt_snapshot``, whose sizes are in ``detail``.
 - ``Event.detail: dict`` — small numeric/short-string detail a kind needs
   beyond kind/subkind (API_ERROR's ``status``/``retryAttempt``,
   MODEL_FALLBACK's ``originalModel``/``fallbackModel``, and the three
@@ -569,6 +571,28 @@ class Column:
     #: "str" | "int" | "float" | "pct" | "money" | "tokens" | "secs"
     kind: str = "str"
     align: str | None = None
+    #: Readability addition: one plain-English sentence saying what the
+    #: column's number means. Empty when none has been written yet.
+    help: str = ""
+
+
+@dataclass(slots=True)
+class Help:
+    """Readability addition: the "how to read this" block for a table or
+    section, in the house style of ``docs/writing-help.md``."""
+
+    #: What the table shows, in one or two sentences.
+    shows: str = ""
+    #: How to read the numbers.
+    read: str = ""
+    #: When to act, and what to do. Empty when there is nothing to do.
+    act: str = ""
+
+
+#: ``Table.dashboard`` values: shown on the dashboard, shown collapsed
+#: under "Advanced detail", or kept out of the dashboard (still in the
+#: CLI/JSON/CSV report).
+DASHBOARD_PLACEMENTS = ("keep", "advanced", "report")
 
 
 @dataclass(slots=True)
@@ -576,6 +600,12 @@ class Table:
     """A renderer-agnostic table: columns plus rows of raw values (not yet
     formatted — ``render.tables.format_cell`` does that per-column at
     render time).
+
+    Readability additions (all defaulted): ``help``, ``value_labels`` and
+    ``dashboard``. ``value_labels`` maps a raw string cell value (a row
+    key such as ``"full-expiry"``) to its display label; it is display
+    only -- ``rows`` keep their raw values, which ``recommend.py``'s
+    evidence lookups and ``tests/test_recommend_contract.py`` rely on.
     """
 
     name: str = ""
@@ -583,16 +613,53 @@ class Table:
     columns: list[Column] = field(default_factory=list)
     rows: list[list] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    help: Help | None = None
+    value_labels: dict[str, str] = field(default_factory=dict)
+    #: One of :data:`DASHBOARD_PLACEMENTS`.
+    dashboard: str = "keep"
 
 
 @dataclass(slots=True)
 class Section:
-    """One report section: a heading, its tables, and free-text notes."""
+    """One report section: a heading, its tables, and free-text notes.
+
+    Readability additions (defaulted): ``intro``, a one-line summary shown
+    under the heading, and ``help``, its "how to read this" block.
+    """
 
     key: str = ""
     title: str = ""
     tables: list[Table] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    intro: str = ""
+    help: Help | None = None
+
+
+@dataclass(slots=True)
+class SettingChange:
+    """One concrete edit a recommendation proposes: which key, where, and
+    to what. ``target`` is ``"settings"`` (a ``settings.json`` key) or
+    ``"agent"`` (a ``.claude/agents/<agent>.md`` frontmatter field).
+    ``value`` is ``None`` when the right value needs your judgement (a
+    narrower ``tools`` list, say); ``suggested`` then describes what to
+    choose. ``unconfirmed`` marks a change whose effect Claude Code's
+    docs don't state, so the explainer says so.
+    """
+
+    target: str = "settings"  # "settings" | "agent"
+    key: str = ""
+    agent: str | None = None
+    value: object = None
+    suggested: str = ""
+    note: str = ""
+    unconfirmed: bool = False
+    #: The value in effect now, from the latest config snapshot (``None``:
+    #: not set, or no snapshot).
+    current: object = None
+    #: ``agent`` is a built-in agent type with no file: the change means
+    #: writing a same-named agent file, which needs judgement, so it is
+    #: offered as a prompt only.
+    new_agent_file: bool = False
 
 
 @dataclass(slots=True)
@@ -627,6 +694,20 @@ class Recommendation:
     #: stanza instead of guessing the agent type back out of ``lever``'s
     #: text.
     agent_type: str | None = None
+    #: Readability additions (defaulted): the concrete edits this
+    #: recommendation proposes (``fixes.build_fix`` turns each into an
+    #: explainer, a command and a prompt), the estimated saving already
+    #: phrased for the billing mode (``units.Units``), and a plain
+    #: sentence on why it matters.
+    changes: list[SettingChange] = field(default_factory=list)
+    estimated_saving: str = ""
+    #: How ``estimated_saving`` was worked out, for the explainer.
+    saving_basis: str = ""
+    why: str = ""
+    #: ``fixes.build_fix`` output per change, filled by ``report.build_report``:
+    #: dicts with ``explainer`` (list of (heading, text)), ``command`` and
+    #: ``prompt``.
+    fixes: list = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -656,6 +737,8 @@ class ReportMeta:
     pricing: PricingMeta = field(default_factory=PricingMeta)
     thresholds: dict = field(default_factory=dict)
     billing_mode: str = "api"  # "api" | "subscription"
+    #: Why ``billing_mode`` has its value (``Config.billing_source``).
+    billing_source: str = ""
     #: TTL/RE-CACHE/etc. assumption text, rendered as the report's
     #: "## Assumptions" block. See the module docstring's deviation note.
     assumptions: list[str] = field(default_factory=list)
@@ -688,6 +771,7 @@ __all__ = [
     "Table",
     "Section",
     "Recommendation",
+    "SettingChange",
     "PricingMeta",
     "ReportMeta",
     "ReportModel",

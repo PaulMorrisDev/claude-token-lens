@@ -206,6 +206,13 @@ systemd hosting paths are scoped instead by OS-level permissions
 `ReadWritePaths`) rather than a container boundary — detail on all
 three in [docs/deploy.md](docs/deploy.md).
 
+A web page you visit can't read the service's API through DNS
+rebinding (pointing its own domain name at `127.0.0.1`): every request
+whose `Host` header isn't a loopback name, the specific `--bind`
+address, or a name you added with `serve --allowed-host` gets `403`
+before any route runs. See
+[docs/api.md](docs/api.md#host-allowlist-dns-rebinding).
+
 The service's on-disk SQLite store (`<config-dir>/service.db`) is
 always a derived cache rebuilt from the same transcripts the CLI
 already reads, never a second source of truth — `claude-token-lens

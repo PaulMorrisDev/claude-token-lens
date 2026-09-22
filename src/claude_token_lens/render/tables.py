@@ -139,6 +139,25 @@ def format_evidence_value(model: "ReportModel", value, source_table: str, row_ke
     return format_cell(value, kind, currency)
 
 
+def display_cell(value, column, table, currency: str = "USD") -> str:
+    """``format_cell`` plus the table's display labels
+    (``Table.value_labels``, e.g. "top-level" -> "Main session"). Only
+    the Markdown and HTML renderers use this: JSON and CSV keep the raw
+    value, which is what scripts and ``recommend.py`` match on."""
+    labels = getattr(table, "value_labels", None) or {}
+    if isinstance(value, str) and value in labels:
+        return labels[value]
+    return format_cell(value, column.kind, currency)
+
+
+def help_parts(help_) -> list[tuple[str, str]]:
+    """A ``model.Help`` as ``(heading, text)`` pairs, empty parts left out."""
+    if help_ is None:
+        return []
+    parts = [("What it shows", help_.shows), ("How to read it", help_.read), ("When to act", help_.act)]
+    return [(heading, text) for heading, text in parts if text]
+
+
 def escape_md(cell) -> str:
     """Escape a table cell for embedding in a Markdown table.
 

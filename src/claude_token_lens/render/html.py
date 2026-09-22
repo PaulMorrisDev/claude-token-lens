@@ -27,7 +27,7 @@ import dataclasses
 import html as _html
 
 from ..model import Diagnostics, ReportModel, Table
-from .tables import format_cell, format_evidence_value
+from .tables import display_cell, format_evidence_value, help_parts
 
 #: Column kinds that read as quantities: right-aligned, sortable numerically.
 _NUMERIC_KINDS = frozenset({"int", "float", "pct", "money", "tokens", "secs"})
@@ -76,6 +76,31 @@ h2 {
 }
 h3 {
   margin-top: 1.25rem;
+}
+.intro {
+  color: var(--muted);
+  max-width: 70ch;
+}
+details.help {
+  margin: 0.25rem 0 0.5rem;
+  font-size: 0.9rem;
+}
+details.help summary {
+  cursor: pointer;
+  color: var(--accent);
+  width: fit-content;
+}
+details.help dl {
+  margin: 0.4rem 0 0;
+  padding-left: 0.8rem;
+  border-left: 3px solid var(--border);
+  max-width: 75ch;
+}
+details.help dt {
+  font-weight: 600;
+}
+details.help dd {
+  margin: 0 0 0.4rem;
 }
 table {
   width: 100%;
@@ -186,7 +211,7 @@ def _meta_lines(model: ReportModel) -> list[str]:
                 f"coverage={pricing.coverage_pct:.1f}%",
             ]
         ),
-        f"Billing mode: {meta.billing_mode}",
+        f"Billing mode: {meta.billing_mode}" + (f" ({meta.billing_source})" if meta.billing_source else ""),
     ]
     thresholds = ", ".join(f"{k}={v}" for k, v in meta.thresholds.items()) or "-"
     lines.append(f"Thresholds: {thresholds}")
@@ -208,6 +233,14 @@ def _diagnostics_lines(model: ReportModel) -> list[str]:
     return lines
 
 
+def _help_html(pairs: list[tuple[str, str]], summary: str = "How to read this") -> str:
+    """A collapsed ``<details>`` block, or "" when there is no help."""
+    if not pairs:
+        return ""
+    items = "".join(f"<dt>{_esc(heading)}</dt><dd>{_esc(text)}</dd>" for heading, text in pairs)
+    return f'<details class="help"><summary>{_esc(summary)}</summary><dl>{items}</dl></details>'
+
+
 def _table_html(table: Table, currency: str, table_id: str) -> str:
     head_cells = []
     for column in table.columns:
@@ -221,7 +254,7 @@ def _table_html(table: Table, currency: str, table_id: str) -> str:
     for row in table.rows:
         cells = []
         for value, column in zip(row, table.columns):
-            display = _esc(format_cell(value, column.kind, currency))
+            display = _esc(display_cell(value, column, table, currency))
             cls_attr = ' class="num"' if column.kind in _NUMERIC_KINDS else ""
             sort_value = "" if value is None else str(value)
             cell_html = display
@@ -248,9 +281,14 @@ def _table_html(table: Table, currency: str, table_id: str) -> str:
             + "</ul>"
         )
 
+    column_help = _help_html(
+        [(column.label, column.help) for column in table.columns if column.help], "What the columns mean"
+    )
     return (
         f"<h3>{_esc(table.title)}</h3>"
+        f"{_help_html(help_parts(table.help))}"
         f'<table class="sortable" id="{_esc(table_id)}">{thead}{tbody}</table>'
+        f"{column_help}"
         f"{notes_html}"
     )
 
@@ -260,6 +298,9 @@ def _sections_html(model: ReportModel) -> str:
     parts = []
     for section_index, section in enumerate(model.sections):
         parts.append(f"<section><h2>{_esc(section.title)}</h2>")
+        if section.intro:
+            parts.append(f'<p class="intro">{_esc(section.intro)}</p>')
+        parts.append(_help_html(help_parts(section.help)))
         for table_index, table in enumerate(section.tables):
             table_id = f"table-{section_index}-{table_index}"
             parts.append(_table_html(table, currency, table_id))
@@ -273,6 +314,29 @@ def _sections_html(model: ReportModel) -> str:
     return "".join(parts)
 
 
+def _fix_html(fix: dict) -> str:
+    """One ``fixes.build_fix`` entry, collapsed: explainer, prompt and
+    (for a plain setting) the dry-run command."""
+    subject = ""
+    if fix.get("key"):
+        subject = f": {fix['key']}" + (f" for {fix['agent']}" if fix.get("agent") else "")
+    parts = [f'<details class="help"><summary>{_esc("How to make this change" + subject)}</summary>']
+    if fix.get("explainer"):
+        parts.append("<dl>")
+        for heading, text in fix["explainer"]:
+            parts.append(f"<dt>{_esc(heading)}</dt><dd>{_esc(text)}</dd>")
+        parts.append("</dl>")
+    parts.append(f"<p>Ask Claude to do it:</p><pre>{_esc(fix['prompt'])}</pre>")
+    if fix.get("command"):
+        parts.append(
+            "<p>Or run this command (it only shows the change; run it again without --dry-run to make it):</p>"
+            + (f"<p><strong>{_esc(fix['command_warning'])}</strong></p>" if fix.get("command_warning") else "")
+            + f"<pre>{_esc(fix['command'])}</pre>"
+        )
+    parts.append("</details>")
+    return "".join(parts)
+
+
 def _recommendations_html(model: ReportModel) -> str:
     if not model.recommendations:
         return "<p>None.</p>"
@@ -281,9 +345,15 @@ def _recommendations_html(model: ReportModel) -> str:
     for rec in model.recommendations:
         parts.append('<article class="rec">')
         parts.append(f"<h3>[{_esc(rec.severity)}] {_esc(rec.title)}</h3>")
+        if rec.why:
+            parts.append(f"<p>{_esc(rec.why)}</p>")
         parts.append(f"<p>Action: {_esc(rec.action)}</p>")
+        if rec.estimated_saving:
+            parts.append(f"<p><strong>Estimated saving:</strong> {_esc(rec.estimated_saving)}</p>")
         if rec.lever:
             parts.append(f"<p>Lever: {_esc(rec.lever)} (scope: {_esc(rec.scope)})</p>")
+        if rec.scope != "managed":
+            parts.extend(_fix_html(fix) for fix in rec.fixes)
         if rec.evidence:
             parts.append('<p>Evidence:</p><ul class="evidence-list">')
             for label, value, source_table, row_key in rec.evidence:

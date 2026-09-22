@@ -79,6 +79,11 @@ class ServeOptions:
     #: themselves; carried here so ``cli.py``'s ``--monthly-report DIR``
     #: flag has somewhere to put the value once a caller needs it.
     monthly_report_dir: Path | None = None
+    #: Extra host names the ``Host`` header may carry (``serve
+    #: --allowed-host``), on top of the loopback names and a specific
+    #: ``bind`` address that are always allowed. Any other ``Host`` is
+    #: refused before routing, so a DNS-rebinding page can't read the API.
+    allowed_hosts: tuple[str, ...] = ()
 
 
 @dataclass(slots=True)

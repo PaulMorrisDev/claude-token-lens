@@ -616,6 +616,31 @@ appear in `claude-token-lens report`'s output — call it directly:
   supplied by the caller; skipped with a note when not enough samples
   exist.
 
+## `agent_startup` (`context_budget.py`)
+
+What each subagent type is given before its first turn. Built from each
+subagent transcript's events before its first priced turn
+(`ContextBudgetStats.add_subagent`); sizes are characters / 4. A fork
+(its first turn reads most of the parent's context from cache, or its
+agent type is `fork`) is counted in `fork_spawns` and kept out of every
+average. No tables and one note when nothing was measured.
+
+- `agent_startup_breakdown` — per agent type: `spawns`, `fork_spawns`,
+  `startup_tokens` (the first turn's whole input), the mean per spawn of
+  `task_prompt`, `claude_md`, `skills_listing`, `tool_lists`,
+  `hook_context`, `other_attachments`, `system_prompt` and
+  `tool_definitions` (the last two only when a system-prompt snapshot
+  was recorded), `not_recorded` (the rest), `measured_pct`, and
+  `write_price` (the first turn's model's 5-minute cache-write list
+  price per million tokens, used to price each part).
+- `agent_startup_unused` — per agent type: spawns measured, the skills
+  list size, spawns given it and spawns that called the Skill tool,
+  spawns offered MCP tools and spawns that called one, the CLAUDE.md
+  size and spawns that only used search and read tools.
+- `agent_startup_shared` — parts (CLAUDE.md by source, and the other
+  parts) that at least half the agent types receive at about the same
+  size, with where they come from and the total across spawns.
+
 ## `context_budget` (`context_budget.py`)
 
 Answers the owner question "do we track preloaded skills, the system
@@ -848,7 +873,10 @@ Rules implemented today (each an Appendix A5 rule, `recommend.py`'s
 `_rule_*` functions): `ttl-switch`, `long-tool-waits`,
 `notification-invalidation`, `batch-instructions`, `subagent-volume`,
 `compaction-churn`, `long-context-share`, `cache-read-dominance`,
-`baseline-bloat`, `agent-report-size`, `spawn-cost`, `effort-mismatch`,
+`baseline-bloat`, `agent-report-size`, `spawn-cost` (for agent types
+without `agent_startup` data; otherwise the per-part `spawn-claude-md`,
+`spawn-unused-skills`, `spawn-unused-mcp`, `spawn-read-only-tools`,
+`spawn-task-prompt` and `spawn-shared-claude-md`), `effort-mismatch`,
 `discovery-share`, `pricing-coverage`, `data-quality` — gated by
 archetype (a `ttl-switch` recommendation for a `chat-only` session's
 subagents is suppressed, since a chat-only session barely has any), a

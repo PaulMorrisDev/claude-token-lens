@@ -9,6 +9,96 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Readable dashboard and reports** (readability stage 1). Every table
+  and section can carry plain-English help (`Column.help`,
+  `Table.help`/`value_labels`/`dashboard`, `Section.intro`/`help`, all
+  defaulted in `model.py`), written by the new `helptext.py` after
+  `recommend()` runs, so table names, column keys and row values are
+  unchanged. The dashboard shows an intro, a "How to read this" block,
+  a `?` per column and readable row labels (raw key on hover), and
+  folds rarely needed tables into "Advanced detail". `report --explain`
+  adds the same help to the Markdown report; the HTML report has it in
+  collapsed blocks. The Agents, Subagent startup, Workstyle and
+  Workflows sections are covered so far; `tests/test_help_coverage.py`
+  keeps a shrinking list of the rest. House style:
+  [`docs/writing-help.md`](docs/writing-help.md).
+- **Subagent startup section** (`agent_startup`, `context_budget.py`):
+  what each agent type is given before its first turn (task prompt,
+  CLAUDE.md and memory, skills list, tool lists, hook output, other
+  notes, and the system prompt and tool definitions when recorded, with
+  the rest shown as "Not recorded"), what it was given but never used,
+  and what most agent types receive alike. Forks are counted but kept
+  out of the averages. `agent_startup_breakdown` also carries each
+  agent's cache-write list price (`write_price`).
+- **Per-part subagent recommendations** replace the single generic
+  `spawn-cost` advice wherever the startup breakdown has data:
+  `spawn-claude-md` (`omitClaudeMd`; never for Explore or Plan),
+  `spawn-unused-skills` (add `Skill` to `disallowedTools`, marked
+  unconfirmed), `spawn-unused-mcp` (`mcpServers`),
+  `spawn-read-only-tools` (`tools`), `spawn-task-prompt` and
+  `spawn-shared-claude-md`. Built-in agent types get a prompt to create
+  a same-named override instead of a command; workflow subagents and
+  forks get no override advice. `spawn-cost` remains for agent types
+  without startup data.
+- **Recommendations say what to change and how.** `Recommendation`
+  gains `changes` (`SettingChange`: target, key, agent, value, current
+  value, suggestion, notes), `estimated_saving`, `saving_basis`, `why`
+  and `fixes`. The new `fixes.py` turns each change into a six-part
+  explainer (what the setting controls, now and after, where and who it
+  affects, expected effect, trade-off, how to undo it), an
+  `apply --set ... --dry-run` command when the value is known, and a
+  self-contained prompt for Claude. When a change needs work first
+  (`omitClaudeMd`: move the CLAUDE.md rules the agent needs into its own
+  agent file), the prompt asks Claude to do that before setting the key,
+  and the command carries a `command_warning`. Shown on the dashboard cards, in the
+  Markdown report and in the HTML report.
+- **Amounts follow the billing mode** (`units.py`): dollars at list
+  price for API billing; for Pro and Max plans, the share of the weekly
+  usage limit (fitted by `elasticity.py` from your statusline readings)
+  with the list-price equivalent next to it, or the list-price
+  equivalent plus a hint when there are too few readings.
+- **`apply --set KEY=VALUE [--agent NAME]`**: change one allowlisted
+  setting or agent frontmatter field without a profile, with the same
+  validation, backups, `--dry-run` and `--revert` as a profile apply.
+  It never writes the active-profile marker. `mcpServers` joins the
+  agent frontmatter allowlist.
+- **`GET /api/diagnostics`**: the parse-quality counters as a labelled
+  table, led by a check of the config snapshot hook.
+- **Snapshot hook health** (`hook_health.py`): finds the SessionStart
+  hook that runs `snapshot-config.py`, spots a Windows path broken by a
+  single backslash in JSON (`\t` read as a tab), and reports how long
+  ago the last snapshot was taken. `init` reports it and offers to fix
+  the command; `init --repair-hook` fixes it without asking. Only that
+  command string changes, after a `settings.json.bak-<timestamp>` backup.
+- **`billing = "auto"`**, the new default: subscription once the usage
+  log holds a usage-limit reading (only Pro and Max plans report them),
+  API otherwise. `ReportMeta.billing_source` says why; the report header
+  and the dashboard's Overview show it.
+- **Host allowlist** for `serve` (DNS rebinding): every request whose
+  `Host` header isn't a loopback name, the bind address or an
+  `--allowed-host NAME` gets `403`.
+
+### Changed
+
+- CLI and dashboard wording: section, table and column titles are
+  plainer; the Markdown and HTML reports show readable row labels. JSON
+  and CSV output keep the raw keys and values.
+- Dashboard: every report section is mapped to a tab (`sessions`,
+  `context_budget`, `baseline_comparison`, `phases`, `agent_startup`,
+  `scorecard`); the Config tab renders its tables once; the Cache tab
+  explains the limit-expiry cause; tabs are renamed "Cache lifetime
+  (TTL)" and "Data quality"; each tab has one heading and an intro.
+
+### Fixed
+
+- Attachment sizes are measured from the fields real transcripts carry
+  (`skill_listing.content`, `instructions.files[]`,
+  `deferred_tools_delta.addedLines` and others). They were always 0,
+  because the code read a `rendered` field that real transcripts never
+  have.
+- The dashboard's recommendation cards no longer show a stale
+  `apply <lever> --dry-run` hint.
+
 - **`elasticity.py`** (v4-elasticity): fits how many percentage points
   of a `five_hour`/`seven_day`/`spend_limit` usage window one million
   tokens (or one list-price dollar) is actually worth, from consecutive

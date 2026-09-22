@@ -65,9 +65,10 @@ in this order:
    fourth marker kind, `limit_markers`, in the blank strip above the
    context line rather than on the line itself — see "Session timeline"
    below for why they're positioned by timestamp instead of turn index.
-3. **Cache** — `/api/recache`: the full-expiry vs. prefix-invalidated
-   breakdown, same figures as the CLI's `recache` subcommand.
-4. **TTL** — `/api/ttl`: per-agent-type observed/simulated cost, the
+3. **Cache** — `/api/recache`: cache rebuilds by cause (expired while
+   idle, invalidated by a change, expired during a usage-limit pause —
+   `recache.SIGNATURES`), plus the `recache`/`limits` report sections.
+4. **Cache lifetime (TTL)** — `/api/ttl`: per-agent-type observed/simulated cost, the
    5m/1h recommendation and its fidelity — same figures as the CLI's
    `ttl` subcommand, including the fidelity-exceeds-bound suppression
    note.
@@ -85,12 +86,14 @@ in this order:
    `compaction-window`/`model-tier`/`wasted-turns` recommendations these
    sections' rules produce are not duplicated here — they show up as
    cards on the Recommendations tab like every other recommendation.
-6. **Agents** — per-agent-type cost/turn/spawn-depth breakdown (from
-   `/api/summary` and `/api/sessions` grouped client-side by
-   `agent_type`, avoiding a dedicated route for a shape the existing
-   ones already carry).
-7. **Config** — `/api/config-diff`: `effective_config`/`config_layers`/
-   `config_groups`/`config_drift` (plan "Configuration layers and
+6. **Agents** — the `agent_startup`, `agents`, `workstyle` and
+   `workflows` report sections, from `/api/report.json`: what each
+   subagent type is given at startup (and what it never used), cost per
+   run, skills and MCP cost, effort, and what fills the context window.
+7. **Config** — `/api/config-diff?auto_keys=1`: `effective_config`/`config_layers`/
+   `config_groups`/`config_drift` and the per-key diff tables, rendered
+   once (the config section is skipped when the tab walks the full
+   report for `context_budget` and `baseline_comparison`) (plan "Configuration layers and
    per-project effective config" section) — which layer supplied each
    key, and which projects share an identical effective config. A
    snapshot with no project attribution (`project_slug: null`, see
@@ -120,22 +123,50 @@ in this order:
    failing silently.
 9. **Recommendations** — `/api/recommendations`: one card per
    `Recommendation`, grouped by `severity`. Every card shows its
-   evidence line(s) (`label: formatted value (table, row)`, same
-   formatting `render/tables.py::format_evidence_value` gives the CLI's
-   Markdown/HTML output) and, where `lever` is set, the same
-   diff-plus-command treatment as the Profiles tab; a `scope: "managed"`
-   card instead shows "managed by policy, raise with your
-   administrator" in place of an apply command (plan "Enterprise use").
+   evidence line(s) (`label: formatted value (from <table title>,
+   <row label>)`, same value formatting
+   `render/tables.py::format_evidence_value` gives the CLI's
+   Markdown/HTML output), `why` and the estimated saving (phrased for
+   the billing mode), and, per entry in `fixes`, "What you're
+   changing" (the six-part explainer), "Ask Claude to do it" (the
+   prompt, with a Copy button) and, for a plain setting, "Or run this
+   command" (the `apply --set ... --dry-run` line). A card with a
+   `lever` but no `fixes` names the setting and where it lives in plain
+   words; a `scope: "managed"` card instead shows "managed by policy,
+   raise with your administrator" (plan "Enterprise use") and no fix.
    The same "capture window open: provisional" notice as the Config
    tab's baseline panel appears above the list while a capture window is
    in progress (`/api/baseline`'s `capture_status`).
-10. **Usage** — the `usage`/`compactions` report sections plus a raw
-    `/api/compactions` list, its own dedicated tab rather than folded
-    into Diagnostics.
-11. **Diagnostics** — parse-quality counters (`Diagnostics` dataclass
-    fields), aggregated corpus-wide from the store — same figures as
-    the CLI report's Diagnostics section, so a user comparing the UI
-    against a CLI run for the same window sees identical numbers.
+10. **Usage** — the `usage`/`compactions`/`phases` report sections plus a raw
+    `/api/compactions` list.
+11. **Data quality** — `/api/diagnostics`: the parse-quality counters
+    (`Diagnostics` dataclass fields) as a labelled table, each with what
+    it means (`helptext.diagnostics_table`) — same figures as the CLI
+    report's Diagnostics section, so a user comparing the UI against a
+    CLI run for the same window sees identical numbers.
+
+## Help and labels
+
+Every tab has exactly one `h2` (its `TAB_TITLES` entry, matching the tab
+button) and a one-line `TAB_INTROS` sentence. Sections are `h3`, tables
+`h4`. The words come from `helptext.py` (house style:
+`docs/writing-help.md`), applied to the report model by
+`helptext.annotate` and rendered generically:
+
+- **Section intro and "How to read this".** `Section.intro` as a line
+  under the heading; `Section.help`/`Table.help` as a collapsed
+  `<details>` with "What it shows", "How to read it", "When to act".
+- **Column help.** A `?` button in the header (a real `<button>` with
+  `aria-expanded`, keyboard and touch operable, never a `title=`-only
+  tooltip) shows that column's `Column.help` in a line above the table.
+  It stops propagation so it never also sorts the column.
+- **Value labels.** `Table.value_labels` replaces raw row values such
+  as `top-level` with "Main session"; the raw value stays in the
+  cell's `title` and `data-raw`.
+- **Placement.** `Table.dashboard`: `keep` tables are shown,
+  `advanced` tables go into one collapsed "Advanced detail (N)" block
+  per section, and `report` tables are left to the CLI report with a
+  one-line note.
 
 ## Data flow
 
@@ -173,13 +204,15 @@ note remains:
   a fixture-server smoke test); this document's own filename reference
   was the one that drifted, not the test suite.
 
-**Generic Section/Table rendering** for Cache/TTL/Agents/Config/Usage/
-Diagnostics is driven by an explicit section-key -> tab map (`recache`/
-`limits` -> Cache, `ttl` -> TTL, `agents`/`workflows`/`workstyle` ->
-Agents, `config`/`scorecard` -> Config, `usage`/`compactions` -> Usage,
-everything else including `phases` -> Diagnostics) so an unrecognised
+**Generic Section/Table rendering** for Sessions/Cache/TTL/Agents/Config/Usage/
+Data quality is driven by an explicit section-key -> tab map (`recache`/
+`limits` -> Cache, `ttl` -> TTL, `agent_startup`/`agents`/`workflows`/`workstyle` ->
+Agents, `sessions` -> Sessions, `config`/`context_budget`/`baseline_comparison` -> Config,
+`usage`/`compactions`/`phases` -> Usage, `scorecard` -> Overview (its
+tiles), anything else -> Data quality) so an unrecognised
 section key still lands somewhere visible instead of being silently
-dropped. `recache_by_group` is also in that map, mapped to Cache like
+dropped. `tests/test_service_static.py` checks every section
+`report._SECTION_ORDER` can emit is in the map. `recache_by_group` is also in that map, mapped to Cache like
 `recache` itself, even though it never arrives as a section's own
 `key` today -- `report.py`'s `_build_recache_section` appends it as an
 extra *table* inside the `"recache"` section rather than a section of

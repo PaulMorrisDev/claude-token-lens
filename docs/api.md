@@ -95,7 +95,9 @@ Flags beyond `--projects-root`/`--config-dir`/`--port`/`--bind`/
 - **`--billing-mode {api,subscription}`** (S1-integration fix 1.a) is
   stamped onto every session's `billing_mode` field (see `/api/sessions`
   above). Defaults to `<config-dir>/config.toml`'s own `billing` setting
-  when omitted (itself defaulting to `"api"` — `config.py`'s `Config.billing`),
+  when omitted (itself `"auto"` by default, resolved at start-up by
+  `config.resolve_billing`: `"subscription"` when `usage-log.csv` holds
+  a usage-limit reading, `"api"` otherwise),
   so a subscription user only has to say so once, in one place, rather
   than on every `serve` invocation.
 - **`--monthly-report DIR`** sets `ServeOptions.monthly_report_dir`, a
@@ -110,6 +112,21 @@ Flags beyond `--projects-root`/`--config-dir`/`--port`/`--bind`/
   transcripts already on disk. Exits `2` (and deletes nothing) if
   `--yes` is missing, `0` otherwise (including when there is nothing to
   delete).
+
+## Host allowlist (DNS rebinding)
+
+Every request's `Host` header is checked before routing. A page on
+another site that re-points its own domain name at `127.0.0.1` (DNS
+rebinding) reaches this server as "same origin", but its requests still
+carry `Host: <that domain>`, so they get `403 forbidden` on every
+`GET`, `HEAD` and `POST` route, the static files included.
+
+Allowed names: `127.0.0.1`, `localhost`, `::1`, the `--bind` address
+when it is a specific address (not `0.0.0.0`/`::`), and each
+`serve --allowed-host NAME` (repeatable, `ServeOptions.allowed_hosts`).
+The port is ignored, so a container published on another host port
+still works. A request with no `Host` header at all (HTTP/1.0, never a
+browser) is allowed.
 
 ## Cross-site protection (review S3)
 
@@ -379,8 +396,28 @@ window rather than a fresh corpus scan.
 Query: `window_days`, or `since`/`until` (see "Report-backed routes:
 windowing query params" above).
 
-`data`: `[{"id", "severity", "category", "title", "action", "lever", "scope", "evidence": [[label, value, source_table, row_key], ...]}, ...]` —
+`data`: `[{"id", "severity", "category", "title", "action", "lever", "scope", "evidence": [[label, value, source_table, row_key], ...], "agent_type", "why", "estimated_saving", "saving_basis", "changes": [{"target", "key", "agent", "value", "suggested", "note", "unconfirmed", "current", "new_agent_file"}, ...], "fixes": [{"key", "agent", "explainer": [[heading, text], ...], "command", "command_warning", "prompt"}, ...]}, ...]` —
 exactly `render/json_out.py`'s existing `Recommendation` encoding.
+`fixes` (from `fixes.py`) holds, per change, the six-part explainer, an
+`apply --set ... --dry-run` command (`null` when the value needs
+judgement) and a prompt for Claude.
+
+### `GET /api/diagnostics`
+
+The report's parse-quality counters (`ReportModel.diagnostics`) as one
+plain-English `Table` — `helptext.diagnostics_table`. Used by the Data
+quality tab.
+
+Query: `window_days`, or `since`/`until` (see "Report-backed routes:
+windowing query params" above).
+
+`data`: a `Table` (`name: "data_quality"`). Each row is `[field, value,
+meaning]`; `field` is the raw `Diagnostics` field name and
+`value_labels` maps it to its display label. Dict counters are joined
+into one `"key: count, ..."` string. The first row, `snapshot_hook`, is
+`hook_health.check` on `<config-dir>/../settings.json`: whether a
+SessionStart hook runs `snapshot-config.py`, whether its path exists,
+and how long ago the last snapshot was taken.
 
 ### `GET /api/profiles`
 

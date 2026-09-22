@@ -1302,3 +1302,48 @@ def _raise_runtime_error(*args, **kwargs):
 
 
 __all__: list[str] = []
+
+
+def test_diagnostics_route_returns_the_labelled_table(server):
+    resp, body = server.get_json("/api/diagnostics")
+    assert resp.status == 200
+    table = body["data"]
+    assert table["name"] == "data_quality"
+    assert [c["key"] for c in table["columns"]] == ["check", "value", "meaning"]
+    assert table["value_labels"]["lines"] == "Lines read"
+    assert_privacy(body)
+
+
+# -- Host allowlist (DNS rebinding) -------------------------------------------
+
+
+@pytest.mark.parametrize("path", ["/api/summary", "/api/report.json", "/", "/static/app.js"])
+def test_forged_host_is_refused_on_get(server, path):
+    resp, raw = server.request("GET", path, headers={"Host": "attacker.example:8765"})
+    assert resp.status == 403
+    assert json.loads(raw)["error"]["code"] == "forbidden"
+
+
+def test_forged_host_is_refused_on_post(server):
+    resp, raw = server.request(
+        "POST", "/api/profiles", body={"id": "x"}, headers={"Host": "attacker.example"}
+    )
+    assert resp.status == 403
+    assert json.loads(raw)["error"]["code"] == "forbidden"
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1:1234", "localhost", "LOCALHOST:8765", "[::1]:8765"])
+def test_loopback_hosts_are_allowed(server, host):
+    resp, _ = server.request("GET", "/api/health", headers={"Host": host})
+    assert resp.status == 200
+
+
+def test_allowed_host_names_add_specific_binds_and_extra_names():
+    from claude_token_lens.service.api import allowed_host_names
+
+    base = ServeOptions(projects_root=Path("p"), config_dir=Path("c"))
+    assert "0.0.0.0" not in allowed_host_names(ServeOptions(projects_root=Path("p"), config_dir=Path("c"), bind="0.0.0.0"))
+    assert "192.168.1.5" in allowed_host_names(ServeOptions(projects_root=Path("p"), config_dir=Path("c"), bind="192.168.1.5"))
+    extra = ServeOptions(projects_root=Path("p"), config_dir=Path("c"), allowed_hosts=("Lens.Local",))
+    assert "lens.local" in allowed_host_names(extra)
+    assert "lens.local" not in allowed_host_names(base)

@@ -42,7 +42,14 @@ __version__ = "0.3.0"
 #: from each turn's own tool_result blocks that carry ``is_error: true``
 #: (see model.py's module docstring), which no pre-batch digest cache
 #: entry ever computed, so it must not be treated as still valid.
-PARSER_VERSION = 6
+#:
+#: Bumped to 7 by the readability batch: events.py now measures an
+#: attachment's ``Event.size_chars`` from the real ``rendered`` shape (a
+#: list of ``{"content": str}`` blocks) or its content fields, where it
+#: previously read only a bare string and so recorded ``None``; it also
+#: adds per-source ``instructions`` sizes and ``prompt_snapshot``
+#: system/tool sizes to ``Event.detail``.
+PARSER_VERSION = 7
 
 #: Bump when the model.py contract changes in a way that invalidates the
 #: on-disk digest cache (see model.py's module docstring for the contract

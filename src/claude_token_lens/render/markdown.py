@@ -8,7 +8,9 @@ Layout (fixed, see the project plan's "Renderers and CLI" section):
    provenance, billing mode, thresholds).
 3. ``## Assumptions`` (from ``model.meta.assumptions``).
 4. ``## <Section.title>`` per section, each ``Table`` as a GitHub pipe
-   table plus its notes.
+   table plus its notes. With ``explain=True`` (``report --explain``)
+   each section also gets its intro and "how to read this" help, and
+   each table its help and a column glossary.
 5. ``## Recommendations``.
 6. ``## Diagnostics``.
 
@@ -20,7 +22,7 @@ from __future__ import annotations
 import dataclasses
 
 from ..model import Diagnostics, ReportModel, Table
-from .tables import escape_md, format_cell, format_evidence_value
+from .tables import display_cell, escape_md, format_evidence_value, help_parts
 
 #: Column kinds that read as quantities and so are right-aligned by
 #: default in a pipe table, unless the column overrides ``align``.
@@ -59,7 +61,7 @@ def _render_meta(model: ReportModel) -> list[str]:
                 f"coverage={pricing.coverage_pct:.1f}%",
             ]
         ),
-        f"- Billing mode: {meta.billing_mode}",
+        f"- Billing mode: {meta.billing_mode}" + (f" ({meta.billing_source})" if meta.billing_source else ""),
     ]
     if meta.thresholds:
         thresholds = ", ".join(f"{k}={v}" for k, v in meta.thresholds.items())
@@ -78,8 +80,15 @@ def _render_assumptions(model: ReportModel) -> list[str]:
     return lines
 
 
-def _render_table(table: Table, currency: str) -> list[str]:
+def _help_lines(help_) -> list[str]:
+    lines = [f"**{heading}.** {text}" for heading, text in help_parts(help_)]
+    return [line for pair in zip(lines, [""] * len(lines)) for line in pair]
+
+
+def _render_table(table: Table, currency: str, explain: bool = False) -> list[str]:
     lines = [f"### {table.title}", ""]
+    if explain:
+        lines.extend(_help_lines(table.help))
     aligns = [_align_for(column.kind, column.align) for column in table.columns]
     header = "| " + " | ".join(escape_md(column.label) for column in table.columns) + " |"
     divider = "| " + " | ".join(_alignment_marker(a) for a in aligns) + " |"
@@ -87,28 +96,58 @@ def _render_table(table: Table, currency: str) -> list[str]:
     lines.append(divider)
     for row in table.rows:
         cells = [
-            escape_md(format_cell(value, column.kind, currency))
+            escape_md(display_cell(value, column, table, currency))
             for value, column in zip(row, table.columns)
         ]
         lines.append("| " + " | ".join(cells) + " |")
     if table.notes:
         lines.append("")
         lines.extend(f"- {note}" for note in table.notes)
+    if explain and any(column.help for column in table.columns):
+        lines.append("")
+        lines.append("Columns:")
+        lines.extend(f"- {column.label}: {column.help}" for column in table.columns if column.help)
     return lines
 
 
-def _render_sections(model: ReportModel) -> list[str]:
+def _render_sections(model: ReportModel, explain: bool = False) -> list[str]:
     currency = model.meta.pricing.currency
     lines: list[str] = []
     for section in model.sections:
         lines.append(f"## {section.title}")
         lines.append("")
+        if explain:
+            if section.intro:
+                lines.extend([section.intro, ""])
+            lines.extend(_help_lines(section.help))
         for table in section.tables:
-            lines.extend(_render_table(table, currency))
+            lines.extend(_render_table(table, currency, explain))
             lines.append("")
         if section.notes:
             lines.extend(f"- {note}" for note in section.notes)
             lines.append("")
+    return lines
+
+
+def _render_fix(fix: dict) -> list[str]:
+    """One ``fixes.build_fix`` entry: the explainer, the prompt for
+    Claude and, for a plain setting, the dry-run command."""
+    lines: list[str] = []
+    if fix.get("explainer"):
+        subject = f": {fix['key']}" + (f" for {fix['agent']}" if fix.get("agent") else "") if fix.get("key") else ""
+        lines += ["", f"What you're changing{subject}:", ""]
+        lines += [f"- **{heading}.** {text}" for heading, text in fix["explainer"]]
+    lines += ["", "Ask Claude to do it:", "", "```text", fix["prompt"], "```"]
+    if fix.get("command"):
+        lines += [
+            "",
+            "Or run this command (it only shows the change; run it again without --dry-run to make it):",
+            *(["", fix["command_warning"]] if fix.get("command_warning") else []),
+            "",
+            "```bash",
+            fix["command"],
+            "```",
+        ]
     return lines
 
 
@@ -121,10 +160,19 @@ def _render_recommendations(model: ReportModel) -> list[str]:
     for rec in model.recommendations:
         lines.append(f"### [{rec.severity}] {rec.title}")
         lines.append("")
+        if rec.why:
+            lines.append(rec.why)
+            lines.append("")
         lines.append(f"Action: {rec.action}")
+        if rec.estimated_saving:
+            lines.append("")
+            lines.append(f"Estimated saving: {rec.estimated_saving}")
         if rec.lever:
             lines.append("")
             lines.append(f"Lever: {rec.lever} (scope: {rec.scope})")
+        if rec.scope != "managed":
+            for fix in rec.fixes:
+                lines.extend(_render_fix(fix))
         if rec.evidence:
             lines.append("")
             lines.append("Evidence:")
@@ -153,16 +201,17 @@ def _render_diagnostics(model: ReportModel) -> list[str]:
     return lines
 
 
-def render_markdown(model: ReportModel) -> str:
+def render_markdown(model: ReportModel, explain: bool = False) -> str:
     """Render ``model`` as a single Markdown document (see module
-    docstring for the fixed section order).
+    docstring for the fixed section order). ``explain`` adds the help
+    text ``helptext.annotate`` put on each section, table and column.
     """
     lines: list[str] = ["# Claude token lens report", ""]
     lines.extend(_render_meta(model))
     lines.append("")
     lines.extend(_render_assumptions(model))
     lines.append("")
-    lines.extend(_render_sections(model))
+    lines.extend(_render_sections(model, explain))
     lines.extend(_render_recommendations(model))
     lines.append("")
     lines.extend(_render_diagnostics(model))

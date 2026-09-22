@@ -32,6 +32,7 @@ posture ``pricing.py``/``snapshots.py`` take for optional structure.
 
 from __future__ import annotations
 
+import csv
 import os
 import tomllib
 from dataclasses import dataclass, field
@@ -41,7 +42,7 @@ from pathlib import Path
 #: claude-token-lens's own files. Mirrors ``pricing.TOKEN_LENS_DIRNAME``.
 TOKEN_LENS_DIRNAME = "token-lens"
 
-_ALLOWED_BILLING = frozenset({"api", "subscription"})
+_ALLOWED_BILLING = frozenset({"api", "subscription", "auto"})
 #: Same three values ``parse.detect_provider`` can return (fix 6).
 _ALLOWED_PROVIDER = frozenset({"anthropic", "bedrock", "vertex"})
 #: v0.3 addition (``init``/``apply`` milestone): where a profile/settings
@@ -90,7 +91,13 @@ class ProjectConfig:
 class Config:
     """Parsed ``config.toml`` (or all-defaults when the file is absent)."""
 
-    billing: str = "api"  # "api" | "subscription"
+    #: "api" | "subscription" once loaded: ``load_config`` resolves
+    #: config.toml's "auto" (also the default when the key is absent) to
+    #: one of the two, see :func:`resolve_billing`.
+    billing: str = "api"
+    #: Why ``billing`` has its value, in plain words, for the report
+    #: header and the dashboard. Empty on a directly constructed Config.
+    billing_source: str = ""
     #: IANA zone name, or None for the machine's own local zone.
     tz: str | None = None
     #: Free-form, passed to other packages' ``from_config`` (plan
@@ -172,7 +179,7 @@ class Config:
         """Lines for the report header (plan "Renderers and CLI"
         section)."""
         lines = [
-            f"billing: {self.billing}",
+            f"billing: {self.billing}" + (f" ({self.billing_source})" if self.billing_source else ""),
             f"timezone: {self.tz or 'local (machine)'}",
             f"min_sessions: {self.min_sessions}",
             f"min_turns: {self.min_turns}",
@@ -244,7 +251,7 @@ def _read_toml(path: Path, *, what: str) -> dict | None:
 def _build_config(data: dict, path: Path) -> Config:
     config = Config()
 
-    billing = data.get("billing", config.billing)
+    billing = data.get("billing", "auto")
     if not isinstance(billing, str) or billing not in _ALLOWED_BILLING:
         raise ConfigError(
             f"config file {path}: 'billing' must be one of {sorted(_ALLOWED_BILLING)}, got {billing!r}"
@@ -400,6 +407,43 @@ def load_project_configs(config_dir: str | Path | None = None) -> dict[str, Proj
     return result
 
 
+def _usage_log_has_rate_limits(config_dir: Path) -> bool:
+    """Whether ``<config_dir>/usage-log.csv`` holds any usage-limit
+    reading (a ``five_hour``/``seven_day`` row with a used percentage).
+    Claude Code only reports usage limits to Pro and Max plans, so one
+    such row means a subscription."""
+    path = config_dir / "usage-log.csv"
+    if not path.exists():
+        return False
+    try:
+        with open(path, encoding="utf-8", newline="") as fh:
+            reader = csv.reader(fh)
+            next(reader, None)
+            for raw in reader:
+                # log_usage.CSV_FIELDS: logged_at, session_id, window, used_percentage, ...
+                if len(raw) >= 4 and raw[2] and raw[2] != "context_window" and raw[3].strip():
+                    return True
+    except (OSError, csv.Error, UnicodeDecodeError):
+        return False
+    return False
+
+
+def resolve_billing(config: Config, config_dir: Path) -> None:
+    """Resolve ``config.billing == "auto"`` in place and record why in
+    ``config.billing_source``."""
+    if config.billing != "auto":
+        config.billing_source = "set in config.toml"
+    elif _usage_log_has_rate_limits(config_dir):
+        config.billing = "subscription"
+        config.billing_source = "automatic: usage-limit readings were found, so this is a Pro or Max plan"
+    else:
+        config.billing = "api"
+        config.billing_source = (
+            "automatic: no usage-limit readings found, so amounts are pay-per-token. "
+            "Set billing in config.toml if you have a Pro or Max plan"
+        )
+
+
 def load_config(config_dir: str | Path | None = None) -> Config:
     """Load ``<config_dir>/config.toml`` (``config_dir`` defaults to
     ``~/.claude/token-lens``, honouring ``CLAUDE_CONFIG_DIR``). A missing
@@ -410,7 +454,12 @@ def load_config(config_dir: str | Path | None = None) -> Config:
     resolved_dir = _resolve_config_dir(config_dir)
     path = resolved_dir / "config.toml"
     data = _read_toml(path, what="config file")
-    config = Config() if data is None else _build_config(data, path)
+    if data is None:
+        config = Config()
+        config.billing = "auto"
+    else:
+        config = _build_config(data, path)
+    resolve_billing(config, resolved_dir)
     config.projects = load_project_configs(resolved_dir)
     return config
 

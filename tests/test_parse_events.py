@@ -110,13 +110,13 @@ def test_cache_signal_thinking_stripped():
 def test_cache_signal_deferred_tools_delta_carries_counts_only():
     line = attachment_line(
         "deferred_tools_delta",
-        addedNames=["Read", "Grep"],
+        addedNames=["Read", "Grep", "mcp__github__get_issue"],
         removedNames=["Write"],
     )
     event = events.classify_line(line)
     assert event.kind == EventKind.CACHE_SIGNAL
     assert event.subkind == "deferred_tools_delta"
-    assert event.detail == {"added": 2, "removed": 1}
+    assert event.detail == {"added": 3, "removed": 1, "mcp_added": 1}
 
 
 def test_cache_signal_agent_listing_delta_counts_only():
@@ -148,6 +148,52 @@ def test_context_inject():
     event = events.classify_line(line)
     assert event.kind == EventKind.CONTEXT_INJECT
     assert event.size_chars == 500
+
+
+def test_rendered_block_list_is_measured():
+    # Real transcripts carry ``rendered`` as a list of content blocks.
+    line = attachment_line("environment")
+    line["rendered"] = [{"content": "a" * 300}, {"content": "b" * 200}]
+    assert events.classify_line(line).size_chars == 500
+
+
+def test_size_falls_back_to_content_fields_without_rendered():
+    skill = attachment_line("skill_listing", content="s" * 900, skillCount=12, names=["x"])
+    event = events.classify_line(skill)
+    assert event.size_chars == 900
+    assert event.detail == {"count": 12}
+    delta = attachment_line("deferred_tools_delta", addedNames=["a", "b"], addedLines=["a" * 40, "b" * 60])
+    assert events.classify_line(delta).size_chars == 100
+    memory = attachment_line("nested_memory", content={"path": "p", "content": "m" * 70})
+    assert events.classify_line(memory).size_chars == 70
+
+
+def test_instructions_split_by_file_type_without_paths():
+    line = attachment_line(
+        "instructions",
+        files=[
+            {"path": "C:/Users/u/.claude/CLAUDE.md", "type": "User", "content": "u" * 100},
+            {"path": "C:/repo/CLAUDE.md", "type": "Project", "content": "p" * 300},
+            {"path": "C:/x", "type": "Weird", "content": "w" * 5},
+        ],
+    )
+    event = events.classify_line(line)
+    assert event.size_chars == 405
+    assert event.detail == {"count": 3, "chars_by_type": {"User": 100, "Project": 300, "Other": 5}}
+    assert "C:" not in repr(event.detail)
+
+
+def test_prompt_snapshot_sizes_go_to_detail_not_size_chars():
+    line = attachment_line(
+        "prompt_snapshot",
+        systemPrompt=["x" * 1000, "y" * 500],
+        tools=[{"name": "Read", "description": "d" * 50}, {"name": "Bash"}],
+    )
+    event = events.classify_line(line)
+    assert event.size_chars is None
+    assert event.detail["system_chars"] == 1500
+    assert event.detail["tool_count"] == 2
+    assert event.detail["tools_chars"] > 50
 
 
 def test_context_inject_invoked_skills_carries_count_not_names():

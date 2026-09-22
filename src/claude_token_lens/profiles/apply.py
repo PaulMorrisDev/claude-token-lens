@@ -416,6 +416,7 @@ def plan_apply(
     snapshot: "snapshots_mod.Snapshot | None" = None,
     allow_tracked: bool = False,
     force: bool = False,
+    mark_active: bool = True,
 ) -> ApplyPlan:
     """Resolve every file :func:`execute` would touch for applying
     ``profile`` at ``scope``, without writing anything.
@@ -583,7 +584,9 @@ def plan_apply(
     active_path = config_dir / _ACTIVE_PROFILE_FILENAME
     old_active = _read_bytes_or_none(active_path)
     new_active = (profile.id + "\n").encode("utf-8")
-    if new_active != (old_active or b""):
+    # A one-off ``apply --set`` change isn't a profile, so it leaves the
+    # active-profile marker alone (mark_active=False).
+    if mark_active and new_active != (old_active or b""):
         actions.append(
             FileAction(kind="active_profile", path=active_path, old_bytes=old_active, new_bytes=new_active, tracked=False)
         )

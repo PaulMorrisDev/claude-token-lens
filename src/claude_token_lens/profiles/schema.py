@@ -194,6 +194,7 @@ AGENT_ALLOWLIST: dict[str, LeverSpec] = {
     "tools": LeverSpec("list[str]", "agent frontmatter", doc_ref="docs/config-layers.md#content_layers"),
     "disallowedTools": LeverSpec("list[str]", "agent frontmatter", doc_ref="docs/config-layers.md#content_layers"),
     "skills": LeverSpec("list[str]", "agent frontmatter", doc_ref="docs/config-layers.md#content_layers"),
+    "mcpServers": LeverSpec("list[str]", "agent frontmatter", doc_ref="docs/config-layers.md#content_layers"),
     "experimental.cacheTtl": LeverSpec(
         "enum", "agent frontmatter", values=_TTL_VALUES,
         doc_ref="docs/config-layers.md#effective_agents",

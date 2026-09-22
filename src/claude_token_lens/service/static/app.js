@@ -325,10 +325,53 @@
     return maxima;
   }
 
+  // "How to read this": the three-part help (model.Help) a section or
+  // table carries -- what it shows, how to read it, when to act.
+  function helpBlock(help) {
+    if (!help || !(help.shows || help.read || help.act)) return null;
+    var details = el("details", { class: "how-to-read" });
+    details.appendChild(el("summary", { text: "How to read this" }));
+    var list = el("dl");
+    [
+      ["What it shows", help.shows],
+      ["How to read it", help.read],
+      ["When to act", help.act],
+    ].forEach(function (pair) {
+      if (!pair[1]) return;
+      list.appendChild(el("dt", { text: pair[0] }));
+      list.appendChild(el("dd", { text: pair[1] }));
+    });
+    details.appendChild(list);
+    return details;
+  }
+
   function renderTable(table, tableId, currency) {
     var maxima = tableMaxima(table);
     var wrap = el("div", { class: "table-wrap" });
-    wrap.appendChild(el("h3", { text: table.title || table.name }));
+    wrap.appendChild(el("h4", { text: table.title || table.name }));
+    var tableHelp = helpBlock(table.help);
+    if (tableHelp) wrap.appendChild(tableHelp);
+
+    // Column help: a real button per header (keyboard and touch, never a
+    // title= tooltip alone) that shows one column's help at a time in
+    // the line above the table.
+    var colHelpId = tableId + "-colhelp";
+    var colHelp = el("p", { class: "col-help", id: colHelpId, role: "status", hidden: true });
+    var helpButtons = [];
+    function showColumnHelp(index, button) {
+      var open = button.getAttribute("aria-expanded") === "true";
+      helpButtons.forEach(function (b) {
+        b.setAttribute("aria-expanded", "false");
+      });
+      if (open) {
+        colHelp.hidden = true;
+        return;
+      }
+      var column = table.columns[index];
+      colHelp.textContent = (column.label || column.key) + ": " + column.help;
+      colHelp.hidden = false;
+      button.setAttribute("aria-expanded", "true");
+    }
 
     var tableEl = el("table", { id: tableId });
     var thead = el("thead");
@@ -342,6 +385,26 @@
         "aria-sort": "none",
       });
       th.appendChild(document.createTextNode(column.label || column.key));
+      if (column.help) {
+        var helpBtn = el("button", {
+          type: "button",
+          class: "col-help-btn",
+          text: "?",
+          "aria-label": "What is " + (column.label || column.key) + "?",
+          "aria-expanded": "false",
+          "aria-controls": colHelpId,
+        });
+        helpBtn.addEventListener("click", function (event) {
+          event.stopPropagation();
+          showColumnHelp(index, helpBtn);
+        });
+        // Enter/Space on the button must not also sort the column.
+        helpBtn.addEventListener("keydown", function (event) {
+          event.stopPropagation();
+        });
+        helpButtons.push(helpBtn);
+        th.appendChild(helpBtn);
+      }
       th.appendChild(el("span", { class: "sort-indicator", text: "" }));
       th.addEventListener("click", function () {
         sortTable(table, tableEl, tableId, index, currency, maxima);
@@ -359,7 +422,8 @@
 
     var tbody = el("tbody");
     tableEl.appendChild(tbody);
-    renderTableBody(table.rows, table.columns, tbody, currency, maxima);
+    renderTableBody(table.rows, table.columns, tbody, currency, maxima, table.value_labels);
+    if (helpButtons.length) wrap.appendChild(colHelp);
     wrap.appendChild(tableEl);
 
     if (table.notes && table.notes.length) {
@@ -376,7 +440,11 @@
     return wrap;
   }
 
-  function renderTableBody(rows, columns, tbody, currency, maxima) {
+  // valueLabels: the table's display names for raw row values (e.g.
+  // "top-level" -> "Main session"). The raw value stays in the cell's
+  // title and data-raw, so the key the CLI/JSON/CSV use is one hover or
+  // one inspect away.
+  function renderTableBody(rows, columns, tbody, currency, maxima, valueLabels) {
     clear(tbody);
     rows.forEach(function (row) {
       var tr = el("tr");
@@ -401,6 +469,8 @@
           var cellWrap = el("span", { class: "bar-cell", html: barSvg });
           cellWrap.appendChild(el("span", { text: display }));
           td.appendChild(cellWrap);
+        } else if (valueLabels && typeof value === "string" && Object.prototype.hasOwnProperty.call(valueLabels, value)) {
+          td.appendChild(el("span", { class: "value-label", title: value, "data-raw": value, text: valueLabels[value] }));
         } else {
           td.textContent = display;
         }
@@ -437,15 +507,54 @@
       }
       return ascending ? cmp : -cmp;
     });
-    renderTableBody(rows, table.columns, tableEl.querySelector("tbody"), currency, maxima);
+    renderTableBody(rows, table.columns, tableEl.querySelector("tbody"), currency, maxima, table.value_labels);
+  }
+
+  // Tables by dashboard placement (helptext.py's table audit): "keep"
+  // shown, "advanced" collapsed into one block, "report" left to the CLI
+  // report (and the JSON/CSV exports), with a line saying so.
+  function renderPlacedTables(container, tables, currency, idPrefix) {
+    var advanced = [];
+    var reportOnly = 0;
+    tables.forEach(function (table, i) {
+      var tableId = idPrefix + "-" + table.name + "-" + i;
+      var placement = table.dashboard || "keep";
+      if (placement === "report") {
+        reportOnly += 1;
+      } else if (placement === "advanced") {
+        advanced.push({ table: table, id: tableId });
+      } else {
+        container.appendChild(renderTable(table, tableId, currency));
+      }
+    });
+    if (advanced.length) {
+      var details = el("details", { class: "advanced-detail" });
+      details.appendChild(el("summary", { text: "Advanced detail (" + advanced.length + ")" }));
+      advanced.forEach(function (item) {
+        details.appendChild(renderTable(item.table, item.id, currency));
+      });
+      container.appendChild(details);
+    }
+    if (reportOnly) {
+      container.appendChild(
+        el("p", {
+          class: "notes",
+          text:
+            (reportOnly === 1 ? "1 more table is" : reportOnly + " more tables are") +
+            " in the full report (claude-token-lens report).",
+        })
+      );
+    }
   }
 
   function renderSectionGeneric(container, section, currency, idPrefix) {
     if (!section) return;
-    container.appendChild(el("h2", { text: section.title || section.key }));
-    (section.tables || []).forEach(function (table, i) {
-      container.appendChild(renderTable(table, (idPrefix || section.key) + "-" + table.name + "-" + i, currency));
-    });
+    // Sections are h3: each tab has exactly one h2, its own title.
+    container.appendChild(el("h3", { class: "section-title", text: section.title || section.key }));
+    if (section.intro) container.appendChild(el("p", { class: "section-intro", text: section.intro }));
+    var sectionHelp = helpBlock(section.help);
+    if (sectionHelp) container.appendChild(sectionHelp);
+    renderPlacedTables(container, section.tables || [], currency, idPrefix || section.key);
     if (section.notes && section.notes.length) {
       container.appendChild(
         el(
@@ -478,14 +587,21 @@
     // counters.
     limits: "cache",
     ttl: "ttl",
+    agent_startup: "agents",
     agents: "agents",
     workflows: "agents",
     workstyle: "agents",
+    sessions: "sessions",
+    // The Config tab renders the config section's tables once, from
+    // /api/config-diff?auto_keys=1 (renderConfig skips it here).
     config: "config",
-    scorecard: "config",
+    context_budget: "config",
+    baseline_comparison: "config",
+    // The scorecard is the Overview tab's tiles, never a generic table.
+    scorecard: "overview",
     usage: "usage",
     compactions: "usage",
-    phases: "diagnostics",
+    phases: "usage",
     // v4 wiring round: carry/compaction_sim/model_swap/waste each have
     // their own dedicated report-backed route (/api/carry etc., fetched
     // directly by the Savings tab below, the same way ttl's own entry
@@ -499,45 +615,58 @@
     waste: "savings",
   };
 
-  function renderMappedSections(report, tabKey, container) {
+  // skip: section keys the tab renders some other way.
+  function renderMappedSections(report, tabKey, container, skip) {
     if (!report || !Array.isArray(report.sections)) return;
     report.sections.forEach(function (section) {
       if (section.key === "overview") return; // handled by the Overview tab directly
+      if (skip && skip.indexOf(section.key) !== -1) return;
       var target = SECTION_TAB_MAP[section.key] || "diagnostics";
       if (target !== tabKey) return;
       renderSectionGeneric(container, section, state.currency, "report");
     });
   }
 
-  // -- diagnostics dataclass block (mirrors render/html.py's
-  //    _diagnostics_lines -- not a Section/Table, a plain counters
-  //    block) --------------------------------------------------------
-
-  function renderDiagnosticsBlock(container, diagnostics) {
-    if (!diagnostics) return;
-    container.appendChild(el("h2", { text: "Diagnostics" }));
-    var list = el("ul", { class: "diagnostics-list" });
-    Object.keys(diagnostics)
-      .sort()
-      .forEach(function (key) {
-        var value = diagnostics[key];
-        var display;
-        if (value && typeof value === "object" && !Array.isArray(value)) {
-          var parts = Object.keys(value).map(function (k) {
-            return k + "=" + value[k];
-          });
-          display = parts.length ? parts.join(", ") : "-";
-        } else {
-          display = String(value);
-        }
-        list.appendChild(el("li", { text: key + ": " + display }));
-      });
-    container.appendChild(list);
-  }
-
   // ======================================================================
   // Overview tab
   // ======================================================================
+
+  // One h2 per tab: its title (matching index.html's tab button) and a
+  // one-line intro saying what question the tab answers.
+  var TAB_TITLES = {
+    overview: "Overview",
+    sessions: "Sessions",
+    cache: "Cache",
+    ttl: "Cache lifetime (TTL)",
+    savings: "Savings",
+    agents: "Agents",
+    config: "Config",
+    profiles: "Profiles",
+    recommendations: "Recommendations",
+    usage: "Usage",
+    diagnostics: "Data quality",
+  };
+
+  var TAB_INTROS = {
+    overview: "Your totals for the window, and a scorecard of where your tokens go.",
+    sessions: "Every session, newest first. Pick one to see its replies on a timeline.",
+    cache:
+      "When Claude Code had to rebuild the prompt cache, and why. A rebuild writes the whole conversation to the cache again, at the cache-write price.",
+    ttl: "How long the prompt cache stays warm, and whether a longer cache lifetime would have paid for itself.",
+    savings:
+      "Estimates of what you could save: shorter tool output, earlier conversation summaries, cheaper models, and replies that did no useful work.",
+    agents: "What your subagents cost, what they are given when they start, and what they hand back.",
+    config: "Your Claude Code settings, how they changed, and how much of the context window is used before you type.",
+    profiles: "Ready-made groups of settings you can compare with yours.",
+    recommendations: "Changes worth making, most important first.",
+    usage: "Usage over time, by project, and in five-hour blocks.",
+    diagnostics: "How much of your data could be read, and anything the parser had to skip.",
+  };
+
+  function tabHeading(panel, tabKey) {
+    panel.appendChild(el("h2", { text: TAB_TITLES[tabKey] || tabKey }));
+    if (TAB_INTROS[tabKey]) panel.appendChild(el("p", { class: "tab-intro", text: TAB_INTROS[tabKey] }));
+  }
 
   var LEVEL_LABELS = { 5: "excellent", 4: "good", 3: "fair", 2: "poor", 1: "very poor" };
   var WINDOW_OPTIONS = [
@@ -631,7 +760,7 @@
 
   function renderOverview(panel) {
     clear(panel);
-    panel.appendChild(el("h2", { text: "Overview" }));
+    tabHeading(panel, "overview");
 
     var windowRow = el("div", { class: "pager" });
     windowRow.appendChild(el("label", { for: "overview-window", text: "Window:" }));
@@ -643,6 +772,11 @@
     if (savedWindow !== null) select.value = savedWindow;
     windowRow.appendChild(select);
     panel.appendChild(windowRow);
+
+    // Which billing mode the amounts follow, and why (config.toml's
+    // billing, or the automatic choice from usage-limit readings).
+    var billingLine = el("p", { class: "notes", id: "overview-billing" });
+    panel.appendChild(billingLine);
 
     var summaryContainer = el("div", { id: "overview-summary" });
     panel.appendChild(summaryContainer);
@@ -671,6 +805,12 @@
           return;
         }
         var report = result.report;
+        var meta = report.meta || {};
+        billingLine.textContent =
+          (meta.billing_mode === "subscription"
+            ? "Billing: Pro or Max plan. Amounts are list-price equivalents, not what you are charged"
+            : "Billing: pay per token (API). Amounts are what the tokens cost at list price") +
+          (meta.billing_source ? " (" + meta.billing_source + ")." : ".");
         renderScorecardTiles(scorecardContainer, findSection(report, "scorecard"));
         var overviewSection = findSection(report, "overview");
         if (overviewSection) {
@@ -761,7 +901,7 @@
 
   function renderSessions(panel) {
     clear(panel);
-    panel.appendChild(el("h2", { text: "Sessions" }));
+    tabHeading(panel, "sessions");
 
     var tableContainer = el("div", { id: "sessions-table" });
     var pager = el("div", { class: "pager" });
@@ -777,6 +917,16 @@
 
     var detailContainer = el("div", { id: "session-detail" });
     panel.appendChild(detailContainer);
+
+    var sectionContainer = el("div", { id: "sessions-sections" });
+    panel.appendChild(sectionContainer);
+    loadReport().then(function (result) {
+      if (result.error) {
+        sectionContainer.appendChild(errorNotice(result.error));
+        return;
+      }
+      renderMappedSections(result.report, "sessions", sectionContainer);
+    });
 
     function load() {
       rangeLabel.textContent = "Rows " + (sessionsState.offset + 1) + "–" + (sessionsState.offset + sessionsState.limit);
@@ -1169,7 +1319,7 @@
 
   function renderCache(panel) {
     clear(panel);
-    panel.appendChild(el("h2", { text: "Cache" }));
+    tabHeading(panel, "cache");
 
     var quickContainer = el("div", { id: "cache-quick" });
     panel.appendChild(quickContainer);
@@ -1188,20 +1338,28 @@
     });
   }
 
+  // recache.SIGNATURES, in plain words. The raw signature stays in the
+  // card's title for anyone matching it against the CLI report.
+  var REBUILD_CAUSES = [
+    { key: "full-expiry", label: "Cache expired while idle" },
+    { key: "prefix-invalidated", label: "Cache invalidated by a change" },
+    { key: "limit-expiry", label: "Cache expired during a usage-limit pause" },
+  ];
+
   function renderRecacheQuickStats(data, container) {
     var bySignature = data.by_signature || {};
     var cards = el("div", { class: "stat-cards" });
-    ["full-expiry", "prefix-invalidated"].forEach(function (sig) {
-      var entry = bySignature[sig] || { turns: 0, cache_creation_tokens: 0 };
+    REBUILD_CAUSES.forEach(function (cause) {
+      var entry = bySignature[cause.key] || { turns: 0, cache_creation_tokens: 0 };
       cards.appendChild(
-        el("div", { class: "stat-card" }, [
-          el("div", { class: "stat-label", text: sig }),
-          el("div", { class: "stat-value", text: thousands(entry.turns || 0) + " turns" }),
-          el("div", { class: "notes", text: formatCell(entry.cache_creation_tokens, "tokens") + " cache-creation tokens" }),
+        el("div", { class: "stat-card", title: cause.key }, [
+          el("div", { class: "stat-label", text: cause.label }),
+          el("div", { class: "stat-value", text: thousands(entry.turns || 0) + " rebuilds" }),
+          el("div", { class: "notes", text: formatCell(entry.cache_creation_tokens, "tokens") + " tokens written to the cache" }),
         ])
       );
     });
-    container.appendChild(el("h3", { text: "Re-cache quick stats (corpus-wide)" }));
+    container.appendChild(el("h3", { text: "Cache rebuilds by cause (all history)" }));
     container.appendChild(cards);
   }
 
@@ -1213,7 +1371,7 @@
 
   function renderTtl(panel) {
     clear(panel);
-    panel.appendChild(el("h2", { text: "TTL" }));
+    tabHeading(panel, "ttl");
     var container = el("div", { id: "ttl-section" });
     panel.appendChild(container);
     loadInto(container, "/api/ttl", function (data, target) {
@@ -1264,7 +1422,7 @@
 
   function renderSavings(panel) {
     clear(panel);
-    panel.appendChild(el("h2", { text: "Savings" }));
+    tabHeading(panel, "savings");
     SAVINGS_SECTIONS.forEach(function (spec) {
       var container = el("div", { id: spec.id });
       panel.appendChild(container);
@@ -1280,7 +1438,7 @@
 
   function renderAgents(panel) {
     clear(panel);
-    panel.appendChild(el("h2", { text: "Agents" }));
+    tabHeading(panel, "agents");
     var container = el("div", { id: "agents-sections" });
     panel.appendChild(container);
     container.appendChild(loadingNode());
@@ -1300,10 +1458,10 @@
 
   function renderConfig(panel) {
     clear(panel);
-    panel.appendChild(el("h2", { text: "Config" }));
+    tabHeading(panel, "config");
 
     var driftContainer = el("div", { id: "config-drift" });
-    panel.appendChild(el("h3", { text: "Config drift (managed keys)" }));
+    panel.appendChild(el("h3", { text: "Your settings and how they changed" }));
     panel.appendChild(driftContainer);
     loadInto(driftContainer, "/api/config-diff?auto_keys=1", renderConfigDiff);
 
@@ -1321,7 +1479,8 @@
         sectionContainer.appendChild(errorNotice(result.error));
         return;
       }
-      renderMappedSections(result.report, "config", sectionContainer);
+      // The config section's own tables came from /api/config-diff above.
+      renderMappedSections(result.report, "config", sectionContainer, ["config"]);
     });
   }
 
@@ -1333,9 +1492,7 @@
         renderSectionGeneric(container, section, state.currency, "config-diff-" + i);
       });
     } else if (Array.isArray(data) && data.length) {
-      data.forEach(function (table, i) {
-        container.appendChild(renderTable(table, "config-diff-" + i, state.currency));
-      });
+      renderPlacedTables(container, data, state.currency, "config-diff");
     } else {
       container.appendChild(el("p", { class: "notice", text: "No config drift observed across the current snapshot window." }));
     }
@@ -1405,7 +1562,7 @@
 
   function renderProfiles(panel) {
     clear(panel);
-    panel.appendChild(el("h2", { text: "Profiles" }));
+    tabHeading(panel, "profiles");
 
     var listContainer = el("div", { id: "profiles-list" });
     var diffContainer = el("div", { id: "profiles-diff" });
@@ -1635,7 +1792,7 @@
 
   function renderRecommendations(panel) {
     clear(panel);
-    panel.appendChild(el("h2", { text: "Recommendations" }));
+    tabHeading(panel, "recommendations");
     var noticeContainer = el("div", { id: "recommendations-notice" });
     var container = el("div", { id: "recommendations-list" });
     panel.appendChild(noticeContainer);
@@ -1695,21 +1852,78 @@
     });
   }
 
+  // Recommendation.scope, in plain words.
+  var SCOPE_LABELS = {
+    user: "your user settings, every project",
+    repo: "this project's settings or agent files",
+    managed: "set by your organisation's policy",
+  };
+
+  // "section.table" + raw row key -> the table's title and the row's
+  // display label, falling back to the raw names.
+  function evidenceSource(report, sourceTable, rowKey) {
+    var dot = String(sourceTable).indexOf(".");
+    var sectionKey = dot === -1 ? sourceTable : sourceTable.slice(0, dot);
+    var tableName = dot === -1 ? "" : sourceTable.slice(dot + 1);
+    var section = report ? findSection(report, sectionKey) : null;
+    var table = section
+      ? (section.tables || []).filter(function (t) {
+          return t.name === tableName;
+        })[0]
+      : null;
+    var tableLabel = table && table.title ? table.title : sourceTable;
+    var rowLabel = table && table.value_labels && table.value_labels[rowKey] ? table.value_labels[rowKey] : rowKey;
+    return "from " + tableLabel + ", " + rowLabel;
+  }
+
+  // One fixes.build_fix entry: the plain explainer, then the prompt
+  // for Claude and (for a plain setting) the dry-run command.
+  function renderFix(fix) {
+    var box = el("div", { class: "fix" });
+    if (fix.explainer && fix.explainer.length) {
+      box.appendChild(el("h5", { text: "What you're changing" + (fix.key ? ": " + fix.key + (fix.agent ? " for " + fix.agent : "") : "") }));
+      var list = el("dl", { class: "fix-explainer" });
+      fix.explainer.forEach(function (pair) {
+        list.appendChild(el("dt", { text: pair[0] }));
+        list.appendChild(el("dd", { text: pair[1] }));
+      });
+      box.appendChild(list);
+    }
+    box.appendChild(el("h5", { text: "Ask Claude to do it" }));
+    box.appendChild(codeBlockWithCopy(fix.prompt));
+    if (fix.command) {
+      box.appendChild(el("h5", { text: "Or run this command" }));
+      box.appendChild(
+        el("p", { class: "notes", text: "It shows the change without writing anything. Run it again without --dry-run to make the change; the output tells you how to undo it." })
+      );
+      if (fix.command_warning) {
+        box.appendChild(el("p", { class: "fix-warning", text: fix.command_warning }));
+      }
+      box.appendChild(codeBlockWithCopy(fix.command));
+    }
+    return box;
+  }
+
   function renderRecommendationCard(rec, report) {
     var card = el("article", { class: "rec rec-severity-" + rec.severity });
     card.appendChild(el("h4", { text: rec.title }));
     card.appendChild(el("div", { class: "rec-meta", text: "category: " + rec.category + (rec.agent_type ? " · agent type: " + rec.agent_type : "") }));
+    if (rec.why) card.appendChild(el("p", { class: "rec-why", text: rec.why }));
     card.appendChild(el("p", { text: "Action: " + rec.action }));
+    if (rec.estimated_saving) {
+      card.appendChild(el("p", { class: "rec-saving", text: "Estimated saving: " + rec.estimated_saving }));
+    }
 
+    var fixes = rec.fixes || [];
     if (rec.scope === "managed") {
       card.appendChild(el("p", { class: "notice", text: "Managed by policy — raise with your administrator." }));
-    } else if (rec.lever) {
-      card.appendChild(el("p", { text: "Lever (scope: " + rec.scope + "):" }));
-      card.appendChild(el("pre", { text: rec.lever }));
-      card.appendChild(
-        el("p", { class: "notes", text: "Illustrative host command — `apply` ships in v0.3; nothing here is executed by the service:" })
-      );
-      card.appendChild(el("pre", { text: "claude-token-lens apply " + rec.lever + " --dry-run" }));
+    } else if (rec.lever && !fixes.length) {
+      card.appendChild(el("p", { text: "Setting to change: " + rec.lever + " (" + (SCOPE_LABELS[rec.scope] || rec.scope) + ")" }));
+    }
+    if (rec.scope !== "managed") {
+      fixes.forEach(function (fix) {
+        card.appendChild(renderFix(fix));
+      });
     }
 
     if (rec.evidence && rec.evidence.length) {
@@ -1718,7 +1932,7 @@
       rec.evidence.forEach(function (tuple) {
         var label = tuple[0], value = tuple[1], sourceTable = tuple[2], rowKey = tuple[3];
         var formatted = report ? formatEvidenceValue(report, value, sourceTable, rowKey, state.currency) : String(value);
-        list.appendChild(el("li", { text: label + ": " + formatted + " (table " + sourceTable + ", row " + rowKey + ")" }));
+        list.appendChild(el("li", { text: label + ": " + formatted + " (" + evidenceSource(report, sourceTable, rowKey) + ")" }));
       });
       card.appendChild(list);
     }
@@ -1731,7 +1945,7 @@
 
   function renderUsage(panel) {
     clear(panel);
-    panel.appendChild(el("h2", { text: "Usage" }));
+    tabHeading(panel, "usage");
 
     var sectionContainer = el("div", { id: "usage-sections" });
     panel.appendChild(sectionContainer);
@@ -1746,7 +1960,7 @@
     });
 
     var compactionsContainer = el("div", { id: "usage-compactions" });
-    panel.appendChild(el("h3", { text: "Recent compactions (raw)" }));
+    panel.appendChild(el("h3", { text: "Recent conversation summaries (compactions)" }));
     panel.appendChild(compactionsContainer);
     loadInto(compactionsContainer, "/api/compactions", renderCompactionsRaw);
   }
@@ -1805,6 +2019,7 @@
 
   function renderDiagnosticsTab(panel) {
     clear(panel);
+    tabHeading(panel, "diagnostics");
     var sectionContainer = el("div", { id: "diagnostics-sections" });
     panel.appendChild(sectionContainer);
     sectionContainer.appendChild(loadingNode());
@@ -1814,9 +2029,14 @@
         sectionContainer.appendChild(errorNotice(result.error));
         return;
       }
-      var report = result.report;
-      renderMappedSections(report, "diagnostics", sectionContainer);
-      renderDiagnosticsBlock(sectionContainer, report && report.diagnostics);
+      renderMappedSections(result.report, "diagnostics", sectionContainer);
+    });
+
+    // The parse-quality counters, labelled (helptext.diagnostics_table).
+    var countersContainer = el("div", { id: "diagnostics-counters" });
+    panel.appendChild(countersContainer);
+    loadInto(countersContainer, "/api/diagnostics", function (table, target) {
+      target.appendChild(renderTable(table, "diagnostics-counters-table", state.currency));
     });
   }
 

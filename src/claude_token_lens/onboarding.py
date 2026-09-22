@@ -36,7 +36,7 @@ from pathlib import Path
 from typing import IO
 
 from . import baseline as baseline_mod
-from . import discovery, snapshots
+from . import discovery, hook_health, snapshots
 from .config import (
     Config,
     ConfigError,
@@ -370,6 +370,32 @@ def gather_answers(
     )
 
 
+def _offer_hook_repair(health, *, repair_hook: bool, non_interactive: bool, stdin, stdout, now) -> None:
+    """A broken SessionStart hook command that can be fixed (see
+    ``hook_health``): repair it with ``--repair-hook`` or a yes at the
+    prompt, never silently. The fix changes only that command string,
+    and settings.json is backed up first."""
+    if health.fixed_command is None:
+        return
+    stdout.write(f"The hook command in {health.settings_path} is:\n  {health.command!r}\n")
+    stdout.write(f"It should be:\n  {health.fixed_command!r}\n")
+    if not repair_hook:
+        if non_interactive:
+            stdout.write("Run 'claude-token-lens init --repair-hook' to fix it (settings.json is backed up first).\n\n")
+            return
+        stdout.write("Fix it now? settings.json is backed up first. (y/n) [n]: ")
+        stdout.flush()
+        if (stdin.readline() or "").strip().lower() not in _TRUE_STRINGS:
+            stdout.write("Left unchanged.\n\n")
+            return
+    try:
+        backup = hook_health.repair(health, now=now)
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        stdout.write(f"Could not fix the hook command: {exc}\n\n")
+        return
+    stdout.write(f"Fixed. The previous settings.json is at {backup}\n\n")
+
+
 def run_init(
     *,
     config_dir: str | Path,
@@ -385,6 +411,7 @@ def run_init(
     all_projects: bool = False,
     project: list[str] | None = None,
     project_family: str | None = None,
+    repair_hook: bool = False,
 ) -> int:
     """Run the whole ``init`` flow: detect, ask/derive, write
     ``config.toml``/``projects/<slug>.toml``, print the install step,
@@ -417,7 +444,10 @@ def run_init(
     stdout.write(f"- projects discovered under projects root: {detection.project_count}\n")
     stdout.write(f"- config snapshots on file: {detection.snapshot_count}\n")
     stdout.write(f"- usage log present: {'yes' if detection.usage_log_present else 'no'}\n")
+    health = hook_health.check(config_dir, now=now)
+    stdout.write(f"- config snapshot hook: {health.summary()}\n")
     stdout.write("\n")
+    _offer_hook_repair(health, repair_hook=repair_hook, non_interactive=non_interactive, stdin=stdin, stdout=stdout, now=now)
 
     try:
         answers = gather_answers(

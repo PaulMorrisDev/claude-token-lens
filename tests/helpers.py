@@ -156,14 +156,15 @@ def attachment_line(attachment_type: str, rendered: str | None = None, **attachm
     the rest of ``attachment_overrides`` merged into the nested
     ``attachment`` dict (e.g. ``addedNames=[...]`` for a delta type).
     ``rendered``, when given, becomes the top-level ``rendered`` field
-    ``Event.size_chars`` is measured from.
+    ``Event.size_chars`` is measured from, in the shape real transcripts
+    use: a list of ``{"content": str}`` blocks.
     """
     line = _base_line("attachment")
     attachment = {"type": attachment_type}
     attachment.update(attachment_overrides)
     line["attachment"] = attachment
     if rendered is not None:
-        line["rendered"] = rendered
+        line["rendered"] = [{"content": rendered}]
     return line
 
 

@@ -26,8 +26,11 @@ FIXTURES = Path(__file__).resolve().parent / "fixtures" / "config"
 
 def test_missing_config_file_returns_defaults(tmp_path):
     config = load_config(config_dir=tmp_path / "does-not-exist")
-    assert config == Config()
+    # A missing file means billing = "auto", resolved to "api" here (no
+    # usage log); everything else is the dataclass default.
+    assert config == Config(billing_source=config.billing_source)
     assert config.billing == "api"
+    assert config.billing_source.startswith("automatic")
     assert config.tz is None
     assert config.thresholds == {}
     assert config.recache == {}
@@ -418,3 +421,33 @@ def test_save_session_override_round_trips_special_characters(tmp_path):
 
     overrides = load_session_overrides(config_dir=token_lens_dir)
     assert overrides[session_id] == {"mode": "mixed"}
+
+
+def _write_usage_log(config_dir, rows):
+    config_dir.mkdir(parents=True, exist_ok=True)
+    lines = ["logged_at,session_id,window,used_percentage,resets_at,source"]
+    lines.extend(rows)
+    (config_dir / "usage-log.csv").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def test_auto_billing_is_subscription_once_usage_limit_readings_exist(tmp_path):
+    _write_usage_log(tmp_path, ["2026-09-01T00:00:00Z,s1,five_hour,12.5,2026-09-01T05:00:00Z,statusline"])
+    config = load_config(config_dir=tmp_path)
+    assert config.billing == "subscription"
+    assert "usage-limit readings were found" in config.billing_source
+
+
+def test_auto_billing_ignores_context_window_rows(tmp_path):
+    _write_usage_log(tmp_path, ["2026-09-01T00:00:00Z,s1,context_window,,,statusline"])
+    config = load_config(config_dir=tmp_path)
+    assert config.billing == "api"
+
+
+def test_explicit_billing_wins_over_usage_log(tmp_path):
+    _write_usage_log(tmp_path, ["2026-09-01T00:00:00Z,s1,seven_day,40,,statusline"])
+    (tmp_path / "config.toml").write_text('billing = "api"\n', encoding="utf-8")
+    config = load_config(config_dir=tmp_path)
+    assert config.billing == "api"
+    assert config.billing_source == "set in config.toml"
+    (tmp_path / "config.toml").write_text('billing = "auto"\n', encoding="utf-8")
+    assert load_config(config_dir=tmp_path).billing == "subscription"

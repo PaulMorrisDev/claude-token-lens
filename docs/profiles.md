@@ -83,6 +83,7 @@ naming any other key is rejected outright.
 | `tools` | list of strings | any | `docs/config-layers.md#content_layers` |
 | `disallowedTools` | list of strings | any | `docs/config-layers.md#content_layers` |
 | `skills` | list of strings | any | `docs/config-layers.md#content_layers` |
+| `mcpServers` | list of strings | any | `docs/config-layers.md#content_layers` |
 | `"experimental.cacheTtl"` | enum | `5m`, `1h` | `docs/config-layers.md#effective_agents` |
 
 `"experimental.cacheTtl"` may be written either as that dotted key, or
@@ -369,6 +370,8 @@ functions themselves take no CLI dependency (a future `POST
 
 ```
 claude-token-lens apply <profile> [--scope user|project-local|repo]
+claude-token-lens apply --set KEY=VALUE [--set ...] [--agent NAME]
+                                   [--scope user|project-local|repo]
                                    [--project-dir PATH]
                                    [--dry-run] [--launch]
                                    [--allow-tracked] [--force]
@@ -376,6 +379,11 @@ claude-token-lens apply <profile> [--scope user|project-local|repo]
 ```
 
 `<profile>` is a catalogue id or a path to a profile TOML file.
+`--set` instead builds a one-off profile (id `one-off`) from the given
+keys (under `agents.NAME` with `--agent`) and validates it through
+`schema.load_dict`, so the allowlist and ranges are the same. It calls
+`plan_apply(..., mark_active=False)`: the active-profile marker is left
+alone.
 
 ### Scopes: what gets touched
 

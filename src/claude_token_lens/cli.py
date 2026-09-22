@@ -188,6 +188,11 @@ def _add_report_output_args(sub: argparse.ArgumentParser, *, allow_patch_set: bo
         "--html", metavar="PATH", help="also write a single-file HTML report to PATH"
     )
     sub.add_argument(
+        "--explain",
+        action="store_true",
+        help="add what each table shows, how to read it and when to act (Markdown output)",
+    )
+    sub.add_argument(
         "--csv-dir", metavar="DIR", help="also write one CSV file per table (plus an index) to DIR"
     )
     sub.add_argument(
@@ -442,6 +447,15 @@ def _add_serve_args(sub: argparse.ArgumentParser) -> None:
         help="allow --bind to a non-loopback address (refused by default)",
     )
     sub.add_argument(
+        "--allowed-host",
+        action="append",
+        default=None,
+        metavar="NAME",
+        dest="allowed_host",
+        help="repeatable; an extra host name the browser may use to reach the dashboard "
+        "(loopback names and a specific --bind address are always allowed)",
+    )
+    sub.add_argument(
         "--poll-interval",
         type=float,
         default=30.0,
@@ -454,7 +468,7 @@ def _add_serve_args(sub: argparse.ArgumentParser) -> None:
         type=int,
         default=None,
         metavar="N",
-        help="prune sessions older than N days on every poll tick (default: keep forever)",
+        help="prune sessions older than N days on every poll tick (default: config.toml's retention_days, else keep forever)",
     )
     sub.add_argument(
         "--exclude-project",
@@ -593,6 +607,21 @@ def _add_apply_args(sub: argparse.ArgumentParser) -> None:
         "profile", nargs="?", metavar="PROFILE", help="catalogue id or path to a profile TOML file"
     )
     sub.add_argument(
+        "--set",
+        metavar="KEY=VALUE",
+        action="append",
+        default=None,
+        dest="set_values",
+        help="change one allowlisted setting instead of applying a profile (repeatable); "
+        "a list value is comma-separated, e.g. tools=Read,Grep",
+    )
+    sub.add_argument(
+        "--agent",
+        metavar="NAME",
+        default=None,
+        help="with --set: change this agent's frontmatter (.claude/agents/NAME.md) instead of settings.json",
+    )
+    sub.add_argument(
         "--scope",
         choices=("user", "project-local", "repo"),
         default=None,
@@ -664,6 +693,13 @@ def _add_init_args(sub: argparse.ArgumentParser) -> None:
         "--no-install",
         action="store_true",
         help="skip printing the SessionStart hook / statusLine install fragments",
+    )
+    sub.add_argument(
+        "--repair-hook",
+        action="store_true",
+        dest="repair_hook",
+        help="fix a SessionStart hook command whose path was broken by JSON escaping, "
+        "without asking (settings.json is backed up first)",
     )
     service_group = sub.add_mutually_exclusive_group()
     service_group.add_argument(
@@ -1125,7 +1161,7 @@ def _emit_report_outputs(model, args: argparse.Namespace) -> None:
     if getattr(args, "json", False):
         print(render_json(model, patch_set=patch_text))
     else:
-        text = render_markdown(model)
+        text = render_markdown(model, explain=getattr(args, "explain", False))
         print(text, end="")
         if patch_text:
             print()
@@ -2066,6 +2102,7 @@ def _cmd_init(args: argparse.Namespace) -> int:
             answers_path=args.answers,
             non_interactive=args.non_interactive,
             no_install=args.no_install,
+            repair_hook=args.repair_hook,
             hook_fragment=hook_fragment,
             statusline_fragment=statusline_fragment,
             # Resolved here rather than relying on run_init's own
@@ -2429,6 +2466,58 @@ def _load_profile_arg(profile_arg: str):
         return None, str(exc)
 
 
+#: Profile id recorded in the backup manifest for an ``apply --set``.
+ONE_OFF_PROFILE_ID = "one-off"
+
+
+def _parse_set_value(raw: str, spec) -> object:
+    """``--set``'s VALUE as the allowlisted key's type: true/false for a
+    bool, a number for an int, a comma-separated list for a list (empty
+    means an empty list), else the text itself."""
+    if spec is None:
+        return raw
+    if spec.kind == "bool":
+        lowered = raw.strip().lower()
+        if lowered in ("true", "yes", "1", "on"):
+            return True
+        if lowered in ("false", "no", "0", "off"):
+            return False
+        return raw
+    if spec.kind == "int":
+        try:
+            return int(raw)
+        except ValueError:
+            return raw
+    if spec.kind == "list[str]":
+        return [item.strip() for item in raw.split(",") if item.strip()]
+    return raw
+
+
+def _one_off_profile(set_values: list[str], agent: str | None):
+    """An ad-hoc profile holding just the ``--set`` changes, validated
+    through the same allowlist and range checks as a real profile.
+    Returns ``(profile, None)`` or ``(None, error text)``."""
+    from .profiles import schema
+
+    allowlist = schema.AGENT_ALLOWLIST if agent else schema.SETTINGS_ALLOWLIST
+    values: dict = {}
+    for item in set_values:
+        key, sep, raw = item.partition("=")
+        key = key.strip()
+        if not sep or not key:
+            return None, f"--set {item!r}: expected KEY=VALUE"
+        values[key] = _parse_set_value(raw, allowlist.get(key))
+    doc: dict = {"id": ONE_OFF_PROFILE_ID, "name": "One-off change"}
+    if agent:
+        doc["agents"] = {agent: values}
+    else:
+        doc["settings"] = values
+    try:
+        return schema.load_dict(doc), None
+    except schema.ProfileError as exc:
+        return None, str(exc)
+
+
 def _cmd_apply(args: argparse.Namespace) -> int:
     """``apply``: apply a profile's allowlisted settings/agent/env
     levers to a project or the current user (plan Milestone v0.3's
@@ -2472,15 +2561,24 @@ def _cmd_apply(args: argparse.Namespace) -> int:
         )
         return 0
 
-    if not args.profile:
+    if args.set_values and args.profile:
+        print(f"claude-token-lens {command}: give a profile or --set, not both", file=sys.stderr)
+        return 2
+    if args.agent and not args.set_values:
+        print(f"claude-token-lens {command}: --agent only goes with --set", file=sys.stderr)
+        return 2
+    if not args.profile and not args.set_values:
         print(
             f"claude-token-lens {command}: a profile id or path is required "
-            "(or use --revert/--list-backups)",
+            "(or use --set/--revert/--list-backups)",
             file=sys.stderr,
         )
         return 2
 
-    profile, err = _load_profile_arg(args.profile)
+    if args.set_values:
+        profile, err = _one_off_profile(args.set_values, args.agent)
+    else:
+        profile, err = _load_profile_arg(args.profile)
     if err is not None:
         print(f"claude-token-lens {command}: {err}", file=sys.stderr)
         return 2
@@ -2511,6 +2609,7 @@ def _cmd_apply(args: argparse.Namespace) -> int:
             snapshot=latest_snapshot,
             allow_tracked=args.allow_tracked,
             force=args.force,
+            mark_active=not args.set_values,
         )
     except ValueError as exc:
         print(f"claude-token-lens {command}: {exc}", file=sys.stderr)
@@ -2537,10 +2636,13 @@ def _cmd_apply(args: argparse.Namespace) -> int:
             for reason in plan.blocked:
                 print(f"claude-token-lens {command}: would be refused: {reason}", file=sys.stderr)
             return 2
-        suggested = apply_command(
-            plan.profile_id, scope, str(project_path) if project_path else None
-        )
-        print(suggested)
+        if args.set_values:
+            print("To make this change, run the same command without --dry-run.")
+        else:
+            suggested = apply_command(
+                plan.profile_id, scope, str(project_path) if project_path else None
+            )
+            print(suggested)
         return 0
 
     if plan.blocked:
@@ -2625,7 +2727,8 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     ``--billing-mode`` (S1-integration fix 1.a) defaults to
     ``config.toml``'s own ``billing`` setting (itself defaulting to
     ``"api"``) when not given on the command line, so a subscription
-    user only has to say so once, in one place.
+    user only has to say so once, in one place. ``--retention-days``
+    falls back to ``config.toml``'s ``retention_days`` the same way.
     """
     config_dir = _resolve_config_dir(args.config_dir)
 
@@ -2636,14 +2739,13 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     from .service.serve import run as run_serve
 
     projects_root = Path(args.projects_root) if args.projects_root else discovery.projects_root()
-    if args.billing_mode is not None:
-        billing_mode = args.billing_mode
-    else:
-        try:
-            billing_mode = load_config(config_dir).billing
-        except ConfigError as exc:
-            print(f"claude-token-lens serve: {exc}", file=sys.stderr)
-            return 2
+    try:
+        config = load_config(config_dir)
+    except ConfigError as exc:
+        print(f"claude-token-lens serve: {exc}", file=sys.stderr)
+        return 2
+    billing_mode = args.billing_mode if args.billing_mode is not None else config.billing
+    retention_days = args.retention_days if args.retention_days is not None else config.retention_days
     monthly_report_dir = Path(args.monthly_report_dir) if args.monthly_report_dir else None
     options = ServeOptions(
         projects_root=projects_root,
@@ -2651,10 +2753,11 @@ def _cmd_serve(args: argparse.Namespace) -> int:
         port=args.port,
         bind=args.bind,
         poll_interval_s=args.poll_interval,
-        retention_days=args.retention_days,
+        retention_days=retention_days,
         exclude_projects=tuple(args.exclude_project or ()),
         billing_mode=billing_mode,
         monthly_report_dir=monthly_report_dir,
+        allowed_hosts=tuple(args.allowed_host or ()),
     )
     try:
         return run_serve(options, once=args.once, allow_remote=args.allow_remote)

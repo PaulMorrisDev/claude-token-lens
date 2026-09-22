@@ -121,8 +121,10 @@ from dataclasses import dataclass
 
 from . import carry, compaction_sim, model_swap, waste
 from .config import Config
-from .model import Recommendation, ReportModel, Section, Table
+from .context_budget import _READ_ONLY_TOOLS
+from .model import Recommendation, ReportModel, Section, SettingChange, Table
 from .snapshots import Snapshot, managed_keys
+from .units import NO_LIMIT_SHARE_HINT, Units
 
 #: Purposes ``classify.classify_purpose`` can return that count as
 #: "docs/general-dev" for the ``effort-mismatch`` rule (plan A5 wording).
@@ -243,6 +245,14 @@ class RecommendThresholds:
 
     # spawn-cost: "mean first-turn write per agent type > 40k tokens".
     spawn_cost_tokens: float = 40_000.0
+    # spawn-claude-md / spawn-unused-* / spawn-task-prompt (the
+    # agent_startup section, part by part): measured spawns before any of
+    # them fires, the per-spawn size a CLAUDE.md or shared part must reach,
+    # the size an unused part must reach, and a long task prompt.
+    spawn_parts_min_spawns: int = 5
+    spawn_part_tokens: float = 2_000.0
+    spawn_unused_part_tokens: float = 500.0
+    spawn_task_prompt_tokens: float = 4_000.0
 
     # effort-mismatch: ">= 30% of output tokens are thinking on sessions
     # whose purpose is docs/general-dev at effort high or above".
@@ -986,8 +996,351 @@ def _rule_agent_report_size(report: ReportModel, th: RecommendThresholds, archet
     return out
 
 
+# -- subagent startup, part by part -------------------------------------------
+
+#: Built-in agent types that Claude Code already starts without CLAUDE.md
+#: (its sub-agents docs), so omitClaudeMd means nothing for them.
+_SKIPS_CLAUDE_MD = frozenset({"Explore", "Plan"})
+
+#: Agent types started by Claude Code itself (workflow scripts, forks)
+#: rather than by name, so no agent file can override them.
+_NOT_OVERRIDABLE = frozenset({"workflow-subagent", "fork", "(unknown)"})
+
+#: ``SettingChange.current`` when there is no config snapshot to read it from.
+_CURRENT_UNKNOWN = "unknown (no config snapshot yet)"
+
+
+def _agent_source(agent_type: str, snapshot: Snapshot | None) -> str | None:
+    """``"user"`` or ``"project"``: which agents directory the agent's
+    file lives in, per the latest config snapshot (``None`` when unknown
+    or when it is a built-in agent type with no file)."""
+    if snapshot is None:
+        return None
+    agents_map = snapshot.data.get("agents")
+    entry = agents_map.get(agent_type) if isinstance(agents_map, dict) else None
+    source = entry.get("source") if isinstance(entry, dict) else None
+    return source if source in ("user", "project") else None
+
+
+def _agent_current(agent_type: str, key: str, snapshot: Snapshot | None):
+    if snapshot is None:
+        return _CURRENT_UNKNOWN
+    agents_map = snapshot.data.get("agents")
+    entry = agents_map.get(agent_type) if isinstance(agents_map, dict) else None
+    return entry.get(key) if isinstance(entry, dict) else None
+
+
+def _startup_saving(units: "Units | None", tokens, spawns, price, *, prefix: str = "") -> str:
+    """The list price of writing ``tokens`` into the cache on each of
+    ``spawns`` spawns, phrased for the billing mode, or ``""`` when any
+    input is missing."""
+    if units is None or not all(isinstance(v, (int, float)) and v > 0 for v in (tokens, spawns, price)):
+        return ""
+    amount = units.money(tokens * spawns * price / 1_000_000, period="across the spawns in this report")
+    if amount is None:
+        return ""
+    text = f"{prefix}{amount.text()}."
+    return text[:1].upper() + text[1:]
+
+
+def _startup_basis(units: "Units | None") -> str:
+    """How :func:`_startup_saving` worked its amount out."""
+    if units is None:
+        return ""
+    basis = "Estimated at the list price of writing these tokens into the cache once per spawn."
+    probe = units.money(1.0)
+    if probe is not None and probe.basis == NO_LIMIT_SHARE_HINT:
+        basis += " " + probe.basis
+    return basis
+
+
+def _rule_spawn_parts(
+    report: ReportModel,
+    th: RecommendThresholds,
+    archetype: str | None,
+    snapshot: Snapshot | None,
+    units: "Units | None",
+) -> tuple[list[Recommendation], set[str]]:
+    """One recommendation per large or unused part of what a subagent is
+    given at startup (the ``agent_startup`` section), instead of one
+    generic "spawning is expensive". Returns the recommendations and the
+    agent types they cover, so :func:`_rule_spawn_cost` only falls back
+    to its generic advice for the rest."""
+    if archetype in _NO_SUBAGENT_ARCHETYPES:
+        return [], set()
+    breakdown = _table(report, "agent_startup", "agent_startup_breakdown")
+    unused = _table(report, "agent_startup", "agent_startup_unused")
+    if breakdown is None or unused is None:
+        return [], set()
+
+    def part(agent_type, column):
+        return _cell(report, "agent_startup", "agent_startup_breakdown", agent_type, column)
+
+    def used(agent_type, column):
+        return _cell(report, "agent_startup", "agent_startup_unused", agent_type, column)
+
+    out: list[Recommendation] = []
+    covered: set[str] = set()
+    for row in breakdown.rows:
+        agent_type = row[0]
+        spawns = used(agent_type, "spawns")
+        if not isinstance(spawns, int) or spawns < th.spawn_parts_min_spawns:
+            continue
+        overridable = agent_type not in _NOT_OVERRIDABLE
+        price = part(agent_type, "write_price")
+        has_file = _agent_has_frontmatter(agent_type, snapshot)
+        source = _agent_source(agent_type, snapshot)
+        scope = "repo" if source == "project" or (has_file and source is None) else "user"
+        spawns_evidence = _evidence("Spawns measured", spawns, "agent_startup", "agent_startup_unused", agent_type)
+        read_only = used(agent_type, "read_only_spawns")
+        all_read_only = isinstance(read_only, int) and read_only == spawns
+
+        claude_md = part(agent_type, "claude_md")
+        if (
+            isinstance(claude_md, (int, float))
+            and claude_md >= th.spawn_part_tokens
+            and agent_type not in _SKIPS_CLAUDE_MD
+            and overridable
+        ):
+            why = f"Each {agent_type} spawn starts with about {claude_md:,.0f} tokens of CLAUDE.md files and memory."
+            if all_read_only:
+                why += " Every measured spawn only searched or read files, so it rarely needs your working rules."
+            out.append(
+                Recommendation(
+                    id="spawn-claude-md",
+                    severity="advice",
+                    category="settings",
+                    archetypes=_ALL_ARCHETYPES,
+                    title=f"{agent_type} is sent your CLAUDE.md files every time it starts",
+                    action=(
+                        f"Move the CLAUDE.md rules {agent_type} needs into its agent file, then stop "
+                        "sending it CLAUDE.md (omitClaudeMd: true)."
+                        if has_file
+                        else f"{agent_type} is a built-in agent, so it has no file to change. Create a "
+                        f"same-named agent file that does the same job with omitClaudeMd: true; it replaces "
+                        "the built-in one."
+                    ),
+                    lever="omitClaudeMd" if has_file else None,
+                    scope=scope,
+                    agent_type=agent_type,
+                    evidence=[
+                        _evidence("CLAUDE.md and memory per spawn", claude_md, "agent_startup", "agent_startup_breakdown", agent_type),
+                        spawns_evidence,
+                    ],
+                    changes=[
+                        SettingChange(
+                            target="agent",
+                            key="omitClaudeMd",
+                            agent=agent_type,
+                            value=True,
+                            current=_agent_current(agent_type, "omitClaudeMd", snapshot),
+                            new_agent_file=not has_file,
+                        )
+                    ],
+                    estimated_saving=_startup_saving(units, claude_md, spawns, price),
+                    saving_basis=_startup_basis(units),
+                    why=why,
+                )
+            )
+            covered.add(agent_type)
+
+        skills_tokens = part(agent_type, "skills_listing")
+        listed = used(agent_type, "skills_listed_spawns")
+        skills_used = used(agent_type, "skills_used_spawns")
+        if (
+            isinstance(skills_tokens, (int, float))
+            and skills_tokens >= th.spawn_unused_part_tokens
+            and isinstance(listed, int)
+            and listed >= th.spawn_parts_min_spawns
+            and skills_used == 0
+            and overridable
+        ):
+            out.append(
+                Recommendation(
+                    id="spawn-unused-skills",
+                    severity="info",
+                    category="settings",
+                    archetypes=_ALL_ARCHETYPES,
+                    title=f"{agent_type} is given the skills list but never used a skill",
+                    action=(
+                        f"Add Skill to {agent_type}'s disallowedTools so it can't call skills. Whether this "
+                        "also drops the skills list from its startup isn't documented, so check the Skills "
+                        "list column after a few new spawns."
+                    ),
+                    lever=None,
+                    scope=scope,
+                    agent_type=agent_type,
+                    evidence=[
+                        _evidence("Skills list per spawn", skills_tokens, "agent_startup", "agent_startup_breakdown", agent_type),
+                        _evidence("Spawns given the skills list", listed, "agent_startup", "agent_startup_unused", agent_type),
+                        _evidence("Spawns that used a skill", skills_used, "agent_startup", "agent_startup_unused", agent_type),
+                    ],
+                    changes=[
+                        SettingChange(
+                            target="agent",
+                            key="disallowedTools",
+                            agent=agent_type,
+                            # A new file has nothing to keep; an existing one may
+                            # already list tools, which a plain --set would drop.
+                            value=None if has_file else ["Skill"],
+                            suggested="add Skill to the list, keeping anything already there",
+                            current=_agent_current(agent_type, "disallowedTools", snapshot),
+                            new_agent_file=not has_file,
+                            unconfirmed=True,
+                        )
+                    ],
+                    estimated_saving=_startup_saving(
+                        units, skills_tokens, listed, price, prefix="if the list is dropped, about "
+                    ),
+                    saving_basis=_startup_basis(units),
+                    why=f"In {listed} spawns given the skills list, {agent_type} never called a skill.",
+                )
+            )
+            covered.add(agent_type)
+
+        offered = used(agent_type, "mcp_offered_spawns")
+        mcp_used = used(agent_type, "mcp_used_spawns")
+        tool_lists = part(agent_type, "tool_lists")
+        if isinstance(offered, int) and offered >= th.spawn_parts_min_spawns and mcp_used == 0 and overridable:
+            out.append(
+                Recommendation(
+                    id="spawn-unused-mcp",
+                    severity="info",
+                    category="settings",
+                    archetypes=_ALL_ARCHETYPES,
+                    title=f"{agent_type} is offered MCP tools but never used one",
+                    action=(
+                        f"Give {agent_type} an mcpServers list naming only the servers it needs, so the "
+                        "others' tools aren't loaded for it."
+                    ),
+                    lever=None,
+                    scope=scope,
+                    agent_type=agent_type,
+                    evidence=[
+                        _evidence("Spawns offered MCP tools", offered, "agent_startup", "agent_startup_unused", agent_type),
+                        _evidence("Spawns that used an MCP tool", mcp_used, "agent_startup", "agent_startup_unused", agent_type),
+                    ],
+                    changes=[
+                        SettingChange(
+                            target="agent",
+                            key="mcpServers",
+                            agent=agent_type,
+                            suggested="only the servers this agent needs (none were used in these spawns)",
+                            current=_agent_current(agent_type, "mcpServers", snapshot),
+                            new_agent_file=not has_file,
+                        )
+                    ],
+                    estimated_saving=_startup_saving(
+                        units, tool_lists, offered, price, prefix="at most "
+                    ),
+                    saving_basis=_startup_basis(units)
+                    + " The tool lists this is taken from also hold deferred tools and the agent roster, so the "
+                    "real saving is smaller.",
+                    why=f"In {offered} spawns offered MCP tools, {agent_type} never called one.",
+                )
+            )
+            covered.add(agent_type)
+
+        if all_read_only and has_file:
+            out.append(
+                Recommendation(
+                    id="spawn-read-only-tools",
+                    severity="info",
+                    category="settings",
+                    archetypes=_ALL_ARCHETYPES,
+                    title=f"{agent_type} only ever searched and read files",
+                    action=(
+                        f"Limit {agent_type}'s tools to the search and read tools it used, so the "
+                        "definitions of the others aren't sent at startup."
+                    ),
+                    lever=None,
+                    scope=scope,
+                    agent_type=agent_type,
+                    evidence=[
+                        _evidence("Spawns that only searched or read", read_only, "agent_startup", "agent_startup_unused", agent_type),
+                        spawns_evidence,
+                    ],
+                    changes=[
+                        SettingChange(
+                            target="agent",
+                            key="tools",
+                            agent=agent_type,
+                            value=sorted(_READ_ONLY_TOOLS),
+                            current=_agent_current(agent_type, "tools", snapshot),
+                            note="Remove any tool from the list that this agent should not use.",
+                        )
+                    ],
+                    estimated_saving="",
+                    why=f"All {spawns} measured spawns used only search and read tools.",
+                )
+            )
+            covered.add(agent_type)
+
+        task_prompt = part(agent_type, "task_prompt")
+        if isinstance(task_prompt, (int, float)) and task_prompt >= th.spawn_task_prompt_tokens:
+            out.append(
+                Recommendation(
+                    id="spawn-task-prompt",
+                    severity="info",
+                    category="workflow",
+                    archetypes=_ALL_ARCHETYPES,
+                    title=f"The instructions written for each {agent_type} are long",
+                    action=(
+                        f"When starting {agent_type}, point it at files instead of pasting their contents, "
+                        "and leave out background it can look up itself."
+                    ),
+                    lever=None,
+                    scope="user",
+                    agent_type=agent_type,
+                    evidence=[
+                        _evidence("Task prompt per spawn", task_prompt, "agent_startup", "agent_startup_breakdown", agent_type),
+                        spawns_evidence,
+                    ],
+                    estimated_saving=_startup_saving(
+                        units, task_prompt / 2, spawns, price, prefix="if they were half as long, about "
+                    ),
+                    saving_basis=_startup_basis(units),
+                    why=f"Each {agent_type} spawn starts with about {task_prompt:,.0f} tokens of instructions from its parent.",
+                )
+            )
+            covered.add(agent_type)
+
+    shared = _table(report, "agent_startup", "agent_startup_shared")
+    for row in shared.rows if shared is not None else []:
+        key, source_label, reach, mean_tokens = row[0], row[1], row[2], row[3]
+        if not str(key).startswith("claude_md:") or not isinstance(mean_tokens, (int, float)):
+            continue
+        if mean_tokens < th.spawn_part_tokens:
+            continue
+        out.append(
+            Recommendation(
+                id="spawn-shared-claude-md",
+                severity="advice",
+                category="workflow",
+                archetypes=_ALL_ARCHETYPES,
+                title=f"{source_label} goes to {reach} agent types",
+                action=(
+                    "Ask Claude to move sections that only some agents need out of this file and into "
+                    "those agents' own files or into skills loaded on demand. Every spawn then carries less."
+                ),
+                lever=None,
+                scope="user",
+                evidence=[
+                    _evidence("Size per spawn", mean_tokens, "agent_startup", "agent_startup_shared", key),
+                    _evidence("Agent types given it", reach, "agent_startup", "agent_startup_shared", key),
+                ],
+                why=f"About {mean_tokens:,.0f} tokens of it are sent to each of these agents when they start.",
+            )
+        )
+    return out, covered
+
+
 def _rule_spawn_cost(
-    report: ReportModel, th: RecommendThresholds, archetype: str | None, snapshot: Snapshot | None
+    report: ReportModel,
+    th: RecommendThresholds,
+    archetype: str | None,
+    snapshot: Snapshot | None,
+    covered: set[str] | None = None,
 ) -> list[Recommendation]:
     if archetype in _NO_SUBAGENT_ARCHETYPES:
         return []
@@ -998,6 +1351,8 @@ def _rule_spawn_cost(
     out: list[Recommendation] = []
     for row in table.rows:
         agent_type = row[0]
+        if covered and agent_type in covered:
+            continue
         mean_write = _cell(report, "agents", "topology_spawn_write", agent_type, "mean_write")
         if not isinstance(mean_write, (int, float)) or mean_write <= th.spawn_cost_tokens:
             continue
@@ -1284,6 +1639,7 @@ def recommend(
     archetype: str | None,
     snapshot: Snapshot | None = None,
     thresholds: RecommendThresholds | None = None,
+    units: "Units | None" = None,
 ) -> list[Recommendation]:
     """Every Appendix A5 recommendation rule this module implements,
     evaluated against ``report`` (an already-assembled
@@ -1330,7 +1686,9 @@ def recommend(
     recs.extend(_rule_cache_read_dominance(report, th))
     recs.extend(_rule_baseline_bloat(report, th, snapshot, archetype))
     recs.extend(_rule_agent_report_size(report, th, archetype))
-    recs.extend(_rule_spawn_cost(report, th, archetype, snapshot))
+    part_recs, covered_agents = _rule_spawn_parts(report, th, archetype, snapshot, units)
+    recs.extend(part_recs)
+    recs.extend(_rule_spawn_cost(report, th, archetype, snapshot, covered_agents))
     recs.extend(_rule_effort_mismatch(report, th))
     if _section(report, "phases") is not None:
         recs.extend(_rule_discovery_share(report, th))

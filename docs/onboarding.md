@@ -82,7 +82,7 @@ claude-token-lens init [--answers FILE] [--non-interactive] [--no-install]
 
 | Key | Asked as | Feeds |
 |---|---|---|
-| `billing` | Billing mode (api/subscription) | `config.billing` |
+| `billing` | Billing mode (api/subscription; `auto` when unset — see the README's billing note) | `config.billing` |
 | `exclude_projects` | Comma-separated slugs to always exclude | `config.exclude_projects` |
 | `launch_overlays` | Do you launch Claude Code with `--settings`/`CLAUDE_CONFIG_DIR` overlays rather than each project's own settings files? | `config.launch_overlays` and this project's `projects/<slug>.toml` |
 | `shared_project_config` | Are this project's agents/skills shared with colleagues? | `config.shared_project_config` and this project's `projects/<slug>.toml` |

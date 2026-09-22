@@ -225,7 +225,7 @@ def test_scrub_attachment_line_keeps_only_type_and_x_fills_rendered():
     out = scrub.scrub_line(line, _KEY)
 
     assert out["attachment"] == {"type": "skill_listing"}
-    assert out["rendered"] == "x" * 42
+    assert out["rendered"] == [{"content": "x" * 42}]
 
 
 def test_scrub_line_hashes_cwd_to_a_short_slug():

@@ -83,6 +83,7 @@ from typing import Sequence
 from . import compaction
 from . import snapshots as snapshots_mod
 from .model import Column, Event, EventKind, Section, Table, TranscriptResult, Turn
+from .pricing import Pricing
 from .snapshots import Snapshot
 from .tools import log_usage
 
@@ -288,12 +289,181 @@ class _ProjectAcc:
     session_ids: list[str] = field(default_factory=list)
 
 
+#: Parts of a subagent's startup context, in display order. Each is
+#: measured in tokens (chars / 4) from what the transcript records before
+#: the subagent's first priced turn; see :func:`_startup_parts`.
+STARTUP_PARTS = (
+    "task_prompt",
+    "claude_md",
+    "skills_listing",
+    "tool_lists",
+    "hook_context",
+    "other_attachments",
+    "system_prompt",
+    "tool_definitions",
+)
+
+#: CACHE_SIGNAL attachment types that list what the agent can call or
+#: spawn: the deferred-tool list, MCP server instructions, and the
+#: sibling-agent roster.
+_TOOL_LIST_SUBKINDS = frozenset({"deferred_tools_delta", "mcp_instructions_delta", "agent_listing_delta"})
+
+#: Tools that only search or read. A subagent that used nothing else
+#: counts towards :class:`_AgentStartupAcc`'s ``read_only_spawns``.
+_READ_ONLY_TOOLS = frozenset({"Read", "Grep", "Glob", "LS", "WebFetch", "WebSearch", "ToolSearch"})
+
+#: A subagent counts as a fork (it inherited the parent's conversation
+#: and prompt cache) when its first turn reads at least this share of the
+#: parent's context at the spawning turn from cache, and that context is
+#: at least :data:`_FORK_MIN_PARENT_CTX` tokens. A fresh spawn only reads
+#: its own system prompt and tools from cache, which is far smaller than
+#: a parent conversation of this size.
+_FORK_READ_RATIO = 0.9
+_FORK_MIN_PARENT_CTX = 40_000
+
+#: A startup part counts as shared when at least half of the measured
+#: agent types (and at least two) receive it, and each of their means is
+#: within this fraction of the largest.
+_SHARED_TOLERANCE = 0.15
+
+
+@dataclass(slots=True)
+class _AgentStartupAcc:
+    """Per-agent-type running totals for the subagent startup breakdown."""
+
+    agent_type: str = ""
+    spawns: int = 0
+    fork_spawns: int = 0
+    startup_tokens: list[int] = field(default_factory=list)
+    parts: dict[str, list[float]] = field(default_factory=dict)
+    #: Spawns whose transcript recorded a system-prompt snapshot, so the
+    #: system prompt and tool definitions were measured rather than left
+    #: in "not recorded".
+    snapshot_spawns: int = 0
+    claude_md_by_source: dict[str, list[float]] = field(default_factory=dict)
+    skills_listed_spawns: int = 0
+    skills_used_spawns: int = 0
+    mcp_offered_spawns: int = 0
+    mcp_used_spawns: int = 0
+    claude_md_spawns: int = 0
+    read_only_spawns: int = 0
+    #: The first turn's model's 5-minute cache-write list price (USD per
+    #: million tokens), per measured spawn whose model is on the rate card.
+    write_prices: list[float] = field(default_factory=list)
+
+
+def _startup_parts(events_before: list[Event], first: Turn | None) -> tuple[dict[str, float], dict[str, float], bool]:
+    """Tokens per startup part (:data:`STARTUP_PARTS`), CLAUDE.md tokens
+    per source (``User``/``Project``/``Local``/``AutoMem``/``Managed``/
+    ``Nested``/``Other``), and whether a system-prompt snapshot was seen.
+    """
+    chars: dict[str, float] = {part: 0.0 for part in STARTUP_PARTS}
+    claude_md_by_source: dict[str, float] = {}
+    saw_snapshot = False
+    chars["task_prompt"] = _human_prompt_est_tokens(first, events_before) * _CHARS_PER_TOKEN_APPROX
+    for event in events_before:
+        size = event.size_chars or 0
+        if event.kind == EventKind.CONTEXT_INJECT and event.subkind == "prompt_snapshot":
+            saw_snapshot = True
+            chars["system_prompt"] += event.detail.get("system_chars") or 0
+            chars["tool_definitions"] += event.detail.get("tools_chars") or 0
+        elif event.kind == EventKind.CONTEXT_INJECT and event.subkind == "instructions":
+            chars["claude_md"] += size
+            for source, source_chars in (event.detail.get("chars_by_type") or {}).items():
+                claude_md_by_source[source] = claude_md_by_source.get(source, 0.0) + source_chars
+        elif event.kind == EventKind.CONTEXT_INJECT and event.subkind == "nested_memory":
+            chars["claude_md"] += size
+            claude_md_by_source["Nested"] = claude_md_by_source.get("Nested", 0.0) + size
+        elif event.kind == EventKind.CONTEXT_INJECT and event.subkind == "skill_listing":
+            chars["skills_listing"] += size
+        elif event.kind == EventKind.CACHE_SIGNAL and event.subkind in _TOOL_LIST_SUBKINDS:
+            chars["tool_lists"] += size
+        elif event.kind == EventKind.HOOK_OUTPUT:
+            chars["hook_context"] += size
+        elif event.kind in (EventKind.CONTEXT_INJECT, EventKind.REMINDER, EventKind.CACHE_SIGNAL, EventKind.ATTACHMENT):
+            chars["other_attachments"] += size
+    tokens = {part: value / _CHARS_PER_TOKEN_APPROX for part, value in chars.items()}
+    by_source = {source: value / _CHARS_PER_TOKEN_APPROX for source, value in claude_md_by_source.items()}
+    return tokens, by_source, saw_snapshot
+
+
 @dataclass(slots=True)
 class ContextBudgetStats:
     """Corpus-wide context-budget accumulator, fed one top-level session
-    at a time via :meth:`add_session`. See the module docstring."""
+    at a time via :meth:`add_session`, and one subagent transcript at a
+    time via :meth:`add_subagent`. See the module docstring."""
 
     projects: dict[str, _ProjectAcc] = field(default_factory=dict)
+    agents: dict[str, _AgentStartupAcc] = field(default_factory=dict)
+
+    def add_subagent(
+        self, sub: TranscriptResult, parent_ctx_at_spawn: int | None = None, pricing: "Pricing | None" = None
+    ) -> None:
+        """Fold one subagent transcript into its agent type's startup
+        breakdown: what the transcript records before the first priced
+        turn (task prompt, CLAUDE.md, skills listing, tool lists, hook
+        output, other attachments and -- when a system-prompt snapshot was
+        recorded -- the system prompt and tool definitions), next to the
+        first turn's full input size.
+
+        ``parent_ctx_at_spawn`` is the parent's context size on the turn
+        that spawned this subagent (``None`` when it can't be joined). A
+        subagent whose first turn reads nearly all of that from cache is
+        counted as a fork and kept out of the means: it inherited the
+        parent's conversation, so its startup size isn't comparable to a
+        fresh spawn's.
+
+        ``pricing``, when given, records the first turn's model's
+        cache-write price, so a recommendation can put a list price on
+        each startup part.
+        """
+        agent_type = sub.meta.agent_type or "(unknown)"
+        acc = self.agents.setdefault(agent_type, _AgentStartupAcc(agent_type=agent_type))
+        acc.spawns += 1
+        first = _first_priced_turn(sub)
+        if first is None:
+            return
+        if agent_type == "fork" or (
+            parent_ctx_at_spawn is not None
+            and parent_ctx_at_spawn >= _FORK_MIN_PARENT_CTX
+            and first.cache_read_tokens >= _FORK_READ_RATIO * parent_ctx_at_spawn
+        ):
+            acc.fork_spawns += 1
+            return
+
+        events_before = _events_before_first_turn(sub, first)
+        parts, claude_md_by_source, saw_snapshot = _startup_parts(events_before, first)
+        acc.startup_tokens.append(first.input_tokens + first.cache_creation_tokens + first.cache_read_tokens)
+        for part, tokens in parts.items():
+            acc.parts.setdefault(part, []).append(tokens)
+        for source, tokens in claude_md_by_source.items():
+            acc.claude_md_by_source.setdefault(source, []).append(tokens)
+        if saw_snapshot:
+            acc.snapshot_spawns += 1
+        resolved = pricing.resolve_model(first.model) if pricing is not None else None
+        if resolved is not None:
+            acc.write_prices.append(resolved.rates.cache_write_5m)
+
+        tool_names = {name for turn in sub.turns for name in turn.tool_names}
+        if parts["skills_listing"] > 0:
+            acc.skills_listed_spawns += 1
+            if "Skill" in tool_names:
+                acc.skills_used_spawns += 1
+        mcp_offered = any(
+            event.detail.get("mcp_added")
+            for event in events_before
+            if event.kind == EventKind.CACHE_SIGNAL and event.subkind == "deferred_tools_delta"
+        )
+        if mcp_offered:
+            acc.mcp_offered_spawns += 1
+            if any(turn.attribution_mcp_server for turn in sub.turns) or any(
+                name.startswith("mcp__") for name in tool_names
+            ):
+                acc.mcp_used_spawns += 1
+        if parts["claude_md"] > 0:
+            acc.claude_md_spawns += 1
+            if tool_names <= _READ_ONLY_TOOLS:
+                acc.read_only_spawns += 1
 
     def add_session(self, project: str, top: TranscriptResult) -> None:
         """Fold one session's top-level transcript into ``project``'s
@@ -754,8 +924,202 @@ def build_section(
     return Section(key="context_budget", title="Context budget", tables=tables, notes=[])
 
 
+# -- subagent startup section ------------------------------------------------
+
+
+def _mean_or_zero(values: list[float] | None) -> float:
+    return fmean(values) if values else 0.0
+
+
+def _build_startup_table(stats: ContextBudgetStats) -> Table:
+    columns = [
+        Column(key="agent_type", label="Agent type", kind="str"),
+        Column(key="spawns", label="Spawns", kind="int"),
+        Column(key="fork_spawns", label="Forks (left out)", kind="int"),
+        Column(key="startup_tokens", label="Startup size", kind="tokens"),
+        Column(key="task_prompt", label="Task prompt", kind="tokens"),
+        Column(key="claude_md", label="CLAUDE.md and memory", kind="tokens"),
+        Column(key="skills_listing", label="Skills list", kind="tokens"),
+        Column(key="tool_lists", label="Tool and agent lists", kind="tokens"),
+        Column(key="hook_context", label="Hook output", kind="tokens"),
+        Column(key="other_attachments", label="Environment and other notes", kind="tokens"),
+        Column(key="system_prompt", label="System prompt", kind="tokens"),
+        Column(key="tool_definitions", label="Tool definitions", kind="tokens"),
+        Column(key="not_recorded", label="Not recorded", kind="tokens"),
+        Column(key="measured_pct", label="Share explained", kind="pct"),
+        Column(key="write_price", label="Cache-write price per million tokens", kind="money"),
+    ]
+    rows: list[list] = []
+    for agent_type in sorted(stats.agents, key=lambda key: -stats.agents[key].spawns):
+        acc = stats.agents[agent_type]
+        if not acc.startup_tokens:
+            continue
+        startup = fmean(acc.startup_tokens)
+        parts = {part: _mean_or_zero(acc.parts.get(part)) for part in STARTUP_PARTS}
+        known = sum(parts.values())
+        not_recorded = max(0.0, startup - known)
+        measured_pct = min(100.0, known / startup * 100) if startup else None
+        rows.append(
+            [agent_type, acc.spawns, acc.fork_spawns, startup]
+            + [parts[part] for part in STARTUP_PARTS]
+            + [not_recorded, measured_pct, fmean(acc.write_prices) if acc.write_prices else None]
+        )
+    return Table(
+        name="agent_startup_breakdown",
+        title="What each subagent is given at startup",
+        columns=columns,
+        rows=rows,
+        notes=[
+            "Startup size is the first turn's whole input (new, cache-write and cache-read tokens). "
+            "Every other column is the average per spawn, in tokens, estimated as characters / "
+            f"{_CHARS_PER_TOKEN_APPROX} from what the transcript records before that first turn.",
+            "The system prompt and tool definitions are only measured when Claude Code recorded a "
+            "system-prompt snapshot for the spawn; otherwise they sit in \"Not recorded\".",
+            "Forks inherit the parent's conversation and prompt cache, so they are counted but kept "
+            "out of the averages.",
+        ],
+    )
+
+
+def _build_unused_table(stats: ContextBudgetStats) -> Table:
+    columns = [
+        Column(key="agent_type", label="Agent type", kind="str"),
+        Column(key="spawns", label="Spawns measured", kind="int"),
+        Column(key="skills_listing_tokens", label="Skills list size", kind="tokens"),
+        Column(key="skills_listed_spawns", label="Spawns given the skills list", kind="int"),
+        Column(key="skills_used_spawns", label="Spawns that used a skill", kind="int"),
+        Column(key="mcp_offered_spawns", label="Spawns offered MCP tools", kind="int"),
+        Column(key="mcp_used_spawns", label="Spawns that used an MCP tool", kind="int"),
+        Column(key="claude_md_tokens", label="CLAUDE.md size", kind="tokens"),
+        Column(key="read_only_spawns", label="Spawns that only searched or read", kind="int"),
+    ]
+    rows: list[list] = []
+    for agent_type in sorted(stats.agents, key=lambda key: -stats.agents[key].spawns):
+        acc = stats.agents[agent_type]
+        if not acc.startup_tokens:
+            continue
+        rows.append(
+            [
+                agent_type,
+                len(acc.startup_tokens),
+                _mean_or_zero(acc.parts.get("skills_listing")),
+                acc.skills_listed_spawns,
+                acc.skills_used_spawns,
+                acc.mcp_offered_spawns,
+                acc.mcp_used_spawns,
+                _mean_or_zero(acc.parts.get("claude_md")),
+                acc.read_only_spawns,
+            ]
+        )
+    return Table(
+        name="agent_startup_unused",
+        title="Loaded at startup but not used",
+        columns=columns,
+        rows=rows,
+        notes=[
+            "A skill counts as used when the subagent called the Skill tool; an MCP tool counts as "
+            "used when any of its turns called one.",
+            "\"Only searched or read\" means every tool the subagent called was one of "
+            + ", ".join(sorted(_READ_ONLY_TOOLS))
+            + ".",
+        ],
+    )
+
+
+#: ``instructions.files[].type`` (plus ``Nested`` for nested CLAUDE.md
+#: files) -> where that text comes from, for the shared-injection table.
+CLAUDE_MD_SOURCES = {
+    "User": "Your global CLAUDE.md (~/.claude/CLAUDE.md)",
+    "Project": "The project's CLAUDE.md",
+    "Local": "The project's CLAUDE.local.md",
+    "AutoMem": "Auto memory (MEMORY.md)",
+    "Managed": "Managed policy CLAUDE.md",
+    "Nested": "CLAUDE.md files in subfolders and rules",
+    "Other": "Other instruction files",
+}
+
+#: Startup part -> where it comes from, for the shared-injection table.
+_PART_SOURCES = {
+    "skills_listing": "Installed skills and plugins",
+    "tool_lists": "MCP servers, deferred tools and the agent roster",
+    "hook_context": "A SessionStart or SubagentStart hook",
+    "other_attachments": "Claude Code (environment, model and settings notes)",
+    "system_prompt": "Claude Code's system prompt plus the agent's own prompt",
+    "tool_definitions": "Built-in and MCP tool definitions",
+}
+
+
+def _is_shared(means: list[float], measured_types: int) -> bool:
+    if len(means) < 2 or len(means) * 2 < measured_types:
+        return False
+    top = max(means)
+    return top > 0 and all(abs(top - value) <= _SHARED_TOLERANCE * top for value in means)
+
+
+def _build_shared_table(stats: ContextBudgetStats) -> Table:
+    columns = [
+        Column(key="part", label="What", kind="str"),
+        Column(key="source", label="Where it comes from", kind="str"),
+        Column(key="agent_types", label="Agent types given it", kind="str"),
+        Column(key="mean_tokens", label="Size per spawn", kind="tokens"),
+        Column(key="total_tokens", label="Total across spawns", kind="tokens"),
+    ]
+    measured = [acc for acc in stats.agents.values() if acc.startup_tokens]
+    rows: list[list] = []
+    if len(measured) >= 2:
+        candidates: list[tuple[str, str, list[list[float]]]] = [
+            (f"claude_md:{source}", CLAUDE_MD_SOURCES.get(source, source), [acc.claude_md_by_source.get(source, []) for acc in measured])
+            for source in sorted({source for acc in measured for source in acc.claude_md_by_source})
+        ]
+        candidates += [
+            (part, source, [acc.parts.get(part, []) for acc in measured]) for part, source in _PART_SOURCES.items()
+        ]
+        for key, source, per_agent in candidates:
+            receiving = [values for values in per_agent if values and fmean(values) > 0]
+            means = [fmean(values) for values in receiving]
+            if not _is_shared(means, len(measured)):
+                continue
+            total = sum(sum(values) for values in receiving)
+            rows.append([key, source, f"{len(receiving)} of {len(measured)}", fmean(means), total])
+        rows.sort(key=lambda row: -row[4])
+    return Table(
+        name="agent_startup_shared",
+        title="Given to most subagent types",
+        columns=columns,
+        rows=rows,
+        notes=[
+            "A part is listed when at least half of the agent types receive it at about the same "
+            f"size (within {int(_SHARED_TOLERANCE * 100)}%), which usually means one shared source. "
+            "Trimming that source shrinks every one of those spawns.",
+        ],
+    )
+
+
+def build_startup_section(stats: ContextBudgetStats) -> Section:
+    """Build the "Subagent startup" report section (key
+    ``"agent_startup"``): what each agent type is given before its first
+    turn, what it was given but never used, and what every agent type
+    receives alike."""
+    if not any(acc.startup_tokens for acc in stats.agents.values()):
+        return Section(
+            key="agent_startup",
+            title="Subagent startup",
+            tables=[],
+            notes=["No subagent transcripts with a priced first turn in this window."],
+        )
+    return Section(
+        key="agent_startup",
+        title="Subagent startup",
+        tables=[_build_startup_table(stats), _build_unused_table(stats), _build_shared_table(stats)],
+        notes=[],
+    )
+
+
 __all__ = [
+    "CLAUDE_MD_SOURCES",
     "ContextBudgetStats",
+    "STARTUP_PARTS",
     "build_section",
+    "build_startup_section",
     "load_context_window_rows",
 ]
