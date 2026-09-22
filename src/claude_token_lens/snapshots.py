@@ -676,6 +676,28 @@ def co_changed_keys(snapshot_a: Snapshot, snapshot_b: Snapshot) -> list[str]:
     return changed
 
 
+_SETTING_KEY_PREFIXES = {
+    "user_settings": "your settings",
+    "managed_settings": "managed settings",
+    "project_settings": "project settings",
+    "mcp_servers": "MCP servers",
+    "enabled_plugins": "enabled plugins",
+    "agents": "agents",
+    "env_names": "environment variables",
+    "effective": "in effect",
+}
+
+
+def _plain_setting_key(key: str) -> str:
+    """A flattened snapshot key (``user_settings.model``) as a table title
+    can show it: ``model (your settings)``."""
+    head, _, rest = key.partition(".")
+    where = _SETTING_KEY_PREFIXES.get(head)
+    if where is None:
+        return key.replace("_", " ")
+    return f"{rest.replace('_', ' ')} ({where})" if rest else where
+
+
 def _keys_co_changed_with(snapshots: list[Snapshot], key: str) -> list[str]:
     """Across consecutive snapshots in ``snapshots``, every other key that
     changed at the same time ``key`` changed. Feeds the note on a
@@ -782,17 +804,18 @@ def build_config_diff_table(
             "and are excluded from every group above."
         )
     co_changed = _keys_co_changed_with(snapshots, key)
+    plain = _plain_setting_key(key)
     if co_changed:
         notes.append(
-            "Keys that changed alongside "
-            f"{key!r} in the same window: {', '.join(co_changed)}."
+            f"Settings that changed at the same time as {plain}: "
+            f"{', '.join(_plain_setting_key(k) for k in co_changed)}."
         )
     else:
-        notes.append(f"No other key changed alongside {key!r} in the same window.")
+        notes.append(f"No other setting changed at the same time as {plain}.")
 
     return Table(
         name=f"config-diff-{key}",
-        title=f"Config diff: {key}",
+        title=f"Sessions by setting: {_plain_setting_key(key)}",
         columns=[
             Column(key="value", label="Value", kind="str"),
             Column(key="sessions", label="Sessions", kind="int"),

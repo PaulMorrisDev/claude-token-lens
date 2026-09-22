@@ -456,7 +456,14 @@ def build_section(stats: ModelSwapStats, thresholds: ModelSwapThresholds | None 
         Column(key="observed_cost", label="Observed cost", kind="money"),
     ]
     for alt_id in stats.alternative_models:
-        columns.append(Column(key=f"cost_{alt_id}", label=f"Cost at {alt_id}", kind="money"))
+        columns.append(
+            Column(
+                key=f"cost_{alt_id}",
+                label=f"Cost at {alt_id}",
+                kind="money",
+                help=f"The same tokens at {alt_id}'s list price.",
+            )
+        )
     columns.extend(
         [
             Column(key="best_cheaper_alternative_model", label="Best cheaper alternative (model id)", kind="str"),

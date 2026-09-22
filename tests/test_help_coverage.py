@@ -27,24 +27,7 @@ SRC = Path(__file__).resolve().parent.parent / "src" / "claude_token_lens"
 
 #: Sections whose tables don't have help yet. Remove a key once its copy
 #: is written in ``helptext.py``.
-NOT_YET_COVERED = {
-    "overview",
-    "usage",
-    "sessions",
-    "recache",
-    "ttl",
-    "limits",
-    "carry",
-    "compaction_sim",
-    "model_swap",
-    "waste",
-    "compactions",
-    "config",
-    "context_budget",
-    "scorecard",
-    "phases",
-    "baseline_comparison",
-}
+NOT_YET_COVERED: set[str] = set()
 
 #: Words the house style replaces (see the "Words to use" table).
 BANNED = re.compile(r"\b(re-?cache[sd]?|top-level|briefing|cache_creation|cache_read|attribution_\w+|per_turn_\w+)\b", re.I)

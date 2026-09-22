@@ -56,7 +56,7 @@ def format_cell(value, kind: str, currency: str = "USD") -> str:
     kind is one of "str", "int", "float", "pct", "money", "tokens", "secs".
     ``None`` always renders as ``"-"``, regardless of kind.
 
-    - str: as-is via ``str()``.
+    - str: as-is via ``str()``; a bool reads ``Yes``/``No``.
     - int: thousands separators, e.g. ``1,234,567``.
     - float: thousands separators, 2 decimal places.
     - pct: 1 decimal place with a trailing ``%``, e.g. ``12.3%``.
@@ -69,6 +69,8 @@ def format_cell(value, kind: str, currency: str = "USD") -> str:
         raise ValueError(f"unknown column kind: {kind!r}")
     if value is None:
         return "-"
+    if isinstance(value, bool):
+        return "Yes" if value else "No"
     if kind == "str":
         return str(value)
     if kind == "int":

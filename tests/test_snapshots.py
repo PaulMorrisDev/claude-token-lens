@@ -301,9 +301,9 @@ def test_build_config_diff_table_notes_co_changed_keys():
         _sessions_with_metrics(), snapshots, "user_settings.autoCompactWindow"
     )
     co_changed_note = next(
-        note for note in table.notes if "changed alongside" in note
+        note for note in table.notes if "changed at the same time" in note
     )
-    assert "user_settings.effortLevel" in co_changed_note
+    assert "effortLevel (your settings)" in co_changed_note
 
 
 def test_build_config_diff_table_no_co_changed_keys_note():
@@ -311,7 +311,7 @@ def test_build_config_diff_table_no_co_changed_keys_note():
     table = snap_mod.build_config_diff_table(
         _sessions_with_metrics(), snapshots, "user_settings.model"
     )
-    assert any("No other key changed alongside" in note for note in table.notes)
+    assert any("No other setting changed" in note for note in table.notes)
 
 
 # -- build_config_section -----------------------------------------------

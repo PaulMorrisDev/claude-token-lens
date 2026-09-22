@@ -121,6 +121,7 @@
   function formatCell(value, kind, currency) {
     currency = currency || "USD";
     if (value === null || value === undefined) return "-";
+    if (typeof value === "boolean") return value ? "Yes" : "No";
     if (COLUMN_KINDS.indexOf(kind) === -1) kind = "str";
     switch (kind) {
       case "str":

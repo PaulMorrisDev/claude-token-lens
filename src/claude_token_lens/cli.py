@@ -33,13 +33,13 @@ from pathlib import Path
 from zoneinfo import available_timezones
 
 from . import __version__, baseline as baseline_mod, classify, discovery, installer as installer_mod, onboarding
-from . import probe as probe_mod, recache, snapshots
+from . import helptext, probe as probe_mod, recache, snapshots
 from . import statusline as statusline_mod
 from .cache import DigestCache
 from .config import Config, ConfigError, load_config, load_session_overrides
 from .corpus import Corpus, load_corpus
 from .parse import load_or_create_salt
-from .model import Diagnostics, EventKind, PricingMeta, ReportMeta, ReportModel, TranscriptResult
+from .model import Diagnostics, EventKind, PricingMeta, ReportMeta, ReportModel, Section, TranscriptResult
 from .pricing import Pricing, PricingCoverage, PricingError, load_pricing, price_turn
 from .render.csv_out import write_csv_dir
 from .render.html import render_html
@@ -1422,6 +1422,7 @@ def _cmd_config_diff(args: argparse.Namespace) -> int:
     else:
         tables = [snapshots.build_config_diff_table(session_metrics, snaps, args.key)]
 
+    helptext.annotate_section(Section(key="config", title="", tables=tables), "subscription" if config.billing == "subscription" else "api")
     for table in tables:
         _print_table(table, rates.currency)
         print()

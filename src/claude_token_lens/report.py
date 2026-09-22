@@ -657,7 +657,7 @@ def _build_baseline_comparison_section(
     ]
     overview_table = Table(
         name="baseline_comparison_overview",
-        title=f"Baseline comparison: {baseline_record.get('id', '?')} vs current window",
+        title=f"This window vs your baseline {baseline_record.get('id', '?')}",
         columns=columns,
         rows=rows,
         notes=[

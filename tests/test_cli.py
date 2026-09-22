@@ -500,7 +500,7 @@ def test_report_baseline_latest_adds_baseline_comparison_section(tmp_path, capsy
     )
     out = capsys.readouterr().out
     assert exit_code == 0
-    assert "## Baseline comparison" in out
+    assert "## Before and after" in out
     assert "Cost per session" in out
     assert "Observed, not controlled" in out
 
@@ -531,7 +531,7 @@ def test_report_baseline_explicit_id_matches_latest(tmp_path, capsys):
     )
     out = capsys.readouterr().out
     assert exit_code == 0
-    assert f"Baseline comparison: {baseline_id}" in out
+    assert f"your baseline {baseline_id}" in out
 
 
 def test_report_baseline_unresolved_id_omits_section_and_notes_how_to_fix(tmp_path, capsys):
@@ -554,7 +554,7 @@ def test_report_baseline_unresolved_id_omits_section_and_notes_how_to_fix(tmp_pa
     )
     out = capsys.readouterr().out
     assert exit_code == 0
-    assert "## Baseline comparison" not in out
+    assert "## Before and after" not in out
     assert "no such baseline was found" in out
     assert "claude-token-lens baseline --list" in out
 
@@ -569,7 +569,7 @@ def test_report_baseline_latest_with_none_saved_yet_omits_section(tmp_path, caps
     )
     out = capsys.readouterr().out
     assert exit_code == 0
-    assert "## Baseline comparison" not in out
+    assert "## Before and after" not in out
     assert "no baseline has been saved yet" in out
 
 
@@ -581,7 +581,7 @@ def test_report_without_baseline_flag_has_no_note_or_section(tmp_path, capsys):
     exit_code = cli.main(["report", "--config-dir", str(config_dir), "--projects-root", str(root), "--project", "proj-a"])
     out = capsys.readouterr().out
     assert exit_code == 0
-    assert "## Baseline comparison" not in out
+    assert "## Before and after" not in out
     # No --baseline flag given at all -- no resolution attempted, so no
     # "no baseline found"/"run `claude-token-lens baseline`" note either
     # (unlike test_report_baseline_latest_with_none_saved_yet_omits_section,
@@ -1149,7 +1149,7 @@ def test_config_diff_renders_a_table(tmp_path, capsys):
     )
     assert exit_code == 0
     out = capsys.readouterr().out
-    assert "Config diff: user_settings.model" in out
+    assert "Sessions by setting: model (your settings)" in out
     assert "Sessions" in out
 
 
@@ -1194,7 +1194,7 @@ def test_config_diff_finds_snapshots_written_by_the_hook_at_the_same_config_dir(
     )
     assert exit_code == 0
     out = capsys.readouterr().out
-    assert "Config diff: user_settings.model" in out
+    assert "Sessions by setting: model (your settings)" in out
     assert "Sessions" in out
 
 
@@ -1251,7 +1251,7 @@ def test_snapshot_config_hook_and_config_diff_agree_on_the_same_config_dir(tmp_p
     )
     assert exit_code == 0
     out = capsys.readouterr().out
-    assert "Config diff: user_settings.model" in out
+    assert "Sessions by setting: model (your settings)" in out
 
 
 def test_config_diff_honors_session_overrides(tmp_path, capsys, monkeypatch):
@@ -1532,8 +1532,8 @@ def test_report_against_the_real_fixture_exits_0_with_nonempty_sections(capsys):
     markdown = capsys.readouterr().out
     assert "## Overview" in markdown
     assert "## Sessions" in markdown
-    assert "## Re-cache events" in markdown
-    assert "## Cache TTL break-even" in markdown
+    assert "## Cache rebuilds" in markdown
+    assert "## Cache lifetime (TTL)" in markdown
 
     exit_code = cli.main(
         [

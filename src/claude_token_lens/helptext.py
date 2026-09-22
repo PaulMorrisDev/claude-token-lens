@@ -217,6 +217,13 @@ class SectionCopy:
 
 
 _MAIN_OR_SUB = {"top-level": "Main session", "subagent": "Subagents", "workflow-agent": "Workflow agents"}
+_SETTINGS_FILES = {
+    "(unknown project)": "Unknown project (older snapshot)",
+    "managed": "Managed policy",
+    "project_local": "Project, local file (.claude/settings.local.json)",
+    "project_shared": "Project, shared file (.claude/settings.json)",
+    "user": "Your user settings (~/.claude/settings.json)",
+}
 
 SECTION_COPY: dict[str, SectionCopy] = {
     "agent_startup": SectionCopy(
@@ -263,6 +270,213 @@ SECTION_COPY: dict[str, SectionCopy] = {
             shows="Workflow runs in the window, their status, and the most expensive runs.",
             read="A high failure or cancel share means spend that produced nothing.",
             act="If one workflow dominates cost, check its agent count and phases.",
+        ),
+    ),
+    "overview": SectionCopy(
+        title="Overview",
+        intro="How much you used in this window, and what it cost at list prices.",
+        help=Help(
+            shows="Totals for the window, then the same totals split by model.",
+            read="Cache reads are usually most of your tokens but a small part of cost. Cost follows cache writes "
+            "and output more than the raw token count.",
+            act="If one model carries most of the cost, check whether some of its work could run on a cheaper "
+            "model. The Savings tab estimates the effect.",
+        ),
+    ),
+    "usage": SectionCopy(
+        title="Usage over time",
+        intro="When you used Claude Code, in which projects, and from which app.",
+        help=Help(
+            shows="Usage by day, week and month, by project, by app, and in five-hour blocks.",
+            read="Token counts here include cache reads, so they run far higher than cost suggests. "
+            "Compare cost across periods, not tokens.",
+            act="Look for days or projects that stand out, then check what ran there.",
+        ),
+    ),
+    "sessions": SectionCopy(
+        title="Sessions by kind",
+        intro="What kinds of sessions you run: how you worked in them, and what they were for.",
+        help=Help(
+            shows="Your sessions grouped two ways: by how you worked (mode) and by the kind of work (purpose).",
+            read="Each session is sorted by simple rules on its activity: your prompts, the gaps between them, "
+            "subagents and the tools used. Treat the groups as a rough guide.",
+            act="A group with far more replies or subagents per session than the rest is where most of your "
+            "usage goes. Start there.",
+        ),
+    ),
+    "scorecard": SectionCopy(
+        title="Scorecard",
+        intro="A quick health check: five ratings from 1 (very poor) to 5 (excellent).",
+        help=Help(
+            shows="One rating each for cache efficiency, context size, subagent cost balance, config stability "
+            "and data quality, plus an overall rating.",
+            read="The overall rating is the lowest of the first four, never an average. Data quality is shown "
+            "but left out of the overall rating.",
+            act="Start with the lowest-rated area. The matching tab and the recommendations say what to change.",
+        ),
+    ),
+    "baseline_comparison": SectionCopy(
+        title="Before and after",
+        intro="How this window compares with a baseline you saved earlier.",
+        help=Help(
+            shows="The same measures for your saved baseline and for this window, side by side, with the change.",
+            read="This is not a controlled test. A change can come from different work, not only from a "
+            "setting you changed.",
+            act="Look for a clear move in cost per session or cache rebuilds after a change you made. Check the "
+            "by-mode table to see whether the kind of work was similar in both windows.",
+        ),
+    ),
+    "phases": SectionCopy(
+        title="Where the work went",
+        intro="How your cost splits between exploring, building, checking and everything else.",
+        help=Help(
+            shows="Every reply sorted into a phase by the tools it called, for the whole window, for the main "
+            "session and subagents, and for each agent type.",
+            read="Phases come from tool names only, not from what Claude intended. A reply that edits a file "
+            "and runs tests in one go counts as building.",
+            act="If exploring is more than 35% of cost, Claude spends a lot on finding things. Clearer pointers "
+            "in CLAUDE.md or in your prompts can cut it.",
+        ),
+    ),
+    "recache": SectionCopy(
+        title="Cache rebuilds",
+        intro="Which replies had to write their context into the cache again instead of reading it, and why.",
+        help=Help(
+            shows="Replies that rebuilt the cache, what that cost, and what happened just before each one.",
+            read="A cache rebuild is a reply with a large context (over 20,000 tokens by default) that read less "
+            "than a fifth of it from the cache. Compare each cause's share of rebuilds with its share of all "
+            "replies: a cause far more common before rebuilds is likely behind them.",
+            act="If rebuilds follow waits of 5 to 60 minutes, a longer cache lifetime (TTL) can help. If they follow "
+            "a setting change, a hook or a note from Claude Code, that change is breaking the cache.",
+        ),
+    ),
+    "ttl": SectionCopy(
+        title="Cache lifetime (TTL)",
+        intro=(
+            "Whether a 5-minute or a 1-hour cache lifetime would cost you less, for the main session and "
+            "each agent type."
+        ),
+        help=Help(
+            shows="What you paid with the cache lifetimes you used, what each lifetime would have cost, and how much "
+            "of what you wrote to the cache was ever read back.",
+            read="A cache write costs more with a 1-hour lifetime than with a 5-minute one. It pays off only when "
+            "enough replies come 5 to 60 minutes after the one before. The estimates replay your own replies "
+            "and waits.",
+            act="Follow the advice column only when the estimate error is low. A subagent's lifetime is set in its "
+            "agent file; the main session's in your settings.",
+        ),
+    ),
+    "limits": SectionCopy(
+        title="Usage limits",
+        intro="How often you hit a usage limit, how long you waited, and what restarting the cache cost afterwards.",
+        help=Help(
+            shows="Usage-limit stops, pauses, subagents stopped early, and the cache writes on the first reply after "
+            "each pause.",
+            read="After a pause the cache has expired, so the next reply writes its whole context again. That "
+            "cost is unavoidable, so the cache rebuild and cache lifetime tabs leave it out of their advice.",
+            act="If limits stop you often at the same hour, move heavy work, such as large subagent fan-outs, "
+            "away from that time.",
+        ),
+    ),
+    "compactions": SectionCopy(
+        title="Conversation summaries (compaction)",
+        intro="How often Claude Code summarised a long conversation to free up context, and what the next reply cost.",
+        help=Help(
+            shows="How many sessions were summarised, how much context each summary removed, and the cache write "
+            "on the reply after it.",
+            read="A summary replaces most of the conversation with a short version. The next reply writes that "
+            "shorter context to the cache. Most replies after a summary still read the cache normally.",
+            act="If summaries are frequent, start fresh sessions for new tasks, or keep large tool output out of "
+            "the conversation.",
+        ),
+    ),
+    "carry": SectionCopy(
+        title="Tool output kept in context",
+        intro=(
+            "What you pay to keep each tool's output in context, reply after reply, until a conversation "
+            "summary drops it."
+        ),
+        help=Help(
+            shows="What tool output costs after the reply that received it. Every later reply reads it again "
+            "from the cache, or writes it again after a cache rebuild.",
+            read="This cost is part of your cache read and cache write spend, not extra on top. Reply counts "
+            "are measured. Output sizes are estimated at about 4 characters per token, and the cost split "
+            "between cache reads and writes follows each reply's own mix.",
+            act="If one tool's output dominates, cap it at the source: pipe long command output through head "
+            "or tail, search with Grep before reading whole files, and ask subagents for short reports.",
+        ),
+    ),
+    "compaction_sim": SectionCopy(
+        title="Auto-compact window: what if",
+        intro=(
+            "Would your sessions cost less if Claude Code wrote its conversation summary at a different "
+            "context size?"
+        ),
+        help=Help(
+            shows="A simulation that replays your sessions with the conversation summary (compaction) "
+            "triggered at context sizes from 100,000 to 500,000 tokens. The setting is autoCompactWindow "
+            "in settings.json.",
+            read="Only the \"As now\" figures are measured; every other cost is simulated. Each simulated "
+            "summary is charged a cache write for the summary and an allowance for re-reading files after "
+            "it, both taken from your own past summaries. The simulation can't see what a summary loses, "
+            "so small windows look better than they are.",
+            act="Treat large savings at small windows with caution. The Recommendations tab only suggests a "
+            "minimum window, after adding a stricter allowance for re-reading.",
+        ),
+    ),
+    "model_swap": SectionCopy(
+        title="Cheaper model: what if",
+        intro="What your main session and each subagent type would have cost on a cheaper model, for the same tokens.",
+        help=Help(
+            shows="Your measured tokens repriced at every model's list price, and the saving from moving each "
+            "agent type one tier down: Fable to Opus, Opus to Sonnet, Sonnet to Haiku.",
+            read="Real cost is measured. Costs at other models are recalculated, not observed: they assume the "
+            "cheaper model uses the same tokens and replies. A smaller model may need more replies or fail "
+            "the task, so every saving is the most you could save, not a forecast.",
+            act="Try a cheaper model on the agent type with the biggest saving, on routine work first, and "
+            "compare results before switching more. Set it with the model field in that agent's file.",
+        ),
+    ),
+    "waste": SectionCopy(
+        title="Replies that produced nothing",
+        intro=(
+            "How much you spent on replies you got nothing back from: failed tool calls, replies you "
+            "stopped, and subagents stopped before they reported."
+        ),
+        help=Help(
+            shows="Replies whose output you never used, grouped by cause, agent type and session.",
+            read="Which replies were wasted is measured from your logs. Each one is priced at its full cost, "
+            "so the total is the most you could recover: some of that work would still have been needed.",
+            act="Act when wasted cost is above 10% of your total. Start with the most expensive cause.",
+        ),
+    ),
+    "config": SectionCopy(
+        title="Your settings and their effect",
+        intro=(
+            "Which Claude Code settings were in effect, which file each came from, and how sessions "
+            "differed after a setting changed."
+        ),
+        help=Help(
+            shows="Your current settings per project, the file each one came from, and cost per session "
+            "grouped by the value a setting had.",
+            read="Settings come from snapshots the config hook takes when a session starts. Sessions that "
+            "started before the first snapshot are left out of the comparisons.",
+            act="Before you credit one setting for a cost change, check the note under its table. It lists "
+            "the other settings that changed at the same time.",
+        ),
+    ),
+    "context_budget": SectionCopy(
+        title="How full the context window gets",
+        intro=(
+            "How much of the context window a session fills before any work, and when Claude Code "
+            "summarises the conversation."
+        ),
+        help=Help(
+            shows="What the main session's startup context is made of, when conversation summaries "
+            "(compactions) start, and real context use where your status line logs it.",
+            read="Columns marked (est.) are rough estimates from text length, about 4 characters per token. "
+            "Claude Code's /context command gives the exact breakdown.",
+            act="If startup context is large, trim its biggest part first. The recommendations tab names it.",
         ),
     ),
 }
@@ -603,6 +817,1908 @@ TABLE_COPY: dict[str, TableCopy] = {
             "finished": ("", "When it finished."),
         },
     ),
+    # -- overview ---------------------------------------------------------------
+    "totals": TableCopy(
+        title="Totals for the window",
+        help=Help(
+            shows="One row per total: sessions, subagent runs, replies, tokens by type, and cost.",
+            read="\"All tokens\" counts cache reads; \"New tokens\" leaves them out and is closer to the work "
+            "done. A cache payback above 0 means caching saved more than it cost.",
+            act="If many main session replies carry over 200,000 tokens of context, clear or summarise long "
+            "sessions sooner.",
+        ),
+        columns={
+            "metric": ("What", "What is counted."),
+            "value": ("Amount", "The total for the window. The unit is in the row name."),
+        },
+        value_labels={
+            "sessions": "Sessions",
+            "top_level_transcripts": "Main sessions",
+            "subagent_transcripts": "Subagent runs",
+            "workflow_runs": "Workflow runs",
+            "priced_turns": "Replies with token counts",
+            "input_tokens": "Input tokens, not cached",
+            "cache_creation_tokens": "Cache write tokens",
+            "cache_read_tokens": "Cache read tokens",
+            "output_tokens": "Output tokens, including thinking",
+            "usage_tokens": "All tokens, including cache reads",
+            "new_tokens": "New tokens: everything except cache reads",
+            "total_cost_usd": "Total cost at list price (USD)",
+            "cache_read_cost_share_pct": "Share of cost from cache reads (%)",
+            "cache_roi": "Cache payback: net saving per 1 USD of cache writes",
+            "top_level_median_ctx": "Typical main session context per reply (tokens)",
+            "top_level_turns_ctx_ge_200k_pct": "Main session replies with over 200,000 tokens of context (%)",
+        },
+    ),
+    "by_model": TableCopy(
+        title="Usage and cost by model",
+        help=Help(
+            shows="One row per model: replies, tokens by type, and cost.",
+            read="Price per token differs a lot between models. A model with few replies can still cost the most.",
+            act="If an expensive model does routine work such as searching, consider a cheaper model for that "
+            "agent type. The Savings tab estimates the effect.",
+        ),
+        columns={
+            "model": ("", "The model that wrote the replies."),
+            "turns": ("Replies", "Model replies from this model, main session and subagents together."),
+            "input_tokens": ("Input tokens", "Input tokens not read from or written to the cache."),
+            "cache_creation_tokens": ("Cache writes", "Tokens written into the cache."),
+            "cache_read_tokens": ("Cache reads", "Tokens read back from the cache. Far cheaper than a cache write."),
+            "output_tokens": ("Output tokens", "Tokens Claude wrote, including thinking."),
+            "cost": ("", "Cost at list prices for the window."),
+        },
+        value_labels={"<unknown>": "Unknown model"},
+    ),
+    # -- usage ------------------------------------------------------------------
+    "by_day": TableCopy(
+        title="Usage by day",
+        help=Help(
+            shows="One row per day and model: replies, tokens and cost. Days are in your local time.",
+            read="Tokens include cache reads, so they run far above what cost suggests. Compare cost from day "
+            "to day. A spike is usually one long session or a big fan-out of subagents.",
+            act="",
+        ),
+        columns={
+            "period": ("Day", "The local calendar day."),
+            "model": ("", "The model that wrote the replies."),
+            "turns": ("Replies", "Model replies that day, main session and subagents together."),
+            "tokens": ("", "All tokens for these replies, including cache reads."),
+            "cost": ("", "Cost at list prices for these replies."),
+        },
+        value_labels={"<unknown>": "Unknown model"},
+    ),
+    "by_week": TableCopy(
+        title="Usage by week",
+        help=Help(
+            shows="One row per week and model: replies, tokens and cost. Weeks run Monday to Sunday.",
+            read="Compare cost from week to week. Tokens include cache reads, so they run far above cost.",
+            act="",
+        ),
+        columns={
+            "period": ("Week", "The week, as year and week number, such as 2026-W30."),
+            "model": ("", "The model that wrote the replies."),
+            "turns": ("Replies", "Model replies that week, main session and subagents together."),
+            "tokens": ("", "All tokens for these replies, including cache reads."),
+            "cost": ("", "Cost at list prices for these replies."),
+        },
+        value_labels={"<unknown>": "Unknown model"},
+    ),
+    "by_month": TableCopy(
+        title="Usage by month",
+        help=Help(
+            shows="One row per month and model: replies, tokens and cost.",
+            read="Compare cost from month to month. A month still in progress is only partly counted.",
+            act="",
+        ),
+        columns={
+            "period": ("Month", "The local calendar month."),
+            "model": ("", "The model that wrote the replies."),
+            "turns": ("Replies", "Model replies that month, main session and subagents together."),
+            "tokens": ("", "All tokens for these replies, including cache reads."),
+            "cost": ("", "Cost at list prices for these replies."),
+        },
+        value_labels={"<unknown>": "Unknown model"},
+    ),
+    "by_project": TableCopy(
+        title="Cost by project",
+        help=Help(
+            shows="One row per project folder: how many sessions ran there and what they cost.",
+            read="Names are the folder names Claude Code uses, with slashes turned into dashes. Each worktree "
+            "shows up as its own project.",
+            act="",
+        ),
+        columns={
+            "slug": ("", "The project folder, as Claude Code names it."),
+            "sessions": ("", "Sessions started in this project."),
+            "cost": ("", "Cost at list prices of those sessions, including their subagents."),
+        },
+    ),
+    "by_entrypoint": TableCopy(
+        title="Usage by app",
+        help=Help(
+            shows="One row per app you ran Claude Code from, such as the terminal, the desktop app or the SDK.",
+            read="Each main session and each subagent run counts once, under the app that started it.",
+            act="",
+        ),
+        columns={
+            "entrypoint": ("App", "Where Claude Code was started from, as it records it."),
+            "transcripts": (
+                "Sessions and subagent runs",
+                "How many conversation logs this covers: one per main session and one per subagent run.",
+            ),
+            "turns": ("Replies", "Model replies from these sessions and runs."),
+            "tokens": ("", "All tokens for these replies, including cache reads."),
+            "cost": ("", "Cost at list prices for these replies."),
+        },
+        value_labels={
+            "cli": "Terminal",
+            "claude-desktop": "Claude desktop app",
+            "claude-vscode": "VS Code extension",
+            "sdk": "Agent SDK",
+            "sdk-cli": "Agent SDK (command line)",
+            "sdk-ts": "Agent SDK (TypeScript)",
+            "sdk-py": "Agent SDK (Python)",
+            "unknown": "Not recorded",
+        },
+    ),
+    "five_hour_blocks": TableCopy(
+        title="Five-hour blocks",
+        help=Help(
+            shows="Your usage cut into fixed five-hour blocks of local time, starting at 00:00, 05:00, 10:00, "
+            "15:00 and 20:00. Shown only for subscription billing.",
+            read="Your real usage limit window starts with your first message, not on this grid. Treat each "
+            "block as an approximation. Each reply counts in the block its own time falls in.",
+            act="Blocks with much higher cost than usual are the ones most likely to hit a usage limit. The "
+            "Usage limits tab shows the stops that actually happened.",
+        ),
+        columns={
+            "block_start": ("Block start", "When the block starts, in your local time."),
+            "sessions": ("", "Sessions with at least one reply in this block."),
+            "turns": ("Replies", "Model replies in this block, main session and subagents together."),
+            "tokens": ("", "All tokens in this block, including cache reads."),
+            "cost": ("", "Cost at list prices for this block."),
+        },
+    ),
+    # -- sessions ---------------------------------------------------------------
+    "sessions_by_mode": TableCopy(
+        title="Sessions by how you worked",
+        help=Help(
+            shows="Your sessions grouped by working mode. Interactive: you replied within a few minutes. "
+            "Long autonomous run: Claude worked through many steps or subagents with few prompts from you. "
+            "Overnight: the session ran into the night with a long gap. Mixed: none of these.",
+            read="Replies and subagents are totals for the group. Typical length and typical prompts come from "
+            "the middle session in the group.",
+            act="",
+        ),
+        columns={
+            "value": ("Mode", "How you worked in the session."),
+            "sessions": ("", "Sessions in this group."),
+            "turns": ("Replies", "Every reply logged in these sessions, main session and subagents together."),
+            "subagents": ("", "Subagent runs started in these sessions, in total."),
+            "median_span_s": (
+                "Typical length",
+                "Time from first to last message in the middle session, including idle time.",
+            ),
+            "human_prompts_median": ("Typical prompts from you", "Messages you typed in the middle session."),
+        },
+        value_labels={
+            "interactive": "Interactive",
+            "long-agentic": "Long autonomous run",
+            "overnight": "Overnight",
+            "mixed": "Mixed",
+            "unknown": "Not classified",
+        },
+    ),
+    "sessions_by_purpose": TableCopy(
+        title="Sessions by what they were for",
+        help=Help(
+            shows="Your sessions grouped by the kind of work, judged from the tools used: tests run, files "
+            "edited, reviews, plan mode, subagents started, and so on.",
+            read="Each session gets the first purpose whose signs it shows. A review that also started "
+            "subagents counts as a review; subagent fan-out only catches sessions with no clearer purpose.",
+            act="Recommendations are tuned to your largest groups. A large subagent fan-out group is worth a "
+            "look in the Subagents tab.",
+        ),
+        columns={
+            "value": ("Purpose", "What the session was for."),
+            "sessions": ("", "Sessions in this group."),
+            "turns": ("Replies", "Every reply logged in these sessions, main session and subagents together."),
+            "subagents": ("", "Subagent runs started in these sessions, in total."),
+            "median_span_s": (
+                "Typical length",
+                "Time from first to last message in the middle session, including idle time.",
+            ),
+            "human_prompts_median": ("Typical prompts from you", "Messages you typed in the middle session."),
+        },
+        value_labels={
+            "general-dev": "General development",
+            "agent-fanout": "Subagent fan-out",
+            "docs-or-light-edit": "Docs or light edits",
+            "test-triage": "Running and fixing tests",
+            "workflow-run": "Workflow runs",
+            "refactor": "Refactoring",
+            "planning": "Planning",
+            "review": "Code review",
+            "local-llm-pipeline": "Calling a local model",
+            "unknown": "Not classified",
+        },
+    ),
+    # -- scorecard --------------------------------------------------------------
+    "dimensions": TableCopy(
+        title="Scorecard ratings",
+        help=Help(
+            shows="One row per area: its rating, the one number it is based on, and the limit for that rating.",
+            read="Ratings run from 1 (very poor) to 5 (excellent). The limit is the bound the number had to stay "
+            "within to earn its rating. Cache rebuilds forced by usage-limit pauses are left out of cache "
+            "efficiency.",
+            act="Work on the lowest rating first. For cache efficiency, see the Cache rebuilds tab. For context "
+            "size, clear or summarise long sessions sooner. For subagent cost balance, check the costliest "
+            "agent type in the Subagents tab.",
+        ),
+        columns={
+            "dimension": ("Area", "What is rated."),
+            "level": ("Level", "The rating as a number from 1 to 5. Higher is better."),
+            "label": ("Rating", "The rating in words."),
+            "metric": ("Based on", "The one number the rating is based on."),
+            "value": ("Value", "That number. Its unit is in the name: %, tokens, times, or a count of settings."),
+            "threshold": (
+                "Limit for this rating",
+                "The bound the value stayed within to earn this rating. For a rating of 1, the bound it went past.",
+            ),
+        },
+        value_labels={
+            "cache_efficiency": "Cache efficiency",
+            "context_hygiene": "Context size",
+            "agent_efficiency": "Subagent cost balance",
+            "config_fit": "Config stability",
+            "data_quality": "Data quality",
+            "recache_share_pct": "Cache writes that were rebuilds, excluding usage-limit pauses (%)",
+            "p90_top_level_ctx": "Main session context that 9 in 10 replies stay under (tokens)",
+            "agent_cost_variance_ratio": "Cost per run of the costliest agent type, versus the typical type (times)",
+            "changed_config_keys": "Settings changed during the window (count)",
+            "pricing_coverage_pct": "Tokens with a known price (%)",
+            "no config snapshot available": "No config snapshot, so counted as stable",
+            "excellent": "Excellent",
+            "good": "Good",
+            "fair": "Fair",
+            "poor": "Poor",
+            "very poor": "Very poor",
+        },
+    ),
+    "overall": TableCopy(
+        title="Overall rating",
+        help=Help(
+            shows="Your overall rating: the lowest of cache efficiency, context size, subagent cost balance and "
+            "config stability.",
+            read="It is the lowest rating, not an average, so one weak area pulls it down. Data quality is left out.",
+            act="To raise it, fix the lowest-rated area in the ratings table.",
+        ),
+        columns={
+            "metric": ("", "What is rated."),
+            "level": ("Level", "From 1 to 5. Higher is better. 0 means nothing could be measured."),
+            "label": ("Rating", "The rating in words."),
+        },
+        value_labels={
+            "overall": "Overall",
+            "excellent": "Excellent",
+            "good": "Good",
+            "fair": "Fair",
+            "poor": "Poor",
+            "very poor": "Very poor",
+            "unmeasured": "Not measured",
+        },
+    ),
+    # -- before and after -------------------------------------------------------
+    "baseline_comparison_overview": TableCopy(
+        title="",  # the builder's title names the baseline
+        help=Help(
+            shows="Key measures for the baseline you saved and for this window, with the change between them.",
+            read="\"Change\" is this window minus the baseline. \"Change (%)\" is that change as a share of the "
+            "baseline. For measures that are already percentages it is a relative change, not points. "
+            "Cache lifetime (TTL) is how long a cache write stays readable: 5 minutes or 1 hour.",
+            act="A clear drop in cost per session or in the rebuild share after a setting change suggests it "
+            "helped. Check the by-mode table before you credit the setting.",
+        ),
+        columns={
+            "metric": ("Measure", "What is compared."),
+            "baseline": ("Baseline", "The value when you saved the baseline."),
+            "current": ("This window", "The value for this report's window."),
+            "delta": ("Change", "This window minus the baseline, in the measure's own unit."),
+            "delta_pct": ("Change (%)", "The change as a percentage of the baseline value."),
+        },
+        value_labels={
+            "Cost per session": "Cost per session (list price)",
+            "Re-cache share of cache-creation": "Share of cache writes that were rebuilds",
+            "Compactions per session": "Conversation summaries per session",
+            "Session baseline size (mean top-level first-turn cache-creation)": (
+                "Main session startup write (average tokens)"
+            ),
+            "TTL mix - top-level (5m share)": "Main session cache writes with a 5-minute lifetime",
+            "TTL mix - top-level (1h share)": "Main session cache writes with a 1-hour lifetime",
+            "Scorecard level - cache_efficiency": "Scorecard: cache efficiency (1 to 5)",
+            "Scorecard level - context_hygiene": "Scorecard: context size (1 to 5)",
+            "Scorecard level - agent_efficiency": "Scorecard: subagent cost balance (1 to 5)",
+            "Scorecard level - config_fit": "Scorecard: config stability (1 to 5)",
+            "Scorecard level - data_quality": "Scorecard: data quality (1 to 5)",
+        },
+    ),
+    "baseline_comparison_by_mode": TableCopy(
+        title="Before and after, by working mode",
+        help=Help(
+            shows="Cost per session, rebuild share and conversation summaries, split by working mode so you "
+            "compare like with like.",
+            read="A mode shows numbers only when it has at least 5 sessions in both windows. Each change is "
+            "relative to the baseline, as a % of it, not percentage points.",
+            act="If a measure moved in every mode, a setting change is the likelier cause. If it moved in one "
+            "mode only, the work itself probably changed.",
+        ),
+        columns={
+            "mode": ("Mode", "How you worked in the session. See \"Sessions by how you worked\"."),
+            "sessions_baseline": ("Sessions before", "Sessions of this mode in the baseline."),
+            "sessions_current": ("Sessions now", "Sessions of this mode in this window."),
+            "sample_ok": ("Enough sessions", "Yes when both windows have at least 5 sessions of this mode."),
+            "cost_per_session_baseline": (
+                "Cost per session before",
+                "Average cost per session in the baseline, at list prices.",
+            ),
+            "cost_per_session_current": (
+                "Cost per session now",
+                "Average cost per session in this window, at list prices.",
+            ),
+            "cost_per_session_delta_pct": ("Cost per session change", "The change as a % of the baseline value."),
+            "recache_share_baseline": (
+                "Rebuild share before",
+                "Share of cache writes that were cache rebuilds in the baseline, in %.",
+            ),
+            "recache_share_current": (
+                "Rebuild share now",
+                "Share of cache writes that were cache rebuilds in this window, in %.",
+            ),
+            "recache_share_delta_pct": (
+                "Rebuild share change",
+                "The change as a % of the baseline value. Not percentage points.",
+            ),
+            "compactions_per_session_baseline": (
+                "Summaries per session before",
+                "Average conversation summaries per session in the baseline.",
+            ),
+            "compactions_per_session_current": (
+                "Summaries per session now",
+                "Average conversation summaries per session in this window.",
+            ),
+            "compactions_per_session_delta_pct": (
+                "Summaries per session change",
+                "The change as a % of the baseline value.",
+            ),
+            "note": ("Note", "Why a row shows no numbers: too few sessions in one of the windows."),
+        },
+        value_labels={
+            "interactive": "Interactive",
+            "long-agentic": "Long autonomous run",
+            "overnight": "Overnight",
+            "mixed": "Mixed",
+            "unknown": "Not classified",
+            "yes": "Yes",
+            "no": "No",
+        },
+    ),
+    # -- phases -----------------------------------------------------------------
+    "phases_summary": TableCopy(
+        title="Cost by phase",
+        help=Help(
+            shows="One row per phase: replies, tokens and cost, with each phase's share of total cost.",
+            read="Exploring: the reply only read or searched. Building: it edited files or ran a shell command. "
+            "Checking: it ran tests or a build, or edited a scratch file. Other: no tools, or other tools "
+            "such as starting a subagent.",
+            act="If exploring is more than 35% of cost, a recommendation suggests ways to point Claude at the "
+            "right files sooner.",
+        ),
+        columns={
+            "phase": ("", "The phase, judged from the tools the reply called."),
+            "turns": ("Replies", "Model replies in this phase, main session and subagents together."),
+            "new_tokens": ("New tokens", "Input plus cache writes, in tokens. Cache reads are left out."),
+            "cache_read_tokens": ("Cache reads", "Tokens read back from the cache."),
+            "output_tokens": ("Output tokens", "Tokens Claude wrote, including thinking."),
+            "cost": ("", "Cost at list prices for this phase."),
+            "cost_share_pct": ("Share of cost", "This phase's cost as a % of all phases."),
+        },
+        value_labels={
+            "discovery": "Exploring",
+            "implementation": "Building",
+            "verification": "Checking",
+            "other": "Other",
+        },
+    ),
+    "phases_by_transcript_kind": TableCopy(
+        title="Cost by phase: main session vs subagents",
+        help=Help(
+            shows="The same split by phase, for the main session, subagents and workflow agents separately.",
+            read="Subagents often do most of the exploring. Compare how each group's cost spreads across phases.",
+            act="",
+        ),
+        columns={
+            "dimension": ("Where", "Main session, subagents or workflow agents."),
+            "phase": ("", "The phase, judged from the tools the reply called."),
+            "turns": ("Replies", "Model replies in this phase."),
+            "new_tokens": ("New tokens", "Input plus cache writes, in tokens. Cache reads are left out."),
+            "cache_read_tokens": ("Cache reads", "Tokens read back from the cache."),
+            "output_tokens": ("Output tokens", "Tokens Claude wrote, including thinking."),
+            "cost": ("", "Cost at list prices for this phase."),
+        },
+        value_labels=_MAIN_OR_SUB
+        | {"discovery": "Exploring", "implementation": "Building", "verification": "Checking", "other": "Other"},
+    ),
+    "phases_by_agent_type": TableCopy(
+        title="Cost by phase and agent type",
+        help=Help(
+            shows="The same split by phase, for each agent type.",
+            read="An agent type meant to search should be mostly exploring. One that is mostly building or "
+            "checking is doing more than its name suggests.",
+            act="",
+        ),
+        columns={
+            "dimension": (
+                "Agent type",
+                "The subagent type. The main session is listed with subagents that have no type.",
+            ),
+            "phase": ("", "The phase, judged from the tools the reply called."),
+            "turns": ("Replies", "Model replies in this phase."),
+            "new_tokens": ("New tokens", "Input plus cache writes, in tokens. Cache reads are left out."),
+            "cache_read_tokens": ("Cache reads", "Tokens read back from the cache."),
+            "output_tokens": ("Output tokens", "Tokens Claude wrote, including thinking."),
+            "cost": ("", "Cost at list prices for this phase."),
+        },
+        value_labels={
+            "unknown": "Main session, and subagents with no type",
+            "discovery": "Exploring",
+            "implementation": "Building",
+            "verification": "Checking",
+            "other": "Other",
+        },
+    ),
+    # -- cache rebuilds -----------------------------------------------------
+    "recache_summary": TableCopy(
+        title="Cache rebuilds at a glance",
+        help=Help(
+            shows="Totals for the window: how many replies rebuilt the cache, and what that cost.",
+            read="Avoidable cost is what the rebuilds cost above reading the same tokens from the cache. "
+            "Rebuilds after a usage-limit pause are counted, but their cost is shown on its own, because "
+            "you can't avoid them.",
+            act="If avoidable cost is a large part of your spend, use the tables below to find the cause.",
+        ),
+        columns={
+            "metric": ("", "This row covers every reply in the window."),
+            "transcripts": ("Conversation logs", "One per main session and one per subagent run."),
+            "priced_turns": ("Replies", "Model replies with token counts."),
+            "recache_turns": (
+                "Cache rebuilds",
+                "Replies that rebuilt the cache, including those after a usage-limit pause.",
+            ),
+            "recache_turn_share_pct": ("Rebuild share", "Cache rebuilds as a share of all replies."),
+            "recache_cc_tokens": ("Tokens rebuilt", "Tokens those rebuilds wrote to the cache."),
+            "total_cc_tokens": ("All cache writes", "Tokens every reply wrote to the cache."),
+            "recache_cc_share_pct": ("Rebuild share of cache writes", "Tokens rebuilt as a share of all cache writes."),
+            "avoidable_cost_usd": (
+                "Avoidable cost",
+                "What rebuilds cost above reading the same tokens from the cache. Leaves out rebuilds after a "
+                "usage-limit pause.",
+            ),
+            "unavoidable_limit_expiry_cost_usd": (
+                "Cost after usage-limit pauses",
+                "The same extra cost for rebuilds after a usage-limit pause. You can't avoid these.",
+            ),
+        },
+        value_labels={"all": "All replies"},
+    ),
+    "recache_signature_split": TableCopy(
+        title="Why the cache was rebuilt",
+        help=Help(
+            shows="Cache rebuilds split by what had happened to the cache.",
+            read="\"Cache expired\" means almost nothing was left to read: the cache lifetime ran out. \"Cache "
+            "broken by a change\" means part was read, but something early in the context changed. \"Expired "
+            "during a usage-limit pause\" means you were waiting for a limit to reset.",
+            act="Expired caches respond to a longer cache lifetime. Broken ones don't: check what came just "
+            "before them in the causes table.",
+        ),
+        columns={
+            "signature": ("Reason", "What had happened to the cache."),
+            "turns": ("Rebuilds", "Replies that rebuilt the cache for this reason."),
+            "cc_tokens": ("Tokens rebuilt", "Tokens those rebuilds wrote to the cache."),
+            "cost_delta_usd": (
+                "Cost above a cache read",
+                "What these rebuilds cost above reading the same tokens from the cache. "
+                "Unavoidable for the usage-limit row.",
+            ),
+            "median_ctx": ("Typical context size", "The middle context size of these replies, in tokens."),
+            "median_gap_s": ("Typical wait before", "The middle wait since the previous reply."),
+        },
+        value_labels={
+            "full-expiry": "Cache expired",
+            "prefix-invalidated": "Cache broken by a change",
+            "limit-expiry": "Expired during a usage-limit pause",
+        },
+    ),
+    "recache_gap_buckets": TableCopy(
+        title="Cache rebuilds by wait since the previous reply",
+        help=Help(
+            shows="Cache rebuilds grouped by how long it had been since the previous reply, next to the same "
+            "split for all replies. Usage-limit pauses are left out.",
+            read="A 5-minute cache expires after 5 minutes with no reply. Compare the share of rebuilds with the "
+            "share of all replies in each row: a row with far more rebuilds than replies points at expiry.",
+            act="If most rebuilds follow waits of 5 to 60 minutes, a 1-hour cache lifetime may pay for itself. "
+            "Check the cache lifetime tab.",
+        ),
+        columns={
+            "bucket": ("Wait since previous reply", "How long it had been since the previous reply."),
+            "turns": ("Rebuilds", "Cache rebuilds after a wait in this range."),
+            "share_pct_turns": ("Share of rebuilds", "This row's rebuilds as a share of all rebuilds."),
+            "control_turns": ("All replies", "Every reply after a wait in this range."),
+            "control_share_pct_turns": ("Share of all replies", "This row's replies as a share of all replies."),
+            "cc_tokens": ("Tokens rebuilt", "Tokens those rebuilds wrote to the cache."),
+            "cc_share_pct": ("Share of tokens rebuilt", "This row's rebuilt tokens as a share of all rebuilt tokens."),
+            "control_cc_tokens": ("All cache writes", "Tokens every reply in this range wrote to the cache."),
+            "control_cc_share_pct": (
+                "Share of all cache writes",
+                "This row's cache writes as a share of all cache writes.",
+            ),
+        },
+        value_labels={
+            "<1m": "Under 1 minute",
+            "1-5m": "1 to 5 minutes",
+            "5-15m": "5 to 15 minutes",
+            "15-60m": "15 to 60 minutes",
+            ">60m": "Over 60 minutes",
+            "unknown": "Not known (first reply, or time unreadable)",
+        },
+    ),
+    "recache_preceding_tool": TableCopy(
+        title="Cache rebuilds by the tool used just before",
+        help=Help(
+            shows="Cache rebuilds grouped by the tool the previous reply called, next to the same split for all "
+            "replies. Usage-limit pauses are left out.",
+            read="Bash or PowerShell is shown when the previous reply used it, even if it also called other tools. "
+            "Compare the share of rebuilds with the share of all replies.",
+            act="A tool far more common before rebuilds than before other replies is worth a look. It is often a "
+            "long-running command that outlasts the cache.",
+        ),
+        columns={
+            "preceding_tool": ("Tool used just before", "The tool the previous reply called."),
+            "turns": ("Rebuilds", "Cache rebuilds after this tool."),
+            "share_pct_turns": ("Share of rebuilds", "This row's rebuilds as a share of all rebuilds."),
+            "control_turns": ("All replies", "Every reply after this tool."),
+            "control_share_pct_turns": ("Share of all replies", "This row's replies as a share of all replies."),
+            "cc_tokens": ("Tokens rebuilt", "Tokens those rebuilds wrote to the cache."),
+            "cc_share_pct": ("Share of tokens rebuilt", "This row's rebuilt tokens as a share of all rebuilt tokens."),
+            "control_cc_tokens": ("All cache writes", "Tokens every reply after this tool wrote to the cache."),
+            "control_cc_share_pct": (
+                "Share of all cache writes",
+                "This row's cache writes as a share of all cache writes.",
+            ),
+        },
+        value_labels={
+            "none": "No tool (a text reply)",
+            "n/a": "No previous reply",
+        },
+    ),
+    "recache_top_command_prefixes": TableCopy(
+        title="Commands run just before a cache rebuild",
+        help=Help(
+            shows="The 12 shell commands followed by the most rebuilt tokens. Usage-limit pauses are left out.",
+            read="Only the first 40 characters are kept, with paths hidden. Waiting loops and long builds often "
+            "outlast a 5-minute cache.",
+            act="For a command that runs for minutes, run it in the background, or use a 1-hour cache lifetime "
+            "for the agent that runs it.",
+        ),
+        columns={
+            "preceding_cmd_prefix": ("Command (start)", "The start of the shell command the previous reply ran."),
+            "turns": ("Rebuilds", "Cache rebuilds right after this command."),
+            "cc_tokens": ("Tokens rebuilt", "Tokens those rebuilds wrote to the cache."),
+        },
+    ),
+    "recache_primary_cause": TableCopy(
+        title="What happened just before each cache rebuild",
+        help=Help(
+            shows="Cache rebuilds grouped by the most important thing that happened since the previous reply, next "
+            "to the same split for all replies. Usage-limit pauses are left out.",
+            read="\"Over-represented by\" is the share of rebuilds minus the share of all replies, in percentage "
+            "points. A large positive number means that event comes before rebuilds far more often than usual.",
+            act="For a cause that is strongly over-represented, change it less often mid-session: for example, "
+            "switch model, mode or MCP servers at the start of a session instead of in the middle.",
+        ),
+        columns={
+            "preceding_primary": ("What came just before", "The most important event since the previous reply."),
+            "turns": ("Rebuilds", "Cache rebuilds after this event."),
+            "share_pct_turns": ("Share of rebuilds", "This row's rebuilds as a share of all rebuilds."),
+            "control_share_pct_turns": ("Share of all replies", "Replies after this event as a share of all replies."),
+            "over_representation_points_turns": (
+                "Over-represented by (replies)",
+                "Share of rebuilds minus share of all replies, in percentage points.",
+            ),
+            "cc_tokens": ("Tokens rebuilt", "Tokens those rebuilds wrote to the cache."),
+            "cc_share_pct": ("Share of tokens rebuilt", "This row's rebuilt tokens as a share of all rebuilt tokens."),
+            "control_cc_tokens": ("All cache writes", "Tokens every reply after this event wrote to the cache."),
+            "control_cc_share_pct": (
+                "Share of all cache writes",
+                "This row's cache writes as a share of all cache writes.",
+            ),
+            "over_representation_points_tokens": (
+                "Over-represented by (tokens)",
+                "Share of rebuilt tokens minus share of all cache writes, in percentage points.",
+            ),
+            "avoidable_cost_usd": (
+                "Avoidable cost",
+                "What these rebuilds cost above reading the same tokens from the cache.",
+            ),
+        },
+        value_labels={
+            "compact_boundary": "Conversation summary (compaction)",
+            "compact_summary": "Conversation summary text",
+            "api_error": "API error and retry",
+            "model_fallback": "Switched to a fallback model",
+            "local_command": "Local command output",
+            "hook_output": "Hook output",
+            "cache_signal": "Model, mode or tool list changed",
+            "reminder": "Claude Code reminder",
+            "context_inject": "Files, memory or skills added by Claude Code",
+            "queue_operation": "Message queued while Claude worked",
+            "attachment": "Other Claude Code note",
+            "meta": "Hidden message from Claude Code",
+            "tool_denial": "Tool call denied",
+            "tool_result": "Tool result",
+            "task_notification": "Subagent or background task finished",
+            "peer_message": "Message from another agent",
+            "slash_command": "Slash command",
+            "scheduled_task": "Scheduled or looped task",
+            "interrupt": "You interrupted Claude",
+            "human_text": "Your message",
+            "unknown": "Nothing recorded",
+            "limit_hit": "Usage limit reached",
+            "limit_resume": "Resumed after a usage limit",
+            "agent_terminated": "Subagent stopped early",
+        },
+    ),
+    "recache_primary_cause_prefix_invalidated": TableCopy(
+        title="What came just before a broken cache",
+        help=Help(
+            shows="The same causes as above, for caches broken by a change only. Expired caches are left out, "
+            "because they had run out whatever came before.",
+            read="Shares are out of broken-cache rebuilds only, compared with all replies. This is the clearest "
+            "view of what breaks a warm cache.",
+            act="The top over-represented cause here is the one to change first.",
+        ),
+        columns={
+            "preceding_primary": ("What came just before", "The most important event since the previous reply."),
+            "turns": ("Rebuilds", "Broken-cache rebuilds after this event."),
+            "share_pct_turns": (
+                "Share of broken-cache rebuilds",
+                "This row's rebuilds as a share of broken-cache rebuilds.",
+            ),
+            "control_share_pct_turns": ("Share of all replies", "Replies after this event as a share of all replies."),
+            "cc_tokens": ("Tokens rebuilt", "Tokens those rebuilds wrote to the cache."),
+            "cc_share_pct": (
+                "Share of tokens rebuilt",
+                "This row's rebuilt tokens as a share of all broken-cache rebuilt tokens.",
+            ),
+            "control_cc_tokens": ("All cache writes", "Tokens every reply after this event wrote to the cache."),
+            "control_cc_share_pct": (
+                "Share of all cache writes",
+                "This row's cache writes as a share of all cache writes.",
+            ),
+            "over_representation_points_tokens": (
+                "Over-represented by (tokens)",
+                "Share of rebuilt tokens minus share of all cache writes, in percentage points.",
+            ),
+        },
+        value_labels={
+            "compact_boundary": "Conversation summary (compaction)",
+            "compact_summary": "Conversation summary text",
+            "api_error": "API error and retry",
+            "model_fallback": "Switched to a fallback model",
+            "local_command": "Local command output",
+            "hook_output": "Hook output",
+            "cache_signal": "Model, mode or tool list changed",
+            "reminder": "Claude Code reminder",
+            "context_inject": "Files, memory or skills added by Claude Code",
+            "queue_operation": "Message queued while Claude worked",
+            "attachment": "Other Claude Code note",
+            "meta": "Hidden message from Claude Code",
+            "tool_denial": "Tool call denied",
+            "tool_result": "Tool result",
+            "task_notification": "Subagent or background task finished",
+            "peer_message": "Message from another agent",
+            "slash_command": "Slash command",
+            "scheduled_task": "Scheduled or looped task",
+            "interrupt": "You interrupted Claude",
+            "human_text": "Your message",
+            "unknown": "Nothing recorded",
+            "limit_hit": "Usage limit reached",
+            "limit_resume": "Resumed after a usage limit",
+            "agent_terminated": "Subagent stopped early",
+        },
+    ),
+    "recache_attachment_subsplit": TableCopy(
+        title="Claude Code notes before a broken cache",
+        help=Help(
+            shows="The kinds of note Claude Code added just before a cache broken by a change.",
+            read="A rebuild with several kinds of note counts once for each, so rows can add up to more than the "
+            "number of rebuilds.",
+            act="Notes from hooks, output styles or mode switches are ones you control. If one of them leads, "
+            "check whether it needs to change mid-session.",
+        ),
+        columns={
+            "attachment_type": ("Note type", "The kind of note Claude Code added."),
+            "turns": ("Rebuilds", "Broken-cache rebuilds with this note just before."),
+            "cc_tokens": ("Tokens rebuilt", "Tokens those rebuilds wrote to the cache."),
+        },
+        value_labels={
+            "": "Note with no type",
+            # hooks
+            "hook_success": "Hook output",
+            "hook_non_blocking_error": "Hook error (did not block)",
+            "hook_blocking_error": "Hook blocked an action",
+            "hook_system_message": "Hook message",
+            "hook_additional_context": "Context added by a hook",
+            "hook_cancelled": "Hook cancelled",
+            # settings and lists that change mid-session
+            "model": "Model changed",
+            "thinking_stripped": "Thinking removed from history",
+            "ultra_effort_enter": "Ultra effort switched on",
+            "ultra_effort_exit": "Ultra effort switched off",
+            "deferred_tools_delta": "Deferred tool list changed",
+            "deferred_tools_record": "Deferred tool list recorded",
+            "mcp_instructions_delta": "MCP server instructions changed",
+            "agent_listing_delta": "Agent list changed",
+            "plan_mode": "Plan mode on",
+            "plan_mode_exit": "Plan mode off",
+            "auto_mode": "Auto mode on",
+            "auto_mode_exit": "Auto mode off",
+            "output_style": "Output style",
+            "output_style_instructions": "Output style instructions",
+            # reminders
+            "total_tokens_reminder": "Token count reminder",
+            "batching_reminder_sent": "Batching reminder",
+            "silent_turn_reminder": "Silent reply reminder",
+            "task_reminder": "Task list reminder",
+            "date": "Today's date",
+            "date_change": "Date changed",
+            # files, memory and context
+            "file": "File contents",
+            "edited_text_file": "File edited",
+            "read_truncation_notice": "File read cut short",
+            "nested_memory": "Subfolder CLAUDE.md",
+            "prompt_snapshot": "System prompt snapshot",
+            "compact_file_reference": "File list after a summary",
+            "plan_file_reference": "Plan file",
+            "session_context": "Session details",
+            "environment": "Environment details",
+            "instructions": "CLAUDE.md and memory",
+            "skill_listing": "Skills list",
+            "invoked_skills": "Skills used",
+            "directory": "Folder listing",
+            "inlined_image_paths": "Image paths",
+            "remote_session_change": "Remote session changed",
+            "workflow_keyword_request": "Workflow keyword",
+            # queue
+            "queued_command": "Queued message",
+        },
+    ),
+    "recache_by_agent_type": TableCopy(
+        title="Cache rebuilds by agent type",
+        help=Help(
+            shows="Cache rebuilds for the main session and each agent type. Usage-limit pauses are left out.",
+            read="Rebuild share is rebuilds out of that type's replies. Compare types doing similar work.",
+            act="For a type with a high share or cost, check its waits and causes in the cache lifetime tab.",
+        ),
+        columns={
+            "agent_type": ("", "The subagent type, or the main session."),
+            "priced_turns": ("Replies", "Model replies with token counts."),
+            "recache_turns": ("Rebuilds", "Replies that rebuilt the cache."),
+            "recache_share_pct": ("Rebuild share", "Rebuilds as a share of this type's replies."),
+            "cc_tokens": ("Tokens rebuilt", "Tokens those rebuilds wrote to the cache."),
+            "avoidable_cost_usd": (
+                "Avoidable cost",
+                "What these rebuilds cost above reading the same tokens from the cache.",
+            ),
+        },
+        value_labels={"top-level": "Main session"},
+    ),
+    "recache_huge_context": TableCopy(
+        title="Cache reads from very large contexts",
+        help=Help(
+            shows="How much of your cache reading comes from replies with a very large context (200,000 tokens "
+            "or more by default).",
+            read="Every reply reads its whole context from the cache. A huge context makes each reply cost more, "
+            "even when the cache works. It is not a price surcharge.",
+            act="If the share is high, start new sessions for new tasks, or summarise the conversation sooner.",
+        ),
+        columns={
+            "metric": ("", "This row covers every reply in the window."),
+            "huge_ctx_turns": (
+                "Replies with a huge context",
+                "Replies at or over the size limit, in tokens of context.",
+            ),
+            "total_priced_turns": ("All replies", "Model replies with token counts."),
+            "huge_ctx_cache_read_tokens": (
+                "Cache reads from those replies",
+                "Tokens those replies read from the cache.",
+            ),
+            "total_cache_read_tokens": ("All cache reads", "Tokens every reply read from the cache."),
+            "share_pct": ("Share of cache reads", "Cache reads from huge contexts as a share of all cache reads."),
+        },
+        value_labels={"all": "All replies"},
+    ),
+    "recache_by_group": TableCopy(
+        title="Cache rebuilds by group",
+        help=Help(
+            shows="The cache rebuild totals, one row per group you chose with the group-by option.",
+            read="Each row has the same columns as \"Cache rebuilds at a glance\", for that group only.",
+            act="",
+        ),
+        columns={
+            "group": ("", "The group this row covers."),
+            "metric": ("", "Every reply in the group."),
+            "transcripts": ("Conversation logs", "One per main session and one per subagent run."),
+            "priced_turns": ("Replies", "Model replies with token counts."),
+            "recache_turns": (
+                "Cache rebuilds",
+                "Replies that rebuilt the cache, including those after a usage-limit pause.",
+            ),
+            "recache_turn_share_pct": ("Rebuild share", "Cache rebuilds as a share of all replies."),
+            "recache_cc_tokens": ("Tokens rebuilt", "Tokens those rebuilds wrote to the cache."),
+            "total_cc_tokens": ("All cache writes", "Tokens every reply wrote to the cache."),
+            "recache_cc_share_pct": ("Rebuild share of cache writes", "Tokens rebuilt as a share of all cache writes."),
+            "avoidable_cost_usd": (
+                "Avoidable cost",
+                "What rebuilds cost above reading the same tokens from the cache. Leaves out rebuilds after a "
+                "usage-limit pause.",
+            ),
+            "unavoidable_limit_expiry_cost_usd": (
+                "Cost after usage-limit pauses",
+                "The same extra cost for rebuilds after a usage-limit pause. You can't avoid these.",
+            ),
+        },
+        value_labels={"all": "All", "top-level": "Main session", "unknown": "Not known"},
+    ),
+    # -- cache lifetime -----------------------------------------------------
+    "ttl_by_agent_type": TableCopy(
+        title="Which cache lifetime costs less",
+        help=Help(
+            shows="For the main session and each agent type: what you paid, and what you would have paid if every "
+            "cache write had used a 5-minute or a 1-hour lifetime.",
+            read="\"Over the cheaper lifetime\" is what you paid above the cheaper option; negative means your "
+            "mix already beat both. \"Estimate error\" is how far the replay misses your real bill. Trust the "
+            "advice only when it is low.",
+            act="When the advice says to switch, change the setting named in the last column. A subscription "
+            "ignores a 1-hour lifetime for subagents, so there the advice covers the main session only.",
+        ),
+        columns={
+            "agent_type": ("", "The subagent type, or the main session."),
+            "spawns": ("Runs", "Subagent runs of this type, or main sessions."),
+            "priced_turns": ("Replies", "Model replies with token counts."),
+            "observed_5m_pct": ("5-minute share", "Share of cache writes that used a 5-minute lifetime."),
+            "observed_1h_pct": ("1-hour share", "Share of cache writes that used a 1-hour lifetime."),
+            "gaps_over_5m": (
+                "Waits over 5 minutes",
+                "Waits between replies long enough for a 5-minute cache to expire. Usage-limit pauses are left out.",
+            ),
+            "gaps_over_1h": (
+                "Waits over 1 hour",
+                "Waits long enough for a 1-hour cache to expire. Usage-limit pauses are left out.",
+            ),
+            "limit_gaps": (
+                "Usage-limit pauses",
+                "Waits caused by a usage limit. The cache expires under either lifetime.",
+            ),
+            "gap_p50_s": ("Typical wait", "The middle wait between replies."),
+            "gap_p90_s": ("Long wait", "9 in 10 waits between replies are shorter than this."),
+            "cost_observed": ("Cost as billed", "Total cost of these replies with the cache lifetimes they used."),
+            "cost_all_5m": (
+                "Cost if all 5-minute",
+                "Estimated total cost if every cache write used a 5-minute lifetime.",
+            ),
+            "cost_all_1h": ("Cost if all 1-hour", "Estimated total cost if every cache write used a 1-hour lifetime."),
+            "best_policy": ("Cheaper lifetime", "Which of the two lifetimes would have cost less."),
+            "delta_usd": (
+                "Over the cheaper lifetime",
+                "Cost as billed minus the cheaper lifetime's cost. Negative means your mix was already cheaper.",
+            ),
+            "delta_pct": ("Over the cheaper lifetime (%)", "The same difference as a share of cost as billed."),
+            "saving_usd": (
+                "Saving if switched",
+                "What switching to the cheaper lifetime would save. Never below zero.",
+            ),
+            "fidelity_pct": (
+                "Estimate error",
+                "How far the replay of your own lifetime misses your real bill. Lower is more reliable.",
+            ),
+            "unsimulatable": (
+                "Replies not replayed",
+                "Replies with no readable wait time. They keep their real cost in both estimates.",
+            ),
+            "unpriced_turns": ("Replies with no price", "Replies from a model with no known price. Counted at zero."),
+            "recommendation": (
+                "Advice",
+                "Whether to change this type's cache lifetime, and why not when advice is held back.",
+            ),
+            "lever": ("Setting to change", "The setting that controls this type's cache lifetime."),
+        },
+        value_labels={
+            "top-level": "Main session",
+            "unknown": "Subagent (type not recorded)",
+            "5m": "5 minutes",
+            "1h": "1 hour",
+            "no material difference": "No change needed",
+            "switch to 5m": "Switch to 5 minutes",
+            "switch to 1h": "Switch to 1 hour",
+            "keep 5m (already dominant)": "Keep 5 minutes (already used)",
+            "keep 1h (already dominant)": "Keep 1 hour (already used)",
+            "no material difference (suppressed: subscription billing)": (
+                "No change: a subscription ignores a 1-hour lifetime for subagents"
+            ),
+            "promptCacheTtl": "promptCacheTtl in your settings",
+        },
+    ),
+    "ttl_gap_distribution": TableCopy(
+        title="Waits between replies",
+        help=Help(
+            shows="How many waits between replies fell in each range, per agent type. Usage-limit pauses are left out.",
+            read="Waits under 5 minutes keep either cache. Waits of 5 to 60 minutes keep only a 1-hour cache. "
+            "Longer waits lose both.",
+            act="",
+        ),
+        columns={
+            "agent_type": ("", "The subagent type, or the main session."),
+            "lt_1m": ("Under 1 min", "Waits under 1 minute."),
+            "1_5m": ("1 to 5 min", "Waits of 1 to 5 minutes."),
+            "5_15m": ("5 to 15 min", "Waits of 5 to 15 minutes."),
+            "15_60m": ("15 to 60 min", "Waits of 15 to 60 minutes."),
+            "gt_60m": ("Over 60 min", "Waits over 60 minutes."),
+        },
+        value_labels={"top-level": "Main session", "unknown": "Subagent (type not recorded)"},
+    ),
+    "ttl_wasted_writes": TableCopy(
+        title="Cache writes never read back",
+        help=Help(
+            shows="How many cache writes expired before any later reply read them.",
+            read="A write that is never read back is paid for and gives nothing. The last reply of each "
+            "conversation is counted on its own, because nothing comes after it.",
+            act="A high share with long waits points at expiry: see which lifetime costs less above.",
+        ),
+        columns={
+            "agent_type": ("", "The subagent type, or the main session."),
+            "writes": (
+                "Cache writes",
+                "Cache writes before the last reply. A write that used both lifetimes counts twice.",
+            ),
+            "wasted_writes": ("Never read back", "Writes that expired before a later reply read them."),
+            "tokens_written": ("Tokens written", "Tokens in those cache writes."),
+            "tokens_wasted": ("Tokens never read back", "Tokens in the writes that were never read back."),
+            "share": ("Share never read back", "Tokens never read back as a share of tokens written."),
+            "usd_wasted": ("Cost never read back", "What the unused cache writes cost."),
+            "terminal_writes": (
+                "Writes on the last reply",
+                "Writes on a conversation's last reply. Nothing can read them, so they are left out of the share.",
+            ),
+        },
+        value_labels={"top-level": "Main session", "unknown": "Subagent (type not recorded)"},
+    ),
+    "ttl_premium_waste": TableCopy(
+        title="When a 1-hour lifetime pays off",
+        help=Help(
+            shows="Every cache write, sorted by how long until the next reply: within 5 minutes, 5 to 60 "
+            "minutes, or later.",
+            read="Within 5 minutes, a 1-hour lifetime is extra cost for nothing. From 5 to 60 minutes, it saves "
+            "a cache rebuild. Later than that, neither lifetime keeps the cache.",
+            act="If the saving is larger than the extra cost, a 1-hour lifetime pays for this type.",
+        ),
+        columns={
+            "agent_type": ("", "The subagent type, or the main session."),
+            "h1_not_needed_tokens": (
+                "1 hour not needed (tokens)",
+                "Tokens written where the next reply came within 5 minutes.",
+            ),
+            "h1_not_needed_usd": (
+                "1 hour not needed (extra cost)",
+                "What a 1-hour lifetime would add on those tokens, for nothing.",
+            ),
+            "h1_earned_tokens": (
+                "1 hour pays off (tokens)",
+                "Tokens written where the next reply came 5 to 60 minutes later.",
+            ),
+            "h1_earned_usd": (
+                "1 hour pays off (saving)",
+                "The cache rebuild a 1-hour lifetime would avoid on the next reply.",
+            ),
+            "h1_expired_tokens": (
+                "Expires anyway (tokens)",
+                "Tokens written where the next reply came over an hour later, or never.",
+            ),
+            "h1_expired_usd": (
+                "Expires anyway (extra cost)",
+                "What a 1-hour lifetime would add on those tokens, for nothing.",
+            ),
+            "m5_fine_tokens": ("5 minutes enough (tokens)", "Tokens a 5-minute lifetime kept until the next reply."),
+            "m5_loss_tokens": (
+                "5 minutes expires (tokens)",
+                "Tokens whose 5-minute cache expires before the next reply, where 1 hour would not.",
+            ),
+            "m5_loss_usd": (
+                "5 minutes rebuild cost",
+                "The cache rebuild a 5-minute lifetime causes on the next reply.",
+            ),
+            "m5_would_expire_tokens": (
+                "Expires under both (tokens)",
+                "Tokens whose cache expires before the next reply under either lifetime.",
+            ),
+        },
+        value_labels={"top-level": "Main session", "unknown": "Subagent (type not recorded)"},
+    ),
+    "ttl_break_even_share": TableCopy(
+        title="Does a 1-hour lifetime pay for itself?",
+        help=Help(
+            shows="For each type: the extra cost of using a 1-hour lifetime everywhere, against the cache "
+            "rebuilds a 5-minute lifetime causes.",
+            read="A 1-hour lifetime pays when enough of your context comes after waits of 5 to 60 minutes. "
+            "Compare that share with the break-even share: above it, 1 hour is cheaper.",
+            act="Where the verdict is \"1 hour is cheaper\", consider a 1-hour lifetime for that type. "
+            "Check the advice in the first table before changing anything.",
+        ),
+        columns={
+            "agent_type": ("", "The subagent type, or the main session."),
+            "premium_all_1h": (
+                "Extra cost of 1 hour",
+                "What you would pay on top if every cache write used a 1-hour lifetime.",
+            ),
+            "expiry_loss_all_5m": (
+                "Rebuild cost of 5 minutes",
+                "What cache rebuilds after waits of 5 to 60 minutes cost with a 5-minute lifetime.",
+            ),
+            "margin": ("Difference", "Rebuild cost minus extra cost. Positive means 1 hour pays for itself."),
+            "in_window_pct": (
+                "Context after 5 to 60 minute waits",
+                "Share of your context, by size, that came after a wait of 5 to 60 minutes.",
+            ),
+            "break_even_pct": (
+                "Break-even share",
+                "The share in the previous column that 1 hour needs to pay for itself.",
+            ),
+            "verdict": ("Verdict", "Which lifetime is cheaper, or too close to call."),
+        },
+        value_labels={
+            "top-level": "Main session",
+            "unknown": "Subagent (type not recorded)",
+            "5m pays": "5 minutes is cheaper",
+            "1h pays": "1 hour is cheaper",
+            "marginal": "Too close to call",
+        },
+    ),
+    "ttl_near_miss": TableCopy(
+        title="Waits that just made or just missed the cache",
+        help=Help(
+            shows="Waits that ended within a minute either side of the 5-minute and 1-hour limits.",
+            read="A \"just missed\" wait lost the cache by less than a minute and rebuilt the whole context. "
+            "Many of these mean a slightly quicker reply would have saved the rebuild.",
+            act="If many waits just miss 5 minutes, reply a little sooner, or use the status line countdown to "
+            "see when the cache will expire.",
+        ),
+        columns={
+            "agent_type": ("", "The subagent type, or the main session."),
+            "near_5m_hit": (
+                "Just made 5 minutes",
+                "Waits in the last minute before 5 minutes. The cache was still there.",
+            ),
+            "near_5m_miss": (
+                "Just missed 5 minutes",
+                "Waits in the first minute after 5 minutes. The cache had expired.",
+            ),
+            "near_5m_miss_tokens": ("Tokens written after just missing 5 minutes", "Cache writes on those replies."),
+            "near_5m_miss_usd": (
+                "Cost of just missing 5 minutes",
+                "Rewriting the whole context on those replies, at the 5-minute write price.",
+            ),
+            "near_1h_hit": ("Just made 1 hour", "Waits in the last minute before 1 hour. The cache was still there."),
+            "near_1h_miss": ("Just missed 1 hour", "Waits in the first minute after 1 hour. The cache had expired."),
+            "near_1h_miss_tokens": ("Tokens written after just missing 1 hour", "Cache writes on those replies."),
+            "near_1h_miss_usd": (
+                "Cost of just missing 1 hour",
+                "Rewriting the whole context on those replies, at the 5-minute write price.",
+            ),
+        },
+        value_labels={"top-level": "Main session", "unknown": "Subagent (type not recorded)"},
+    ),
+    "ttl_addressable_share": TableCopy(
+        title="Cache rebuilds a longer lifetime could prevent",
+        help=Help(
+            shows="Cache rebuilds split into those where the cache expired and those where it was broken by a "
+            "change.",
+            read="A longer cache lifetime can prevent expiry. It can't help when the context itself changed. "
+            "Costs here are the full cache write, not only the avoidable part.",
+            act="If the expired share is high, look at the cache lifetime advice. If the changed share is high, "
+            "look at the causes on the cache rebuilds tab.",
+        ),
+        columns={
+            "agent_type": ("", "The subagent type, or the main session."),
+            "full_expiry_tokens": ("Expired (tokens)", "Tokens rewritten because the cache had expired."),
+            "full_expiry_usd": ("Expired (cost)", "What those cache writes cost."),
+            "full_expiry_share": ("Expired share", "Expired tokens as a share of all rebuilt tokens."),
+            "prefix_invalidated_tokens": (
+                "Broken by a change (tokens)",
+                "Tokens rewritten because something early in the context changed.",
+            ),
+            "prefix_invalidated_usd": ("Broken by a change (cost)", "What those cache writes cost."),
+            "prefix_invalidated_share": ("Broken share", "Broken-cache tokens as a share of all rebuilt tokens."),
+        },
+        value_labels={"top-level": "Main session", "unknown": "Subagent (type not recorded)"},
+    ),
+    "ttl_cache_economy": TableCopy(
+        title="What the cache saves you",
+        help=Help(
+            shows="For each type: what you paid for cache writes and reads, and what the same tokens would cost "
+            "with no cache.",
+            read="\"Return on cache writes\" is the saving for each unit spent on writes. 10 means every 1 spent "
+            "on writes saved 10.",
+            act="A low return means the cache is written often but read little. Check the waits and rebuilds for "
+            "that type.",
+        ),
+        columns={
+            "agent_type": ("", "The subagent type, or the main session."),
+            "tokens_written": ("Cache writes (tokens)", "Tokens written to the cache."),
+            "tokens_read": ("Cache reads (tokens)", "Tokens read from the cache."),
+            "write_usd": ("Cache write cost", "What the cache writes cost."),
+            "read_usd": ("Cache read cost", "What the cache reads cost."),
+            "uncached_equivalent_usd": ("Cost with no cache", "What the same tokens would cost as plain input."),
+            "net_saving_usd": (
+                "Saved by the cache",
+                "Cost with no cache, minus what you paid for cache writes and reads.",
+            ),
+            "cache_roi": ("Return on cache writes", "Saving divided by cache write cost."),
+        },
+        value_labels={"top-level": "Main session", "unknown": "Subagent (type not recorded)", "overall": "All"},
+    ),
+    # -- usage limits -------------------------------------------------------
+    "limits_summary": TableCopy(
+        title="Usage limits at a glance",
+        help=Help(
+            shows="Totals for the window: limit stops, automatic resumes, subagents stopped early, pauses, and "
+            "the cache writes after each pause.",
+            read="One pause can show several limit messages, so stops can be higher than pauses. The cost after "
+            "a pause is a full cache write that you can't avoid.",
+            act="If pauses are frequent, spread heavy work over the day or across the week.",
+        ),
+        columns={
+            "metric": ("", "This row covers the whole window."),
+            "transcripts": ("Conversation logs", "One per main session and one per subagent run."),
+            "sessions_affected": (
+                "Sessions affected",
+                "Sessions with a limit stop, a resume after one, or a subagent stopped early.",
+            ),
+            "limit_hits": ("Limit stops", "Times Claude Code showed a usage-limit message."),
+            "session_limit_hits": ("5-hour limit stops", "Stops at the rolling 5-hour session limit."),
+            "weekly_limit_hits": ("Weekly limit stops", "Stops at the weekly limit."),
+            "limit_resumes": ("Automatic resumes", "Times the desktop app carried on by itself after a limit reset."),
+            "agents_terminated": (
+                "Subagents stopped early",
+                "Subagents Claude Code ended before they finished, for any reason.",
+            ),
+            "agents_terminated_rate_limit": ("Stopped by a limit", "Of those, the subagents stopped by a usage limit."),
+            "pause_count": ("Pauses", "Waits between replies that spanned a usage limit."),
+            "pause_total_s": ("Total pause time", "All those pauses added together."),
+            "limit_turn_cc_tokens": (
+                "Cache writes after a pause",
+                "Tokens written to the cache on the first reply after each pause.",
+            ),
+            "limit_turn_write_cost_usd": (
+                "Cost of cache writes after a pause",
+                "What those cache writes cost in full. The cache rebuilds tab shows a smaller figure: large "
+                "contexts only, and only the cost above a cache read.",
+            ),
+        },
+        value_labels={"all": "All"},
+    ),
+    "limits_hits_by_kind": TableCopy(
+        title="Which limit you hit",
+        help=Help(
+            shows="Limit stops split between the 5-hour session limit and the weekly limit.",
+            read="Session-limit stops reset within hours. Weekly-limit stops can block you for days.",
+            act="",
+        ),
+        columns={
+            "kind": ("Limit", "Which usage limit stopped you."),
+            "hits": ("Stops", "Times this limit stopped a reply."),
+            "share_pct": ("Share", "Share of all limit stops."),
+        },
+        value_labels={"session_limit": "5-hour session limit", "weekly_limit": "Weekly limit"},
+    ),
+    "limits_agent_terminated": TableCopy(
+        title="Subagents stopped early",
+        help=Help(
+            shows="Subagents Claude Code ended before they finished, and why.",
+            read="A stopped subagent returns no report, so what it spent produced nothing.",
+            act="",
+        ),
+        columns={
+            "kind": ("Reason", "Why Claude Code stopped the subagent."),
+            "terminated": ("Subagents", "How many subagents stopped for this reason."),
+            "share_pct": ("Share", "Share of all subagents stopped early."),
+        },
+        value_labels={"rate_limit": "Usage limit", "other": "Other, or not stated"},
+    ),
+    "limits_pauses": TableCopy(
+        title="How long usage-limit pauses lasted",
+        help=Help(
+            shows="How many times you waited for a usage limit to reset, and for how long.",
+            read="Each pause is the wait from the reply before the limit to the first reply after it.",
+            act="",
+        ),
+        columns={
+            "metric": ("", "This row covers the whole window."),
+            "pause_count": ("Pauses", "Waits between replies that spanned a usage limit."),
+            "total_s": ("Total pause time", "All pauses added together."),
+            "mean_s": ("Average pause", "Total pause time divided by the number of pauses."),
+        },
+        value_labels={"all": "All"},
+    ),
+    "limits_reset_hour_histogram": TableCopy(
+        title="When your limits reset",
+        help=Help(
+            shows="Limit stops grouped by the local hour the limit said it would reset.",
+            read="A peak at one hour shows when you usually run out. Stops with no reset time are left out.",
+            act="If limits often reset at a busy hour, start heavy work just after a reset.",
+        ),
+        columns={
+            "local_hour": ("Local hour", "The hour of day the limit reset, in your time zone."),
+            "resets": ("Limit stops", "Limit stops that named a reset in this hour."),
+            "share_pct": ("Share", "Share of limit stops with a reset time."),
+        },
+        value_labels={f"{hour:02d}": f"{hour:02d}:00" for hour in range(24)},
+    ),
+    "limits_by_agent_type": TableCopy(
+        title="Usage limits by agent type",
+        help=Help(
+            shows="Limit stops, pauses and the cache writes after them, for the main session and each agent type.",
+            read="Most stops show up in the main session. A subagent type with many stops is often running "
+            "when you reach the limit.",
+            act="",
+        ),
+        columns={
+            "agent_type": ("", "The subagent type, or the main session."),
+            "transcripts": ("Conversation logs", "Main sessions or subagent runs of this type."),
+            "limit_hits": ("Limit stops", "Times this type showed a usage-limit message."),
+            "limit_resumes": ("Automatic resumes", "Times this type carried on by itself after a limit reset."),
+            "agents_terminated": ("Subagents stopped early", "Notices of a subagent stopped early, seen by this type."),
+            "pause_count": ("Pauses", "Waits between replies that spanned a usage limit."),
+            "pause_total_s": ("Total pause time", "All those pauses added together."),
+            "pause_median_s": ("Typical pause", "The middle pause length."),
+            "pause_max_s": ("Longest pause", "The longest pause."),
+            "limit_turn_cc_tokens": (
+                "Cache writes after a pause",
+                "Tokens written to the cache on the first reply after each pause.",
+            ),
+            "limit_turn_write_cost_usd": (
+                "Cost of cache writes after a pause",
+                "What those cache writes cost in full.",
+            ),
+        },
+        value_labels={"top-level": "Main session"},
+    ),
+    "limits_csv_cross_check": TableCopy(
+        title="Usage log compared with conversation logs",
+        help=Help(
+            shows="How often your usage log recorded a limit as fully used, next to the limit stops found in "
+            "your conversation logs.",
+            read="The two are recorded separately and won't match exactly. The usage log samples all the time; "
+            "a conversation log only records a stop when a reply was blocked.",
+            act="A large, lasting gap may mean one of the two logs is missing data.",
+        ),
+        columns={
+            "window": ("Window", "Which usage limit this row compares."),
+            "csv_exhaustion_rows": ("Usage log at the limit", "Usage log entries that showed this limit fully used."),
+            "transcript_hits": ("Stops in conversation logs", "Limit stops found in your conversation logs."),
+            "delta": ("Difference", "Conversation-log stops minus usage-log entries."),
+        },
+        value_labels={"five_hour": "5-hour session limit", "seven_day": "Weekly limit"},
+    ),
+    # -- conversation summaries ---------------------------------------------
+    "compactions_summary": TableCopy(
+        title="Conversation summaries at a glance",
+        help=Help(
+            shows="How many sessions were summarised, how large the context was before and after, and the cache "
+            "write on the reply after each summary.",
+            read="Costs only count replies within 15 minutes of the summary. \"Rebuilt most of the cache\" is the "
+            "part of that cost where the next reply read less than a fifth of its context from the cache.",
+            act="If summaries are frequent and large, split long tasks into separate sessions.",
+        ),
+        columns={
+            "metric": ("", "What is measured."),
+            "value": ("", "The figure, in the unit named on the left."),
+        },
+        value_labels={
+            "Sessions with >=1 compaction": "Sessions with at least one summary",
+            "Total sessions": "All sessions",
+            "Compactions per session (mean)": "Summaries per session (average over all sessions)",
+            "Compactions per compacting session (mean)": "Summaries per summarised session (average)",
+            "Compactions per session (max)": "Most summaries in one session",
+            "Pre-compaction tokens (median)": "Context before a summary (typical, tokens)",
+            "Post-compaction tokens (median)": "Context after a summary (typical, tokens)",
+            "Dropped tokens (total)": "Tokens removed by summaries (total)",
+            "Dropped tokens (share of cache_creation)": "Tokens removed, as a % of all cache writes",
+            "Dropped tokens (share of new_tokens: input+cache_creation)": (
+                "Tokens removed, as a % of all new input and cache writes"
+            ),
+            "Mean duration (ms)": "Average time to summarise (milliseconds)",
+            "Total post-compaction write cost (USD)": "Cache write cost on the reply after a summary",
+            "Total post-compaction RE-CACHE-flagged write cost (USD)": (
+                "Of that, replies that rebuilt most of the cache"
+            ),
+        },
+    ),
+    "compactions_trigger_mix": TableCopy(
+        title="What started each summary",
+        help=Help(
+            shows="Whether each summary ran automatically or because you asked for it.",
+            read="Automatic summaries run when the context is nearly full.",
+            act="",
+        ),
+        columns={
+            "trigger": ("Started by", "What started the summary."),
+            "count": ("Summaries", "How many summaries."),
+            "pct": ("Share", "Share of all summaries."),
+        },
+        value_labels={
+            "auto": "Automatic (context nearly full)",
+            "manual": "You ran /compact",
+            "unknown": "Not recorded",
+        },
+    ),
+    "compactions_per_session": TableCopy(
+        title="Sessions that removed the most context",
+        help=Help(
+            shows="The 20 sessions whose summaries removed the most tokens.",
+            read="Many summaries in one session means it ran long enough to fill the context again and again.",
+            act="",
+        ),
+        columns={
+            "session": ("", "The session id."),
+            "count": ("Summaries", "Summaries in this session, including its subagents."),
+            "dropped_tokens": ("Tokens removed", "Tokens the summaries removed from the context."),
+            "write_cost": (
+                "Cache write cost after summaries",
+                "Cache writes on the reply after each summary. Left out when that reply came over 15 minutes later.",
+            ),
+        },
+    ),
+    # -- savings: tool output kept in context ---------------------------------
+    "carry_by_tool": TableCopy(
+        title="Cost of keeping each tool's output in context",
+        help=Help(
+            shows="One row per tool: how much output it added, how many replies that output stayed for, "
+            "and what keeping it cost.",
+            read="Kept tokens are output size times later replies. Share of cache compares them with every "
+            "token read from or written to the cache. The rest is instructions, messages and replies, so "
+            "rows don't add up to 100%.",
+            act="A tool above about 25% of the cache is worth capping. The table \"Saving if large tool "
+            "outputs were capped\" shows what that would save.",
+        ),
+        columns={
+            "key": ("Tool", "The tool that produced the output."),
+            "result_count": ("Outputs", "Tool outputs counted. Calls to one tool in the same reply count as one."),
+            "tokens_entered": ("Output size (tokens)", "Total size of those outputs, estimated from characters."),
+            "mean_turns_carried": (
+                "Replies kept for",
+                "Average number of later replies each output stayed in context, until a summary or the end.",
+            ),
+            "carry_tokens": ("Kept tokens", "Output size times the number of later replies it stayed for."),
+            "carry_cost_usd": (
+                "Cost of keeping it",
+                "Cache read and cache write cost of the kept tokens, at list price.",
+            ),
+            "share_of_cache_volume_pct": (
+                "Share of cache",
+                "Kept tokens as a share of every token read from or written to the cache.",
+            ),
+        },
+    ),
+    "carry_by_agent_type": TableCopy(
+        title="Cost of keeping tool output in context, by agent type",
+        help=Help(
+            shows="The same measure as the tool table, for the main session and each subagent type.",
+            read="Long conversations keep output for more replies, so the main session usually carries "
+            "output the longest.",
+            act="If one subagent type keeps a lot of output, ask it to read less or to trim command output.",
+        ),
+        columns={
+            "key": ("Agent type", "The main session or the subagent type that received the output."),
+            "result_count": ("Outputs", "Tool outputs counted. Calls to one tool in the same reply count as one."),
+            "tokens_entered": ("Output size (tokens)", "Total size of those outputs, estimated from characters."),
+            "mean_turns_carried": (
+                "Replies kept for",
+                "Average number of later replies each output stayed in context, until a summary or the end.",
+            ),
+            "carry_tokens": ("Kept tokens", "Output size times the number of later replies it stayed for."),
+            "carry_cost_usd": (
+                "Cost of keeping it",
+                "Cache read and cache write cost of the kept tokens, at list price.",
+            ),
+            "share_of_cache_volume_pct": (
+                "Share of cache",
+                "Kept tokens as a share of every token read from or written to the cache.",
+            ),
+        },
+        value_labels={"top-level": "Main session"},
+    ),
+    "carry_top_results": TableCopy(
+        title="Most expensive single tool outputs",
+        help=Help(
+            shows="The 10 tool outputs that cost the most to keep in context. Only the tool name and sizes "
+            "are stored, never content, paths or commands.",
+            read="A large output early in a long conversation costs the most, because every later reply pays "
+            "for it again.",
+            act="If these are file reads, read only the lines you need. If they are command output, trim it "
+            "before Claude sees it.",
+        ),
+        columns={
+            "tool": ("", "The tool that produced the output."),
+            "agent_type": ("Where", "The main session or the subagent type that received it."),
+            "tokens": ("Size (tokens)", "The output's size, estimated from characters."),
+            "turns_carried": ("Replies kept for", "Later replies it stayed in context for."),
+            "carry_cost_usd": ("Cost of keeping it", "Cache read and cache write cost of keeping it, at list price."),
+        },
+        value_labels={"top-level": "Main session"},
+    ),
+    "carry_truncation_savings": TableCopy(
+        title="Saving if large tool outputs were capped",
+        help=Help(
+            shows="What you would have saved if every tool output had been cut to 2,000 or 8,000 tokens "
+            "before Claude saw it.",
+            read="Worked out directly from the cost of keeping each output, with no replay. It assumes "
+            "nothing else changes. Claude may need an extra read to recover what was cut, so treat it as "
+            "an upper bound.",
+            act="If the 8,000-token row shows a real saving, cap long outputs at the source.",
+        ),
+        columns={
+            "truncate_to_tokens": ("Cap", "The largest size any one tool output is allowed, in tokens."),
+            "results_affected": ("Outputs over the cap", "Tool outputs larger than the cap."),
+            "tokens_saved": ("Kept tokens saved", "Tokens over the cap, times the later replies they stayed for."),
+            "usd_saved": ("Saving", "Cost of keeping the part over the cap, at list price."),
+        },
+        value_labels={"2000": "2,000 tokens", "8000": "8,000 tokens"},
+    ),
+    # -- savings: auto-compact window -------------------------------------------
+    "compaction_sim_by_window": TableCopy(
+        title="Main session cost at each auto-compact window",
+        help=Help(
+            shows="One row per window size, for your main sessions. \"As now\" is your real cost; every other "
+            "row is simulated.",
+            read="A negative change means cheaper. Summaries per session shows how often each window would "
+            "summarise. More summaries means more detail lost and more re-reading.",
+            act="Look for the smallest window with a clear saving and no more than about 2 summaries per session.",
+        ),
+        columns={
+            "window": ("Window (tokens)", "The context size at which the conversation is summarised."),
+            "compactions_per_session": (
+                "Summaries per session",
+                "Average conversation summaries per session under this window, real ones included.",
+            ),
+            "mean_ctx": ("Average context (tokens)", "Average context size per reply under this window, simulated."),
+            "cost": (
+                "Cost",
+                "Simulated cost of your main sessions under this window, at list price. \"As now\" is your real cost.",
+            ),
+            "delta_usd": ("Change in cost", "Simulated cost minus real cost, at list price. Negative means cheaper."),
+            "delta_pct": ("Change (%)", "The change as a share of your real cost. Negative means cheaper."),
+        },
+        value_labels={"none": "As now (no extra summaries)"},
+    ),
+    "compaction_sim_by_agent_type": TableCopy(
+        title="Best auto-compact window for each agent type",
+        help=Help(
+            shows="For the main session and each subagent type: the window with the lowest simulated cost, "
+            "and the saving against your real cost.",
+            read="Savings are simulated and never below zero. \"No clear saving\" means the best window saves "
+            "under 5% of the cost, or under $1.00 at list price.",
+            act="The auto-compact window is one setting for the whole session, not per agent type. Choose it "
+            "from the main session row; subagent rows show where summaries would matter most.",
+        ),
+        columns={
+            "agent_type": ("", "The main session or the subagent type."),
+            "sessions": ("Runs", "Main session: how many sessions. Subagents: how many runs of that type."),
+            "observed_cost": ("Real cost", "Measured cost, at list price."),
+            "best_window": ("Best window (tokens)", "The window with the lowest simulated cost."),
+            "best_cost": ("Cost at best window", "Simulated cost at that window, at list price."),
+            "saving_usd": (
+                "Simulated saving",
+                "Real cost minus cost at the best window, at list price. Never below 0.",
+            ),
+            "delta_pct": (
+                "Change (%)",
+                "Simulated change at the best window, against real cost. Negative means cheaper.",
+            ),
+            "recommendation": ("Suggestion", "Whether the simulated saving is big enough to act on."),
+        },
+        value_labels={
+            "top-level": "Main session",
+            "unknown": "Unnamed subagent",
+            "none": "As now (no extra summaries)",
+            "no material difference": "No clear saving",
+        },
+    ),
+    "compaction_sim_fidelity": TableCopy(
+        title="Simulation check against your real sessions",
+        help=Help(
+            shows="Main sessions whose auto-compact window is known, replayed at that same window.",
+            read="Error is how far the simulated cost is from the real cost. It should be close to 0%. Above "
+            "10% means the simulation doesn't fit your sessions well, so trust the other tables less.",
+            act="",
+        ),
+        columns={
+            "session": ("Session", "The session this row replays."),
+            "configured_window": ("Your window (tokens)", "The auto-compact window set when the session ran."),
+            "simulated_cost": ("Simulated cost", "Cost replayed at your own window, at list price."),
+            "observed_cost": ("Real cost", "Measured cost, at list price."),
+            "fidelity_pct": ("Error", "Gap between simulated and real cost, as a share of real cost. Lower is better."),
+        },
+    ),
+    # -- savings: cheaper model ---------------------------------------------------
+    "model_swap_by_agent_type": TableCopy(
+        title="Cost of each agent type on other models",
+        help=Help(
+            shows="One row for the main session and one per subagent type: its real cost, the same tokens "
+            "repriced at every known model, and the saving one tier down.",
+            read="Only real cost is measured. The saving is the most you could save at today's usage, and it "
+            "appears only when a cheaper tier exists.",
+            act="A saving above 10% and above $1.00 at list price, on at least 5 runs or 200 replies, becomes "
+            "a recommendation.",
+        ),
+        columns={
+            "agent_type": ("", "The main session or the subagent type."),
+            "spawns": ("Runs", "Main session: how many sessions. Subagents: how many times that type started."),
+            "priced_turns": ("Replies", "Model replies counted, including any with an unknown model."),
+            "unpriced_turns": (
+                "Replies with an unknown model",
+                "Replies whose model isn't in this tool's price list. They count as zero in real cost.",
+            ),
+            "observed_model": ("Model used", "The model most replies used, with a count of any others."),
+            "observed_cost": ("Real cost", "Measured tokens at the list price of the models actually used."),
+            "best_cheaper_alternative_model": (
+                "One tier down",
+                "The current model one tier cheaper than the one used. Empty when there is none.",
+            ),
+            "best_cheaper_alternative": ("Verdict", "The cheaper model and its saving, or why there isn't one."),
+            "saving_usd": ("Most you could save", "Real cost minus the cost one tier down, at list price."),
+            "saving_pct": ("Most you could save (%)", "That saving as a share of real cost."),
+            "lever": ("Where to change it", "The file and field that set this agent type's model."),
+        },
+        value_labels={
+            "top-level": "Main session",
+            "unknown": "Unnamed subagent",
+            "model (settings.json)": "model setting in settings.json",
+        },
+    ),
+    "model_swap_summary": TableCopy(
+        title="All Fable and Opus subagents one tier down",
+        help=Help(
+            shows="The combined saving if every subagent type on Fable or Opus moved one tier down. The main "
+            "session is left out.",
+            read="The most you could save, not a forecast: same tokens and replies at cheaper prices. Agent "
+            "types that would be no cheaper one tier down are left out.",
+            act="",
+        ),
+        columns={
+            "scope": ("Scope", "Which agent types this row covers."),
+            "agent_types": ("Agent types", "Subagent types on Fable or Opus with a cheaper tier available."),
+            "observed_cost_usd": ("Real cost", "Measured cost of those agent types, at list price."),
+            "cost_after_tier_down_usd": ("Cost one tier down", "The same tokens at the cheaper tier's list price."),
+            "saving_usd": ("Most you could save", "Real cost minus the cost one tier down, at list price."),
+            "saving_pct": ("Most you could save (%)", "That saving as a share of real cost."),
+        },
+        value_labels={"subagent types currently on Fable/Opus": "Subagent types on Fable or Opus"},
+    ),
+    # -- savings: wasted replies --------------------------------------------------
+    "waste_summary": TableCopy(
+        title="Wasted replies at a glance",
+        help=Help(
+            shows="All your replies and their cost, and how much went on replies that produced nothing.",
+            read="Shares are against everything in the window, not just the wasted replies.",
+            act="Above 10% of cost is worth acting on. See \"Why replies were wasted\" for what to change.",
+        ),
+        columns={
+            "metric": ("", "Which sessions this row covers."),
+            "total_priced_turns": ("All replies", "Every model reply in the window, including the ones left out."),
+            "total_priced_cost_usd": ("All cost", "Cost of every reply, at list price."),
+            "wasted_turns": ("Wasted replies", "Replies whose output you never used."),
+            "wasted_turns_share_pct": ("Share of replies", "Wasted replies as a share of all replies."),
+            "wasted_cost_usd": (
+                "Wasted cost",
+                "Full cost of the wasted replies, at list price. The most you could recover.",
+            ),
+            "wasted_cost_share_pct": ("Share of cost", "Wasted cost as a share of all cost."),
+            "wasted_tokens": (
+                "Wasted tokens",
+                "Input, cache write, cache read and output tokens of the wasted replies.",
+            ),
+            "limit_pause_excluded_turns": (
+                "Left out: after a usage limit",
+                "Replies right after a usage-limit pause. The Usage limits tab covers these.",
+            ),
+            "api_error_retry_turns": (
+                "After an API error",
+                "Replies that followed an API error and automatic retry. Counted only, not in wasted cost.",
+            ),
+        },
+        value_labels={"all": "All sessions"},
+    ),
+    "waste_by_cause": TableCopy(
+        title="Why replies were wasted",
+        help=Help(
+            shows="Wasted replies by cause, with what each cost and what to change.",
+            read="Each wasted reply has one cause, so the four costed causes add up to the totals above. API "
+            "errors are counted only, never costed.",
+            act="Start with the cause that cost the most and follow its suggestion.",
+        ),
+        columns={
+            "cause": ("", "What made the reply useless."),
+            "turns": ("Replies", "Wasted replies with this cause."),
+            "share_of_turns_pct": ("Share of all replies", "Against every reply in the window."),
+            "cost_usd": ("Wasted cost", "Full cost of those replies, at list price."),
+            "share_of_cost_pct": ("Share of all cost", "Against all cost in the window."),
+            "tokens": ("Tokens", "All tokens of those replies."),
+            "lever": ("What to change", "The change that stops this kind of waste."),
+        },
+        value_labels={
+            "tool-error": "A tool call failed",
+            "interrupt": "You stopped the reply",
+            "tool-denial": "You denied a tool call",
+            "max-turns": "Subagent stopped before it reported",
+            "api-error-retry": "API error, retried automatically",
+            # The builder's lever text (waste.LEVERS), reworded for display.
+            "Write clearer briefs, double-check paths/commands before handing them to a tool, and pre-approve "
+            "routine permissions so a tool call resolves correctly the first time.": (
+                "Give clearer task prompts, check paths and commands before a tool runs them, and pre-approve "
+                "routine permissions."
+            ),
+            "Batch instructions and plan the whole step before running it, so there is less to interrupt "
+            "mid-turn.": "Plan the whole step and give your instructions up front, so there is less to stop midway.",
+            "Add the repeatedly-denied tool/command to the permissions allowlist so it stops being denied "
+            "mid-run.": (
+                "If you keep denying the same tool or command, allow it in your permissions, or tell Claude "
+                "up front not to use it."
+            ),
+            "Raise the subagent's maxTurns budget or narrow its brief so it finishes -- and reports back -- "
+            "inside the turns it's given.": (
+                "Narrow the subagent's task prompt so it finishes sooner, or raise its turn limit. A stopped "
+                "run returns no report, so all its replies count."
+            ),
+            "None -- retried automatically by the harness; investigate only if persistently frequent.": (
+                "Nothing to do. Claude Code retried these for you. Look into it only if it keeps happening."
+            ),
+        },
+    ),
+    "waste_by_agent_type": TableCopy(
+        title="Wasted replies by agent type",
+        help=Help(
+            shows="Wasted replies and their cost for the main session and each subagent type.",
+            read="Shares are against all replies and all cost in the window, not per agent type.",
+            act="A subagent type with a high wasted cost may need a clearer task prompt, or permission for "
+            "the tools it keeps failing on.",
+        ),
+        columns={
+            "agent_type": ("", "The main session or the subagent type."),
+            "turns": ("Wasted replies", "Replies whose output you never used."),
+            "share_of_turns_pct": ("Share of all replies", "Against every reply in the window."),
+            "cost_usd": ("Wasted cost", "Full cost of those replies, at list price."),
+            "share_of_cost_pct": ("Share of all cost", "Against all cost in the window."),
+            "tokens": ("Wasted tokens", "All tokens of those replies."),
+        },
+        value_labels={"top-level": "Main session"},
+    ),
+    "waste_top_sessions": TableCopy(
+        title="Sessions with the most wasted cost",
+        help=Help(
+            shows="The 20 sessions that spent the most on wasted replies, their subagents included.",
+            read="Session ids are scrambled for privacy. Causes lists each cause and its count, most "
+            "frequent first.",
+            act="In a session with many failed tool calls, look for a path or command that kept going wrong.",
+        ),
+        columns={
+            "session_hash": ("Session", "A scrambled session id, so the real id is never stored."),
+            "turns": ("Wasted replies", "Replies in this session whose output you never used."),
+            "cost_usd": ("Wasted cost", "Full cost of those replies, at list price."),
+            "share_of_cost_pct": ("Share of all cost", "Against all cost in the window."),
+            "cause_mix": ("Causes", "Each cause and its count, most frequent first."),
+        },
+    ),
+    # -- config ------------------------------------------------------------
+    "effective-config": TableCopy(
+        title="Settings in effect",
+        help=Help(
+            shows="One row per setting per project: its current value and the settings file it came from.",
+            read="Only settings that affect cost or context are recorded. When a setting is in more than one "
+            "file, the highest-priority file wins: managed policy, then project local, then project shared, "
+            "then your user settings.",
+            act="To change a setting, edit the file named in \"Set in\". Only your administrator can change "
+            "a managed-policy setting.",
+        ),
+        columns={
+            "project": ("", "The project, shown as a short code so no folder path is stored."),
+            "key": ("Setting", "The setting name, as written in settings.json."),
+            "value": ("", "Its current value. Values that could hold private details are summarised."),
+            "provenance": ("Set in", "The settings file that supplied the value."),
+        },
+        value_labels=_SETTINGS_FILES,
+    ),
+    "config-layers": TableCopy(
+        title="Settings files and project content",
+        help=Help(
+            shows="For each project: which of the four settings files exist, and how many agents, skills, "
+            "rules, commands and MCP servers the project loads.",
+            read="The counts to the right describe the whole project, so they repeat on every settings-file "
+            "row. They don't belong to that one file.",
+            act="",
+        ),
+        columns={
+            "project": ("", "The project, shown as a short code so no folder path is stored."),
+            "layer": ("Settings file", "The settings file this row checks."),
+            "present": ("Exists", "Whether that settings file exists."),
+            "agents": ("", "Custom agents available in this project, from your user and project agent folders."),
+            "skills": ("", "Skills in your user and project skill folders. Plugin skills are not counted."),
+            "rules": ("", "Rule files in the project's .claude/rules folder."),
+            "claude_md_bytes": (
+                "CLAUDE.md size (bytes)",
+                "Your global, project, local and subfolder CLAUDE.md files together, in bytes.",
+            ),
+            "commands": ("", "Custom slash commands in the project's .claude/commands folder."),
+            "mcp_servers": ("", "MCP servers configured for this project, including your global ones."),
+        },
+        value_labels=_SETTINGS_FILES,
+    ),
+    "config-groups": TableCopy(
+        title="Projects with the same settings",
+        help=Help(
+            shows="Projects grouped by identical settings, using each project's latest snapshot.",
+            read="Projects in one group run with the same settings. Cost differences between them come "
+            "from the work, not the setup.",
+            act="",
+        ),
+        columns={
+            "config_hash": ("Settings group", "A short code for one exact set of settings."),
+            "project_count": ("Projects", "How many projects share these settings."),
+            "projects": ("Projects in group", "The projects, shown as short codes."),
+            "sessions": ("", "Sessions matched to these projects' settings snapshots."),
+        },
+        value_labels={"(unknown project)": "Unknown project (older snapshot)"},
+    ),
+    "config-drift": TableCopy(
+        title="Settings that did not take effect",
+        help=Help(
+            shows="Sessions where the model Claude actually used differs from the model in your settings.",
+            read="Only the model is checked. A mismatch usually means something overrode the setting, "
+            "such as an environment variable, a command-line flag or a model switch during the session.",
+            act="If sessions ran on a pricier model than you set, check your shell profile and launch "
+            "command for a model override.",
+        ),
+        columns={
+            "session_id": ("Session", "The session's id."),
+            "key": ("Setting", "The setting that was checked."),
+            "snapshot_value": ("In your settings", "The value your settings files gave when the session started."),
+            "observed_value": ("Actually used", "The model the main session used for most of its replies."),
+        },
+    ),
+    # Run-time named: one table per changed setting, "config-diff-<setting>";
+    # found by prefix (see _table_copy_for).
+    "config-diff-": TableCopy(
+        title="",
+        help=Help(
+            shows="Sessions grouped by the value this setting had when each one started, with the cost "
+            "and behaviour of each group.",
+            read="Compare cost per session and cache rebuild share between rows. The groups are observed, "
+            "not controlled: projects, tasks and other settings also differ between them.",
+            act="Treat a difference as a lead, not proof. The note below lists other settings that changed "
+            "at the same time.",
+        ),
+        columns={
+            "value": ("Setting value", "The value when the session started. \"Not set\" means the setting was absent."),
+            "sessions": ("", "Sessions that started with this value. Sessions before the first snapshot are left out."),
+            "turns": ("Replies", "Model replies in those sessions, main session and subagents together."),
+            "cost": ("", "Cost of those sessions at list prices, main session and subagents together."),
+            "cost_per_session": ("Cost per session", "Average cost of one session at list prices."),
+            "recache_share": ("Cache rebuild share", "Share of cache writes that were cache rebuilds, in %."),
+            "compactions_per_session": (
+                "Summaries per session",
+                "Average conversation summaries (compactions) per session.",
+            ),
+            "median_span": ("Typical session length", "The middle session's length, from first to last message."),
+        },
+        value_labels={"(unset)": "Not set", "{}": "Empty", "[]": "Empty list"},
+    ),
+    # -- context budget ------------------------------------------------------
+    "context_budget_baseline": TableCopy(
+        title="What the main session starts with",
+        help=Help(
+            shows="One row per project, plus one for all projects: the main session's startup context and "
+            "an estimate of what it is made of, in tokens.",
+            read="Startup context is measured: it is the cache write on the first reply. The parts to its "
+            "right are estimates. \"System prompt and tools\" is whatever the other parts don't explain, so "
+            "it also holds anything that could not be estimated.",
+            act="If one project's startup context is much larger than the rest, run /context in that "
+            "project to see the exact breakdown. Then trim the biggest part.",
+        ),
+        columns={
+            "project": ("", "The project folder. \"All projects\" combines every session."),
+            "sessions": ("", "Main sessions in this project."),
+            "mean_baseline": (
+                "Average startup context",
+                "Tokens written to the cache on the main session's first reply, averaged. Measured.",
+            ),
+            "median_baseline": ("Typical startup context", "The middle value, less affected by a few very large sessions."),
+            "human_prompt_est": ("Your first message (est.)", "Your first message, estimated from its length."),
+            "skills_listing_est": ("Skills list (est.)", "The list of skills Claude Code sent, estimated from its length."),
+            "memory_files_est": (
+                "CLAUDE.md and rules (est.)",
+                "Your CLAUDE.md files and project rules, estimated from file size. Blank without a settings snapshot.",
+            ),
+            "custom_agents_est": (
+                "Agent list (est.)",
+                "Your custom agents, at about 60 tokens each. Blank without a settings snapshot.",
+            ),
+            "mcp_tools_est": ("MCP tools", "Whether MCP servers are configured. Their size can't be measured here."),
+            "system_prompt_and_tools_est": (
+                "System prompt and tools (rest)",
+                "Average startup context minus every estimate to its left. Blank when the estimates add up "
+                "to more than the measurement.",
+            ),
+        },
+        value_labels={"all": "All projects", "present, size unknown": "Yes, size unknown"},
+    ),
+    "context_budget_autocompact": TableCopy(
+        title="When conversations get summarised",
+        help=Help(
+            shows="For each project: your auto-compact setting, the model's context window, and the context "
+            "size at which Claude Code actually summarised the main session.",
+            read="\"Summarised at\" is the typical context size just before an automatic summary. \"Room left\" "
+            "is the context window minus that. The window is assumed unless your status line logged it.",
+            act="If \"Differs from setting\" is yes, summaries start more than 10% away from your "
+            "autoCompactWindow value. Check whether another settings file or an environment variable overrides it.",
+        ),
+        columns={
+            "project": ("", "The project folder."),
+            "configured_window": ("Auto-compact setting", "Your autoCompactWindow value, in tokens. Blank if not set."),
+            "context_window_size": ("Context window", "The model's context window, in tokens."),
+            "context_window_source": (
+                "Window from",
+                "Measured by your status line, or assumed: 1,000,000 tokens for a model set with [1m], "
+                "otherwise 200,000.",
+            ),
+            "observed_threshold": (
+                "Summarised at",
+                "Typical context size just before an automatic summary, in tokens. Blank if none happened.",
+            ),
+            "implied_buffer": ("Room left", "Context window minus \"Summarised at\", in tokens."),
+            "auto_compactions": ("Automatic summaries", "Automatic summaries in this project's main sessions."),
+            "drift": (
+                "Differs from setting",
+                "Yes when \"Summarised at\" is more than 10% away from your auto-compact setting. "
+                "Blank when either is missing.",
+            ),
+        },
+        value_labels={"statusline": "Status line", "assumed": "Assumed"},
+    ),
+    "context_budget_statusline": TableCopy(
+        title="Context used, as reported by Claude Code",
+        help=Help(
+            shows="The last context size your status line logged for each session. These are Claude Code's "
+            "own numbers, not estimates.",
+            read="\"Used\" is how full the context window was at the last status line update. The table stays "
+            "empty until you install the status line logger.",
+            act="If sessions often end near full, start a new session for each new task instead of carrying "
+            "old context.",
+        ),
+        columns={
+            "session": ("", "The session's id."),
+            "used_tokens": ("Last context size", "Tokens in the context window at the last status line update."),
+            "context_window_size": ("Context window", "The model's context window, in tokens."),
+            "used_percentage": ("Used", "How full the context window was, in %."),
+        },
+    ),
 }
 
 
@@ -671,6 +2787,15 @@ def diagnostics_table(diagnostics: Diagnostics, hook=None) -> Table:
     )
 
 
+def _table_copy_for(table_name: str) -> TableCopy | None:
+    """A table's copy by exact name, else by a run-time name's prefix
+    (one ``config-diff-<setting>`` table per changed setting)."""
+    copy = TABLE_COPY.get(table_name)
+    if copy is None and table_name.startswith("config-diff-"):
+        copy = TABLE_COPY.get("config-diff-")
+    return copy
+
+
 def _apply_table_copy(table: Table, copy: TableCopy | None, billing_mode: str) -> None:
     table.dashboard = placement_for(table.name)
     if copy is not None:
@@ -704,7 +2829,7 @@ def annotate_section(section: Section, billing_mode: str = "api") -> None:
         if copy.help is not None:
             section.help = copy.help
     for table in section.tables:
-        _apply_table_copy(table, TABLE_COPY.get(table.name), billing_mode)
+        _apply_table_copy(table, _table_copy_for(table.name), billing_mode)
 
 
 def annotate(model: ReportModel) -> ReportModel:
