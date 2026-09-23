@@ -36,6 +36,11 @@ def _isolated_claude_config_dir(tmp_path_factory, monkeypatch):
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(fake_home / ".claude"))
     monkeypatch.setenv("HOME", str(fake_home))
     monkeypatch.setenv("USERPROFILE", str(fake_home))
+    # init looks for WSL distros through wsl.exe; a developer machine
+    # with Ubuntu installed would otherwise get an extra question.
+    from claude_token_lens import discovery
+
+    monkeypatch.setattr(discovery, "find_wsl_projects_roots", lambda run=None: [])
 
 
 @pytest.fixture(autouse=True)

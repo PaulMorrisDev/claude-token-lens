@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-23
+
+### Added
+
+- **Sessions from WSL.** `init` finds Claude Code sessions inside WSL
+  distros (`\\wsl.localhost\<distro>\home\<user>\.claude\projects`) and asks
+  whether to include them. They go in `config.toml`'s new
+  `extra_projects_roots`, which the dashboard, the logon service and
+  every command read alongside this computer's own folder.
+  `--projects-root` can now be given more than once.
+- The Sessions tab shows a **Where** column ("This computer" or
+  "WSL: Ubuntu") when any session ran outside this computer, and the
+  session detail says where it ran. `GET /api/sessions` and
+  `GET /api/session/<id>` carry it as `source`, never the path.
+- **`update`**: installs the newest version and restarts the dashboard
+  on it in one command (`python -m claude_token_lens update`).
+- `install-service` says when the dashboard answering on the port is a
+  different version from the one just installed: an older copy is still
+  holding the port.
+
+### Changed
+
+- The dashboard no longer marks a folder's transcripts missing while
+  that folder is out of reach (a WSL distro that was shut down).
+
 ## [0.4.1] - 2026-09-23
 
 ### Changed

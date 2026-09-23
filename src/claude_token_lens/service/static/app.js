@@ -1174,15 +1174,22 @@
     { key: "total_tokens", label: "Tokens", kind: "tokens" },
   ];
 
+  // Shown only when some sessions ran somewhere else, such as WSL.
+  var SOURCE_COLUMN = { key: "source", label: "Where", kind: "str" };
+
   function renderSessionsTable(rows, container, detailContainer) {
     if (!rows.length) {
       container.appendChild(el("p", { class: "notice", text: "No sessions in this window." }));
       return;
     }
+    var columns = SESSION_COLUMNS.slice();
+    if (rows.some(function (row) { return row.source && row.source !== "This computer"; })) {
+      columns.splice(2, 0, SOURCE_COLUMN);
+    }
     var table = el("table", { id: "sessions-list-table" });
     var thead = el("thead");
     var headRow = el("tr");
-    SESSION_COLUMNS.forEach(function (col) {
+    columns.forEach(function (col) {
       headRow.appendChild(el("th", { class: NUMERIC_KINDS[col.kind] ? "num" : null, text: col.label }));
     });
     thead.appendChild(headRow);
@@ -1191,7 +1198,7 @@
     var tbody = el("tbody");
     rows.forEach(function (row) {
       var tr = el("tr", { class: "clickable", tabIndex: 0, "data-session-id": row.id });
-      SESSION_COLUMNS.forEach(function (col) {
+      columns.forEach(function (col) {
         var value = row[col.key];
         tr.appendChild(el("td", { class: NUMERIC_KINDS[col.kind] ? "num" : null, text: formatCell(value, col.kind, state.currency) }));
       });
@@ -1231,6 +1238,7 @@
 
     var summaryList = el("ul", { class: "notes" }, [
       el("li", { text: "Project: " + (session.slug || "-") }),
+      el("li", { text: "Where it ran: " + (session.source || "This computer") }),
       el("li", { text: "Archetype: " + (session.archetype || "-") }),
       el("li", { text: "Span: " + formatCell(session.span_s, "secs") }),
       el("li", { text: "Cost: " + formatCell(session.total_cost, "money", state.currency) }),

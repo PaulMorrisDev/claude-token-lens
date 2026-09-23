@@ -25,7 +25,8 @@ elsewhere). claude-token-lens reads that folder, so the dashboard shows
 all your repositories at once. Only two commands care where you run
 them: `init` names the repository you're in as "this project", and
 `report` and `check` look at just that repository unless you add
-`--all-projects`.
+`--all-projects`. Also run Claude Code inside WSL? Still install it on
+Windows; see [Using Claude Code in WSL too](#using-claude-code-in-wsl-too).
 
 ### 1. Check Python
 
@@ -47,7 +48,7 @@ python -m pip install git+https://github.com/PaulMorrisDev/claude-token-lens
 python -m claude_token_lens --version
 ```
 
-The second line should print `claude-token-lens 0.4.1` or later.
+The second line should print `claude-token-lens 0.5.0` or later.
 
 This guide always runs the tool as `python -m claude_token_lens`. The
 shorter `claude-token-lens` works too, but only when pip's Scripts
@@ -72,12 +73,14 @@ It asks a few questions. The first matters most: **how you pay for
 Claude Code**. Type `subscription` for a Pro, Max, Team or Enterprise
 plan, or `api` if you pay per token with an API key. For the rest,
 pressing Enter accepts the default, which suits most people. It then
-offers two things, and asks before each:
+offers these, and asks before each:
 
 - **Connect to Claude Code.** It adds a small hook to your Claude Code
   `settings.json` that records your settings when a session starts, so
   the dashboard can show what changed and what that did. It shows you
   the exact change first and backs the file up.
+- **Include your WSL sessions** (only if you run Claude Code inside
+  WSL too). It finds them itself; say yes.
 - **Start the dashboard when you log on.** Say yes. It starts straight
   away, and again every time you log on. Claude Code deletes old
   transcripts after a while (30 days by default), and the dashboard
@@ -108,19 +111,58 @@ analysis. Both print to the terminal and change nothing.
 ### Updating
 
 ```powershell
+python -m claude_token_lens update
+```
+
+That one command installs the newest version, restarts the dashboard on
+it, and checks that the dashboard answering on port 8765 is the new one.
+If an older copy is still holding the port, it says so; see
+[An old dashboard won't go away](#an-old-dashboard-wont-go-away). Add
+`--dry-run` to see the commands it would run first. On macOS, restart the
+dashboard afterwards with
+`launchctl kickstart -k gui/$(id -u)/com.claude-token-lens`.
+
+**On version 0.4 or older** (`update` says it's an invalid choice), run
+the two steps it replaces once; after that, `update` works:
+
+```powershell
 python -m pip install --force-reinstall git+https://github.com/PaulMorrisDev/claude-token-lens
 python -m claude_token_lens install-service
 ```
 
-The first line installs the new version (`--force-reinstall` is needed
-because pip skips a copy it thinks is already up to date). The second
-stops the running dashboard, points it at the new version and starts it
-again. On macOS, restart it with
-`launchctl kickstart -k gui/$(id -u)/com.claude-token-lens` instead.
-
 Check the dashboard's footer shows the new version. After an update it
 may re-read your history once, so the first page load can be slow.
 [`CHANGELOG.md`](CHANGELOG.md) lists what changed.
+
+### Using Claude Code in WSL too
+
+If you also run Claude Code inside WSL (Ubuntu on Windows), its sessions
+are kept inside Linux, in `\\wsl.localhost\<distro>\home\<you>\.claude\projects`.
+Install claude-token-lens on **Windows** as above, not inside WSL, and
+run `python -m claude_token_lens init`: it finds those folders itself
+and asks whether to include them. Say yes, and the dashboard shows your
+Windows and WSL sessions together, with a **Where** column on the
+Sessions tab saying which is which ("This computer" or "WSL: Ubuntu").
+
+- It only reads those folders, the same as your Windows one. It changes
+  nothing inside WSL.
+- While the dashboard runs, it looks in them every 30 seconds, which
+  keeps WSL running in the background. If WSL is shut down, the
+  dashboard carries on with what it already has and picks the rest up
+  when WSL is back.
+- The "Connect to Claude Code" hook is for Claude Code on Windows. The
+  copy of Claude Code inside WSL has its own settings and doesn't need
+  it.
+- Added a WSL distro later? Run `init` again. To list the folders by
+  hand, put them in `config.toml` (in `%USERPROFILE%\.claude\token-lens`)
+  and restart the dashboard with `python -m claude_token_lens install-service`:
+
+  ```toml
+  extra_projects_roots = ['\\wsl.localhost\Ubuntu\home\alice\.claude\projects']
+  ```
+
+  A one-off command can take several folders too:
+  `python -m claude_token_lens report --all-projects --projects-root <folder> --projects-root <another>`.
 
 ### If something goes wrong
 
@@ -129,6 +171,7 @@ may re-read your history once, so the first page load can be slow.
 | `claude-token-lens` "is not recognized as a name of a cmdlet" or "command not found" | pip's Scripts folder isn't on your `PATH`. Use `python -m claude_token_lens` instead; everything else stays the same |
 | The dashboard still looks old after updating (its footer shows an old version, or has no version at all) | Something else is still serving port 8765, such as an older copy started by hand, from another Python install, or from Docker. See [An old dashboard won't go away](#an-old-dashboard-wont-go-away) |
 | http://127.0.0.1:8765 doesn't open | The first start reads your whole history, which can take a minute. If it still doesn't open, run `python -m claude_token_lens serve` in a PowerShell window and leave it open; any error prints there |
+| Sessions you ran in WSL are missing | Run `python -m claude_token_lens init` again and say yes when it offers the WSL folder. It only finds a distro that is installed for your Windows user; `wsl -l -v` lists them. See [Using Claude Code in WSL too](#using-claude-code-in-wsl-too) |
 | Amounts are in dollars but you're on a plan | Run `python -m claude_token_lens init` again and answer `subscription` to "How do you pay for Claude Code?" |
 
 [`docs/first-run.md`](docs/first-run.md#troubleshooting) has more.
@@ -303,7 +346,7 @@ assumes) are in [`docs/concepts.md`](docs/concepts.md).
 
 ### Status
 
-**Version 0.4, pre-release.** Every command in the table below works
+**Version 0.5, pre-release.** Every command in the table below works
 and is covered by tests. This README describes what the code does
 today; the roadmap in [section 9](#9-licence-contributing-roadmap) lists
 what is still missing, and
@@ -468,6 +511,7 @@ this table only lists what's specific to each one.
 | `uninstall` | Take it back out: remove the SessionStart hook and statusline from `settings.json` (diff shown, file backed up first) and the logon service | `--claude-root PATH` (as for `init`), `--revert-changes` (also undo every `apply` still in place, newest first), `--delete-data` (also delete the data folder), `--dry-run` (show every step without changing anything), `--yes` (make the changes without asking; they are still printed) |
 | `check` | Quick actions: answer one token question (or all of them) from your own sessions, with the evidence, fixes and tips — the Quick actions tab in the terminal | `ID` (optional: `models`, `effort`, `compaction`, `cache`, `tools`, `skills`, `claude-md`, `tool-output`, `habits` or `quality`), plus the global `--days`/`--since`/`--until` |
 | `review` | Review your CLAUDE.md files or skills: size, how often each is sent, cost, and fixes — the Context files tab in the terminal | `claude-md` or `skills`, plus the global window flags |
+| `update` | Install the newest version with pip, then, when the dashboard starts at logon, run the new copy's `install-service` to restart it on that version and check which version answers on the port | `--from SOURCE` (what pip installs from; default the GitHub repository, a local folder also works), `--no-service` (install but leave the dashboard alone), `--port`, `--bind`, `--dry-run` (print both commands without running either) |
 | `uninstall-service` | Remove whatever `install-service` (or `init`) registered — stops the dashboard it is running (`Stop-ScheduledTask` on Windows; `systemctl --user disable --now` and `launchctl bootout` stop it on Linux and macOS), then deletes the task/unit/agent definition it wrote, and says which steps it did | `--dry-run` (print what would be removed, without removing anything) |
 | `compare` | A/B compare two arms of sessions (`window:`/`key:`/`profile:`/`project:` specs), stratified by purpose/mode with a minimum-sample gate — see [`docs/compare.md`](docs/compare.md) | `--a SPEC` / `--b SPEC` (required), `--stratify purpose,mode` (default), `--min-sessions N` (default: `config.toml`'s `min_sessions`), plus the same `--json`/`--html PATH`/`--csv-dir DIR` output flags as `report` |
 | `reconcile` | Compare local usage/cost accounting against an Admin API CSV export, entirely offline — see [`docs/compare.md`](docs/compare.md) | `--admin-csv FILE` (required), `--by {day,model,"day,model"}` (default `day`), plus the same `--json`/`--html PATH`/`--csv-dir DIR` output flags as `report` (the window comes from the global `--days`/`--since`/`--until` flags, not a separate flag) |
@@ -496,7 +540,7 @@ above lists what each one adds on top):
 
 | Flag | Meaning |
 |---|---|
-| `--projects-root PATH` | override the `<projects_root>` directory (default: `~/.claude/projects`, or `$CLAUDE_CONFIG_DIR/projects`) |
+| `--projects-root PATH` | override the `<projects_root>` directory (default: `~/.claude/projects`, or `$CLAUDE_CONFIG_DIR/projects`). Repeatable, to read several folders at once. `config.toml`'s `extra_projects_roots` (such as a WSL distro's folder, which `init` offers) are always read as well |
 | `--project NAME` | repeatable; a project slug to include (default: the current directory's own slug) |
 | `--all-projects` | include every project under the projects root |
 | `--project-family REGEX` | group worktree slugs matching a regex as one project family |
@@ -1066,6 +1110,8 @@ see the Status note above):
   changes and what they did", quality signals per agent and setup, the
   dashboard-wide window picker, and `serve --monthly-report`. Shipped —
   see [CHANGELOG.md](CHANGELOG.md).
+- **v0.5** — sessions from WSL alongside Windows ones (found by
+  `init`), and one-command `update`. Shipped.
 - **Next** — a budget guardrail that exits non-zero past a
   weekly token or daily dollar limit (planned as `check --weekly-tokens
   N --daily-usd N`, before `check` became the quick-actions command, so

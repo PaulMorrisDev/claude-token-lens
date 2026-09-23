@@ -259,7 +259,12 @@ Recent sessions — `Store.sessions`.
 Query: `limit` (default 50), `offset` (default 0). Newest first (by
 `first_ts`); no window.
 
-`data`: `[{"id", "slug", "first_ts", "last_ts", "span_s", "archetype", "mode", "purpose", "entrypoint", "billing_mode", "profile_id", "total_cost", "total_tokens"}, ...]`.
+`data`: `[{"id", "slug", "first_ts", "last_ts", "span_s", "archetype", "mode", "purpose", "entrypoint", "billing_mode", "profile_id", "total_cost", "total_tokens", "source"}, ...]`.
+
+`source` says where the session ran: `"This computer"`, or
+`"WSL: <distro>"` for one read from a WSL distro's folder (see
+`extra_projects_roots` in [configuration](../README.md#using-claude-code-in-wsl-too)).
+It never carries the path itself.
 
 ### `GET /api/session/<id>`
 

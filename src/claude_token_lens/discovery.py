@@ -26,6 +26,9 @@ import hashlib
 import json
 import os
 import re
+import subprocess
+import sys
+from collections.abc import Iterable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -90,6 +93,80 @@ def projects_root() -> Path:
     return claude_root() / "projects"
 
 
+#: ``\\wsl.localhost\<distro>\...`` or ``\\wsl$\<distro>\...`` (either
+#: slash direction): the Windows path to a folder inside a WSL distro.
+_WSL_PATH_RE = re.compile(r"^[\\/]{2}(?:wsl\.localhost|wsl\$)[\\/]([^\\/]+)", re.IGNORECASE)
+
+#: WSL distros that belong to Docker Desktop, never a place people run
+#: Claude Code.
+_WSL_SKIP_DISTROS = ("docker-desktop", "docker-desktop-data")
+
+
+def projects_roots(explicit: Iterable[str | Path] | None = None, extra: Iterable[str | Path] = ()) -> list[Path]:
+    """Every folder of project folders to read: ``explicit`` (the
+    ``--projects-root`` flags) or else :func:`projects_root`, then
+    ``extra`` (``config.toml``'s ``extra_projects_roots``, such as a WSL
+    distro's ``~/.claude/projects``). A folder named twice is kept once.
+    """
+    roots = [Path(p) for p in explicit or ()] or [projects_root()]
+    roots.extend(Path(p) for p in extra)
+    seen: set[str] = set()
+    result: list[Path] = []
+    for root in roots:
+        key = os.path.normcase(str(root)).rstrip("\\/")
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(root)
+    return result
+
+
+def source_label(path: str | Path | None) -> str:
+    r"""Where a transcript came from, for display: ``"WSL: <distro>"``
+    for a path inside a WSL distro (``\\wsl.localhost\Ubuntu\...``),
+    otherwise ``"This computer"``. Never includes the rest of the path.
+    """
+    match = _WSL_PATH_RE.match(str(path or ""))
+    return f"WSL: {match.group(1)}" if match else "This computer"
+
+
+def find_wsl_projects_roots(run=subprocess.run) -> list[Path]:
+    r"""Claude Code project folders inside this Windows computer's WSL
+    distros: ``\\wsl.localhost\<distro>\home\<user>\.claude\projects``
+    (and ``root``'s own). Distro names come from ``wsl.exe -l -q``.
+    Returns ``[]`` off Windows, without WSL, or on any error. Looking
+    starts a stopped distro, so only ``init`` calls this, never the
+    dashboard's polling.
+    """
+    if sys.platform != "win32":
+        return []
+    try:
+        completed = run(["wsl.exe", "-l", "-q"], capture_output=True, timeout=15, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if completed.returncode != 0:
+        return []
+    raw = completed.stdout or b""
+    # wsl.exe writes UTF-16 unless WSL_UTF8=1 is set.
+    text = raw.decode("utf-16-le", errors="ignore") if b"\x00" in raw else raw.decode("utf-8", errors="ignore")
+    found: list[Path] = []
+    for line in text.splitlines():
+        distro = line.strip().lstrip("\ufeff").strip()
+        if not distro or distro.lower() in _WSL_SKIP_DISTROS:
+            continue
+        base = Path(rf"\\wsl.localhost\{distro}")
+        candidates: list[Path] = []
+        try:
+            home = base / "home"
+            if home.is_dir():
+                candidates.extend(sorted(p / ".claude" / "projects" for p in home.iterdir() if p.is_dir()))
+            candidates.append(base / "root" / ".claude" / "projects")
+            found.extend(c for c in candidates if c.is_dir())
+        except OSError:
+            continue
+    return found
+
+
 def slug_for(cwd: str | Path) -> str:
     """The project slug for a working directory: non-alphanumeric
     characters become ``-``, truncated to 200 characters plus an 8-hex
@@ -112,7 +189,7 @@ def slug_for(cwd: str | Path) -> str:
 
 
 def resolve_project_dirs(
-    root: str | Path,
+    root: str | Path | Iterable[str | Path],
     slugs: list[str] | None = None,
     all_projects: bool = False,
     family_regex: str | None = None,
@@ -125,6 +202,9 @@ def resolve_project_dirs(
     de-duplicated by ``os.path.normcase(os.path.realpath(...))`` so
     Windows slug case variants of the same real directory, or a worktree
     symlinked back to its parent, only appear once.
+
+    ``root`` may be one folder or several (see :func:`projects_roots`);
+    a folder that is missing or can't be read is skipped.
 
     Precedence when more than one selector is given: ``all_projects``,
     then ``family_regex``, then ``slugs``. Returns ``[]`` if none of the
@@ -141,10 +221,16 @@ def resolve_project_dirs(
     its own optional structure), since one bad entry in a user's
     exclude list shouldn't take discovery down entirely.
     """
-    root = Path(root)
-    if not root.exists():
-        return []
-    candidates = sorted(p for p in root.iterdir() if p.is_dir())
+    roots = [Path(root)] if isinstance(root, (str, Path)) else [Path(r) for r in root]
+    candidates: list[Path] = []
+    for one_root in roots:
+        # A WSL distro's folder can vanish (WSL shut down, distro
+        # removed): skip that folder rather than fail the whole scan.
+        try:
+            if one_root.is_dir():
+                candidates.extend(sorted(p for p in one_root.iterdir() if p.is_dir()))
+        except OSError:
+            continue
 
     if all_projects:
         selected = candidates

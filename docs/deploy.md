@@ -65,7 +65,9 @@ run *before* doing either.
   first stops a copy the task already started and ends with
   `Start-ScheduledTask`, so the dashboard starts straight away, and
   re-running `install-service` after an update switches it to the new
-  code. This is the same task
+  code (`update` does both steps). Folders in `config.toml`'s
+  `extra_projects_roots`, such as a WSL distro's, are not written into
+  the task: `serve` reads them each time it starts. This is the same task
   Path 1 below registers by hand, with one difference: there is no
   `schtasks /create` fallback. `uninstall-service` first runs
   `Stop-ScheduledTask -TaskName ClaudeTokenLens`, which shuts down a

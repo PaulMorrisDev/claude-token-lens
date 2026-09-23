@@ -52,6 +52,10 @@ class ServeOptions:
 
     projects_root: Path
     config_dir: Path
+    #: More folders of project folders read alongside ``projects_root``
+    #: (more ``--projects-root`` flags, then ``config.toml``'s
+    #: ``extra_projects_roots``, such as a WSL distro's).
+    extra_projects_roots: tuple[Path, ...] = ()
     port: int = 8765
     #: Localhost by default (plan: "port bound to localhost only").
     #: ``serve`` may accept a different bind for an explicit opt-in
@@ -184,7 +188,8 @@ class Watcher(Protocol):
     last_stats: "WatcherStats | None"
 
     def run_once(self) -> "WatcherStats":
-        """Scan ``ServeOptions.projects_root`` once: find new/changed
+        """Scan ``ServeOptions.projects_root`` (and ``extra_projects_roots``)
+        once: find new/changed
         transcript files since the last tick (via ``Store.known_files``),
         plus any unchanged file whose stored digest predates the running
         ``PARSER_VERSION``, re-parse each in full with ``parse_transcript``

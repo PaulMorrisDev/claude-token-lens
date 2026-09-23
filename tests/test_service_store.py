@@ -1037,3 +1037,27 @@ def test_no_local_path_leaks_from_any_read_query(store: Store) -> None:
 
 
 __all__: list[str] = []
+
+
+def test_sessions_say_where_they_ran_without_the_path():
+    store = Store(":memory:")
+    store.open()
+    for session_id, path in (
+        ("s-local", r"C:\Users\alice\.claude\projects\proj\s-local.jsonl"),
+        ("s-wsl", r"\\wsl.localhost\Ubuntu\home\alice\.claude\projects\-home-alice-repo\s-wsl.jsonl"),
+    ):
+        store.ensure_session(session_id=session_id, project_slug="proj")
+        store.upsert_transcript(
+            session_id=session_id,
+            path=path,
+            kind="top-level",
+            mtime_ns=1,
+            size_bytes=1,
+            parser_version=1,
+            digest_json="{}",
+        )
+    sources = {row["id"]: row["source"] for row in store.sessions()}
+    assert sources == {"s-local": "This computer", "s-wsl": "WSL: Ubuntu"}
+    detail = store.session("s-wsl")
+    assert detail["source"] == "WSL: Ubuntu"
+    assert "wsl.localhost" not in json.dumps(detail)

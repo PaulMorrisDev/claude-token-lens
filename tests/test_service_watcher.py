@@ -928,3 +928,36 @@ def test_sessions_carry_the_profile_active_at_their_start(tmp_path: Path, store:
 
     assert store.session("sess-a1")["profile_id"] == "lean"
     assert [s["profile_id"] for s in store.sessions()] == ["lean"]
+
+
+# -- several folders of projects (WSL) --------------------------------------
+
+
+def test_extra_projects_roots_are_scanned_too(tmp_path: Path, store: Store):
+    _write_session(tmp_path / "projects", "proj-a", "sess-a1", _two_turns())
+    _write_session(tmp_path / "wsl-projects", "-home-alice-repo", "sess-w1", _two_turns())
+
+    watcher = FileWatcher(store, _options(tmp_path, extra_projects_roots=(tmp_path / "wsl-projects",)))
+    stats = watcher.run_once()
+
+    assert stats.sessions_upserted == 2
+    assert {row["id"] for row in store.sessions()} == {"sess-a1", "sess-w1"}
+    assert all(row["source"] == "This computer" for row in store.sessions())
+
+
+def test_an_unreachable_extra_root_does_not_mark_its_sessions_missing(tmp_path: Path, store: Store):
+    """A WSL distro that shuts down takes its folder away for a while;
+    its sessions must not be marked missing on the strength of that."""
+    _write_session(tmp_path / "projects", "proj-a", "sess-a1", _two_turns())
+    wsl_root = tmp_path / "wsl-projects"
+    _write_session(wsl_root, "-home-alice-repo", "sess-w1", _two_turns())
+    watcher = FileWatcher(store, _options(tmp_path, extra_projects_roots=(wsl_root,)))
+    watcher.run_once()
+
+    wsl_root.rename(tmp_path / "wsl-away")
+    stats = watcher.run_once()
+
+    assert_privacy(stats)
+    assert stats.files_removed == 0
+    assert store.count_missing_transcripts() == 0
+    assert any("not reachable" in message for message in stats.error_messages)

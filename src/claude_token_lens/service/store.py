@@ -85,7 +85,7 @@ from pathlib import Path
 
 from . import schema
 from ..cache import result_from_jsonable
-from ..discovery import redact_slug
+from ..discovery import redact_slug, source_label
 from ..limits import limit_markers as _limit_markers
 from ..model import EventKind
 
@@ -1212,12 +1212,15 @@ class Store:
 
     def sessions(self, *, limit: int = 50, offset: int = 0) -> list[dict]:
         """The most recent ``limit`` sessions (by ``first_ts`` descending),
-        one summary dict each — no transcript paths."""
+        one summary dict each — no transcript paths. ``source`` says
+        where it ran ("This computer" or "WSL: <distro>", see
+        ``discovery.source_label``)."""
         rows = self._connection().execute(
             """
             SELECT s.id, s.slug, s.first_ts, s.last_ts, s.span_s, s.archetype,
                    s.mode, s.purpose, s.entrypoint, s.billing_mode, s.profile_id,
-                   s.total_cost, s.total_tokens
+                   s.total_cost, s.total_tokens,
+                   (SELECT t.path FROM transcripts t WHERE t.session_id = s.id LIMIT 1) AS source_path
             FROM sessions s
             ORDER BY s.first_ts DESC
             LIMIT ? OFFSET ?
@@ -1227,6 +1230,7 @@ class Store:
         result = [dict(row) for row in rows]
         for item in result:
             item["slug"] = redact_slug(item["slug"])
+            item["source"] = source_label(item.pop("source_path"))
         return result
 
     def session(self, session_id: str) -> dict | None:
@@ -1247,6 +1251,10 @@ class Store:
             return None
         result = dict(row)
         result["slug"] = redact_slug(result["slug"])
+        source_row = conn.execute(
+            "SELECT path FROM transcripts WHERE session_id = ? LIMIT 1", (session_id,)
+        ).fetchone()
+        result["source"] = source_label(source_row["path"] if source_row else None)
         transcript_rows = conn.execute(
             "SELECT id, kind, agent_id, agent_type, spawn_depth, parent_agent_id "
             "FROM transcripts WHERE session_id = ?",

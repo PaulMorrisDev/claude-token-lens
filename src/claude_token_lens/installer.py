@@ -394,7 +394,7 @@ def _plan_macos(python_exe: str, serve_args: list[str], pyz_path: Path | None) -
 
 def plan_service_install(
     python_exe: str,
-    projects_root: Path | str,
+    projects_root: Path | str | list[Path | str],
     config_dir: Path | str,
     *,
     port: int = 8765,
@@ -405,6 +405,9 @@ def plan_service_install(
     """Build (never run) the plan to register ``claude-token-lens
     serve --projects-root <projects_root> --config-dir <config_dir>
     --port <port> --bind <bind>`` to start at logon/boot.
+    ``projects_root`` may be a list: each folder gets its own
+    ``--projects-root``. ``config.toml``'s ``extra_projects_roots`` are
+    not passed here; ``serve`` reads them each time it starts.
 
     ``platform`` defaults to :func:`detect_platform` -- passed
     explicitly by tests that monkeypatch ``sys.platform`` and want a
@@ -424,12 +427,11 @@ def plan_service_install(
     if pyz_path is None:
         pyz_path = detect_pyz_path()
 
-    projects_root = Path(projects_root)
+    roots = [projects_root] if isinstance(projects_root, (str, Path)) else list(projects_root)
     config_dir = Path(config_dir)
     serve_args = [
         "serve",
-        "--projects-root",
-        str(projects_root),
+        *(arg for root in roots for arg in ("--projects-root", str(Path(root)))),
         "--config-dir",
         str(config_dir),
         "--port",

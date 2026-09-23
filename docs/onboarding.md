@@ -131,6 +131,7 @@ claude-token-lens init [--answers FILE] [--non-interactive] [--no-install]
 | `tz` | Time zone, such as Europe/London (blank for this computer's) | `config.tz` |
 | `apply_scope` | Where should changes you apply go by default (`user`/`project-local`/`repo`) | `config.apply_scope` and this project's `projects/<slug>.toml` |
 | `capture_window` | How many days to collect data before the first baseline | `config.capture_window` (default 7) |
+| `extra_projects_roots` | Asked once per WSL folder `init` finds that `config.toml` doesn't list yet: Claude Code also runs in WSL: <distro>; include those sessions? (default yes; `--non-interactive` adds them with a note). An answers-file list replaces the whole setting | `config.extra_projects_roots` |
 
 `config.capture_started` is set to the current UTC timestamp by the
 first `init` — it isn't a question. Running `init` again (for example

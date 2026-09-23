@@ -118,6 +118,12 @@ class Config:
     #: list (e.g. a work project on a personal machine), not a narrower
     #: selector. Fix 6 addition.
     exclude_projects: list[str] = field(default_factory=list)
+    #: More folders of project folders to read besides this computer's
+    #: own ``~/.claude/projects``, such as the one inside a WSL distro
+    #: (reached from Windows through ``wsl.localhost``). ``init`` offers
+    #: the ones it finds; every command and the dashboard read them
+    #: (see ``discovery.projects_roots``).
+    extra_projects_roots: list[str] = field(default_factory=list)
     #: Sessions older than this many days (by the same ``mtime``/
     #: ``timestamp`` window key ``discovery.find_sessions`` already
     #: understands) are outside the tool's normal window — not enforced
@@ -192,6 +198,8 @@ class Config:
             lines.append(f"recache: {self.recache}")
         if self.exclude_projects:
             lines.append(f"exclude_projects: {self.exclude_projects}")
+        if self.extra_projects_roots:
+            lines.append(f"extra_projects_roots: {len(self.extra_projects_roots)} folder(s)")
         if self.retention_days is not None:
             lines.append(f"retention_days: {self.retention_days}")
         if self.provider is not None:
@@ -299,6 +307,13 @@ def _build_config(data: dict, path: Path) -> Config:
     ):
         raise ConfigError(f"config file {path}: 'exclude_projects' must be a list of strings")
     config.exclude_projects = list(exclude_projects)
+
+    extra_projects_roots = data.get("extra_projects_roots", [])
+    if not isinstance(extra_projects_roots, list) or not all(
+        isinstance(item, str) for item in extra_projects_roots
+    ):
+        raise ConfigError(f"config file {path}: 'extra_projects_roots' must be a list of strings")
+    config.extra_projects_roots = list(extra_projects_roots)
 
     retention_days = data.get("retention_days")
     if retention_days is not None and (

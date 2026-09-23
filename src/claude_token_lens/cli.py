@@ -83,6 +83,7 @@ SUBCOMMANDS: tuple[str, ...] = (
     "serve",
     "install-service",
     "uninstall-service",
+    "update",
     "changes",
     "review",
     "check",
@@ -124,7 +125,13 @@ def _build_common_parser() -> argparse.ArgumentParser:
     surface. Returned as a parent parser so each subcommand inherits them.
     """
     common = argparse.ArgumentParser(add_help=False)
-    common.add_argument("--projects-root")
+    common.add_argument(
+        "--projects-root",
+        action="append",
+        default=None,
+        help="folder of Claude Code project folders; repeatable. Default ~/.claude/projects, "
+        "plus any extra_projects_roots in config.toml (such as a WSL distro's)",
+    )
     common.add_argument(
         "--project",
         action="append",
@@ -540,6 +547,26 @@ def _add_install_service_args(sub: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_update_args(sub: argparse.ArgumentParser) -> None:
+    """Extra flags for ``update``: where to install from, and the same
+    ``--port``/``--bind``/``--dry-run`` as ``install-service``, which it
+    runs last."""
+    _add_install_service_args(sub)
+    sub.add_argument(
+        "--from",
+        dest="source",
+        default=UPDATE_SOURCE,
+        metavar="SOURCE",
+        help="what pip installs from (default: the GitHub repository; a local folder also works)",
+    )
+    sub.add_argument(
+        "--no-service",
+        action="store_true",
+        dest="no_service",
+        help="install the new version but leave the running dashboard alone",
+    )
+
+
 def _add_uninstall_service_args(sub: argparse.ArgumentParser) -> None:
     """Extra flags for ``uninstall-service`` (v3): the inverse of
     ``install-service``. Takes no ``--port``/``--bind`` -- removing a
@@ -895,6 +922,7 @@ def _make_parser() -> argparse.ArgumentParser:
             "serve": "run the local JSON API + watcher service",
             "install-service": "register 'serve' to start at logon/boot (Scheduled Task / systemd user unit / LaunchAgent)",
             "uninstall-service": "remove a logon/boot registration made by install-service (or by init)",
+            "update": "install the newest version and restart the dashboard on it",
             "changes": "list what this tool has installed and changed, and the command that undoes each",
             "review": "review your CLAUDE.md files or skills: size, how often each is sent, cost, and fixes",
             "check": "quick actions: answer one token question (or all of them) with evidence and fixes",
@@ -954,6 +982,8 @@ def _make_parser() -> argparse.ArgumentParser:
             _add_install_service_args(sub)
         if name == "uninstall-service":
             _add_uninstall_service_args(sub)
+        if name == "update":
+            _add_update_args(sub)
         if name == "uninstall":
             _add_uninstall_args(sub)
         if name == "changes":
@@ -1038,13 +1068,22 @@ def _priced_turns(result: TranscriptResult):
     return [t for t in result.turns if t.turn_index > 0]
 
 
-def _resolve_project_dirs_for_args(args: argparse.Namespace, config: Config) -> tuple[Path, list[Path]]:
-    root = Path(args.projects_root) if args.projects_root else discovery.projects_root()
+def _service_projects_roots(args: argparse.Namespace) -> list[Path]:
+    """The ``--projects-root`` folders the logon service is registered
+    with: the ones given, or this computer's default. ``serve`` adds
+    ``config.toml``'s ``extra_projects_roots`` itself each time it
+    starts, so they are never baked into the registration."""
+    return [Path(p) for p in args.projects_root] if args.projects_root else [discovery.projects_root()]
+
+
+def _resolve_project_dirs_for_args(args: argparse.Namespace, config: Config) -> tuple[str, list[Path]]:
+    roots = discovery.projects_roots(args.projects_root, config.extra_projects_roots)
+    root = ", ".join(str(r) for r in roots)
     slugs = list(args.project) if args.project else None
     if not args.all_projects and not args.project_family and not slugs:
         slugs = [discovery.slug_for(os.getcwd())]
     project_dirs = discovery.resolve_project_dirs(
-        root,
+        roots,
         slugs=slugs,
         all_projects=args.all_projects,
         family_regex=args.project_family,
@@ -2192,7 +2231,8 @@ def _cmd_init(args: argparse.Namespace) -> int:
     docstring).
     """
     config_dir = _resolve_config_dir(args.config_dir)
-    projects_root_path = Path(args.projects_root) if args.projects_root else discovery.projects_root()
+    service_roots = _service_projects_roots(args)
+    projects_root_path = service_roots[0]
 
     claude_root = _resolve_claude_root(args.claude_root)
     extra_args = _config_dir_args(config_dir)
@@ -2207,6 +2247,8 @@ def _cmd_init(args: argparse.Namespace) -> int:
         rc = onboarding.run_init(
             config_dir=config_dir,
             projects_root_path=projects_root_path,
+            extra_projects_roots=service_roots[1:],
+            find_wsl_roots=discovery.find_wsl_projects_roots,
             answers_path=args.answers,
             non_interactive=args.non_interactive,
             no_install=args.no_install,
@@ -2251,7 +2293,7 @@ def _cmd_init(args: argparse.Namespace) -> int:
     # draws for the hook/statusLine fragments above.
     if not args.no_install and (args.connect or not args.non_interactive):
         _cmd_init_connect_step(args, config_dir=config_dir, hook=hook, claude_root=claude_root)
-    return _cmd_init_service_step(args, config_dir=config_dir, projects_root_path=projects_root_path)
+    return _cmd_init_service_step(args, config_dir=config_dir, projects_root_path=service_roots)
 
 
 def _cmd_init_connect_step(
@@ -2313,7 +2355,7 @@ def _cmd_init_service_step(
     args: argparse.Namespace,
     *,
     config_dir: Path,
-    projects_root_path: Path,
+    projects_root_path: list[Path],
     stdin=None,
     stdout=None,
 ) -> int:
@@ -2398,6 +2440,23 @@ def _http_health_ok(url: str) -> bool:
     return bool(body.get("ok"))
 
 
+def _http_health_version(url: str) -> str | None:
+    """The ``version`` the dashboard at ``url`` reports in
+    ``/api/health``, or ``None`` when it can't be read (an old copy from
+    before 0.4.1 reports none). Never raises."""
+    import urllib.error
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(f"{url}/api/health", timeout=2) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+    except (OSError, urllib.error.URLError, ValueError):
+        return None
+    data = body.get("data") if isinstance(body, dict) else None
+    version = data.get("version") if isinstance(data, dict) else None
+    return version if isinstance(version, str) else "older than 0.4.1"
+
+
 def _probe_service_after_install(
     platform: str,
     *,
@@ -2406,6 +2465,7 @@ def _probe_service_after_install(
     is_registered_fn=None,
     health_check=None,
     sleep_fn=None,
+    version_check=None,
 ) -> None:
     """Print a short "is it actually working" summary right after
     :func:`installer.install` returns: :func:`installer.is_registered`
@@ -2418,6 +2478,9 @@ def _probe_service_after_install(
     import time as time_mod
 
     is_registered_fn = is_registered_fn or (lambda: installer_mod.is_registered(platform))
+    if version_check is None:
+        # Only the real health check has a real dashboard to ask.
+        version_check = _http_health_version if health_check is None else (lambda url: None)
     health_check = health_check or _http_health_ok
     sleep_fn = sleep_fn or time_mod.sleep
 
@@ -2433,7 +2496,17 @@ def _probe_service_after_install(
 
     url = f"http://{bind}:{port}"
     if health_check(url):
-        print(f"claude-token-lens: the service is already responding at {url}")
+        from . import __version__
+
+        answering = version_check(url)
+        if answering is not None and answering != __version__:
+            print(
+                f"claude-token-lens: {url} is answering with version {answering}, not {__version__}: "
+                "an older copy still holds the port. See 'An old dashboard won't go away' in the README "
+                "to find and stop it."
+            )
+        else:
+            print(f"claude-token-lens: the service is already responding at {url}")
     else:
         print(
             f"claude-token-lens: not responding yet (the first start reads your whole history, "
@@ -2447,7 +2520,7 @@ def _cmd_install_service(args: argparse.Namespace) -> int:
     ``init`` before this milestone existed).
     """
     config_dir = _resolve_config_dir(args.config_dir)
-    projects_root_path = Path(args.projects_root) if args.projects_root else discovery.projects_root()
+    projects_root_path = _service_projects_roots(args)
 
     try:
         plan = installer_mod.plan_service_install(
@@ -2464,6 +2537,86 @@ def _cmd_install_service(args: argparse.Namespace) -> int:
     return 0
 
 
+#: What ``update`` installs from by default.
+UPDATE_SOURCE = "git+https://github.com/PaulMorrisDev/claude-token-lens"
+
+#: Where a ``.pyz`` user downloads the newest copy.
+_RELEASES_URL = "https://github.com/PaulMorrisDev/claude-token-lens/releases/latest"
+
+
+def _cmd_update(args: argparse.Namespace, *, runner=None, is_registered_fn=None) -> int:
+    """``update``: the README's two update steps as one command. Installs
+    the newest version with pip (``--force-reinstall``, because pip skips
+    a copy whose version number hasn't changed), then, when the dashboard
+    is registered to start at logon, runs the *new* copy's
+    ``install-service``, which stops the old dashboard, starts the new one
+    and checks the version that answers on the port."""
+    import subprocess
+
+    from . import __version__
+
+    runner = runner or subprocess.run
+    is_registered_fn = is_registered_fn or installer_mod.is_registered
+    if installer_mod.detect_pyz_path() is not None:
+        print(
+            "claude-token-lens update: this copy runs from a .pyz file, which pip can't update. "
+            f"Download the new claude-token-lens.pyz from {_RELEASES_URL}, put it in place of this one, "
+            "then run it with install-service.",
+            file=sys.stderr,
+        )
+        return 2
+
+    config_dir = _resolve_config_dir(args.config_dir)
+    install = [sys.executable, "-m", "pip", "install", "--upgrade", "--force-reinstall", "--no-deps", args.source]
+    restart = [
+        sys.executable,
+        "-m",
+        "claude_token_lens",
+        "install-service",
+        *(arg for root in _service_projects_roots(args) for arg in ("--projects-root", str(root))),
+        "--config-dir",
+        str(config_dir),
+        "--port",
+        str(args.port),
+        "--bind",
+        args.bind,
+    ]
+    print(f"claude-token-lens update: this is version {__version__}.")
+    print("1. Install the newest version:\n   " + " ".join(install))
+    if args.dry_run:
+        print("2. Restart the dashboard on it (only if it starts at logon):\n   " + " ".join(restart))
+        print("Dry run: nothing installed or restarted.")
+        return 0
+
+    if runner(install).returncode != 0:
+        print(
+            "claude-token-lens update: pip could not install the new version (its message is above). "
+            "Nothing else was changed.",
+            file=sys.stderr,
+        )
+        return 1
+    probe = runner(
+        [sys.executable, "-c", "import claude_token_lens; print(claude_token_lens.__version__)"],
+        capture_output=True,
+        text=True,
+    )
+    new_version = (probe.stdout or "").strip() or "unknown"
+    print(f"   Installed version {new_version}.")
+
+    if args.no_service:
+        print("Left the dashboard alone (--no-service). Restart it with: python -m claude_token_lens install-service")
+        return 0
+    if is_registered_fn() is False:
+        print(
+            "The dashboard isn't set to start at logon, so there is nothing to restart. "
+            "Start it with 'python -m claude_token_lens serve', or have it start at logon with "
+            "'python -m claude_token_lens install-service'."
+        )
+        return 0
+    print("2. Restart the dashboard on the new version:\n   " + " ".join(restart))
+    return runner(restart).returncode
+
+
 def _cmd_uninstall_service(args: argparse.Namespace) -> int:
     """``uninstall-service`` (v3): remove a registration made by
     ``install-service`` or by ``init``'s own logon-service step.
@@ -2472,7 +2625,7 @@ def _cmd_uninstall_service(args: argparse.Namespace) -> int:
     ``installer.InstallPlan.uninstall_commands``/``uninstall_files``).
     """
     config_dir = _resolve_config_dir(args.config_dir)
-    projects_root_path = Path(args.projects_root) if args.projects_root else discovery.projects_root()
+    projects_root_path = _service_projects_roots(args)
 
     plan = installer_mod.plan_service_install(sys.executable, projects_root_path, config_dir)
     return installer_mod.uninstall(plan, dry_run=args.dry_run)
@@ -2531,7 +2684,7 @@ def _cmd_uninstall(args: argparse.Namespace) -> int:
     from . import footprint
 
     config_dir = _resolve_config_dir(args.config_dir)
-    projects_root_path = Path(args.projects_root) if args.projects_root else discovery.projects_root()
+    projects_root_path = _service_projects_roots(args)
     claude_root = _resolve_claude_root(args.claude_root)
     plan = footprint.plan_uninstall(config_dir, claude_root=claude_root)
     dry = args.dry_run
@@ -3073,17 +3226,18 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     from .service.contracts import ServeOptions
     from .service.serve import run as run_serve
 
-    projects_root = Path(args.projects_root) if args.projects_root else discovery.projects_root()
     try:
         config = load_config(config_dir)
     except ConfigError as exc:
         print(f"claude-token-lens serve: {exc}", file=sys.stderr)
         return 2
+    projects_root, *extra_projects_roots = discovery.projects_roots(args.projects_root, config.extra_projects_roots)
     billing_mode = args.billing_mode if args.billing_mode is not None else config.billing
     retention_days = args.retention_days if args.retention_days is not None else config.retention_days
     monthly_report_dir = Path(args.monthly_report_dir) if args.monthly_report_dir else None
     options = ServeOptions(
         projects_root=projects_root,
+        extra_projects_roots=tuple(extra_projects_roots),
         config_dir=config_dir,
         port=args.port,
         bind=args.bind,
@@ -3165,6 +3319,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_install_service(args)
     if command == "uninstall-service":
         return _cmd_uninstall_service(args)
+    if command == "update":
+        return _cmd_update(args)
     if command == "import":
         return _cmd_import(args)
     if command == "team-report":

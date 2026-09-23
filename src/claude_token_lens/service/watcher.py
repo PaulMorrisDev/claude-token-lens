@@ -1,11 +1,13 @@
 """``FileWatcher``: the polling loop that keeps the v0.2 service's
 :class:`~claude_token_lens.service.store.Store` up to date with whatever
-is currently under ``ServeOptions.projects_root``, implementing
+is currently under ``ServeOptions.projects_root`` (and its
+``extra_projects_roots``), implementing
 ``service.contracts.Watcher``.
 
 Each :meth:`FileWatcher.run_once` tick:
 
 1. Discovers every project directory under ``options.projects_root``
+   and each of ``options.extra_projects_roots``
    (``discovery.resolve_project_dirs(..., all_projects=True,
    exclude_projects=options.exclude_projects)``), then every top-level
    session file, subagent transcript (ordinary and workflow-nested — see
@@ -96,6 +98,15 @@ _PARALLEL_PARSE_THRESHOLD = 50
 #: parsing, and a huge machine gains nothing past 4 for a tick-sized
 #: (not whole-corpus) batch.
 _MAX_PARSE_WORKERS = 4
+
+
+def _is_dir(path: Path) -> bool:
+    """``Path.is_dir`` that treats an unreadable network path (a WSL
+    distro that is shutting down) as missing instead of raising."""
+    try:
+        return Path(path).is_dir()
+    except OSError:
+        return False
 
 
 def _now_iso() -> str:
@@ -410,7 +421,7 @@ class FileWatcher:
         project_dirs = self._time_discovery(
             stats,
             discovery.resolve_project_dirs,
-            self.options.projects_root,
+            [self.options.projects_root, *self.options.extra_projects_roots],
             all_projects=True,
             exclude_projects=list(self.options.exclude_projects),
         )
@@ -451,6 +462,15 @@ class FileWatcher:
             # visible as an explicit, non-error note rather than silence.
             stats.error_messages = stats.error_messages + (
                 "projects root returned no projects; skipped missing check",
+            )
+        elif unreachable := [
+            root for root in (self.options.projects_root, *self.options.extra_projects_roots) if not _is_dir(root)
+        ]:
+            # One folder of several is out of reach (a WSL distro that
+            # was shut down): its sessions were not seen this tick, but
+            # are not gone. Same reasoning as the empty case above.
+            stats.error_messages = stats.error_messages + (
+                f"{len(unreachable)} projects folder(s) not reachable; skipped missing check",
             )
         else:
             stats.files_removed = self._time_store(stats, self.store.remove_missing, seen_paths)

@@ -125,6 +125,7 @@ pressing Enter through all of them is a reasonable first pass:
 | Time zone | Used to group reports by day; blank uses this computer's |
 | Where should changes you apply go by default | `user` (all your projects), `project-local` (this project, just you) or `repo` (this project, everyone) |
 | How many days to collect data before the first baseline | How long `baseline` waits before it has enough data for a confident first read (default 7) |
+| Claude Code also runs in WSL: Ubuntu on this computer. Include those sessions? | Asked only when `init` finds Claude Code sessions inside a WSL distro (it runs `wsl -l -q` and looks in each distro's `/home/*/.claude/projects`). Yes adds the folder to `config.toml`'s `extra_projects_roots`, and the dashboard and every command read it alongside your Windows folder. Default yes; `--non-interactive` adds it and says so |
 
 Running it unattended (a script, or just to skip the prompts) derives
 every answer instead of asking, and prints exactly what it derived and
@@ -348,7 +349,21 @@ Finally, if installed via `pip`: `pip uninstall claude-token-lens`. Via
 
 ## 8. Update to a newer version
 
-Install the new version the same way you installed the first one:
+From version 0.5 on, one command does it all for routes B and C:
+
+```powershell
+py -3 -m claude_token_lens update
+```
+
+It installs the newest version from GitHub (`--from <path-to-the-cloned-repo>`
+for Route B, after a `git pull`), then runs the new copy's
+`install-service`, which restarts the dashboard on it and checks the
+version that answers on port 8765. `--dry-run` prints both commands
+without running them. A `.pyz` can't update itself: `update` says so and
+links the download.
+
+On 0.4 or older, or to do it by hand, install the new version the same
+way you installed the first one:
 
 | Route | Update |
 |---|---|
@@ -377,6 +392,7 @@ after the restart, so the first page load can be slow.
 
 | Symptom | Fix |
 |---|---|
+| WSL sessions missing from the dashboard | Run `init` again and say yes to the WSL folder, or add it to `extra_projects_roots` in `config.toml` and run `install-service` to restart the dashboard. See the README's [Using Claude Code in WSL too](../README.md#using-claude-code-in-wsl-too) |
 | Dashboard still shows the old version after an update (see its footer) | Something else still holds port 8765: an older copy started by hand, from another Python install, or from Docker. The README's [An old dashboard won't go away](../README.md#an-old-dashboard-wont-go-away) shows how to find and stop it; then run `install-service` with the Python you updated (section 8) |
 | `claude-token-lens` not found | Use the full path to the venv's `Scripts\claude-token-lens.exe`, or `python -m claude_token_lens` (works regardless of `PATH`) |
 | The Data quality tab says the SessionStart hook isn't running | The hook command names a Python that isn't installed (`py` with no launcher), uses `%USERPROFILE%` (Claude Code runs hooks through Git Bash, which doesn't expand it), or has a path broken by single backslashes in JSON. Run `claude-token-lens init --repair-hook`: it shows the fixed command and changes it without asking, after copying `settings.json` to `settings.json.bak-<UTC time>`. It keeps your own Python when it's found and writes any `%VARIABLE%` out in full; otherwise it names your main Python install by full path. It can only fix a command whose script exists: if the script is missing, run `claude-token-lens init --connect` first, which copies it back into `<config-dir>\hooks\` |

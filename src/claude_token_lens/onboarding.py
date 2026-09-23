@@ -103,12 +103,28 @@ class Detection:
     #: How many project directories are discoverable under
     #: ``projects_root`` at all (not filtered to the current one).
     project_count: int
+    #: Claude Code project folders found inside WSL distros that
+    #: ``config.toml`` doesn't list yet (``init`` offers to add them).
+    wsl_roots: list[Path] = field(default_factory=list)
 
 
-def detect(config_dir: str | Path, projects_root_path: str | Path) -> Detection:
+def _root_key(path: str | Path) -> str:
+    return os.path.normcase(str(path)).rstrip("\\/")
+
+
+def detect(
+    config_dir: str | Path,
+    projects_root_path: str | Path,
+    *,
+    extra_projects_roots: list[Path] | None = None,
+    find_wsl_roots=None,
+) -> Detection:
     """Gather :class:`Detection` for ``config_dir``/``projects_root_path``.
     Tolerant throughout: a missing config dir, no snapshots, and no
     discoverable projects are all just facts to report, not errors.
+
+    ``find_wsl_roots`` (``discovery.find_wsl_projects_roots`` from the
+    CLI; ``None`` skips the search) lists WSL project folders to offer.
     """
     config_dir = Path(config_dir)
     projects_root_path = Path(projects_root_path)
@@ -129,13 +145,15 @@ def detect(config_dir: str | Path, projects_root_path: str | Path) -> Detection:
     usage_log_present = (config_dir / "usage-log.csv").exists()
     project_slug = discovery.redact_slug(discovery.slug_for(os.getcwd()))
 
-    project_count = 0
-    if projects_root_path.is_dir():
-        project_count = len(
-            discovery.resolve_project_dirs(
-                projects_root_path, all_projects=True, exclude_projects=existing_config.exclude_projects
-            )
-        )
+    roots = discovery.projects_roots(
+        [projects_root_path, *(extra_projects_roots or ())], existing_config.extra_projects_roots
+    )
+    project_count = len(
+        discovery.resolve_project_dirs(roots, all_projects=True, exclude_projects=existing_config.exclude_projects)
+    )
+
+    known = {_root_key(r) for r in roots}
+    wsl_roots = [r for r in (find_wsl_roots() if find_wsl_roots else []) if _root_key(r) not in known]
 
     return Detection(
         config_dir=config_dir,
@@ -145,6 +163,7 @@ def detect(config_dir: str | Path, projects_root_path: str | Path) -> Detection:
         usage_log_present=usage_log_present,
         project_slug=project_slug,
         project_count=project_count,
+        wsl_roots=wsl_roots,
     )
 
 
@@ -164,6 +183,9 @@ class Answers:
     tz: str | None = None
     apply_scope: str = "user"
     capture_window: int = DEFAULT_CAPTURE_WINDOW_DAYS
+    #: ``config.toml``'s ``extra_projects_roots``: the ones already
+    #: there plus each WSL folder the user said yes to.
+    extra_projects_roots: list[str] = field(default_factory=list)
     #: One line per question answered by derivation rather than by the
     #: user -- printed so a ``--non-interactive`` run never silently
     #: guesses without saying so (this task's own "derive instead of
@@ -372,6 +394,15 @@ def gather_answers(
             f"{capture_window!r}"
         )
 
+    extra_projects_roots = _gather_extra_roots(
+        detection,
+        answers_data=answers_data,
+        non_interactive=non_interactive,
+        stdin=stdin,
+        stdout=stdout,
+        notes=notes,
+    )
+
     return Answers(
         billing=billing,
         exclude_projects=exclude_projects,
@@ -380,8 +411,47 @@ def gather_answers(
         tz=tz,
         apply_scope=apply_scope,
         capture_window=capture_window,
+        extra_projects_roots=extra_projects_roots,
         notes=notes,
     )
+
+
+def _gather_extra_roots(
+    detection: Detection,
+    *,
+    answers_data: dict | None,
+    non_interactive: bool,
+    stdin: IO[str],
+    stdout: IO[str],
+    notes: list[str],
+) -> list[str]:
+    """The folders for ``extra_projects_roots``. An ``--answers`` list
+    replaces them outright. Otherwise the existing ones are kept and each
+    newly found WSL folder is offered (yes by default: it holds the same
+    person's own sessions); ``--non-interactive`` adds them and says so."""
+    raw = answers_data.get("extra_projects_roots") if answers_data is not None else None
+    if raw is not None:
+        items = raw if isinstance(raw, list) else str(raw).split(",")
+        return [str(item).strip() for item in items if str(item).strip()]
+    roots = list(detection.existing_config.extra_projects_roots)
+    for found in detection.wsl_roots:
+        label = discovery.source_label(found)
+        if non_interactive:
+            notes.append(f"extra_projects_roots: found Claude Code sessions in {label}; added {found}")
+            roots.append(str(found))
+            continue
+        if _ask_bool(
+            "extra_projects_roots",
+            f"Claude Code also runs in {label} on this computer ({found}). Include those sessions",
+            True,
+            answers_data=None,
+            non_interactive=False,
+            stdin=stdin,
+            stdout=stdout,
+            notes=notes,
+        ):
+            roots.append(str(found))
+    return roots
 
 
 def _offer_hook_repair(health, *, repair_hook: bool, non_interactive: bool, stdin, stdout, now) -> None:
@@ -414,6 +484,8 @@ def run_init(
     *,
     config_dir: str | Path,
     projects_root_path: str | Path,
+    extra_projects_roots: list[Path] | None = None,
+    find_wsl_roots=None,
     answers_path: str | Path | None = None,
     non_interactive: bool = False,
     no_install: bool = False,
@@ -452,12 +524,16 @@ def run_init(
     config_dir = Path(config_dir)
     projects_root_path = Path(projects_root_path)
 
-    detection = detect(config_dir, projects_root_path)
+    detection = detect(
+        config_dir, projects_root_path, extra_projects_roots=extra_projects_roots, find_wsl_roots=find_wsl_roots
+    )
 
     stdout.write("claude-token-lens init\n")
     stdout.write(f"- config directory: {'exists' if detection.config_dir_exists else 'will be created'}\n")
     stdout.write(f"- current project: {detection.project_slug}\n")
     stdout.write(f"- projects discovered under projects root: {detection.project_count}\n")
+    for found in detection.wsl_roots:
+        stdout.write(f"- Claude Code sessions found in {discovery.source_label(found)}: {found}\n")
     stdout.write(f"- config snapshots on file: {detection.snapshot_count}\n")
     stdout.write(f"- usage log present: {'yes' if detection.usage_log_present else 'no'}\n")
     # claude_root: Claude Code's own folder (``--claude-root``, else
@@ -491,6 +567,7 @@ def run_init(
         "shared_project_config": answers.shared_project_config,
         "apply_scope": answers.apply_scope,
         "capture_window": answers.capture_window,
+        "extra_projects_roots": answers.extra_projects_roots,
         # Set once, on the first init: re-running init (to change an
         # answer, or with --repair-hook) must not restart the capture
         # window the user is already part-way through.
@@ -542,7 +619,7 @@ def run_init(
     if not all_projects and not project_family and not baseline_slugs:
         baseline_slugs = [project_slug]
     project_dirs = discovery.resolve_project_dirs(
-        projects_root_path,
+        discovery.projects_roots([projects_root_path, *(extra_projects_roots or ())], config.extra_projects_roots),
         slugs=baseline_slugs,
         all_projects=all_projects,
         family_regex=project_family,
