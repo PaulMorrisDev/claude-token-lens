@@ -10,36 +10,127 @@ change is a prompt you give Claude or a command you run.
 
 ## Quick start
 
-1. **Install** (Python 3.11 or later, and git for this command):
+About five minutes. You need Claude Code, already used for a while so
+there are sessions to look at, and Python 3.11 or newer.
 
-   ```bash
-   pip install git+https://github.com/PaulMorrisDev/claude-token-lens
-   ```
+### 1. Check Python
 
-   No pip or network on this machine? Download `claude-token-lens.pyz`
-   from the Releases page instead; [`docs/first-run.md`](docs/first-run.md)
-   walks through every route.
+Open a terminal (PowerShell on Windows) and run:
 
-2. **Set up**, from any project folder:
+```bash
+python --version
+```
 
-   ```bash
-   claude-token-lens init
-   ```
+It should print `Python 3.11` or higher. If it says the command isn't
+found, or shows an older version, install Python from
+[python.org](https://www.python.org/downloads/). On Windows, tick **Add
+python.exe to PATH** in the installer, then open a new terminal. On
+macOS and Linux the command may be `python3`; use `python3` wherever this
+guide says `python`.
 
-   It asks a few questions (for example, whether you use a Pro or Max
-   plan) and offers to start the dashboard every time you log on.
+### 2. Install
 
-   Before it writes anything to your Claude Code settings (a small
-   hook that records your settings when a session starts), it shows you
-   the exact change and asks.
+```bash
+python -m pip install git+https://github.com/PaulMorrisDev/claude-token-lens
+```
 
-3. **Open the dashboard** at http://127.0.0.1:8765. Read **Start
-   here** on the Overview tab, then **Quick actions** for one answer per
-   way of saving.
+Check it worked:
 
-Prefer the terminal? `claude-token-lens report` prints the same analysis
-as Markdown, and `claude-token-lens check` runs the quick actions, with
-no setup at all.
+```bash
+claude-token-lens --version
+```
+
+- **"claude-token-lens is not recognized" or "command not found"?**
+  Python installed it into a folder that isn't on your `PATH`. Put
+  `python -m claude_token_lens` in front of the command instead, for
+  example `python -m claude_token_lens --version`. This works
+  everywhere in this guide.
+- **No git on this machine?** Use the zip instead:
+  `python -m pip install https://github.com/PaulMorrisDev/claude-token-lens/archive/refs/heads/main.zip`
+- **Can't use pip at all** (a locked-down work machine)? Download
+  `claude-token-lens.pyz` from the
+  [latest release](https://github.com/PaulMorrisDev/claude-token-lens/releases/latest)
+  and run `python claude-token-lens.pyz` wherever this guide says
+  `claude-token-lens`. [`docs/first-run.md`](docs/first-run.md) covers
+  this route step by step.
+
+### 3. Set up
+
+```bash
+claude-token-lens init
+```
+
+It asks a few questions. Pressing Enter accepts the default, which is
+right for most people. It then offers two things, and asks before each:
+
+- **Connect to Claude Code.** It adds a small hook to your Claude Code
+  `settings.json` that records your settings when a session starts, so
+  the dashboard can show what changed and what that did. It shows you
+  the exact change first and backs the file up.
+- **Start the dashboard when you log on.** Say yes. Claude Code deletes
+  old transcripts after a while (30 days by default), and the dashboard
+  keeps their figures only if it is running.
+
+On Windows the dashboard first starts at your next logon. To start it
+now, run `Start-ScheduledTask -TaskName ClaudeTokenLens` in PowerShell.
+
+### 4. Open the dashboard
+
+Go to **http://127.0.0.1:8765** in your browser. The first visit can take
+a minute while it reads your history. Start with **Start here** on the
+Overview tab, then **Quick actions**, which answers one question per way
+of saving, such as "Is each agent on the cheapest model that does the
+job?".
+
+It only runs on your machine; nobody else can open it.
+
+### Just want a quick look?
+
+You can skip `init` and the dashboard. From any folder:
+
+```bash
+claude-token-lens check --all-projects
+claude-token-lens report --all-projects
+```
+
+`check` answers the quick-action questions, and `report` prints the full
+analysis. Both print Markdown to the terminal and change nothing.
+
+### Updating
+
+```bash
+python -m pip install --force-reinstall git+https://github.com/PaulMorrisDev/claude-token-lens
+```
+
+(`--force-reinstall` is needed because pip skips a copy it thinks is
+already up to date.) Then restart the dashboard so it runs the new
+version:
+
+| System | Command |
+|---|---|
+| Windows (PowerShell) | `Stop-ScheduledTask -TaskName ClaudeTokenLens; Start-ScheduledTask -TaskName ClaudeTokenLens` |
+| macOS | `launchctl kickstart -k gui/$(id -u)/com.claude-token-lens` |
+| Linux | `systemctl --user restart claude-token-lens` |
+
+After an update the dashboard may re-read your history once, so the
+first page load can be slow. [`CHANGELOG.md`](CHANGELOG.md) lists what
+changed.
+
+### Uninstalling
+
+Look at what would be removed first:
+
+```bash
+claude-token-lens uninstall --revert-changes --delete-data --dry-run
+```
+
+Then run the same command without `--dry-run`. It removes the hook and
+the logon service, undoes any setting changes you made through this
+tool, and deletes its data, asking before each step. Finally:
+
+```bash
+python -m pip uninstall claude-token-lens
+```
 
 ## What it does to Claude Code, and how to undo it
 
@@ -59,15 +150,9 @@ no setup at all.
   away. Try one change at a time and check **Profiles > Your changes and
   what they did** after a few sessions.
 
-To see everything it installed: `claude-token-lens changes`. To take it
-all back out, look first, then run the same command without `--dry-run`:
-
-```bash
-claude-token-lens uninstall --revert-changes --delete-data --dry-run
-```
-
-The Data quality tab lists the same things, with what each costs and how
-to undo it.
+To see everything it installed, run `claude-token-lens changes` or open
+the Data quality tab; both say how to undo each item. To remove it
+completely, see [Uninstalling](#uninstalling).
 
 ## What each tab answers
 
@@ -176,40 +261,12 @@ assumes) are in [`docs/concepts.md`](docs/concepts.md).
 
 ### Status
 
-**Status: pre-release, v0.3 shipped.** The parsing, pricing, RE-CACHE,
-TTL, classification, compaction, config-snapshot, topology, workstyle,
-workflow, phase-split, usage, report-assembly, recommendation, scorecard,
-onboarding and baseline-capture engines are all implemented and covered
-by tests. The command-line surface now matches: `report`, `sessions`,
-`recache`, `ttl`, `limits`, `carry`, `compaction-sim`, `model-swap`,
-`waste`, `compactions`, `config-diff`, `log-usage`,
-`pricing-check`, `scrub-fixture`, `probe`, `statusline`,
-`snapshot-config`, `probe-config`, `export`, `monthly-report`, `compare`,
-`reconcile`, `init`, `baseline`, `apply`, `serve`, `install-service`,
-`uninstall-service`, `changes`, `review`, `check`, `uninstall`, `import`
-and `team-report` are real subcommands backed by that engine — see
-[section 2](#2-installing-and-first-run) for the full flag reference and
-[`docs/onboarding.md`](docs/onboarding.md) for `init`/`baseline`
-specifically. This README describes what the code does today, not the
-full plan. See [`docs/sections-reference.md`](docs/sections-reference.md)
-for section-by-section detail, and the roadmap in
-[section 9](#9-licence-contributing-roadmap) for what is still missing.
-
-A few things are also usable directly, outside the `report` command:
-
-- `python -m claude_token_lens.tools.scrub` — turn a real transcript into
-  a privacy-scrubbed fixture (see [Privacy and security](#7-privacy-and-security)).
-- `python -m claude_token_lens.statusline` — a live Claude Code status
-  line (see [Installing the hook and statusline](#4-installing-the-sessionstart-hook-and-the-statusline)).
-- `python -m claude_token_lens.tools.log_usage` — append a `get_usage`
-  paste to a local CSV log.
-- Every analytics module (`recache`, `ttl`, `classify`, `compaction`,
-  `snapshots`, `topology`, `workstyle`, `workflows`, `phases`, `usage`,
-  `scorecard`, `recommend`, `pricing`) can also be called directly from a
-  Python shell or a short script against your own transcripts, if you
-  want one section or one recommendation in isolation rather than the
-  full report; that is how the worked examples in this README were
-  produced.
+**Version 0.4, pre-release.** Every command in the table below works
+and is covered by tests. This README describes what the code does
+today; the roadmap in [section 9](#9-licence-contributing-roadmap) lists
+what is still missing, and
+[`docs/sections-reference.md`](docs/sections-reference.md) describes
+each report section in detail.
 
 ### What it reads, and what it cannot do
 
@@ -264,126 +321,69 @@ What it cannot do:
 
 ## 2. Installing and first run
 
-New to this tool, or on a locked-down work machine? [`docs/first-run.md`](docs/first-run.md)
-walks through all three install routes end to end: download the
-`claude-token-lens.pyz` from the Releases page for a machine with no
-`pip` or network access, `pip install .` from a clone for a normal one,
-or `pip install git+https://github.com/PaulMorrisDev/claude-token-lens`
-straight from GitHub. It then covers `init`, the logon service, the
-dashboard and your first report, with a troubleshooting table.
+The [Quick start](#quick-start) covers the usual route. For a work
+machine without `pip`, `git` or network access, or to install from a
+local copy of the code, follow [`docs/first-run.md`](docs/first-run.md).
+Every route in short:
 
-```bash
-pip install .
-# or, isolated from your other Python environments:
-pipx install .
-# or, straight from GitHub (needs git):
-pip install git+https://github.com/PaulMorrisDev/claude-token-lens
-# or, no pip at all: download claude-token-lens.pyz from the Releases page and run
-#   py -3 claude-token-lens.pyz --version
-```
+| Route | Command | Needs |
+|---|---|---|
+| From GitHub | `python -m pip install git+https://github.com/PaulMorrisDev/claude-token-lens` | pip, git and network |
+| From GitHub, without git | `python -m pip install https://github.com/PaulMorrisDev/claude-token-lens/archive/refs/heads/main.zip` | pip and network |
+| From a local copy | `python -m pip install <folder>` (or `pipx install <folder>` to keep it apart from other Python tools) | pip |
+| Single file | download `claude-token-lens.pyz` from the [latest release](https://github.com/PaulMorrisDev/claude-token-lens/releases/latest), then `python claude-token-lens.pyz <command>` | Python only |
 
-Then, from the project you want to analyse:
+The package has no third-party dependencies; `rich` is an optional
+extra for nicer terminal output. Building the `.pyz` yourself is
+covered in [`docs/deploy.md`](docs/deploy.md#distribution-without-pip-the-pyz-build).
 
-```bash
-claude-token-lens init
-# then open http://127.0.0.1:8765
-```
+### What `init` does
 
-`init` is the fastest way to a first report, and the fastest way to a
-live dashboard. It detects what's already on your machine (existing
-config, config snapshots, a usage log), asks a handful of short
-questions it genuinely can't infer on its own (billing mode, any
-projects to always exclude, whether you launch Claude Code with shared
-settings overlays, your timezone, a default profile-apply scope, and
-how long to run its onboarding "capture window" for — 7 days by
-default), writes `config.toml`, shows the SessionStart hook and statusline
-change to `settings.json` as a diff and asks before making it (skip
-with `--no-install`), kicks off that capture window with an initial baseline
-for the current project, and — as its last step — offers to register
-`claude-token-lens serve` to run at logon (`y` by default; skip with
-`--no-service`, or answer up front with `--install-service`). Say yes
-and, on macOS and Linux, http://127.0.0.1:8765 is live by the time
-`init` exits; on Windows the task first runs at your next logon (or
-start it now with `Start-ScheduledTask -TaskName ClaudeTokenLens`).
+`claude-token-lens init` detects what is already set up (an existing
+config, settings snapshots, a usage log), then asks a few questions it
+can't work out itself: your billing mode, projects to always leave out,
+whether you start Claude Code with extra settings files, your time
+zone, where `apply` writes by default, and how long the first
+"capture window" should run (7 days by default). It then:
 
-This last step matters for a reason that's easy to miss: Claude Code
-itself deletes transcripts older than `cleanupPeriodDays`, so the only
-way to keep that history around for `report`/`baseline`/the dashboard
-above is a watcher that's actually running when a transcript would
-otherwise be cleaned up — not just running the one time you happened to
-invoke a subcommand. See [section 10](#10-running-the-service) for what
-the registration step actually does on each platform, and
-[`docs/deploy.md`](docs/deploy.md) for the full detail (including
-`install-service --dry-run` to preview it and `uninstall-service` to
-remove it).
+1. writes `config.toml` into its own folder (`~/.claude/token-lens`);
+2. shows the change that connects the SessionStart hook (and a
+   statusline, if you have none) to Claude Code's `settings.json`, and
+   makes it only after you say yes (`--no-install` skips this);
+3. records a first baseline for the current project;
+4. offers to start the dashboard at every logon (`--no-service` skips
+   this, `--install-service` says yes up front).
 
-Answering non-interactively (e.g. in a script or CI) is supported too:
+Running `init` again is safe: it keeps your existing capture window and
+shows any change before making it. `init --repair-hook` fixes a hook
+command that stopped working. For scripts or CI:
 
 ```bash
 claude-token-lens init --non-interactive --no-install
 ```
 
-— any question not answered from an `--answers FILE` is derived from
-what `init` detected, and `init` prints exactly what it derived and
-why, rather than guessing silently.
+Unanswered questions are then worked out from what `init` found, and it
+prints what it chose and why. [`docs/onboarding.md`](docs/onboarding.md)
+lists every question and the baseline's fields.
 
-Once the capture window has enough data (or immediately with
-`--finalise`), run:
+The logon service matters because Claude Code deletes its own
+transcripts after `cleanupPeriodDays`; only a dashboard that is running
+keeps their figures. [Section 10](#10-running-the-service) and
+[`docs/deploy.md`](docs/deploy.md) describe what it registers on each
+system (`install-service --dry-run` previews it, `uninstall-service`
+removes it).
+
+When the capture window has enough data (or straight away with
+`--finalise`):
 
 ```bash
 claude-token-lens baseline
 ```
 
-to get a suggested workstyle profile, a projected caching saving, and
-a few concrete next steps — see [`docs/onboarding.md`](docs/onboarding.md)
-for the full question set, the baseline record's fields, and the
-Markdown report's shape. `claude-token-lens baseline --list` /
-`--show ID` read back a previously captured baseline without
-recapturing anything.
+suggests a workstyle profile, a caching saving and a few next steps.
+`baseline --list` and `baseline --show ID` read back earlier baselines.
 
-Prefer to skip setup entirely? `claude-token-lens report` (the default
-subcommand — see below) works standalone, with no `init` step at all.
-
-Because the package has no third-party dependencies (`dependencies = []`
-in `pyproject.toml`; `rich` is an optional extra), it can also be built
-into a single-file, dependency-free `.pyz` with the standard library's
-own `zipapp` module — useful on a locked-down machine that only has a
-bare Python 3.11+ interpreter:
-
-```bash
-python -m zipapp src -m "claude_token_lens.__main__:main" -o claude-token-lens.pyz
-```
-
-Windows:
-
-```powershell
-py -3 claude-token-lens.pyz report
-```
-
-**Single-file download.** Every tagged release (`vX.Y.Z`) attaches a
-pre-built `claude-token-lens.pyz` to its GitHub Release page — grab it
-from [the Releases page](https://github.com/PaulMorrisDev/claude-token-lens/releases)
-and skip the build step above entirely; `.github/workflows/release.yml`
-builds and smoke-tests it on every tag push. `report` above runs the
-real report (see the Status note) because it's the default subcommand.
-
-**Zipapp exit codes.** Point `zipapp -m` at `claude_token_lens.__main__:main`,
-not at `claude_token_lens.cli:main`. `zipapp`'s own generated bootstrap for
-a `module:function` target never wraps the call in `sys.exit(...)`
-(`import {module}; {module}.{fn}()`, verbatim from `zipapp.MAIN_TEMPLATE`)
-— pointed at `cli:main` directly, that drops every non-zero exit code
-(no-data, bad-input, ...) a caller or CI script depends on.
-[`claude_token_lens/__main__.py`](src/claude_token_lens/__main__.py) exists
-precisely to close this: it's a module whose *import* already calls
-`sys.exit(main())`, so `zipapp`'s generated `import claude_token_lens.__main__`
-line raises `SystemExit` with the real code before the bootstrap's second,
-never-reached line would have swallowed it. Verified by building a `.pyz`
-this way and checking both paths: `--version` exits 0, an unrecognised
-subcommand exits 2 (argparse's own `parser.error()` behaviour). The
-installed console script (`pip install .`, which points
-at `cli:main` — see `pyproject.toml`) is unaffected either way, since
-`setuptools`' own console-script wrapper always calls `sys.exit(main())`
-regardless of what module it targets.
+`claude-token-lens report` works without any of this setup.
 
 ### Subcommands
 
@@ -1019,7 +1019,12 @@ see the Status note above):
   [`docs/onboarding.md`](docs/onboarding.md),
   [`docs/profiles.md`](docs/profiles.md), [section 11](#11-applying-a-profile),
   [`docs/compare.md`](docs/compare.md) and [`docs/team.md`](docs/team.md).
-- **v0.4 backlog** — a budget guardrail that exits non-zero past a
+- **v0.4** — Quick actions, goal-first profile creation with what-if
+  estimates, CLAUDE.md and skills review (Context files tab), "Your
+  changes and what they did", quality signals per agent and setup, the
+  dashboard-wide window picker, and `serve --monthly-report`. Shipped —
+  see [CHANGELOG.md](CHANGELOG.md).
+- **Next** — a budget guardrail that exits non-zero past a
   weekly token or daily dollar limit (planned as `check --weekly-tokens
   N --daily-usd N`, before `check` became the quick-actions command, so
   it will need another name), anomaly-outlier detection, and an opt-in `--show-paths` local file view. See

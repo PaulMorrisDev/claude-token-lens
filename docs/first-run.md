@@ -7,8 +7,8 @@ maybe no proxy access to PyPI. The three install routes, `init`,
 were run end to end against a synthetic, throwaway project when this
 document was written.
 
-If you're comfortable with the tool already, [section 2 of the
-README](../README.md#2-installing-and-first-run) is the fast path. This document is
+On an ordinary machine, the README's [Quick
+start](../README.md#quick-start) is the fast path. This document is
 for the first five minutes on a machine you've never run it on before.
 
 ## 0. Check Python
@@ -92,14 +92,14 @@ back to Route A.
 ### Route C: `pip` from GitHub
 
 ```powershell
-pip install git+https://github.com/PaulMorrisDev/claude-token-lens
+py -3 -m pip install git+https://github.com/PaulMorrisDev/claude-token-lens
 ```
 
 No `git` on the machine? This works without it (a plain HTTPS
 download, no `git clone`):
 
 ```powershell
-pip install https://github.com/PaulMorrisDev/claude-token-lens/archive/refs/heads/main.zip
+py -3 -m pip install https://github.com/PaulMorrisDev/claude-token-lens/archive/refs/heads/main.zip
 ```
 
 Both need outbound HTTPS access to GitHub (and, same as Route B, to
@@ -332,9 +332,8 @@ making it:
    `settings.json`. The diff is shown, and the file is copied to
    `settings.json.bak-<UTC time>` first. A statusline of your own is
    left alone.
-2. Removes the logon service, if registered. On Windows this doesn't
-   stop a copy that is already running; stop it, or log off, before
-   step 4.
+2. Removes the logon service, if registered, stopping the running
+   dashboard first on every system.
 3. With `--revert-changes`: undoes every `apply` still in place, newest
    first. If a file was edited after an apply, that apply is not undone
    at all, and the file is named. Without `--revert-changes`, each one
@@ -350,6 +349,29 @@ once you're happy.
 
 Finally, if installed via `pip`: `pip uninstall claude-token-lens`. Via
 `.pyz`: delete the one file.
+
+## 8. Update to a newer version
+
+Install the new version the same way you installed the first one:
+
+| Route | Update |
+|---|---|
+| A (`.pyz`) | Download the new `claude-token-lens.pyz` from the [latest release](https://github.com/PaulMorrisDev/claude-token-lens/releases/latest) over the old file |
+| B (local clone) | `git pull` in the clone, then `.venv\Scripts\pip install --force-reinstall <path-to-the-cloned-repo>` |
+| C (GitHub) | `python -m pip install --force-reinstall git+https://github.com/PaulMorrisDev/claude-token-lens` |
+
+`--force-reinstall` is needed because pip skips a copy whose version
+number hasn't changed. Then restart the dashboard so it runs the new
+code:
+
+```powershell
+Stop-ScheduledTask -TaskName ClaudeTokenLens; Start-ScheduledTask -TaskName ClaudeTokenLens
+```
+
+On macOS: `launchctl kickstart -k gui/$(id -u)/com.claude-token-lens`.
+On Linux: `systemctl --user restart claude-token-lens`. If a new
+version reads transcripts differently, the dashboard re-reads them once
+after the restart, so the first page load can be slow.
 
 ## Troubleshooting
 
@@ -383,8 +405,8 @@ python3 -m venv .venv
 .venv/bin/claude-token-lens --version    # or: .venv/bin/python -m claude_token_lens --version
 
 # Route C: pip from GitHub
-pip install git+https://github.com/PaulMorrisDev/claude-token-lens
-pip install https://github.com/PaulMorrisDev/claude-token-lens/archive/refs/heads/main.zip
+python3 -m pip install git+https://github.com/PaulMorrisDev/claude-token-lens
+python3 -m pip install https://github.com/PaulMorrisDev/claude-token-lens/archive/refs/heads/main.zip
 
 claude-token-lens init
 claude-token-lens install-service --dry-run   # prints the systemd user unit / LaunchAgent plan; writes nothing
