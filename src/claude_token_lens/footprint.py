@@ -104,6 +104,58 @@ def _size_label(size: int) -> str:
     return f"{size:,.1f} GB"
 
 
+#: What to expect from installing and using this tool, in plain words:
+#: (title, text). Shown by ``changes``, the Data quality tab (``GET
+#: /api/setup``) and docs/first-run.md.
+EXPECTATIONS: tuple[tuple[str, str], ...] = (
+    (
+        "It never uses your Claude tokens",
+        "This tool reads files Claude Code already writes. It never calls Claude, so it adds nothing to your "
+        "usage, on the first run or after.",
+    ),
+    (
+        "The hook and statusline add nothing to Claude's context",
+        "The snapshot hook prints nothing and the statusline is shown only to you, so neither is sent to Claude. "
+        "The hook starts a short Python process at each session start, which takes well under a second.",
+    ),
+    (
+        "The first scan takes a while",
+        "The first report or dashboard start reads every transcript under ~/.claude/projects, which can take a few "
+        "minutes and use a CPU core. Later runs read only new or changed files.",
+    ),
+    (
+        "It reads, it doesn't change",
+        "The dashboard never changes Claude Code. Every fix is a prompt for Claude, which shows you the diff and "
+        "asks before editing, or an apply command you run yourself with --dry-run first.",
+    ),
+    (
+        "A change takes effect in new sessions",
+        "Claude Code reads settings when a session starts, and every session builds its cache from scratch anyway, "
+        "so a change costs nothing extra to switch on. Switching model inside a running session (/model) does "
+        "rebuild that session's cache once.",
+    ),
+    (
+        "Cheaper isn't free",
+        "A cheaper model, lower effort or earlier summaries can mean more replies or missed details on hard work. "
+        "Check \"Your changes and what they did\" on Profiles after a few sessions, and undo with the apply "
+        "--revert command if it's worse.",
+    ),
+    (
+        "Amounts are list-price equivalents",
+        "Costs are worked out from each model's list price. On a Pro or Max plan you don't pay per token, so they "
+        "show as a share of your weekly limit when the statusline has recorded limit readings.",
+    ),
+    (
+        "Your data stays on this machine",
+        "Transcripts and settings are read locally. CLAUDE.md text and skill descriptions are read when you ask "
+        "for a review and never stored. Nothing is uploaded.",
+    ),
+)
+
+#: The one command that takes everything back out, shown dry-run first.
+UNINSTALL_COMMAND = "claude-token-lens uninstall --revert-changes --delete-data --dry-run"
+
+
 def inventory(config_dir: str | Path, *, service_registered: bool | None = None) -> list[FootprintItem]:
     """Everything this tool has put on the machine, in the order
     ``uninstall`` removes it. ``service_registered`` comes from
@@ -168,8 +220,8 @@ def inventory(config_dir: str | Path, *, service_registered: bool | None = None)
                 where=f"{_scope_label(backup.scope)}; backup in {home_label(config_dir / 'backups' / backup.ts)}",
                 what_it_does="Changed Claude Code settings or agent files. This changes how Claude works from the next session.",
                 token_cost=(
-                    "The first reply after a settings change rebuilds the prompt cache once, a small one-off cost. "
-                    "After that the change should save tokens."
+                    "None by itself: Claude Code reads settings when a session starts, and every session builds "
+                    "its cache from scratch anyway. After that it saves or costs what its estimate said."
                 ),
                 undo=f"claude-token-lens apply --revert {backup.ts}",
             )
@@ -310,7 +362,9 @@ def delete_data(config_dir: str | Path) -> list[str]:
 
 
 __all__ = [
+    "EXPECTATIONS",
     "FootprintItem",
+    "UNINSTALL_COMMAND",
     "UninstallPlan",
     "delete_data",
     "home_label",

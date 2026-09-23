@@ -160,6 +160,7 @@ _PROFILE_DIFF_RE = re.compile(r"^/api/profiles/([^/]+)/diff$")
 _PROFILE_RE = re.compile(r"^/api/profiles/([^/]+)$")
 _SESSION_EXPLAIN_RE = re.compile(r"^/api/session/([^/]+)/explain$")
 _CLAUDE_MD_RE = re.compile(r"^/api/claude-md/([0-9a-f]{16})$")
+_QUICK_ACTION_RE = re.compile(r"^/api/quick-actions/([a-z0-9-]+)$")
 
 #: ``profiles.diff``'s own ``_VALID_SCOPES`` -- duplicated rather than
 #: imported (that name is private) so a scope query param can be
@@ -1248,6 +1249,53 @@ def make_handler(
             )
         )
 
+    def _quick_context(window, query):
+        from .. import quick_actions
+
+        model = _get_report_model(*window)
+        effective, effective_agents = _current_settings()
+        return quick_actions, quick_actions.Context(
+            model=model,
+            units=_report_units(model),
+            period=_period_text(*window, name=query.get("window")),
+            config_dir=Path(options.config_dir),
+            effective=effective,
+            effective_agents=effective_agents,
+        )
+
+    def route_quick_actions(store, query, body):
+        """Every quick-action check's status and one-line answer for the
+        window."""
+        window, err = _window_query(query)
+        if err is not None:
+            return err
+        module, ctx = _quick_context(window, query)
+        return _ok({"period": ctx.period, "checks": module.run_all(ctx)})
+
+    def route_quick_action(store, query, body):
+        """One check in full: its evidence table, fixes and tips."""
+        window, err = _window_query(query)
+        if err is not None:
+            return err
+        module, ctx = _quick_context(window, query)
+        if query.get("id") not in module.CHECK_IDS:
+            return _not_found("unknown quick action")
+        return _ok(module.run(query["id"], ctx))
+
+    def route_setup(store, query, body):
+        """What this tool has installed and changed on this machine, what
+        each costs in tokens and how to undo it, plus what to expect."""
+        from .. import footprint
+
+        items = footprint.inventory(options.config_dir, service_registered=_cached_service_registered())
+        return _ok(
+            {
+                "items": [item.as_dict() for item in items],
+                "expectations": [{"title": title, "text": text} for title, text in footprint.EXPECTATIONS],
+                "uninstall_command": footprint.UNINSTALL_COMMAND,
+            }
+        )
+
     impact_cache: dict = {"key": None, "data": None}
 
     def route_impact(store, query, body):
@@ -1326,6 +1374,8 @@ def make_handler(
         "/api/skills": route_skills,
         "/api/impact": route_impact,
         "/api/profile-goals": route_profile_goals,
+        "/api/quick-actions": route_quick_actions,
+        "/api/setup": route_setup,
         "/api/report.json": _render_report("application/json", lambda model: render_json(model)),
         # Finding 22: charset was missing on the two text-ish renderers
         # (application/json has no encoding ambiguity, but text/markdown
@@ -1340,6 +1390,7 @@ def make_handler(
         (_PROFILE_DIFF_RE, route_profile_diff),
         (_PROFILE_RE, route_profile),
         (_CLAUDE_MD_RE, route_claude_md_file),
+        (_QUICK_ACTION_RE, route_quick_action),
     )
     post_routes: dict[str, Callable] = {
         "/api/profiles": route_profiles_post,

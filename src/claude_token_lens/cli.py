@@ -84,6 +84,7 @@ SUBCOMMANDS: tuple[str, ...] = (
     "uninstall-service",
     "changes",
     "review",
+    "check",
     "uninstall",
     "import",
     "team-report",
@@ -875,6 +876,7 @@ def _make_parser() -> argparse.ArgumentParser:
             "uninstall-service": "remove a logon/boot registration made by install-service (or by init)",
             "changes": "list what this tool has installed and changed, and the command that undoes each",
             "review": "review your CLAUDE.md files or skills: size, how often each is sent, cost, and fixes",
+            "check": "quick actions: answer one token question (or all of them) with evidence and fixes",
             "uninstall": "remove the hook, statusline and logon service, optionally undo applied changes and delete data",
             "import": "validate and copy team-aggregate document(s) into <config_dir>/team/",
             "team-report": "cross-machine comparison built from every imported team document",
@@ -897,6 +899,15 @@ def _make_parser() -> argparse.ArgumentParser:
                 "what",
                 choices=("claude-md", "skills"),
                 help="claude-md: every CLAUDE.md file and rule; skills: every skill Claude Code lists",
+            )
+        if name == "check":
+            from .quick_actions import CHECK_IDS
+
+            sub.add_argument(
+                "id",
+                nargs="?",
+                choices=CHECK_IDS,
+                help="the check to run in full; leave it out for every check's one-line answer",
             )
         if name in _REPORT_LIKE_COMMANDS:
             _add_report_output_args(sub, allow_patch_set=(name == "report"))
@@ -1340,7 +1351,7 @@ def _cmd_review(args: argparse.Namespace) -> int:
 
     def emit(model, config_dir, window) -> int:
         units = model.units or Units()
-        period = window if window.startswith("since") else f"over the {window}" if window.startswith("last") else f"over {window}"
+        period = _period_phrase(window)
         context = model.context_files or {}
         if args.what == "skills":
             print(skills_review.render_markdown(skills_review.review(config_dir, context, units, period)))
@@ -1350,6 +1361,48 @@ def _cmd_review(args: argparse.Namespace) -> int:
         return 0
 
     return _cmd_report_like(args, {"overview"}, emit=emit)
+
+
+def _period_phrase(window: str) -> str:
+    """"last 30 days" -> "over the last 30 days", for amounts."""
+    if window.startswith("since"):
+        return window
+    return f"over the {window}" if window.startswith("last") else f"over {window}"
+
+
+def _cmd_check(args: argparse.Namespace) -> int:
+    """``check [ID]``: the dashboard's Quick actions as Markdown -- every
+    check's one-line answer, or one check in full with its evidence,
+    fixes and tips. Nothing is changed; fixes are prompts and dry-run
+    commands."""
+    from . import quick_actions
+    from .units import Units
+
+    def emit(model, config_dir, window) -> int:
+        snapshot = next(
+            (s for s in reversed(snapshots.load_snapshots(config_dir)) if isinstance(s.data.get("effective"), dict)),
+            None,
+        )
+        agents = snapshot.data.get("effective_agents") if snapshot is not None else None
+        ctx = quick_actions.Context(
+            model=model,
+            units=model.units or Units(),
+            period=_period_phrase(window),
+            config_dir=Path(config_dir),
+            effective=snapshots.effective_config(snapshot) if snapshot is not None else {},
+            effective_agents=agents if isinstance(agents, dict) else {},
+        )
+        if args.id:
+            print(quick_actions.render_markdown(quick_actions.run(args.id, ctx)))
+            return 0
+        marks = {"act": "Act", "ok": "OK", "no_data": "No data"}
+        print(f"# Quick actions ({ctx.period})\n")
+        for row in quick_actions.run_all(ctx):
+            print(f"- **{marks[row['status']]}** `{row['id']}`: {row['question']} {row['summary']}")
+        print("\nRun `claude-token-lens check <id>` for the evidence and fixes.")
+        return 0
+
+    return _cmd_report_like(args, None, emit=emit)
 
 
 # -- config-diff -------------------------------------------------------------
@@ -2420,7 +2473,10 @@ def _cmd_changes(args: argparse.Namespace) -> int:
         if item.status in ("installed", "in place"):
             print(f"  To undo: {item.undo}")
         print()
-    print("To remove everything: claude-token-lens uninstall --revert-changes --delete-data --dry-run")
+    print("What to expect\n")
+    for title, text in footprint.EXPECTATIONS:
+        print(f"- {title}. {text}")
+    print(f"\nTo remove everything: {footprint.UNINSTALL_COMMAND}")
     return 0
 
 
@@ -3090,6 +3146,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_changes(args)
     if command == "review":
         return _cmd_review(args)
+    if command == "check":
+        return _cmd_check(args)
     if command == "uninstall":
         return _cmd_uninstall(args)
 

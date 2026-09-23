@@ -1546,3 +1546,27 @@ def test_whatif_rejects_cross_site_posts(server):
         "POST", "/api/whatif", body={"settings": {"model": "sonnet"}}, headers={"Sec-Fetch-Site": "cross-site"}
     )
     assert resp.status == 403
+
+
+def test_quick_actions_list_and_detail(server):
+    resp, payload = server.get_json("/api/quick-actions?window=24h")
+    assert resp.status == 200
+    checks = payload["data"]["checks"]
+    assert [c["id"] for c in checks][:2] == ["models", "effort"]
+    assert all(c["status"] in ("act", "ok", "no_data") and c["summary"] for c in checks)
+    for check in checks:
+        resp, payload = server.get_json(f"/api/quick-actions/{check['id']}")
+        assert resp.status == 200
+        assert set(payload["data"]) >= {"question", "table", "fixes", "tips"}
+    resp, _payload = server.get_json("/api/quick-actions/nope")
+    assert resp.status == 404
+
+
+def test_setup_lists_the_footprint_expectations_and_uninstall(server):
+    resp, payload = server.get_json("/api/setup")
+    assert resp.status == 200
+    data = payload["data"]
+    assert {item["key"] for item in data["items"]} >= {"snapshot_hook"}
+    assert all(set(item) >= {"title", "status", "token_cost", "undo"} for item in data["items"])
+    assert data["expectations"][0]["title"] == "It never uses your Claude tokens"
+    assert data["uninstall_command"].endswith("--dry-run")

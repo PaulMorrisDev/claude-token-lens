@@ -1647,3 +1647,17 @@ def test_cmd_apply_set_merges_a_skill_override_by_name(tmp_path, capsys):
     }
     assert cli.main(["apply", "--set", "skillOverrides=pdf:sometimes", "--config-dir", str(config_dir),
                      "--claude-root", str(claude_root), "--dry-run"]) == 2
+
+
+def test_check_lists_every_quick_action_and_runs_one_in_full(tmp_path, capsys):
+    from claude_token_lens.quick_actions import CHECK_IDS
+
+    root = tmp_path / "projects"
+    _write_project(root, "proj-a")
+    base = ["--projects-root", str(root), "--project", "proj-a", "--config-dir", str(tmp_path / "tl")]
+    assert cli.main(["check", *base]) == 0
+    out = capsys.readouterr().out
+    assert out.startswith("# Quick actions")
+    assert all(f"`{check_id}`" in out for check_id in CHECK_IDS)
+    assert cli.main(["check", "models", *base]) == 0
+    assert capsys.readouterr().out.startswith("## Is each agent on the cheapest model")
