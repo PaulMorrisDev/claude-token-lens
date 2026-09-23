@@ -31,7 +31,7 @@ Two kinds of route:
   :func:`~claude_token_lens.report.build_report`/
   :func:`~claude_token_lens.recommend.recommend` pipeline the CLI's
   ``report`` subcommand uses, then a renderer. Rebuilt once per
-  ``(window_days, store-change-token)`` pair and cached in-process (see
+  ``(window_days, since, until, store-change-token)`` key and cached in-process (see
   ``_ReportCache``) so switching UI tabs (``docs/ui.md``) never re-parses
   the whole store for the same window.
 

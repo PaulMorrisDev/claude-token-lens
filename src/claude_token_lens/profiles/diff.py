@@ -334,6 +334,10 @@ def apply_command(profile_id: str, scope: str, project_path: str | None = None) 
         raise ValueError(f"unknown scope: {scope!r} (expected one of {_VALID_SCOPES})")
 
     args = ["claude-token-lens", "apply", profile_id]
+    # ``apply`` defaults to user scope without --project-dir and to
+    # project-local with it, so any other scope is named explicitly.
+    if scope != "user":
+        args += ["--scope", scope]
     if scope in ("project-local", "repo") and project_path:
         args += ["--project-dir", project_path]
     if scope == "repo":

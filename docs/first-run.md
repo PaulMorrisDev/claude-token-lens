@@ -2,11 +2,10 @@
 
 The one document to follow on a machine you don't fully control: no
 admin rights, Python 3.11+ already there (or not), maybe no `git`,
-maybe no proxy access to PyPI. Every command below was actually run
-end-to-end against a synthetic, throwaway project during this
-document's own verification pass (three install routes, `init`,
-`install-service --dry-run`, `report`, `serve` + a health check) —
-nothing here is aspirational.
+maybe no proxy access to PyPI. The three install routes, `init`,
+`install-service --dry-run`, `report` and `serve` with a health check
+were run end to end against a synthetic, throwaway project when this
+document was written.
 
 If you're comfortable with the tool already, [section 2 of the
 README](../README.md#2-installing-and-first-run) is the fast path. This document is
@@ -143,25 +142,48 @@ that variable is set) — the same place Claude Code itself already
 keeps its transcripts, so on an ordinary machine you don't need to pass
 either.
 
-**What `init` writes**, all under `<config-dir>` (nothing outside it,
-and nothing to `settings.json` directly — see the next point):
+Unattended, `init` doesn't touch `settings.json`. Without `--no-install`
+it prints the hook and statusline fragments for you to add by hand. Add
+`--connect` to make
+that change without asking (it is still printed, and the file backed up
+first).
 
-- `config.toml` — your answers above.
-- `projects\<slug>.toml` — this project's own settings (merged into an
-  existing file key-by-key; if the shape can't be merged automatically,
+**What `init` writes under `<config-dir>`:**
+
+- `config.toml` — your answers above. An existing file is merged
+  key-by-key. If its shape can't be merged automatically,
   `config.toml.new` is written instead and `init` says so, leaving the
-  original untouched).
+  original untouched.
+- `projects\<slug>.toml` — this project's own settings.
 - `baselines\<id>.json` + `<id>.md` — an initial baseline, if any
   sessions were already found for this project.
+- `hooks\snapshot-config.py` — a copy of the hook script, made during
+  the connect step below.
+
+Running `init` again restarts the capture window from that moment.
 
 **Connecting to Claude Code — shown, then asked.** `init` then shows
-the exact change to `~/.claude/settings.json`: a `SessionStart` hook
-that records your settings when a session starts, and a `statusLine`
-command when you have none. It writes it only after you answer yes, and
-backs the file up first. Both commands name this Python and the script
-by full path, so they work without the `py` launcher and under Git Bash.
-Say no and nothing changes; `claude-token-lens init --connect` makes the
-change later. Skip the step entirely with `--no-install`.
+the exact change to `settings.json` in the folder above `<config-dir>`
+(normally `%USERPROFILE%\.claude\settings.json`):
+
+- a `SessionStart` hook that records your settings when a session
+  starts, added only if no hook runs `snapshot-config.py` yet;
+- a `statusLine` command, added only if you have no statusline. Yours
+  is never replaced.
+
+It writes the change only after you answer yes (the default is no). It
+first copies the file to `settings.json.bak-<UTC time>` beside it. The
+hook command names your main Python install and the script by full
+path; the script needs only the standard library, so a deleted
+virtual environment can't break it. The statusline command names the
+Python you installed claude-token-lens into. Neither needs the `py`
+launcher or a `%VARIABLE%`, so both run under Git Bash. Say no and
+`settings.json` is left as it was; `claude-token-lens init --connect`
+makes the change later. `--no-install` skips this step.
+
+If your existing hook command is broken (a mis-escaped path, a missing
+interpreter or a `%VARIABLE%`), `init` shows the fixed command at the
+start and asks before changing it. See the troubleshooting table.
 
 ## What to expect
 
@@ -169,12 +191,13 @@ change later. Skip the step entirely with `--no-install`.
   has already written. It never calls Claude or any other service, so
   there is no bump in usage from running it, however often.
 - **The hook and statusline add nothing to your conversations.** The
-  hook runs for a few milliseconds when a session starts and prints
-  nothing; the statusline draws a line under the prompt. Neither sends
-  anything to Claude.
+  hook starts a short Python process in the background when a session
+  starts (well under a second) and prints nothing. The statusline draws
+  a line under the prompt, in the terminal only. Neither is sent to
+  Claude.
 - **The first scan takes a while.** The service reads every transcript
-  once (seconds to a few minutes for a large history), then only new
-  lines.
+  once (seconds to a few minutes for a large history), then only new or
+  changed files.
 - **It reads; it doesn't change.** Nothing about how Claude works
   changes until you apply a change yourself, through a prompt you give
   Claude or `claude-token-lens apply`. A change takes effect in the next
@@ -192,8 +215,9 @@ tool installed and the command that undoes each.
 ## 3. The logon service
 
 `init`'s last step asks whether to register `claude-token-lens serve`
-to start automatically at logon (default yes; `--no-service` skips the
-question entirely, `--install-service` answers it yes non-interactively).
+to start automatically at logon (default yes). `--no-service` skips the
+question. `--install-service` answers yes without asking. Under
+`--non-interactive` without `--install-service`, the answer is no.
 This matters because Claude Code deletes its own transcripts after
 `cleanupPeriodDays` — only a service that's actually *running* when
 that happens keeps the history.
@@ -213,6 +237,15 @@ claude_token_lens`, which cannot work once the code is inside a zip) —
 confirm the line contains the full path to your `.pyz`, not a bare
 `claude_token_lens` module reference.
 
+On Windows, registering the task doesn't start it: it first runs at
+your next logon. To start it now:
+
+```powershell
+Start-ScheduledTask -TaskName ClaudeTokenLens
+```
+
+(On Linux and macOS, registration starts it straight away.)
+
 Confirm it actually registered, two ways:
 
 ```powershell
@@ -220,7 +253,8 @@ schtasks /Query /TN ClaudeTokenLens
 curl http://127.0.0.1:8765/api/health
 ```
 
-The second's JSON body includes `"service_registered": true` once
+The second answers only while the service is running. Its JSON body
+includes `"service_registered": true` once
 `is_registered()`'s own platform probe (the same `schtasks` query
 above) has confirmed it — `false` or `null` (probe inconclusive) means
 check the output `install-service` printed. The dashboard's Overview
@@ -232,10 +266,11 @@ tab also shows a banner when this comes back `false`.
 http://127.0.0.1:8765
 ```
 
-Live once the service is running (either just now via
-`install-service`, or by running `claude-token-lens serve` directly in
-a terminal you leave open). Loopback-only by default — nothing outside
-this machine can reach it unless you explicitly pass `--allow-remote`.
+Live once the service is running (started by the logon task, or by
+running `claude-token-lens serve` directly in a terminal you leave
+open). Loopback-only by default — nothing outside
+this machine can reach it unless you pass both `--bind <address>` and
+`--allow-remote`. It has no login, so don't do that on a shared network.
 
 ## 5. Run the first report
 
@@ -276,6 +311,11 @@ claude-token-lens apply --list-backups
 claude-token-lens apply --revert <TS>
 ```
 
+`--revert` restores the backup `apply` made under
+`<config-dir>\backups\<TS>\`. If a file was edited after the apply, it
+refuses and restores nothing; `--ignore-changes` restores it anyway,
+discarding those edits.
+
 **Take everything back out.** Look first:
 
 ```powershell
@@ -285,15 +325,25 @@ claude-token-lens uninstall --revert-changes --delete-data --dry-run
 Then run it without `--dry-run`. It shows each step and asks before
 making it:
 
-1. Removes the `SessionStart` hook and the `statusLine` from
-   `~/.claude/settings.json` (the diff is shown, and the file backed up
-   first).
-2. Removes the logon service, if registered.
+1. Removes this tool's `SessionStart` hook and statusline from
+   `settings.json`. The diff is shown, and the file is copied to
+   `settings.json.bak-<UTC time>` first. A statusline of your own is
+   left alone.
+2. Removes the logon service, if registered. On Windows this doesn't
+   stop a copy that is already running; stop it, or log off, before
+   step 4.
 3. With `--revert-changes`: undoes every `apply` still in place, newest
-   first. A file edited since is left alone and named.
+   first. If a file was edited after an apply, that apply is not undone
+   at all, and the file is named. Without `--revert-changes`, each one
+   is listed with its `apply --revert` command.
 4. With `--delete-data`: deletes `<config-dir>` (default
    `%USERPROFILE%\.claude\token-lens`): the database, snapshots, usage
-   log, profiles and backups.
+   log, profiles and backups. It refuses while any applied change is
+   still in place, because the backups are the only way to undo it.
+
+`--yes` answers yes to every question (each change is still printed).
+Nothing removes the `settings.json.bak-*` copies; delete them yourself
+once you're happy.
 
 Finally, if installed via `pip`: `pip uninstall claude-token-lens`. Via
 `.pyz`: delete the one file.
@@ -303,14 +353,14 @@ Finally, if installed via `pip`: `pip uninstall claude-token-lens`. Via
 | Symptom | Fix |
 |---|---|
 | `claude-token-lens` not found | Use the full path to the venv's `Scripts\claude-token-lens.exe`, or `python -m claude_token_lens` (works regardless of `PATH`) |
-| The Data quality tab says the SessionStart hook isn't running | The hook command uses `py` (not on the `PATH`) or `%USERPROFILE%` (Git Bash doesn't expand it). Run `claude-token-lens init --repair-hook`: it shows the fixed command, backs up `settings.json`, writes the folder out in full, and keeps your own Python when it's found (otherwise it names one by full path) |
+| The Data quality tab says the SessionStart hook isn't running | The hook command names a Python that isn't installed (`py` with no launcher), uses `%USERPROFILE%` (Claude Code runs hooks through Git Bash, which doesn't expand it), or has a path broken by single backslashes in JSON. Run `claude-token-lens init --repair-hook`: it shows the fixed command and changes it without asking, after copying `settings.json` to `settings.json.bak-<UTC time>`. It keeps your own Python when it's found and writes any `%VARIABLE%` out in full; otherwise it names your main Python install by full path. It can only fix a command whose script exists: if the script is missing, run `claude-token-lens init --connect` first, which copies it back into `<config-dir>\hooks\` |
 | No usage-limit readings | The statusline runs only in Claude Code in a terminal, not in the desktop app or an IDE. Amounts stay list-price equivalents until readings arrive |
 | `py` launcher missing (`'py' is not recognized`) | Use `python`/`python3` directly, or reinstall Python from python.org with "py launcher" checked |
 | Python 3.10 or older | `pip install` refuses (`Requires-Python`); the `.pyz` fails at import with a `tomllib`-related error. Install 3.11+ (a user-level install needs no admin rights) |
 | Execution policy blocks a `.ps1` script | `install-service`/`init` never need this — they shell out via `powershell.exe -ExecutionPolicy Bypass -Command ...` themselves. Only affects the legacy `scripts\windows\Register-TokenLensTask.ps1` path; run it the same way: `powershell -ExecutionPolicy Bypass -File scripts\windows\Register-TokenLensTask.ps1` |
 | Corporate proxy blocks `pip`/PyPI/GitHub | Use Route A (`.pyz`) — no network access needed once downloaded |
-| `CLAUDE_CONFIG_DIR` already set (for Claude Code itself) | Harmless — `claude-token-lens` reads it too and uses `<CLAUDE_CONFIG_DIR>\token-lens` as its own subdirectory, never touching Claude Code's own files there. Override with `--config-dir` if you want this tool somewhere else entirely |
-| Port 8765 already in use | `claude-token-lens serve --port <other>` (and pass the same `--port` to `install-service`); `/api/health`'s URL and the dashboard link both change to match |
+| `CLAUDE_CONFIG_DIR` already set (for Claude Code itself) | Harmless — `claude-token-lens` reads it too and keeps its own files in `<CLAUDE_CONFIG_DIR>\token-lens`. The connect step and `uninstall` edit `<CLAUDE_CONFIG_DIR>\settings.json`, only after showing the change. `--config-dir` moves this tool's folder, but the connect step, `--repair-hook` and `uninstall` always use the `settings.json` in the folder above it, so pass it only for an unattended `init --no-install` |
+| Port 8765 already in use | `claude-token-lens serve --port <other>`, or `claude-token-lens install-service --port <other>` for the logon task (`init`'s service step always uses 8765). The dashboard and `/api/health` URLs change to match |
 
 ## POSIX (Linux/macOS) quick variant
 
@@ -334,10 +384,10 @@ pip install git+https://github.com/PaulMorrisDev/claude-token-lens
 pip install https://github.com/PaulMorrisDev/claude-token-lens/archive/refs/heads/main.zip
 
 claude-token-lens init
-claude-token-lens install-service --dry-run   # writes a systemd user unit / LaunchAgent plan
+claude-token-lens install-service --dry-run   # prints the systemd user unit / LaunchAgent plan; writes nothing
 curl http://127.0.0.1:8765/api/health
 claude-token-lens report
-claude-token-lens uninstall-service
+claude-token-lens uninstall --revert-changes --delete-data --dry-run   # look first, then run without --dry-run
 ```
 
 Config defaults to `~/.claude/token-lens`/`~/.claude/projects`

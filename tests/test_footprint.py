@@ -183,3 +183,20 @@ def test_uninstall_asks_and_a_no_changes_nothing(tmp_path, monkeypatch, capsys):
     rc, out = _run(["uninstall", "--config-dir", str(config_dir)], monkeypatch, capsys, stdin="n\n")
     assert "Left unchanged." in out
     assert "statusLine" in json.loads((config_dir.parent / "settings.json").read_text(encoding="utf-8"))
+
+
+def test_init_dry_run_shows_the_connect_change_and_writes_nothing(tmp_path):
+    from types import SimpleNamespace
+
+    config_dir = _claude(tmp_path, {"model": "opus"})
+    settings = config_dir.parent / "settings.json"
+    before = settings.read_text(encoding="utf-8")
+    hook = SimpleNamespace(
+        install_hook=lambda cfg: cfg / "hooks" / "snapshot-config.py",
+        hook_command=lambda script: f'"{sys.executable}" "{script}"',
+    )
+    out = io.StringIO()
+    args = SimpleNamespace(connect=True, dry_run=True)
+    cli._cmd_init_connect_step(args, config_dir=config_dir, hook=hook, stdin=io.StringIO("y\n"), stdout=out)
+    assert settings.read_text(encoding="utf-8") == before
+    assert "Dry run" in out.getvalue() and "SessionStart" in out.getvalue()

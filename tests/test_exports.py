@@ -406,3 +406,15 @@ def test_export_per_session_opt_in_does_contain_session_id(tmp_path):
     options = exports.resolve_export_options("csv-flat", False, False)
     text = exports.build_export_text(corpus, PRICING, Config(), config_dir, options)
     assert "session-super-secret" in text
+
+
+def test_hashed_export_hashes_custom_agent_names_but_keeps_stock_ones(tmp_path):
+    rows = [
+        {"project": "p", "agent_type": "acme-secret-reviewer"},
+        {"project": "p", "agent_type": "Explore"},
+        {"project": "p", "agent_type": "top-level"},
+        {"project": "p", "agent_type": "subagent"},
+    ]
+    exports._apply_hash_slugs(rows, tmp_path)
+    assert rows[0]["agent_type"].startswith("custom:") and "acme" not in rows[0]["agent_type"]
+    assert [r["agent_type"] for r in rows[1:]] == ["Explore", "top-level", "subagent"]

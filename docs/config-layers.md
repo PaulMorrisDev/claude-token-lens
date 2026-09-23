@@ -19,7 +19,7 @@ a lever is set to but *which file* set it:
 | `managed`        | the platform's `managed-settings.json` | enterprise policy, outside any user's control (macOS `/Library/Application Support/ClaudeCode/…`, Linux `/etc/claude-code/…`, Windows `%ProgramData%\ClaudeCode\…`) |
 | `project_local`  | `<project>/.claude/settings.local.json` | per-machine, not checked in |
 | `project_shared` | `<project>/.claude/settings.json`   | checked in, shared with a team |
-| `user`           | `~/.claude/settings.json`            | this machine's default |
+| `user`           | `~/.claude/settings.json` (or `$CLAUDE_CONFIG_DIR/settings.json`) | this machine's default |
 
 `SETTINGS_LAYER_ORDER` in the hook (`SETTINGS_LAYER_NAMES` in
 `snapshots.py`) fixes this precedence; `effective`/`effective_provenance`
@@ -164,10 +164,11 @@ layer the plan's "Configuration layers" section lists:
 - `claude_md` — byte counts for the user (`~/.claude/CLAUDE.md`),
   project root (`CLAUDE.md`), and project-local (`CLAUDE.local.md`)
   files, plus a bounded walk's count/total-bytes for nested `CLAUDE.md`
-  files below the project root. The walk is depth-limited (≤6) and
-  visits at most 5,000 directories, skipping `.git`, `node_modules`,
-  `.venv`, `bin`, `obj` — so a huge or symlink-cyclic tree can't make a
-  session start hang.
+  files below the project root. The walk is depth-limited (≤6), visits
+  at most 5,000 directories, stops after 1 second, and skips `.git`,
+  `node_modules`, `.venv`, `bin`, `obj`, `dist`, `build`, `target`,
+  `__pycache__`, `.next`, `vendor`, `Pods` and `packages` — so a huge or
+  symlink-cyclic tree can't make a session start hang.
 - `rules` / `commands` — count and total bytes of
   `.claude/rules/*.md` / `.claude/commands/**/*.md`.
 - `skills` — `{project, user}`, each `{names, total_bytes}` from
@@ -245,10 +246,11 @@ getting exactly the one table it always has.
   only the project slug and content hashes, matching the hook's own
   privacy posture.
 
-## What `init` (v0.3) will ask
+## What `init` could ask (not built yet)
 
-The planned `init` command (v0.3 milestone) uses this same schema-2 scan
-to open with a project-specific summary instead of a blank slate:
+`init` exists (`onboarding.py`), but it does not read this scan yet. The
+plan is for it to use the same schema-2 scan to open with a
+project-specific summary instead of a blank slate:
 
 - Which settings layers are present for this project, and which one
   currently wins each effective-config key — so a suggested change can

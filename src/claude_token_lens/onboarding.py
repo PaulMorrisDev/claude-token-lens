@@ -3,8 +3,7 @@ layers" section's "Asked, not guessed (v0.3 init)"): detect what's
 already on the machine, ask (or derive, under ``--non-interactive``) a
 handful of questions this codebase genuinely cannot infer on its own,
 write ``config.toml``/``<config_dir>/projects/<slug>.toml``, print the
-install-step fragments (never edit ``settings.json`` directly), and
-finish by running an initial :mod:`~claude_token_lens.baseline` capture
+install-step fragments when asked to, and finish by running an initial :mod:`~claude_token_lens.baseline` capture
 and printing its capture-window status.
 
 This module never performs the dynamic import of the packaged
@@ -16,13 +15,11 @@ install fragment as plain strings (``hook_fragment``/
 and unit-testable without touching ``importlib``/packaged-resource
 plumbing at all.
 
-Nothing here edits ``settings.json``: the plan is explicit that a
-managed/user/project settings file is the user's own to hand-edit (or
-apply a profile to, once ``profiles/apply.py`` -- out of this package's
-current scope -- exists); this command only prints the fragments to add
-and the commands that already exist for doing so safely
-(``snapshot-config --install-hook``, ``statusline --print-install-
-fragment``).
+The only ``settings.json`` write here is repairing a broken hook
+command, after showing it and a yes (or ``--repair-hook``), with a
+backup first (:func:`_offer_hook_repair`). Connecting the hook and
+statusline is ``cli.py``'s ``_cmd_init_connect_step``, which also shows
+the change and asks first; profiles are written only by ``apply``.
 """
 
 from __future__ import annotations

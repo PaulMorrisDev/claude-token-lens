@@ -30,30 +30,46 @@ inline SVG charts, `prefers-color-scheme` dark."
   service has no login — it binds to localhost and relies on that for
   access control (plan: "port bound to localhost only"), so there is
   nothing to store client-side beyond per-viewer UI state
-  (`localStorage`: last-selected tab, sort order — never data the
-  server should be the source of truth for).
+  (`localStorage`: last-selected tab, sort order, chosen window —
+  never data the server should be the source of truth for).
 
 ## Tabs
 
-One page (`index.html`), one `<nav>` of tabs, each rendering from its
-own `/api/*` route(s) so a tab's data can be refetched independently
-(a background poll re-renders only the active tab). Fourteen tabs ship,
-in the order below.
+One page (`index.html`), one `<nav>` of tabs (`TAB_ORDER`), each
+rendering from its own `/api/*` route(s). A tab is rendered the first
+time it is opened and kept until the window changes; there is no
+background poll. Fourteen tabs ship, in the order below.
 
-**The window picker** sits in the header and applies to every tab: the
-last hour, today, the last 24 hours, 7/30/90 days, all time, or since
-my last change. It is sent to every report-backed route as
+**The dashboard never changes Claude Code's settings.** There is no
+Apply button. Every fix is a prompt to paste into Claude Code or an
+`apply ... --dry-run` command to run yourself, each with a Copy button.
+The only things the dashboard writes are profile files in this tool's
+own folder and session tags in its own store. Amounts follow the
+billing mode (`docs/writing-help.md`, "Amounts").
+
+**The window picker** sits in the header: Last hour, Today, Last 24
+hours, Last 7/30/90 days (30 by default), All time, or Since my last
+change (`WINDOW_OPTIONS`). It is sent to every report-backed route as
 `window=<name>` or `window_days=N` (`withWindow()`), remembered in
-`localStorage` (`tls:window`), and a change drops every rendered tab and
+`localStorage` (`tls:window`, read from the older `tls:overviewWindow`
+key when it is missing), and a change drops every rendered tab and
 redraws the one on screen, so no tab keeps showing the previous
 window's numbers (review finding 21). `loadReport()`'s cache is keyed by
-the window for the same reason. Short windows carry a note: a session
-active in the window counts in full.
+the window for the same reason. The short windows (last hour, today,
+last 24 hours, since my last change) carry a note: a session active in
+the window counts in full. A few panels always cover all history and
+ignore the picker: the Sessions list, the Cache tab's rebuild counts,
+the Usage tab's compaction list, the baseline panel, "Your changes and
+what they did", the setup panel and service health.
 
-1. **Overview** — `/api/summary` + the corpus-wide totals table also
-   shown by the CLI's `report` overview section, and the Scorecard and
-   Totals from `/api/report.json` for the same window. **Start here**,
-   above the totals, lists the three most important items from
+1. **Overview** — top to bottom: a line naming the billing mode and
+   why it was chosen (from `report.meta`); **Start here**; four stat
+   cards from `/api/summary` (sessions, transcripts, cost at list
+   price, tokens); the **Scorecard** tiles; the `totals` and `by_model`
+   tables from the report's overview section (`/api/report.json`, same
+   window); and **Service health** from `/api/health` (watcher status,
+   plus a warning when the service is not registered to start at
+   logon). **Start here** lists the three most important items from
    `/api/recommendations` (most severe first, each with its severity in
    plain words, `why` and estimated saving, and buttons to the
    Recommendations and Quick actions tabs), then every scorecard area
@@ -61,13 +77,16 @@ active in the window counts in full.
 2. **Quick actions** — `/api/quick-actions`: one card per check, each a
    question (for example "Is a cheaper model enough for any of your
    agents?") with a status badge (Worth a look / Nothing to do / Not
-   enough data) and its one-line answer. "Show the evidence" loads
+   enough data) and its one-line answer. "Show the evidence" (with the
+   number of fixes and tips, for example "Show the evidence, 2 fixes
+   and 1 tip"; no button when there is not enough data) loads
    `/api/quick-actions/<id>`: the evidence table, fix cards rendered by
    the same `renderFix` the Recommendations tab uses, and habit tips.
    The same checks run in the terminal as `claude-token-lens check`.
-3. **Sessions** — `/api/sessions`, a sortable table (client-side sort,
-   same click-to-sort pattern as `render/html.py`'s `_SCRIPT`); a row
-   click renders that session's detail inline in the same panel rather
+3. **Sessions** — `/api/sessions`, 50 rows a page, newest first, with
+   Previous/Next buttons (all history, not the window); the report's
+   `sessions` section follows below it. A row click (or Enter) renders
+   that session's detail inline in the same panel rather
    than switching to a separate tab (feature #5, "root-causing one
    expensive session", folded into Sessions rather than given its own
    tab). The detail view fetches `/api/session/<id>` and renders an
@@ -81,12 +100,17 @@ active in the window counts in full.
    fourth marker kind, `limit_markers`, in the blank strip above the
    context line rather than on the line itself — see "Session timeline"
    below for why they're positioned by timestamp instead of turn index.
-   Above the timeline, **Why was this session expensive?** renders
-   `/api/session/<id>/explain`: the headline, its sentences, and the
-   cost split as a small table with share bars.
-4. **Cache** — `/api/recache`: cache rebuilds by cause (expired while
-   idle, invalidated by a change, expired during a usage-limit pause —
-   `recache.SIGNATURES`), plus the `recache`/`limits` report sections.
+   The detail runs, top to bottom: a summary list, **Why was this
+   session expensive?** (`/api/session/<id>/explain`: the headline, its
+   sentences, and the cost split as a small table with share bars),
+   "Mode override" and "Purpose override" selects with an "Apply tags"
+   button (`POST /api/sessions/<id>/tags`, stored in this tool's own
+   store), a **Transcripts** table, then the timeline.
+4. **Cache** — `/api/recache`: stat cards for cache rebuilds by cause
+   (expired while idle, invalidated by a change, expired during a
+   usage-limit pause — `recache.SIGNATURES`), headed "all history"
+   because the route takes no window, plus the `recache`/`limits`
+   report sections for the chosen window.
 5. **Cache lifetime (TTL)** — `/api/ttl`: per-agent-type observed/simulated cost, the
    5m/1h recommendation and its fidelity — same figures as the CLI's
    `ttl` subcommand, including the fidelity-exceeds-bound suppression
@@ -116,8 +140,8 @@ active in the window counts in full.
    `/api/claude-md/<id>` with the sections by size, duplicates, stale
    references and fix prompts. **Skills** (`/api/skills`): each skill's
    description, source, how often it was listed and used, and what the
-   listing cost, with a filter for skills Claude never used and one fix
-   that hides them all. File text and skill descriptions are read when
+   listing cost, with a "Show only skills Claude never used" checkbox
+   and, when two or more are unused, one fix that hides them all. File text and skill descriptions are read when
    the tab asks and never stored. The terminal equivalent is
    `claude-token-lens review claude-md|skills`.
 9. **Config** — `/api/config-diff?auto_keys=1`: `effective_config`/`config_layers`/
@@ -134,53 +158,61 @@ active in the window counts in full.
    captured yet"), and every past capture in a history table — with a
    "capture window open: provisional" notice whenever
    `capture_status.started && !capture_status.complete`.
-10. **Profiles** — **Create a profile** first: pick a goal from
-   `/api/profile-goals` (spend less on subagents, cheaper models,
-   cheaper cache, shorter conversations, less thinking, start from my
-   recommendations, or start from my current settings). The goal's
+10. **Profiles** — a "Save my current settings as a profile" button
+   comes first (`POST /api/profiles/from-current`; if a copy already
+   exists it asks before replacing it). Then **Create a profile**: pick
+   a goal from `/api/profile-goals` (spend less on subagents, cheaper
+   models, cheaper cache, shorter conversations, less thinking, start
+   from my recommendations, or start from my current settings, whose
+   "Start here" presses the save button above). The goal's
    draft is a table of candidate changes (setting, now, after,
    estimated effect, why and the trade-off) with the ones your data
    supports already ticked; each tick re-posts the chosen changes to
    `POST /api/whatif` and updates the running total. Name it and save
-   (`POST /api/profiles`). Then one card per profile from `/api/profiles` (the
+   (`POST /api/profiles`). Then **Your profiles and the built-in
+   ones**: one card per profile from `/api/profiles` (the
    catalogue's seven shipped profiles plus every user profile): name,
    "Built in" or "Yours", who it is for, and "Changes N settings: ..."
    listed by their plain labels (from `/api/profiles/<id>` and
    `/api/profile-schema`). The card matching the latest baseline's
    `suggested_profile_id` carries a "Suggested for you" badge. "Show what
    it changes" opens the detail view from `/api/profiles/<id>/diff`,
-   with a scope picker in plain words: one table of Setting / Now /
-   After / Set in (unchanged and policy-locked rows are greyed and say
-   so), then "Ask Claude to do it" (the route's `prompt`), "Or run this
-   command" (`dry_run_command`) and "Or try it for one session"
+   with a scope picker ("Apply it to:", in plain words): one table of
+   Setting / Now / After / Set in (unchanged and policy-locked rows are
+   greyed and say so), an **Estimated effect** table from
+   `POST /api/whatif` (Change / Effect / How it was worked out), then
+   "Ask Claude to do it" (the route's `prompt`), "Or run this command"
+   (`dry_run_command`) and "Or try it for one session"
    (`launch_command`), each with a Copy button, and the unified diff in
    a collapsed block. The UI never runs a command itself, and never
    fills in a project directory on the user's behalf (`docs/api.md`'s
    own note on why that route never accepts one).
-   "Save my current settings as a profile" posts to
-   `POST /api/profiles/from-current`; if a copy already exists it asks
-   before replacing it. "Make your own profile" is a form built from
+   **Your changes and what they did** (`/api/impact`, all history):
+   each `apply`, undo or settings change the hook saw, with the
+   sessions before against those after on the measures that change
+   should move, and, for an apply, "To undo it:
+   `claude-token-lens apply --revert <backup_ts>`".
+   "Make your own profile" is a form built from
    `/api/profile-schema`: "Start from" any profile, one field per
    setting (a select for fixed values and on/off, a number box with
    the allowed range, or a comma-separated list), an "Add an agent"
    block per agent, and "Edit as JSON instead" as an escape hatch. It
    posts to `POST /api/profiles` and shows the server's validation
-   error inline. It sits in a collapsed "Edit settings directly" block
-   under **Your changes and what they did** (`/api/impact`): each
-   `apply`, undo or settings change the hook saw, with the sessions
-   before against those after on the measures that change should move,
-   and the command that reverts an apply. Each profile's detail also
-   shows its estimated effect from `POST /api/whatif`.
+   error inline. It sits last, in a collapsed "Edit settings directly"
+   block.
 11. **Recommendations** — `/api/recommendations`: one card per
-   `Recommendation`, grouped by `severity`. Every card shows its
-   evidence line(s) (`label: formatted value (from <table title>,
-   <row label>)`, same value formatting
-   `render/tables.py::format_evidence_value` gives the CLI's
-   Markdown/HTML output), `why` and the estimated saving (phrased for
-   the billing mode), and, per entry in `fixes`, "What you're
-   changing" (the six-part explainer), "Ask Claude to do it" (the
-   prompt, with a Copy button) and, for a plain setting, "Or run this
-   command" (the `apply --set ... --dry-run` line). A card with a
+   `Recommendation`, grouped by `severity` under "Do this" (action),
+   "Worth considering" (advice) and "For your information" (info).
+   Every card shows `why`, "For: <agent>", the estimated saving
+   (phrased for the billing mode), "What to do", and a collapsed "Show
+   the numbers behind this" with its evidence line(s) (`label:
+   formatted value (from <table title>, <row label>)`, same value
+   formatting `render/tables.py::format_evidence_value` gives the CLI's
+   Markdown/HTML output). Per entry in `fixes` (each collapsed when
+   there are several) it shows "What you're changing" (the six-part
+   explainer), "Ask Claude to do it" (the prompt, with a Copy button)
+   and, for a plain setting, "Or run this command" (the
+   `apply --set ... --dry-run` line). A card with a
    `lever` but no `fixes` names the setting and where it lives in plain
    words; a `scope: "managed"` card instead shows "managed by policy,
    raise with your administrator" (plan "Enterprise use") and no fix.
@@ -188,17 +220,20 @@ active in the window counts in full.
    tab's baseline panel appears above the list while a capture window is
    in progress (`/api/baseline`'s `capture_status`).
 12. **Usage** — the `usage`/`compactions`/`phases` report sections plus a raw
-    `/api/compactions` list.
+    `/api/compactions` list (all history, the first 50 shown).
 13. **Data quality** — **What this tool installed, and what to expect**
     first (`/api/setup`): what to expect in plain words (it never uses
     your Claude tokens, the hook and statusline add none, the first scan
     takes a while, nothing changes until you apply it), then each thing
     installed with where it is, what it does, its token cost and how to
-    undo it, and the uninstall command. Then `/api/diagnostics`: the parse-quality counters
-    (`Diagnostics` dataclass fields) as a labelled table, each with what
-    it means (`helptext.diagnostics_table`) — same figures as the CLI
-    report's Diagnostics section, so a user comparing the UI against a
-    CLI run for the same window sees identical numbers.
+    undo it, and the uninstall command under "Remove everything". Then
+    any report section no other tab claims (the fallback in
+    `SECTION_TAB_MAP`, below). Then `/api/diagnostics`: whether the
+    snapshot hook and the statusline are working, then the parse-quality
+    counters (`Diagnostics` dataclass fields), as one labelled table,
+    each row with what it means (`helptext.diagnostics_table`) — same
+    figures as the CLI report's Diagnostics section, so a user comparing
+    the UI against a CLI run for the same window sees identical numbers.
 14. **Glossary** — the `GLOSSARY` constant in `app.js`: each term the
     dashboard uses, in plain English. The README's glossary is the same
     list, word for word.
@@ -237,30 +272,24 @@ doesn't already have; a page reload is always safe.
 
 ## Testing
 
-`tests/test_service_ui.py` (built alongside `static/`) greps every file
-under `static/` for the forbidden substrings above (mirroring
-`test_render.py`'s HTML egress test) and starts a real service against
-a fixture store to assert each tab's initial `fetch` succeeds and its
-rendered DOM contains the expected section headings — no headless
-browser, `urllib.request` plus a minimal DOM-shape string check is
-enough for a stdlib-only test suite.
+`tests/test_service_static.py` greps every file under `static/` for
+the forbidden substrings above (mirroring `test_render.py`'s HTML
+egress test), then starts a real service with canned JSON for every
+route and checks, among other things, that each static file is served
+with the right content type, that
+`app.js` fetches every `GET /api/...` route this document's sibling
+`docs/api.md` documents under a `### \`GET ...\`` heading, that every
+`TAB_TITLES` entry matches its tab button, and that every section
+`report._SECTION_ORDER` can emit is mapped to a tab. There is no
+headless browser: `urllib.request` plus string checks is enough for a
+stdlib-only test suite.
 
 ## Implementation notes (S1-ui)
 
 The UI shipped in `static/index.html` + `app.js` + `app.css` follows
-this document's Constraints, Data flow and Testing sections exactly —
-the Tabs section above now describes the shipped twelve-tab structure
-directly (reconciled by S1-integration; it previously described a
-nine-tab plan with two footnoted deviations, which was corrected in
-place rather than left as a drifted historical record; the Savings tab
-was added in the v4 wiring round, after S1-integration). One naming
-note remains:
-
-- The test file is `tests/test_service_static.py` (the S1-ui brief's
-  literal filename), not `tests/test_service_ui.py` as an earlier draft
-  of this document named it — both cover the same ground (egress scan +
-  a fixture-server smoke test); this document's own filename reference
-  was the one that drifted, not the test suite.
+this document's Constraints, Data flow and Testing sections, and the
+Tabs section above describes the shipped fourteen-tab structure
+directly.
 
 **Generic Section/Table rendering** for Sessions/Cache/TTL/Agents/Config/Usage/
 Data quality is driven by an explicit section-key -> tab map (`recache`/

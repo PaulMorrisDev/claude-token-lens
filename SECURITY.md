@@ -1,13 +1,15 @@
 # Security policy
 
-claude-token-lens is a local, read-only analytics tool. This document is
-a sign-off checklist for a corporate security review, written to be
-verifiable against the code rather than taken on trust.
+claude-token-lens is a local analytics tool. It reads the files Claude
+Code writes; it never calls Claude or any other remote service, and
+uses none of your tokens. This document is a sign-off checklist for a
+corporate security review, written to be verifiable against the code
+rather than taken on trust.
 
 **Status note:** every guarantee below describes what the *current*
-code does, verifiable against it rather than taken on trust. This
-includes the `claude-token-lens serve` service (watcher, SQLite store,
-JSON API, static web UI) and its deployment artefacts — see
+code does. This includes the `claude-token-lens serve` service
+(watcher, SQLite store, JSON API, static web UI) and its deployment
+artefacts — see
 [README.md's "Running the service"](README.md#10-running-the-service)
 and [docs/deploy.md](docs/deploy.md).
 
@@ -50,12 +52,58 @@ and [docs/deploy.md](docs/deploy.md).
   prompts built from them name headings and line numbers, not whole
   passages.
 
-Nothing outside these locations is read, and nothing is ever written to
-except claude-token-lens's own on-disk digest cache, config-snapshot
-files, usage log, and salt file, under `<config-dir>` (default
-`~/.claude/token-lens`, or `$CLAUDE_CONFIG_DIR/token-lens`) — with one
-deliberate, explicit-opt-in exception: `claude-token-lens apply`. See
-"Applying a profile" below.
+- `settings.json` in the folder above `<config-dir>` (normally
+  `~/.claude/settings.json`), read directly by `init`, `changes`,
+  `uninstall` and the dashboard's Data quality tab, to see whether the
+  SessionStart hook and statusline are set up. Only the hook command and
+  whether `statusLine` runs this tool are used; nothing from it is
+  stored.
+- The JSON payload Claude Code sends the statusline command on stdin at
+  each refresh (see "Statusline" below).
+
+Nothing outside these locations is read.
+
+## What is written, and where
+
+Everything this tool writes by itself lives under `<config-dir>`
+(default `~/.claude/token-lens`, or `$CLAUDE_CONFIG_DIR/token-lens`):
+`config.toml`, `projects/`, `baselines/`, `snapshots/`, `cache/`,
+`usage-log.csv`, `statusline-keys.json`, `salt`, `service.db`,
+`hooks/snapshot-config.py`, `profiles/`, `backups/` and
+`active-profile`. The only other files it writes are output files you
+name on the command line: for example `--out` (`export`,
+`monthly-report`, `scrub-fixture`), `report --html PATH` or `serve
+--monthly-report DIR`.
+
+Four commands change something outside `<config-dir>`. Each prints the
+change before making it:
+
+- **`init`** (connect step): adds a SessionStart hook and, if you have
+  none, a statusline to `settings.json` in the folder above
+  `<config-dir>`. It asks first (default no), or does it without asking
+  with `--connect`. `init --repair-hook` rewrites only a broken hook
+  command. Both copy the file to `settings.json.bak-<UTC time>` beside
+  it before writing.
+- **`install-service`** (and `init`'s last step, when you say yes):
+  registers `serve` to start at logon. On Windows that is a Scheduled
+  Task (`-RunLevel Limited`, no file written); on Linux it writes
+  `~/.config/systemd/user/claude-token-lens.service`; on macOS
+  `~/Library/LaunchAgents/com.claude-token-lens.plist`. `--dry-run`
+  prints the plan and does nothing. `uninstall-service` removes it. See
+  [docs/deploy.md](docs/deploy.md).
+- **`uninstall`**: removes this tool's hook and statusline from
+  `settings.json` (after the same `.bak-` copy), removes the logon
+  service, and, only with the matching flags, reverts applied changes
+  (`--revert-changes`) and deletes `<config-dir>` (`--delete-data`).
+  It asks before each step unless you pass `--yes`.
+- **`apply`**: see "Applying a profile" below.
+
+Running processes: `install-service`, `uninstall-service`,
+`uninstall`, `changes` and the service's `/api/health` run the
+platform's own task tool (`schtasks`, `powershell.exe`, `systemctl` or
+`launchctl`) to register, remove or check the logon service. `apply`
+runs `git ls-files` to check whether a target file is tracked. Nothing
+else starts a process.
 
 ## What is stored
 
@@ -107,10 +155,11 @@ directory (`service/schema.py`'s module docstring). They exist purely
 for the watcher's own bookkeeping — deciding what to re-parse and
 where a project's scan root is — and every one of `Store`'s read
 queries (`summary`, `sessions`, `session`, `daily_usage`, `recache`,
-`compactions`, `snapshots`, `tags`) is written to leave them out of its
-result dict entirely, so the `/api/*` routes and the UI never see
-them; `tests/test_service_store.py` asserts this by construction with
-a distinctive fake path round-tripped through every read query.
+`compactions`, `snapshots`, `profiles`, `baselines`, `tags` and the
+rest) is written to leave them out of its result dict entirely, so the
+`/api/*` routes and the UI never see them; `tests/test_service_store.py`
+asserts this with a distinctive fake path round-tripped through the
+read queries.
 `sessions.slug` (Claude Code's own project-slug encoding of the
 project's absolute path, so it also embeds the username) is read out —
 the UI needs some label for "which project" — but every read query
@@ -134,14 +183,18 @@ bare `@`, or a URL). Run it yourself:
 python -m pytest tests/test_privacy.py tests/test_scrub.py -q
 ```
 
-## Applying a profile: the one command that writes outside `<config-dir>`
+<a id="applying-a-profile-the-one-command-that-writes-outside-config-dir"></a>
 
-Every guarantee above describes every subcommand except one:
-`claude-token-lens apply` (`profiles/apply.py`) is the single command
-in this package that writes to a project's or your user account's real
-Claude Code configuration files, and only when you explicitly run it —
-never as a side effect of `report`, `snapshot-config`, or any other
-subcommand, and never on `--dry-run` (which only prints text).
+## Applying a profile
+
+`claude-token-lens apply` (`profiles/apply.py`) is the one command that
+changes how Claude Code behaves: it writes the settings and agent files
+a profile or `--set` names. It does so only when you run it yourself —
+never as a side effect of `report`, `snapshot-config`, the dashboard or
+any other subcommand, and never on `--dry-run` (which only prints
+text). `init` and `uninstall` also edit `settings.json`, but only to add
+or remove this tool's own hook and statusline (see "What is written,
+and where" above).
 
 A real apply (not `--dry-run`, not `--launch`) writes exactly these
 files, depending on `--scope`:
@@ -168,21 +221,30 @@ printed as `export NAME=value` guidance only (see `docs/profiles.md`'s
 layer currently governs, regardless of scope or flags.
 
 Two refusals are on by default, both requiring an explicit flag to
-override: writing to a project file already tracked by git
-(`--allow-tracked`), and creating an agent frontmatter file that
-doesn't exist yet (`--force`). Every write is preceded by a
-byte-for-byte backup, so any apply can be undone exactly with
-`claude-token-lens apply --revert <ts>`. A revert checks each file's
-hash against the one `apply` recorded and refuses, restoring nothing,
-if a file was edited after the apply, so it never silently discards
-later changes; `--ignore-changes` overrides that. Full detail:
+override: writing to a file already tracked by git, at any scope
+(`--allow-tracked`; checked with `git ls-files`), and creating an agent
+frontmatter file that doesn't exist yet (`--force`). Every write is
+preceded by a byte-for-byte backup, so any apply can be undone exactly
+with `claude-token-lens apply --revert <ts>`: each file is restored from
+its backup, and a file the apply created is deleted. A revert checks
+each file's hash against the one `apply` recorded and refuses,
+restoring nothing, if a file was edited after the apply, so it never
+silently discards later changes; `--ignore-changes` overrides that. The
+backups stay under `<config-dir>/backups/` until you delete that folder
+(`uninstall --delete-data` refuses while an applied change is still in
+place). Full detail:
 [docs/profiles.md#applying-a-profile](docs/profiles.md#applying-a-profile).
 
 ## No outbound network calls
 
-No module outside `src/claude_token_lens/service/` imports a
-networking library — no `socket`, `urllib`, `http.client`, `requests`
-or equivalent anywhere else in `src/claude_token_lens/`. The package
+The tool never calls Claude, Anthropic or any other remote service,
+and uses none of your tokens. Outside `src/claude_token_lens/service/`,
+one function imports a networking library: after `install-service` (or
+`init`'s service step) registers the service, `cli.py` makes one `GET
+/api/health` request to the address and port it just registered
+(`127.0.0.1:8765` by default), to report whether the service is
+already answering. It never contacts any other address. No other module
+imports `socket`, `urllib`, `http.client`, `requests` or equivalent. The package
 has zero third-party dependencies (`pyproject.toml`'s
 `dependencies = []`); `rich` is an optional, opt-in extra for nicer
 terminal output, not a networking dependency. Pricing comes from a
@@ -190,14 +252,14 @@ user-edited local `pricing.toml`, never a live lookup — there is no
 code path that could fetch it.
 
 For the CLI's analytics/report subcommands this is a structural
-guarantee: nothing to call out to, because there is no networking code
-at all. **The `claude-token-lens serve` service** (a local
+guarantee: nothing to call out to, because they contain no networking
+code at all. **The `claude-token-lens serve` service** (a local
 `http.server` API and static UI, `src/claude_token_lens/service/`) is
-the one exception: `service/api.py` and `service/serve.py` do import
+the main exception: `service/api.py` and `service/serve.py` do import
 `http.server` (to listen on its own local socket) and `urllib.parse`
 (to parse request query strings — it never builds or fetches a URL).
 The service opens one socket — its own local HTTP bind,
-`127.0.0.1`-only unless you pass `--allow-remote` — but never
+`127.0.0.1`-only unless you pass `--bind <address> --allow-remote` — but never
 initiates a connection of its own. This is an automated, always-on
 guarantee, not just documentation:
 `tests/test_service_egress.py` monkeypatches every socket-level call
@@ -220,23 +282,52 @@ systemd hosting paths are scoped instead by OS-level permissions
 `ReadWritePaths`) rather than a container boundary — detail on all
 three in [docs/deploy.md](docs/deploy.md).
 
-A web page you visit can't read the service's API through DNS
-rebinding (pointing its own domain name at `127.0.0.1`): every request
-whose `Host` header isn't a loopback name, the specific `--bind`
-address, or a name you added with `serve --allowed-host` gets `403`
-before any route runs. See
-[docs/api.md](docs/api.md#host-allowlist-dns-rebinding).
+## What a web page can and can't do to the service
+
+The service has no login. Any program or user on this machine can call
+it, and so can other machines if you bind it to a non-loopback address
+(`--bind <address> --allow-remote`; `serve` refuses a non-loopback bind
+without that flag). These guards stop a web page you visit from using
+it through your browser:
+
+- **DNS rebinding.** A page can't read the API by pointing its own
+  domain name at `127.0.0.1`: every request whose `Host` header isn't a
+  loopback name (`127.0.0.1`, `localhost`, `::1`), the specific
+  `--bind` address, or a name you added with `serve --allowed-host`
+  gets `403` before any route runs. A request with no `Host` header
+  (not a browser) is allowed. See
+  [docs/api.md](docs/api.md#host-allowlist-dns-rebinding).
+- **Cross-site writes.** Every `POST` is refused with `403` when its
+  `Origin` header isn't exactly `http://<Host>`, or its
+  `Sec-Fetch-Site` is anything but `same-origin` or `none`. A request
+  with neither header (a local script) is allowed. A `POST` must also
+  be `Content-Type: application/json`, which a plain HTML form can't
+  send. See [docs/api.md](docs/api.md#cross-site-protection-review-s3).
+- **No CORS.** The service never sends `Access-Control-Allow-*`
+  headers, so another site's script can't read a response.
+- **Response headers.** Every response carries
+  `Content-Security-Policy: default-src 'self'` (scripts only from the
+  service itself), `X-Content-Type-Options: nosniff` and
+  `Cache-Control: no-store`.
+- **Static files.** `/static/*` serves only files inside the packaged
+  UI folder; a path that escapes it gets `404`.
+- **No request log.** Request paths are never written to stdout or a
+  log.
+
+## What the dashboard can change
 
 The dashboard never changes your Claude Code configuration. A
 recommendation or profile gives you a prompt to paste into Claude Code
 (which asks your permission before editing anything under `.claude`)
 and a `claude-token-lens apply ... --dry-run` command to run yourself.
 The service's few write routes touch only its own files: session tags
-in the store, and user profiles under `<config-dir>/profiles/`
-(`POST /api/profiles`, and `POST /api/profiles/from-current`, which
-saves a copy of your current settings there). Both refuse to overwrite
-an existing profile unless asked to with `?replace=1`, and neither can
-create or change a shipped catalogue profile.
+(`mode`/`purpose`) in the store, and user profiles under
+`<config-dir>/profiles/` (`POST /api/profiles`, and `POST
+/api/profiles/from-current`, which saves the allowlisted keys of the
+latest config snapshot there). Both refuse to overwrite an existing
+profile unless asked to with `?replace=1`, and neither can create or
+change a shipped catalogue profile. `POST /api/whatif` only works out
+an estimate and writes nothing.
 
 The service's on-disk SQLite store (`<config-dir>/service.db`) is
 always a derived cache rebuilt from the same transcripts the CLI
@@ -265,7 +356,7 @@ Remove-Item -Recurse -Force "$env:USERPROFILE\.claude\token-lens\cache"
 it as it parses); `--no-cache` skips the cache entirely for that one run
 without deleting anything already on disk. Both are wired through to
 `corpus.load_corpus` for every subcommand that loads a corpus — see
-[README.md](README.md#2-installing-and-first-run).
+[README.md](README.md#global-flags-clipy).
 
 ## Excluding confidential projects
 
@@ -323,7 +414,16 @@ also fails on any slug-shaped `Users-`/`home-`-anchored username segment
 anywhere in a scanned string, not just in export output). Full
 column-by-column detail: [`docs/exports.md`](docs/exports.md).
 
-## Statusline payload key recording (`statusline-keys.json`)
+## Statusline
+
+Claude Code runs the statusline command only in a terminal session,
+not in the desktop app. Its output is shown to you under the prompt and
+is never sent to Claude. From each payload it appends a row to
+`<config-dir>/usage-log.csv`: the time, the session id, usage-limit
+percentages and reset times, context-window token counts and cache
+state. No prompt text, file paths or command text.
+
+### Payload key recording (`statusline-keys.json`)
 
 `claude-token-lens`'s statusline integration
 (`src/claude_token_lens/statusline.py`) records the *key names* of the

@@ -41,7 +41,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `impact.py`, `GET /api/impact`).
 - **Window picker in the header**, for every tab: the last hour, today,
   the last 24 hours, 7/30/90 days, all time, or since my last change
-  (`?window=1h|today|24h|change|all` on every report-backed route).
+  (`?window=1h|today|24h|change|all`, or `?window_days=N`, on every
+  report-backed route).
 - **What this tool installed, and what to expect** on the Data quality
   tab (`GET /api/setup`) and in `changes`: it never uses your Claude
   tokens, the hook and statusline add none, and what each piece does
@@ -72,8 +73,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from", settings, per-agent fields, JSON as an escape hatch) and
   "Save my current settings as a profile" write only to this tool's own
   profile store.
-- **Glossary tab**, whose wording the README's glossary is generated
-  from.
+- **Glossary tab**, worded the same as the README's glossary (the two
+  are kept in step by hand).
 - New read-only routes `GET /api/profile-schema` (every allowlisted
   key with label, type, allowed values, description and trade-off) and
   `GET /api/profiles/<id>`, and `POST /api/profiles/from-current`,
@@ -160,141 +161,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Host allowlist** for `serve` (DNS rebinding): every request whose
   `Host` header isn't a loopback name, the bind address or an
   `--allowed-host NAME` gets `403`.
-
-### Changed
-
-- **README restructured**: a plain description, a three-step quick
-  start, what each tab answers, acting on a recommendation, and a
-  glossary, then the reference sections (renumbered). The token totals,
-  how caching works, cache rebuild definitions and the TTL simulation
-  assumptions moved to [`docs/concepts.md`](docs/concepts.md); links
-  across the docs are updated.
-- `render_patch_set` renders a recommendation's `changes` with current
-  and proposed values instead of guessing from the lever text.
-- The dashboard subtitle says what the tool is for; the Cache tab's
-  statusline table is titled "Cache health per session, from your
-  statusline". CLI wording changed; JSON and CSV keys are unchanged.
-- **Recommendations in plain words.** Severity reads "Do this",
-  "Worth considering" or "For your information"; cards say who a
-  change is for and "What to do", fold multiple fixes, and put the
-  evidence under "Show the numbers behind this", citing the table
-  title and row label. Markdown and HTML reports use the same wording.
-- **Totals for the window grouped and labelled with units**
-  (Activity, Tokens, Cost, Context size) via display-only
-  `Table.row_groups`/`row_kinds`; numbers in mixed metric tables get
-  thousands separators.
-- **Scorecard tiles explain themselves**: what each area measures,
-  which way is better, and what the next rating needs, in words
-  rather than threshold keys.
-- CLI and dashboard wording: section, table and column titles are
-  plainer; the Markdown and HTML reports show readable row labels. JSON
-  and CSV output keep the raw keys and values.
-- Dashboard: every report section is mapped to a tab (`sessions`,
-  `context_budget`, `baseline_comparison`, `phases`, `agent_startup`,
-  `scorecard`); the Config tab renders its tables once; the Cache tab
-  explains the limit-expiry cause; tabs are renamed "Cache lifetime
-  (TTL)" and "Data quality"; each tab has one heading and an intro.
-- **Recommendations are written in plain words** by a new pass,
-  `advice.py`, run at the end of `recommend()`: each card has a plain
-  title, a `why` sentence, an action, and (where a setting is involved)
-  `changes` with the current value, so it comes with an explainer, a
-  command and a prompt. Cards that disagreed are consolidated:
-  `compaction-window` replaces `compaction-churn` and takes the setting
-  from `long-context-share`, and is dropped when `autoCompactWindow` is
-  already at or below its floor; the per-agent `model-tier` cards merge
-  into one with a change per agent type (as the `haiku`/`sonnet`/`opus`
-  alias), skipping workflow subagents and forks. `spawn-cost` no longer
-  fires for agents no file can change. Cards are ordered by severity,
-  then by estimated saving (`Recommendation.saving_usd`). A setting
-  locked by managed policy gets a prompt that drafts a request to your
-  administrator instead of a command. The rules' ids, evidence and JSON
-  keys are unchanged.
-- `data-quality` fires on cache-write mismatches only when they are a
-  real share of replies (the same bar as unreadable lines), not on a
-  single odd reply.
-
-### Fixed
-
-- The SessionStart hook and statusline commands name this Python and
-  the script by full path. `py -3` fails where the launcher isn't on the
-  `PATH`, and Git Bash doesn't expand `%USERPROFILE%`; either stopped the
-  hook without any visible error. The hook health check now reports
-  both, and `init --repair-hook` fixes them: it writes out a `%VAR%`
-  and keeps your own interpreter when it's found, and otherwise names
-  the base Python rather than a virtual environment's, since the hook
-  needs only the standard library.
-- The Data quality tab says when the statusline isn't logging (it runs
-  only in Claude Code in a terminal).
-- "All time" on the dashboard now means all time on every tab; it used
-  to fall back to 30 days on report-backed tabs.
-- A service from an older build no longer re-reads transcripts that a
-  newer build already read. Two services sharing one store used to undo
-  each other's work on every pass.
-- The skills and CLAUDE.md checks say "not enough data" when no session
-  in the window recorded those files, instead of "nothing to do".
-- **An apply stamp was read as the latest config snapshot.** `apply`
-  writes a small `{ts, schema_version, profile_id}` record into the
-  snapshot directory; every reader took it for a snapshot with no
-  settings, so the scorecard counted every setting as changed, profile
-  diffs showed empty "Now" values, "save my current settings" saved
-  nothing, and hook health dated the last snapshot from the apply. New
-  `snapshots.records_config` skips records that hold no config.
-- **The dashboard never saw the statusline usage log**: it now passes
-  the log into its report, scoped to the window's sessions like the CLI
-  (`statusline.scoped_usage_log_rows`).
-- **Stored snapshots lost their config.** The watcher stored snapshots
-  flattened, so the service's rebuilt snapshots had no effective
-  config, managed keys or agents. It now stores the hook's own
-  (redacted) document.
-- **Dashboard cost no longer dips while the service rescans.** The
-  watcher's placeholder session row (written before a session's
-  subagents are parsed) reset the session's stored cost and tokens to
-  zero until the fold finished, so a large session could briefly vanish
-  from the totals. It is now insert-only (`Store.ensure_session`).
-- **Context budget never found a project's settings snapshot.** The
-  config hook stores `project_slug` as a hash (`slug:<12 hex>`), but
-  `context_budget.py` looked snapshots up by the readable slug, so
-  CLAUDE.md, agent-list and MCP estimates, the auto-compact setting and
-  its drift check were always blank. New `snapshots.snapshot_project_key`
-  computes the hook's key.
-- **Sessions were joined to other projects' snapshots.**
-  `snapshots.snapshot_for` takes an optional `project_key` and ignores
-  snapshots from other projects (schema-1 snapshots with no project
-  still match). Config diff, config drift, `compare` and `savers` pass it.
-- **Subagents with no recorded type were counted as the main session**
-  in carry, waste, cache rebuilds and limits; phases filed the main
-  session under "unknown". All now use `model.agent_type_label`:
-  `top-level` for the main session, `unknown` for an untyped subagent.
-- `model_swap`: the unpriced-turns note now says those turns are still
-  priced at the alternatives (so the saving is understated), and the
-  lever for a built-in agent says to create an overriding agent file;
-  workflow, fork and untyped subagents have none.
-- Baseline `cost_per_session` no longer counts orphaned subagent bundles
-  as sessions.
-- Mixed "metric / value" tables (overview totals, compactions summary)
-  show numbers with separators and at most 2 decimals instead of raw
-  floats.
-- TTL near-miss column labels follow `near_miss_window_s`, and the
-  just-missed token count uses the same basis as its cost (the context
-  rewritten).
-- The scorecard's usage-limit share of cache rebuilds counted every
-  write after a limit pause; it now counts only limit-expiry rebuilds.
-
-- The auto-compact simulation (`compaction_sim`) shrank everything a
-  session added after a simulated summary by the compression ratio, so
-  context grew far too slowly afterwards and small windows looked much
-  cheaper than they are. It now removes only the tokens the summary
-  dropped. On the worked example the 100,000 saving falls from 69% to
-  35%, and the recommended floor moves to 150,000.
-
-- Attachment sizes are measured from the fields real transcripts carry
-  (`skill_listing.content`, `instructions.files[]`,
-  `deferred_tools_delta.addedLines` and others). They were always 0,
-  because the code read a `rendered` field that real transcripts never
-  have.
-- The dashboard's recommendation cards no longer show a stale
-  `apply <lever> --dry-run` hint.
-
 - **`elasticity.py`** (v4-elasticity): fits how many percentage points
   of a `five_hour`/`seven_day`/`spend_limit` usage window one million
   tokens (or one list-price dollar) is actually worth, from consecutive
@@ -380,6 +246,72 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sections' tables (see [`docs/ui.md`](docs/ui.md)).
   `docs/sections-reference.md`'s section order now matches
   `report.py`'s assembly order exactly.
+- **`savers.py`** (v4-saver-roi): third-party token-saver tool ROI —
+  detects candidate "saver" MCP servers/plugins/skills via an explicit
+  `config.toml` `[savers]` allowlist plus auto-detection (a
+  case-insensitive name regex over MCP server names, config-snapshot
+  `mcp_servers`/`enabled_plugins`, and `attribution_skill`), then reports
+  each candidate's own overhead, its effect on cost/tokens/re-cache/
+  compactions/turns in sessions where it was present versus absent
+  (stratified by purpose/mode, gated on a 5-session-per-arm minimum),
+  a search-substitution comparison against native `Grep`/`Glob`/`Read`/
+  shell search calls (reusing `carry.compute_carry`'s per-turn pricing),
+  and a net-saving-per-session verdict labelled "observed, not
+  controlled". New `saver-tool-roi` recommendation rule (`savers.RULES`)
+  recommends keeping or disabling a saver based on that net saving. See
+  [`docs/savers.md`](docs/savers.md).
+
+### Changed
+
+- **README restructured**: a plain description, a three-step quick
+  start, what each tab answers, acting on a recommendation, and a
+  glossary, then the reference sections (renumbered). The token totals,
+  how caching works, cache rebuild definitions and the TTL simulation
+  assumptions moved to [`docs/concepts.md`](docs/concepts.md); links
+  across the docs are updated.
+- `render_patch_set` renders a recommendation's `changes` with current
+  and proposed values instead of guessing from the lever text.
+- The dashboard subtitle says what the tool is for; the Cache tab's
+  statusline table is titled "Cache health per session, from your
+  statusline". CLI wording changed; JSON and CSV keys are unchanged.
+- **Recommendations in plain words.** Severity reads "Do this",
+  "Worth considering" or "For your information"; cards say who a
+  change is for and "What to do", fold multiple fixes, and put the
+  evidence under "Show the numbers behind this", citing the table
+  title and row label. Markdown and HTML reports use the same wording.
+- **Totals for the window grouped and labelled with units**
+  (Activity, Tokens, Cost, Context size) via display-only
+  `Table.row_groups`/`row_kinds`; numbers in mixed metric tables get
+  thousands separators.
+- **Scorecard tiles explain themselves**: what each area measures,
+  which way is better, and what the next rating needs, in words
+  rather than threshold keys.
+- CLI and dashboard wording: section, table and column titles are
+  plainer; the Markdown and HTML reports show readable row labels. JSON
+  and CSV output keep the raw keys and values.
+- Dashboard: every report section is mapped to a tab (`sessions`,
+  `context_budget`, `baseline_comparison`, `phases`, `agent_startup`,
+  `scorecard`); the Config tab renders its tables once; the Cache tab
+  explains the limit-expiry cause; tabs are renamed "Cache lifetime
+  (TTL)" and "Data quality"; each tab has one heading and an intro.
+- **Recommendations are written in plain words** by a new pass,
+  `advice.py`, run at the end of `recommend()`: each card has a plain
+  title, a `why` sentence, an action, and (where a setting is involved)
+  `changes` with the current value, so it comes with an explainer, a
+  command and a prompt. Cards that disagreed are consolidated:
+  `compaction-window` replaces `compaction-churn` and takes the setting
+  from `long-context-share`, and is dropped when `autoCompactWindow` is
+  already at or below its floor; the per-agent `model-tier` cards merge
+  into one with a change per agent type (as the `haiku`/`sonnet`/`opus`
+  alias), skipping workflow subagents and forks. `spawn-cost` no longer
+  fires for agents no file can change. Cards are ordered by severity,
+  then by estimated saving (`Recommendation.saving_usd`). A setting
+  locked by managed policy gets a prompt that drafts a request to your
+  administrator instead of a command. The rules' ids, evidence and JSON
+  keys are unchanged.
+- `data-quality` fires on cache-write mismatches only when they are a
+  real share of replies (the same bar as unreadable lines), not on a
+  single odd reply.
 - **`compaction_sim.py`'s `compaction-window` rule, conservatively
   rewritten**: the window sweep only ever charged a flat rediscovery
   allowance, so a smaller window always looked cheaper in isolation —
@@ -404,9 +336,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   config directory unless a caller explicitly hands it one.
   `service/api.py` passes its own real `config_dir` so the running
   service's salt lives alongside its other state as intended.
-
-### Changed
-
 - **`PARSER_VERSION` 5 -> 6** (`__init__.py`, v4-wasted-turns): two new
   additive `Turn` fields, `tool_error_count`/`tool_error_chars`,
   derived from each turn's own tool_result blocks that carry
@@ -414,23 +343,86 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `model.py`'s module docstring). No pre-batch digest cache entry ever
   computed these, so any cache built under `PARSER_VERSION` 5 or
   earlier is invalidated and transcripts are reparsed on next use.
-- **`savers.py`** (v4-saver-roi): third-party token-saver tool ROI —
-  detects candidate "saver" MCP servers/plugins/skills via an explicit
-  `config.toml` `[savers]` allowlist plus auto-detection (a
-  case-insensitive name regex over MCP server names, config-snapshot
-  `mcp_servers`/`enabled_plugins`, and `attribution_skill`), then reports
-  each candidate's own overhead, its effect on cost/tokens/re-cache/
-  compactions/turns in sessions where it was present versus absent
-  (stratified by purpose/mode, gated on a 5-session-per-arm minimum),
-  a search-substitution comparison against native `Grep`/`Glob`/`Read`/
-  shell search calls (reusing `carry.compute_carry`'s per-turn pricing),
-  and a net-saving-per-session verdict labelled "observed, not
-  controlled". New `saver-tool-roi` recommendation rule (`savers.RULES`)
-  recommends keeping or disabling a saver based on that net saving. See
-  [`docs/savers.md`](docs/savers.md).
 
 ### Fixed
 
+- The SessionStart hook and statusline commands name this Python and
+  the script by full path. `py -3` fails where the launcher isn't on the
+  `PATH`, and Git Bash doesn't expand `%USERPROFILE%`; either stopped the
+  hook without any visible error. The hook health check now reports
+  both, and `init --repair-hook` fixes them: it writes out a `%VAR%`
+  and keeps your own interpreter when it's found, and otherwise names
+  the base Python rather than a virtual environment's, since the hook
+  needs only the standard library.
+- The Data quality tab says when the statusline isn't logging (it runs
+  only in Claude Code in a terminal).
+- "All time" on the dashboard now means all time on every tab; it used
+  to fall back to 30 days on report-backed tabs.
+- A service from an older build no longer re-reads transcripts that a
+  newer build already read. Two services sharing one store used to undo
+  each other's work on every pass.
+- The skills and CLAUDE.md checks say "not enough data" when no session
+  in the window recorded those files, instead of "nothing to do".
+- **An apply stamp was read as the latest config snapshot.** `apply`
+  writes a small `{ts, schema_version, profile_id}` record into the
+  snapshot directory; every reader took it for a snapshot with no
+  settings, so the scorecard counted every setting as changed, profile
+  diffs showed empty "Now" values, "save my current settings" saved
+  nothing, and hook health dated the last snapshot from the apply. New
+  `snapshots.records_config` skips records that hold no config.
+- **The dashboard never saw the statusline usage log**: it now passes
+  the log into its report, scoped to the window's sessions like the CLI
+  (`statusline.scoped_usage_log_rows`).
+- **Stored snapshots lost their config.** The watcher stored snapshots
+  flattened, so the service's rebuilt snapshots had no effective
+  config, managed keys or agents. It now stores the hook's own
+  (redacted) document.
+- **Dashboard cost no longer dips while the service rescans.** The
+  watcher's placeholder session row (written before a session's
+  subagents are parsed) reset the session's stored cost and tokens to
+  zero until the fold finished, so a large session could briefly vanish
+  from the totals. It is now insert-only (`Store.ensure_session`).
+- **Context budget never found a project's settings snapshot.** The
+  config hook stores `project_slug` as a hash (`slug:<12 hex>`), but
+  `context_budget.py` looked snapshots up by the readable slug, so
+  CLAUDE.md, agent-list and MCP estimates, the auto-compact setting and
+  its drift check were always blank. New `snapshots.snapshot_project_key`
+  computes the hook's key.
+- **Sessions were joined to other projects' snapshots.**
+  `snapshots.snapshot_for` takes an optional `project_key` and ignores
+  snapshots from other projects (schema-1 snapshots with no project
+  still match). Config diff, config drift, `compare` and `savers` pass it.
+- **Subagents with no recorded type were counted as the main session**
+  in carry, waste, cache rebuilds and limits; phases filed the main
+  session under "unknown". All now use `model.agent_type_label`:
+  `top-level` for the main session, `unknown` for an untyped subagent.
+- `model_swap`: the unpriced-turns note now says those turns are still
+  priced at the alternatives (so the saving is understated), and the
+  lever for a built-in agent says to create an overriding agent file;
+  workflow, fork and untyped subagents have none.
+- Baseline `cost_per_session` no longer counts orphaned subagent bundles
+  as sessions.
+- Mixed "metric / value" tables (overview totals, compactions summary)
+  show numbers with separators and at most 2 decimals instead of raw
+  floats.
+- TTL near-miss column labels follow `near_miss_window_s`, and the
+  just-missed token count uses the same basis as its cost (the context
+  rewritten).
+- The scorecard's usage-limit share of cache rebuilds counted every
+  write after a limit pause; it now counts only limit-expiry rebuilds.
+- The auto-compact simulation (`compaction_sim`) shrank everything a
+  session added after a simulated summary by the compression ratio, so
+  context grew far too slowly afterwards and small windows looked much
+  cheaper than they are. It now removes only the tokens the summary
+  dropped. On the worked example the 100,000 saving falls from 69% to
+  35%, and the recommended floor moves to 150,000.
+- Attachment sizes are measured from the fields real transcripts carry
+  (`skill_listing.content`, `instructions.files[]`,
+  `deferred_tools_delta.addedLines` and others). They were always 0,
+  because the code read a `rendered` field that real transcripts never
+  have.
+- The dashboard's recommendation cards no longer show a stale
+  `apply <lever> --dry-run` hint.
 - **The watcher never re-parsed a transcript whose file hadn't changed
   but whose stored `parser_version` had fallen behind** (`watcher.py`
   `FileWatcher._resolve`/`_needs_parse_this_tick`, `store.py`

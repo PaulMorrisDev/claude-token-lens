@@ -165,11 +165,11 @@ SETTINGS_ALLOWLIST: dict[str, LeverSpec] = {
     ),
     "disabledMcpjsonServers": LeverSpec(
         "list[str]", "settings",
-        doc_ref="docs/config-layers.md#claude_json----the-claudejson-cross-check",
+        doc_ref="docs/config-layers.md#claude_json--the-claudejson-cross-check",
     ),
     "enabledMcpjsonServers": LeverSpec(
         "list[str]", "settings",
-        doc_ref="docs/config-layers.md#claude_json----the-claudejson-cross-check",
+        doc_ref="docs/config-layers.md#claude_json--the-claudejson-cross-check",
     ),
     "alwaysThinkingEnabled": LeverSpec(
         "bool", "settings",

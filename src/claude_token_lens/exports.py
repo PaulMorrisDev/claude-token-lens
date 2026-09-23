@@ -323,9 +323,18 @@ def build_export_rows(corpus: Corpus, pricing: Pricing, config: Config, *, per_s
 
 
 def _apply_hash_slugs(rows: list[dict], config_dir: str | Path) -> None:
+    """Hash each project slug and each custom agent's name (often named
+    after the project); stock agent types and the transcript kinds
+    ``_agent_type_of`` falls back to stay as they are, as in a team
+    document (``team._agent_type_group_label``)."""
+    from .team import _agent_type_group_label  # team imports this module
+
     salt = load_or_create_salt(config_dir)
     for row in rows:
         row["project"] = _hash_slug(row["project"], salt)
+        agent_type = row.get("agent_type")
+        if agent_type and agent_type not in ("subagent", "workflow-agent"):
+            row["agent_type"] = _agent_type_group_label(agent_type, salt)
 
 
 def _apply_slug_redaction(rows: list[dict]) -> None:

@@ -10,8 +10,8 @@ people on different machines:
    their own machine and hands the resulting file to a team lead (by
    whatever channel they already use — Slack, email, a shared drive;
    this project has no upload mechanism of its own).
-2. The team lead runs `claude-token-lens import FILE...` once per
-   file, on their own machine, to build up a local store.
+2. The team lead runs `claude-token-lens import FILE...` on their own
+   machine, naming one or more files, to build up a local store.
 3. The team lead runs `claude-token-lens team-report` to see the
    cross-machine comparison.
 
@@ -55,8 +55,8 @@ files out.
   any string value over 64 characters — before it ever touches disk,
   so a hand-edited or malformed file can't smuggle something unplanned
   into the store.
-- **Observed, not controlled.** Every comparison table `team-report`
-  renders carries this note. A difference between two machines may
+- **Observed, not controlled.** The `team-report` section carries this
+  note above its comparison tables. A difference between two machines may
   reflect different work (a different mix of projects, a different
   role), not a settings or skill difference — the same caveat
   `compare`'s own tables already carry for A/B arms.
@@ -81,7 +81,8 @@ claude-token-lens import my-machine.json colleague-a.json colleague-b.json
 ```
 
 Validates every file first (`team.validate_team_document`), then
-copies each one into `<config_dir>/team/<machine_id>-<generated_at>.json`.
+copies each one into `<config_dir>/team/<machine_id>-<generated_at>.json`
+(with `:` and `.` in the timestamp replaced so it is a safe file name).
 If any file fails validation, `import` exits 2 naming the file and the
 reason, and writes nothing at all for the whole batch — a bad file
 never partially imports alongside good ones. Re-importing a newer

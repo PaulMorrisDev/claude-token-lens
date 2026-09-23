@@ -183,7 +183,8 @@ def _build_common_parser() -> argparse.ArgumentParser:
 
 def _add_report_output_args(sub: argparse.ArgumentParser, *, allow_patch_set: bool = False) -> None:
     """Flags shared by every report-like subcommand (``report`` and the
-    ``sessions``/``recache``/``ttl``/``compactions`` focused views).
+    focused views: ``sessions``, ``recache``, ``ttl``, ``compactions``,
+    ``limits``, ``carry``, ``compaction-sim``, ``model-swap``, ``waste``).
     """
     sub.add_argument(
         "--json", action="store_true", help="print the whole report as JSON instead of Markdown"
@@ -494,7 +495,7 @@ def _add_serve_args(sub: argparse.ArgumentParser) -> None:
         dest="billing_mode",
         metavar="{api,subscription}",
         help="stamped onto every session (default: 'billing' from "
-        "<config-dir>/config.toml, else 'api')",
+        "<config-dir>/config.toml, else worked out from your transcripts)",
     )
     sub.add_argument(
         "--monthly-report",
@@ -725,12 +726,12 @@ def _add_init_args(sub: argparse.ArgumentParser) -> None:
         "--non-interactive",
         action="store_true",
         help="never prompt on stdin; any question --answers doesn't cover uses a "
-        "derived default, printed as 'derived: ...' so nothing is guessed silently",
+        "derived default, printed as '(derived) ...' so nothing is guessed silently",
     )
     sub.add_argument(
         "--no-install",
         action="store_true",
-        help="skip printing the SessionStart hook / statusLine install fragments",
+        help="skip connecting to Claude Code: no SessionStart hook / statusLine change and no fragments printed",
     )
     sub.add_argument(
         "--repair-hook",
@@ -764,9 +765,8 @@ def _add_init_args(sub: argparse.ArgumentParser) -> None:
         "--dry-run",
         action="store_true",
         dest="dry_run",
-        help="print the service-install plan without writing or running anything "
-        "(only affects the logon-service step -- config.toml/the initial baseline "
-        "are still written)",
+        help="show the settings.json change and the service-install plan without "
+        "making either (config.toml and the initial baseline are still written)",
     )
 
 
@@ -846,7 +846,7 @@ def _make_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command")
     for name in SUBCOMMANDS:
         help_text = {
-            "snapshot-config": "capture and diff Claude Code config",
+            "snapshot-config": "capture Claude Code config (see config-diff to compare)",
             "report": "full report (default)",
             "sessions": "sessions-only report view",
             "recache": "RE-CACHE-only report view",
@@ -2248,10 +2248,10 @@ def _cmd_init_connect_step(args: argparse.Namespace, *, config_dir: Path, hook, 
     """``init``'s "Connect to Claude Code" step: install the snapshot
     hook script into this tool's own folder, then show the exact
     ``settings.json`` change that runs it (and adds a statusline when
-    you have none) and write it only after a yes, or with ``--connect``.
-    ``settings.json`` is backed up first. Commands name this Python and
-    the script by full path, so they need neither the ``py`` launcher
-    nor shell variables."""
+    you have none) and write it only after a yes, or with ``--connect``;
+    ``--dry-run`` shows it and writes nothing. ``settings.json`` is
+    backed up first. Commands name a Python and the script by full
+    path, so they need neither the ``py`` launcher nor shell variables."""
     stdin = stdin if stdin is not None else sys.stdin
     stdout = stdout if stdout is not None else sys.stdout
     script = hook.install_hook(config_dir)
@@ -2272,6 +2272,9 @@ def _cmd_init_connect_step(args: argparse.Namespace, *, config_dir: Path, hook, 
     for line in plan.changes:
         stdout.write(f"- {line}\n")
     stdout.write("\n" + plan.diff + "\n")
+    if getattr(args, "dry_run", False):
+        stdout.write("Dry run: settings.json left unchanged. Run 'claude-token-lens init --connect' to make it.\n\n")
+        return
     stdout.write("To undo it later: claude-token-lens uninstall (or restore the backup named below).\n")
     if not args.connect:
         stdout.write("Make this change? settings.json is backed up first. (y/n) [n]: ")

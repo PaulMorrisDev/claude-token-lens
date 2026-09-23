@@ -1435,7 +1435,7 @@ def hook_fragment_text(python: str | None = None, script: Path | None = None) ->
             {
                 "hooks": {
                     "SessionStart": [
-                        {"hooks": [{"type": "command", "command": command}]}
+                        {"hooks": [{"type": "command", "command": command, "async": True}]}
                     ]
                 }
             },

@@ -117,7 +117,10 @@ Every re-cache turn is assigned one of two **signatures**:
 A re-cache turn's **avoidable cost** is what its own cache-creation
 tokens cost at the write rate they were actually billed at, minus what
 those same tokens would have cost at the flat cache-read rate had the
-cache not been invalidated. Every threshold above is overridable via
+cache not been invalidated. A rebuild right after a usage-limit pause
+is not avoidable: it is left out of the headline avoidable cost and
+the cause tables, and shown in its own column (see
+[limits.md](limits.md)). Every threshold above is overridable via
 `config.toml`'s `[thresholds]` table (`RecacheThresholds.from_config`).
 
 ## 4. TTL simulation assumptions
@@ -134,6 +137,9 @@ themselves where the model might not hold for their own working style:
 - reads are priced at the flat cache_read rate
 - compaction shrink clamps write at 0
 - gap is measured from the start of one request to the start of the next
+- a gap spanning a usage-limit pause (`Turn.gap_cause == "limit"`) forces
+  a full rewrite under every policy, counted separately from the
+  behavioural gaps > 5 min / > 60 min columns
 
 A per-transcript **fidelity self-check** replays the simulation at the
 transcript's own dominant observed TTL and compares it to the actually
@@ -171,36 +177,51 @@ size. No text is kept (`context_files.py`).
   when you open it and matches them to the transcript records by the
   same salted hash. A file on disk that no transcript in the window
   mentions is listed as "not seen".
-- **Unused skills**: a skill counts as used when Claude invoked it in the
-  window. Every listed skill costs its listing line in every session,
-  used or not; `skillOverrides` (`name-only` or `off`) is the setting
-  that trims it.
+- **Unused skills**: a skill counts as used when Claude invoked it, or
+  a reply was attributed to it, in the window. It counts as unused once
+  it was listed in at least 3 sessions or subagent runs with no use
+  (`skills_review.py`). Every listed skill costs its listing line in
+  every session, used or not. `skillOverrides` is the setting that
+  trims it: `name-only` keeps just the name, and `user-invocable-only`
+  or `off` drops the line.
+- **Invoked skills**: a skill's full text, once invoked, is sent again
+  after each conversation summary; the tab counts that separately from
+  the listing line.
 
 ## 6. Windows, what-if estimates and before/after comparisons
 
 - **Window**: the picker at the top of the dashboard (and `--days`,
   `--since`, `--until` in the CLI) picks which sessions count. A session
-  counts when any of its replies falls in the window, and then counts in
-  full, so a long session that started yesterday appears whole under
-  "Today". Short windows (the last hour, today) are for checking a
+  counts when its main transcript was last written inside the window
+  (`--window-by timestamp` in the CLI uses its first reply instead), and
+  then counts in full, so a long session that started yesterday and ran
+  on today appears whole under "Today". The named windows are the last
+  hour, today (from midnight in `config.toml`'s `tz`, else your
+  machine's time zone), the last 24 hours, since your last change, and
+  all time. Short windows (the last hour, today) are for checking a
   change straight away; they hold few sessions, so read them as a quick
   signal, not a verdict.
 - **Since my last change**: starts at the latest change point: an
-  `apply`, its undo, or a settings change the snapshot hook saw.
+  `apply`, its undo, or a settings change the snapshot hook saw
+  (`change_points.py`).
 - **What-if estimate** (`whatif.py`): what a change would have saved
   over the window, looked up in the report's own simulations rather
   than computed afresh: the model-swap repricing for a model change, the
   cache-lifetime simulation for a TTL change, the summary-point sweep
-  for `autoCompactWindow`, measured startup tokens per spawn for
-  skipping CLAUDE.md, and a rough share of thinking tokens for effort.
-  Each row says how it was worked out; a change with nothing to read
-  from is "not estimated", never guessed. Estimates assume Claude would
-  have done the same work; a cheaper model or lower effort can change
-  that.
+  for `autoCompactWindow`, measured CLAUDE.md tokens per spawn for
+  skipping CLAUDE.md, and each skill's listing cost for `skillOverrides`
+  or turning a plugin off. Effort is not estimated: the row shows only
+  how much of the output was thinking. Each row says how it was worked
+  out; a change with nothing to read from is "not estimated", never
+  guessed. Estimates assume Claude would have done the same work; a
+  cheaper model or lower effort can change that.
 - **Before and after** (`impact.py`): for each change point, the
-  sessions in the days before it are compared with those after it, on
-  the measures that change should move (cost per subagent run for a
-  model change, summaries per session for `autoCompactWindow`, cache
-  rebuild share for a TTL change, and so on). Nothing is said until each
-  side has enough sessions, and the result always notes that other
-  things (the work itself, Claude Code updates) change too.
+  sessions started in the 14 days before it (or since the previous
+  change) are compared with those started after it, on the measures
+  that change should move (cost per reply for a model or effort change,
+  cost per spawn for a change to one agent, summaries per session for
+  `autoCompactWindow`, cache rebuild share for a TTL change, and so on).
+  Nothing is said until each side has at least 3 sessions, and the
+  result always notes that other things (the work itself, Claude Code
+  updates) change too. [Profiles](profiles.md#on-the-dashboard) has the
+  full rules.

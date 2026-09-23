@@ -25,13 +25,15 @@ header and one of two top-level shapes:
 {"ok": false, "error": {"code": "not_found", "message": "session not found"}}
 ```
 
-`error.code` is a short, stable, machine-matchable string (`not_found`,
-`bad_request`, `conflict`, `forbidden`, `managed`, `internal_error`, ...);
-`error.message` is a one-line human-readable explanation. The HTTP
-status code carries the same information for clients that don't want to
-parse the body (`200` for `ok: true` on every route except
-`POST /api/profiles`, which is `201` on success; `400`/`404`/`409`/
-`500` for the matching `error.code`, per route below). This is exactly
+`error.code` is a short, stable, machine-matchable string:
+`bad_request` (`400`), `forbidden` (`403`), `not_found` (`404`),
+`method_not_allowed` (`405`), `conflict` (`409`) or `internal_error`
+(`500`). `error.message` is a one-line human-readable explanation. The
+HTTP status code carries the same information for clients that don't
+want to parse the body: `200` for `ok: true` on every route except
+`POST /api/profiles` and `POST /api/profiles/from-current`, which are
+`201` on success. A managed setting is never an error code; see
+"Managed-settings routes" below. This is exactly
 `service.contracts.ApiError.to_envelope()`'s shape.
 
 ## Security headers
@@ -76,6 +78,15 @@ value embedded in a `report.*` route already went through this same
 audit for the CLI's own JSON output (`render/json_out.py`) and is
 reused verbatim here.
 
+The context-file routes are the one deliberate exception.
+`/api/claude-md`, `/api/claude-md/<id>` and `/api/skills` return the
+files' paths with your home folder written as `~`, short excerpts of
+CLAUDE.md text (repeated lines) and skill descriptions. That text is
+read from disk (or, for skill descriptions, the newest transcript's
+skill listing) when the request arrives and is never stored. It is the
+content of your own instruction files, never a message or tool
+result.
+
 ## Local only
 
 The service opens exactly one listening socket, on `--bind` (default
@@ -90,19 +101,21 @@ anything outside the bound address for the lifetime of a test server.
 
 Flags beyond `--projects-root`/`--config-dir`/`--port`/`--bind`/
 `--allow-remote`/`--poll-interval`/`--retention-days`/`--exclude-project`/
-`--once` (see `--help`):
+`--once` (see `--help`) and `--allowed-host` (see "Host allowlist"
+below):
 
 - **`--billing-mode {api,subscription}`** (S1-integration fix 1.a) is
   stamped onto every session's `billing_mode` field (see `/api/sessions`
-  above). Defaults to `<config-dir>/config.toml`'s own `billing` setting
+  below). Defaults to `<config-dir>/config.toml`'s own `billing` setting
   when omitted (itself `"auto"` by default, resolved at start-up by
   `config.resolve_billing`: `"subscription"` when `usage-log.csv` holds
   a usage-limit reading, `"api"` otherwise),
   so a subscription user only has to say so once, in one place, rather
   than on every `serve` invocation.
-- **`--monthly-report DIR`** sets `ServeOptions.monthly_report_dir`, a
-  directory a monthly report is written into. `None` (the default) means
-  no monthly report is written.
+- **`--monthly-report DIR`** sets `ServeOptions.monthly_report_dir`.
+  Nothing in the service reads that field yet, so `serve` writes no
+  monthly report today. Run `claude-token-lens monthly-report --out DIR`
+  instead ([docs/exports.md](exports.md#claude-token-lens-monthly-report)).
 - **`--purge`** deletes `<config-dir>/service.db` and its `-wal`/`-shm`
   sidecars and exits (S1-integration fix 2.e) — never starts the watcher
   or the API. Always prints exactly which files it would delete first;
@@ -130,14 +143,14 @@ browser) is allowed.
 
 ## Cross-site protection (review S3)
 
-Both `POST` routes below are mutating, and — without a same-origin
-check — a `Content-Type: text/plain` POST is a preflight-free "simple"
+The `POST` routes below are mutating (all but `POST /api/whatif`), and
+— without a same-origin check — a `Content-Type: text/plain` POST is a preflight-free "simple"
 cross-site request a browser will send blind. The response is opaque to
 a cross-site attacker (no CORS headers are ever sent, so it can't read
 `ok`/`data` back), but a profile written this way is exactly what
 `apply` later reads and acts on, so the write itself is the risk, not
-exfiltration. Every `POST` request is checked before its body is even
-parsed:
+exfiltration. Every `POST` request, `POST /api/whatif` included, is
+checked before its body is even parsed:
 
 - **`Content-Type` must be `application/json`** (a parameter such as
   `; charset=utf-8` is ignored) — `400 bad_request` otherwise. This
@@ -155,8 +168,9 @@ same-machine CLI tool such as `curl`) is allowed — this API has no
 authentication of its own (see "Local only" above), so that posture is
 unchanged; the guard targets a *browser* silently issuing the request on
 a victim's behalf, not a deliberate local caller. `service/static/app.js`
-already sends `Content-Type: application/json` on both of its own `POST`
-calls, so the UI itself is unaffected.
+sends `Content-Type: application/json` on every one of its own `POST`
+calls, so the UI itself is unaffected. A `POST` whose `Host` is not on
+the allowlist above is also `403 forbidden`.
 
 ## Routes
 
@@ -209,9 +223,13 @@ See `service/contracts.py`'s `WatcherStats` for the exact field list.
 
 Corpus-wide totals — `Store.summary`.
 
-Query: `window_days` (int, optional).
+Query: `window_days` (int, optional; no default, so all time when
+omitted) or `window` (a named window, as for the report-backed routes
+below; it takes precedence, and `window_days` is then `null` in the
+response).
 
 `data`: `{"window_days": int|null, "sessions": int, "transcripts": int, "total_cost": float, "total_tokens": int}`.
+`total_cost` is at list price, whatever the billing mode.
 
 With `window_days` given, a session qualifies for the window by its
 *top-level transcript's* `mtime` — the same `window_by="mtime"` rule
@@ -230,7 +248,8 @@ row's own `last_ts` and never window `transcripts` at all).
 
 Recent sessions — `Store.sessions`.
 
-Query: `limit` (default 50), `offset` (default 0).
+Query: `limit` (default 50), `offset` (default 0). Newest first (by
+`first_ts`); no window.
 
 `data`: `[{"id", "slug", "first_ts", "last_ts", "span_s", "archetype", "mode", "purpose", "entrypoint", "billing_mode", "profile_id", "total_cost", "total_tokens"}, ...]`.
 
@@ -300,28 +319,49 @@ asked. `404` if `<id>` is unknown.
 
 Corpus-wide RE-CACHE breakdown — `Store.recache`.
 
-`data`: `{"by_signature": {"full-expiry": {"turns", "cache_creation_tokens"}, "prefix-invalidated": {...}}}`.
+`data`: `{"by_signature": {"full-expiry": {"turns", "cache_creation_tokens"}, "prefix-invalidated": {...}, "limit-expiry": {...}}}`.
+A signature with no rebuilds is absent, not zero. Always all history:
+this route takes no window.
+
+### Daily usage: `GET /api/daily-usage`
+
+Per-day, per-model token and cost totals — `Store.daily_usage`. The
+dashboard does not call this route (so its heading is not in the
+`GET /api/...` form `tests/test_service_static.py` checks against
+`app.js`); it is here for other clients.
+
+Query: `days` (int, default 30, at least 1). Days are UTC calendar days.
+
+`data`: `[{"day", "model", "turns", "input_tokens", "cache_creation_tokens", "cache_read_tokens", "output_tokens", "thinking_tokens", "cc_5m", "cc_1h", "cost"}, ...]`,
+ordered by day, then model. `cost` is at list price.
 
 ### Report-backed routes: windowing query params
 
 `/api/ttl`, `/api/carry`, `/api/compaction-sim`, `/api/model-swap`,
 `/api/waste`, `/api/config-diff`, `/api/recommendations`,
-`/api/diagnostics`, `/api/claude-md`, `/api/skills`,
-`/api/profile-goals`, `/api/quick-actions`, `POST /api/whatif` and
+`/api/diagnostics`, `/api/claude-md`, `/api/claude-md/<id>`,
+`/api/skills`, `/api/profile-goals` (with `goal`), `/api/quick-actions`,
+`/api/quick-actions/<id>`, `POST /api/whatif` and
 `/api/report.md`/`.html`/`.json` (below) all accept the same windowing
 query params, mirroring the CLI `report` subcommand's own
 `--days`/`--since`/`--until` (`discovery._resolve_window`'s exact
-resolution):
+resolution). `/api/summary` accepts `window` and `window_days` only.
+Every other route (`/api/health`, `/api/sessions`, `/api/session/<id>`,
+`/api/recache`, `/api/compactions`, `/api/baseline`, `/api/profiles*`,
+`/api/impact`, `/api/setup`) ignores them.
 
 - **`window`** (optional) — a named window, used by the dashboard's
-  header picker: `1h` (the last hour), `today` (since midnight in your
-  configured time zone), `24h`, `change` (since your latest `apply`, its
-  undo, or a settings change the config hook saw; `400` when none is
-  recorded yet) or `all` (no limit). A named window takes precedence
-  over the other three params. A session counts when any of its turns
-  falls in the window, and it then counts in full.
-- **`window_days`** (int, optional) — same as before; defaults to 30
-  when neither `since` nor `until` is given.
+  header picker: `1h` (the last hour), `today` (since midnight in
+  `config.toml`'s `tz`, else the machine's zone), `24h`, `change` (since
+  your latest `apply`, its undo, or a settings change the config hook
+  saw; `400` when none is recorded yet) or `all` (no limit). Anything
+  else is `400`. A named window takes precedence over the other three
+  params. It is turned into a `since` rounded down to the minute, so
+  repeat requests share one cached report. A session counts when its
+  main transcript was last written inside the window (so it was active
+  then), and it then counts in full.
+- **`window_days`** (int, at least 1, optional) — the last N days;
+  defaults to 30 when neither `since` nor `until` is given.
 - **`since`** / **`until`** (ISO 8601, optional) — when either is
   present, `window_days` is *not* defaulted to 30 (matching the CLI's
   own `--days`/`--since` mutually-exclusive argparse group), so a
@@ -342,8 +382,8 @@ tables (`render/json_out.py`'s `Section`/`Table` encoding), sourced by
 re-running `ttl.py`'s simulation over the store's `turns_agg`/
 `recache_turns` rows rather than a fresh parse.
 
-Query: `window_days`, or `since`/`until` (see "Report-backed routes:
-windowing query params" above).
+Query: `window`, `window_days`, or `since`/`until` (see "Report-backed
+routes: windowing query params" above).
 
 ### `GET /api/carry`
 
@@ -353,8 +393,8 @@ share; plus the top individually-carried results and the truncation-cap
 savings table) — same shape as the CLI's `carry` section tables, sourced
 from the assembled report's `"carry"` section (`carry.py`).
 
-Query: `window_days`, or `since`/`until` (see "Report-backed routes:
-windowing query params" above).
+Query: `window`, `window_days`, or `since`/`until` (see "Report-backed
+routes: windowing query params" above).
 
 ### `GET /api/compaction-sim`
 
@@ -365,8 +405,8 @@ session's actually-configured window) — same shape as the CLI's
 `compaction-sim` section tables, sourced from the assembled report's
 `"compaction_sim"` section (`compaction_sim.py`).
 
-Query: `window_days`, or `since`/`until` (see "Report-backed routes:
-windowing query params" above).
+Query: `window`, `window_days`, or `since`/`until` (see "Report-backed
+routes: windowing query params" above).
 
 ### `GET /api/model-swap`
 
@@ -377,8 +417,8 @@ Fable/Opus subagent type moved one tier down) — same shape as the CLI's
 `model-swap` section tables, sourced from the assembled report's
 `"model_swap"` section (`model_swap.py`).
 
-Query: `window_days`, or `since`/`until` (see "Report-backed routes:
-windowing query params" above).
+Query: `window`, `window_days`, or `since`/`until` (see "Report-backed
+routes: windowing query params" above).
 
 ### `GET /api/waste`
 
@@ -388,8 +428,8 @@ per-agent-type roll-up, and the top wasted-cost sessions by a salted
 session hash) — same shape as the CLI's `waste` section tables, sourced
 from the assembled report's `"waste"` section (`waste.py`).
 
-Query: `window_days`, or `since`/`until` (see "Report-backed routes:
-windowing query params" above).
+Query: `window`, `window_days`, or `since`/`until` (see "Report-backed
+routes: windowing query params" above).
 
 ### `GET /api/compactions`
 
@@ -403,10 +443,15 @@ Effective-config comparison across projects (plan "Configuration
 layers" section: `config_groups`/`config_drift`), computed from the
 latest `snapshots` row per project.
 
-Query: `key` (a specific settings key) or `auto_keys=1` (every managed
-key), plus `window_days`/`since`/`until` (see "Report-backed routes:
-windowing query params" above). Mirrors the CLI's `config-diff`
-subcommand.
+Query: `key` (a specific settings key) or `auto_keys=1` (the whole
+config section; `400` when neither is given), plus `window`/`window_days`/`since`/
+`until` (see "Report-backed routes: windowing query params" above).
+Mirrors the CLI's `config-diff` subcommand.
+
+`data`: with `auto_keys=1`, a list of every `config` section table (the
+dashboard's Config tab uses this); with `key`, that key's
+`config-diff-<key>` `Table`, or `[]` when it didn't change in the
+window.
 
 A snapshot taken outside any recognised project (no project slug on
 disk to attribute it to) is still captured — never dropped — under the
@@ -422,8 +467,8 @@ The same `Recommendation` list `recommend.recommend()` produces for the
 CLI's `report`, computed from the store's latest snapshot and session
 window rather than a fresh corpus scan.
 
-Query: `window_days`, or `since`/`until` (see "Report-backed routes:
-windowing query params" above).
+Query: `window`, `window_days`, or `since`/`until` (see "Report-backed
+routes: windowing query params" above).
 
 `data`: `[{"id", "severity", "category", "title", "action", "lever", "scope", "evidence": [[label, value, source_table, row_key], ...], "agent_type", "why", "estimated_saving", "saving_basis", "changes": [{"target", "key", "agent", "value", "suggested", "note", "unconfirmed", "current", "new_agent_file"}, ...], "fixes": [{"key", "agent", "explainer": [[heading, text], ...], "command", "command_warning", "prompt"}, ...]}, ...]` —
 exactly `render/json_out.py`'s existing `Recommendation` encoding.
@@ -437,8 +482,8 @@ The report's parse-quality counters (`ReportModel.diagnostics`) as one
 plain-English `Table` — `helptext.diagnostics_table`. Used by the Data
 quality tab.
 
-Query: `window_days`, or `since`/`until` (see "Report-backed routes:
-windowing query params" above).
+Query: `window`, `window_days`, or `since`/`until` (see "Report-backed
+routes: windowing query params" above).
 
 `data`: a `Table` (`name: "data_quality"`). Each row is `[field, value,
 meaning]`; `field` is the raw `Diagnostics` field name and
@@ -446,7 +491,10 @@ meaning]`; `field` is the raw `Diagnostics` field name and
 into one `"key: count, ..."` string. The first row, `snapshot_hook`, is
 `hook_health.check` on `<config-dir>/../settings.json`: whether a
 SessionStart hook runs `snapshot-config.py`, whether its path exists,
-and how long ago the last snapshot was taken.
+and how long ago the last snapshot was taken. The second, `statusline`,
+is `hook_health.statusline_check`: whether the statusline that records
+usage limits is running, given where your sessions run. Both have the
+value `working` or `needs attention`.
 
 ### `GET /api/profiles`
 
@@ -564,15 +612,20 @@ habits. Each check always answers, including "nothing to do".
 Query: the windowing params above.
 
 `data`: `{"period", "checks": [{"id", "question", "why", "status", "summary", "fix_count", "tip_count"}, ...]}`.
-`status` is `act` (worth a look), `ok` (nothing to do) or `no_data`.
+`period` is the window as a phrase ("over the last 30 days", "in the
+last hour"). `status` is `act` (worth a look), `ok` (nothing to do) or
+`no_data`.
 
 ### `GET /api/quick-actions/<id>`
 
 One check in full. `404` for an unknown id.
 
-`data`: `{"id", "question", "why", "status", "summary", "table": {"columns": [{"key", "label"}, ...], "rows": [{...}, ...]}, "fixes": [Fix, ...], "tips": [{"title", "text"}, ...]}`,
-where a `Fix` is the `fixes.py` shape `/api/recommendations` uses, plus
-an optional `title`. Environment-variable fixes (`BASH_MAX_OUTPUT_LENGTH`,
+Query: the windowing params above.
+
+`data`: `{"id", "question", "why", "period", "status", "summary", "table": {"columns": [{"key", "label"}, ...], "rows": [[cell, ...], ...]}|null, "fixes": [Fix, ...], "tips": [{"title", "text"}, ...]}`,
+where each row is a list of display values in column order, `table` is
+`null` when there is nothing to show, and a `Fix` is the `fixes.py`
+shape `/api/recommendations` uses, plus an optional `title`. Environment-variable fixes (`BASH_MAX_OUTPUT_LENGTH`,
 `MAX_MCP_OUTPUT_TOKENS`) carry a prompt and no command: this tool never
 writes the `env` block.
 
@@ -585,17 +638,22 @@ window and what that cost. File text is read now and never stored.
 Query: the windowing params above.
 
 `data`: `{"period", "transcripts", "files": [{"id", "path", "name", "level", "project", "who", "tokens", "scoped", "sections", "seen", "sends", "reach", "reach_text", "cost_usd", "cost_text", "findings": [str, ...], "fix_count"}, ...]}`.
-`id` is a 16-character hex hash of the path.
+`id` is a 16-character hex hash of the path. `path` is the file's path
+with your home folder written as `~` (`footprint.home_label`): the one
+kind of path this API returns (see "Privacy" above).
 
 ### `GET /api/claude-md/<id>`
 
 One file's sections, duplicates, stale references and fixes. `404` for
-an unknown id.
+an unknown id, and for an id that is not 16 hex characters.
 
-`data`: the list entry plus `section_rows` (`heading`, `level`, `line`,
-`tokens`, `share`, `cost_text`, `agents`), `imports`, `duplicates`
-(`line`, `excerpt`, `tokens`, `also_in: [{"file", "line"}]`), `stale`
-(`line`, `reference`, `kind`), `cost_by_reach` and `fixes`.
+Query: the windowing params above.
+
+`data`: `period`, the list entry, plus `section_rows` (`heading`,
+`level`, `line`, `tokens`, `share` as a fraction of the file, `cost_text`,
+`agents`), `imports` (paths, `~`-relative), `duplicates` (`line`,
+`excerpt`, `tokens`, `also_in: [{"file", "line"}]`), `stale` (`line`,
+`reference`, `kind`), `cost_by_reach` and `fixes`.
 
 ### `GET /api/skills`
 
@@ -605,21 +663,29 @@ comes from, how often it was listed and used, and what the listing cost.
 
 Query: the windowing params above.
 
-`data`: `{"period", "skills": [{"name", "description", "source", "source_label", "path", "listing_tokens", "listed", "listed_text", "invoked", "invoked_by", "listing_cost_usd", "listing_cost_text", "use_cost_text", "resent_tokens", "status", ...}, ...], "listing_tokens", "listing_cost_text", "unused", "fixes"}`.
-`fixes` holds one change that hides every unused skill at once, when
-there are two or more.
+`data`: `{"period", "skills": [{"name", "description", "source", "source_label", "path", "listing_tokens", "listed", "listed_text", "invoked", "invoked_by", "listing_cost_usd", "listing_cost_text", "use_cost_text", "use_text", "resent_tokens", "status", "fixes"}, ...], "listing_tokens", "listing_cost_text", "unused", "fixes"}`.
+Skills come unused first, then by listing cost. `status` is `unused`,
+`used`, `listed` or `not listed`. `path` is `~`-relative, or `""` when
+the skill has no file on disk. Each skill's own `fixes` hide it or
+shorten its description; the top-level `fixes` holds one change that
+hides every unused skill at once, when there are two or more.
 
 ### `GET /api/profile-goals`
 
 Without `goal`: `{"goals": [{"id", "title", "what"}, ...]}`, the goals a
-profile can start from (`profiles/goals.py`). With `goal=<id>`: that
-goal's draft. An unknown goal is `400`.
+profile can start from (`profiles/goals.py`): `recommendations`,
+`subagents`, `models`, `cache`, `compaction`, `thinking` and `current`.
+With `goal=<id>`: that goal's draft. An unknown goal is `400`.
 
-Query: `goal`, plus the windowing params above.
+Query: `goal`, plus the windowing params above (used only with `goal`).
 
-`data` (with `goal`): `{"goal", "period", "from_current", "candidates": [{"key", "agent", "label", "now", "value", "ticked", "evidence", "what", "tradeoff", "note", "estimate"}, ...], "profile": {"settings", "agents"}, "whatif"}`.
+`data` (with `goal`): `{"goal": {"id", "title", "what"}, "period", "from_current", "candidates": [{"key", "agent", "label", "now", "value", "ticked", "evidence", "what", "tradeoff", "note", "estimate"}, ...], "profile": {"settings", "agents"}, "whatif"}`.
 A candidate is ticked only when the data supports it; the main model is
-never pre-ticked.
+never pre-ticked. `estimate` is that one change's `POST /api/whatif`
+row; `profile` holds the ticked changes and `whatif` their combined
+estimate. `current` returns no candidates (`from_current: true`): the
+dashboard saves your current settings with
+`POST /api/profiles/from-current` instead.
 
 ### `GET /api/impact`
 
@@ -627,8 +693,16 @@ Each change you made (an `apply`, its undo, or a settings change the
 config hook saw), with the sessions before it against those after it,
 on the measures that change should move.
 
-`data`: `{"changes": [{"change", "before_sessions", "after_sessions", "enough", "verdict", "measures": [{"label", "before", "after", "before_n", "after_n", "change_pct", "direction"}, ...]}, ...], "caveat", "min_sessions", "lookback_days"}`.
-`enough` is false until each side has `min_sessions` sessions.
+Takes no window: each change is compared over its own before and after
+periods, looking back at most `lookback_days`.
+
+`data`: `{"changes": [{"change": {"ts", "source", "label", "keys", "changes", "backup_ts", "reverted"}, "before_sessions", "after_sessions", "enough", "verdict", "measures": [{"label", "before", "after", "before_n", "after_n", "change_pct", "direction"}, ...]}, ...], "caveat", "min_sessions", "lookback_days"}`.
+Newest change first, at most ten. `change.source` is `apply`, `revert`
+or `config` (a settings change the hook saw). `enough` is false until each side has
+`min_sessions` sessions. `before`/`after` are display text in the
+billing mode's units; `direction` is `lower`, `higher`, `same` or
+`null`. For an `apply` that is not yet undone, `backup_ts` is what
+`claude-token-lens apply --revert <backup_ts>` takes.
 
 ### `GET /api/setup`
 
@@ -645,28 +719,34 @@ parse — byte-equivalent in content to running the CLI's `report`
 subcommand with `--json`/`--html`/(default) over the same window,
 modulo the "verified against CLI JSON" test the plan's Milestone v0.2
 Tests bullet requires (`tests/test_service_api.py`, built alongside
-`api.py`). `report.md`/`report.html` set `Content-Type: text/markdown`/
-`text/html` instead of the envelope shape above (the raw rendered
-document, matching the CLI's own stdout for `--html`).
+`api.py`). All three return the raw rendered document on success, not
+the envelope above: `report.json` as `application/json`, and
+`report.md`/`report.html` as `text/markdown`/`text/html` (UTF-8),
+matching the CLI's own stdout. Errors still use the JSON envelope.
 
-Query: `window_days`, or `since`/`until` (see "Report-backed routes:
+Query: `window`, `window_days`, or `since`/`until` (see "Report-backed routes:
 windowing query params" above) — this is what makes `/api/report.json?
 since=...&until=...` byte-equivalent to `report --since ... --until
 ...`, not just to `report --days N`.
 
 ## Mutating routes
 
-The only routes that write anything, each scoped to a single row or
-file and never touching `~/.claude` proper (plan: "neither touches
-`~/.claude` proper"):
+The `POST` routes. All but `POST /api/whatif` write something, each
+scoped to a single row or file and never touching `~/.claude` proper
+(plan: "neither touches `~/.claude` proper"). Nothing here changes
+Claude Code's settings: a saved profile takes effect only when you run
+the `apply` command or give Claude the prompt that
+`GET /api/profiles/<id>/diff` returns.
 
 ### `POST /api/sessions/<id>/tags`
 
 Body: `{"key": "mode"|"purpose", "value": str}`. Calls `Store.set_tag`
 (the same override `config.sessions.toml` holds for the CLI). `404` if
-`<id>` is unknown; `400` if `key` isn't `mode`/`purpose` (or the
-`Content-Type`/cross-site checks above reject the request first — see
-"Cross-site protection").
+`<id>` is unknown; `400` if the body is not a JSON object, `key` isn't
+`mode`/`purpose` or `value` isn't a string (the cross-site checks above
+run first — see "Cross-site protection"). The tag is merged into the
+session overrides every report-backed route classifies sessions with,
+taking precedence over `sessions.toml`.
 
 `data`: `{"session_id": str, "tags": {key: value}}` (the session's full
 tag set after the write).
@@ -676,10 +756,11 @@ tag set after the write).
 Body: a profile document's JSON form (the same shape a TOML profile
 round-trips to — `id`, optional `name`/`for`/`archetype`/`notes`,
 optional `settings`/`agents`/`env` tables), validated by
-`profiles.schema.load_dict` before anything is written. `403`
-(`error.code: "forbidden"`) if the `Content-Type`/cross-site checks
-above reject the request first — see "Cross-site protection". `400`
-(`error.code: "bad_request"`) if the schema rejects an unknown key or
+`profiles.schema.load_dict` before anything is written. The
+cross-site checks above run first (`403 forbidden` for a cross-site
+request, `400 bad_request` for a wrong `Content-Type` — see "Cross-site
+protection"). `400` (`error.code: "bad_request"`) if the body is not a
+JSON object, or if the schema rejects an unknown key or
 an out-of-range value — the schema's own problem text, joined with
 `"; "` (plan: "the schema rejects anything else so a profile can never
 promise an effect the harness cannot deliver"). `409`
@@ -730,13 +811,16 @@ because the changes travel in the body. Behind the cross-site guard like
 the other POST routes.
 
 Body: `{"settings": {...}, "agents": {"<agent>": {...}}}`, checked with
-`profiles.schema.validate` (`400` on a bad key or value).
+`profiles.schema.validate` (`400` on a bad key or value, or when the
+body, `settings` or `agents` is not a JSON object).
 
 Query: the windowing params above.
 
-`data`: `{"period", "rows": [{"key", "agent", "value", "saving_usd", "fidelity", "basis", "effect_text"}, ...], "total_usd", "total_text", "estimated", "not_estimated", "total_note"}`.
-`saving_usd` is `null` when a change is not estimated. `fidelity` says how it was worked out
-and `basis` explains it in a sentence.
+`data`: `{"period", "rows": [{"key", "agent", "value", "saving_usd", "fidelity", "fidelity_text", "basis", "effect_text"}, ...], "total_usd", "total_text", "estimated", "not_estimated", "total_note"}`.
+`saving_usd` is `null` when a change is not estimated. `fidelity` says
+how it was worked out (`fidelity_text` in plain words) and `basis`
+explains it in a sentence. `effect_text` and `total_text` are in the
+billing mode's units; `estimated`/`not_estimated` are counts of rows.
 
 ## Managed-settings routes
 
@@ -745,10 +829,12 @@ Any route whose `data` would include a recommendation or a diff whose
 the managed-ness is carried in the payload (`scope: "managed"`, per
 `model.py`'s `Recommendation.scope`) rather than as an HTTP error, so
 the UI can render "managed by policy, raise with your administrator"
-inline (plan "Enterprise use"). `POST /api/profiles`/`/tags` never
-write a managed key regardless of what the client sends — that
-validation lives in `apply`/`profiles/schema.py`, not this API, since
-the service itself never calls `apply`.
+inline (plan "Enterprise use"). No route writes a managed key into
+Claude Code's config, because no route writes Claude Code's config at
+all. `POST /api/profiles` may save a managed key into a profile file;
+`apply` skips it when the profile is applied, and the profile diff
+marks the row `managed`. `POST /api/profiles/from-current` leaves
+managed keys out and lists them in `skipped_managed`.
 
 ## Report routes: how they are computed
 
@@ -756,6 +842,8 @@ Implementation notes for `service/api.py` (S1-api), for a future reader
 of this frozen contract who needs to know how the report-backed routes
 (`/api/ttl`, `/api/carry`, `/api/compaction-sim`, `/api/model-swap`,
 `/api/waste`, `/api/config-diff`, `/api/recommendations`,
+`/api/diagnostics`, `/api/claude-md*`, `/api/skills`,
+`/api/profile-goals`, `/api/quick-actions*`, `POST /api/whatif`,
 `/api/report.md`/`.html`/`.json`) get their data, and where the
 implementation had to make a call this document didn't spell out.
 
@@ -799,7 +887,8 @@ had a `config_dir` of their own to give it.
 every request would make every tab switch in the UI (`docs/ui.md`)
 re-parse the whole corpus. The implementation caches the assembled
 `ReportModel` in-process, keyed by `(window_days, since, until,
-change_token)`, where `change_token` is `Store.change_token()` (S1-integration fix 1.f) — a
+change_token)` (a named `window` is first turned into its `since`,
+rounded to the minute), where `change_token` is `Store.change_token()` (S1-integration fix 1.f) — a
 single string combining `(COUNT(*), MAX(updated_at))` over `transcripts`
 and `(COUNT(*), MAX(ts))` over `snapshots`. A cache hit only requires
 this token to be unchanged since the entry was built; any transcript or
@@ -853,11 +942,10 @@ special-cased.
 `service/static/index.html`/assets (the UI package's build output,
 per `docs/ui.md`) when present, guarded against path traversal
 (`Path.resolve()` plus a parent-containment check — a `..` segment or
-an escaping resolved path is `404`, not an error). `service/static/`
-is empty at S1-api's own delivery time (a sibling work package ships
-its contents), so `/` falls back to a small, non-persisted placeholder
-page generated at request time rather than anything written to disk or
-committed to the repository. `make_handler()` accepts an additional
+an escaping resolved path is `404`, not an error). When
+`service/static/index.html` is missing or unreadable, `/` falls back to
+a small, non-persisted placeholder page generated at request time
+rather than anything written to disk or committed to the repository. `make_handler()` accepts an additional
 keyword-only `static_dir` parameter (default: the package's own
 `service/static/`) so a test can point it at a directory with real
 files without writing into the source tree.
@@ -865,9 +953,11 @@ files without writing into the source tree.
 **`make_handler()`/`serve.run()` accept parameters beyond their frozen
 signatures.** `service.contracts.MakeHandler` is `(store, options) ->
 type[BaseHTTPRequestHandler]`; `make_handler()` additionally accepts
-two keyword-only parameters with defaults — `watcher_stats` (a
+three keyword-only parameters with defaults — `watcher_stats` (a
 zero-argument callable returning the current `WatcherStats`, used by
-`/api/health`) and `static_dir` (above) — which is still a valid
+`/api/health`), `service_registered` (a zero-argument probe for
+`/api/health`'s field of that name; omitted, it reports `null`) and
+`static_dir` (above) — which is still a valid
 `MakeHandler` implementation (a Protocol callable is satisfied by
 something that accepts extra optional parameters). Similarly,
 `service.serve.run(options, *, once=False)` gains `allow_remote:
@@ -887,6 +977,7 @@ real answer: `serve.run()` passes `make_handler` a `watcher_stats`
 callable that simply reads `watcher.last_stats`, no fallback guesswork
 needed, since `run()` always calls `watcher.run_once()` synchronously
 once before serving starts.
+
 ## Store rebuild
 
 `GET /api/report.*` above is built from the store instead of a fresh

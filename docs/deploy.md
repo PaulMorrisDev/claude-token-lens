@@ -50,18 +50,25 @@ run *before* doing either.
 
 **What each platform's plan actually does:**
 
-- **Windows:** builds and runs one PowerShell `-Command` script that
-  chains `New-ScheduledTaskAction` (`-AtLogOn`, scoped to
-  `$env:USERDOMAIN\$env:USERNAME`), `New-ScheduledTaskPrincipal`
-  (`-RunLevel Limited` — no admin rights), `New-ScheduledTaskSettingsSet`
-  (`-ExecutionTimeLimit ([TimeSpan]::Zero)`, since `serve` runs
-  indefinitely) and `Register-ScheduledTask -TaskName ClaudeTokenLens`.
-  The action runs `pythonw.exe` beside the running interpreter when it
-  exists (no console window at logon), else `python.exe`. Writes no
-  file of its own — the task definition lives entirely in Task
-  Scheduler's own store. This is the same task Path 1 below registers
-  by hand; `Unregister-ScheduledTask -TaskName ClaudeTokenLens` removes
-  it.
+- **Windows:** builds and runs one `powershell.exe -NoProfile
+  -ExecutionPolicy Bypass -Command` script that chains
+  `New-ScheduledTaskAction`, `New-ScheduledTaskTrigger -AtLogOn`
+  (scoped to `$env:USERDOMAIN\$env:USERNAME`),
+  `New-ScheduledTaskPrincipal` (`-RunLevel Limited` — no admin rights),
+  `New-ScheduledTaskSettingsSet` (runs on battery, restarts up to 3
+  times a minute apart, `-ExecutionTimeLimit ([TimeSpan]::Zero)` since
+  `serve` runs indefinitely) and `Register-ScheduledTask -TaskName
+  ClaudeTokenLens -Force`. The action runs `pythonw.exe` beside the
+  running interpreter when it exists (no console window at logon), else
+  `python.exe`. Writes no file of its own — the task definition lives
+  entirely in Task Scheduler's own store. Registering doesn't start the
+  task: it first runs at your next logon (`Start-ScheduledTask
+  -TaskName ClaudeTokenLens` starts it now). This is the same task
+  Path 1 below registers by hand, with two differences: there is no
+  `schtasks /create` fallback, and `uninstall-service` runs only
+  `Unregister-ScheduledTask -TaskName ClaudeTokenLens`, which doesn't
+  stop a copy that is already running (`Unregister-TokenLensTask.ps1`
+  does).
 - **Linux:** writes `~/.config/systemd/user/claude-token-lens.service`
   (the same hardening as `scripts/systemd/claude-token-lens.service` —
   see Path 2 below — but with `ExecStart`/`ReadWritePaths` filled in
@@ -73,7 +80,7 @@ run *before* doing either.
   disable --now` and deletes the unit file.
 - **macOS:** writes `~/Library/LaunchAgents/com.claude-token-lens.plist`
   (`RunAtLoad`/`KeepAlive` both true) and runs `launchctl bootstrap
-  gui/<uid>  <path-to-plist>`. `uninstall-service` runs `launchctl
+  gui/<uid> <path-to-plist>`. `uninstall-service` runs `launchctl
   bootout gui/<uid>/com.claude-token-lens` and deletes the plist.
 
 **Running from a `.pyz`:** if the current process was itself launched
@@ -109,7 +116,10 @@ wrote (the systemd unit or the LaunchAgent plist; Windows writes no
 file of its own). It is best-effort past the printed plan: a command or
 file removal that fails is reported and the rest still runs, rather
 than aborting partway through, the same posture as
-`Unregister-TokenLensTask.ps1`/`serve --purge`.
+`Unregister-TokenLensTask.ps1`/`serve --purge`. To remove everything
+else this tool added as well (the hook, the statusline, applied changes
+and the data folder), use `claude-token-lens uninstall` — see
+[`docs/first-run.md`](first-run.md#7-undo-a-change-or-uninstall-completely).
 
 Nothing above replaces the hand-run paths below — `install-service`
 deliberately mirrors their exact flags/hardening choices rather than
@@ -180,9 +190,12 @@ systemctl --user daemon-reload
 systemctl --user enable --now claude-token-lens.service
 ```
 
-Runs `claude-token-lens serve --projects-root ~/.claude/projects
---config-dir ~/.claude/token-lens` as your own user, restarting on
-failure (`Restart=on-failure`).
+Runs `~/.local/bin/claude-token-lens serve --projects-root
+~/.claude/projects --config-dir ~/.claude/token-lens` as your own user,
+restarting on failure (`Restart=on-failure`). That `ExecStart` path
+assumes a `pip install --user`; edit it if `claude-token-lens` lives
+elsewhere (`command -v claude-token-lens`), or use `install-service`,
+which fills in the real interpreter for you.
 
 **What this path can/cannot touch:**
 
@@ -396,8 +409,9 @@ that actually delete a row.
   tick prunes sessions whose transcripts were all last active more than
   `N` days ago (`Store.retention_prune`) — this is what actually deletes
   a marked-missing (or still-present) transcript's row, not the
-  missing-file check itself. Off by default — nothing is ever pruned
-  unless you opt in.
+  missing-file check itself. Off by default: without the flag, `serve`
+  uses `retention_days` from `config.toml`, and with neither set nothing
+  is ever pruned.
 - **`serve --purge`** (deliverable 2.e): deletes `<config-dir>/service.db`
   and its `-wal`/`-shm` sidecars, then exits — never starts the watcher
   or API. Always prints exactly which files it would delete first; only

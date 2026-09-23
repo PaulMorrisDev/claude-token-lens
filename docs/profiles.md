@@ -1,53 +1,88 @@
 # v0.3 profiles
 
 `claude_token_lens.profiles` (plan Milestone v0.3: "baseline capture,
-archetype, profiles, apply") is the schema, shipped catalogue, and diff
-renderer for a **profile**: a small, allowlisted bundle of Claude Code
-settings/agent-frontmatter/environment-variable levers that a user can
-apply to a project. This document is the frozen contract for the
-package — a later work package wires `cli.py`'s `apply`/`init`/
-`baseline` subcommands and the `/api/profiles*` and
-`/api/profile-schema` routes (`docs/api.md`) against it; nothing in
-`profiles/` touches those files itself.
+archetype, profiles, apply") is the schema, shipped catalogue, diff
+renderer and apply/revert code for a **profile**: a small, allowlisted
+bundle of Claude Code settings/agent-frontmatter/environment-variable
+levers that a user can apply to a project. This document is the
+contract for the package. `cli.py`'s `apply`/`init`/`baseline`
+subcommands and the `/api/profiles*`, `/api/profile-schema` and
+`/api/profile-goals` routes (`docs/api.md`) are built on it. Only
+`profiles/apply.py` writes Claude Code files, and only when you run
+`apply` yourself.
 
 ## On the dashboard
 
 **Create a profile** starts from a goal instead of a blank form:
 
-1. Pick a goal: spend less on subagents, cheaper models where it's safe,
-   cheaper cache, shorter conversations, less thinking where it isn't
-   needed, start from my recommendations, or start from my current
+1. Pick a goal: start from my recommendations, spend less on subagents,
+   cheaper models where it's safe, cheaper cache, shorter conversations,
+   less thinking where it isn't needed, or start from my current
    settings (`profiles/goals.py`).
 2. Tick the changes you want. Each row shows the setting, its value now
    and after, the estimated effect over the window, the evidence and the
    trade-off. A change is ticked for you only when your own sessions
-   support it; the main session's model is never ticked for you, and
-   anything that trades quality for cost (lower effort, skipping
-   CLAUDE.md) is left for you to decide. The total at the top is a
-   what-if estimate (`whatif.py`), updated as you tick.
+   support it. A model, cache or summary-point change that would save
+   less than 5% of what it touches is not offered at all; an agent's
+   model change is ticked from a 20% saving. The main session's model
+   is never ticked for you. A lower effort or skipping CLAUDE.md found
+   from your tables is offered unticked, for you to decide; the same
+   change from a recommendation is ticked. The total at the top is a what-if estimate (`whatif.py`),
+   updated as you tick.
 3. Name it and save it. It then works like any other profile below.
 
-The estimate reads the report's own simulations: the model-swap table
-for a model change, the cache-lifetime simulation for a TTL change, the
-summary-point sweep for `autoCompactWindow`, measured startup tokens per
-spawn for `omitClaudeMd`, and a rough share of thinking tokens for
-effort. A change with nothing to read from says "not estimated" rather
-than guessing. Each profile's detail shows the same estimate.
+The estimate reads the report's own tables and runs no new simulation:
+
+| Change | Read from | How it is worked out |
+|---|---|---|
+| `model` (main session or an agent) | model-swap table | Simulated: the same tokens repriced |
+| `autoCompactWindow` | summary-point sweep | Simulated: your sessions replayed |
+| `promptCacheTtl`, `subagentPromptCacheTtl`, an agent's `experimental.cacheTtl` | cache-lifetime simulation | Simulated: every cache write replayed at 5 minutes or 1 hour |
+| an agent's `omitClaudeMd = true` | CLAUDE.md tokens per spawn | Measured per spawn, times the spawns in the window |
+| `skillOverrides`, `enabledPlugins` (turning one off) | each skill's listing cost (Context files) | Estimated from what stops being sent |
+| `effortLevel`, an agent's `effort` | thinking share of output | Not estimated: shows the thinking share only |
+
+Any other key says "not estimated" rather than guessing. Changes
+overlap, so a total of several rows is rough. Each profile's detail
+shows the same estimate.
 
 **Your changes and what they did** lists every `apply`, its undo, and
-any settings change the snapshot hook saw, with the sessions before it
-against those after it on the measures that change should move (cost
-per spawn for a model change, summaries per session for
-`autoCompactWindow`, and so on). It needs a few sessions on each side
-before it says anything, and notes that other things change too.
+any settings change the snapshot hook saw between one session start
+and the next (`change_points.py`). A snapshot change that spans an
+apply or undo is that same change, not a second one. For each, newest
+first (at most 10), it compares the sessions started before it with
+those started after it (`impact.py`):
+
+- **Before** is the 14 days before the change, cut short by an earlier
+  change. **After** runs from the change to the next one, or now.
+- Changes within 10 minutes of each other (one apply writing several
+  files, say) share their before and after.
+- It needs at least 3 sessions on each side. With fewer, it says how
+  many it has and gives no verdict.
+- The measures follow the keys that changed: cost per reply for a
+  model or effort change, summaries per session and largest context
+  for `autoCompactWindow`, the share of cache writes that rebuilt
+  expired context for a cache lifetime, context at session start for
+  skills, plugins and MCP servers, and cost and start-up context per
+  spawn for a change to one agent. Cost per session always comes last.
+  A change under 5% reads as "about the same".
+- An apply names its keys from its backup manifest. An apply made
+  before manifests recorded keys names them from the difference
+  between the backup and the file as it is now. Later edits to the
+  same file show up too, so it names keys but not values.
+
+Sessions differ in size and kind of work, so a difference is a signal,
+not proof.
 
 The Profiles tab also shows one card per profile with the settings it
 changes by their plain labels. Opening one shows a table of Setting /
 Now / After / Set in for the scope you pick, then three ways to use it:
 a prompt that asks Claude to make the changes and show you the diff
 first (`fixes.profile_prompt`), the `claude-token-lens apply <id>
---dry-run` command, and a one-session `--launch` trial that writes
-nothing. "Save my current settings as a profile" saves your latest
+--dry-run` command, and a one-session `--launch` trial that changes no
+Claude Code settings file (it writes only its own overlay under
+`<config-dir>/profiles/`). "Save my current settings as a profile"
+saves your latest
 config snapshot's allowlisted, non-managed values as a user profile
 (`POST /api/profiles/from-current`), and "Edit settings directly" is a
 form built from `GET /api/profile-schema`. None of these change your
@@ -93,10 +128,10 @@ excluded, since it is excluded from equality too).
 ## The allowlist: what a profile may contain
 
 `SETTINGS_ALLOWLIST`, `AGENT_ALLOWLIST` and `ENV_ALLOWLIST` in
-`schema.py` are the single source of truth — `validate()`'s rejection
-messages and this document's tables are both generated from the exact
-same three dicts, so they cannot drift apart silently. A profile
-naming any other key is rejected outright.
+`schema.py` are the single source of truth. `validate()`'s rejection
+messages are built from these three dicts; the tables below are copied
+from them by hand, so update both together. A profile naming any
+other key is rejected outright.
 
 ### `settings` (top-level `settings.json` overlay keys)
 
@@ -117,8 +152,8 @@ description), `name-only` (listed by name, which costs fewer tokens),
 | `subagentPromptCacheTtl` | enum | `5m`, `1h` | `docs/api.md#get-apittl` |
 | `enabledPlugins` | map of plugin name to on/off | `true`, `false` | `docs/config-layers.md#content_layers` |
 | `skillOverrides` | map of skill name to visibility | `on`, `name-only`, `user-invocable-only`, `off` | `docs/profiles.md#settings-top-level-settingsjson-overlay-keys` |
-| `disabledMcpjsonServers` | list of strings | any server names | `docs/config-layers.md#claude_json----the-claudejson-cross-check` |
-| `enabledMcpjsonServers` | list of strings | any server names | `docs/config-layers.md#claude_json----the-claudejson-cross-check` |
+| `disabledMcpjsonServers` | list of strings | any server names | `docs/config-layers.md#claude_json--the-claudejson-cross-check` |
+| `enabledMcpjsonServers` | list of strings | any server names | `docs/config-layers.md#claude_json--the-claudejson-cross-check` |
 | `alwaysThinkingEnabled` | bool | — | `docs/config-layers.md#redaction-rule-settings-and-agent-frontmatter-alike` |
 | `autoCompactEnabled` | bool | — | `docs/config-layers.md#redaction-rule-settings-and-agent-frontmatter-alike` |
 | `cleanupPeriodDays` | int | 0–3,650 | `docs/config-layers.md#redaction-rule-settings-and-agent-frontmatter-alike` |
@@ -188,9 +223,9 @@ for an unrecognised id.
 
 ## `suggest()`: archetype/purpose → catalogue id
 
-`suggest(archetype, purposes) -> str` is the deterministic mapping a
-future `init`/`baseline` (out of this work package's scope) calls once
-it has detected a corpus's archetype and dominant purposes
+`suggest(archetype, purposes) -> str` is the deterministic mapping
+`baseline.py` (behind `init` and `baseline`) calls once it has detected
+a corpus's archetype and dominant purposes
 (`classify.classify_purpose`'s values, most-dominant first). A purpose
 is checked first, in the caller's own list order, since it is a more
 specific signal than the bare archetype; the archetype is only a
@@ -232,9 +267,9 @@ That profile is justified entirely by session *mode* evidence
 human gap > 60 minutes), which `suggest`'s plan-specified signature
 (archetype and purpose only, no mode) has no way to receive — an
 overnight session can be any archetype. `catalogue.get("overnight-batch")`
-still returns it directly; reaching it automatically would require a
-future, explicitly reviewed `suggest` signature change that also takes
-the corpus's mode mix, not a guess baked into this mapping.
+still returns it directly, and `baseline._suggested_profile` suggests
+it before calling `suggest()` when at least half the window's sessions
+are overnight (`sessions_by_mode`).
 
 ## Diffing a profile against a project's effective config
 
@@ -331,8 +366,10 @@ left implicit, per this project's "report deviations" convention.
 apply_command(profile_id: str, scope: "user" | "project-local" | "repo", project_path: str | None = None) -> str
 ```
 
-Two lines: the exact `claude-token-lens apply <id> [--project-dir <path>]
-[--allow-tracked]` invocation (`--project-dir` only appears when
+Two lines: the exact `claude-token-lens apply <id> [--scope <scope>]
+[--project-dir <path>] [--allow-tracked]` invocation (`--scope` appears
+for every scope but `user`, since `apply` otherwise falls back to user
+scope; `--project-dir` only appears when
 `project_path` is given; `--allow-tracked` is only added for
 `scope="repo"`, matching that scope writing a version-controlled
 `.claude/settings.json`), and the `--launch` one-session-overlay
@@ -372,17 +409,19 @@ environment-variable surface expose. It is not, and cannot become:
   *name allowlist* — the schema never stores or transmits an actual
   secret or value; the user supplies that at apply time, in their own
   shell.
-- **A path to a real file.** No function in this package reads or
-  writes a project's filesystem — `diff.py` is pure, and `schema.py`'s
+- **A path to a real file.** A profile names keys, never files. Where
+  a change lands is decided by `apply`'s `--scope` and `--project-dir`
+  (see "Applying a profile"). `diff.py` is pure, and `schema.py`'s
   `load_profile`/`dump_profile` only ever touch the one profile file
-  they are explicitly given.
+  they are explicitly given; `apply.py` is the only module here that
+  writes Claude Code files.
 - **An override of a managed-settings key.** `diff_against_effective`/
   `render_unified_diff` know about `managed_keys` precisely so a
   profile's proposed change to a managed key is surfaced as "managed
-  by policy" rather than silently presented as applicable — the actual
-  refusal to *write* a managed key is enforced by `apply`/the
-  `POST /api/profiles` route (both out of this work package), not by
-  anything here.
+  by policy" rather than silently presented as applicable. `apply`
+  drops a managed key from its write plan (see "Managed keys" below).
+  `POST /api/profiles` only saves a profile file and never writes
+  Claude Code settings at all.
 - **A key this project has no way to honour.** The allowlist is the
   single source of truth; `validate()` rejects any key not in it, so a
   profile can never promise an effect the harness cannot deliver
@@ -416,9 +455,9 @@ evolves.
 `profiles/apply.py` is the one module in this package that actually
 writes to a project's or a user's real files — `plan_apply` resolves
 every write without touching disk, `execute` performs it, and `revert`
-undoes it. `cli.py`'s `apply` subcommand is the only caller; the
-functions themselves take no CLI dependency (a future `POST
-/api/profiles` route can call them the same way).
+undoes it. `cli.py`'s `apply` and `uninstall --revert-changes` are the
+only callers that write; the dashboard only reads the backups (to list
+your changes) and never calls `execute` or `revert`.
 
 ```
 claude-token-lens apply <profile> [--scope user|project-local|repo]
@@ -461,10 +500,10 @@ patches unable to find any agent file at all. `plan_apply`'s
 `claude_root` parameter and `--claude-root` exist precisely so the two
 directories are never conflated again.
 
-An agent's frontmatter file is not itself scope-specific — the same
-`.claude/agents/<name>.md` is patched regardless of which settings
-scope is chosen (this mirrors `diff.py`'s own `target_file` note above:
-a per-agent row always renders against that one path). Existing keys
+`project-local` and `repo` patch the same
+`<project>/.claude/agents/<name>.md` — an agent file has no local
+variant, so only the settings file differs between those two scopes.
+`user` scope patches `<claude-root>/agents/<name>.md` instead. Existing keys
 and surrounding text (comments, unrelated keys, formatting) in an agent
 file are preserved exactly — only the allowlisted keys a profile sets
 are patched in place (`frontmatter.patch_frontmatter`).
@@ -482,13 +521,13 @@ resolved for `snapshot-config`/`probe-config` — it is spelled
 
 `--dry-run` prints a real unified diff of every file `plan_apply`
 would write, followed by any managed-key notes, the env-var export
-lines, and the exact command to run for real. When the plan is
-non-empty but `plan.blocked` is not (see "Git-tracked files" and
-"Missing agent files" below), `--dry-run` instead prints each blocked
-reason to stderr and exits `2` — the same outcome the real apply would
-hit, surfaced before the user runs it for real, rather than a
-misleadingly clean-looking `0` exit for a preview whose apply would
-actually refuse. Nothing is written to disk either way.
+lines, and the exact command to run for real. When `plan.blocked` is
+non-empty (see "Git-tracked files" and "Missing agent files" below),
+`--dry-run` still prints the diff, but then prints each blocked reason
+to stderr instead of the command, and exits `2` — the same refusal the
+real apply would hit (which exits `1`), surfaced before you run it for
+real rather than a clean-looking `0` exit for a preview whose apply
+would refuse. Nothing is written to disk either way.
 
 This diff text (`apply.render_plan_diff`) is built from the exact same
 `actions` list `execute()` writes from — each action already carries
@@ -541,7 +580,10 @@ SHA-256 of the content written. If a file no longer matches that hash
 (you or Claude Code edited it since), `--revert` refuses and restores
 nothing, because restoring would discard those edits; `--ignore-changes`
 restores the backup anyway. Manifests from before hashes were recorded
-revert without the check.
+revert without the check. A revert keeps the backup and the snapshot
+stamp, and writes a `reverted.json` marker beside the manifest, so the
+dashboard and `uninstall` stop listing that apply as still in place.
+`--revert` exits `2` when it refuses or cannot find the backup.
 
 Both `--dry-run` and a real apply first print each change in words:
 what the setting controls, its value now and after, which file and who

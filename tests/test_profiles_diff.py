@@ -337,6 +337,15 @@ def test_apply_command_repo_scope_adds_allow_tracked():
     assert "--project-dir /home/dev/project" in apply_line
 
 
+def test_apply_command_names_every_scope_but_user():
+    """``apply`` falls back to user scope without --project-dir, so a
+    project scope must be named or the command writes user settings."""
+    assert "--scope" not in apply_command("interactive-chat", "user").splitlines()[0]
+    assert "--scope project-local" in apply_command("interactive-chat", "project-local").splitlines()[0]
+    repo = apply_command("interactive-chat", "repo", project_path="/p").splitlines()[0]
+    assert "--scope repo" in repo and "--allow-tracked" in repo
+
+
 def test_apply_command_rejects_unknown_scope():
     with pytest.raises(ValueError):
         apply_command("interactive-chat", "not-a-scope")

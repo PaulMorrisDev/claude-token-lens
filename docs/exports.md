@@ -16,6 +16,14 @@ claude-token-lens export --format json --per-session --no-hash-slugs --out my-us
 claude-token-lens export --format otel-jsonl --out usage.otel.jsonl
 ```
 
+`--format` is `csv-flat` (the default), `json` or `otel-jsonl`. The
+export goes to stdout unless `--out PATH` is given. Like every other
+command it covers the current directory's project unless you pass
+`--project` (repeatable) or `--all-projects`, and every session unless
+you pass `--days N`, `--since` or `--until`. `--generated-at` (ISO
+8601) or `SOURCE_DATE_EPOCH` pins `--format json`'s `meta.generated_at`
+so two runs are byte-identical.
+
 ### Privacy guarantees (for team leads)
 
 - **Aggregate-only is the default.** Rows are grouped by
@@ -75,9 +83,9 @@ usually wants those as separate dimensions.
 | --- | --- |
 | `day` | local calendar day (`YYYY-MM-DD`, in `config.tz` or the machine's own zone) |
 | `project` | project slug, or its hash (see above) |
-| `model` | model id as recorded on the turn |
-| `entrypoint` | e.g. `claude-desktop`, `claude-code` |
-| `agent_type` | the transcript's agent type, falling back to its `kind` (`top-level`/`subagent`/`workflow-agent`), or `unknown` |
+| `model` | model id as recorded on the turn, or `<unknown>` |
+| `entrypoint` | e.g. `claude-desktop`, `claude-code`, or `unknown` |
+| `agent_type` | the transcript's agent type, falling back to its `kind` (`top-level`/`subagent`/`workflow-agent`), or `unknown`. A custom agent's own name is hashed to `custom:<8 hex>` with the project names, as in a team document (below); with `--no-hash-slugs` it is printed as is |
 | `turns` | priced turn count in this cell |
 | `input_tokens` | summed input tokens |
 | `cache_write_5m_tokens` / `cache_write_1h_tokens` | summed `ephemeral_5m`/`ephemeral_1h` cache-creation tokens |
@@ -86,7 +94,7 @@ usually wants those as separate dimensions.
 | `output_tokens` | summed output tokens |
 | `thinking_tokens` | summed thinking tokens |
 | `cost` | summed cost (list-price equivalent USD under subscription billing, same convention as every other cost column in this project) |
-| `recache_turns` | count of turns flagged as a RE-CACHE event (see [README section 5](concepts.md#3-cache-rebuild-definitions-and-signatures)) |
+| `recache_turns` | count of turns flagged as a RE-CACHE event (see [Concepts, section 3](concepts.md#3-cache-rebuild-definitions-and-signatures)) |
 | `recache_cache_creation` | cache-creation tokens summed over just those RE-CACHE turns |
 | `session_id` | (only with `--per-session`) the session's id |
 
@@ -158,14 +166,16 @@ A team document carries:
   Stable across runs on the same machine and config dir; never reveals
   or reverses to the hostname.
 - `by_archetype`, `by_mode`, `by_purpose`, `by_agent_type`, `by_model`
-  — one row per group value on each axis: `sessions`, `priced_turns`,
-  `tokens` (input/cache_creation/cache_read/output), `cost_usd`,
+  — one row per group value on each axis, most sessions first: `value`
+  (the group value itself), `sessions`, `priced_turns`, `tokens`
+  (`input`/`cache_creation`/`cache_read`/`output`), `cost_usd`,
   `recache_share_pct`, `compaction_rate`, `ttl_mix` (`5m_pct`/`1h_pct`),
   `mean_spawn_write`, `mean_report_size`. Never a session id, never a
-  slug.
-- `scorecard` — the corpus-wide scorecard level (1-5) per dimension,
-  read from the same `scorecard` section every report renders (never
-  independently recomputed).
+  slug. A custom agent's name in `by_agent_type` is hashed to
+  `custom:<8 hex chars>`; built-in agent types are kept as they are.
+- `scorecard` — `{dimension: level}`, the corpus-wide scorecard level
+  (1-5) per dimension, read from the same `scorecard` section every
+  report renders (never independently recomputed).
 - `projects` — present **only** with `--include-projects`: a sorted
   list of hashed project slugs (the same `_hash_slug` construction
   `--hash-slugs` uses above), never the plaintext slug. Omitted by
@@ -190,9 +200,9 @@ multi-section `report` output:
 
 1. **Finance summary** — total cost, total tokens, session count, and
    (subscription billing only) five-hour blocks used.
-2. **Cost by model**, **Cost by project**, **Cost by entrypoint** —
-   regrouped from the `usage` section's own `by_month`/`by_project`/
-   `by_entrypoint` tables.
+2. **Cost by model** (the `usage` section's `by_month` table summed per
+   model), then **Cost by project** and **Cost by entrypoint** (its
+   `by_project`/`by_entrypoint` tables under new titles).
 3. The full `usage` section's own tables (by day/week/month, by project,
    by entrypoint, five-hour blocks, and `cache_ground_truth` when a
    usage log is available). `cache_ground_truth` is scoped to sessions
@@ -241,37 +251,28 @@ byte-for-byte comparison without pinning `generated_at`.
 For a **genuinely** byte-identical run — no stripping needed — pass a
 fixed `--generated-at` (ISO 8601) or set `SOURCE_DATE_EPOCH`, the same
 reproducible-build convention `export` already offers. This makes it
-safe to schedule (cron, a CI job, `serve`'s own scheduler once it
-exists) with a deterministic timestamp (e.g. the run's own scheduled
+safe to schedule (cron, a CI job) with a deterministic timestamp (e.g. the run's own scheduled
 time) without producing spurious diffs even at the byte level.
 
-### Service entry point (v0.2 `serve --monthly-report DIR`)
+### Calling it from code
 
-`monthly.write_monthly_report(corpus, pricing, config, month, out_dir) ->
-list[Path]` is the function the v0.2 service package wires up to its own
-`serve --monthly-report DIR` flag: it takes an already-loaded
-`corpus`/`pricing`/`config` rather than loading them itself (matching
-`report.build_report`'s own "caller loads, this function only assembles"
-contract), resolves the month with `monthly.resolve_month` if the caller
-doesn't already have one, and returns the two paths it wrote (Markdown
-first, then HTML) so the caller can log or serve them without having to
+`monthly.write_monthly_report(corpus, pricing, config, month, out_dir,
+usage_log_rows=None, generated_at=None) -> list[Path]` takes an
+already-loaded `corpus`/`pricing`/`config` rather than loading them
+itself (matching `report.build_report`'s own "caller loads, this
+function only assembles" contract). `month` (`YYYY-MM`) is required:
+resolve it first with `monthly.resolve_month(None, config.tz)` for the
+previous month. It returns the two paths it wrote (Markdown first, then
+HTML) so the caller can log or serve them without having to
 reconstruct the filenames itself.
+
+`serve --monthly-report DIR` is accepted and stored, but the service
+does not call this function yet, so no report is written. Schedule
+`claude-token-lens monthly-report --out DIR` instead.
 
 ## Statusline payload key recording (`statusline-keys.json`)
 
-Several of the field-name fallback chains this module and `statusline.py`
-implement (see the `context_window` fallbacks above, and the
-`prompt_cache` ground-truth fields `statusline.py`'s own module
-docstring documents) are this project's own best reconciliation of
-partially-overlapping, undocumented field-name lists — not a restatement
-of a single published contract. To make the *real* payload shape ground
-truth for future releases rather than relying on research captures going
-stale, every statusline invocation now writes the payload's own key
-names — recursively, dotted (e.g. `context_window.used_tokens`), **names
-only, never values**, capped at 200 names — to
-`<config_dir>/statusline-keys.json`, and only rewrites that file when the
-recorded key set actually differs from what a real invocation just saw.
-This file contains no prompt text, no token counts, no paths, and no
-usernames — only the shape of the payload, which is safe to attach to a
-bug report or commit into a fixture corpus. See also
-[SECURITY.md](../SECURITY.md).
+Not an export, but safe to share the same way: the statusline records
+the payload's key names (never values, at most 200) to
+`<config_dir>/statusline-keys.json`, which you can attach to a bug
+report. [SECURITY.md](../SECURITY.md) describes what it holds.

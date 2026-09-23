@@ -10,7 +10,7 @@ change is a prompt you give Claude or a command you run.
 
 ## Quick start
 
-1. **Install** (Python 3.11 or later; nothing else):
+1. **Install** (Python 3.11 or later, and git for this command):
 
    ```bash
    pip install git+https://github.com/PaulMorrisDev/claude-token-lens
@@ -47,8 +47,8 @@ no setup at all.
   already written; it never calls Claude or any other service.
 - **It changes nothing on its own.** `init` offers two optional
   additions, each shown and confirmed first: a SessionStart hook that
-  copies your settings into a local snapshot (a few milliseconds per
-  session, adds no tokens to the conversation) and a statusline command
+  copies your settings into a local snapshot (well under a second per
+  session, in the background; adds no tokens to the conversation) and a statusline command
   that logs usage-limit readings (terminal only; adds no tokens).
 - **Settings change only when you say so**, through a prompt you give
   Claude or `claude-token-lens apply`, which backs the file up first and
@@ -127,7 +127,8 @@ undo it. Then it gives you two ways to make the change:
 
 Profiles on the Profiles tab work the same way, for several settings at
 once: a prompt, `claude-token-lens apply <profile> --dry-run`, or a
-one-session trial that writes nothing. See [section 11](#11-applying-a-profile)
+one-session trial (`apply <profile> --launch`) that leaves your settings
+files alone. See [section 11](#11-applying-a-profile)
 and [`docs/profiles.md`](docs/profiles.md).
 
 ## Glossary
@@ -156,7 +157,7 @@ and [`docs/profiles.md`](docs/profiles.md).
 - **Scope**: Where a change is written: your user settings (every project), this project on your machine only, or this project for everyone.
 - **Managed setting**: A setting your organisation's policy controls. Only your administrator can change it.
 - **Snapshot**: A record of your Claude Code settings at one moment, taken so changes can be compared over time.
-- **Window**: The stretch of time the numbers cover, picked at the top of the dashboard: the last hour, today, the last 24 hours, 7, 30 or 90 days, all time, or since your last change. A session counts when any of its replies falls in the window.
+- **Window**: The stretch of time the numbers cover, picked at the top of the dashboard: the last hour, today, the last 24 hours, 7, 30 or 90 days, all time, or since your last change. A session counts, in full, when it was last active in the window.
 - **Change point**: A moment your settings changed: an apply, its undo, or a change the settings snapshot saw. The dashboard compares the sessions before it with those after it.
 - **Quick action**: One question about a way to spend less, such as whether a cheaper model would do for an agent, answered from your own sessions with the evidence and a fix you can copy.
 - **What-if estimate**: What a change would have saved over the window, worked out from your own sessions. It is an estimate: cheaper settings can change how Claude works, which the estimate can't see.
@@ -184,14 +185,14 @@ by tests. The command-line surface now matches: `report`, `sessions`,
 `pricing-check`, `scrub-fixture`, `probe`, `statusline`,
 `snapshot-config`, `probe-config`, `export`, `monthly-report`, `compare`,
 `reconcile`, `init`, `baseline`, `apply`, `serve`, `install-service`,
-`uninstall-service`, `import` and `team-report` are real subcommands
-backed by that engine — see [section 2](#2-installing-and-first-run) for the full
-flag reference and [`docs/onboarding.md`](docs/onboarding.md) for
-`init`/`baseline` specifically. This README describes what the code
-actually does today, not the full plan — see
-[`docs/sections-reference.md`](docs/sections-reference.md) for
-section-by-section detail and this file's own notes on what's still
-missing.
+`uninstall-service`, `changes`, `review`, `check`, `uninstall`, `import`
+and `team-report` are real subcommands backed by that engine — see
+[section 2](#2-installing-and-first-run) for the full flag reference and
+[`docs/onboarding.md`](docs/onboarding.md) for `init`/`baseline`
+specifically. This README describes what the code does today, not the
+full plan. See [`docs/sections-reference.md`](docs/sections-reference.md)
+for section-by-section detail, and the roadmap in
+[section 9](#9-licence-contributing-roadmap) for what is still missing.
 
 A few things are also usable directly, outside the `report` command:
 
@@ -294,13 +295,15 @@ questions it genuinely can't infer on its own (billing mode, any
 projects to always exclude, whether you launch Claude Code with shared
 settings overlays, your timezone, a default profile-apply scope, and
 how long to run its onboarding "capture window" for — 7 days by
-default), writes `config.toml`, offers the SessionStart hook and
-statusline `settings.json` fragments to install (skip with
-`--no-install`), kicks off that capture window with an initial baseline
+default), writes `config.toml`, shows the SessionStart hook and statusline
+change to `settings.json` as a diff and asks before making it (skip
+with `--no-install`), kicks off that capture window with an initial baseline
 for the current project, and — as its last step — offers to register
 `claude-token-lens serve` to run at logon (`y` by default; skip with
 `--no-service`, or answer up front with `--install-service`). Say yes
-and http://127.0.0.1:8765 is already live by the time `init` exits.
+and, on macOS and Linux, http://127.0.0.1:8765 is live by the time
+`init` exits; on Windows the task first runs at your next logon (or
+start it now with `Start-ScheduledTask -TaskName ClaudeTokenLens`).
 
 This last step matters for a reason that's easy to miss: Claude Code
 itself deletes transcripts older than `cleanupPeriodDays`, so the only
@@ -390,7 +393,7 @@ this table only lists what's specific to each one.
 
 | Subcommand | What it does | Extra flags |
 | --- | --- | --- |
-| `report` | Full report: every section in [section 3](#3-reading-the-report-sections) (`overview`, `usage`, `sessions`, `recache`, `ttl`, `limits`, `carry`, `compaction_sim`, `model_swap`, `waste`, `compactions`, `agents`, `workstyle`, `workflows`, `config` when snapshots exist, `scorecard`, `recommendations`), printed as Markdown by default. This is the default subcommand — `claude-token-lens` with no arguments runs it. | `--json` (print the whole report as JSON instead), `--html PATH` (also write a single-file HTML report), `--csv-dir DIR` (also write one CSV per table plus an index), `--phases` (add the DISCOVERY/IMPLEMENTATION/VERIFICATION phase-split section), `--patch-set` (also print the recommendation set as unified-diff-style settings/frontmatter patches), `--explain` (add each section's and table's "what it shows / how to read it" help to the Markdown) |
+| `report` | Full report: every section in [section 3](#3-reading-the-report-sections) (`overview`, `usage`, `sessions`, `recache`, `ttl`, `limits`, `carry`, `compaction_sim`, `model_swap`, `waste`, `compactions`, `agents`, `workstyle`, `workflows`, `config` when snapshots exist, `scorecard`, `recommendations`), printed as Markdown by default. This is the default subcommand — `claude-token-lens` with no arguments runs it. | `--json` (print the whole report as JSON instead), `--html PATH` (also write a single-file HTML report), `--csv-dir DIR` (also write one CSV per table plus an index), `--phases` (add the DISCOVERY/IMPLEMENTATION/VERIFICATION phase-split section), `--patch-set` (also print the recommendation set as unified-diff-style settings/frontmatter patches), `--explain` (add each section's and table's "what it shows / how to read it" help to the Markdown), `--baseline ID\|latest` (add a comparison against a saved `baseline` record) |
 | `sessions` | Focused view: just `overview` + `sessions` | Same output flags as `report` except `--patch-set` (recommendations aren't part of a focused view) |
 | `recache` | Focused view: just `overview` + `recache` | Same as `sessions` |
 | `ttl` | Focused view: just `overview` + `ttl` | Same as `sessions` |
@@ -401,18 +404,18 @@ this table only lists what's specific to each one.
 | `waste` | Focused view: just `overview` + `waste` (spend on turns whose output was never used — see [`docs/waste.md`](docs/waste.md)) | Same as `sessions` |
 | `compactions` | Focused view: just `overview` + `compactions` | Same as `sessions` |
 | `config-diff` | Compare sessions grouped by one (or every changed) config key's value, from captured `snapshot-config` snapshots. Prints its own plain-text table(s), independent of `report`'s renderers. | `--key KEY` **or** `--auto-keys` (mutually exclusive, one required): diff one named flattened config key, or every key that changed across the available snapshots |
-| `snapshot-config` | Capture (or print/install) the SessionStart config-snapshot hook — see [section 4](#4-installing-the-sessionstart-hook-and-the-statusline) | `--print-hook` (print the settings.json fragment), `--install-hook` (copy the hook script into `<config-dir>/hooks/`), `--managed-path PATH` (override the platform managed-settings.json path) |
+| `snapshot-config` | Capture (or print/install) the SessionStart config-snapshot hook — see [section 4](#4-installing-the-sessionstart-hook-and-the-statusline) | `--print-hook` (print the settings.json fragment), `--install-hook` (copy the hook script into `<config-dir>/hooks/`), `--managed-path PATH` (override the platform managed-settings.json path), `--project-dir PATH` (take the snapshot for this project directory instead of the current one), `--min-interval SECONDS` (skip the write when an identical snapshot is younger than this; default 300) |
 | `probe-config` | Scan a project's config layers directly from the filesystem, without needing a captured session — the same layered-config view `snapshot-config` captures, on demand (schema 2) | `--project-dir PATH` (project directory to scan; default: the current directory), `--managed-path PATH` (override the platform managed-settings.json path) |
 | `log-usage` | Read a pasted `get_usage` JSON payload from stdin and append its rows to the local usage-window CSV log | none beyond the global flags |
 | `pricing-check` | Print the resolved rate card's provenance and rate table, and (with `--models`) how specific model ids resolve against it | `--models ID,ID,...` |
 | `scrub-fixture` | Turn a real `<project_dir>/<session_id>` directory into a privacy-scrubbed test fixture, or verify an already-scrubbed one | `--session-dir PATH --out PATH` (scrub), or `--verify OUT_DIR` (audit an existing scrub), plus optional `--key-seed SEED` (deterministic HMAC key — tests only) |
 | `probe` | Content-free schema histogram (line types, key names, attachment types, `version` values — every string capped at 64 chars) of a project or one transcript file, safe to paste into a bug report | `--file PATH` (probe a single transcript file instead of a project) |
 | `statusline` | Claude Code `statusLine` handler — reads a JSON payload from stdin on every refresh (see [section 4](#4-installing-the-sessionstart-hook-and-the-statusline)) | `--print-install-fragment` / `--install` (print the settings.json fragment instead of reading stdin) |
-| `export` | Aggregate, privacy-safe export of a corpus for BI/observability tooling (see [section 6](#6-for-team-leads-and-enterprise) and [`docs/exports.md`](docs/exports.md)) | `--format {csv-flat,json,otel-jsonl}` (default `csv-flat`), `--aggregate-only` / `--per-session` (mutually exclusive, default `--aggregate-only`), `--hash-slugs` / `--no-hash-slugs` (mutually exclusive, default hashed whenever `--aggregate-only` is in effect), `--out PATH` (default: stdout) |
-| `monthly-report` | Write a habit-forming finance summary (cost/tokens by model/project/entrypoint, five-hour blocks under subscription billing) plus the `usage` section for one calendar month, as both Markdown and HTML (see [section 6](#6-for-team-leads-and-enterprise) and [`docs/exports.md`](docs/exports.md)) | `--out DIR` (required), `--month YYYY-MM` (default: the previous calendar month) |
+| `export` | Aggregate, privacy-safe export of a corpus for BI/observability tooling (see [section 6](#6-for-team-leads-and-enterprise) and [`docs/exports.md`](docs/exports.md)) | `--format {csv-flat,json,otel-jsonl}` (default `csv-flat`), `--aggregate-only` / `--per-session` (mutually exclusive, default `--aggregate-only`), `--hash-slugs` / `--no-hash-slugs` (mutually exclusive, default hashed in every mode), `--out PATH` (default: stdout), `--generated-at ISO8601` (fix the `json` export's timestamp so reruns are byte-identical), `--aggregate` (write a team-aggregate JSON document for `import`/`team-report` instead), `--include-projects` (with `--aggregate`: add hashed project slugs) |
+| `monthly-report` | Write a habit-forming finance summary (cost/tokens by model/project/entrypoint, five-hour blocks under subscription billing) plus the `usage` section for one calendar month, as both Markdown and HTML (see [section 6](#6-for-team-leads-and-enterprise) and [`docs/exports.md`](docs/exports.md)) | `--out DIR` (required), `--month YYYY-MM` (default: the previous calendar month), `--generated-at ISO8601` (fix the trailing "Generated at" line so reruns are byte-identical) |
 | `import` | Validate and copy one or more `export --aggregate` team documents into `<config_dir>/team/` for `team-report` (see [section 6](#6-for-team-leads-and-enterprise) and [`docs/team.md`](docs/team.md)) | `FILE...` (one or more team-document paths); exits 2 with the reason on the first invalid file |
 | `team-report` | Cross-machine per-archetype/per-agent-type comparison built from every document already imported into `<config_dir>/team/` (see [section 6](#6-for-team-leads-and-enterprise) and [`docs/team.md`](docs/team.md)) | `--min-sessions N` (default 5), plus the same `--json`/`--html PATH`/`--csv-dir DIR` output flags as `report` |
-| `init` | Detect what's already set up, ask (or, non-interactively, derive) a short question set, write `config.toml` and this project's `projects/<slug>.toml`, print the hook/statusline install fragments, run an initial onboarding baseline, show the exact `settings.json` change that connects the snapshot hook (and a statusline when you have none) and make it only after you say yes, and — as its last step — offer to register the service to run at logon (`docs/deploy.md`) — see [`docs/onboarding.md`](docs/onboarding.md) | `--answers FILE` (JSON file supplying any subset of the answers), `--non-interactive` (derive unanswered questions instead of prompting; derives to *not* installing the service unless `--install-service` is also given), `--no-install` (skip connecting to Claude Code), `--connect` (make the `settings.json` change without asking; it is still shown, and the file backed up first), `--install-service` (register the service without asking), `--no-service` (skip the logon-service step entirely), `--dry-run` (governs only the logon-service step: print its plan without writing/registering anything), `--repair-hook` (fix a broken SessionStart hook command without asking: a path a single backslash in JSON broke, a missing `py` launcher, or a `%VARIABLE%` Git Bash doesn't expand; `settings.json` is backed up first) |
+| `init` | Detect what's already set up, ask (or, non-interactively, derive) a short question set, write `config.toml` and this project's `projects/<slug>.toml`, print the hook/statusline install fragments, run an initial onboarding baseline, show the exact `settings.json` change that connects the snapshot hook (and a statusline when you have none) and make it only after you say yes, and — as its last step — offer to register the service to run at logon (`docs/deploy.md`) — see [`docs/onboarding.md`](docs/onboarding.md) | `--answers FILE` (JSON file supplying any subset of the answers), `--non-interactive` (derive unanswered questions instead of prompting; derives to *not* installing the service unless `--install-service` is also given), `--no-install` (skip connecting to Claude Code), `--connect` (make the `settings.json` change without asking; it is still shown, and the file backed up first), `--install-service` (register the service without asking), `--no-service` (skip the logon-service step entirely), `--dry-run` (show the `settings.json` change and the logon-service plan without making either; `config.toml` and the baseline are still written), `--repair-hook` (fix a broken SessionStart hook command without asking: a path a single backslash in JSON broke, an interpreter that can't be found such as a missing `py` launcher, or a `%VARIABLE%` Git Bash doesn't expand; it keeps your own Python when it's found and writes the folder out in full; `settings.json` is backed up first) |
 | `baseline` | Capture (or list/show) an onboarding baseline: mode mix, dominant purposes, suggested profile, projected saving — see [`docs/onboarding.md`](docs/onboarding.md) | `--finalise` (treat the baseline as final even if the capture window hasn't elapsed), `--list` (list saved baselines), `--show ID` (print a previously saved baseline's report) |
 | `apply` | Apply a catalogue or custom profile's settings/agent/env levers to a project or your user config, with backup/`--revert` — see [section 11](#11-applying-a-profile) and [`docs/profiles.md`](docs/profiles.md) | `PROFILE` (catalogue id or path to a profile TOML file), or `--set KEY=VALUE` (repeatable; one allowlisted setting, no profile needed) with `--agent NAME` for agent frontmatter, `--scope {user,project-local,repo}` (default `user`, or `project-local` once `--project-dir` is given), `--project-dir PATH`, `--claude-root PATH` (default: `$CLAUDE_CONFIG_DIR`, else `~/.claude`), `--dry-run`, `--launch` (one-session overlay instead of a persisted apply), `--allow-tracked`, `--force` (create a missing agent file from scratch), `--revert TS`, `--ignore-changes` (with `--revert`), `--list-backups` |
 | `serve` | Run the local JSON API + watcher service (`service/serve.py`) — see [`docs/api.md`](docs/api.md) and [`docs/ui.md`](docs/ui.md) | `--port N` (default 8765), `--bind ADDRESS` (default `127.0.0.1`, loopback only), `--allow-remote` (allow `--bind` to a non-loopback address, refused by default), `--poll-interval SECONDS` (watcher poll interval, default 30), `--retention-days N` (prune sessions older than N days on every poll tick; default: `config.toml`'s `retention_days`, else keep forever), `--exclude-project SLUG` (repeatable; project slug never scanned), `--billing-mode {api,subscription}` (stamped onto every session; default: `config.toml`'s `billing`, resolved as for `report`), `--allowed-host NAME` (repeatable; an extra host name the dashboard answers to — every other `Host` header gets `403`, see [`docs/api.md`](docs/api.md#host-allowlist-dns-rebinding)), `--monthly-report DIR` (accepted and carried on `ServeOptions.monthly_report_dir`, but not yet consumed by the watcher tick — run the standalone `monthly-report` subcommand, e.g. from cron, until this is wired up), `--once` (run a single watcher tick, print its stats, and exit instead of serving), `--purge --yes` (delete `<config-dir>/service.db` and its WAL/SHM sidecars, then exit) |
@@ -427,9 +430,10 @@ this table only lists what's specific to each one.
 
 `usage`, `agents`, `workstyle`, `workflows` and `scorecard` are real
 report sections (see [section 3](#3-reading-the-report-sections)) but
-don't have their own focused subcommand the way `sessions`/`recache`/
-`ttl`/`limits`/`compactions` do today — get them via `report` (or
-`report --json` and pull out that section).
+don't have their own focused subcommand the way `sessions`, `recache`,
+`ttl`, `limits`, `carry`, `compaction-sim`, `model-swap`, `waste` and
+`compactions` do. Get them via `report` (or `report --json` and pull out
+that section).
 
 ### Exit codes
 
@@ -458,7 +462,8 @@ above lists what each one adds on top):
 | `--window-by {mtime,timestamp}` | which timestamp windows and sorts by (default `mtime`) |
 | `--pricing PATH` | use a rate card other than the packaged default / config-dir override |
 | `--config-dir PATH` | override `~/.claude/token-lens` (or `$CLAUDE_CONFIG_DIR/token-lens`) |
-| `--group-by {mode,purpose,agent,project,model,profile}` | grouping axis for tables that support it |
+| `--tz ZONE` | IANA time zone for this run only (e.g. `America/New_York`); default: `config.toml`'s `tz`, else the machine's own zone |
+| `--group-by {agent,entrypoint,mode,model,project,purpose}` | grouping axis for tables that support it |
 | `--no-cache` / `--rebuild-cache` | mutually exclusive. `--no-cache` skips the on-disk digest cache entirely; `--rebuild-cache` purges it first, then repopulates as it parses. Both are wired through to `corpus.load_corpus` for every subcommand that loads a corpus. |
 | `--jobs N` | parallel parsing workers (default: 1) |
 | `--quiet` / `--verbose` | verbosity (mutually exclusive); `--verbose` also prints a `[corpus] files=... cache_hits=... cache_misses=... elapsed_s=...` line to stderr |
@@ -540,11 +545,6 @@ token-volume regression per window — has a `build_section` function but
 nothing in `report.py`/`cli.py` wires it into the assembled report yet;
 call it directly, the same as any other module, until that's closed.
 
-`--allow-titles` is accepted by every report-like subcommand but is
-currently a no-op: nothing in `model.py`/`parse.py`/`events.py` captures
-`customTitle`/ai-title line text anywhere, even conditionally, so there
-is no title data for the flag to gate yet.
-
 ### The Recommendations block
 
 `recommend.recommend()` turns the assembled report into a list of
@@ -607,7 +607,8 @@ breakdowns, trigger mix, and so on) and how to read each column.
 
 ### SessionStart config-capture hook
 
-`hooks/snapshot-config.py` is a standalone stdlib script — it
+[`hooks/snapshot-config.py`](src/claude_token_lens/hooks/snapshot-config.py)
+is a standalone stdlib script — it
 deliberately imports nothing from this package, so it keeps working if
 copied on its own onto a machine that only has a bare Python
 interpreter.
@@ -619,7 +620,9 @@ out again. The rest of this section is for doing it by hand.
 
 **What it costs:** the hook runs once when a session starts, takes a few
 milliseconds and prints nothing, so it adds no tokens to the
-conversation. It is registered as async, so it never delays a session.
+conversation. `init` registers it with `"async": true`, so it never
+delays a session. The by-hand fragments below leave that key out; add
+it next to `"command"` if you want the same.
 
 To install it by hand:
 
@@ -690,7 +693,8 @@ capturing:
 - **Environment variable names only, never values**, for every name
   matching `ANTHROPIC_*` / `CLAUDE_*`.
 - **Settings values, but only for a small allowlist**: `model`,
-  `effortLevel`, `outputStyle`, `autoCompactWindow`, `promptCacheTtl`,
+  `effortLevel`, `outputStyle`, `autoCompactWindow`,
+  `autoCompactEnabled`, `promptCacheTtl`,
   `subagentPromptCacheTtl`, `cleanupPeriodDays`,
   `desktopSessionCleanupPeriodDays`, `autoUpdatesChannel`,
   `alwaysThinkingEnabled`, plus any plain `bool`/`int` value (a toggle or
@@ -867,8 +871,10 @@ schedule even when diffing raw bytes.
 Together these make claude-token-lens usable as a team tool without
 running claude-token-lens's own modules by hand against each person's own
 `~/.claude/projects` — see [`docs/exports.md`](docs/exports.md) for the
-full picture, including the entry point (`monthly.write_monthly_report`)
-the v0.2 service wires up to its own `--monthly-report DIR` flag.
+full picture, including the entry point (`monthly.write_monthly_report`).
+`serve --monthly-report DIR` accepts a directory but doesn't write a
+report yet; schedule `monthly-report` yourself (for example from cron)
+until it does.
 
 ### For team leads: cross-machine comparison (v0.3)
 
@@ -1000,8 +1006,10 @@ see the Status note above):
   [`docs/onboarding.md`](docs/onboarding.md),
   [`docs/profiles.md`](docs/profiles.md), [section 11](#11-applying-a-profile),
   [`docs/compare.md`](docs/compare.md) and [`docs/team.md`](docs/team.md).
-- **v0.4 backlog** — a budget-check guardrail (`check --weekly-tokens
-  N --daily-usd N`), anomaly-outlier detection, `serve --monthly-report`
+- **v0.4 backlog** — a budget guardrail that exits non-zero past a
+  weekly token or daily dollar limit (planned as `check --weekly-tokens
+  N --daily-usd N`, before `check` became the quick-actions command, so
+  it will need another name), anomaly-outlier detection, `serve --monthly-report`
   actually wired to run on a schedule (the flag exists today but nothing
   yet consumes it), and an opt-in `--show-paths` local file view. See
   [CHANGELOG.md](CHANGELOG.md)'s `[0.3.0]` "Planned" notes.
@@ -1110,6 +1118,7 @@ claude-token-lens apply --set omitClaudeMd=true --agent code-reviewer --scope us
 | Flag | Meaning |
 |---|---|
 | `--scope {user,project-local,repo}` | Which settings file is written (default: `user`, or `project-local` once `--project-dir` is given) |
+| `--claude-root PATH` | The Claude Code folder holding `settings.json` and `agents/` for `user` scope (default: `$CLAUDE_CONFIG_DIR`, else `~/.claude`) |
 | `--project-dir PATH` | Project directory for `project-local`/`repo` scope. Named `--project-dir`, not `--project` — the global `--project` flag already means "a repeatable project slug to filter a report by", the same collision `snapshot-config`/`probe-config` resolve the same way |
 | `--dry-run` | Explain each change in words (what it controls, now and after, where, trade-off, undo), then print the diff and the command to run, without writing anything |
 | `--launch` | Write a one-session `<config-dir>/profiles/<id>.settings.json` overlay instead of a persisted apply |
