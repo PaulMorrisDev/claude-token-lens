@@ -30,11 +30,13 @@ def to_jsonable(value):
     dataclasses), enums become their ``.value``, tuples become lists,
     ``datetime`` becomes an ISO 8601 string with a ``Z`` suffix (UTC),
     and floats are rounded to 6 decimal places to keep output stable.
+    A dataclass field whose metadata has ``json: False`` is left out.
     """
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
         return {
             f.name: to_jsonable(getattr(value, f.name))
             for f in dataclasses.fields(value)
+            if f.metadata.get("json", True)
         }
     if isinstance(value, Enum):
         return to_jsonable(value.value)

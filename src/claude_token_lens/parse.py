@@ -360,9 +360,15 @@ def _read_target_hash(path_value: str) -> str | None:
     """
     if _SALT is None:
         return None
+    return path_hash(path_value, _SALT)
+
+
+def path_hash(path_value: str, salt: bytes) -> str:
+    """The same salted hash as :func:`_read_target_hash`, with the salt
+    passed in, so a file found on disk can be matched to the records
+    transcripts keep for it (``claude_md_review``)."""
     normalized = _normalize_path_for_hash(path_value)
-    digest = hmac.new(_SALT, normalized.encode("utf-8"), hashlib.sha256).hexdigest()
-    return digest[:16]
+    return hmac.new(salt, normalized.encode("utf-8"), hashlib.sha256).hexdigest()[:16]
 
 
 def detect_provider(model_id: str | None) -> str | None:
@@ -554,6 +560,8 @@ class _PendingTurn:
     #: turn's own ``tool_use_ids`` that carry ``is_error: true``.
     tool_error_count: int = 0
     tool_error_chars: int = 0
+    #: Context-files addition (see model.py's ``Turn.skills_invoked``).
+    skills_invoked: list[str] = field(default_factory=list)
 
 
 def _merge_content_blocks(pending: _PendingTurn, content, tool_use_names: dict[str, str]) -> None:
@@ -610,6 +618,11 @@ def _merge_content_blocks(pending: _PendingTurn, content, tool_use_names: dict[s
                 hashed = _read_target_hash(target_value)
                 if hashed is not None:
                     pending.read_target_hashes.append(hashed)
+
+        if name == "Skill":
+            skill_name = tool_input.get("skill")
+            if isinstance(skill_name, str) and skill_name:
+                pending.skills_invoked.append(skill_name)
 
 
 def _new_pending(d: dict, tool_use_names: dict[str, str]) -> _PendingTurn:
@@ -918,6 +931,7 @@ def _finalize_turn(
         gap_cause=gap_cause,
         tool_error_count=pending.tool_error_count,
         tool_error_chars=pending.tool_error_chars,
+        skills_invoked=tuple(pending.skills_invoked),
     )
     return turn, new_prev_ts, new_priced_count
 

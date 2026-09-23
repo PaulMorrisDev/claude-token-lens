@@ -96,7 +96,7 @@ from pathlib import Path
 
 from .. import snapshots as snapshots_mod
 from .frontmatter import FrontmatterError, parse_frontmatter, patch_frontmatter
-from .schema import ENV_ALLOWLIST, Profile
+from .schema import ENV_ALLOWLIST, SETTINGS_ALLOWLIST, Profile
 
 __all__ = [
     "ApplyError",
@@ -518,7 +518,13 @@ def plan_apply(
         except (ValueError, UnicodeDecodeError) as exc:
             raise ApplyError([f"{settings_path}: cannot parse as JSON ({exc})"]) from None
         merged = dict(existing)
-        merged.update(settings_changes)
+        for key, value in settings_changes.items():
+            spec = SETTINGS_ALLOWLIST.get(key)
+            if spec is not None and spec.kind.startswith("map[") and isinstance(existing.get(key), dict):
+                # Merge by name: change only the entries the profile names.
+                merged[key] = {**existing[key], **value}
+            else:
+                merged[key] = value
         new_bytes = _render_settings_json(existing_bytes=old_bytes, merged=merged)
         if new_bytes != (old_bytes or b""):
             # Fix S7: checked regardless of scope -- a user-scope

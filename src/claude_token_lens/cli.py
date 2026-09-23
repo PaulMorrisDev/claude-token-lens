@@ -83,6 +83,7 @@ SUBCOMMANDS: tuple[str, ...] = (
     "install-service",
     "uninstall-service",
     "changes",
+    "review",
     "uninstall",
     "import",
     "team-report",
@@ -873,6 +874,7 @@ def _make_parser() -> argparse.ArgumentParser:
             "install-service": "register 'serve' to start at logon/boot (Scheduled Task / systemd user unit / LaunchAgent)",
             "uninstall-service": "remove a logon/boot registration made by install-service (or by init)",
             "changes": "list what this tool has installed and changed, and the command that undoes each",
+            "review": "review your CLAUDE.md files or skills: size, how often each is sent, cost, and fixes",
             "uninstall": "remove the hook, statusline and logon service, optionally undo applied changes and delete data",
             "import": "validate and copy team-aggregate document(s) into <config_dir>/team/",
             "team-report": "cross-machine comparison built from every imported team document",
@@ -890,6 +892,12 @@ def _make_parser() -> argparse.ArgumentParser:
             _add_probe_config_args(sub)
         if name == "apply":
             _add_apply_args(sub)
+        if name == "review":
+            sub.add_argument(
+                "what",
+                choices=("claude-md", "skills"),
+                help="claude-md: every CLAUDE.md file and rule; skills: every skill Claude Code lists",
+            )
         if name in _REPORT_LIKE_COMMANDS:
             _add_report_output_args(sub, allow_patch_set=(name == "report"))
         if name == "config-diff":
@@ -1201,7 +1209,7 @@ def _emit_report_outputs(model, args: argparse.Namespace) -> None:
             Path(csv_dir).joinpath("patch-set.txt").write_text(patch_text, encoding="utf-8")
 
 
-def _cmd_report_like(args: argparse.Namespace, include: set[str] | None) -> int:
+def _cmd_report_like(args: argparse.Namespace, include: set[str] | None, *, emit=None) -> int:
     command = args.command or DEFAULT_SUBCOMMAND
 
     config, rates, config_dir, err = _load_config_and_pricing(args)
@@ -1317,8 +1325,31 @@ def _cmd_report_like(args: argparse.Namespace, include: set[str] | None) -> int:
         # other user-facing config error in this function.
         print(f"claude-token-lens {command}: {exc}", file=sys.stderr)
         return 2
+    if emit is not None:
+        return emit(model, config_dir, window)
     _emit_report_outputs(model, args)
     return 0
+
+
+def _cmd_review(args: argparse.Namespace) -> int:
+    """``review claude-md|skills``: the dashboard's Context files review
+    as Markdown. File text and skill descriptions are read now, never
+    stored."""
+    from . import claude_md_review, skills_review
+    from .units import Units
+
+    def emit(model, config_dir, window) -> int:
+        units = model.units or Units()
+        period = window if window.startswith("since") else f"over the {window}" if window.startswith("last") else f"over {window}"
+        context = model.context_files or {}
+        if args.what == "skills":
+            print(skills_review.render_markdown(skills_review.review(config_dir, context, units, period)))
+        else:
+            review = claude_md_review.build_review(config_dir, context)
+            print(claude_md_review.render_markdown(review, units, period))
+        return 0
+
+    return _cmd_report_like(args, {"overview"}, emit=emit)
 
 
 # -- config-diff -------------------------------------------------------------
@@ -2668,7 +2699,8 @@ ONE_OFF_PROFILE_ID = "one-off"
 def _parse_set_value(raw: str, spec) -> object:
     """``--set``'s VALUE as the allowlisted key's type: true/false for a
     bool, a number for an int, a comma-separated list for a list (empty
-    means an empty list), else the text itself."""
+    means an empty list), NAME:VALUE pairs for a map, else the text
+    itself."""
     if spec is None:
         return raw
     if spec.kind == "bool":
@@ -2685,6 +2717,22 @@ def _parse_set_value(raw: str, spec) -> object:
             return raw
     if spec.kind == "list[str]":
         return [item.strip() for item in raw.split(",") if item.strip()]
+    if spec.kind.startswith("map["):
+        # NAME:VALUE pairs, comma-separated: skillOverrides=pdf:off,xlsx:name-only
+        out: dict = {}
+        for pair in raw.split(","):
+            name, sep, value = pair.strip().rpartition(":")
+            if not sep or not name:
+                return raw
+            value = value.strip()
+            if spec.kind == "map[str,bool]":
+                lowered = value.lower()
+                if lowered not in ("true", "false"):
+                    return raw
+                out[name.strip()] = lowered == "true"
+            else:
+                out[name.strip()] = value
+        return out
     return raw
 
 
@@ -3040,6 +3088,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_team_report(args)
     if command == "changes":
         return _cmd_changes(args)
+    if command == "review":
+        return _cmd_review(args)
     if command == "uninstall":
         return _cmd_uninstall(args)
 

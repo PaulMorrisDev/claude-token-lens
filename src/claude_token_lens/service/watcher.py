@@ -66,6 +66,7 @@ from ..cache import DigestCache, encode_result, result_from_jsonable
 from ..compaction import compaction_records_for_transcript
 from ..corpus import _parse_worker
 from ..model import TranscriptMeta, TranscriptResult
+from .. import parse as parse_mod
 from ..parse import parse_transcript
 from ..pricing import Pricing, PricingError, load_pricing, price_turn
 from ..profiles import catalogue as profile_catalogue, schema as profile_schema
@@ -287,10 +288,14 @@ class FileWatcher:
         *,
         cache: DigestCache | None = None,
         now=None,
+        salt: bytes | None = None,
     ) -> None:
         self.store = store
         self.options = options
         self.cache = cache
+        #: Handed to each prewarm worker process, which (under Windows'
+        #: ``spawn``) does not inherit this process's ``parse.set_salt``.
+        self._salt = salt
         self._now = now or time.time
         self._pricing = _default_pricing()
         self._recache_thresholds = recache.RecacheThresholds()
@@ -582,7 +587,11 @@ class FileWatcher:
             if pending:
                 workers = min(_MAX_PARSE_WORKERS, os.cpu_count() or 1)
                 if workers > 1:
-                    with concurrent.futures.ProcessPoolExecutor(max_workers=workers) as executor:
+                    pool_kwargs: dict = {}
+                    if self._salt is not None:
+                        pool_kwargs["initializer"] = parse_mod.set_salt
+                        pool_kwargs["initargs"] = (self._salt,)
+                    with concurrent.futures.ProcessPoolExecutor(max_workers=workers, **pool_kwargs) as executor:
                         future_map = {
                             executor.submit(_parse_worker, path, meta): (path, meta) for path, meta in pending
                         }

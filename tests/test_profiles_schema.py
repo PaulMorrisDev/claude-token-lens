@@ -55,7 +55,8 @@ def test_validate_accepts_minimal_profile():
         ("outputStyle", "concise"),
         ("promptCacheTtl", "1h"),
         ("subagentPromptCacheTtl", "5m"),
-        ("enabledPlugins", ["my-plugin"]),
+        ("enabledPlugins", {"my-plugin@market": False}),
+        ("skillOverrides", {"pdf": "name-only"}),
         ("disabledMcpjsonServers", ["some-server"]),
         ("enabledMcpjsonServers", ["some-server"]),
         ("alwaysThinkingEnabled", True),
@@ -152,8 +153,9 @@ def test_validate_rejects_unknown_archetype():
         ("autoCompactWindow", 2_000_000),  # out of range (max 1_000_000)
         ("autoCompactWindow", True),  # bool must not pass as int
         ("promptCacheTtl", "15m"),  # not in enum
-        ("enabledPlugins", "not-a-list"),  # wrong type
-        ("enabledPlugins", [1, 2]),  # list of non-str
+        ("enabledPlugins", ["a-list"]),  # wrong type: an object of true/false
+        ("skillOverrides", {"pdf": "hidden"}),  # not a visibility state
+        ("enabledPlugins", {"p": "yes"}),  # non-bool value
         ("alwaysThinkingEnabled", "yes"),  # wrong type
         ("cleanupPeriodDays", 99999),  # out of range
     ],
@@ -330,7 +332,7 @@ def test_dump_profile_round_trips_every_field_kind():
             "outputStyle": "concise",
             "promptCacheTtl": "5m",
             "subagentPromptCacheTtl": "1h",
-            "enabledPlugins": ["a", "b"],
+            "enabledPlugins": {"a@m": True, "b@m": False},
             "disabledMcpjsonServers": ["srv"],
             "enabledMcpjsonServers": ["srv2"],
             "alwaysThinkingEnabled": True,

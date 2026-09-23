@@ -1625,3 +1625,25 @@ def test_cmd_apply_set_explains_the_change_then_reverts(tmp_path, capsys):
     assert "--ignore-changes" in capsys.readouterr().err
     assert cli.main(["apply", "--revert", ts, "--ignore-changes", "--config-dir", str(config_dir)]) == 0
     assert json.loads(settings.read_text(encoding="utf-8")) == {"effortLevel": "high"}
+
+
+def test_cmd_apply_set_merges_a_skill_override_by_name(tmp_path, capsys):
+    claude_root = tmp_path / "claude"
+    config_dir = tmp_path / "tl"
+    claude_root.mkdir()
+    settings = claude_root / "settings.json"
+    settings.write_text('{"skillOverrides": {"pdf": "off"}}', encoding="utf-8")
+    command = [
+        "apply", "--set", "skillOverrides=impeccable:impeccable:name-only,xlsx:user-invocable-only",
+        "--config-dir", str(config_dir), "--claude-root", str(claude_root),
+    ]
+    assert cli.main([*command, "--dry-run"]) == 0
+    assert "skillOverrides" in capsys.readouterr().out
+    assert cli.main(command) == 0
+    assert json.loads(settings.read_text(encoding="utf-8"))["skillOverrides"] == {
+        "pdf": "off",
+        "impeccable:impeccable": "name-only",
+        "xlsx": "user-invocable-only",
+    }
+    assert cli.main(["apply", "--set", "skillOverrides=pdf:sometimes", "--config-dir", str(config_dir),
+                     "--claude-root", str(claude_root), "--dry-run"]) == 2

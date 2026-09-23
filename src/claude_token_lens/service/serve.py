@@ -36,6 +36,7 @@ from __future__ import annotations
 import sys
 from http.server import ThreadingHTTPServer
 
+from .. import parse as parse_mod
 from ..cache import DigestCache
 from .contracts import ServeOptions
 from .store import Store
@@ -98,7 +99,12 @@ def run(options: ServeOptions, *, once: bool = False, allow_remote: bool = False
     # (``FileWatcher._prewarm_cache``) has somewhere to persist parsed
     # results across ticks.
     cache = DigestCache(options.config_dir)
-    watcher = FileWatcher(store, options, cache=cache)
+    # Salt the path and skill-name hashes the same way the CLI does, so a
+    # digest cached by either carries the same hashes (CLAUDE.md and
+    # skills review join on them).
+    salt = parse_mod.load_or_create_salt(options.config_dir)
+    parse_mod.set_salt(salt)
+    watcher = FileWatcher(store, options, cache=cache, salt=salt)
     stats = watcher.run_once()
 
     if once:

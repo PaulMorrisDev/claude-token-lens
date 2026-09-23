@@ -111,7 +111,7 @@ class LeverSpec:
       only here; values supplied at apply time" A7 comment).
     """
 
-    kind: str  # "str" | "enum" | "int" | "bool" | "list[str]"
+    kind: str  # "str" | "enum" | "int" | "bool" | "list[str]" | "map[str,bool]" | "map[str,enum]"
     scope_kind: str  # "settings" | "agent frontmatter" | "env"
     values: tuple[str, ...] | None = None
     min: int | None = None
@@ -123,6 +123,9 @@ class LeverSpec:
 
 _EFFORT_LEVELS = ("low", "medium", "high", "max")
 _TTL_VALUES = ("5m", "1h")
+#: ``skillOverrides`` values: listed with its description, by name only,
+#: only for you to invoke with /name, or not at all.
+_SKILL_VISIBILITY = ("on", "name-only", "user-invocable-only", "off")
 
 #: Top-level ``settings.json`` overlay keys a profile may set.
 SETTINGS_ALLOWLIST: dict[str, LeverSpec] = {
@@ -150,9 +153,15 @@ SETTINGS_ALLOWLIST: dict[str, LeverSpec] = {
         "enum", "settings", values=_TTL_VALUES,
         doc_ref="docs/api.md#get-apittl",
     ),
+    # Objects keyed by name: apply merges them into the existing object,
+    # so a profile turning one plugin off leaves every other plugin alone.
     "enabledPlugins": LeverSpec(
-        "list[str]", "settings",
+        "map[str,bool]", "settings",
         doc_ref="docs/config-layers.md#content_layers",
+    ),
+    "skillOverrides": LeverSpec(
+        "map[str,enum]", "settings", values=_SKILL_VISIBILITY,
+        doc_ref="docs/profiles.md#settings",
     ),
     "disabledMcpjsonServers": LeverSpec(
         "list[str]", "settings",
@@ -292,6 +301,14 @@ def _type_ok(value, spec: LeverSpec) -> bool:
         return isinstance(value, bool)
     if spec.kind == "list[str]":
         return isinstance(value, list) and all(isinstance(item, str) for item in value)
+    if spec.kind == "map[str,bool]":
+        return isinstance(value, dict) and all(
+            isinstance(k, str) and isinstance(v, bool) for k, v in value.items()
+        )
+    if spec.kind == "map[str,enum]":
+        return isinstance(value, dict) and all(
+            isinstance(k, str) and isinstance(v, str) and v in (spec.values or ()) for k, v in value.items()
+        )
     return False  # pragma: no cover - every LeverSpec.kind above is exhaustive
 
 
@@ -307,6 +324,10 @@ def _describe_expected(spec: LeverSpec) -> str:
         return "a bool"
     if spec.kind == "list[str]":
         return "a list of strings"
+    if spec.kind == "map[str,bool]":
+        return "a table of names to true or false"
+    if spec.kind == "map[str,enum]":
+        return f"a table of names to one of {', '.join(spec.values or ())}"
     return "a string"
 
 
@@ -531,6 +552,8 @@ def _toml_value(v) -> str:
         return _toml_string(v)
     if isinstance(v, (list, tuple)):
         return "[" + ", ".join(_toml_value(item) for item in v) + "]"
+    if isinstance(v, dict):
+        return "{ " + ", ".join(f"{_toml_string(k)} = {_toml_value(item)}" for k, item in v.items()) + " }"
     raise TypeError(f"cannot emit {v!r} as TOML")  # pragma: no cover - schema-validated inputs only
 
 

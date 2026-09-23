@@ -158,6 +158,7 @@ _SESSION_TAGS_RE = re.compile(r"^/api/sessions/([^/]+)/tags$")
 _PROFILE_DIFF_RE = re.compile(r"^/api/profiles/([^/]+)/diff$")
 _PROFILE_RE = re.compile(r"^/api/profiles/([^/]+)$")
 _SESSION_EXPLAIN_RE = re.compile(r"^/api/session/([^/]+)/explain$")
+_CLAUDE_MD_RE = re.compile(r"^/api/claude-md/([0-9a-f]{16})$")
 
 #: ``profiles.diff``'s own ``_VALID_SCOPES`` -- duplicated rather than
 #: imported (that name is private) so a scope query param can be
@@ -259,6 +260,16 @@ def _window_query(
     if err is not None:
         return None, err
     return (window_days, since, until), None
+
+
+def _period_text(window_days: int | None, since: str | None, until: str | None) -> str:
+    """The window as a phrase that follows an amount: "over the last 30
+    days", "since 2026-09-20T10:00:00Z", "over all time"."""
+    if since or until:
+        return _window_label(window_days, since, until)
+    if window_days:
+        return f"over the last {window_days} days"
+    return "over all time"
 
 
 def _window_label(window_days: int | None, since: str | None, until: str | None) -> str:
@@ -1041,6 +1052,65 @@ def make_handler(
         statusline = hook_health.statusline_check(options.config_dir, store.entrypoint_counts())
         return _ok(to_jsonable(helptext.diagnostics_table(model.diagnostics, hook=hook, statusline=statusline)))
 
+    def _report_units(model):
+        from ..units import Units
+
+        if model.units is not None:
+            return model.units
+        config = load_config(options.config_dir)
+        return Units(billing_mode=config.billing, currency=model.meta.pricing.currency)
+
+    def _claude_md_review(window):
+        from .. import claude_md_review
+
+        model = _get_report_model(*window)
+        review = claude_md_review.build_review(options.config_dir, model.context_files or {})
+        return claude_md_review, review, _report_units(model), _period_text(*window)
+
+    def route_claude_md(store, query, body):
+        """Every CLAUDE.md-family file on disk, with how often it was sent
+        in the window and what it cost. File text is read now and never
+        stored."""
+        window, err = _window_query(query)
+        if err is not None:
+            return err
+        module, review, units, period = _claude_md_review(window)
+        return _ok(
+            {
+                "period": period,
+                "transcripts": review.transcripts,
+                "files": [module.file_summary(item, units, period) for item in review.files],
+            }
+        )
+
+    def route_claude_md_file(store, query, body):
+        window, err = _window_query(query)
+        if err is not None:
+            return err
+        module, review, units, period = _claude_md_review(window)
+        file_id = query.get("id", "")
+        item = next((entry for entry in review.files if entry.id == file_id), None)
+        if item is None:
+            return _not_found("unknown CLAUDE.md file")
+        return _ok({"period": period, **module.file_detail(item, units, period)})
+
+    def route_skills(store, query, body):
+        """Every skill Claude Code listed in the window: what it is (its
+        description, read now from the newest listing and never stored),
+        where it comes from, how often it was listed and used, and how
+        to hide the ones Claude never uses."""
+        from .. import skills_review
+
+        window, err = _window_query(query)
+        if err is not None:
+            return err
+        model = _get_report_model(*window)
+        return _ok(
+            skills_review.review(
+                options.config_dir, model.context_files or {}, _report_units(model), _period_text(*window)
+            )
+        )
+
     def route_recommendations(store, query, body):
         window, err = _window_query(query)
         if err is not None:
@@ -1080,6 +1150,8 @@ def make_handler(
         "/api/recommendations": route_recommendations,
         "/api/diagnostics": route_diagnostics,
         "/api/profile-schema": route_profile_schema,
+        "/api/claude-md": route_claude_md,
+        "/api/skills": route_skills,
         "/api/report.json": _render_report("application/json", lambda model: render_json(model)),
         # Finding 22: charset was missing on the two text-ish renderers
         # (application/json has no encoding ambiguity, but text/markdown
@@ -1093,6 +1165,7 @@ def make_handler(
         (_SESSION_EXPLAIN_RE, route_session_explain),
         (_PROFILE_DIFF_RE, route_profile_diff),
         (_PROFILE_RE, route_profile),
+        (_CLAUDE_MD_RE, route_claude_md_file),
     )
     post_routes: dict[str, Callable] = {
         "/api/profiles": route_profiles_post,

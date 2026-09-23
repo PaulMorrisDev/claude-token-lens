@@ -288,22 +288,109 @@ def _rendered_size_chars(d: dict, attachment: dict) -> int | None:
 _INSTRUCTION_FILE_TYPES = frozenset({"User", "Project", "Local", "AutoMem", "Managed"})
 
 
+def _path_hash(path: object) -> str | None:
+    """Salted hash of an instruction file's path (``parse._read_target_hash``),
+    so a file can be matched to the same file on disk later without the
+    path itself being stored. ``None`` with no salt set or no path."""
+    if not isinstance(path, str) or not path:
+        return None
+    from . import parse  # parse imports this module; resolved at call time
+
+    return parse._read_target_hash(path)
+
+
+def _instruction_file_record(entry: dict) -> dict:
+    """One instruction file as ``{"hash", "type", "scoped", "chars"}``:
+    a salted path hash, the type label, whether it loads only for
+    matching paths (it has ``globs``), and its size. Never its text or
+    path."""
+    file_type = entry.get("type")
+    record: dict = {
+        "type": file_type if file_type in _INSTRUCTION_FILE_TYPES else "Other",
+        "scoped": bool(entry.get("globs")),
+        "chars": _text_chars(entry.get("content")),
+    }
+    hashed = _path_hash(entry.get("path"))
+    if hashed is not None:
+        record["hash"] = hashed
+    return record
+
+
 def _instructions_detail(attachment: dict) -> dict:
-    """Chars per instruction-file type (``User``/``Project``/...), plus a
-    file count. Unknown types are summed under ``Other``."""
+    """Chars per instruction-file type (``User``/``Project``/...), a file
+    count, and one record per file (:func:`_instruction_file_record`).
+    Unknown types are summed under ``Other``."""
     files = attachment.get("files")
     if not isinstance(files, list):
         return {}
     by_type: dict[str, int] = {}
-    count = 0
+    records: list[dict] = []
     for entry in files:
         if not isinstance(entry, dict):
             continue
-        count += 1
-        file_type = entry.get("type")
-        label = file_type if file_type in _INSTRUCTION_FILE_TYPES else "Other"
-        by_type[label] = by_type.get(label, 0) + _text_chars(entry.get("content"))
-    return {"count": count, "chars_by_type": by_type}
+        record = _instruction_file_record(entry)
+        records.append(record)
+        by_type[record["type"]] = by_type.get(record["type"], 0) + record["chars"]
+    return {"count": len(records), "chars_by_type": by_type, "files": records}
+
+
+def _nested_memory_detail(attachment: dict) -> dict:
+    """The one file a ``nested_memory`` attachment loads (a subfolder
+    CLAUDE.md or a ``.claude/rules`` file), as a single file record."""
+    content = attachment.get("content")
+    if not isinstance(content, dict):
+        return {}
+    return {"files": [_instruction_file_record(content)]}
+
+
+#: One ``- name: description`` line of a ``skill_listing``'s content.
+_SKILL_LINE_RE = re.compile(r"^- ([^\s:][^\n]*?): ", re.MULTILINE)
+
+
+def _skill_listing_detail(attachment: dict) -> dict:
+    """Skill count, plus each listed skill's name and the characters its
+    listing line takes. Names are kept (they are labels, like
+    ``Turn.attribution_skill``); descriptions never are. A name is kept
+    only when it is also in the attachment's own ``names`` list."""
+    detail: dict = {}
+    if isinstance(attachment.get("skillCount"), int):
+        detail["count"] = attachment["skillCount"]
+    content = attachment.get("content")
+    names = attachment.get("names")
+    if not isinstance(content, str) or not isinstance(names, list):
+        return detail
+    known = {name for name in names if isinstance(name, str)}
+    starts = [(match.start(), match.group(1)) for match in _SKILL_LINE_RE.finditer(content)]
+    skills: list[dict] = []
+    for index, (start, name) in enumerate(starts):
+        if name not in known:
+            continue
+        end = starts[index + 1][0] if index + 1 < len(starts) else len(content)
+        skills.append({"name": name, "chars": len(content[start:end].rstrip("\n"))})
+    if skills:
+        detail["skills"] = skills
+    return detail
+
+
+def _invoked_skills_detail(attachment: dict) -> dict:
+    """Skill count, plus each re-sent skill's name and the characters of
+    its instructions. ``invoked_skills`` re-sends the full text of skills
+    already used, e.g. after a conversation summary."""
+    skills = attachment.get("skills")
+    names = attachment.get("names")
+    detail: dict = {}
+    if isinstance(names, list):
+        detail["count"] = len(names)
+    if isinstance(skills, list):
+        records = [
+            {"name": skill["name"], "chars": _text_chars(skill.get("content"))}
+            for skill in skills
+            if isinstance(skill, dict) and isinstance(skill.get("name"), str)
+        ]
+        detail["count"] = len(records)
+        if records:
+            detail["skills"] = records
+    return detail
 
 
 def _prompt_snapshot_detail(attachment: dict) -> dict:
@@ -607,16 +694,13 @@ def classify_line(d: dict) -> Event | None:
     if attachment_type in _CONTEXT_INJECT_TYPES:
         detail = {}
         if attachment_type == "invoked_skills":
-            names = attachment.get("names")
-            # Counts only — skill names aren't in the privacy allowlist
-            # and aren't needed for anything WP1 computes.
-            if isinstance(names, list):
-                detail["count"] = len(names)
+            detail = _invoked_skills_detail(attachment)
         elif attachment_type == "skill_listing":
-            if isinstance(attachment.get("skillCount"), int):
-                detail["count"] = attachment["skillCount"]
+            detail = _skill_listing_detail(attachment)
         elif attachment_type == "instructions":
             detail = _instructions_detail(attachment)
+        elif attachment_type == "nested_memory":
+            detail = _nested_memory_detail(attachment)
         elif attachment_type == "prompt_snapshot":
             detail = _prompt_snapshot_detail(attachment)
             size_chars = None

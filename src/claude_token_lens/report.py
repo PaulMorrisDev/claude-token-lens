@@ -120,6 +120,7 @@ from . import (
     compaction,
     compaction_sim,
     context_budget,
+    context_files,
     discovery,
     elasticity,
     fixes,
@@ -1192,6 +1193,7 @@ def build_report(
     cs = compaction.CompactionStats()
     tp = topology.TopologyStats()
     cb = context_budget.ContextBudgetStats()
+    cf = context_files.ContextFileStats()
     ph = PhaseStats() if phases else None
     # v4 wiring round: waste.WasteStats accumulates per-transcript like
     # ls/ts/cs above (mirrors that shape); carry/model_swap/compaction_sim
@@ -1254,6 +1256,7 @@ def build_report(
             ts.add(tr, pricing.resolve_model, ttl_th)
             ws.add(tr, pricing)
             all_results.append(tr)
+            cf.add(tr, pricing, is_main=tr is top)
 
             dominant_model = _dominant_transcript_model(tr)
             dominant_rate = pricing.resolve_model(dominant_model) if dominant_model else None
@@ -1613,7 +1616,9 @@ def build_report(
         assumptions=assumptions,
     )
 
-    report_model = ReportModel(meta=meta, sections=sections, recommendations=[], diagnostics=diagnostics)
+    report_model = ReportModel(
+        meta=meta, sections=sections, recommendations=[], diagnostics=diagnostics, context_files=cf.to_dict()
+    )
 
     # WP10b: recommendations are computed from the already-assembled
     # report (see recommend.py's module docstring for why it works from
@@ -1624,12 +1629,14 @@ def build_report(
     # already treat ``snapshots`` as a single corpus-wide input.
     corpus_archetype, _archetype_evidence = workstyle.corpus_archetype(session_records)
     latest_snapshot = snapshots[-1] if snapshots else None
+    units = _report_units(corpus, pricing, config, config_dir)
+    report_model.units = units
     report_model.recommendations = recommend(
         report_model,
         config=config,
         archetype=corpus_archetype,
         snapshot=latest_snapshot,
-        units=_report_units(corpus, pricing, config, config_dir),
+        units=units,
     )
     fixes.attach_fixes(report_model.recommendations)
     # Display copy last: it never touches table names, column keys or row

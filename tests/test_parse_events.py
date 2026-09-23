@@ -179,8 +179,62 @@ def test_instructions_split_by_file_type_without_paths():
     )
     event = events.classify_line(line)
     assert event.size_chars == 405
-    assert event.detail == {"count": 3, "chars_by_type": {"User": 100, "Project": 300, "Other": 5}}
+    assert event.detail["count"] == 3
+    assert event.detail["chars_by_type"] == {"User": 100, "Project": 300, "Other": 5}
+    # No salt set: one record per file, with no path hash.
+    assert event.detail["files"] == [
+        {"type": "User", "scoped": False, "chars": 100},
+        {"type": "Project", "scoped": False, "chars": 300},
+        {"type": "Other", "scoped": False, "chars": 5},
+    ]
     assert "C:" not in repr(event.detail)
+
+
+def test_instruction_files_carry_a_salted_path_hash_never_the_path(monkeypatch):
+    from claude_token_lens import parse
+
+    monkeypatch.setattr(parse, "_SALT", b"s" * 32)
+    line = attachment_line(
+        "instructions", files=[{"path": "C:\\Repo\\CLAUDE.md", "type": "Project", "content": "p" * 40}]
+    )
+    record = events.classify_line(line).detail["files"][0]
+    assert record["hash"] == parse.path_hash("c:/repo/claude.md", b"s" * 32)
+    assert "Repo" not in repr(record) and "p" * 40 not in repr(record)
+
+
+def test_nested_memory_records_a_path_scoped_rule(monkeypatch):
+    from claude_token_lens import parse
+
+    monkeypatch.setattr(parse, "_SALT", b"s" * 32)
+    line = attachment_line(
+        "nested_memory",
+        path="C:/repo/.claude/rules/db.md",
+        content={"path": "C:/repo/.claude/rules/db.md", "type": "Project", "globs": ["src/db/**"], "content": "r" * 80},
+    )
+    event = events.classify_line(line)
+    assert event.detail["files"] == [
+        {"type": "Project", "scoped": True, "chars": 80, "hash": parse.path_hash("C:/repo/.claude/rules/db.md", b"s" * 32)}
+    ]
+
+
+def test_skill_listing_keeps_names_and_sizes_not_descriptions():
+    content = "- grill-me: Interview the user.\n- impeccable:impeccable: Design: polish UI.\n- stray: not in names\n"
+    line = attachment_line(
+        "skill_listing", content=content, skillCount=2, names=["grill-me", "impeccable:impeccable"]
+    )
+    detail = events.classify_line(line).detail
+    assert detail["count"] == 2
+    assert detail["skills"] == [
+        {"name": "grill-me", "chars": len("- grill-me: Interview the user.")},
+        {"name": "impeccable:impeccable", "chars": len("- impeccable:impeccable: Design: polish UI.")},
+    ]
+    assert "Interview" not in repr(detail)
+
+
+def test_invoked_skills_records_each_skills_size():
+    line = attachment_line("invoked_skills", skills=[{"name": "pdf", "path": "bundled:pdf", "content": "c" * 120}])
+    detail = events.classify_line(line).detail
+    assert detail == {"count": 1, "skills": [{"name": "pdf", "chars": 120}]}
 
 
 def test_prompt_snapshot_sizes_go_to_detail_not_size_chars():
@@ -196,7 +250,7 @@ def test_prompt_snapshot_sizes_go_to_detail_not_size_chars():
     assert event.detail["tools_chars"] > 50
 
 
-def test_context_inject_invoked_skills_carries_count_not_names():
+def test_context_inject_invoked_skills_counts_names():
     line = attachment_line("invoked_skills", names=["grill-me", "ai-tool"])
     event = events.classify_line(line)
     assert event.detail == {"count": 2}

@@ -214,6 +214,12 @@ used):
   ``_tool_result_length`` helper). The LENGTH only -- never the error
   text itself, per this module's own rule against storing tool result
   content.
+
+Context-files addition:
+
+- ``Turn.skills_invoked: tuple[str, ...] = ()`` -- the ``skill`` input of
+  each ``Skill`` tool_use in this turn: the skill's name, a label like
+  ``attribution_skill``, never its arguments.
 """
 
 from __future__ import annotations
@@ -390,6 +396,9 @@ class Turn:
     #: Wasted-turns addition (see module docstring): summed length of
     #: those erroring tool_result blocks' content. Length only.
     tool_error_chars: int = 0
+    #: Context-files addition (see module docstring): names of the skills
+    #: this turn invoked with the ``Skill`` tool.
+    skills_invoked: tuple[str, ...] = ()
 
 
 @dataclass(slots=True)
@@ -787,6 +796,15 @@ class ReportModel:
     sections: list[Section] = field(default_factory=list)
     recommendations: list[Recommendation] = field(default_factory=list)
     diagnostics: Diagnostics = field(default_factory=Diagnostics)
+    #: Per-file CLAUDE.md-family and per-skill usage
+    #: (``context_files.ContextFileStats.to_dict``): hashes, names, sizes,
+    #: counts and estimated costs only.
+    context_files: dict = field(default_factory=dict)
+    #: How amounts are phrased for this report's billing mode
+    #: (``units.Units``), for routes that phrase amounts after the fact.
+    #: Typed loosely because this module imports nothing from the
+    #: package; left out of JSON output.
+    units: object = field(default=None, metadata={"json": False})
 
 
 __all__ = [

@@ -724,3 +724,26 @@ def test_apply_result_paths_are_all_under_caller_supplied_roots(tmp_path):
         assert str(path).startswith(str(project)) or str(path).startswith(str(home))
     assert str(result.snapshot_path).startswith(str(config_dir))
     assert str(result.active_profile_path).startswith(str(config_dir))
+
+
+def test_map_settings_merge_by_name_and_revert_cleanly(tmp_path):
+    # skillOverrides and enabledPlugins are objects keyed by name: a
+    # profile naming one entry changes that entry and keeps the rest.
+    home = tmp_path / "home"
+    claude_root = home / ".claude"
+    config_dir = claude_root / "token-lens"
+    claude_root.mkdir(parents=True)
+    settings_path = claude_root / "settings.json"
+    settings_path.write_text(
+        json.dumps({"skillOverrides": {"pdf": "off"}, "enabledPlugins": {"a@m": True, "b@m": True}}, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    original = settings_path.read_bytes()
+    profile = _profile(settings={"skillOverrides": {"xlsx": "name-only"}, "enabledPlugins": {"b@m": False}})
+    plan = apply_mod.plan_apply(profile, scope="user", project_path=None, config_dir=config_dir, claude_root=claude_root)
+    result = apply_mod.execute(plan, config_dir=config_dir)
+    data = json.loads(settings_path.read_text(encoding="utf-8"))
+    assert data["skillOverrides"] == {"pdf": "off", "xlsx": "name-only"}
+    assert data["enabledPlugins"] == {"a@m": True, "b@m": False}
+    apply_mod.revert(result.ts, config_dir=config_dir)
+    assert settings_path.read_bytes() == original

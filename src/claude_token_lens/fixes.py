@@ -124,6 +124,14 @@ SETTING_TEXT.update(
             "Claude can't call tools from servers you turn off.",
             "",
         ),
+        "skillOverrides": (
+            "How each skill is shown to Claude. \"name-only\" lists the skill by name without its "
+            "description; \"user-invocable-only\" hides it from Claude but keeps it in your / menu; \"off\" "
+            "hides it everywhere. Skills not named stay as they are.",
+            "Claude uses a skill on its own only when its description tells Claude what it is for. With the "
+            "description gone Claude may not reach for it; hidden, only you can start it, by typing /name.",
+            "",
+        ),
         "enabledMcpjsonServers": (
             "MCP servers from the project's .mcp.json that are turned on.",
             "Every enabled server's tool list is sent with each session.",
@@ -159,6 +167,7 @@ LEVER_LABELS = {
     "subagentPromptCacheTtl": "Subagent cache lifetime",
     "experimental.cacheTtl": "Cache lifetime",
     "enabledPlugins": "Plugins turned on",
+    "skillOverrides": "How skills are shown to Claude",
     "disabledMcpjsonServers": "Project MCP servers turned off",
     "enabledMcpjsonServers": "Project MCP servers turned on",
     "alwaysThinkingEnabled": "Always think before replying",
@@ -236,6 +245,8 @@ def _human(value) -> str:
         return "true" if value else "false"
     if isinstance(value, (list, tuple)):
         return ", ".join(str(v) for v in value) if value else "(empty list)"
+    if isinstance(value, dict):
+        return ", ".join(f"{k}: {_human(v)}" for k, v in value.items()) if value else "(none)"
     return str(value)
 
 
@@ -244,6 +255,8 @@ def _cli_value(value) -> str:
         return "true" if value else "false"
     if isinstance(value, (list, tuple)):
         return ",".join(str(v) for v in value)
+    if isinstance(value, dict):
+        return ",".join(f"{k}:{_cli_value(v)}" for k, v in value.items())
     return str(value)
 
 
@@ -334,6 +347,13 @@ def prompt_for(rec: Recommendation, change: SettingChange) -> str:
         )
         if prepare:
             ask += " " + prepare
+    elif isinstance(change.value, dict):
+        # Objects keyed by name (skillOverrides, enabledPlugins): add or
+        # update the named entries, as ``apply`` does, never replace.
+        entries = ", ".join(f"{json.dumps(k)}: {json.dumps(v)}" for k, v in change.value.items())
+        ask = f"In {path}, add {entries} to {change.key}, keeping every entry already there."
+        if prepare:
+            ask = f"{prepare} Then, {ask[0].lower()}{ask[1:]}"
     elif change.value is not None:
         where = " in the frontmatter" if change.target == "agent" else ""
         ask = f"In {path}, set {change.key} to {json.dumps(change.value)}{where}."
