@@ -24,5 +24,8 @@ tests/fixtures/_private/
 # from your own history, never committed
 .claude/dev-service.db*
 
+# Claude desktop app preview config (starts that dev dashboard; Windows paths)
+.claude/launch.json
+
 # Playwright MCP screenshots and snapshots
 .playwright-mcp/
