@@ -1,6 +1,6 @@
 # Concepts
 
-How Claude Code's prompt cache works, and the definitions behind the numbers this tool reports: the two token totals, what counts as a cache rebuild, and what the cache-lifetime simulation assumes. The [README](../README.md) covers installing and using the tool.
+How Claude Code's prompt cache works, and the definitions behind the numbers this tool reports: the two token totals, what counts as a cache rebuild, what the cache-lifetime simulation assumes, how CLAUDE.md files and skills are counted, and how windows, what-if estimates and before/after comparisons work. The [README](../README.md) covers installing and using the tool.
 
 ## 1. The two token totals
 
@@ -147,3 +147,60 @@ its projected saving doesn't clear the simulation's own fidelity margin,
 or whenever its fidelity exceeds `TtlThresholds.max_fidelity_for_advice_pct`
 (5% by default) — the tool would rather stay silent than recommend a
 policy change it can't back with a trustworthy number.
+
+## 5. How CLAUDE.md files and skills are counted
+
+Claude Code records what it put in front of the model in each
+transcript: an `instructions` entry for each CLAUDE.md-family file
+(user, project, local and rule files), a `nested_memory` entry for a
+CLAUDE.md in a subfolder that loaded when Claude touched a file there,
+and a `skill_listing` entry with one line per skill (its name and
+description). The parser keeps, per file, a salted hash of its path, its
+type, whether it is path-scoped and its size; per skill, its name and
+size. No text is kept (`context_files.py`).
+
+- **How often it is sent**: once per main session, once per subagent
+  run that receives it (Explore and Plan subagents skip CLAUDE.md), and
+  again after each conversation summary.
+- **What it costs**: each time it is sent it is written to the prompt
+  cache once, then read from the cache on every later reply of that
+  transcript, plus written again on each reply that rebuilt the cache.
+  Sizes use the same four-characters-per-token approximation as the rest
+  of the tool, so the cost is an estimate.
+- **Which file is which**: the Context files tab reads the files on disk
+  when you open it and matches them to the transcript records by the
+  same salted hash. A file on disk that no transcript in the window
+  mentions is listed as "not seen".
+- **Unused skills**: a skill counts as used when Claude invoked it in the
+  window. Every listed skill costs its listing line in every session,
+  used or not; `skillOverrides` (`name-only` or `off`) is the setting
+  that trims it.
+
+## 6. Windows, what-if estimates and before/after comparisons
+
+- **Window**: the picker at the top of the dashboard (and `--days`,
+  `--since`, `--until` in the CLI) picks which sessions count. A session
+  counts when any of its replies falls in the window, and then counts in
+  full, so a long session that started yesterday appears whole under
+  "Today". Short windows (the last hour, today) are for checking a
+  change straight away; they hold few sessions, so read them as a quick
+  signal, not a verdict.
+- **Since my last change**: starts at the latest change point: an
+  `apply`, its undo, or a settings change the snapshot hook saw.
+- **What-if estimate** (`whatif.py`): what a change would have saved
+  over the window, looked up in the report's own simulations rather
+  than computed afresh: the model-swap repricing for a model change, the
+  cache-lifetime simulation for a TTL change, the summary-point sweep
+  for `autoCompactWindow`, measured startup tokens per spawn for
+  skipping CLAUDE.md, and a rough share of thinking tokens for effort.
+  Each row says how it was worked out; a change with nothing to read
+  from is "not estimated", never guessed. Estimates assume Claude would
+  have done the same work; a cheaper model or lower effort can change
+  that.
+- **Before and after** (`impact.py`): for each change point, the
+  sessions in the days before it are compared with those after it, on
+  the measures that change should move (cost per subagent run for a
+  model change, summaries per session for `autoCompactWindow`, cache
+  rebuild share for a TTL change, and so on). Nothing is said until each
+  side has enough sessions, and the result always notes that other
+  things (the work itself, Claude Code updates) change too.

@@ -71,6 +71,21 @@ def test_an_empty_report_is_no_data_everywhere_but_never_fails(tmp_path):
     assert statuses["models"] == statuses["cache"] == statuses["tool-output"] == "no_data"
 
 
+def test_files_on_disk_without_transcript_records_are_no_data_not_ok(tmp_path):
+    """A skill or CLAUDE.md file on disk that no session in the window
+    recorded says "not enough data", never "nothing to do"."""
+    ctx = _ctx(tmp_path, model=NS(sections=[], context_files={}, recommendations=[]))
+    claude_root = ctx.config_dir.parent
+    (claude_root / "CLAUDE.md").write_text("# Rules\n\nBe brief.\n", encoding="utf-8")
+    skill = claude_root / "skills" / "tidy"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text("---\nname: tidy\ndescription: Tidy things.\n---\n", encoding="utf-8")
+    for check_id in ("skills", "claude-md"):
+        result = qa.run(check_id, ctx)
+        assert result["status"] == "no_data", (check_id, result["summary"])
+        assert "over the last 14 days" in result["summary"]
+
+
 def test_models_check_offers_a_fix_per_cheaper_model_with_a_dry_run_command(tmp_path):
     result = qa.run("models", _ctx(tmp_path, effective_agents={"Explore": {}}))
     assert result["status"] == "act"

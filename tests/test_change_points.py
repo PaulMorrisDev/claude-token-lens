@@ -61,3 +61,16 @@ def test_a_snapshot_difference_spanning_an_apply_is_not_counted_twice(tmp_path):
 
 def test_no_changes_means_no_latest(tmp_path):
     assert change_points.latest(tmp_path) is None
+
+
+def test_an_older_apply_without_recorded_changes_names_keys_from_its_backup(tmp_path):
+    """Applies from before changes were recorded: the keys come from the
+    backed-up file against the file now."""
+    config_dir, result = _apply(tmp_path, {"effortLevel": "medium"})
+    manifest_path = config_dir / "backups" / result.ts / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    for entry in manifest["entries"]:
+        entry.pop("changes", None)
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    [point] = change_points.change_points(config_dir)
+    assert point.keys == ["effortLevel"]

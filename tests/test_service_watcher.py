@@ -409,6 +409,28 @@ def test_stale_parser_version_forces_reparse_of_an_unchanged_file(tmp_path: Path
     assert stats3.files_reparsed_stale_parser == 0
 
 
+def test_a_newer_parser_version_is_never_downgraded(tmp_path: Path, store: Store):
+    """A digest written by a newer build (a service still running the old
+    code after an upgrade, sharing the store with the new one) is left
+    alone: re-parsing it here would throw away fields this build doesn't
+    know, and the two builds would keep overwriting each other."""
+    root = tmp_path / "projects"
+    path_a = _write_session(root, "proj-a", "sess-a1", _two_turns())
+
+    watcher = FileWatcher(store, _options(tmp_path))
+    assert watcher.run_once().files_parsed == 1
+    store._connection().execute(
+        "UPDATE transcripts SET parser_version = ? WHERE path = ?",
+        (PARSER_VERSION + 1, str(path_a)),
+    )
+
+    for _ in range(2):
+        stats = watcher.run_once()
+        assert stats.files_parsed == 0
+        assert stats.files_reparsed_stale_parser == 0
+    assert store.known_files()[str(path_a)][2] == PARSER_VERSION + 1
+
+
 def test_up_to_date_parser_version_is_not_reparsed_on_an_unchanged_file(tmp_path: Path, store: Store):
     """The counterpart to the stale-parser test above: a row already at
     the current PARSER_VERSION with an unchanged file must never be

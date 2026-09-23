@@ -482,7 +482,7 @@ class FileWatcher:
         #: The file itself is unchanged, but the digest stored for it was
         #: produced under an older ``PARSER_VERSION`` than the one now
         #: running -- see :meth:`_resolve`'s docstring.
-        parser_stale = (not never_seen) and prior[2] != PARSER_VERSION
+        parser_stale = (not never_seen) and (prior[2] or 0) < PARSER_VERSION
 
         if not changed and not forced:
             return parser_stale
@@ -778,7 +778,7 @@ class FileWatcher:
         #: The file itself is unchanged, but the digest stored for it was
         #: produced under an older ``PARSER_VERSION`` than the one now
         #: running.
-        parser_stale = (not never_seen) and prior[2] != PARSER_VERSION
+        parser_stale = (not never_seen) and (prior[2] or 0) < PARSER_VERSION
 
         if not changed and not forced and not parser_stale:
             existing = self._load_existing(path_str, stats)

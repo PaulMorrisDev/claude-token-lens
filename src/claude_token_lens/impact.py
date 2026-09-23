@@ -32,6 +32,9 @@ MIN_SESSIONS = 3
 LOOKBACK_DAYS = 14
 #: A change smaller than this (either way) reads as "about the same".
 NOISE_PCT = 5.0
+#: Changes this close together (one apply writing several files, say)
+#: share their before and after instead of cutting each other's short.
+TOGETHER = timedelta(minutes=10)
 
 CAVEAT = (
     "Sessions differ in size and kind of work, so read a difference as a signal, not proof. "
@@ -285,18 +288,14 @@ def _verdict(rows: list[dict], before: int, after: int, enough: bool) -> str:
 
 
 def impact(points: list[ChangePoint], sessions: list[SessionFacts], units: Units, *, limit: int = 10) -> list[dict]:
-    """Newest change first, at most ``limit``."""
+    """Newest change first, at most ``limit``. A change made within
+    :data:`TOGETHER` of another doesn't bound its before or after."""
     out = []
     for index in range(len(points) - 1, -1, -1):
-        out.append(
-            compare(
-                points[index],
-                sessions,
-                units,
-                previous=points[index - 1] if index > 0 else None,
-                following=points[index + 1] if index + 1 < len(points) else None,
-            )
-        )
+        point = points[index]
+        previous = next((p for p in reversed(points[:index]) if point.ts - p.ts > TOGETHER), None)
+        following = next((p for p in points[index + 1 :] if p.ts - point.ts > TOGETHER), None)
+        out.append(compare(point, sessions, units, previous=previous, following=following))
         if len(out) >= limit:
             break
     return out

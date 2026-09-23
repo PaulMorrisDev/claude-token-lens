@@ -1475,6 +1475,16 @@ def test_named_windows_resolve_to_since(server, name):
     assert resp.status == 200
 
 
+def test_all_time_window_has_no_limit(server):
+    resp, payload = server.get_json("/api/quick-actions?window=all")
+    assert resp.status == 200
+    assert payload["data"]["period"] == "over all time"
+    assert service_api._window_query({"window": "all"}) == ((None, None, None), None)
+    resp, payload = server.get_json("/api/summary?window=all")
+    assert resp.status == 200
+    assert "sessions" in payload["data"]
+
+
 def test_since_last_change_window_needs_a_change(server):
     resp, payload = server.get_json("/api/recommendations?window=change")
     assert resp.status == 400

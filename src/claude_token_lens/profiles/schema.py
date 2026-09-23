@@ -161,7 +161,7 @@ SETTINGS_ALLOWLIST: dict[str, LeverSpec] = {
     ),
     "skillOverrides": LeverSpec(
         "map[str,enum]", "settings", values=_SKILL_VISIBILITY,
-        doc_ref="docs/profiles.md#settings",
+        doc_ref="docs/profiles.md#settings-top-level-settingsjson-overlay-keys",
     ),
     "disabledMcpjsonServers": LeverSpec(
         "list[str]", "settings",

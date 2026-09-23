@@ -305,12 +305,21 @@ Corpus-wide RE-CACHE breakdown — `Store.recache`.
 ### Report-backed routes: windowing query params
 
 `/api/ttl`, `/api/carry`, `/api/compaction-sim`, `/api/model-swap`,
-`/api/waste`, `/api/config-diff`, `/api/recommendations` and
+`/api/waste`, `/api/config-diff`, `/api/recommendations`,
+`/api/diagnostics`, `/api/claude-md`, `/api/skills`,
+`/api/profile-goals`, `/api/quick-actions`, `POST /api/whatif` and
 `/api/report.md`/`.html`/`.json` (below) all accept the same windowing
 query params, mirroring the CLI `report` subcommand's own
 `--days`/`--since`/`--until` (`discovery._resolve_window`'s exact
 resolution):
 
+- **`window`** (optional) — a named window, used by the dashboard's
+  header picker: `1h` (the last hour), `today` (since midnight in your
+  configured time zone), `24h`, `change` (since your latest `apply`, its
+  undo, or a settings change the config hook saw; `400` when none is
+  recorded yet) or `all` (no limit). A named window takes precedence
+  over the other three params. A session counts when any of its turns
+  falls in the window, and it then counts in full.
 - **`window_days`** (int, optional) — same as before; defaults to 30
   when neither `since` nor `until` is given.
 - **`since`** / **`until`** (ISO 8601, optional) — when either is
@@ -546,6 +555,89 @@ text, no raw paths, `projects` a list of already-redacted slugs).
 been captured. `capture_status.summary` is the same one-line status
 `init`/`baseline` print to the terminal.
 
+### `GET /api/quick-actions`
+
+One answer per way of saving tokens (`quick_actions.CHECKS`): models,
+effort, compaction, cache, tools, skills, claude-md, tool-output and
+habits. Each check always answers, including "nothing to do".
+
+Query: the windowing params above.
+
+`data`: `{"period", "checks": [{"id", "question", "why", "status", "summary", "fix_count", "tip_count"}, ...]}`.
+`status` is `act` (worth a look), `ok` (nothing to do) or `no_data`.
+
+### `GET /api/quick-actions/<id>`
+
+One check in full. `404` for an unknown id.
+
+`data`: `{"id", "question", "why", "status", "summary", "table": {"columns": [{"key", "label"}, ...], "rows": [{...}, ...]}, "fixes": [Fix, ...], "tips": [{"title", "text"}, ...]}`,
+where a `Fix` is the `fixes.py` shape `/api/recommendations` uses, plus
+an optional `title`. Environment-variable fixes (`BASH_MAX_OUTPUT_LENGTH`,
+`MAX_MCP_OUTPUT_TOKENS`) carry a prompt and no command: this tool never
+writes the `env` block.
+
+### `GET /api/claude-md`
+
+Every CLAUDE.md-family file on disk (user, project, local, `.claude/rules`
+and nested files seen in transcripts), with how often it was sent in the
+window and what that cost. File text is read now and never stored.
+
+Query: the windowing params above.
+
+`data`: `{"period", "transcripts", "files": [{"id", "path", "name", "level", "project", "who", "tokens", "scoped", "sections", "seen", "sends", "reach", "reach_text", "cost_usd", "cost_text", "findings": [str, ...], "fix_count"}, ...]}`.
+`id` is a 16-character hex hash of the path.
+
+### `GET /api/claude-md/<id>`
+
+One file's sections, duplicates, stale references and fixes. `404` for
+an unknown id.
+
+`data`: the list entry plus `section_rows` (`heading`, `level`, `line`,
+`tokens`, `share`, `cost_text`, `agents`), `imports`, `duplicates`
+(`line`, `excerpt`, `tokens`, `also_in: [{"file", "line"}]`), `stale`
+(`line`, `reference`, `kind`), `cost_by_reach` and `fixes`.
+
+### `GET /api/skills`
+
+Every skill Claude Code listed in the window: its description (read now
+from the newest transcript's skill listing, never stored), where it
+comes from, how often it was listed and used, and what the listing cost.
+
+Query: the windowing params above.
+
+`data`: `{"period", "skills": [{"name", "description", "source", "source_label", "path", "listing_tokens", "listed", "listed_text", "invoked", "invoked_by", "listing_cost_usd", "listing_cost_text", "use_cost_text", "resent_tokens", "status", ...}, ...], "listing_tokens", "listing_cost_text", "unused", "fixes"}`.
+`fixes` holds one change that hides every unused skill at once, when
+there are two or more.
+
+### `GET /api/profile-goals`
+
+Without `goal`: `{"goals": [{"id", "title", "what"}, ...]}`, the goals a
+profile can start from (`profiles/goals.py`). With `goal=<id>`: that
+goal's draft. An unknown goal is `400`.
+
+Query: `goal`, plus the windowing params above.
+
+`data` (with `goal`): `{"goal", "period", "from_current", "candidates": [{"key", "agent", "label", "now", "value", "ticked", "evidence", "what", "tradeoff", "note", "estimate"}, ...], "profile": {"settings", "agents"}, "whatif"}`.
+A candidate is ticked only when the data supports it; the main model is
+never pre-ticked.
+
+### `GET /api/impact`
+
+Each change you made (an `apply`, its undo, or a settings change the
+config hook saw), with the sessions before it against those after it,
+on the measures that change should move.
+
+`data`: `{"changes": [{"change", "before_sessions", "after_sessions", "enough", "verdict", "measures": [{"label", "before", "after", "before_n", "after_n", "change_pct", "direction"}, ...]}, ...], "caveat", "min_sessions", "lookback_days"}`.
+`enough` is false until each side has `min_sessions` sessions.
+
+### `GET /api/setup`
+
+What this tool installed and changed on this machine, what each piece
+costs in tokens and how to undo it, plus what to expect
+(`footprint.py`). Used by the Data quality tab.
+
+`data`: `{"items": [{"key", "title", "status", "where", "what_it_does", "token_cost", "undo"}, ...], "expectations": [{"title", "text"}, ...], "uninstall_command"}`.
+
 ### `GET /api/report.md` / `GET /api/report.html` / `GET /api/report.json`
 
 The full report in each format, built from the store instead of a fresh
@@ -629,6 +721,22 @@ Without it, a second save is `409` (`error.code: "conflict"`, message
 `data`: the `POST /api/profiles` result plus `skipped_managed`: the
 allowlisted setting names left out because managed settings control
 them. `201` on success.
+
+### `POST /api/whatif`
+
+The estimated effect of a set of changes on the window, looked up in the
+report's own tables (`whatif.py`). It writes nothing; it is a POST only
+because the changes travel in the body. Behind the cross-site guard like
+the other POST routes.
+
+Body: `{"settings": {...}, "agents": {"<agent>": {...}}}`, checked with
+`profiles.schema.validate` (`400` on a bad key or value).
+
+Query: the windowing params above.
+
+`data`: `{"period", "rows": [{"key", "agent", "value", "saving_usd", "fidelity", "basis", "effect_text"}, ...], "total_usd", "total_text", "estimated", "not_estimated", "total_note"}`.
+`saving_usd` is `null` when a change is not estimated. `fidelity` says how it was worked out
+and `basis` explains it in a sentence.
 
 ## Managed-settings routes
 

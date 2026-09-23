@@ -36,15 +36,17 @@ from pathlib import Path
 
 import pytest
 
-from claude_token_lens import helptext
+from claude_token_lens import footprint, helptext, quick_actions, skills_review
 from claude_token_lens.config import Config
 from claude_token_lens.corpus import load_corpus
 from claude_token_lens.pricing import load_pricing
+from claude_token_lens.profiles import goals
 from claude_token_lens.profiles import schema as profile_schema
 from claude_token_lens.report import build_report
 from claude_token_lens.render.json_out import render_json, to_jsonable
 from claude_token_lens.service.store import Store
 from claude_token_lens.snapshots import Snapshot
+from claude_token_lens.units import Units
 
 from helpers import turn_line, write_jsonl
 
@@ -427,6 +429,26 @@ def _build_fixture_data(tmp_path: Path) -> tuple[dict, dict]:
         "scopes": [{"key": "user", "label": "Your user settings, every project"}],
     }
 
+    # Goal-first profiles, quick actions, context files, impact and setup:
+    # built by the same modules the real routes call, over the same report.
+    config_dir = tmp_path / "claude-config"
+    config_dir.mkdir()
+    units = report.units if report.units is not None else Units(billing_mode="api", currency="USD")
+    period = "over the last 7 days"
+    ctx = quick_actions.Context(
+        model=report, units=units, period=period, config_dir=config_dir, effective={}, effective_agents={}
+    )
+    canned["/api/quick-actions"] = {"period": period, "checks": quick_actions.run_all(ctx)}
+    canned["/api/profile-goals"] = {"goals": goals.goals_list()}
+    canned["/api/skills"] = skills_review.review(config_dir, report.context_files or {}, units, period, projects=[])
+    canned["/api/claude-md"] = {"period": period, "transcripts": 0, "files": []}
+    canned["/api/impact"] = {"changes": [], "caveat": "", "min_sessions": 3, "lookback_days": 30}
+    canned["/api/setup"] = {
+        "items": [item.as_dict() for item in footprint.inventory(config_dir, service_registered=False)],
+        "expectations": [{"title": title, "text": text} for title, text in footprint.EXPECTATIONS],
+        "uninstall_command": footprint.UNINSTALL_COMMAND,
+    }
+
     return canned, sessions_map
 
 
@@ -553,27 +575,26 @@ def test_load_report_cache_is_keyed_by_the_selected_window() -> None:
     """
     app_js = _static_text("app.js")
     assert "reportPromise:" not in app_js, "the report cache must not be a single unkeyed promise"
-    assert "reportPromises" in app_js, "the report cache should be keyed (e.g. by window_days)"
+    assert "reportPromises" in app_js, "the report cache should be keyed (by the selected window)"
 
     start = app_js.index("function loadReport(")
     end = app_js.index("\n  function ", start + 1)
     load_report_src = app_js[start:end]
-    assert "windowDays" in load_report_src, "loadReport() must accept the selected window"
-    assert "window_days=" in load_report_src, "loadReport() must forward the window to /api/report.json"
-
-    # renderOverview must actually pass the selected window through when
-    # it (re)loads the report, and refetch it on a window change rather
-    # than only refreshing the plain /api/summary cards.
-    overview_start = app_js.index("function renderOverview(")
-    overview_end = app_js.index("\n  function ", overview_start + 1)
-    overview_src = app_js[overview_start:overview_end]
-    assert "loadReport(select.value)" in overview_src or "loadReport(windowDays)" in overview_src
-    change_listener_start = overview_src.index("addEventListener(\"change\"")
-    change_listener_src = overview_src[change_listener_start:]
-    assert "renderOverviewSummary" in change_listener_src
-    assert "loadReport" in change_listener_src or "renderOverviewReportSections" in change_listener_src, (
-        "the window-change handler must also refresh the report-backed Scorecard/Totals, not just the summary cards"
+    assert "state.window" in load_report_src, "loadReport() must key its cache by the selected window"
+    assert 'withWindow("/api/report.json")' in load_report_src, (
+        "loadReport() must forward the window to /api/report.json"
     )
+
+    # The window now lives in the header picker and applies to every tab:
+    # a change must drop every rendered tab and redraw the one on screen,
+    # so no tab keeps showing the previous window's numbers.
+    picker_start = app_js.index("function initWindowPicker(")
+    picker_end = app_js.index("\n  function ", picker_start + 1)
+    picker_src = app_js[picker_start:picker_end]
+    change_listener_src = picker_src[picker_src.index('addEventListener("change"') :]
+    assert "state.window = select.value" in change_listener_src
+    assert "delete renderedTabs[key]" in change_listener_src
+    assert "force: true" in change_listener_src
 
 
 def test_section_tab_map_includes_recache_by_group() -> None:

@@ -949,3 +949,120 @@ tr.row-group th {
   margin: 0.15rem 0 0;
   max-width: 70ch;
 }
+
+/* -- Header window picker ---------------------------------------------------- */
+
+.window-picker {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.window-picker label {
+  font-weight: 600;
+}
+
+.window-hint {
+  color: var(--muted);
+  font-size: 0.85rem;
+  max-width: 60ch;
+}
+
+/* -- Quick actions ------------------------------------------------------------ */
+
+.quick-list, .skill-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.quick-head {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+}
+
+.quick-head h4 {
+  margin: 0;
+}
+
+.quick-summary {
+  font-weight: 600;
+  margin: 0.25rem 0 0.5rem;
+}
+
+.quick-detail {
+  margin-top: 0.5rem;
+}
+
+/* -- Context files: skills ---------------------------------------------------- */
+
+.skill-row {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.5rem 0.75rem;
+}
+
+.skill-row summary {
+  cursor: pointer;
+}
+
+.skill-row p {
+  margin: 0.5rem 0 0;
+  max-width: 80ch;
+}
+
+/* -- Create a profile --------------------------------------------------------- */
+
+.goal-card.selected, .goal-card[aria-pressed="true"] {
+  border-color: var(--accent);
+}
+
+.goal-draft {
+  margin-top: 1rem;
+}
+
+.goal-table td:first-child {
+  width: 2rem;
+  text-align: center;
+}
+
+.whatif-total {
+  font-weight: 600;
+  margin: 0.5rem 0;
+  padding: 0.5rem 0.75rem;
+  border-left: 3px solid var(--accent);
+  background: var(--zebra);
+}
+
+.profile-estimate {
+  margin: 0.5rem 0;
+}
+
+/* -- Impact and setup --------------------------------------------------------- */
+
+.impact-card {
+  border-left-color: var(--accent);
+}
+
+.expectations li {
+  margin-bottom: 0.35rem;
+  max-width: 80ch;
+}
+
+.advanced-detail {
+  margin-top: 1rem;
+}
+
+.advanced-detail > summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+@media (prefers-color-scheme: dark) {
+  .severity-action { color: #ff6b5e; }
+  .severity-advice { color: #f0b429; }
+}

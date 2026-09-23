@@ -29,28 +29,69 @@ change is a prompt you give Claude or a command you run.
    It asks a few questions (for example, whether you use a Pro or Max
    plan) and offers to start the dashboard every time you log on.
 
-3. **Open the dashboard** at http://127.0.0.1:8765 and read
-   **Start here** on the Overview tab.
+   Before it writes anything to your Claude Code settings (a small
+   hook that records your settings when a session starts), it shows you
+   the exact change and asks.
+
+3. **Open the dashboard** at http://127.0.0.1:8765. Read **Start
+   here** on the Overview tab, then **Quick actions** for one answer per
+   way of saving.
 
 Prefer the terminal? `claude-token-lens report` prints the same analysis
-as Markdown, with no setup at all.
+as Markdown, and `claude-token-lens check` runs the quick actions, with
+no setup at all.
+
+## What it does to Claude Code, and how to undo it
+
+- **It never uses your Claude tokens.** It reads files Claude Code has
+  already written; it never calls Claude or any other service.
+- **It changes nothing on its own.** `init` offers two optional
+  additions, each shown and confirmed first: a SessionStart hook that
+  copies your settings into a local snapshot (a few milliseconds per
+  session, adds no tokens to the conversation) and a statusline command
+  that logs usage-limit readings (terminal only; adds no tokens).
+- **Settings change only when you say so**, through a prompt you give
+  Claude or `claude-token-lens apply`, which backs the file up first and
+  prints the command that undoes it. A change takes effect in the next
+  session you start, not the one you have open.
+- **Cheaper isn't free.** A cheaper model, lower effort or an earlier
+  summary can make Claude less thorough. Each change says what it trades
+  away. Try one change at a time and check **Profiles > Your changes and
+  what they did** after a few sessions.
+
+To see everything it installed: `claude-token-lens changes`. To take it
+all back out, look first, then run the same command without `--dry-run`:
+
+```bash
+claude-token-lens uninstall --revert-changes --delete-data --dry-run
+```
+
+The Data quality tab lists the same things, with what each costs and how
+to undo it.
 
 ## What each tab answers
 
 | Tab | The question it answers |
 |---|---|
 | Overview | How much did I use, and what should I look at first? |
+| Quick actions | For each way of saving (models, effort, summaries, cache, tools, skills, CLAUDE.md, tool output, habits): is there anything to do, and what exactly? |
 | Sessions | Which sessions cost the most? Pick one to see why it was expensive. |
 | Cache | When did Claude Code rebuild the prompt cache, and what caused it? |
 | Cache lifetime (TTL) | Would a 1-hour cache lifetime have paid for itself? |
 | Savings | What would shorter tool output, earlier summaries, cheaper models or fewer wasted replies save? |
 | Agents | What do my subagents cost, what are they given when they start, and what do they send back? |
+| Context files | What does each CLAUDE.md file and skill cost, who is it sent to, and what can be trimmed, moved or hidden? |
 | Config | What are my settings, and did changing them change my costs? |
-| Profiles | How does a ready-made group of settings differ from mine? Save and compare your own. |
+| Profiles | Make a profile from a goal with an estimate of what it saves, compare it with my settings, and see what each change I made did. |
 | Recommendations | What exactly should I change, where, and what is the trade-off? |
 | Usage | How is my usage spread over days, projects and five-hour blocks? |
-| Data quality | Could every transcript be read and priced? |
+| Data quality | What did this tool install, what should I expect, and could every transcript be read and priced? |
 | Glossary | What does a term on the dashboard mean? |
+
+The window picker at the top sets the time every tab covers: the last
+hour, today or the last 24 hours to see the effect of a change straight
+away, 7 to 90 days or all time for the long view, or **since my last
+change**.
 
 Amounts follow your billing mode. On a Pro or Max plan, savings are a
 share of your usage limits once your statusline has logged enough
@@ -115,6 +156,12 @@ and [`docs/profiles.md`](docs/profiles.md).
 - **Scope**: Where a change is written: your user settings (every project), this project on your machine only, or this project for everyone.
 - **Managed setting**: A setting your organisation's policy controls. Only your administrator can change it.
 - **Snapshot**: A record of your Claude Code settings at one moment, taken so changes can be compared over time.
+- **Window**: The stretch of time the numbers cover, picked at the top of the dashboard: the last hour, today, the last 24 hours, 7, 30 or 90 days, all time, or since your last change. A session counts when any of its replies falls in the window.
+- **Change point**: A moment your settings changed: an apply, its undo, or a change the settings snapshot saw. The dashboard compares the sessions before it with those after it.
+- **Quick action**: One question about a way to spend less, such as whether a cheaper model would do for an agent, answered from your own sessions with the evidence and a fix you can copy.
+- **What-if estimate**: What a change would have saved over the window, worked out from your own sessions. It is an estimate: cheaper settings can change how Claude works, which the estimate can't see.
+- **CLAUDE.md**: Instruction files Claude reads at the start of every session, and of most subagents: yours, each project's, and rule files. Every line is paid for on every reply that re-reads it.
+- **Skill**: A packaged set of instructions Claude can load when a task needs it. Its name and description are listed to Claude at the start of every session, used or not.
 
 ## Reference
 
@@ -365,11 +412,15 @@ this table only lists what's specific to each one.
 | `monthly-report` | Write a habit-forming finance summary (cost/tokens by model/project/entrypoint, five-hour blocks under subscription billing) plus the `usage` section for one calendar month, as both Markdown and HTML (see [section 6](#6-for-team-leads-and-enterprise) and [`docs/exports.md`](docs/exports.md)) | `--out DIR` (required), `--month YYYY-MM` (default: the previous calendar month) |
 | `import` | Validate and copy one or more `export --aggregate` team documents into `<config_dir>/team/` for `team-report` (see [section 6](#6-for-team-leads-and-enterprise) and [`docs/team.md`](docs/team.md)) | `FILE...` (one or more team-document paths); exits 2 with the reason on the first invalid file |
 | `team-report` | Cross-machine per-archetype/per-agent-type comparison built from every document already imported into `<config_dir>/team/` (see [section 6](#6-for-team-leads-and-enterprise) and [`docs/team.md`](docs/team.md)) | `--min-sessions N` (default 5), plus the same `--json`/`--html PATH`/`--csv-dir DIR` output flags as `report` |
-| `init` | Detect what's already set up, ask (or, non-interactively, derive) a short question set, write `config.toml` and this project's `projects/<slug>.toml`, print the hook/statusline install fragments, run an initial onboarding baseline, and — as its last step — offer to register the service to run at logon (`docs/deploy.md`) — see [`docs/onboarding.md`](docs/onboarding.md) | `--answers FILE` (JSON file supplying any subset of the answers), `--non-interactive` (derive unanswered questions instead of prompting; derives to *not* installing the service unless `--install-service` is also given), `--no-install` (skip printing the hook/statusline fragments), `--install-service` (register the service without asking), `--no-service` (skip the logon-service step entirely), `--dry-run` (governs only the logon-service step: print its plan without writing/registering anything), `--repair-hook` (fix a SessionStart hook command whose path a single backslash in JSON broke, without asking; `settings.json` is backed up first) |
+| `init` | Detect what's already set up, ask (or, non-interactively, derive) a short question set, write `config.toml` and this project's `projects/<slug>.toml`, print the hook/statusline install fragments, run an initial onboarding baseline, show the exact `settings.json` change that connects the snapshot hook (and a statusline when you have none) and make it only after you say yes, and — as its last step — offer to register the service to run at logon (`docs/deploy.md`) — see [`docs/onboarding.md`](docs/onboarding.md) | `--answers FILE` (JSON file supplying any subset of the answers), `--non-interactive` (derive unanswered questions instead of prompting; derives to *not* installing the service unless `--install-service` is also given), `--no-install` (skip connecting to Claude Code), `--connect` (make the `settings.json` change without asking; it is still shown, and the file backed up first), `--install-service` (register the service without asking), `--no-service` (skip the logon-service step entirely), `--dry-run` (governs only the logon-service step: print its plan without writing/registering anything), `--repair-hook` (fix a broken SessionStart hook command without asking: a path a single backslash in JSON broke, a missing `py` launcher, or a `%VARIABLE%` Git Bash doesn't expand; `settings.json` is backed up first) |
 | `baseline` | Capture (or list/show) an onboarding baseline: mode mix, dominant purposes, suggested profile, projected saving — see [`docs/onboarding.md`](docs/onboarding.md) | `--finalise` (treat the baseline as final even if the capture window hasn't elapsed), `--list` (list saved baselines), `--show ID` (print a previously saved baseline's report) |
 | `apply` | Apply a catalogue or custom profile's settings/agent/env levers to a project or your user config, with backup/`--revert` — see [section 11](#11-applying-a-profile) and [`docs/profiles.md`](docs/profiles.md) | `PROFILE` (catalogue id or path to a profile TOML file), or `--set KEY=VALUE` (repeatable; one allowlisted setting, no profile needed) with `--agent NAME` for agent frontmatter, `--scope {user,project-local,repo}` (default `user`, or `project-local` once `--project-dir` is given), `--project-dir PATH`, `--claude-root PATH` (default: `$CLAUDE_CONFIG_DIR`, else `~/.claude`), `--dry-run`, `--launch` (one-session overlay instead of a persisted apply), `--allow-tracked`, `--force` (create a missing agent file from scratch), `--revert TS`, `--ignore-changes` (with `--revert`), `--list-backups` |
 | `serve` | Run the local JSON API + watcher service (`service/serve.py`) — see [`docs/api.md`](docs/api.md) and [`docs/ui.md`](docs/ui.md) | `--port N` (default 8765), `--bind ADDRESS` (default `127.0.0.1`, loopback only), `--allow-remote` (allow `--bind` to a non-loopback address, refused by default), `--poll-interval SECONDS` (watcher poll interval, default 30), `--retention-days N` (prune sessions older than N days on every poll tick; default: `config.toml`'s `retention_days`, else keep forever), `--exclude-project SLUG` (repeatable; project slug never scanned), `--billing-mode {api,subscription}` (stamped onto every session; default: `config.toml`'s `billing`, resolved as for `report`), `--allowed-host NAME` (repeatable; an extra host name the dashboard answers to — every other `Host` header gets `403`, see [`docs/api.md`](docs/api.md#host-allowlist-dns-rebinding)), `--monthly-report DIR` (accepted and carried on `ServeOptions.monthly_report_dir`, but not yet consumed by the watcher tick — run the standalone `monthly-report` subcommand, e.g. from cron, until this is wired up), `--once` (run a single watcher tick, print its stats, and exit instead of serving), `--purge --yes` (delete `<config-dir>/service.db` and its WAL/SHM sidecars, then exit) |
 | `install-service` | Register `claude-token-lens serve` to run at logon for the current platform (Windows Scheduled Task, systemd user unit, or macOS LaunchAgent) — this is what `init`'s last step, and the manual paths in [section 10](#10-running-the-service), both call — see [`docs/deploy.md`](docs/deploy.md) | `--port N` (default 8765), `--bind ADDRESS` (default `127.0.0.1`), `--dry-run` (print exactly what would be written/run, without writing or running anything) |
+| `changes` | List everything this tool has installed or changed on this machine, what each costs in tokens, what to expect, and the command that undoes each | none beyond the global flags |
+| `uninstall` | Take it back out: remove the SessionStart hook and statusline from `settings.json` (diff shown, file backed up first) and the logon service | `--revert-changes` (also undo every `apply` still in place, newest first), `--delete-data` (also delete the data folder), `--dry-run` (show every step without changing anything), `--yes` (make the changes without asking; they are still printed) |
+| `check` | Quick actions: answer one token question (or all of them) from your own sessions, with the evidence, fixes and tips — the Quick actions tab in the terminal | `ID` (optional: `models`, `effort`, `compaction`, `cache`, `tools`, `skills`, `claude-md`, `tool-output` or `habits`), plus the global `--days`/`--since`/`--until` |
+| `review` | Review your CLAUDE.md files or skills: size, how often each is sent, cost, and fixes — the Context files tab in the terminal | `claude-md` or `skills`, plus the global window flags |
 | `uninstall-service` | Remove whatever `install-service` (or `init`) registered — deletes the task/unit/agent definition it wrote, using the same per-platform command the manual `Unregister-TokenLensTask.ps1`/`systemctl --user disable`/`launchctl bootout` paths use | `--dry-run` (print what would be removed, without removing anything) |
 | `compare` | A/B compare two arms of sessions (`window:`/`key:`/`profile:`/`project:` specs), stratified by purpose/mode with a minimum-sample gate — see [`docs/compare.md`](docs/compare.md) | `--a SPEC` / `--b SPEC` (required), `--stratify purpose,mode` (default), `--min-sessions N` (default: `config.toml`'s `min_sessions`), plus the same `--json`/`--html PATH`/`--csv-dir DIR` output flags as `report` |
 | `reconcile` | Compare local usage/cost accounting against an Admin API CSV export, entirely offline — see [`docs/compare.md`](docs/compare.md) | `--admin-csv FILE` (required), `--by {day,model,"day,model"}` (default `day`), plus the same `--json`/`--html PATH`/`--csv-dir DIR` output flags as `report` (the window comes from the global `--days`/`--since`/`--until` flags, not a separate flag) |
@@ -559,8 +610,18 @@ breakdowns, trigger mix, and so on) and how to read each column.
 `hooks/snapshot-config.py` is a standalone stdlib script — it
 deliberately imports nothing from this package, so it keeps working if
 copied on its own onto a machine that only has a bare Python
-interpreter. Installed and run today via the working `snapshot-config`
-CLI subcommand:
+interpreter.
+
+**The easy way:** `claude-token-lens init` installs the script, shows
+the exact `settings.json` change and makes it only after you say yes
+(the file is backed up first). `claude-token-lens uninstall` takes it
+out again. The rest of this section is for doing it by hand.
+
+**What it costs:** the hook runs once when a session starts, takes a few
+milliseconds and prints nothing, so it adds no tokens to the
+conversation. It is registered as async, so it never delays a session.
+
+To install it by hand:
 
 ```bash
 claude-token-lens snapshot-config --install-hook   # copies the script into <config-dir>/hooks/
@@ -581,7 +642,7 @@ Windows:
         "hooks": [
           {
             "type": "command",
-            "command": "py -3 \"%USERPROFILE%\\.claude\\token-lens\\hooks\\snapshot-config.py\""
+            "command": "\"C:\\path\\to\\python.exe\" \"C:\\Users\\<you>\\.claude\\token-lens\\hooks\\snapshot-config.py\""
           }
         ]
       }
@@ -608,6 +669,12 @@ POSIX (Linux/macOS):
   }
 }
 ```
+
+On Windows the command names the Python and the script by full path.
+Claude Code may run hooks through Git Bash, which doesn't expand
+`%USERPROFILE%`, and the `py` launcher isn't always on the `PATH`; either
+one stops the hook running without any visible error. The Data quality
+tab flags both, and `claude-token-lens init --repair-hook` fixes them.
 
 The hook always exits 0 and prints nothing on success (or a single
 stderr line on failure) so a broken Python can never block a session
@@ -657,7 +724,7 @@ Merge the result into `~/.claude/settings.json` (replaces any existing
 Windows:
 
 ```json
-{ "statusLine": { "type": "command", "command": "py -3 -m claude_token_lens.statusline" } }
+{ "statusLine": { "type": "command", "command": "\"C:\\path\\to\\python.exe\" -m claude_token_lens.statusline" } }
 ```
 
 POSIX (Linux/macOS):
@@ -665,6 +732,11 @@ POSIX (Linux/macOS):
 ```json
 { "statusLine": { "type": "command", "command": "python3 -m claude_token_lens.statusline" } }
 ```
+
+The statusline runs only in Claude Code in a terminal. Sessions in the
+desktop app or an IDE never run it, so usage-limit readings come only
+from terminal sessions (the Data quality tab says when none are
+arriving). Like the hook, it adds no tokens to the conversation.
 
 On every status-line refresh, Claude Code writes a JSON payload to this
 script's stdin; the statusline reads `context_window.used_tokens` (a

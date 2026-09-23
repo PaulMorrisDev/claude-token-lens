@@ -39,6 +39,17 @@ and [docs/deploy.md](docs/deploy.md).
   `.claude/commands/`, skills, `.mcp.json`, output styles, auto-memory,
   and installed plugins.
 
+- **On request only**, when you open the Context files tab or run
+  `claude-token-lens review claude-md|skills` or `check claude-md|skills`:
+  the text of your CLAUDE.md-family files (user, project, local, rule
+  files, nested CLAUDE.md files, auto memory `MEMORY.md` and one level of
+  `@` imports), and the skill descriptions in the newest transcripts'
+  skill listing. They are read to measure sections, find duplicates and
+  stale references and show each skill's description, then discarded:
+  never written to the database, a snapshot, a log or a cache. The
+  prompts built from them name headings and line numbers, not whole
+  passages.
+
 Nothing outside these locations is read, and nothing is ever written to
 except claude-token-lens's own on-disk digest cache, config-snapshot
 files, usage log, and salt file, under `<config-dir>` (default

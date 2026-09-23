@@ -17,6 +17,7 @@ from pathlib import Path
 
 from . import snapshots as snapshots_mod
 from .profiles import apply as apply_mod
+from .profiles.frontmatter import parse_frontmatter
 
 _TS_FORMAT = "%Y%m%dT%H%M%SZ"
 
@@ -73,16 +74,56 @@ def _parse_iso(ts: str | None) -> datetime | None:
 
 
 def _manifest_changes(config_dir: Path, backup_ts: str) -> list[dict]:
+    folder = config_dir / "backups" / backup_ts
     try:
-        manifest = json.loads((config_dir / "backups" / backup_ts / "manifest.json").read_text(encoding="utf-8"))
+        manifest = json.loads((folder / "manifest.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return []
     out = []
     for entry in manifest.get("entries") or ():
-        for change in entry.get("changes") or () if isinstance(entry, dict) else ():
+        if not isinstance(entry, dict):
+            continue
+        if "changes" not in entry:
+            out.extend(_backup_diff(folder, entry))
+        for change in entry.get("changes") or ():
             if isinstance(change, dict) and change.get("key"):
                 out.append(change)
     return out
+
+
+def _read_keys(path: Path, kind: str) -> dict | None:
+    """A settings file's top-level keys or an agent file's frontmatter;
+    ``{}`` for a missing file, ``None`` for one that can't be read."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {}
+    except OSError:
+        return None
+    try:
+        data = json.loads(text) if kind == "settings" else parse_frontmatter(text)
+    except ValueError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _backup_diff(folder: Path, entry: dict) -> list[dict]:
+    """The keys an apply changed, for a manifest written before applies
+    recorded them: the backed-up file against the file now. Later edits
+    to the same keys show too, so this names keys but not values."""
+    kind = entry.get("kind")
+    if kind not in ("settings", "agent_frontmatter") or not entry.get("path"):
+        return []
+    old = _read_keys(folder / "files" / entry["backup"], kind) if entry.get("backup") else {}
+    new = _read_keys(Path(entry["path"]), kind)
+    if old is None or new is None:
+        return []
+    agent = entry.get("agent_name") if kind == "agent_frontmatter" else None
+    return [
+        {"key": key, "agent": agent}
+        for key in sorted(set(old) | set(new))
+        if json.dumps(old.get(key), sort_keys=True, default=str) != json.dumps(new.get(key), sort_keys=True, default=str)
+    ]
 
 
 def _key_label(change: dict) -> str:

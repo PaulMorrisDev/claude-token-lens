@@ -12,7 +12,36 @@ package — a later work package wires `cli.py`'s `apply`/`init`/
 
 ## On the dashboard
 
-The Profiles tab shows one card per profile with the settings it
+**Create a profile** starts from a goal instead of a blank form:
+
+1. Pick a goal: spend less on subagents, cheaper models where it's safe,
+   cheaper cache, shorter conversations, less thinking where it isn't
+   needed, start from my recommendations, or start from my current
+   settings (`profiles/goals.py`).
+2. Tick the changes you want. Each row shows the setting, its value now
+   and after, the estimated effect over the window, the evidence and the
+   trade-off. A change is ticked for you only when your own sessions
+   support it; the main session's model is never ticked for you, and
+   anything that trades quality for cost (lower effort, skipping
+   CLAUDE.md) is left for you to decide. The total at the top is a
+   what-if estimate (`whatif.py`), updated as you tick.
+3. Name it and save it. It then works like any other profile below.
+
+The estimate reads the report's own simulations: the model-swap table
+for a model change, the cache-lifetime simulation for a TTL change, the
+summary-point sweep for `autoCompactWindow`, measured startup tokens per
+spawn for `omitClaudeMd`, and a rough share of thinking tokens for
+effort. A change with nothing to read from says "not estimated" rather
+than guessing. Each profile's detail shows the same estimate.
+
+**Your changes and what they did** lists every `apply`, its undo, and
+any settings change the snapshot hook saw, with the sessions before it
+against those after it on the measures that change should move (cost
+per spawn for a model change, summaries per session for
+`autoCompactWindow`, and so on). It needs a few sessions on each side
+before it says anything, and notes that other things change too.
+
+The Profiles tab also shows one card per profile with the settings it
 changes by their plain labels. Opening one shows a table of Setting /
 Now / After / Set in for the scope you pick, then three ways to use it:
 a prompt that asks Claude to make the changes and show you the diff
@@ -20,7 +49,7 @@ first (`fixes.profile_prompt`), the `claude-token-lens apply <id>
 --dry-run` command, and a one-session `--launch` trial that writes
 nothing. "Save my current settings as a profile" saves your latest
 config snapshot's allowlisted, non-managed values as a user profile
-(`POST /api/profiles/from-current`), and "Make your own profile" is a
+(`POST /api/profiles/from-current`), and "Edit settings directly" is a
 form built from `GET /api/profile-schema`. None of these change your
 Claude Code config; only running the command, or Claude acting on the
 prompt with your permission, does.
@@ -71,6 +100,13 @@ naming any other key is rejected outright.
 
 ### `settings` (top-level `settings.json` overlay keys)
 
+`enabledPlugins` and `skillOverrides` are objects keyed by name. `apply`
+merges them into the object already there, so a profile that turns one
+plugin off, or hides one skill, leaves every other entry alone.
+`skillOverrides` sets how Claude sees a skill: `on` (listed with its
+description), `name-only` (listed by name, which costs fewer tokens),
+`user-invocable-only` (only you can start it, with `/name`) or `off`.
+
 | Key | Type | Allowed values | Doc reference |
 |---|---|---|---|
 | `model` | string | any | `docs/config-layers.md#the-layer-model` |
@@ -79,7 +115,8 @@ naming any other key is rejected outright.
 | `outputStyle` | string | any | `docs/config-layers.md#what-each-layer-records-settings_layerslayer` |
 | `promptCacheTtl` | enum | `5m`, `1h` | `docs/api.md#get-apittl` |
 | `subagentPromptCacheTtl` | enum | `5m`, `1h` | `docs/api.md#get-apittl` |
-| `enabledPlugins` | list of strings | any plugin names | `docs/config-layers.md#content_layers` |
+| `enabledPlugins` | map of plugin name to on/off | `true`, `false` | `docs/config-layers.md#content_layers` |
+| `skillOverrides` | map of skill name to visibility | `on`, `name-only`, `user-invocable-only`, `off` | `docs/profiles.md#settings-top-level-settingsjson-overlay-keys` |
 | `disabledMcpjsonServers` | list of strings | any server names | `docs/config-layers.md#claude_json----the-claudejson-cross-check` |
 | `enabledMcpjsonServers` | list of strings | any server names | `docs/config-layers.md#claude_json----the-claudejson-cross-check` |
 | `alwaysThinkingEnabled` | bool | — | `docs/config-layers.md#redaction-rule-settings-and-agent-frontmatter-alike` |

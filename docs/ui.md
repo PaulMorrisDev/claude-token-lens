@@ -37,24 +37,35 @@ inline SVG charts, `prefers-color-scheme` dark."
 
 One page (`index.html`), one `<nav>` of tabs, each rendering from its
 own `/api/*` route(s) so a tab's data can be refetched independently
-(a background poll re-renders only the active tab). Twelve tabs ship,
-in this order:
+(a background poll re-renders only the active tab). Fourteen tabs ship,
+in the order below.
+
+**The window picker** sits in the header and applies to every tab: the
+last hour, today, the last 24 hours, 7/30/90 days, all time, or since
+my last change. It is sent to every report-backed route as
+`window=<name>` or `window_days=N` (`withWindow()`), remembered in
+`localStorage` (`tls:window`), and a change drops every rendered tab and
+redraws the one on screen, so no tab keeps showing the previous
+window's numbers (review finding 21). `loadReport()`'s cache is keyed by
+the window for the same reason. Short windows carry a note: a session
+active in the window counts in full.
 
 1. **Overview** — `/api/summary` + the corpus-wide totals table also
-   shown by the CLI's `report` overview section. The window selector
-   (7/30/90 days / all time) re-fetches `summary`/`daily_usage` with a
-   new `window_days`, and also re-fetches `/api/report.json` for that
-   same `window_days` so the Scorecard and Totals tables (both
-   report-derived) track the selector instead of staying pinned to
-   whichever window first populated them (review finding 21) --
-   `loadReport()`'s in-memory cache is keyed by the requested
-   `window_days` for exactly this reason. **Start here**, above the
-   totals, lists the three most important items from
-   `/api/recommendations` for the same window (most severe first, each
-   with its severity in plain words, `why` and estimated saving, and a
-   button to the Recommendations tab), then every scorecard area rated
-   poor or worse, each as a sentence about its number.
-2. **Sessions** — `/api/sessions`, a sortable table (client-side sort,
+   shown by the CLI's `report` overview section, and the Scorecard and
+   Totals from `/api/report.json` for the same window. **Start here**,
+   above the totals, lists the three most important items from
+   `/api/recommendations` (most severe first, each with its severity in
+   plain words, `why` and estimated saving, and buttons to the
+   Recommendations and Quick actions tabs), then every scorecard area
+   rated poor or worse, each as a sentence about its number.
+2. **Quick actions** — `/api/quick-actions`: one card per check, each a
+   question (for example "Is a cheaper model enough for any of your
+   agents?") with a status badge (Worth a look / Nothing to do / Not
+   enough data) and its one-line answer. "Show the evidence" loads
+   `/api/quick-actions/<id>`: the evidence table, fix cards rendered by
+   the same `renderFix` the Recommendations tab uses, and habit tips.
+   The same checks run in the terminal as `claude-token-lens check`.
+3. **Sessions** — `/api/sessions`, a sortable table (client-side sort,
    same click-to-sort pattern as `render/html.py`'s `_SCRIPT`); a row
    click renders that session's detail inline in the same panel rather
    than switching to a separate tab (feature #5, "root-causing one
@@ -73,14 +84,14 @@ in this order:
    Above the timeline, **Why was this session expensive?** renders
    `/api/session/<id>/explain`: the headline, its sentences, and the
    cost split as a small table with share bars.
-3. **Cache** — `/api/recache`: cache rebuilds by cause (expired while
+4. **Cache** — `/api/recache`: cache rebuilds by cause (expired while
    idle, invalidated by a change, expired during a usage-limit pause —
    `recache.SIGNATURES`), plus the `recache`/`limits` report sections.
-4. **Cache lifetime (TTL)** — `/api/ttl`: per-agent-type observed/simulated cost, the
+5. **Cache lifetime (TTL)** — `/api/ttl`: per-agent-type observed/simulated cost, the
    5m/1h recommendation and its fidelity — same figures as the CLI's
    `ttl` subcommand, including the fidelity-exceeds-bound suppression
    note.
-5. **Savings** (v4 wiring round) — the four newly-wired analytics
+6. **Savings** (v4 wiring round) — the four newly-wired analytics
    sections, each fetched directly from its own report-backed route the
    same way TTL fetches `/api/ttl` (rather than waiting on the full
    `/api/report.json`), and each rendered with the same generic
@@ -94,11 +105,22 @@ in this order:
    `compaction-window`/`model-tier`/`wasted-turns` recommendations these
    sections' rules produce are not duplicated here — they show up as
    cards on the Recommendations tab like every other recommendation.
-6. **Agents** — the `agent_startup`, `agents`, `workstyle` and
+7. **Agents** — the `agent_startup`, `agents`, `workstyle` and
    `workflows` report sections, from `/api/report.json`: what each
    subagent type is given at startup (and what it never used), cost per
    run, skills and MCP cost, effort, and what fills the context window.
-7. **Config** — `/api/config-diff?auto_keys=1`: `effective_config`/`config_layers`/
+8. **Context files** — what Claude reads at the start of every
+   session and subagent. **CLAUDE.md files** (`/api/claude-md`): one
+   row per file with its level, size in tokens, how often it was sent
+   and to whom, the cost and its findings; "Review" loads
+   `/api/claude-md/<id>` with the sections by size, duplicates, stale
+   references and fix prompts. **Skills** (`/api/skills`): each skill's
+   description, source, how often it was listed and used, and what the
+   listing cost, with a filter for skills Claude never used and one fix
+   that hides them all. File text and skill descriptions are read when
+   the tab asks and never stored. The terminal equivalent is
+   `claude-token-lens review claude-md|skills`.
+9. **Config** — `/api/config-diff?auto_keys=1`: `effective_config`/`config_layers`/
    `config_groups`/`config_drift` and the per-key diff tables, rendered
    once (the config section is skipped when the tab walks the full
    report for `context_budget` and `baseline_comparison`) (plan "Configuration layers and
@@ -112,7 +134,15 @@ in this order:
    captured yet"), and every past capture in a history table — with a
    "capture window open: provisional" notice whenever
    `capture_status.started && !capture_status.complete`.
-8. **Profiles** — one card per profile from `/api/profiles` (the
+10. **Profiles** — **Create a profile** first: pick a goal from
+   `/api/profile-goals` (spend less on subagents, cheaper models,
+   cheaper cache, shorter conversations, less thinking, start from my
+   recommendations, or start from my current settings). The goal's
+   draft is a table of candidate changes (setting, now, after,
+   estimated effect, why and the trade-off) with the ones your data
+   supports already ticked; each tick re-posts the chosen changes to
+   `POST /api/whatif` and updates the running total. Name it and save
+   (`POST /api/profiles`). Then one card per profile from `/api/profiles` (the
    catalogue's seven shipped profiles plus every user profile): name,
    "Built in" or "Yours", who it is for, and "Changes N settings: ..."
    listed by their plain labels (from `/api/profiles/<id>` and
@@ -135,8 +165,13 @@ in this order:
    the allowed range, or a comma-separated list), an "Add an agent"
    block per agent, and "Edit as JSON instead" as an escape hatch. It
    posts to `POST /api/profiles` and shows the server's validation
-   error inline.
-9. **Recommendations** — `/api/recommendations`: one card per
+   error inline. It sits in a collapsed "Edit settings directly" block
+   under **Your changes and what they did** (`/api/impact`): each
+   `apply`, undo or settings change the hook saw, with the sessions
+   before against those after on the measures that change should move,
+   and the command that reverts an apply. Each profile's detail also
+   shows its estimated effect from `POST /api/whatif`.
+11. **Recommendations** — `/api/recommendations`: one card per
    `Recommendation`, grouped by `severity`. Every card shows its
    evidence line(s) (`label: formatted value (from <table title>,
    <row label>)`, same value formatting
@@ -152,14 +187,19 @@ in this order:
    The same "capture window open: provisional" notice as the Config
    tab's baseline panel appears above the list while a capture window is
    in progress (`/api/baseline`'s `capture_status`).
-10. **Usage** — the `usage`/`compactions`/`phases` report sections plus a raw
+12. **Usage** — the `usage`/`compactions`/`phases` report sections plus a raw
     `/api/compactions` list.
-11. **Data quality** — `/api/diagnostics`: the parse-quality counters
+13. **Data quality** — **What this tool installed, and what to expect**
+    first (`/api/setup`): what to expect in plain words (it never uses
+    your Claude tokens, the hook and statusline add none, the first scan
+    takes a while, nothing changes until you apply it), then each thing
+    installed with where it is, what it does, its token cost and how to
+    undo it, and the uninstall command. Then `/api/diagnostics`: the parse-quality counters
     (`Diagnostics` dataclass fields) as a labelled table, each with what
     it means (`helptext.diagnostics_table`) — same figures as the CLI
     report's Diagnostics section, so a user comparing the UI against a
     CLI run for the same window sees identical numbers.
-12. **Glossary** — the `GLOSSARY` constant in `app.js`: each term the
+14. **Glossary** — the `GLOSSARY` constant in `app.js`: each term the
     dashboard uses, in plain English. The README's glossary is the same
     list, word for word.
 

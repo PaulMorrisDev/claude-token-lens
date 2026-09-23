@@ -71,3 +71,16 @@ def test_before_stops_at_the_previous_change_and_after_at_the_next():
     assert (second["before_sessions"], second["after_sessions"]) == (3, 3)
     cost = next(row for row in second["measures"] if row["label"] == "Cost per session")
     assert cost["before"] == "2.00 USD" and cost["after"] == "1.00 USD"
+
+
+def test_changes_made_together_share_their_before_and_after():
+    """One apply that wrote two files gives two change points seconds
+    apart; neither cuts the other's comparison to nothing."""
+    sessions = [_session(-d, 2.0) for d in (1, 2, 3)] + [_session(d, 1.0) for d in (0.1, 0.2, 0.3)]
+    points = [
+        ChangePoint(CHANGE, "apply", "first"),
+        ChangePoint(CHANGE + timedelta(seconds=1), "apply", "second"),
+    ]
+    for result in impact.impact(points, sessions, UNITS):
+        assert (result["before_sessions"], result["after_sessions"]) == (3, 3), result["change"]["label"]
+        assert result["enough"]

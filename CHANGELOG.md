@@ -9,6 +9,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Quick actions tab and `check` command.** Nine questions, one per way
+  of saving: the right model per agent, effort, the summary point
+  (`autoCompactWindow`), cache lifetime, unused tools and MCP servers on
+  agents, unused skills, CLAUDE.md size, large tool output
+  (`BASH_MAX_OUTPUT_LENGTH`, `MAX_MCP_OUTPUT_TOKENS`) and habits. Each
+  always answers, including "nothing to do", with the evidence table,
+  fixes (a prompt, and a `--dry-run` command for a plain setting) and
+  tips (`quick_actions.py`, `GET /api/quick-actions`,
+  `GET /api/quick-actions/<id>`).
+- **Context files tab and `review claude-md|skills`.** Each CLAUDE.md
+  file's size by section, how often it was sent and to which agents, its
+  estimated cost, agent-only sections, duplicates and stale references,
+  each with a fix prompt. Each skill's description, source, how often it
+  was listed and used, and one fix that hides every unused skill
+  (`skillOverrides`). Transcripts now keep per-file and per-skill sizes
+  (never text); file text and skill descriptions are read on request and
+  never stored (`claude_md_review.py`, `skills_review.py`,
+  `context_files.py`, `GET /api/claude-md`, `GET /api/claude-md/<id>`,
+  `GET /api/skills`).
+- **Create a profile from a goal.** Pick a goal (spend less on
+  subagents, cheaper models, cheaper cache, shorter conversations, less
+  thinking, from my recommendations, from my current settings), tick the
+  changes your data supports, see the what-if estimate update, name it
+  and save it (`profiles/goals.py`, `whatif.py`,
+  `GET /api/profile-goals`, `POST /api/whatif`). Profile details show
+  their estimated effect.
+- **Your changes and what they did** on the Profiles tab: each `apply`,
+  undo or settings change, with sessions before against sessions after
+  on the measures that change should move (`change_points.py`,
+  `impact.py`, `GET /api/impact`).
+- **Window picker in the header**, for every tab: the last hour, today,
+  the last 24 hours, 7/30/90 days, all time, or since my last change
+  (`?window=1h|today|24h|change|all` on every report-backed route).
+- **What this tool installed, and what to expect** on the Data quality
+  tab (`GET /api/setup`) and in `changes`: it never uses your Claude
+  tokens, the hook and statusline add none, and what each piece does
+  and how to undo it. New `uninstall` command removes the hook,
+  statusline and service, and with `--revert-changes`/`--delete-data`
+  undoes applied changes and deletes the data folder.
+- `init` connects the snapshot hook (and a statusline when you have
+  none) after showing the exact `settings.json` diff and asking;
+  `--connect` skips the question. `settings.json` is backed up first.
+- `skillOverrides` joins the profile settings allowlist;
+  `enabledPlugins` is now a name-to-on/off map merged into the existing
+  object.
+- Glossary entries for Window, Change point, Quick action, What-if
+  estimate, CLAUDE.md and Skill.
 - **Start here** on the Overview tab: the three most important
   recommendations for the selected window, with why and the estimated
   saving, and any scorecard area rated poor or worse.
@@ -168,6 +215,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The SessionStart hook and statusline commands name this Python and
+  the script by full path. `py -3` fails where the launcher isn't on the
+  `PATH`, and Git Bash doesn't expand `%USERPROFILE%`; either stopped the
+  hook without any visible error. The hook health check now reports
+  both, and `init --repair-hook` fixes them.
+- The Data quality tab says when the statusline isn't logging (it runs
+  only in Claude Code in a terminal).
+- "All time" on the dashboard now means all time on every tab; it used
+  to fall back to 30 days on report-backed tabs.
+- A service from an older build no longer re-reads transcripts that a
+  newer build already read. Two services sharing one store used to undo
+  each other's work on every pass.
+- The skills and CLAUDE.md checks say "not enough data" when no session
+  in the window recorded those files, instead of "nothing to do".
 - **An apply stamp was read as the latest config snapshot.** `apply`
   writes a small `{ts, schema_version, profile_id}` record into the
   snapshot directory; every reader took it for a snapshot with no

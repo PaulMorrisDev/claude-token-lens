@@ -654,7 +654,7 @@ def build_fixes(review: FileReview, units: Units, period: str) -> list[dict]:
     if agent_sections:
         moved = sum(s.tokens for s in agent_sections)
         lines = [
-            f'- "{s.heading}" (line {s.line}, about {s.tokens} tokens), for {", ".join(s.agents)}'
+            f'- "{s.heading}" (line {s.line}, about {s.tokens:,} tokens), for {", ".join(s.agents)}'
             for s in agent_sections
         ]
         saving = per_token * moved
@@ -702,7 +702,7 @@ def build_fixes(review: FileReview, units: Units, period: str) -> list[dict]:
                     "Paragraphs that say the same thing twice are cut to one copy, in the file where they "
                     "belong.",
                     f"Now: {len(review.duplicates)} repeated paragraph{'s' if len(review.duplicates) != 1 else ''} "
-                    f"(about {repeated} tokens). After: each is said once.",
+                    f"(about {repeated:,} tokens). After: each is said once.",
                     review,
                     f"Up to {_amount(units, per_token * repeated, period)}." if per_token else "A smaller file.",
                     "None, if the copy you keep reaches every session that needs it. A user-level rule reaches "
@@ -749,7 +749,7 @@ def build_fixes(review: FileReview, units: Units, period: str) -> list[dict]:
 
     big = [s for s in review.sections if s.tokens >= ON_DEMAND_SECTION_TOKENS and not s.agents]
     if big and review.level not in ("Auto memory",) and not review.scoped:
-        lines = [f'- "{s.heading}" (line {s.line}, about {s.tokens} tokens)' for s in big[:8]]
+        lines = [f'- "{s.heading}" (line {s.line}, about {s.tokens:,} tokens)' for s in big[:8]]
         on_demand = sum(s.tokens for s in big)
         fixes.append(
             _fix(
@@ -784,7 +784,7 @@ def build_fixes(review: FileReview, units: Units, period: str) -> list[dict]:
 
     if review.tokens >= TRIM_TOKENS:
         top = _largest(review.sections)
-        lines = [f'- "{s.heading}" (about {s.tokens} tokens)' for s in top]
+        lines = [f'- "{s.heading}" (about {s.tokens:,} tokens)' for s in top]
         target = review.tokens // 2
         fixes.append(
             _fix(
@@ -792,17 +792,17 @@ def build_fixes(review: FileReview, units: Units, period: str) -> list[dict]:
                 _explainer(
                     "The file is shortened: rules said once, in short lines, without anything Claude can "
                     "read from the code itself.",
-                    f"Now: about {review.tokens} tokens, sent to {reach}. After: aim for about {target}.",
+                    f"Now: about {review.tokens:,} tokens, sent to {reach}. After: aim for about {target:,}.",
                     review,
                     f"About {_amount(units, cost / 2, period)} if you halve it." if cost else "A smaller startup.",
                     "Cutting too much loses rules Claude needs. Review the diff line by line.",
                 ),
                 "\n".join(
                     [
-                        f"{path} is about {review.tokens} tokens and is sent to {reach}. Its largest "
+                        f"{path} is about {review.tokens:,} tokens and is sent to {reach}. Its largest "
                         "sections are:",
                         *lines,
-                        f"Shorten it to about {target} tokens. Remove explanations of things Claude can "
+                        f"Shorten it to about {target:,} tokens. Remove explanations of things Claude can "
                         "learn from the code, merge rules that overlap, and turn paragraphs into short "
                         "imperative lines.",
                         _PROMPT_TAIL,
@@ -813,18 +813,24 @@ def build_fixes(review: FileReview, units: Units, period: str) -> list[dict]:
     return fixes
 
 
+def _count(n: int, one: str, many: str) -> str:
+    return f"{n} {one if n == 1 else many}"
+
+
 def _findings(review: FileReview) -> list[str]:
     notes = []
     if review.scoped:
         notes.append("Loads only when Claude works on matching files (path-scoped).")
-    if any(s.agents for s in review.sections):
-        notes.append(f"{sum(1 for s in review.sections if s.agents)} section(s) name a specific agent.")
+    agent_sections = sum(1 for s in review.sections if s.agents)
+    if agent_sections:
+        verb = "names" if agent_sections == 1 else "name"
+        notes.append(f"{_count(agent_sections, 'section', 'sections')} {verb} a specific agent.")
     if review.duplicates:
-        notes.append(f"{len(review.duplicates)} repeated paragraph(s).")
+        notes.append(f"{_count(len(review.duplicates), 'repeated paragraph', 'repeated paragraphs')}.")
     if review.stale:
-        notes.append(f"{len(review.stale)} reference(s) to things that no longer exist.")
+        notes.append(f"{_count(len(review.stale), 'reference', 'references')} to things that no longer exist.")
     if review.tokens >= TRIM_TOKENS:
-        notes.append(f"Large: about {review.tokens} tokens.")
+        notes.append(f"Large: about {review.tokens:,} tokens.")
     return notes
 
 

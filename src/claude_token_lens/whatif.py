@@ -103,8 +103,8 @@ def _model(tables: _Tables, agent: str, value, key: str, label: str | None) -> d
         value,
         observed - new,
         "simulated",
-        f"{who}'s replies in this window repriced at {column[len('cost_'):]}. A different model may need "
-        "more or fewer replies for the same work, which this doesn't capture.",
+        f"Worked out by repricing {who}'s replies in this window at {column[len('cost_'):]}. "
+        "A different model may need more or fewer replies for the same work, which this doesn't capture.",
     )
 
 

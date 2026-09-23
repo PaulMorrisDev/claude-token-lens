@@ -290,8 +290,8 @@ def _skills(ctx: Context) -> dict:
         ctx.config_dir, getattr(ctx.model, "context_files", None) or {}, ctx.units, ctx.period,
     )
     rows = data["skills"]
-    if not rows:
-        return _result("no_data", "No skill listing recorded in this window.")
+    if not any(r["status"] != "not listed" for r in rows):
+        return _result("no_data", f"No skill listing was recorded {ctx.period}.")
     unused = sorted((r for r in rows if r["status"] == "unused"), key=lambda r: -r["listing_cost_usd"])
     table = _table(
         [("name", "Skill"), ("source", "From"), ("description", "What it is"), ("cost", "Listing cost")],
@@ -326,6 +326,12 @@ def _claude_md(ctx: Context) -> dict:
         [[s["path"], f"{s['tokens']:,}", s["reach_text"], s["cost_text"] or "none", len(s["findings"])]
          for s in summaries[:10]],
     )
+    if not any(summary["seen"] for summary in summaries):
+        return _result(
+            "no_data",
+            f"None of your CLAUDE.md files was seen in a session {ctx.period}, so how often each is sent isn't known.",
+            table=table,
+        )
     detail = claude_md_review.file_detail(pairs[0][0], ctx.units, ctx.period)
     fixes = _merge_fixes(
         detail["fixes"], _rec_fixes(_recommendations(ctx, {"spawn-claude-md", "spawn-shared-claude-md"}))

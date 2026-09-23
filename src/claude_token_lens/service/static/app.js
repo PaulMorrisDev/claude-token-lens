@@ -224,16 +224,30 @@
     // window selector fetched a report for one window, every tab kept
     // reading that same cached promise even after the selector changed,
     // silently showing stale data for every other window choice. Keyed
-    // by the `window_days` value now (`""` for "All time", matching
-    // WINDOW_OPTIONS), so each window gets its own cache entry.
+    // by the header picker's window now (WINDOW_OPTIONS), so each window
+    // gets its own cache entry.
     reportPromises: {},
     currency: "USD",
+    // The one window every tab reads (the picker in the header): a
+    // number of days, or a named window the server resolves ("1h",
+    // "today", "24h", "change", "all").
+    window: "30",
   };
 
-  function loadReport(windowDays) {
-    var key = windowDays || "";
+  // The window as a query parameter, for every window-aware route.
+  function windowParam() {
+    var value = state.window || "all";
+    return /^[0-9]+$/.test(value) ? "window_days=" + value : "window=" + encodeURIComponent(value);
+  }
+
+  function withWindow(url) {
+    return url + (url.indexOf("?") === -1 ? "?" : "&") + windowParam();
+  }
+
+  function loadReport() {
+    var key = state.window;
     if (!state.reportPromises[key]) {
-      var url = "/api/report.json" + (key ? "?window_days=" + encodeURIComponent(key) : "");
+      var url = withWindow("/api/report.json");
       state.reportPromises[key] = fetchJson(url).then(function (result) {
         var body = result.body;
         if (!body || body.ok === false) {
@@ -651,11 +665,13 @@
   // one-line intro saying what question the tab answers.
   var TAB_TITLES = {
     overview: "Overview",
+    quick: "Quick actions",
     sessions: "Sessions",
     cache: "Cache",
     ttl: "Cache lifetime (TTL)",
     savings: "Savings",
     agents: "Agents",
+    context: "Context files",
     config: "Config",
     profiles: "Profiles",
     recommendations: "Recommendations",
@@ -666,6 +682,8 @@
 
   var TAB_INTROS = {
     overview: "Your totals for the window, and a scorecard of where your tokens go.",
+    quick:
+      "One question per way of saving tokens, answered from your own sessions in the window, with the evidence and a fix you can copy. Nothing here changes Claude Code by itself.",
     sessions: "Every session, newest first. Pick one to see its replies on a timeline.",
     cache:
       "When Claude Code had to rebuild the prompt cache, and why. A rebuild writes the whole conversation to the cache again, at the cache-write price.",
@@ -673,11 +691,15 @@
     savings:
       "Estimates of what you could save: shorter tool output, earlier conversation summaries, cheaper models, and replies that did no useful work.",
     agents: "What your subagents cost, what they are given when they start, and what they hand back.",
+    context:
+      "What Claude reads at the start of every session and subagent: your CLAUDE.md files and the skills list. How often each is sent, what it costs, and how to trim it.",
     config: "Your Claude Code settings, how they changed, and how much of the context window is used before you type.",
-    profiles: "Ready-made groups of settings you can compare with yours.",
+    profiles:
+      "Groups of settings: make one from a goal with an estimate of its effect, compare it with yours, apply it, and see what each change you made did.",
     recommendations: "Changes worth making, most important first.",
     usage: "Usage over time, by project, and in five-hour blocks.",
-    diagnostics: "How much of your data could be read, and anything the parser had to skip.",
+    diagnostics:
+      "What this tool installed and what to expect, how much of your data could be read, and anything the parser had to skip.",
     glossary: "The words this dashboard uses, in plain English.",
   };
 
@@ -687,11 +709,18 @@
   }
 
   var LEVEL_LABELS = { 5: "excellent", 4: "good", 3: "fair", 2: "poor", 1: "very poor" };
+  // Short windows show a change's effect within the hour; "Since my
+  // last change" starts at the newest apply, undo or settings change.
+  // A window counts every session active in it, whole.
   var WINDOW_OPTIONS = [
-    { label: "7 days", value: "7" },
-    { label: "30 days", value: "30" },
-    { label: "90 days", value: "90" },
-    { label: "All time", value: "" },
+    { label: "Last hour", value: "1h" },
+    { label: "Today", value: "today" },
+    { label: "Last 24 hours", value: "24h" },
+    { label: "Last 7 days", value: "7" },
+    { label: "Last 30 days", value: "30" },
+    { label: "Last 90 days", value: "90" },
+    { label: "All time", value: "all" },
+    { label: "Since my last change", value: "change" },
   ];
 
   // Each scorecard area as a sentence about its number, plus which way is
@@ -828,11 +857,10 @@
     return rank === -1 ? SEVERITY_ORDER.length : rank;
   }
 
-  function renderStartHereRecommendations(container, windowDays) {
+  function renderStartHereRecommendations(container) {
     clear(container);
     container.appendChild(loadingNode());
-    var url = "/api/recommendations" + (windowDays ? "?window_days=" + encodeURIComponent(windowDays) : "");
-    fetchJson(url).then(function (result) {
+    fetchJson(withWindow("/api/recommendations")).then(function (result) {
       clear(container);
       var body = result.body;
       if (!body || body.ok !== true) {
@@ -874,6 +902,15 @@
         activateTab("recommendations", { focus: true });
       });
       container.appendChild(more);
+      var quick = el("button", {
+        type: "button",
+        class: "link-button",
+        text: "Or check one thing at a time in Quick actions",
+      });
+      quick.addEventListener("click", function () {
+        activateTab("quick", { focus: true });
+      });
+      container.appendChild(quick);
     });
   }
 
@@ -927,25 +964,13 @@
     container.appendChild(cards);
   }
 
-  function renderOverviewSummary(container, windowDays) {
-    var url = "/api/summary" + (windowDays ? "?window_days=" + encodeURIComponent(windowDays) : "");
-    return loadInto(container, url, renderSummaryCards);
+  function renderOverviewSummary(container) {
+    return loadInto(container, withWindow("/api/summary"), renderSummaryCards);
   }
 
   function renderOverview(panel) {
     clear(panel);
     tabHeading(panel, "overview");
-
-    var windowRow = el("div", { class: "pager" });
-    windowRow.appendChild(el("label", { for: "overview-window", text: "Window:" }));
-    var select = el("select", { id: "overview-window" });
-    WINDOW_OPTIONS.forEach(function (opt) {
-      select.appendChild(el("option", { value: opt.value, text: opt.label }));
-    });
-    var savedWindow = storageGet("tls:overviewWindow");
-    if (savedWindow !== null) select.value = savedWindow;
-    windowRow.appendChild(select);
-    panel.appendChild(windowRow);
 
     // Which billing mode the amounts follow, and why (config.toml's
     // billing, or the automatic choice from usage-limit readings).
@@ -964,7 +989,7 @@
 
     var summaryContainer = el("div", { id: "overview-summary" });
     panel.appendChild(summaryContainer);
-    renderOverviewSummary(summaryContainer, select.value);
+    renderOverviewSummary(summaryContainer);
 
     var scorecardContainer = el("div", { id: "overview-scorecard" });
     panel.appendChild(el("h3", { text: "Scorecard" }));
@@ -975,12 +1000,12 @@
     panel.appendChild(totalsContainer);
     totalsContainer.appendChild(loadingNode());
 
-    function renderOverviewReportSections(windowDays) {
+    function renderOverviewReportSections() {
       clear(scorecardContainer);
       clear(totalsContainer);
       scorecardContainer.appendChild(loadingNode());
       totalsContainer.appendChild(loadingNode());
-      loadReport(windowDays).then(function (result) {
+      loadReport().then(function (result) {
         clear(scorecardContainer);
         clear(totalsContainer);
         if (result.error) {
@@ -998,7 +1023,7 @@
         renderScorecardTiles(scorecardContainer, findSection(report, "scorecard"));
         renderStartHereWeakAreas(startWeak, findSection(report, "scorecard"));
         // After the report, which the recommendations are built from.
-        renderStartHereRecommendations(startRecs, windowDays);
+        renderStartHereRecommendations(startRecs);
         var overviewSection = findSection(report, "overview");
         if (overviewSection) {
           var totalsTable = (overviewSection.tables || []).filter(function (t) {
@@ -1015,13 +1040,7 @@
       });
     }
 
-    renderOverviewReportSections(select.value);
-
-    select.addEventListener("change", function () {
-      storageSet("tls:overviewWindow", select.value);
-      renderOverviewSummary(summaryContainer, select.value);
-      renderOverviewReportSections(select.value);
-    });
+    renderOverviewReportSections();
 
     var healthContainer = el("div", { id: "overview-health" });
     panel.appendChild(el("h3", { text: "Service health" }));
@@ -1609,7 +1628,7 @@
     tabHeading(panel, "ttl");
     var container = el("div", { id: "ttl-section" });
     panel.appendChild(container);
-    loadInto(container, "/api/ttl", function (data, target) {
+    loadInto(container, withWindow("/api/ttl"), function (data, target) {
       renderTtlData(data, target);
     });
   }
@@ -1661,7 +1680,7 @@
     SAVINGS_SECTIONS.forEach(function (spec) {
       var container = el("div", { id: spec.id });
       panel.appendChild(container);
-      loadInto(container, spec.url, function (data, target) {
+      loadInto(container, withWindow(spec.url), function (data, target) {
         renderReportBackedSection(data, target, spec.id, spec.empty);
       });
     });
@@ -1698,7 +1717,7 @@
     var driftContainer = el("div", { id: "config-drift" });
     panel.appendChild(el("h3", { text: "Your settings and how they changed" }));
     panel.appendChild(driftContainer);
-    loadInto(driftContainer, "/api/config-diff?auto_keys=1", renderConfigDiff);
+    loadInto(driftContainer, withWindow("/api/config-diff?auto_keys=1"), renderConfigDiff);
 
     var baselineContainer = el("div", { id: "config-baseline" });
     panel.appendChild(el("h3", { text: "Latest baseline" }));
@@ -1820,7 +1839,7 @@
 
     // -- save what you have now, so you can compare or go back later --
     var saveCurrentRow = el("div", { class: "profile-actions" });
-    var saveCurrentBtn = el("button", { type: "button", text: "Save my current settings as a profile" });
+    var saveCurrentBtn = el("button", { type: "button", id: "profiles-save-current", text: "Save my current settings as a profile" });
     var saveCurrentStatus = el("span", { class: "notes", role: "status" });
     saveCurrentRow.appendChild(saveCurrentBtn);
     saveCurrentRow.appendChild(saveCurrentStatus);
@@ -1836,10 +1855,21 @@
     var detailContainer = el("div", { id: "profiles-diff" });
     var formContainer = el("div", { id: "profiles-save-form" });
 
+    var creatorContainer = el("div", { id: "profiles-create" });
+    var impactContainer = el("div", { id: "profiles-impact" });
+
+    panel.appendChild(el("h3", { text: "Create a profile" }));
+    panel.appendChild(creatorContainer);
+    panel.appendChild(el("h3", { text: "Your profiles and the built-in ones" }));
     panel.appendChild(listContainer);
     panel.appendChild(detailContainer);
-    panel.appendChild(el("h3", { text: "Make your own profile" }));
-    panel.appendChild(formContainer);
+    panel.appendChild(el("h3", { text: "Your changes and what they did" }));
+    panel.appendChild(impactContainer);
+    loadInto(impactContainer, "/api/impact", renderImpact);
+    var editorDetails = el("details", { class: "advanced-detail" });
+    editorDetails.appendChild(el("summary", { text: "Edit settings directly" }));
+    editorDetails.appendChild(formContainer);
+    panel.appendChild(editorDetails);
 
     var editorShown = false;
 
@@ -1892,6 +1922,7 @@
       saveCurrent(true);
     });
 
+    renderProfileCreator(creatorContainer, refreshList);
     refreshList();
   }
 
@@ -2044,6 +2075,9 @@
     });
     scopeRow.appendChild(scopeSelect);
     container.appendChild(scopeRow);
+    var estimate = el("div", { class: "profile-estimate" });
+    container.appendChild(estimate);
+    renderProfileEstimate(profile, estimate);
     var body = el("div");
     container.appendChild(body);
     function load() {
@@ -2368,7 +2402,7 @@
       }
     });
 
-    Promise.all([fetchJson("/api/recommendations"), loadReport()]).then(function (results) {
+    Promise.all([fetchJson(withWindow("/api/recommendations")), loadReport()]).then(function (results) {
       clear(container);
       var recResult = results[0];
       var reportResult = results[1];
@@ -2441,6 +2475,7 @@
   // One fixes.build_fix entry: the plain explainer, then the prompt
   // for Claude and (for a plain setting) the dry-run command.
   function fixTitle(fix) {
+    if (fix.title) return fix.title;
     // Same rule as render/tables.py's fix_subject.
     if (!fix.key) return "What you're changing";
     var who = fix.agent ? " for " + fix.agent : fix.key === "model" ? " for your main session" : "";
@@ -2595,6 +2630,10 @@
   function renderDiagnosticsTab(panel) {
     clear(panel);
     tabHeading(panel, "diagnostics");
+    var setupContainer = el("div", { id: "diagnostics-setup" });
+    panel.appendChild(el("h3", { text: "What this tool installed, and what to expect" }));
+    panel.appendChild(setupContainer);
+    loadInto(setupContainer, "/api/setup", renderSetup);
     var sectionContainer = el("div", { id: "diagnostics-sections" });
     panel.appendChild(sectionContainer);
     sectionContainer.appendChild(loadingNode());
@@ -2610,9 +2649,573 @@
     // The parse-quality counters, labelled (helptext.diagnostics_table).
     var countersContainer = el("div", { id: "diagnostics-counters" });
     panel.appendChild(countersContainer);
-    loadInto(countersContainer, "/api/diagnostics", function (table, target) {
+    loadInto(countersContainer, withWindow("/api/diagnostics"), function (table, target) {
       target.appendChild(renderTable(table, "diagnostics-counters-table", state.currency));
     });
+  }
+
+  // ======================================================================
+  // Shared pieces for the Quick actions, Context files and Profiles
+  // additions: a plain table of display strings, and a status badge.
+  // ======================================================================
+
+  function simpleTable(columns, rows, caption) {
+    var wrap = el("div", { class: "table-wrap" });
+    if (caption) wrap.appendChild(el("h4", { text: caption }));
+    var table = el("table", { class: "data-table" });
+    var headRow = el("tr");
+    columns.forEach(function (col) {
+      headRow.appendChild(el("th", { scope: "col", text: col.label }));
+    });
+    table.appendChild(el("thead", null, [headRow]));
+    var tbody = el("tbody");
+    rows.forEach(function (row) {
+      var tr = el("tr");
+      row.forEach(function (cell) {
+        tr.appendChild(el("td", { text: cell === null || cell === undefined ? "" : String(cell) }));
+      });
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    wrap.appendChild(table);
+    return wrap;
+  }
+
+  var CHECK_STATUS = {
+    act: { label: "Worth a look", cls: "severity-action" },
+    ok: { label: "Nothing to do", cls: "severity-info" },
+    no_data: { label: "Not enough data", cls: "severity-info" },
+  };
+
+  function statusBadge(status) {
+    var info = CHECK_STATUS[status] || { label: status, cls: "severity-info" };
+    return el("span", { class: "severity-badge " + info.cls, text: info.label });
+  }
+
+  function renderTips(tips, container) {
+    if (!tips || !tips.length) return;
+    container.appendChild(el("h5", { text: "Habits that help" }));
+    container.appendChild(
+      el(
+        "ul",
+        { class: "notes" },
+        tips.map(function (tip) {
+          return el("li", null, [el("strong", { text: tip.title + ". " }), el("span", { text: tip.text })]);
+        })
+      )
+    );
+  }
+
+  function renderFixList(fixes, container) {
+    (fixes || []).forEach(function (fix, i) {
+      container.appendChild(renderFix(fix, i > 0));
+    });
+  }
+
+  // ======================================================================
+  // Quick actions tab: one question per lever, answered for the window
+  // ======================================================================
+
+  function renderQuickActions(panel) {
+    clear(panel);
+    tabHeading(panel, "quick");
+    var list = el("div", { class: "quick-list" });
+    panel.appendChild(list);
+    loadInto(list, withWindow("/api/quick-actions"), function (data, container) {
+      (data.checks || []).forEach(function (check) {
+        container.appendChild(renderQuickCard(check));
+      });
+    });
+  }
+
+  function renderQuickCard(check) {
+    var card = el("article", { class: "rec quick-card" });
+    card.appendChild(el("div", { class: "quick-head" }, [statusBadge(check.status), el("h4", { text: check.question })]));
+    card.appendChild(el("p", { class: "notes", text: check.why }));
+    card.appendChild(el("p", { class: "quick-summary", text: check.summary }));
+    var detail = el("div", { class: "quick-detail" });
+    if (check.status !== "no_data") {
+      var extras = [];
+      if (check.fix_count) extras.push(check.fix_count + (check.fix_count === 1 ? " fix" : " fixes"));
+      if (check.tip_count) extras.push(check.tip_count + (check.tip_count === 1 ? " tip" : " tips"));
+      var button = el("button", {
+        type: "button",
+        text: "Show the evidence" + (extras.length === 2 ? ", " + extras.join(" and ") : extras.length ? " and " + extras[0] : ""),
+        "aria-expanded": "false",
+      });
+      var loaded = false;
+      button.addEventListener("click", function () {
+        var open = button.getAttribute("aria-expanded") === "true";
+        button.setAttribute("aria-expanded", open ? "false" : "true");
+        detail.hidden = open;
+        if (!loaded) {
+          loaded = true;
+          loadInto(detail, withWindow("/api/quick-actions/" + encodeURIComponent(check.id)), renderQuickDetail);
+        }
+      });
+      card.appendChild(button);
+    }
+    card.appendChild(detail);
+    return card;
+  }
+
+  function renderQuickDetail(data, container) {
+    if (data.table) container.appendChild(simpleTable(data.table.columns, data.table.rows));
+    renderTips(data.tips, container);
+    if (data.fixes && data.fixes.length) {
+      container.appendChild(
+        el("p", {
+          class: "notes",
+          text: "Each fix below is a prompt for Claude, which shows you the diff before saving, and where it applies a command that previews the change with --dry-run. Nothing here changes Claude Code by itself.",
+        })
+      );
+      renderFixList(data.fixes, container);
+    }
+  }
+
+  // ======================================================================
+  // Context files tab: every CLAUDE.md file and every skill Claude Code
+  // lists, with how often each is sent and what it costs
+  // ======================================================================
+
+  function renderContextFiles(panel) {
+    clear(panel);
+    tabHeading(panel, "context");
+    panel.appendChild(el("h3", { text: "CLAUDE.md files" }));
+    panel.appendChild(
+      el("p", {
+        class: "notes",
+        text: "Read from disk when you open this tab and never stored. Sent to your main session at its start and to most subagents each time one starts.",
+      })
+    );
+    var files = el("div", { id: "context-claude-md" });
+    var fileDetail = el("div", { id: "context-claude-md-detail" });
+    panel.appendChild(files);
+    panel.appendChild(fileDetail);
+    loadInto(files, withWindow("/api/claude-md"), function (data, container) {
+      renderClaudeMdList(data, container, fileDetail);
+    });
+
+    panel.appendChild(el("h3", { text: "Skills" }));
+    panel.appendChild(
+      el("p", {
+        class: "notes",
+        text: "Claude Code lists every skill's name and description at the start of each session and subagent, used or not. Descriptions are read from your newest transcript and never stored.",
+      })
+    );
+    var skills = el("div", { id: "context-skills" });
+    panel.appendChild(skills);
+    loadInto(skills, withWindow("/api/skills"), renderSkills);
+  }
+
+  function renderClaudeMdList(data, container, detailContainer) {
+    var rows = data.files || [];
+    if (!rows.length) {
+      container.appendChild(el("p", { class: "notice", text: "No CLAUDE.md files found." }));
+      return;
+    }
+    var cards = el("div", { class: "profile-cards" });
+    rows.forEach(function (file) {
+      var card = el("article", { class: "profile-card" });
+      card.appendChild(el("h4", { text: file.path }));
+      card.appendChild(el("p", { class: "profile-card-meta", text: file.who }));
+      var facts = [thousands(file.tokens) + " tokens"];
+      facts.push(file.seen ? "sent to " + file.reach_text : "not seen in this window's sessions");
+      if (file.cost_text) facts.push(file.cost_text);
+      card.appendChild(el("p", { class: "profile-card-summary", text: facts.join(" · ") }));
+      if (file.findings && file.findings.length) {
+        card.appendChild(el("ul", { class: "notes" }, file.findings.map(function (f) {
+          return el("li", { text: f });
+        })));
+      }
+      var button = el("button", { type: "button", text: "Review" + (file.fix_count ? " (" + file.fix_count + (file.fix_count === 1 ? " fix" : " fixes") + ")" : "") });
+      button.addEventListener("click", function () {
+        loadInto(detailContainer, withWindow("/api/claude-md/" + encodeURIComponent(file.id)), renderClaudeMdDetail);
+        detailContainer.scrollIntoView({ behavior: "smooth", block: "start" });
+      });
+      card.appendChild(button);
+      cards.appendChild(card);
+    });
+    container.appendChild(cards);
+  }
+
+  function renderClaudeMdDetail(data, container) {
+    container.appendChild(el("h3", { text: data.path }));
+    container.appendChild(
+      el("p", { class: "notes", text: thousands(data.tokens) + " tokens" + (data.reach_text ? ", sent to " + data.reach_text : "") + (data.cost_text ? ", " + data.cost_text : "") + "." })
+    );
+    var sections = data.section_rows || [];
+    if (sections.length) {
+      container.appendChild(
+        simpleTable(
+          [{ label: "Section" }, { label: "Line" }, { label: "Tokens" }, { label: "Share" }, { label: "Cost" }, { label: "Only about" }],
+          sections.map(function (s) {
+            return [
+              (s.level > 1 ? "  ".repeat(s.level - 1) : "") + (s.heading || "(before the first heading)"),
+              s.line,
+              thousands(s.tokens),
+              formatCell(s.share * 100, "pct"),
+              s.cost_text || "",
+              (s.agents || []).join(", "),
+            ];
+          }),
+          "Sections, largest share of the file first in the prompt"
+        )
+      );
+    }
+    if (data.duplicates && data.duplicates.length) {
+      container.appendChild(el("h5", { text: "Repeated text" }));
+      container.appendChild(el("ul", { class: "notes" }, data.duplicates.map(function (d) {
+        var where = (d.also_in || []).map(function (o) {
+          return o.file + " line " + o.line;
+        });
+        return el("li", { text: "Line " + d.line + ", about " + d.tokens + " tokens: “" + d.excerpt + "”" + (where.length ? ", also in " + where.join(", ") : "") });
+      })));
+    }
+    if (data.stale && data.stale.length) {
+      container.appendChild(el("h5", { text: "References to things that no longer exist" }));
+      container.appendChild(el("ul", { class: "notes" }, data.stale.map(function (d) {
+        return el("li", { text: "Line " + d.line + ": " + d.reference + " (" + d.kind + ")" });
+      })));
+    }
+    if (data.fixes && data.fixes.length) {
+      container.appendChild(el("h4", { text: "What you could change" }));
+      renderFixList(data.fixes, container);
+    } else {
+      container.appendChild(el("p", { class: "notes", text: "Nothing to change in this file." }));
+    }
+  }
+
+  var SKILL_STATUS = {
+    unused: "Never used",
+    used: "Used",
+    listed: "Listed",
+    "not listed": "Not listed",
+  };
+
+  function renderSkills(data, container) {
+    var rows = data.skills || [];
+    if (!rows.length) {
+      container.appendChild(el("p", { class: "notice", text: "No skill listing recorded in this window." }));
+      return;
+    }
+    container.appendChild(
+      el("p", {
+        class: "quick-summary",
+        text:
+          rows.length + " skills listed, " + thousands(data.listing_tokens) + " tokens at each start" +
+          (data.listing_cost_text ? ", " + data.listing_cost_text : "") + ". " +
+          (data.unused ? data.unused + " were never used." : "Every listed skill was used."),
+      })
+    );
+    renderFixList(data.fixes, container);
+    var filterRow = el("div", { class: "pager" });
+    var unusedOnly = el("input", { type: "checkbox", id: "skills-unused-only", checked: Boolean(data.unused) });
+    filterRow.appendChild(unusedOnly);
+    filterRow.appendChild(el("label", { for: "skills-unused-only", text: "Show only skills Claude never used" }));
+    container.appendChild(filterRow);
+    var list = el("div", { class: "skill-list" });
+    container.appendChild(list);
+    function draw() {
+      clear(list);
+      rows
+        .filter(function (row) {
+          return !unusedOnly.checked || row.status === "unused";
+        })
+        .forEach(function (row) {
+          var item = el("details", { class: "skill-row" });
+          item.appendChild(
+            el("summary", null, [
+              el("strong", { text: row.name }),
+              el("span", { class: "notes", text: " · " + row.source_label + " · " + (SKILL_STATUS[row.status] || row.status) + " · " + row.listing_cost_text }),
+            ])
+          );
+          item.appendChild(el("p", { text: row.description || "(no description in the listing)" }));
+          var facts = [thousands(row.listing_tokens) + " tokens in the listing"];
+          if (row.listed_text) facts.push("listed to " + row.listed_text);
+          if (row.use_text) facts.push(row.use_text);
+          if (row.path) facts.push(row.path);
+          item.appendChild(el("p", { class: "notes", text: facts.join(" · ") }));
+          renderFixList(row.fixes, item);
+          list.appendChild(item);
+        });
+    }
+    unusedOnly.addEventListener("change", draw);
+    draw();
+  }
+
+  // ======================================================================
+  // Profiles: create one from a goal, with a live what-if; and what
+  // each change you made did
+  // ======================================================================
+
+  function postJson(url, body) {
+    return fetchJson(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  }
+
+  function candidateValueText(value) {
+    return _diffRowValue(value);
+  }
+
+  function renderWhatIf(data, container) {
+    clear(container);
+    if (!data || !data.rows || !data.rows.length) {
+      container.appendChild(el("p", { class: "notes", text: "Tick a change to see its estimated effect." }));
+      return;
+    }
+    if (data.total_text) container.appendChild(el("p", { class: "quick-summary", text: "Estimated effect of these changes: " + data.total_text + "." }));
+    if (data.total_note) container.appendChild(el("p", { class: "notes", text: data.total_note }));
+    if (data.not_estimated) {
+      container.appendChild(
+        el("p", { class: "notes", text: data.not_estimated + (data.not_estimated === 1 ? " change isn't" : " changes aren't") + " estimated; see each row." })
+      );
+    }
+  }
+
+  function renderProfileCreator(container, onSaved) {
+    clear(container);
+    var goalsBox = el("div", { class: "profile-cards" });
+    var draftBox = el("div", { class: "goal-draft" });
+    container.appendChild(el("p", { class: "notes", text: "1. Pick what you want. 2. Tick the changes. 3. Name it and save. Saving writes only this tool's profile folder; you then apply it with the prompt or command it shows." }));
+    container.appendChild(goalsBox);
+    container.appendChild(draftBox);
+    loadInto(goalsBox, "/api/profile-goals", function (data, target) {
+      (data.goals || []).forEach(function (goal) {
+        var card = el("article", { class: "profile-card goal-card" });
+        card.appendChild(el("h4", { text: goal.title }));
+        card.appendChild(el("p", { class: "profile-card-summary", text: goal.what }));
+        var pick = el("button", { type: "button", text: "Start here" });
+        pick.addEventListener("click", function () {
+          if (goal.id === "current") {
+            var saveBtn = document.getElementById("profiles-save-current");
+            if (saveBtn) {
+              saveBtn.click();
+              saveBtn.scrollIntoView({ behavior: "smooth", block: "center" });
+            }
+            return;
+          }
+          loadInto(draftBox, withWindow("/api/profile-goals?goal=" + encodeURIComponent(goal.id)), function (draft, box) {
+            renderGoalDraft(draft, box, onSaved);
+          });
+          draftBox.scrollIntoView({ behavior: "smooth", block: "start" });
+        });
+        card.appendChild(pick);
+        target.appendChild(card);
+      });
+    });
+  }
+
+  function renderGoalDraft(draft, container, onSaved) {
+    container.appendChild(el("h4", { text: draft.goal.title }));
+    var candidates = draft.candidates || [];
+    if (!candidates.length) {
+      container.appendChild(el("p", { class: "notice", text: "Nothing to change for this goal " + (draft.period || "in this window") + ": your settings already match what the data supports, or there isn't enough data yet." }));
+      return;
+    }
+    container.appendChild(el("p", { class: "notes", text: "Ticked changes are the ones your data supports. Unticked ones are a trade-off for you to decide." }));
+    var total = el("div", { class: "whatif-total", role: "status" });
+    var table = el("table", { class: "data-table goal-table" });
+    var head = el("tr");
+    ["", "Setting", "Now", "After", "Estimated effect", "Why, and the trade-off"].forEach(function (label) {
+      head.appendChild(el("th", { scope: "col", text: label }));
+    });
+    table.appendChild(el("thead", null, [head]));
+    var tbody = el("tbody");
+    var boxes = [];
+    candidates.forEach(function (c, i) {
+      var box = el("input", { type: "checkbox", id: "goal-candidate-" + i, checked: Boolean(c.ticked) });
+      boxes.push(box);
+      var estimate = c.estimate || {};
+      var why = el("td", null, [
+        el("p", { text: c.evidence }),
+        c.tradeoff ? el("p", { class: "notes", text: "Trade-off: " + c.tradeoff }) : null,
+        estimate.basis ? el("p", { class: "notes", text: estimate.fidelity_text + " " + estimate.basis }) : null,
+      ]);
+      tbody.appendChild(
+        el("tr", null, [
+          el("td", null, [box]),
+          el("td", null, [el("label", { for: box.id, text: c.label + (c.agent ? " (" + c.agent + ")" : "") })]),
+          el("td", { text: candidateValueText(c.now) }),
+          el("td", { text: candidateValueText(c.value) }),
+          el("td", { text: estimate.effect_text || "" }),
+          why,
+        ])
+      );
+    });
+    table.appendChild(tbody);
+    container.appendChild(el("div", { class: "table-wrap" }, [table]));
+    container.appendChild(total);
+
+    function chosen() {
+      var settings = {};
+      var agents = {};
+      candidates.forEach(function (c, i) {
+        if (!boxes[i].checked) return;
+        if (c.agent) {
+          agents[c.agent] = agents[c.agent] || {};
+          agents[c.agent][c.key] = c.value;
+        } else {
+          settings[c.key] = c.value;
+        }
+      });
+      return { settings: settings, agents: agents };
+    }
+    var pending = 0;
+    function refreshTotal() {
+      var ticket = ++pending;
+      total.textContent = "Working out the estimate…";
+      postJson(withWindow("/api/whatif"), chosen()).then(function (result) {
+        if (ticket !== pending) return;
+        var body = result.body;
+        if (!body || body.ok !== true) {
+          clear(total);
+          total.appendChild(errorNotice(body && body.error));
+          return;
+        }
+        renderWhatIf(body.data, total);
+      });
+    }
+    boxes.forEach(function (box) {
+      box.addEventListener("change", refreshTotal);
+    });
+    refreshTotal();
+
+    var form = el("div", { class: "profile-actions" });
+    var name = el("input", { type: "text", id: "goal-profile-name", value: draft.goal.title });
+    form.appendChild(el("label", { for: "goal-profile-name", text: "Name" }));
+    form.appendChild(name);
+    var save = el("button", { type: "button", text: "Save as a profile" });
+    var status = el("span", { class: "notes", role: "status" });
+    form.appendChild(save);
+    form.appendChild(status);
+    container.appendChild(form);
+    save.addEventListener("click", function () {
+      var picked = chosen();
+      if (!Object.keys(picked.settings).length && !Object.keys(picked.agents).length) {
+        status.textContent = "Tick at least one change first.";
+        return;
+      }
+      var id = (name.value || draft.goal.id).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60) || draft.goal.id;
+      save.disabled = true;
+      status.textContent = "Saving…";
+      postJson("/api/profiles", {
+        id: id,
+        name: name.value || draft.goal.title,
+        settings: picked.settings,
+        agents: picked.agents,
+        notes: "Made from the goal \"" + draft.goal.title + "\" " + (draft.period || "") + ".",
+      }).then(function (result) {
+        save.disabled = false;
+        var body = result.body;
+        if (!body || body.ok !== true) {
+          status.textContent = (body && body.error && body.error.message) || "Could not save the profile.";
+          return;
+        }
+        status.textContent = "Saved. It's in the list above: pick \"Show what it changes\" for the prompt and the command that apply it.";
+        if (onSaved) onSaved(body.data.id);
+      });
+    });
+  }
+
+  function renderProfileEstimate(profile, container) {
+    Promise.all([fetchJson("/api/profiles/" + encodeURIComponent(profile.id)), loadProfileSchema()]).then(function (results) {
+      var body = results[0].body;
+      if (!body || body.ok !== true) return;
+      var p = body.data;
+      var labels = {};
+      ((results[1] && results[1].settings) || []).concat((results[1] && results[1].agents) || []).forEach(function (lever) {
+        labels[lever.key] = lever.label;
+      });
+      postJson(withWindow("/api/whatif"), { settings: p.settings || {}, agents: p.agents || {} }).then(function (res) {
+        var data = res.body && res.body.ok === true ? res.body.data : null;
+        if (!data || !data.rows.length) return;
+        clear(container);
+        container.appendChild(el("h4", { text: "Estimated effect" }));
+        renderWhatIf(data, container);
+        container.appendChild(
+          simpleTable(
+            [{ label: "Change" }, { label: "Effect" }, { label: "How it was worked out" }],
+            data.rows.map(function (row) {
+              return [
+                (labels[row.key] || row.key) + (row.agent ? " (" + row.agent + ")" : "") + ": " + _diffRowValue(row.value),
+                row.effect_text,
+                (row.fidelity_text + " " + row.basis).trim(),
+              ];
+            })
+          )
+        );
+      });
+    });
+  }
+
+  function renderImpact(data, container) {
+    var changes = data.changes || [];
+    if (!changes.length) {
+      container.appendChild(
+        el("p", { class: "notes", text: "No changes recorded yet. After you apply a profile or a fix, or change a setting, this shows the sessions before it against those after it." })
+      );
+      return;
+    }
+    container.appendChild(el("p", { class: "notes", text: data.caveat }));
+    changes.forEach(function (item) {
+      var change = item.change || {};
+      var card = el("article", { class: "rec impact-card" });
+      card.appendChild(el("h4", { text: change.label + (change.reverted ? " (since undone)" : "") }));
+      card.appendChild(el("p", { class: "profile-card-meta", text: String(change.ts || "").replace("T", " ").replace("Z", " UTC") + (change.keys && change.keys.length ? " · " + change.keys.join(", ") : "") }));
+      card.appendChild(el("p", { class: "quick-summary", text: item.verdict }));
+      if (item.enough) {
+        card.appendChild(
+          simpleTable(
+            [{ label: "Measure" }, { label: "Before" }, { label: "After" }, { label: "Change" }],
+            (item.measures || []).map(function (m) {
+              return [m.label, m.before, m.after, m.change_pct === null || m.change_pct === undefined ? "" : (m.change_pct > 0 ? "+" : "") + m.change_pct + "%"];
+            })
+          )
+        );
+      }
+      if (change.source === "apply" && change.backup_ts && !change.reverted) {
+        card.appendChild(el("p", { class: "notes", text: "To undo it:" }));
+        card.appendChild(codeBlockWithCopy("claude-token-lens apply --revert " + change.backup_ts));
+      }
+      container.appendChild(card);
+    });
+  }
+
+  // ======================================================================
+  // Data quality: what this tool installed, what to expect, and how to
+  // take it back out
+  // ======================================================================
+
+  function renderSetup(data, container) {
+    container.appendChild(el("h4", { text: "What to expect" }));
+    container.appendChild(
+      el(
+        "ul",
+        { class: "notes expectations" },
+        (data.expectations || []).map(function (item) {
+          return el("li", null, [el("strong", { text: item.title + ". " }), el("span", { text: item.text })]);
+        })
+      )
+    );
+    container.appendChild(el("h4", { text: "What it installed and changed" }));
+    (data.items || []).forEach(function (item) {
+      var box = el("details", { class: "fix" });
+      box.appendChild(el("summary", { text: item.title + ": " + item.status }));
+      var list = el("dl", { class: "fix-explainer" });
+      [["Where", item.where], ["What it does", item.what_it_does], ["Tokens", item.token_cost], ["To undo it", item.undo]].forEach(function (pair) {
+        list.appendChild(el("dt", { text: pair[0] }));
+        list.appendChild(el("dd", { text: pair[1] }));
+      });
+      box.appendChild(list);
+      container.appendChild(box);
+    });
+    container.appendChild(el("h4", { text: "Remove everything" }));
+    container.appendChild(el("p", { class: "notes", text: "Shows what it would remove, undo and delete. Run it again without --dry-run to do it; it asks before each step and backs up settings.json first." }));
+    container.appendChild(codeBlockWithCopy(data.uninstall_command));
   }
 
   // ======================================================================
@@ -2649,6 +3252,12 @@
     ["Scope", "Where a change is written: your user settings (every project), this project on your machine only, or this project for everyone."],
     ["Managed setting", "A setting your organisation's policy controls. Only your administrator can change it."],
     ["Snapshot", "A record of your Claude Code settings at one moment, taken so changes can be compared over time."],
+    ["Window", "The stretch of time the numbers cover, picked at the top of the dashboard: the last hour, today, the last 24 hours, 7, 30 or 90 days, all time, or since your last change. A session counts when any of its replies falls in the window."],
+    ["Change point", "A moment your settings changed: an apply, its undo, or a change the settings snapshot saw. The dashboard compares the sessions before it with those after it."],
+    ["Quick action", "One question about a way to spend less, such as whether a cheaper model would do for an agent, answered from your own sessions with the evidence and a fix you can copy."],
+    ["What-if estimate", "What a change would have saved over the window, worked out from your own sessions. It is an estimate: cheaper settings can change how Claude works, which the estimate can't see."],
+    ["CLAUDE.md", "Instruction files Claude reads at the start of every session, and of most subagents: yours, each project's, and rule files. Every line is paid for on every reply that re-reads it."],
+    ["Skill", "A packaged set of instructions Claude can load when a task needs it. Its name and description are listed to Claude at the start of every session, used or not."],
   ];
 
   function renderGlossary(panel) {
@@ -2664,11 +3273,13 @@
 
   var TAB_RENDERERS = {
     overview: renderOverview,
+    quick: renderQuickActions,
     sessions: renderSessions,
     cache: renderCache,
     ttl: renderTtl,
     savings: renderSavings,
     agents: renderAgents,
+    context: renderContextFiles,
     config: renderConfig,
     profiles: renderProfiles,
     recommendations: renderRecommendations,
@@ -2677,7 +3288,7 @@
     glossary: renderGlossary,
   };
 
-  var TAB_ORDER = ["overview", "sessions", "cache", "ttl", "savings", "agents", "config", "profiles", "recommendations", "usage", "diagnostics", "glossary"];
+  var TAB_ORDER = ["overview", "quick", "sessions", "cache", "ttl", "savings", "agents", "context", "config", "profiles", "recommendations", "usage", "diagnostics", "glossary"];
 
   var renderedTabs = {};
 
@@ -2693,6 +3304,7 @@
       panel.hidden = !selected;
     });
     storageSet("tls:activeTab", tabKey);
+    state.activeTab = tabKey;
     if (!renderedTabs[tabKey] || options.force) {
       renderedTabs[tabKey] = true;
       var panel = document.getElementById("panel-" + tabKey);
@@ -2705,7 +3317,49 @@
     }
   }
 
+  // The header's window picker: every tab reads state.window, so a change
+  // clears every rendered tab and redraws the one on screen.
+  function initWindowPicker() {
+    var saved = storageGet("tls:window");
+    if (saved === null) {
+      var legacy = storageGet("tls:overviewWindow");
+      if (legacy !== null) saved = legacy || "all";
+    }
+    var known = WINDOW_OPTIONS.some(function (opt) {
+      return opt.value === saved;
+    });
+    if (known) state.window = saved;
+    var host = document.getElementById("window-picker");
+    if (!host) return;
+    host.appendChild(el("label", { for: "window-select", text: "Window" }));
+    var select = el("select", { id: "window-select" });
+    WINDOW_OPTIONS.forEach(function (opt) {
+      select.appendChild(el("option", { value: opt.value, text: opt.label }));
+    });
+    select.value = state.window;
+    host.appendChild(select);
+    var hint = el("span", { class: "window-hint" });
+    host.appendChild(hint);
+    function describe() {
+      var short = ["1h", "today", "24h", "change"].indexOf(state.window) !== -1;
+      hint.textContent = short
+        ? "Counts every session active in this window, in full, so a long session that started earlier counts whole."
+        : "";
+    }
+    describe();
+    select.addEventListener("change", function () {
+      state.window = select.value;
+      storageSet("tls:window", select.value);
+      describe();
+      Object.keys(renderedTabs).forEach(function (key) {
+        delete renderedTabs[key];
+      });
+      activateTab(state.activeTab || "overview", { force: true });
+    });
+  }
+
   function initTabs() {
+    initWindowPicker();
     var nav = document.getElementById("tabs");
     if (!nav) return;
     var buttons = Array.prototype.slice.call(nav.querySelectorAll(".tab"));

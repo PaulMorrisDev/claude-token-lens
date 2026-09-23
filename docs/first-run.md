@@ -154,13 +154,40 @@ and nothing to `settings.json` directly — see the next point):
 - `baselines\<id>.json` + `<id>.md` — an initial baseline, if any
   sessions were already found for this project.
 
-**`settings.json` fragments — printed, never written.** `init` prints
-two JSON snippets (the `SessionStart` hook and the `statusLine`
-command) for you to merge into `~/.claude/settings.json` by hand — this
-tool never edits that file itself during `init` (only `claude-token-lens
-apply`, a separate, optional command, does — and *that* command backs
-up every file it touches first, to `<config-dir>\backups\<timestamp>\`,
-before writing anything). Skip printing them with `--no-install`.
+**Connecting to Claude Code — shown, then asked.** `init` then shows
+the exact change to `~/.claude/settings.json`: a `SessionStart` hook
+that records your settings when a session starts, and a `statusLine`
+command when you have none. It writes it only after you answer yes, and
+backs the file up first. Both commands name this Python and the script
+by full path, so they work without the `py` launcher and under Git Bash.
+Say no and nothing changes; `claude-token-lens init --connect` makes the
+change later. Skip the step entirely with `--no-install`.
+
+## What to expect
+
+- **It never uses your Claude tokens.** It only reads files Claude Code
+  has already written. It never calls Claude or any other service, so
+  there is no bump in usage from running it, however often.
+- **The hook and statusline add nothing to your conversations.** The
+  hook runs for a few milliseconds when a session starts and prints
+  nothing; the statusline draws a line under the prompt. Neither sends
+  anything to Claude.
+- **The first scan takes a while.** The service reads every transcript
+  once (seconds to a few minutes for a large history), then only new
+  lines.
+- **It reads; it doesn't change.** Nothing about how Claude works
+  changes until you apply a change yourself, through a prompt you give
+  Claude or `claude-token-lens apply`. A change takes effect in the next
+  session you start.
+- **Cheaper isn't free.** A cheaper model, lower effort or an earlier
+  summary can make Claude less thorough. Each change says what it trades
+  away. Pick **Since my last change** in the window picker, or look at
+  **Profiles > Your changes and what they did**, to check the effect.
+- **Amounts on a Pro or Max plan are list-price equivalents** until the
+  statusline has logged enough usage-limit readings.
+
+`claude-token-lens changes` prints the same list with everything the
+tool installed and the command that undoes each.
 
 ## 3. The logon service
 
@@ -239,29 +266,45 @@ python -m pytest tests\test_privacy.py tests\test_scrub.py -q
 `SECURITY.md`'s written guarantee and this project's public CI are the
 proof in that case.)
 
-## 7. Uninstall completely
+## 7. Undo a change, or uninstall completely
+
+**Undo one change.** Every `apply` prints the command that undoes it.
+To find it again:
 
 ```powershell
-claude-token-lens uninstall-service   # removes the Scheduled Task / systemd unit / LaunchAgent
+claude-token-lens apply --list-backups
+claude-token-lens apply --revert <TS>
 ```
 
-Then by hand:
+**Take everything back out.** Look first:
 
-1. Remove the two fragments `init` had you paste into
-   `~/.claude/settings.json` (the `SessionStart` hook entry and the
-   `statusLine` entry) — or restore a backup from `<config-dir>\backups\`
-   if `apply` wrote them for you.
-2. Delete `<config-dir>` (default `%USERPROFILE%\.claude\token-lens`) —
-   the SQLite store, config, snapshots, and baselines all live there
-   and nowhere else.
-3. If installed via `pip`: `pip uninstall claude-token-lens`. Via
-   `.pyz`: just delete the one file.
+```powershell
+claude-token-lens uninstall --revert-changes --delete-data --dry-run
+```
+
+Then run it without `--dry-run`. It shows each step and asks before
+making it:
+
+1. Removes the `SessionStart` hook and the `statusLine` from
+   `~/.claude/settings.json` (the diff is shown, and the file backed up
+   first).
+2. Removes the logon service, if registered.
+3. With `--revert-changes`: undoes every `apply` still in place, newest
+   first. A file edited since is left alone and named.
+4. With `--delete-data`: deletes `<config-dir>` (default
+   `%USERPROFILE%\.claude\token-lens`): the database, snapshots, usage
+   log, profiles and backups.
+
+Finally, if installed via `pip`: `pip uninstall claude-token-lens`. Via
+`.pyz`: delete the one file.
 
 ## Troubleshooting
 
 | Symptom | Fix |
 |---|---|
 | `claude-token-lens` not found | Use the full path to the venv's `Scripts\claude-token-lens.exe`, or `python -m claude_token_lens` (works regardless of `PATH`) |
+| The Data quality tab says the SessionStart hook isn't running | The hook command uses `py` (not on the `PATH`) or `%USERPROFILE%` (Git Bash doesn't expand it). Run `claude-token-lens init --repair-hook`: it shows the fixed command, backs up `settings.json`, and names this Python and the script by full path |
+| No usage-limit readings | The statusline runs only in Claude Code in a terminal, not in the desktop app or an IDE. Amounts stay list-price equivalents until readings arrive |
 | `py` launcher missing (`'py' is not recognized`) | Use `python`/`python3` directly, or reinstall Python from python.org with "py launcher" checked |
 | Python 3.10 or older | `pip install` refuses (`Requires-Python`); the `.pyz` fails at import with a `tomllib`-related error. Install 3.11+ (a user-level install needs no admin rights) |
 | Execution policy blocks a `.ps1` script | `install-service`/`init` never need this — they shell out via `powershell.exe -ExecutionPolicy Bypass -Command ...` themselves. Only affects the legacy `scripts\windows\Register-TokenLensTask.ps1` path; run it the same way: `powershell -ExecutionPolicy Bypass -File scripts\windows\Register-TokenLensTask.ps1` |

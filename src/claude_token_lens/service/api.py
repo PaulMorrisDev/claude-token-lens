@@ -243,6 +243,7 @@ WINDOW_NAMES = {
     "today": "today",
     "24h": "in the last 24 hours",
     "change": "since your last change",
+    "all": "over all time",
 }
 
 
@@ -299,6 +300,8 @@ def _window_query(
     ``(None, error)`` -- an already-built ``400 bad_request`` response.
     """
     name = _str_query(query, "window")
+    if name == "all":
+        return (None, None, None), None
     if name is not None:
         since, reason = _named_window_since(name, config_dir)
         if since is None:
