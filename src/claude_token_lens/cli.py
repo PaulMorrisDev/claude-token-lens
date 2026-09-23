@@ -515,10 +515,18 @@ def _add_serve_args(sub: argparse.ArgumentParser) -> None:
         "when it is missing; checked at startup and hourly (default: none)",
     )
     sub.add_argument(
+        "--store",
+        default=None,
+        metavar="PATH",
+        dest="store_path",
+        help="the dashboard's database file (default: <config-dir>/service.db); give a second "
+        "serve its own so it never shares one with the service",
+    )
+    sub.add_argument(
         "--purge",
         action="store_true",
-        help="delete <config-dir>/service.db (and its WAL/SHM sidecars) and exit; "
-        "requires --yes",
+        help="delete the dashboard's database (<config-dir>/service.db, or --store) and its "
+        "WAL/SHM sidecars, then exit; requires --yes",
     )
     sub.add_argument(
         "--yes",
@@ -2409,11 +2417,8 @@ def _cmd_init_service_step(
 #: Short pause (seconds) before probing a just-installed service, so a
 #: platform that starts it immediately on install (systemd's
 #: ``enable --now``, launchd's ``bootstrap`` with ``RunAtLoad``) has a
-#: moment to actually come up before ``/api/health`` is hit. Windows'
-#: Scheduled Task is logon-triggered, not started by registration
-#: itself, so this probe is expected to (and does) report "not
-#: responding yet" there -- see ``_probe_service_after_install``'s
-#: printed message for that case.
+#: moment to actually come up before ``/api/health`` is hit (``serve``
+#: binds its port before its first scan, so a few seconds at most).
 _POST_INSTALL_PROBE_DELAY_S = 1.0
 
 
@@ -2506,8 +2511,8 @@ def _probe_service_after_install(
             print(f"claude-token-lens: the service is already responding at {url}")
     else:
         print(
-            f"claude-token-lens: not responding yet (the first start reads your whole history, "
-            f"which can take a minute). Once it's running, open {url}"
+            f"claude-token-lens: not responding yet (it can take a few seconds to start). "
+            f"Once it's running, open {url}; it shows its progress while it reads your history."
         )
 
 
@@ -3147,18 +3152,29 @@ def _cmd_apply(args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_serve_purge(config_dir: Path, *, confirmed: bool) -> int:
+def _cmd_serve_purge(config_dir: Path, *, confirmed: bool, store_path: Path | None = None) -> int:
     """``serve --purge`` (S1-integration fix 2.e): delete
-    ``<config-dir>/service.db`` and its WAL/SHM sidecars. The store is
+    ``<config-dir>/service.db`` (or ``--store``'s file) and its WAL/SHM
+    sidecars. The store is
     always a derived cache (never source of truth -- see
     ``service/store.py``'s module docstring), so this is safe: the next
     ``serve`` run simply rebuilds it from the transcripts on disk.
     Always prints exactly what it would delete; only actually deletes
-    when ``confirmed`` (``--yes``) is set.
+    when ``confirmed`` (``--yes``) is set. Refuses while a running
+    ``serve`` holds the store's lock (``service/storelock.py``): deleting
+    a database out from under it leaves that dashboard writing to a file
+    nothing can see.
     """
+    from .service import storelock
     from .service.serve import STORE_FILENAME
 
-    db_path = config_dir / STORE_FILENAME
+    db_path = store_path if store_path is not None else config_dir / STORE_FILENAME
+    holder = storelock.holder(db_path)
+    if holder is not None:
+        from .service.serve import locked_message
+
+        print(locked_message(db_path, holder, command="serve --purge"), file=sys.stderr)
+        return 1
     candidates = [db_path, db_path.with_name(db_path.name + "-wal"), db_path.with_name(db_path.name + "-shm")]
     existing = [p for p in candidates if p.exists()]
 
@@ -3216,9 +3232,10 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     falls back to ``config.toml``'s ``retention_days`` the same way.
     """
     config_dir = _resolve_config_dir(args.config_dir)
+    store_path = Path(args.store_path) if args.store_path else None
 
     if args.purge:
-        return _cmd_serve_purge(config_dir, confirmed=args.yes)
+        return _cmd_serve_purge(config_dir, confirmed=args.yes, store_path=store_path)
 
     from .service.contracts import ServeOptions
     from .service.serve import run as run_serve
@@ -3244,6 +3261,7 @@ def _cmd_serve(args: argparse.Namespace) -> int:
         billing_mode=billing_mode,
         monthly_report_dir=monthly_report_dir,
         allowed_hosts=tuple(args.allowed_host or ()),
+        store_path=store_path,
     )
     try:
         return run_serve(options, once=args.once, allow_remote=args.allow_remote)

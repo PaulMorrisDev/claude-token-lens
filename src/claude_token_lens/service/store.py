@@ -97,6 +97,10 @@ _SCHEMA_VERSION_KEY = "schema_version"
 #: See module docstring's "GLOBAL_PROJECT_SLUG" paragraph.
 GLOBAL_PROJECT_SLUG = "__global__"
 
+#: How long a connection waits for another's write lock before SQLite
+#: gives up with "database is locked" (its own default is 5 s).
+_BUSY_TIMEOUT_S = 30.0
+
 #: Matches every ``CREATE TABLE IF NOT EXISTS <name>`` statement in
 #: ``schema.ALL_STATEMENTS``, so :meth:`Store.migrate` can derive the
 #: exact set of tables to drop (in reverse -- child-before-parent --
@@ -238,26 +242,36 @@ class Store:
     def _connection(self) -> sqlite3.Connection:
         conn = getattr(self._local, "conn", None)
         if conn is None:
-            conn = sqlite3.connect(self.path, isolation_level=None)
-            conn.row_factory = sqlite3.Row
-            conn.execute("PRAGMA foreign_keys = ON")
-            if self.path != ":memory:":
-                conn.execute("PRAGMA journal_mode = WAL")
-                # S1-perf item 3: NORMAL still fsyncs at every checkpoint
-                # (durable against an application crash) but no longer at
-                # every transaction commit as FULL does -- WAL mode's own
-                # documented safety guarantee ("consistent after a crash,
-                # perhaps missing the last few committed transactions")
-                # is an acceptable trade for a store that's a rebuildable
-                # cache over transcripts still on disk (module docstring),
-                # never the source of truth, in exchange for a large cut
-                # in per-transaction write latency. temp_store=MEMORY
-                # keeps SQLite's own internal temp b-trees (e.g. for a
-                # multi-column ON CONFLICT upsert) off disk entirely.
-                conn.execute("PRAGMA synchronous = NORMAL")
-                conn.execute("PRAGMA temp_store = MEMORY")
+            # A generous busy timeout: a scan's write transaction or a WAL
+            # checkpoint can hold the write lock for seconds on a big
+            # corpus, and waiting out a slow neighbour beats failing.
+            conn = sqlite3.connect(self.path, isolation_level=None, timeout=_BUSY_TIMEOUT_S)
+            try:
+                self._configure(conn)
+            except BaseException:
+                conn.close()
+                raise
             self._local.conn = conn
         return conn
+
+    def _configure(self, conn: sqlite3.Connection) -> None:
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys = ON")
+        if self.path != ":memory:":
+            conn.execute("PRAGMA journal_mode = WAL")
+            # S1-perf item 3: NORMAL still fsyncs at every checkpoint
+            # (durable against an application crash) but no longer at
+            # every transaction commit as FULL does -- WAL mode's own
+            # documented safety guarantee ("consistent after a crash,
+            # perhaps missing the last few committed transactions")
+            # is an acceptable trade for a store that's a rebuildable
+            # cache over transcripts still on disk (module docstring),
+            # never the source of truth, in exchange for a large cut
+            # in per-transaction write latency. temp_store=MEMORY
+            # keeps SQLite's own internal temp b-trees (e.g. for a
+            # multi-column ON CONFLICT upsert) off disk entirely.
+            conn.execute("PRAGMA synchronous = NORMAL")
+            conn.execute("PRAGMA temp_store = MEMORY")
 
     def _table_names_in_creation_order(self) -> list[str]:
         names: list[str] = []

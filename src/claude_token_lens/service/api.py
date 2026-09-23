@@ -121,7 +121,7 @@ from ..render.json_out import render_json, to_jsonable
 from ..render.markdown import render_markdown
 from ..report import build_report
 from ..snapshots import Snapshot
-from .contracts import ApiError, ServeOptions, WatcherStats
+from .contracts import ApiError, ServeOptions, WatcherState, WatcherStats
 
 if TYPE_CHECKING:
     from .store import Store
@@ -149,6 +149,110 @@ _DEFAULT_WINDOW_DAYS = 30
 #: ``launchctl`` (``installer.is_registered``), so this keeps a busy UI
 #: polling ``/api/health`` from spawning that process on every refresh.
 _SERVICE_REGISTERED_CACHE_TTL_S = 600.0
+
+#: ``/api/health`` calls the scanner stale once no scan has finished for
+#: this long (or ten poll intervals, if longer).
+_STALE_AFTER_S = 600.0
+
+#: ... and calls one scan stuck once it has run this long (a first read
+#: of a large history takes minutes, not hours).
+_STUCK_SCAN_S = 3600.0
+
+_RESTART_ADVICE = "Restart the dashboard: claude-token-lens install-service, or stop and start serve."
+
+
+def _parse_utc(ts: str | None) -> datetime | None:
+    if not ts:
+        return None
+    try:
+        parsed = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
+
+
+def _clock(ts: str | None) -> str:
+    parsed = _parse_utc(ts)
+    return parsed.strftime("%H:%M UTC") if parsed is not None else "an unknown time"
+
+
+def _scan_progress_message(state: WatcherState) -> str:
+    if state.phase == "finding" and state.done:
+        return (
+            f"Scanning your history: found {state.done:,} transcript files so far. "
+            "Figures may be incomplete until it finishes."
+        )
+    if state.phase == "reading" and state.total:
+        return (
+            f"Scanning your history: read {state.done:,} of {state.total:,} changed files. "
+            "Figures may be incomplete until it finishes."
+        )
+    if state.phase == "storing" and state.total:
+        return (
+            f"Scanning your history: stored {state.done:,} of {state.total:,} sessions. "
+            "Figures may be incomplete until it finishes."
+        )
+    return "Scanning your history. Figures may be incomplete until it finishes."
+
+
+def _health_status(
+    stats: WatcherStats | None,
+    state: WatcherState | None,
+    *,
+    poll_interval_s: float,
+    now: datetime | None = None,
+) -> tuple[str, str | None]:
+    """``/api/health``'s ``(status, message)``: ``"ok"`` (message
+    ``None``); ``"starting"`` while the scanner has yet to finish its
+    first scan; ``"degraded"`` when its last scan failed outright;
+    ``"stale"`` when it has stopped, or has not finished a scan for a
+    long while. With no ``state`` (no watcher wired in) it is always
+    ``"ok"``."""
+    if state is None:
+        return "ok", None
+    now = now or datetime.now(timezone.utc)
+    failure = None
+    if stats is not None:
+        failure = next((m for m in reversed(stats.error_messages) if m.startswith("tick failed: ")), None)
+    reason = failure[len("tick failed: "):] if failure else "an error"
+    every = f"{poll_interval_s:g} s"
+
+    if not state.running:
+        if state.last_success_at is None:
+            return "stale", f"The background scanner is not running, so nothing has been read yet. {_RESTART_ADVICE}"
+        return (
+            "stale",
+            f"The background scanner has stopped; figures are as of {_clock(state.last_success_at)}. "
+            f"{_RESTART_ADVICE}",
+        )
+    if state.last_success_at is None:
+        if state.last_tick_failed and not state.scanning:
+            return "degraded", f"The first scan failed ({reason}). Retrying every {every}."
+        return "starting", _scan_progress_message(state)
+    if state.last_tick_failed:
+        return (
+            "degraded",
+            f"The last scan failed ({reason}); figures are as of {_clock(state.last_success_at)}. "
+            f"Retrying every {every}.",
+        )
+    stale_after = max(_STALE_AFTER_S, 10 * poll_interval_s)
+    last_success = _parse_utc(state.last_success_at)
+    if state.scanning:
+        started = _parse_utc(state.scan_started_at)
+        if started is not None and (now - started).total_seconds() > max(_STUCK_SCAN_S, stale_after):
+            return (
+                "stale",
+                f"A scan has been running since {_clock(state.scan_started_at)} without finishing; "
+                f"figures are as of {_clock(state.last_success_at)}. {_RESTART_ADVICE}",
+            )
+        return "ok", None
+    if last_success is not None and (now - last_success).total_seconds() > stale_after:
+        return (
+            "stale",
+            f"No scan has finished since {_clock(state.last_success_at)}, so figures may be out of date. "
+            f"{_RESTART_ADVICE}",
+        )
+    return "ok", None
 
 _PLACEHOLDER_INDEX_HTML = (
     "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>claude-token-lens</title>"
@@ -390,6 +494,7 @@ def make_handler(
     watcher_stats: Callable[[], WatcherStats] | None = None,
     static_dir: Path | None = None,
     service_registered: Callable[[], bool | None] | None = None,
+    watcher_state: Callable[[], WatcherState] | None = None,
 ) -> type[BaseHTTPRequestHandler]:
     """Build an ``http.server.BaseHTTPRequestHandler`` subclass with every
     ``/api/*`` route from ``docs/api.md`` bound to ``store``/``options``,
@@ -402,7 +507,11 @@ def make_handler(
     bare ``(store, options)`` signature (a Protocol callable is satisfied
     by an implementation that accepts *extra* optional parameters, so
     this remains a valid ``MakeHandler``); omitted, ``/api/health``
-    reports an all-zero :class:`WatcherStats`.
+    reports an all-zero :class:`WatcherStats`. ``watcher_state``, when
+    given, is called likewise for the watcher's current
+    :class:`WatcherState`, from which ``/api/health`` works out its
+    ``status``/``message`` (see :func:`_health_status`); omitted, the
+    status is always ``"ok"`` and ``scan`` is ``null``.
 
     ``service_registered``, when given, is called (at most once every
     ``_SERVICE_REGISTERED_CACHE_TTL_S``, per module docstring above) for
@@ -610,9 +719,21 @@ def make_handler(
     # -- store-backed routes ---------------------------------------------
 
     def route_health(store, query, body):
-        stats = (watcher_stats() if watcher_stats is not None else None) or WatcherStats()
+        last_stats = watcher_stats() if watcher_stats is not None else None
+        state = watcher_state() if watcher_state is not None else None
+        stats = last_stats or WatcherStats()
+        status, message = _health_status(last_stats, state, poll_interval_s=options.poll_interval_s)
         data = {
-            "status": "ok",
+            # "ok", "starting" (first scan still running), "degraded"
+            # (the last scan failed) or "stale" (the scanner stopped, or
+            # nothing has finished for a long while); ``message`` says
+            # what that means in plain words, null when ok.
+            "status": status,
+            "message": message,
+            # Where the scanner is right now (its progress through a
+            # scan, when the last one finished); ``watcher`` below is
+            # what its last finished scan did.
+            "scan": to_jsonable(state) if state is not None else None,
             # The running code's version, so "is the dashboard still on
             # the old version after an update?" has a one-look answer.
             "version": _TOOL_VERSION,

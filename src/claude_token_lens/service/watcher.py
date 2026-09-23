@@ -56,6 +56,7 @@ import concurrent.futures
 import hashlib
 import json
 import os
+import sqlite3
 import threading
 import time
 import zlib
@@ -74,7 +75,7 @@ from ..pricing import Pricing, PricingError, load_pricing, price_turn
 from ..profiles import catalogue as profile_catalogue, schema as profile_schema
 from ..report import _dominant_transcript_model, _extract_workstyle_features
 from .. import snapshots as snapshots_mod
-from .contracts import ServeOptions, WatcherStats
+from .contracts import ServeOptions, WatcherState, WatcherStats
 from .store import GLOBAL_PROJECT_SLUG, Store, decode_digest_blob
 
 #: A file whose mtime is under this many seconds old is assumed to still
@@ -111,6 +112,21 @@ def _is_dir(path: Path) -> bool:
 
 def _now_iso() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def _error_summary(exc: BaseException) -> str:
+    """An exception's type name for ``WatcherStats.error_messages``,
+    plus SQLite's own first line for a database error ("database is
+    locked"), which names no path or transcript text and is the part
+    that says what went wrong. Any other exception's message may carry
+    a path (an ``OSError``'s always does), so only its type is kept.
+    """
+    name = type(exc).__name__
+    if isinstance(exc, sqlite3.Error):
+        lines = str(exc).strip().splitlines()
+        if lines:
+            return f"{name}: {lines[0][:80]}"
+    return name
 
 
 def _default_pricing() -> Pricing:
@@ -343,20 +359,64 @@ class FileWatcher:
         #: ``serve.run`` never has to guess (S1-integration fix 1.e).
         self.last_stats: WatcherStats | None = None
 
+        #: What :meth:`state` reports, written by the ticking thread and
+        #: read by ``/api/health`` request threads under ``_state_lock``.
+        self._state_lock = threading.Lock()
+        self._scan_started_at: str | None = None
+        self._last_success_at: str | None = None
+        self._last_tick_failed = False
+        self._phase: str | None = None
+        self._done = 0
+        self._total = 0
+
     # -- contracts.Watcher ------------------------------------------------
 
+    def state(self) -> WatcherState:
+        thread = self._thread
+        with self._state_lock:
+            return WatcherState(
+                running=thread is not None and thread.is_alive(),
+                scanning=self._scan_started_at is not None,
+                scan_started_at=self._scan_started_at,
+                last_success_at=self._last_success_at,
+                last_tick_failed=self._last_tick_failed,
+                phase=self._phase,
+                done=self._done,
+                total=self._total,
+            )
+
+    def _set_progress(self, phase: str | None, total: int = 0) -> None:
+        with self._state_lock:
+            self._phase, self._done, self._total = phase, 0, total
+
+    def _advance_progress(self) -> None:
+        with self._state_lock:
+            self._done += 1
+
     def run_once(self) -> WatcherStats:
-        self.store.open()  # idempotent; ensures this thread's own connection has the schema
         stats = WatcherStats(started_at=_now_iso())
+        with self._state_lock:
+            self._scan_started_at = stats.started_at
         t0 = time.monotonic()
+        failed = False
         try:
+            # Inside the try: a store another process holds locked must
+            # fail this one tick, not kill the thread that runs them all.
+            self.store.open()  # idempotent; ensures this thread's own connection has the schema
             self._run_once(stats)
         except Exception as exc:  # never let one bad tick raise out of run_once
+            failed = True
             stats.errors += 1
-            stats.error_messages = stats.error_messages + (f"tick failed: {type(exc).__name__}",)
+            stats.error_messages = stats.error_messages + (f"tick failed: {_error_summary(exc)}",)
         stats.duration_s = time.monotonic() - t0
         stats.finished_at = _now_iso()
-        self.last_stats = stats
+        with self._state_lock:
+            self.last_stats = stats
+            self._last_tick_failed = failed
+            if not failed:
+                self._last_success_at = stats.finished_at
+            self._scan_started_at = None
+            self._phase, self._done, self._total = None, 0, 0
         return stats
 
     def start(self) -> None:
@@ -378,9 +438,11 @@ class FileWatcher:
             self._thread = None
 
     def _loop(self) -> None:
-        self.store.open()
         while not self._stop_event.is_set():
-            self.run_once()
+            try:
+                self.run_once()
+            except Exception:  # run_once catches its own; this thread must outlive anything
+                pass
             self._stop_event.wait(self.options.poll_interval_s)
 
     # -- per-tick timing helpers (S1-perf item 5) ---------------------------
@@ -444,11 +506,17 @@ class FileWatcher:
         # lookup into this whole-store dict.
         all_tags = self._time_store(stats, self.store.all_tags)
 
-        for project_dir in project_dirs:
+        sessions_by_dir = [
+            (project_dir, self._time_discovery(stats, discovery.find_sessions, project_dir))
+            for project_dir in project_dirs
+        ]
+        self._set_progress("storing", total=sum(len(top_paths) for _, top_paths in sessions_by_dir))
+        for project_dir, top_paths in sessions_by_dir:
             slug = project_dir.name
-            top_paths = self._time_discovery(stats, discovery.find_sessions, project_dir)
             for top_path in top_paths:
                 self._scan_session(project_dir, slug, top_path, known, seen_paths, stats, all_tags)
+                self._advance_progress()
+        self._set_progress(None)
 
         if not project_dirs:
             # Finding 3 (second failure mode): an empty project_dirs list
@@ -542,6 +610,7 @@ class FileWatcher:
             except OSError:
                 continue
             for top_path in top_paths:
+                self._advance_progress()
                 session_id = top_path.stem
                 top_meta = _build_top_meta(top_path, session_id, slug)
                 if self._needs_parse_this_tick(str(top_path), top_meta, known):
@@ -551,6 +620,7 @@ class FileWatcher:
                 except OSError:
                     continue
                 for jsonl_path, _raw_meta in subagent_entries:
+                    self._advance_progress()
                     sub_path_str = str(jsonl_path)
                     try:
                         sub_meta = discovery.load_meta(jsonl_path.with_name(jsonl_path.stem + ".meta.json"))
@@ -590,6 +660,7 @@ class FileWatcher:
             return
 
         t_discover = time.monotonic()
+        self._set_progress("finding")
         candidates = self._collect_parse_candidates(project_dirs, known)
         stats.discovery_s += time.monotonic() - t_discover
 
@@ -597,6 +668,9 @@ class FileWatcher:
             return
 
         t_parse = time.monotonic()
+        # One count over every candidate: a cache hit is read at once, a
+        # miss once its worker below has parsed it.
+        self._set_progress("reading", total=len(candidates))
         try:
             pending: list[tuple[str, TranscriptMeta]] = []
             for path_str, meta in candidates:
@@ -606,6 +680,8 @@ class FileWatcher:
                     hit = None
                 if hit is None:
                     pending.append((path_str, meta))
+                else:
+                    self._advance_progress()
 
             if pending:
                 workers = min(_MAX_PARSE_WORKERS, os.cpu_count() or 1)
@@ -619,6 +695,7 @@ class FileWatcher:
                             executor.submit(_parse_worker, path, meta): (path, meta) for path, meta in pending
                         }
                         for future in concurrent.futures.as_completed(future_map):
+                            self._advance_progress()
                             path, meta = future_map[future]
                             try:
                                 result = future.result()
@@ -653,7 +730,7 @@ class FileWatcher:
             top_result, top_was_parsed = self._resolve(top_path_str, top_meta, known, stats)
         except Exception as exc:
             stats.errors += 1
-            stats.error_messages = stats.error_messages + (f"top-level parse error: {type(exc).__name__}",)
+            stats.error_messages = stats.error_messages + (f"top-level parse error: {_error_summary(exc)}",)
             return
 
         # ``transcripts.session_id`` is a foreign key onto ``sessions.id``
@@ -693,7 +770,7 @@ class FileWatcher:
             )
         except OSError as exc:
             stats.errors += 1
-            stats.error_messages = stats.error_messages + (f"subagent discovery error: {type(exc).__name__}",)
+            stats.error_messages = stats.error_messages + (f"subagent discovery error: {_error_summary(exc)}",)
             subagent_entries = []
         for jsonl_path, _raw_meta in subagent_entries:
             stats.files_scanned += 1
@@ -707,7 +784,7 @@ class FileWatcher:
                 subs.append(sub_result)
             except Exception as exc:
                 stats.errors += 1
-                stats.error_messages = stats.error_messages + (f"subagent parse error: {type(exc).__name__}",)
+                stats.error_messages = stats.error_messages + (f"subagent parse error: {_error_summary(exc)}",)
                 continue
 
         # Workflow run files (S1-integration fix 1.d): parsed via the
@@ -723,7 +800,7 @@ class FileWatcher:
             )
         except OSError as exc:
             stats.errors += 1
-            stats.error_messages = stats.error_messages + (f"workflow discovery error: {type(exc).__name__}",)
+            stats.error_messages = stats.error_messages + (f"workflow discovery error: {_error_summary(exc)}",)
             workflow_paths = []
         for workflow_path in workflow_paths:
             stats.files_scanned += 1
@@ -744,13 +821,13 @@ class FileWatcher:
                 )
             except Exception as exc:
                 stats.errors += 1
-                stats.error_messages = stats.error_messages + (f"workflow parse error: {type(exc).__name__}",)
+                stats.error_messages = stats.error_messages + (f"workflow parse error: {_error_summary(exc)}",)
 
         try:
             self._fold_session(session_id, slug, project_dir, top_result, subs, stats, all_tags)
         except Exception as exc:
             stats.errors += 1
-            stats.error_messages = stats.error_messages + (f"session fold error: {type(exc).__name__}",)
+            stats.error_messages = stats.error_messages + (f"session fold error: {_error_summary(exc)}",)
 
     def _resolve(
         self,
@@ -1022,7 +1099,7 @@ class FileWatcher:
                     fresh_mtimes[path_key] = mtime_ns
             except Exception as exc:
                 stats.errors += 1
-                stats.error_messages = stats.error_messages + (f"snapshot ingest error: {type(exc).__name__}",)
+                stats.error_messages = stats.error_messages + (f"snapshot ingest error: {_error_summary(exc)}",)
         self._snapshot_ids_by_ts = ids_by_ts
         self._snapshot_file_mtimes = fresh_mtimes
         self._profile_marks = snapshots_mod.load_profile_marks(self.options.config_dir)
@@ -1053,7 +1130,7 @@ class FileWatcher:
             records = baseline_mod.list_baselines(self.options.config_dir)
         except OSError as exc:
             stats.errors += 1
-            stats.error_messages = stats.error_messages + (f"baseline scan error: {type(exc).__name__}",)
+            stats.error_messages = stats.error_messages + (f"baseline scan error: {_error_summary(exc)}",)
             return
 
         for record in records:
@@ -1091,7 +1168,7 @@ class FileWatcher:
                 )
             except Exception as exc:
                 stats.errors += 1
-                stats.error_messages = stats.error_messages + (f"baseline ingest error: {type(exc).__name__}",)
+                stats.error_messages = stats.error_messages + (f"baseline ingest error: {_error_summary(exc)}",)
 
     def _scan_profiles(self, stats: WatcherStats) -> None:
         """Ingest every ``<config_dir>/profiles/*.toml`` *user* profile
@@ -1132,7 +1209,7 @@ class FileWatcher:
                 )
             except Exception as exc:
                 stats.errors += 1
-                stats.error_messages = stats.error_messages + (f"profile ingest error: {type(exc).__name__}",)
+                stats.error_messages = stats.error_messages + (f"profile ingest error: {_error_summary(exc)}",)
 
 
 __all__ = ["FileWatcher", "LIVE_FILE_WINDOW_S"]

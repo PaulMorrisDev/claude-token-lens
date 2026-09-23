@@ -967,3 +967,129 @@ def test_an_unreachable_extra_root_does_not_mark_its_sessions_missing(tmp_path: 
     assert stats.files_removed == 0
     assert store.count_missing_transcripts() == 0
     assert any("not reachable" in message for message in stats.error_messages)
+
+
+# -- a failing tick never kills the scanner -----------------------------------
+
+
+def test_a_store_that_cannot_open_fails_the_tick_not_the_watcher(
+    tmp_path: Path, store: Store, monkeypatch: pytest.MonkeyPatch
+):
+    import sqlite3
+
+    _write_session(tmp_path / "projects", "proj-a", "sess-a1", _two_turns())
+    watcher = FileWatcher(store, _options(tmp_path))
+    real_open = store.open
+    calls = {"n": 0}
+
+    def _locked_once():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise sqlite3.OperationalError("database is locked")
+        real_open()
+
+    monkeypatch.setattr(store, "open", _locked_once)
+
+    failed = watcher.run_once()
+    assert failed.error_messages == ("tick failed: OperationalError: database is locked",)
+    state = watcher.state()
+    assert state.last_tick_failed is True
+    assert state.last_success_at is None
+    assert state.scanning is False
+
+    ok = watcher.run_once()
+    assert ok.errors == 0
+    state = watcher.state()
+    assert state.last_tick_failed is False
+    assert state.last_success_at == ok.finished_at
+    assert store.session("sess-a1") is not None
+
+
+def test_the_background_thread_outlives_failing_ticks(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    import sqlite3
+
+    store_obj = Store(str(tmp_path / "store.db"))
+    watcher = FileWatcher(store_obj, _options(tmp_path, poll_interval_s=0.01))
+    real_open = store_obj.open
+    calls = {"n": 0}
+
+    def _locked_twice():
+        calls["n"] += 1
+        if calls["n"] <= 2:
+            raise sqlite3.OperationalError("database is locked")
+        real_open()
+
+    monkeypatch.setattr(store_obj, "open", _locked_twice)
+    watcher.start()
+    try:
+        deadline = time.monotonic() + 10
+        while watcher.state().last_success_at is None and time.monotonic() < deadline:
+            time.sleep(0.01)
+        state = watcher.state()
+        assert state.running is True
+        assert state.last_success_at is not None
+    finally:
+        watcher.stop()
+    assert watcher.state().running is False
+
+
+def test_state_reports_progress_while_storing(tmp_path: Path, store: Store, monkeypatch: pytest.MonkeyPatch):
+    root = tmp_path / "projects"
+    _write_session(root, "proj-a", "sess-a1", _two_turns())
+    _write_session(root, "proj-b", "sess-b1", _two_turns())
+    watcher = FileWatcher(store, _options(tmp_path))
+    seen = []
+    real_scan = watcher._scan_session
+
+    def _spy(*args, **kwargs):
+        seen.append(watcher.state())
+        return real_scan(*args, **kwargs)
+
+    monkeypatch.setattr(watcher, "_scan_session", _spy)
+    watcher.run_once()
+
+    assert [(s.scanning, s.phase, s.done, s.total) for s in seen] == [
+        (True, "storing", 0, 2),
+        (True, "storing", 1, 2),
+    ]
+    assert seen[0].scan_started_at is not None
+    idle = watcher.state()
+    assert (idle.scanning, idle.phase, idle.done, idle.total) == (False, None, 0, 0)
+
+
+def test_error_summary_keeps_sqlite_text_but_never_an_os_error_path(tmp_path: Path):
+    import sqlite3
+
+    from claude_token_lens.service.watcher import _error_summary
+
+    assert _error_summary(sqlite3.OperationalError("database is locked")) == "OperationalError: database is locked"
+    assert _error_summary(sqlite3.OperationalError("")) == "OperationalError"
+    secret = str(tmp_path / "proj-secret" / "sess.jsonl")
+    assert _error_summary(FileNotFoundError(2, "No such file", secret)) == "FileNotFoundError"
+    assert _error_summary(ValueError(secret)) == "ValueError"
+
+
+def test_a_large_tick_reports_finding_then_reading_then_storing(
+    tmp_path: Path, store: Store, monkeypatch: pytest.MonkeyPatch
+):
+    from claude_token_lens.cache import DigestCache
+    import claude_token_lens.service.watcher as watcher_mod
+
+    root = tmp_path / "projects"
+    _write_session(root, "proj-a", "sess-a1", _two_turns())
+    _write_session(root, "proj-a", "sess-a2", _two_turns())
+    _write_subagent(root, "proj-a", "sess-a1", "agent-1", _two_turns())
+    monkeypatch.setattr(watcher_mod, "_PARALLEL_PARSE_THRESHOLD", 0)
+    monkeypatch.setattr(watcher_mod.os, "cpu_count", lambda: 1)  # no process pool in a unit test
+    watcher = FileWatcher(store, _options(tmp_path), cache=DigestCache(tmp_path / "config"))
+    phases = []
+    real_set = watcher._set_progress
+
+    def _spy(phase, total=0):
+        phases.append((phase, total))
+        real_set(phase, total)
+
+    monkeypatch.setattr(watcher, "_set_progress", _spy)
+    watcher.run_once()
+
+    assert phases == [("finding", 0), ("reading", 3), ("storing", 2), (None, 0)]

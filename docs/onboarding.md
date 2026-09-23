@@ -117,8 +117,9 @@ claude-token-lens init [--answers FILE] [--non-interactive] [--no-install]
    and one `GET http://127.0.0.1:8765/api/health` after a short delay
    to report whether the service is already up. `init` always registers
    port 8765 on `127.0.0.1`; use `install-service --port/--bind` for
-   anything else. The first start reads your whole history, so the
-   health check can report "not responding yet" for a minute.
+   anything else. `serve` answers within seconds of starting (it binds
+   its port before reading your history, and shows that scan's progress),
+   so "not responding yet" means it is still starting or has failed.
 
 ### The question set
 

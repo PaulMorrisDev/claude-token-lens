@@ -156,6 +156,30 @@ body {
   border-left-color: #c0392b;
 }
 
+.health-banner {
+  margin: 0.5rem 0 0.75rem;
+  padding: 0.5rem 0.9rem;
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--accent);
+  border-radius: 4px;
+  font-size: 0.9rem;
+}
+
+.health-banner.error {
+  border-left-color: #c0392b;
+}
+
+.health-banner p {
+  margin: 0;
+}
+
+.health-banner progress {
+  display: block;
+  width: 100%;
+  max-width: 28rem;
+  margin-top: 0.4rem;
+}
+
 .notice code {
   font-size: 0.85em;
 }

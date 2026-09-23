@@ -7,8 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **The dashboard opens straight away.** `serve` now binds its port
+  before reading your history, instead of refusing connections until a
+  first scan of the whole history finished (a minute or more on a large
+  one). A banner shows the scan's progress (files found, read and
+  stored), and once it finishes offers **Redraw figures**.
+- `serve --store PATH` puts the dashboard's database somewhere other
+  than `<config-dir>/service.db`, so a second copy (a dev checkout) can
+  run beside the logon service without sharing it.
+
 ### Fixed
 
+- **The dashboard could stop updating for good and still report
+  healthy.** When the database was busy at the moment the background
+  scanner started a scan (a second `serve` on the same database, say),
+  the scanner thread died. The page kept serving the figures it had,
+  frozen, while `/api/health` still said `ok`. A failed scan now fails
+  only that scan, the scanner retries at the next poll, and a busy
+  database is waited on for up to 30 seconds instead of 5.
+- `/api/health`'s `status` is no longer always `ok`: it is `starting`
+  during the first scan, `degraded` when the last scan failed and
+  `stale` when the scanner has stopped or nothing has finished for ten
+  minutes, with a plain-words `message` and the scan's progress
+  (`scan`). The dashboard shows these in a banner on every tab and in
+  its footer, with the command to restart it.
+- A failed scan's error now keeps SQLite's own reason ("database is
+  locked") rather than only "OperationalError".
+- Two `serve`s on one database are refused. `serve` locks its database
+  for as long as it runs; a second one exits naming the process that
+  holds it and its address, and `serve --purge` refuses to delete a
+  database a running `serve` has open.
+- A port already in use is reported in a sentence instead of a
+  traceback.
 - `--since` and `--until` given a bare date (`--since 2026-09-01`), as
   the README documents, or a time with no offset, crashed comparing it
   with the transcripts' own times. Both are now read as UTC.

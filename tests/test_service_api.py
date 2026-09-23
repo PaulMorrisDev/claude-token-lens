@@ -42,7 +42,7 @@ from claude_token_lens.profiles import schema as profile_schema
 from claude_token_lens.render.json_out import render_json
 from claude_token_lens.report import build_report
 from claude_token_lens.service import api as service_api
-from claude_token_lens.service.contracts import ServeOptions
+from claude_token_lens.service.contracts import ServeOptions, WatcherState, WatcherStats
 from claude_token_lens.service.store import Store
 from claude_token_lens.snapshots import Snapshot
 
@@ -355,8 +355,86 @@ def test_health(server):
     # fixture calls make_handler with no extra kwargs), so this must be
     # null ("unknown"), never folded into false.
     assert body["data"]["service_registered"] is None
+    # No watcher_state wired up: nothing to judge the scanner by.
+    assert body["data"]["message"] is None
+    assert body["data"]["scan"] is None
     assert_privacy(body)
     _assert_no_leak(json.dumps(body).encode("utf-8"))
+
+
+def test_health_reports_a_first_scan_in_progress(tmp_path, monkeypatch):
+    state = WatcherState(running=True, scanning=True, scan_started_at="2026-09-23T10:00:00Z", phase="storing", done=12, total=340)
+    handle = _start_server(tmp_path, monkeypatch, watcher_stats=lambda: None, watcher_state=lambda: state)
+    try:
+        resp, body = handle.get_json("/api/health")
+        assert resp.status == 200
+        data = body["data"]
+        assert data["status"] == "starting"
+        assert "12 of 340 sessions" in data["message"]
+        assert data["scan"]["phase"] == "storing"
+        assert (data["scan"]["done"], data["scan"]["total"]) == (12, 340)
+        assert_privacy(body)
+    finally:
+        handle.close()
+        handle.store.close()
+
+
+def test_health_reports_a_failed_scan_as_degraded_with_its_reason(tmp_path, monkeypatch):
+    stats = WatcherStats(errors=1, error_messages=("tick failed: OperationalError: database is locked",))
+    state = WatcherState(running=True, last_success_at="2026-09-23T10:00:00Z", last_tick_failed=True)
+    handle = _start_server(tmp_path, monkeypatch, watcher_stats=lambda: stats, watcher_state=lambda: state)
+    try:
+        _resp, body = handle.get_json("/api/health")
+        assert body["data"]["status"] == "degraded"
+        assert "database is locked" in body["data"]["message"]
+        assert "10:00 UTC" in body["data"]["message"]
+    finally:
+        handle.close()
+        handle.store.close()
+
+
+_NOW = service_api.datetime(2026, 9, 23, 12, 0, tzinfo=service_api.timezone.utc)
+
+
+@pytest.mark.parametrize(
+    ("state", "expected"),
+    [
+        (WatcherState(running=True, last_success_at="2026-09-23T11:59:30Z"), "ok"),
+        (WatcherState(running=True), "starting"),
+        (WatcherState(running=True, scanning=True, phase="reading", done=1, total=9), "starting"),
+        (WatcherState(running=True, last_tick_failed=True), "degraded"),
+        (WatcherState(running=True, last_success_at="2026-09-23T11:00:00Z", last_tick_failed=True), "degraded"),
+        # The watcher thread died: nothing will ever update again.
+        (WatcherState(running=False, last_success_at="2026-09-23T11:59:30Z"), "stale"),
+        (WatcherState(running=False), "stale"),
+        # Alive but has not finished a scan for over ten minutes.
+        (WatcherState(running=True, last_success_at="2026-09-23T11:40:00Z"), "stale"),
+        # A long scan in progress is not stale ...
+        (
+            WatcherState(
+                running=True, scanning=True, scan_started_at="2026-09-23T11:30:00Z", last_success_at="2026-09-23T11:29:00Z"
+            ),
+            "ok",
+        ),
+        # ... until it has run for over an hour.
+        (
+            WatcherState(
+                running=True, scanning=True, scan_started_at="2026-09-23T10:30:00Z", last_success_at="2026-09-23T10:29:00Z"
+            ),
+            "stale",
+        ),
+    ],
+)
+def test_health_status_table(state, expected):
+    status, message = service_api._health_status(None, state, poll_interval_s=30.0, now=_NOW)
+    assert status == expected
+    assert (message is None) == (expected == "ok")
+
+
+def test_health_stale_threshold_grows_with_a_long_poll_interval():
+    state = WatcherState(running=True, last_success_at="2026-09-23T11:40:00Z")
+    status, _message = service_api._health_status(None, state, poll_interval_s=300.0, now=_NOW)
+    assert status == "ok"  # 20 minutes is under ten 5-minute polls
 
 
 @pytest.mark.parametrize("registered_value", [True, False])

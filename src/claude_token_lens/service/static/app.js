@@ -1063,11 +1063,15 @@
         ])
       );
     }
+    var scan = health.scan || {};
+    if (health.message) {
+      container.appendChild(el("div", { class: "notice" + (health.status === "starting" ? "" : " error") }, [el("p", { text: health.message })]));
+    }
     var lines = [
       "status: " + (health.status || "unknown"),
       "version: " + (health.version || "-"),
       "schema version: " + (health.schema_version === undefined ? "-" : health.schema_version),
-      "watcher last tick finished: " + (watcher.finished_at ? shortTs(watcher.finished_at) : "never"),
+      "last scan finished: " + (scan.last_success_at ? shortTs(scan.last_success_at) : watcher.finished_at ? shortTs(watcher.finished_at) : "never"),
       "files scanned / parsed: " + thousands(watcher.files_scanned || 0) + " / " + thousands(watcher.files_parsed || 0),
       "sessions upserted: " + thousands(watcher.sessions_upserted || 0),
       "errors this tick: " + (watcher.errors || 0),
@@ -1095,13 +1099,89 @@
     updateFooterHealth(health);
   }
 
+  var HEALTH_LABELS = {
+    ok: "Up to date",
+    starting: "Scanning your history",
+    degraded: "Last scan failed",
+    stale: "Not updating",
+  };
+
   function updateFooterHealth(health) {
     var footer = document.getElementById("footer-health");
     if (!footer) return;
     var watcher = health.watcher || {};
+    var scan = health.scan || {};
+    var lastScan = scan.last_success_at || watcher.finished_at;
     footer.textContent =
       (health.version ? "claude-token-lens " + health.version + " — " : "") +
-      "Service " + (health.status || "unknown") + " — last watcher tick: " + (watcher.finished_at ? shortTs(watcher.finished_at) : "never") + " — " + thousands(watcher.files_parsed || 0) + " files parsed, " + (watcher.errors || 0) + " errors.";
+      (HEALTH_LABELS[health.status] || "Service " + (health.status || "unknown")) +
+      " — last scan finished " + (lastScan ? shortTs(lastScan) : "never") +
+      (watcher.errors ? " — " + watcher.errors + (watcher.errors === 1 ? " error" : " errors") : "") +
+      ".";
+  }
+
+  // The banner under the header, on every tab: what /api/health's
+  // status means when it is not "ok" (first scan in progress, a failed
+  // scan, a scanner that has stopped) and, once a scan that was running
+  // when the page drew its figures finishes, a way to redraw them.
+  var healthPoll = { status: null, timer: null };
+
+  function redrawAllTabs() {
+    state.reportPromises = {};
+    Object.keys(renderedTabs).forEach(function (key) {
+      delete renderedTabs[key];
+    });
+    activateTab(state.activeTab || "overview", { force: true });
+  }
+
+  function renderHealthBanner(health, previous) {
+    var banner = document.getElementById("health-banner");
+    if (!banner) return;
+    clear(banner);
+    banner.className = "health-banner";
+    if (!health) {
+      banner.classList.add("error");
+      banner.appendChild(el("p", { text: "Can't reach the dashboard service, so these figures may be out of date. Is serve still running?" }));
+      banner.hidden = false;
+      return;
+    }
+    if (health.status === "ok") {
+      if (previous === "starting" || banner.getAttribute("data-scan-finished") === "true") {
+        banner.setAttribute("data-scan-finished", "true");
+        var refresh = el("button", { type: "button", class: "link-button", text: "Redraw figures" });
+        refresh.addEventListener("click", function () {
+          banner.removeAttribute("data-scan-finished");
+          banner.hidden = true;
+          redrawAllTabs();
+        });
+        banner.appendChild(el("p", {}, [el("span", { text: "The scan has finished. " }), refresh]));
+        banner.hidden = false;
+      } else {
+        banner.hidden = true;
+      }
+      return;
+    }
+    banner.removeAttribute("data-scan-finished");
+    if (health.status !== "starting") banner.classList.add("error");
+    banner.appendChild(el("p", { text: health.message || HEALTH_LABELS[health.status] || health.status }));
+    var scan = health.scan || {};
+    if (health.status === "starting" && scan.total) {
+      banner.appendChild(el("progress", { max: String(scan.total), value: String(scan.done || 0) }));
+    }
+    banner.hidden = false;
+  }
+
+  function pollHealth() {
+    fetchJson("/api/health").then(function (result) {
+      var body = result.body;
+      var health = body && body.ok === true ? body.data : null;
+      var previous = healthPoll.status;
+      healthPoll.status = health ? health.status : "unreachable";
+      renderHealthBanner(health, previous);
+      if (health) updateFooterHealth(health);
+      // Poll quickly while a scan's progress is worth watching.
+      healthPoll.timer = setTimeout(pollHealth, health && health.status === "starting" ? 3000 : 60000);
+    });
   }
 
   // ======================================================================
@@ -3446,6 +3526,7 @@
 
   function initTabs() {
     initWindowPicker();
+    pollHealth();
     var nav = document.getElementById("tabs");
     if (!nav) return;
     var buttons = Array.prototype.slice.call(nav.querySelectorAll(".tab"));

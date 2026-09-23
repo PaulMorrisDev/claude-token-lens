@@ -1,8 +1,8 @@
-"""``claude-token-lens serve``'s runtime entry point: open the SQLite
-store, run one watcher tick synchronously so ``/api/*`` has data before
-the first request, start the watcher's background poll thread, then
-serve the JSON API (``service/api.py``'s ``make_handler``) until
-interrupted.
+"""``claude-token-lens serve``'s runtime entry point: lock and open the
+SQLite store, bind the port, start the watcher's background poll thread
+(its first tick included, so a first scan of a large history never keeps
+the dashboard from answering), then serve the JSON API
+(``service/api.py``'s ``make_handler``) until interrupted.
 
 :func:`run` is the whole module's surface -- ``cli.py``'s ``serve``
 subcommand calls it directly with the ``ServeOptions`` it builds from
@@ -10,12 +10,15 @@ argv.
 
 Contract notes:
 
-- ``contracts.ServeOptions`` has no field for the SQLite file's name --
-  only ``config_dir``. This module picks ``<config_dir>/service.db``
-  (a sibling of ``config.toml``/``profiles/``/``snapshots/`` already
-  living under the same directory per ``config.py``/``snapshots.py``),
-  not a frozen contract choice, so a future work package is free to
-  change it as long as ``serve`` and any migration path agree.
+- The SQLite file is ``ServeOptions.store_path`` (``--store``), else
+  ``<config_dir>/service.db`` (a sibling of ``config.toml``/``profiles/``/
+  ``snapshots/`` already living under the same directory per
+  ``config.py``/``snapshots.py``) -- see :func:`store_path_for`.
+- One ``serve`` per store: :func:`run` takes ``storelock.StoreLock`` on
+  the store before opening it and holds it until it exits, so a second
+  ``serve`` (or ``--once``) on the same store is refused with the
+  holder's process id and address rather than fighting it for SQLite's
+  write lock.
 - ``allow_remote`` is a keyword-only addition beyond ``ServeOptions``'s
   own fields (mirroring ``api.py``'s ``watcher_stats`` addition to
   ``MakeHandler``) -- the plan's "port bound to localhost only" default
@@ -25,10 +28,10 @@ Contract notes:
   documented Protocol attribute a concrete ``Watcher`` must keep current,
   so ``/api/health`` always has a real answer once the watcher is polling
   on its own thread: :func:`run` passes ``make_handler`` a
-  ``watcher_stats`` callable that simply reads ``watcher.last_stats``.
-  ``run`` always calls ``watcher.run_once()`` synchronously before
-  serving starts, so by the time any request thread can call
-  ``watcher_stats``, ``last_stats`` is always already populated.
+  ``watcher_stats`` callable that simply reads ``watcher.last_stats``,
+  and a ``watcher_state`` callable (``watcher.state``) that says whether
+  the first scan is still running and how far it has got --
+  ``last_stats`` stays ``None`` until that first tick finishes.
 - ``ServeOptions.monthly_report_dir`` (``--monthly-report DIR``) starts
   ``monthly_job.MonthlyReportJob``: last month's report is written into
   ``DIR`` when missing, checked at startup and hourly on a background
@@ -37,13 +40,18 @@ Contract notes:
 
 from __future__ import annotations
 
+import os
 import sys
+from datetime import datetime, timezone
 from http.server import ThreadingHTTPServer
+from pathlib import Path
 
+from .. import __version__
 from .. import parse as parse_mod
 from ..cache import DigestCache
 from .contracts import ServeOptions
 from .store import Store
+from .storelock import StoreLock, StoreLockedError
 
 #: See module docstring's first contract note. Public (S1-integration
 #: fix 2.e) so ``cli.py``'s ``serve --purge`` can name the exact file
@@ -53,9 +61,53 @@ STORE_FILENAME = "service.db"
 
 _LOOPBACK_ADDRESSES = {"127.0.0.1", "::1", "localhost"}
 
+#: How long a starting ``serve`` waits for another holder of its store's
+#: lock to let go before refusing: long enough for ``install-service``'s
+#: stop-then-start to hand over, short enough to fail visibly otherwise.
+_LOCK_WAIT_S = 10.0
+
 
 def _is_loopback(bind: str) -> bool:
     return bind in _LOOPBACK_ADDRESSES
+
+
+def store_path_for(options: ServeOptions) -> Path:
+    """The SQLite file ``serve`` uses for ``options``: ``--store`` if
+    given, else ``<config_dir>/service.db``."""
+    if options.store_path is not None:
+        return Path(options.store_path)
+    return options.config_dir / STORE_FILENAME
+
+
+def _url(bind: str, port: int) -> str:
+    host = bind if ":" not in bind else f"[{bind}]"
+    return f"http://{host}:{port}"
+
+
+def _lock_info(options: ServeOptions, *, port: int | None, once: bool) -> dict:
+    return {
+        "pid": os.getpid(),
+        "bind": options.bind,
+        "port": port,
+        "once": once,
+        "version": __version__,
+        "started_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+
+
+def locked_message(store_path: Path, holder: dict, *, command: str = "serve") -> str:
+    """What ``serve`` (or ``serve --purge``) prints when another process
+    holds ``store_path``'s lock, naming that process from the details it
+    recorded (``storelock.holder``)."""
+    who = f"process {holder['pid']}" if isinstance(holder.get("pid"), int) else "another process"
+    if holder.get("once"):
+        who += ", a serve --once scan"
+    elif isinstance(holder.get("port"), int) and isinstance(holder.get("bind"), str):
+        who += f", serving {_url(holder['bind'], holder['port'])}"
+    advice = "Stop it first."
+    if command == "serve":
+        advice = "Stop it first, or give this one its own database with --store PATH."
+    return f"claude-token-lens {command}: {store_path} is in use by another serve ({who}).\n{advice}"
 
 
 def _format_stats_line(stats) -> str:
@@ -81,11 +133,34 @@ def _format_stats_line(stats) -> str:
 def run(options: ServeOptions, *, once: bool = False, allow_remote: bool = False) -> int:
     """Run the v0.2 service until ``SIGINT``/``KeyboardInterrupt``
     (or, with ``once=True``, run a single watcher tick and return).
-    Returns the process exit code (``0`` on a clean stop, ``2`` if
-    binding a non-loopback ``options.bind`` was refused).
+    Returns the process exit code: ``0`` on a clean stop, ``1`` if the
+    store is in use by another ``serve`` or the port can't be bound,
+    ``2`` if binding a non-loopback ``options.bind`` was refused.
     """
+    if not once and not allow_remote and not _is_loopback(options.bind):
+        print(
+            f"claude-token-lens serve: refusing to bind non-loopback address "
+            f"{options.bind!r} without --allow-remote",
+            file=sys.stderr,
+        )
+        return 2
+
     options.config_dir.mkdir(parents=True, exist_ok=True)
-    store = Store(options.config_dir / STORE_FILENAME)
+    store_path = store_path_for(options)
+    lock = StoreLock(store_path)
+    try:
+        lock.acquire(_lock_info(options, port=None, once=once), wait_s=0.0 if once else _LOCK_WAIT_S)
+    except StoreLockedError as exc:
+        print(locked_message(store_path, exc.holder), file=sys.stderr)
+        return 1
+    try:
+        return _run_locked(options, store_path, lock, once=once)
+    finally:
+        lock.release()
+
+
+def _run_locked(options: ServeOptions, store_path: Path, lock: StoreLock, *, once: bool) -> int:
+    store = Store(store_path)
     store.open()
 
     # Local import: service.watcher is a sibling work package's module
@@ -109,7 +184,6 @@ def run(options: ServeOptions, *, once: bool = False, allow_remote: bool = False
     salt = parse_mod.load_or_create_salt(options.config_dir)
     parse_mod.set_salt(salt)
     watcher = FileWatcher(store, options, cache=cache, salt=salt)
-    stats = watcher.run_once()
 
     # serve --monthly-report DIR: write last month's report into DIR when
     # it is missing (service/monthly_job.py). --once checks once, in
@@ -122,6 +196,7 @@ def run(options: ServeOptions, *, once: bool = False, allow_remote: bool = False
         monthly_job = MonthlyReportJob(options)
 
     if once:
+        stats = watcher.run_once()
         # Print the tick's WatcherStats before exiting -- --once is the
         # one-shot/cron/verification entry point, and until this was
         # added it discarded every number docs/api.md documents as a
@@ -134,15 +209,6 @@ def run(options: ServeOptions, *, once: bool = False, allow_remote: bool = False
             monthly_job.run_once()
         store.close()
         return 0
-
-    if not allow_remote and not _is_loopback(options.bind):
-        print(
-            f"claude-token-lens serve: refusing to bind non-loopback address "
-            f"{options.bind!r} without --allow-remote",
-            file=sys.stderr,
-        )
-        store.close()
-        return 2
 
     # Local import: service.api depends on this work package's own
     # api.py, which in turn lazily imports service.rebuild -- kept as a
@@ -160,27 +226,42 @@ def run(options: ServeOptions, *, once: bool = False, allow_remote: bool = False
     # of live traffic, not on every request.
     from ..installer import is_registered as _probe_service_registered
 
+    handler_cls = make_handler(
+        store,
+        options,
+        watcher_stats=lambda: watcher.last_stats,
+        watcher_state=watcher.state,
+        service_registered=_probe_service_registered,
+    )
+    # Bind before the first scan: the dashboard answers (and shows the
+    # scan's progress) straight away instead of refusing connections for
+    # as long as a first read of the whole history takes.
+    try:
+        server = ThreadingHTTPServer((options.bind, options.port), handler_cls)
+    except OSError as exc:
+        print(
+            f"claude-token-lens serve: can't listen on {_url(options.bind, options.port)} "
+            f"({exc.strerror or type(exc).__name__}). Is something else using port {options.port}? "
+            "Pick another with --port N.",
+            file=sys.stderr,
+        )
+        store.close()
+        return 1
+    # nit 30: ThreadingHTTPServer defaults daemon_threads to True, so
+    # a KeyboardInterrupt/shutdown() can tear the process down mid-
+    # request, abandoning a request thread (and its still-open
+    # per-thread Store connection, see api.py's Handler._dispatch)
+    # without ever running its own cleanup. Non-daemon request
+    # threads are joined properly on interpreter/thread-pool
+    # teardown instead.
+    server.daemon_threads = False
+    lock.update(_lock_info(options, port=server.server_port, once=False))
+
     watcher.start()
     if monthly_job is not None:
         monthly_job.start()
     try:
-        handler_cls = make_handler(
-            store,
-            options,
-            watcher_stats=lambda: watcher.last_stats,
-            service_registered=_probe_service_registered,
-        )
-        server = ThreadingHTTPServer((options.bind, options.port), handler_cls)
-        # nit 30: ThreadingHTTPServer defaults daemon_threads to True, so
-        # a KeyboardInterrupt/shutdown() can tear the process down mid-
-        # request, abandoning a request thread (and its still-open
-        # per-thread Store connection, see api.py's Handler._dispatch)
-        # without ever running its own cleanup. Non-daemon request
-        # threads are joined properly on interpreter/thread-pool
-        # teardown instead.
-        server.daemon_threads = False
-        host = options.bind if ":" not in options.bind else f"[{options.bind}]"
-        print(f"claude-token-lens serve: listening on http://{host}:{server.server_port}")
+        print(f"claude-token-lens serve: listening on {_url(options.bind, server.server_port)}")
         try:
             server.serve_forever()
         except KeyboardInterrupt:
@@ -197,4 +278,4 @@ def run(options: ServeOptions, *, once: bool = False, allow_remote: bool = False
     return 0
 
 
-__all__ = ["run", "STORE_FILENAME"]
+__all__ = ["run", "STORE_FILENAME", "locked_message", "store_path_for"]

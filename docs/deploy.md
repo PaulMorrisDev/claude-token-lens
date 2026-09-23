@@ -449,7 +449,21 @@ that actually delete a row.
   If one of the files cannot be deleted (for example a `-wal` sidecar
   still held open by another process), `--purge` deletes everything it
   can, reports the failure(s) to stderr, and exits with status `1` —
-  it never aborts partway through with an unhandled error.
+  it never aborts partway through with an unhandled error. While a
+  `serve` is running on the store, `--purge` refuses (status `1`) and
+  names that process: stop it first.
+- **One `serve` per store.** `serve` locks its database
+  (`<store>.lock`, beside it) before opening it and holds the lock until
+  it exits; the operating system drops it however the process ends, so
+  a crash never leaves it stuck. A second `serve` (or `serve --once`)
+  on the same store is refused with exit status `1`, naming the process
+  that holds it and its address, instead of the two fighting over
+  SQLite's write lock (the loser's scans fail with "database is locked"
+  and its dashboard stops updating). A starting `serve` waits up to ten
+  seconds for the lock, so `install-service` restarting the service
+  hands over cleanly. To run a second copy beside the service (a dev
+  checkout, say), give it its own database with `--store PATH`; it
+  still shares `--config-dir`'s settings and parse cache.
 
 ## Re-parsing after a parser upgrade
 

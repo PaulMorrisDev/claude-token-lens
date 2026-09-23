@@ -37,8 +37,22 @@ inline SVG charts, `prefers-color-scheme` dark."
 
 One page (`index.html`), one `<nav>` of tabs (`TAB_ORDER`), each
 rendering from its own `/api/*` route(s). A tab is rendered the first
-time it is opened and kept until the window changes; there is no
+time it is opened and kept until the window changes; tabs have no
 background poll. Fourteen tabs ship, in the order below.
+
+**The health banner and footer** are on every tab, from `/api/health`
+(`pollHealth()`: every 3 seconds while its `status` is `"starting"`,
+every minute otherwise). The banner, under the header, is hidden while
+the status is `"ok"`. Otherwise it shows the route's `message`: the
+first scan's progress (with a progress bar) while `"starting"`, and a
+red-edged warning with the restart command when `"degraded"` or
+`"stale"`, or when the service can't be reached at all. When a scan
+that was in progress finishes, the banner offers **Redraw figures**,
+which drops every rendered tab and the report cache and redraws the tab
+on screen; tabs never redraw themselves under the reader. The footer
+names the running version, the status in words (Up to date, Scanning
+your history, Last scan failed, Not updating) and when the last scan
+finished.
 
 **The dashboard never changes Claude Code's settings.** There is no
 Apply button. Every fix is a prompt to paste into Claude Code or an

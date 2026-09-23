@@ -88,6 +88,11 @@ class ServeOptions:
     #: ``bind`` address that are always allowed. Any other ``Host`` is
     #: refused before routing, so a DNS-rebinding page can't read the API.
     allowed_hosts: tuple[str, ...] = ()
+    #: ``serve --store PATH``: the SQLite database file. ``None`` means
+    #: ``<config_dir>/service.db``. A second ``serve`` (a dev copy
+    #: beside the logon service) points this elsewhere so the two never
+    #: share, and lock, one database.
+    store_path: Path | None = None
 
 
 @dataclass(slots=True)
@@ -154,6 +159,37 @@ class WatcherStats:
 
 
 @dataclass(slots=True)
+class WatcherState:
+    """Where the watcher is right now, as opposed to what its last
+    finished tick did (:class:`WatcherStats`). ``/api/health`` reads it
+    to tell a first scan still running from a scanner that has stopped.
+    """
+
+    #: The background thread is alive (``False`` before :meth:`Watcher.start`,
+    #: after :meth:`Watcher.stop`, and if the thread ever dies).
+    running: bool = False
+    #: A tick is in progress; ``scan_started_at`` is when it began.
+    scanning: bool = False
+    scan_started_at: str | None = None
+    #: When the last tick that did not fail outright finished. ``None``
+    #: until one has.
+    last_success_at: str | None = None
+    #: The most recent finished tick failed outright (the store could not
+    #: be opened or read, say), rather than just skipping a bad file.
+    last_tick_failed: bool = False
+    #: The in-progress tick's phase, with ``done`` of ``total`` items:
+    #: ``"finding"`` (walking the projects folders; ``done`` files seen,
+    #: ``total`` 0 as the count isn't known up front), ``"reading"``
+    #: (parsing changed files, from the parse cache or in parallel) and
+    #: ``"storing"`` (folding sessions into the store). The first two
+    #: happen only on a tick with many changed files. ``None``/``0``
+    #: when idle.
+    phase: str | None = None
+    done: int = 0
+    total: int = 0
+
+
+@dataclass(slots=True)
 class ApiError:
     """The shape of a failed ``/api/*`` response's ``error`` object
     (plan/``docs/api.md``: every response is either ``{"ok": true,
@@ -186,6 +222,11 @@ class Watcher(Protocol):
     #: guess at an attribute a ``Watcher`` implementation might or might
     #: not happen to expose (S1-integration fix 1.e).
     last_stats: "WatcherStats | None"
+
+    def state(self) -> "WatcherState":
+        """A consistent snapshot of the watcher's current
+        :class:`WatcherState`. Safe to call from any thread."""
+        ...
 
     def run_once(self) -> "WatcherStats":
         """Scan ``ServeOptions.projects_root`` (and ``extra_projects_roots``)

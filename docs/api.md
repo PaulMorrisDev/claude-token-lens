@@ -119,9 +119,15 @@ below):
   ([docs/exports.md](exports.md#serve---monthly-report-dir)). It checks
   at startup and hourly, on its own thread, so requests are never held
   up; `--once` checks once after its watcher tick.
-- **`--purge`** deletes `<config-dir>/service.db` and its `-wal`/`-shm`
-  sidecars and exits (S1-integration fix 2.e) — never starts the watcher
-  or the API. Always prints exactly which files it would delete first;
+- **`--store PATH`** sets `ServeOptions.store_path`: the SQLite
+  database (default `<config-dir>/service.db`). `serve` locks it for as
+  long as it runs, so a second `serve` on the same file is refused (exit
+  `1`, naming the holder); `--store` gives a second copy its own. See
+  "One `serve` per store" in [docs/deploy.md](deploy.md).
+- **`--purge`** deletes `<config-dir>/service.db` (or `--store`'s file)
+  and its `-wal`/`-shm` sidecars and exits (S1-integration fix 2.e) —
+  never starts the watcher or the API, and refuses (exit `1`) while a
+  `serve` holds the store. Always prints exactly which files it would delete first;
   only actually deletes them when `--yes` is also given. Safe at any
   time: the store is always a derived cache (`service/store.py`'s module
   docstring), so the next `serve` run simply rebuilds it from the
@@ -185,9 +191,33 @@ returns `404` with `error.code: "not_found"`.
 ### `GET /api/health`
 
 Liveness/diagnostics probe (also the Docker healthcheck target — plan:
-"healthcheck on `/api/health`"). Never fails once the process is up.
+"healthcheck on `/api/health`"). Never fails once the process is up, and
+`serve` binds its port before its first scan, so it answers from the
+first second.
 
-`data`: `{"status": "ok", "version": str, "schema_version": int, "transcripts_missing": int, "watcher": WatcherStats-as-dict, "service_registered": true|false|null}`.
+`data`: `{"status": "ok"|"starting"|"degraded"|"stale", "message": str|null, "scan": WatcherState-as-dict|null, "version": str, "schema_version": int, "transcripts_missing": int, "watcher": WatcherStats-as-dict, "service_registered": true|false|null}`.
+
+`status` says whether the figures are keeping up, and `message` says
+what it means in plain words (`null` when `"ok"`). The HTTP status is
+`200` in every case: the process is up, and a healthcheck that restarts
+a container mid-scan would only make things worse.
+
+| `status` | When |
+|---|---|
+| `ok` | The last scan finished without failing outright, recently. |
+| `starting` | No scan has finished since the process started: the first scan is still running (`message` gives its progress). |
+| `degraded` | The last scan failed outright, such as `OperationalError: database is locked` (the reason is in `message` and in `watcher.error_messages`). It retries every poll interval. |
+| `stale` | The background scanner is no longer running, no scan has finished for ten minutes (or ten poll intervals, if longer), or one scan has run for over an hour. Figures are frozen; `message` names the time they are from and how to restart. |
+
+`scan` (`null` when no watcher is wired in, as in tests) is where the
+scanner is right now, as opposed to `watcher`, which is what its last
+finished scan did: `running` (the background thread is alive),
+`scanning` and `scan_started_at`, `last_success_at`,
+`last_tick_failed`, and the running scan's `phase` with `done` of
+`total`: `"finding"` (walking the projects folders; `done` files seen,
+`total` 0), `"reading"` (parsing changed files from the parse cache or
+in parallel; only on a scan with many changed files) and `"storing"`
+(sessions folded into the store). `phase` is `null` between scans.
 
 `version` is the running code's version (`claude-token-lens
 --version`), also shown in the dashboard's footer: after an update, a
@@ -226,6 +256,11 @@ overhead are counted in none of them — but each is a real,
 non-overlapping measurement of its own phase, so a slow tick's
 dominant cost is visible here rather than only as one opaque total.
 See `service/contracts.py`'s `WatcherStats` for the exact field list.
+A scan that fails outright records `tick failed: <reason>` in
+`watcher.error_messages`. The reason is the exception's type, plus
+SQLite's own message for a database error (it names no path or
+transcript text); other errors give their type only, since their
+messages can carry a path.
 
 ### `GET /api/summary`
 

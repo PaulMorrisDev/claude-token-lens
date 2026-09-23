@@ -201,7 +201,8 @@ start and asks before changing it. See the troubleshooting table.
   Claude.
 - **The first scan takes a while.** The service reads every transcript
   once (seconds to a few minutes for a large history), then only new or
-  changed files.
+  changed files. The dashboard opens straight away and shows the scan's
+  progress; figures fill in as it goes.
 - **It reads; it doesn't change.** Nothing about how Claude works
   changes until you apply a change yourself, through a prompt you give
   Claude or `claude-token-lens apply`. A change takes effect in the next

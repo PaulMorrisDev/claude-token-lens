@@ -224,4 +224,67 @@ def test_purge_never_reaches_service_serve_run(tmp_path: Path, monkeypatch):
     assert captured == {}
 
 
+# -- --store -------------------------------------------------------------------
+
+
+def test_store_flag_reaches_serve_options(tmp_path: Path, monkeypatch):
+    captured = _capture_options(monkeypatch)
+    store_path = tmp_path / "dev.db"
+
+    rc = cli.main(
+        [
+            "serve",
+            "--once",
+            "--projects-root",
+            str(tmp_path / "projects"),
+            "--config-dir",
+            str(tmp_path / "config"),
+            "--store",
+            str(store_path),
+        ]
+    )
+    assert rc == 0
+    assert captured["options"].store_path == store_path
+
+
+def test_store_path_defaults_to_none(tmp_path: Path, monkeypatch):
+    captured = _capture_options(monkeypatch)
+    cli.main(["serve", "--once", "--projects-root", str(tmp_path / "projects"), "--config-dir", str(tmp_path / "config")])
+    assert captured["options"].store_path is None
+
+
+def test_purge_deletes_the_store_flag_file_not_the_default(tmp_path: Path):
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    default_db = config_dir / "service.db"
+    default_db.write_text("keep me", encoding="utf-8")
+    dev_db = tmp_path / "dev.db"
+    dev_db.write_text("x", encoding="utf-8")
+
+    rc = cli.main(["serve", "--purge", "--yes", "--config-dir", str(config_dir), "--store", str(dev_db)])
+    assert rc == 0
+    assert not dev_db.exists()
+    assert default_db.exists()
+
+
+def test_purge_refuses_while_a_serve_holds_the_store(tmp_path: Path, capsys):
+    from claude_token_lens.service.storelock import StoreLock
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    db_path = config_dir / "service.db"
+    db_path.write_text("in use", encoding="utf-8")
+    lock = StoreLock(db_path)
+    lock.acquire({"pid": 777, "bind": "127.0.0.1", "port": 8765, "once": False})
+    try:
+        rc = cli.main(["serve", "--purge", "--yes", "--config-dir", str(config_dir)])
+    finally:
+        lock.release()
+    assert rc == 1
+    assert db_path.exists()
+    err = capsys.readouterr().err
+    assert "process 777" in err
+    assert "--store" not in err  # a purge has no business suggesting a second store
+
+
 __all__: list[str] = []
