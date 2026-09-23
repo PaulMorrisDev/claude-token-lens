@@ -272,12 +272,20 @@ def _resolve_window(
     since_dt: datetime | None = None
     until_dt: datetime | None = None
     if since is not None:
-        since_dt = datetime.fromisoformat(since.replace("Z", "+00:00"))
+        since_dt = _parse_bound(since)
     elif days is not None:
         since_dt = datetime.now(timezone.utc) - timedelta(days=days)
     if until is not None:
-        until_dt = datetime.fromisoformat(until.replace("Z", "+00:00"))
+        until_dt = _parse_bound(until)
     return since_dt, until_dt
+
+
+def _parse_bound(value: str) -> datetime:
+    """A ``--since``/``--until`` value as an aware datetime. A bare date or
+    a time with no offset is read as UTC, as :func:`ts_in_window` reads
+    transcript times, so it compares with them."""
+    dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
 
 
 #: How a session is matched to a window. ``last-reply`` (the default): the

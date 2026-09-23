@@ -229,6 +229,20 @@ def test_find_sessions_window_by_timestamp_reads_first_line(tmp_path):
     assert result_all == [path]
 
 
+def test_find_sessions_since_bare_date_is_read_as_utc(tmp_path):
+    # README documents --since DATE; a bare date parses without an offset
+    # and used to crash comparing with the aware file times.
+    now = time.time()
+    recent = tmp_path / "recent.jsonl"
+    stale = tmp_path / "stale.jsonl"
+    _touch_jsonl(recent, mtime=now)
+    _touch_jsonl(stale, mtime=now - 30 * 86400)
+    since = time.strftime("%Y-%m-%d", time.gmtime(now - 7 * 86400))
+    until = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(now + 86400))
+    assert discovery.find_sessions(tmp_path, since=since) == [recent]
+    assert discovery.find_sessions(tmp_path, since=since, until=until, window_by="mtime") == [recent]
+
+
 def test_find_sessions_missing_dir_returns_empty(tmp_path):
     assert discovery.find_sessions(tmp_path / "nope") == []
 
