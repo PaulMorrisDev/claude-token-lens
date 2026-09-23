@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-09-23
+
+After updating, the first dashboard start re-reads every transcript
+(a few minutes), and output and thinking tokens, and the costs built on
+them, come out noticeably higher: they were undercounted before.
+
 ### Fixed
 
 - **Output and thinking tokens were undercounted by more than half.**

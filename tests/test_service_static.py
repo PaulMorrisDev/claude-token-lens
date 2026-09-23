@@ -361,7 +361,7 @@ def _build_fixture_data(tmp_path: Path) -> tuple[dict, dict]:
     canned: dict = {
         "/api/health": {
             "status": "ok",
-            "version": "0.5.0",
+            "version": "0.5.1",
             "schema_version": store.schema_version(),
             "watcher": {"finished_at": "2026-09-19T00:00:00Z", "files_parsed": 1, "errors": 0},
         },
