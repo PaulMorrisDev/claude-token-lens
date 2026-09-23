@@ -1404,8 +1404,11 @@ def hook_command(python: str | None = None, script: Path | None = None) -> str:
     ``<config dir>/hooks``) by their full paths. A ``py -3`` or
     ``%USERPROFILE%`` command fails silently when the Python launcher is
     missing, or when Claude Code runs the hook through Git Bash, which
-    does not expand ``%VAR%``."""
-    python = python or sys.executable
+    does not expand ``%VAR%``. The default is the base interpreter
+    when this one runs in a virtual environment: this script needs only
+    the standard library, and a venv can be deleted or rebuilt."""
+    base = getattr(sys, "_base_executable", "") or ""
+    python = python or (base if base and Path(base).is_file() else sys.executable)
     script = script or (resolve_config_dir(None) / "hooks" / "snapshot-config.py")
     return f'"{python}" "{script}"'
 

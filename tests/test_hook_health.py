@@ -208,7 +208,7 @@ def test_missing_interpreter_is_found_and_fixed_with_full_paths(tmp_path):
     assert health.fixed_command == f'"/usr/bin/python3" "{script.resolve()}"'
 
 
-def test_percent_variable_is_flagged_and_replaced_by_the_full_path(tmp_path, monkeypatch):
+def test_percent_variable_is_written_out_keeping_the_users_interpreter(tmp_path, monkeypatch):
     # Git Bash, which Claude Code uses on Windows, passes %VAR% through
     # unexpanded.
     config_dir, _ = _claude_dir(tmp_path)
@@ -224,10 +224,34 @@ def test_percent_variable_is_flagged_and_replaced_by_the_full_path(tmp_path, mon
     assert health.percent_vars
     assert not health.ok
     assert "%VARIABLE%" in health.summary()
-    script = (config_dir / "hooks" / "snapshot-config.py").resolve()
+    script = config_dir / "hooks" / "snapshot-config.py"
     assert health.fixed_command == f'"{sys.executable}" "{script}"'
     hook_health.repair(health, now=NOW)
     assert hook_health.check(config_dir, now=NOW).ok
+
+
+def test_percent_variable_with_a_missing_interpreter_names_a_python_by_full_path(tmp_path, monkeypatch):
+    config_dir, _ = _claude_dir(tmp_path)
+    monkeypatch.setenv("TL_TEST_ROOT", str(config_dir))
+    settings_path = config_dir.parent / "settings.json"
+    data = json.loads(settings_path.read_text(encoding="utf-8"))
+    data["hooks"]["SessionStart"][0]["hooks"][0]["command"] = (
+        f'no-such-python-launcher -3 "%TL_TEST_ROOT%{os.sep}hooks{os.sep}snapshot-config.py"'
+    )
+    settings_path.write_text(json.dumps(data), encoding="utf-8")
+
+    health = hook_health.check(config_dir, now=NOW)
+    script = (config_dir / "hooks" / "snapshot-config.py").resolve()
+    assert health.fixed_command == f'"{hook_health.stable_python()}" "{script}"'
+
+
+def test_a_hook_command_prefers_the_base_interpreter_over_a_venv(monkeypatch, tmp_path):
+    base = tmp_path / "python.exe"
+    base.write_text("", encoding="utf-8")
+    monkeypatch.setattr(sys, "_base_executable", str(base), raising=False)
+    assert hook_health.stable_python() == str(base)
+    monkeypatch.setattr(sys, "_base_executable", str(tmp_path / "gone.exe"), raising=False)
+    assert hook_health.stable_python() == sys.executable
 
 
 def _with_statusline(tmp_path, rows=()):

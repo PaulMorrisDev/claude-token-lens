@@ -145,10 +145,35 @@ def _interpreter_found(program: str) -> bool:
     return shutil.which(expanded) is not None
 
 
+def stable_python() -> str:
+    """The Python a hook command should name: the base interpreter when
+    this one runs in a virtual environment, since the hook script uses
+    only the standard library and a venv can be deleted or rebuilt."""
+    base = getattr(sys, "_base_executable", "") or ""
+    return base if base and Path(base).is_file() else sys.executable
+
+
 def _python_command(script: Path, python: str | None = None) -> str:
-    """A hook command that names this Python and the script by their
-    full paths, so it depends on neither PATH nor shell variables."""
-    return f'"{python or sys.executable}" "{script}"'
+    """A hook command that names a Python and the script by their full
+    paths, so it depends on neither PATH nor shell variables."""
+    return f'"{python or stable_python()}" "{script}"'
+
+
+def _expand_percent_vars(command: str) -> str | None:
+    """``command`` with each ``%VAR%`` replaced by its value here, or
+    ``None`` when one isn't set."""
+    missing = False
+
+    def value(match: re.Match) -> str:
+        nonlocal missing
+        found = os.environ.get(match.group(0)[1:-1])
+        if found is None:
+            missing = True
+            return match.group(0)
+        return found
+
+    expanded = _PERCENT_VAR_RE.sub(value, command)
+    return None if missing else expanded
 
 
 def _unescape_decoded(command: str) -> str:
@@ -199,10 +224,18 @@ def check(config_dir: str | Path, *, now: datetime | None = None, python: str | 
         if candidate_path is None or not candidate_path.is_file():
             return health
         program = _interpreter(candidate)
-        if program is not None and _interpreter_found(program) and not _PERCENT_VAR_RE.search(candidate):
-            # Only the escaping was wrong: keep the user's own command.
-            if candidate != command:
-                health.fixed_command = candidate
+        expanded = _expand_percent_vars(candidate) if _PERCENT_VAR_RE.search(candidate) else candidate
+        if (
+            program is not None
+            and _interpreter_found(program)
+            and expanded is not None
+            and _script_path(expanded) is not None
+            and _script_path(expanded).is_file()
+        ):
+            # Only the escaping or a %VAR% was wrong: keep the user's own
+            # interpreter and arguments, with the variable written out.
+            if expanded != command:
+                health.fixed_command = expanded
         else:
             health.fixed_command = _python_command(candidate_path.resolve(), python)
     return health

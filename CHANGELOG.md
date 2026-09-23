@@ -219,7 +219,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the script by full path. `py -3` fails where the launcher isn't on the
   `PATH`, and Git Bash doesn't expand `%USERPROFILE%`; either stopped the
   hook without any visible error. The hook health check now reports
-  both, and `init --repair-hook` fixes them.
+  both, and `init --repair-hook` fixes them: it writes out a `%VAR%`
+  and keeps your own interpreter when it's found, and otherwise names
+  the base Python rather than a virtual environment's, since the hook
+  needs only the standard library.
 - The Data quality tab says when the statusline isn't logging (it runs
   only in Claude Code in a terminal).
 - "All time" on the dashboard now means all time on every tab; it used
