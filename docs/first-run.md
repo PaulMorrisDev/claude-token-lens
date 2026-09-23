@@ -377,7 +377,7 @@ after the restart, so the first page load can be slow.
 
 | Symptom | Fix |
 |---|---|
-| Dashboard still shows the old version after an update (see its footer) | The logon task still runs the old copy, or another Python install. Run `install-service` with the Python you updated (section 8) |
+| Dashboard still shows the old version after an update (see its footer) | Something else still holds port 8765: an older copy started by hand, from another Python install, or from Docker. The README's [An old dashboard won't go away](../README.md#an-old-dashboard-wont-go-away) shows how to find and stop it; then run `install-service` with the Python you updated (section 8) |
 | `claude-token-lens` not found | Use the full path to the venv's `Scripts\claude-token-lens.exe`, or `python -m claude_token_lens` (works regardless of `PATH`) |
 | The Data quality tab says the SessionStart hook isn't running | The hook command names a Python that isn't installed (`py` with no launcher), uses `%USERPROFILE%` (Claude Code runs hooks through Git Bash, which doesn't expand it), or has a path broken by single backslashes in JSON. Run `claude-token-lens init --repair-hook`: it shows the fixed command and changes it without asking, after copying `settings.json` to `settings.json.bak-<UTC time>`. It keeps your own Python when it's found and writes any `%VARIABLE%` out in full; otherwise it names your main Python install by full path. It can only fix a command whose script exists: if the script is missing, run `claude-token-lens init --connect` first, which copies it back into `<config-dir>\hooks\` |
 | No usage-limit readings | The statusline runs only in Claude Code in a terminal, not in the desktop app or an IDE. Amounts stay list-price equivalents until readings arrive |

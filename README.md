@@ -11,66 +11,77 @@ change is a prompt you give Claude or a command you run.
 ## Quick start
 
 About five minutes. You need Claude Code, already used for a while so
-there are sessions to look at, and Python 3.11 or newer.
+there are sessions to look at, and Python 3.11 or newer. The commands
+below are for **Windows PowerShell**; on macOS or Linux, type them in
+Terminal with `python3` in place of `python`.
+
+### Where to install it
+
+Anywhere: you don't install it into a repository, and it doesn't matter
+which folder your terminal is in. Claude Code keeps a transcript of
+every session, for every repository, in one folder
+(`%USERPROFILE%\.claude\projects` on Windows, `~/.claude/projects`
+elsewhere). claude-token-lens reads that folder, so the dashboard shows
+all your repositories at once. Only two commands care where you run
+them: `init` names the repository you're in as "this project", and
+`report` and `check` look at just that repository unless you add
+`--all-projects`.
 
 ### 1. Check Python
 
-Open a terminal (PowerShell on Windows) and run:
+Open PowerShell and run:
 
-```bash
+```powershell
 python --version
 ```
 
-It should print `Python 3.11` or higher. If it says the command isn't
-found, or shows an older version, install Python from
-[python.org](https://www.python.org/downloads/). On Windows, tick **Add
-python.exe to PATH** in the installer, then open a new terminal. On
-macOS and Linux the command may be `python3`; use `python3` wherever this
-guide says `python`.
+It should print `Python 3.11` or higher. If it says `python` isn't
+recognized, or shows an older version, install Python from
+[python.org](https://www.python.org/downloads/), tick **Add python.exe
+to PATH** in the installer, then open a new PowerShell window.
 
 ### 2. Install
 
-```bash
+```powershell
 python -m pip install git+https://github.com/PaulMorrisDev/claude-token-lens
+python -m claude_token_lens --version
 ```
 
-Check it worked:
+The second line should print `claude-token-lens 0.4.1` or later.
 
-```bash
-claude-token-lens --version
-```
+This guide always runs the tool as `python -m claude_token_lens`. The
+shorter `claude-token-lens` works too, but only when pip's Scripts
+folder is on your `PATH`, which it often isn't (pip prints a yellow
+WARNING when it isn't).
 
-- **"claude-token-lens is not recognized" or "command not found"?**
-  Python installed it into a folder that isn't on your `PATH`. Put
-  `python -m claude_token_lens` in front of the command instead, for
-  example `python -m claude_token_lens --version`. This works
-  everywhere in this guide.
-- **No git on this machine?** Use the zip instead:
+- **No git on this machine?** Install from the zip instead:
   `python -m pip install https://github.com/PaulMorrisDev/claude-token-lens/archive/refs/heads/main.zip`
 - **Can't use pip at all** (a locked-down work machine)? Download
-  `claude-token-lens.pyz` from the
-  [latest release](https://github.com/PaulMorrisDev/claude-token-lens/releases/latest)
+  [`claude-token-lens.pyz`](https://github.com/PaulMorrisDev/claude-token-lens/releases/latest/download/claude-token-lens.pyz)
   and run `python claude-token-lens.pyz` wherever this guide says
-  `claude-token-lens`. [`docs/first-run.md`](docs/first-run.md) covers
-  this route step by step.
+  `python -m claude_token_lens`. [`docs/first-run.md`](docs/first-run.md)
+  covers this route step by step.
 
 ### 3. Set up
 
-```bash
-claude-token-lens init
+```powershell
+python -m claude_token_lens init
 ```
 
-It asks a few questions. Pressing Enter accepts the default, which is
-right for most people. It then offers two things, and asks before each:
+It asks a few questions. The first matters most: **how you pay for
+Claude Code**. Type `subscription` for a Pro, Max, Team or Enterprise
+plan, or `api` if you pay per token with an API key. For the rest,
+pressing Enter accepts the default, which suits most people. It then
+offers two things, and asks before each:
 
 - **Connect to Claude Code.** It adds a small hook to your Claude Code
   `settings.json` that records your settings when a session starts, so
   the dashboard can show what changed and what that did. It shows you
   the exact change first and backs the file up.
-- **Start the dashboard when you log on.** Say yes. Claude Code deletes
-  old transcripts after a while (30 days by default), and the dashboard
+- **Start the dashboard when you log on.** Say yes. It starts straight
+  away, and again every time you log on. Claude Code deletes old
+  transcripts after a while (30 days by default), and the dashboard
   keeps their figures only if it is running.
-
 
 ### 4. Open the dashboard
 
@@ -78,69 +89,88 @@ Go to **http://127.0.0.1:8765** in your browser. The first visit can take
 a minute while it reads your history. Start with **Start here** on the
 Overview tab, then **Quick actions**, which answers one question per way
 of saving, such as "Is each agent on the cheapest model that does the
-job?".
+job?". The footer shows the version that is running.
 
 It only runs on your machine; nobody else can open it.
 
 ### Just want a quick look?
 
-You can skip `init` and the dashboard. From any folder:
+You can skip `init` and the dashboard:
 
-```bash
-claude-token-lens check --all-projects
-claude-token-lens report --all-projects
+```powershell
+python -m claude_token_lens check --all-projects
+python -m claude_token_lens report --all-projects
 ```
 
 `check` answers the quick-action questions, and `report` prints the full
-analysis. Both print Markdown to the terminal and change nothing.
+analysis. Both print to the terminal and change nothing.
 
 ### Updating
 
-Two commands. The first installs the new version:
-
-```bash
+```powershell
 python -m pip install --force-reinstall git+https://github.com/PaulMorrisDev/claude-token-lens
-```
-
-(`--force-reinstall` is needed because pip skips a copy it thinks is
-already up to date.) The second points the dashboard at the new version
-and restarts it:
-
-```bash
 python -m claude_token_lens install-service
 ```
 
-On macOS, restart it with
+The first line installs the new version (`--force-reinstall` is needed
+because pip skips a copy it thinks is already up to date). The second
+stops the running dashboard, points it at the new version and starts it
+again. On macOS, restart it with
 `launchctl kickstart -k gui/$(id -u)/com.claude-token-lens` instead.
 
-The dashboard's footer shows the version it is running. After an update
-it may re-read your history once, so the first page load can be slow.
+Check the dashboard's footer shows the new version. After an update it
+may re-read your history once, so the first page load can be slow.
 [`CHANGELOG.md`](CHANGELOG.md) lists what changed.
 
 ### If something goes wrong
 
 | What you see | What to do |
 |---|---|
-| `claude-token-lens` "is not recognized" or "command not found" | pip's Scripts folder isn't on your `PATH` (pip prints a yellow WARNING saying so). Use `python -m claude_token_lens` instead of `claude-token-lens`; everything else stays the same |
-| The dashboard still looks old after updating, or its footer shows the old version | The dashboard is still running the old copy, or runs from a different Python install from the one you updated. Run `python -m claude_token_lens install-service` with the same `python` you updated, then reload the page |
-| http://127.0.0.1:8765 doesn't open | The first start reads your whole history, which can take a minute. If it still doesn't open, run `python -m claude_token_lens serve` in a terminal and leave it open; any error prints there |
-| Amounts are in dollars but you're on a plan | Re-run `python -m claude_token_lens init` and answer `subscription` to "How do you pay for Claude Code?" |
+| `claude-token-lens` "is not recognized as a name of a cmdlet" or "command not found" | pip's Scripts folder isn't on your `PATH`. Use `python -m claude_token_lens` instead; everything else stays the same |
+| The dashboard still looks old after updating (its footer shows an old version, or has no version at all) | Something else is still serving port 8765, such as an older copy started by hand, from another Python install, or from Docker. See [An old dashboard won't go away](#an-old-dashboard-wont-go-away) |
+| http://127.0.0.1:8765 doesn't open | The first start reads your whole history, which can take a minute. If it still doesn't open, run `python -m claude_token_lens serve` in a PowerShell window and leave it open; any error prints there |
+| Amounts are in dollars but you're on a plan | Run `python -m claude_token_lens init` again and answer `subscription` to "How do you pay for Claude Code?" |
 
 [`docs/first-run.md`](docs/first-run.md#troubleshooting) has more.
+
+#### An old dashboard won't go away
+
+Only one program can use port 8765. If an old copy holds it, the new one
+can't start, and your browser keeps showing the old one. See what is
+using the port:
+
+```powershell
+Get-NetTCPConnection -LocalPort 8765 -State Listen | ForEach-Object { Get-Process -Id $_.OwningProcess } | Format-Table Id, ProcessName, Path
+```
+
+- **`python`, `pythonw` or `py`:** an old copy. Stop it, then start the
+  new one:
+
+  ```powershell
+  Get-NetTCPConnection -LocalPort 8765 -State Listen | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force }
+  python -m claude_token_lens install-service
+  ```
+
+- **Anything with `docker` in its name:** the old Docker setup. Run
+  `docker compose down` in the folder you started it from (or stop the
+  container in Docker Desktop), then run
+  `python -m claude_token_lens install-service`.
+
+Then reload http://127.0.0.1:8765 and check the version in the footer.
 
 ### Uninstalling
 
 Look at what would be removed first:
 
-```bash
-claude-token-lens uninstall --revert-changes --delete-data --dry-run
+```powershell
+python -m claude_token_lens uninstall --revert-changes --delete-data --dry-run
 ```
 
 Then run the same command without `--dry-run`. It removes the hook and
 the logon service, undoes any setting changes you made through this
 tool, and deletes its data, asking before each step. Finally:
 
-```bash
+```powershell
 python -m pip uninstall claude-token-lens
 ```
 
