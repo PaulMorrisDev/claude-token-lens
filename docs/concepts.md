@@ -237,9 +237,9 @@ transcript: a main session or one subagent run.
 
 | Signal | Counted as | Out of | For |
 |---|---|---|---|
-| Didn't finish | runs that reported failure, were stopped, were ended early by Claude Code, never replied, or were cut off (the last reply asked for a tool and nothing came after it; ending on a `StructuredOutput` call is a workflow agent's answer, so that counts as finished) | agent runs | subagents |
+| Didn't finish | runs that reported failure, were stopped, were ended early by Claude Code, never replied, were cut off (the last reply asked for a tool and nothing came after it; ending on a `StructuredOutput` call is a workflow agent's answer, so that counts as finished), or ended their last reply with `[result: partial]` or `[result: blocked]` (see markers below) | agent runs | subagents |
 | Likely out of turns | cut-off runs that ended right after a tool result came back, without being stopped: how a run ends when its `maxTurns` runs out (Claude Code doesn't record the reason) | agent runs | subagents |
-| Retried on a larger model | runs after which the same agent type, started again on a larger model family in the same session, edited one of the same files within 2 hours (see below) | agent runs that edited files | subagents |
+| Retried on a larger model | runs after which the same agent type, started again on a larger model family in the same session, edited one of the same files within 2 hours, or a larger model was started with a brief saying `[retry: model]` (see below) | agent runs that edited files or were retried | subagents |
 | Reported failure / Stopped | the status in the agent's task notification or result | agent runs with a recorded outcome | subagents |
 | Failed tool calls | tool results marked as an error | tool calls | all |
 | Failed shell commands | Bash and PowerShell results marked as an error | shell commands | all |
@@ -289,8 +289,8 @@ not enough. Only the same agent type counts: a reviewer after a writer,
 or the main session tidying a file afterwards, is often the plan, and
 counting them more than doubled the runs flagged on real history. A run
 started before the cheaper one ended is working alongside it, not
-retrying it. Nothing records why the agent was run
-again, so one retry is a sign and several are a pattern. Retries stay out of the setup
+retrying it. Unless the retry's brief says why (markers, below), one
+retry is a sign and several are a pattern. Retries stay out of the setup
 comparisons, because the largest model can never be retried on a
 larger one and the test would favour it by construction. Instead, once
 a tenth or more of an agent's runs on a model (of those that edited
@@ -301,6 +301,33 @@ model and it happened at least twice, "Is any agent struggling?" offers
 to move it back to the model the retries used; if the agent file names
 another model, those runs were started on the cheaper one by whatever
 dispatched them, and it says so.
+
+**Markers Claude writes.** Some things only Claude knows: why it ran an
+agent again, and whether a subagent really finished. "Is any agent
+struggling?" offers two lines for `~/.claude/CLAUDE.md`
+(`quality.MARKER_LINES`, about 100 tokens) that ask for them, when agents
+ran in the window, none wrote a marker and the file doesn't have the
+lines yet. A brief that starts `[retry: model]`, `[retry: brief]`,
+`[retry: tools]` or `[retry: other]` says the agent is being run again
+because its last run's work wasn't good enough, and why; a subagent's
+last reply ending `[result: done]`, `[result: partial]` or
+`[result: blocked]` says whether it finished. Only the word is kept,
+never the text around it, and only a marker at the start of the brief or
+in the last characters of the reply's last text block counts, so one
+quoted mid-text doesn't. A retry that gives a reason is matched to the
+agent run it retries: the latest one that ended before it started,
+within 2 hours, preferring one whose files it edits and then one of the
+same agent type. `brief`, `tools` and `other` mean the cheaper model
+wasn't the problem, so that retry never counts as retried on a larger
+model (and two or more of `brief` or `tools` for one agent become a tip
+to fix the task prompt or its tools); `model` on a larger model family
+counts even for a different agent type or with no file in common.
+`partial` and `blocked` count as didn't finish. Each marker costs about
+six output tokens; **Markers Claude wrote** (advanced) shows how often
+each was written, of the runs that could have, and what that cost.
+Explore and Plan start without CLAUDE.md, so they are left out of the
+result marker's share. The markers are Claude's own account and are
+taken at their word.
 
 **Comparing.** Each signal is a ratio of two counts summed over runs,
 and two sets of runs are compared with a two-sided z-test whose

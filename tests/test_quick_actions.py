@@ -7,7 +7,9 @@ from types import SimpleNamespace as NS
 
 import pytest
 
+from claude_token_lens import quality
 from claude_token_lens import quick_actions as qa
+from claude_token_lens.fixes import PROMPT_RESTART
 from claude_token_lens.model import Recommendation
 from claude_token_lens.units import Units
 
@@ -176,12 +178,15 @@ def test_unknown_check_raises(tmp_path):
 
 
 def _quality_model(agents: list[dict], setups: list[dict] | None = None, failing: list[dict] | None = None,
-                   retried: list[dict] | None = None):
+                   retried: list[dict] | None = None, reasons: list[dict] | None = None,
+                   markers: list[dict] | None = None):
     return NS(sections=[NS(key="quality", tables=[
         _table("quality_by_agent", agents),
         _table("quality_by_setup", setups or []),
         _table("quality_retried", retried or []),
+        _table("quality_retry_reasons", reasons or []),
         _table("quality_failing_tools", failing or []),
+        _table("quality_markers", markers or []),
     ])], recommendations=[], context_files={})
 
 
@@ -328,3 +333,42 @@ def test_models_check_does_not_suggest_a_model_the_agent_was_often_retried_from(
     [tip] = result["tips"]
     assert tip["title"] == "Explore: haiku not suggested"
     assert "were run again on sonnet" in tip["text"]
+
+
+_NO_MARKERS = [{"marker": "[retry: ...]", "runs": 0, "of_runs": 40}, {"marker": "[result: ...]", "runs": 0, "of_runs": 40}]
+
+
+def test_quality_offers_the_marker_lines_when_agents_ran_and_none_wrote_one(tmp_path):
+    calm = {**_AGENT, "unfinished_pct": 3.0, "turn_limit_pct": 0.0}
+    result = qa.run("quality", _ctx(tmp_path, model=_quality_model([calm], markers=_NO_MARKERS)))
+    assert result["status"] == "ok"
+    [fix] = result["fixes"]
+    assert set(fix) == FIX_KEYS and fix["key"] is None
+    assert quality.MARKER_LINES in fix["prompt"] and "Show me the diff before saving" in fix["prompt"]
+    assert fix["prompt"].endswith(PROMPT_RESTART)
+    explainer = dict(fix["explainer"])
+    assert f"About {round(len(quality.MARKER_LINES) / 4)} tokens" in explainer["What it costs"]
+    assert "Explore and Plan" in explainer["Where and who it affects"]
+    assert quality.MARKER_HEADING in explainer["How to undo it"]
+
+
+@pytest.mark.parametrize("already", ["written", "in_claude_md", "no_agents"])
+def test_quality_does_not_offer_the_marker_lines_again(tmp_path, already):
+    markers = [{"marker": "[result: ...]", "runs": 3 if already == "written" else 0,
+                "of_runs": 0 if already == "no_agents" else 40}]
+    ctx = _ctx(tmp_path, model=_quality_model([{**_AGENT, "unfinished_pct": 3.0, "turn_limit_pct": 0.0}],
+                                              markers=markers))
+    if already == "in_claude_md":
+        (ctx.config_dir.parent / "CLAUDE.md").write_text(f"# Rules\n\n{quality.MARKER_LINES}\n", encoding="utf-8")
+    assert qa.run("quality", ctx)["fixes"] == []
+
+
+def test_retries_that_blame_the_brief_or_tools_are_tips(tmp_path):
+    reasons = [{"agent_type": "claude-implementer", "model": "claude-haiku-4-5-20251001", "retries": 5,
+                "said_model": 1, "said_brief": 3, "said_tools": 2, "said_other": 0, "last_retried": "2026-09-23"}]
+    ctx = _ctx(tmp_path, model=_quality_model([{**_AGENT, "unfinished_pct": 3.0, "turn_limit_pct": 0.0}],
+                                              reasons=reasons))
+    tips = {tip["title"]: tip["text"] for tip in qa.run("quality", ctx)["tips"]}
+    assert tips["claude-implementer: retried because the brief was unclear"].startswith(
+        "3 of its retries said the instructions it was given were the problem, not haiku.")
+    assert tips["claude-implementer: retried because it lacked a tool or permission"].startswith("2 of its retries")

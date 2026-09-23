@@ -162,6 +162,13 @@ _READ_TARGET_PATH_KEYS = {
 #: non-zero may still have written them.
 _SHELL_NOT_RUN_KINDS = ("blocked", "denied")
 
+#: Quality-markers addition: a reply ending "[result: <word>]" is a
+#: subagent's own account of whether it finished (see
+#: ``quality.MARKER_LINES``). Matched in the reply's last characters only;
+#: only the word is kept.
+_RESULT_MARKER_RE = re.compile(r"\[result:\s*(done|partial|blocked)\s*\][`*_.\s]*$", re.IGNORECASE)
+_RESULT_MARKER_SCAN_CHARS = 80
+
 #: MSYS/Git Bash drive form (``/c/Dev/x``), mapped to ``c:/Dev/x``.
 _MSYS_DRIVE_RE = re.compile(r"^/([A-Za-z])(?=/|$)")
 
@@ -597,6 +604,8 @@ class _PendingTurn:
     edit_hashes_by_tool_use: dict[str, list[str]] = field(default_factory=dict)
     #: Fast-mode addition (see model.py's ``Turn.speed`` docstring).
     speed: str | None = None
+    #: Quality-markers addition (see model.py's ``Turn.result_marker``).
+    result_marker: str | None = None
 
 
 def _merge_content_blocks(
@@ -609,6 +618,12 @@ def _merge_content_blocks(
         return
     tmpdir = tempfile.gettempdir().lower()
     for block in content:
+        if isinstance(block, dict) and block.get("type") == "text" and isinstance(block.get("text"), str):
+            # The reply's last text block decides: a marker further up
+            # was quoted, not reported.
+            match = _RESULT_MARKER_RE.search(block["text"][-_RESULT_MARKER_SCAN_CHARS:])
+            pending.result_marker = match.group(1).lower() if match else None
+            continue
         if not isinstance(block, dict) or block.get("type") != "tool_use":
             continue
         name = block.get("name")
@@ -1015,6 +1030,7 @@ def _finalize_turn(
     human_prompt_chars: int | None = None
     human_prompt_has_paste = False
     human_correction = False
+    retry_marker: str | None = None
     for pending_event in pending_events:
         if pending_event.kind != EventKind.HUMAN_TEXT:
             continue
@@ -1024,6 +1040,7 @@ def _finalize_turn(
             human_prompt_has_paste = True
         if pending_event.detail.get("correction"):
             human_correction = True
+        retry_marker = pending_event.detail.get("retry") or retry_marker
 
     # Usage-limits addition (see module docstring): a limit-hit/resume
     # among the events preceding this turn means the gap to the previous
@@ -1089,6 +1106,8 @@ def _finalize_turn(
         edit_target_hashes=tuple(pending.edit_target_hashes),
         human_correction=human_correction,
         speed=pending.speed,
+        retry_marker=retry_marker,
+        result_marker=pending.result_marker,
     )
     return turn, new_prev_ts, new_priced_count
 

@@ -586,6 +586,72 @@ def _worse_part(difference) -> str:
     return "; ".join(parts) + "." if parts else str(difference or "")
 
 
+#: A declared retry reason is worth a tip once an agent's retries give it
+#: this many times.
+MIN_DECLARED_RETRIES = 2
+_REASON_TIPS = {
+    "brief": (
+        "{agent}: retried because the brief was unclear",
+        "{n} of its retries said the instructions it was given were the problem, not {model}. Say in its task "
+        "prompt what done looks like: the files, the test to pass, what not to touch. A larger model won't fix "
+        "an unclear brief.",
+    ),
+    "tools": (
+        "{agent}: retried because it lacked a tool or permission",
+        "{n} of its retries said it was missing a tool or permission. Give it the tools it needs (its agent file's "
+        "tools list) and allow the commands it runs, instead of running it again.",
+    ),
+}
+
+
+def _markers_fix(ctx: Context, tables) -> dict | None:
+    """The prompt that adds :data:`quality.MARKER_LINES` to CLAUDE.md, when
+    agents ran in this window, none of them wrote a marker and CLAUDE.md
+    doesn't have the lines yet."""
+    markers = {r.get("marker"): r for r in tables.rows("quality", "quality_markers")}
+    result = markers.get("[result: ...]") or {}
+    if not (whatif._num(result.get("of_runs")) or 0) or (whatif._num(result.get("runs")) or 0):
+        return None
+    claude_md = ctx.config_dir.parent / "CLAUDE.md"
+    try:
+        if quality.MARKER_HEADING in claude_md.read_text(encoding="utf-8", errors="replace"):
+            return None
+    except OSError:
+        pass
+    tokens = round(len(quality.MARKER_LINES) / carry._CHARS_PER_TOKEN_APPROX)
+    return {
+        "key": None,
+        "agent": None,
+        "title": "Record why agents are run again and whether they finished",
+        "explainer": [
+            ["What this adds", "Two lines in CLAUDE.md. When Claude starts an agent again because its last run's work "
+             "wasn't good enough, it begins the brief with [retry: model], [retry: brief], [retry: tools] or "
+             "[retry: other]. A subagent ends its last reply with [result: done], [result: partial] or "
+             "[result: blocked]. This dashboard keeps only that word, never the text around it."],
+            ["Why", "Without them this check guesses: a retry on a larger model counts against the cheaper one even "
+             "when the brief was the problem, and an agent that stopped half-done looks finished. With them, a "
+             "brief or tools retry never counts against the model (and gets its own tip), a model retry counts even "
+             "for a different agent, and partial or blocked counts as didn't finish."],
+            ["What it costs", f"About {tokens} tokens of CLAUDE.md on every session and most subagents, read from "
+             "the prompt cache after the first reply (a tenth of the input price). About "
+             f"{quality.MARKER_TOKENS} output tokens each time Claude writes a marker; Markers Claude wrote "
+             "(Agents tab) shows what they cost."],
+            ["Where and who it affects", "~/.claude/CLAUDE.md: every session, in every project. Explore and Plan "
+             "start without CLAUDE.md, and so does an agent whose file sets omitClaudeMd, so they won't write a "
+             "result marker."],
+            ["How to undo it", "Ask Claude: Remove the \"" + quality.MARKER_HEADING + "\" section from "
+             "~/.claude/CLAUDE.md, keeping everything else. Show me the diff before saving."],
+        ],
+        "command": None,
+        "command_warning": "",
+        "prompt": (
+            "Add this section to the end of ~/.claude/CLAUDE.md (create the file if it's missing), keeping everything "
+            "else as it is:\n\n" + quality.MARKER_LINES + "\n\nShow me the diff before saving. "
+            "Claude Code will ask my permission to edit files under .claude; that is expected. " + PROMPT_RESTART
+        ),
+    }
+
+
 def _quality(ctx: Context) -> dict:
     tables = whatif._Tables(ctx.model)
     agents = [r for r in tables.rows("quality", "quality_by_agent") if r.get("agent_type") != quality.ALL_AGENTS]
@@ -680,6 +746,16 @@ def _quality(ctx: Context) -> dict:
                 f"Don't pick {family} for this agent's work."
             )
         tips.append({"title": f"{agent}: runs on {family} were retried on a larger model", "text": evidence + advice})
+    for row in tables.rows("quality", "quality_retry_reasons"):
+        for reason, (title, text) in _REASON_TIPS.items():
+            n = int(whatif._num(row.get(f"said_{reason}")) or 0)
+            if n >= MIN_DECLARED_RETRIES:
+                agent = _who(row.get("agent_type"))
+                tips.append({"title": title.format(agent=agent),
+                             "text": text.format(n=n, model=goals._alias(row.get("model") or "") or "the model")})
+    marker_fix = _markers_fix(ctx, tables)
+    if marker_fix is not None:
+        fixes.append(marker_fix)
     for row in mixed:
         agent = row.get("agent_type")
         who = _who(None if agent == quality.MAIN else agent)
@@ -730,6 +806,7 @@ def _quality(ctx: Context) -> dict:
             "No agent stands out: none fails often, no model or effort did clearly worse than the one it is "
             "compared with, and no agent was often run again on a larger model"
             + (f" ({len(tested)} setups compared)." if tested else "."),
+            fixes=fixes,
             tips=tips,
         )
     parts = []

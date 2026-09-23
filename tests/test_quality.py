@@ -12,6 +12,7 @@ import pytest
 from claude_token_lens import events, parse, quality
 from claude_token_lens.model import EventKind, TranscriptMeta
 from claude_token_lens.parse import parse_transcript
+from claude_token_lens.pricing import load_pricing
 
 from helpers import (
     attachment_line,
@@ -369,7 +370,8 @@ def test_section_tables_and_columns():
     assert section.key == "quality"
     tables = {t.name: t for t in section.tables}
     assert set(tables) == {
-        "quality_by_agent", "quality_by_setup", "quality_retried", "quality_failing_tools", "quality_counts"
+        "quality_by_agent", "quality_by_setup", "quality_retried", "quality_retry_reasons", "quality_failing_tools",
+        "quality_counts", "quality_markers",
     }
     by_agent = tables["quality_by_agent"]
     keys = [c.key for c in by_agent.columns]
@@ -413,8 +415,8 @@ def test_the_same_agent_run_again_on_a_larger_model_on_the_same_files_is_a_retry
     cheap = _edit_run("claude-haiku-4-5-20251001", 0, 10, ["a", "b", "c"])
     retry = _edit_run("claude-sonnet-5", 20, 30, ["a", "b", "z"])
     quality._mark_retried([cheap, retry])
-    assert (cheap.retried_files, cheap.retried_on) == (2, "claude-sonnet-5")
-    assert retry.retried_files == 0
+    assert (cheap.retried, cheap.retried_files, cheap.retried_on) == (True, 2, "claude-sonnet-5")
+    assert not retry.retried
     assert quality.SIGNAL_BY_KEY["retried"].num(cheap) == 1.0
 
 
@@ -435,7 +437,7 @@ def test_the_same_agent_run_again_on_a_larger_model_on_the_same_files_is_a_retry
 def test_what_is_not_a_retry(other):
     cheap = _edit_run("claude-haiku-4-5-20251001", 0, 10, ["a"])
     quality._mark_retried([other, cheap])
-    assert cheap.retried_files == 0
+    assert not cheap.retried
 
 
 def test_session_runs_mark_a_retry_from_the_transcripts(tmp_path):
@@ -480,9 +482,149 @@ def test_retried_rows_and_the_share_that_keeps_a_model_from_being_suggested():
 def test_retries_are_shown_per_setup_but_left_out_of_the_comparison():
     runs = _setup_runs("claude-sonnet-5", 30, 1) + _setup_runs("claude-haiku-4-5", 20, 1)
     for run in runs[30:]:
-        run.edits, run.retried_files = 1, 1
+        run.edits, run.retried = 1, True
     for run in runs[:30]:
         run.edits = 1
     rows = {r["model"]: r for r in quality.setup_rows(runs)}
     assert rows["claude-haiku-4-5"]["values"]["retried"] == 100.0
     assert "retried" not in {r["key"] for r in rows["claude-haiku-4-5"]["comparison"]}
+
+
+# -- markers Claude writes -----------------------------------------------------------
+
+
+@pytest.mark.parametrize("text, reason", [
+    ("[retry: brief] Fix the parser in C:/secret/app.py", "brief"),
+    ("  `[Retry: MODEL]` the last run broke the tests", "model"),
+    ("Fix the parser; last time it was [retry: brief]", None),  # not at the start
+    ("[retry: because] fix it", None),  # not one of the reasons
+])
+def test_a_brief_starting_with_a_retry_marker_keeps_only_the_reason(tmp_path, text, reason):
+    result = _agent(tmp_path, [user_str_line(text, timestamp=_ts(0)), _reply(1)])
+    assert result.turns[0].retry_marker == reason
+    assert "secret" not in repr(result.turns)
+
+
+@pytest.mark.parametrize("texts, word", [
+    (["Fixed both files.\n\n[result: done]"], "done"),
+    (["Two of three tests pass. **[result: partial]**\n"], "partial"),
+    (["I was asked to end with [result: done], so here is the rest of the work."], None),  # quoted, not at the end
+    (["[result: blocked]", "Actually I got it working."], None),  # the last text block decides
+])
+def test_a_reply_ending_with_a_result_marker_keeps_only_the_word(tmp_path, texts, word):
+    blocks = [{"type": "text", "text": t} for t in texts]
+    result = _agent(tmp_path, [user_str_line("brief", timestamp=_ts(0)), _reply(1, *blocks)])
+    assert result.turns[-1].result_marker == word
+
+
+def test_run_facts_take_the_markers_and_a_blocked_run_did_not_finish(tmp_path):
+    result = _agent(tmp_path, [
+        user_str_line("[retry: tools] run the migration", timestamp=_ts(0)),
+        _reply(1, {"type": "text", "text": "Checked the schema."}),
+        user_str_line("go on", timestamp=_ts(2)),
+        _reply(3, {"type": "text", "text": "No database access.\n[result: blocked]"}),
+    ])
+    run = quality.run_facts(result, None)
+    assert (run.retry_marker, run.result_marker) == ("tools", "blocked")
+    assert quality._unfinished(run) == quality._finish_known(run) == 1.0
+    done = quality.Run(group="Explore", kind="subagent", result_marker="done")
+    assert (quality._unfinished(done), quality._finish_known(done)) == (0.0, 1.0)
+
+
+def _declared(run: quality.Run, reason: str) -> quality.Run:
+    run.retry_marker = reason
+    return run
+
+
+def test_a_retry_that_says_the_brief_was_the_problem_never_counts_against_the_model():
+    cheap = _edit_run("claude-haiku-4-5-20251001", 0, 10, ["a", "b"])
+    retry = _declared(_edit_run("claude-sonnet-5", 20, 30, ["a", "b"]), "brief")
+    quality._mark_retried([cheap, retry])
+    assert not cheap.retried and cheap.retried_for == "brief"
+
+
+def test_a_retry_that_says_the_model_counts_even_for_another_agent_and_other_files():
+    cheap = _edit_run("claude-haiku-4-5-20251001", 0, 10, ["a"])
+    retry = _declared(_edit_run("claude-sonnet-5", 20, 30, ["z"], group="code-fixer"), "model")
+    quality._mark_retried([cheap, retry])
+    assert (cheap.retried, cheap.retried_files, cheap.retried_on, cheap.retried_for) == (
+        True, 0, "claude-sonnet-5", "model")
+
+
+def test_a_model_retry_on_the_same_model_records_the_reason_but_is_not_a_larger_model_retry():
+    cheap = _edit_run("claude-sonnet-5", 0, 10, ["a"])
+    retry = _declared(_edit_run("claude-sonnet-5", 20, 30, ["a"]), "model")
+    quality._mark_retried([cheap, retry])
+    assert not cheap.retried and cheap.retried_for == "model"
+
+
+def test_a_declared_retry_is_matched_to_the_run_whose_files_it_edits_then_the_latest():
+    edited = _edit_run("claude-haiku-4-5-20251001", 0, 10, ["a"], group="writer")
+    later = _edit_run("claude-haiku-4-5-20251001", 5, 15, ["q"])
+    retry = _declared(_edit_run("claude-sonnet-5", 20, 30, ["a"]), "other")
+    quality._mark_retried([edited, later, retry])
+    assert (edited.retried_for, later.retried_for) == ("other", "")
+    # No files in common: the same agent type, then the one that ended last.
+    other_type = _edit_run("claude-haiku-4-5-20251001", 0, 18, ["x"], group="writer")
+    earlier = _edit_run("claude-haiku-4-5-20251001", 0, 10, ["x"])
+    latest = _edit_run("claude-haiku-4-5-20251001", 5, 15, ["y"])
+    retry = _declared(_edit_run("claude-sonnet-5", 20, 30, ["z"]), "other")
+    quality._mark_retried([other_type, earlier, latest, retry])
+    assert [r.retried_for for r in (other_type, earlier, latest)] == ["", "", "other"]
+
+
+def test_retry_reason_rows_and_the_retried_reason_text():
+    runs = []
+    for i, reason in enumerate(["model", "model", "brief", "brief", "brief"]):
+        runs.append(_edit_run("claude-haiku-4-5-20251001", 100 * i, 100 * i + 10, [f"f{i}"]))
+        runs.append(_declared(_edit_run("claude-sonnet-5", 100 * i + 20, 100 * i + 30, [f"f{i}"]), reason))
+    quality._mark_retried(runs)
+    [row] = quality.retry_reason_rows(runs)
+    assert (row["agent_type"], row["retries"], row["said_model"], row["said_brief"], row["said_tools"]) == (
+        "claude-implementer", 5, 2, 3, 0)
+    [retried] = quality.retried_rows(runs)
+    assert (retried["runs"], retried["retried"], retried["said_model"]) == (5, 2, 2)
+    reason = quality.retried_models([retried])[("claude-implementer", "haiku")]["reason"]
+    assert reason == "2 of its 5 runs on haiku that edited files were run again on sonnet, and 2 of those retries " \
+                     "said haiku wasn't enough"
+
+
+def test_markers_table_counts_who_could_have_written_them_and_what_they_cost(tmp_path):
+    pricing = load_pricing()
+
+    def agent(name, agent_type, first, last, model="claude-haiku-4-5"):
+        return _parse(tmp_path, [user_str_line(first, timestamp=_ts(0)),
+                                 _reply(1, {"type": "text", "text": last}, model=model)],
+                      f"agent-{name}.jsonl", kind="subagent", agent_id=f"agent-{name}", agent_type=agent_type)
+
+    subs = [
+        agent("a1", "claude-implementer", "write it", "Done.\n[result: done]"),
+        agent("a2", "claude-implementer", "[retry: brief] write it, tests in tests/", "Half.\n[result: partial]"),
+        agent("a3", "Explore", "find it", "Found."),
+    ]
+    top = _parse(tmp_path, [user_str_line("hi", timestamp=_ts(0)), _reply(1, model="claude-opus-5-5")], "top.jsonl",
+                 kind="top-level")
+    runs = quality.session_runs(NS(top=top, subs=subs, session_id="s1"), pricing)
+    table = next(t for t in quality.build_section(runs).tables if t.name == "quality_markers")
+    keys = [c.key for c in table.columns]
+    by_marker = {row[0]: dict(zip(keys, row)) for row in table.rows}
+    retry, result = by_marker["[retry: ...]"], by_marker["[result: ...]"]
+    assert (retry["runs"], retry["of_runs"], retry["breakdown"]) == (1, 3, "brief 1")
+    assert (result["runs"], result["of_runs"], result["breakdown"]) == (2, 2, "done 1, partial 1")  # Explore left out
+    assert result["tokens"] == 2 * quality.MARKER_TOKENS
+    haiku = pricing.resolve_model("claude-haiku-4-5").rates.output
+    opus = pricing.resolve_model("claude-opus-5-5").rates.output
+    assert result["cost"] == pytest.approx(round(2 * quality.MARKER_TOKENS * haiku / 1e6, 4))
+    assert retry["cost"] == pytest.approx(round(quality.MARKER_TOKENS * opus / 1e6, 4))  # the main session wrote it
+    counts = next(t for t in quality.build_section(runs).tables if t.name == "quality_counts")
+    row = dict(zip([c.key for c in counts.columns], counts.rows[[r[0] for r in counts.rows].index("claude-implementer")]))
+    assert (row["said_done"], row["said_partial"], row["said_blocked"]) == (1, 1, 0)
+
+
+def test_marker_lines_stay_short():
+    assert quality.MARKER_LINES.startswith(quality.MARKER_HEADING + "\n")
+    assert len(quality.MARKER_LINES) / 4 < 120
+    for word in quality.RETRY_REASONS:
+        assert f"[retry: {word}]" in quality.MARKER_LINES
+    for word in quality.RESULT_WORDS:
+        assert f"[result: {word}]" in quality.MARKER_LINES

@@ -129,8 +129,10 @@ PLACEMENT: dict[str, str] = {
     "quality_by_agent": "keep",
     "quality_by_setup": "keep",
     "quality_retried": "keep",
+    "quality_retry_reasons": "keep",
     "quality_failing_tools": "advanced",
     "quality_counts": "advanced",
+    "quality_markers": "advanced",
     # workstyle / workflows
     "workstyle_archetypes": "keep",
     "workflows_summary": "keep",
@@ -626,8 +628,9 @@ TABLE_COPY: dict[str, TableCopy] = {
             "runs": ("Runs", "Main sessions or subagent runs counted in this row."),
             "unfinished_pct": (
                 "Didn't finish",
-                "Subagent runs that reported failure, were stopped, ended early or were cut off before they "
-                "answered, out of the runs where that is known.",
+                "Subagent runs that reported failure, were stopped, ended early, were cut off before they "
+                "answered or ended their reply with [result: partial] or [result: blocked], out of the runs where "
+                "that is known.",
             ),
             "turn_limit_pct": (
                 "Likely out of turns",
@@ -637,8 +640,9 @@ TABLE_COPY: dict[str, TableCopy] = {
             ),
             "retried_pct": (
                 "Retried on a larger model",
-                "Subagent runs that were run again on a larger model, which edited the same files within two hours, "
-                "out of the runs that edited files: the cheaper model wasn't enough for that work.",
+                "Subagent runs that were run again on a larger model, which edited the same files within two hours "
+                "or whose brief started [retry: model], out of the runs that edited files or were retried: the "
+                "cheaper model wasn't enough for that work.",
             ),
             "tool_errors_pct": (
                 "Failed tool calls",
@@ -692,13 +696,15 @@ TABLE_COPY: dict[str, TableCopy] = {
             "runs": ("Runs", "Main sessions or subagent runs counted in this row."),
             "unfinished_pct": (
                 "Didn't finish",
-                "Subagent runs that reported failure, were stopped, ended early or were cut off before they "
-                "answered, out of the runs where that is known.",
+                "Subagent runs that reported failure, were stopped, ended early, were cut off before they "
+                "answered or ended their reply with [result: partial] or [result: blocked], out of the runs where "
+                "that is known.",
             ),
             "retried_pct": (
                 "Retried on a larger model",
-                "Subagent runs that were run again on a larger model, which edited the same files within two hours, "
-                "out of the runs that edited files: the cheaper model wasn't enough for that work.",
+                "Subagent runs that were run again on a larger model, which edited the same files within two hours "
+                "or whose brief started [retry: model], out of the runs that edited files or were retried: the "
+                "cheaper model wasn't enough for that work.",
             ),
             "tool_errors_pct": (
                 "Failed tool calls",
@@ -751,9 +757,11 @@ TABLE_COPY: dict[str, TableCopy] = {
         help=Help(
             shows="Each agent and model where the same agent was run again on a larger model soon after one of "
             "its runs ended, and edited the same files: a sign the cheaper model wasn't enough for that work.",
-            read="Nothing records why the agent was run again, so one retry is a sign, not proof. Several, or a "
-            "large share of the runs, is a pattern. A different agent or the main session editing the files "
-            "afterwards isn't counted, since a reviewer after a writer is often the plan.",
+            read="Unless the retry's brief says why ([retry: ...], see Why agents were run again), one retry is a "
+            "sign, not proof. Several, or a large share of the runs, is a pattern. A different agent or the main "
+            "session editing the files afterwards isn't counted, since a reviewer after a writer is often the plan, "
+            "unless its brief said [retry: model]. A retry whose brief said the brief, tools or something else was "
+            "the problem is never counted.",
             act="Once a tenth of an agent's runs on a model were retried on a larger one, that model isn't "
             "suggested for that agent. If its agent file is on that model and it happened twice or more, Quick "
             "actions offers to move it back up.",
@@ -768,6 +776,10 @@ TABLE_COPY: dict[str, TableCopy] = {
                 "and edited one of the same files within two hours.",
             ),
             "retried_pct": ("Share retried", "Retried runs out of the runs that edited files."),
+            "said_model": (
+                "Retries that said the model wasn't enough",
+                "Of the retried runs, those whose retry began its brief with [retry: model].",
+            ),
             "files_edited_again": (
                 "Files edited again",
                 "Files the larger model edited again, summed over the retried runs.",
@@ -775,6 +787,52 @@ TABLE_COPY: dict[str, TableCopy] = {
             "files_edited": ("Files those runs edited", "Every file the retried runs edited, for comparison."),
             "retried_on": ("Retried on", "The model the retries most often used."),
             "last_retried": ("Last time", "The day the latest retried run ended."),
+        },
+    ),
+    "quality_retry_reasons": TableCopy(
+        title="Why agents were run again",
+        help=Help(
+            shows="Each agent and model whose runs were started again with a brief that said why: [retry: model], "
+            "[retry: brief], [retry: tools] or [retry: other]. Claude writes these when CLAUDE.md asks it to (Quick "
+            "actions, \"Is any agent struggling?\").",
+            read="Only retries that said why are here, on any model. A retry is matched to the agent run that ended "
+            "last before it started, within two hours, preferring one whose files it edited and then one of the "
+            "same agent type.",
+            act="The model: a larger model is worth trying (Agent runs retried on a larger model counts these). The "
+            "brief: say what done looks like in the task prompt. Tools: give the agent the tools and permissions it "
+            "needs.",
+        ),
+        columns={
+            "agent_type": ("Agent", "The agent type whose run was retried."),
+            "model": ("Model", "The model the retried runs used."),
+            "retries": ("Retries that said why", "Runs of this agent on this model whose retry gave a reason."),
+            "said_model": ("The model", "Retries that said it needed a stronger model."),
+            "said_brief": ("The brief", "Retries that said the instructions were unclear."),
+            "said_tools": ("Tools", "Retries that said it lacked a tool or permission."),
+            "said_other": ("Other", "Retries that gave another reason."),
+            "last_retried": ("Last time", "The day the latest of these retried runs ended."),
+        },
+    ),
+    "quality_markers": TableCopy(
+        title="Markers Claude wrote",
+        help=Help(
+            shows="How often agent runs carried each marker Claude writes when CLAUDE.md asks it to, and about what "
+            "writing them cost.",
+            read="Only the word in the marker is kept. Explore and Plan start without CLAUDE.md, so they aren't "
+            "counted among the runs that could have ended with a result marker. None at all usually means "
+            "CLAUDE.md doesn't ask for them yet.",
+            act="Quick actions (\"Is any agent struggling?\") offers the CLAUDE.md lines when no marker has been "
+            "seen.",
+        ),
+        columns={
+            "marker": ("Marker", "The marker Claude writes."),
+            "what": ("What it records", "What the marker says."),
+            "runs": ("Agent runs with it", "Subagent runs that carried this marker."),
+            "of_runs": ("Agent runs that could have", "Subagent runs that could have carried it."),
+            "share": ("Share", "Runs with the marker out of the runs that could have."),
+            "breakdown": ("Said", "How many said each word."),
+            "tokens": ("Output tokens, about", "About six output tokens per marker."),
+            "cost": ("Cost, about", "Those tokens at the output price of the model that wrote each."),
         },
     ),
     "quality_failing_tools": TableCopy(
@@ -840,13 +898,23 @@ TABLE_COPY: dict[str, TableCopy] = {
             ),
             "retried": (
                 "Retried on a larger model",
-                "Subagent runs after which the same agent was run again on a larger model and edited the same files.",
+                "Subagent runs after which the same agent was run again on a larger model and edited the same files, "
+                "or a larger model was started with a brief that said [retry: model].",
             ),
             "terminated_early": (
                 "Ended early",
                 "Subagent runs Claude Code ended early, for example at a rate limit.",
             ),
             "never_replied": ("Never replied", "Runs with no model reply at all. Counted as cut off."),
+            "said_done": ("Said done", "Subagent runs whose last reply ended [result: done]."),
+            "said_partial": (
+                "Said partly done",
+                "Subagent runs whose last reply ended [result: partial]. Counted as didn't finish.",
+            ),
+            "said_blocked": (
+                "Said blocked",
+                "Subagent runs whose last reply ended [result: blocked]. Counted as didn't finish.",
+            ),
         },
         value_labels={"(main session)": "Main session", "(all subagents)": "All subagents"},
     ),

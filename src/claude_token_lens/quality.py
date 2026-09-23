@@ -58,6 +58,20 @@ count (a reviewer after a writer is often the plan), nor does a run
 working alongside. Nothing records why the file was edited again, so
 one retry is a sign and several are a pattern.
 
+Markers, when Claude writes them (:data:`MARKER_LINES`, added to
+CLAUDE.md from the quality quick action): a brief that starts
+``[retry: model|brief|tools|other]`` says the agent is being run again
+because its last run's work wasn't good enough, and why; a subagent's last
+reply ending ``[result: done|partial|blocked]`` says whether it finished.
+Only the word is kept. A retry that gives a reason is matched to the agent
+run it retries: the latest one that ended before it started, within
+:data:`RETRY_WINDOW`, preferring one whose files it edits and then one of
+the same agent type. "model" on a larger model family counts as retried on
+a larger model even for a different agent type or with no file in common;
+"brief", "tools" and "other" mean the cheaper model wasn't the problem, so
+that retry never counts against it. A run that says "partial" or
+"blocked" didn't finish.
+
 An edit is a file changed with Edit, Write, MultiEdit or NotebookEdit,
 or written by a Bash or PowerShell command with content it authored
 (``Turn.edit_target_hashes``); a failed edit tool call isn't one.
@@ -106,6 +120,26 @@ RETRIED_SHARE = 0.10
 #: Retried runs needed before the quality check suggests moving an agent
 #: back up to the model it was retried on; with fewer it is a tip.
 MIN_RETRIED_RUNS = 2
+
+#: The CLAUDE.md lines that ask Claude for the markers (see the module
+#: docstring). Kept short: they are sent with every session and most
+#: subagents.
+MARKER_HEADING = "## Token Lens markers"
+MARKER_LINES = (
+    f"{MARKER_HEADING}\n"
+    "- When you start an agent again because its last run's work wasn't good enough, begin the new brief with "
+    "[retry: model], [retry: brief], [retry: tools] or [retry: other]: model if it needed a stronger model, brief "
+    "if your instructions were unclear, tools if it lacked a tool or permission.\n"
+    "- As a subagent, end your final reply with [result: done], [result: partial] or [result: blocked]."
+)
+#: About how many output tokens one marker costs ("[result: partial]" and
+#: the line break before it).
+MARKER_TOKENS = 6
+RETRY_REASONS = ("model", "brief", "tools", "other")
+RESULT_WORDS = ("done", "partial", "blocked")
+#: Built-in agent types Claude Code starts without CLAUDE.md, so they never
+#: see :data:`MARKER_LINES` (same list as ``recommend._SKIPS_CLAUDE_MD``).
+_SKIPS_CLAUDE_MD = frozenset({"Explore", "Plan"})
 
 _SHELL_TOOLS = ("Bash", "PowerShell")
 #: Tools whose call is the agent's answer: a run that ends on one finished.
@@ -180,11 +214,24 @@ class Run:
     edit_log: list = field(default_factory=list)
     #: The time of its last reply.
     end: datetime | None = None
-    #: Subagents only: how many of the files it edited a run of the same
-    #: agent on a larger model edited again soon after (see the module
-    #: docstring), and the model of the retry that edited the most.
+    #: Subagents only: retried on a larger model (see the module
+    #: docstring); how many of the files it edited the retry edited again
+    #: soon after, and the model of the retry.
+    retried: bool = False
     retried_files: int = 0
     retried_on: str = ""
+    #: Subagents only: the reason the run that retried it gave (a
+    #: :data:`RETRY_REASONS` word), whatever its model; "" when none did.
+    retried_for: str = ""
+    #: Subagents only: the markers it carried (see the module docstring):
+    #: why its own brief said it was a retry, and what its last reply said
+    #: about finishing. "" when absent.
+    retry_marker: str = ""
+    result_marker: str = ""
+    #: What writing those markers cost, at the output rate of the model
+    #: that wrote each (the main session's for a retry marker).
+    retry_marker_cost: float = 0.0
+    result_marker_cost: float = 0.0
     output_tokens: int = 0
     thinking_tokens: int = 0
     duration_s: float = 0.0
@@ -318,19 +365,57 @@ def run_facts(
         if status is not None:
             run.outcome = _OUTCOME.get(status.lower(), "other")
         run.terminated_early = run.agent_id in (terminated or set())
+        run.retry_marker = next((turn.retry_marker for turn in result.turns if turn.retry_marker), None) or ""
+        run.result_marker = (last.result_marker or "") if last is not None else ""
     return run
 
 
+def _edited_again(run: Run, other: Run) -> set[str]:
+    """The files ``run`` edited that ``other`` edited within
+    :data:`RETRY_WINDOW` of ``run``'s last reply."""
+    files = {target for _at, target in run.edit_log}
+    until = run.end + RETRY_WINDOW if run.end is not None else None
+    return {target for at, target in other.edit_log if target in files and until is not None and at <= until}
+
+
+def _declared_retries(runs: list[Run]) -> dict[int, int]:
+    """Index of each agent run whose brief gave a retry reason -> index of
+    the run it retries: the latest agent run that ended before it started,
+    within :data:`RETRY_WINDOW`, preferring one whose files it edits, then
+    one of the same agent type."""
+    out: dict[int, int] = {}
+    for j, other in enumerate(runs):
+        if not other.is_agent or not other.retry_marker or other.start is None:
+            continue
+        best: tuple[tuple, int] | None = None
+        for i, run in enumerate(runs):
+            if (
+                i == j
+                or not run.is_agent
+                or run.end is None
+                or run.end > other.start
+                or other.start - run.end > RETRY_WINDOW
+            ):
+                continue
+            key = (bool(_edited_again(run, other)), run.group == other.group, run.end)
+            if best is None or key > best[0]:
+                best = (key, i)
+        if best is not None:
+            out[j] = best[1]
+    return out
+
+
 def _mark_retried(runs: list[Run]) -> None:
-    """Set ``retried_*`` on each agent run of one session after which the
-    same agent type, started again on a larger model, edited one of its
-    files within :data:`RETRY_WINDOW` of its last reply."""
+    """Set ``retried*`` on each agent run of one session that was retried
+    on a larger model: the same agent type, started again on a larger
+    model, edited one of its files within :data:`RETRY_WINDOW` of its last
+    reply, unless that retry's brief gave a reason other than the model; or
+    a retry on a larger model whose brief said the model was the reason
+    (see the module docstring)."""
     tiers = [model_tier(run.model) for run in runs]
     for i, run in enumerate(runs):
         if not run.is_agent or run.end is None or not run.edit_log or tiers[i] < 0:
             continue
-        files = {target for _at, target in run.edit_log}
-        until = run.end + RETRY_WINDOW
         retried: set[str] = set()
         most: tuple[int, Run] | None = None
         for j, other in enumerate(runs):
@@ -340,15 +425,24 @@ def _mark_retried(runs: list[Run]) -> None:
                 or other.group != run.group
                 or other.start is None
                 or other.start < run.end
+                or other.retry_marker not in ("", "model")
             ):
                 continue
-            hit = {target for at, target in other.edit_log if target in files and at <= until}
+            hit = _edited_again(run, other)
             retried |= hit
             if hit and (most is None or len(hit) > most[0]):
                 most = (len(hit), other)
         if most is not None:
+            run.retried = True
             run.retried_files = len(retried)
             run.retried_on = most[1].model
+    for j, i in _declared_retries(runs).items():
+        run, other = runs[i], runs[j]
+        run.retried_for = other.retry_marker
+        if other.retry_marker == "model" and tiers[i] >= 0 and tiers[j] > tiers[i] and not run.retried:
+            run.retried = True
+            run.retried_files = len(_edited_again(run, other))
+            run.retried_on = other.model
 
 
 def session_runs(bundle, pricing: Pricing | None) -> list[Run]:
@@ -362,7 +456,19 @@ def session_runs(bundle, pricing: Pricing | None) -> list[Run]:
         for result in transcripts
     ]
     _mark_retried(runs)
+    if pricing is not None:
+        dispatcher = runs[0].model if runs and not runs[0].is_agent else ""
+        for run in runs:
+            if run.result_marker:
+                run.result_marker_cost = _marker_cost(pricing, run.model)
+            if run.retry_marker:
+                run.retry_marker_cost = _marker_cost(pricing, dispatcher or run.model)
     return runs
+
+
+def _marker_cost(pricing: Pricing, model: str) -> float:
+    resolved = pricing.resolve_model(model) if model else None
+    return MARKER_TOKENS * resolved.rates.output / 1e6 if resolved is not None else 0.0
 
 
 def corpus_runs(corpus, pricing: Pricing | None) -> list[Run]:
@@ -392,11 +498,18 @@ class Signal:
 
 
 def _unfinished(run: Run) -> float:
-    return float(run.outcome in ("failed", "stopped") or bool(run.cut_off) or run.terminated_early)
+    return float(
+        run.outcome in ("failed", "stopped")
+        or bool(run.cut_off)
+        or run.terminated_early
+        or run.result_marker in ("partial", "blocked")
+    )
 
 
 def _finish_known(run: Run) -> float:
-    return float(run.outcome is not None or run.cut_off is not None or run.terminated_early)
+    return float(
+        run.outcome is not None or run.cut_off is not None or run.terminated_early or bool(run.result_marker)
+    )
 
 
 SIGNALS: tuple[Signal, ...] = (
@@ -410,8 +523,8 @@ SIGNALS: tuple[Signal, ...] = (
            lambda r: float(r.cut_off is not None), "pct", "higher", "agents", "agent runs"),
     Signal("cut_off", "Agent runs cut off before answering", lambda r: float(bool(r.cut_off)),
            lambda r: float(r.cut_off is not None), "pct", "higher", "agents", "agent runs"),
-    Signal("retried", "Agent runs retried on a larger model", lambda r: float(r.retried_files > 0),
-           lambda r: float(r.edits > 0), "pct", "higher", "agents", "agent runs that edited files"),
+    Signal("retried", "Agent runs retried on a larger model", lambda r: float(r.retried),
+           lambda r: float(r.edits > 0 or r.retried), "pct", "higher", "agents", "agent runs that edited files"),
     Signal("tool_errors", "Tool calls that failed", lambda r: r.tool_errors, lambda r: r.tool_calls, "pct",
            "higher", "all", "tool calls"),
     Signal("shell_errors", "Shell commands that failed", lambda r: r.shell_errors, lambda r: r.shell_calls, "pct",
@@ -683,10 +796,11 @@ def _counts_table(runs: list[Run]) -> Table:
                 outcomes["completed"], outcomes["failed"], outcomes["stopped"], outcomes["other"], outcomes[None],
                 sum(1 for run in group_runs if run.cut_off),
                 sum(1 for run in group_runs if run.turn_limit),
-                sum(1 for run in group_runs if run.retried_files),
+                sum(1 for run in group_runs if run.retried),
                 sum(1 for run in group_runs if run.terminated_early),
                 sum(1 for run in group_runs if not run.replies),
             ]
+            + [sum(1 for run in group_runs if run.result_marker == word) for word in RESULT_WORDS]
         )
     return Table(
         name="quality_counts",
@@ -704,6 +818,9 @@ def _counts_table(runs: list[Run]) -> Table:
             Column(key="retried", label="Retried on a larger model", kind="int"),
             Column(key="terminated_early", label="Ended early", kind="int"),
             Column(key="never_replied", label="Never replied", kind="int"),
+            Column(key="said_done", label="Said done", kind="int"),
+            Column(key="said_partial", label="Said partly done", kind="int"),
+            Column(key="said_blocked", label="Said blocked", kind="int"),
         ],
         rows=rows,
     )
@@ -814,11 +931,11 @@ def retried_rows(runs: list[Run]) -> list[dict]:
     first."""
     by_setup: dict[tuple[str, str], list[Run]] = {}
     for run in runs:
-        if run.is_agent and run.edits and run.model:
+        if run.is_agent and (run.edits or run.retried) and run.model:
             by_setup.setdefault((run.group, run.model), []).append(run)
     rows = []
     for (group, model), setup_runs in by_setup.items():
-        retried = [run for run in setup_runs if run.retried_files]
+        retried = [run for run in setup_runs if run.retried]
         if not retried:
             continue
         last = max((run.end for run in retried if run.end is not None), default=None)
@@ -828,6 +945,7 @@ def retried_rows(runs: list[Run]) -> list[dict]:
             "runs": len(setup_runs),
             "retried": len(retried),
             "retried_pct": round(100.0 * len(retried) / len(setup_runs), 1),
+            "said_model": sum(1 for run in retried if run.retried_for == "model"),
             "files_edited_again": sum(run.retried_files for run in retried),
             "files_edited": sum(run.files_edited for run in retried),
             "retried_on": Counter(run.retried_on for run in retried).most_common(1)[0][0],
@@ -850,9 +968,12 @@ def retried_models(rows: Iterable[dict]) -> dict[tuple[str, str], dict]:
             continue
         family = _model_family(str(row.get("model") or ""))
         on = _model_family(str(row.get("retried_on") or "")) or "a larger model"
+        said = row.get("said_model") or 0
         reason = (
             f"{retried} of its {runs} run{'s' if runs != 1 else ''} on {family} that edited files "
-            f"{'was' if retried == 1 else 'were'} run again on {on}, which edited the same files soon after"
+            f"{'was' if retried == 1 else 'were'} run again on {on}, "
+            + (f"and {'that retry' if said == 1 else f'{said} of those retries'} said {family} wasn't enough"
+               if said else "which edited the same files soon after")
         )
         out.setdefault((row.get("agent_type"), family), {**row, "reason": reason})
     return out
@@ -862,6 +983,7 @@ def _retried_table(rows: list[dict]) -> Table:
     keys = (
         ("agent_type", "Agent", "str"), ("model", "Model", "str"), ("runs", "Runs that edited files", "int"),
         ("retried", "Retried on a larger model", "int"), ("retried_pct", "Share retried", "pct"),
+        ("said_model", "Retries that said the model wasn't enough", "int"),
         ("files_edited_again", "Files edited again", "int"), ("files_edited", "Files those runs edited", "int"),
         ("retried_on", "Retried on", "str"), ("last_retried", "Last time", "str"),
     )
@@ -870,6 +992,83 @@ def _retried_table(rows: list[dict]) -> Table:
         title="Agent runs retried on a larger model",
         columns=[Column(key=key, label=label, kind=kind) for key, label, kind in keys],
         rows=[[row[key] for key, _label, _kind in keys] for row in rows],
+    )
+
+
+def retry_reason_rows(runs: list[Run]) -> list[dict]:
+    """Per agent and model, when a retry of one of its runs said why
+    (see the module docstring): how many, by reason. Most first."""
+    by_setup: dict[tuple[str, str], list[Run]] = {}
+    for run in runs:
+        if run.is_agent and run.retried_for and run.model:
+            by_setup.setdefault((run.group, run.model), []).append(run)
+    rows = []
+    for (group, model), retried in by_setup.items():
+        reasons = Counter(run.retried_for for run in retried)
+        last = max((run.end for run in retried if run.end is not None), default=None)
+        rows.append({
+            "agent_type": group,
+            "model": model,
+            "retries": len(retried),
+            **{f"said_{reason}": reasons[reason] for reason in RETRY_REASONS},
+            "last_retried": last.date().isoformat() if last is not None else "",
+        })
+    rows.sort(key=lambda r: (-r["retries"], r["agent_type"], r["model"]))
+    return rows
+
+
+def _retry_reasons_table(rows: list[dict]) -> Table:
+    keys = (
+        ("agent_type", "Agent", "str"), ("model", "Model", "str"), ("retries", "Retries that said why", "int"),
+        ("said_model", "The model", "int"), ("said_brief", "The brief", "int"), ("said_tools", "Tools", "int"),
+        ("said_other", "Other", "int"), ("last_retried", "Last time", "str"),
+    )
+    return Table(
+        name="quality_retry_reasons",
+        title="Why agents were run again",
+        columns=[Column(key=key, label=label, kind=kind) for key, label, kind in keys],
+        rows=[[row[key] for key, _label, _kind in keys] for row in rows],
+    )
+
+
+def _breakdown(runs: list[Run], attr: str, words: tuple[str, ...]) -> str:
+    counts = Counter(getattr(run, attr) for run in runs)
+    return ", ".join(f"{word} {counts[word]}" for word in words if counts[word])
+
+
+def _markers_table(runs: list[Run]) -> Table:
+    """How often each marker was written, of the agent runs that could
+    have, and what writing them cost."""
+    agents = [run for run in runs if run.is_agent]
+    readers = [run for run in agents if run.group not in _SKIPS_CLAUDE_MD]
+    retries = [run for run in agents if run.retry_marker]
+    results = [run for run in readers if run.result_marker]
+    rows = []
+    for marker, what, marked, of, attr, words, cost in (
+        ("[retry: ...]", "Agent runs whose brief said they were a retry, and why", retries, agents, "retry_marker",
+         RETRY_REASONS, "retry_marker_cost"),
+        ("[result: ...]", "Agent runs whose last reply said whether they finished", results, readers,
+         "result_marker", RESULT_WORDS, "result_marker_cost"),
+    ):
+        rows.append([
+            marker, what, len(marked), len(of), round(100.0 * len(marked) / len(of), 1) if of else None,
+            _breakdown(marked, attr, words), MARKER_TOKENS * len(marked),
+            round(sum(getattr(run, cost) for run in marked), 4),
+        ])
+    return Table(
+        name="quality_markers",
+        title="Markers Claude wrote",
+        columns=[
+            Column(key="marker", label="Marker", kind="str"),
+            Column(key="what", label="What it records", kind="str"),
+            Column(key="runs", label="Agent runs with it", kind="int"),
+            Column(key="of_runs", label="Agent runs that could have", kind="int"),
+            Column(key="share", label="Share", kind="pct"),
+            Column(key="breakdown", label="Said", kind="str"),
+            Column(key="tokens", label="Output tokens, about", kind="int"),
+            Column(key="cost", label="Cost, about", kind="money"),
+        ],
+        rows=rows if agents else [],
     )
 
 
@@ -937,6 +1136,7 @@ def _failing_tools_table(runs: list[Run]) -> Table:
 def build_section(runs: list[Run]) -> Section:
     setups = setup_rows(runs)
     retried = retried_rows(runs)
+    reasons = retry_reason_rows(runs)
     notes = [
         "An agent run counts as cut off when it was stopped, never replied, or its last reply asked for a tool and "
         "nothing came after it. Ending on a StructuredOutput call is a workflow agent's answer, so it counts as "
@@ -960,6 +1160,12 @@ def build_section(runs: list[Run]) -> Section:
         "An edit is a file changed with Edit, Write, MultiEdit or NotebookEdit, or written by a shell command with "
         "content it authored (sed -i, Set-Content, a heredoc redirected to a file); a program's output captured to "
         "a log isn't one, and neither is an edit whose tool call failed.",
+        "Markers are words Claude writes when CLAUDE.md asks it to (Quick actions, \"Is any agent struggling?\"): "
+        "a brief starting [retry: model|brief|tools|other] and a subagent's last reply ending "
+        "[result: done|partial|blocked]. Only the word is kept. A retry that says the brief, tools or something "
+        "else was the problem never counts against the cheaper model; one that says the model does, even for a "
+        "different agent. A run that says partial or blocked didn't finish. Explore and Plan start without "
+        "CLAUDE.md, so they are left out of the result marker's share.",
     ]
     return Section(
         key="quality",
@@ -968,8 +1174,10 @@ def build_section(runs: list[Run]) -> Section:
             _by_agent_table(runs),
             _by_setup_table(setups),
             _retried_table(retried),
+            _retry_reasons_table(reasons),
             _failing_tools_table(runs),
             _counts_table(runs),
+            _markers_table(runs),
         ],
         notes=notes,
     )
@@ -981,7 +1189,8 @@ ASSUMPTIONS: tuple[str, ...] = (
     "A message counts as a correction when it contains a fixed phrase such as \"that's wrong\" or \"still "
     "broken\"; plain disagreement worded differently is missed, so the rate is a floor.",
     "The same agent run again on a larger model, editing the same files soon after, is taken as a retry because "
-    "the cheaper model's work wasn't enough; nothing records why, so a single case is a sign, not proof.",
+    "the cheaper model's work wasn't enough; unless the retry's brief says why, a single case is a sign, not proof.",
+    "A marker Claude writes ([retry: ...], [result: ...]) is Claude's own account; it is taken at its word.",
 )
 
 
@@ -994,7 +1203,12 @@ __all__ = [
     "MIN_SHARE_CHANGE",
     "MIN_RUNS",
     "MIN_RETRIED_RUNS",
+    "MARKER_HEADING",
+    "MARKER_LINES",
+    "MARKER_TOKENS",
+    "RESULT_WORDS",
     "RETRIED_SHARE",
+    "RETRY_REASONS",
     "RETRY_WINDOW",
     "Run",
     "SIGNALS",
@@ -1006,6 +1220,7 @@ __all__ = [
     "estimate",
     "retried_models",
     "retried_rows",
+    "retry_reason_rows",
     "run_facts",
     "session_runs",
     "SETUP_VERDICTS",

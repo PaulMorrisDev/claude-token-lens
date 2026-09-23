@@ -85,7 +85,9 @@ __version__ = "0.5.2"
 #: (``shell_writes.py``), drops edits whose tool call failed, and paths
 #: are normalised further before hashing (Git Bash's ``/c/`` form, ``.``
 #: and ``..``), so older digests undercount edits and can't match a file
-#: written by a shell command to the same file edited with Edit.
+#: written by a shell command to the same file edited with Edit. The same
+#: bump adds ``Turn.retry_marker``/``result_marker`` (the quality markers
+#: Claude can be asked to write; see ``quality.MARKER_LINES``).
 PARSER_VERSION = 14
 
 #: Bump when the model.py contract changes in a way that invalidates the

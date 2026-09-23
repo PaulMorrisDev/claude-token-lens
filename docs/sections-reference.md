@@ -554,19 +554,32 @@ test and privacy are in [concepts](concepts.md#7-quality-signals).
   retried on a larger model (`quality.retried_rows`; the rule is in
   [concepts](concepts.md#7-quality-signals)): runs that edited files,
   retried runs and their share, files edited again against files those
-  runs edited, the model the retries most often used, and the day of
-  the latest. `quality.retried_models` turns it into the
+  runs edited, how many of the retries said `[retry: model]`, the model
+  the retries most often used, and the day of the latest.
+  `quality.retried_models` turns it into the
   `{(agent, family): row}` guard the models recommendation, the Models
   quick action and the Profiles models goal check, alongside
   `quality.worse_models`.
+- `quality_retry_reasons` — per agent type and model whose runs were
+  retried with a brief that said why (`quality.retry_reason_rows`; the
+  markers are in [concepts](concepts.md#7-quality-signals)): retries
+  that said why, then how many said the model, the brief, tools or
+  other, and the day of the latest.
 - `quality_failing_tools` (advanced) — agent type, tool, failed calls
   and runs with a failure, top 25.
 - `quality_counts` (advanced) — the raw counts behind every share:
   replies, tool calls, failures, denials, messages, corrections, edits,
   summaries, files edited again on a larger model, the recorded
   outcomes (reported done, failure, stopped, other, none recorded), cut
-  off, likely out of turns, retried on a larger model, ended early and
-  never replied.
+  off, likely out of turns, retried on a larger model, ended early,
+  never replied, and runs whose last reply said `[result: done]`,
+  `partial` or `blocked`.
+- `quality_markers` (advanced) — one row per marker (`[retry: ...]`,
+  `[result: ...]`): what it records, agent runs with it, agent runs that
+  could have (Explore and Plan, which start without CLAUDE.md, can't
+  write a result marker), the share, how many said each word, and about
+  how many output tokens writing them took and what that cost at the
+  writing model's output price.
 
 ## `workstyle` (`workstyle.py`)
 

@@ -292,6 +292,19 @@ see ``parse.py``/``pricing.py``'s own module docstrings):
   the Data quality tab/``report --explain`` via the same generic
   ``dataclasses.fields(Diagnostics)`` walk every other counter here
   already gets.
+
+Quality-markers addition (``PARSER_VERSION`` 14 -- see
+``quality.MARKER_LINES`` for the CLAUDE.md lines that ask Claude for
+them). Only the word is kept, never the text around it:
+
+- ``Turn.retry_marker: str | None = None`` -- on the turn that follows
+  a human message (for a subagent, its brief) starting
+  ``[retry: model|brief|tools|other]``: the agent was started again
+  because its last run's work wasn't good enough, and why. Also
+  ``Event.detail["retry"]`` on that ``HUMAN_TEXT`` event.
+- ``Turn.result_marker: str | None = None`` -- ``done``, ``partial`` or
+  ``blocked`` when the turn's last text block ends ``[result: ...]``: a
+  subagent's own account of whether it finished.
 """
 
 from __future__ import annotations
@@ -493,6 +506,12 @@ class Turn:
     #: ("standard" | "fast", as observed today). Drives pricing.py's
     #: fast-mode rate multiplier for the models that document one.
     speed: str | None = None
+    #: Quality-markers addition (see module docstring): why the preceding
+    #: brief said this agent run is a retry. The word only.
+    retry_marker: str | None = None
+    #: Quality-markers addition (see module docstring): what this reply
+    #: said at its end about finishing. The word only.
+    result_marker: str | None = None
 
 
 @dataclass(slots=True)

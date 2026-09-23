@@ -9,10 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 After updating, the first dashboard start re-reads every transcript (a
 few minutes): `PARSER_VERSION` bumped to 14 to pick up each reply's
-fast-mode flag and the fuller edit records below.
+fast-mode flag, the fuller edit records and the markers below.
 
 ### Added
 
+- **Claude can say why it re-ran an agent and whether one finished.**
+  "Is any agent struggling?" offers two lines for `~/.claude/CLAUDE.md`
+  (about 100 tokens, read from the prompt cache after each session's
+  first reply) that ask Claude to start a re-run agent's brief with
+  `[retry: model|brief|tools|other]` and a subagent to end its last
+  reply with `[result: done|partial|blocked]`, about six output tokens
+  each. Only the word is kept. A retry that blames the brief, tools or
+  something else no longer counts against the cheaper model (two or more
+  for one agent become a tip to fix its task prompt or tools); one that
+  blames the model counts even for a different agent type. Partial or
+  blocked counts as didn't finish. The Agents tab adds **Why agents were
+  run again** and, under advanced, **Markers Claude wrote** with how
+  often each was written and what it cost. The fix explains how to
+  remove the lines again.
 - **Spots when a cheaper model wasn't enough.** When an agent's run on
   a cheaper model is followed, in the same session, by the same agent
   started again on a larger model that edits the same files within two

@@ -453,6 +453,11 @@ _CORRECTION_RE = re.compile(
 )
 _CORRECTION_SCAN_CHARS = 200
 
+#: Quality-markers addition: a brief that starts "[retry: <reason>]" says
+#: the agent is being run again because its last run's work wasn't good
+#: enough, and why (see ``quality.MARKER_LINES``). Only the reason is kept.
+_RETRY_MARKER_RE = re.compile(r"^\s*`?\[retry:\s*(model|brief|tools|other)\s*\]", re.IGNORECASE)
+
 
 def _looks_like_correction(texts: list[str]) -> bool:
     return any(_CORRECTION_RE.search(text[:_CORRECTION_SCAN_CHARS]) for text in texts if text)
@@ -497,7 +502,11 @@ def _human_text_detail(d: dict, str_content: str | None) -> tuple[int, dict]:
             for block in (content if isinstance(content, list) else ())
             if isinstance(block, dict) and block.get("type") == "text" and isinstance(block.get("text"), str)
         ]
-    return human_chars, {"has_paste": has_paste, "correction": _looks_like_correction(texts)}
+    detail = {"has_paste": has_paste, "correction": _looks_like_correction(texts)}
+    retry = next((m.group(1).lower() for m in (_RETRY_MARKER_RE.match(t) for t in texts if t) if m), None)
+    if retry is not None:
+        detail["retry"] = retry
+    return human_chars, detail
 
 
 #: Usage-limits addition (see module docstring): the six known synthetic

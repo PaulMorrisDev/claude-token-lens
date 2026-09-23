@@ -154,8 +154,10 @@ what they did", the setup panel and service health.
    effort with each setup compared with the one that agent used most
    ([concepts](concepts.md#7-quality-signals)), then **Agent runs
    retried on a larger model** (each agent and model whose runs the same
-   agent redid on a larger model); the failing-tools and counts tables
-   sit under the advanced toggle.
+   agent redid on a larger model) and **Why agents were run again** (the
+   reasons retries gave, when Claude writes the `[retry: ...]` marker);
+   the failing-tools, counts and markers tables sit under the advanced
+   toggle.
 8. **Context files** — what Claude reads at the start of every
    session and subagent. **CLAUDE.md files** (`/api/claude-md`): one
    row per file with its level, size in tokens, how often it was sent
