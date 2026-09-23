@@ -303,7 +303,7 @@ Finally, if installed via `pip`: `pip uninstall claude-token-lens`. Via
 | Symptom | Fix |
 |---|---|
 | `claude-token-lens` not found | Use the full path to the venv's `Scripts\claude-token-lens.exe`, or `python -m claude_token_lens` (works regardless of `PATH`) |
-| The Data quality tab says the SessionStart hook isn't running | The hook command uses `py` (not on the `PATH`) or `%USERPROFILE%` (Git Bash doesn't expand it). Run `claude-token-lens init --repair-hook`: it shows the fixed command, backs up `settings.json`, and names this Python and the script by full path |
+| The Data quality tab says the SessionStart hook isn't running | The hook command uses `py` (not on the `PATH`) or `%USERPROFILE%` (Git Bash doesn't expand it). Run `claude-token-lens init --repair-hook`: it shows the fixed command, backs up `settings.json`, writes the folder out in full, and keeps your own Python when it's found (otherwise it names one by full path) |
 | No usage-limit readings | The statusline runs only in Claude Code in a terminal, not in the desktop app or an IDE. Amounts stay list-price equivalents until readings arrive |
 | `py` launcher missing (`'py' is not recognized`) | Use `python`/`python3` directly, or reinstall Python from python.org with "py launcher" checked |
 | Python 3.10 or older | `pip install` refuses (`Requires-Python`); the `.pyz` fails at import with a `tomllib`-related error. Install 3.11+ (a user-level install needs no admin rights) |

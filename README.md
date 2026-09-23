@@ -674,7 +674,11 @@ On Windows the command names the Python and the script by full path.
 Claude Code may run hooks through Git Bash, which doesn't expand
 `%USERPROFILE%`, and the `py` launcher isn't always on the `PATH`; either
 one stops the hook running without any visible error. The Data quality
-tab flags both, and `claude-token-lens init --repair-hook` fixes them.
+tab flags both, and `claude-token-lens init --repair-hook` fixes them:
+it writes the folder out in full and keeps your own Python when it's
+found. The hook needs only the standard library, so a new install names
+your main Python rather than a virtual environment's, which could later
+be deleted.
 
 The hook always exits 0 and prints nothing on success (or a single
 stderr line on failure) so a broken Python can never block a session
