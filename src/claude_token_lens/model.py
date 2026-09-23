@@ -262,6 +262,31 @@ Quality-signals addition (see ``quality.py`` for how these are used):
   workflow was killed while it ran), read by ``discovery.load_meta``
   only once the run has finished; ``None`` otherwise. Workflow agents
   get no task notification, so this is their only recorded outcome.
+
+Fast-mode addition (three-pricing-fixes batch, ``PARSER_VERSION`` bump --
+see ``parse.py``/``pricing.py``'s own module docstrings):
+
+- ``Turn.speed: str | None = None`` -- the turn's own
+  ``usage.speed`` (``"standard"`` or ``"fast"``, observed today; any
+  other/missing value is kept verbatim or left ``None``). Drives
+  ``pricing.price_turn``'s fast-mode rate multiplier for the handful of
+  models that document one.
+- ``CostBreakdown.fast_applied: bool = False`` -- whether ``price_turn``
+  actually applied a fast-mode multiplier (the turn's ``speed`` was
+  ``"fast"`` *and* the resolved model carries a ``[.fast]`` table). A
+  turn with ``speed == "fast"`` and ``fast_applied is False`` was priced
+  at standard rates because its model has no fast-mode rates on file --
+  see ``PricingCoverage.fast_priced_as_standard``.
+- ``Diagnostics.pricing_closest_match_turns`` / ``pricing_fast_priced_as_standard_turns``
+  -- corpus-wide totals mirroring ``PricingCoverage.closest_matches``/
+  ``fast_priced_as_standard`` (see ``pricing.py``), set once by
+  ``report.build_report`` from the finished ``PricingCoverage``
+  accumulator rather than merged per-transcript like the other
+  ``Diagnostics`` fields (this data only exists once every turn has
+  been priced against the rate card, not at parse time). Surfaced on
+  the Data quality tab/``report --explain`` via the same generic
+  ``dataclasses.fields(Diagnostics)`` walk every other counter here
+  already gets.
 """
 
 from __future__ import annotations
@@ -459,6 +484,10 @@ class Turn:
     #: Quality-signals addition (see module docstring): the preceding
     #: human message looks like a correction. Flag only.
     human_correction: bool = False
+    #: Fast-mode addition (see module docstring): from ``usage.speed``
+    #: ("standard" | "fast", as observed today). Drives pricing.py's
+    #: fast-mode rate multiplier for the models that document one.
+    speed: str | None = None
 
 
 @dataclass(slots=True)
@@ -549,6 +578,17 @@ class Diagnostics:
     limit_hits: int = 0
     limit_resumes: int = 0
     agents_terminated: int = 0
+    #: Fast-mode addition (see module docstring): corpus-wide totals set
+    #: once by ``report.build_report`` from the finished
+    #: ``pricing.PricingCoverage`` accumulator (pricing-time, not
+    #: parse-time, so unlike every other field here it is not merged
+    #: per-transcript). Turns priced against another model's rate card
+    #: because their own model id only prefix-matched, and turns flagged
+    #: ``usage.speed == "fast"`` that were priced at standard rates for
+    #: lack of a ``[.fast]`` table, respectively. See
+    #: ``PricingCoverage.closest_matches``/``fast_priced_as_standard``.
+    pricing_closest_match_turns: int = 0
+    pricing_fast_priced_as_standard_turns: int = 0
 
 
 
@@ -646,6 +686,12 @@ class CostBreakdown:
     total: float = 0.0
     long_context_applied: bool = False
     model_known: bool = False
+    #: Fast-mode addition (see module docstring): the turn's own
+    #: ``speed == "fast"`` AND the resolved model carries a ``[.fast]``
+    #: rate table, so the fast multiplier was actually applied. A turn
+    #: with ``speed == "fast"`` and this False was priced at standard
+    #: rates for lack of a fast-mode rate on file.
+    fast_applied: bool = False
 
 
 @dataclass(slots=True)

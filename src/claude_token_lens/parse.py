@@ -579,6 +579,8 @@ class _PendingTurn:
     tool_errors_by_tool: dict[str, int] = field(default_factory=dict)
     tool_errors_by_kind: dict[str, int] = field(default_factory=dict)
     edit_target_hashes: list[str] = field(default_factory=list)
+    #: Fast-mode addition (see model.py's ``Turn.speed`` docstring).
+    speed: str | None = None
 
 
 def _merge_content_blocks(pending: _PendingTurn, content, tool_use_names: dict[str, str]) -> None:
@@ -705,6 +707,8 @@ def _apply_usage(pending: _PendingTurn, usage: dict) -> None:
     pending.service_tier = service_tier if isinstance(service_tier, str) else None
     inference_geo = usage.get("inference_geo")
     pending.inference_geo = inference_geo if isinstance(inference_geo, str) else None
+    speed = usage.get("speed")
+    pending.speed = speed if isinstance(speed, str) else None
     details = usage.get("output_tokens_details")
     pending.thinking_tokens = int(details.get("thinking_tokens") or 0) if isinstance(details, dict) else 0
     server_tool_use = usage.get("server_tool_use")
@@ -1044,6 +1048,7 @@ def _finalize_turn(
         tool_errors_by_kind=dict(pending.tool_errors_by_kind),
         edit_target_hashes=tuple(pending.edit_target_hashes),
         human_correction=human_correction,
+        speed=pending.speed,
     )
     return turn, new_prev_ts, new_priced_count
 

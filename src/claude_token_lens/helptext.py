@@ -42,6 +42,8 @@ PLACEMENT: dict[str, str] = {
     "by_entrypoint": "advanced",
     "five_hour_blocks": "keep",
     "pricing_unknown_models": "advanced",
+    "pricing_closest_match": "advanced",
+    "pricing_fast_priced_as_standard": "advanced",
     # usage limits (subscription with usage-log readings)
     "elasticity_budget": "keep",
     "elasticity_recent_burn": "keep",
@@ -1243,6 +1245,37 @@ TABLE_COPY: dict[str, TableCopy] = {
         columns={
             "model_id": ("Model", "The model name exactly as Claude Code recorded it."),
             "turns": ("Replies", "Model replies from this model."),
+            "tokens": ("", "All tokens in those replies, including cache reads."),
+        },
+    ),
+    "pricing_closest_match": TableCopy(
+        title="Priced by closest match",
+        help=Help(
+            shows="One row per model with no price list entry of its own, priced instead at the nearest "
+            "registered model's rate. Shown only when there is at least one.",
+            read="These replies count toward the report's 100% priced score, but the price used is a guess: the "
+            "closest registered model, not this one's own rate, so the cost may be off.",
+            act="Add this model to pricing.toml, with its own prices per million tokens, for an exact cost.",
+        ),
+        columns={
+            "model_id": ("Model", "The model name exactly as Claude Code recorded it."),
+            "priced_as": ("Priced as", "The registered model whose rate was used instead."),
+            "turns": ("Replies", "Model replies from this model."),
+            "tokens": ("", "All tokens in those replies, including cache reads."),
+        },
+    ),
+    "pricing_fast_priced_as_standard": TableCopy(
+        title="Fast turns priced at standard rate",
+        help=Help(
+            shows="One row per model with at least one fast-mode reply that has no fast-mode price on file. "
+            "Shown only when there is at least one.",
+            read="These replies were flagged fast mode by Claude Code, but this model's price list entry has no "
+            "fast rate, so they were costed at the model's standard rate instead -- likely too low.",
+            act="Add a fast rate for this model in pricing.toml for an exact cost.",
+        ),
+        columns={
+            "model_id": ("Model", "The model name exactly as Claude Code recorded it."),
+            "turns": ("Replies", "Fast-mode replies from this model."),
             "tokens": ("", "All tokens in those replies, including cache reads."),
         },
     ),
@@ -3177,6 +3210,8 @@ DIAGNOSTIC_LABELS: dict[str, tuple[str, str]] = {
     "limit_hits": ("Usage-limit stops", "Times a session stopped at a usage limit."),
     "limit_resumes": ("Resumes after a limit", "Times a session carried on after a usage-limit stop."),
     "agents_terminated": ("Subagents stopped by a limit", "Subagents that ended because a usage limit was reached."),
+    "pricing_closest_match_turns": ("Replies priced by closest match", "Replies costed at another, similar model's rate because this one has no price list entry of its own. See Usage's \"Priced by closest match\" table."),
+    "pricing_fast_priced_as_standard_turns": ("Fast replies priced at standard rate", "Replies flagged fast mode but costed at the standard rate because this model has no fast-mode price on file."),
 }
 
 

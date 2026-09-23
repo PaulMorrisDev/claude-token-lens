@@ -1354,6 +1354,47 @@ def test_pricing_coverage_action_names_unknown_model_ids_when_table_present():
     assert "claude-mystery-9" in rec.action
 
 
+def test_pricing_coverage_fires_at_full_coverage_when_closest_match_table_present():
+    # Fix 2: coverage_pct == 100.0 means "no tokens went unpriced", not
+    # "every model has its own rate" -- a pricing_closest_match table
+    # (turns priced by prefix match, not their own pricing.toml row)
+    # must still fire the rule even though nothing is missing from the
+    # total.
+    r = _base_report()
+    r.meta.pricing.coverage_pct = 100.0
+    r = _add_section(
+        r,
+        Section(
+            key="scorecard",
+            title="Scorecard",
+            tables=[_scorecard_dimensions_table([["data_quality", "warn", "Data quality", "pricing_coverage_pct", 100.0, 100.0]])],
+        ),
+    )
+    r = _add_section(
+        r,
+        Section(
+            key="usage",
+            title="Usage",
+            tables=[
+                Table(
+                    name="pricing_closest_match",
+                    title="Priced by closest match",
+                    columns=[
+                        Column(key="model_id", label="Model"),
+                        Column(key="priced_as", label="Priced as"),
+                        Column(key="turns", label="Turns"),
+                        Column(key="tokens", label="Tokens"),
+                    ],
+                    rows=[["claude-widget-9-preview", "claude-widget-9", 4, 2000]],
+                )
+            ],
+        ),
+    )
+    recs = recommend_fn(r, config=_config(), archetype=None)
+    rec = next(rec for rec in recs if rec.id == "pricing-coverage")
+    assert "claude-widget-9-preview" in rec.action
+
+
 # -- data-quality ---------------------------------------------------------
 
 

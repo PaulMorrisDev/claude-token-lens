@@ -218,6 +218,12 @@ class ScorecardInputs:
     #: ``limits.LimitStats``). Surfaced as a ``data_quality`` note when
     #: non-zero; does not itself change the pricing-coverage level.
     limit_pause_sessions: int = 0
+    #: Turns priced by closest (prefix) match rather than their own
+    #: pricing.toml row (from ``pricing.PricingCoverage.closest_match_turns``
+    #: — fix 2). Surfaced as a ``data_quality`` note when non-zero; the
+    #: level itself is already driven by ``pricing_coverage_pct``, which
+    #: counts a closest-match turn as priced.
+    closest_match_turns: int = 0
 
 
 def _level_lower_is_better(value: float, bounds: tuple[float, float, float, float]) -> int:
@@ -330,14 +336,23 @@ def _config_fit(inputs: ScorecardInputs, th: ScorecardThresholds) -> _DimensionR
 
 def _data_quality(inputs: ScorecardInputs, th: ScorecardThresholds) -> _DimensionResult:
     level = _level_higher_is_better(inputs.pricing_coverage_pct, th.data_pricing_coverage_pct)
-    note = None
+    note_parts: list[str] = []
     if inputs.limit_pause_sessions > 0:
         plural = "s" if inputs.limit_pause_sessions != 1 else ""
-        note = (
+        note_parts.append(
             f"{inputs.limit_pause_sessions} session{plural} hit a usage limit and paused. "
             "Waits and cache rebuilds caused by those pauses are counted separately "
             "(see Usage limits), not left out."
         )
+    if inputs.closest_match_turns > 0:
+        plural = inputs.closest_match_turns != 1
+        note_parts.append(
+            f"{inputs.closest_match_turns} turn{'s' if plural else ''} counted as priced above "
+            f"{'were' if plural else 'was'} only priced by closest match, not "
+            f"{'their' if plural else 'its'} own model's rate (see Usage's "
+            "\"Priced by closest match\" table)."
+        )
+    note = " ".join(note_parts) or None
     return _DimensionResult(
         dimension="data_quality",
         level=level,

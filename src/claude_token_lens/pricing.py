@@ -18,7 +18,12 @@ Three things live here:
 
 :class:`PricingCoverage` is a small accumulator later report code uses to
 track how much of the corpus was actually priced, for the "unknown
-model" table and the ``pricing-coverage`` recommendation.
+model" table and the ``pricing-coverage`` recommendation. It also tracks
+two narrower cases of "priced, but only approximately": turns priced by
+closest (prefix) match (``ResolvedRates.approximate`` — see
+``Pricing.resolve_model``) rather than their own rate-card row, and
+fast-flagged turns priced at a model's standard rate for lack of a
+``[.fast]`` table (see :class:`FastRule` and ``price_turn``).
 """
 
 from __future__ import annotations
@@ -92,9 +97,22 @@ class LongContextRule:
 
 
 @dataclass(slots=True)
+class FastRule:
+    """A model's optional fast-mode rate: a flat multiplier over every
+    one of the five standard rates, applied when a turn's own
+    ``usage.speed == "fast"``. Absent unless a model's pricing page
+    documents a fast tier — a fast-flagged turn on a model with no
+    ``FastRule`` is priced at its standard rate (see ``price_turn`` and
+    ``PricingCoverage.fast_priced_as_standard``).
+    """
+
+    multiplier: float
+
+
+@dataclass(slots=True)
 class ModelRates:
     """One ``[models."<id>"]`` entry: per-million-token USD rates plus
-    optional geo multipliers and a long-context rule.
+    optional geo multipliers, a long-context rule, and a fast-mode rule.
     """
 
     canonical_id: str
@@ -107,6 +125,7 @@ class ModelRates:
     #: components when ``price_turn``'s ``geo`` argument matches.
     geo_multipliers: dict[str, float] = field(default_factory=dict)
     long_context: LongContextRule | None = None
+    fast: FastRule | None = None
 
 
 @dataclass(slots=True)
@@ -119,6 +138,16 @@ class ResolvedRates:
     rates: ModelRates
     #: "exact" | "alias" | "strip_1m" | "cloud_strip" | "prefix"
     matched_via: str = "exact"
+    #: True when this is only an approximation of the observed model's
+    #: real price: resolution bottomed out at the longest-registered-id
+    #: *prefix* match (``matched_via in {"prefix", "cloud_strip"}`` when
+    #: the cloud strip itself didn't land on an exact/alias id), not the
+    #: model's own rate-card row. False for "exact"/"alias"/"strip_1m"
+    #: and for a "cloud_strip" that resolved straight to an exact/alias
+    #: id — ``matched_via`` alone can't tell those two "cloud_strip"
+    #: cases apart, which is why this is a separate field rather than a
+    #: new ``matched_via`` value (see ``resolve_model``).
+    approximate: bool = False
 
 
 @dataclass(slots=True)
@@ -202,7 +231,7 @@ class Pricing:
                     best_id = canonical_id
         if best_id is not None:
             matched_via = "cloud_strip" if cloud_stripped else "prefix"
-            return ResolvedRates(best_id, self.models[best_id], matched_via)
+            return ResolvedRates(best_id, self.models[best_id], matched_via, approximate=True)
 
         return None
 
@@ -373,6 +402,19 @@ def _parse_model_entry(model_id: str, entry: object) -> tuple[ModelRates, list[s
             overrides=overrides or None,
         )
 
+    fast: FastRule | None = None
+    raw_fast = entry.get("fast")
+    if raw_fast is not None:
+        if not isinstance(raw_fast, dict) or "multiplier" not in raw_fast:
+            raise PricingError(f"models.\"{model_id}\".fast requires multiplier")
+        try:
+            fast_multiplier = float(raw_fast["multiplier"])
+        except (TypeError, ValueError) as exc:
+            raise PricingError(
+                f"models.\"{model_id}\".fast.multiplier must be a number"
+            ) from exc
+        fast = FastRule(multiplier=fast_multiplier)
+
     aliases_raw = entry.get("aliases", [])
     if not isinstance(aliases_raw, list) or not all(isinstance(a, str) for a in aliases_raw):
         raise PricingError(f"models.\"{model_id}\".aliases must be a list of strings")
@@ -386,6 +428,7 @@ def _parse_model_entry(model_id: str, entry: object) -> tuple[ModelRates, list[s
         cache_read=rate_values["cache_read"],
         geo_multipliers=geo_multipliers,
         long_context=long_context,
+        fast=fast,
     )
     return rates, list(aliases_raw)
 
@@ -536,6 +579,15 @@ def price_turn(
     entry in the model's ``geo_multipliers``, it multiplies all four cost
     components (the documented data-residency uplift).
 
+    When ``turn.speed == "fast"`` and the resolved model carries a
+    ``[.fast]`` table, every one of the five standard rates is
+    multiplied by that model's fast multiplier *before* the
+    ``long_context``/geo rules below apply to them, so cache and geo
+    multipliers stack on top of the fast rate rather than replacing it
+    (the returned ``CostBreakdown.fast_applied`` records whether this
+    happened). A fast-flagged turn on a model with no ``[.fast]`` table
+    is priced at that model's standard rate.
+
     A model's ``long_context`` rule applies when ``turn.ctx`` is at or
     above its threshold: explicit ``overrides`` win over ``multiplier``
     when both are present.
@@ -565,6 +617,16 @@ def price_turn(
     write_5m_rate = model_rates.cache_write_5m
     write_1h_rate = model_rates.cache_write_1h
     read_rate = model_rates.cache_read
+
+    fast_applied = False
+    if turn.speed == "fast" and model_rates.fast is not None:
+        fast_applied = True
+        fast_multiplier = model_rates.fast.multiplier
+        input_rate *= fast_multiplier
+        output_rate *= fast_multiplier
+        write_5m_rate *= fast_multiplier
+        write_1h_rate *= fast_multiplier
+        read_rate *= fast_multiplier
 
     long_context_applied = False
     rule = model_rates.long_context
@@ -611,6 +673,7 @@ def price_turn(
         total=total,
         long_context_applied=long_context_applied,
         model_known=True,
+        fast_applied=fast_applied,
     )
 
 
@@ -628,20 +691,53 @@ class PricingCoverage:
     priced_tokens: int = 0
     #: unknown model id -> {"turns": int, "tokens": int}
     unknown: dict[str, dict[str, int]] = field(default_factory=dict)
+    #: observed model id -> {"priced_as": canonical id, "turns": int,
+    #: "tokens": int}, for turns priced by closest (prefix) match rather
+    #: than their own pricing.toml row (``ResolvedRates.approximate``).
+    closest_matches: dict[str, dict] = field(default_factory=dict)
+    #: observed model id -> {"turns": int, "tokens": int}, for turns
+    #: flagged ``usage.speed == "fast"`` that were priced at standard
+    #: rates because their model carries no ``[.fast]`` table.
+    fast_priced_as_standard: dict[str, dict[str, int]] = field(default_factory=dict)
 
-    def add(self, turn: Turn, breakdown: CostBreakdown) -> None:
-        """Record one priced (or unpriced) turn against the accumulator."""
+    def add(
+        self,
+        turn: Turn,
+        breakdown: CostBreakdown,
+        resolved: ResolvedRates | None = None,
+    ) -> None:
+        """Record one priced (or unpriced) turn against the accumulator.
+
+        ``resolved`` is optional (existing callers that only need the
+        unknown-model/coverage_pct accounting may omit it) and, when
+        given, also feeds the closest-match and fast-priced-as-standard
+        breakdowns below.
+        """
         tokens = _turn_token_total(turn)
+        model_id = turn.model or "<unknown>"
         self.total_turns += 1
         self.total_tokens += tokens
         if breakdown.model_known:
             self.priced_turns += 1
             self.priced_tokens += tokens
         else:
-            model_id = turn.model or "<unknown>"
             entry = self.unknown.setdefault(model_id, {"turns": 0, "tokens": 0})
             entry["turns"] += 1
             entry["tokens"] += tokens
+
+        if resolved is not None and resolved.approximate:
+            match_entry = self.closest_matches.setdefault(
+                model_id, {"priced_as": resolved.canonical_id, "turns": 0, "tokens": 0}
+            )
+            match_entry["turns"] += 1
+            match_entry["tokens"] += tokens
+
+        if turn.speed == "fast" and breakdown.model_known and not breakdown.fast_applied:
+            fast_entry = self.fast_priced_as_standard.setdefault(
+                model_id, {"turns": 0, "tokens": 0}
+            )
+            fast_entry["turns"] += 1
+            fast_entry["tokens"] += tokens
 
     @property
     def coverage_pct(self) -> float:
@@ -651,6 +747,18 @@ class PricingCoverage:
         if self.total_tokens == 0:
             return 100.0
         return 100.0 * self.priced_tokens / self.total_tokens
+
+    @property
+    def closest_match_turns(self) -> int:
+        """Total turns priced by closest (prefix) match rather than their
+        own model's pricing.toml row."""
+        return sum(entry["turns"] for entry in self.closest_matches.values())
+
+    @property
+    def fast_priced_as_standard_turns(self) -> int:
+        """Total turns flagged ``usage.speed == "fast"`` that were priced
+        at standard rates for lack of a ``[.fast]`` table."""
+        return sum(entry["turns"] for entry in self.fast_priced_as_standard.values())
 
     def as_table(self) -> Table:
         """The unknown-model table: one row per unresolved model id."""
@@ -677,10 +785,69 @@ class PricingCoverage:
             notes=notes,
         )
 
+    def as_closest_match_table(self) -> Table:
+        """One row per model id priced by closest (prefix) match: what it
+        was actually priced as, so the approximation is visible instead
+        of reading as a full 100%-priced model."""
+        columns = [
+            Column(key="model_id", label="Model", kind="str"),
+            Column(key="priced_as", label="Priced as", kind="str"),
+            Column(key="turns", label="Turns", kind="int"),
+            Column(key="tokens", label="Tokens", kind="tokens"),
+        ]
+        rows = [
+            [model_id, entry["priced_as"], entry["turns"], entry["tokens"]]
+            for model_id, entry in sorted(self.closest_matches.items())
+        ]
+        notes = []
+        if self.closest_matches:
+            notes.append(
+                "These model ids have no pricing.toml row of their own. Their cost"
+                " is estimated from the closest registered model's rate instead, so"
+                " it may be off. Add a models.\"<id>\" row for this model's own"
+                " rates to price it exactly."
+            )
+        return Table(
+            name="pricing_closest_match",
+            title="Priced by closest match",
+            columns=columns,
+            rows=rows,
+            notes=notes,
+        )
+
+    def as_fast_priced_as_standard_table(self) -> Table:
+        """One row per model id seen with ``usage.speed == "fast"`` that
+        was priced at its standard rate because it has no ``[.fast]``
+        table on file."""
+        columns = [
+            Column(key="model_id", label="Model", kind="str"),
+            Column(key="turns", label="Turns", kind="int"),
+            Column(key="tokens", label="Tokens", kind="tokens"),
+        ]
+        rows = [
+            [model_id, entry["turns"], entry["tokens"]]
+            for model_id, entry in sorted(self.fast_priced_as_standard.items())
+        ]
+        notes = []
+        if self.fast_priced_as_standard:
+            notes.append(
+                "These turns were flagged fast mode, but their model has no fast"
+                " rate on file, so they were priced at the model's standard rate."
+                " Add a models.\"<id>\".fast table to price fast mode exactly."
+            )
+        return Table(
+            name="pricing_fast_priced_as_standard",
+            title="Fast turns priced at standard rate",
+            columns=columns,
+            rows=rows,
+            notes=notes,
+        )
+
 
 __all__ = [
     "PricingError",
     "LongContextRule",
+    "FastRule",
     "ModelRates",
     "ResolvedRates",
     "Pricing",

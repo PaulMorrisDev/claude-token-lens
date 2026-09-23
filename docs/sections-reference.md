@@ -73,6 +73,26 @@ respects.
   onto this section by `report.build_report` only when at least one
   reply was unpriced. The `pricing-coverage` recommendation names these
   model ids. Shown under the Usage tab's advanced detail.
+- `pricing_closest_match` — one row per model id that resolved only via
+  `pricing.Pricing.resolve_model`'s longest-registered-id *prefix* step
+  (`ResolvedRates.approximate`; not `"exact"`/`"alias"`/`"strip_1m"`, and
+  not a `"cloud_strip"` that itself landed on an exact/alias id):
+  `model_id`, `priced_as` (the registered id whose rate was used),
+  `turns`, `tokens`. These replies count as priced (`coverage_pct`
+  treats them as covered), but only at another, similar model's rate —
+  make this visible instead of letting a report read as "every model has
+  its own price" when `coverage_pct` is 100%. Built by
+  `pricing.PricingCoverage.as_closest_match_table`, appended onto this
+  section only when at least one reply matched this way, and named by
+  the `pricing-coverage` recommendation alongside (or instead of) any
+  unpriced model ids. Shown under the Usage tab's advanced detail.
+- `pricing_fast_priced_as_standard` — one row per model id seen with at
+  least one reply flagged `usage.speed == "fast"` whose rate card entry
+  has no `[models."<id>".fast]` table, so it was priced at that model's
+  standard rate instead: `model_id`, `turns`, `tokens`. Built by
+  `pricing.PricingCoverage.as_fast_priced_as_standard_table`, appended
+  onto this section only when at least one such reply exists. Shown
+  under the Usage tab's advanced detail.
 - `cache_ground_truth` (S1-exports) — one row per session: `session_id`,
   `rows_logged`, `warm_share` (percentage of *logged rows* — statusline
   refreshes, not wall-clock time — where `statusline.py`'s real,
@@ -263,9 +283,15 @@ gap in `recache`/`ttl`/`sessions`).
 re-cache share already known to be pause-forced
 (`ScorecardInputs.limit_recache_share_pct`); `data_quality` notes the
 count of sessions with at least one pause
-(`ScorecardInputs.limit_pause_sessions`). `recommend.py`'s
-`limit-pressure` rule fires off this section's own `limits_summary`
-counts.
+(`ScorecardInputs.limit_pause_sessions`) and, separately, the count of
+turns counted as priced above that were only priced by closest match
+rather than their own model's rate
+(`ScorecardInputs.closest_match_turns`, from
+`pricing.PricingCoverage.closest_match_turns` — see the `usage`
+section's `pricing_closest_match` table above). Neither note changes
+the `pricing_coverage_pct` metric or level itself, which already counts
+a closest-match turn as priced. `recommend.py`'s `limit-pressure` rule
+fires off this section's own `limits_summary` counts.
 
 ## `carry` (`carry.py`)
 
@@ -1022,12 +1048,19 @@ include `lines`, `unparsable_lines`, `truncated_final_line`,
 `ignored_line_types` (a count per ignored line type), `oversized_lines`,
 `trailing_events`, `replayed_lines`, `timestamp_parse_failures`,
 `agent_settings`, `modes`, `attachment_catch_all`, `limit_hits`,
-`limit_resumes`, `agents_terminated`, and
+`limit_resumes`, `agents_terminated`,
 `pre_split_turns` (pre-split `cache_creation` reads normalised at parse
-time — see the CHANGELOG). `recommend.py`'s `data-quality` rule reads
-this field directly to decide whether its unparsable-lines/ttl-mismatch
-clauses additionally fire, alongside the `scorecard.dimensions`
-`data_quality` row it cites as evidence.
+time — see the CHANGELOG), and `pricing_closest_match_turns` /
+`pricing_fast_priced_as_standard_turns` (corpus-wide totals mirroring
+the `usage` section's `pricing_closest_match`/
+`pricing_fast_priced_as_standard` tables above — unlike every other
+field here, these two are set once by `report.build_report` from the
+finished `pricing.PricingCoverage` accumulator rather than merged
+per-transcript, since they only exist once every turn has been priced
+against the rate card, not at parse time). `recommend.py`'s
+`data-quality` rule reads this field directly to decide whether its
+unparsable-lines/ttl-mismatch clauses additionally fire, alongside the
+`scorecard.dimensions` `data_quality` row it cites as evidence.
 
 ## Worked example
 

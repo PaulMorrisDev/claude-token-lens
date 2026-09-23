@@ -29,9 +29,12 @@ def turn_line(**overrides: Any) -> dict:
     ``cache_creation_input_tokens``, ``cache_read_input_tokens``,
     ``output_tokens``, ``ephemeral_5m_input_tokens``,
     ``ephemeral_1h_input_tokens``, ``content``, ``request_id``, ``uuid``,
-    ``timestamp``. Any other keyword is merged into the top-level line
-    dict as-is (e.g. ``isApiErrorMessage=True``), which also lets a
-    caller override ``type`` or replace ``message`` wholesale.
+    ``timestamp``, ``speed`` (``usage.speed``, e.g. ``"fast"`` --
+    omitted from ``usage`` entirely when left at its default ``None``,
+    matching real JSONL where the field is absent rather than null on
+    older/standard-speed replies). Any other keyword is merged into the
+    top-level line dict as-is (e.g. ``isApiErrorMessage=True``), which
+    also lets a caller override ``type`` or replace ``message`` wholesale.
     """
     n = next(_counter)
 
@@ -47,22 +50,27 @@ def turn_line(**overrides: Any) -> dict:
     request_id = overrides.pop("request_id", f"req_{n:06d}")
     uuid = overrides.pop("uuid", f"uuid_{n:06d}")
     timestamp = overrides.pop("timestamp", "2026-09-18T12:00:00.000Z")
+    speed = overrides.pop("speed", None)
+
+    usage: dict[str, Any] = {
+        "input_tokens": input_tokens,
+        "cache_creation_input_tokens": cache_creation_input_tokens,
+        "cache_read_input_tokens": cache_read_input_tokens,
+        "output_tokens": output_tokens,
+        "cache_creation": {
+            "ephemeral_5m_input_tokens": ephemeral_5m_input_tokens,
+            "ephemeral_1h_input_tokens": ephemeral_1h_input_tokens,
+        },
+    }
+    if speed is not None:
+        usage["speed"] = speed
 
     line: dict[str, Any] = {
         "type": "assistant",
         "message": {
             "id": message_id,
             "model": model,
-            "usage": {
-                "input_tokens": input_tokens,
-                "cache_creation_input_tokens": cache_creation_input_tokens,
-                "cache_read_input_tokens": cache_read_input_tokens,
-                "output_tokens": output_tokens,
-                "cache_creation": {
-                    "ephemeral_5m_input_tokens": ephemeral_5m_input_tokens,
-                    "ephemeral_1h_input_tokens": ephemeral_1h_input_tokens,
-                },
-            },
+            "usage": usage,
             "content": content,
         },
         "requestId": request_id,

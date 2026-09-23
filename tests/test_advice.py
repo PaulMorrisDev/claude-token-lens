@@ -238,3 +238,81 @@ def test_severity_orders_before_saving():
         Recommendation(id="d", severity="action"),
     ]
     assert [r.id for r in advice.finish(recs, report, None, None)] == ["d", "c", "b", "a"]
+
+
+# -- pricing-coverage (fix 2): title/why depend on which of the two usage
+# tables the rule cites have rows -----------------------------------------
+
+
+def _usage_report(*tables: Table) -> ReportModel:
+    return ReportModel(
+        meta=ReportMeta(pricing=PricingMeta(coverage_pct=90.0)),
+        sections=[Section(key="usage", title="Usage", tables=list(tables))],
+        diagnostics=Diagnostics(lines=1000),
+    )
+
+
+def _unknown_models_table(rows) -> Table:
+    return Table(
+        name="pricing_unknown_models",
+        columns=[
+            Column(key="model_id", label="Model"),
+            Column(key="turns", label="Turns"),
+            Column(key="tokens", label="Tokens"),
+        ],
+        rows=rows,
+    )
+
+
+def _closest_match_table(rows) -> Table:
+    return Table(
+        name="pricing_closest_match",
+        columns=[
+            Column(key="model_id", label="Model"),
+            Column(key="priced_as", label="Priced as"),
+            Column(key="turns", label="Turns"),
+            Column(key="tokens", label="Tokens"),
+        ],
+        rows=rows,
+    )
+
+
+def _pricing_coverage_rec() -> Recommendation:
+    return Recommendation(id="pricing-coverage", severity="info", category="data", action="...")
+
+
+def test_pricing_coverage_wording_when_only_unknown_models():
+    report = _usage_report(_unknown_models_table([["claude-mystery-9", 3, 1000]]))
+    out = advice.finish([_pricing_coverage_rec()], report, None, None)
+    rec = out[0]
+    assert rec.title == "Some usage has no price"
+    assert "left out of every cost" in rec.why
+
+
+def test_pricing_coverage_wording_when_only_closest_match():
+    report = _usage_report(_closest_match_table([["claude-widget-9-preview", "claude-widget-9", 3, 1000]]))
+    out = advice.finish([_pricing_coverage_rec()], report, None, None)
+    rec = out[0]
+    assert rec.title == "Some usage is priced by closest match, not its own rate"
+    assert "estimated from the closest registered model" in rec.why
+
+
+def test_pricing_coverage_wording_when_both_tables_present():
+    report = _usage_report(
+        _unknown_models_table([["claude-mystery-9", 3, 1000]]),
+        _closest_match_table([["claude-widget-9-preview", "claude-widget-9", 3, 1000]]),
+    )
+    out = advice.finish([_pricing_coverage_rec()], report, None, None)
+    rec = out[0]
+    assert rec.title == "Some usage has no price, some is only an estimate"
+    assert "left out of every cost" in rec.why
+    assert "a different model's rate" in rec.why
+
+
+def test_pricing_coverage_wording_falls_back_when_neither_table_present():
+    # A report built with `include` leaving out `usage` (or one with no
+    # rows in either table) still gets the plain "no price" wording.
+    report = _usage_report()
+    out = advice.finish([_pricing_coverage_rec()], report, None, None)
+    rec = out[0]
+    assert rec.title == "Some usage has no price"

@@ -1484,40 +1484,71 @@ def _rule_discovery_share(report: ReportModel, th: RecommendThresholds) -> list[
 
 
 def _rule_pricing_coverage(report: ReportModel) -> list[Recommendation]:
-    """Fires when ``report.meta.pricing.coverage_pct`` is below 100%,
-    citing the ``scorecard.dimensions`` row that mirrors it as evidence.
+    """Fires when ``report.meta.pricing.coverage_pct`` is below 100%, or
+    when it reads 100% only because every turn was priced by closest
+    (prefix) match rather than its own rate (fix 2 -- 100% coverage
+    means "no unpriced tokens", not "every model has its own price").
+    Cites the ``scorecard.dimensions`` row that mirrors coverage_pct as
+    evidence either way.
+
     ``report.py`` appends ``usage.pricing_unknown_models``
     (``pricing.PricingCoverage.as_table``) whenever a reply came from a
-    model with no price; the action then names those model ids. Without
-    that table (a report built with ``include`` leaving out ``usage``)
-    the rule still fires, with a generic action.
+    model with no price, and ``usage.pricing_closest_match``
+    (``as_closest_match_table``) whenever one was priced by closest
+    match; the action names whichever of those model ids is present.
+    Without either table (a report built with ``include`` leaving out
+    ``usage``) the rule still fires on ``coverage_pct`` alone, with a
+    generic action.
     """
     coverage_pct = report.meta.pricing.coverage_pct
-    if coverage_pct >= 100.0:
+    closest_table = _table(report, "usage", "pricing_closest_match")
+    closest_model_ids = (
+        [row[0] for row in closest_table.rows if row] if closest_table is not None else []
+    )
+    if coverage_pct >= 100.0 and not closest_model_ids:
         return []
     dq_value = _cell(report, "scorecard", "dimensions", "data_quality", "value")
     if dq_value is None:
         return []
-    action = (
-        "Add the unpriced model id(s) to pricing.toml so the report's cost figures cover "
-        "the whole corpus."
-    )
+
+    action_parts: list[str] = []
     unknown_table = _table(report, "usage", "pricing_unknown_models")
-    if unknown_table is not None and unknown_table.rows:
-        model_ids = [row[0] for row in unknown_table.rows if row]
-        if model_ids:
-            action = (
-                f"Add {', '.join(str(m) for m in model_ids)} to pricing.toml so the "
-                "report's cost figures cover the whole corpus."
-            )
+    unknown_model_ids = (
+        [row[0] for row in unknown_table.rows if row] if unknown_table is not None else []
+    )
+    if unknown_model_ids:
+        action_parts.append(
+            f"Add {', '.join(str(m) for m in unknown_model_ids)} to pricing.toml so the "
+            "report's cost figures cover the whole corpus."
+        )
+    if closest_model_ids:
+        action_parts.append(
+            f"{', '.join(str(m) for m in closest_model_ids)} "
+            + ("was" if len(closest_model_ids) == 1 else "were")
+            + " priced by closest match, not its own rate; give "
+            + ("it" if len(closest_model_ids) == 1 else "them")
+            + " a pricing.toml row of its own for an exact cost."
+        )
+    if not action_parts:
+        action_parts.append(
+            "Add the unpriced model id(s) to pricing.toml so the report's cost figures cover "
+            "the whole corpus."
+        )
+
+    title = (
+        "Some usage could not be priced"
+        if coverage_pct < 100.0
+        else "Some usage was only priced by closest match"
+    )
+
     return [
         Recommendation(
             id="pricing-coverage",
             severity="info",
             category="data",
             archetypes=_ALL_ARCHETYPES,
-            title="Some usage could not be priced",
-            action=action,
+            title=title,
+            action=" ".join(action_parts),
             lever=None,
             evidence=[
                 _evidence("Pricing coverage (data-quality dimension)", dq_value, "scorecard", "dimensions", "data_quality"),
