@@ -192,10 +192,12 @@ size. No text is kept (`context_files.py`).
 
 - **Window**: the picker at the top of the dashboard (and `--days`,
   `--since`, `--until` in the CLI) picks which sessions count. A session
-  counts when its main transcript was last written inside the window
-  (`--window-by timestamp` in the CLI uses its first reply instead), and
-  then counts in full, so a long session that started yesterday and ran
-  on today appears whole under "Today". The named windows are the last
+  counts when its last reply falls inside the window (`--window-by
+  timestamp` in the CLI uses its first reply instead), and then counts in
+  full, so a long session that started yesterday and ran on today
+  appears whole under "Today". When the transcript file was last
+  written doesn't matter: Claude Code adds titles and other notes to
+  old transcripts without any new reply. The named windows are the last
   hour, today (from midnight in `config.toml`'s `tz`, else your
   machine's time zone), the last 24 hours, since your last change, and
   all time. Short windows (the last hour, today) are for checking a

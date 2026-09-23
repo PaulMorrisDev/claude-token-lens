@@ -645,6 +645,14 @@ def make_handler(
             return err
         return _ok(store.summary(window_days=window_days))
 
+    def _listing_window(query):
+        """The window a store listing is limited to: none unless the
+        request names one (``window``, ``window_days``, ``since`` or
+        ``until``), then the same one the report uses."""
+        if not any(key in query for key in ("window", "window_days", "since", "until")):
+            return (None, None, None), None
+        return _window_query(query)
+
     def route_sessions(store, query, body):
         limit, err = _int_query(query, "limit", 50, minimum=0)
         if err is not None:
@@ -652,7 +660,11 @@ def make_handler(
         offset, err = _int_query(query, "offset", 0, minimum=0)
         if err is not None:
             return err
-        return _ok(store.sessions(limit=limit, offset=offset))
+        window, err = _listing_window(query)
+        if err is not None:
+            return err
+        window_days, since, until = window
+        return _ok(store.sessions(limit=limit, offset=offset, window_days=window_days, since=since, until=until))
 
     def route_session(store, query, body):
         session_id = query.get("id", "")
@@ -689,7 +701,11 @@ def make_handler(
         return _ok(store.daily_usage(days=days))
 
     def route_compactions(store, query, body):
-        return _ok(store.compactions())
+        window, err = _listing_window(query)
+        if err is not None:
+            return err
+        window_days, since, until = window
+        return _ok(store.compactions(window_days=window_days, since=since, until=until))
 
     def _latest_baseline_row(store) -> dict | None:
         rows = store.baselines()

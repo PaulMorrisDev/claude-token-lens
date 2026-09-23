@@ -547,7 +547,7 @@ above lists what each one adds on top):
 | `--days N` / `--since DATE` | window start (mutually exclusive) |
 | `--until DATE` | window end |
 | `--limit N` | cap the number of sessions considered |
-| `--window-by {mtime,timestamp}` | which timestamp windows and sorts by (default `mtime`) |
+| `--window-by {last-reply,mtime,timestamp}` | what places a session in the window: its last reply (default), its file's modification time, or its first reply |
 | `--pricing PATH` | use a rate card other than the packaged default / config-dir override |
 | `--config-dir PATH` | override `~/.claude/token-lens` (or `$CLAUDE_CONFIG_DIR/token-lens`) |
 | `--tz ZONE` | IANA time zone for this run only (e.g. `America/New_York`); default: `config.toml`'s `tz`, else the machine's own zone |

@@ -1142,7 +1142,7 @@
     function load() {
       rangeLabel.textContent = "Rows " + (sessionsState.offset + 1) + "–" + (sessionsState.offset + sessionsState.limit);
       prevBtn.disabled = sessionsState.offset === 0;
-      var url = "/api/sessions?limit=" + sessionsState.limit + "&offset=" + sessionsState.offset;
+      var url = withWindow("/api/sessions?limit=" + sessionsState.limit + "&offset=" + sessionsState.offset);
       loadInto(tableContainer, url, function (rows, container) {
         renderSessionsTable(rows, container, detailContainer);
         nextBtn.disabled = rows.length < sessionsState.limit;
@@ -2603,9 +2603,9 @@
     });
 
     var compactionsContainer = el("div", { id: "usage-compactions" });
-    panel.appendChild(el("h3", { text: "Recent conversation summaries (compactions)" }));
+    panel.appendChild(el("h3", { text: "Conversation summaries (compactions) in this window" }));
     panel.appendChild(compactionsContainer);
-    loadInto(compactionsContainer, "/api/compactions", renderCompactionsRaw);
+    loadInto(compactionsContainer, withWindow("/api/compactions"), renderCompactionsRaw);
   }
 
   var COMPACTION_COLUMNS = [
@@ -2627,7 +2627,7 @@
 
   function renderCompactionsRaw(rows, container) {
     if (!rows.length) {
-      container.appendChild(el("p", { class: "notice", text: "No compactions recorded." }));
+      container.appendChild(el("p", { class: "notice", text: "No conversation summaries in this window." }));
       return;
     }
     // The API lists them oldest first; this table shows the newest.
@@ -3428,13 +3428,14 @@
     function describe() {
       var short = ["1h", "today", "24h", "change"].indexOf(state.window) !== -1;
       hint.textContent = short
-        ? "Counts every session active in this window, in full, so a long session that started earlier counts whole."
+        ? "Counts every session with a reply in this window, in full, so a long session that started earlier counts whole."
         : "";
     }
     describe();
     select.addEventListener("change", function () {
       state.window = select.value;
       storageSet("tls:window", select.value);
+      sessionsState.offset = 0;
       describe();
       Object.keys(renderedTabs).forEach(function (key) {
         delete renderedTabs[key];

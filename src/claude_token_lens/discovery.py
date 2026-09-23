@@ -280,6 +280,36 @@ def _resolve_window(
     return since_dt, until_dt
 
 
+#: How a session is matched to a window. ``last-reply`` (the default): the
+#: session's last reply, from its top-level or any subagent transcript,
+#: falls in the window. ``mtime``: the top-level file's modification time,
+#: which Claude Code moves forward when it appends titles and other
+#: metadata to an old transcript, so a session with no replies in the
+#: window can count. ``timestamp``: the first reply's time.
+WINDOW_BY = ("last-reply", "mtime", "timestamp")
+
+
+def ts_in_window(ts: str | None, since_dt: datetime | None, until_dt: datetime | None) -> bool:
+    """Whether ``ts`` (ISO 8601, e.g. a session's last reply) falls in
+    ``[since_dt, until_dt]``. With no window everything is in; with one, a
+    missing or unreadable time is out."""
+    if since_dt is None and until_dt is None:
+        return True
+    if not ts:
+        return False
+    try:
+        dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    if since_dt is not None and dt < since_dt:
+        return False
+    if until_dt is not None and dt > until_dt:
+        return False
+    return True
+
+
 def _session_window_ts(path: Path, window_by: str) -> datetime | None:
     if window_by == "mtime":
         try:
@@ -310,16 +340,20 @@ def find_sessions(
     since: str | None = None,
     until: str | None = None,
     limit: int | None = None,
-    window_by: str = "mtime",
+    window_by: str = "last-reply",
 ) -> list[Path]:
     """List top-level session transcripts (``<project_dir>/*.jsonl``)
     matching a window, newest first.
 
-    ``window_by="mtime"`` (default, matches the seed's parity mode) uses
-    the file's modification time; ``window_by="timestamp"`` reads the
-    first ``user``/``assistant`` line's ``timestamp`` field instead —
-    slower (a partial parse per file) but immune to a file being touched
-    without new content (e.g. a filesystem backup).
+    ``window_by="mtime"`` uses the file's modification time;
+    ``window_by="timestamp"`` reads the first ``user``/``assistant``
+    line's ``timestamp`` field instead — slower (a partial parse per file)
+    but immune to a file being touched without new content (e.g. a
+    filesystem backup). ``window_by="last-reply"`` (default) needs the
+    parsed replies, so here it keeps every file written since the window
+    opened (a file's last reply is never later than its mtime) and
+    :func:`~claude_token_lens.corpus.load_corpus` drops the sessions whose
+    last reply falls outside the window.
 
     A file whose window key can't be determined (e.g. no user/assistant
     line, stat failure) is included only when no ``days``/``since``/
@@ -329,6 +363,8 @@ def find_sessions(
     if not project_dir.exists():
         return []
     since_dt, until_dt = _resolve_window(days, since, until)
+    if window_by == "last-reply":
+        window_by, until_dt = "mtime", None
     has_window_filter = since_dt is not None or until_dt is not None
 
     dated: list[tuple[Path, datetime | None]] = []
@@ -619,6 +655,8 @@ __all__ = [
     "redact_slug",
     "resolve_project_dirs",
     "find_sessions",
+    "ts_in_window",
+    "WINDOW_BY",
     "find_subagents",
     "filter_subagents_by_window",
     "find_workflows",

@@ -769,6 +769,21 @@ def test_compactions_listing(store: Store) -> None:
     assert rows[0]["dropped_tokens"] == 140000
 
 
+def test_compactions_listing_keeps_only_those_in_the_window(store: Store) -> None:
+    _seed(store)  # one compaction, at 2026-09-18T12:30:00Z
+    assert len(store.compactions(since="2026-09-18T12:00:00Z")) == 1
+    assert store.compactions(since="2026-09-18T13:00:00Z") == []
+    assert store.compactions(until="2026-09-18T12:00:00Z") == []
+
+
+def test_sessions_listing_keeps_only_sessions_with_a_reply_in_the_window(store: Store) -> None:
+    _seed(store)  # session-a, replies from 12:00 to 13:00 on 2026-09-18
+    assert [s["id"] for s in store.sessions(since="2026-09-18T12:30:00Z")] == ["session-a"]
+    assert store.sessions(since="2026-09-18T13:30:00Z") == []
+    assert store.sessions(since="2026-09-17T00:00:00Z", until="2026-09-18T12:30:00Z") == []
+    assert store.summary(since="2026-09-18T13:30:00Z")["sessions"] == 0
+
+
 def test_snapshots_listing(store: Store) -> None:
     _seed(store)
     rows = store.snapshots()

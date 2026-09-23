@@ -83,6 +83,18 @@ def _two_turns() -> list[dict]:
     ]
 
 
+def _iso_ago(seconds_ago: float) -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(time.time() - seconds_ago))
+
+
+def _two_turns_ago(seconds_ago: float) -> list[dict]:
+    """Two replies, the last ``seconds_ago`` seconds ago."""
+    return [
+        turn_line(timestamp=_iso_ago(seconds_ago + 300), input_tokens=100, output_tokens=10),
+        turn_line(timestamp=_iso_ago(seconds_ago), input_tokens=120, output_tokens=12),
+    ]
+
+
 @pytest.fixture
 def store() -> Store:
     s = Store(":memory:")
@@ -138,22 +150,15 @@ def test_run_once_parses_synthetic_two_session_corpus(tmp_path: Path, store: Sto
 
 
 def test_summary_windowing_matches_report_overview_totals(tmp_path: Path, store: Store):
-    """Regression for a live windowing bug: with ``window_days=7``,
-    ``/api/summary`` (``Store.summary``) used to count ``transcripts``
-    corpus-wide (never windowed at all) and window ``sessions`` by the
-    session row's own ``last_ts`` rather than the report's own windowing
-    rule (a session's top-level transcript file's ``mtime`` -- the same
-    ``window_by="mtime"`` default ``discovery.find_sessions``/
-    ``corpus.load_corpus``/``service.rebuild.corpus_from_store`` all
-    share). Build a synthetic two-session corpus -- one session touched
-    recently, one touched 40 days ago, well outside a 7-day window, one
-    of them with a subagent transcript -- and assert
-    ``Store.summary(window_days=7)`` agrees exactly with the same window
-    built the way the CLI ``report`` command does: a fresh
+    """``Store.summary(window_days=7)`` agrees exactly with the same
+    window built the way the CLI ``report`` command does: a fresh
     ``corpus.load_corpus(project_dirs, days=7)`` fed through
     ``report.build_report``, read back from its "overview" section's
     "totals" table (``sessions``, ``top_level_transcripts`` +
-    ``subagent_transcripts``).
+    ``subagent_transcripts``). Both count a session by its last reply:
+    one replied to recently (with a subagent) counts; one last replied
+    to 40 days ago doesn't, even when its file changed ten minutes ago,
+    as when Claude Code appends a title to an old transcript.
     """
     from claude_token_lens.config import Config
     from claude_token_lens.corpus import load_corpus
@@ -162,9 +167,10 @@ def test_summary_windowing_matches_report_overview_totals(tmp_path: Path, store:
 
     root = tmp_path / "projects"
     project_dir = root / "proj-a"
-    _write_session(root, "proj-a", "sess-recent", _two_turns(), age_s=600.0)
-    _write_subagent(root, "proj-a", "sess-recent", "agent-1", [turn_line(timestamp="2026-09-18T12:06:00.000Z")], age_s=600.0)
-    _write_session(root, "proj-a", "sess-old", _two_turns(), age_s=40 * 86400.0)
+    _write_session(root, "proj-a", "sess-recent", _two_turns_ago(900.0), age_s=600.0)
+    _write_subagent(root, "proj-a", "sess-recent", "agent-1", [turn_line(timestamp=_iso_ago(800.0))], age_s=600.0)
+    _write_session(root, "proj-a", "sess-old", _two_turns_ago(40 * 86400.0), age_s=40 * 86400.0)
+    _write_session(root, "proj-a", "sess-touched", _two_turns_ago(40 * 86400.0), age_s=600.0)
 
     options = _options(tmp_path)
     watcher = FileWatcher(store, options)

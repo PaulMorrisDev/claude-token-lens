@@ -63,7 +63,7 @@ import json
 
 from ..cache import result_from_jsonable
 from ..corpus import Corpus, SessionBundle, _session_sort_key
-from ..discovery import _resolve_window
+from ..discovery import _resolve_window, ts_in_window
 from ..model import WorkflowRun
 from .store import Store, decode_digest_blob
 
@@ -111,7 +111,7 @@ def corpus_from_store(
     days: int | None = None,
     since: str | None = None,
     until: str | None = None,
-    window_by: str = "mtime",
+    window_by: str = "last-reply",
 ) -> Corpus:
     """Rebuild a :class:`Corpus` entirely from ``store`` — no transcript
     files read. See the module docstring for what this makes possible
@@ -122,7 +122,10 @@ def corpus_from_store(
     ``discovery._resolve_window`` resolution): a session whose top-level
     transcript falls outside the resolved window is skipped, exactly as
     it would never have been discovered by a fresh ``load_corpus`` call
-    over the same window. A session with no stored top-level transcript
+    over the same window. ``window_by="last-reply"`` (the default) reads
+    the session row's stored ``last_ts``, its last reply across every
+    transcript, which is what ``load_corpus`` filters on. A session with
+    no stored top-level transcript
     at all (shouldn't normally happen — ``FileWatcher`` always upserts
     one alongside any of a session's subagents) is skipped rather than
     guessed at, matching ``report.build_report``'s own
@@ -132,7 +135,7 @@ def corpus_from_store(
     since_dt, until_dt = _resolve_window(days, since, until)
     has_window_filter = since_dt is not None or until_dt is not None
 
-    session_rows = conn.execute("SELECT id, slug FROM sessions").fetchall()
+    session_rows = conn.execute("SELECT id, slug, last_ts FROM sessions").fetchall()
 
     bundles: list[SessionBundle] = []
     total_bytes = 0
@@ -141,6 +144,8 @@ def corpus_from_store(
     for session_row in session_rows:
         session_id = session_row["id"]
         slug = session_row["slug"]
+        if window_by == "last-reply" and not ts_in_window(session_row["last_ts"], since_dt, until_dt):
+            continue
 
         transcript_rows = conn.execute(
             "SELECT kind, digest_blob, mtime_ns, size_bytes FROM transcripts "
@@ -154,7 +159,7 @@ def corpus_from_store(
         if top_row is None:
             continue
 
-        if has_window_filter:
+        if has_window_filter and window_by != "last-reply":
             window_ts = _window_ts(top_row, window_by)
             if window_ts is None:
                 continue

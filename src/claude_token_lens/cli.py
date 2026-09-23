@@ -148,7 +148,7 @@ def _build_common_parser() -> argparse.ArgumentParser:
     common.add_argument("--limit", type=int)
 
     common.add_argument(
-        "--window-by", choices=("mtime", "timestamp"), default="mtime"
+        "--window-by", choices=("last-reply", "mtime", "timestamp"), default="last-reply"
     )
     common.add_argument("--pricing", metavar="PATH")
     common.add_argument(

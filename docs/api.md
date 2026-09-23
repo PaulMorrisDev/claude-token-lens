@@ -239,12 +239,14 @@ response).
 `data`: `{"window_days": int|null, "sessions": int, "transcripts": int, "total_cost": float, "total_tokens": int}`.
 `total_cost` is at list price, whatever the billing mode.
 
-With `window_days` given, a session qualifies for the window by its
-*top-level transcript's* `mtime` — the same `window_by="mtime"` rule
-`discovery.find_sessions`/`corpus.load_corpus`/
-`service.rebuild.corpus_from_store` already share — and every
-transcript belonging to a qualifying session (top-level and every
-subagent) counts once the session itself qualifies. This is the same
+With a window given, a session qualifies when its last reply (from its
+main transcript or any subagent's) falls in the window — the same
+`window_by="last-reply"` rule `corpus.load_corpus` and
+`service.rebuild.corpus_from_store` share — and every transcript
+belonging to a qualifying session (top-level and every subagent) counts
+once the session itself qualifies. A transcript file's `mtime` is not
+used: Claude Code appends titles and other metadata to old transcripts,
+which moved a session with no replies in the window into it. This is the same
 windowing the CLI's `report` overview section uses, so
 `sessions`/`transcripts` here always agree with a fresh
 `report --days <window_days>`'s own `sessions`/
@@ -256,8 +258,10 @@ row's own `last_ts` and never window `transcripts` at all).
 
 Recent sessions — `Store.sessions`.
 
-Query: `limit` (default 50), `offset` (default 0). Newest first (by
-`first_ts`); no window.
+Query: `limit` (default 50), `offset` (default 0), plus the optional
+`window`/`window_days`/`since`/`until` (below): with one, only the
+sessions a report over that window counts (last reply in the window).
+Without one, every session. Newest first (by `first_ts`).
 
 `data`: `[{"id", "slug", "first_ts", "last_ts", "span_s", "archetype", "mode", "purpose", "entrypoint", "billing_mode", "profile_id", "total_cost", "total_tokens", "source"}, ...]`.
 
@@ -359,9 +363,10 @@ ordered by day, then model. `cost` is at list price.
 query params, mirroring the CLI `report` subcommand's own
 `--days`/`--since`/`--until` (`discovery._resolve_window`'s exact
 resolution). `/api/summary` accepts `window` and `window_days` only.
-Every other route (`/api/health`, `/api/sessions`, `/api/session/<id>`,
-`/api/recache`, `/api/compactions`, `/api/baseline`, `/api/profiles*`,
-`/api/impact`, `/api/setup`) ignores them.
+`/api/sessions` and `/api/compactions` accept them all but, unlike the
+report routes, list everything when none is given. Every other route
+(`/api/health`, `/api/session/<id>`, `/api/recache`, `/api/baseline`,
+`/api/profiles*`, `/api/impact`, `/api/setup`) ignores them.
 
 - **`window`** (optional) — a named window, used by the dashboard's
   header picker: `1h` (the last hour), `today` (since midnight in
@@ -446,7 +451,8 @@ routes: windowing query params" above).
 
 ### `GET /api/compactions`
 
-Every recorded compaction — `Store.compactions`.
+Every recorded compaction — `Store.compactions` — oldest first. With
+`window`/`window_days`/`since`/`until`, only those in the window.
 
 `data`: `[{"transcript_id", "ts", "pre_tokens", "post_tokens", "dropped_tokens", "trigger", "join_delta_s"}, ...]`.
 
@@ -1022,7 +1028,7 @@ once before serving starts.
 
 `GET /api/report.*` above is built from the store instead of a fresh
 parse, via `service/rebuild.py`'s `corpus_from_store(store, *, days=None,
-since=None, until=None, window_by="mtime") -> Corpus`. This is what lets
+since=None, until=None, window_by="last-reply") -> Corpus`. This is what lets
 a report be served for a session whose transcript file has already been
 removed by Claude Code's own `cleanupPeriodDays` retention: the watcher
 (`service/watcher.py`) folds every parsed transcript's full

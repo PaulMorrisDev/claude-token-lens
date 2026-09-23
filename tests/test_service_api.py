@@ -427,6 +427,20 @@ def test_sessions_rejects_bad_limit(server):
     assert resp.status == 400
 
 
+def test_sessions_and_compactions_follow_the_window(server):
+    """With a window the listings keep only what happened in it, so the
+    Sessions and Usage tabs agree with the numbers above them."""
+    _resp, all_sessions = server.get_json("/api/sessions?window=all")
+    _resp, future = server.get_json("/api/sessions?since=2099-01-01T00:00:00Z")
+    _resp, past = server.get_json("/api/sessions?since=2000-01-01T00:00:00Z")
+    assert len(all_sessions["data"]) == len(past["data"]) == 1
+    assert future["data"] == []
+    _resp, compactions = server.get_json("/api/compactions?since=2099-01-01T00:00:00Z")
+    assert compactions["data"] == []
+    resp, _body = server.get_json("/api/sessions?since=yesterday")
+    assert resp.status == 400
+
+
 def test_session_detail(server):
     resp, body = server.get_json(f"/api/session/{server.session_id}")
     assert resp.status == 200

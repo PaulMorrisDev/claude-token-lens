@@ -234,16 +234,58 @@ def test_exclude_projects_malformed_regex_is_skipped_not_fatal(tmp_path):
 # -- window filters ------------------------------------------------------
 
 
-def test_days_window_filter_excludes_old_sessions(tmp_path):
+def _iso(epoch: float) -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(epoch))
+
+
+def _write_top_replied(project_dir: Path, session_id: str, *, last_reply: float, mtime: float) -> Path:
+    path = project_dir / f"{session_id}.jsonl"
+    write_jsonl(path, [turn_line(timestamp=_iso(last_reply - 600)), turn_line(timestamp=_iso(last_reply))])
+    os.utime(path, (mtime, mtime))
+    return path
+
+
+def _three_sessions(project_dir: Path) -> None:
+    """A recent session; one whose replies are ten days old but whose file
+    changed an hour ago, as when Claude Code appends a title to an old
+    transcript; and one old in both."""
+    now = time.time()
+    _write_top_replied(project_dir, "session-recent", last_reply=now - 3600, mtime=now - 3600)
+    _write_top_replied(project_dir, "session-touched", last_reply=now - 10 * 86400, mtime=now - 3600)
+    _write_top_replied(project_dir, "session-old", last_reply=now - 10 * 86400, mtime=now - 10 * 86400)
+
+
+def test_days_window_counts_sessions_by_their_last_reply(tmp_path):
     project_dir = tmp_path / "proj-window"
     project_dir.mkdir()
-    _write_top(project_dir, "session-recent", mtime=time.time())
-    _write_top(project_dir, "session-old", mtime=time.time() - 10 * 86400)
+    _three_sessions(project_dir)
 
     corpus = load_corpus([project_dir], days=5)
 
-    ids = {s.session_id for s in corpus.sessions}
-    assert ids == {"session-recent"}
+    assert {s.session_id for s in corpus.sessions} == {"session-recent"}
+    assert corpus.total_files == 1
+
+
+def test_mtime_window_counts_sessions_by_their_file(tmp_path):
+    project_dir = tmp_path / "proj-window"
+    project_dir.mkdir()
+    _three_sessions(project_dir)
+
+    corpus = load_corpus([project_dir], days=5, window_by="mtime")
+
+    assert {s.session_id for s in corpus.sessions} == {"session-recent", "session-touched"}
+
+
+def test_until_keeps_a_session_whose_file_changed_after_the_window(tmp_path):
+    project_dir = tmp_path / "proj-until"
+    project_dir.mkdir()
+    now = time.time()
+    _write_top_replied(project_dir, "session-in", last_reply=now - 3 * 86400, mtime=now - 3600)
+    _write_top_replied(project_dir, "session-after", last_reply=now - 3600, mtime=now - 3600)
+
+    corpus = load_corpus([project_dir], since=_iso(now - 5 * 86400), until=_iso(now - 2 * 86400))
+
+    assert {s.session_id for s in corpus.sessions} == {"session-in"}
 
 
 def test_limit_caps_number_of_sessions(tmp_path):

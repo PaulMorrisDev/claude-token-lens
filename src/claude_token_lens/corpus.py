@@ -258,6 +258,20 @@ def _session_first_ts(bundle: SessionBundle) -> str | None:
     return first_raw
 
 
+def _session_last_ts(bundle: SessionBundle) -> str | None:
+    """Latest ``Turn.ts`` across the session's top-level and subagent
+    transcripts (the session's last reply), as the original ISO string;
+    ``None`` when no turn has a readable time."""
+    latest: tuple[datetime, str] | None = None
+    transcripts = ([bundle.top] if bundle.top is not None else []) + bundle.subs
+    for result in transcripts:
+        for turn in result.turns:
+            dt = _parse_ts(turn.ts)
+            if dt is not None and (latest is None or dt > latest[0]):
+                latest = (dt, turn.ts)
+    return latest[1] if latest else None
+
+
 def _session_sort_key(bundle: SessionBundle) -> tuple:
     first_ts = _session_first_ts(bundle)
     # ``None`` first_ts sorts after every known one, but still
@@ -274,7 +288,7 @@ def load_corpus(
     since: str | None = None,
     until: str | None = None,
     limit: int | None = None,
-    window_by: str = "mtime",
+    window_by: str = "last-reply",
     subagent_window: str = "parent",
     cache: DigestCache | None = None,
     jobs: int = 1,
@@ -390,6 +404,23 @@ def load_corpus(
                 project_dir=spec.project_dir,
             )
         )
+
+    if window_by == "last-reply":
+        # find_sessions kept every file written since the window opened;
+        # keep only the sessions whose last reply is in the window.
+        since_dt, until_dt = discovery._resolve_window(days, since, until)
+        kept = [
+            (spec, bundle)
+            for spec, bundle in zip(specs, bundles)
+            if discovery.ts_in_window(_session_last_ts(bundle), since_dt, until_dt)
+        ]
+        if len(kept) != len(bundles):
+            bundles = [bundle for _spec, bundle in kept]
+            total = sum(1 + len(spec.sub_specs) for spec, _bundle in kept)
+            total_bytes = sum(
+                spec.top_meta.size_bytes + sum(meta.size_bytes for _path, meta in spec.sub_specs)
+                for spec, _bundle in kept
+            )
 
     bundles.sort(key=_session_sort_key)
 

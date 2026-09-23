@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Short windows counted sessions with no replies in them.** A session
+  counted in a window when its transcript file last changed there, and
+  Claude Code (the desktop app especially) appends titles and other
+  notes to old transcripts. "Last 24 hours" could show a week-old
+  session's full cost with nothing run that day. A session now counts
+  when its last reply falls in the window, in the dashboard, `report`
+  and every other command (`--window-by last-reply`, the new default;
+  `mtime` keeps the old rule).
+- The dashboard's Sessions list and the Usage tab's conversation
+  summaries ignored the window picker and always listed everything; both
+  now show only what falls in the window. `GET /api/sessions` and
+  `GET /api/compactions` accept the same window parameters as the
+  report.
+
 ## [0.5.1] - 2026-09-23
 
 After updating, the first dashboard start re-reads every transcript

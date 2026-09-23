@@ -85,7 +85,7 @@ from pathlib import Path
 
 from . import schema
 from ..cache import result_from_jsonable
-from ..discovery import redact_slug, source_label
+from ..discovery import _resolve_window, redact_slug, source_label, ts_in_window
 from ..limits import limit_markers as _limit_markers
 from ..model import EventKind
 
@@ -1128,24 +1128,14 @@ class Store:
         """Corpus-wide totals: session/transcript counts and cost/token
         sums, optionally restricted to a trailing ``window_days`` window.
 
-        The windowed branch must count exactly the sessions/transcripts
-        a report over the same window would (``report.py``'s "overview"
+        The windowed branch counts exactly the sessions/transcripts a
+        report over the same window would (``report.py``'s "overview"
         section, built from ``service.rebuild.corpus_from_store``/
-        ``corpus.load_corpus`` with their shared ``window_by="mtime"``
-        default) -- a live bug this method used to have: it windowed
-        *sessions* by the session row's own ``last_ts`` (a different
-        timestamp basis than the report's own windowing) and never
-        windowed *transcripts* at all, always summing the whole corpus
-        regardless of ``window_days``. A session qualifies for the
-        window when its TOP-LEVEL transcript's ``mtime_ns`` falls in the
-        trailing ``window_days`` -- exactly
-        ``discovery._session_window_ts``/``service.rebuild._window_ts``'s
-        ``window_by="mtime"`` rule -- and every transcript belonging to
-        a qualifying session (top-level and every subagent) counts once
-        the session itself qualifies, never filtered again by its own
-        mtime (matching ``service.rebuild.corpus_from_store``'s own
-        ``total_files`` count, which is exactly ``report.py``'s
-        ``top_level_transcripts + subagent_transcripts``).
+        ``corpus.load_corpus`` with their shared ``window_by="last-reply"``
+        default): a session qualifies when its last reply (the row's
+        ``last_ts``) falls in the window, and every transcript belonging to
+        it (top-level and every subagent) then counts, matching
+        ``corpus_from_store``'s own ``total_files``.
         """
         conn = self._connection()
         if window_days is None and since is None:
@@ -1162,18 +1152,8 @@ class Store:
                 "total_tokens": row["total_tokens"],
             }
 
-        if since is not None:
-            # ``since`` (an ISO timestamp, a named short window resolved by
-            # the API) windows by the same top-level mtime rule.
-            cutoff_s = datetime.fromisoformat(since.replace("Z", "+00:00")).timestamp()
-        else:
-            cutoff_s = time.time() - window_days * 86400
-        cutoff_ns = int(cutoff_s * 1_000_000_000)
-        qualifying = conn.execute(
-            "SELECT session_id FROM transcripts WHERE kind = 'top-level' AND mtime_ns >= ?",
-            (cutoff_ns,),
-        ).fetchall()
-        session_ids = [r["session_id"] for r in qualifying]
+        since_dt, until_dt = _resolve_window(window_days, since, None)
+        session_ids = self._session_ids_in_window(since_dt, until_dt)
         if not session_ids:
             return {
                 "window_days": window_days,
@@ -1210,23 +1190,45 @@ class Store:
         ).fetchall()
         return {row["entrypoint"]: {"count": row["n"], "last_ts": row["last_ts"]} for row in rows}
 
-    def sessions(self, *, limit: int = 50, offset: int = 0) -> list[dict]:
+    def _session_ids_in_window(self, since_dt: datetime | None, until_dt: datetime | None) -> list[str]:
+        """Sessions whose last reply falls in the window: the rule
+        ``service.rebuild.corpus_from_store`` and ``corpus.load_corpus``
+        use to decide what a windowed report counts."""
+        rows = self._connection().execute("SELECT id, last_ts FROM sessions").fetchall()
+        return [row["id"] for row in rows if ts_in_window(row["last_ts"], since_dt, until_dt)]
+
+    def sessions(
+        self,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+        window_days: int | None = None,
+        since: str | None = None,
+        until: str | None = None,
+    ) -> list[dict]:
         """The most recent ``limit`` sessions (by ``first_ts`` descending),
         one summary dict each — no transcript paths. ``source`` says
         where it ran ("This computer" or "WSL: <distro>", see
-        ``discovery.source_label``)."""
-        rows = self._connection().execute(
-            """
+        ``discovery.source_label``). ``window_days``/``since``/``until``
+        keep only the sessions a report over that window counts (last
+        reply in the window)."""
+        query = """
             SELECT s.id, s.slug, s.first_ts, s.last_ts, s.span_s, s.archetype,
                    s.mode, s.purpose, s.entrypoint, s.billing_mode, s.profile_id,
                    s.total_cost, s.total_tokens,
                    (SELECT t.path FROM transcripts t WHERE t.session_id = s.id LIMIT 1) AS source_path
             FROM sessions s
             ORDER BY s.first_ts DESC
-            LIMIT ? OFFSET ?
-            """,
-            (limit, offset),
-        ).fetchall()
+            """
+        since_dt, until_dt = _resolve_window(window_days, since, until)
+        if since_dt is None and until_dt is None:
+            rows = self._connection().execute(query + " LIMIT ? OFFSET ?", (limit, offset)).fetchall()
+        else:
+            rows = [
+                row
+                for row in self._connection().execute(query).fetchall()
+                if ts_in_window(row["last_ts"], since_dt, until_dt)
+            ][offset : offset + limit]
         result = [dict(row) for row in rows]
         for item in result:
             item["slug"] = redact_slug(item["slug"])
@@ -1302,9 +1304,12 @@ class Store:
         by_signature = {row["signature"]: {"turns": row["turns"], "cache_creation_tokens": row["cache_creation_tokens"]} for row in rows}
         return {"by_signature": by_signature}
 
-    def compactions(self) -> list[dict]:
+    def compactions(
+        self, *, window_days: int | None = None, since: str | None = None, until: str | None = None
+    ) -> list[dict]:
         """Every recorded compaction event (no transcript path — only
-        the opaque, store-local ``transcript_id``)."""
+        the opaque, store-local ``transcript_id``), oldest first; with a
+        window, only those that happened in it."""
         rows = self._connection().execute(
             """
             SELECT transcript_id, ts, pre_tokens, post_tokens, dropped_tokens, trigger, join_delta_s
@@ -1312,7 +1317,8 @@ class Store:
             ORDER BY ts
             """
         ).fetchall()
-        return [dict(row) for row in rows]
+        since_dt, until_dt = _resolve_window(window_days, since, until)
+        return [dict(row) for row in rows if ts_in_window(row["ts"], since_dt, until_dt)]
 
     def snapshots(self) -> list[dict]:
         """Every captured config snapshot's identity and digest (already
