@@ -37,12 +37,10 @@ stopped_by_user`, all of which already existed.
   `waste` report section (four tables, described below).
 - `RULES` — a one-element tuple, `(_rule_wasted_turns,)`, of `(report,
   th) -> list[Recommendation]` callables in the same shape
-  `recommend.py`'s own internal `_rule_*` functions already have. No
-  `RULES` constant exists anywhere else in this codebase yet
-  (`recommend.py` calls its rule functions directly from its own
-  `recommend()` entry point) — this is a new, minimal convention this
-  module establishes for a wiring agent to fold in, e.g.
-  `recs.extend(waste.RULES[0](report, waste_th))`.
+  `recommend.py`'s own internal `_rule_*` functions already have.
+  `recommend.recommend()` runs it as
+  `recs.extend(waste.RULES[0](report, waste_th))`, the same way it runs
+  `carry.RULES`, `compaction_sim.RULES` and `model_swap.RULES`.
 
 ## Cause detection
 
@@ -153,11 +151,10 @@ codebase follows.
 
 ## Downstream attribution
 
-`waste.py` does not itself modify `limits.py`, `recache.py`,
-`scorecard.py`, or `recommend.py` — wiring this section's totals and
-`RULES` into `report.build_report`/`recommend.recommend`, and any
-scorecard dimension that should account for wasted spend, is left to
-the integrating change. The functions to call are `waste.compute_waste`
-(or `WasteStats`/`WasteStats.add` for a per-transcript loop),
-`waste.build_section`, `waste.WasteThresholds.from_config`, and
-`waste.RULES`.
+`report.build_report` feeds every transcript through `WasteStats.add`
+in its per-session loop, appends `waste.build_section(...)` after the
+`model_swap` section, and adds `waste.ASSUMPTIONS` to the report's
+assumptions. `recommend.recommend()` runs `waste.RULES[0]` with
+`WasteThresholds.from_config(config.thresholds)`. The CLI's `waste`
+subcommand prints this section plus `overview`. No scorecard dimension
+reads wasted spend yet.

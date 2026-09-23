@@ -27,7 +27,7 @@ claude-token-lens compare \
 
 | Form | Example | Selects |
 |---|---|---|
-| `window:<since>..<until>` | `window:2026-08-01..2026-08-31` | Sessions whose first turn timestamp falls in `[since, until]` (either date may be omitted, but not both; `until` is inclusive of the whole day). |
+| `window:<since>..<until>` | `window:2026-08-01..2026-08-31` | Sessions whose first turn timestamp falls in `[since, until]`, read as UTC dates (either date may be omitted, but not both; `until` is inclusive of the whole day). |
 | `key:<key>=<value>` | `key:user_settings.autoCompactWindow=5` | Sessions whose joined config snapshot (`snapshots.snapshot_for`: the latest snapshot at or before the session's first turn) has that flattened key equal to that value. Requires config snapshots to exist (`snapshot-config` hook) — a session with no snapshot never matches. |
 | `profile:<id>` | `profile:default` | Sessions whose `SessionRecord.profile_id` equals `<id>`. **Currently matches zero sessions in any real corpus** — see the caveat below. |
 | `project:<slug>[,<slug>...]` | `project:my-app,my-app-staging` | Sessions under any of the named (redacted) project slugs. |
@@ -45,10 +45,10 @@ partition of it.
 implemented and tested against a hand-set `profile_id`, but nothing in
 the shipped codebase currently populates `SessionRecord.profile_id` —
 `classify.build_session_record`'s own docstring documents this as
-"nothing to populate it with yet". The filter is ready the moment the
-sibling `profiles/` package (out of scope for this work package) wires
-that field up; until then, a `profile:` arm always selects an empty
-group.
+"nothing to populate it with yet". The `profiles/` package now ships
+and the `snapshot-config` hook records the active `profile_id` in each
+snapshot, but nothing copies it onto the session record. Until that
+wiring lands, a `profile:` arm always selects an empty group.
 
 ### Overview metrics: per-session means vs totals (review finding S4)
 
@@ -127,9 +127,10 @@ table names what else moved alongside it.
 
 `--json`/`--html PATH`/`--csv-dir DIR` work exactly as they do for
 `report` (a single `Section` wrapped in a minimal `ReportModel` for the
-same renderers); the default is Markdown to stdout. Only a bad arm spec,
-a bad `--stratify` key, or a `sessions.toml` load failure exits non-zero
-(2); anything else — including no sessions above `--min-sessions` in
+same renderers); the default is Markdown to stdout. A bad arm spec, a
+bad `--stratify` key, or a `sessions.toml` load failure exits 2. No
+matching project directory, or no sessions at all in the window, exits
+1. Anything else — including fewer than `--min-sessions` sessions in
 either arm — still exits 0 with a full report.
 
 ## `claude-token-lens reconcile`
@@ -167,8 +168,9 @@ rather than silently dropping it or failing the whole file.
 | `cost` | `cost`, `cost_usd`, `total_cost` |
 | `cost` (cents — divided by 100) | `cost_cents`, `total_cost_cents` |
 
-A 5-minute-split and a 1-hour-split column (however named) are always
-summed into one `cache_creation_tokens` total; a `cost_cents` column is
+The flat, 5-minute-split and 1-hour-split columns (however named) are
+all summed into one `cache_creation_tokens` total, so a file that
+carries both the flat total and the split counts those tokens twice; a `cost_cents` column is
 added to `cost` after dividing by 100. A file with no recognisable
 `date` column is refused outright (there's nothing to group by); every
 other field defaults to zero/`None` when absent.
@@ -193,7 +195,7 @@ correct Admin figure can still legitimately differ:
 - subscription usage has no Admin cost
 - other tools may use the same API key
 - workspace filters on the Admin export
-- UTC day boundaries (a session's turns are bucketed by local time here,
+- UTC day boundaries (a session's turns are bucketed by UTC day here;
   the Admin export's own day boundary may differ)
 - an unknown model is priced at zero locally
 
@@ -208,5 +210,7 @@ error and the command exits 2. **A bad-row message never includes the
 row's own content** — only the 1-based line number
 (`cannot parse admin CSV at line 7`) — so a reconcile failure can be
 pasted into a shared terminal or ticket without risk of leaking whatever
-the export actually contained. Once the CSV parses, `reconcile` always
-exits 0 — a large or unexplained delta is not treated as a failure.
+the export actually contained. Once the CSV parses, `reconcile` exits 1
+only when no project directory matches or the window holds no sessions;
+otherwise it exits 0 — a large or unexplained delta is not treated as a
+failure.

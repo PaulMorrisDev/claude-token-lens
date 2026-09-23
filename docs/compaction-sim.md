@@ -60,15 +60,33 @@ under this row — see the "no candidate window" identity below).
 | `compaction_sim_by_agent_type` | `"top-level"` and every subagent type | Each key's own cheapest candidate window, its cost, the saving vs. observed (0 floor), and a recommendation string naming the window. |
 | `compaction_sim_fidelity` | Top-level sessions with a known configured window | Simulating at the session's own snapshot-configured `autoCompactWindow` against its true observed cost — a trust check on the simulation itself. |
 
+The `compaction_sim_by_agent_type` recommendation string names the
+cheapest window only when it is both below
+`CompactionSimThresholds.switch_pct` (default 0.95) × observed cost and
+more than `switch_usd` (default $1.00) cheaper.
+
 Recommendation rule `compaction-window` (category `settings`, lever
-`autoCompactWindow`) fires when the best candidate window's cost clears
-both `CompactionSimThresholds.switch_pct` (default 0.95× observed) and
-`switch_usd` (default > $1.00 saved) — the same two-condition gate shape
-as `ttl.py`'s own `ttl-switch` rule. Scope is `"user"`
+`autoCompactWindow`) is more conservative. It reads
+`compaction_sim_by_window` and names a floor ("at least W"), not a
+single best window:
+
+1. It adds an extra rediscovery cost per simulated compaction on top of
+   the sweep's flat allowance: the allowance × the corpus's mean
+   post-compaction redundant reads per session (the second row of
+   `topology_redundant_reads`), or the allowance again when the
+   `agents` section is missing.
+2. It walks the candidate windows from smallest up, skips any with more
+   than 2 simulated compactions per session, and picks the first whose
+   corrected saving is more than (1 − `switch_pct`) of observed cost
+   (5% by default) and more than `switch_usd`.
+
+The action says the figure is modelled, not observed, and points to
+`compaction_sim_fidelity` when that table has rows. Scope is `"user"`
 (`~/.claude/settings.json`), `"project"` (`<project>/.claude/settings.json`
-or `.settings.local.json`, read via `snapshots.effective_provenance`), or
-`"managed"` (named, not offered as user-actionable) depending on which
-settings layer actually set the session's effective `autoCompactWindow`.
+or `<project>/.claude/settings.local.json`, read via
+`snapshots.effective_provenance`), or `"managed"` (named, not offered as
+user-actionable) depending on which settings layer actually set the
+session's effective `autoCompactWindow`.
 
 ## Sign convention (differs from `ttl.py`)
 
@@ -92,9 +110,10 @@ all (`window=none`). Under `window=100,000`, compactions fire at turns
 last summary, passes 100,000 again), and the total drops to
 **$1.138** — a **$0.622 saving (35% cheaper)**. That is three summaries
 a session, so the rule skips 100,000 and names 150,000 (two summaries,
-$0.501 saved) as the floor, once the saving clears the switch
-thresholds. The full turn-by-turn arithmetic is spelled out in that test
-file's docstrings.
+$0.501 saved) as the floor. That needs `switch_usd` lowered below
+$0.50, as the rule tests do ($0.10); at the default $1.00 this small
+example fires nothing. The full turn-by-turn arithmetic is spelled out
+in that test file's docstrings.
 
 ## The "no candidate window" identity
 
@@ -129,21 +148,14 @@ Printed verbatim in the report section's own notes (`ASSUMPTIONS`):
 - `delta_usd = candidate_cost - observed_cost` (see the sign-convention
   section above).
 
-## Wiring into the report and CLI (integration note)
+## Wiring into the report and CLI
 
-`compaction_sim.py` cannot be imported by `report.py`/`cli.py`/
-`recommend.py` from within this module (out of this work's file
-ownership) — the module's own docstring in
-`src/claude_token_lens/compaction_sim.py` spells out the exact call
-sites and snippets an integrating change needs:
-
-1. `report.py`: build `snapshot_windows: dict[session_id, int | None]`
-   (reusing `context_budget.py`'s own `session_to_project` reverse
-   lookup plus `snapshots.effective_config(snapshot).get("autoCompactWindow")`,
-   just keyed by session id instead of project), then call
-   `compaction_sim.simulate_compaction_windows(all_results, rates, snapshot_windows)`
-   and `compaction_sim.build_section(stats)`, and append the section.
-2. `recommend.py`: add
-   `recs.extend(compaction_sim.RULES[0](report, CompactionSimThresholds(), snapshot))`
-   alongside the module's other `recs.extend(_rule_xxx(...))` calls,
-   after step 1 has added the `compaction_sim` section to `report`.
+`report.build_report` builds a per-session `snapshot_windows` map (the
+effective `autoCompactWindow` in the latest config snapshot of each
+session's project), calls
+`compaction_sim.simulate_compaction_windows(all_results, rates, snapshot_windows, thresholds)`
+and appends `compaction_sim.build_section(...)` after the `carry`
+section. `recommend.recommend()` then runs
+`compaction_sim.RULES[0](report, CompactionSimThresholds.from_config(config.thresholds), snapshot)`.
+The CLI's `compaction-sim` subcommand prints this section plus
+`overview`.

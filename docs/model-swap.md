@@ -81,7 +81,7 @@ archetype that never spawns subagents of its own (`chat-only`) — the
 top-level row's own model is a real lever regardless of archetype, so
 it is never suppressed.
 
-## For the wiring agent
+## API and wiring
 
 ```python
 from claude_token_lens import model_swap
@@ -97,8 +97,10 @@ recs = model_swap.RULES["model-tier"](report, thresholds, archetype, snapshot)
 - `model_swap.ModelSwapThresholds` — `saving_pct_min` (10.0), `saving_usd_min` (1.00), `min_sessions` (5), `min_turns` (200); `.from_config(dict)` and `.describe()` follow the same convention as `RecacheThresholds`/`TtlThresholds`.
 - `model_swap.ASSUMPTIONS` — the four caveats this module states about every number it produces; fold into any parent "assumptions" listing.
 
-Fold `model_swap.build_section(...)`'s `Section` into the report's
-section list and `RULES["model-tier"]` into `recommend.py`'s own rule
-dispatch the same way every other `*.RULES` mapping is wired in; no
-change to `recommend.py`, `report.py`, `model.py`, or `pricing.py` was
-made by this module, so the wiring is additive.
+`report.build_report` appends `model_swap.build_section(...)` after the
+`compaction_sim` section and adds `model_swap.ASSUMPTIONS` to the
+report's assumptions. `recommend.recommend()` runs
+`RULES["model-tier"]` with
+`ModelSwapThresholds.from_config(config.thresholds)`, the report's
+archetype and the latest snapshot. The CLI's `model-swap` subcommand
+prints this section plus `overview`.

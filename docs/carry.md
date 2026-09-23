@@ -70,16 +70,21 @@ elsewhere in this codebase) and integers.
 
 ## The lever
 
-`recommend.py`'s `tool-output-carry` rule (`carry.RULES`, wired in
-separately — see below) fires when a tool's carry cost exceeds
-`carry_share_pct` (default 25%) of the corpus's total cache volume, and
-that tool has at least `min_sample_results` (default 5) carried
-results. There is no settings key for this: the fix is a workflow
+The `tool-output-carry` rule (`carry.RULES`, which
+`recommend.recommend()` runs after its own rules) fires per tool when
+that tool's carry *tokens* are more than `carry_share_pct` (default
+25%) of the corpus's total cache volume (every priced turn's
+`cache_read_tokens + cache_creation_tokens`), and that tool has at
+least `min_sample_results` (default 5) carried results. The corpus
+must also clear the usual minimum sample (`min_sessions`/`min_turns`).
+There is no settings key for this: the fix is a workflow
 change at the point the result is produced — pipe long Bash/PowerShell
 output through `head`/`tail` or a digest script, prefer `Grep` over
 `Read` for large files, and cap agent report length before it enters
-context — so `Recommendation.lever` is `None`, and the action names the
-projected saving from `carry_truncation_savings` directly.
+context — so `Recommendation.lever` is `None`. The action names the
+projected saving from the `carry_truncation_savings` row at
+`big_result_tokens` (default 8,000), or at the largest configured cap
+when no row matches.
 
 ## Worked example (synthetic numbers)
 
@@ -117,9 +122,8 @@ it at, say, 8,000 tokens as `$0.006 × (1 − 8,000/10,000) = $0.0012`.
   report section described above.
 - `RULES` — `[_rule_tool_output_carry]`, the `tool-output-carry` rule
   described above, in the same `(report, thresholds) -> list[Recommendation]`
-  shape every baseline rule in `recommend.py` uses. Not wired into
-  `recommend.recommend()` by this module (it never imports or edits
-  `recommend.py`) — a caller folds `carry.RULES` into that function's
-  own rule list, and appends `carry.ASSUMPTIONS` to the report's
-  assembled `ReportMeta.assumptions` the same way `report.py` already
-  does for `ttl.ASSUMPTIONS`/`recache.ASSUMPTIONS`/`limits.ASSUMPTIONS`.
+  shape every baseline rule in `recommend.py` uses. `carry.py` never
+  imports `recommend.py`; `recommend.recommend()` imports `carry` and
+  calls `carry.RULES[0]` itself, and `report.build_report` appends
+  `carry.ASSUMPTIONS` to `ReportMeta.assumptions` alongside
+  `ttl.ASSUMPTIONS`/`recache.ASSUMPTIONS`/`limits.ASSUMPTIONS`.

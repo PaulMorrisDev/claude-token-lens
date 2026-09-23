@@ -88,7 +88,7 @@ weekly window" instead.
 | Table | What it shows |
 |---|---|
 | `elasticity_fit` | One row per window kind × metric (`new_tokens`, `cache_read`, `usd`): the unit, the fitted window-percent-per-unit slope (blank when refused), R², pairs used, residual spread (percentage points), whether the fit was accepted, and the reason when it wasn't. |
-| `elasticity_budget` | One row per window kind: the derived million new tokens a full window is worth, and a note (the fit's own pair count/R² when available, else the refusal reason). |
+| `elasticity_budget` | One row per window kind: the derived million new tokens a full window is worth (blank unless that window's new-tokens fit was accepted with a positive slope), and a note (the fit's own pair count/R² when available, else the refusal reason). |
 | `elasticity_recent_burn` | One row, for `weekly_window`: the burn-window length in hours, new tokens consumed in it, the resulting share of a full window, and a note (populated only when the fit backing it was refused). |
 
 ## Weighting choice
@@ -109,21 +109,19 @@ independent of which estimator produced the slope.
 ## `express_in_window` for other sections
 
 Every other analytics module in this codebase reports a ceiling saving
-in USD. Once `config.billing == "subscription"`, that number alone
-understates what actually matters to the user: their subscription's
-usage window. A wiring step should call, for each recommendation's own
-USD saving figure (in subscription mode only):
+in USD. Under `config.billing == "subscription"`, that number alone
+understates what actually matters to you: your plan's usage limits.
+So `report.build_report` (via `_report_units`) calls
+`compute_elasticity` whenever billing is `subscription` and
+`<config-dir>/usage-log.csv` has rows, and hands the result to
+`units.Units`. `Units.money` then calls `express_in_window` for every
+amount it phrases:
 
-```python
-pct = elasticity.express_in_window(saving_usd, stats)  # stats: ElasticityStats
-if pct is not None:
-    saving_line += f" (≈ {pct:.1f}% of your weekly window)"
-```
-
-`pct` is `None` whenever the underlying weekly-window USD fit hasn't
-been accepted yet (too few usage-log samples, or a poor fit) — the
-wiring step should simply omit the suffix in that case, exactly as
-`elasticity_fit`'s own `reason` column would explain.
+- With an accepted weekly-window USD fit, the amount reads "about x% of
+  your weekly usage limit", with the list-price equivalent second.
+- Otherwise (`express_in_window` returns `None`), it reads "$X
+  list-price equivalent" plus a hint to log statusline usage-limit
+  readings.
 
 ## The `window-budget` recommendation rule
 
@@ -160,11 +158,10 @@ rule's own output after every other module's rules.
 
 ## Downstream attribution
 
-`elasticity.py` does not itself modify `report.py`, `recommend.py`, or
-any other module — wiring the `elasticity` section, `RULES`, and
-`express_in_window` into `report.build_report`/`recommend.recommend`
-(and attaching its window-share suffix to every recommendation's saving
-line in subscription mode) is left to the integrating change. The
-functions to call are `elasticity.compute_elasticity`,
-`elasticity.build_section`, `elasticity.ElasticityThresholds.
-from_config`, `elasticity.express_in_window`, and `elasticity.RULES`.
+Only `compute_elasticity` and `express_in_window` are wired in today,
+through `units.Units` (see above). `report.build_report` does not add
+the `elasticity` section, `recommend.recommend()` does not run
+`elasticity.RULES`, and no CLI subcommand prints the section — call
+`elasticity.build_section` directly to see the tables. The
+`_report_units` call also uses default thresholds, so an
+`[thresholds.elasticity]` table in `config.toml` does not reach it.

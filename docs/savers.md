@@ -104,8 +104,8 @@ direction:
 - **Net saving negative** — "not paying for itself", naming the
   projected saving from disabling it.
 
-The lever is `mcpServers.<name>` (or the plugin-equivalent name),
-scoped `"managed"` when `mcpServers`/`enabledPlugins` appears in the
+The lever is always `mcpServers.<name>`, even for a candidate found
+only as a plugin, scoped `"managed"` when `mcpServers`/`enabledPlugins` appears in the
 joined snapshot's `managed_keys` (the org-pushed managed-settings case),
 `"user"` otherwise.
 
@@ -127,7 +127,11 @@ Check the Config report section, or run `claude-token-lens
 probe-config`, for the exact MCP server and plugin names this tool
 already has on file before typing one in.
 
-## For the wiring agent
+## API and wiring
+
+Nothing calls this module yet: `report.build_report` does not add the
+`savers` section, `recommend.recommend()` does not run its rule, and no
+CLI subcommand or dashboard tab prints it. Call it directly:
 
 ```python
 from claude_token_lens import savers
@@ -145,12 +149,10 @@ recs = savers.RULES["saver-tool-roi"](report, thresholds, snapshot)
 - `savers.SaverThresholds` — `min_sessions_per_arm` (5), `overhead_share_pct` (20.0), `net_saving_usd_min` (0.01), `configured_names` (from `config.savers`); `.from_config(data, config=None)` and `.describe()` follow the same convention as `RecommendThresholds`/`ScorecardThresholds`.
 - `savers.ASSUMPTIONS` — this module's own modelling caveats; fold into any parent "assumptions" listing.
 
-Fold `savers.build_section(...)`'s `Section` into the report's section
-list and `RULES["saver-tool-roi"]` into `recommend.py`'s own rule
-dispatch the same way every other `*.RULES` mapping is wired in; no
-change to `recommend.py`, `report.py`, `model.py`, `compare.py`,
-`snapshots.py`, `parse.py`, `cli.py`, or `service/` was made by this
-module, so the wiring is additive. `compute_saver_roi` takes
+To wire it in, fold `savers.build_section(...)`'s `Section` into the
+report's section list and `RULES["saver-tool-roi"]` into
+`recommend.recommend()` the way `carry.RULES`/`waste.RULES` already
+are. `compute_saver_roi` takes
 `sessions` as already-built `SessionRecord`s (`classify.
 build_session_record`'s own output) — it does not classify sessions
 itself.

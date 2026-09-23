@@ -6,27 +6,44 @@ table each `build_section(...)` function produces today, and expands the
 two topics the README only summarises: the TTL section's utilisation
 metrics, and a worked example against a real, scrubbed transcript.
 
-`report.build_report` assembles every section below (in this same order,
-minus `phases`/`config` when their preconditions aren't met — see the
-README) into one `ReportModel`; `claude-token-lens report` prints it.
-Each section is still independently produced by calling the named
-module's own `build_section` function directly against
-`TranscriptResult`/`SessionRecord` objects from `parse_transcript`, which
-is what every example in this file does.
+`report.build_report` assembles these sections into one `ReportModel`,
+in this order: `overview`, `usage`, `sessions`, `recache`, `ttl`,
+`limits`, `carry`, `compaction_sim`, `model_swap`, `waste`,
+`compactions`, `agent_startup`, `agents`, `workstyle`, `workflows`,
+`phases` (only with `--phases`), `config` (only when config snapshots
+exist), `context_budget`, `scorecard`, and `baseline_comparison` (only
+with `--baseline`). `claude-token-lens report` prints it. This file
+groups sections by topic, so its order differs.
+
+These sections are not part of the assembled report: `config_diff`,
+`compare`, `reconcile` and `team_report` (each printed by its own
+subcommand), and `usage_windows`, `savers` and `elasticity` (no
+subcommand prints them yet; call their `build_section` directly).
+
+Table names below are the exact `Table.name` values. A table's CSV
+export is `<section key>__<table name>.csv`, and a recommendation's
+evidence cites it by section key and table name. Each section can also
+be produced by calling the named module's own `build_section` function
+directly against `TranscriptResult`/`SessionRecord` objects from
+`parse_transcript`, which is what the worked example at the end of this
+file does.
 
 ## `overview` (`report.py`)
 
-- `overview_totals` — corpus-wide totals: sessions, top-level/subagent
-  transcripts, workflow runs, priced turns, the four raw token counts
-  (`input_tokens`, `cache_creation_tokens`, `cache_read_tokens`,
-  `output_tokens`), the two derived totals from
-  [README section 3](concepts.md#1-the-two-token-totals)
+- `totals` — one `metric`/`value` row per corpus-wide total: sessions,
+  top-level/subagent transcripts, workflow runs, priced turns, the four
+  raw token counts (`input_tokens`, `cache_creation_tokens`,
+  `cache_read_tokens`, `output_tokens`), the two derived totals from
+  [Concepts section 1](concepts.md#1-the-two-token-totals)
   (`usage_tokens`, `new_tokens`), `total_cost_usd`,
   `cache_read_cost_share_pct` (cache-read cost as a percentage of total
-  cost), and `cache_roi` (from `ttl.py`'s cache-economy totals — see
-  [`ttl_cache_economy`](#ttl-utilisation-metrics) below).
-- `overview_by_model` — the same token/cost breakdown, one row per model
-  id, sorted by cost descending.
+  cost), `cache_roi` (from `ttl.py`'s cache-economy totals — see
+  [`ttl_cache_economy`](#ttl-utilisation-metrics) below), and two
+  top-level-only context figures: `top_level_median_ctx` and
+  `top_level_turns_ctx_ge_200k_pct` (the share of top-level turns at
+  200,000 tokens of context or more).
+- `by_model` — turns, the four raw token counts and cost, one row per
+  model id, sorted by cost descending.
 
 ## `usage` (`usage.py`)
 
@@ -36,13 +53,13 @@ block grid — see [README section 1](../README.md#1-what-it-is-what-it-measures
 for the billing-mode distinction every money column in this section
 respects.
 
-- `usage_by_day` / `usage_by_week` / `usage_by_month` — period x model:
+- `by_day` / `by_week` / `by_month` — period x model:
   turns, tokens, cost. The period key is computed in `config.tz` (falling
   back to the machine's own local zone).
-- `usage_by_project` — sessions and cost per project slug.
-- `usage_by_entrypoint` — transcripts, turns, tokens, cost per
+- `by_project` — sessions and cost per project slug.
+- `by_entrypoint` — transcripts, turns, tokens, cost per
   `entrypoint` (e.g. `claude-desktop`, `claude-code`).
-- `usage_five_hour_blocks` — sessions, turns, tokens, cost per fixed
+- `five_hour_blocks` — sessions, turns, tokens, cost per fixed
   00:00/05:00/10:00/15:00/20:00-local block, populated only when
   `config.billing == "subscription"` (a genuine per-account rolling
   5-hour window can't be observed from transcripts alone, so this is a
@@ -76,18 +93,22 @@ are not real invoice lines.
 
 ## `sessions` (`classify.py`)
 
-- `sessions_by_mode` — session count, cost, span by `mode` (`interactive`,
-  `long-agentic`, `overnight`, `mixed`), first match wins in that order
-  from the plan's classification rules (chain/subagent-fanout with few
-  prompts, span > 4h with a >60min human gap, median human gap < 5min
-  with ≤2 subagents, else mixed).
-- `sessions_by_purpose` — the same, by `purpose` (`local-llm-pipeline`,
-  `agent-fanout`, `workflow-run`, `review`, `test-triage`, `planning`,
-  `docs`, `refactor`, `general-dev`), with intent signatures checked
-  before falling through to the generic buckets.
-- `sessions_per_session` — one row per session: mode, purpose, cost,
-  span, subagent count, max spawn depth, evidence source
-  (`sessions.toml` override vs. rule-derived).
+- `sessions_by_mode` — sessions, turns, subagents, median span and
+  median human prompts per `mode`. First match wins, in this order:
+  `overnight` (span over 4h once usage-limit pauses are discounted, a
+  human gap over 60min, and real activity in the local 22:00-07:00
+  window), `long-agentic` (a self-chained run, or subagents or at least
+  30 turns with at most 10 human prompts), `interactive` (median human
+  gap under 5min with at most 2 subagents), else `mixed`. A section note
+  states the overnight window in use.
+- `sessions_by_purpose` — the same columns by `purpose`. First match
+  wins, in this order: `local-llm-pipeline`, `workflow-run`, `review`,
+  `test-triage`, `planning`, `docs-or-light-edit`, `refactor`,
+  `agent-fanout`, else `general-dev`.
+- `sessions_detail` — the 50 most recently started sessions, one row
+  each: project, mode, purpose, sources (whether each came from a
+  `sessions.toml` override or the rule engine), start time, span, turns
+  and subagent count.
 
 Per-session `mode`/`purpose` overrides live in
 `<config-dir>/sessions.toml` (`<config-dir>` defaults to
@@ -96,12 +117,16 @@ Per-session `mode`/`purpose` overrides live in
 
 ## `recache` (`recache.py`)
 
-Definitions: [README section 5](concepts.md#3-cache-rebuild-definitions-and-signatures).
+Definitions: [Concepts section 3](concepts.md#3-cache-rebuild-definitions-and-signatures).
 
 - `recache_summary` — transcripts, priced turns, re-cache turns and
-  share, cache-creation tokens (re-cache vs. all), avoidable cost.
-- `recache_signature_split` — `full-expiry` vs. `prefix-invalidated`:
-  turns, cache-creation tokens, avoidable cost, median ctx, median gap.
+  share, cache-creation tokens (re-cache vs. all), avoidable cost, and
+  `unavoidable_limit_expiry_cost_usd` (re-cache turns right after a
+  usage-limit pause, kept out of avoidable cost).
+- `recache_signature_split` — `full-expiry`, `prefix-invalidated` and
+  `limit-expiry` (the gap spanned a usage-limit pause): turns,
+  cache-creation tokens, avoidable cost, median ctx, median gap. Every
+  cause table below leaves `limit-expiry` turns out.
 - `recache_gap_buckets` — re-cache turns and their control-group share
   (all priced turns), bucketed by inter-turn gap (`<1m`, `1-5m`, `5-15m`,
   `15-60m`, `>60m`, `unknown`), both by turn count and by cache-creation
@@ -116,8 +141,10 @@ Definitions: [README section 5](concepts.md#3-cache-rebuild-definitions-and-sign
   against its control share, with an explicit
   "over-representation" column (`share - control_share`).
 - `recache_primary_cause_prefix_invalidated` — the same, restricted to
-  `prefix-invalidated` turns only (the signature a TTL change can
-  actually address — see the README's TTL utilisation section).
+  `prefix-invalidated` turns, with shares taken within that subset.
+  Full-expiry turns are left out because their cache had fully expired
+  whatever preceded them; a prefix-invalidated turn is the one a
+  preceding event can actually explain.
 - `recache_event_cooccurrence` — every event kind's presence (not just
   the precedence-resolved primary) among re-cache turns vs. control, so
   the precedence order never hides a contributing cause.
@@ -130,51 +157,61 @@ Definitions: [README section 5](concepts.md#3-cache-rebuild-definitions-and-sign
   200,000 tokens) and their share of total cache-read volume: a
   context-hygiene metric, not a pricing surcharge (current-generation
   models bill the full context window at standard rates).
+- `recache_by_group` — only with `report --group-by`: the
+  `recache_summary` columns, one row per group.
+- `measured_miss_causes` — only when the usage-log CSV carries the
+  statusline's cache-miss causes: the main session's cache misses by the
+  cause Claude Code itself reported (misses, share, sessions), to set
+  beside the causes inferred above.
 
 ## `ttl` (`ttl.py`)
 
-Simulation assumptions: [README section 7](concepts.md#4-ttl-simulation-assumptions).
+Simulation assumptions: [Concepts section 4](concepts.md#4-ttl-simulation-assumptions).
 
 - `ttl_by_agent_type` — per agent type and `"top-level"`: spawns, priced
-  turns, observed 5m/1h mix, gaps > 5min, gaps > 60min, cost observed /
-  all-5m / all-1h, best policy, delta, fidelity, and a recommendation
-  string naming the concrete lever (`subagentPromptCacheTtl`,
-  `experimental.cacheTtl` in `<agent>.md`, or `promptCacheTtl`).
+  turns, observed 5m/1h mix, gaps > 5min, gaps > 60min, limit gaps, gap
+  p50/p90, cost observed / all-5m / all-1h, best policy, delta vs. best
+  (USD and %), saving if switched, fidelity, unsimulatable and unpriced
+  turns, a recommendation string, and the lever (`promptCacheTtl` for
+  the top-level row; otherwise `experimental.cacheTtl` in `<agent>.md`,
+  or `subagentPromptCacheTtl` for all subagents).
 - `ttl_gap_distribution` — inter-turn gap histogram per agent type.
 
 ### TTL utilisation metrics
 
-- `ttl_wasted_writes` — cache-creation writes that were never read back
-  before the entry expired: count, tokens, USD, and a wasted-share
-  percentage (`waste_pct`).
+- `ttl_wasted_writes` — per agent type: `writes`, `wasted_writes`
+  (never read back before the entry expired), `tokens_written`,
+  `tokens_wasted`, `share` (wasted tokens as a percentage of tokens
+  written, leaving out each transcript's last write), `usd_wasted`, and
+  `terminal_writes` (those last writes, counted separately).
 - `ttl_premium_waste` — for turns using a 1h TTL: tokens/USD where the
   extra write premium was never earned back by a hit a 5m TTL would have
-  missed (`premium_1h_not_needed_*`) vs. tokens/USD where it was earned
-  (`premium_1h_earned_*`) vs. tokens where the 1h entry expired anyway
-  (`premium_1h_expired_*`); symmetrically for 5m turns,
-  `premium_5m_fine_tokens` (no loss) vs. `premium_5m_loss_*` (expired
-  when a 1h TTL would have survived) and `premium_5m_would_expire_tokens`.
-- `ttl_break_even_share` — `premium_ratio` (the rate-card-derived
-  break-even point) against `break_even_pct` (the same figure expressed
-  as a percentage of the shared cacheable-prefix denominator, `Σ C_i`
-  across all gaps), `premium_all_1h`/`expiry_loss_all_5m` (what every
-  write would have cost end to end under each fixed policy), `margin`
-  (`expiry_loss_all_5m - premium_all_1h`, positive means 1h wins) and a
-  one-word verdict (`"marginal"` when the larger side is within a small
-  band of the smaller, else `"1h"`/`"5m"`).
+  missed (`h1_not_needed_*`) vs. tokens/USD where it was earned
+  (`h1_earned_*`) vs. tokens/USD where the 1h entry expired anyway
+  (`h1_expired_*`); symmetrically for 5m turns, `m5_fine_tokens` (no
+  loss) vs. `m5_loss_*` (expired when a 1h TTL would have survived) and
+  `m5_would_expire_tokens` (would have expired under 1h too).
+- `ttl_break_even_share` — `premium_all_1h`/`expiry_loss_all_5m` (what
+  every write would have cost end to end under each fixed policy),
+  `margin` (`expiry_loss_all_5m - premium_all_1h`, positive means 1h
+  wins), `in_window_pct` (the prefix-weighted share of gaps between 5
+  and 60 minutes) against `break_even_pct` (the share at which 1h starts
+  to pay), and a `verdict`: `"marginal"` when the margin is within 5% of
+  the larger side or under $1.00, else `"1h pays"` or `"5m pays"`.
 - `ttl_near_miss` — turns whose gap fell within `near_miss_window_s`
   (default 60s) of a TTL boundary, on the side that just missed and the
   side that just made it, for both the 5m and 1h boundaries.
-- `ttl_addressable_share` — of all re-cache turns, the share whose
-  signature is `prefix-invalidated` (TTL-addressable: a longer TTL could
-  have survived the gap) vs. `full-expiry` (content-addressable only: no
-  TTL choice below the gap length would have helped).
-- `ttl_cache_economy` — `cache_economy`/`cache_roi` per agent type: the
-  "uncached-equivalent" cost (as if every token had been priced as plain
-  input) minus what was actually paid for writes and reads
-  (`net_saving_usd`), and that saving as a ratio to what was spent on
-  writes (`cache_roi`) — a standalone "is caching worth it at all"
-  number, plus `unpriced_turns` for coverage.
+- `ttl_addressable_share` — per agent type, re-cache tokens, USD and
+  share split by signature: `full_expiry_*` (TTL-addressable: the entry
+  expired, so a longer TTL could have kept it) vs.
+  `prefix_invalidated_*` (content-addressable: something upstream of
+  the cached prefix changed, which no TTL choice fixes).
+- `ttl_cache_economy` — per agent type plus an `overall` row:
+  `tokens_written`, `tokens_read`, `write_usd`, `read_usd`,
+  `uncached_equivalent_usd` (every cache token priced as plain input),
+  `net_saving_usd` (uncached-equivalent minus write and read USD), and
+  `cache_roi` (net saving divided by write USD) — a standalone "is
+  caching worth it at all" number.
 
 Fidelity self-check: `ttl.dominant_ttl`/`ttl.fidelity` replay the
 simulation at a transcript's own dominant observed TTL and compare it to
@@ -211,7 +248,7 @@ gap in `recache`/`ttl`/`sessions`).
   `usage-log.csv`'s own exhaustion-row counts for `five_hour`/
   `seven_day`, appended as an extra table on this section only when
   `report.build_report` is given `usage_log_rows` (same "extra table
-  bolted on" convention `usage_ground_truth` uses for the `usage`
+  bolted on" convention `cache_ground_truth` uses for the `usage`
   section above).
 
 `scorecard.py`'s `cache_efficiency` dimension excludes the portion of
@@ -250,16 +287,14 @@ or re-written at a `cache_write_5m`/`cache_write_1h` rate on a re-cache
   re-simulation (carry cost is exactly proportional to a result's own
   token size for a fixed run of later turns).
 
-`carry.py` never imports or is imported by `recommend.py`; its
-`tool-output-carry` rule lives in `carry.RULES` (same
-`(report, thresholds) -> list[Recommendation]` shape as every baseline
-rule) for a caller to fold into `recommend.recommend()`'s own rule
-list, and it fires whenever a tool's carry-cost share of cache volume
-clears `CarryThresholds.carry_share_pct` (default 25%) on at least
-`min_sample_results` (default 5) carried results — its action names a
-concrete workflow lever (truncate long Bash/PowerShell output, prefer
-`Grep` over `Read`, cap agent report length) and cites the matching
-`carry_truncation_savings` row as the projected saving.
+`recommend.recommend()` runs the `tool-output-carry` rule
+(`carry.RULES`). It fires when a tool's carry-token share of cache
+volume is more than `CarryThresholds.carry_share_pct` (default 25%) on
+at least `min_sample_results` (default 5) carried results. Its action
+names a workflow lever (truncate long Bash/PowerShell output, prefer
+`Grep` over `Read`, cap agent report length) and cites the
+`carry_truncation_savings` row at `big_result_tokens` (default 8,000)
+as the projected saving.
 
 ## `compaction_sim` (`compaction_sim.py`)
 
@@ -273,13 +308,15 @@ The `autoCompactWindow` sweep: full write-up and worked example in
   cheaper**, the opposite sign convention to `ttl`'s own delta columns
   (see the module docstring for why).
 - `compaction_sim_by_agent_type` — every agent type's (`"top-level"` and
-  each subagent type) own best candidate window, its cost, the saving
-  vs. observed (0 floor) and a recommendation string naming the window.
+  each subagent type) sessions, observed cost, best candidate window,
+  its cost, the saving vs. observed (0 floor), the delta in percent, and
+  a recommendation string naming the window.
 - `compaction_sim_fidelity` — for each top-level session whose project
-  snapshot carries a known configured `autoCompactWindow`: simulating at
-  that same window against the recommendation threshold
-  (`CompactionSimThresholds.fidelity_warn_pct`, default 10%) confirms
-  the model's assumptions hold before trusting its recommendation.
+  snapshot carries a known configured `autoCompactWindow`: that
+  configured window, the simulated cost at it, the observed cost, and
+  the fidelity gap in percent. A gap above
+  `CompactionSimThresholds.fidelity_warn_pct` (default 10%) says the
+  model's assumptions don't hold for that session.
 
 A simulated compaction resets context to this corpus's own observed
 compression ratio (median `postTokens`/`preTokens` across real
@@ -288,20 +325,16 @@ compression ratio (median `postTokens`/`preTokens` across real
 cache write) plus a rediscovery allowance (this corpus's own median
 post-compaction re-cache write cost from real events; $0.00 default). A
 real, already-observed compaction is kept as-is under every candidate
-window rather than re-simulated. Recommendation rule: `compaction-window`
-(lever `autoCompactWindow`, category `settings`), gated on the same
-`switch_pct`/`switch_usd` shape as `ttl`'s own switch rule (default >5%
-and >$1.00 cheaper).
+window rather than re-simulated.
 
-> **Note (v4 wiring round):** the paragraph above describes the rule's
-> pre-v4 gating shape. `compaction-window`'s rule function was rewritten
-> to a conservative range/floor recommendation (smallest window with
-> ≤2 compactions/session and a saving that survives a rediscovery
-> estimate derived from `topology_redundant_reads`, phrased "at least
-> W" and citing "modelled, not observed") — this file's scope for this
-> v4 wiring round is section ordering only, so the prose itself has not
-> been updated to match; see `compaction_sim.py`'s own docstring and
-> `docs/compaction-sim.md` for the current behaviour.
+`recommend.recommend()` runs the `compaction-window` rule (lever
+`autoCompactWindow`, category `settings`). It names a floor ("at least
+W"), not a single best window: the smallest window with at most 2
+simulated compactions per session whose saving, after an extra
+rediscovery cost taken from `topology_redundant_reads`, is still more
+than 5% of observed cost (`1 - switch_pct`) and more than $1.00
+(`switch_usd`). The action says the figure is modelled, not observed.
+See [`docs/compaction-sim.md`](compaction-sim.md#the-report-section).
 
 ## `model_swap` (`model_swap.py`)
 
@@ -325,12 +358,15 @@ outright, and neither possibility is represented here.
   observed model is already the cheapest available, its own volumes
   already beat the next tier down, or the family/tier can't be
   determined — the table never implies a saving where none exists.
-- `model_swap_summary` — the corpus-wide ceiling if every subagent
-  type currently on Fable or Opus moved one tier down (excludes
-  top-level and any Fable/Opus type already cheaper than its next
-  tier).
+  Each row also carries the `lever` to change.
+- `model_swap_summary` — `scope`, `agent_types`, `observed_cost_usd`,
+  `cost_after_tier_down_usd`, `saving_usd` and `saving_pct`: the
+  corpus-wide ceiling if every subagent type currently on Fable or Opus
+  moved one tier down (excludes top-level and any Fable/Opus type
+  already cheaper than its next tier).
 
-The `model-tier` recommendation fires per qualifying row (real cheaper
+`recommend.recommend()` runs the `model-tier` rule
+(`model_swap.RULES`). It fires per qualifying row (real cheaper
 alternative, sample and saving thresholds cleared) and names the exact
 lever: `settings.json`'s `"model"` key for the top-level conversation,
 or the subagent's `.claude/agents/<type>.md` frontmatter `model:` line.
@@ -369,25 +405,28 @@ since `limits.py` already owns that attribution.
 
 Every `share_pct` column here is against the whole corpus's priced
 turns/cost, not just the wasted subset, so `waste_by_cause`'s shares
-sum to `waste_summary`'s own totals. `recommend.py`'s `wasted-turns`
-rule (`waste.RULES`) fires when `waste_summary`'s own
+sum to `waste_summary`'s own totals. `recommend.recommend()` runs the
+`wasted-turns` rule (`waste.RULES`). It fires when `waste_summary`'s own
 `wasted_cost_share_pct` clears `WasteThresholds.share_pct` (default
 10%) and the corpus meets the usual minimum-sample gate, naming the
 dominant cause and its lever.
 
 ## `compactions` (`compaction.py`)
 
-- `compactions_summary` — sessions with ≥1 compaction, total sessions,
-  compactions per session (mean/max), pre/post-compaction tokens
-  (median).
+- `compactions_summary` — one metric/value row each: sessions with ≥1
+  compaction, total sessions, compactions per session (mean/max),
+  compactions per compacting session, pre/post-compaction tokens
+  (median), dropped tokens in total, dropped tokens as a share of
+  `cache_creation` and of `new_tokens` (`input_tokens +
+  cache_creation_tokens`), mean compaction duration, total
+  post-compaction write cost, and the part of it on turns flagged as a
+  re-cache.
 - `compactions_trigger_mix` — trigger value (`auto`/`manual`/`unknown`)
   counts and share.
 - `compactions_per_session` — top 20 sessions by dropped tokens:
-  compaction count, dropped tokens, post-compaction write cost.
+  session, compaction count, dropped tokens, post-compaction write cost.
 
-`dropped_share_of_new_tokens` (in the summary notes) reports dropped
-tokens against both the `cache_creation` and `new_tokens`
-(`input_tokens + cache_creation_tokens`) denominators. Post-compaction
+Post-compaction
 write/recache cost aggregates exclude any join to the next turn that
 took longer than 15 minutes (the join is presumed stale, not a genuine
 immediate-post-compaction cost).
@@ -426,8 +465,11 @@ the agents/skills/workflows it spawns" with numbers only:
   prefix-loaded tool deltas, plan-mode/auto-mode transitions, output
   style changes).
 - `topology_mcp_cost` — cost by `attribution_mcp_server`.
-- `topology_effort_by_agent_type` — output/thinking token share by
-  `effort`/`per_turn_effort`, by agent type.
+- `topology_effort_tokens` — output and thinking tokens by the
+  session's `effort` setting.
+- `topology_per_turn_effort_tokens` — the same, by `per_turn_effort`.
+- `topology_effort_by_agent_type` — output and thinking tokens and the
+  thinking share, by agent type.
 - `topology_context_composition` — context composition per turn
   (baseline / tool results by tool / assistant output / notifications
   and attachments / compaction summaries), averaged per transcript kind.
@@ -444,10 +486,11 @@ the agents/skills/workflows it spawns" with numbers only:
 
 - `workstyle_archetypes` — one row per detected archetype
   (`overseer-fanout`, `plan-high-implement-low`, `workflow-heavy`,
-  `effort-varied`, `chat-only`, `single-model`), with the evidence
-  features that produced it (model-by-role, effort distribution, spawn
-  counts, plan-mode-then-lower-model-implementer sequences). First match
-  wins, in the order the module checks them; `recommend.py` conditions
+  `effort-varied`, `chat-only`, `single-model`, else `mixed`): sessions,
+  share and a one-sentence description. Each session gets the first
+  archetype whose evidence (model by role, effort spread, spawn counts,
+  plan-mode-then-lower-model-implementer sequences) it matches, in that
+  order. `recommend.py` conditions
   on this archetype so an overseer session is never told to "stop
   spawning agents" and a chat-only session is never told about subagent
   TTLs — see [Recommendations](#recommendations-recommendpy) below.
@@ -456,13 +499,14 @@ the agents/skills/workflows it spawns" with numbers only:
 
 From `<session>/workflows/wf_*.json` run files:
 
-- `workflows_summary` — run count, agent count, phase count, duration,
-  cost.
+- `workflows_summary` — one metric/value row each: total runs, total
+  agents spawned, total cost, mean agents per run, mean cost per run.
 - `workflows_status_mix` — run `status` (`completed`/`killed`/other
   observed values) counts and share.
-- `workflows_detail` — one row per run: run id, session id, agent count,
-  phase titles (never phase `detail`, which can carry workflow source or
-  prompt text), started/finished, cost.
+- `workflows_detail` — the costliest runs, one row each: run id,
+  session id, status, agent count, phase count (never a phase's
+  `detail`, which can carry workflow source or prompt text), cost,
+  started/finished.
 
 ## `phases` (`phases.py`)
 
@@ -492,25 +536,46 @@ below.
 
 ## `config` (`report.py` via `snapshots.py`) and `config-diff` (CLI-only)
 
-The assembled report's own `config` section renders one diff table per
-config key that changed across the window's `snapshot-config` snapshots
-(capped at 20 keys — `report._MAX_CONFIG_DIFF_KEYS`), automatically,
-with no key to name. The standalone `claude-token-lens config-diff`
-subcommand, described next, is a separate, narrower consumer of the same
-underlying table function for when you want exactly one key (or every
-changed key) outside a full report run.
+The assembled report's own `config` section renders one
+`config-diff-<key>` table per config key that changed across the
+window's `snapshot-config` snapshots (the first 20 keys alphabetically —
+`report._MAX_CONFIG_DIFF_KEYS`), automatically, with no key to name.
+When snapshots exist it also adds:
+
+- `effective-config` — per project, each key's value in the latest
+  snapshot and the settings layer it came from.
+- `config-layers` — per project and settings layer: whether the layer
+  file is present, and its agents, skills, rules, CLAUDE.md bytes,
+  commands and MCP servers.
+- `config-groups` — projects that share the same effective config
+  (hash, project count and list, sessions).
+- `config-drift` — only when observed session values exist: sessions
+  whose observed value (for example the model) differs from the
+  snapshot's.
+
+The standalone `claude-token-lens config-diff` subcommand, described
+next, is a separate, narrower consumer of the same underlying table
+function for when you want exactly one key (or every changed key)
+outside a full report run.
 
 ## `config_diff` (`snapshots.py`)
 
 Reads the JSON files `hooks/snapshot-config.py` writes (see the
 README's [installation section](../README.md#4-installing-the-sessionstart-hook-and-the-statusline)).
 
-- `config_diff` (the section's one table) — per distinct value of one
-  chosen config key across a window: sessions, turns, cost, cost per
-  session, re-cache share, compactions per session, median span, plus a
-  computed "keys that also changed in the same snapshot" caveat, since a
-  before/after comparison across two different snapshots can't isolate
-  one key's effect from everything else that changed alongside it.
+- `config-diff-<key>` — `config-diff --key KEY` prints one, and
+  `config-diff --auto-keys` prints one per changed key. Per distinct
+  value of that config key across a window: sessions, turns, cost, cost
+  per session, re-cache share, compactions per session, median span. A
+  table note lists the keys that also changed in the same snapshot,
+  since a before/after comparison across two different snapshots can't
+  isolate one key's effect from everything else that changed alongside
+  it.
+
+The subcommand prints these tables directly as Markdown.
+`snapshots.build_config_section` wraps the same table in a
+`config_diff` section for a library caller; nothing in the CLI or the
+report calls it.
 
 `snapshot_for(session, snapshots)` joins a session to the latest snapshot
 whose timestamp is at or before the session's start; `diff_keys` and
@@ -546,8 +611,9 @@ partition.
   `--min-sessions`.
 - `compare_by_stratum` — the same two arms split by `--stratify`
   (`purpose`, `mode`, or both — default `purpose,mode`), with a reduced,
-  raw-valued metric set (session counts, cost, new tokens, cache-read
-  share) so this table's own CSV/JSON export stays numeric. A stratum
+  raw-valued metric set (session counts, a `sample_ok` flag, cost and
+  new tokens per session, cache-read share, and a note) so this table's
+  own CSV/JSON export stays numeric. A stratum
   below `--min-sessions` in either arm shows its session counts only,
   every metric cell blank, and a note explaining the suppression.
 - `compare_co_changed` — only populated when *both* arms are
@@ -560,10 +626,9 @@ Every table's notes always carry the plan's "observed, not controlled"
 caveat (Risks and gaps item 2: correlation is not causation) plus each
 arm's own exact selection rule, so a delta is never presented as
 evidence the arm's own setting *caused* it. The `profile:<id>` arm form
-is implemented and tested, but as of this work package nothing in the
-shipped codebase populates `SessionRecord.profile_id` yet, so it
-currently matches zero sessions in any real corpus until the sibling
-`profiles/` package ships that wiring.
+is implemented and tested, but nothing copies the `profile_id` the
+`snapshot-config` hook records onto `SessionRecord.profile_id`, so it
+currently matches zero sessions in any real corpus.
 
 ## `reconcile` (`reconcile.py`) — CLI-only
 
@@ -575,8 +640,9 @@ Console/Admin API. No network call is ever made.
 
 - `reconcile_by_period` — one row per distinct day (and/or model, per
   `--by`), each token metric (input, cache-creation, cache-read, output)
-  and cost as four columns (local, Admin, delta, delta as a percentage
-  of the Admin figure — delta is always local minus Admin), plus a fixed
+  and cost as four columns, `<metric>_local`, `<metric>_admin`,
+  `<metric>_delta` and `<metric>_delta_pct` (delta is always local
+  minus Admin; delta-% is against the Admin figure), plus a fixed
   `TOTAL` row. `--days`/`--since`/`--until` (the same common-parser flags
   every other subcommand uses) restrict both the local and the Admin
   side to the same window before grouping.
@@ -606,7 +672,8 @@ percentage. It has a `build_section` function like every other section
 here, but nothing in `report.py`/`cli.py` calls it yet, so it doesn't
 appear in `claude-token-lens report`'s output — call it directly:
 
-- `usage_windows_latest` — per window (`five_hour`/`seven_day`), the
+- `usage_windows_latest` — per window (`five_hour`/`seven_day`/
+  `spend_limit`), the
   latest used percentage, its reset time, and sample count. Comes back
   empty (with a note) when no usage-log rows exist yet.
 - `usage_windows_regression` — a simple linear fit of used-percentage
@@ -708,45 +775,6 @@ section's sized buckets as its evidence, and names the largest one in
 its action text, whenever `context_budget` is present in the report —
 falling back to its older single-mean-baseline evidence otherwise.
 
-## `carry` (`carry.py`)
-
-Full field-by-field contract: [`docs/carry.md`](carry.md#the-carry-report-section).
-
-Every other section prices a tool result once, at the turn it entered
-context. `carry` prices it again for every later turn it keeps riding
-along inside the cached prefix — re-read at the flat `cache_read` rate,
-or re-written at a `cache_write_5m`/`cache_write_1h` rate on a re-cache
-— until a `COMPACT_BOUNDARY` drops it or the transcript ends.
-
-- `carry_by_tool` — per tool name: carried-result count, tokens
-  entered, mean turns carried, carry tokens, carry cost, and that
-  tool's carry-token share of the corpus's total cache volume (an
-  attribution share, not a partition — rows need not sum to 100%,
-  since one physical cache read carries every still-live result in
-  that turn's prefix at once).
-- `carry_by_agent_type` — the same roll-up keyed by agent type
-  (`"top-level"` for the main session).
-- `carry_top_results` — the single most expensive individual carried
-  results corpus-wide: tool name, agent type, tokens, turns carried,
-  cost — no content, path, or command.
-- `carry_truncation_savings` — for each configured cap in
-  `CarryThresholds.truncation_tokens` (default 2,000 and 8,000 tokens):
-  how many carried results exceed it and the exact tokens/USD saved had
-  every one been capped there, computed by linear scaling rather than
-  re-simulation (carry cost is exactly proportional to a result's own
-  token size for a fixed run of later turns).
-
-`carry.py` never imports or is imported by `recommend.py`; its
-`tool-output-carry` rule lives in `carry.RULES` (same
-`(report, thresholds) -> list[Recommendation]` shape as every baseline
-rule) for a caller to fold into `recommend.recommend()`'s own rule
-list, and it fires whenever a tool's carry-cost share of cache volume
-clears `CarryThresholds.carry_share_pct` (default 25%) on at least
-`min_sample_results` (default 5) carried results — its action names a
-concrete workflow lever (truncate long Bash/PowerShell output, prefer
-`Grep` over `Read`, cap agent report length) and cites the matching
-`carry_truncation_savings` row as the projected saving.
-
 ## `savers` (`savers.py`)
 
 Full field-by-field contract: [`docs/savers.md`](savers.md#the-savers-report-section).
@@ -783,17 +811,18 @@ prefixes), config-snapshot `mcp_servers`/`enabled_plugins` entries, and
   controlled", plus any other config key that co-changed between the
   two arms' representative snapshots.
 
-`savers.py` never imports or is imported by `recommend.py`; its
-`saver-tool-roi` rule lives in `savers.RULES` (same
-`(report, thresholds, snapshot=None) -> list[Recommendation]` shape as
-`model_swap.RULES`) for a caller to fold into `recommend.recommend()`'s
-own rule list, and it fires per candidate whose verdict row clears the
+Nothing calls `savers.py` yet: the report, `recommend.recommend()`, the
+CLI and the dashboard all leave it out. Its `saver-tool-roi` rule lives
+in `savers.RULES` (same `(report, thresholds, snapshot=None) ->
+list[Recommendation]` shape as `model_swap.RULES`). It would fire per
+candidate whose verdict row clears the
 minimum sample and whose net saving per session clears
 `SaverThresholds.net_saving_usd_min` (default $0.01) in either
 direction — keep (naming a result-size lever when overhead eats too
 much of the gross saving, and citing displaced native search calls plus
 smaller mean result size when the search-substitution table supports
 it) or disable.
+
 ## `elasticity` (`elasticity.py`)
 
 Full field-by-field contract: [`docs/elasticity.md`](elasticity.md).
@@ -811,50 +840,80 @@ is refused outright rather than reported with a caveat.
 - `elasticity_fit` — one row per window kind × metric: unit, the fitted
   window-percent-per-unit slope (blank when refused), R², pairs used,
   residual spread, whether it was accepted, and the reason when not.
-- `elasticity_budget` — per window kind, the derived million new tokens
-  a full window is worth (`100 / slope`), for every window whose own
-  new-tokens fit was accepted with a positive slope.
+- `elasticity_budget` — one row per window kind: the derived million
+  new tokens a full window is worth (`100 / slope`), blank unless that
+  window's new-tokens fit was accepted with a positive slope.
 - `elasticity_recent_burn` — the last 24h's new-token volume expressed
   as a share of `ElasticityThresholds.weekly_window` (`seven_day` by
   default, "your weekly window").
 
-`express_in_window(usd_saving, elasticity_stats, window=None)` converts
-a USD saving into a share of a usage window via that window's own USD
-fit — the function a wiring step calls to append "≈ x% of your weekly
-window" to a recommendation's saving line once `config.billing ==
-"subscription"`. `elasticity.RULES`'s `window-budget` rule fires only
-under subscription billing with an accepted weekly-window fit, states
-the derived budget and burn share, and names whichever other
-already-computed recommendation looks like the biggest lever by its own
-id — never repeating that recommendation's own numbers.
+The report does not include this section, and `recommend.recommend()`
+does not run `elasticity.RULES`. What is wired is
+`express_in_window(usd_saving, elasticity_stats, window=None)`: under
+subscription billing with usage-log rows, `report.build_report` fits
+elasticity (with default thresholds) and `units.Units.money` uses it to
+phrase every amount as "about x% of your weekly usage limit". The
+unwired `window-budget` rule would fire only under subscription billing
+with an accepted weekly-window fit, state the derived budget and burn
+share, and name whichever other recommendation looks like the biggest
+lever by its id alone.
+
+## `team_report` (`team.py`) — CLI-only
+
+`claude-token-lens team-report` compares the team documents each
+machine saved (see [`docs/team.md`](team.md)). One column per machine,
+keyed by its hashed machine id, never a hostname.
+
+- `team_by_archetype` — one row per archetype: each machine's cost per
+  session and session count.
+- `team_by_agent_type` — the same, one row per agent type.
+
+A cell reads `n<N` when that machine has fewer than `N` sessions for
+the row (default 5), and `-` when it has none. The section notes carry
+the "observed, not controlled" caveat.
+
+## `baseline_comparison` (`report.py`)
+
+Only with `report --baseline <id>`: this window against a saved
+baseline.
+
+- `baseline_comparison_overview` — `metric`, `baseline`, `current`,
+  `delta`, `delta_pct` (pre-formatted text): cost per session, re-cache
+  share, compactions per session, session baseline size, the TTL mix and
+  mean spawn write per agent type, and each scorecard level.
+- `baseline_comparison_by_mode` — per mode: sessions in each window, a
+  `sample_ok` flag, and baseline, current and delta-% for cost per
+  session, re-cache share and compactions per session. A mode with fewer
+  than 5 sessions on either side shows its session counts only.
 
 ## `scorecard` (`scorecard.py`)
 
 Five 1-5 levels (1 poor, 5 excellent) summarising a corpus's cache
 efficiency, context hygiene, agent efficiency, config fit and data
-quality — see [README section 6](../README.md#3-reading-the-report-sections).
+quality — see [README section 3](../README.md#3-reading-the-report-sections).
 
-- `scorecard_dimensions` — one row per scored dimension: `dimension`,
-  `level` (1-5), `label` (`very poor`/`poor`/`fair`/`good`/`excellent`,
-  from `LEVEL_LABELS`), the one representative `metric` name and its
+- `dimensions` — one row per scored dimension: `dimension`,
+  `level` (1-5), `label` (headed "Rating": `very poor`/`poor`/`fair`/
+  `good`/`excellent`, from `LEVEL_LABELS`), the one representative
+  `metric` name and its
   `value`, and the `threshold` band it was scored against. A dimension with
   nothing to measure in this corpus (e.g. `agent_efficiency` when no
   session ever spawned an agent) is left out of the table entirely
   rather than guessing a level.
-- `scorecard_overall` — one row: the minimum level across
+- `overall` — one row (`metric`, `level`, `label`): the minimum level
+  across
   `cache_efficiency`/`context_hygiene`/`agent_efficiency`/`config_fit`
   (never an average, and never including `data_quality`, which is
   reported alongside but deliberately excluded from `overall` — a
   low-fidelity measurement shouldn't be conflated with a genuinely poor
   working pattern).
 
-`config_fit` is a proxy: whether a config snapshot covers the window at
-all, and how many keys changed across it, rather than the full
-profile-match the project plan describes (no `profiles.py` module exists
-yet for a session's observed shape to be compared against — see
-`scorecard.py`'s own module docstring for the full deviation note).
-`agent_efficiency` is similarly a proxy: the ratio of the costliest agent
-type's mean cost to the median across agent types.
+`config_fit` is a proxy for config stability: how many keys changed
+across the window's config snapshots (`changed_config_keys`), not a
+match against a profile. With no snapshot it is rated 5 with a note,
+rather than marked down. `agent_efficiency` is similarly a proxy
+(`agent_cost_variance_ratio`): the ratio of the costliest agent type's
+mean cost to the median across agent types.
 
 ## Recommendations (`recommend.py`)
 
@@ -865,24 +924,28 @@ excluded from CSV, which is table-shaped only). `recommend.recommend()`
 builds it by reading back cells from the report's own already-rendered
 tables — never a raw accumulator — so every recommendation's evidence
 is guaranteed to cite a real, checkable number. See
-[README section 6](../README.md#the-recommendations-block) for the
+[README section 3](../README.md#the-recommendations-block) for the
 `Recommendation` field table (`id`, `severity`, `category`, `scope`,
 `lever`, `evidence`).
 
-Rules implemented today (each an Appendix A5 rule, `recommend.py`'s
-`_rule_*` functions): `ttl-switch`, `long-tool-waits`,
+Rules implemented today, in the order they run. From `recommend.py`'s
+own `_rule_*` functions: `ttl-switch`, `long-tool-waits`,
 `notification-invalidation`, `batch-instructions`, `subagent-volume`,
 `compaction-churn`, `long-context-share`, `cache-read-dominance`,
 `baseline-bloat`, `agent-report-size`, `spawn-cost` (for agent types
 without `agent_startup` data; otherwise the per-part `spawn-claude-md`,
 `spawn-unused-skills`, `spawn-unused-mcp`, `spawn-read-only-tools`,
 `spawn-task-prompt` and `spawn-shared-claude-md`), `effort-mismatch`,
-`discovery-share`, `pricing-coverage`, `data-quality` — gated by
+`discovery-share` (only with `--phases`), `pricing-coverage`,
+`data-quality`, `limit-pressure`. Then each module's own rule:
+`tool-output-carry` (`carry.RULES`), `compaction-window`
+(`compaction_sim.RULES`), `model-tier` (`model_swap.RULES`) and
+`wasted-turns` (`waste.RULES`). Rules are gated by
 archetype (a `ttl-switch` recommendation for a `chat-only` session's
 subagents is suppressed, since a chat-only session barely has any), a
 minimum-sample size (`min_sessions`/`min_turns` in `config.toml`'s
 `[thresholds]` table), and managed-settings awareness (see
-[README section 10](../README.md#6-for-team-leads-and-enterprise)).
+[README section 6](../README.md#6-for-team-leads-and-enterprise)).
 `report --patch-set` renders the whole set as unified-diff-style text
 via `recommend.render_patch_set`.
 
@@ -897,7 +960,8 @@ include `lines`, `unparsable_lines`, `truncated_final_line`,
 `turns_missing_usage`, `ttl_sum_mismatch`, `late_duplicate_ids`,
 `ignored_line_types` (a count per ignored line type), `oversized_lines`,
 `trailing_events`, `replayed_lines`, `timestamp_parse_failures`,
-`agent_settings`, `modes`, `attachment_catch_all`, and
+`agent_settings`, `modes`, `attachment_catch_all`, `limit_hits`,
+`limit_resumes`, `agents_terminated`, and
 `pre_split_turns` (pre-split `cache_creation` reads normalised at parse
 time — see the CHANGELOG). `recommend.py`'s `data-quality` rule reads
 this field directly to decide whether its unparsable-lines/ttl-mismatch
@@ -906,7 +970,7 @@ clauses additionally fire, alongside the `scorecard.dimensions`
 
 ## Worked example
 
-Both tables below are the real output of `recache.build_section` and
+The tables below are the real output of `recache.build_section` and
 `compaction.build_section`, run against
 [`tests/fixtures/real/session-a`](../tests/fixtures/real/session-a) — a
 genuine Claude Code session (1 top-level transcript, 25 subagent
@@ -918,9 +982,9 @@ and nothing here is the original session's real identifier.
 
 **Re-cache summary** (`recache_summary`):
 
-| Transcripts | Priced turns | Re-cache turns | Re-cache turn share | Cache-creation tokens (re-cache) | Cache-creation tokens (all) | Cache-creation share | Avoidable cost |
-|---|---|---|---|---|---|---|---|
-| 26 | 2,037 | 7 | 0.3% | 1,003,923 | 10,234,286 | 9.8% | 5.80 USD |
+| Metric | Transcripts | Priced turns | Re-cache turns | Re-cache turn share | Cache-creation tokens (re-cache) | Cache-creation tokens (all) | Cache-creation share | Avoidable cost | Unavoidable cost (limit-expiry) |
+|---|---|---|---|---|---|---|---|---|---|
+| all | 26 | 2,037 | 7 | 0.3% | 1,003,923 | 10,234,286 | 9.8% | 5.80 USD | 0.00 USD |
 
 **Re-cache signature split** (`recache_signature_split`):
 
@@ -928,10 +992,11 @@ and nothing here is the original session's real identifier.
 |---|---|---|---|---|---|
 | full-expiry | 7 | 1,003,923 | 5.80 USD | 130,555 | 10m 21s |
 | prefix-invalidated | 0 | 0 | 0.00 USD | - | - |
+| limit-expiry | 0 | 0 | 0.00 USD | - | - |
 
 Every re-cache turn in this session was a genuine TTL expiry
-(`full-expiry`), not a broken-prefix invalidation — consistent with this
-scrubbed session showing no `prefix-invalidated` rows anywhere.
+(`full-expiry`), not a broken-prefix invalidation or a usage-limit
+pause.
 
 **Compaction summary** (`compactions_summary`):
 
@@ -940,9 +1005,16 @@ scrubbed session showing no `prefix-invalidated` rows anywhere.
 | Sessions with ≥1 compaction | 1 |
 | Total sessions | 1 |
 | Compactions per session (mean) | 45 |
+| Compactions per compacting session (mean) | 45 |
 | Compactions per session (max) | 45 |
 | Pre-compaction tokens (median) | 121,010 |
 | Post-compaction tokens (median) | 17,798 |
+| Dropped tokens (total) | 6,370,510 |
+| Dropped tokens (share of cache_creation) | 62.2% |
+| Dropped tokens (share of new_tokens: input+cache_creation) | 62.2% |
+| Mean duration (ms) | 170,334 |
+| Total post-compaction write cost (USD) | 18.12 |
+| Total post-compaction RE-CACHE-flagged write cost (USD) | 1.87 |
 
 **Compaction trigger mix** (`compactions_trigger_mix`):
 
