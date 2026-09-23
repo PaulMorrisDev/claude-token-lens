@@ -128,11 +128,19 @@ def _session_start_commands(settings: dict) -> list[str]:
     return commands
 
 
+def _expand(text: str) -> str:
+    """``text`` with ``~``, ``$VAR`` and ``%VAR%`` expanded the same way
+    on every platform (``os.path.expandvars`` only knows ``%VAR%`` on
+    Windows). A variable that isn't set is left as written."""
+    text = _PERCENT_VAR_RE.sub(lambda m: os.environ.get(m.group(0)[1:-1], m.group(0)), text)
+    return os.path.expanduser(os.path.expandvars(text))
+
+
 def _script_path(command: str) -> Path | None:
     match = _QUOTED_SCRIPT_RE.search(command) or _BARE_SCRIPT_RE.search(command)
     if match is None:
         return None
-    return Path(os.path.expanduser(os.path.expandvars(match.group(1))))
+    return Path(_expand(match.group(1)))
 
 
 def _args_after_script(command: str) -> str:
@@ -150,7 +158,7 @@ def _interpreter(command: str) -> str | None:
 
 
 def _interpreter_found(program: str) -> bool:
-    expanded = os.path.expanduser(os.path.expandvars(program))
+    expanded = _expand(program)
     if os.path.isabs(expanded) or os.sep in expanded or (os.altsep and os.altsep in expanded):
         return Path(expanded).is_file()
     return shutil.which(expanded) is not None

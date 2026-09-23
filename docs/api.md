@@ -187,7 +187,12 @@ returns `404` with `error.code: "not_found"`.
 Liveness/diagnostics probe (also the Docker healthcheck target — plan:
 "healthcheck on `/api/health`"). Never fails once the process is up.
 
-`data`: `{"status": "ok", "schema_version": int, "transcripts_missing": int, "watcher": WatcherStats-as-dict, "service_registered": true|false|null}`.
+`data`: `{"status": "ok", "version": str, "schema_version": int, "transcripts_missing": int, "watcher": WatcherStats-as-dict, "service_registered": true|false|null}`.
+
+`version` is the running code's version (`claude-token-lens
+--version`), also shown in the dashboard's footer: after an update, a
+dashboard still showing the old one hasn't been restarted, or runs from
+another Python install.
 
 `service_registered` (v3) is whether `serve` is currently registered to
 start at logon/boot (`claude-token-lens install-service` — see

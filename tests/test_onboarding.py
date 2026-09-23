@@ -184,7 +184,23 @@ def test_gather_answers_interactive_prompts_and_accepts_input():
     assert answers.apply_scope == "repo"
     assert answers.capture_window == 10
     assert answers.notes == []
-    assert "Billing mode" in stdout.getvalue()
+    assert "How do you pay for Claude Code?" in stdout.getvalue()
+
+
+@pytest.mark.parametrize(
+    ("typed", "expected"),
+    [("Max", "subscription"), ("pro", "subscription"), (" API ", "api"), ("auto", "auto")],
+)
+def test_gather_answers_billing_accepts_plan_names(typed, expected):
+    stdin = io.StringIO(typed + "\n" + "\n" * 6)
+    answers = onboarding.gather_answers(
+        detection=_detection(existing_config=Config(billing="api")),
+        non_interactive=False,
+        stdin=stdin,
+        stdout=io.StringIO(),
+    )
+    assert answers.billing == expected
+    assert not any(note.startswith("billing:") for note in answers.notes)
 
 
 def test_gather_answers_interactive_blank_lines_use_derived_defaults():

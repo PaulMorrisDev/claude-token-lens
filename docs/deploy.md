@@ -61,9 +61,11 @@ run *before* doing either.
   ClaudeTokenLens -Force`. The action runs `pythonw.exe` beside the
   running interpreter when it exists (no console window at logon), else
   `python.exe`. Writes no file of its own — the task definition lives
-  entirely in Task Scheduler's own store. Registering doesn't start the
-  task: it first runs at your next logon (`Start-ScheduledTask
-  -TaskName ClaudeTokenLens` starts it now). This is the same task
+  entirely in Task Scheduler's own store. The same command
+  first stops a copy the task already started and ends with
+  `Start-ScheduledTask`, so the dashboard starts straight away, and
+  re-running `install-service` after an update switches it to the new
+  code. This is the same task
   Path 1 below registers by hand, with one difference: there is no
   `schtasks /create` fallback. `uninstall-service` first runs
   `Stop-ScheduledTask -TaskName ClaudeTokenLens`, which shuts down a
@@ -74,8 +76,10 @@ run *before* doing either.
   (the same hardening as `scripts/systemd/claude-token-lens.service` —
   see Path 2 below — but with `ExecStart`/`ReadWritePaths` filled in
   with this call's real, absolute `config_dir` rather than `%h`), then
-  runs `systemctl --user daemon-reload` followed by `systemctl --user
-  enable --now claude-token-lens.service`. Prints a note to also run
+  runs `systemctl --user daemon-reload`, `systemctl --user enable
+  --now claude-token-lens.service` and `systemctl --user restart
+  claude-token-lens.service` (so re-running it after an update runs the
+  new code). Prints a note to also run
   `loginctl enable-linger $USER` once, for a headless server with no
   interactive session. `uninstall-service` runs `systemctl --user
   disable --now`, which stops the running service as well as disabling

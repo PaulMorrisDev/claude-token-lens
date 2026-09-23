@@ -71,8 +71,6 @@ right for most people. It then offers two things, and asks before each:
   old transcripts after a while (30 days by default), and the dashboard
   keeps their figures only if it is running.
 
-On Windows the dashboard first starts at your next logon. To start it
-now, run `Start-ScheduledTask -TaskName ClaudeTokenLens` in PowerShell.
 
 ### 4. Open the dashboard
 
@@ -98,23 +96,37 @@ analysis. Both print Markdown to the terminal and change nothing.
 
 ### Updating
 
+Two commands. The first installs the new version:
+
 ```bash
 python -m pip install --force-reinstall git+https://github.com/PaulMorrisDev/claude-token-lens
 ```
 
 (`--force-reinstall` is needed because pip skips a copy it thinks is
-already up to date.) Then restart the dashboard so it runs the new
-version:
+already up to date.) The second points the dashboard at the new version
+and restarts it:
 
-| System | Command |
+```bash
+python -m claude_token_lens install-service
+```
+
+On macOS, restart it with
+`launchctl kickstart -k gui/$(id -u)/com.claude-token-lens` instead.
+
+The dashboard's footer shows the version it is running. After an update
+it may re-read your history once, so the first page load can be slow.
+[`CHANGELOG.md`](CHANGELOG.md) lists what changed.
+
+### If something goes wrong
+
+| What you see | What to do |
 |---|---|
-| Windows (PowerShell) | `Stop-ScheduledTask -TaskName ClaudeTokenLens; Start-ScheduledTask -TaskName ClaudeTokenLens` |
-| macOS | `launchctl kickstart -k gui/$(id -u)/com.claude-token-lens` |
-| Linux | `systemctl --user restart claude-token-lens` |
+| `claude-token-lens` "is not recognized" or "command not found" | pip's Scripts folder isn't on your `PATH` (pip prints a yellow WARNING saying so). Use `python -m claude_token_lens` instead of `claude-token-lens`; everything else stays the same |
+| The dashboard still looks old after updating, or its footer shows the old version | The dashboard is still running the old copy, or runs from a different Python install from the one you updated. Run `python -m claude_token_lens install-service` with the same `python` you updated, then reload the page |
+| http://127.0.0.1:8765 doesn't open | The first start reads your whole history, which can take a minute. If it still doesn't open, run `python -m claude_token_lens serve` in a terminal and leave it open; any error prints there |
+| Amounts are in dollars but you're on a plan | Re-run `python -m claude_token_lens init` and answer `subscription` to "How do you pay for Claude Code?" |
 
-After an update the dashboard may re-read your history once, so the
-first page load can be slow. [`CHANGELOG.md`](CHANGELOG.md) lists what
-changed.
+[`docs/first-run.md`](docs/first-run.md#troubleshooting) has more.
 
 ### Uninstalling
 

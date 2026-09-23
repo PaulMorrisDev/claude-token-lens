@@ -2436,8 +2436,8 @@ def _probe_service_after_install(
         print(f"claude-token-lens: the service is already responding at {url}")
     else:
         print(
-            f"claude-token-lens: not responding yet (this is normal on Windows, which starts the "
-            f"task at your next logon). Once it's running, open {url}"
+            f"claude-token-lens: not responding yet (the first start reads your whole history, "
+            f"which can take a minute). Once it's running, open {url}"
         )
 
 

@@ -133,6 +133,11 @@ def test_plan_windows_uses_python_exe_when_no_pythonw_beside_it(tmp_path):
     assert "New-ScheduledTaskTrigger -AtLogOn" in script
     assert "-RunLevel Limited" in script
     assert "ExecutionTimeLimit ([TimeSpan]::Zero)" in script
+    # Re-registering after an update swaps the running dashboard for the
+    # new code: stop any running copy first, start the new one last.
+    assert script.startswith(f"Stop-ScheduledTask -TaskName '{installer.TASK_NAME}' -ErrorAction SilentlyContinue; ")
+    assert script.endswith(f"Start-ScheduledTask -TaskName '{installer.TASK_NAME}'")
+    assert script.index("Register-ScheduledTask") < script.index("Start-ScheduledTask")
     assert plan.probe_command == ["schtasks", "/Query", "/TN", installer.TASK_NAME]
     # Stop the running task first: unregistering alone leaves serve running.
     assert [c[0] for c in plan.uninstall_commands] == ["powershell.exe", "powershell.exe"]
@@ -188,6 +193,7 @@ def test_plan_linux_writes_systemd_unit_with_real_execstart(tmp_path):
     assert plan.commands == [
         ["systemctl", "--user", "daemon-reload"],
         ["systemctl", "--user", "enable", "--now", installer.SYSTEMD_UNIT_NAME],
+        ["systemctl", "--user", "restart", installer.SYSTEMD_UNIT_NAME],
     ]
     assert plan.probe_command == ["systemctl", "--user", "is-enabled", "claude-token-lens"]
     assert plan.uninstall_commands == [["systemctl", "--user", "disable", "--now", installer.SYSTEMD_UNIT_NAME]]

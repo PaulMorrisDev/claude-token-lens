@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-09-23
+
+### Changed
+
+- **Updating is two commands.** On Windows, `install-service` now stops
+  a dashboard the logon task already started, re-registers the task for
+  the Python you ran it with, and starts it straight away (a first
+  install no longer waits for the next logon). On Linux it also restarts
+  the service. So after `pip install --force-reinstall`, running
+  `python -m claude_token_lens install-service` switches the dashboard
+  to the new version.
+- The dashboard's footer and `GET /api/health` (`version`) show the
+  running version, so a dashboard still on an old copy is easy to spot.
+- `init` asks its questions in plain words ("How do you pay for Claude
+  Code?"), and the billing question accepts `pro`, `max`, `team`,
+  `enterprise` and `plan` as `subscription`.
+- The README's quick start covers checking Python, installing,
+  updating, uninstalling and what to do when `claude-token-lens` isn't
+  found.
+
+### Fixed
+
+- The hook health check expands `%VAR%` on every platform, not only on
+  Windows, so its tests pass on Linux CI.
+
 ## [0.4.0] - 2026-09-23
 
 ### Added

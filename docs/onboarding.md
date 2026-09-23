@@ -117,20 +117,20 @@ claude-token-lens init [--answers FILE] [--non-interactive] [--no-install]
    and one `GET http://127.0.0.1:8765/api/health` after a short delay
    to report whether the service is already up. `init` always registers
    port 8765 on `127.0.0.1`; use `install-service --port/--bind` for
-   anything else. On Windows the task first runs at the next logon, so
-   the health check reports "not responding yet".
+   anything else. The first start reads your whole history, so the
+   health check can report "not responding yet" for a minute.
 
 ### The question set
 
 | Key | Asked as | Feeds |
 |---|---|---|
-| `billing` | Billing mode (api/subscription; `auto` when unset — see the README's billing note) | `config.billing` |
-| `exclude_projects` | Comma-separated slugs to always exclude | `config.exclude_projects` |
-| `launch_overlays` | Do you launch Claude Code with `--settings`/`CLAUDE_CONFIG_DIR` overlays rather than each project's own settings files? | `config.launch_overlays` and this project's `projects/<slug>.toml` |
-| `shared_project_config` | Are this project's agents/skills shared with colleagues? | `config.shared_project_config` and this project's `projects/<slug>.toml` |
-| `tz` | Timezone (IANA name, blank for local) | `config.tz` |
-| `apply_scope` | Default scope for applying a profile (user/project-local/repo) | `config.apply_scope` and this project's `projects/<slug>.toml` |
-| `capture_window` | Onboarding capture window length in days | `config.capture_window` (default 7) |
+| `billing` | How do you pay for Claude Code? (`subscription`, `api` or `auto`, the default when unset; `pro`, `max`, `team`, `enterprise` and `plan` mean `subscription`, and anything else is rejected — see the README's billing note) | `config.billing` |
+| `exclude_projects` | Projects to always leave out (folder names under `~/.claude/projects`, comma-separated) | `config.exclude_projects` |
+| `launch_overlays` | Do you start Claude Code with `--settings` or `CLAUDE_CONFIG_DIR` pointing at extra settings? | `config.launch_overlays` and this project's `projects/<slug>.toml` |
+| `shared_project_config` | Is this project's `.claude` folder (agents, skills) committed to a repo colleagues use? | `config.shared_project_config` and this project's `projects/<slug>.toml` |
+| `tz` | Time zone, such as Europe/London (blank for this computer's) | `config.tz` |
+| `apply_scope` | Where should changes you apply go by default (`user`/`project-local`/`repo`) | `config.apply_scope` and this project's `projects/<slug>.toml` |
+| `capture_window` | How many days to collect data before the first baseline | `config.capture_window` (default 7) |
 
 `config.capture_started` is set to the current UTC timestamp by the
 first `init` — it isn't a question. Running `init` again (for example

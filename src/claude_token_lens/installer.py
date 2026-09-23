@@ -233,8 +233,13 @@ def _plan_windows(python_exe: str, serve_args: list[str], pyz_path: Path | None)
     # execution time limit) -- see that script's own comments for why
     # each flag is there. Built as one semicolon-joined -Command string
     # so every cmdlet shares the same PowerShell process and its
-    # variables ($action, $trigger, ...).
+    # variables ($action, $trigger, ...). It stops a copy the task already
+    # started first and starts the new one last, so re-running
+    # install-service after an update switches the dashboard to the new
+    # code straight away (and a first install starts it without waiting
+    # for the next logon, like systemctl --now and launchctl bootstrap).
     ps_script = (
+        f"Stop-ScheduledTask -TaskName {_ps_quote(TASK_NAME)} -ErrorAction SilentlyContinue; "
         f"$action = New-ScheduledTaskAction -Execute {_ps_quote(action_exe)} "
         f"-Argument {_ps_quote(argument_list)}; "
         "$trigger = New-ScheduledTaskTrigger -AtLogOn -User \"$env:USERDOMAIN\\$env:USERNAME\"; "
@@ -244,7 +249,8 @@ def _plan_windows(python_exe: str, serve_args: list[str], pyz_path: Path | None)
         "-DontStopIfGoingOnBatteries -StartWhenAvailable -RestartCount 3 "
         "-RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero); "
         f"Register-ScheduledTask -TaskName {_ps_quote(TASK_NAME)} -Action $action "
-        "-Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null"
+        "-Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null; "
+        f"Start-ScheduledTask -TaskName {_ps_quote(TASK_NAME)}"
     )
     install_command = ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps_script]
     # Stop first: Unregister-ScheduledTask removes the definition but
@@ -273,7 +279,7 @@ def _plan_windows(python_exe: str, serve_args: list[str], pyz_path: Path | None)
         platform="windows",
         description=(
             f"Register Scheduled Task {TASK_NAME!r} (logon trigger, -RunLevel Limited, "
-            f"no admin rights) running: {action_exe} {argument_list}"
+            f"no admin rights) and start it now, running: {action_exe} {argument_list}"
         ),
         commands=[install_command],
         uninstall_commands=[stop_command, uninstall_command],
@@ -329,6 +335,9 @@ def _plan_linux(python_exe: str, serve_args: list[str], pyz_path: Path | None, c
         commands=[
             ["systemctl", "--user", "daemon-reload"],
             ["systemctl", "--user", "enable", "--now", SYSTEMD_UNIT_NAME],
+            # --now leaves an already-running copy alone; restart it so
+            # re-running install-service after an update runs the new code.
+            ["systemctl", "--user", "restart", SYSTEMD_UNIT_NAME],
         ],
         # --now stops the running service as well as disabling it.
         uninstall_commands=[["systemctl", "--user", "disable", "--now", SYSTEMD_UNIT_NAME]],

@@ -1065,6 +1065,7 @@
     }
     var lines = [
       "status: " + (health.status || "unknown"),
+      "version: " + (health.version || "-"),
       "schema version: " + (health.schema_version === undefined ? "-" : health.schema_version),
       "watcher last tick finished: " + (watcher.finished_at || "never"),
       "files scanned / parsed: " + (watcher.files_scanned || 0) + " / " + (watcher.files_parsed || 0),
@@ -1099,6 +1100,7 @@
     if (!footer) return;
     var watcher = health.watcher || {};
     footer.textContent =
+      (health.version ? "claude-token-lens " + health.version + " — " : "") +
       "Service " + (health.status || "unknown") + " — last watcher tick: " + (watcher.finished_at || "never") + " — " + (watcher.files_parsed || 0) + " files parsed, " + (watcher.errors || 0) + " errors.";
   }
 

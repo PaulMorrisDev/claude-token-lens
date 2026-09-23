@@ -118,13 +118,13 @@ pressing Enter through all of them is a reasonable first pass:
 
 | Question | Means |
 |---|---|
-| Billing mode (api/subscription) | Which Claude Code billing model to price against |
-| Comma-separated project slugs to always exclude | Skip these projects' transcripts everywhere (reports, dashboard, exports) |
-| Do you launch Claude Code with `--settings`/`CLAUDE_CONFIG_DIR` overlays | Affects where a later `apply` writes a profile |
-| Are this project's agents/skills shared with colleagues | Same — affects `apply`'s default scope |
-| Timezone | Used for day-boundary grouping in reports; blank uses the machine's own local zone |
-| Default scope for applying a profile | `user`/`project-local`/`repo` — where a future `apply` writes by default |
-| Onboarding capture window length in days | How long `baseline` waits before it has enough data for a confident first read (default 7) |
+| How do you pay for Claude Code? | `subscription` for a Pro, Max, Team or Enterprise plan (typing the plan name works too), `api` for pay-per-token, `auto` to decide from usage-limit readings. Sets whether amounts are shown as money or as a share of your usage limits |
+| Projects to always leave out | Folder names under `~/.claude/projects`; their transcripts are skipped everywhere (reports, dashboard, exports) |
+| Do you start Claude Code with `--settings` or `CLAUDE_CONFIG_DIR` | Affects where a later `apply` writes a profile. Most people answer no |
+| Is this project's `.claude` folder committed to a repo colleagues use | Same: affects `apply`'s default scope |
+| Time zone | Used to group reports by day; blank uses this computer's |
+| Where should changes you apply go by default | `user` (all your projects), `project-local` (this project, just you) or `repo` (this project, everyone) |
+| How many days to collect data before the first baseline | How long `baseline` waits before it has enough data for a confident first read (default 7) |
 
 Running it unattended (a script, or just to skip the prompts) derives
 every answer instead of asking, and prints exactly what it derived and
@@ -240,14 +240,10 @@ claude_token_lens`, which cannot work once the code is inside a zip) —
 confirm the line contains the full path to your `.pyz`, not a bare
 `claude_token_lens` module reference.
 
-On Windows, registering the task doesn't start it: it first runs at
-your next logon. To start it now:
-
-```powershell
-Start-ScheduledTask -TaskName ClaudeTokenLens
-```
-
-(On Linux and macOS, registration starts it straight away.)
+Registering also starts it straight away, on every system. Re-running
+`install-service` is safe: on Windows it stops the running copy,
+re-registers the task for the Python you ran it with, and starts it
+again.
 
 Confirm it actually registered, two ways:
 
@@ -358,18 +354,22 @@ Install the new version the same way you installed the first one:
 |---|---|
 | A (`.pyz`) | Download the new `claude-token-lens.pyz` from the [latest release](https://github.com/PaulMorrisDev/claude-token-lens/releases/latest) over the old file |
 | B (local clone) | `git pull` in the clone, then `.venv\Scripts\pip install --force-reinstall <path-to-the-cloned-repo>` |
-| C (GitHub) | `python -m pip install --force-reinstall git+https://github.com/PaulMorrisDev/claude-token-lens` |
+| C (GitHub) | `py -3 -m pip install --force-reinstall git+https://github.com/PaulMorrisDev/claude-token-lens` |
 
 `--force-reinstall` is needed because pip skips a copy whose version
-number hasn't changed. Then restart the dashboard so it runs the new
-code:
+number hasn't changed. Then point the logon task at the new version and
+restart it, with the same Python you just updated:
 
 ```powershell
-Stop-ScheduledTask -TaskName ClaudeTokenLens; Start-ScheduledTask -TaskName ClaudeTokenLens
+py -3 -m claude_token_lens install-service
 ```
 
-On macOS: `launchctl kickstart -k gui/$(id -u)/com.claude-token-lens`.
-On Linux: `systemctl --user restart claude-token-lens`. If a new
+(Route A: `py -3 claude-token-lens.pyz install-service`; Route B:
+`.venv\Scripts\python.exe -m claude_token_lens install-service`.) It stops the
+running dashboard, re-registers the task for this install and starts it
+again. On Linux it restarts the service too; on macOS run
+`launchctl kickstart -k gui/$(id -u)/com.claude-token-lens` instead.
+The dashboard's footer shows the version it is running. If a new
 version reads transcripts differently, the dashboard re-reads them once
 after the restart, so the first page load can be slow.
 
@@ -377,6 +377,7 @@ after the restart, so the first page load can be slow.
 
 | Symptom | Fix |
 |---|---|
+| Dashboard still shows the old version after an update (see its footer) | The logon task still runs the old copy, or another Python install. Run `install-service` with the Python you updated (section 8) |
 | `claude-token-lens` not found | Use the full path to the venv's `Scripts\claude-token-lens.exe`, or `python -m claude_token_lens` (works regardless of `PATH`) |
 | The Data quality tab says the SessionStart hook isn't running | The hook command names a Python that isn't installed (`py` with no launcher), uses `%USERPROFILE%` (Claude Code runs hooks through Git Bash, which doesn't expand it), or has a path broken by single backslashes in JSON. Run `claude-token-lens init --repair-hook`: it shows the fixed command and changes it without asking, after copying `settings.json` to `settings.json.bak-<UTC time>`. It keeps your own Python when it's found and writes any `%VARIABLE%` out in full; otherwise it names your main Python install by full path. It can only fix a command whose script exists: if the script is missing, run `claude-token-lens init --connect` first, which copies it back into `<config-dir>\hooks\` |
 | No usage-limit readings | The statusline runs only in Claude Code in a terminal, not in the desktop app or an IDE. Amounts stay list-price equivalents until readings arrive |

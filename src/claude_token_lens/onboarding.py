@@ -190,6 +190,20 @@ def load_answers_file(path: str | Path) -> dict:
     return data
 
 
+#: Answers accepted for the billing question, including the plan names
+#: people type instead of "subscription".
+_BILLING_WORDS = {
+    "api": "api",
+    "subscription": "subscription",
+    "auto": "auto",
+    "pro": "subscription",
+    "max": "subscription",
+    "team": "subscription",
+    "enterprise": "subscription",
+    "plan": "subscription",
+}
+
+
 def _ask(
     key: str,
     prompt: str,
@@ -260,9 +274,10 @@ def gather_answers(
     notes: list[str] = []
     existing = detection.existing_config
 
-    billing = _ask(
+    billing_raw = _ask(
         "billing",
-        "Billing mode (api/subscription)",
+        "How do you pay for Claude Code? Type subscription for a Pro, Max, Team or Enterprise plan, "
+        "api to pay per token with an API key, or auto to let this tool work it out",
         existing.billing,
         answers_data=answers_data,
         non_interactive=non_interactive,
@@ -270,12 +285,14 @@ def gather_answers(
         stdout=stdout,
         notes=notes,
     )
+    # Anything else is left as typed, for run_init's validation to reject.
+    billing = _BILLING_WORDS.get(billing_raw.strip().lower(), billing_raw)
 
     exclude_raw = answers_data.get("exclude_projects") if answers_data is not None else None
     if exclude_raw is None:
         exclude_str = _ask(
             "exclude_projects",
-            "Comma-separated project slugs to always exclude (blank for none)",
+            "Projects to always leave out: folder names under ~/.claude/projects, separated by commas (blank for none)",
             ",".join(existing.exclude_projects),
             answers_data=None,
             non_interactive=non_interactive,
@@ -291,8 +308,8 @@ def gather_answers(
 
     launch_overlays = _ask_bool(
         "launch_overlays",
-        "Do you launch Claude Code with --settings/CLAUDE_CONFIG_DIR overlays "
-        "rather than each project's own settings files",
+        "Do you start Claude Code with --settings or CLAUDE_CONFIG_DIR pointing at extra settings "
+        "(most people don't)",
         existing.launch_overlays,
         answers_data=answers_data,
         non_interactive=non_interactive,
@@ -303,8 +320,7 @@ def gather_answers(
 
     shared_project_config = _ask_bool(
         "shared_project_config",
-        "Are this project's agents/skills shared with colleagues (e.g. committed "
-        "to a shared repo)",
+        "Is this project's .claude folder (agents, skills) committed to a repo colleagues use",
         existing.shared_project_config,
         answers_data=answers_data,
         non_interactive=non_interactive,
@@ -315,7 +331,7 @@ def gather_answers(
 
     tz_raw = _ask(
         "tz",
-        "Timezone (IANA name, blank for the machine's own local zone)",
+        "Time zone, such as Europe/London (blank uses this computer's)",
         existing.tz or "",
         answers_data=answers_data,
         non_interactive=non_interactive,
@@ -327,7 +343,8 @@ def gather_answers(
 
     apply_scope = _ask(
         "apply_scope",
-        "Default scope for applying a profile (user/project-local/repo)",
+        "Where should changes you apply go by default: user (all your projects), "
+        "project-local (this project, just you) or repo (this project, everyone)",
         existing.apply_scope,
         answers_data=answers_data,
         non_interactive=non_interactive,
@@ -338,7 +355,7 @@ def gather_answers(
 
     capture_window_raw = _ask(
         "capture_window",
-        "Onboarding capture window length in days",
+        "How many days to collect data before the first baseline",
         str(existing.capture_window or DEFAULT_CAPTURE_WINDOW_DAYS),
         answers_data=answers_data,
         non_interactive=non_interactive,

@@ -585,6 +585,9 @@ def make_handler(
         stats = (watcher_stats() if watcher_stats is not None else None) or WatcherStats()
         data = {
             "status": "ok",
+            # The running code's version, so "is the dashboard still on
+            # the old version after an update?" has a one-look answer.
+            "version": _TOOL_VERSION,
             "schema_version": store.schema_version() or 0,
             "watcher": to_jsonable(stats),
             # Finding 3: a transcript whose file has gone missing (past
