@@ -20,5 +20,9 @@ tests/fixtures/_private/
 # Agent worktrees (created per concurrent-writer session; never committed)
 .claude/worktrees/
 
+# Development dashboard store (serve --store .claude/dev-service.db): built
+# from your own history, never committed
+.claude/dev-service.db*
+
 # Playwright MCP screenshots and snapshots
 .playwright-mcp/
