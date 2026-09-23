@@ -535,7 +535,8 @@ test and privacy are in [concepts](concepts.md#7-quality-signals).
 
 - `quality_by_agent` — per group (the main session, each agent type,
   and all subagents pooled when there are two types or more): runs,
-  then as shares didn't finish, likely out of turns, failed tool calls,
+  then as shares didn't finish, likely out of turns, retried on a
+  larger model, failed tool calls,
   failed shell commands, denied, stopped by you, corrections, edited
   again and hit the output limit, then replies and cost per run. A
   signal that doesn't apply to the group (corrections for a subagent,
@@ -546,13 +547,25 @@ test and privacy are in [concepts](concepts.md#7-quality-signals).
   (the one that agent used most), a verdict (`only`, `baseline`,
   `worse`, `possibly_worse`, `better`, `possibly_better`,
   `no_clear_difference`, `too_little_data`) and the difference in
-  words. Setups ran at different times on possibly different work.
+  words. Setups ran at different times on possibly different work. The
+  retried share is shown but not compared (the largest model can never
+  be retried on a larger one).
+- `quality_retried` — per agent type and model with at least one run
+  retried on a larger model (`quality.retried_rows`; the rule is in
+  [concepts](concepts.md#7-quality-signals)): runs that edited files,
+  retried runs and their share, files edited again against files those
+  runs edited, the model the retries most often used, and the day of
+  the latest. `quality.retried_models` turns it into the
+  `{(agent, family): row}` guard the models recommendation, the Models
+  quick action and the Profiles models goal check, alongside
+  `quality.worse_models`.
 - `quality_failing_tools` (advanced) — agent type, tool, failed calls
   and runs with a failure, top 25.
 - `quality_counts` (advanced) — the raw counts behind every share:
   replies, tool calls, failures, denials, messages, corrections, edits,
-  summaries, the recorded outcomes (reported done, failure, stopped,
-  other, none recorded), cut off, likely out of turns, ended early and
+  summaries, files edited again on a larger model, the recorded
+  outcomes (reported done, failure, stopped, other, none recorded), cut
+  off, likely out of turns, retried on a larger model, ended early and
   never replied.
 
 ## `workstyle` (`workstyle.py`)

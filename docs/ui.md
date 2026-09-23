@@ -152,8 +152,10 @@ what they did", the setup panel and service health.
    The `quality` section, **Is the work going well?**, follows the
    agents section: quality signals per agent type, then per model and
    effort with each setup compared with the one that agent used most
-   ([concepts](concepts.md#7-quality-signals)); the failing-tools and
-   counts tables sit under the advanced toggle.
+   ([concepts](concepts.md#7-quality-signals)), then **Agent runs
+   retried on a larger model** (each agent and model whose runs the same
+   agent redid on a larger model); the failing-tools and counts tables
+   sit under the advanced toggle.
 8. **Context files** — what Claude reads at the start of every
    session and subagent. **CLAUDE.md files** (`/api/claude-md`): one
    row per file with its level, size in tokens, how often it was sent

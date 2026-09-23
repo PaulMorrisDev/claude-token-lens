@@ -113,3 +113,19 @@ def test_an_agent_setting_already_in_effect_is_skipped_under_its_snapshot_field_
                                       "model": "claude-haiku-4-5-20251001"}}
     out = goals.draft("recommendations", _report([rec]), UNITS, effective_agents=agents)
     assert out["candidates"] == []
+
+
+def test_models_goal_skips_a_model_the_agent_was_often_retried_from():
+    model = _report()
+    [table] = model.sections[0].tables
+    table.columns.append(NS(key="best_cheaper_alternative_model"))
+    table.columns.append(NS(key="saving_pct"))
+    table.rows[0] += ["claude-sonnet-4-5", 40.0]
+    table.rows[1] += ["claude-haiku-4-5-20251001", 80.0]
+    model.sections.append(NS(key="quality", tables=[NS(
+        name="quality_retried",
+        columns=[NS(key=k) for k in ("agent_type", "model", "runs", "retried", "retried_on")],
+        rows=[["Explore", "claude-haiku-4-5-20251001", 4, 1, "claude-sonnet-5"]],
+    )]))
+    out = goals.draft("models", model, UNITS)
+    assert [(c["agent"], c["value"]) for c in out["candidates"]] == [(None, "sonnet")]

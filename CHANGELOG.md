@@ -13,6 +13,22 @@ fast-mode flag.
 
 ### Added
 
+- **Spots when a cheaper model wasn't enough.** When an agent's run on
+  a cheaper model is followed, in the same session, by the same agent
+  started again on a larger model that edits the same files within two
+  hours, the run counts as retried on a larger model. The Agents tab
+  lists each agent and model this happened to ("Agent runs retried on a
+  larger model"), and the retried share joins the quality signals and
+  Profiles' before-and-after. Once a tenth of an agent's runs on a model
+  were retried, that model is no longer suggested for it: the models
+  recommendation, the Models quick action and the Profiles models goal
+  skip it and say why. When the agent file is on that model and it
+  happened twice or more, "Is any agent struggling?" offers to move it
+  back up; when the agent file names another model, it says the cheaper
+  model was picked by whatever started the agent. On real history this
+  flagged claude-implementer on Haiku (4 of 31 runs retried on Sonnet,
+  against 2 of 350 Sonnet runs retried on Opus), which the models check
+  had been recommending.
 - **The dashboard opens straight away.** `serve` now binds its port
   before reading your history, instead of refusing connections until a
   first scan of the whole history finished (a minute or more on a large

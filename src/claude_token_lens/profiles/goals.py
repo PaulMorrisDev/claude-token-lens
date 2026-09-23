@@ -149,6 +149,8 @@ def _from_recommendations(draft: _Draft, recommendations, keys: set[str] | None 
 
 def _models(draft: _Draft, tables, *, subagents_only: bool) -> None:
     worse = quality.worse_models(tables.rows("quality", "quality_by_setup"))
+    worse.update({key: row for key, row in quality.retried_models(tables.rows("quality", "quality_retried")).items()
+                  if key not in worse})
     for row in tables.rows("model_swap", "model_swap_by_agent_type"):
         agent = row.get("agent_type")
         best = row.get("best_cheaper_alternative_model")
@@ -156,7 +158,8 @@ def _models(draft: _Draft, tables, *, subagents_only: bool) -> None:
         if not best or pct < MIN_SHARE_PCT or (subagents_only and agent == TOP):
             continue
         if (agent, _alias(best)) in worse:
-            # The quality check found this agent did worse on that model.
+            # The quality check found this agent did worse on that model,
+            # or its runs on it were often retried on a larger one.
             continue
         who = "the main session" if agent == TOP else agent
         draft.add(

@@ -175,10 +175,12 @@ def test_unknown_check_raises(tmp_path):
         qa.run("nope", _ctx(tmp_path))
 
 
-def _quality_model(agents: list[dict], setups: list[dict] | None = None, failing: list[dict] | None = None):
+def _quality_model(agents: list[dict], setups: list[dict] | None = None, failing: list[dict] | None = None,
+                   retried: list[dict] | None = None):
     return NS(sections=[NS(key="quality", tables=[
         _table("quality_by_agent", agents),
         _table("quality_by_setup", setups or []),
+        _table("quality_retried", retried or []),
         _table("quality_failing_tools", failing or []),
     ])], recommendations=[], context_files={})
 
@@ -274,3 +276,55 @@ def test_the_main_session_doing_worse_is_a_tip(tmp_path):
     main = {**_WORSE, "agent_type": "(main session)"}
     result = qa.run("quality", _ctx(tmp_path, model=_quality_model([{**_AGENT, "unfinished_pct": 3.0}], [main])))
     assert not result["fixes"] and result["tips"][0]["title"] == "Main session did worse on claude-haiku-4-5-20251001"
+
+
+_RETRIED = {"agent_type": "claude-implementer", "model": "claude-haiku-4-5-20251001", "runs": 31, "retried": 4,
+            "retried_pct": 12.9, "files_edited_again": 10, "files_edited": 19, "retried_on": "claude-sonnet-5",
+            "last_retried": "2026-09-23"}
+
+
+def test_runs_retried_on_a_larger_model_offer_the_move_back_when_the_agent_file_is_on_the_cheaper_one(tmp_path):
+    ctx = _ctx(tmp_path, model=_quality_model([{**_AGENT, "unfinished_pct": 3.0}], retried=[_RETRIED]),
+               effective_agents={"claude-implementer": {"model": "haiku"}})
+    result = qa.run("quality", ctx)
+    assert result["status"] == "act"
+    assert result["summary"].startswith("1 agent was often run again on a larger model after a cheaper one.")
+    [fix] = result["fixes"]
+    assert (fix["key"], fix["agent"], fix["title"]) == ("model", "claude-implementer", "claude-implementer: back to sonnet")
+    assert result["table"]["rows"][-1][-1] == (
+        "On claude-haiku-4-5-20251001: 4 of its 31 runs on haiku that edited files were run again on sonnet, which "
+        "edited the same files soon after"
+    )
+
+
+def test_one_retry_is_a_tip_until_it_happens_again(tmp_path):
+    ctx = _ctx(tmp_path, model=_quality_model([{**_AGENT, "unfinished_pct": 3.0}],
+                                              retried=[{**_RETRIED, "runs": 3, "retried": 1}]),
+               effective_agents={"claude-implementer": {"model": "haiku"}})
+    result = qa.run("quality", ctx)
+    assert not result["fixes"]
+    [tip] = result["tips"]
+    assert tip["title"] == "claude-implementer: runs on haiku were retried on a larger model"
+    assert tip["text"].endswith("One more retry and this check will offer to move it back to sonnet.")
+
+
+def test_retries_started_on_a_model_the_agent_file_does_not_name_are_a_tip_about_the_dispatcher(tmp_path):
+    ctx = _ctx(tmp_path, model=_quality_model([{**_AGENT, "unfinished_pct": 3.0}], retried=[_RETRIED]),
+               effective_agents={"claude-implementer": {"model": "sonnet"}})
+    result = qa.run("quality", ctx)
+    assert not result["fixes"]
+    [tip] = result["tips"]
+    assert "Its agent file now says sonnet" in tip["text"] and "Don't pick haiku" in tip["text"]
+
+
+def test_models_check_does_not_suggest_a_model_the_agent_was_often_retried_from(tmp_path):
+    model = _full_model()
+    model.sections.append(NS(key="quality", tables=[
+        _table("quality_by_setup", []),
+        _table("quality_retried", [{**_RETRIED, "agent_type": "Explore"}]),
+    ]))
+    result = qa.run("models", _ctx(tmp_path, model=model))
+    assert [fix["agent"] for fix in result["fixes"]] == [None]
+    [tip] = result["tips"]
+    assert tip["title"] == "Explore: haiku not suggested"
+    assert "were run again on sonnet" in tip["text"]

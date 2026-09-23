@@ -195,19 +195,30 @@ def _models(ctx: Context) -> dict:
 
 def _models_left_out(ctx: Context, rows: list[dict]) -> list[dict]:
     """A tip for each cheaper model the models goal skipped because the
-    quality check found that agent did worse on it."""
-    worse = quality.worse_models(whatif._Tables(ctx.model).rows("quality", "quality_by_setup"))
+    quality check found that agent did worse on it, or its runs on it
+    were often retried on a larger one."""
+    tables = whatif._Tables(ctx.model)
+    worse = quality.worse_models(tables.rows("quality", "quality_by_setup"))
+    retried = quality.retried_models(tables.rows("quality", "quality_retried"))
     tips = []
     for row in rows:
         agent, best = row.get("agent_type"), row.get("best_cheaper_alternative_model")
-        setup = worse.get((agent, goals._alias(best or ""))) if best else None
-        if setup is None or (whatif._num(row.get("saving_pct")) or 0.0) < goals.MIN_SHARE_PCT:
+        if not best or (whatif._num(row.get("saving_pct")) or 0.0) < goals.MIN_SHARE_PCT:
+            continue
+        key = (agent, goals._alias(best))
+        if key in worse:
+            setup = worse[key]
+            reason = (
+                f"on {setup.get('model')} at effort {setup.get('effort')} it did worse than on "
+                f"{setup.get('compared_model')} at effort {setup.get('compared_effort')}: {setup.get('difference')}"
+            )
+        elif key in retried:
+            reason = retried[key]["reason"] + "."
+        else:
             continue
         tips.append({
             "title": f"{_who(agent)}: {goals._alias(best)} not suggested",
-            "text": f"It would price {_pct(row.get('saving_pct'))} lower, but on {setup.get('model')} at effort "
-            f"{setup.get('effort')} it did worse than on {setup.get('compared_model')} at effort "
-            f"{setup.get('compared_effort')}: {setup.get('difference')}",
+            "text": f"It would price {_pct(row.get('saving_pct'))} lower, but {reason}",
         })
     return tips
 
@@ -595,6 +606,7 @@ def _quality(ctx: Context) -> dict:
             struggling.append((row, issues))
     worse = [r for r in setups if r.get("setup_verdict") == "worse"]
     mixed = [r for r in setups if r.get("setup_verdict") == "mixed"]
+    retried = quality.retried_models(tables.rows("quality", "quality_retried"))
     table = _table(
         [("agent", "Agent"), ("runs", "Runs"), ("unfinished", "Didn't finish"), ("tools", "Failed tool calls"),
          ("shell", "Failed shell commands"), ("stands_out", "What stands out")],
@@ -603,7 +615,9 @@ def _quality(ctx: Context) -> dict:
           "; ".join(issues)] for r, issues in struggling]
         + [[_who(r.get("agent_type") if r.get("agent_type") != quality.MAIN else None), r.get("runs"),
             _pct(r.get("unfinished_pct")), _pct(r.get("tool_errors_pct")), _pct(r.get("shell_errors_pct")),
-            f"On {r.get('model')}, effort {r.get('effort')}: {_worse_part(r.get('difference'))}"] for r in worse],
+            f"On {r.get('model')}, effort {r.get('effort')}: {_worse_part(r.get('difference'))}"] for r in worse]
+        + [[_who(r.get("agent_type")), r.get("runs"), "", "", "", f"On {r.get('model')}: {r['reason']}"]
+           for r in retried.values()],
     )
     fixes = []
     tips = []
@@ -636,6 +650,36 @@ def _quality(ctx: Context) -> dict:
         if not any(fix.get("agent") == agent for fix in fixes):
             tips.append({"title": f"{agent} did worse on {row.get('model')}, effort {row.get('effort')}",
                          "text": evidence + " Its agent file no longer uses that setup, so nothing to change."})
+    for (agent, family), row in retried.items():
+        evidence = (
+            f"{row['reason'][:1].upper()}{row['reason'][1:]}: {row.get('files_edited_again')} of the "
+            f"{row.get('files_edited')} files those runs edited, last on {row.get('last_retried')}."
+        )
+        back_to = goals._alias(row.get("retried_on") or "")
+        fields = ctx.effective_agents.get(agent) if isinstance(ctx.effective_agents.get(agent), dict) else {}
+        now_model = fields.get("model")
+        on_it = now_model is not None and goals._alias(now_model) == family
+        if (
+            on_it
+            and agent not in _NOT_OVERRIDABLE
+            and back_to
+            and (row.get("retried") or 0) >= quality.MIN_RETRIED_RUNS
+            and not any(fix.get("agent") == agent and fix.get("key") == "model" for fix in fixes)
+        ):
+            fixes.append(_candidate_fix(ctx, {"agent": agent, "key": "model", "value": back_to, "now": now_model,
+                                              "evidence": evidence}, f"{agent}: back to {back_to}"))
+            continue
+        if on_it:
+            advice = (f" One more retry and this check will offer to move it back to {back_to}." if back_to
+                      and (row.get("retried") or 0) < quality.MIN_RETRIED_RUNS else "")
+        else:
+            said = f"now says {now_model}" if now_model is not None else "names no model"
+            advice = (
+                f" Its agent file {said}, so those runs were most likely started on {family} by whatever dispatched "
+                "them: a workflow script's model setting, or Claude choosing a model when it started the agent. "
+                f"Don't pick {family} for this agent's work."
+            )
+        tips.append({"title": f"{agent}: runs on {family} were retried on a larger model", "text": evidence + advice})
     for row in mixed:
         agent = row.get("agent_type")
         who = _who(None if agent == quality.MAIN else agent)
@@ -679,18 +723,22 @@ def _quality(ctx: Context) -> dict:
                 "title": f"{who}: replies hit the output limit",
                 "text": "Ask for the result in parts, or write long output to a file instead of the reply.",
             })
-    if not struggling and not worse:
+    if not struggling and not worse and not retried:
         tested = [r for r in setups if r.get("setup_verdict") not in ("only", "baseline", "too_little_data")]
         return _result(
             "ok",
-            "No agent stands out: none fails often, and no model or effort did clearly worse than the one it is "
-            "compared with" + (f" ({len(tested)} setups compared)." if tested else "."),
+            "No agent stands out: none fails often, no model or effort did clearly worse than the one it is "
+            "compared with, and no agent was often run again on a larger model"
+            + (f" ({len(tested)} setups compared)." if tested else "."),
             tips=tips,
         )
     parts = []
     if worse:
         parts.append(f"{len(worse)} model or effort setup{'s' if len(worse) != 1 else ''} did clearly worse than the "
                      "one that agent used most")
+    if retried:
+        parts.append(f"{len(retried)} agent{'s were' if len(retried) != 1 else ' was'} often run again on a larger "
+                     "model after a cheaper one")
     if struggling:
         one = len(struggling) == 1
         parts.append(f"{len(struggling)} agent{'' if one else 's'} often fail{'s' if one else ''} or "

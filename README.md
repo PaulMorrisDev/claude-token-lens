@@ -251,7 +251,7 @@ completely, see [Uninstalling](#uninstalling).
 | Cache | When did Claude Code rebuild the prompt cache, and what caused it? |
 | Cache lifetime (TTL) | Would a 1-hour cache lifetime have paid for itself? |
 | Savings | What would shorter tool output, earlier summaries, cheaper models or fewer wasted replies save? |
-| Agents | What do my subagents cost, what are they given when they start, what do they send back, and is their work going well (failed tool calls, runs that don't finish, per model and effort)? |
+| Agents | What do my subagents cost, what are they given when they start, what do they send back, and is their work going well (failed tool calls, runs that don't finish, runs a larger model had to redo, per model and effort)? |
 | Context files | What does each CLAUDE.md file and skill cost, who is it sent to, and what can be trimmed, moved or hidden? |
 | Config | What are my settings, and did changing them change my costs? |
 | Profiles | Make a profile from a goal with an estimate of what it saves, compare it with my settings, and see what each change I made did. |

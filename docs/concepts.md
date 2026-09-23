@@ -239,6 +239,7 @@ transcript: a main session or one subagent run.
 |---|---|---|---|
 | Didn't finish | runs that reported failure, were stopped, were ended early by Claude Code, never replied, or were cut off (the last reply asked for a tool and nothing came after it; ending on a `StructuredOutput` call is a workflow agent's answer, so that counts as finished) | agent runs | subagents |
 | Likely out of turns | cut-off runs that ended right after a tool result came back, without being stopped: how a run ends when its `maxTurns` runs out (Claude Code doesn't record the reason) | agent runs | subagents |
+| Retried on a larger model | runs after which the same agent type, started again on a larger model family in the same session, edited one of the same files within 2 hours (see below) | agent runs that edited files | subagents |
 | Reported failure / Stopped | the status in the agent's task notification or result | agent runs with a recorded outcome | subagents |
 | Failed tool calls | tool results marked as an error | tool calls | all |
 | Failed shell commands | Bash and PowerShell results marked as an error | shell commands | all |
@@ -265,6 +266,29 @@ running when the workflow ended, which counts as stopped). A run with
 none of these has no recorded outcome and is left out of the outcome
 rates only.
 
+**Retried on a larger model.** When a run on a cheaper model ends and
+the same agent type is started again on a larger model family (haiku,
+sonnet, opus, fable, smallest first) and edits one of the same files
+(by salted hash) within 2 hours of the first run's last reply, in the
+same session, whatever dispatched it judged the cheaper model's work
+not enough. Only the same agent type counts: a reviewer after a writer,
+or the main session tidying a file afterwards, is often the plan, and
+counting them more than doubled the runs flagged on real history. A run
+started before the cheaper one ended is working alongside it, not
+retrying it. Nothing records why the agent was run
+again and edits made through a shell command aren't seen, so one retry
+is a sign and several are a pattern. Retries stay out of the setup
+comparisons, because the largest model can never be retried on a
+larger one and the test would favour it by construction. Instead, once
+a tenth or more of an agent's runs on a model (of those that edited
+files) were retried, that model is no longer suggested for that agent
+(the models recommendation, the Models quick action and the Profiles
+models goal all skip it and say why). If the agent file is on that
+model and it happened at least twice, "Is any agent struggling?" offers
+to move it back to the model the retries used; if the agent file names
+another model, those runs were started on the cheaper one by whatever
+dispatched them, and it says so.
+
 **Comparing.** Each signal is a ratio of two counts summed over runs,
 and two sets of runs are compared with a two-sided z-test whose
 variance comes from the runs themselves (the delta method for a ratio of
@@ -283,7 +307,8 @@ against none is not worth acting on.
 has every signal per agent type, then per model and effort, with each
 setup compared against the one that agent used most (across the whole
 window, so a setup used for other work or in another week can differ for
-that reason). Profiles' "Your changes and what they did" compares the
+that reason), then each agent and model whose runs were retried on a
+larger model. Profiles' "Your changes and what they did" compares the
 runs of the agent a change touched (or the main session) before and
 after it. The Quick actions check "Is any agent struggling?" turns both
 into fixes.

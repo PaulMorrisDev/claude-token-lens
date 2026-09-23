@@ -4,6 +4,7 @@ runs are compared."""
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace as NS
 
 import pytest
@@ -319,7 +320,9 @@ def test_section_tables_and_columns():
     section = quality.build_section(runs)
     assert section.key == "quality"
     tables = {t.name: t for t in section.tables}
-    assert set(tables) == {"quality_by_agent", "quality_by_setup", "quality_failing_tools", "quality_counts"}
+    assert set(tables) == {
+        "quality_by_agent", "quality_by_setup", "quality_retried", "quality_failing_tools", "quality_counts"
+    }
     by_agent = tables["quality_by_agent"]
     keys = [c.key for c in by_agent.columns]
     assert {"unfinished_pct", "turn_limit_pct", "tool_errors_pct", "replies_per_run"} <= set(keys)
@@ -343,3 +346,95 @@ def test_a_notification_outcome_wins_over_the_run_file(tmp_path):
     result = _agent(tmp_path, [user_str_line("brief", timestamp=_ts(0)), _reply(1)], agent_id="abc123")
     result.meta.workflow_agent_state = "done"
     assert quality.run_facts(result, None, outcomes={"abc123": "failed"}).outcome == "failed"
+
+
+# -- retried on a larger model -------------------------------------------------------
+
+_T0 = datetime(2026, 9, 23, 19, 0, tzinfo=timezone.utc)
+
+
+def _edit_run(model: str, start_min: int, end_min: int, files, group="claude-implementer", kind="subagent",
+              edit_min=None) -> quality.Run:
+    at = _T0 + timedelta(minutes=end_min if edit_min is None else edit_min)
+    return quality.Run(group=group, kind=kind, model=model, start=_T0 + timedelta(minutes=start_min),
+                       end=_T0 + timedelta(minutes=end_min), edits=len(files), files_edited=len(files),
+                       edit_log=[(at, f) for f in files])
+
+
+def test_the_same_agent_run_again_on_a_larger_model_on_the_same_files_is_a_retry():
+    cheap = _edit_run("claude-haiku-4-5-20251001", 0, 10, ["a", "b", "c"])
+    retry = _edit_run("claude-sonnet-5", 20, 30, ["a", "b", "z"])
+    quality._mark_retried([cheap, retry])
+    assert (cheap.retried_files, cheap.retried_on) == (2, "claude-sonnet-5")
+    assert retry.retried_files == 0
+    assert quality.SIGNAL_BY_KEY["retried"].num(cheap) == 1.0
+
+
+@pytest.mark.parametrize("other", [
+    # A different agent type afterwards: a reviewer after a writer is often the plan.
+    _edit_run("claude-sonnet-5", 20, 30, ["a"], group="code-reviewer"),
+    # The main session editing the file afterwards.
+    _edit_run("claude-opus-5", 0, 60, ["a"], group=quality.MAIN, kind="top-level", edit_min=20),
+    # Working alongside: started before the cheaper run ended.
+    _edit_run("claude-sonnet-5", 5, 30, ["a"]),
+    # Not a larger model.
+    _edit_run("claude-haiku-4-5-20251001", 20, 30, ["a"]),
+    # Too long after.
+    _edit_run("claude-sonnet-5", 200, 210, ["a"]),
+    # Other files.
+    _edit_run("claude-sonnet-5", 20, 30, ["z"]),
+])
+def test_what_is_not_a_retry(other):
+    cheap = _edit_run("claude-haiku-4-5-20251001", 0, 10, ["a"])
+    quality._mark_retried([other, cheap])
+    assert cheap.retried_files == 0
+
+
+def test_session_runs_mark_a_retry_from_the_transcripts(tmp_path):
+    def edit(sec, tid, model):
+        return _reply(sec, tool_use_block("Edit", tid, {"file_path": "C:/Dev/app/wf.js"}), model=model)
+
+    cheap = _parse(tmp_path, [user_str_line("write it", timestamp=_ts(0)), edit(1, "t1", "claude-haiku-4-5"),
+                              _result(2, "t1"), _reply(3, model="claude-haiku-4-5")], "agent-a1.jsonl",
+                   kind="subagent", agent_id="agent-a1", agent_type="claude-implementer")
+    retry = _parse(tmp_path, [user_str_line("fix it", timestamp=_ts(60)), edit(61, "t2", "claude-sonnet-5"),
+                              _result(62, "t2"), _reply(63, model="claude-sonnet-5")], "agent-a2.jsonl",
+                   kind="subagent", agent_id="agent-a2", agent_type="claude-implementer")
+    runs = quality.session_runs(NS(top=None, subs=[cheap, retry], session_id="s1"), None)
+    assert [(r.model, r.retried_files) for r in runs] == [("claude-haiku-4-5", 1), ("claude-sonnet-5", 0)]
+    assert "wf.js" not in repr(runs[0].edit_log)
+
+
+def test_retried_rows_and_the_share_that_keeps_a_model_from_being_suggested():
+    runs = []
+    for i in range(10):
+        cheap = _edit_run("claude-haiku-4-5-20251001", 100 * i, 100 * i + 10, [f"f{i}"])
+        runs.append(cheap)
+        if i < 2:
+            runs.append(_edit_run("claude-sonnet-5", 100 * i + 20, 100 * i + 30, [f"f{i}"]))
+    for i in range(20):
+        runs.append(_edit_run("claude-haiku-4-5-20251001", 5000 + 100 * i, 5010 + 100 * i, [f"e{i}"], group="Explore"))
+    runs.append(_edit_run("claude-sonnet-5", 5020, 5030, ["e0"], group="Explore"))
+    quality._mark_retried(runs)
+    rows = quality.retried_rows(runs)
+    assert [(r["agent_type"], r["runs"], r["retried"], r["retried_pct"]) for r in rows] == [
+        ("claude-implementer", 10, 2, 20.0),
+        ("Explore", 20, 1, 5.0),
+    ]
+    assert rows[0]["retried_on"] == "claude-sonnet-5" and rows[0]["files_edited_again"] == 2
+    flagged = quality.retried_models(rows)
+    assert set(flagged) == {("claude-implementer", "haiku")}  # 1 in 20 is under the share
+    assert flagged[("claude-implementer", "haiku")]["reason"] == (
+        "2 of its 10 runs on haiku that edited files were run again on sonnet, which edited the same files soon after"
+    )
+
+
+def test_retries_are_shown_per_setup_but_left_out_of_the_comparison():
+    runs = _setup_runs("claude-sonnet-5", 30, 1) + _setup_runs("claude-haiku-4-5", 20, 1)
+    for run in runs[30:]:
+        run.edits, run.retried_files = 1, 1
+    for run in runs[:30]:
+        run.edits = 1
+    rows = {r["model"]: r for r in quality.setup_rows(runs)}
+    assert rows["claude-haiku-4-5"]["values"]["retried"] == 100.0
+    assert "retried" not in {r["key"] for r in rows["claude-haiku-4-5"]["comparison"]}

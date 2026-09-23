@@ -316,3 +316,22 @@ def test_pricing_coverage_wording_falls_back_when_neither_table_present():
     out = advice.finish([_pricing_coverage_rec()], report, None, None)
     rec = out[0]
     assert rec.title == "Some usage has no price"
+
+
+def test_model_tier_leaves_out_an_agent_often_retried_on_a_larger_model():
+    report = _model_swap_report([["reviewer", "claude-sonnet-5", "claude-haiku-4-5-20251001", 50.0]])
+    report.sections.append(
+        Section(
+            key="quality",
+            title="Quality",
+            tables=[
+                Table(
+                    name="quality_retried",
+                    columns=[Column(key=k, label=k) for k in ("agent_type", "model", "runs", "retried", "retried_on")],
+                    rows=[["reviewer", "claude-haiku-4-5-20251001", 5, 2, "claude-sonnet-5"]],
+                )
+            ],
+        )
+    )
+    snap = Snapshot(path=None, ts="2026-09-20T00:00:00Z", data={"agents": {}})
+    assert not any(r.id == "model-tier" for r in advice.finish([_tier("reviewer")], report, snap, Units()))

@@ -128,6 +128,7 @@ PLACEMENT: dict[str, str] = {
     # quality signals
     "quality_by_agent": "keep",
     "quality_by_setup": "keep",
+    "quality_retried": "keep",
     "quality_failing_tools": "advanced",
     "quality_counts": "advanced",
     # workstyle / workflows
@@ -617,8 +618,8 @@ TABLE_COPY: dict[str, TableCopy] = {
             "took.",
             read="Each figure is a share of what your logs counted, so an agent with few runs can swing a lot. "
             "Read it with the number of runs.",
-            act="An agent that often doesn't finish, or whose tool calls often fail, needs a clearer task prompt, "
-            "the right tools, or a stronger model or effort.",
+            act="An agent that often doesn't finish, whose tool calls often fail, or that often has to be run again "
+            "on a larger model, needs a clearer task prompt, the right tools, or a stronger model or effort.",
         ),
         columns={
             "agent_type": ("Agent", "The main session, or the subagent type."),
@@ -633,6 +634,11 @@ TABLE_COPY: dict[str, TableCopy] = {
                 "Subagent runs cut off right after a tool result came back, without being stopped. That is how a "
                 "run ends when it reaches its maxTurns; Claude Code doesn't record the reason, so this is likely, "
                 "not certain.",
+            ),
+            "retried_pct": (
+                "Retried on a larger model",
+                "Subagent runs that were run again on a larger model, which edited the same files within two hours, "
+                "out of the runs that edited files: the cheaper model wasn't enough for that work.",
             ),
             "tool_errors_pct": (
                 "Failed tool calls",
@@ -689,6 +695,11 @@ TABLE_COPY: dict[str, TableCopy] = {
                 "Subagent runs that reported failure, were stopped, ended early or were cut off before they "
                 "answered, out of the runs where that is known.",
             ),
+            "retried_pct": (
+                "Retried on a larger model",
+                "Subagent runs that were run again on a larger model, which edited the same files within two hours, "
+                "out of the runs that edited files: the cheaper model wasn't enough for that work.",
+            ),
             "tool_errors_pct": (
                 "Failed tool calls",
                 "Tool calls whose result came back as an error, out of all tool calls.",
@@ -735,6 +746,37 @@ TABLE_COPY: dict[str, TableCopy] = {
             "only": "Only setup",
         },
     ),
+    "quality_retried": TableCopy(
+        title="Agent runs retried on a larger model",
+        help=Help(
+            shows="Each agent and model where the same agent was run again on a larger model soon after one of "
+            "its runs ended, and edited the same files: a sign the cheaper model wasn't enough for that work.",
+            read="Nothing records why the agent was run again, so one retry is a sign, not proof. Several, or a "
+            "large share of the runs, is a pattern. A different agent or the main session editing the files "
+            "afterwards isn't counted, since a reviewer after a writer is often the plan.",
+            act="Once a tenth of an agent's runs on a model were retried on a larger one, that model isn't "
+            "suggested for that agent. If its agent file is on that model and it happened twice or more, Quick "
+            "actions offers to move it back up.",
+        ),
+        columns={
+            "agent_type": ("Agent", "The subagent type that was retried."),
+            "model": ("Model", "The model those runs used."),
+            "runs": ("Runs that edited files", "This agent's runs on this model that edited at least one file."),
+            "retried": (
+                "Retried on a larger model",
+                "Of those, runs after which the same agent was started again on a larger model, in the same session, "
+                "and edited one of the same files within two hours.",
+            ),
+            "retried_pct": ("Share retried", "Retried runs out of the runs that edited files."),
+            "files_edited_again": (
+                "Files edited again",
+                "Files the larger model edited again, summed over the retried runs.",
+            ),
+            "files_edited": ("Files those runs edited", "Every file the retried runs edited, for comparison."),
+            "retried_on": ("Retried on", "The model the retries most often used."),
+            "last_retried": ("Last time", "The day the latest retried run ended."),
+        },
+    ),
     "quality_failing_tools": TableCopy(
         title="Which tools failed",
         help=Help(
@@ -773,6 +815,10 @@ TABLE_COPY: dict[str, TableCopy] = {
             "corrections": ("Corrections", "Your messages that looked like a correction."),
             "edits": ("Edits", "File edits and writes."),
             "rework_edits": ("Edited again", "Edits to a file already changed before your last message."),
+            "retried_files": (
+                "Edited again on a larger model",
+                "Files a subagent edited that the same agent, run again on a larger model, edited soon after.",
+            ),
             "max_tokens": ("Hit output limit", "Replies cut off at the output limit."),
             "api_errors": ("API errors", "Errors from the API, usually retried automatically."),
             "fallbacks": ("Model fallbacks", "Times Claude Code switched to another model after an error."),
@@ -791,6 +837,10 @@ TABLE_COPY: dict[str, TableCopy] = {
                 "Likely out of turns",
                 "Cut-off runs that ended right after a tool result came back, without being stopped: most likely "
                 "their maxTurns ran out.",
+            ),
+            "retried": (
+                "Retried on a larger model",
+                "Subagent runs after which the same agent was run again on a larger model and edited the same files.",
             ),
             "terminated_early": (
                 "Ended early",

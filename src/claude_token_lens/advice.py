@@ -150,7 +150,9 @@ def _merge_model_tier(recs: list[Recommendation], ctx: _Context) -> list[Recomme
     if not tier:
         return recs
     rest = [r for r in recs if r.id != "model-tier"]
-    worse = quality.worse_models(whatif._Tables(ctx.report).rows("quality", "quality_by_setup"))
+    tables = whatif._Tables(ctx.report)
+    worse = quality.worse_models(tables.rows("quality", "quality_by_setup"))
+    retried = quality.retried_models(tables.rows("quality", "quality_retried"))
     left_out: list[str] = []
     rows = []
     for rec in tier:
@@ -169,6 +171,10 @@ def _merge_model_tier(recs: list[Recommendation], ctx: _Context) -> list[Recomme
         if (agent, _family_alias(alt)) in worse:
             # The quality section found this agent did worse on that model.
             left_out.append(f"{_who(agent)} (did worse on {_family_alias(alt)})")
+            continue
+        if (agent, _family_alias(alt)) in retried:
+            # Its runs on that model were often retried on a larger one.
+            left_out.append(f"{_who(agent)} ({retried[(agent, _family_alias(alt))]['reason']})")
             continue
         rows.append((rec, agent, alt, saving if isinstance(saving, (int, float)) else 0.0, observed))
     if not rows:
