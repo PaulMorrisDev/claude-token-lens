@@ -68,7 +68,7 @@ def test_an_empty_report_is_no_data_everywhere_but_never_fails(tmp_path):
     ctx = _ctx(tmp_path, model=NS(sections=[], context_files={}, recommendations=[]))
     statuses = {row["id"]: row["status"] for row in qa.run_all(ctx)}
     assert set(statuses) == set(qa.CHECK_IDS)
-    assert statuses["models"] == statuses["cache"] == statuses["tool-output"] == "no_data"
+    assert statuses["models"] == statuses["cache"] == statuses["tool-output"] == statuses["quality"] == "no_data"
 
 
 def test_files_on_disk_without_transcript_records_are_no_data_not_ok(tmp_path):
@@ -119,3 +119,69 @@ def test_markdown_carries_the_table_tips_and_fixes(tmp_path):
 def test_unknown_check_raises(tmp_path):
     with pytest.raises(KeyError):
         qa.run("nope", _ctx(tmp_path))
+
+
+def _quality_model(agents: list[dict], setups: list[dict] | None = None, failing: list[dict] | None = None):
+    return NS(sections=[NS(key="quality", tables=[
+        _table("quality_by_agent", agents),
+        _table("quality_by_setup", setups or []),
+        _table("quality_failing_tools", failing or []),
+    ])], recommendations=[], context_files={})
+
+
+_AGENT = {"agent_type": "claude-implementer", "runs": 40, "unfinished_pct": 30.0, "turn_limit_pct": 20.0,
+          "tool_errors_pct": 2.0, "shell_errors_pct": 3.0, "corrections_pct": None, "max_tokens_pct": 0.0}
+_WORSE = {"agent_type": "claude-implementer", "model": "claude-haiku-4-5-20251001", "effort": "high", "runs": 20,
+          "setup_verdict": "worse",
+          "difference": "Better: agent runs that didn't finish 0% against 14%; Worse: tool calls that failed 8.4% against 2.2%.",
+          "compared_model": "claude-sonnet-5", "compared_effort": "high"}
+
+
+def test_quality_is_ok_when_nothing_stands_out(tmp_path):
+    calm = {**_AGENT, "unfinished_pct": 3.0, "turn_limit_pct": 0.0}
+    result = qa.run("quality", _ctx(tmp_path, model=_quality_model([calm])))
+    assert result["status"] == "ok" and not result["fixes"]
+
+
+def test_quality_flags_an_agent_that_runs_out_of_turns_with_a_tip(tmp_path):
+    result = qa.run("quality", _ctx(tmp_path, model=_quality_model([_AGENT])))
+    assert result["status"] == "act"
+    assert result["table"]["rows"][0][-1] == "30% of runs didn't finish"
+    assert result["summary"] == "1 agent often fails or doesn't finish."
+    tip = result["tips"][0]
+    assert tip["title"] == "claude-implementer: runs often don't finish"
+    assert tip["text"].startswith("20% of its runs most likely ran out of turns")
+
+
+def test_quality_ignores_agents_with_too_few_runs(tmp_path):
+    result = qa.run("quality", _ctx(tmp_path, model=_quality_model([{**_AGENT, "runs": 3}])))
+    assert result["status"] == "ok"
+
+
+def test_a_worse_setup_offers_the_model_it_was_compared_with(tmp_path):
+    calm = {**_AGENT, "unfinished_pct": 3.0}
+    ctx = _ctx(tmp_path, model=_quality_model([calm], [_WORSE]),
+               effective_agents={"claude-implementer": {"model": "haiku"}})
+    result = qa.run("quality", ctx)
+    assert result["status"] == "act"
+    assert result["table"]["rows"][-1][-1] == (
+        "On claude-haiku-4-5-20251001, effort high: Worse: tool calls that failed 8.4% against 2.2%."
+    )
+    fix = result["fixes"][0]
+    assert FIX_KEYS <= set(fix)
+    assert (fix["key"], fix["agent"], fix["title"]) == ("model", "claude-implementer", "claude-implementer: back to sonnet")
+    assert "--dry-run" in fix["command"]
+
+
+def test_a_worse_setup_no_longer_in_use_is_a_tip_not_a_fix(tmp_path):
+    ctx = _ctx(tmp_path, model=_quality_model([{**_AGENT, "unfinished_pct": 3.0}], [_WORSE]),
+               effective_agents={"claude-implementer": {"model": "sonnet"}})
+    result = qa.run("quality", ctx)
+    assert not result["fixes"]
+    assert "no longer uses that setup" in result["tips"][0]["text"]
+
+
+def test_the_main_session_doing_worse_is_a_tip(tmp_path):
+    main = {**_WORSE, "agent_type": "(main session)"}
+    result = qa.run("quality", _ctx(tmp_path, model=_quality_model([{**_AGENT, "unfinished_pct": 3.0}], [main])))
+    assert not result["fixes"] and result["tips"][0]["title"] == "Main session did worse on claude-haiku-4-5-20251001"

@@ -429,6 +429,35 @@ _PASTE_CHAR_THRESHOLD = 2000
 _PASTE_MARKER = "[Pasted text"
 
 
+#: Quality-signals addition: phrases that mark a message as correcting
+#: Claude ("that's wrong", "still broken", "why did you", "undo that").
+#: Matched in the first :data:`_CORRECTION_SCAN_CHARS` characters only,
+#: and only the resulting yes/no is kept -- never the text. A bare "no"
+#: is deliberately not a match: "no, go ahead" is as common as a
+#: correction.
+_CORRECTION_RE = re.compile(
+    r"\b(?:"
+    r"that'?s (?:wrong|not right|not what|incorrect|broken)"
+    r"|th(?:is|at) (?:is|was) (?:wrong|broken|incorrect|not (?:right|working|what))"
+    r"|it'?s (?:still )?(?:broken|wrong|not working|failing|incorrect)"
+    r"|(?:still|it still) (?:broken|failing|wrong|not working|doesn'?t work|fails)"
+    r"|(?:doesn'?t|does not|didn'?t|did not) work"
+    r"|not what (?:i|we) (?:asked|wanted|meant|said)"
+    r"|you (?:broke|missed|forgot|ignored|didn'?t (?:do|read|follow|check|run|fix))"
+    r"|why (?:did|didn'?t|would|are|is) you"
+    r"|(?:undo|revert|roll back) (?:that|this|it|the|your)"
+    r"|that broke|you'?ve broken|try again|redo (?:it|that|this)"
+    r"|wrong (?:file|approach|answer|place|branch|one)"
+    r")\b",
+    re.IGNORECASE,
+)
+_CORRECTION_SCAN_CHARS = 200
+
+
+def _looks_like_correction(texts: list[str]) -> bool:
+    return any(_CORRECTION_RE.search(text[:_CORRECTION_SCAN_CHARS]) for text in texts if text)
+
+
 def _human_text_metrics(d: dict, str_content: str | None) -> tuple[int, bool]:
     """Chars and paste-flag for a HUMAN_TEXT line's own text content (A4):
     sums the plain string content, or every ``text`` block's length for a
@@ -451,6 +480,24 @@ def _human_text_metrics(d: dict, str_content: str | None) -> tuple[int, bool]:
     total_chars = sum(len(text) for text in texts)
     has_paste = any(len(text) > _PASTE_CHAR_THRESHOLD or _PASTE_MARKER in text for text in texts)
     return total_chars, has_paste
+
+
+def _human_text_detail(d: dict, str_content: str | None) -> tuple[int, dict]:
+    """Size and the detail flags for a HUMAN_TEXT line: ``has_paste``
+    and (quality signals) ``correction``, whether the message looks like
+    it corrects Claude. Flags only -- never the text."""
+    human_chars, has_paste = _human_text_metrics(d, str_content)
+    if str_content is not None:
+        texts = [str_content]
+    else:
+        message = d.get("message")
+        content = message.get("content") if isinstance(message, dict) else None
+        texts = [
+            block.get("text")
+            for block in (content if isinstance(content, list) else ())
+            if isinstance(block, dict) and block.get("type") == "text" and isinstance(block.get("text"), str)
+        ]
+    return human_chars, {"has_paste": has_paste, "correction": _looks_like_correction(texts)}
 
 
 #: Usage-limits addition (see module docstring): the six known synthetic
@@ -530,6 +577,43 @@ _LIMIT_RESUME_PREFIX = "I hit my usage limit while you were working, but it has 
 #: used to tell a usage-limit kill apart from any other reason.
 _TERMINATED_EARLY_MARKER = "terminated early due to"
 _ERROR_TYPE_RE = re.compile(r"error type ([a-zA-Z_]+)")
+
+
+#: Quality-signals addition: a task notification's own ``<task-id>`` and
+#: ``<status>`` tags (``completed``/``failed``/``stopped`` observed). The
+#: id is the agent's id for a background agent (its transcript is
+#: ``agent-<id>.jsonl``) or a background shell task's id.
+_TASK_ID_RE = re.compile(r"<task-id>([A-Za-z0-9_-]{1,64})</task-id>")
+_TASK_STATUS_RE = re.compile(r"<status>([a-z_]{1,24})</status>")
+
+
+def _task_notification_detail(text: str | None) -> dict:
+    if not text or "<task-id>" not in text:
+        return {}
+    detail = {}
+    task_id = _TASK_ID_RE.search(text)
+    status = _TASK_STATUS_RE.search(text)
+    if task_id:
+        detail["task_id"] = task_id.group(1)
+    if status:
+        detail["status"] = status.group(1)
+    return detail
+
+
+def _agent_results_detail(d: dict) -> dict:
+    """Quality-signals addition: a synchronous agent's result
+    (``toolUseResult`` with an ``agentId`` and a final ``status``) as
+    ``{"agents": [[agent_id, status]]}``; ``{}`` for any other tool
+    result, including a background launch (``async_launched``)."""
+    result = d.get("toolUseResult")
+    if not isinstance(result, dict):
+        return {}
+    agent_id, status = result.get("agentId"), result.get("status")
+    if not isinstance(agent_id, str) or not isinstance(status, str) or result.get("isAsync"):
+        return {}
+    if status == "async_launched" or not _TASK_ID_RE.fullmatch(f"<task-id>{agent_id}</task-id>"):
+        return {}
+    return {"agents": [[agent_id, status[:24]]]}
 
 
 def _agent_terminated_subkind(text: str) -> str:
@@ -709,10 +793,26 @@ def classify_line(d: dict) -> Event | None:
         )
 
     # 10. QUEUE_OPERATION
+    # A task notification that arrives while Claude is mid-reply is
+    # queued (and then attached) rather than sent as a user line, so its
+    # task id and status are read here too (quality signals).
     if line_type == "queue-operation":
-        return Event(kind=EventKind.QUEUE_OPERATION, subkind=d.get("operation"), ts=ts)
+        content = d.get("content")
+        return Event(
+            kind=EventKind.QUEUE_OPERATION,
+            subkind=d.get("operation"),
+            ts=ts,
+            detail=_task_notification_detail(content if isinstance(content, str) else None),
+        )
     if attachment_type == "queued_command":
-        return Event(kind=EventKind.QUEUE_OPERATION, subkind=attachment_type, ts=ts, size_chars=size_chars)
+        prompt = attachment.get("prompt") if isinstance(attachment, dict) else None
+        return Event(
+            kind=EventKind.QUEUE_OPERATION,
+            subkind=attachment_type,
+            ts=ts,
+            size_chars=size_chars,
+            detail=_task_notification_detail(prompt if isinstance(prompt, str) else None),
+        )
 
     # 11. ATTACHMENT (catch-all for any attachment type not listed above)
     if line_type == "attachment":
@@ -725,7 +825,7 @@ def classify_line(d: dict) -> Event | None:
 
     # 13. TOOL_RESULT
     if line_type == "user" and _user_has_tool_result(d):
-        return Event(kind=EventKind.TOOL_RESULT, subkind=None, ts=ts)
+        return Event(kind=EventKind.TOOL_RESULT, subkind=None, ts=ts, detail=_agent_results_detail(d))
 
     is_task_notification_line = line_type == "user" and (
         origin_kind == "task-notification" or (str_content is not None and str_content.startswith("<task-notification"))
@@ -737,11 +837,21 @@ def classify_line(d: dict) -> Event | None:
     if is_task_notification_line:
         text = _first_user_text(d, str_content)
         if text is not None and _TERMINATED_EARLY_MARKER in text:
-            return Event(kind=EventKind.AGENT_TERMINATED, subkind=_agent_terminated_subkind(text), ts=ts)
+            return Event(
+                kind=EventKind.AGENT_TERMINATED,
+                subkind=_agent_terminated_subkind(text),
+                ts=ts,
+                detail=_task_notification_detail(text),
+            )
 
     # 14. TASK_NOTIFICATION
     if is_task_notification_line:
-        return Event(kind=EventKind.TASK_NOTIFICATION, subkind=None, ts=ts)
+        return Event(
+            kind=EventKind.TASK_NOTIFICATION,
+            subkind=None,
+            ts=ts,
+            detail=_task_notification_detail(_first_user_text(d, str_content)),
+        )
 
     # 15. PEER_MESSAGE
     if line_type == "user" and origin_kind == "peer":
@@ -790,15 +900,11 @@ def classify_line(d: dict) -> Event | None:
     if line_type == "user" and (
         origin_kind == "human" or d.get("promptSource") is not None or d.get("permissionMode") is not None
     ):
-        human_chars, has_paste = _human_text_metrics(d, str_content)
-        return Event(
-            kind=EventKind.HUMAN_TEXT, subkind=None, ts=ts, size_chars=human_chars, detail={"has_paste": has_paste}
-        )
+        human_chars, detail = _human_text_detail(d, str_content)
+        return Event(kind=EventKind.HUMAN_TEXT, subkind=None, ts=ts, size_chars=human_chars, detail=detail)
     if line_type == "user" and (str_content is not None or _user_has_text_or_image_list(d)):
-        human_chars, has_paste = _human_text_metrics(d, str_content)
-        return Event(
-            kind=EventKind.HUMAN_TEXT, subkind=None, ts=ts, size_chars=human_chars, detail={"has_paste": has_paste}
-        )
+        human_chars, detail = _human_text_detail(d, str_content)
+        return Event(kind=EventKind.HUMAN_TEXT, subkind=None, ts=ts, size_chars=human_chars, detail=detail)
 
     # 21. UNKNOWN
     return Event(kind=EventKind.UNKNOWN, subkind=None, ts=ts)

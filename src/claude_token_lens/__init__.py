@@ -55,7 +55,16 @@ __version__ = "0.3.0"
 #: ``instructions`` and ``nested_memory``, and one per skill (name, size)
 #: for ``skill_listing`` and ``invoked_skills``; parse.py adds
 #: ``Turn.skills_invoked``.
-PARSER_VERSION = 8
+#:
+#: Bumped to 9 by the quality-signals batch: parse.py adds
+#: ``Turn.stop_reason``, ``tool_calls_by_tool``, ``tool_errors_by_tool``, ``edit_target_hashes``
+#: and ``human_correction``; events.py records task-notification and
+#: agent-result outcomes in ``Event.detail``.
+#:
+#: Bumped to 10 by the same batch: discovery.py records a workflow
+#: agent's end state on ``TranscriptMeta.workflow_agent_state``, which a
+#: version-9 digest (already written by a development build) lacks.
+PARSER_VERSION = 10
 
 #: Bump when the model.py contract changes in a way that invalidates the
 #: on-disk digest cache (see model.py's module docstring for the contract

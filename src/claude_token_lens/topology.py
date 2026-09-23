@@ -824,9 +824,9 @@ def _build_chains_summary_table(stats: TopologyStats) -> Table:
         columns=columns,
         rows=rows,
         notes=[
-            "maxTurns truncations are not observable from the transcript (no"
-            " field records that a run stopped because maxTurns was reached);"
-            " only stoppedByUser is counted, per the plan.",
+            "No field records that a run stopped because maxTurns was reached,"
+            " so only stoppedByUser is counted here. Quality signals (Agents"
+            " tab) infers likely maxTurns endings from how a run ends.",
         ],
     )
 

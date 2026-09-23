@@ -74,12 +74,12 @@ to undo it.
 | Tab | The question it answers |
 |---|---|
 | Overview | How much did I use, and what should I look at first? |
-| Quick actions | For each way of saving (models, effort, summaries, cache, tools, skills, CLAUDE.md, tool output, habits): is there anything to do, and what exactly? |
+| Quick actions | For each way of saving (models, effort, summaries, cache, tools, skills, CLAUDE.md, tool output, habits), and whether any agent is struggling: is there anything to do, and what exactly? |
 | Sessions | Which sessions cost the most? Pick one to see why it was expensive. |
 | Cache | When did Claude Code rebuild the prompt cache, and what caused it? |
 | Cache lifetime (TTL) | Would a 1-hour cache lifetime have paid for itself? |
 | Savings | What would shorter tool output, earlier summaries, cheaper models or fewer wasted replies save? |
-| Agents | What do my subagents cost, what are they given when they start, and what do they send back? |
+| Agents | What do my subagents cost, what are they given when they start, what do they send back, and is their work going well (failed tool calls, runs that don't finish, per model and effort)? |
 | Context files | What does each CLAUDE.md file and skill cost, who is it sent to, and what can be trimmed, moved or hidden? |
 | Config | What are my settings, and did changing them change my costs? |
 | Profiles | Make a profile from a goal with an estimate of what it saves, compare it with my settings, and see what each change I made did. |
@@ -163,6 +163,7 @@ and [`docs/profiles.md`](docs/profiles.md).
 - **What-if estimate**: What a change would have saved over the window, worked out from your own sessions. It is an estimate: cheaper settings can change how Claude works, which the estimate can't see.
 - **CLAUDE.md**: Instruction files Claude reads at the start of every session, and of most subagents: yours, each project's, and rule files. Every line is paid for on every reply that re-reads it.
 - **Skill**: A packaged set of instructions Claude can load when a task needs it. Its name and description are listed to Claude at the start of every session, used or not.
+- **Quality signal**: A sign of whether the work went well, not just what it cost: tool calls that failed, agent runs that didn't finish, your corrections. Compared across models and efforts, and before and after each change you make.
 
 ## Reference
 
@@ -393,7 +394,7 @@ this table only lists what's specific to each one.
 
 | Subcommand | What it does | Extra flags |
 | --- | --- | --- |
-| `report` | Full report: every section in [section 3](#3-reading-the-report-sections) (`overview`, `usage`, `sessions`, `recache`, `ttl`, `limits`, `carry`, `compaction_sim`, `model_swap`, `waste`, `compactions`, `agents`, `workstyle`, `workflows`, `config` when snapshots exist, `scorecard`, `recommendations`), printed as Markdown by default. This is the default subcommand — `claude-token-lens` with no arguments runs it. | `--json` (print the whole report as JSON instead), `--html PATH` (also write a single-file HTML report), `--csv-dir DIR` (also write one CSV per table plus an index), `--phases` (add the DISCOVERY/IMPLEMENTATION/VERIFICATION phase-split section), `--patch-set` (also print the recommendation set as unified-diff-style settings/frontmatter patches), `--explain` (add each section's and table's "what it shows / how to read it" help to the Markdown), `--baseline ID\|latest` (add a comparison against a saved `baseline` record) |
+| `report` | Full report: every section in [section 3](#3-reading-the-report-sections) (`overview`, `usage`, `sessions`, `recache`, `ttl`, `limits`, `carry`, `compaction_sim`, `model_swap`, `waste`, `compactions`, `agents`, `quality`, `workstyle`, `workflows`, `config` when snapshots exist, `scorecard`, `recommendations`), printed as Markdown by default. This is the default subcommand — `claude-token-lens` with no arguments runs it. | `--json` (print the whole report as JSON instead), `--html PATH` (also write a single-file HTML report), `--csv-dir DIR` (also write one CSV per table plus an index), `--phases` (add the DISCOVERY/IMPLEMENTATION/VERIFICATION phase-split section), `--patch-set` (also print the recommendation set as unified-diff-style settings/frontmatter patches), `--explain` (add each section's and table's "what it shows / how to read it" help to the Markdown), `--baseline ID\|latest` (add a comparison against a saved `baseline` record) |
 | `sessions` | Focused view: just `overview` + `sessions` | Same output flags as `report` except `--patch-set` (recommendations aren't part of a focused view) |
 | `recache` | Focused view: just `overview` + `recache` | Same as `sessions` |
 | `ttl` | Focused view: just `overview` + `ttl` | Same as `sessions` |
@@ -403,6 +404,7 @@ this table only lists what's specific to each one.
 | `model-swap` | Focused view: just `overview` + `model_swap` (ceiling saving from moving a model/subagent type one tier down — see [`docs/model-swap.md`](docs/model-swap.md)) | Same as `sessions` |
 | `waste` | Focused view: just `overview` + `waste` (spend on turns whose output was never used — see [`docs/waste.md`](docs/waste.md)) | Same as `sessions` |
 | `compactions` | Focused view: just `overview` + `compactions` | Same as `sessions` |
+| `quality` | Focused view: just `overview` + `quality` (failed tool calls, agent runs that didn't finish, corrections, and each agent's model and effort compared with the one it used most — see [`docs/concepts.md`](docs/concepts.md#7-quality-signals)) | Same as `sessions` |
 | `config-diff` | Compare sessions grouped by one (or every changed) config key's value, from captured `snapshot-config` snapshots. Prints its own plain-text table(s), independent of `report`'s renderers. | `--key KEY` **or** `--auto-keys` (mutually exclusive, one required): diff one named flattened config key, or every key that changed across the available snapshots |
 | `snapshot-config` | Capture (or print/install) the SessionStart config-snapshot hook — see [section 4](#4-installing-the-sessionstart-hook-and-the-statusline) | `--print-hook` (print the settings.json fragment), `--install-hook` (copy the hook script into `<config-dir>/hooks/`), `--managed-path PATH` (override the platform managed-settings.json path), `--project-dir PATH` (take the snapshot for this project directory instead of the current one), `--min-interval SECONDS` (skip the write when an identical snapshot is younger than this; default 300) |
 | `probe-config` | Scan a project's config layers directly from the filesystem, without needing a captured session — the same layered-config view `snapshot-config` captures, on demand (schema 2) | `--project-dir PATH` (project directory to scan; default: the current directory), `--managed-path PATH` (override the platform managed-settings.json path) |
@@ -422,7 +424,7 @@ this table only lists what's specific to each one.
 | `install-service` | Register `claude-token-lens serve` to run at logon for the current platform (Windows Scheduled Task, systemd user unit, or macOS LaunchAgent) — this is what `init`'s last step, and the manual paths in [section 10](#10-running-the-service), both call — see [`docs/deploy.md`](docs/deploy.md) | `--port N` (default 8765), `--bind ADDRESS` (default `127.0.0.1`), `--dry-run` (print exactly what would be written/run, without writing or running anything) |
 | `changes` | List everything this tool has installed or changed on this machine, what each costs in tokens, what to expect, and the command that undoes each | none beyond the global flags |
 | `uninstall` | Take it back out: remove the SessionStart hook and statusline from `settings.json` (diff shown, file backed up first) and the logon service | `--revert-changes` (also undo every `apply` still in place, newest first), `--delete-data` (also delete the data folder), `--dry-run` (show every step without changing anything), `--yes` (make the changes without asking; they are still printed) |
-| `check` | Quick actions: answer one token question (or all of them) from your own sessions, with the evidence, fixes and tips — the Quick actions tab in the terminal | `ID` (optional: `models`, `effort`, `compaction`, `cache`, `tools`, `skills`, `claude-md`, `tool-output` or `habits`), plus the global `--days`/`--since`/`--until` |
+| `check` | Quick actions: answer one token question (or all of them) from your own sessions, with the evidence, fixes and tips — the Quick actions tab in the terminal | `ID` (optional: `models`, `effort`, `compaction`, `cache`, `tools`, `skills`, `claude-md`, `tool-output`, `habits` or `quality`), plus the global `--days`/`--since`/`--until` |
 | `review` | Review your CLAUDE.md files or skills: size, how often each is sent, cost, and fixes — the Context files tab in the terminal | `claude-md` or `skills`, plus the global window flags |
 | `uninstall-service` | Remove whatever `install-service` (or `init`) registered — deletes the task/unit/agent definition it wrote, using the same per-platform command the manual `Unregister-TokenLensTask.ps1`/`systemctl --user disable`/`launchctl bootout` paths use | `--dry-run` (print what would be removed, without removing anything) |
 | `compare` | A/B compare two arms of sessions (`window:`/`key:`/`profile:`/`project:` specs), stratified by purpose/mode with a minimum-sample gate — see [`docs/compare.md`](docs/compare.md) | `--a SPEC` / `--b SPEC` (required), `--stratify purpose,mode` (default), `--min-sessions N` (default: `config.toml`'s `min_sessions`), plus the same `--json`/`--html PATH`/`--csv-dir DIR` output flags as `report` |
@@ -520,6 +522,7 @@ was produced, and is still useful if you want one section in isolation.
 | `waste` | Wasted-turn spend | `waste.py` | spend on turns whose output was never used (tool error, interrupt, tool denial, harness-killed subagent), by cause, agent type and top session — see [`docs/waste.md`](docs/waste.md) |
 | `compactions` | Compactions | `compaction.py` | compaction count, trigger mix, pre/post/dropped tokens, and the re-cache cost of the turn right after each compaction |
 | `agents` | Agents and information flow | `topology.py` | downward cost (briefing/system-prompt writes into each agent type), upward cost (`Agent`/`Workflow` tool-result sizes flowing back), skill roll-ups, spawn-depth chains |
+| `quality` | Quality signals | `quality.py` | whether the work went well: agent runs that didn't finish or likely ran out of turns, failed tool calls and shell commands, denials, corrections, edits redone, per agent type and per model and effort, with a significance test — see [`docs/concepts.md`](docs/concepts.md#7-quality-signals) |
 | `workstyle` | Workstyle | `workstyle.py` | one archetype per session/corpus: `overseer-fanout`, `plan-high-implement-low`, `workflow-heavy`, `effort-varied`, `chat-only`, `single-model`, with the evidence features |
 | `workflows` | Workflows | `workflows.py` | per-run agent count, phase count, duration and cost from `<session>/workflows/wf_*.json` |
 | `phases` | Phases | `phases.py` | cost split across DISCOVERY (read/search only), IMPLEMENTATION (real edits or an ordinary shell command), VERIFICATION (a test/build tool, or a scratch-file edit), OTHER — only in the report when `--phases` is given |

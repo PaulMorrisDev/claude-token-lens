@@ -13,6 +13,12 @@ it); "after" is those started from the change until the next one.
 Sessions differ in size and kind of work, so a difference is a signal,
 not proof; with fewer than :data:`MIN_SESSIONS` on either side there is
 no verdict at all.
+
+Each change is also checked for quality (:mod:`quality`): the runs of the
+agent it changed (or the main session, for any other setting) before and
+after, on every quality signal, each marked worse, better, no clear
+change or too little data. A cheaper setting that makes the work worse
+shows up here.
 """
 
 from __future__ import annotations
@@ -20,7 +26,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
-from . import recache
+from . import quality, recache
 from .change_points import ChangePoint
 from .model import EventKind, TranscriptResult
 from .pricing import Pricing, price_turn
@@ -73,6 +79,8 @@ class SessionFacts:
     main: _Transcript
     #: (agent type, facts) per subagent spawn.
     spawns: list[tuple[str, _Transcript]] = field(default_factory=list)
+    #: Quality counts per transcript: the main session and each spawn.
+    runs: list[quality.Run] = field(default_factory=list)
 
     @property
     def cost(self) -> float:
@@ -116,6 +124,7 @@ def session_facts(corpus, pricing: Pricing) -> list[SessionFacts]:
                 start=start,
                 main=_transcript(top, pricing),
                 spawns=[(sub.meta.agent_type or "(unknown)", _transcript(sub, pricing)) for sub in bundle.subs],
+                runs=quality.session_runs(bundle, pricing),
             )
         )
     out.sort(key=lambda s: s.start)
@@ -264,7 +273,39 @@ def compare(
         "enough": enough,
         "verdict": _verdict(rows, len(before), len(after), enough),
         "measures": rows,
+        "quality": _quality(point, before, after, units),
     }
+
+
+def quality_groups(point: ChangePoint) -> list[str]:
+    """Whose runs a change's quality is judged on: each agent it changed,
+    else the main session."""
+    agents = [m.agent for m in measures_for(point) if m.agent]
+    return list(dict.fromkeys(agents)) or [quality.MAIN]
+
+
+def _quality(point: ChangePoint, before: list[SessionFacts], after: list[SessionFacts], units: Units) -> list[dict]:
+    out = []
+    for group in quality_groups(point):
+        old = [run for s in before for run in s.runs if run.group == group]
+        new = [run for s in after for run in s.runs if run.group == group]
+        rows = quality.compare_runs(
+            old, new, quality.signals_for(group), money=lambda value: _text("money", value, units)
+        )
+        out.append(
+            {
+                "group": group,
+                "label": "Main session" if group == quality.MAIN else group,
+                "before_runs": len(old),
+                "after_runs": len(new),
+                "verdict": quality.verdict(rows),
+                #: False when every signal had too little data to compare.
+                "judged": any(row["label_key"] != "too_little_data" for row in rows),
+                "min_runs": quality.MIN_RUNS,
+                "signals": rows,
+            }
+        )
+    return out
 
 
 def _verdict(rows: list[dict], before: int, after: int, enough: bool) -> str:
@@ -301,4 +342,14 @@ def impact(points: list[ChangePoint], sessions: list[SessionFacts], units: Units
     return out
 
 
-__all__ = ["CAVEAT", "LOOKBACK_DAYS", "MIN_SESSIONS", "SessionFacts", "compare", "impact", "measures_for", "session_facts"]
+__all__ = [
+    "CAVEAT",
+    "LOOKBACK_DAYS",
+    "MIN_SESSIONS",
+    "SessionFacts",
+    "compare",
+    "impact",
+    "measures_for",
+    "quality_groups",
+    "session_facts",
+]

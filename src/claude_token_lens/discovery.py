@@ -459,6 +459,8 @@ def load_meta(path: str | Path) -> TranscriptMeta:
     if path.parent.parent.name == "workflows":
         meta.workflow_run_id = path.parent.name
         meta.session_id = path.parent.parent.parent.parent.name
+        run_file = path.parent.parent.parent.parent / "workflows" / f"{meta.workflow_run_id}.json"
+        meta.workflow_agent_state = _workflow_agent_states(str(run_file)).get(meta.agent_id.removeprefix("agent-"))
     else:
         meta.session_id = path.parent.parent.name
 
@@ -473,6 +475,39 @@ def load_meta(path: str | Path) -> TranscriptMeta:
         meta.size_bytes = stat.st_size
 
     return meta
+
+
+_WORKFLOW_STATES_CACHE: dict[str, tuple[int, dict[str, str]]] = {}
+
+
+def _workflow_agent_states(run_file: str) -> dict[str, str]:
+    """Agent id -> end state (``done``/``error``/``progress``) from a
+    finished workflow run file's ``workflowProgress``; ``{}`` while the
+    run is still going (a state could still change) or when the file
+    can't be read. Cached per file by mtime: a run file lists every one
+    of its agents, and each agent's meta asks for it."""
+    try:
+        mtime = os.stat(run_file).st_mtime_ns
+    except OSError:
+        return {}
+    cached = _WORKFLOW_STATES_CACHE.get(run_file)
+    if cached is not None and cached[0] == mtime:
+        return cached[1]
+    states: dict[str, str] = {}
+    try:
+        raw = json.loads(Path(run_file).read_text(encoding="utf-8", errors="replace"))
+    except (OSError, ValueError):
+        raw = None
+    status = raw.get("status") if isinstance(raw, dict) else None
+    if isinstance(status, str) and status not in ("running", "pending"):
+        for entry in raw.get("workflowProgress") or ():
+            if not isinstance(entry, dict) or entry.get("type") != "workflow_agent":
+                continue
+            agent_id, state = entry.get("agentId"), entry.get("state")
+            if isinstance(agent_id, str) and isinstance(state, str):
+                states[agent_id.removeprefix("agent-")] = state[:24]
+    _WORKFLOW_STATES_CACHE[run_file] = (mtime, states)
+    return states
 
 
 __all__ = [

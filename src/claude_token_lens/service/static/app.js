@@ -619,6 +619,7 @@
     ttl: "ttl",
     agent_startup: "agents",
     agents: "agents",
+    quality: "agents",
     workflows: "agents",
     workstyle: "agents",
     sessions: "sessions",
@@ -3177,6 +3178,41 @@
           )
         );
       }
+      var unjudged = (item.quality || []).filter(function (group) {
+        return !group.judged;
+      });
+      (item.quality || []).forEach(function (group) {
+        if (!group.judged) return;
+        card.appendChild(el("p", { class: "quick-summary" }, [el("strong", { text: "Quality, " + group.label + ": " }), el("span", { text: group.verdict })]));
+        var box = el("details", { class: "fix" });
+        box.appendChild(el("summary", { text: "Every quality signal (" + group.before_runs + " runs before, " + group.after_runs + " after)" }));
+        box.appendChild(
+          simpleTable(
+            [{ label: "Signal" }, { label: "Before" }, { label: "After" }, { label: "Verdict" }],
+            (group.signals || []).map(function (s) {
+              return [s.label, s.before_text + " (" + s.before_counts + ")", s.after_text + " (" + s.after_counts + ")", s.verdict];
+            })
+          )
+        );
+        card.appendChild(box);
+      });
+      if (unjudged.length) {
+        card.appendChild(
+          el("p", { class: "notes" }, [
+            el("strong", { text: "Quality: " }),
+            el("span", {
+              text:
+                "too few runs yet to judge " +
+                unjudged
+                  .map(function (group) {
+                    return group.label + " (" + group.before_runs + " before, " + group.after_runs + " after)";
+                  })
+                  .join(", ") +
+                ". Each needs at least " + unjudged[0].min_runs + " runs on each side.",
+            }),
+          ])
+        );
+      }
       if (change.source === "apply" && change.backup_ts && !change.reverted) {
         card.appendChild(el("p", { class: "notes", text: "To undo it:" }));
         card.appendChild(codeBlockWithCopy("claude-token-lens apply --revert " + change.backup_ts));
@@ -3258,6 +3294,7 @@
     ["What-if estimate", "What a change would have saved over the window, worked out from your own sessions. It is an estimate: cheaper settings can change how Claude works, which the estimate can't see."],
     ["CLAUDE.md", "Instruction files Claude reads at the start of every session, and of most subagents: yours, each project's, and rule files. Every line is paid for on every reply that re-reads it."],
     ["Skill", "A packaged set of instructions Claude can load when a task needs it. Its name and description are listed to Claude at the start of every session, used or not."],
+    ["Quality signal", "A sign of whether the work went well, not just what it cost: tool calls that failed, agent runs that didn't finish, your corrections. Compared across models and efforts, and before and after each change you make."],
   ];
 
   function renderGlossary(panel) {

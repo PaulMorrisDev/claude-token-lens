@@ -13,7 +13,8 @@ optionally :class:`phases.PhaseStats`), and assembles their
 
 Section order and keys: ``overview``, ``usage``, ``sessions``, ``recache``,
 ``ttl``, ``limits``, ``carry``, ``compaction_sim``, ``model_swap``,
-``waste``, ``compactions``, ``agents``, ``workstyle``,
+``waste``, ``compactions``, ``agent_startup``, ``agents``, ``quality``,
+``workstyle``,
 ``workflows``, ``phases`` (only when ``phases=True``), ``config`` (only
 when snapshots are supplied), ``context_budget``, ``scorecard``,
 ``baseline_comparison``
@@ -127,6 +128,7 @@ from . import (
     helptext,
     limits,
     model_swap,
+    quality,
     recache,
     scorecard,
     snapshots as snapshots_mod,
@@ -177,6 +179,7 @@ _SECTION_ORDER: tuple[str, ...] = (
     "compactions",
     "agent_startup",
     "agents",
+    "quality",
     "workstyle",
     "workflows",
     "phases",
@@ -1499,6 +1502,9 @@ def build_report(
     if _want("agents"):
         sections.append(topology.build_section(tp))
 
+    if _want("quality"):
+        sections.append(quality.build_section(quality.corpus_runs(corpus, pricing)))
+
     if _want("workstyle"):
         sections.append(workstyle.build_section(session_records))
 
@@ -1589,6 +1595,7 @@ def build_report(
         + list(compaction_sim.ASSUMPTIONS)
         + list(model_swap.ASSUMPTIONS)
         + list(waste.ASSUMPTIONS)
+        + list(quality.ASSUMPTIONS)
     )
     if baseline_record is None and baseline_note:
         assumptions.append(baseline_note)

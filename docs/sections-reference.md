@@ -9,7 +9,7 @@ metrics, and a worked example against a real, scrubbed transcript.
 `report.build_report` assembles these sections into one `ReportModel`,
 in this order: `overview`, `usage`, `sessions`, `recache`, `ttl`,
 `limits`, `carry`, `compaction_sim`, `model_swap`, `waste`,
-`compactions`, `agent_startup`, `agents`, `workstyle`, `workflows`,
+`compactions`, `agent_startup`, `agents`, `quality`, `workstyle`, `workflows`,
 `phases` (only with `--phases`), `config` (only when config snapshots
 exist), `context_budget`, `scorecard`, and `baseline_comparison` (only
 with `--baseline`). `claude-token-lens report` prints it. This file
@@ -481,6 +481,35 @@ the agents/skills/workflows it spawns" with numbers only:
   session, and how many of those repeats land within a compaction's
   rediscovery window; every count is 0 unless the corpus load wired up a
   hashing salt (see `parse.load_or_create_salt`).
+
+## `quality` (`quality.py`)
+
+Whether the work went well, not just what it cost. One *run* is one
+transcript (a main session or one subagent run); every signal is a
+ratio of two counts summed over runs. Definitions, the significance
+test and privacy are in [concepts](concepts.md#7-quality-signals).
+
+- `quality_by_agent` — per group (the main session, each agent type,
+  and all subagents pooled when there are two types or more): runs,
+  then as shares didn't finish, likely out of turns, failed tool calls,
+  failed shell commands, denied, stopped by you, corrections, edited
+  again and hit the output limit, then replies and cost per run. A
+  signal that doesn't apply to the group (corrections for a subagent,
+  say) is blank.
+- `quality_by_setup` — per agent type, model and effort (the model and
+  effort most of a run's replies used; runs that never replied are left
+  out): the main shares and per-run measures, the setup compared with
+  (the one that agent used most), a verdict (`only`, `baseline`,
+  `worse`, `possibly_worse`, `better`, `possibly_better`,
+  `no_clear_difference`, `too_little_data`) and the difference in
+  words. Setups ran at different times on possibly different work.
+- `quality_failing_tools` (advanced) — agent type, tool, failed calls
+  and runs with a failure, top 25.
+- `quality_counts` (advanced) — the raw counts behind every share:
+  replies, tool calls, failures, denials, messages, corrections, edits,
+  summaries, the recorded outcomes (reported done, failure, stopped,
+  other, none recorded), cut off, likely out of turns, ended early and
+  never replied.
 
 ## `workstyle` (`workstyle.py`)
 

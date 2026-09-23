@@ -125,6 +125,14 @@ Only numeric digests and short, non-identifying labels:
   `modelPricing` (a present flag plus the model ids it overrides, never
   the overridden numbers).
 
+For the quality signals, a message of yours keeps only a yes/no for
+whether its first 200 characters contain a correction phrase
+(`events._CORRECTION_RE`; the text itself is dropped), and a task
+notification keeps only its task id and status word, and a workflow
+agent only its state word from the run file (`done`, `error`,
+`progress`), never the run file's prompt or result previews. Edited files are
+known by the same salted hash as below (`Turn.edit_target_hashes`).
+
 `Turn.read_target_hashes` is the one exception to "no path fragment is
 ever stored", and it is deliberately a one-way hash rather than a
 shortened/redacted string: for every `Read`/`Edit`/`Write`/

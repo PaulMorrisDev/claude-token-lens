@@ -469,3 +469,34 @@ def test_load_meta_never_stores_worktree_branch_name(tmp_path):
     # Only a bool field exists for this on TranscriptMeta — there's no
     # attribute to have leaked the branch name into.
     assert not hasattr(meta, "worktree_branch")
+
+
+def _workflow_agent(tmp_path, status, state, agent="a1b2c3"):
+    session = tmp_path / "session-wf"
+    run_dir = session / "subagents" / "workflows" / "wf_0001"
+    run_dir.mkdir(parents=True)
+    (session / "workflows").mkdir()
+    (session / "workflows" / "wf_0001.json").write_text(json.dumps({
+        "runId": "wf_0001",
+        "status": status,
+        "workflowProgress": [
+            {"type": "workflow_phase", "index": 1, "title": "Review"},
+            {"type": "workflow_agent", "agentId": agent, "state": state, "promptPreview": "never kept"},
+        ],
+    }))
+    meta_path = run_dir / f"agent-{agent}.meta.json"
+    meta_path.write_text(json.dumps({"agentType": "workflow-subagent"}))
+    return discovery.load_meta(meta_path)
+
+
+@pytest.mark.parametrize("status, state, expected", [
+    ("completed", "done", "done"),
+    ("killed", "progress", "progress"),
+    ("completed", "error", "error"),
+    ("running", "progress", None),  # could still change
+])
+def test_load_meta_reads_a_workflow_agents_end_state_from_its_finished_run(tmp_path, status, state, expected):
+    meta = _workflow_agent(tmp_path, status, state)
+    assert meta.workflow_run_id == "wf_0001"
+    assert meta.workflow_agent_state == expected
+    assert "never kept" not in repr(meta)

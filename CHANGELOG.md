@@ -9,11 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Quick actions tab and `check` command.** Nine questions, one per way
-  of saving: the right model per agent, effort, the summary point
+- **Quality signals: is the work going well?** A cheaper model or lower
+  effort only saves money if the work still gets done. The new
+  `quality` section (Agents tab, `quality` command) counts, per agent
+  type and per model and effort: agent runs that didn't finish
+  (reported failure, stopped, never replied, or cut off, and those that
+  most likely ran out of turns), failed tool calls and shell commands,
+  denials, replies you stopped, your corrections (a yes/no from a fixed
+  phrase list, text never kept), files edited again and replies cut off
+  at the output limit. Setups are compared with the one each agent used
+  most, with a per-run z-test and a Holm correction; "Your changes and
+  what they did" compares them before and after each change; and the
+  Quick actions check "Is any agent struggling?" turns both into fixes
+  (`quality.py`). Agent outcomes are read from task notifications,
+  including queued ones, and a workflow agent's from its run file. The
+  parser keeps stop reasons, tool calls and errors by tool, and edit
+  targets as salted hashes (`PARSER_VERSION` 10: sessions are re-read
+  once).
+- **Quick actions tab and `check` command.** Ten questions: nine, one per
+  way of saving: the right model per agent, effort, the summary point
   (`autoCompactWindow`), cache lifetime, unused tools and MCP servers on
   agents, unused skills, CLAUDE.md size, large tool output
-  (`BASH_MAX_OUTPUT_LENGTH`, `MAX_MCP_OUTPUT_TOKENS`) and habits. Each
+  (`BASH_MAX_OUTPUT_LENGTH`, `MAX_MCP_OUTPUT_TOKENS`) and habits, and
+  whether any agent is struggling. Each
   always answers, including "nothing to do", with the evidence table,
   fixes (a prompt, and a `--dry-run` command for a plain setting) and
   tips (`quick_actions.py`, `GET /api/quick-actions`,

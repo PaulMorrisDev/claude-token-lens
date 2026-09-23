@@ -117,6 +117,11 @@ PLACEMENT: dict[str, str] = {
     "topology_context_composition": "keep",
     "topology_redundant_work": "advanced",
     "topology_redundant_reads": "advanced",
+    # quality signals
+    "quality_by_agent": "keep",
+    "quality_by_setup": "keep",
+    "quality_failing_tools": "advanced",
+    "quality_counts": "advanced",
     # workstyle / workflows
     "workstyle_archetypes": "keep",
     "workflows_summary": "keep",
@@ -255,6 +260,22 @@ SECTION_COPY: dict[str, SectionCopy] = {
             read="Compare agent types with each other. A type that costs much more per run, or carries "
             "far more context, is worth a closer look.",
             act="Start with the most expensive agent type per run, then check its startup context above.",
+        ),
+    ),
+    "quality": SectionCopy(
+        title="Is the work going well?",
+        intro=(
+            "Signs that work went badly: agent runs that didn't finish, failed tool calls, replies you "
+            "stopped and messages where you corrected Claude. Use them to check that a cheaper model or a "
+            "lower effort still does the job."
+        ),
+        help=Help(
+            shows="Each signal per agent type and for the main session, then per model and effort, with each "
+            "setup compared against the one that agent used most.",
+            read="Every signal is a share of something counted in your logs, such as failed tool calls out of all "
+            "tool calls. A difference is marked only when it is unlikely to be chance; with few runs it says so.",
+            act="If a setup is marked worse, move that agent back to the model or effort that did better. "
+            "Profiles shows the same signals before and after each change you made.",
         ),
     ),
     "workstyle": SectionCopy(
@@ -569,6 +590,195 @@ TABLE_COPY: dict[str, TableCopy] = {
             "system_prompt": "System prompt",
             "tool_definitions": "Tool definitions",
         },
+    ),
+    # -- quality signals ----------------------------------------------------
+    "quality_by_agent": TableCopy(
+        title="Quality signals by agent",
+        help=Help(
+            shows="For the main session and each agent type, how often work went badly, and how much work a run "
+            "took.",
+            read="Each figure is a share of what your logs counted, so an agent with few runs can swing a lot. "
+            "Read it with the number of runs.",
+            act="An agent that often doesn't finish, or whose tool calls often fail, needs a clearer task prompt, "
+            "the right tools, or a stronger model or effort.",
+        ),
+        columns={
+            "agent_type": ("Agent", "The main session, or the subagent type."),
+            "runs": ("Runs", "Main sessions or subagent runs counted in this row."),
+            "unfinished_pct": (
+                "Didn't finish",
+                "Subagent runs that reported failure, were stopped, ended early or were cut off before they "
+                "answered, out of the runs where that is known.",
+            ),
+            "turn_limit_pct": (
+                "Likely out of turns",
+                "Subagent runs cut off right after a tool result came back, without being stopped. That is how a "
+                "run ends when it reaches its maxTurns; Claude Code doesn't record the reason, so this is likely, "
+                "not certain.",
+            ),
+            "tool_errors_pct": (
+                "Failed tool calls",
+                "Tool calls whose result came back as an error, out of all tool calls.",
+            ),
+            "shell_errors_pct": (
+                "Failed shell commands",
+                "Shell commands that returned an error, out of all shell commands.",
+            ),
+            "denials_pct": ("Denied by you", "Tool calls you declined when asked, out of all tool calls."),
+            "interrupts_pct": (
+                "Stopped by you",
+                "Replies you stopped midway, out of all replies. Main session only.",
+            ),
+            "corrections_pct": (
+                "Corrections",
+                "Your messages that looked like a correction, such as \"that's wrong\" or \"still broken\", out of all "
+                "your messages. Main session only.",
+            ),
+            "rework_pct": (
+                "Edited again",
+                "Edits to a file that had already been changed before your last message, out of all edits. Main "
+                "session only.",
+            ),
+            "max_tokens_pct": (
+                "Hit output limit",
+                "Replies cut off because they reached the output limit, out of all replies.",
+            ),
+            "replies_per_run": ("Replies per run", "Average replies in one main session or one subagent run."),
+            "cost_per_run": ("Cost per run", "Average cost of one run, at list price."),
+        },
+        value_labels={"(main session)": "Main session", "(all subagents)": "All subagents"},
+    ),
+    "quality_by_setup": TableCopy(
+        title="Quality by model and effort",
+        help=Help(
+            shows="Each agent's runs split by the model and effort they used, with each setup compared against "
+            "the one that agent used most.",
+            read="Worse or Better means the difference is unlikely to be chance, even allowing for the number of "
+            "signals compared. Possibly means it would be, taken alone. The setups ran at different times and "
+            "maybe on different work, so check the before and after on Profiles too.",
+            act="If a cheaper setup is marked worse, move that agent back to the setup it is compared with.",
+        ),
+        columns={
+            "agent_type": ("Agent", "The main session, or the subagent type."),
+            "model": ("Model", "The model most of the run's replies used."),
+            "effort": (
+                "Effort",
+                "The effort most of the run's replies were sent at. Default when none was recorded.",
+            ),
+            "runs": ("Runs", "Main sessions or subagent runs counted in this row."),
+            "unfinished_pct": (
+                "Didn't finish",
+                "Subagent runs that reported failure, were stopped, ended early or were cut off before they "
+                "answered, out of the runs where that is known.",
+            ),
+            "tool_errors_pct": (
+                "Failed tool calls",
+                "Tool calls whose result came back as an error, out of all tool calls.",
+            ),
+            "shell_errors_pct": (
+                "Failed shell commands",
+                "Shell commands that returned an error, out of all shell commands.",
+            ),
+            "max_tokens_pct": (
+                "Hit output limit",
+                "Replies cut off because they reached the output limit, out of all replies.",
+            ),
+            "replies_per_run": ("Replies per run", "Average replies in one main session or one subagent run."),
+            "tool_calls_per_run": ("Tool calls per run", "Average tool calls in one run."),
+            "cost_per_run": ("Cost per run", "Average cost of one run, at list price."),
+            "compared_with": (
+                "Compared with",
+                "The model and effort this agent used most; others are compared with it.",
+            ),
+            "setup_verdict": (
+                "Verdict",
+                "Worse if any signal is clearly worse than in the setup it is compared with, Better if one is clearly "
+                "better and none worse.",
+            ),
+            "difference": (
+                "Difference",
+                "Every signal that differs, with its value here and in the setup it is compared with.",
+            ),
+            "compared_model": ("Compared model", "The model of the setup it is compared with."),
+            "compared_effort": ("Compared effort", "The effort of the setup it is compared with."),
+        },
+        value_labels={
+            "(main session)": "Main session",
+            "(all subagents)": "All subagents",
+            "worse": "Worse",
+            "possibly_worse": "Possibly worse",
+            "better": "Better",
+            "possibly_better": "Possibly better",
+            "no_clear_difference": "No clear difference",
+            "too_little_data": "Too little data",
+            "baseline": "Most used",
+            "only": "Only setup",
+        },
+    ),
+    "quality_failing_tools": TableCopy(
+        title="Which tools failed",
+        help=Help(
+            shows="The tools whose calls failed most, per agent.",
+            read="A tool that fails in many runs points at a missing permission, a wrong path or a tool the "
+            "agent shouldn't have.",
+            act="For a tool that keeps failing, give that agent the permission, or say in its task prompt how "
+            "to use the tool.",
+        ),
+        columns={
+            "agent_type": ("Agent", "The main session, or the subagent type."),
+            "tool": ("Tool", "The tool that was called."),
+            "errors": ("Failed calls", "Calls to this tool whose result came back as an error."),
+            "runs_with_errors": ("Runs with a failure", "Runs where this tool failed at least once."),
+        },
+        value_labels={"(main session)": "Main session", "(all subagents)": "All subagents"},
+    ),
+    "quality_counts": TableCopy(
+        title="Quality signal counts",
+        help=Help(
+            shows="The raw counts behind every quality signal.",
+            read="Use these to see how many of something a share is based on.",
+            act="",
+        ),
+        columns={
+            "agent_type": ("Agent", "The main session, or the subagent type."),
+            "runs": ("Runs", "Main sessions or subagent runs counted in this row."),
+            "replies": ("Replies", "Model replies."),
+            "tool_calls": ("Tool calls", "Every tool call."),
+            "tool_errors": ("Failed tool calls", "Tool calls whose result came back as an error."),
+            "shell_calls": ("Shell commands", "Bash and PowerShell calls."),
+            "shell_errors": ("Failed shell commands", "Shell commands that returned an error."),
+            "denials": ("Denied", "Tool calls you declined."),
+            "interrupts": ("Stopped by you", "Replies you stopped."),
+            "human_messages": ("Your messages", "Messages you typed in the main session."),
+            "corrections": ("Corrections", "Your messages that looked like a correction."),
+            "edits": ("Edits", "File edits and writes."),
+            "rework_edits": ("Edited again", "Edits to a file already changed before your last message."),
+            "max_tokens": ("Hit output limit", "Replies cut off at the output limit."),
+            "api_errors": ("API errors", "Errors from the API, usually retried automatically."),
+            "fallbacks": ("Model fallbacks", "Times Claude Code switched to another model after an error."),
+            "compactions": ("Summaries", "Times the conversation was summarised."),
+            "outcome_completed": ("Reported done", "Subagent runs whose notification or result said completed."),
+            "outcome_failed": ("Reported failure", "Subagent runs that reported failure."),
+            "outcome_stopped": ("Stopped", "Subagent runs stopped before they finished."),
+            "outcome_other": ("Other outcome", "Subagent runs with another reported status."),
+            "outcome_unknown": ("No outcome recorded", "Subagent runs with no notification or result to read."),
+            "cut_off": (
+                "Cut off",
+                "Subagent runs that were stopped, never replied, or whose last reply asked for a tool and never "
+                "answered.",
+            ),
+            "turn_limit": (
+                "Likely out of turns",
+                "Cut-off runs that ended right after a tool result came back, without being stopped: most likely "
+                "their maxTurns ran out.",
+            ),
+            "terminated_early": (
+                "Ended early",
+                "Subagent runs Claude Code ended early, for example at a rate limit.",
+            ),
+            "never_replied": ("Never replied", "Runs with no model reply at all. Counted as cut off."),
+        },
+        value_labels={"(main session)": "Main session", "(all subagents)": "All subagents"},
     ),
     # -- agents ------------------------------------------------------------
     "topology_spawn_write": TableCopy(

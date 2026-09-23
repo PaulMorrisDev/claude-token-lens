@@ -5,9 +5,11 @@ and fixes in the :mod:`fixes` shape (explainer, prompt, and a dry-run
 
 Unlike a recommendation, a check always answers, including "nothing to
 do here" (``status`` "ok") and "not enough data" ("no_data"). Checks
-reuse the recommendations, the goal drafts (:mod:`profiles.goals`) and
-the CLAUDE.md and skills reviews rather than adding rules of their own,
-so a check and a recommendation never disagree.
+reuse the recommendations, the goal drafts (:mod:`profiles.goals`), the
+CLAUDE.md and skills reviews and the quality signals (:mod:`quality`)
+rather than adding rules of their own, so a check and a recommendation
+never disagree. The quality check is the one with thresholds of its own
+(:data:`STRUGGLE_PCT`): no recommendation covers how well work went.
 """
 
 from __future__ import annotations
@@ -16,11 +18,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from . import whatif
+from . import quality, whatif
 from .fixes import build_fix, build_fixes
 from .model import Recommendation, SettingChange
 from .profiles import goals
-from .recommend import _BUILTIN_AGENT_TYPES
+from .recommend import _BUILTIN_AGENT_TYPES, _NOT_OVERRIDABLE
 from .units import Units
 
 TOP = whatif.TOP
@@ -451,6 +453,153 @@ def _habits(ctx: Context) -> dict:
     )
 
 
+#: An agent is struggling when, over at least ``quality.MIN_RUNS`` runs,
+#: one of these shares (percent) is reached.
+STRUGGLE_PCT = {
+    "unfinished_pct": 25.0,
+    "tool_errors_pct": 5.0,
+    "shell_errors_pct": 10.0,
+    "corrections_pct": 5.0,
+    "max_tokens_pct": 2.0,
+}
+_STRUGGLE_TEXT = {
+    "unfinished_pct": "{v} of runs didn't finish",
+    "tool_errors_pct": "{v} of tool calls failed",
+    "shell_errors_pct": "{v} of shell commands failed",
+    "corrections_pct": "{v} of your messages corrected Claude",
+    "max_tokens_pct": "{v} of replies hit the output limit",
+}
+
+
+def _worse_part(difference) -> str:
+    """Only the worse findings of a setup's difference text (its parts
+    are joined by "; " and start with their label)."""
+    parts = [p for p in str(difference or "").rstrip(".").split("; ") if p.startswith(("Worse", "Possibly worse"))]
+    return "; ".join(parts) + "." if parts else str(difference or "")
+
+
+def _quality(ctx: Context) -> dict:
+    tables = whatif._Tables(ctx.model)
+    agents = [r for r in tables.rows("quality", "quality_by_agent") if r.get("agent_type") != quality.ALL_AGENTS]
+    setups = tables.rows("quality", "quality_by_setup")
+    failing = tables.rows("quality", "quality_failing_tools")
+    if not agents:
+        return _result("no_data", "No sessions in this window.")
+    struggling = []
+    for row in agents:
+        if (whatif._num(row.get("runs")) or 0) < quality.MIN_RUNS:
+            continue
+        issues = [
+            _STRUGGLE_TEXT[key].format(v=_pct(row.get(key)))
+            for key, limit in STRUGGLE_PCT.items()
+            if (whatif._num(row.get(key)) or 0) >= limit
+        ]
+        if issues:
+            struggling.append((row, issues))
+    worse = [r for r in setups if r.get("setup_verdict") == "worse"]
+    table = _table(
+        [("agent", "Agent"), ("runs", "Runs"), ("unfinished", "Didn't finish"), ("tools", "Failed tool calls"),
+         ("shell", "Failed shell commands"), ("stands_out", "What stands out")],
+        [[_who(r.get("agent_type") if r.get("agent_type") != quality.MAIN else None), r.get("runs"),
+          _pct(r.get("unfinished_pct")), _pct(r.get("tool_errors_pct")), _pct(r.get("shell_errors_pct")),
+          "; ".join(issues)] for r, issues in struggling]
+        + [[_who(r.get("agent_type") if r.get("agent_type") != quality.MAIN else None), r.get("runs"),
+            _pct(r.get("unfinished_pct")), _pct(r.get("tool_errors_pct")), _pct(r.get("shell_errors_pct")),
+            f"On {r.get('model')}, effort {r.get('effort')}: {_worse_part(r.get('difference'))}"] for r in worse],
+    )
+    fixes = []
+    tips = []
+    for row in worse:
+        agent = row.get("agent_type")
+        base_model, base_effort = row.get("compared_model") or "", row.get("compared_effort") or ""
+        evidence = (
+            f"On {row.get('model')} at effort {row.get('effort')}, {agent} did worse than on {base_model} at effort "
+            f"{base_effort}: {row.get('difference')}"
+        )
+        if agent == quality.MAIN or agent in _NOT_OVERRIDABLE:
+            tips.append({"title": f"{_who(None if agent == quality.MAIN else agent)} did worse on "
+                                  f"{row.get('model')}", "text": evidence})
+            continue
+        fields = ctx.effective_agents.get(agent) if isinstance(ctx.effective_agents.get(agent), dict) else {}
+        now_model = fields.get("model")
+        if goals._alias(row.get("model") or "") != goals._alias(base_model) and (now_model is None or goals._alias(now_model) == goals._alias(
+            row.get("model") or ""
+        )):
+            fixes.append(_candidate_fix(ctx, {"agent": agent, "key": "model", "value": goals._alias(base_model),
+                                              "now": now_model, "evidence": evidence},
+                                        f"{agent}: back to {goals._alias(base_model)}"))
+        now_effort = fields.get("effort")
+        if base_effort not in ("", "default") and base_effort != row.get("effort") and now_effort in (
+            None, row.get("effort")
+        ):
+            fixes.append(_candidate_fix(ctx, {"agent": agent, "key": "effort", "value": base_effort,
+                                              "now": now_effort, "evidence": evidence},
+                                        f"{agent}: back to effort {base_effort}"))
+        if not any(fix.get("agent") == agent for fix in fixes):
+            tips.append({"title": f"{agent} did worse on {row.get('model')}, effort {row.get('effort')}",
+                         "text": evidence + " Its agent file no longer uses that setup, so nothing to change."})
+    for row, issues in struggling:
+        agent = row.get("agent_type")
+        who = _who(None if agent == quality.MAIN else agent)
+        tool = next((f for f in failing if f.get("agent_type") == agent), None)
+        if (whatif._num(row.get("tool_errors_pct")) or 0) >= STRUGGLE_PCT["tool_errors_pct"] or (
+            whatif._num(row.get("shell_errors_pct")) or 0
+        ) >= STRUGGLE_PCT["shell_errors_pct"]:
+            tips.append({
+                "title": f"{who}: tool calls fail often",
+                "text": (f"Its {tool.get('tool')} calls failed {tool.get('errors')} times in {tool.get('runs_with_errors')} "
+                         "runs. " if tool else "")
+                + "Say in its task prompt or agent file which commands and paths to use, and allow the ones it "
+                "needs, so it doesn't spend replies recovering.",
+            })
+        if (whatif._num(row.get("unfinished_pct")) or 0) >= STRUGGLE_PCT["unfinished_pct"]:
+            out_of_turns = whatif._num(row.get("turn_limit_pct")) or 0
+            tips.append({
+                "title": f"{who}: runs often don't finish",
+                "text": (f"{out_of_turns:.0f}% of its runs most likely ran out of turns (the agent's maxTurns). "
+                         if out_of_turns else "")
+                + "Give it a smaller task, or raise maxTurns in its agent file if it keeps stopping mid-task. "
+                "Quality signal counts (Agents tab) splits failed, stopped, cut off and out of turns.",
+            })
+        if (whatif._num(row.get("corrections_pct")) or 0) >= STRUGGLE_PCT["corrections_pct"]:
+            tips.append({
+                "title": "You correct Claude often",
+                "text": "Say what done looks like in your first message (the file, the test to pass, what not to "
+                "touch). Put rules you repeat into CLAUDE.md.",
+            })
+        if (whatif._num(row.get("max_tokens_pct")) or 0) >= STRUGGLE_PCT["max_tokens_pct"]:
+            tips.append({
+                "title": f"{who}: replies hit the output limit",
+                "text": "Ask for the result in parts, or write long output to a file instead of the reply.",
+            })
+    if not struggling and not worse:
+        tested = [r for r in setups if r.get("setup_verdict") not in ("only", "baseline", "too_little_data")]
+        return _result(
+            "ok",
+            "No agent stands out: none fails often, and no model or effort did clearly worse than the one it is "
+            "compared with" + (f" ({len(tested)} setups compared)." if tested else "."),
+        )
+    parts = []
+    if worse:
+        parts.append(f"{len(worse)} model or effort setup{'s' if len(worse) != 1 else ''} did clearly worse than the "
+                     "one that agent used most")
+    if struggling:
+        one = len(struggling) == 1
+        parts.append(f"{len(struggling)} agent{'' if one else 's'} often fail{'s' if one else ''} or "
+                     f"{'doesn' if one else 'don'}'t finish")
+    caveat = (
+        " Setups ran at different times and maybe on different work, so check \"Your changes and what they did\" "
+        "on Profiles before you switch back." if worse else ""
+    )
+    return _result(
+        "act",
+        " and ".join(parts) + "." + caveat,
+        table=table,
+        fixes=_merge_fixes(fixes),
+        tips=tips,
+    )
+
+
 CHECKS: tuple[Check, ...] = (
     Check("models", "Is each agent on the cheapest model that does the job?",
           "Every reply is priced by its model; a cheaper model for routine agents is usually the largest saving.",
@@ -472,6 +621,8 @@ CHECKS: tuple[Check, ...] = (
           "A tool's output stays in the conversation and is re-read on every later reply.", _tool_output),
     Check("habits", "Do any habits cost tokens?",
           "Pauses, retries and long reports cost tokens that no setting can save.", _habits),
+    Check("quality", "Is any agent struggling?",
+          "A cheaper model or a lower effort only saves money if the work still gets done.", _quality),
 )
 CHECK_IDS = tuple(check.id for check in CHECKS)
 

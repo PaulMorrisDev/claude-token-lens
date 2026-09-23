@@ -71,6 +71,13 @@ those started after it (`impact.py`):
   between the backup and the file as it is now. Later edits to the
   same file show up too, so it names keys but not values.
 
+Each change also gets a quality check: the runs of each agent it
+changed (or the main session's, for a setting that isn't per agent)
+before against after, on the [quality signals](concepts.md#7-quality-signals)
+such as failed tool calls and runs that didn't finish. A cheaper model
+that cost less but failed more shows up here. It needs 5 runs on each
+side.
+
 Sessions differ in size and kind of work, so a difference is a signal,
 not proof.
 

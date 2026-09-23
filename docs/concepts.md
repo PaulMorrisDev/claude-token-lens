@@ -1,6 +1,6 @@
 # Concepts
 
-How Claude Code's prompt cache works, and the definitions behind the numbers this tool reports: the two token totals, what counts as a cache rebuild, what the cache-lifetime simulation assumes, how CLAUDE.md files and skills are counted, and how windows, what-if estimates and before/after comparisons work. The [README](../README.md) covers installing and using the tool.
+How Claude Code's prompt cache works, and the definitions behind the numbers this tool reports: the two token totals, what counts as a cache rebuild, what the cache-lifetime simulation assumes, how CLAUDE.md files and skills are counted, how windows, what-if estimates and before/after comparisons work, and how the quality signals are counted and compared. The [README](../README.md) covers installing and using the tool.
 
 ## 1. The two token totals
 
@@ -225,3 +225,69 @@ size. No text is kept (`context_files.py`).
   result always notes that other things (the work itself, Claude Code
   updates) change too. [Profiles](profiles.md#on-the-dashboard) has the
   full rules.
+
+## 7. Quality signals
+
+A cheaper model or a lower effort only saves money if the work still
+gets done. The quality signals (`quality.py`) measure, from the
+transcripts alone, the signs that it didn't. One **run** is one
+transcript: a main session or one subagent run.
+
+| Signal | Counted as | Out of | For |
+|---|---|---|---|
+| Didn't finish | runs that reported failure, were stopped, were ended early by Claude Code, never replied, or were cut off (the last reply asked for a tool and nothing came after it; ending on a `StructuredOutput` call is a workflow agent's answer, so that counts as finished) | agent runs | subagents |
+| Likely out of turns | cut-off runs that ended right after a tool result came back, without being stopped: how a run ends when its `maxTurns` runs out (Claude Code doesn't record the reason) | agent runs | subagents |
+| Reported failure / Stopped | the status in the agent's task notification or result | agent runs with a recorded outcome | subagents |
+| Failed tool calls | tool results marked as an error | tool calls | all |
+| Failed shell commands | Bash and PowerShell results marked as an error | shell commands | all |
+| Denied by you | tool calls you declined | tool calls | all |
+| Stopped by you | replies you interrupted | replies | main session |
+| Corrections | your messages containing a correction phrase ("that's wrong", "still broken", "why did you", "undo that"...) | your messages | main session |
+| Edited again | edits to a file already changed before your latest message | edits | main session |
+| Hit output limit | replies that stopped at the output token limit | replies | all |
+| API errors, model fallbacks | API errors and fallbacks to another model | replies | all |
+
+Neutral measures of how much work a run took sit alongside them:
+replies, tool calls and output tokens per run, edits per file, the
+share of output spent thinking, minutes and cost per run. A change in
+these is "higher" or "lower", not better or worse.
+
+**Where outcomes come from.** A background agent's task notification
+carries its task id and status (`completed`, `failed`, `stopped`); its
+transcript is `agent-<task id>.jsonl`, so the two join on the id. A
+notification that arrives while Claude is mid-reply is queued first, so
+the queued copy is read too. A synchronous agent's tool result carries
+its agent id and status. A workflow agent gets neither: its outcome is
+its own state in the finished workflow run file (done, error, or still
+running when the workflow ended, which counts as stopped). A run with
+none of these has no recorded outcome and is left out of the outcome
+rates only.
+
+**Comparing.** Each signal is a ratio of two counts summed over runs,
+and two sets of runs are compared with a two-sided z-test whose
+variance comes from the runs themselves (the delta method for a ratio of
+sums). So fifty failed commands in one bad run count as one bad run, not
+fifty independent failures. Many signals are tested at once, so the
+p-values in one comparison are Holm-corrected: **Worse** or **Better**
+means the difference holds after the correction, **Possibly worse** or
+**Possibly better** that it holds only on its own, **No clear change**
+that it doesn't hold. With fewer than 5 runs, or fewer than 10 of what
+a rate counts, on either side it is **Too little data**. A share that
+moved by less than half a percentage point is **No clear change** even
+when the test says it is real: over thousands of tool calls, 0.04%
+against none is not worth acting on.
+
+**Where it shows.** The Agents tab's "Is the work going well?" section
+has every signal per agent type, then per model and effort, with each
+setup compared against the one that agent used most (across the whole
+window, so a setup used for other work or in another week can differ for
+that reason). Profiles' "Your changes and what they did" compares the
+runs of the agent a change touched (or the main session) before and
+after it. The Quick actions check "Is any agent struggling?" turns both
+into fixes.
+
+**Privacy.** Only counts and flags are kept. Whether a message looks
+like a correction is a yes/no from a fixed phrase list; the text is
+never stored. Files are known only by a salted hash. The phrase list
+misses disagreement worded another way, so the correction rate is a
+floor.

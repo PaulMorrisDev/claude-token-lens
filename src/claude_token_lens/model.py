@@ -220,6 +220,40 @@ Context-files addition:
 - ``Turn.skills_invoked: tuple[str, ...] = ()`` -- the ``skill`` input of
   each ``Skill`` tool_use in this turn: the skill's name, a label like
   ``attribution_skill``, never its arguments.
+
+Quality-signals addition (see ``quality.py`` for how these are used):
+
+- ``Turn.stop_reason: str | None = None`` -- the API's ``stop_reason``
+  for this reply (``end_turn``, ``tool_use``, ``max_tokens``,
+  ``stop_sequence``, ...): the last non-null value across the message's
+  lines. A transcript whose last reply stopped on ``tool_use`` was cut
+  off before it could answer.
+- ``Turn.tool_calls_by_tool: dict = {}`` -- tool name -> how many
+  ``tool_use`` blocks this turn made with it (``tool_names`` lists each
+  name once).
+- ``Turn.tool_errors_by_tool: dict = {}`` -- tool name -> how many of
+  ``tool_error_count`` came from that tool.
+- ``Turn.edit_target_hashes: tuple[str, ...] = ()`` -- the salted hashes
+  of this turn's Edit/Write/NotebookEdit targets only (a subset of
+  ``read_target_hashes``), so a file edited again later can be counted
+  as a re-edit without keeping any path.
+- ``Turn.human_correction: bool = False`` -- on the turn that follows a
+  human message: whether that message looks like it corrects Claude
+  ("that's wrong", "still broken", "why did you ..."). A yes/no from a
+  fixed phrase list; the text is never kept.
+- ``Event.detail`` on ``TASK_NOTIFICATION``/``AGENT_TERMINATED`` (and on
+  a ``QUEUE_OPERATION`` that queues a task notification) gains
+  ``task_id`` and ``status`` (``completed``/``failed``/``stopped``) from
+  the notification's own tags, and on ``TOOL_RESULT`` gains ``agents``
+  (``[[agent_id, status]]``) for a synchronous agent's result. A
+  background agent's transcript is ``agent-<task_id>.jsonl``, so its
+  outcome joins to ``TranscriptMeta.agent_id``.
+- ``TranscriptMeta.workflow_agent_state: str | None = None`` -- for a
+  workflow agent, its own end state from the run file's
+  ``workflowProgress`` (``done``, ``error``, or ``progress`` when the
+  workflow was killed while it ran), read by ``discovery.load_meta``
+  only once the run has finished; ``None`` otherwise. Workflow agents
+  get no task notification, so this is their only recorded outcome.
 """
 
 from __future__ import annotations
@@ -399,6 +433,21 @@ class Turn:
     #: Context-files addition (see module docstring): names of the skills
     #: this turn invoked with the ``Skill`` tool.
     skills_invoked: tuple[str, ...] = ()
+    #: Quality-signals addition (see module docstring): why the API
+    #: stopped this reply.
+    stop_reason: str | None = None
+    #: Quality-signals addition (see module docstring): tool name ->
+    #: tool_use count.
+    tool_calls_by_tool: dict = field(default_factory=dict)
+    #: Quality-signals addition (see module docstring): tool name ->
+    #: erroring tool_result count.
+    tool_errors_by_tool: dict = field(default_factory=dict)
+    #: Quality-signals addition (see module docstring): salted hashes of
+    #: Edit/Write/NotebookEdit targets only.
+    edit_target_hashes: tuple[str, ...] = ()
+    #: Quality-signals addition (see module docstring): the preceding
+    #: human message looks like a correction. Flag only.
+    human_correction: bool = False
 
 
 @dataclass(slots=True)
@@ -434,6 +483,9 @@ class TranscriptMeta:
     #: Discovery fix addition (see module docstring): the workflow run id
     #: a workflow-nested subagent lives under.
     workflow_run_id: str | None = None
+    #: Quality-signals addition (see module docstring): a workflow
+    #: agent's end state in its finished run file.
+    workflow_agent_state: str | None = None
 
 
 @dataclass(slots=True)

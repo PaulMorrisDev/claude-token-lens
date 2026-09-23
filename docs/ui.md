@@ -129,10 +129,15 @@ what they did", the setup panel and service health.
    `compaction-window`/`model-tier`/`wasted-turns` recommendations these
    sections' rules produce are not duplicated here — they show up as
    cards on the Recommendations tab like every other recommendation.
-7. **Agents** — the `agent_startup`, `agents`, `workstyle` and
-   `workflows` report sections, from `/api/report.json`: what each
+7. **Agents** — the `agent_startup`, `agents`, `quality`, `workstyle`
+   and `workflows` report sections, from `/api/report.json`: what each
    subagent type is given at startup (and what it never used), cost per
    run, skills and MCP cost, effort, and what fills the context window.
+   The `quality` section, **Is the work going well?**, follows the
+   agents section: quality signals per agent type, then per model and
+   effort with each setup compared with the one that agent used most
+   ([concepts](concepts.md#7-quality-signals)); the failing-tools and
+   counts tables sit under the advanced toggle.
 8. **Context files** — what Claude reads at the start of every
    session and subagent. **CLAUDE.md files** (`/api/claude-md`): one
    row per file with its level, size in tokens, how often it was sent
@@ -190,7 +195,10 @@ what they did", the setup panel and service health.
    **Your changes and what they did** (`/api/impact`, all history):
    each `apply`, undo or settings change the hook saw, with the
    sessions before against those after on the measures that change
-   should move, and, for an apply, "To undo it:
+   should move, then a "Quality, <agent>:" line per agent the change
+   touched (or the main session) with a collapsed Signal / Before /
+   After / Verdict table (agents with too few runs yet share one line),
+   and, for an apply, "To undo it:
    `claude-token-lens apply --revert <backup_ts>`".
    "Make your own profile" is a form built from
    `/api/profile-schema`: "Start from" any profile, one field per

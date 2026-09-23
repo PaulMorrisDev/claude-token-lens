@@ -63,6 +63,7 @@ SUBCOMMANDS: tuple[str, ...] = (
     "compaction-sim",
     "model-swap",
     "waste",
+    "quality",
     "compactions",
     "config-diff",
     "snapshot-config",
@@ -109,6 +110,7 @@ _REPORT_LIKE_SECTIONS: dict[str, str] = {
     "compaction-sim": "compaction_sim",
     "model-swap": "model_swap",
     "waste": "waste",
+    "quality": "quality",
     "compactions": "compactions",
 }
 
@@ -856,6 +858,8 @@ def _make_parser() -> argparse.ArgumentParser:
             "compaction-sim": "autoCompactWindow-sweep-only report view (modelled cost under other window settings)",
             "model-swap": "model-swap-only report view (modelled saving from a cheaper model tier)",
             "waste": "wasted-turn-spend-only report view (turns whose output was never used)",
+            "quality": "quality-signals-only report view (failed agent runs, failed tool calls, corrections, "
+            "compared by model and effort)",
             "compactions": "compactions-only report view",
             "config-diff": "compare sessions grouped by a config key's value",
             "pricing-check": "print the resolved rate card's provenance and rate table",

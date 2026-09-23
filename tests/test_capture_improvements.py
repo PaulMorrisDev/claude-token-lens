@@ -388,14 +388,14 @@ def test_human_text_event_size_chars_and_detail_populated():
     line = user_str_line("please fix the bug", origin={"kind": "human"})
     event = events.classify_line(line)
     assert event.size_chars == len("please fix the bug")
-    assert event.detail == {"has_paste": False}
+    assert event.detail == {"has_paste": False, "correction": False}
 
 
 def test_human_text_event_detects_paste_marker_without_origin():
     line = user_str_line("[Pasted text #1 +10 lines] rest of message")
     event = events.classify_line(line)
     assert event.size_chars is not None
-    assert event.detail == {"has_paste": True}
+    assert event.detail == {"has_paste": True, "correction": False}
 
 
 def test_batch_a4_fields_pass_privacy_scan(tmp_path: Path):

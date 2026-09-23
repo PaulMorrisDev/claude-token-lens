@@ -562,6 +562,12 @@ class _PendingTurn:
     tool_error_chars: int = 0
     #: Context-files addition (see model.py's ``Turn.skills_invoked``).
     skills_invoked: list[str] = field(default_factory=list)
+    #: Quality-signals addition (see model.py's ``Turn.stop_reason``/
+    #: ``tool_errors_by_tool``/``edit_target_hashes``).
+    stop_reason: str | None = None
+    tool_calls_by_tool: dict[str, int] = field(default_factory=dict)
+    tool_errors_by_tool: dict[str, int] = field(default_factory=dict)
+    edit_target_hashes: list[str] = field(default_factory=list)
 
 
 def _merge_content_blocks(pending: _PendingTurn, content, tool_use_names: dict[str, str]) -> None:
@@ -576,6 +582,7 @@ def _merge_content_blocks(pending: _PendingTurn, content, tool_use_names: dict[s
             continue
         if name not in pending.tool_names:
             pending.tool_names.append(name)
+        pending.tool_calls_by_tool[name] = pending.tool_calls_by_tool.get(name, 0) + 1
         tool_use_id = block.get("id")
         if isinstance(tool_use_id, str) and tool_use_id:
             tool_use_names[tool_use_id] = name
@@ -618,6 +625,8 @@ def _merge_content_blocks(pending: _PendingTurn, content, tool_use_names: dict[s
                 hashed = _read_target_hash(target_value)
                 if hashed is not None:
                     pending.read_target_hashes.append(hashed)
+                    if name in _EDIT_TOOL_PATH_KEYS:
+                        pending.edit_target_hashes.append(hashed)
 
         if name == "Skill":
             skill_name = tool_input.get("skill")
@@ -708,7 +717,17 @@ def _new_pending(d: dict, tool_use_names: dict[str, str]) -> _PendingTurn:
             pending.ttl_split_unknown = True
 
     _merge_content_blocks(pending, message.get("content"), tool_use_names)
+    _merge_stop_reason(pending, message)
     return pending
+
+
+def _merge_stop_reason(pending: _PendingTurn, message) -> None:
+    """Quality-signals addition: keep the last non-null ``stop_reason``
+    across the lines of one message (streamed lines carry null until the
+    final one)."""
+    stop_reason = message.get("stop_reason") if isinstance(message, dict) else None
+    if isinstance(stop_reason, str) and stop_reason:
+        pending.stop_reason = stop_reason[:32]
 
 
 def _merge_into_pending(pending: _PendingTurn, d: dict, tool_use_names: dict[str, str]) -> None:
@@ -720,6 +739,7 @@ def _merge_into_pending(pending: _PendingTurn, d: dict, tool_use_names: dict[str
     message = d.get("message")
     content = message.get("content") if isinstance(message, dict) else None
     _merge_content_blocks(pending, content, tool_use_names)
+    _merge_stop_reason(pending, message)
 
 
 def _tool_result_length(content) -> int:
@@ -780,6 +800,7 @@ def _accumulate_tool_results(
             if block.get("is_error") is True:
                 current.tool_error_count += 1
                 current.tool_error_chars += length
+                current.tool_errors_by_tool[name] = current.tool_errors_by_tool.get(name, 0) + 1
 
 
 def _resolve_preceding_tool(previous_turn: Turn | None) -> tuple[str, str | None]:
@@ -867,6 +888,7 @@ def _finalize_turn(
     # ``human_prompt_has_paste`` docstrings).
     human_prompt_chars: int | None = None
     human_prompt_has_paste = False
+    human_correction = False
     for pending_event in pending_events:
         if pending_event.kind != EventKind.HUMAN_TEXT:
             continue
@@ -874,6 +896,8 @@ def _finalize_turn(
         human_prompt_chars = chars if human_prompt_chars is None else human_prompt_chars + chars
         if pending_event.detail.get("has_paste"):
             human_prompt_has_paste = True
+        if pending_event.detail.get("correction"):
+            human_correction = True
 
     # Usage-limits addition (see module docstring): a limit-hit/resume
     # among the events preceding this turn means the gap to the previous
@@ -932,6 +956,11 @@ def _finalize_turn(
         tool_error_count=pending.tool_error_count,
         tool_error_chars=pending.tool_error_chars,
         skills_invoked=tuple(pending.skills_invoked),
+        stop_reason=pending.stop_reason,
+        tool_calls_by_tool=dict(pending.tool_calls_by_tool),
+        tool_errors_by_tool=dict(pending.tool_errors_by_tool),
+        edit_target_hashes=tuple(pending.edit_target_hashes),
+        human_correction=human_correction,
     )
     return turn, new_prev_ts, new_priced_count
 
