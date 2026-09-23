@@ -265,15 +265,24 @@ def resolve_config_dir(cli_arg: str | None = None) -> Path:
     token-lens directory directly. A user pointing the same
     ``--config-dir`` value at both this hook and the CLI got snapshots
     written one directory level away from where the CLI looked for
-    them. Every caller in this file that needs the ``~/.claude`` root
-    itself (for ``settings.json``/``agents/``, which live one level up
-    from token-lens) now reaches it via the returned path's ``.parent``.
+    them. Claude Code's own folder (``settings.json``/``agents/``) is
+    :func:`resolve_claude_root`, never this path's parent.
     """
     if cli_arg:
         return Path(cli_arg)
+    return resolve_claude_root() / "token-lens"
+
+
+def resolve_claude_root() -> Path:
+    """Claude Code's own folder, holding ``settings.json``, ``agents/``
+    and ``CLAUDE.md``: ``$CLAUDE_CONFIG_DIR``, else ``~/.claude``. A
+    copy of ``discovery.claude_root`` (this script runs on its own,
+    without the package). Not derived from ``--config-dir``: ``init``
+    adds that flag to the hook command when this tool's data folder is
+    somewhere else, and its parent is then unrelated to Claude Code.
+    """
     env = os.environ.get("CLAUDE_CONFIG_DIR")
-    root = Path(env) if env else (Path.home() / ".claude")
-    return root / "token-lens"
+    return Path(env) if env else (Path.home() / ".claude")
 
 
 def default_managed_settings_path() -> Path:
@@ -1127,8 +1136,8 @@ def build_snapshot(
     hook stdin payload, cwd override and resolved config directory.
 
     ``config_dir`` is the token-lens directory (see
-    :func:`resolve_config_dir`); ``settings.json``/``agents/`` live one
-    level up, at ``config_dir.parent`` (the ``~/.claude`` root).
+    :func:`resolve_config_dir`); ``settings.json``/``agents/`` live in
+    Claude Code's own folder (:func:`resolve_claude_root`).
 
     ``managed_path`` overrides the platform default from
     :func:`default_managed_settings_path` (used by tests and by the
@@ -1141,7 +1150,7 @@ def build_snapshot(
     source = stdin_data.get("source")
     cwd = cwd_override or stdin_data.get("cwd") or os.getcwd()
     cwd_path = Path(cwd)
-    claude_root = config_dir.parent
+    claude_root = resolve_claude_root()
 
     claude_version = os.environ.get("CLAUDE_CODE_VERSION") or None
     profile_id = _read_active_profile(config_dir)
@@ -1398,7 +1407,7 @@ def install_hook(config_dir: Path) -> Path:
     return dest
 
 
-def hook_command(python: str | None = None, script: Path | None = None) -> str:
+def hook_command(python: str | None = None, script: Path | None = None, extra_args: str = "") -> str:
     """The SessionStart command for this machine: ``python`` (default:
     this interpreter) and ``script`` (default: the installed copy under
     ``<config dir>/hooks``) by their full paths. A ``py -3`` or
@@ -1406,14 +1415,16 @@ def hook_command(python: str | None = None, script: Path | None = None) -> str:
     missing, or when Claude Code runs the hook through Git Bash, which
     does not expand ``%VAR%``. The default is the base interpreter
     when this one runs in a virtual environment: this script needs only
-    the standard library, and a venv can be deleted or rebuilt."""
+    the standard library, and a venv can be deleted or rebuilt.
+    ``extra_args`` (for example ``--config-dir "<path>"`` when this
+    tool's data folder is not the default) is appended as written."""
     base = getattr(sys, "_base_executable", "") or ""
     python = python or (base if base and Path(base).is_file() else sys.executable)
     script = script or (resolve_config_dir(None) / "hooks" / "snapshot-config.py")
-    return f'"{python}" "{script}"'
+    return f'"{python}" "{script}"{extra_args}'
 
 
-def hook_fragment_text(python: str | None = None, script: Path | None = None) -> str:
+def hook_fragment_text(python: str | None = None, script: Path | None = None, extra_args: str = "") -> str:
     """The settings.json ``hooks`` fragment to paste in, for Windows and
     POSIX, using the commands named in the plan's "Running on other
     people's machines" section (both must exit 0 and print nothing on
@@ -1422,7 +1433,7 @@ def hook_fragment_text(python: str | None = None, script: Path | None = None) ->
     platform this runs on is :func:`hook_command`; the other shows the
     general shape.
     """
-    native = hook_command(python, script)
+    native = hook_command(python, script, extra_args)
     if os.name == "nt":
         windows_command = native
         posix_command = 'python3 "$HOME/.claude/token-lens/hooks/snapshot-config.py"'

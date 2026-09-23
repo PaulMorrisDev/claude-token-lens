@@ -21,11 +21,15 @@ convention. In particular, the ``_5m``/``_1h`` cache-creation TTL-split
 column names (:data:`_SLOT_HEADERS`'s ``cache_creation_tokens_5m``/
 ``cache_creation_tokens_1h`` entries) are this module's own guess at a
 plausible naming pattern, folded into one ``cache_creation_tokens``
-total either way.
+total either way. The flat column is taken to be the split's own total,
+so a row carrying both counts the larger of the two, never their sum.
 
 Day bucketing: this module buckets its own local per-turn totals by the
 turn's own timestamp's **UTC calendar day** (not ``config.tz``), on the
-assumption that an Admin usage/cost export buckets by UTC day too. This
+assumption that an Admin usage/cost export buckets by UTC day too. An
+Admin date cell that is a full timestamp is reduced to its UTC day the
+same way, and the CLI converts its ``--since``/``--until`` window to
+UTC days before calling :func:`reconcile`. This
 is itself an assumption (documented in ``docs/compare.md``), which is
 also why "UTC day boundaries" is one of the fixed reasons every
 reconciliation table's note lists for an expected local/Admin
@@ -149,6 +153,27 @@ def _parse_money(raw: str) -> float:
     return float(text)
 
 
+def _admin_utc_day(raw: str) -> str:
+    """The UTC ``YYYY-MM-DD`` day an Admin row's date cell names. A
+    plain date passes through unchanged; a full timestamp (e.g. a
+    ``bucket_start`` of ``2026-08-05T00:00:00Z``) is reduced to its UTC
+    day, so it groups and window-filters against the local side's own
+    UTC-day keys rather than never matching them. Raises ``ValueError``
+    for an empty cell.
+    """
+    text = raw.strip()
+    if not text:
+        raise ValueError("empty date")
+    if len(text) <= 10:
+        return text
+    dt = _parse_ts(text)
+    if dt is None:
+        return text
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).date().isoformat()
+
+
 def _build_row(raw_row: list[str], index_to_slot: dict[int, str], line_num: int) -> dict:
     values: dict[str, str] = {}
     for i, cell in enumerate(raw_row):
@@ -156,17 +181,20 @@ def _build_row(raw_row: list[str], index_to_slot: dict[int, str], line_num: int)
         if slot is not None:
             values[slot] = cell
     try:
-        date = values.get("date", "").strip()
-        if not date:
-            raise ValueError("empty date")
+        date = _admin_utc_day(values.get("date", ""))
         model = values.get("model", "").strip() or None
         input_tokens = _parse_int(values.get("input_tokens", "0"))
         output_tokens = _parse_int(values.get("output_tokens", "0"))
         cache_read_tokens = _parse_int(values.get("cache_read_tokens", "0"))
-        cache_creation_tokens = (
-            _parse_int(values.get("cache_creation_tokens", "0"))
-            + _parse_int(values.get("cache_creation_tokens_5m", "0"))
-            + _parse_int(values.get("cache_creation_tokens_1h", "0"))
+        # The flat column is already the 5m + 1h total, so the two are
+        # never added together. Take the larger of the flat figure and the
+        # split's own sum -- the same rule ``parse.py`` applies to a
+        # turn's ``usage`` -- so a file carrying either shape, or both,
+        # counts each cache-creation token exactly once.
+        cache_creation_tokens = max(
+            _parse_int(values.get("cache_creation_tokens", "0")),
+            _parse_int(values.get("cache_creation_tokens_5m", "0"))
+            + _parse_int(values.get("cache_creation_tokens_1h", "0")),
         )
         cost = _parse_money(values.get("cost", "0"))
         if "cost_cents" in values:
@@ -372,7 +400,7 @@ KNOWN_DIFFERENCE_REASONS: tuple[str, ...] = (
     "subscription usage has no Admin cost",
     "other tools may use the same API key",
     "workspace filters on the Admin export",
-    "UTC day boundaries (a session's turns are bucketed by local time here, the Admin export's own day boundary "
+    "UTC day boundaries (a session's turns are bucketed by UTC day here, the Admin export's own day boundary "
     "may differ)",
     "an unknown model is priced at zero locally",
 )

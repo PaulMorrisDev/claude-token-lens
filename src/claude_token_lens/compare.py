@@ -59,16 +59,14 @@ module docstrings for the same pattern):
   raw-valued table (so its CSV/JSON export stays numeric) instead of a
   very wide or pre-formatted one. The overview table already carries the
   full headline breakdown for the corpus as a whole.
-- The ``profile:<id>`` arm form filters on ``SessionRecord.profile_id``
-  exactly as specified. As of this work package, nothing in the shipped
-  codebase ever populates that field (see
-  ``classify.build_session_record``'s own docstring: "profile_id has
-  nothing to populate it with yet"), so a ``profile:`` arm currently
-  selects zero sessions in any real corpus until the sibling ``profiles/``
-  package (v0.3, out of scope here -- see this work package's
-  boundaries) ships that wiring. The filter itself is still implemented
-  and tested against a hand-set ``profile_id`` so it is ready the moment
-  that lands.
+- The ``profile:<id>`` arm form selects the sessions that started while
+  profile ``<id>`` was active (``snapshots.profile_for``). With
+  ``config_dir``, that reads the config directory's whole record: the
+  config hook's capture of the ``active-profile`` marker at each
+  session start, ``apply``'s stamps, and undone applies. Without it,
+  only the hook captures in ``snapshots`` count. A session that started
+  before anything recorded a profile, or with none applied, matches no
+  ``profile:`` arm.
 - ``compare_co_changed`` is only ever populated when *both* arms are
   ``key:``-selected (comparing two representative snapshots makes sense
   only when both arms are themselves defined by a snapshot key/value);
@@ -84,6 +82,7 @@ from __future__ import annotations
 import statistics
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from . import classify, discovery, recache
 from . import snapshots as snapshots_mod
@@ -253,6 +252,7 @@ def _collect_session_metrics(
     session_overrides: dict,
     recache_th: recache.RecacheThresholds,
     coverage: PricingCoverage,
+    profile_marks: list[snapshots_mod.ProfileMark] | None = None,
 ) -> list[_SessionMetrics]:
     """Classify and price every session in ``corpus`` once, folding pricing
     coverage into ``coverage`` as it goes (mirrors
@@ -291,7 +291,7 @@ def _collect_session_metrics(
             span_s=record.span_s,
             mode=classification.mode,
             purpose=classification.purpose,
-            profile_id=record.profile_id,
+            profile_id=snapshots_mod.profile_for(record.first_ts, profile_marks or [], record.session_id),
             project_key=snapshots_mod.snapshot_project_key(bundle.slug),
         )
 
@@ -650,6 +650,7 @@ def compare(
     min_sessions: int = 5,
     snapshots: list[Snapshot] | None = None,
     session_overrides: dict | None = None,
+    config_dir: str | Path | None = None,
 ) -> Section:
     """Build the A/B ``compare`` :class:`Section`: ``compare_overview``,
     ``compare_by_stratum``, ``compare_co_changed``.
@@ -661,7 +662,9 @@ def compare(
     matches one); ``session_overrides`` is the ``sessions.toml``-shaped
     dict :func:`config.load_session_overrides` produces, passed straight
     through to :func:`classify.classify_session` exactly as
-    ``report.build_report`` does.
+    ``report.build_report`` does. ``config_dir`` (read only) gives
+    ``profile:`` arms the full record of which profile was active when;
+    without it they use the hook captures in ``snapshots``.
 
     Never raises for a too-small sample: an arm with fewer than
     ``min_sessions`` sessions still gets a full ``compare_overview`` row
@@ -672,7 +675,12 @@ def compare(
     session_overrides = session_overrides or {}
     recache_th = recache.RecacheThresholds.from_config(config.thresholds)
     coverage = PricingCoverage()
-    metrics = _collect_session_metrics(corpus, pricing, config, session_overrides, recache_th, coverage)
+    profile_marks = (
+        snapshots_mod.load_profile_marks(config_dir)
+        if config_dir is not None
+        else snapshots_mod.profile_marks_from_snapshots(snapshots or [])
+    )
+    metrics = _collect_session_metrics(corpus, pricing, config, session_overrides, recache_th, coverage, profile_marks)
 
     snapshot_by_session: dict[str, Snapshot | None] = {}
     if snapshots:

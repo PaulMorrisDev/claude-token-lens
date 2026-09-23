@@ -64,11 +64,12 @@ run *before* doing either.
   entirely in Task Scheduler's own store. Registering doesn't start the
   task: it first runs at your next logon (`Start-ScheduledTask
   -TaskName ClaudeTokenLens` starts it now). This is the same task
-  Path 1 below registers by hand, with two differences: there is no
-  `schtasks /create` fallback, and `uninstall-service` runs only
-  `Unregister-ScheduledTask -TaskName ClaudeTokenLens`, which doesn't
-  stop a copy that is already running (`Unregister-TokenLensTask.ps1`
-  does).
+  Path 1 below registers by hand, with one difference: there is no
+  `schtasks /create` fallback. `uninstall-service` first runs
+  `Stop-ScheduledTask -TaskName ClaudeTokenLens`, which shuts down a
+  dashboard the task already started, then `Unregister-ScheduledTask
+  -TaskName ClaudeTokenLens`. It doesn't stop a `serve` you started by
+  hand in a terminal; `Unregister-TokenLensTask.ps1` does.
 - **Linux:** writes `~/.config/systemd/user/claude-token-lens.service`
   (the same hardening as `scripts/systemd/claude-token-lens.service` —
   see Path 2 below — but with `ExecStart`/`ReadWritePaths` filled in
@@ -77,11 +78,13 @@ run *before* doing either.
   enable --now claude-token-lens.service`. Prints a note to also run
   `loginctl enable-linger $USER` once, for a headless server with no
   interactive session. `uninstall-service` runs `systemctl --user
-  disable --now` and deletes the unit file.
+  disable --now`, which stops the running service as well as disabling
+  it, and deletes the unit file.
 - **macOS:** writes `~/Library/LaunchAgents/com.claude-token-lens.plist`
   (`RunAtLoad`/`KeepAlive` both true) and runs `launchctl bootstrap
   gui/<uid> <path-to-plist>`. `uninstall-service` runs `launchctl
-  bootout gui/<uid>/com.claude-token-lens` and deletes the plist.
+  bootout gui/<uid>/com.claude-token-lens`, which stops the running
+  agent as well as unloading it, and deletes the plist.
 
 **Running from a `.pyz`:** if the current process was itself launched
 from a `.pyz` archive (`detect_pyz_path`, a real zip-file check on
@@ -110,12 +113,16 @@ when it comes back `false`.
 
 **Uninstalling:** `claude-token-lens uninstall-service` is the
 inverse of `install-service` — it runs the platform's own removal
-command (`Unregister-ScheduledTask`/`systemctl --user disable
---now`/`launchctl bootout`) and deletes any file `install-service`
-wrote (the systemd unit or the LaunchAgent plist; Windows writes no
-file of its own). It is best-effort past the printed plan: a command or
-file removal that fails is reported and the rest still runs, rather
-than aborting partway through, the same posture as
+command (`Stop-ScheduledTask` then `Unregister-ScheduledTask`,
+`systemctl --user disable --now`, or `launchctl bootout`) and deletes
+any file `install-service` wrote (the systemd unit or the LaunchAgent
+plist; Windows writes no file of its own). Each platform's first
+command also stops a dashboard the service is running, and the output
+says what was done, one line per step ("Stopped Scheduled Task
+'ClaudeTokenLens' ...", "Removed Scheduled Task ..."). It is
+best-effort past the printed plan: a command or file removal that
+fails is reported and the rest still runs, rather than aborting
+partway through, the same posture as
 `Unregister-TokenLensTask.ps1`/`serve --purge`. To remove everything
 else this tool added as well (the hook, the statusline, applied changes
 and the data folder), use `claude-token-lens uninstall` — see

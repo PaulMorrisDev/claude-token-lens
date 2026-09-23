@@ -21,6 +21,10 @@ several questions a report needs:
   (:func:`detect_drift`, :func:`build_config_drift_table`) — a mismatch
   implies a shell-profile env var or a ``--settings`` overlay the hook
   cannot see.
+- Which profile was active when a session started
+  (:func:`load_profile_marks`, :func:`profile_for`)? The hook records
+  the ``active-profile`` marker in every capture, ``apply`` writes a
+  stamp, and an undone apply restores the marker it backed up.
 - (schema 2) Does ``~/.claude.json``'s own per-project ``last*`` session
   total agree with this tool's own accounting for the same session
   (:func:`claude_json_cross_check`)?
@@ -203,6 +207,157 @@ def snapshot_for(
         if best_dt is None or dt > best_dt:
             best, best_dt = snap, dt
     return best
+
+
+# -- which profile was active ---------------------------------------------
+
+#: The ``profile_id`` ``apply --set`` stamps: a one-off change is not a
+#: profile and leaves the ``active-profile`` marker alone, so its stamp
+#: says nothing about which profile was active. Matches
+#: ``cli.ONE_OFF_PROFILE_ID`` (not imported: cli imports this module).
+_ONE_OFF_PROFILE_ID = "one-off"
+
+
+@dataclass(slots=True)
+class ProfileMark:
+    """One moment the active profile is known: ``profile_id`` (``None``
+    for no profile) from ``ts`` on. ``session_id`` is set when the mark
+    is the config hook's own capture at that session's start."""
+
+    ts: datetime
+    profile_id: str | None
+    session_id: str | None = None
+
+
+def _stamp_datetime(ts: object) -> datetime | None:
+    """A snapshot/stamp ``ts``. ``apply`` adds ``-2``, ``-3``... to a
+    stamp written in the same second as another, so only the part before
+    the first ``-`` is parsed."""
+    return _parse_ts(str(ts).split("-")[0]) if ts else None
+
+
+def _mark_from_document(data: dict, fallback_ts: str) -> ProfileMark | None:
+    """The profile mark one snapshot document records, or ``None`` when
+    it records none: a schema-1 hook capture with no ``profile_id`` key,
+    or a one-off ``apply --set`` stamp."""
+    if "profile_id" not in data:
+        return None
+    raw = data.get("profile_id")
+    profile_id = str(raw).strip() if raw else None
+    if profile_id == _ONE_OFF_PROFILE_ID and not records_config(data):
+        return None
+    when = _stamp_datetime(data.get("ts") or fallback_ts)
+    if when is None:
+        return None
+    session_id = data.get("session_id") if records_config(data) else None
+    return ProfileMark(ts=when, profile_id=profile_id or None, session_id=str(session_id) if session_id else None)
+
+
+def profile_marks_from_snapshots(snapshots: list[Snapshot]) -> list[ProfileMark]:
+    """Profile marks from already-loaded hook snapshots (each records the
+    ``active-profile`` marker as it stood at that session's start).
+    Sorted by time. :func:`load_snapshots` skips ``apply``'s stamps, so
+    use :func:`load_profile_marks` when the config directory is known."""
+    marks = [m for m in (_mark_from_document(s.data, s.ts) for s in snapshots) if m is not None]
+    marks.sort(key=lambda m: m.ts)
+    return marks
+
+
+def load_profile_marks(config_dir: Path | str) -> list[ProfileMark]:
+    """Every record of which profile was active, from
+    ``<config_dir>/snapshots/`` and ``<config_dir>/backups/``, sorted by
+    time:
+
+    - each config hook capture's ``profile_id`` (the marker at that
+      session's start, ``None`` when no profile was applied);
+    - each ``apply`` stamp (``{"ts", "schema_version", "profile_id"}``),
+      except a one-off ``--set`` change, which leaves the marker alone;
+    - each undone apply that changed the marker: from the time it was
+      undone, the marker is whatever that apply backed up (``None`` when
+      there was no marker before it).
+
+    Unreadable files are skipped, like :func:`load_snapshots`.
+    """
+    config_dir = Path(config_dir)
+    marks: list[ProfileMark] = []
+    snapshots_dir = config_dir / "snapshots"
+    if snapshots_dir.is_dir():
+        for path in sorted(snapshots_dir.glob("*.json")):
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if isinstance(data, dict):
+                mark = _mark_from_document(data, path.stem)
+                if mark is not None:
+                    marks.append(mark)
+    marks.extend(_revert_marks(config_dir))
+    marks.sort(key=lambda m: m.ts)
+    return marks
+
+
+def _revert_marks(config_dir: Path) -> list[ProfileMark]:
+    """One mark per undone apply whose manifest changed the
+    ``active-profile`` marker: the marker it restored, from the moment
+    it was undone."""
+    backups_dir = config_dir / "backups"
+    if not backups_dir.is_dir():
+        return []
+    marks: list[ProfileMark] = []
+    for folder in sorted(p for p in backups_dir.iterdir() if p.is_dir()):
+        try:
+            manifest = json.loads((folder / "manifest.json").read_text(encoding="utf-8"))
+            reverted = json.loads((folder / "reverted.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(manifest, dict) or not isinstance(reverted, dict):
+            continue
+        entry = next(
+            (e for e in manifest.get("entries") or () if isinstance(e, dict) and e.get("kind") == "active_profile"),
+            None,
+        )
+        when = _parse_iso_utc(reverted.get("reverted_at"))
+        if entry is None or when is None:
+            continue
+        restored: str | None = None
+        if entry.get("backup"):
+            try:
+                restored = (folder / "files" / str(entry["backup"])).read_text(encoding="utf-8").strip() or None
+            except OSError:
+                continue
+        marks.append(ProfileMark(ts=when, profile_id=restored))
+    return marks
+
+
+def _parse_iso_utc(ts: object) -> datetime | None:
+    if not isinstance(ts, str) or not ts:
+        return None
+    try:
+        parsed = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def profile_for(session_first_ts: str | None, marks: list[ProfileMark], session_id: str | None = None) -> str | None:
+    """The profile active when a session started: the config hook's own
+    capture for ``session_id`` when there is one, otherwise the latest
+    mark at or before ``session_first_ts``. ``None`` when no profile was
+    active, or nothing records one that early. The ``active-profile``
+    marker is one file for every project, so marks are not filtered by
+    project."""
+    if session_id:
+        own = next((m for m in marks if m.session_id == session_id), None)
+        if own is not None:
+            return own.profile_id
+    target = _parse_ts(session_first_ts)
+    if target is None:
+        return None
+    best: ProfileMark | None = None
+    for mark in marks:
+        if mark.ts <= target and (best is None or mark.ts >= best.ts):
+            best = mark
+    return best.profile_id if best is not None else None
 
 
 # -- flattening / diffing -------------------------------------------------

@@ -160,11 +160,14 @@ first).
 - `hooks\snapshot-config.py` — a copy of the hook script, made during
   the connect step below.
 
-Running `init` again restarts the capture window from that moment.
+Running `init` again keeps the capture window where it is: only the
+first `init` sets its start. To start a new window, delete the
+`capture_started` line from `config.toml` and run `init` again.
 
 **Connecting to Claude Code — shown, then asked.** `init` then shows
-the exact change to `settings.json` in the folder above `<config-dir>`
-(normally `%USERPROFILE%\.claude\settings.json`):
+the exact change to Claude Code's own `settings.json`
+(`%USERPROFILE%\.claude\settings.json`, or `%CLAUDE_CONFIG_DIR%\settings.json`
+when that is set; `--claude-root` names another folder):
 
 - a `SessionStart` hook that records your settings when a session
   starts, added only if no hook runs `snapshot-config.py` yet;
@@ -359,7 +362,7 @@ Finally, if installed via `pip`: `pip uninstall claude-token-lens`. Via
 | Python 3.10 or older | `pip install` refuses (`Requires-Python`); the `.pyz` fails at import with a `tomllib`-related error. Install 3.11+ (a user-level install needs no admin rights) |
 | Execution policy blocks a `.ps1` script | `install-service`/`init` never need this — they shell out via `powershell.exe -ExecutionPolicy Bypass -Command ...` themselves. Only affects the legacy `scripts\windows\Register-TokenLensTask.ps1` path; run it the same way: `powershell -ExecutionPolicy Bypass -File scripts\windows\Register-TokenLensTask.ps1` |
 | Corporate proxy blocks `pip`/PyPI/GitHub | Use Route A (`.pyz`) — no network access needed once downloaded |
-| `CLAUDE_CONFIG_DIR` already set (for Claude Code itself) | Harmless — `claude-token-lens` reads it too and keeps its own files in `<CLAUDE_CONFIG_DIR>\token-lens`. The connect step and `uninstall` edit `<CLAUDE_CONFIG_DIR>\settings.json`, only after showing the change. `--config-dir` moves this tool's folder, but the connect step, `--repair-hook` and `uninstall` always use the `settings.json` in the folder above it, so pass it only for an unattended `init --no-install` |
+| `CLAUDE_CONFIG_DIR` already set (for Claude Code itself) | Harmless — `claude-token-lens` reads it too and keeps its own files in `<CLAUDE_CONFIG_DIR>\token-lens`. The connect step, `--repair-hook`, `apply`, `changes`, `uninstall` and the dashboard all use `<CLAUDE_CONFIG_DIR>\settings.json`; the ones that change it show the change first. `--config-dir` moves only this tool's own folder: `settings.json` is never looked for beside it, and the hook and statusline commands `init` adds then carry the same `--config-dir`, so snapshots and the usage log land where the dashboard reads them. Pass `--claude-root` to name Claude Code's folder yourself |
 | Port 8765 already in use | `claude-token-lens serve --port <other>`, or `claude-token-lens install-service --port <other>` for the logon task (`init`'s service step always uses 8765). The dashboard and `/api/health` URLs change to match |
 
 ## POSIX (Linux/macOS) quick variant

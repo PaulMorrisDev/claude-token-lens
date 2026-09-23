@@ -410,6 +410,7 @@ def run_init(
     project_family: str | None = None,
     repair_hook: bool = False,
     connect_step: bool = False,
+    claude_root: str | Path | None = None,
 ) -> int:
     """Run the whole ``init`` flow: detect, ask/derive, write
     ``config.toml``/``projects/<slug>.toml``, print the install step,
@@ -442,7 +443,9 @@ def run_init(
     stdout.write(f"- projects discovered under projects root: {detection.project_count}\n")
     stdout.write(f"- config snapshots on file: {detection.snapshot_count}\n")
     stdout.write(f"- usage log present: {'yes' if detection.usage_log_present else 'no'}\n")
-    health = hook_health.check(config_dir, now=now)
+    # claude_root: Claude Code's own folder (``--claude-root``, else
+    # $CLAUDE_CONFIG_DIR, else ~/.claude), never config_dir's parent.
+    health = hook_health.check(config_dir, now=now, claude_root=claude_root)
     stdout.write(f"- config snapshot hook: {health.summary()}\n")
     stdout.write("\n")
     _offer_hook_repair(health, repair_hook=repair_hook, non_interactive=non_interactive, stdin=stdin, stdout=stdout, now=now)
@@ -471,7 +474,10 @@ def run_init(
         "shared_project_config": answers.shared_project_config,
         "apply_scope": answers.apply_scope,
         "capture_window": answers.capture_window,
-        "capture_started": now.isoformat(),
+        # Set once, on the first init: re-running init (to change an
+        # answer, or with --repair-hook) must not restart the capture
+        # window the user is already part-way through.
+        "capture_started": detection.existing_config.capture_started or now.isoformat(),
     }
     if answers.tz is not None:
         updates["tz"] = answers.tz

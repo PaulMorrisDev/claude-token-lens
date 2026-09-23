@@ -750,3 +750,59 @@ def test_load_snapshots_skips_apply_stamps_that_record_no_config(tmp_path):
     assert [s.ts for s in loaded] == ["20260901T000000Z", "20260903T000000Z"]
     # Without the stamp nothing looks changed.
     assert diff_keys(loaded) == {}
+
+
+# -- profile marks / profile_for ----------------------------------------
+
+
+def _write_json(path: Path, data: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+
+def test_profile_for_follows_apply_stamps_hook_captures_and_undos(tmp_path):
+    snaps = tmp_path / "snapshots"
+    # Hook capture: no profile yet.
+    _write_json(snaps / "20260901T000000Z.json", {"ts": "20260901T000000Z", "profile_id": None, "user_settings": {}})
+    # apply lean (stamp), then a one-off --set that must not change it.
+    _write_json(snaps / "20260905T000000Z.json", {"ts": "20260905T000000Z", "schema_version": 2, "profile_id": "lean"})
+    _write_json(snaps / "20260906T000000Z-2.json", {"ts": "20260906T000000Z-2", "schema_version": 2, "profile_id": "one-off"})
+    # apply deep, whose marker backup held "lean"; undone on 09-12.
+    _write_json(snaps / "20260910T000000Z.json", {"ts": "20260910T000000Z", "schema_version": 2, "profile_id": "deep"})
+    backup = tmp_path / "backups" / "20260910T000000Z"
+    _write_json(
+        backup / "manifest.json",
+        {"ts": "20260910T000000Z", "profile_id": "deep", "entries": [{"kind": "active_profile", "path": "x", "backup": "0000.bak"}]},
+    )
+    (backup / "files").mkdir()
+    (backup / "files" / "0000.bak").write_text("lean\n", encoding="utf-8")
+    _write_json(backup / "reverted.json", {"reverted_at": "2026-09-12T00:00:00Z"})
+
+    marks = snap_mod.load_profile_marks(tmp_path)
+    assert snap_mod.profile_for("2026-08-30T00:00:00.000Z", marks) is None
+    assert snap_mod.profile_for("2026-09-02T00:00:00.000Z", marks) is None
+    assert snap_mod.profile_for("2026-09-07T00:00:00.000Z", marks) == "lean"
+    assert snap_mod.profile_for("2026-09-11T00:00:00.000Z", marks) == "deep"
+    assert snap_mod.profile_for("2026-09-13T00:00:00.000Z", marks) == "lean"
+    assert snap_mod.profile_for("not a time", marks) is None
+
+
+def test_profile_for_prefers_the_sessions_own_hook_capture(tmp_path):
+    snaps = tmp_path / "snapshots"
+    _write_json(snaps / "20260905T000000Z.json", {"ts": "20260905T000000Z", "schema_version": 2, "profile_id": "lean"})
+    # The session's own capture was written a moment after its first turn.
+    _write_json(
+        snaps / "20260906T000005Z.json",
+        {"ts": "20260906T000005Z", "session_id": "s1", "profile_id": "deep", "user_settings": {}},
+    )
+    marks = snap_mod.load_profile_marks(tmp_path)
+    assert snap_mod.profile_for("2026-09-06T00:00:00.000Z", marks) == "lean"
+    assert snap_mod.profile_for("2026-09-06T00:00:00.000Z", marks, "s1") == "deep"
+
+
+def test_profile_marks_ignore_captures_without_a_profile_field(tmp_path):
+    _copy_fixtures_into_config_dir(tmp_path)
+    marks = snap_mod.load_profile_marks(tmp_path)
+    fixtures_with_field = [s for s in _load() if "profile_id" in s.data]
+    assert len(marks) == len(fixtures_with_field)
+    assert snap_mod.load_profile_marks(tmp_path / "missing") == []

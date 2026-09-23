@@ -7,7 +7,8 @@ two topics the README only summarises: the TTL section's utilisation
 metrics, and a worked example against a real, scrubbed transcript.
 
 `report.build_report` assembles these sections into one `ReportModel`,
-in this order: `overview`, `usage`, `sessions`, `recache`, `ttl`,
+in this order: `overview`, `usage`, `elasticity` (only under
+subscription billing with usage-log readings), `sessions`, `recache`, `ttl`,
 `limits`, `carry`, `compaction_sim`, `model_swap`, `waste`,
 `compactions`, `agent_startup`, `agents`, `quality`, `workstyle`, `workflows`,
 `phases` (only with `--phases`), `config` (only when config snapshots
@@ -17,8 +18,8 @@ groups sections by topic, so its order differs.
 
 These sections are not part of the assembled report: `config_diff`,
 `compare`, `reconcile` and `team_report` (each printed by its own
-subcommand), and `usage_windows`, `savers` and `elasticity` (no
-subcommand prints them yet; call their `build_section` directly).
+subcommand), and `usage_windows` and `savers` (no subcommand prints
+them yet; call their `build_section` directly).
 
 Table names below are the exact `Table.name` values. A table's CSV
 export is `<section key>__<table name>.csv`, and a recommendation's
@@ -65,6 +66,13 @@ respects.
   5-hour window can't be observed from transcripts alone, so this is a
   documented, deterministic proxy grid instead); under `"api"` billing
   the table is empty with a one-line note explaining the skip.
+- `pricing_unknown_models` — one row per model id that `pricing.toml`
+  has no price for: `model_id`, `turns`, `tokens`. Those replies are
+  priced at zero. Built by `pricing.PricingCoverage.as_table` from the
+  same coverage count behind `meta.pricing.coverage_pct`, and appended
+  onto this section by `report.build_report` only when at least one
+  reply was unpriced. The `pricing-coverage` recommendation names these
+  model ids. Shown under the Usage tab's advanced detail.
 - `cache_ground_truth` (S1-exports) — one row per session: `session_id`,
   `rows_logged`, `warm_share` (percentage of *logged rows* — statusline
   refreshes, not wall-clock time — where `statusline.py`'s real,
@@ -841,7 +849,13 @@ prefixes), config-snapshot `mcp_servers`/`enabled_plugins` entries, and
   two arms' representative snapshots.
 
 Nothing calls `savers.py` yet: the report, `recommend.recommend()`, the
-CLI and the dashboard all leave it out. Its `saver-tool-roi` rule lives
+CLI and the dashboard all leave it out, on purpose. Its name-based
+detection treats ordinary tools whose names contain "context", "memory"
+or "cache" as savers; a saver configured for every session leaves no
+sessions to compare against, and the two groups differ in workload
+anyway; and its rule's lever (`mcpServers.<name>`) is not a settings key
+the report's fixes can change, with dollar amounts written directly
+rather than in the billing mode. Its `saver-tool-roi` rule lives
 in `savers.RULES` (same `(report, thresholds, snapshot=None) ->
 list[Recommendation]` shape as `model_swap.RULES`). It would fire per
 candidate whose verdict row clears the
@@ -876,16 +890,23 @@ is refused outright rather than reported with a caveat.
   as a share of `ElasticityThresholds.weekly_window` (`seven_day` by
   default, "your weekly window").
 
-The report does not include this section, and `recommend.recommend()`
-does not run `elasticity.RULES`. What is wired is
-`express_in_window(usd_saving, elasticity_stats, window=None)`: under
-subscription billing with usage-log rows, `report.build_report` fits
-elasticity (with default thresholds) and `units.Units.money` uses it to
-phrase every amount as "about x% of your weekly usage limit". The
-unwired `window-budget` rule would fire only under subscription billing
-with an accepted weekly-window fit, state the derived budget and burn
-share, and name whichever other recommendation looks like the biggest
-lever by its id alone.
+Under subscription billing with rows in `<config-dir>/usage-log.csv`,
+`report.build_report` fits elasticity once (thresholds from
+`config.toml`'s `[thresholds.elasticity]`), adds this section right
+after `usage`, and hands the same fit to `units.Units`, whose `money`
+phrases every amount as "about x% of your weekly usage limit"
+(`express_in_window`). Under API billing, or with no readings, the
+section is left out. On the dashboard it sits on the Usage tab:
+`elasticity_budget` and `elasticity_recent_burn` are shown, and
+`elasticity_fit` is under the advanced detail.
+
+`recommend.recommend()` runs the `window-budget` rule
+(`elasticity.RULES`) last, after the other recommendations are
+finished. It fires only under subscription billing with an accepted
+weekly-limit fit, states how many million new tokens a full weekly
+limit holds and the last 24 hours' share of it, and names the most
+important other recommendation by its title, never repeating its
+numbers.
 
 ## `team_report` (`team.py`) — CLI-only
 
@@ -969,7 +990,8 @@ without `agent_startup` data; otherwise the per-part `spawn-claude-md`,
 `data-quality`, `limit-pressure`. Then each module's own rule:
 `tool-output-carry` (`carry.RULES`), `compaction-window`
 (`compaction_sim.RULES`), `model-tier` (`model_swap.RULES`) and
-`wasted-turns` (`waste.RULES`). Rules are gated by
+`wasted-turns` (`waste.RULES`). Last, `window-budget`
+(`elasticity.RULES`, subscription billing only). Rules are gated by
 archetype (a `ttl-switch` recommendation for a `chat-only` session's
 subagents is suppressed, since a chat-only session barely has any), a
 minimum-sample size (`min_sessions`/`min_turns` in `config.toml`'s

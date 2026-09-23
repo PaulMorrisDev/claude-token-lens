@@ -266,9 +266,34 @@ previous month. It returns the two paths it wrote (Markdown first, then
 HTML) so the caller can log or serve them without having to
 reconstruct the filenames itself.
 
-`serve --monthly-report DIR` is accepted and stored, but the service
-does not call this function yet, so no report is written. Schedule
-`claude-token-lens monthly-report --out DIR` instead.
+`monthly.run_monthly_report(...)` wraps it with the steps the command
+and the service share: the "no project folders"/"no sessions" checks
+(raised as `MonthlyReportError`), loading the usage log, and the
+empty-month note.
+
+### `serve --monthly-report DIR`
+
+```bash
+claude-token-lens serve --monthly-report ./monthly-reports
+```
+
+While the dashboard runs, it writes the previous calendar month's
+report into `DIR` — the same two files `monthly-report --out DIR`
+writes — whenever either of them is missing. It checks when `serve`
+starts and then every hour, on a background thread
+(`service/monthly_job.py`), so building a report never holds up the
+dashboard. When both files are there, a check does nothing, so each
+month is written once; delete a file and the next check writes it
+again. The report covers every project the dashboard scans: everything
+under `--projects-root` except `config.toml`'s `exclude_projects` and
+any `--exclude-project`. "Previous month" is worked out in `config.tz`,
+as for the command.
+
+If a report can't be written (no sessions yet, a bad `config.toml`, a
+full disk), `serve` prints one line to stderr saying why and tries again
+at the next check; it never stops. An empty month is written with
+zeroed tables, and a line says so. `serve --once --monthly-report DIR`
+checks once after its watcher tick, which suits a cron job.
 
 ## Statusline payload key recording (`statusline-keys.json`)
 

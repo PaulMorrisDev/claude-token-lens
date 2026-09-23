@@ -114,6 +114,9 @@ def _run_hook(
     # config and break test determinism.
     env["HOME"] = str(config_dir.parent.parent)
     env["USERPROFILE"] = str(config_dir.parent.parent)
+    # Claude Code's folder (settings.json, agents/) comes from
+    # CLAUDE_CONFIG_DIR, never from --config-dir's parent.
+    env["CLAUDE_CONFIG_DIR"] = str(config_dir.parent)
     if extra_env:
         env.update(extra_env)
 
@@ -1108,3 +1111,18 @@ def test_snapshot_project_key_matches_the_hooks_stored_slug():
     spec.loader.exec_module(hook)
     raw = hook._project_slug("/home/alice/my-project")
     assert snap_mod.snapshot_project_key(raw) == hook._redact_slug(raw)
+
+
+def test_hook_with_config_dir_elsewhere_reads_claude_settings_not_its_parent(tmp_path, home, project):
+    # init adds --config-dir to the hook command when the data folder is
+    # not <claude folder>/token-lens; settings.json and agents/ still come
+    # from Claude Code's own folder ($CLAUDE_CONFIG_DIR), not the parent.
+    data = tmp_path / "elsewhere" / "tl-data"
+    data.mkdir(parents=True)
+    (data.parent / "settings.json").write_text(json.dumps({"model": "decoy"}), encoding="utf-8")
+    stdin = json.dumps({"session_id": "sess-9", "cwd": str(project), "source": "startup"})
+    env = {"HOME": str(home), "USERPROFILE": str(home), "CLAUDE_CONFIG_DIR": str(home / ".claude")}
+    result = _run_hook(config_dir=data, cwd=project, stdin_text=stdin, extra_env=env)
+    assert result.returncode == 0
+    snapshot = _latest_snapshot(data)
+    assert snapshot["user_settings"]["model"] == "fable[1m]"

@@ -504,7 +504,8 @@ def _add_serve_args(sub: argparse.ArgumentParser) -> None:
         default=None,
         metavar="DIR",
         dest="monthly_report_dir",
-        help="directory a monthly report is written into (default: none)",
+        help="while serving, write the previous month's report (as 'monthly-report' does) into DIR "
+        "when it is missing; checked at startup and hourly (default: none)",
     )
     sub.add_argument(
         "--purge",
@@ -556,6 +557,7 @@ def _add_uninstall_service_args(sub: argparse.ArgumentParser) -> None:
 def _add_uninstall_args(sub: argparse.ArgumentParser) -> None:
     """Extra flags for ``uninstall``. Without ``--yes`` every step shows
     what it changes and asks first."""
+    _add_claude_root_arg(sub)
     sub.add_argument(
         "--dry-run",
         action="store_true",
@@ -715,7 +717,22 @@ def _add_apply_args(sub: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_claude_root_arg(sub: argparse.ArgumentParser) -> None:
+    """``--claude-root`` for the commands that read or change Claude
+    Code's own ``settings.json`` (``init``, ``uninstall``, ``changes``);
+    ``apply`` declares its own with the same meaning."""
+    sub.add_argument(
+        "--claude-root",
+        metavar="PATH",
+        default=None,
+        dest="claude_root",
+        help="the Claude Code folder holding settings.json (default: $CLAUDE_CONFIG_DIR, else ~/.claude; "
+        "never worked out from --config-dir)",
+    )
+
+
 def _add_init_args(sub: argparse.ArgumentParser) -> None:
+    _add_claude_root_arg(sub)
     sub.add_argument(
         "--answers",
         metavar="FILE",
@@ -746,7 +763,7 @@ def _add_init_args(sub: argparse.ArgumentParser) -> None:
         "--connect",
         action="store_true",
         help="add the config snapshot hook (and a statusline, if you have none) to "
-        "~/.claude/settings.json without asking; the change is still printed and the file backed up first",
+        "Claude Code's settings.json without asking; the change is still printed and the file backed up first",
     )
     service_group = sub.add_mutually_exclusive_group()
     service_group.add_argument(
@@ -939,6 +956,8 @@ def _make_parser() -> argparse.ArgumentParser:
             _add_uninstall_service_args(sub)
         if name == "uninstall":
             _add_uninstall_args(sub)
+        if name == "changes":
+            _add_claude_root_arg(sub)
         if name == "init":
             _add_init_args(sub)
         if name == "baseline":
@@ -976,6 +995,10 @@ def _resolve_claude_root(cli_arg: str | Path | None) -> Path:
     ``settings.json`` and ``agents/``. ``--claude-root`` wins; else
     ``$CLAUDE_CONFIG_DIR``; else ``~/.claude``.
 
+    Delegates to :func:`discovery.claude_root`, the one rule every
+    command uses to find ``settings.json`` (``init``, ``uninstall``,
+    ``changes``, the dashboard's hook checks, the snapshot hook).
+
     Fix B3: deliberately NOT derived from ``_resolve_config_dir``'s
     result. ``apply`` used to compute ``home = config_dir.parent``,
     which happens to equal this exact directory only when ``config_dir``
@@ -990,10 +1013,20 @@ def _resolve_claude_root(cli_arg: str | Path | None) -> Path:
     in the default layout) while printing "Applied ..." and leaving the
     real ``~/.claude/settings.json`` untouched.
     """
-    if cli_arg:
-        return Path(cli_arg)
-    base = os.environ.get("CLAUDE_CONFIG_DIR")
-    return Path(base) if base else (Path.home() / ".claude")
+    return discovery.claude_root(cli_arg)
+
+
+def _config_dir_args(config_dir: Path) -> str:
+    """`` --config-dir "<absolute path>"`` for a hook or statusline
+    command when this tool's data folder is not the default
+    ``<claude-root>/token-lens``, else an empty string. Without it the
+    hook and statusline, which Claude Code starts on its own, would
+    write snapshots and the usage log to the default folder while the
+    CLI and dashboard read ``--config-dir``."""
+    config_dir = Path(config_dir).resolve()
+    if config_dir == (discovery.claude_root() / "token-lens").resolve():
+        return ""
+    return f' --config-dir "{config_dir}"'
 
 
 def _priced_turns(result: TranscriptResult):
@@ -1624,6 +1657,7 @@ def _cmd_compare(args: argparse.Namespace) -> int:
         min_sessions=min_sessions,
         snapshots=snaps,
         session_overrides=session_overrides,
+        config_dir=config_dir,
     )
 
     coverage = PricingCoverage()
@@ -1927,73 +1961,39 @@ def _cmd_monthly_report(args: argparse.Namespace) -> int:
 
     root, project_dirs = _resolve_project_dirs_for_args(args, config)
     if not project_dirs:
-        print(
-            f"claude-token-lens {command}: no matching project directories under {root}",
-            file=sys.stderr,
-        )
+        print(f"claude-token-lens {command}: no matching project directories under {root}", file=sys.stderr)
         return 1
 
     try:
         # Fix for review finding 12: resolve_month's "previous calendar
-        # month" default now takes its reference date from config.tz
-        # (falling back to the machine's own zone when tz is None/
-        # unresolvable, unchanged from before) rather than unconditionally
-        # from the machine's own zone -- see resolve_month's docstring.
+        # month" default takes its reference date from config.tz (falling
+        # back to the machine's own zone when tz is None/unresolvable).
         month = monthly_mod.resolve_month(args.month, config.tz)
     except ValueError as exc:
         print(f"claude-token-lens {command}: {exc}", file=sys.stderr)
         return 2
 
-    # The monthly report always covers exactly the calendar month itself
-    # (never --days/--since/--until, which are for the other report-like
-    # subcommands): load the whole corpus for the project(s) and let
-    # monthly.write_monthly_report do its own month-window filtering
-    # against each turn's local timestamp, the same way build_report's
-    # own --days/--since/--until filtering happens at discovery.load_corpus
-    # time rather than post-hoc -- here there is no discovery-level
-    # equivalent for "one specific calendar month", so the filtering
-    # happens inside monthly.py itself instead.
-    corpus = _load_corpus_for_args(args, config, config_dir, project_dirs)
-    if not corpus.sessions:
-        print(
-            f"claude-token-lens {command}: no sessions found under {root}",
-            file=sys.stderr,
+    # Shared with serve --monthly-report (service/monthly_job.py):
+    # the no-projects/no-sessions checks, the usage log (review finding
+    # 9) and the empty-month note (nit 17). A fixed generated_at (review
+    # finding 11) makes repeated runs byte-identical -- see
+    # _resolve_generated_at (shared with _cmd_export).
+    try:
+        paths = monthly_mod.run_monthly_report(
+            config=config,
+            pricing=rates,
+            config_dir=config_dir,
+            root=root,
+            project_dirs=project_dirs,
+            month=month,
+            out_dir=Path(args.out),
+            load_corpus=lambda dirs: _load_corpus_for_args(args, config, config_dir, dirs),
+            generated_at=_resolve_generated_at(args),
+            note=lambda text: print(f"claude-token-lens {command}: {text} (exit 0)", file=sys.stderr),
         )
-        return 1
-
-    # Fix for review finding 9: docs/exports.md promises cache_ground_truth
-    # in the monthly report's usage section "when a usage log is
-    # available", but write_monthly_report never received usage_log_rows
-    # at all -- load it the same tolerant way _cmd_report_like does (no
-    # --days/--since/--until/--project scoping needed here beyond what
-    # write_monthly_report's own month-session filter already applies).
-    usage_log_csv_path = config_dir / "usage-log.csv"
-    usage_log_rows = (
-        statusline_mod.load_usage_log_ground_truth(usage_log_csv_path) if usage_log_csv_path.exists() else None
-    )
-
-    # Nit 17: an empty target month exits 0 and still writes files with
-    # zeroed tables (a reasonable choice for a scheduled job -- it should
-    # not fail a cron run just because nothing happened that month), but
-    # that was undocumented and asymmetric with the *corpus*-empty case
-    # just above, which exits 1 and writes nothing. Behaviour is
-    # unchanged; this just names it on stderr instead of failing silent.
-    if not monthly_mod.filter_corpus_to_month(corpus, month, config.tz).sessions:
-        print(
-            f"claude-token-lens {command}: no sessions found for {month} -- "
-            "writing a report with zeroed tables (exit 0)",
-            file=sys.stderr,
-        )
-
-    # Fix for review finding 11: a fixed generated_at makes repeated runs
-    # genuinely byte-identical rather than "identical apart from one
-    # line" -- see _resolve_generated_at (shared with _cmd_export).
-    generated_at = _resolve_generated_at(args)
-
-    out_dir = Path(args.out)
-    paths = monthly_mod.write_monthly_report(
-        corpus, rates, config, month, out_dir, usage_log_rows=usage_log_rows, generated_at=generated_at
-    )
+    except monthly_mod.MonthlyReportError as exc:
+        print(f"claude-token-lens {command}: {exc}", file=sys.stderr)
+        return exc.exit_code
     for path in paths:
         print(str(path))
     return 0
@@ -2194,9 +2194,14 @@ def _cmd_init(args: argparse.Namespace) -> int:
     config_dir = _resolve_config_dir(args.config_dir)
     projects_root_path = Path(args.projects_root) if args.projects_root else discovery.projects_root()
 
+    claude_root = _resolve_claude_root(args.claude_root)
+    extra_args = _config_dir_args(config_dir)
+
     hook = _load_snapshot_hook_module()
-    hook_fragment = hook.hook_fragment_text(script=Path(config_dir) / "hooks" / "snapshot-config.py")
-    statusline_fragment = statusline_mod.print_install_fragment()
+    hook_fragment = hook.hook_fragment_text(
+        script=Path(config_dir).resolve() / "hooks" / "snapshot-config.py", extra_args=extra_args
+    )
+    statusline_fragment = statusline_mod.print_install_fragment(extra_args=extra_args)
 
     try:
         rc = onboarding.run_init(
@@ -2229,6 +2234,7 @@ def _cmd_init(args: argparse.Namespace) -> int:
             all_projects=args.all_projects,
             project=args.project,
             project_family=args.project_family,
+            claude_root=claude_root,
         )
     except onboarding.OnboardingError as exc:
         print(f"claude-token-lens init: {exc}", file=sys.stderr)
@@ -2244,25 +2250,34 @@ def _cmd_init(args: argparse.Namespace) -> int:
     # itself installs anything" boundary its module docstring already
     # draws for the hook/statusLine fragments above.
     if not args.no_install and (args.connect or not args.non_interactive):
-        _cmd_init_connect_step(args, config_dir=config_dir, hook=hook)
+        _cmd_init_connect_step(args, config_dir=config_dir, hook=hook, claude_root=claude_root)
     return _cmd_init_service_step(args, config_dir=config_dir, projects_root_path=projects_root_path)
 
 
-def _cmd_init_connect_step(args: argparse.Namespace, *, config_dir: Path, hook, stdin=None, stdout=None) -> None:
+def _cmd_init_connect_step(
+    args: argparse.Namespace, *, config_dir: Path, hook, claude_root: Path | None = None, stdin=None, stdout=None
+) -> None:
     """``init``'s "Connect to Claude Code" step: install the snapshot
     hook script into this tool's own folder, then show the exact
     ``settings.json`` change that runs it (and adds a statusline when
     you have none) and write it only after a yes, or with ``--connect``;
     ``--dry-run`` shows it and writes nothing. ``settings.json`` is
     backed up first. Commands name a Python and the script by full
-    path, so they need neither the ``py`` launcher nor shell variables."""
+    path, so they need neither the ``py`` launcher nor shell variables,
+    and carry ``--config-dir`` when this tool's folder is not the
+    default (:func:`_config_dir_args`). ``settings.json`` is the one in
+    ``claude_root`` (:func:`_resolve_claude_root`), never next to
+    ``--config-dir``."""
     stdin = stdin if stdin is not None else sys.stdin
     stdout = stdout if stdout is not None else sys.stdout
-    script = hook.install_hook(config_dir)
+    claude_root = claude_root if claude_root is not None else _resolve_claude_root(None)
+    extra_args = _config_dir_args(config_dir)
+    script = hook.install_hook(Path(config_dir).resolve())
     plan = hook_health.plan_connect(
         config_dir,
-        hook_command=hook.hook_command(script=script),
-        statusline_command=statusline_mod.install_command(),
+        hook_command=hook.hook_command(script=script, extra_args=extra_args),
+        statusline_command=statusline_mod.install_command(extra_args=extra_args),
+        claude_root=claude_root,
     )
     stdout.write("Connect to Claude Code\n")
     if plan.new_text is None:
@@ -2470,7 +2485,11 @@ def _cmd_changes(args: argparse.Namespace) -> int:
     from . import footprint
 
     config_dir = _resolve_config_dir(args.config_dir)
-    items = footprint.inventory(config_dir, service_registered=installer_mod.is_registered())
+    items = footprint.inventory(
+        config_dir,
+        service_registered=installer_mod.is_registered(),
+        claude_root=_resolve_claude_root(getattr(args, "claude_root", None)),
+    )
     print("What claude-token-lens has installed and changed\n")
     for item in items:
         print(f"{item.title}: {item.status}")
@@ -2513,7 +2532,8 @@ def _cmd_uninstall(args: argparse.Namespace) -> int:
 
     config_dir = _resolve_config_dir(args.config_dir)
     projects_root_path = Path(args.projects_root) if args.projects_root else discovery.projects_root()
-    plan = footprint.plan_uninstall(config_dir)
+    claude_root = _resolve_claude_root(args.claude_root)
+    plan = footprint.plan_uninstall(config_dir, claude_root=claude_root)
     dry = args.dry_run
     problems = 0
 
@@ -2574,7 +2594,7 @@ def _cmd_uninstall(args: argparse.Namespace) -> int:
     elif not args.delete_data:
         print(f"   Kept: {footprint.home_label(plan.data_dir)} (add --delete-data to delete it).\n")
     else:
-        still_applied = [b for b in footprint.plan_uninstall(config_dir).applied] if not dry else (
+        still_applied = [b for b in footprint.plan_uninstall(config_dir, claude_root=claude_root).applied] if not dry else (
             [] if args.revert_changes else plan.applied
         )
         if still_applied:

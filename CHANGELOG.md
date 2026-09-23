@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Monthly reports from the dashboard.** `serve --monthly-report DIR`
+  now writes last month's report into DIR when it's missing, checking at
+  startup and every hour; a failure logs one line and is retried later.
+- **Sessions record their profile.** Each session carries the profile
+  active when it started (from the config hook, `apply` and undone
+  applies), so `compare --a profile:<id>` selects real sessions and the
+  session list shows the profile.
+- **Usage-limit headroom.** For subscription users with usage-limit
+  readings, the new `elasticity` section (Usage tab) shows how many
+  tokens a full limit holds and how much of the weekly limit the last
+  day used; `[thresholds.elasticity]` in `config.toml` now takes effect.
+- Replies from a model with no price are listed under the Usage tab's
+  advanced detail, and the "Some usage has no price" recommendation
+  names those models.
 - **Quality signals: is the work going well?** A cheaper model or lower
   effort only saves money if the work still gets done. The new
   `quality` section (Agents tab, `quality` command) counts, per agent
@@ -364,6 +378,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `reconcile` no longer counts cache-write tokens twice when an Admin
+  export has both the total column and the 5-minute/1-hour split, says
+  correctly that local usage is grouped by UTC day, and groups an Admin
+  date column holding full timestamps by UTC day too.
+- Every command finds Claude Code's `settings.json` the same way:
+  `--claude-root`, else `CLAUDE_CONFIG_DIR`, else `~/.claude`. `init`,
+  `--repair-hook`, `changes`, `uninstall` and the dashboard used the
+  folder above `--config-dir` and could change the wrong file. With a
+  non-default `--config-dir`, the hook and statusline commands now carry
+  it, and `--repair-hook` keeps those arguments.
+- Running `init` again no longer restarts the capture window.
+- On Windows, `uninstall-service` stops the running dashboard before
+  removing the scheduled task, and every platform says which steps it did.
+- The token-saver analysis stays out of the report; its docs now say why.
 - The SessionStart hook and statusline commands name this Python and
   the script by full path. `py -3` fails where the launcher isn't on the
   `PATH`, and Git Bash doesn't expand `%USERPROFILE%`; either stopped the

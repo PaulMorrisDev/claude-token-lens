@@ -9,9 +9,16 @@ their 5-hour/7-day usage windows, not just their USD spend -- the
 binding constraint most target users actually feel. Every other
 analytics module in this codebase reports a saving in dollars;
 :func:`express_in_window` is the one function that turns a dollar saving
-back into "x% of your weekly window", so a later wiring step can attach
-that suffix to any recommendation's saving line once ``config.billing ==
-"subscription"``.
+back into "x% of your weekly window".
+
+Where it is used: under subscription billing with a non-empty
+``<config_dir>/usage-log.csv``, ``report._report_units`` runs
+:func:`compute_elasticity` (thresholds from ``config.toml``'s
+``[thresholds.elasticity]``) and hands the result to ``units.Units``,
+whose ``money`` phrases every amount through :func:`express_in_window`.
+``report.build_report`` also adds the ``elasticity`` section
+(:func:`build_section`) from the same result, and ``recommend.recommend``
+runs :data:`RULES` last, after the other recommendations are final.
 
 Method (see the project brief this module was written against):
 
@@ -84,16 +91,12 @@ of carrying either.
 ``ReportModel`` via self-contained ``_cell``/``_evidence`` helpers
 (duplicated locally rather than imported from ``waste.py``/
 ``recommend.py``, matching both modules' own stated reason -- avoiding a
-circular import regardless of which direction a wiring agent connects
-this module to them), not on an ``ElasticityStats`` instance directly.
+circular import), not on an ``ElasticityStats`` instance directly.
 ``_rule_window_budget`` additionally reads ``report.recommendations``
-(whatever other rules have already been folded in by the time it runs)
-to name the single most material *other* lever already on the report,
-by its own ``id`` only -- deliberately never repeating a number that
-recommendation already owns, per the brief. This means the rule is only
-as good as what has already been appended to ``report.recommendations``
-when it runs; a wiring step that wants a well-informed "biggest lever"
-clause should append this module's own rule after the others.
+to name the single most material *other* recommendation, by its title
+only -- deliberately never repeating a number that recommendation
+already owns. ``recommend.recommend`` therefore runs it after every
+other rule has been finished and ordered.
 """
 
 from __future__ import annotations
@@ -129,6 +132,9 @@ ASSUMPTIONS: tuple[str, ...] = (
     "machine's own logged history, not a controlled experiment or a "
     "guaranteed future rate.",
 )
+
+#: Plain names for each window kind, for recommendation text.
+WINDOW_LABELS: dict[str, str] = {"five_hour": "5-hour", "seven_day": "weekly", "spend_limit": "spend"}
 
 #: The three volume metrics every window kind is fit against.
 _METRICS: tuple[str, ...] = ("new_tokens", "cache_read", "usd")
@@ -843,7 +849,7 @@ def _rule_window_budget(report: ReportModel, th: ElasticityThresholds) -> list[R
     States the derived tokens-per-window budget and the last-24h burn
     share, and names whichever other recommendation already on the
     report looks like the biggest lever (see :func:`_biggest_lever`), by
-    its own id only -- never repeating a number that recommendation
+    its title only -- never repeating a number that recommendation
     already cites.
 
     Assumes ``th.weekly_window`` is the same window kind
@@ -881,18 +887,19 @@ def _rule_window_budget(report: ReportModel, th: ElasticityThresholds) -> list[R
             _evidence("Share of window burned in the last 24h", burn_pct, "elasticity", "elasticity_recent_burn", window)
         )
 
+    limit = WINDOW_LABELS.get(window, window)
     burn_clause = ""
     if burn_pct is not None and burn_hours is not None:
-        burn_clause = f" The last {burn_hours:.0f}h alone used {burn_pct:.1f}% of one full {window} window."
+        burn_clause = f" The last {burn_hours:.0f} hours used {burn_pct:.1f}% of it."
 
     lever = _biggest_lever(report, exclude_id="window-budget")
     lever_clause = ""
     if lever is not None:
-        lever_clause = f" See the '{lever.id}' recommendation ({lever.title}) for the biggest lever to stretch it further."
+        lever_clause = f' To make it last longer, start with "{lever.title}" in your recommendations.'
 
     action = (
-        f"At today's observed usage elasticity, a full {window} window is "
-        f"worth about {budget:,.1f} million new tokens.{burn_clause}{lever_clause}"
+        f"A full {limit} limit is worth about {budget:,.1f} million new tokens (input, cache writes and "
+        f"output).{burn_clause}{lever_clause}"
     )
 
     return [
@@ -901,19 +908,22 @@ def _rule_window_budget(report: ReportModel, th: ElasticityThresholds) -> list[R
             severity="info",
             category="data",
             archetypes=(),
-            title="Your usage window's token budget, derived from real elasticity",
+            title=f"How many tokens your {limit} limit holds",
             action=action,
             lever=None,
             evidence=evidence,
+            why=(
+                "Worked out from your logged usage-limit readings and the tokens your sessions used between "
+                "them, so it is specific to how you work."
+            ),
         )
     ]
 
 
 #: One rule per this module's own convention (see the module docstring
 #: and ``waste.py``'s identical one): a tuple of ``(report, th) ->
-#: list[Recommendation]`` callables for a wiring agent to fold into
-#: ``recommend.recommend()``'s own output, e.g.
-#: ``recs.extend(elasticity.RULES[0](report, elasticity_th))``.
+#: list[Recommendation]`` callables; ``recommend.recommend()`` runs it
+#: last, against the report with the other recommendations filled in.
 RULES: tuple = (_rule_window_budget,)
 
 

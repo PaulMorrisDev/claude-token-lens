@@ -303,7 +303,8 @@ directly.
 Data quality is driven by an explicit section-key -> tab map (`recache`/
 `limits` -> Cache, `ttl` -> TTL, `agent_startup`/`agents`/`workflows`/`workstyle` ->
 Agents, `sessions` -> Sessions, `config`/`context_budget`/`baseline_comparison` -> Config,
-`usage`/`compactions`/`phases` -> Usage, `scorecard` -> Overview (its
+`usage`/`elasticity`/`compactions`/`phases` -> Usage (`elasticity` only
+under subscription billing with usage-limit readings), `scorecard` -> Overview (its
 tiles), anything else -> Data quality) so an unrecognised
 section key still lands somewhere visible instead of being silently
 dropped. `tests/test_service_static.py` checks every section

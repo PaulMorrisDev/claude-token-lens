@@ -72,12 +72,12 @@ class ServeOptions:
     #: ``Config.billing`` when no explicit ``--billing-mode`` flag is
     #: given, falling back to this field's own default otherwise.
     billing_mode: str = "api"
-    #: Directory a future monthly-report job should write its rendered
-    #: reports to under a ``"subscription"`` billing mode (plan
-    #: "Milestone v0.2"'s billing-mode note) -- ``None`` means no such
-    #: job is configured. Not yet consumed by ``serve``/``watcher.py``
-    #: themselves; carried here so ``cli.py``'s ``--monthly-report DIR``
-    #: flag has somewhere to put the value once a caller needs it.
+    #: ``serve --monthly-report DIR``: while ``serve`` runs,
+    #: ``monthly_job.MonthlyReportJob`` writes the previous calendar
+    #: month's report (the same files ``monthly-report --out DIR``
+    #: writes) into this directory when they are missing, checking at
+    #: startup and hourly. ``None`` means no report is written. Any
+    #: billing mode.
     monthly_report_dir: Path | None = None
     #: Extra host names the ``Host`` header may carry (``serve
     #: --allowed-host``), on top of the loopback names and a specific

@@ -134,8 +134,11 @@ def test_plan_windows_uses_python_exe_when_no_pythonw_beside_it(tmp_path):
     assert "-RunLevel Limited" in script
     assert "ExecutionTimeLimit ([TimeSpan]::Zero)" in script
     assert plan.probe_command == ["schtasks", "/Query", "/TN", installer.TASK_NAME]
-    assert plan.uninstall_commands[0][0] == "powershell.exe"
-    assert "Unregister-ScheduledTask" in plan.uninstall_commands[0][-1]
+    # Stop the running task first: unregistering alone leaves serve running.
+    assert [c[0] for c in plan.uninstall_commands] == ["powershell.exe", "powershell.exe"]
+    assert plan.uninstall_commands[0][-1] == f"Stop-ScheduledTask -TaskName '{installer.TASK_NAME}'"
+    assert "Unregister-ScheduledTask" in plan.uninstall_commands[1][-1]
+    assert len(plan.uninstall_done) == len(plan.uninstall_commands)
 
 
 def test_plan_windows_prefers_pythonw_beside_the_interpreter(tmp_path):
@@ -333,6 +336,51 @@ def test_uninstall_reports_a_failed_command_but_keeps_going(tmp_path):
     # The command "failed" but file removal still happens.
     assert rc == 1
     assert not unit_path.exists()
+
+
+def test_uninstall_windows_stops_the_task_before_removing_it(tmp_path, capsys):
+    python_exe = tmp_path / "python.exe"
+    python_exe.write_text("", encoding="utf-8")
+    plan = installer.plan_service_install(
+        str(python_exe), tmp_path / "projects", tmp_path / "config", platform="windows"
+    )
+    runner = _RecordingRunner()
+    rc = installer.uninstall(plan, runner=runner)
+    assert rc == 0
+    assert "Stop-ScheduledTask" in runner.calls[0][-1]
+    assert "Unregister-ScheduledTask" in runner.calls[1][-1]
+    out = capsys.readouterr().out
+    assert "Stopped Scheduled Task 'ClaudeTokenLens' (a running dashboard is shut down)." in out
+    assert "Removed Scheduled Task 'ClaudeTokenLens'." in out
+    assert out.index("Stopped Scheduled Task") < out.index("Removed Scheduled Task")
+
+
+def test_uninstall_does_not_claim_a_step_that_failed(tmp_path, capsys):
+    python_exe = tmp_path / "python.exe"
+    python_exe.write_text("", encoding="utf-8")
+    plan = installer.plan_service_install(
+        str(python_exe), tmp_path / "projects", tmp_path / "config", platform="windows"
+    )
+    rc = installer.uninstall(plan, runner=_RecordingRunner(returncode=1))
+    assert rc == 1
+    out = capsys.readouterr().out
+    assert "Stopped Scheduled Task" not in out
+    assert "Removed Scheduled Task" not in out
+    assert "finished with problems" in out
+
+
+@pytest.mark.parametrize("platform", ["linux", "macos"])
+def test_uninstall_posix_stop_is_part_of_the_removal_command(tmp_path, capsys, monkeypatch, platform):
+    # systemctl --user disable --now and launchctl bootout both stop a
+    # running serve as well as removing the registration.
+    monkeypatch.setattr(installer, "_uid", lambda: "501")
+    plan = installer.plan_service_install(
+        "/usr/bin/python3", tmp_path / "projects", tmp_path / "config", platform=platform
+    )
+    assert "--now" in plan.uninstall_commands[0] or plan.uninstall_commands[0][:2] == ["launchctl", "bootout"]
+    rc = installer.uninstall(plan, runner=_RecordingRunner())
+    assert rc == 0
+    assert "Stopped and " in capsys.readouterr().out
 
 
 # --------------------------------------------------------------------

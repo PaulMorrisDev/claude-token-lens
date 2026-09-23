@@ -15,10 +15,24 @@ measures whether an *installed* claimed-saver is actually paying for
 itself, net of the overhead it itself adds (schema/prefix load, its own
 turns, its own tool-result chars).
 
-Three layers, mirroring ``model_swap.py``/``carry.py``'s own shape (both
-standalone modules a wiring agent folds in afterwards -- ``recommend.py``,
-``model.py``, ``compare.py``, ``snapshots.py``, ``parse.py``, ``report.py``,
-``cli.py`` and ``service/`` are all off-limits to this work order):
+Current state: nothing calls this module. ``report.build_report`` does
+not add the ``savers`` section, ``recommend.recommend`` does not run
+:data:`RULES`, and no CLI command or dashboard tab shows it; it is
+library code with its own tests. It stays out of the report because its
+output is not yet sound enough to show or act on:
+
+- detection is a name match, so ordinary tools whose names contain
+  "context", "memory" or "cache" (a documentation server, a notes
+  server) are treated as savers;
+- a saver configured for every session leaves no "absent" sessions to
+  compare with, and when both groups exist they differ in workload, so
+  the verdict cannot separate the tool from the work;
+- the rule's lever, ``mcpServers.<name>``, is not a settings key the
+  report's fixes can change (MCP servers live in ``.mcp.json`` or
+  ``~/.claude.json``), and its action text writes dollar amounts
+  directly instead of following the billing mode (``units.Units``).
+
+Three layers, mirroring ``model_swap.py``/``carry.py``'s own shape:
 
 - :func:`detect_savers` -- merges an explicit ``config.toml`` ``[savers]``
   allowlist with auto-detection: every MCP server name (``Turn.
@@ -145,8 +159,8 @@ _NATIVE_SEARCH_TOOLS: tuple[str, ...] = ("Grep", "Glob", "Read")
 #: (redacted, <=40 char) ``cmd_prefix`` starts with one of these.
 _SHELL_SEARCH_RE = re.compile(r"^\s*(rg|grep|find|select-string)\b", re.IGNORECASE)
 
-#: This module's own modelling assumptions -- fold into
-#: ``ReportMeta.assumptions`` alongside ``ttl.ASSUMPTIONS``/
+#: This module's own modelling assumptions -- for a caller that renders
+#: :func:`build_section` to fold into ``ReportMeta.assumptions`` alongside ``ttl.ASSUMPTIONS``/
 #: ``carry.ASSUMPTIONS``/``limits.ASSUMPTIONS`` (same convention).
 ASSUMPTIONS: tuple[str, ...] = (
     "a saver 'name' matching the fixed regex token|saver|savior|"
@@ -732,8 +746,9 @@ def _compute_verdicts(
 @dataclass(slots=True)
 class SaverThresholds:
     """Every tunable number this module's own logic depends on.
-    Overridable via ``config.toml``'s ``[thresholds.savers]`` table
-    (mirrors ``RecommendThresholds``/``ScorecardThresholds``'s own
+    :meth:`from_config` reads ``config.toml``'s ``[thresholds.savers]``
+    table when a caller uses it (nothing does yet; see the module
+    docstring) (mirrors ``RecommendThresholds``/``ScorecardThresholds``'s own
     per-module-subtable convention, rather than ``RecacheThresholds``/
     ``LimitThresholds``'s shared flat ``[thresholds]`` namespace -- see
     :meth:`from_config`).
@@ -1117,9 +1132,9 @@ def _evidence(label: str, value, section_key: str, table_name: str, row_key) -> 
 
 
 def _lever_and_scope(name: str, snapshot: Snapshot | None) -> tuple[str, str]:
-    """``mcpServers.<name>`` (or ``enabledPlugins.<name>`` when ``name``
-    only ever showed up as a plugin) -- the enable/disable key in
-    ``settings.json``/``.mcp.json``. Scope is "user" by default, upgraded
+    """Always ``mcpServers.<name>``, even for a candidate only ever seen
+    as a plugin or a skill (the module docstring notes this is not a key
+    the report's fixes can change). Scope is "user" by default, upgraded
     to "managed" when the underlying top-level key
     (``mcpServers``/``enabledPlugins``) appears in
     ``snapshots.managed_keys(snapshot)`` (same convention as

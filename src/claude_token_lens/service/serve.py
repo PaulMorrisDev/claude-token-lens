@@ -29,6 +29,10 @@ Contract notes:
   ``run`` always calls ``watcher.run_once()`` synchronously before
   serving starts, so by the time any request thread can call
   ``watcher_stats``, ``last_stats`` is always already populated.
+- ``ServeOptions.monthly_report_dir`` (``--monthly-report DIR``) starts
+  ``monthly_job.MonthlyReportJob``: last month's report is written into
+  ``DIR`` when missing, checked at startup and hourly on a background
+  thread (once, in line, under ``--once``).
 """
 
 from __future__ import annotations
@@ -107,6 +111,16 @@ def run(options: ServeOptions, *, once: bool = False, allow_remote: bool = False
     watcher = FileWatcher(store, options, cache=cache, salt=salt)
     stats = watcher.run_once()
 
+    # serve --monthly-report DIR: write last month's report into DIR when
+    # it is missing (service/monthly_job.py). --once checks once, in
+    # line; a running service checks at startup and hourly on its own
+    # thread, so a report being built never holds up a request.
+    monthly_job = None
+    if options.monthly_report_dir is not None:
+        from .monthly_job import MonthlyReportJob
+
+        monthly_job = MonthlyReportJob(options)
+
     if once:
         # Print the tick's WatcherStats before exiting -- --once is the
         # one-shot/cron/verification entry point, and until this was
@@ -116,6 +130,8 @@ def run(options: ServeOptions, *, once: bool = False, allow_remote: bool = False
         # what the tick actually did short of reading the store or
         # starting the full server just to hit /api/health once.
         print(_format_stats_line(stats))
+        if monthly_job is not None:
+            monthly_job.run_once()
         store.close()
         return 0
 
@@ -145,6 +161,8 @@ def run(options: ServeOptions, *, once: bool = False, allow_remote: bool = False
     from ..installer import is_registered as _probe_service_registered
 
     watcher.start()
+    if monthly_job is not None:
+        monthly_job.start()
     try:
         handler_cls = make_handler(
             store,
@@ -171,6 +189,8 @@ def run(options: ServeOptions, *, once: bool = False, allow_remote: bool = False
             server.shutdown()
             server.server_close()
     finally:
+        if monthly_job is not None:
+            monthly_job.stop()
         watcher.stop()
         store.close()
 

@@ -21,6 +21,14 @@ NOW = datetime(2026, 9, 22, 12, 0, tzinfo=timezone.utc)
 windows_only = pytest.mark.skipif(os.name != "nt", reason="the escaping bug needs Windows backslash paths")
 
 
+@pytest.fixture(autouse=True)
+def _claude_folder(tmp_path, monkeypatch):
+    """Claude Code's folder is ``$CLAUDE_CONFIG_DIR`` (``discovery.claude_root``),
+    never worked out from the data folder: point it at the ``claude``
+    folder these tests build ``settings.json`` in."""
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
+
+
 def _claude_dir(tmp_path, command=None, *, script=True):
     """``<tmp>/claude`` with ``token-lens/`` as the config dir and a
     ``settings.json`` whose one SessionStart hook runs ``command``
@@ -284,3 +292,19 @@ def test_statusline_check_not_set_up(tmp_path):
     config_dir, _ = _claude_dir(tmp_path)
     working, sentence = hook_health.statusline_check(config_dir, {})
     assert not working and "init --connect" in sentence
+
+
+def test_repair_keeps_arguments_after_the_script(tmp_path, monkeypatch):
+    # A hook command for a non-default data folder carries --config-dir;
+    # rebuilding it around a working Python must keep that.
+    claude = tmp_path / "claude"
+    config_dir = claude / "token-lens"
+    script = config_dir / "hooks" / "snapshot-config.py"
+    script.parent.mkdir(parents=True)
+    script.write_text("", encoding="utf-8")
+    command = f'nosuchpython-xyz "{script}" --config-dir "{config_dir}"'
+    settings = {"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": command}]}]}}
+    (claude / "settings.json").write_text(json.dumps(settings), encoding="utf-8")
+    health = hook_health.check(config_dir, now=NOW, python=sys.executable)
+    assert not health.interpreter_found
+    assert health.fixed_command == f'"{sys.executable}" "{script.resolve()}" --config-dir "{config_dir}"'

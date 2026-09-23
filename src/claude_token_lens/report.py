@@ -11,7 +11,9 @@ existing accumulators (:class:`recache.RecacheStats`,
 optionally :class:`phases.PhaseStats`), and assembles their
 ``build_section`` outputs into ``ReportModel.sections`` in a fixed order.
 
-Section order and keys: ``overview``, ``usage``, ``sessions``, ``recache``,
+Section order and keys: ``overview``, ``usage``, ``elasticity`` (only
+under subscription billing with usage-log readings, see
+:func:`_report_units`), ``sessions``, ``recache``,
 ``ttl``, ``limits``, ``carry``, ``compaction_sim``, ``model_swap``,
 ``waste``, ``compactions``, ``agent_startup``, ``agents``, ``quality``,
 ``workstyle``,
@@ -168,6 +170,7 @@ from .tools import log_usage
 _SECTION_ORDER: tuple[str, ...] = (
     "overview",
     "usage",
+    "elasticity",
     "sessions",
     "recache",
     "ttl",
@@ -1146,7 +1149,11 @@ def build_report(
     (every test in this repo, ``baseline.py``, ``team.py``) omits it, and
     none of them should silently start writing into the user's real
     Claude Code config directory just because a ``waste`` section is now
-    always part of the assembled report.
+    always part of the assembled report. It is also read (never written)
+    for each session's ``profile_id`` (``snapshots.load_profile_marks``:
+    the profile active at the session's start) and, under subscription
+    billing, the usage log behind :func:`_report_units`. Without it,
+    ``profile_id`` comes from the hook captures in ``snapshots``.
     """
     from . import usage as usage_mod  # local import: avoids a cycle risk with any future usage<->report coupling
     from . import statusline as statusline_mod  # local import: same rationale as usage_mod above
@@ -1168,6 +1175,14 @@ def build_report(
     waste_th = waste.WasteThresholds.from_config(config.thresholds)
 
     session_overrides = session_overrides or {}
+    # Which profile was active at each session's start: the config
+    # directory's full record (hook captures, apply stamps, undone
+    # applies) when there is one, else what the loaded snapshots record.
+    profile_marks = (
+        snapshots_mod.load_profile_marks(config_dir)
+        if config_dir is not None
+        else snapshots_mod.profile_marks_from_snapshots(snapshots or [])
+    )
 
     session_records: list[SessionRecord] = []
     session_cost: dict[str, float] = {}
@@ -1234,6 +1249,7 @@ def build_report(
         record = classify.build_session_record(top, subs, bundle.workflows, classification, slug)
         session_mode[record.session_id] = classification.mode
         record.project_key = snapshots_mod.snapshot_project_key(bundle.slug)
+        record.profile_id = snapshots_mod.profile_for(record.first_ts, profile_marks, record.session_id)
         session_snapshot_key[record.session_id] = record.project_key
 
         features = _extract_workstyle_features(top, subs, bundle.workflows)
@@ -1428,6 +1444,11 @@ def build_report(
         all_results, pricing.resolve_model, snapshot_windows, compaction_sim_th
     )
 
+    # How amounts are phrased (billing mode, and under subscription the
+    # usage-limit fit). Built before the sections: the elasticity section
+    # renders the same fit.
+    units = _report_units(corpus, pricing, config, config_dir)
+
     # -- assemble sections ---------------------------------------------
 
     sections: list[Section] = []
@@ -1453,7 +1474,16 @@ def build_report(
             # doesn't own the construction of.
             cache_table = statusline_mod.build_cache_ground_truth_table(usage_log_rows)
             usage_section = dataclasses.replace(usage_section, tables=[*usage_section.tables, cache_table])
+        if pricing_coverage.unknown:
+            # Replies from models pricing.toml doesn't list: named here so
+            # the pricing-coverage recommendation can say which to add.
+            usage_section = dataclasses.replace(
+                usage_section, tables=[*usage_section.tables, pricing_coverage.as_table()]
+            )
         sections.append(usage_section)
+
+    if units.elasticity is not None and _want("elasticity"):
+        sections.append(elasticity.build_section(units.elasticity))
 
     if _want("sessions"):
         sections.append(classify.build_section(session_records, mode_thresholds))
@@ -1597,6 +1627,8 @@ def build_report(
         + list(waste.ASSUMPTIONS)
         + list(quality.ASSUMPTIONS)
     )
+    if units.elasticity is not None:
+        assumptions.extend(elasticity.ASSUMPTIONS)
     if baseline_record is None and baseline_note:
         assumptions.append(baseline_note)
 
@@ -1636,7 +1668,6 @@ def build_report(
     # already treat ``snapshots`` as a single corpus-wide input.
     corpus_archetype, _archetype_evidence = workstyle.corpus_archetype(session_records)
     latest_snapshot = snapshots[-1] if snapshots else None
-    units = _report_units(corpus, pricing, config, config_dir)
     report_model.units = units
     report_model.recommendations = recommend(
         report_model,
@@ -1656,15 +1687,18 @@ def build_report(
 def _report_units(corpus: Corpus, pricing: Pricing, config: Config, config_dir) -> units_mod.Units:
     """How amounts are phrased for this report's billing mode. For a
     subscription with a usage log, fit how much of the weekly limit a
-    list-price dollar is worth (``elasticity``); the fit refuses itself
-    when there are too few readings, and amounts fall back to list-price
-    equivalents."""
+    list-price dollar is worth (``elasticity``, with ``config.toml``'s
+    ``[thresholds.elasticity]``); the fit refuses itself when there are
+    too few readings, and amounts fall back to list-price equivalents.
+    The same fit is rendered as the ``elasticity`` section."""
     fitted = None
     if config.billing == "subscription" and config_dir is not None:
         usage_rows = log_usage.load_usage_log(Path(config_dir) / "usage-log.csv")
         if usage_rows:
             results = [tr for bundle in corpus.sessions for tr in ([bundle.top] if bundle.top else []) + bundle.subs]
-            fitted = elasticity.compute_elasticity(usage_rows, results, pricing)
+            fitted = elasticity.compute_elasticity(
+                usage_rows, results, pricing, elasticity.ElasticityThresholds.from_config(config.thresholds)
+            )
     return units_mod.Units(billing_mode=config.billing, currency=pricing.currency, elasticity=fitted)
 
 

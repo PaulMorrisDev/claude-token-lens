@@ -20,6 +20,14 @@ HOOK_CMD = f'"{sys.executable}" "C:/x/token-lens/hooks/snapshot-config.py"'
 STATUS_CMD = f'"{sys.executable}" -m claude_token_lens.statusline'
 
 
+@pytest.fixture(autouse=True)
+def _claude_folder(tmp_path, monkeypatch):
+    """Claude Code's folder is ``$CLAUDE_CONFIG_DIR`` (``discovery.claude_root``),
+    never worked out from the data folder: point it at the ``claude``
+    folder these tests build ``settings.json`` in."""
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
+
+
 def _claude(tmp_path, settings=None):
     claude = tmp_path / "claude"
     config_dir = claude / "token-lens"
@@ -193,10 +201,88 @@ def test_init_dry_run_shows_the_connect_change_and_writes_nothing(tmp_path):
     before = settings.read_text(encoding="utf-8")
     hook = SimpleNamespace(
         install_hook=lambda cfg: cfg / "hooks" / "snapshot-config.py",
-        hook_command=lambda script: f'"{sys.executable}" "{script}"',
+        hook_command=lambda script, extra_args="": f'"{sys.executable}" "{script}"{extra_args}',
     )
     out = io.StringIO()
     args = SimpleNamespace(connect=True, dry_run=True)
     cli._cmd_init_connect_step(args, config_dir=config_dir, hook=hook, stdin=io.StringIO("y\n"), stdout=out)
     assert settings.read_text(encoding="utf-8") == before
     assert "Dry run" in out.getvalue() and "SessionStart" in out.getvalue()
+
+
+# --------------------------------------------------------------------
+# One rule for where settings.json is: --claude-root, else
+# $CLAUDE_CONFIG_DIR, else ~/.claude -- never next to --config-dir.
+# --------------------------------------------------------------------
+
+
+def _elsewhere(tmp_path):
+    """A data folder away from Claude Code's folder, with a decoy
+    settings.json beside it that nothing may read or write."""
+    data = tmp_path / "elsewhere" / "tl-data"
+    data.mkdir(parents=True)
+    decoy = data.parent / "settings.json"
+    decoy.write_text('{"decoy": true}\n', encoding="utf-8")
+    return data, decoy
+
+
+def test_init_connect_with_config_dir_elsewhere_writes_claude_settings(tmp_path):
+    from types import SimpleNamespace
+
+    claude_settings = _claude(tmp_path, {"model": "opus"}).parent / "settings.json"
+    data, decoy = _elsewhere(tmp_path)
+    hook = cli._load_snapshot_hook_module()
+    args = SimpleNamespace(connect=True, dry_run=False)
+    cli._cmd_init_connect_step(args, config_dir=data, hook=hook, stdin=io.StringIO(""), stdout=io.StringIO())
+
+    assert decoy.read_text(encoding="utf-8") == '{"decoy": true}\n'
+    written = json.loads(claude_settings.read_text(encoding="utf-8"))
+    hook_cmd = written["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+    # The hook and the statusline write where the CLI reads.
+    assert hook_cmd.endswith(f'--config-dir "{data.resolve()}"')
+    assert str(data.resolve() / "hooks" / "snapshot-config.py") in hook_cmd
+    assert written["statusLine"]["command"].endswith(f'--config-dir "{data.resolve()}"')
+    # The dashboard's own check finds it in the same place.
+    assert hook_health.check(data).command == hook_cmd
+
+
+def test_default_config_dir_adds_no_config_dir_flag(tmp_path):
+    config_dir = _claude(tmp_path)
+    assert cli._config_dir_args(config_dir) == ""
+    assert cli._config_dir_args(tmp_path / "other") == f' --config-dir "{(tmp_path / "other").resolve()}"'
+
+
+def test_claude_root_flag_wins_over_the_environment(tmp_path):
+    other = tmp_path / "other-claude"
+    other.mkdir()
+    (other / "settings.json").write_text(json.dumps({"statusLine": {"type": "command", "command": STATUS_CMD}}))
+    data, decoy = _elsewhere(tmp_path)
+    assert hook_health.settings_path(other) == other / "settings.json"
+    plan = footprint.plan_uninstall(data, claude_root=other)
+    assert plan.settings_path == other / "settings.json"
+    assert plan.new_settings_text is not None
+
+
+def test_uninstall_and_changes_use_claude_settings_not_config_dir_parent(tmp_path, monkeypatch, capsys):
+    claude_settings = _claude(tmp_path, {"statusLine": {"type": "command", "command": STATUS_CMD}}).parent / "settings.json"
+    data, decoy = _elsewhere(tmp_path)
+    monkeypatch.setattr(installer, "is_registered", lambda *a, **k: False)
+
+    assert cli.main(["changes", "--config-dir", str(data)]) == 0
+    out = capsys.readouterr().out
+    assert "Statusline: installed" in out
+
+    assert cli.main(["uninstall", "--config-dir", str(data), "--yes"]) == 0
+    assert "statusLine" not in json.loads(claude_settings.read_text(encoding="utf-8"))
+    assert decoy.read_text(encoding="utf-8") == '{"decoy": true}\n'
+
+
+def test_uninstall_claude_root_flag(tmp_path, monkeypatch):
+    _claude(tmp_path)
+    other = tmp_path / "other-claude"
+    other.mkdir()
+    (other / "settings.json").write_text(json.dumps({"statusLine": {"type": "command", "command": STATUS_CMD}}))
+    monkeypatch.setattr(installer, "is_registered", lambda *a, **k: False)
+    data, _decoy = _elsewhere(tmp_path)
+    assert cli.main(["uninstall", "--config-dir", str(data), "--claude-root", str(other), "--yes"]) == 0
+    assert "statusLine" not in json.loads((other / "settings.json").read_text(encoding="utf-8"))

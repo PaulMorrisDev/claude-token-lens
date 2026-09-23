@@ -402,7 +402,7 @@ def test_rule_fires_with_budget_and_no_lever_clause_when_no_other_recommendation
     assert "recommendation" not in rec.action.lower()  # nothing else to point at yet
 
 
-def test_rule_names_the_biggest_other_lever_by_id_without_repeating_its_number():
+def test_rule_names_the_biggest_other_lever_by_title_without_repeating_its_number():
     other = Recommendation(
         id="wasted-turns",
         severity="advice",
@@ -418,7 +418,8 @@ def test_rule_names_the_biggest_other_lever_by_id_without_repeating_its_number()
 
     assert len(recs) == 1
     action = recs[0].action
-    assert "'wasted-turns'" in action
+    assert '"A material share of spend went to turns with no benefit"' in action
+    assert "wasted-turns" not in action  # plain words, not the rule id
     assert "942.17" not in action  # names the lever, never repeats its own number
 
 
@@ -444,8 +445,8 @@ def test_rule_picks_action_severity_over_info_for_biggest_lever():
 
     recs = elasticity.RULES[0](report, th)
 
-    assert "'model-tier'" in recs[0].action
-    assert "'pricing-coverage'" not in recs[0].action
+    assert "Move a subagent down a model tier" in recs[0].action
+    assert "unknown model" not in recs[0].action
 
 
 def test_rule_evidence_cites_real_table_cells():
@@ -461,3 +462,57 @@ def test_rule_evidence_cites_real_table_cells():
         table = next(t for t in section.tables if t.name == table_name)
         row = next(r for r in table.rows if r[0] == row_key)
         assert value in row, f"{label}: {value!r} not found in row {row!r} for {source_table}/{row_key}"
+
+
+# -- wired into the report -----------------------------------------------
+
+
+def test_report_adds_the_section_and_rule_under_subscription_with_readings(tmp_path, monkeypatch):
+    from claude_token_lens import report as report_mod
+    from claude_token_lens.config import Config
+    from claude_token_lens.corpus import load_corpus
+    from claude_token_lens.report import build_report
+
+    from helpers import turn_line, write_jsonl
+
+    usage_rows, results = _known_slope_fixture(slope=2.0, volumes_millions=[1, 2, 3, 1, 2, 3, 1, 2, 3, 4])
+    stats = elasticity.compute_elasticity(usage_rows, results, _pricing())
+    seen_thresholds = []
+
+    def fake_compute(rows, res, rates, thresholds=None, **kw):
+        seen_thresholds.append(thresholds)
+        return stats
+
+    monkeypatch.setattr(report_mod.log_usage, "load_usage_log", lambda path: usage_rows)
+    monkeypatch.setattr(elasticity, "compute_elasticity", fake_compute)
+    project_dir = tmp_path / "proj"
+    project_dir.mkdir()
+    for i in range(6):
+        write_jsonl(project_dir / f"s{i}.jsonl", [turn_line(timestamp=f"2026-09-1{i}T10:00:00.000Z")])
+    config = Config(billing="subscription", thresholds={"elasticity": {"min_pairs": 9}})
+
+    model = build_report(
+        load_corpus([project_dir]), _pricing(), config, projects=("proj",), window="w", config_dir=tmp_path / "cfg"
+    )
+
+    assert seen_thresholds[0].min_pairs == 9  # [thresholds.elasticity] reaches the fit
+    keys = [s.key for s in model.sections]
+    assert keys.index("elasticity") == keys.index("usage") + 1
+    section = next(s for s in model.sections if s.key == "elasticity")
+    budget = next(t for t in section.tables if t.name == "elasticity_budget")
+    assert budget.dashboard == "keep" and budget.help and all(c.help for c in budget.columns)
+    rec = next(r for r in model.recommendations if r.id == "window-budget")
+    assert rec.title == "How many tokens your weekly limit holds"
+    assert "50.0 million new tokens" in rec.action
+    assert any(a in model.meta.assumptions for a in elasticity.ASSUMPTIONS)
+
+
+def test_report_leaves_the_section_out_under_api_billing(tmp_path):
+    from claude_token_lens.config import Config
+    from claude_token_lens.corpus import load_corpus
+    from claude_token_lens.report import build_report
+
+    project_dir = tmp_path / "proj"
+    project_dir.mkdir()
+    model = build_report(load_corpus([project_dir]), _pricing(), Config(), projects=("proj",), window="w", config_dir=tmp_path)
+    assert "elasticity" not in [s.key for s in model.sections]

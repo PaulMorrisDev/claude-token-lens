@@ -79,7 +79,7 @@ def test_empty_corpus_renders_without_exceptions(tmp_path):
     corpus = load_corpus([project_dir])
     report = build_report(corpus, PRICING, Config(), projects=("proj-empty",), window="last 7 days")
 
-    assert [s.key for s in report.sections] == [k for k in _SECTION_ORDER if k not in ("phases", "config")]
+    assert [s.key for s in report.sections] == [k for k in _SECTION_ORDER if k not in ("phases", "config", "elasticity")]
     overview = next(s for s in report.sections if s.key == "overview")
     totals = {row[0]: row[1] for row in overview.tables[0].rows}
     assert totals["sessions"] == 0
@@ -569,7 +569,7 @@ def test_build_report_against_real_fixture():
     corpus = load_corpus([FIXTURE_DIR])
     report = build_report(corpus, PRICING, Config(), projects=("session-a",), window="real fixture")
 
-    assert [s.key for s in report.sections] == [k for k in _SECTION_ORDER if k not in ("phases", "config")]
+    assert [s.key for s in report.sections] == [k for k in _SECTION_ORDER if k not in ("phases", "config", "elasticity")]
     overview = next(s for s in report.sections if s.key == "overview")
     totals = {row[0]: row[1] for row in overview.tables[0].rows}
     assert totals["sessions"] > 0
@@ -632,3 +632,25 @@ def test_limit_recache_share_counts_only_limit_expiry_rebuilds():
     assert recache_share == 10.0
     assert limit_share == 10.0
     assert _recache_shares([]) == (None, None)
+
+
+def test_session_records_carry_the_profile_active_at_their_start(tmp_path, monkeypatch):
+    # The apply stamp for "lean" predates the session's first turn, so
+    # its SessionRecord is filled in with that profile.
+    from claude_token_lens import report as report_mod
+
+    project_dir = tmp_path / "proj"
+    project_dir.mkdir()
+    write_jsonl(project_dir / "s1.jsonl", [turn_line(timestamp="2026-09-18T12:00:00.000Z")])
+    config_dir = tmp_path / "config"
+    (config_dir / "snapshots").mkdir(parents=True)
+    (config_dir / "snapshots" / "20260918T110000Z.json").write_text(
+        json.dumps({"ts": "20260918T110000Z", "schema_version": 2, "profile_id": "lean"}), encoding="utf-8"
+    )
+    seen: list = []
+    real = report_mod.workstyle.build_section
+    monkeypatch.setattr(report_mod.workstyle, "build_section", lambda records: seen.extend(records) or real(records))
+
+    build_report(load_corpus([project_dir]), PRICING, Config(), projects=("proj",), window="w", config_dir=config_dir)
+
+    assert [r.profile_id for r in seen] == ["lean"]

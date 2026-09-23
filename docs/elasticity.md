@@ -113,7 +113,8 @@ in USD. Under `config.billing == "subscription"`, that number alone
 understates what actually matters to you: your plan's usage limits.
 So `report.build_report` (via `_report_units`) calls
 `compute_elasticity` whenever billing is `subscription` and
-`<config-dir>/usage-log.csv` has rows, and hands the result to
+`<config-dir>/usage-log.csv` has rows, with thresholds from
+`config.toml`'s `[thresholds.elasticity]`, and hands the result to
 `units.Units`. `Units.money` then calls `express_in_window` for every
 amount it phrases:
 
@@ -135,11 +136,9 @@ already-computed recommendation on the report (`report.recommendations`
 at the time this rule runs) looks like the biggest lever — ranked by
 severity (`action` > `advice` > `info`), tie-broken by the largest
 single numeric value in its own evidence — by that recommendation's
-`id` only, deliberately never repeating a number it already owns. This
-means the rule is only as informative as whatever has already been
-folded into `report.recommendations` by the time it runs; a wiring step
-that wants a well-informed "biggest lever" clause should append this
-rule's own output after every other module's rules.
+title only, deliberately never repeating a number it already owns.
+`recommend.recommend()` runs it last, after every other rule's output
+has been finished and ordered, so it sees the final titles.
 
 ## Assumptions
 
@@ -156,12 +155,12 @@ rule's own output after every other module's rules.
   seen in this machine's own logged history, not a controlled
   experiment or a guaranteed future rate.
 
-## Downstream attribution
+## Where it appears
 
-Only `compute_elasticity` and `express_in_window` are wired in today,
-through `units.Units` (see above). `report.build_report` does not add
-the `elasticity` section, `recommend.recommend()` does not run
-`elasticity.RULES`, and no CLI subcommand prints the section — call
-`elasticity.build_section` directly to see the tables. The
-`_report_units` call also uses default thresholds, so an
-`[thresholds.elasticity]` table in `config.toml` does not reach it.
+Under subscription billing with usage-log rows, `report.build_report`
+adds the `elasticity` section right after `usage`, from the same fit
+`units.Units` uses, and adds `elasticity.ASSUMPTIONS` to the report's
+assumptions. `recommend.recommend()` runs `elasticity.RULES` last. The
+dashboard shows the section on the Usage tab. Under API billing, or with
+no usage-log rows, none of this appears. No separate CLI subcommand
+prints the section; `claude-token-lens report` includes it.

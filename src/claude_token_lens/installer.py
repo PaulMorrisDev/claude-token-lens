@@ -201,6 +201,11 @@ class InstallPlan:
     commands: list[list[str]] = field(default_factory=list)
     #: Commands run, in order, by ``uninstall()``.
     uninstall_commands: list[list[str]] = field(default_factory=list)
+    #: One plain sentence per ``uninstall_commands`` entry, same order,
+    #: printed by ``uninstall()`` once that command has succeeded, so the
+    #: output says what actually happened (stopped, removed) rather than
+    #: only what was about to be run.
+    uninstall_done: list[str] = field(default_factory=list)
     #: Files removed by ``uninstall()`` (the same paths as
     #: ``files_to_write``'s keys, for the platforms that wrote any).
     uninstall_files: list[Path] = field(default_factory=list)
@@ -242,6 +247,19 @@ def _plan_windows(python_exe: str, serve_args: list[str], pyz_path: Path | None)
         "-Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null"
     )
     install_command = ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps_script]
+    # Stop first: Unregister-ScheduledTask removes the definition but
+    # leaves a copy the task already started running, so the dashboard
+    # would keep serving (and holding service.db open) until the next
+    # reboot. Stop-ScheduledTask ends the task's own process, the same
+    # thing Unregister-TokenLensTask.ps1 does by hand.
+    stop_command = [
+        "powershell.exe",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        f"Stop-ScheduledTask -TaskName {_ps_quote(TASK_NAME)}",
+    ]
     uninstall_command = [
         "powershell.exe",
         "-NoProfile",
@@ -258,7 +276,11 @@ def _plan_windows(python_exe: str, serve_args: list[str], pyz_path: Path | None)
             f"no admin rights) running: {action_exe} {argument_list}"
         ),
         commands=[install_command],
-        uninstall_commands=[uninstall_command],
+        uninstall_commands=[stop_command, uninstall_command],
+        uninstall_done=[
+            f"Stopped Scheduled Task {TASK_NAME!r} (a running dashboard is shut down).",
+            f"Removed Scheduled Task {TASK_NAME!r}.",
+        ],
         probe_command=["schtasks", "/Query", "/TN", TASK_NAME],
     )
 
@@ -308,7 +330,9 @@ def _plan_linux(python_exe: str, serve_args: list[str], pyz_path: Path | None, c
             ["systemctl", "--user", "daemon-reload"],
             ["systemctl", "--user", "enable", "--now", SYSTEMD_UNIT_NAME],
         ],
+        # --now stops the running service as well as disabling it.
         uninstall_commands=[["systemctl", "--user", "disable", "--now", SYSTEMD_UNIT_NAME]],
+        uninstall_done=[f"Stopped and disabled {SYSTEMD_UNIT_NAME} (a running dashboard is shut down)."],
         uninstall_files=[unit_path],
         probe_command=["systemctl", "--user", "is-enabled", "claude-token-lens"],
         notes=[
@@ -351,7 +375,9 @@ def _plan_macos(python_exe: str, serve_args: list[str], pyz_path: Path | None) -
         description=f"Write a LaunchAgent at {plist_path} and bootstrap it: {' '.join(argv)}",
         files_to_write={plist_path: plist_content},
         commands=[["launchctl", "bootstrap", f"gui/{uid}", str(plist_path)]],
+        # bootout stops the running agent as well as unloading it.
         uninstall_commands=[["launchctl", "bootout", target]],
+        uninstall_done=[f"Stopped and unloaded {LAUNCHD_LABEL} (a running dashboard is shut down)."],
         uninstall_files=[plist_path],
         probe_command=["launchctl", "print", target],
     )
@@ -500,7 +526,9 @@ def uninstall(
     dry_run: bool = False,
 ) -> int:
     """The inverse of :func:`install`: run ``plan.uninstall_commands``
-    then remove ``plan.uninstall_files``. Best-effort past the printed
+    (each platform's first one also stops a running ``serve``) then
+    remove ``plan.uninstall_files``, printing ``plan.uninstall_done``'s
+    sentence for each command that succeeded. Best-effort past the printed
     plan -- a command or file removal that fails is reported and
     skipped rather than aborting the rest, the same "always tell you
     exactly what happened" posture as
@@ -513,7 +541,7 @@ def uninstall(
         return 0
 
     failures: list[str] = []
-    for command in plan.uninstall_commands:
+    for index, command in enumerate(plan.uninstall_commands):
         try:
             result = runner(command, capture_output=True, text=True)
         except OSError as exc:
@@ -523,6 +551,8 @@ def uninstall(
         if returncode != 0:
             stderr = getattr(result, "stderr", "") or ""
             failures.append(f"{' '.join(command)}: exit {returncode}: {stderr}".rstrip())
+        elif index < len(plan.uninstall_done):
+            print(plan.uninstall_done[index])
 
     for path in plan.uninstall_files:
         try:

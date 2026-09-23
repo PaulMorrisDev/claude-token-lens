@@ -76,7 +76,9 @@ claude-token-lens init [--answers FILE] [--non-interactive] [--no-install]
    when asked interactively or with `--connect`, and not with
    `--no-install`. It copies the hook script to
    `<config_dir>/hooks/snapshot-config.py`, then shows the exact change
-   to `settings.json` in the folder above `<config_dir>`
+   to Claude Code's `settings.json` (`--claude-root`, else
+   `$CLAUDE_CONFIG_DIR`, else `~/.claude` -- never the folder above
+   `<config_dir>`)
    (`hook_health.plan_connect`) as a diff:
    - a SessionStart hook (`"async": true`) running that script, added
      only when no SessionStart hook runs `snapshot-config.py` yet (a
@@ -88,6 +90,9 @@ claude-token-lens init [--answers FILE] [--non-interactive] [--no-install]
    environment's, since the script is stdlib-only) and the script by
    full path. The statusline command names the running Python with
    `-m claude_token_lens.statusline`, or the `.pyz` by full path.
+   When `<config_dir>` is not the default `<Claude folder>/token-lens`,
+   both commands end with `--config-dir "<config_dir>"`, so the hook
+   and the statusline write where the CLI and dashboard read.
    It writes only after a `y` (default `n`), or at once with
    `--connect`, after copying `settings.json` to
    `settings.json.bak-<UTC timestamp>`. Declining prints how to do it
@@ -127,9 +132,12 @@ claude-token-lens init [--answers FILE] [--non-interactive] [--no-install]
 | `apply_scope` | Default scope for applying a profile (user/project-local/repo) | `config.apply_scope` and this project's `projects/<slug>.toml` |
 | `capture_window` | Onboarding capture window length in days | `config.capture_window` (default 7) |
 
-`config.capture_started` is always set to the current UTC timestamp by
-`init` itself — it isn't a question. So running `init` again (for
-example `init --connect`) restarts the capture window.
+`config.capture_started` is set to the current UTC timestamp by the
+first `init` — it isn't a question. Running `init` again (for example
+`init --connect` or `init --repair-hook`) keeps it, so the capture
+window you are part-way through carries on. To start a new window on
+purpose, delete the `capture_started` line from `config.toml` and run
+`init` again.
 
 **Scope note** (docs vs. code): `docs/config-layers.md`'s "What `init`
 (v0.3) will ask" section previews a richer detection step (per-key

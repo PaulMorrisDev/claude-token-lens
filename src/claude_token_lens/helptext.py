@@ -41,6 +41,11 @@ PLACEMENT: dict[str, str] = {
     "by_project": "keep",
     "by_entrypoint": "advanced",
     "five_hour_blocks": "keep",
+    "pricing_unknown_models": "advanced",
+    # usage limits (subscription with usage-log readings)
+    "elasticity_budget": "keep",
+    "elasticity_recent_burn": "keep",
+    "elasticity_fit": "advanced",
     # sessions
     "sessions_by_mode": "keep",
     "sessions_by_purpose": "keep",
@@ -147,19 +152,15 @@ PLACEMENT: dict[str, str] = {
     "baseline_comparison_overview": "keep",
     "baseline_comparison_by_mode": "advanced",
     "data_quality": "keep",
-    # Tables of other CLI commands (compare, elasticity, finance, pricing,
-    # reconcile, savers, usage-windows, monthly). They never reach the
-    # dashboard; "report" records that.
+    # Tables of other CLI commands (compare, finance, pricing, reconcile,
+    # usage-windows, monthly), and of savers.py, which nothing builds into
+    # a report yet. They never reach the dashboard; "report" records that.
     "compare_overview": "report",
     "compare_by_stratum": "report",
     "compare_co_changed": "report",
     "cost_by_model": "report",
-    "elasticity_budget": "report",
-    "elasticity_fit": "report",
-    "elasticity_recent_burn": "report",
     "finance_summary": "report",
     "pricing_rates": "report",
-    "pricing_unknown_models": "report",
     "reconcile_by_period": "report",
     "savers_detected": "report",
     "savers_effect_by_stratum": "report",
@@ -232,6 +233,8 @@ _SETTINGS_FILES = {
     "project_shared": "Project, shared file (.claude/settings.json)",
     "user": "Your user settings (~/.claude/settings.json)",
 }
+
+_WINDOW_LABELS = {"five_hour": "5-hour limit", "seven_day": "Weekly limit", "spend_limit": "Spend limit"}
 
 SECTION_COPY: dict[str, SectionCopy] = {
     "agent_startup": SectionCopy(
@@ -315,6 +318,17 @@ SECTION_COPY: dict[str, SectionCopy] = {
             read="Token counts here include cache reads, so they run far higher than cost suggests. "
             "Compare cost across periods, not tokens.",
             act="Look for days or projects that stand out, then check what ran there.",
+        ),
+    ),
+    "elasticity": SectionCopy(
+        title="What your usage limits hold",
+        intro="How many tokens a full usage limit is worth for you, measured from your own usage-limit readings.",
+        help=Help(
+            shows="Each time the status line logs how full a usage limit is, the rise since the last reading is "
+            "matched against the tokens your sessions used in between.",
+            read="With enough readings that agree, this gives the tokens one full limit holds. With too few, or "
+            "readings that disagree, no figure is shown and the reason says why.",
+            act="Use it to judge how far a saving elsewhere in the report stretches your limits.",
         ),
     ),
     "sessions": SectionCopy(
@@ -1211,6 +1225,87 @@ TABLE_COPY: dict[str, TableCopy] = {
             "turns": ("Replies", "Model replies in this block, main session and subagents together."),
             "tokens": ("", "All tokens in this block, including cache reads."),
             "cost": ("", "Cost at list prices for this block."),
+        },
+    ),
+    "pricing_unknown_models": TableCopy(
+        title="Models with no price",
+        help=Help(
+            shows="One row per model your replies came from that the price list does not include. Shown only "
+            "when there is at least one.",
+            read="These replies count as costing nothing, so every cost in the report is too low by their share. "
+            "Compare the tokens here with your total tokens to see how much is missing.",
+            act="Add each model to pricing.toml, with its prices per million tokens, then run the report again.",
+        ),
+        columns={
+            "model_id": ("Model", "The model name exactly as Claude Code recorded it."),
+            "turns": ("Replies", "Model replies from this model."),
+            "tokens": ("", "All tokens in those replies, including cache reads."),
+        },
+    ),
+    # -- usage limits -------------------------------------------------------------
+    "elasticity_budget": TableCopy(
+        title="Tokens one full usage limit holds",
+        help=Help(
+            shows="One row per usage limit: how many million new tokens use up all of it, going by your own "
+            "readings.",
+            read="New tokens are input, cache writes and output. Cache reads are left out. A blank figure means "
+            "there are not yet enough readings that agree; the note says why.",
+            act="",
+        ),
+        columns={
+            "window": ("Usage limit", "Which usage limit this row is about."),
+            "million_new_tokens_per_window": (
+                "Million new tokens per full limit",
+                "How many million new tokens take this limit from empty to full.",
+            ),
+            "note": ("Note", "How many readings the figure rests on and how well they agree, or why it is blank."),
+        },
+        value_labels=_WINDOW_LABELS,
+    ),
+    "elasticity_recent_burn": TableCopy(
+        title="How much of your weekly limit you used recently",
+        help=Help(
+            shows="The new tokens your sessions used in the last day, as a share of one full weekly limit.",
+            read="Over 14% in a day means you would run out before the week resets if every day were like it.",
+            act="If it is high, start with the recommendations that save the most.",
+        ),
+        columns={
+            "window": ("Usage limit", "Which usage limit the share is of."),
+            "hours": ("Hours", "How far back this looks, in hours."),
+            "new_tokens": ("New tokens", "Input, cache writes and output in that time. Cache reads are left out."),
+            "pct_of_window": ("Share of the limit", "Those tokens as a percentage of one full limit."),
+            "note": ("Note", "Why the share is blank, when it is."),
+        },
+        value_labels=_WINDOW_LABELS,
+    ),
+    "elasticity_fit": TableCopy(
+        title="How well your readings line up",
+        help=Help(
+            shows="One row per usage limit and measure: how much of the limit, in percent, each unit used, and "
+            "how well the readings agree.",
+            read="A figure is shown only with enough readings that agree closely. The fit score runs from 0 "
+            "to 1; higher means the readings agree more.",
+            act="",
+        ),
+        columns={
+            "window": ("Usage limit", "Which usage limit this row is about."),
+            "metric": ("Measured by", "What the limit use is compared with."),
+            "unit": ("Per", "The unit the percentage is per."),
+            "slope": ("Percent of the limit per unit", "How much of the limit one unit used, in percent."),
+            "r2": ("Fit score", "How well the readings agree, from 0 to 1."),
+            "n_pairs": ("Readings used", "Pairs of back-to-back readings the figure rests on."),
+            "residual_std": ("Typical miss", "How far a typical reading sits from the figure, in percentage points."),
+            "accepted": ("Shown", "Whether the figure passed the checks and is used."),
+            "reason": ("Why not", "Why the figure was held back, when it was."),
+        },
+        value_labels={
+            **_WINDOW_LABELS,
+            "new_tokens": "New tokens",
+            "cache_read": "Cache reads",
+            "usd": "List-price dollars",
+            "million new tokens": "Million new tokens",
+            "million cache-read tokens": "Million cache-read tokens",
+            "USD (list price)": "Dollar at list price",
         },
     ),
     # -- sessions ---------------------------------------------------------------

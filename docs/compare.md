@@ -29,7 +29,7 @@ claude-token-lens compare \
 |---|---|---|
 | `window:<since>..<until>` | `window:2026-08-01..2026-08-31` | Sessions whose first turn timestamp falls in `[since, until]`, read as UTC dates (either date may be omitted, but not both; `until` is inclusive of the whole day). |
 | `key:<key>=<value>` | `key:user_settings.autoCompactWindow=5` | Sessions whose joined config snapshot (`snapshots.snapshot_for`: the latest snapshot at or before the session's first turn) has that flattened key equal to that value. Requires config snapshots to exist (`snapshot-config` hook) — a session with no snapshot never matches. |
-| `profile:<id>` | `profile:default` | Sessions whose `SessionRecord.profile_id` equals `<id>`. **Currently matches zero sessions in any real corpus** — see the caveat below. |
+| `profile:<id>` | `profile:default` | Sessions that started while profile `<id>` was active — see "Which profile a session ran under" below. |
 | `project:<slug>[,<slug>...]` | `project:my-app,my-app-staging` | Sessions under any of the named (redacted) project slugs. |
 
 Dates are `YYYY-MM-DD`. A malformed spec (missing separator, unknown
@@ -41,14 +41,23 @@ A session can match both arms, neither, or exactly one — each spec is
 an independent membership test against the whole corpus, not a
 partition of it.
 
-**Assumption, flagged explicitly:** the `profile:` arm form is fully
-implemented and tested against a hand-set `profile_id`, but nothing in
-the shipped codebase currently populates `SessionRecord.profile_id` —
-`classify.build_session_record`'s own docstring documents this as
-"nothing to populate it with yet". The `profiles/` package now ships
-and the `snapshot-config` hook records the active `profile_id` in each
-snapshot, but nothing copies it onto the session record. Until that
-wiring lands, a `profile:` arm always selects an empty group.
+**Which profile a session ran under.** `SessionRecord.profile_id` is
+the profile active when the session started (`snapshots.profile_for`).
+It comes from, in order of preference:
+
+1. the config hook's own capture for that session, which records the
+   `active-profile` marker at session start;
+2. otherwise the latest record at or before the session's first turn:
+   another hook capture, an `apply` stamp, or an undone apply (from the
+   moment it was undone, the marker it had backed up). A one-off
+   `apply --set` change is not a profile and is ignored.
+
+A session that started with no profile applied, or before anything
+recorded one, matches no `profile:` arm. `compare.compare(...,
+config_dir=...)` reads the whole record from the config directory;
+without `config_dir` only the hook captures in `snapshots` count
+(`apply` stamps are not loaded as snapshots). The report, and the
+service's `/api/sessions` `profile_id` field, use the same rule.
 
 ### Overview metrics: per-session means vs totals (review finding S4)
 
@@ -168,10 +177,12 @@ rather than silently dropping it or failing the whole file.
 | `cost` | `cost`, `cost_usd`, `total_cost` |
 | `cost` (cents — divided by 100) | `cost_cents`, `total_cost_cents` |
 
-The flat, 5-minute-split and 1-hour-split columns (however named) are
-all summed into one `cache_creation_tokens` total, so a file that
-carries both the flat total and the split counts those tokens twice; a `cost_cents` column is
-added to `cost` after dividing by 100. A file with no recognisable
+The flat, 5-minute-split and 1-hour-split columns (however named) all
+feed one `cache_creation_tokens` total. The flat column is taken to be
+the split's own total, so each row counts the larger of the flat figure
+and the 5-minute plus 1-hour sum, never both added together. A file with
+only the flat column, only the split, or both gives the same total. A
+`cost_cents` column is added to `cost` after dividing by 100. A file with no recognisable
 `date` column is refused outright (there's nothing to group by); every
 other field defaults to zero/`None` when absent.
 
@@ -179,7 +190,10 @@ other field defaults to zero/`None` when absent.
 
 This tool's own local turns are bucketed by their timestamp's **UTC
 calendar day**, on the assumption that an Admin export also buckets by
-UTC day. This is itself an unconfirmed assumption — if the real export
+UTC day. An Admin date cell that holds a full timestamp (for example a
+`bucket_start` of `2026-08-05T00:00:00Z`) is reduced to its UTC day the
+same way, and the `--days`/`--since`/`--until` window is converted to
+UTC days before either side is filtered. This is itself an unconfirmed assumption — if the real export
 actually buckets by, say, workspace-local time, a session whose turns
 straddle midnight will land in a different day on each side even though
 every token was accounted for correctly on both. This is exactly why

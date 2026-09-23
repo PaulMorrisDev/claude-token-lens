@@ -1,7 +1,8 @@
 """Is the SessionStart snapshot hook actually running?
 
 ``hooks/snapshot-config.py`` writes a config snapshot at the start of
-every Claude Code session, but only if ``~/.claude/settings.json`` has a
+every Claude Code session, but only if Claude Code's ``settings.json``
+(``~/.claude``, or ``$CLAUDE_CONFIG_DIR`` -- see :func:`settings_path`) has a
 SessionStart hook whose command points at it. A hand-edited command can
 be quietly wrong: in a Windows path written into JSON with single
 backslashes, ``.claude`` + backslash + ``token-lens`` decodes the
@@ -28,7 +29,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import snapshots
+from . import discovery, snapshots
 
 HOOK_SCRIPT_NAME = "snapshot-config.py"
 
@@ -107,9 +108,12 @@ class HookHealth:
         return f"{age}. The SessionStart hook is set up."
 
 
-def _settings_path(config_dir: Path) -> Path:
-    # config_dir is <claude dir>/token-lens (pricing.TOKEN_LENS_DIRNAME).
-    return Path(config_dir).parent / "settings.json"
+def settings_path(claude_root: str | Path | None = None) -> Path:
+    """Claude Code's user ``settings.json``: in ``claude_root`` when
+    given (``--claude-root``), else where :func:`discovery.claude_root`
+    finds it (``$CLAUDE_CONFIG_DIR``, else ``~/.claude``). Never next to
+    ``--config-dir``, which can point this tool's folder anywhere."""
+    return discovery.claude_root(claude_root) / "settings.json"
 
 
 def _session_start_commands(settings: dict) -> list[str]:
@@ -129,6 +133,13 @@ def _script_path(command: str) -> Path | None:
     if match is None:
         return None
     return Path(os.path.expanduser(os.path.expandvars(match.group(1))))
+
+
+def _args_after_script(command: str) -> str:
+    """Whatever follows the script path in ``command`` (leading space
+    kept), or an empty string."""
+    match = _QUOTED_SCRIPT_RE.search(command) or _BARE_SCRIPT_RE.search(command)
+    return command[match.end():].rstrip() if match else ""
 
 
 def _interpreter(command: str) -> str | None:
@@ -191,14 +202,21 @@ def _newest_snapshot_days(config_dir: Path, now: datetime) -> float | None:
     return max(0.0, (now - newest).total_seconds() / 86400)
 
 
-def check(config_dir: str | Path, *, now: datetime | None = None, python: str | None = None) -> HookHealth:
-    """Inspect ``settings.json`` next to ``config_dir`` and the snapshot
-    history in ``config_dir``. Never raises: an unreadable settings file
-    reads as "no hook". ``python`` is the interpreter a fixed command
-    names (default: the one running this code)."""
+def check(
+    config_dir: str | Path,
+    *,
+    now: datetime | None = None,
+    python: str | None = None,
+    claude_root: str | Path | None = None,
+) -> HookHealth:
+    """Inspect Claude Code's ``settings.json`` (see :func:`settings_path`)
+    and the snapshot history in ``config_dir``. Never raises: an
+    unreadable settings file reads as "no hook". ``python`` is the
+    interpreter a fixed command names (default: the one running this
+    code)."""
     config_dir = Path(config_dir)
     now = now or datetime.now(timezone.utc)
-    health = HookHealth(settings_path=_settings_path(config_dir))
+    health = HookHealth(settings_path=settings_path(claude_root))
     health.last_snapshot_days = _newest_snapshot_days(config_dir, now)
     try:
         settings = json.loads(health.settings_path.read_text(encoding="utf-8"))
@@ -237,7 +255,9 @@ def check(config_dir: str | Path, *, now: datetime | None = None, python: str | 
             if expanded != command:
                 health.fixed_command = expanded
         else:
-            health.fixed_command = _python_command(candidate_path.resolve(), python)
+            # Keep any arguments after the script (such as the
+            # --config-dir init adds for a non-default data folder).
+            health.fixed_command = _python_command(candidate_path.resolve(), python) + _args_after_script(candidate)
     return health
 
 
@@ -269,7 +289,9 @@ def repair(health: HookHealth, *, now: datetime | None = None) -> Path:
 TERMINAL_ENTRYPOINTS = frozenset({"cli"})
 
 
-def statusline_check(config_dir: str | Path, entrypoints: dict[str, dict]) -> tuple[bool, str]:
+def statusline_check(
+    config_dir: str | Path, entrypoints: dict[str, dict], *, claude_root: str | Path | None = None
+) -> tuple[bool, str]:
     """Is the statusline feeding the usage log? ``entrypoints`` is
     ``Store.entrypoint_counts()``. Returns (working, one plain sentence).
     Usage-limit amounts for Pro and Max plans come only from here."""
@@ -277,7 +299,7 @@ def statusline_check(config_dir: str | Path, entrypoints: dict[str, dict]) -> tu
 
     config_dir = Path(config_dir)
     try:
-        settings = json.loads(_settings_path(config_dir).read_text(encoding="utf-8"))
+        settings = json.loads(settings_path(claude_root).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         settings = None
     last_logged = None
@@ -335,7 +357,13 @@ class ConnectPlan:
     new_text: str | None
 
 
-def plan_connect(config_dir: str | Path, *, hook_command: str, statusline_command: str | None) -> ConnectPlan:
+def plan_connect(
+    config_dir: str | Path,
+    *,
+    hook_command: str,
+    statusline_command: str | None,
+    claude_root: str | Path | None = None,
+) -> ConnectPlan:
     """Work out the ``settings.json`` change that connects this tool,
     without writing anything. The snapshot hook is added only when no
     SessionStart hook runs it yet (a broken one is :func:`repair`'s job);
@@ -343,16 +371,16 @@ def plan_connect(config_dir: str | Path, *, hook_command: str, statusline_comman
     your own is never replaced."""
     import difflib
 
-    settings_path = _settings_path(Path(config_dir))
+    path = settings_path(claude_root)
     try:
-        before = settings_path.read_text(encoding="utf-8")
+        before = path.read_text(encoding="utf-8")
         settings = json.loads(before)
     except FileNotFoundError:
         before, settings = "", {}
     except (OSError, ValueError):
-        return ConnectPlan(settings_path, ["settings.json could not be read, so nothing will be changed."], "", None)
+        return ConnectPlan(path, ["settings.json could not be read, so nothing will be changed."], "", None)
     if not isinstance(settings, dict):
-        return ConnectPlan(settings_path, ["settings.json is not a JSON object, so nothing will be changed."], "", None)
+        return ConnectPlan(path, ["settings.json is not a JSON object, so nothing will be changed."], "", None)
 
     changes = []
     if not any(HOOK_SCRIPT_NAME in c for c in _session_start_commands(settings)):
@@ -373,7 +401,7 @@ def plan_connect(config_dir: str | Path, *, hook_command: str, statusline_comman
             "not in the desktop app."
         )
     if not changes:
-        return ConnectPlan(settings_path, [], "", None)
+        return ConnectPlan(path, [], "", None)
     after = json.dumps(settings, indent=2, ensure_ascii=False) + "\n"
     diff = "".join(
         difflib.unified_diff(
@@ -383,7 +411,7 @@ def plan_connect(config_dir: str | Path, *, hook_command: str, statusline_comman
             tofile="settings.json (after)",
         )
     )
-    return ConnectPlan(settings_path, changes, diff, after)
+    return ConnectPlan(path, changes, diff, after)
 
 
 def connect(plan: ConnectPlan, *, now: datetime | None = None) -> Path | None:
@@ -402,4 +430,4 @@ def connect(plan: ConnectPlan, *, now: datetime | None = None) -> Path | None:
     return backup
 
 
-__all__ = ["HOOK_SCRIPT_NAME", "HookHealth", "check", "repair", "ConnectPlan", "plan_connect", "connect"]
+__all__ = ["HOOK_SCRIPT_NAME", "HookHealth", "settings_path", "check", "repair", "ConnectPlan", "plan_connect", "connect"]

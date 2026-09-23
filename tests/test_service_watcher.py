@@ -912,3 +912,19 @@ def test_start_twice_starts_only_one_thread(tmp_path: Path):
 
 
 __all__: list[str] = []
+
+
+def test_sessions_carry_the_profile_active_at_their_start(tmp_path: Path, store: Store):
+    root = tmp_path / "projects"
+    _write_session(root, "proj-a", "sess-a1", _two_turns())
+    options = _options(tmp_path)
+    snapshots_dir = options.config_dir / "snapshots"
+    snapshots_dir.mkdir(parents=True)
+    (snapshots_dir / "20260918T110000Z.json").write_text(
+        json.dumps({"ts": "20260918T110000Z", "schema_version": 2, "profile_id": "lean"}), encoding="utf-8"
+    )
+
+    FileWatcher(store, options).run_once()
+
+    assert store.session("sess-a1")["profile_id"] == "lean"
+    assert [s["profile_id"] for s in store.sessions()] == ["lean"]

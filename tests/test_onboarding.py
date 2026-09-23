@@ -541,6 +541,52 @@ def test_run_init_prints_capture_window_status(tmp_path, monkeypatch):
     assert "Capture window:" in stdout.getvalue()
 
 
+def _init_at(config_dir, projects_root, now, *, repair_hook=False):
+    rc = onboarding.run_init(
+        config_dir=config_dir,
+        projects_root_path=projects_root,
+        non_interactive=True,
+        no_install=True,
+        hook_fragment="HOOK",
+        statusline_fragment="STATUSLINE",
+        stdin=io.StringIO(""),
+        stdout=io.StringIO(),
+        now=now,
+        repair_hook=repair_hook,
+    )
+    assert rc == 0
+    return load_config(config_dir)
+
+
+@pytest.mark.parametrize("repair_hook", [False, True])
+def test_run_init_again_keeps_the_original_capture_start(tmp_path, monkeypatch, repair_hook):
+    from datetime import datetime, timezone
+
+    real_project_path, projects_root, _slug = _make_project(tmp_path)
+    monkeypatch.chdir(real_project_path)
+    config_dir = tmp_path / "config"
+    first = datetime(2026, 9, 1, 9, 0, tzinfo=timezone.utc)
+    later = datetime(2026, 9, 20, 9, 0, tzinfo=timezone.utc)
+
+    assert _init_at(config_dir, projects_root, first).capture_started == first.isoformat()
+    # A second init (or init --repair-hook) weeks later must not restart
+    # the window the user is part-way through.
+    assert _init_at(config_dir, projects_root, later, repair_hook=repair_hook).capture_started == first.isoformat()
+
+
+def test_run_init_sets_capture_start_when_config_has_none(tmp_path, monkeypatch):
+    from datetime import datetime, timezone
+
+    real_project_path, projects_root, _slug = _make_project(tmp_path)
+    monkeypatch.chdir(real_project_path)
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    # A config.toml written by hand (or before capture windows existed).
+    (config_dir / "config.toml").write_text('billing = "api"\n', encoding="utf-8")
+    now = datetime(2026, 9, 20, 9, 0, tzinfo=timezone.utc)
+    assert _init_at(config_dir, projects_root, now).capture_started == now.isoformat()
+
+
 def test_run_init_bad_answers_file_exits_2(tmp_path, monkeypatch):
     real_project_path, projects_root, _slug = _make_project(tmp_path)
     monkeypatch.chdir(real_project_path)

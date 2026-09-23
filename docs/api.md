@@ -113,9 +113,12 @@ below):
   so a subscription user only has to say so once, in one place, rather
   than on every `serve` invocation.
 - **`--monthly-report DIR`** sets `ServeOptions.monthly_report_dir`.
-  Nothing in the service reads that field yet, so `serve` writes no
-  monthly report today. Run `claude-token-lens monthly-report --out DIR`
-  instead ([docs/exports.md](exports.md#claude-token-lens-monthly-report)).
+  While `serve` runs, it writes the previous calendar month's report
+  into `DIR` when either of its two files is missing — the same report
+  `claude-token-lens monthly-report --out DIR` writes
+  ([docs/exports.md](exports.md#serve---monthly-report-dir)). It checks
+  at startup and hourly, on its own thread, so requests are never held
+  up; `--once` checks once after its watcher tick.
 - **`--purge`** deletes `<config-dir>/service.db` and its `-wal`/`-shm`
   sidecars and exits (S1-integration fix 2.e) — never starts the watcher
   or the API. Always prints exactly which files it would delete first;

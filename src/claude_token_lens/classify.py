@@ -853,9 +853,10 @@ def build_session_record(
     unset even after a report renders — the session-to-config join is
     resolved on demand at render time instead, via
     ``snapshots.snapshot_for(record.first_ts, snapshots)``, rather than
-    stored back onto the record; ``profile_id`` has nothing to populate
-    it with yet — the profile schema/catalogue it would reference is a
-    v0.3 milestone item (see ``CHANGELOG.md``).
+    stored back onto the record; ``profile_id`` needs the config
+    directory's snapshots and apply history, so each caller that has
+    them fills it in with ``snapshots.profile_for`` (``report.py``,
+    ``compare.py`` and the service's watcher).
     ``entrypoint`` (batch C addition) is carried straight through from
     ``top.meta.entrypoint`` — ``parse_transcript`` already derived it as
     the first non-empty ``entrypoint`` field seen anywhere in the top

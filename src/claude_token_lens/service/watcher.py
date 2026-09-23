@@ -313,6 +313,9 @@ class FileWatcher:
 
         self._loaded_snapshots: list[snapshots_mod.Snapshot] = []
         self._snapshot_ids_by_ts: dict[str, int] = {}
+        #: Which profile was active when, re-read each tick by
+        #: :meth:`_scan_snapshots` for :meth:`_fold_session`'s ``profile_id``.
+        self._profile_marks: list[snapshots_mod.ProfileMark] = []
         #: ``{str(path): mtime_ns}`` as of the last tick that actually
         #: upserted that snapshot file (nit 29) -- lets _scan_snapshots
         #: skip re-flattening/re-upserting a snapshot file that hasn't
@@ -912,6 +915,7 @@ class FileWatcher:
             snap = snapshots_mod.snapshot_for(record.first_ts, self._loaded_snapshots)
             if snap is not None:
                 snapshot_id = self._snapshot_ids_by_ts.get(snap.ts)
+        profile_id = snapshots_mod.profile_for(record.first_ts, self._profile_marks, session_id)
 
         self._time_store(
             stats,
@@ -931,7 +935,7 @@ class FileWatcher:
             entrypoint=record.entrypoint,
             billing_mode=self.options.billing_mode,
             snapshot_id=snapshot_id,
-            profile_id=None,
+            profile_id=profile_id,
             total_cost=total_cost,
             total_tokens=total_tokens,
         )
@@ -947,7 +951,8 @@ class FileWatcher:
         previous pre-check-and-skip workaround against
         ``Store.snapshots()``). Populates
         :attr:`_loaded_snapshots`/:attr:`_snapshot_ids_by_ts` for
-        :meth:`_fold_session`'s ``snapshot_id`` lookup.
+        :meth:`_fold_session`'s ``snapshot_id`` lookup, and
+        :attr:`_profile_marks` for its ``profile_id``.
         """
         loaded = snapshots_mod.load_snapshots(self.options.config_dir)
         self._loaded_snapshots = loaded
@@ -1000,6 +1005,7 @@ class FileWatcher:
                 stats.error_messages = stats.error_messages + (f"snapshot ingest error: {type(exc).__name__}",)
         self._snapshot_ids_by_ts = ids_by_ts
         self._snapshot_file_mtimes = fresh_mtimes
+        self._profile_marks = snapshots_mod.load_profile_marks(self.options.config_dir)
 
     # -- v0.3 baseline / profile ingestion -----------------------------------
 

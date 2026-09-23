@@ -631,6 +631,8 @@
     // The scorecard is the Overview tab's tiles, never a generic table.
     scorecard: "overview",
     usage: "usage",
+    // Subscription only: how many tokens a usage limit holds.
+    elasticity: "usage",
     compactions: "usage",
     phases: "usage",
     // v4 wiring round: carry/compaction_sim/model_swap/waste each have

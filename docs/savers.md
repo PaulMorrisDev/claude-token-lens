@@ -131,7 +131,21 @@ already has on file before typing one in.
 
 Nothing calls this module yet: `report.build_report` does not add the
 `savers` section, `recommend.recommend()` does not run its rule, and no
-CLI subcommand or dashboard tab prints it. Call it directly:
+CLI subcommand or dashboard tab prints it. That is deliberate until
+these are fixed:
+
+- Detection is a name match, so ordinary tools whose names contain
+  "context", "memory" or "cache" (a documentation server, a notes
+  server) become candidates.
+- A saver configured for every session leaves no "absent" sessions, and
+  when both groups exist they differ in workload, so the verdict cannot
+  separate the tool from the work.
+- The rule's lever, `mcpServers.<name>`, is not a settings key the
+  report's fixes can change (MCP servers live in `.mcp.json` or
+  `~/.claude.json`), and its action text writes dollar amounts directly
+  rather than following the billing mode.
+
+Call it directly:
 
 ```python
 from claude_token_lens import savers

@@ -116,10 +116,11 @@ it either.
 
 from __future__ import annotations
 
+import dataclasses
 import re
 from dataclasses import dataclass
 
-from . import carry, compaction_sim, model_swap, waste
+from . import carry, compaction_sim, elasticity, model_swap, waste
 from .config import Config
 from .context_budget import _READ_ONLY_TOOLS
 from .model import Recommendation, ReportModel, Section, SettingChange, Table
@@ -1481,16 +1482,13 @@ def _rule_discovery_share(report: ReportModel, th: RecommendThresholds) -> list[
 
 
 def _rule_pricing_coverage(report: ReportModel) -> list[Recommendation]:
-    """Fix R12: the old check read ``usage.pricing_unknown_models`` --
-    a table ``report.py`` never actually builds into any section (see
-    ``pricing.PricingCoverage.as_table``, which nothing calls), so that
-    lookup was always ``None`` and coverage-below-100% never fired
-    through it. The real, always-present signal is
-    ``report.meta.pricing.coverage_pct`` -- gate on that directly, and
-    cite the ``scorecard.dimensions`` row that mirrors it (a real table
-    cell) as evidence. If a future ``report.py`` change does start
-    attaching ``pricing_unknown_models`` to a section, this still
-    opportunistically names the unpriced model ids in the action text.
+    """Fires when ``report.meta.pricing.coverage_pct`` is below 100%,
+    citing the ``scorecard.dimensions`` row that mirrors it as evidence.
+    ``report.py`` appends ``usage.pricing_unknown_models``
+    (``pricing.PricingCoverage.as_table``) whenever a reply came from a
+    model with no price; the action then names those model ids. Without
+    that table (a report built with ``include`` leaving out ``usage``)
+    the rule still fires, with a generic action.
     """
     coverage_pct = report.meta.pricing.coverage_pct
     if coverage_pct >= 100.0:
@@ -1721,7 +1719,14 @@ def recommend(
 
     from . import advice  # imported here: advice imports this module
 
-    return advice.finish(recs, report, snapshot, units)
+    recs = advice.finish(recs, report, snapshot, units)
+    # Runs last: it points at the most important of the finished
+    # recommendations above, by its final title. Needs the report's
+    # ``elasticity`` section, so it only fires under subscription billing
+    # with enough usage-limit readings.
+    elasticity_th = elasticity.ElasticityThresholds.from_config(config.thresholds)
+    recs.extend(elasticity.RULES[0](dataclasses.replace(report, recommendations=list(recs)), elasticity_th))
+    return recs
 
 
 # -- patch-set rendering --------------------------------------------------

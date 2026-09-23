@@ -1,6 +1,7 @@
 """Tests for V3-compare's ``reconcile.py`` (``claude-token-lens
 reconcile``): the tolerant Admin-CSV header mapper (standard headers,
-alternate spellings, ``_5m``/``_1h`` cache-creation splits, ``cost_cents``,
+alternate spellings, ``_5m``/``_1h`` cache-creation splits (never added on
+top of the flat total), timestamp dates, ``cost_cents``,
 unmapped-column reporting), ``ReconcileError``'s "line number only, never
 row content" contract, the ``reconcile()`` entry point's local-vs-Admin
 delta table (including an exact round-trip where the admin export is
@@ -97,6 +98,43 @@ def test_parse_admin_csv_sums_5m_and_1h_cache_creation_split(tmp_path):
     )
     result = reconcile_mod.parse_admin_csv(csv_path)
     assert result.rows[0]["cache_creation_tokens"] == 150
+
+
+def test_parse_admin_csv_flat_and_split_cache_creation_not_double_counted(tmp_path):
+    # Regression: a row carrying the flat total (150) *and* its own 5m/1h
+    # split (100 + 50) used to sum all three to 300. The flat column is
+    # the split's total, so the row counts 150 cache-creation tokens once.
+    csv_path = tmp_path / "admin.csv"
+    _write_csv(
+        csv_path,
+        [
+            "date,input_tokens,cache_creation_input_tokens,"
+            "cache_creation_ephemeral_5m_input_tokens,cache_creation_ephemeral_1h_input_tokens,output_tokens",
+            "2026-08-07,500,150,100,50,80",
+            "2026-08-07,10,0,30,20,5",
+            "2026-08-07,10,70,,,5",
+        ],
+    )
+    result = reconcile_mod.parse_admin_csv(csv_path)
+    assert [r["cache_creation_tokens"] for r in result.rows] == [150, 50, 70]
+    # Input tokens stay uncached input only -- cache creation is never
+    # folded into them as well.
+    assert [r["input_tokens"] for r in result.rows] == [500, 10, 10]
+
+
+def test_parse_admin_csv_timestamp_date_reduced_to_utc_day(tmp_path):
+    csv_path = tmp_path / "admin.csv"
+    _write_csv(
+        csv_path,
+        [
+            "bucket_start,input_tokens",
+            "2026-08-05T00:00:00Z,1",
+            "2026-08-05T22:00:00-05:00,2",
+            "2026-08-06,3",
+        ],
+    )
+    result = reconcile_mod.parse_admin_csv(csv_path)
+    assert [r["date"] for r in result.rows] == ["2026-08-05", "2026-08-06", "2026-08-06"]
 
 
 def test_parse_admin_csv_cost_cents_divided_by_100(tmp_path):
@@ -214,6 +252,61 @@ def test_reconcile_totals_reconcile_exactly_when_admin_built_from_local(tmp_path
     total_row = table.rows[-1]
     assert total_row[0] == "TOTAL"
     assert total_row[1] == "-"
+
+
+def test_reconcile_split_admin_export_matches_local_cache_creation(tmp_path):
+    # End to end: one local turn wrote 150 cache tokens (100 at 5m, 50 at
+    # 1h); the Admin export for that day carries the flat total and the
+    # split. The cache-creation delta must be zero, not -150.
+    root = tmp_path / "projects"
+    project_dir = root / "proj"
+    project_dir.mkdir(parents=True)
+    _write_session(
+        project_dir,
+        "s1",
+        "2026-08-05T09:00:00.000Z",
+        input_tokens=500,
+        output_tokens=80,
+        cache_creation_input_tokens=150,
+        ephemeral_5m_input_tokens=100,
+        ephemeral_1h_input_tokens=50,
+    )
+    corpus = load_corpus([project_dir])
+    csv_path = tmp_path / "admin.csv"
+    _write_csv(
+        csv_path,
+        [
+            "date,input_tokens,output_tokens,cache_creation_input_tokens,"
+            "cache_creation_input_tokens_5m,cache_creation_input_tokens_1h",
+            "2026-08-05,500,80,150,100,50",
+        ],
+    )
+    admin = reconcile_mod.parse_admin_csv(csv_path)
+    section = reconcile_mod.reconcile(corpus, PRICING, CONFIG, admin_rows=admin.rows, by=("day",))
+    table = _table(section)
+    col_index = {c.key: i for i, c in enumerate(table.columns)}
+    for row in table.rows:
+        assert row[col_index["cache_creation_tokens_local"]] == 150
+        assert row[col_index["cache_creation_tokens_admin"]] == 150
+        assert row[col_index["cache_creation_tokens_delta"]] == 0
+        assert row[col_index["input_tokens_delta"]] == 0
+
+
+def test_reconcile_buckets_local_turns_by_utc_day(tmp_path):
+    # 22:30 at UTC-05:00 is 03:30 UTC the next day; the Admin export
+    # buckets by UTC day, so the turn must land on 2026-08-06.
+    root = tmp_path / "projects"
+    project_dir = root / "proj"
+    project_dir.mkdir(parents=True)
+    _write_session(project_dir, "s1", "2026-08-05T22:30:00.000-05:00")
+    corpus = load_corpus([project_dir])
+
+    section = reconcile_mod.reconcile(corpus, PRICING, CONFIG, admin_rows=[], by=("day",))
+    table = _table(section)
+    assert [row[0] for row in table.rows[:-1]] == ["2026-08-06"]
+    joined_notes = " ".join(section.notes)
+    assert "bucketed by UTC day" in joined_notes
+    assert "local time" not in joined_notes
 
 
 def test_reconcile_reports_nonzero_delta(tmp_path):

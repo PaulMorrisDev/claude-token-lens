@@ -62,16 +62,32 @@ def redact_slug(slug: str) -> str:
     return _HOME_SEGMENT_RE.sub(lambda m: f"{m.group(1)}-<user>", slug)
 
 
+def claude_root(explicit: str | Path | None = None) -> Path:
+    """Claude Code's own folder: the one holding ``settings.json``,
+    ``agents/`` and ``projects/``. ``explicit`` (a ``--claude-root``
+    flag) wins; else ``$CLAUDE_CONFIG_DIR``; else ``~/.claude`` -- the
+    same lookup Claude Code itself makes.
+
+    The one place every command finds ``settings.json``: ``init``'s
+    connect step and ``--repair-hook``, ``apply``, ``uninstall``,
+    ``changes``, the dashboard's hook and statusline checks and the
+    snapshot hook's own copy of this rule. It is never derived from
+    ``--config-dir``: that flag moves this tool's own folder, which can
+    sit anywhere, and its parent is then unrelated to Claude Code.
+    """
+    if explicit:
+        return Path(explicit)
+    base = os.environ.get("CLAUDE_CONFIG_DIR")
+    return Path(base) if base else (Path.home() / ".claude")
+
+
 def projects_root() -> Path:
     """The root directory holding every ``<slug>/`` project directory.
 
     Honours ``CLAUDE_CONFIG_DIR`` (whole-tree override); falls back to
     ``~/.claude/projects``.
     """
-    config_dir = os.environ.get("CLAUDE_CONFIG_DIR")
-    if config_dir:
-        return Path(config_dir) / "projects"
-    return Path.home() / ".claude" / "projects"
+    return claude_root() / "projects"
 
 
 def slug_for(cwd: str | Path) -> str:
@@ -511,6 +527,7 @@ def _workflow_agent_states(run_file: str) -> dict[str, str]:
 
 
 __all__ = [
+    "claude_root",
     "projects_root",
     "slug_for",
     "redact_slug",

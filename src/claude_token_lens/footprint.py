@@ -4,8 +4,9 @@ how to take each part back out.
 One list, used by ``claude-token-lens changes``, ``claude-token-lens
 uninstall`` and the Data quality tab (``GET /api/setup``):
 
-- the SessionStart snapshot hook and the statusline in
-  ``~/.claude/settings.json``;
+- the SessionStart snapshot hook and the statusline in Claude Code's
+  ``settings.json`` (``hook_health.settings_path``: ``--claude-root``,
+  else ``$CLAUDE_CONFIG_DIR``, else ``~/.claude``);
 - the logon service (``install-service`` or ``init``);
 - each change ``apply`` made to your Claude Code settings or agent files
   that has not been reverted;
@@ -70,8 +71,8 @@ def home_label(path: Path | str) -> str:
     return text
 
 
-def _settings(config_dir: Path) -> tuple[Path, dict | None]:
-    path = Path(config_dir).parent / "settings.json"
+def _settings(claude_root: str | Path | None) -> tuple[Path, dict | None]:
+    path = hook_health.settings_path(claude_root)
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -156,15 +157,20 @@ EXPECTATIONS: tuple[tuple[str, str], ...] = (
 UNINSTALL_COMMAND = "claude-token-lens uninstall --revert-changes --delete-data --dry-run"
 
 
-def inventory(config_dir: str | Path, *, service_registered: bool | None = None) -> list[FootprintItem]:
+def inventory(
+    config_dir: str | Path,
+    *,
+    service_registered: bool | None = None,
+    claude_root: str | Path | None = None,
+) -> list[FootprintItem]:
     """Everything this tool has put on the machine, in the order
     ``uninstall`` removes it. ``service_registered`` comes from
     ``installer.is_registered`` (``None`` means it could not be checked)."""
     config_dir = Path(config_dir)
-    settings_path, settings = _settings(config_dir)
+    settings_path, settings = _settings(claude_root)
     items: list[FootprintItem] = []
 
-    health = hook_health.check(config_dir)
+    health = hook_health.check(config_dir, claude_root=claude_root)
     items.append(
         FootprintItem(
             key="snapshot_hook",
@@ -283,11 +289,11 @@ class UninstallPlan:
     data_dir: Path | None = None
 
 
-def plan_uninstall(config_dir: str | Path) -> UninstallPlan:
+def plan_uninstall(config_dir: str | Path, *, claude_root: str | Path | None = None) -> UninstallPlan:
     """What ``uninstall`` would remove from ``settings.json``, and which
     applied changes are still in place. Writes nothing."""
     config_dir = Path(config_dir)
-    settings_path, settings = _settings(config_dir)
+    settings_path, settings = _settings(claude_root)
     plan = UninstallPlan(settings_path=settings_path, data_dir=config_dir if config_dir.is_dir() else None)
     plan.applied = [b for b in reversed(apply_mod.list_backups(config_dir)) if not b.reverted_at]
     if settings is None:

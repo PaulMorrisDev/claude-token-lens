@@ -1302,9 +1302,9 @@ def test_pricing_coverage_does_not_fire_at_full_coverage():
 
 
 def test_pricing_coverage_fires_from_coverage_pct_alone_with_no_unknown_models_table():
-    # R12: report.py never actually attaches a usage.pricing_unknown_models
-    # table to any section -- the rule must fire off
-    # report.meta.pricing.coverage_pct alone, not a dead table lookup.
+    # R12: a report built without the usage section has no
+    # usage.pricing_unknown_models table -- the rule must still fire off
+    # report.meta.pricing.coverage_pct alone.
     r = _base_report()
     r.meta.pricing.coverage_pct = 42.0
     r = _add_section(
@@ -2164,3 +2164,30 @@ def test_render_patch_set_prefers_setting_changes_with_now_and_after():
     assert "+tools: (your choice: only the tools it uses)" in text
     assert "-autoCompactWindow: (unset)" in text
     assert "+autoCompactWindow: 120000" in text
+
+
+def test_pricing_coverage_names_unknown_models_from_a_built_report(tmp_path):
+    # End to end: build_report attaches usage.pricing_unknown_models, and
+    # the recommendation names the unpriced model from it.
+    from claude_token_lens.corpus import load_corpus
+    from claude_token_lens.pricing import load_pricing
+    from claude_token_lens.report import build_report
+
+    from helpers import turn_line, write_jsonl
+
+    project_dir = tmp_path / "proj"
+    project_dir.mkdir()
+    for i in range(6):
+        write_jsonl(
+            project_dir / f"s{i}.jsonl",
+            [turn_line(timestamp=f"2026-09-1{i}T10:00:00.000Z", model="claude-mystery-9")]
+            + [turn_line(timestamp=f"2026-09-1{i}T10:0{j}:00.000Z") for j in range(1, 3)],
+        )
+    model = build_report(load_corpus([project_dir]), load_pricing(), Config(), projects=("proj",), window="w")
+
+    usage = next(s for s in model.sections if s.key == "usage")
+    unknown = next(t for t in usage.tables if t.name == "pricing_unknown_models")
+    assert [row[0] for row in unknown.rows] == ["claude-mystery-9"]
+    assert unknown.dashboard == "advanced" and unknown.help and unknown.help.shows
+    rec = next(r for r in model.recommendations if r.id == "pricing-coverage")
+    assert "claude-mystery-9" in rec.action

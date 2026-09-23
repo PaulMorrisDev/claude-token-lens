@@ -2,7 +2,7 @@
 ``parse_arm_spec``'s four spec forms and their error paths, the
 ``compare()`` entry point's overview/stratum/co-changed tables against
 synthetic corpora built with ``tests/helpers``, the minimum-sample gate
-(``sample_ok``), the ``profile:`` arm's documented current limitation,
+(``sample_ok``), the ``profile:`` arm's join to the profile history,
 and the CLI wiring (``cli.main(["compare", ...])`` exit codes and
 output). Every returned ``Section`` is also run through
 ``tests.helpers.assert_privacy``, matching this codebase's existing
@@ -512,24 +512,75 @@ def test_compare_project_arm_selects_by_slug(tmp_path):
     assert rows_by_metric["Sessions"][2] == "1"
 
 
-def test_compare_profile_arm_currently_selects_nothing(tmp_path):
-    """Documents compare.py's own module-docstring caveat: nothing in the
-    shipped codebase populates SessionRecord.profile_id yet (the sibling
-    profiles/ package, out of scope here, hasn't shipped that wiring), so
-    a profile: arm always matches zero real sessions today."""
+def _write_profile_history(config_dir: Path) -> None:
+    """A hook capture with no profile on 2026-09-01, an ``apply`` stamp
+    for ``lean`` on 2026-09-05, a one-off ``--set`` stamp on 2026-09-06
+    (ignored: it leaves the active profile alone), and that ``lean``
+    apply undone on 2026-09-08 (back to no profile)."""
+    snaps = config_dir / "snapshots"
+    snaps.mkdir(parents=True)
+    (snaps / "20260901T000000Z.json").write_text(
+        json.dumps({"schema": 2, "ts": "20260901T000000Z", "profile_id": None, "user_settings": {}}), encoding="utf-8"
+    )
+    (snaps / "20260905T000000Z.json").write_text(
+        json.dumps({"ts": "20260905T000000Z", "schema_version": 2, "profile_id": "lean"}), encoding="utf-8"
+    )
+    (snaps / "20260906T000000Z.json").write_text(
+        json.dumps({"ts": "20260906T000000Z", "schema_version": 2, "profile_id": "one-off"}), encoding="utf-8"
+    )
+    backup = config_dir / "backups" / "20260905T000000Z"
+    backup.mkdir(parents=True)
+    (backup / "manifest.json").write_text(
+        json.dumps(
+            {
+                "ts": "20260905T000000Z",
+                "profile_id": "lean",
+                "scope": "user",
+                "entries": [{"kind": "active_profile", "path": str(config_dir / "active-profile"), "backup": None}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (backup / "reverted.json").write_text(json.dumps({"reverted_at": "2026-09-08T00:00:00Z"}), encoding="utf-8")
+
+
+def test_compare_profile_arm_selects_sessions_started_under_that_profile(tmp_path):
+    root = tmp_path / "projects"
+    project_dir = root / "proj"
+    project_dir.mkdir(parents=True)
+    _write_session(project_dir, "before", "2026-09-02T10:00:00.000Z")
+    _write_session(project_dir, "during", "2026-09-06T10:00:00.000Z")
+    _write_session(project_dir, "undone", "2026-09-09T10:00:00.000Z")
+    corpus = load_corpus([project_dir])
+    config_dir = tmp_path / "config"
+    _write_profile_history(config_dir)
+
+    arm_a = compare_mod.parse_arm_spec("profile:lean")
+    arm_b = compare_mod.parse_arm_spec("window:2026-09-01..2026-09-30")
+    section = compare_mod.compare(
+        corpus, PRICING, CONFIG, arm_a=arm_a, arm_b=arm_b, min_sessions=1, config_dir=config_dir
+    )
+    rows_by_metric = {row[0]: row for row in _table(section, "compare_overview").rows}
+    assert rows_by_metric["Sessions"][1] == "1"
+    assert rows_by_metric["Sessions"][2] == "3"
+
+
+def test_compare_profile_arm_uses_hook_captures_without_config_dir(tmp_path):
     root = tmp_path / "projects"
     project_dir = root / "proj"
     project_dir.mkdir(parents=True)
     _write_session(project_dir, "s1", "2026-09-01T10:00:00.000Z")
+    _write_session(project_dir, "s2", "2026-09-03T10:00:00.000Z")
     corpus = load_corpus([project_dir])
+    snaps = [
+        snapshots_mod.Snapshot(path=Path("a.json"), ts="20260902T000000Z", data={"profile_id": "lean", "user_settings": {}}),
+    ]
 
-    arm_a = compare_mod.parse_arm_spec("profile:default")
+    arm_a = compare_mod.parse_arm_spec("profile:lean")
     arm_b = compare_mod.parse_arm_spec("window:2026-09-01..2026-09-30")
-    section = compare_mod.compare(corpus, PRICING, CONFIG, arm_a=arm_a, arm_b=arm_b, min_sessions=1)
-    overview = _table(section, "compare_overview")
-    rows_by_metric = {row[0]: row for row in overview.rows}
-    assert rows_by_metric["Sessions"][1] == "0"
-    assert rows_by_metric["Sessions"][2] == "1"
+    section = compare_mod.compare(corpus, PRICING, CONFIG, arm_a=arm_a, arm_b=arm_b, min_sessions=1, snapshots=snaps)
+    rows_by_metric = {row[0]: row for row in _table(section, "compare_overview").rows}
+    assert rows_by_metric["Sessions"][1] == "1"
 
 
 # -- privacy ---------------------------------------------------------------

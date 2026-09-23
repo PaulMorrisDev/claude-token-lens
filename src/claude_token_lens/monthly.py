@@ -43,12 +43,13 @@ asserting the "apart from one line" idempotency still strips that one
 line/comment before comparing, since a caller that doesn't pin
 ``generated_at`` gets the previous behaviour.
 
-Entry point for the service (S1-integration): ``write_monthly_report``
-is the function the sibling package's ``service.serve`` wires up to
-``serve --monthly-report DIR`` (documented in ``docs/exports.md``), so
-it takes an already-loaded ``corpus``/``pricing``/``config`` rather than
-loading them itself, matching ``report.build_report``'s own "caller
-loads, this function only assembles" contract.
+Entry points: ``write_monthly_report`` takes an already-loaded
+``corpus``/``pricing``/``config`` rather than loading them itself,
+matching ``report.build_report``'s own "caller loads, this function only
+assembles" contract. ``run_monthly_report`` wraps it with the steps the
+``monthly-report`` command and ``serve --monthly-report DIR``
+(``service/monthly_job.py``) share: the no-projects/no-sessions checks,
+the usage log and the empty-month note.
 """
 
 from __future__ import annotations
@@ -59,6 +60,7 @@ import re
 from calendar import monthrange
 from datetime import date, datetime, timezone
 from pathlib import Path
+from typing import Callable
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .config import Config
@@ -393,15 +395,91 @@ def write_monthly_report(
     if generated_at is None:
         generated_at = datetime.now().astimezone().isoformat()
 
-    md_path = out_path / f"claude-token-lens-{month}.md"
-    html_path = out_path / f"claude-token-lens-{month}.html"
+    md_path, html_path = report_paths(out_path, month)
     md_path.write_text(_render_month_markdown(month, all_tables, currency, generated_at), encoding="utf-8")
     html_path.write_text(_render_month_html(month, all_tables, currency, generated_at), encoding="utf-8")
     return [md_path, html_path]
+
+
+def report_paths(out_dir: str | Path, month: str) -> list[Path]:
+    """The two files :func:`write_monthly_report` writes for ``month``
+    into ``out_dir`` (Markdown first, then HTML), without writing them --
+    so ``serve --monthly-report`` can tell whether a month is done."""
+    out_path = Path(out_dir)
+    return [out_path / f"claude-token-lens-{month}.md", out_path / f"claude-token-lens-{month}.html"]
+
+
+class MonthlyReportError(Exception):
+    """A monthly report could not be written for a reason worth one line
+    (no project folders, no sessions at all). ``exit_code`` is what the
+    ``monthly-report`` command exits with."""
+
+    def __init__(self, message: str, exit_code: int = 1) -> None:
+        super().__init__(message)
+        self.exit_code = exit_code
+
+
+def run_monthly_report(
+    *,
+    config: Config,
+    pricing: Pricing,
+    config_dir: str | Path,
+    root: str | Path,
+    project_dirs: list[Path],
+    month: str,
+    out_dir: str | Path,
+    load_corpus: Callable[[list[Path]], Corpus],
+    generated_at: str | None = None,
+    note: Callable[[str], None] | None = None,
+) -> list[Path]:
+    """Everything the ``monthly-report`` command does once its config,
+    pricing, project folders and month are resolved, shared with
+    ``serve --monthly-report`` (``service/monthly_job.py``) so the two
+    write the same report. ``load_corpus`` loads the sessions for
+    ``project_dirs`` (each caller keeps its own cache and flag
+    handling). Loads ``<config_dir>/usage-log.csv`` when present, for
+    the ``cache_ground_truth`` table. Raises :class:`MonthlyReportError`
+    when there are no project folders under ``root`` or no sessions in
+    them; an empty ``month`` is not an error -- ``note`` is told, and the
+    report is written with zeroed tables. Returns the paths written.
+    """
+    # Local import: statusline pulls in installer, which this module
+    # otherwise never needs.
+    from .statusline import load_usage_log_ground_truth
+
+    if not project_dirs:
+        raise MonthlyReportError(f"no matching project directories under {root}")
+
+    # The monthly report always covers exactly the calendar month itself:
+    # load the corpus for the project(s) and let write_monthly_report do
+    # its own month-window filtering against each turn's local timestamp
+    # (there is no discovery-level filter for one calendar month).
+    corpus = load_corpus(project_dirs)
+    if not corpus.sessions:
+        raise MonthlyReportError(f"no sessions found under {root}")
+
+    # Review finding 9: docs/exports.md promises cache_ground_truth "when
+    # a usage log is available" -- load it the same tolerant way
+    # ``report`` does; write_monthly_report scopes it to this month.
+    usage_log_csv_path = Path(config_dir) / "usage-log.csv"
+    usage_log_rows = load_usage_log_ground_truth(usage_log_csv_path) if usage_log_csv_path.exists() else None
+
+    # Nit 17: an empty target month still writes files with zeroed tables
+    # (a scheduled job should not fail just because nothing happened that
+    # month), but says so rather than failing silent.
+    if note is not None and not filter_corpus_to_month(corpus, month, config.tz).sessions:
+        note(f"no sessions found for {month} -- writing a report with zeroed tables")
+
+    return write_monthly_report(
+        corpus, pricing, config, month, out_dir, usage_log_rows=usage_log_rows, generated_at=generated_at
+    )
 
 
 __all__ = [
     "resolve_month",
     "filter_corpus_to_month",
     "write_monthly_report",
+    "report_paths",
+    "MonthlyReportError",
+    "run_monthly_report",
 ]
