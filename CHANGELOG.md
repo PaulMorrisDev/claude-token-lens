@@ -14,6 +14,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   first scan of the whole history finished (a minute or more on a large
   one). A banner shows the scan's progress (files found, read and
   stored), and once it finishes offers **Redraw figures**.
+- **Tabs no longer wait on a report rebuild while you work.** Every
+  reply in a live session changed the store and threw away every built
+  report, so each tab opened afterwards rebuilt the whole report first,
+  and the "last hour" and "last 24 hours" windows rebuilt every minute.
+  The dashboard now answers from the report it has and rebuilds it in
+  the background, and its footer says what time the figures are from.
+  A report is only rebuilt while you wait when there is none for that
+  window yet or it is over ten minutes old. Responses built from a
+  report carry `X-Figures-As-Of` (and `X-Figures-Refreshing: 1` while a
+  newer one is built).
 - `serve --store PATH` puts the dashboard's database somewhere other
   than `<config-dir>/service.db`, so a second copy (a dev checkout) can
   run beside the logon service without sharing it.

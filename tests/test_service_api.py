@@ -1353,9 +1353,108 @@ def test_report_json_cache_invalidates_when_store_change_token_changes(server, m
         digest_json=json.dumps({"turns": 1}),
     )
 
+    # change_token moved: the kept report is served at once, marked as
+    # refreshing, while a rebuild runs in the background.
     resp3, _ = server.request("GET", "/api/report.json")
     assert resp3.status == 200
-    assert calls["n"] == 2  # change_token moved -> rebuilt
+    assert resp3.getheader("X-Figures-Refreshing") == "1"
+    _wait_until_fresh(server, "/api/report.json")
+    assert calls["n"] == 2
+
+
+def _count_builds(server, monkeypatch) -> dict:
+    """Swap in a rebuild module that counts report builds."""
+    calls = {"n": 0}
+    real_corpus = server.corpus
+
+    def counting_corpus_from_store(store, *, days=None, since=None, until=None, window_by="mtime"):
+        calls["n"] += 1
+        return real_corpus
+
+    import claude_token_lens.service as service_pkg
+
+    fake = types.ModuleType("claude_token_lens.service.rebuild")
+    fake.corpus_from_store = counting_corpus_from_store
+    monkeypatch.setitem(sys.modules, "claude_token_lens.service.rebuild", fake)
+    monkeypatch.setattr(service_pkg, "rebuild", fake, raising=False)
+    return calls
+
+
+def _touch_store(server, suffix: str) -> None:
+    server.store.upsert_transcript(
+        session_id=server.session_id,
+        path=_FAKE_PATH + suffix,
+        kind="subagent",
+        digest_json=json.dumps({"turns": 1}),
+    )
+
+
+def _wait_until_fresh(server, path: str, timeout: float = 10.0):
+    """Request ``path`` until its figures are no longer refreshing."""
+    deadline = time.monotonic() + timeout
+    while True:
+        resp, raw = server.request("GET", path)
+        if resp.getheader("X-Figures-Refreshing") is None or time.monotonic() > deadline:
+            assert resp.getheader("X-Figures-Refreshing") is None, "background rebuild never finished"
+            return resp, raw
+        time.sleep(0.05)
+
+
+def test_report_backed_routes_say_what_time_their_figures_are_from(server):
+    resp, _ = server.request("GET", "/api/report.json")
+    as_of = resp.getheader("X-Figures-As-Of")
+    assert as_of and service_api._parse_utc(as_of) is not None
+    assert resp.getheader("X-Figures-Refreshing") is None
+    resp, _ = server.request("GET", "/api/recommendations")
+    assert resp.getheader("X-Figures-As-Of") == as_of  # the same kept report
+    resp, _ = server.request("GET", "/api/health")
+    assert resp.getheader("X-Figures-As-Of") is None
+
+
+def test_a_report_kept_too_long_is_rebuilt_before_it_is_served(server, monkeypatch):
+    calls = _count_builds(server, monkeypatch)
+    server.request("GET", "/api/report.json")
+    assert calls["n"] == 1
+    monkeypatch.setattr(service_api, "_STALE_REPORT_MAX_AGE_S", 0.0)
+    _touch_store(server, ".old")
+
+    resp, _ = server.request("GET", "/api/report.json")
+    assert calls["n"] == 2  # built while the request waited
+    assert resp.getheader("X-Figures-Refreshing") is None
+
+
+def test_a_named_window_serves_its_last_report_when_its_start_moves_on(server, monkeypatch):
+    """A named window's start moves every minute; the report kept for it
+    is served (and refreshed behind the scenes) rather than rebuilt while
+    the tab waits."""
+    calls = _count_builds(server, monkeypatch)
+    start = {"since": "2026-09-23T10:00:00Z"}
+    monkeypatch.setattr(service_api, "_named_window_since", lambda name, config_dir, now=None: (start["since"], ""))
+
+    server.request("GET", "/api/report.json?window=1h")
+    assert calls["n"] == 1
+    start["since"] = "2026-09-23T10:01:00Z"
+    resp, _ = server.request("GET", "/api/report.json?window=1h")
+    assert resp.status == 200
+    assert resp.getheader("X-Figures-Refreshing") == "1"
+    _wait_until_fresh(server, "/api/report.json?window=1h")
+    assert calls["n"] == 2
+
+    # An explicit since is its own window: never served another's report.
+    server.request("GET", "/api/report.json?since=2026-09-23T10:02:00Z")
+    assert calls["n"] == 3
+
+
+def test_impact_is_served_while_it_refreshes(server):
+    resp, _ = server.request("GET", "/api/impact")
+    assert resp.status == 200
+    assert resp.getheader("X-Figures-Refreshing") is None
+    _touch_store(server, ".impact")
+    resp, raw = server.request("GET", "/api/impact")
+    assert resp.status == 200
+    assert resp.getheader("X-Figures-Refreshing") == "1"
+    assert json.loads(raw)["ok"] is True
+    _wait_until_fresh(server, "/api/impact")
 
 
 # -- static file serving ------------------------------------------------------

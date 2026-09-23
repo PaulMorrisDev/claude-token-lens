@@ -51,8 +51,10 @@ that was in progress finishes, the banner offers **Redraw figures**,
 which drops every rendered tab and the report cache and redraws the tab
 on screen; tabs never redraw themselves under the reader. The footer
 names the running version, the status in words (Up to date, Scanning
-your history, Last scan failed, Not updating) and when the last scan
-finished.
+your history, Last scan failed, Not updating), when the last scan
+finished and, once a report has loaded, the time the oldest figures
+drawn are from (`X-Figures-As-Of`). A tab keeps the figures it drew; a
+reload, a new window or **Redraw figures** picks up a newer report.
 
 **The dashboard never changes Claude Code's settings.** There is no
 Apply button. Every fix is a prompt to paste into Claude Code or an

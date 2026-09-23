@@ -403,6 +403,25 @@ report routes, list everything when none is given. Every other route
 (`/api/health`, `/api/session/<id>`, `/api/recache`, `/api/baseline`,
 `/api/profiles*`, `/api/impact`, `/api/setup`) ignores them.
 
+**Caching.** The service builds each window's report once per store
+change (`Store.change_token()`) and keeps the last eight. When the store
+has changed since a window's report was built (a live session writes
+every few seconds), a request is answered from the kept report at once
+and a rebuild starts in the background (one at a time), so a tab never
+waits on a whole report build just because a transcript grew. A named
+`window` keeps its report across the minute-by-minute moves of its
+start the same way. A request waits for a build only when nothing is
+kept for its window, when the kept report is over ten minutes old, or
+when the list of change points behind `/api/impact` has changed; and
+requests for a window already being built wait on that one build.
+`/api/impact` is cached the same way.
+
+Every response built from a kept report carries **`X-Figures-As-Of`**
+(ISO 8601, UTC): when that report's figures were read from the store.
+While a newer one is being built it also carries
+**`X-Figures-Refreshing: 1`**. The dashboard shows the time in its
+footer.
+
 - **`window`** (optional) — a named window, used by the dashboard's
   header picker: `1h` (the last hour), `today` (since midnight in
   `config.toml`'s `tz`, else the machine's zone), `24h`, `change` (since
@@ -411,8 +430,8 @@ report routes, list everything when none is given. Every other route
   else is `400`. A named window takes precedence over the other three
   params. It is turned into a `since` rounded down to the minute, so
   repeat requests share one cached report. A session counts when its
-  main transcript was last written inside the window (so it was active
-  then), and it then counts in full.
+  last reply falls inside the window (so it was active then), and it
+  then counts in full.
 - **`window_days`** (int, at least 1, optional) — the last N days;
   defaults to 30 when neither `since` nor `until` is given.
 - **`since`** / **`until`** (ISO 8601, optional) — when either is

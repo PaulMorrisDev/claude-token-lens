@@ -162,7 +162,11 @@
             return { ok: false, error: { code: "bad_response", message: "response was not valid JSON (HTTP " + res.status + ")" } };
           })
           .then(function (body) {
-            return { httpStatus: res.status, body: body };
+            // A report-backed route says when its figures are from
+            // (docs/api.md, "Caching").
+            var asOf = res.headers.get("X-Figures-As-Of");
+            if (asOf) noteFiguresAsOf(asOf);
+            return { httpStatus: res.status, body: body, asOf: asOf };
           });
       })
       .catch(function (err) {
@@ -246,13 +250,19 @@
 
   function loadReport() {
     var key = state.window;
-    if (!state.reportPromises[key]) {
+    if (state.reportPromises[key]) {
+      // A report fetched earlier is drawn again: its figures' time counts.
+      state.reportPromises[key].then(function (loaded) {
+        if (loaded && loaded.asOf) noteFiguresAsOf(loaded.asOf);
+      });
+    } else {
       var url = withWindow("/api/report.json");
       state.reportPromises[key] = fetchJson(url).then(function (result) {
         var body = result.body;
         if (!body || body.ok === false) {
           return { error: (body && body.error) || { code: "error", message: "failed to load report" } };
         }
+        var asOf = result.asOf;
         // docs/api.md: unlike every other route, /api/report.json is the
         // raw rendered document ({"schema_version": ..., "report": {...}}),
         // not the {"ok": true, "data": ...} envelope -- kept unwrapped for
@@ -266,7 +276,7 @@
         if (report && report.meta && report.meta.pricing && report.meta.pricing.currency) {
           state.currency = report.meta.pricing.currency;
         }
-        return { report: report };
+        return { report: report, asOf: asOf };
       });
     }
     return state.reportPromises[key];
@@ -1106,6 +1116,24 @@
     stale: "Not updating",
   };
 
+  // The time the oldest figures drawn since the tabs were last dropped
+  // are from: the oldest X-Figures-As-Of a report-backed response has
+  // carried. Tabs keep what they drew and don't refetch on their own, so
+  // X-Figures-Refreshing isn't shown: "Redraw figures", a new window or
+  // a reload picks up the newer report.
+  var figures = { asOf: null };
+
+  function noteFiguresAsOf(asOf) {
+    if (figures.asOf && asOf >= figures.asOf) return;
+    figures.asOf = asOf;
+    if (healthPoll.health) updateFooterHealth(healthPoll.health);
+  }
+
+  function resetFiguresAsOf() {
+    figures.asOf = null;
+    if (healthPoll.health) updateFooterHealth(healthPoll.health);
+  }
+
   function updateFooterHealth(health) {
     var footer = document.getElementById("footer-health");
     if (!footer) return;
@@ -1115,8 +1143,9 @@
     footer.textContent =
       (health.version ? "claude-token-lens " + health.version + " — " : "") +
       (HEALTH_LABELS[health.status] || "Service " + (health.status || "unknown")) +
-      " — last scan finished " + (lastScan ? shortTs(lastScan) : "never") +
+      (lastScan ? " — last scan finished " + shortTs(lastScan) : "") +
       (watcher.errors ? " — " + watcher.errors + (watcher.errors === 1 ? " error" : " errors") : "") +
+      (figures.asOf ? " — figures as of " + shortTs(figures.asOf) : "") +
       ".";
   }
 
@@ -1124,10 +1153,11 @@
   // status means when it is not "ok" (first scan in progress, a failed
   // scan, a scanner that has stopped) and, once a scan that was running
   // when the page drew its figures finishes, a way to redraw them.
-  var healthPoll = { status: null, timer: null };
+  var healthPoll = { status: null, timer: null, health: null };
 
   function redrawAllTabs() {
     state.reportPromises = {};
+    resetFiguresAsOf();
     Object.keys(renderedTabs).forEach(function (key) {
       delete renderedTabs[key];
     });
@@ -1177,6 +1207,7 @@
       var health = body && body.ok === true ? body.data : null;
       var previous = healthPoll.status;
       healthPoll.status = health ? health.status : "unreachable";
+      if (health) healthPoll.health = health;
       renderHealthBanner(health, previous);
       if (health) updateFooterHealth(health);
       // Poll quickly while a scan's progress is worth watching.
@@ -3517,6 +3548,8 @@
       storageSet("tls:window", select.value);
       sessionsState.offset = 0;
       describe();
+      delete state.reportPromises[state.window];
+      resetFiguresAsOf();
       Object.keys(renderedTabs).forEach(function (key) {
         delete renderedTabs[key];
       });

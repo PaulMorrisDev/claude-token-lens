@@ -100,6 +100,7 @@ import tempfile
 import threading
 import time
 import urllib.parse
+from collections import OrderedDict
 from concurrent.futures import Future
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler
@@ -158,7 +159,19 @@ _STALE_AFTER_S = 600.0
 #: of a large history takes minutes, not hours).
 _STUCK_SCAN_S = 3600.0
 
+#: How many built reports (one per window) the service keeps.
+_REPORT_CACHE_SIZE = 8
+
+#: A kept report older than this is rebuilt before it is served, rather
+#: than served while a rebuild runs (a tab reopened after a long idle
+#: shouldn't show figures from hours ago, even briefly).
+_STALE_REPORT_MAX_AGE_S = 600.0
+
 _RESTART_ADVICE = "Restart the dashboard: claude-token-lens install-service, or stop and start serve."
+
+
+def _now_utc_iso() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _parse_utc(ts: str | None) -> datetime | None:
@@ -542,15 +555,33 @@ def make_handler(
     static_dir = (static_dir if static_dir is not None else Path(__file__).resolve().parent / "static")
 
     report_lock = threading.Lock()
-    report_cache: dict = {"token": None, "models": {}}
+    #: slot -> the latest report built for it: {"key", "token", "model",
+    #: "started" (monotonic), "as_of" (ISO)}, least recently used first.
+    #: A slot is the window as asked for: a named window by its name (its
+    #: resolved start moves every minute), anything else by its key.
+    report_cache: OrderedDict = OrderedDict()
     #: cache key -> the build in progress for it, which later requests
     #: for the same window wait on (see _get_report_model).
     report_building: dict = {}
+    #: window name -> the start it last resolved to, so a named window's
+    #: key maps back to its slot.
+    named_window_starts: dict[str, str] = {}
+    #: One background rebuild at a time: each is a whole report build,
+    #: and they would only slow each other (and requests) down.
+    background_builds = threading.Semaphore(1)
+    #: What this request's figures are as of, for the X-Figures-As-Of
+    #: header (see Handler._write_headers).
+    request_ctx = threading.local()
 
     def _window_query(query, _parse=globals()["_window_query"]):
         # Named windows ("since your last change", "today") need this
         # service's config dir: its apply backups, snapshots and tz.
-        return _parse(query, config_dir=options.config_dir)
+        window, err = _parse(query, config_dir=options.config_dir)
+        name = _str_query(query, "window")
+        if err is None and name in WINDOW_NAMES and window[1] is not None:
+            with report_lock:
+                named_window_starts[name] = window[1]
+        return window, err
 
     service_registered_lock = threading.Lock()
     service_registered_cache: dict = {"checked_at": None, "value": None}
@@ -679,31 +710,43 @@ def make_handler(
             config_dir=options.config_dir,
         )
 
-    def _get_report_model(window_days: int | None, since: str | None = None, until: str | None = None):
-        # Cache key widened from a bare window_days to the full
-        # (window_days, since, until) triple so a since/until request
-        # never collides with (or is served from) a plain window_days
-        # entry for the same store change_token.
-        cache_key = (window_days, since, until)
+    def _slot_for(cache_key):
+        """The report cache slot for a key (see ``report_cache``). Call
+        with ``report_lock`` held."""
+        window_days, since, until = cache_key
+        if window_days is None and until is None and since is not None:
+            for name, start in named_window_starts.items():
+                if start == since:
+                    return ("named", name)
+        return cache_key
+
+    def _keep_report(cache_key, token, model, started: float, as_of: str) -> None:
+        """Keep a finished build, unless the slot already holds one that
+        started later. Call with ``report_lock`` held."""
+        slot = _slot_for(cache_key)
+        current = report_cache.get(slot)
+        if current is not None and current["started"] > started:
+            return
+        report_cache[slot] = {"key": cache_key, "token": token, "model": model, "started": started, "as_of": as_of}
+        report_cache.move_to_end(slot)
+        while len(report_cache) > _REPORT_CACHE_SIZE:
+            report_cache.popitem(last=False)
+
+    def _note_as_of(as_of: str, refreshing: bool) -> None:
+        """Record this request's figures' age for its response headers
+        (the oldest, when one request reads several reports)."""
+        current = getattr(request_ctx, "as_of", None)
+        if current is None or as_of < current[0]:
+            request_ctx.as_of = (as_of, refreshing)
+        elif refreshing:
+            request_ctx.as_of = (current[0], True)
+
+    def _build_and_keep(cache_key, building: Future):
         token = store.change_token()
-        with report_lock:
-            if report_cache["token"] != token:
-                report_cache["token"] = token
-                report_cache["models"] = {}
-            cached = report_cache["models"].get(cache_key)
-            # One build per window at a time: a page opening ten panels
-            # at once, or a live session moving the change token between
-            # them, would otherwise build the same report ten times over.
-            building = report_building.get(cache_key) if cached is None else None
-            owner = cached is None and building is None
-            if owner:
-                building = report_building[cache_key] = Future()
-        if cached is not None:
-            return cached
-        if not owner:
-            return building.result()
+        started = time.monotonic()
+        as_of = _now_utc_iso()
         try:
-            model = _build_report_model(window_days, since, until)
+            model = _build_report_model(*cache_key)
         except BaseException as exc:
             with report_lock:
                 report_building.pop(cache_key, None)
@@ -711,9 +754,69 @@ def make_handler(
             raise
         with report_lock:
             report_building.pop(cache_key, None)
-            if report_cache["token"] == token:
-                report_cache["models"][cache_key] = model
+            _keep_report(cache_key, token, model, started, as_of)
         building.set_result(model)
+        return model, as_of
+
+    def _rebuild_in_background(cache_key, building: Future) -> None:
+        def run():
+            try:
+                with background_builds:
+                    _build_and_keep(cache_key, building)
+            except BaseException:  # noqa: BLE001 -- the next request retries; waiters see it via the Future
+                pass
+            finally:
+                store.close()  # this thread's own connection
+
+        threading.Thread(target=run, name="claude-token-lens-report", daemon=True).start()
+
+    def _get_report_model(window_days: int | None, since: str | None = None, until: str | None = None):
+        """The report for a window, built at most once per store change.
+
+        Stale-while-revalidate: when the store has changed since the
+        window's report was built (a live session writes every few
+        seconds), the kept report is served at once and a rebuild starts
+        in the background, so a tab never waits on a whole report build
+        just because a transcript grew. Only a window with nothing kept
+        (or a report older than ``_STALE_REPORT_MAX_AGE_S``) is built
+        while the request waits, and requests for a window already being
+        built wait on that one build rather than starting their own.
+        """
+        # Cache key widened from a bare window_days to the full
+        # (window_days, since, until) triple so a since/until request
+        # never collides with (or is served from) a plain window_days
+        # entry for the same store change_token.
+        cache_key = (window_days, since, until)
+        token = store.change_token()
+        now = time.monotonic()
+        with report_lock:
+            slot = _slot_for(cache_key)
+            kept = report_cache.get(slot)
+            if kept is not None:
+                report_cache.move_to_end(slot)
+                if kept["key"] == cache_key and kept["token"] == token:
+                    _note_as_of(kept["as_of"], False)
+                    return kept["model"]
+                if now - kept["started"] > _STALE_REPORT_MAX_AGE_S:
+                    kept = None
+            building = report_building.get(cache_key)
+            owner = building is None
+            if owner:
+                building = report_building[cache_key] = Future()
+        if kept is not None:
+            # Serve what is kept; refresh it behind the scenes.
+            if owner:
+                _rebuild_in_background(cache_key, building)
+            _note_as_of(kept["as_of"], True)
+            return kept["model"]
+        if not owner:
+            model = building.result()
+            with report_lock:
+                kept = report_cache.get(_slot_for(cache_key))
+            _note_as_of(kept["as_of"] if kept is not None else _now_utc_iso(), False)
+            return model
+        model, as_of = _build_and_keep(cache_key, building)
+        _note_as_of(as_of, False)
         return model
 
     # -- store-backed routes ---------------------------------------------
@@ -1467,21 +1570,65 @@ def make_handler(
             }
         )
 
-    impact_cache: dict = {"key": None, "data": None}
+    impact_cache: dict = {"key": None, "data": None, "started": 0.0, "as_of": None, "building": False}
 
     def route_impact(store, query, body):
         """Each change you made (an apply, its undo, or a settings change
         the config hook saw) with the sessions before it against those
-        after it, on the measures that change should move."""
+        after it, on the measures that change should move. Cached like
+        the report (see _get_report_model): a store change serves the
+        kept answer and refreshes it in the background, while a new
+        change point (the list itself changing) is worked out at once."""
         from .. import change_points
+
+        points = change_points.change_points(options.config_dir)
+        point_key = tuple((p.iso(), p.source, p.backup_ts) for p in points)
+        key = (store.change_token(), point_key)
+        now = time.monotonic()
+        refresh = False
+        with report_lock:
+            kept = impact_cache["data"]
+            kept_key = impact_cache["key"]
+            if kept is not None and kept_key == key:
+                _note_as_of(impact_cache["as_of"], False)
+                return _ok(kept)
+            if (
+                kept is not None
+                and kept_key[1] == point_key
+                and now - impact_cache["started"] <= _STALE_REPORT_MAX_AGE_S
+            ):
+                refresh = not impact_cache["building"]
+                if refresh:
+                    impact_cache["building"] = True
+                _note_as_of(impact_cache["as_of"], True)
+            else:
+                kept = None
+        if kept is not None:
+            if refresh:
+
+                def run():
+                    try:
+                        with background_builds:
+                            _compute_impact(points, key)
+                    except BaseException:  # noqa: BLE001 -- the next request retries
+                        pass
+                    finally:
+                        with report_lock:
+                            impact_cache["building"] = False
+                        store.close()
+
+                threading.Thread(target=run, name="claude-token-lens-impact", daemon=True).start()
+            return _ok(kept)
+        data = _compute_impact(points, key)
+        _note_as_of(impact_cache["as_of"] or _now_utc_iso(), False)
+        return _ok(data)
+
+    def _compute_impact(points, key):
         from .. import impact as impact_mod
         from . import rebuild
 
-        points = change_points.change_points(options.config_dir)
-        key = (store.change_token(), tuple((p.iso(), p.source, p.backup_ts) for p in points))
-        with report_lock:
-            if impact_cache["key"] == key:
-                return _ok(impact_cache["data"])
+        started = time.monotonic()
+        as_of = _now_utc_iso()
         changes: list = []
         if points:
             config = load_config(options.config_dir)
@@ -1498,9 +1645,9 @@ def make_handler(
             "lookback_days": impact_mod.LOOKBACK_DAYS,
         }
         with report_lock:
-            impact_cache["key"] = key
-            impact_cache["data"] = data
-        return _ok(data)
+            if started >= impact_cache["started"]:
+                impact_cache.update(key=key, data=data, started=started, as_of=as_of)
+        return data
 
     def route_recommendations(store, query, body):
         window, err = _window_query(query)
@@ -1594,6 +1741,14 @@ def make_handler(
                 self.send_header(name, value)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(length))
+            # When this request read a built report: when that report's
+            # figures were read from the store, and whether a newer one
+            # is being built (see _get_report_model).
+            as_of = getattr(request_ctx, "as_of", None)
+            if as_of is not None:
+                self.send_header("X-Figures-As-Of", as_of[0])
+                if as_of[1]:
+                    self.send_header("X-Figures-Refreshing", "1")
             self.end_headers()
 
         def _write_json(self, status: int, payload: dict, *, head_only: bool = False) -> None:
@@ -1660,6 +1815,7 @@ def make_handler(
             return host is None or _host_name(host) in host_names
 
         def _dispatch(self, body: dict | None, *, head_only: bool = False) -> None:
+            request_ctx.as_of = None
             if not self._host_allowed():
                 self._write_json(
                     *_forbidden("this Host is not allowed; start serve with --allowed-host NAME to add it"),
