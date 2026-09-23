@@ -75,6 +75,7 @@ def test_find_wsl_projects_roots_is_empty_without_wsl(monkeypatch):
     assert _REAL_FIND_WSL(run=missing) == []
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="builds Windows network paths")
 def test_find_wsl_projects_roots_reads_utf16_names_and_skips_docker(monkeypatch):
     monkeypatch.setattr(sys, "platform", "win32")
     listing = "\ufeffUbuntu\r\ndocker-desktop\r\n".encode("utf-16-le")
