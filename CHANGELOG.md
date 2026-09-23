@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+After updating, the first dashboard start re-reads every transcript (a
+few minutes): `PARSER_VERSION` bumped to 13 to pick up each reply's
+fast-mode flag.
+
 ### Added
 
 - **The dashboard opens straight away.** `serve` now binds its port
@@ -54,6 +58,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--since` and `--until` given a bare date (`--since 2026-09-01`), as
   the README documents, or a time with no offset, crashed comparing it
   with the transcripts' own times. Both are now read as UTC.
+- **Claude Opus 5.5 had no rate card entry, so it silently priced at
+  Opus 5's rate: a quarter too much on input and output and two and a
+  half times too much on cache reads.** `pricing.toml` now carries its own row (input $4,
+  output $20, cache writes $5/$8 for a five-minute/one-hour TTL, cache
+  reads $0.20, all per million tokens, plus the documented 1.1x "us"
+  data-residency uplift) instead of falling back to a prefix match on
+  the shorter "claude-opus-5" id. Every other rate in the file was
+  checked against the current pricing page while this was open; none
+  needed a correction.
+- **A reply priced against another, similar model's rate — because its
+  own model id only prefix-matched, not because it had its own
+  pricing.toml row — counted as "100% priced," so the report read as if
+  every model had an exact price.** The Usage tab now gets a "Priced by
+  closest match" table (model, priced as, replies, tokens) whenever this
+  happens, the Data quality tab's counters and the `pricing-coverage`
+  recommendation name it too, and `pricing-check --models` marks a
+  closest-match resolution `(closest match, not this model's own rate)`.
+  The coverage percentage itself is unchanged — a closest-match reply
+  still counts as priced, since its cost isn't zero — only the wording
+  now says so plainly instead of implying an exact price.
+- **Fast mode (`usage.speed == "fast"`, currently 2x standard rates on
+  Claude Opus 5.5, Opus 5 and Opus 4.8) was ignored and every reply was
+  billed at its standard rate regardless.** `pricing.toml` now carries a
+  `[models."<id>".fast]` multiplier for those three models, and a fast
+  reply on a model with no such table still prices at standard (as
+  before) but now says so: a new "Fast turns priced at standard rate"
+  table on the Usage tab, and matching Data quality tab counters, name
+  which models and how many replies. Recording each reply's own speed
+  needed a new `Turn.speed` field, hence the `PARSER_VERSION` bump above.
 
 ## [0.5.2] - 2026-09-23
 

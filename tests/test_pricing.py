@@ -14,6 +14,7 @@ import pytest
 
 from claude_token_lens import model
 from claude_token_lens.pricing import (
+    FastRule,
     ModelRates,
     Pricing,
     PricingCoverage,
@@ -29,6 +30,7 @@ FIXTURES = Path(__file__).resolve().parent / "fixtures"
 REQUIRED_PACKAGED_MODEL_IDS = {
     "claude-fable-5-1",
     "claude-fable-5",
+    "claude-opus-5-5",
     "claude-opus-5",
     "claude-opus-4-8",
     "claude-opus-4-7",
@@ -76,7 +78,7 @@ def _turn(**overrides) -> model.Turn:
 
 def test_packaged_default_loads():
     pricing = load_pricing()
-    assert pricing.version == "2026-09-18"
+    assert pricing.version == "2026-09-23"
     assert pricing.currency == "USD"
     assert pricing.sha256
     assert len(pricing.sha8) == 8
@@ -95,7 +97,7 @@ def test_packaged_default_covers_every_required_model_id():
 def test_packaged_default_currency_and_version_surfaced():
     pricing = load_pricing()
     assert pricing.currency == "USD"
-    assert pricing.version == "2026-09-18"
+    assert pricing.version == "2026-09-23"
     assert pricing.source_url
 
 
@@ -309,6 +311,55 @@ def test_cloud_strip_matched_via_survives_a_subsequent_prefix_step(min_pricing):
 
 def test_unknown_model_resolves_to_none(min_pricing):
     assert min_pricing.resolve_model("claude-totally-unheard-of") is None
+
+
+# --------------------------------------------------------------------
+# ResolvedRates.approximate (fix 2): true only once resolution bottoms
+# out at a prefix match (with or without a preceding cloud strip), never
+# for exact/alias/strip_1m, and never for a cloud_strip that itself
+# landed on an exact/alias id — matched_via alone can't tell the two
+# "cloud_strip" cases apart, which is why this is a separate field.
+# --------------------------------------------------------------------
+
+
+def test_approximate_false_for_exact_match(min_pricing):
+    resolved = min_pricing.resolve_model("claude-widget-9")
+    assert resolved.matched_via == "exact"
+    assert resolved.approximate is False
+
+
+def test_approximate_false_for_alias_match(min_pricing):
+    resolved = min_pricing.resolve_model("widget")
+    assert resolved.matched_via == "alias"
+    assert resolved.approximate is False
+
+
+def test_approximate_false_for_strip_1m_match(min_pricing):
+    resolved = min_pricing.resolve_model("claude-gadget-2[1m]")
+    assert resolved.matched_via == "strip_1m"
+    assert resolved.approximate is False
+
+
+def test_approximate_false_for_cloud_strip_to_exact(min_pricing):
+    resolved = min_pricing.resolve_model("anthropic.claude-widget-9-v1:0")
+    assert resolved.matched_via == "cloud_strip"
+    assert resolved.approximate is False
+
+
+def test_approximate_true_for_plain_prefix_match(min_pricing):
+    resolved = min_pricing.resolve_model("claude-widget-9-preview-2026")
+    assert resolved.matched_via == "prefix"
+    assert resolved.approximate is True
+
+
+def test_approximate_true_for_cloud_strip_then_prefix(min_pricing):
+    # matched_via still reads "cloud_strip" (unchanged -- see the test
+    # above this module's docstring points at), but the resolution only
+    # succeeded via the prefix step underneath it, so this is still only
+    # an approximation of claude-widget-9's real price.
+    resolved = min_pricing.resolve_model("us.anthropic.claude-widget-9-20260101")
+    assert resolved.matched_via == "cloud_strip"
+    assert resolved.approximate is True
 
 
 # --------------------------------------------------------------------
@@ -567,6 +618,78 @@ def test_long_context_explicit_overrides_win_over_multiplier(min_pricing):
 
 
 # --------------------------------------------------------------------
+# Fast mode (fix 3): FastRule parsing and price_turn's rate multiplier.
+# "claude-widget-9" carries a [.fast] table (multiplier=2.0);
+# "claude-gadget-2" deliberately does not, for the standard-rate
+# fallback case.
+# --------------------------------------------------------------------
+
+
+def test_fast_rule_parsed_from_pricing_toml(min_pricing):
+    rates = min_pricing.models["claude-widget-9"]
+    assert isinstance(rates.fast, FastRule)
+    assert rates.fast.multiplier == pytest.approx(2.0)
+
+
+def test_model_without_fast_table_has_none(min_pricing):
+    assert min_pricing.models["claude-gadget-2"].fast is None
+
+
+def test_fast_speed_doubles_every_rate_when_model_has_fast_table(min_pricing):
+    resolved = min_pricing.resolve_model("claude-widget-9")
+    kwargs = dict(
+        model="claude-widget-9",
+        input_tokens=1_000_000,
+        output_tokens=1_000_000,
+        cc_5m=1_000_000,
+        cache_read_tokens=1_000_000,
+    )
+    standard = price_turn(_turn(**kwargs), resolved)
+    fast = price_turn(_turn(speed="fast", **kwargs), resolved)
+    assert fast.fast_applied is True
+    assert fast.input_cost == pytest.approx(standard.input_cost * 2.0)
+    assert fast.output_cost == pytest.approx(standard.output_cost * 2.0)
+    assert fast.cache_write_cost == pytest.approx(standard.cache_write_cost * 2.0)
+    assert fast.cache_read_cost == pytest.approx(standard.cache_read_cost * 2.0)
+    assert fast.total == pytest.approx(standard.total * 2.0)
+
+
+def test_fast_speed_on_model_without_fast_table_prices_at_standard_rate(min_pricing):
+    resolved = min_pricing.resolve_model("claude-gadget-2")
+    standard = price_turn(_turn(model="claude-gadget-2", input_tokens=1_000_000), resolved)
+    fast = price_turn(_turn(model="claude-gadget-2", input_tokens=1_000_000, speed="fast"), resolved)
+    assert fast.fast_applied is False
+    assert fast == standard
+
+
+def test_standard_speed_never_applies_fast_multiplier(min_pricing):
+    resolved = min_pricing.resolve_model("claude-widget-9")
+    turn = _turn(model="claude-widget-9", input_tokens=1_000_000, speed="standard")
+    assert price_turn(turn, resolved).fast_applied is False
+
+
+def test_unset_speed_never_applies_fast_multiplier(min_pricing):
+    resolved = min_pricing.resolve_model("claude-widget-9")
+    turn = _turn(model="claude-widget-9", input_tokens=1_000_000)  # speed defaults to None
+    assert price_turn(turn, resolved).fast_applied is False
+
+
+def test_fast_multiplier_stacks_with_geo_multiplier(min_pricing):
+    resolved = min_pricing.resolve_model("claude-widget-9")
+    standard = price_turn(_turn(model="claude-widget-9", input_tokens=1_000_000), resolved, geo=None)
+    fast_only = price_turn(
+        _turn(model="claude-widget-9", input_tokens=1_000_000, speed="fast"), resolved, geo=None
+    )
+    fast_and_geo = price_turn(
+        _turn(model="claude-widget-9", input_tokens=1_000_000, speed="fast"), resolved, geo="us"
+    )
+    # Fast (2x) and the "us" geo multiplier (1.2x) stack multiplicatively,
+    # not replace one another: 2.0 * 1.2 = 2.4x standard.
+    assert fast_only.input_cost == pytest.approx(standard.input_cost * 2.0)
+    assert fast_and_geo.input_cost == pytest.approx(standard.input_cost * 2.0 * 1.2)
+
+
+# --------------------------------------------------------------------
 # PricingCoverage
 # --------------------------------------------------------------------
 
@@ -596,6 +719,84 @@ def test_coverage_tracks_unknown_models_and_computes_percentage(min_pricing):
 def test_coverage_pct_is_100_when_nothing_recorded():
     coverage = PricingCoverage()
     assert coverage.coverage_pct == 100.0
+
+
+# -- closest-match and fast-priced-as-standard tracking (fixes 2/3) ------
+
+
+def test_coverage_tracks_closest_match_turns(min_pricing):
+    coverage = PricingCoverage()
+    turn = _turn(model="claude-widget-9-preview-2026", input_tokens=1_000_000)
+    resolved = min_pricing.resolve_model(turn.model)
+    assert resolved.approximate is True
+    coverage.add(turn, price_turn(turn, resolved), resolved)
+
+    assert coverage.closest_match_turns == 1
+    assert coverage.closest_matches["claude-widget-9-preview-2026"] == {
+        "priced_as": "claude-widget-9",
+        "turns": 1,
+        "tokens": 1_000_000,
+    }
+    table = coverage.as_closest_match_table()
+    assert table.rows == [["claude-widget-9-preview-2026", "claude-widget-9", 1, 1_000_000]]
+    assert table.notes
+
+
+def test_coverage_does_not_record_closest_match_for_exact_hit(min_pricing):
+    coverage = PricingCoverage()
+    turn = _turn(model="claude-widget-9", input_tokens=1_000_000)
+    resolved = min_pricing.resolve_model(turn.model)
+    coverage.add(turn, price_turn(turn, resolved), resolved)
+    assert coverage.closest_matches == {}
+    assert coverage.closest_match_turns == 0
+    assert coverage.as_closest_match_table().rows == []
+
+
+def test_coverage_add_without_resolved_argument_still_works(min_pricing):
+    # Existing callers that only need unknown-model/coverage_pct
+    # accounting (report.py's other PricingCoverage.add call sites, and
+    # every pre-existing test above) may omit `resolved` entirely.
+    coverage = PricingCoverage()
+    turn = _turn(model="claude-widget-9", input_tokens=1_000_000)
+    resolved = min_pricing.resolve_model(turn.model)
+    coverage.add(turn, price_turn(turn, resolved))
+    assert coverage.priced_turns == 1
+    assert coverage.closest_matches == {}
+    assert coverage.fast_priced_as_standard == {}
+
+
+def test_coverage_tracks_fast_priced_as_standard(min_pricing):
+    coverage = PricingCoverage()
+    turn = _turn(model="claude-gadget-2", input_tokens=1_000_000, speed="fast")
+    resolved = min_pricing.resolve_model(turn.model)
+    breakdown = price_turn(turn, resolved)
+    assert breakdown.fast_applied is False
+    coverage.add(turn, breakdown, resolved)
+
+    assert coverage.fast_priced_as_standard_turns == 1
+    assert coverage.fast_priced_as_standard["claude-gadget-2"] == {"turns": 1, "tokens": 1_000_000}
+    table = coverage.as_fast_priced_as_standard_table()
+    assert table.rows == [["claude-gadget-2", 1, 1_000_000]]
+    assert table.notes
+
+
+def test_coverage_does_not_record_fast_priced_as_standard_when_fast_applied(min_pricing):
+    coverage = PricingCoverage()
+    turn = _turn(model="claude-widget-9", input_tokens=1_000_000, speed="fast")
+    resolved = min_pricing.resolve_model(turn.model)
+    breakdown = price_turn(turn, resolved)
+    assert breakdown.fast_applied is True
+    coverage.add(turn, breakdown, resolved)
+    assert coverage.fast_priced_as_standard == {}
+    assert coverage.fast_priced_as_standard_turns == 0
+
+
+def test_coverage_does_not_record_fast_priced_as_standard_for_standard_speed(min_pricing):
+    coverage = PricingCoverage()
+    turn = _turn(model="claude-gadget-2", input_tokens=1_000_000)  # speed is None
+    resolved = min_pricing.resolve_model(turn.model)
+    coverage.add(turn, price_turn(turn, resolved), resolved)
+    assert coverage.fast_priced_as_standard == {}
 
 
 # --------------------------------------------------------------------

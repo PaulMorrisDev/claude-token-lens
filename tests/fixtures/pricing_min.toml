@@ -19,6 +19,9 @@ us = 1.2
 threshold_tokens = 100000
 multiplier = 2.0
 
+[models."claude-widget-9".fast]
+multiplier = 2.0
+
 [models."claude-gadget-2"]
 aliases = []
 input = 4.0

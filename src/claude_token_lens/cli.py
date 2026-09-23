@@ -2214,8 +2214,9 @@ def _cmd_pricing_check(args: argparse.Namespace) -> int:
             if resolved is None:
                 print(f"  {model_id} -> UNKNOWN (no matching rate)")
             else:
+                approx = " (closest match, not this model's own rate)" if resolved.approximate else ""
                 print(
-                    f"  {model_id} -> {resolved.canonical_id} (matched via {resolved.matched_via})"
+                    f"  {model_id} -> {resolved.canonical_id} (matched via {resolved.matched_via}){approx}"
                 )
 
     return 0

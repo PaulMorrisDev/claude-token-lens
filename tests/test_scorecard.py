@@ -305,6 +305,47 @@ def test_data_quality_has_no_limit_pause_note_when_zero():
     assert not any("usage-limit pause" in (note or "") for note in dimensions_table.notes)
 
 
+def test_data_quality_notes_closest_match_turn_count_when_nonzero():
+    # Fix 2: a closest-match turn already counts as priced in
+    # pricing_coverage_pct, so the level is untouched -- the note just
+    # says it was only an estimate.
+    inputs = ScorecardInputs(pricing_coverage_pct=100.0, closest_match_turns=4)
+    section = build_section(inputs)
+    dimensions_table = section.tables[0]
+    assert any(
+        "4 turns counted as priced above were only priced by closest match" in (note or "")
+        for note in dimensions_table.notes
+    )
+    dims = {row[0]: row for row in dimensions_table.rows}
+    assert dims["data_quality"][1] == 5
+
+
+def test_data_quality_note_uses_singular_turn_for_count_of_one():
+    inputs = ScorecardInputs(closest_match_turns=1)
+    section = build_section(inputs)
+    dimensions_table = section.tables[0]
+    assert any(
+        "1 turn counted as priced above was only priced by closest match" in (note or "")
+        for note in dimensions_table.notes
+    )
+
+
+def test_data_quality_has_no_closest_match_note_when_zero():
+    inputs = ScorecardInputs()
+    section = build_section(inputs)
+    dimensions_table = section.tables[0]
+    assert not any("closest match" in (note or "") for note in dimensions_table.notes)
+
+
+def test_data_quality_combines_limit_pause_and_closest_match_notes():
+    inputs = ScorecardInputs(limit_pause_sessions=2, closest_match_turns=3)
+    section = build_section(inputs)
+    dimensions_table = section.tables[0]
+    combined = " ".join(note or "" for note in dimensions_table.notes)
+    assert "2 sessions hit a usage limit and paused" in combined
+    assert "3 turns counted as priced above were only priced by closest match" in combined
+
+
 def test_scorecard_with_limit_fields_passes_privacy():
     inputs = ScorecardInputs(
         recache_share_pct=40.0,

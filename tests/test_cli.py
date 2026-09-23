@@ -353,6 +353,20 @@ def test_pricing_check_exits_0(capsys):
     capsys.readouterr()
 
 
+def test_pricing_check_models_flags_a_closest_match_resolution(capsys):
+    # "claude-opus-4-1-preview" only resolves via the prefix-match step
+    # against the packaged "claude-opus-4-1" id -- fix 2's approximate
+    # marker must show up in --models output for it, but not for an
+    # exact hit in the same call.
+    exit_code = cli.main(["pricing-check", "--models", "claude-opus-4-1-preview,claude-sonnet-5"])
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    preview_line = next(line for line in out.splitlines() if "claude-opus-4-1-preview" in line)
+    sonnet_line = next(line for line in out.splitlines() if line.strip().startswith("claude-sonnet-5"))
+    assert "(closest match, not this model's own rate)" in preview_line
+    assert "(closest match, not this model's own rate)" not in sonnet_line
+
+
 def test_snapshot_config_print_hook_exits_0(capsys):
     exit_code = cli.main(["snapshot-config", "--print-hook"])
     assert exit_code == 0

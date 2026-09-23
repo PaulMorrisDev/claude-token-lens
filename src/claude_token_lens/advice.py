@@ -500,8 +500,39 @@ def _explain_data_quality(rec: Recommendation, ctx: _Context) -> None:
 
 
 def _explain_pricing_coverage(rec: Recommendation, ctx: _Context) -> None:
-    rec.title = "Some usage has no price"
-    rec.why = "Replies from models missing from pricing.toml are left out of every cost, so totals are too low."
+    # Fix 2: coverage_pct alone can't tell "no price at all" (cost is
+    # left out entirely, totals read too low) from "priced by closest
+    # match" (cost is counted, but only an estimate) apart -- read the
+    # two usage tables the rule cites back off the report itself, the
+    # same way _explain_baseline_bloat above reads a table it needs
+    # rows from rather than a single cell.
+    unknown_table = next(
+        (t for s in ctx.report.sections if s.key == "usage" for t in s.tables if t.name == "pricing_unknown_models"),
+        None,
+    )
+    closest_table = next(
+        (t for s in ctx.report.sections if s.key == "usage" for t in s.tables if t.name == "pricing_closest_match"),
+        None,
+    )
+    has_unknown = bool(unknown_table is not None and unknown_table.rows)
+    has_closest_match = bool(closest_table is not None and closest_table.rows)
+
+    if has_unknown and has_closest_match:
+        rec.title = "Some usage has no price, some is only an estimate"
+        rec.why = (
+            "Replies from models missing from pricing.toml are left out of every cost, so "
+            "totals are too low; others were priced at a different model's rate, so their "
+            "cost may be off."
+        )
+    elif has_closest_match:
+        rec.title = "Some usage is priced by closest match, not its own rate"
+        rec.why = (
+            "These replies' model has no pricing.toml row of its own, so their cost is "
+            "estimated from the closest registered model's rate instead, and may be off."
+        )
+    else:
+        rec.title = "Some usage has no price"
+        rec.why = "Replies from models missing from pricing.toml are left out of every cost, so totals are too low."
 
 
 def _explain_discovery_share(rec: Recommendation, ctx: _Context) -> None:

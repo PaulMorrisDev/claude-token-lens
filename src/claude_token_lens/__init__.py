@@ -73,7 +73,13 @@ __version__ = "0.5.2"
 #: Bumped to 12: parse.py records why each failed tool call failed
 #: (``Turn.tool_errors_by_kind``), which waste.py needs to tell a failing
 #: test or a hook block from a call that couldn't run.
-PARSER_VERSION = 12
+#:
+#: Bumped to 13 by the three-pricing-fixes batch: parse.py now records
+#: ``Turn.speed`` from each turn's own ``usage.speed`` (see model.py's
+#: module docstring), which pricing.py needs to apply a model's fast-mode
+#: rate multiplier. A pre-13 digest has no ``speed`` recorded, so every
+#: transcript is re-parsed once to pick it up.
+PARSER_VERSION = 13
 
 #: Bump when the model.py contract changes in a way that invalidates the
 #: on-disk digest cache (see model.py's module docstring for the contract

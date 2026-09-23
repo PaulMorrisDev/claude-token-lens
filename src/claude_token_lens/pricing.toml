@@ -1,7 +1,7 @@
-version = "2026-09-18"
+version = "2026-09-23"
 currency = "USD"
 source_url = "https://platform.claude.com/docs/en/about-claude/pricing"
-retrieved = "2026-09-18"
+retrieved = "2026-09-23"
 notes = """
 Manually curated USD list prices, per million tokens, read from the
 Claude pricing page on the date above. Never fetched automatically (see
@@ -57,6 +57,31 @@ cache_read = 1.0
 
 # --- Opus ---------------------------------------------------------------
 
+# Fast mode ([models.<id>.fast]): an optional per-model speed tier,
+# priced by a flat multiplier over every one of the five standard rates
+# (input/output/cache_write_5m/cache_write_1h/cache_read), applied when
+# a turn's own usage.speed == "fast". Documented for exactly three
+# models today (this one, claude-opus-5, claude-opus-4-8); every other
+# model deliberately carries no [.fast] table, so a fast-flagged turn on
+# one of them is priced at its standard rate (see pricing.py's
+# price_turn and PricingCoverage.fast_priced_as_standard). Cache-write/
+# read and data-residency multipliers stack on top of the fast rate
+# (documented on the pricing page), not the other way around.
+
+[models."claude-opus-5-5"]
+aliases = []
+input = 4.0
+output = 20.0
+cache_write_5m = 5.0
+cache_write_1h = 8.0
+cache_read = 0.2 # cache hits are 0.05x input on this model (4.0 * 0.05)
+
+[models."claude-opus-5-5".geo_multipliers]
+us = 1.1 # documented data-residency uplift when usage.inference_geo == "us"
+
+[models."claude-opus-5-5".fast]
+multiplier = 2.0 # fast-mode rate is $8/$40 in/out, 2x standard
+
 [models."claude-opus-5"]
 aliases = ["opus", "opus[1m]"]
 input = 5.0
@@ -68,6 +93,9 @@ cache_read = 0.5
 [models."claude-opus-5".geo_multipliers]
 us = 1.1 # documented data-residency uplift when usage.inference_geo == "us"
 
+[models."claude-opus-5".fast]
+multiplier = 2.0 # fast-mode rate is $10/$50 in/out, 2x standard
+
 [models."claude-opus-4-8"]
 aliases = []
 input = 5.0
@@ -78,6 +106,9 @@ cache_read = 0.5
 
 [models."claude-opus-4-8".geo_multipliers]
 us = 1.1 # documented data-residency uplift when usage.inference_geo == "us"
+
+[models."claude-opus-4-8".fast]
+multiplier = 2.0 # fast-mode rate is $10/$50 in/out, 2x standard
 
 [models."claude-opus-4-7"]
 aliases = []
@@ -91,6 +122,9 @@ cache_read = 0.5
 us = 1.1 # documented data-residency uplift when usage.inference_geo == "us"
 
 [models."claude-opus-4-6"]
+# No [.fast] table: Opus 4.6 runs fast-flagged requests at standard
+# speed and bills standard rates (documented on the pricing page), not
+# an omission to fix.
 aliases = []
 input = 5.0
 output = 25.0

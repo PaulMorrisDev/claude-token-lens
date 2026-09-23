@@ -1293,7 +1293,7 @@ def build_report(
             for turn in _priced_turns(tr):
                 resolved = pricing.resolve_model(turn.model)
                 breakdown = price_turn(turn, resolved)
-                pricing_coverage.add(turn, breakdown)
+                pricing_coverage.add(turn, breakdown, resolved)
 
                 overview.priced_turns += 1
                 overview.input_tokens += turn.input_tokens
@@ -1477,6 +1477,21 @@ def build_report(
             usage_section = dataclasses.replace(
                 usage_section, tables=[*usage_section.tables, pricing_coverage.as_table()]
             )
+        if pricing_coverage.closest_matches:
+            # Replies priced by closest (prefix) match rather than their
+            # own pricing.toml row: visible here so 100% coverage doesn't
+            # read as "every model has its own price" (fix 2).
+            usage_section = dataclasses.replace(
+                usage_section,
+                tables=[*usage_section.tables, pricing_coverage.as_closest_match_table()],
+            )
+        if pricing_coverage.fast_priced_as_standard:
+            # Fast-flagged replies priced at standard rate for lack of a
+            # [.fast] table (fix 3).
+            usage_section = dataclasses.replace(
+                usage_section,
+                tables=[*usage_section.tables, pricing_coverage.as_fast_priced_as_standard_table()],
+            )
         sections.append(usage_section)
 
     if units.elasticity is not None and _want("elasticity"):
@@ -1652,6 +1667,14 @@ def build_report(
         assumptions=assumptions,
     )
 
+    # Fixes 2/3: these two counters are pricing-time totals (every turn
+    # has to be resolved and priced first), not something any single
+    # transcript's own Diagnostics ever carries, so they're set once here
+    # from the finished PricingCoverage accumulator rather than merged
+    # per-transcript like every other Diagnostics field above.
+    diagnostics.pricing_closest_match_turns = pricing_coverage.closest_match_turns
+    diagnostics.pricing_fast_priced_as_standard_turns = pricing_coverage.fast_priced_as_standard_turns
+
     report_model = ReportModel(
         meta=meta, sections=sections, recommendations=[], diagnostics=diagnostics, context_files=cf.to_dict()
     )
@@ -1800,6 +1823,7 @@ def _build_scorecard_section(
         pricing_coverage_pct=pricing_coverage.coverage_pct,
         parse_error_rate_pct=parse_error_rate_pct,
         limit_pause_sessions=len(ls.sessions_affected),
+        closest_match_turns=pricing_coverage.closest_match_turns,
     )
     return scorecard.build_section(inputs, th)
 
