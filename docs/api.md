@@ -596,7 +596,12 @@ old and new values, and asking Claude to show the diff before saving.
 the newest snapshot that records config: `apply` writes a
 `{ts, schema_version, profile_id}` stamp into the snapshots folder to
 mark the active profile, and the service skips those stamps
-(`snapshots.records_config`) wherever it reads snapshots.
+(`snapshots.records_config`) wherever it reads snapshots. Here, and in
+`/api/profile-goals` and `/api/quick-actions`, its agents are widened
+to every project's latest snapshot (`snapshots.with_every_project_agents`):
+the config hook records only the agents of the project a session
+started in, so the newest snapshot alone would show another project's
+agents as not set.
 
 ### `GET /api/baseline`
 
@@ -676,10 +681,19 @@ comes from, how often it was listed and used, and what the listing cost.
 
 Query: the windowing params above.
 
-`data`: `{"period", "skills": [{"name", "description", "source", "source_label", "path", "listing_tokens", "listed", "listed_text", "invoked", "invoked_by", "listing_cost_usd", "listing_cost_text", "use_cost_text", "use_text", "resent_tokens", "status", "fixes"}, ...], "listing_tokens", "listing_cost_text", "unused", "fixes"}`.
+`data`: `{"period", "skills": [{"name", "description", "source", "source_label", "path", "listing_tokens", "listed", "listed_text", "invoked", "invoked_by", "listing_cost_usd", "listing_cost_text", "use_cost_text", "use_text", "resent_tokens", "status", "hidden", "needed_by", "fixes"}, ...], "listing_tokens", "listing_cost_text", "unused", "needed_by_a_tool", "fixes"}`.
 Skills come unused first, then by listing cost. `status` is `unused`,
-`used`, `listed` or `not listed`. `path` is `~`-relative, or `""` when
-the skill has no file on disk. Each skill's own `fixes` hide it or
+`used`, `listed`, `not listed`, `needed by a tool`, `no longer listed` or `hidden`:
+`~/.claude/settings.json` already keeps a `hidden` skill out of the
+listing, and `hidden` says why ("skillOverrides sets it to off", "its
+plugin is turned off"); such a skill gets no fixes. `needed_by` names
+the Claude Code tool (`Artifact`, `Workflow`) that tells Claude to load
+a built-in skill, or `""`; one Claude never used is `needed by a tool`,
+never counted as unused or hidden, and its one fix lists it by name
+only. A skill with no file on disk that no listing has named for 14
+days before the newest one in the window (one you deleted) has
+`source` `removed`, is `no longer listed` and gets no fixes. `path` is
+`~`-relative, or `""` when the skill has no file on disk. Each skill's own `fixes` hide it or
 shorten its description; the top-level `fixes` holds one change that
 hides every unused skill at once, when there are two or more.
 

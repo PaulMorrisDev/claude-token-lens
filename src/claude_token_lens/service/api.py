@@ -100,6 +100,7 @@ import tempfile
 import threading
 import time
 import urllib.parse
+from concurrent.futures import Future
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
@@ -433,6 +434,9 @@ def make_handler(
 
     report_lock = threading.Lock()
     report_cache: dict = {"token": None, "models": {}}
+    #: cache key -> the build in progress for it, which later requests
+    #: for the same window wait on (see _get_report_model).
+    report_building: dict = {}
 
     def _window_query(query, _parse=globals()["_window_query"]):
         # Named windows ("since your last change", "today") need this
@@ -498,6 +502,13 @@ def make_handler(
             if isinstance(snapshot.data.get("effective"), dict):
                 return snapshot
         return snaps[-1] if snaps else None
+
+    def _config_snapshot_with_every_project_agents() -> Snapshot | None:
+        """:func:`_latest_config_snapshot` with its agents widened to
+        every project's latest snapshot (see
+        ``snapshots.with_every_project_agents``), for the "now" value of
+        an agent recorded in another project."""
+        return snapshots_mod.with_every_project_agents(_snapshots_from_store())
 
     def _build_report_model(window_days: int | None, since: str | None = None, until: str | None = None):
         # Local import: service.rebuild is a sibling work package's
@@ -571,12 +582,29 @@ def make_handler(
                 report_cache["token"] = token
                 report_cache["models"] = {}
             cached = report_cache["models"].get(cache_key)
+            # One build per window at a time: a page opening ten panels
+            # at once, or a live session moving the change token between
+            # them, would otherwise build the same report ten times over.
+            building = report_building.get(cache_key) if cached is None else None
+            owner = cached is None and building is None
+            if owner:
+                building = report_building[cache_key] = Future()
         if cached is not None:
             return cached
-        model = _build_report_model(window_days, since, until)
+        if not owner:
+            return building.result()
+        try:
+            model = _build_report_model(window_days, since, until)
+        except BaseException as exc:
+            with report_lock:
+                report_building.pop(cache_key, None)
+            building.set_exception(exc)
+            raise
         with report_lock:
+            report_building.pop(cache_key, None)
             if report_cache["token"] == token:
                 report_cache["models"][cache_key] = model
+        building.set_result(model)
         return model
 
     # -- store-backed routes ---------------------------------------------
@@ -820,7 +848,7 @@ def make_handler(
             return _bad_request(f"'scope' must be one of {_VALID_PROFILE_SCOPES}")
 
         notes: list[str] = []
-        snapshot = _latest_config_snapshot()
+        snapshot = _config_snapshot_with_every_project_agents()
         if snapshot is not None:
             effective = snapshots_mod.effective_config(snapshot)
             provenance = snapshots_mod.effective_provenance(snapshot)
@@ -1189,9 +1217,9 @@ def make_handler(
         )
 
     def _current_settings() -> tuple[dict, dict]:
-        """The latest snapshot's effective settings and agent fields, or
-        empty when no snapshot is recorded yet."""
-        snapshot = _latest_config_snapshot()
+        """The latest snapshot's effective settings, and every project's
+        agent fields, or empty when no snapshot is recorded yet."""
+        snapshot = _config_snapshot_with_every_project_agents()
         if snapshot is None:
             return {}, {}
         agents = snapshot.data.get("effective_agents")

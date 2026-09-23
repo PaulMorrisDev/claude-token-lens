@@ -43,6 +43,13 @@ own mtime. Both are deliberate, not an oversight — a turn/session's
 it's the one value guaranteed to exist before any tool call or streaming
 delay could skew it.
 
+Usage is the opposite: a streamed reply is written as one line per
+content block, each with a usage snapshot taken so far, so a turn's
+token counts come from the most complete snapshot among its lines (the
+largest ``output_tokens``), not the first. The first line's
+``output_tokens`` is a partial count and only the last line carries
+``output_tokens_details.thinking_tokens``.
+
 Privacy: no raw JSONL line, message content, tool_result content, file
 path, or command is ever retained past the single line/block that
 produces it. Only lengths, short prefixes (<=40 chars), names, and counts
@@ -96,6 +103,9 @@ tree before implementing) and, when it is ``True``, increments
 ``current.tool_error_count`` and adds the same ``_tool_result_length``
 figure already computed for that block onto ``current.tool_error_chars``
 — no second pass over the content list, keeping the parser single-pass.
+The same loop reads the start of each error's text to record why it
+failed (:func:`_tool_error_kind`, ``Turn.tool_errors_by_kind``); only
+the kind is kept.
 """
 
 from __future__ import annotations
@@ -567,6 +577,7 @@ class _PendingTurn:
     stop_reason: str | None = None
     tool_calls_by_tool: dict[str, int] = field(default_factory=dict)
     tool_errors_by_tool: dict[str, int] = field(default_factory=dict)
+    tool_errors_by_kind: dict[str, int] = field(default_factory=dict)
     edit_target_hashes: list[str] = field(default_factory=list)
 
 
@@ -672,53 +683,68 @@ def _new_pending(d: dict, tool_use_names: dict[str, str]) -> _PendingTurn:
         setattr(pending, attr, value if isinstance(value, str) else None)
 
     if isinstance(usage, dict):
-        pending.has_usage = True
-        pending.input_tokens = int(usage.get("input_tokens") or 0)
-        pending.cache_creation_tokens = int(usage.get("cache_creation_input_tokens") or 0)
-        pending.cache_read_tokens = int(usage.get("cache_read_input_tokens") or 0)
-        pending.output_tokens = int(usage.get("output_tokens") or 0)
-        service_tier = usage.get("service_tier")
-        pending.service_tier = service_tier if isinstance(service_tier, str) else None
-        inference_geo = usage.get("inference_geo")
-        pending.inference_geo = inference_geo if isinstance(inference_geo, str) else None
-        details = usage.get("output_tokens_details")
-        if isinstance(details, dict):
-            pending.thinking_tokens = int(details.get("thinking_tokens") or 0)
-        server_tool_use = usage.get("server_tool_use")
-        if isinstance(server_tool_use, dict):
-            pending.web_search_requests = int(server_tool_use.get("web_search_requests") or 0)
-            pending.web_fetch_requests = int(server_tool_use.get("web_fetch_requests") or 0)
-        cache_creation = usage.get("cache_creation")
-        if isinstance(cache_creation, dict):
-            pending.cc_5m = int(cache_creation.get("ephemeral_5m_input_tokens") or 0)
-            pending.cc_1h = int(cache_creation.get("ephemeral_1h_input_tokens") or 0)
-
-            # Reconcile the flat cache_creation_input_tokens field against
-            # the 5m/1h split: some usage payloads under-report the flat
-            # field relative to its own ephemeral breakdown. The mismatch
-            # is always recorded (even when nothing needs correcting, e.g.
-            # the flat field is *larger* than the split); ctx (computed
-            # from cache_creation_tokens in _finalize_turn) picks up the
-            # corrected value automatically.
-            ttl_sum = pending.cc_5m + pending.cc_1h
-            if ttl_sum != pending.cache_creation_tokens:
-                pending.ttl_sum_mismatch = True
-            if pending.cache_creation_tokens < ttl_sum:
-                pending.cache_creation_tokens = ttl_sum
-        else:
-            # Coordinator follow-up (WP12a diversity fixtures): older,
-            # pre-5m/1h-split Claude Code JSONL has no nested
-            # cache_creation object at all. cc_5m/cc_1h stay 0 (the split
-            # was never recorded, not that nothing was written) and the
-            # flat cache_creation_input_tokens is kept as the write total
-            # unchanged - this is a format difference, not a sum mismatch,
-            # so it must never set ttl_sum_mismatch (0 != a nonzero flat
-            # value is not evidence of anything broken here).
-            pending.ttl_split_unknown = True
+        _apply_usage(pending, usage)
 
     _merge_content_blocks(pending, message.get("content"), tool_use_names)
     _merge_stop_reason(pending, message)
     return pending
+
+
+def _apply_usage(pending: _PendingTurn, usage: dict) -> None:
+    """Set every usage-derived field of ``pending`` from one line's
+    ``usage`` object, replacing whatever an earlier line of the same
+    message set. Every field is assigned (not just the ones present), so a
+    later, more complete snapshot fully supersedes an earlier partial one.
+    """
+    pending.has_usage = True
+    pending.input_tokens = int(usage.get("input_tokens") or 0)
+    pending.cache_creation_tokens = int(usage.get("cache_creation_input_tokens") or 0)
+    pending.cache_read_tokens = int(usage.get("cache_read_input_tokens") or 0)
+    pending.output_tokens = int(usage.get("output_tokens") or 0)
+    service_tier = usage.get("service_tier")
+    pending.service_tier = service_tier if isinstance(service_tier, str) else None
+    inference_geo = usage.get("inference_geo")
+    pending.inference_geo = inference_geo if isinstance(inference_geo, str) else None
+    details = usage.get("output_tokens_details")
+    pending.thinking_tokens = int(details.get("thinking_tokens") or 0) if isinstance(details, dict) else 0
+    server_tool_use = usage.get("server_tool_use")
+    if isinstance(server_tool_use, dict):
+        pending.web_search_requests = int(server_tool_use.get("web_search_requests") or 0)
+        pending.web_fetch_requests = int(server_tool_use.get("web_fetch_requests") or 0)
+    else:
+        pending.web_search_requests = 0
+        pending.web_fetch_requests = 0
+    pending.ttl_sum_mismatch = False
+    pending.ttl_split_unknown = False
+    cache_creation = usage.get("cache_creation")
+    if isinstance(cache_creation, dict):
+        pending.cc_5m = int(cache_creation.get("ephemeral_5m_input_tokens") or 0)
+        pending.cc_1h = int(cache_creation.get("ephemeral_1h_input_tokens") or 0)
+
+        # Reconcile the flat cache_creation_input_tokens field against
+        # the 5m/1h split: some usage payloads under-report the flat
+        # field relative to its own ephemeral breakdown. The mismatch
+        # is always recorded (even when nothing needs correcting, e.g.
+        # the flat field is *larger* than the split); ctx (computed
+        # from cache_creation_tokens in _finalize_turn) picks up the
+        # corrected value automatically.
+        ttl_sum = pending.cc_5m + pending.cc_1h
+        if ttl_sum != pending.cache_creation_tokens:
+            pending.ttl_sum_mismatch = True
+        if pending.cache_creation_tokens < ttl_sum:
+            pending.cache_creation_tokens = ttl_sum
+    else:
+        # Coordinator follow-up (WP12a diversity fixtures): older,
+        # pre-5m/1h-split Claude Code JSONL has no nested
+        # cache_creation object at all. cc_5m/cc_1h stay 0 (the split
+        # was never recorded, not that nothing was written) and the
+        # flat cache_creation_input_tokens is kept as the write total
+        # unchanged - this is a format difference, not a sum mismatch,
+        # so it must never set ttl_sum_mismatch (0 != a nonzero flat
+        # value is not evidence of anything broken here).
+        pending.cc_5m = 0
+        pending.cc_1h = 0
+        pending.ttl_split_unknown = True
 
 
 def _merge_stop_reason(pending: _PendingTurn, message) -> None:
@@ -737,6 +763,15 @@ def _merge_into_pending(pending: _PendingTurn, d: dict, tool_use_names: dict[str
         if model == "<synthetic>" or d.get("isApiErrorMessage"):
             pending.is_synthetic = True
     message = d.get("message")
+    # A streamed reply writes one line per content block, each carrying a
+    # usage snapshot taken so far: the first line's output_tokens is a
+    # partial count (often single digits) and only the last line carries
+    # output_tokens_details. Keep the most complete snapshot seen.
+    usage = message.get("usage") if isinstance(message, dict) else None
+    if isinstance(usage, dict) and (
+        not pending.has_usage or int(usage.get("output_tokens") or 0) >= pending.output_tokens
+    ):
+        _apply_usage(pending, usage)
     content = message.get("content") if isinstance(message, dict) else None
     _merge_content_blocks(pending, content, tool_use_names)
     _merge_stop_reason(pending, message)
@@ -754,6 +789,51 @@ def _tool_result_length(content) -> int:
                     total += len(text)
         return total
     return 0
+
+
+#: How much of an error's text :func:`_tool_error_kind` reads.
+_ERROR_TEXT_CHARS = 600
+#: A hook or a Claude Code guard stopped the call before it ran.
+_ERROR_BLOCKED_RE = re.compile(
+    r"^(?:\w+:\w+ hook error|<tool_use_error>Blocked:|This agent is isolated in the worktree)"
+    r"|blocked by (?:a |the )?hook",
+    re.IGNORECASE,
+)
+#: You, or the permission classifier, said no.
+_ERROR_DENIED_RE = re.compile(
+    r"^(?:The user doesn't want to (?:proceed|take this action)|Permission to use |Permission for this action was denied)"
+)
+#: A command that exited non-zero.
+_ERROR_EXIT_RE = re.compile(r"^Exit code \d+")
+#: In a non-zero exit's output: the command itself was wrong (a path that
+#: isn't there, bad quoting, an unknown option, a one-off script that
+#: crashed), not a test or build that failed.
+_ERROR_COMMAND_WRONG_RE = re.compile(
+    r"unexpected EOF|syntax error|No such file or directory|command not found|cannot access|can't read"
+    r"|is not recognized as|Cannot find path|unknown option|unknown revision|ambiguous argument"
+    r"|cannot change to|not a git repository|File \"<(?:stdin|string)>\"",
+    re.IGNORECASE,
+)
+
+
+def _tool_error_kind(content) -> str:
+    """Why an erroring tool_result failed, from the start of its text:
+    ``blocked``, ``denied``, ``failed`` or ``misfire`` (see model.py's
+    ``Turn.tool_errors_by_kind``). The text is read here and dropped."""
+    if isinstance(content, list):
+        content = "".join(
+            b.get("text", "") for b in content if isinstance(b, dict) and isinstance(b.get("text"), str)
+        )
+    text = content.strip()[:_ERROR_TEXT_CHARS] if isinstance(content, str) else ""
+    if _ERROR_BLOCKED_RE.search(text.split("\n", 1)[0]):
+        return "blocked"
+    if _ERROR_DENIED_RE.match(text):
+        return "denied"
+    if _ERROR_EXIT_RE.match(text):
+        return "misfire" if _ERROR_COMMAND_WRONG_RE.search(text) else "failed"
+    if text.startswith("Command timed out"):
+        return "failed"
+    return "misfire"
 
 
 def _accumulate_tool_results(
@@ -801,6 +881,8 @@ def _accumulate_tool_results(
                 current.tool_error_count += 1
                 current.tool_error_chars += length
                 current.tool_errors_by_tool[name] = current.tool_errors_by_tool.get(name, 0) + 1
+                kind = _tool_error_kind(block.get("content"))
+                current.tool_errors_by_kind[kind] = current.tool_errors_by_kind.get(kind, 0) + 1
 
 
 def _resolve_preceding_tool(previous_turn: Turn | None) -> tuple[str, str | None]:
@@ -959,6 +1041,7 @@ def _finalize_turn(
         stop_reason=pending.stop_reason,
         tool_calls_by_tool=dict(pending.tool_calls_by_tool),
         tool_errors_by_tool=dict(pending.tool_errors_by_tool),
+        tool_errors_by_kind=dict(pending.tool_errors_by_kind),
         edit_target_hashes=tuple(pending.edit_target_hashes),
         human_correction=human_correction,
     )

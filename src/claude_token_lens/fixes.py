@@ -250,6 +250,40 @@ def _human(value) -> str:
     return str(value)
 
 
+def _shown(value) -> str:
+    """``_human`` for reading: whole numbers get thousands separators.
+    Prompts keep ``_human`` so Claude copies the value as written."""
+    if isinstance(value, int) and not isinstance(value, bool):
+        return f"{value:,}"
+    return _human(value)
+
+
+def _model_family(model_id: str) -> str:
+    for family in ("haiku", "sonnet", "opus", "fable"):
+        if family in model_id:
+            return family
+    return model_id
+
+
+def already_set(key: str, value, now) -> bool:
+    """Whether ``now`` already is ``value``, so offering the change would
+    do nothing. A model id matches its family's alias ("claude-sonnet-5"
+    is "sonnet"), text ignores case, and a map (skillOverrides) is set
+    when every entry it names already has that value."""
+    if value is None or now is None:
+        return False
+    if isinstance(value, dict):
+        return isinstance(now, dict) and all(already_set(key, v, now.get(k)) for k, v in value.items())
+    if isinstance(value, str) and isinstance(now, str):
+        wanted, current = value.strip().lower(), now.strip().lower()
+        if key == "model":
+            wanted, current = _model_family(wanted), _model_family(current)
+        return wanted == current
+    if isinstance(value, bool) or isinstance(now, bool):
+        return value is now
+    return value == now
+
+
 def _cli_value(value) -> str:
     if isinstance(value, bool):
         return "true" if value else "false"
@@ -296,8 +330,25 @@ def _after(change: SettingChange) -> str:
     return change.suggested or "your choice"
 
 
+#: Model families, cheapest first.
+_MODEL_ORDER = ("haiku", "sonnet", "opus", "fable")
+
+
+def _to_larger_model(change: SettingChange) -> bool:
+    """Whether ``change`` moves a model setting up to a pricier family."""
+    if change.key != "model" or not isinstance(change.value, str) or not isinstance(change.current, str):
+        return False
+    after, before = _model_family(change.value.lower()), _model_family(change.current.lower())
+    return after in _MODEL_ORDER and before in _MODEL_ORDER and _MODEL_ORDER.index(after) > _MODEL_ORDER.index(before)
+
+
 def explainer_for(rec: Recommendation, change: SettingChange) -> list[tuple[str, str]]:
     what, tradeoff, caveat = SETTING_TEXT.get(change.key, (f"The {change.key} setting.", "", ""))
+    if _to_larger_model(change):
+        tradeoff = (
+            "A larger model costs more per token, so every reply this agent sends costs more. The models check "
+            "shows how much."
+        )
     path, who = _where(change, rec.scope)
     if change.new_agent_file:
         where = (
@@ -320,7 +371,11 @@ def explainer_for(rec: Recommendation, change: SettingChange) -> list[tuple[str,
     )
     return [
         ("What this setting controls", what),
-        ("Now and after", f"Now: {_human(change.current)}. After: {_after(change)}."),
+        (
+            "Now and after",
+            f"Now: {_shown(change.current)}. "
+            f"After: {_shown(change.value) if change.value is not None else _after(change)}.",
+        ),
         ("Where and who it affects", where),
         ("Expected effect", effect),
         ("Trade-off", " ".join(t for t in (tradeoff, notes) if t) or "None known."),
@@ -476,6 +531,7 @@ __all__ = [
     "LEVER_LABELS",
     "PROFILE_SCOPE_WHERE",
     "SETTING_TEXT",
+    "already_set",
     "attach_fixes",
     "build_fix",
     "build_fixes",

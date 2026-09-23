@@ -16,33 +16,45 @@ same event-to-turn forward-merge locally, at this module's own
 into ``compaction.py``'s private symbols).
 
 **Why a compaction costs and saves money** (the model this module
-simulates): Claude Code auto-compacts a session once its context reaches
+simulates): Claude Code auto-compacts a session once its context nears
 ``autoCompactWindow`` tokens (observed in config snapshots, e.g.
 ``300000``; the model's own context window is typically 1,000,000 for a
 "[1m]"-aliased model or 200,000 otherwise -- see
-``context_budget.py``'s own assumed-window constants). Each compaction:
+``context_budget.py``'s own assumed-window constants). It keeps a
+reserve below the window, so a 300,000 window summarises near 267,000;
+this module measures that reserve from real auto compactions in sessions
+whose configured window is known. Each compaction:
 
-- **Costs** a summary write -- ``compactMetadata.postTokens`` becomes the
-  new baseline, written as ``cache_creation`` on the very next turn -- plus
-  a rediscovery allowance for the re-reads a compacted session tends to
-  redo just after the boundary (already measured, for *real* compactions,
-  as the following turn's re-cache write cost;
-  ``topology_redundant_reads``/``compaction.py``'s own post-compaction
-  re-cache-cost measurement is the source of the corpus-wide default this
-  module falls back on when a corpus/transcript never suffered one).
-- **Saves** money on every later turn, which now carries ``postTokens`` of
-  context instead of ``preTokens`` -- priced at ``cache_read`` (or
-  ``cache_write`` on a turn that itself re-caches).
+- **Costs** the summary request (not logged in the transcript: the
+  context read once more, with the summary as its output) and the reply
+  after it, which re-caches its whole context: the part of the session's
+  starting context that stays cached (system prompt, tools) is read, the
+  rest (CLAUDE.md, skills listing, the summary) is written again.
+- **Saves** money on every later turn, which now carries the session's
+  starting context plus the summary instead of the whole conversation --
+  priced at ``cache_read`` (or ``cache_write`` on a turn that itself
+  re-caches).
+
+The session's starting context (its first priced turn's context, a
+median of about 80,000 tokens on a real corpus) never goes away: a
+summary replaces the conversation, not the system prompt, tools and
+CLAUDE.md in front of it. Summary size barely tracks conversation size,
+so a simulated summary is this corpus's own median ``postTokens``, not a
+ratio of the context.
 
 :func:`simulate_compaction_windows` replays every transcript's priced
 turns, in order, against each of :data:`CANDIDATE_WINDOWS`: whenever the
-running (possibly already-shrunk) context would exceed the candidate
-window, a simulated compaction is inserted -- charging the summary write
-plus the rediscovery allowance, and removing the tokens the summary
-dropped (context times one minus the corpus's own observed compression
-ratio) from every later turn's context and cache reads. Content added
-after the summary is kept whole: a later turn carries ``postTokens`` plus
-whatever the conversation grew by since, not a scaled-down copy of it. A **real**
+running (possibly already-shrunk) context passes the candidate window
+less the trigger reserve, a simulated compaction is inserted -- charging
+the summary request and the re-cached reply above, and removing the
+tokens the summary dropped from every later turn's context and cache
+reads. A compaction that would not shrink the context (a starting
+context plus summary already at least as large) is skipped. Content
+added after the summary is kept whole: a later turn carries the new
+baseline plus whatever the conversation grew by since. The files a
+session re-reads after a summary are not visible in the transcript it
+replays, so the sweep does not charge them; the ``compaction-window``
+rule adds a rediscovery correction for that instead. A **real**
 observed compaction already recorded in the transcript's own events is
 kept as-is under every candidate window (its real cost, not a synthetic
 one) -- a policy sweep asks "what would happen on top of what already
@@ -139,15 +151,23 @@ from .snapshots import Snapshot, effective_provenance, managed_keys
 #: Assumptions this module's simulation makes, printed verbatim in the
 #: report section's notes (same convention as ``ttl.ASSUMPTIONS``).
 ASSUMPTIONS: list[str] = [
-    "a simulated compaction resets context to this corpus's own observed "
-    "compression ratio (median post_tokens/pre_tokens across real "
-    "compact_boundary events; 0.15 when this corpus has none)",
-    "a simulated compaction charges a summary-write cost equal to the "
-    "simulated post-compaction token count, priced at the 5-minute "
-    "cache-write rate (no observed TTL split of its own to reuse)",
-    "a simulated compaction also charges a rediscovery allowance -- this "
-    "corpus's own median post-compaction re-cache write cost from real "
-    "compact_boundary events; $0.00 (noted) when this corpus has none",
+    "a simulated compaction resets context to the session's own starting "
+    "context (its first reply's context: system prompt, tools, CLAUDE.md) "
+    "plus a summary of this corpus's own median post_tokens across real "
+    "compact_boundary events (20,000 tokens when this corpus has none); a "
+    "compaction that would not shrink the context is skipped",
+    "a candidate window summarises at the window less this corpus's own "
+    "median trigger reserve (window minus pre_tokens across real auto "
+    "compactions in sessions whose configured window is known; 0 when "
+    "none)",
+    "a simulated compaction charges the summary request (the context read "
+    "again, the summary as output, the triggering reply's own cache "
+    "split) and the reply after it re-caching its whole context: this "
+    "corpus's own median share of the starting context still cached after "
+    "a real compaction is read, the rest written at the reply's own "
+    "cache lifetime (all written when this corpus has none)",
+    "files re-read after a summary are not charged by the sweep -- the "
+    "compaction-window rule corrects for them before recommending a window",
     "every later turn's context and cache reads shrink by the tokens the "
     "simulated summary dropped (cache writes once reads are used up), "
     "until the next compaction, real or simulated; growth after the "
@@ -174,11 +194,6 @@ CANDIDATE_WINDOWS: tuple[int | None, ...] = (
     None,
 )
 
-#: The bucket a simulated compaction's summary write is priced at (5
-#: minutes) -- see ``ASSUMPTIONS``.
-_SUMMARY_WRITE_TTL_S = 300
-
-
 def _window_label(window: int | None) -> str:
     return "none" if window is None else f"{window:,}"
 
@@ -194,12 +209,24 @@ class CompactionSimThresholds:
     :class:`~claude_token_lens.ttl.TtlThresholds`.
     """
 
-    #: Used for a transcript/corpus with no real ``compact_boundary``
-    #: event to measure a compression ratio from.
-    default_compression_ratio: float = 0.15
+    #: Summary size used for a corpus with no real ``compact_boundary``
+    #: event to measure ``postTokens`` from.
+    default_summary_tokens: int = 20_000
+    #: Tokens below ``autoCompactWindow`` at which a compaction fires, used
+    #: for a corpus with no real auto compaction in a session whose
+    #: configured window is known.
+    default_trigger_reserve_tokens: int = 0
+    #: Share of a session's starting context still read from cache on the
+    #: reply after a compaction, used for a corpus with no real one (0:
+    #: the whole new context is written).
+    default_cached_prefix_share: float = 0.0
     #: Used for a corpus with no real post-compaction re-cache turn to
-    #: measure a rediscovery allowance from.
+    #: measure a rediscovery allowance from (the ``compaction-window``
+    #: rule's correction, not the sweep).
     default_rediscovery_allowance_usd: float = 0.0
+    #: The ``compaction-window`` rule and the profile goals never suggest a
+    #: window that summarises more often than this per session.
+    max_compactions_per_session: float = 2.0
     #: A window switch is recommended only when the best candidate
     #: window's cost is below this fraction of the observed cost AND
     #: saves more than ``switch_usd`` -- both conditions, independently
@@ -236,8 +263,14 @@ class CompactionSimThresholds:
             data = nested
 
         kwargs: dict = {}
-        if "default_compression_ratio" in data:
-            kwargs["default_compression_ratio"] = float(data["default_compression_ratio"])
+        if "default_summary_tokens" in data:
+            kwargs["default_summary_tokens"] = int(data["default_summary_tokens"])
+        if "default_trigger_reserve_tokens" in data:
+            kwargs["default_trigger_reserve_tokens"] = int(data["default_trigger_reserve_tokens"])
+        if "default_cached_prefix_share" in data:
+            kwargs["default_cached_prefix_share"] = float(data["default_cached_prefix_share"])
+        if "max_compactions_per_session" in data:
+            kwargs["max_compactions_per_session"] = float(data["max_compactions_per_session"])
         if "default_rediscovery_allowance_usd" in data:
             kwargs["default_rediscovery_allowance_usd"] = float(data["default_rediscovery_allowance_usd"])
         if "switch_pct" in data:
@@ -255,12 +288,19 @@ class CompactionSimThresholds:
         same convention as ``RecacheThresholds.describe``/
         ``TtlThresholds.describe``."""
         return [
-            f"default_compression_ratio = {self.default_compression_ratio:.2f}: used "
-            "when this corpus has no real compact_boundary event to measure a "
-            "compression ratio from.",
+            f"default_summary_tokens = {self.default_summary_tokens:,}: used when this "
+            "corpus has no real compact_boundary event to measure a summary size from.",
+            f"default_trigger_reserve_tokens = {self.default_trigger_reserve_tokens:,}: used "
+            "when this corpus has no real auto compaction under a known window to measure "
+            "the reserve from.",
+            f"default_cached_prefix_share = {self.default_cached_prefix_share:.2f}: used when "
+            "this corpus has no real compaction to measure how much of the starting context "
+            "stays cached after one.",
             f"default_rediscovery_allowance_usd = ${self.default_rediscovery_allowance_usd:.2f}: "
             "used when this corpus has no real post-compaction re-cache turn to measure "
             "a rediscovery allowance from.",
+            f"max_compactions_per_session = {self.max_compactions_per_session:g}: no window "
+            "that summarises more often than this per session is suggested.",
             f"switch_pct = {self.switch_pct:.2f} and switch_usd = ${self.switch_usd:.2f}: a "
             "window switch is recommended only when the best candidate window's cost is "
             "below switch_pct of the observed cost AND saves more than switch_usd -- both "
@@ -352,24 +392,66 @@ def _real_compaction_turn_indices(
 # -- corpus-wide defaults --------------------------------------------------
 
 
-def _corpus_compression_ratio(
+def _corpus_summary_tokens(results: list[TranscriptResult], th: CompactionSimThresholds) -> tuple[float, bool]:
+    """``(tokens, is_default)`` -- the median ``post_tokens`` (the summary
+    a compaction leaves behind) across every real ``COMPACT_BOUNDARY``
+    event in ``results``, or ``th.default_summary_tokens`` (flagged) when
+    there are none. A flat size, not a ratio of the context: on a real
+    corpus a summary barely grows with the conversation it replaces."""
+    sizes = [
+        event.post_tokens
+        for tr in results
+        for event in tr.events
+        if event.kind == EventKind.COMPACT_BOUNDARY and event.post_tokens
+    ]
+    if not sizes:
+        return float(th.default_summary_tokens), True
+    return float(statistics.median(sizes)), False
+
+
+def _corpus_trigger_reserve(
+    results: list[TranscriptResult], snapshot_windows: dict[str, int | None], th: CompactionSimThresholds
+) -> tuple[float, bool]:
+    """``(tokens, is_default)`` -- how far below ``autoCompactWindow`` a
+    real auto compaction fired: the median ``window - pre_tokens`` across
+    auto-triggered ``COMPACT_BOUNDARY`` events in top-level sessions whose
+    configured window is known, or ``th.default_trigger_reserve_tokens``
+    (flagged) when there are none."""
+    reserves: list[int] = []
+    for tr in results:
+        window = snapshot_windows.get(tr.meta.session_id) if tr.meta.kind == "top-level" else None
+        if not window:
+            continue
+        for event in tr.events:
+            if event.kind != EventKind.COMPACT_BOUNDARY or event.trigger != "auto" or not event.pre_tokens:
+                continue
+            reserve = window - event.pre_tokens
+            if 0 <= reserve < window:
+                reserves.append(reserve)
+    if not reserves:
+        return float(th.default_trigger_reserve_tokens), True
+    return float(statistics.median(reserves)), False
+
+
+def _corpus_cached_prefix_share(
     results: list[TranscriptResult], th: CompactionSimThresholds
 ) -> tuple[float, bool]:
-    """``(ratio, is_default)`` -- the median ``post_tokens/pre_tokens``
-    across every real ``COMPACT_BOUNDARY`` event in ``results``, or
-    ``th.default_compression_ratio`` (flagged) when there are none."""
-    ratios: list[float] = []
+    """``(share, is_default)`` -- how much of a session's starting context
+    the reply after a real compaction still read from cache (its
+    ``cache_read`` over the transcript's first priced turn's context,
+    capped at 1), median across every real compaction joined to a reply,
+    or ``th.default_cached_prefix_share`` (flagged) when there are none."""
+    shares: list[float] = []
     for tr in results:
-        for event in tr.events:
-            if (
-                event.kind == EventKind.COMPACT_BOUNDARY
-                and event.pre_tokens
-                and event.post_tokens is not None
-            ):
-                ratios.append(event.post_tokens / event.pre_tokens)
-    if not ratios:
-        return th.default_compression_ratio, True
-    return statistics.median(ratios), False
+        priced = _priced_turns(tr.turns)
+        if not priced or priced[0].ctx <= 0:
+            continue
+        floor = priced[0].ctx
+        for index in _real_compaction_turn_indices(tr, priced, th):
+            shares.append(min(1.0, priced[index].cache_read_tokens / floor))
+    if not shares:
+        return th.default_cached_prefix_share, True
+    return statistics.median(shares), False
 
 
 def _corpus_rediscovery_allowance(
@@ -410,59 +492,87 @@ class _ReplayResult:
     turns: int = 0
 
 
-def _write_cost(turn: Turn, rates: RatesArg, tokens: float) -> float:
-    """Price ``tokens`` as a fresh 5-minute cache write on ``turn`` --
-    the simulated compaction's summary-write cost (see ``ASSUMPTIONS``).
-    """
-    if tokens <= 0:
-        return 0.0
-    return price_turn(
-        turn, rates, write_split={_SUMMARY_WRITE_TTL_S: int(round(tokens))}, read_tokens=0
-    ).cache_write_cost
+@dataclass(slots=True, frozen=True)
+class _Shape:
+    """What a simulated compaction looks like, measured from this
+    corpus's real ones (see ``ASSUMPTIONS``)."""
+
+    summary_tokens: float = 20_000.0
+    trigger_reserve: float = 0.0
+    cached_prefix_share: float = 0.0
 
 
-def _shrunk_cost(turn: Turn, rates: RatesArg, dropped: float, *, zero_cache: bool) -> float:
+def _shrunk_cost(turn: Turn, rates: RatesArg, dropped: float) -> float:
     """Price ``turn`` with ``dropped`` tokens taken out of its context:
     out of its cache reads first (the dropped history is the old, cached
     part of the prefix), then out of its cache writes once the reads are
-    used up (a turn that re-cached its whole prefix). ``zero_cache=True``
-    additionally zeroes every cache-token field (used on a simulated
-    compaction's own triggering turn, whose real cache volumes are
-    charged separately as the summary write plus rediscovery allowance --
-    never both, see the module docstring)."""
+    used up (a turn that re-cached its whole prefix)."""
+    if dropped <= 0:
+        return price_turn(turn, rates).total
     ctx = max(0, int(round(turn.ctx - dropped)))
-    if zero_cache:
-        shrunk = replace(turn, ctx=ctx, cache_creation_tokens=0, cache_read_tokens=0, cc_5m=0, cc_1h=0)
-    elif dropped <= 0:
-        shrunk = turn
-    else:
-        read = max(0, int(round(turn.cache_read_tokens - dropped)))
-        from_writes = max(0.0, dropped - turn.cache_read_tokens)
-        write = turn.cache_creation_tokens
-        keep = max(0.0, (write - from_writes) / write) if write else 1.0
-        shrunk = replace(
-            turn,
-            ctx=ctx,
-            cache_read_tokens=read,
-            cache_creation_tokens=int(round(write * keep)),
-            cc_5m=int(round(turn.cc_5m * keep)),
-            cc_1h=int(round(turn.cc_1h * keep)),
-        )
+    read = max(0, int(round(turn.cache_read_tokens - dropped)))
+    from_writes = max(0.0, dropped - turn.cache_read_tokens)
+    write = turn.cache_creation_tokens
+    keep = max(0.0, (write - from_writes) / write) if write else 1.0
+    shrunk = replace(
+        turn,
+        ctx=ctx,
+        cache_read_tokens=read,
+        cache_creation_tokens=int(round(write * keep)),
+        cc_5m=int(round(turn.cc_5m * keep)),
+        cc_1h=int(round(turn.cc_1h * keep)),
+    )
     return price_turn(shrunk, rates).total
+
+
+def _summary_request_cost(turn: Turn, rates: RatesArg, dropped: float, summary_tokens: float) -> float:
+    """The summary request a compaction sends and the transcript never
+    logs: the triggering turn's own (already shrunk) context, read and
+    written the way that turn's was, with the summary as its output."""
+    request = replace(turn, output_tokens=int(round(summary_tokens)), thinking_tokens=0)
+    return _shrunk_cost(request, rates, dropped)
+
+
+def _recached_reply_cost(turn: Turn, rates: RatesArg, new_ctx: float, cached_prefix: float) -> float:
+    """The reply right after a simulated compaction: its context is now
+    ``new_ctx`` (starting context plus summary), of which ``cached_prefix``
+    is still read from cache and the rest is written, at this turn's own
+    5-minute/1-hour mix (5 minutes when it wrote nothing)."""
+    ctx = int(round(new_ctx))
+    read = min(ctx, int(round(cached_prefix)))
+    uncached = min(turn.input_tokens, ctx - read)
+    write = ctx - read - uncached
+    written = turn.cc_5m + turn.cc_1h
+    write_1h = int(round(write * turn.cc_1h / written)) if written else 0
+    reply = replace(
+        turn,
+        ctx=ctx,
+        input_tokens=uncached,
+        cache_read_tokens=read,
+        cache_creation_tokens=write,
+        cc_5m=write - write_1h,
+        cc_1h=write_1h,
+    )
+    return price_turn(reply, rates).total
 
 
 def _replay_transcript(
     priced_turns: list[Turn],
     lookup: RatesLookup,
     window: int | None,
-    compression_ratio: float,
-    rediscovery_allowance_usd: float,
+    shape: _Shape,
     real_after: dict[int, int],
 ) -> _ReplayResult:
     """Walk ``priced_turns`` in order under candidate ``window``. See the
     module docstring's algorithm description and its "no candidate
     window" identity (``window=None`` reproduces the true observed cost
     exactly, since ``dropped`` then never leaves 0)."""
+    if not priced_turns:
+        return _ReplayResult()
+    starting_ctx = float(priced_turns[0].ctx)
+    new_ctx = starting_ctx + shape.summary_tokens
+    cached_prefix = starting_ctx * shape.cached_prefix_share
+    trigger = None if window is None else window - shape.trigger_reserve
     dropped = 0.0  # tokens simulated summaries have taken out of the context
     cost = 0.0
     compactions = 0
@@ -482,16 +592,14 @@ def _replay_transcript(
             sim_ctx = float(turn.ctx)
         else:
             sim_ctx = max(0.0, turn.ctx - dropped)
-            if window is not None and sim_ctx > window:
-                post_tokens_sim = sim_ctx * compression_ratio
-                cost += _write_cost(turn, rates, post_tokens_sim)
-                cost += rediscovery_allowance_usd
+            if trigger is not None and sim_ctx > trigger and new_ctx < sim_ctx:
+                cost += _summary_request_cost(turn, rates, dropped, shape.summary_tokens)
+                cost += _recached_reply_cost(turn, rates, new_ctx, cached_prefix)
                 compactions += 1
-                dropped = turn.ctx - post_tokens_sim
-                cost += _shrunk_cost(turn, rates, dropped, zero_cache=True)
-                sim_ctx = post_tokens_sim
+                dropped = turn.ctx - new_ctx
+                sim_ctx = new_ctx
             else:
-                cost += _shrunk_cost(turn, rates, dropped, zero_cache=False)
+                cost += _shrunk_cost(turn, rates, dropped)
         ctx_sum += sim_ctx
     return _ReplayResult(cost=cost, compactions=compactions, ctx_sum=ctx_sum, turns=len(priced_turns))
 
@@ -615,13 +723,14 @@ class CompactionSimStats:
 
     def __init__(
         self,
-        compression_ratio: float,
-        compression_ratio_is_default: bool,
+        shape: _Shape,
+        defaults: frozenset[str],
         rediscovery_allowance_usd: float,
         rediscovery_allowance_is_default: bool,
     ) -> None:
-        self.compression_ratio = compression_ratio
-        self.compression_ratio_is_default = compression_ratio_is_default
+        self.shape = shape
+        #: The ``_Shape`` fields that fell back to a threshold default.
+        self.defaults = defaults
         self.rediscovery_allowance_usd = rediscovery_allowance_usd
         self.rediscovery_allowance_is_default = rediscovery_allowance_is_default
         self._acc: dict[tuple[str, int | None], _WindowAccumulator] = {}
@@ -644,9 +753,7 @@ class CompactionSimStats:
 
         results_by_window: dict[int | None, _ReplayResult] = {}
         for window in CANDIDATE_WINDOWS:
-            result = _replay_transcript(
-                priced_turns, lookup, window, self.compression_ratio, self.rediscovery_allowance_usd, real_after
-            )
+            result = _replay_transcript(priced_turns, lookup, window, self.shape, real_after)
             results_by_window[window] = result
             acc = self._acc.setdefault((key, window), _WindowAccumulator())
             acc.compactions += result.compactions
@@ -658,14 +765,7 @@ class CompactionSimStats:
             observed_cost = results_by_window[None].cost
             sim_result = results_by_window.get(snapshot_window)
             if sim_result is None:
-                sim_result = _replay_transcript(
-                    priced_turns,
-                    lookup,
-                    snapshot_window,
-                    self.compression_ratio,
-                    self.rediscovery_allowance_usd,
-                    real_after,
-                )
+                sim_result = _replay_transcript(priced_turns, lookup, snapshot_window, self.shape, real_after)
             self._fidelity_rows.append(
                 CompactionSimFidelityRow(
                     session_id=tr.meta.session_id,
@@ -751,15 +851,26 @@ def simulate_compaction_windows(
     same id a subagent transcript's own ``TranscriptMeta.session_id``
     shares with its parent top-level session, per ``discovery.py``) to
     that session's own configured ``autoCompactWindow``, or ``None`` when
-    unknown -- used only for the fidelity self-check, which is restricted
-    to top-level transcripts (see ``build_section``'s
-    ``compaction_sim_fidelity`` table).
+    unknown -- used for the fidelity self-check, which is restricted to
+    top-level transcripts (see ``build_section``'s
+    ``compaction_sim_fidelity`` table), and to measure the trigger reserve.
     """
     th = thresholds or _DEFAULT_THRESHOLDS
     lookup = _as_lookup(rates)
-    ratio, ratio_is_default = _corpus_compression_ratio(results, th)
+    summary, summary_is_default = _corpus_summary_tokens(results, th)
+    reserve, reserve_is_default = _corpus_trigger_reserve(results, snapshot_windows, th)
+    share, share_is_default = _corpus_cached_prefix_share(results, th)
+    defaults = frozenset(
+        name
+        for name, is_default in (
+            ("summary_tokens", summary_is_default),
+            ("trigger_reserve", reserve_is_default),
+            ("cached_prefix_share", share_is_default),
+        )
+        if is_default
+    )
     allowance, allowance_is_default = _corpus_rediscovery_allowance(results, lookup, th)
-    stats = CompactionSimStats(ratio, ratio_is_default, allowance, allowance_is_default)
+    stats = CompactionSimStats(_Shape(summary, reserve, share), defaults, allowance, allowance_is_default)
     for tr in results:
         snapshot_window = snapshot_windows.get(tr.meta.session_id)
         stats.add_transcript(tr, lookup, snapshot_window, th)
@@ -776,8 +887,9 @@ def build_section(stats: CompactionSimStats, thresholds: CompactionSimThresholds
     key's best window, top-level and subagent), and
     ``compaction_sim_fidelity`` (top-level sessions with a known
     configured window). Notes print :data:`ASSUMPTIONS` verbatim, the
-    compression ratio/rediscovery allowance actually used (flagging a
-    corpus default), ``thresholds.describe()``, and a fidelity warning
+    summary size, trigger reserve, cached share and rediscovery allowance
+    actually used (flagging a default), ``thresholds.describe()``, and a
+    fidelity warning
     for any session above ``thresholds.fidelity_warn_pct``.
     """
     th = thresholds or _DEFAULT_THRESHOLDS
@@ -868,17 +980,37 @@ def build_section(stats: CompactionSimStats, thresholds: CompactionSimThresholds
     )
 
     notes: list[str] = list(ASSUMPTIONS)
-    ratio_note = f"Compression ratio used: {stats.compression_ratio:.3f}"
-    if stats.compression_ratio_is_default:
-        ratio_note += " (this corpus's own default -- no real compact_boundary event found)."
-    else:
-        ratio_note += " (this corpus's own median post_tokens/pre_tokens across real compact_boundary events)."
-    notes.append(ratio_note)
+    shape = stats.shape
+    notes.append(
+        f"Summary size used: {shape.summary_tokens:,.0f} tokens"
+        + (
+            " (default -- no real compact_boundary event found)."
+            if "summary_tokens" in stats.defaults
+            else " (this corpus's own median post_tokens across real compact_boundary events)."
+        )
+    )
+    notes.append(
+        f"Trigger reserve used: {shape.trigger_reserve:,.0f} tokens below the window"
+        + (
+            " (default -- no real auto compaction under a known window found)."
+            if "trigger_reserve" in stats.defaults
+            else " (this corpus's own median window minus pre_tokens across real auto compactions)."
+        )
+    )
+    notes.append(
+        f"Starting context still cached after a summary: {100.0 * shape.cached_prefix_share:.0f}%"
+        + (
+            " (default -- no real compaction joined to a reply found)."
+            if "cached_prefix_share" in stats.defaults
+            else " (this corpus's own median across real compactions)."
+        )
+    )
     allowance_note = f"Rediscovery allowance used: ${stats.rediscovery_allowance_usd:.4f}"
     if stats.rediscovery_allowance_is_default:
-        allowance_note += " (this corpus's own default -- no real post-compaction re-cache turn found)."
+        allowance_note += " (default -- no real post-compaction re-cache turn found)."
     else:
         allowance_note += " (this corpus's own median post-compaction re-cache write cost)."
+    allowance_note += " Used by the compaction-window rule's correction, not charged by the sweep."
     notes.append(allowance_note)
     notes.extend(th.describe())
 
@@ -1006,8 +1138,8 @@ def _post_compaction_redundant_reads_mean(report: ReportModel) -> float | None:
     ``topology.py``'s own ``_REDISCOVERY_WINDOW_TURNS`` constant).
     ``None`` when the ``agents`` section (topology's own) isn't part of
     this report, or that table has no rows/mean -- the caller then falls
-    back to doubling the flat allowance instead (see this module's
-    docstring's conservative-rule-change note)."""
+    back to one allowance per simulated compaction instead (see
+    :func:`_rule_compaction_window`)."""
     table = _table(report, "agents", "topology_redundant_reads")
     if table is None or len(table.rows) < 2:
         return None
@@ -1022,34 +1154,27 @@ def _rule_compaction_window(
 ) -> list[Recommendation]:
     """"compaction-window": recommends a *range floor* for
     ``autoCompactWindow`` -- the smallest candidate window whose modelled
-    per-session compaction count stays at or below 2 and whose modelled
-    saving clears ``thresholds.switch_pct``/``switch_usd`` over the
-    observed cost, once a conservative rediscovery correction has been
-    added on top of the sweep's own flat allowance.
+    per-session compaction count stays at or below
+    ``thresholds.max_compactions_per_session`` and whose modelled saving
+    clears ``thresholds.switch_pct``/``switch_usd`` over the observed
+    cost, once a rediscovery correction has been taken off.
 
-    Conservative rule change (v4 wiring round): the sweep
-    (:func:`simulate_compaction_windows`) charges only one flat
-    rediscovery allowance per simulated compaction, so on a real corpus
-    a small window's modelled saving can look implausibly large (a
-    100,000-token window showing a ~68% saving was the trigger case --
-    not credible once real post-compaction rediscovery is accounted
-    for). This rule -- the arithmetic in ``simulate_compaction_windows``
-    itself is unchanged, out of this wiring's file ownership -- adds its
-    own extra, more conservative rediscovery estimate on top of each
-    candidate window's already-reported saving before deciding whether
-    to recommend it:
+    The sweep (:func:`simulate_compaction_windows`) prices the summary
+    and the re-cached reply after it, but cannot see the files a session
+    re-reads once a summary has dropped them, so a small window's saving
+    is an upper bound. This rule takes a rediscovery estimate off each
+    candidate window's saving before deciding whether to recommend it,
+    priced with the rediscovery allowance (this corpus's own median
+    post-compaction re-cache write cost, from the section's notes):
 
-    - When this report also carries topology's ``agents`` section, the
-      extra estimate is this corpus's own mean rate of redundant reads
-      landing shortly after a real compaction (``topology_redundant_reads``'
-      second row) multiplied by the flat allowance already used -- i.e.
-      assume each such extra redundant read costs about as much as the
-      one rediscovery event the flat allowance already prices for.
+    - When this report also carries topology's ``agents`` section, one
+      allowance per redundant read landing shortly after a real
+      compaction (``topology_redundant_reads``' second row, a mean per
+      session) per simulated compaction.
     - Otherwise (no ``topology_redundant_reads`` data available -- e.g.
       a report filtered down to only the ``compaction_sim`` section),
-      the extra estimate is simply the flat allowance again, so the
-      total rediscovery cost assumed is *double* the sweep's own flat
-      allowance -- noted as a fallback rather than silently applied.
+      one allowance per simulated compaction -- noted as a fallback
+      rather than silently applied.
 
     A recommendation, when one fires, is phrased as a floor ("at least
     W"), not a single optimal point -- the correction above is itself a
@@ -1076,14 +1201,14 @@ def _rule_compaction_window(
         extra_per_compaction_usd = allowance_usd * redundant_reads_mean
         allowance_source = (
             f"this corpus's own post-compaction redundant-read rate "
-            f"({redundant_reads_mean:.2f} redundant reads/session, from topology_redundant_reads) "
-            f"applied to the ${allowance_usd:.4f} flat allowance already charged"
+            f"({redundant_reads_mean:.2f} redundant reads/session, from topology_redundant_reads), "
+            f"each priced at ${allowance_usd:.4f}, the median re-cache after a real summary"
         )
     else:
         extra_per_compaction_usd = allowance_usd
         allowance_source = (
-            f"topology_redundant_reads unavailable in this report, so the ${allowance_usd:.4f} "
-            "flat allowance already charged was doubled as a conservative fallback"
+            f"topology_redundant_reads unavailable in this report, so one ${allowance_usd:.4f} "
+            "re-cache (the median after a real summary) per simulated summary as a fallback"
         )
 
     chosen: tuple[str, float, float, float] | None = None  # (label, compactions_per_session, raw_saving, adjusted_saving)
@@ -1098,7 +1223,7 @@ def _rule_compaction_window(
         delta_usd = row[col["delta_usd"]]
         if compactions_per_session is None or delta_usd is None:
             continue
-        if compactions_per_session > 2:
+        if compactions_per_session > thresholds.max_compactions_per_session:
             continue
         raw_saving_usd = max(0.0, -delta_usd)
         adjusted_saving_usd = raw_saving_usd - extra_per_compaction_usd * compactions_per_session
@@ -1118,10 +1243,10 @@ def _rule_compaction_window(
     scope, file_note = _scope_and_lever_note(snapshot)
     action = (
         f"Set autoCompactWindow to at least {label} in {file_note}. This is a modelled, not "
-        f"observed, range floor: smaller windows compact more often, and the sweep's own flat "
-        f"rediscovery allowance likely understates their true cost, so only the smallest window "
-        f"clearing the threshold after a conservative rediscovery correction ({allowance_source}) "
-        f"is named, rather than a single 'best' point. Projected saving at {label}: "
+        f"observed, range floor: smaller windows compact more often, and the replay can't see "
+        f"the files a session re-reads after a summary, so only the smallest window clearing the "
+        f"threshold after a rediscovery correction ({allowance_source}) is named, rather than a "
+        f"single 'best' point. Projected saving at {label}: "
         f"${adjusted_saving_usd:.2f} vs the observed cost of ${observed_cost:.2f} "
         f"(raw modelled saving before this correction: ${raw_saving_usd:.2f})."
     )

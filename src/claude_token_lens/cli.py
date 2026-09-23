@@ -1455,10 +1455,7 @@ def _cmd_check(args: argparse.Namespace) -> int:
     from .units import Units
 
     def emit(model, config_dir, window) -> int:
-        snapshot = next(
-            (s for s in reversed(snapshots.load_snapshots(config_dir)) if isinstance(s.data.get("effective"), dict)),
-            None,
-        )
+        snapshot = snapshots.with_every_project_agents(snapshots.load_snapshots(config_dir))
         agents = snapshot.data.get("effective_agents") if snapshot is not None else None
         ctx = quick_actions.Context(
             model=model,

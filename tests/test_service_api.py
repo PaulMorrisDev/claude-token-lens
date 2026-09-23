@@ -27,6 +27,7 @@ import http.client
 import json
 import sys
 import threading
+import time
 import types
 from http.server import ThreadingHTTPServer
 from pathlib import Path
@@ -1185,6 +1186,46 @@ def test_report_json_is_memoized_per_window(server, monkeypatch):
     resp3, _ = server.request("GET", "/api/report.json?window_days=7")
     assert resp3.status == 200
     assert calls["n"] == 2
+
+
+def test_requests_for_a_window_already_being_built_share_that_build(server, monkeypatch):
+    """A page opening several panels at once asks for the same window
+    several times; only the first builds, the rest wait for it."""
+    calls = {"n": 0}
+    started, release = threading.Event(), threading.Event()
+    real_corpus = server.corpus
+
+    def slow_corpus_from_store(store, *, days=None, since=None, until=None, window_by="mtime"):
+        calls["n"] += 1
+        started.set()
+        release.wait(10)
+        return real_corpus
+
+    import claude_token_lens.service as service_pkg
+
+    fake = types.ModuleType("claude_token_lens.service.rebuild")
+    fake.corpus_from_store = slow_corpus_from_store
+    monkeypatch.setitem(sys.modules, "claude_token_lens.service.rebuild", fake)
+    monkeypatch.setattr(service_pkg, "rebuild", fake, raising=False)
+
+    statuses = []
+
+    def fetch():
+        resp, _ = server.request("GET", "/api/report.json")
+        statuses.append(resp.status)
+
+    first = threading.Thread(target=fetch)
+    first.start()
+    assert started.wait(10)
+    others = [threading.Thread(target=fetch) for _ in range(3)]
+    for thread in others:
+        thread.start()
+    time.sleep(0.3)  # let them reach the build in progress
+    release.set()
+    for thread in [first, *others]:
+        thread.join(10)
+    assert statuses == [200] * 4
+    assert calls["n"] == 1
 
 
 def test_report_json_cache_invalidates_when_store_change_token_changes(server, monkeypatch):

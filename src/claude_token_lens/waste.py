@@ -11,8 +11,20 @@ reader" convention -- see that module's docstring):
 - ``tool-error`` -- the assistant turn whose own tool_use produced a
   ``tool_result`` block with ``is_error: true`` (``Turn.tool_error_count
   > 0``, the v4-wasted-turns parser addition -- see model.py's module
-  docstring). This is the turn *itself*, not the turn before or after
-  it: the assistant spent tokens producing a tool call that failed.
+  docstring) because the call couldn't run as written: a wrong path, a
+  malformed command, an edit whose text wasn't found (``misfire`` in
+  ``Turn.tool_errors_by_kind``). This is the turn *itself*, not the turn
+  before or after it: the assistant spent tokens producing a tool call
+  that failed.
+- ``blocked`` -- the same, where a hook or a Claude Code guard stopped
+  the call (``blocked``) and nothing misfired.
+- A turn whose only errors are commands that ran and reported failure
+  (``failed``: a failing test or build, a timeout) is not wasted: Claude
+  reads that output and acts on it. It is counted
+  (``WasteStats.failed_command_turns``) and left out. One whose only
+  errors are denials falls through to ``tool-denial``. A digest from
+  before ``tool_errors_by_kind`` existed counts every error as
+  ``tool-error``.
 - ``interrupt`` -- a turn immediately followed by ``[Request
   interrupted``: i.e. the *next* priced turn's own
   ``preceding_primary == EventKind.INTERRUPT``. The turn under scrutiny
@@ -60,9 +72,9 @@ answer a narrower, less actionable question (see ``waste_summary``'s own
 
 Cause priority when a turn could match more than one rule: limit-pause
 exclusion first (outranks everything -- see above), then ``max-turns``
-(a whole-transcript override), then ``tool-error`` (the turn's own
-defect), then ``interrupt``/``tool-denial`` (what happened right after
-it). ``api-error-retry`` is independent of this priority order -- it is
+(a whole-transcript override), then ``tool-error``/``blocked`` (the
+turn's own defect), then ``interrupt``/``tool-denial`` (what happened
+right after it). ``api-error-retry`` is independent of this priority order -- it is
 a separate, non-costed counter, not a cause a turn is exclusively
 assigned to.
 
@@ -152,10 +164,10 @@ ASSUMPTIONS: tuple[str, ...] = (
     "internal breakdown",
 )
 
-#: The four cost-attributed causes, in the fixed display order every
+#: The cost-attributed causes, in the fixed display order every
 #: by-cause table uses (not sorted by size -- see limits.py's HIT_KINDS
 #: for the same fixed-order convention).
-CAUSES: tuple[str, ...] = ("tool-error", "interrupt", "tool-denial", "max-turns")
+CAUSES: tuple[str, ...] = ("tool-error", "blocked", "interrupt", "tool-denial", "max-turns")
 
 #: The count-only cause, reported alongside CAUSES but never priced.
 API_ERROR_RETRY_CAUSE = "api-error-retry"
@@ -164,9 +176,14 @@ API_ERROR_RETRY_CAUSE = "api-error-retry"
 #: for this kind of wasted turn again.
 LEVERS: dict[str, str] = {
     "tool-error": (
-        "Write clearer briefs, double-check paths/commands before handing "
-        "them to a tool, and pre-approve routine permissions so a tool "
-        "call resolves correctly the first time."
+        "Give exact paths and names in briefs, and have Claude check a path "
+        "exists or read a file before it edits or runs against it, so a "
+        "tool call works the first time."
+    ),
+    "blocked": (
+        "Put the rule a hook enforces into the instructions of the agent "
+        "that keeps hitting it (its prompt, or CLAUDE.md for the main "
+        "session), so Claude doesn't try the blocked action first."
     ),
     "interrupt": (
         "Batch instructions and plan the whole step before running it, so "
@@ -299,6 +316,9 @@ class WasteStats:
         self.total_priced_tokens = 0
         self.limit_pause_excluded_turns = 0
         self.api_error_retry_turns = 0
+        #: Turns whose only failed tool calls were commands that ran and
+        #: reported failure -- work, not waste (see the module docstring).
+        self.failed_command_turns = 0
         self.pricing_version: str | None = None
         self.pricing_currency: str | None = None
         self.pricing_sha8: str | None = None
@@ -341,8 +361,10 @@ class WasteStats:
             if transcript_truncated:
                 cause = "max-turns"
             elif turn.tool_error_count > 0:
-                cause = "tool-error"
-            else:
+                cause = _error_cause(turn)
+                if cause is None and turn.tool_errors_by_kind.get("failed"):
+                    self.failed_command_turns += 1
+            if cause is None and not transcript_truncated:
                 next_turn = priced[i + 1] if i + 1 < n else None
                 if next_turn is not None and next_turn.preceding_primary == EventKind.INTERRUPT:
                     cause = "interrupt"
@@ -401,6 +423,17 @@ def compute_waste(
     return stats
 
 
+def _error_cause(turn) -> str | None:
+    """The cause a turn with failed tool calls counts under, or ``None``
+    when none of them wasted the turn (see the module docstring)."""
+    kinds = turn.tool_errors_by_kind
+    if not kinds or kinds.get("misfire"):
+        return "tool-error"
+    if kinds.get("blocked"):
+        return "blocked"
+    return None
+
+
 # -- report section -----------------------------------------------------------
 
 
@@ -427,6 +460,11 @@ def build_section(stats: WasteStats, thresholds: WasteThresholds | None = None) 
         "(Turn.gap_cause == \"limit\") were excluded from this section entirely -- "
         "see the limits section for their own pause/cost accounting."
     )
+    notes.append(
+        f"{stats.failed_command_turns} turn(s) whose only failed tool calls were commands that "
+        "ran and reported failure (a failing test or build, a timeout) are not counted as wasted: "
+        "Claude used that output."
+    )
 
     return Section(key="waste", title="Wasted-turn spend", tables=tables, notes=notes)
 
@@ -449,6 +487,7 @@ def _summary_table(stats: WasteStats) -> Table:
             Column(key="wasted_tokens", label="Wasted tokens", kind="tokens"),
             Column(key="limit_pause_excluded_turns", label="Excluded (limit pause)", kind="int"),
             Column(key="api_error_retry_turns", label="API-error-retry turns (count only)", kind="int"),
+            Column(key="failed_command_turns", label="Not counted (a command ran and failed)", kind="int"),
         ],
         rows=[
             [
@@ -462,6 +501,7 @@ def _summary_table(stats: WasteStats) -> Table:
                 wasted_tokens,
                 stats.limit_pause_excluded_turns,
                 stats.api_error_retry_turns,
+                stats.failed_command_turns,
             ]
         ],
         notes=[

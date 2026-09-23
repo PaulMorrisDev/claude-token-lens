@@ -18,7 +18,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from . import quality, whatif
+from . import carry, quality, whatif
+from .compaction_sim import CompactionSimThresholds
 from .fixes import build_fix, build_fixes
 from .model import Recommendation, SettingChange
 from .profiles import goals
@@ -53,6 +54,15 @@ def _money(ctx: Context, usd, *, period: bool = False) -> str:
     value = whatif._num(usd)
     amount = ctx.units.money(value, period=ctx.period if period else "") if value else None
     return amount.text() if amount is not None else "none"
+
+
+def _short(text: str, limit: int = 160) -> str:
+    """``text`` cut at a word to about ``limit`` characters, for a table
+    cell; the full text is on the Context files tab."""
+    text = " ".join(str(text or "").split())
+    if len(text) <= limit:
+        return text
+    return text[:limit].rsplit(" ", 1)[0].rstrip(",;:-") + "…"
 
 
 def _who(agent) -> str:
@@ -91,6 +101,7 @@ def _candidate_fix(ctx: Context, candidate: dict, title: str) -> dict:
     a recommendation's change gets."""
     agent = candidate["agent"]
     estimate = candidate.get("estimate") or {}
+    fields = ctx.effective_agents.get(agent) if agent else None
     change = SettingChange(
         target="agent" if agent else "settings",
         key=candidate["key"],
@@ -98,6 +109,8 @@ def _candidate_fix(ctx: Context, candidate: dict, title: str) -> dict:
         value=candidate["value"],
         current=candidate["now"],
         new_agent_file=bool(agent) and agent in _BUILTIN_AGENT_TYPES and agent not in ctx.effective_agents,
+        # A project's own agent file, not one in ~/.claude/agents.
+        scope="repo" if isinstance(fields, dict) and fields.get("source") == "project" else "",
     )
     effect = estimate.get("effect_text") or ""
     rec = Recommendation(
@@ -159,9 +172,15 @@ def _models(ctx: Context) -> dict:
     )
     draft = _goal(ctx, "models")
     fixes = _goal_fixes(ctx, draft, lambda c: f"{_who(c['agent'])}: use {c['value']}")
+    tips = _models_left_out(ctx, rows)
     if not fixes:
-        return _result("ok", "Every agent is already on the cheapest model that priced lower by a useful margin.",
-                       table=table)
+        return _result(
+            "ok",
+            "Every agent is already on the cheapest model that priced lower by a useful margin"
+            + (", or did worse on it." if tips else "."),
+            table=table,
+            tips=tips,
+        )
     top = max(draft["candidates"], key=lambda c: (c["estimate"] or {}).get("saving_usd") or 0)
     return _result(
         "act",
@@ -170,7 +189,27 @@ def _models(ctx: Context) -> dict:
         "cheaper model may need more replies for hard work, so try it on one agent first.",
         table=table,
         fixes=fixes,
+        tips=tips,
     )
+
+
+def _models_left_out(ctx: Context, rows: list[dict]) -> list[dict]:
+    """A tip for each cheaper model the models goal skipped because the
+    quality check found that agent did worse on it."""
+    worse = quality.worse_models(whatif._Tables(ctx.model).rows("quality", "quality_by_setup"))
+    tips = []
+    for row in rows:
+        agent, best = row.get("agent_type"), row.get("best_cheaper_alternative_model")
+        setup = worse.get((agent, goals._alias(best or ""))) if best else None
+        if setup is None or (whatif._num(row.get("saving_pct")) or 0.0) < goals.MIN_SHARE_PCT:
+            continue
+        tips.append({
+            "title": f"{_who(agent)}: {goals._alias(best)} not suggested",
+            "text": f"It would price {_pct(row.get('saving_pct'))} lower, but on {setup.get('model')} at effort "
+            f"{setup.get('effort')} it did worse than on {setup.get('compared_model')} at effort "
+            f"{setup.get('compared_effort')}: {setup.get('difference')}",
+        })
+    return tips
 
 
 def _effort(ctx: Context) -> dict:
@@ -217,6 +256,18 @@ def _compaction(ctx: Context) -> dict:
     draft = _goal(ctx, "compaction")
     fixes = _goal_fixes(ctx, draft, lambda c: f"Summarise at {c['value']:,} tokens")
     if not fixes:
+        current = (ctx.effective or {}).get("autoCompactWindow")
+        if current and any(str(r.get("window")).replace(",", "") == str(current) for r in rows):
+            # The last column is against the sessions as they ran, most
+            # perhaps before this setting, so its own row can read cheaper.
+            limit = CompactionSimThresholds().max_compactions_per_session
+            return _result(
+                "ok",
+                f"You already summarise at {int(current):,} tokens, within a few percent of the cheapest point "
+                f"replayed that summarises at most {limit:g} times a session. The last column compares each point "
+                "with your sessions as they ran, not with that setting.",
+                table=table,
+            )
         return _result("ok", "Your current summary point is within a few percent of the cheapest one replayed.",
                        table=table)
     [candidate] = draft["candidates"]
@@ -295,18 +346,32 @@ def _skills(ctx: Context) -> dict:
     if not any(r["status"] != "not listed" for r in rows):
         return _result("no_data", f"No skill listing was recorded {ctx.period}.")
     unused = sorted((r for r in rows if r["status"] == "unused"), key=lambda r: -r["listing_cost_usd"])
+    kept = [r for r in rows if r["status"] == "needed by a tool"]
     table = _table(
         [("name", "Skill"), ("source", "From"), ("description", "What it is"), ("cost", "Listing cost")],
-        [[r["name"], r["source_label"], r["description"], r["listing_cost_text"]] for r in unused[:20]],
+        [[r["name"], r["source_label"], _short(r["description"]), _money(ctx, r["listing_cost_usd"])]
+         for r in unused[:20]],
     )
+    tips = [
+        {
+            "title": f"{r['name']}: needed by the {r['needed_by']} tool",
+            "text": f"Claude never used it {ctx.period}, but Claude Code's {r['needed_by']} tool tells Claude to "
+            "load it, so it isn't offered for hiding. Listing it by name only drops its description and keeps "
+            "it loadable.",
+        }
+        for r in kept
+    ]
     if not unused:
-        return _result("ok", f"Claude used every listed skill {ctx.period}.")
+        return _result("ok", f"Claude used every listed skill it can do without {ctx.period}.", tips=tips)
     return _result(
         "act",
         f"{len(unused)} skills were listed to Claude at every session and subagent start but never used "
         f"{ctx.period}. Hiding them from Claude keeps them available to you as /name.",
         table=table,
-        fixes=data["fixes"] + [fix for r in unused[:5] for fix in r["fixes"]],
+        fixes=data["fixes"]
+        + [fix for r in unused[:5] for fix in r["fixes"]]
+        + [{**fix, "title": f"{r['name']}: list it by name only"} for r in kept for fix in r["fixes"]],
+        tips=tips,
     )
 
 
@@ -325,7 +390,7 @@ def _claude_md(ctx: Context) -> dict:
     summaries = [summary for _item, summary in pairs]
     table = _table(
         [("file", "File"), ("tokens", "Tokens"), ("sent", "Sent to"), ("cost", "Cost"), ("findings", "Findings")],
-        [[s["path"], f"{s['tokens']:,}", s["reach_text"], s["cost_text"] or "none", len(s["findings"])]
+        [[s["path"], f"{s['tokens']:,}", s["reach_text"], _money(ctx, s["cost_usd"]), len(s["findings"])]
          for s in summaries[:10]],
     )
     if not any(summary["seen"] for summary in summaries):
@@ -350,17 +415,21 @@ def _claude_md(ctx: Context) -> dict:
     )
 
 
-#: Environment levers for tool output: (tool test, env name, suggested
-#: value, Claude Code's default, what it is).
-_OUTPUT_LEVERS = (
-    (lambda tool: tool in ("Bash", "PowerShell"), "BASH_MAX_OUTPUT_LENGTH", "15000", "30,000 characters",
-     "The most characters of a shell command's output Claude Code keeps; the middle of longer output is cut."),
-    (lambda tool: tool.startswith("mcp__"), "MAX_MCP_OUTPUT_TOKENS", "10000", "25,000 tokens",
-     "The most tokens of one MCP tool result Claude Code keeps."),
-)
+#: For each of ``carry.OUTPUT_CAPS``: (Claude Code's default, what it is).
+_OUTPUT_CAP_TEXT = {
+    "BASH_MAX_OUTPUT_LENGTH": (
+        "30,000 characters",
+        "The most characters of a shell command's output Claude Code keeps; the middle of longer output is cut.",
+    ),
+    "MAX_MCP_OUTPUT_TOKENS": ("25,000 tokens", "The most tokens of one MCP tool result Claude Code keeps."),
+}
+#: A cap is offered only when it would have saved at least this share of
+#: what carrying the results it covers cost; below that, most of them are
+#: already under the cap and cutting the rest isn't worth the lost output.
+CAP_MIN_SAVING_SHARE = 0.10
 
 
-def _env_fix(name: str, value: str, default: str, what: str, carry_text: str) -> dict:
+def _env_fix(name: str, value: str, default: str, what: str, effect: str) -> dict:
     return {
         "key": name,
         "agent": None,
@@ -369,8 +438,7 @@ def _env_fix(name: str, value: str, default: str, what: str, carry_text: str) ->
             ["What this setting controls", what],
             ["Now and after", f"Now: Claude Code's default ({default}) unless you set it. After: {value}."],
             ["Where and who it affects", "The env block of ~/.claude/settings.json: every session, in every project."],
-            ["Expected effect", f"Results from these tools stayed in context and cost {carry_text}. Capping "
-             "them cuts that for the largest results; the saving isn't estimated on its own."],
+            ["Expected effect", effect],
             ["Trade-off", "Long output is cut, which can hide an error at the end. Claude then re-runs a narrower "
              "command, which costs a reply."],
             ["How to undo it", f"Remove {name} from the env block (Claude Code shows the change before saving)."],
@@ -398,12 +466,38 @@ def _tool_output(ctx: Context) -> dict:
           f"{int(whatif._num(r.get('tokens_entered')) or 0):,}", f"{whatif._num(r.get('mean_turns_carried')) or 0:.0f}",
           _money(ctx, r.get("carry_cost_usd"))] for r in rows[:10]],
     )
-    fixes = []
-    for matches, name, value, default, what in _OUTPUT_LEVERS:
-        cost = sum(whatif._num(r.get("carry_cost_usd")) or 0 for r in rows if matches(str(r.get("key") or "")))
-        if total and cost / total >= 0.05:
-            fixes.append(_env_fix(name, value, default, what, _money(ctx, cost, period=True)))
-    tips = []
+    fixes, tips = [], []
+    savings = {r.get("setting"): r for r in tables.rows("carry", "carry_output_cap_savings")}
+    for cap in carry.OUTPUT_CAPS:
+        default, what = _OUTPUT_CAP_TEXT[cap.setting]
+        cost = sum(whatif._num(r.get("carry_cost_usd")) or 0 for r in rows if cap.covers(str(r.get("key") or "")))
+        if not total or cost / total < 0.05:
+            continue
+        row = savings.get(cap.setting)
+        if row is None:
+            # A report from before the saving was worked out.
+            fixes.append(_env_fix(
+                cap.setting, cap.value, default, what,
+                f"Results from these tools stayed in context and cost {_money(ctx, cost, period=True)}. Capping "
+                "them cuts that for the largest results; the saving isn't estimated on its own.",
+            ))
+            continue
+        saved = whatif._num(row.get("usd_saved")) or 0.0
+        cut = f"{int(whatif._num(row.get('results_affected')) or 0):,} of {int(whatif._num(row.get('results')) or 0):,}"
+        if saved >= CAP_MIN_SAVING_SHARE * cost:
+            fixes.append(_env_fix(
+                cap.setting, cap.value, default, what,
+                f"At {cap.value}, it would have cut {cut} results and saved up to "
+                f"{_money(ctx, saved, period=True)} of the {_money(ctx, cost, period=True)} they cost to keep in "
+                "context. Up to: results from one reply are counted together.",
+            ))
+        else:
+            tips.append({
+                "title": f"{cap.setting} at {cap.value} would save little",
+                "text": f"It would have cut {cut} results and saved {_money(ctx, saved, period=True)} of the "
+                f"{_money(ctx, cost, period=True)} they cost to keep in context: most of that output is already "
+                "shorter, and cutting the rest can hide an error Claude then re-runs a command to see.",
+            })
     read = next((r for r in rows if r.get("key") == "Read"), None)
     if read and total and (whatif._num(read.get("carry_cost_usd")) or 0) / total >= 0.1:
         tips.append({
@@ -413,6 +507,9 @@ def _tool_output(ctx: Context) -> dict:
         })
     if not fixes and not tips:
         return _result("ok", "No one tool's output dominates your context.", table=table)
+    if not fixes and all(t["title"].endswith("would save little") for t in tips):
+        return _result("ok", "No output cap would save much: most results are already short.", table=table,
+                       tips=tips)
     return _result(
         "act",
         f"Carrying tool results in context cost {_money(ctx, total, period=True)}. "
@@ -497,6 +594,7 @@ def _quality(ctx: Context) -> dict:
         if issues:
             struggling.append((row, issues))
     worse = [r for r in setups if r.get("setup_verdict") == "worse"]
+    mixed = [r for r in setups if r.get("setup_verdict") == "mixed"]
     table = _table(
         [("agent", "Agent"), ("runs", "Runs"), ("unfinished", "Didn't finish"), ("tools", "Failed tool calls"),
          ("shell", "Failed shell commands"), ("stands_out", "What stands out")],
@@ -538,6 +636,15 @@ def _quality(ctx: Context) -> dict:
         if not any(fix.get("agent") == agent for fix in fixes):
             tips.append({"title": f"{agent} did worse on {row.get('model')}, effort {row.get('effort')}",
                          "text": evidence + " Its agent file no longer uses that setup, so nothing to change."})
+    for row in mixed:
+        agent = row.get("agent_type")
+        who = _who(None if agent == quality.MAIN else agent)
+        tips.append({
+            "title": f"{who}: mixed results on {row.get('model')}, effort {row.get('effort')}",
+            "text": f"Against {row.get('compared_model')} at effort {row.get('compared_effort')}, some signals were "
+            f"clearly better and others clearly worse: {row.get('difference')} Neither setup is clearly better, so "
+            "nothing to switch.",
+        })
     for row, issues in struggling:
         agent = row.get("agent_type")
         who = _who(None if agent == quality.MAIN else agent)
@@ -578,6 +685,7 @@ def _quality(ctx: Context) -> dict:
             "ok",
             "No agent stands out: none fails often, and no model or effort did clearly worse than the one it is "
             "compared with" + (f" ({len(tested)} setups compared)." if tested else "."),
+            tips=tips,
         )
     parts = []
     if worse:

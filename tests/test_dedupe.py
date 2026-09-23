@@ -16,17 +16,19 @@ from helpers import tool_use_block, turn_line, write_jsonl
 
 def test_three_lines_same_id_count_as_one_turn_with_unioned_tools(tmp_path: Path):
     lines = [
-        turn_line(message_id="msg_A", input_tokens=100, cache_creation_input_tokens=20, output_tokens=10),
+        turn_line(message_id="msg_A", input_tokens=100, cache_creation_input_tokens=20, output_tokens=4),
         turn_line(
             message_id="msg_A",
-            # usage on a later block-line in the same group must be ignored:
-            # the first line's usage wins.
-            input_tokens=999,
-            output_tokens=999,
+            input_tokens=100,
+            cache_creation_input_tokens=20,
+            output_tokens=4,
             content=[tool_use_block("Bash", "tu1", {"command": "echo hi"})],
         ),
         turn_line(
             message_id="msg_A",
+            input_tokens=100,
+            cache_creation_input_tokens=20,
+            output_tokens=605,
             content=[tool_use_block("Read", "tu2", {"file_path": "C:/x.txt"})],
         ),
         turn_line(message_id="msg_B", input_tokens=50, output_tokens=5),
@@ -41,13 +43,52 @@ def test_three_lines_same_id_count_as_one_turn_with_unioned_tools(tmp_path: Path
     assert len(result.turns) == 2
 
     turn_a, turn_b = result.turns
-    # First line's usage wins, not the 999/999 on a later block-line.
     assert turn_a.input_tokens == 100
-    assert turn_a.output_tokens == 10
+    assert turn_a.cache_creation_tokens == 20
     assert turn_a.tool_names == ("Bash", "Read")
     assert turn_a.turn_index == 1
     assert turn_b.turn_index == 2
     assert turn_b.input_tokens == 50
+
+
+def test_streamed_reply_takes_usage_from_its_most_complete_line(tmp_path: Path):
+    """Claude Code writes a streamed reply as one line per content block.
+    The first line's output_tokens is a partial count and only the last
+    carries output_tokens_details, so the turn must use the last line's
+    usage, not the first's."""
+    first = turn_line(message_id="msg_A", input_tokens=10, cache_creation_input_tokens=49_295, output_tokens=4)
+    last = turn_line(
+        message_id="msg_A",
+        input_tokens=10,
+        cache_creation_input_tokens=49_295,
+        output_tokens=605,
+        content=[tool_use_block("Bash", "tu1", {"command": "echo hi"})],
+    )
+    last["message"]["usage"]["output_tokens_details"] = {"thinking_tokens": 291}
+    path = tmp_path / "session.jsonl"
+    write_jsonl(path, [first, last])
+
+    (turn,) = parse_transcript(path, TranscriptMeta(path=str(path))).turns
+
+    assert turn.output_tokens == 605
+    assert turn.thinking_tokens == 291
+    assert turn.cache_creation_tokens == 49_295
+    assert turn.tool_names == ("Bash",)
+
+
+def test_streamed_reply_ignores_a_less_complete_later_snapshot(tmp_path: Path):
+    lines = [
+        turn_line(message_id="msg_A", output_tokens=300),
+        turn_line(message_id="msg_A", output_tokens=7, content=[{"type": "text", "text": "late"}]),
+    ]
+    lines[0]["message"]["usage"]["output_tokens_details"] = {"thinking_tokens": 120}
+    path = tmp_path / "session.jsonl"
+    write_jsonl(path, lines)
+
+    (turn,) = parse_transcript(path, TranscriptMeta(path=str(path))).turns
+
+    assert turn.output_tokens == 300
+    assert turn.thinking_tokens == 120
 
 
 def test_late_out_of_order_duplicate_id_is_dropped_and_counted(tmp_path: Path):

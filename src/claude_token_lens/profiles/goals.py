@@ -12,10 +12,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .. import whatif
-from ..fixes import LEVER_LABELS, SETTING_TEXT
+from .. import quality, whatif
+from ..compaction_sim import CompactionSimThresholds
+from ..fixes import LEVER_LABELS, SETTING_TEXT, already_set
 from ..recommend import _NOT_OVERRIDABLE, _SKIPS_CLAUDE_MD
 from ..units import Units
+from .diff import _EFFECTIVE_AGENT_FIELD
 
 TOP = whatif.TOP
 
@@ -93,7 +95,8 @@ class _Draft:
         if agent is None:
             return self.effective.get(key)
         fields = self.effective_agents.get(agent)
-        return fields.get(key) if isinstance(fields, dict) else None
+        # effective_agents names its fields its own way (experimental_cache_ttl).
+        return fields.get(_EFFECTIVE_AGENT_FIELD.get(key, key)) if isinstance(fields, dict) else None
 
     def add(self, key: str, agent: str | None, value, *, ticked: bool, evidence: str) -> None:
         if value is None or any(c["key"] == key and c["agent"] == agent for c in self.candidates):
@@ -102,7 +105,7 @@ class _Draft:
         if agent in _NOT_OVERRIDABLE or (key == "omitClaudeMd" and agent in _SKIPS_CLAUDE_MD):
             return
         now = self.now(key, agent)
-        if now == value:
+        if now == value or already_set(key, value, now):
             return
         what, tradeoff, note = SETTING_TEXT.get(key, ("", "", ""))
         self.candidates.append(
@@ -145,11 +148,15 @@ def _from_recommendations(draft: _Draft, recommendations, keys: set[str] | None 
 
 
 def _models(draft: _Draft, tables, *, subagents_only: bool) -> None:
+    worse = quality.worse_models(tables.rows("quality", "quality_by_setup"))
     for row in tables.rows("model_swap", "model_swap_by_agent_type"):
         agent = row.get("agent_type")
         best = row.get("best_cheaper_alternative_model")
         pct = whatif._num(row.get("saving_pct")) or 0.0
         if not best or pct < MIN_SHARE_PCT or (subagents_only and agent == TOP):
+            continue
+        if (agent, _alias(best)) in worse:
+            # The quality check found this agent did worse on that model.
             continue
         who = "the main session" if agent == TOP else agent
         draft.add(
@@ -197,7 +204,18 @@ def _compaction(draft: _Draft, tables) -> None:
     current = draft.now("autoCompactWindow", None)
     base = next((r for r in rows if str(r.get("window")).replace(",", "") == str(current)), None)
     base = base or next((r for r in rows if str(r.get("window")) == "none"), None)
-    best = min((r for r in rows if str(r.get("window")) != "none"), key=lambda r: r["cost"], default=None)
+    # Same limit as the compaction-window rule: a window that summarises
+    # more often loses too much detail to suggest, however cheap.
+    limit = CompactionSimThresholds().max_compactions_per_session
+    best = min(
+        (
+            r
+            for r in rows
+            if str(r.get("window")) != "none" and (whatif._num(r.get("compactions_per_session")) or 0.0) <= limit
+        ),
+        key=lambda r: r["cost"],
+        default=None,
+    )
     if best is None or base is None:
         return
     pct = _share(base["cost"] - best["cost"], base["cost"])

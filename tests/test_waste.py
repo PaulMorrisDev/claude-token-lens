@@ -113,6 +113,44 @@ def test_tool_error_absent_when_no_is_error_result(tmp_path: Path):
     assert stats.wasted_cost_usd == 0.0
 
 
+def test_tool_error_kinds_come_from_the_start_of_the_error_text():
+    from claude_token_lens.parse import _tool_error_kind
+
+    assert _tool_error_kind("PreToolUse:Read hook error: [pwsh guard.ps1]: first Read must use the index") == "blocked"
+    assert _tool_error_kind("<tool_use_error>Blocked: sleep 90 followed by: cat out.txt</tool_use_error>") == "blocked"
+    assert _tool_error_kind("The user doesn't want to proceed with this tool use.") == "denied"
+    assert _tool_error_kind("Permission to use Bash with command git push has been denied.") == "denied"
+    assert _tool_error_kind("Exit code 1\nFAILED tests/test_api.py::test_login - AssertionError") == "failed"
+    assert _tool_error_kind([{"type": "text", "text": "Exit code 143\nCommand timed out after 2m 0s"}]) == "failed"
+    assert _tool_error_kind("Exit code 2\n/usr/bin/bash: -c: line 3: unexpected EOF while looking for `'") == "misfire"
+    assert _tool_error_kind("Exit code 1\n  File \"<stdin>\", line 5\nKeyError: 'x'") == "misfire"
+    assert _tool_error_kind("<tool_use_error>String to replace not found in file.</tool_use_error>") == "misfire"
+
+
+def _one_error_turn(tmp_path: Path, text: str):
+    lines = [
+        turn_line(message_id="msg_1", model=_MODEL, input_tokens=1_000_000, output_tokens=0,
+                  content=[tool_use_block("Bash", "tu_a", {"command": "pytest"})]),
+        user_block_line([tool_result_block("tu_a", text, is_error=True)]),
+    ]
+    stats = waste.WasteStats(config_dir=tmp_path / "cfg")
+    stats.add(_parse(tmp_path, lines), _pricing())
+    return stats
+
+
+def test_a_failing_test_run_is_work_not_waste(tmp_path: Path):
+    stats = _one_error_turn(tmp_path, "Exit code 1\n3 failed, 40 passed")
+    assert stats.wasted_turns == 0 and stats.failed_command_turns == 1
+    summary = _table(waste.build_section(stats), "waste_summary")
+    assert summary.rows[0][[c.key for c in summary.columns].index("failed_command_turns")] == 1
+
+
+def test_a_hook_block_is_its_own_cause(tmp_path: Path):
+    stats = _one_error_turn(tmp_path, "PreToolUse:Bash hook error: [guard.ps1]: BLOCKED: run the eval first")
+    assert stats._by_cause["blocked"].turns == 1 and stats._by_cause["tool-error"].turns == 0
+    assert "hook enforces" in waste.LEVERS["blocked"]
+
+
 # -- interrupt ---------------------------------------------------------------
 
 

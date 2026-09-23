@@ -471,6 +471,47 @@ def latest_snapshot_per_project(snapshots: list[Snapshot]) -> dict[str, Snapshot
     return latest
 
 
+def with_every_project_agents(snapshots: list[Snapshot]) -> Snapshot | None:
+    """The newest snapshot that records settings, with its ``agents`` and
+    ``effective_agents`` widened to every project's latest snapshot.
+
+    The config hook records only the agents of the project a session
+    started in, so the newest snapshot alone knows nothing of another
+    project's agents: advice about them would read their settings as
+    unset, call them built into Claude Code and point ``apply`` at the
+    user folder. A project agent wins over a user agent of the same name
+    (Claude Code's own order); otherwise the newer snapshot wins.
+    Settings, provenance and managed keys stay the newest snapshot's.
+    ``None`` when ``snapshots`` is empty.
+    """
+    base = next((s for s in reversed(snapshots) if isinstance(s.data.get("effective"), dict)), None)
+    if base is None:
+        base = snapshots[-1] if snapshots else None
+    if base is None:
+        return None
+    merged: dict[str, dict] = {"agents": {}, "effective_agents": {}}
+    for snap in sorted(latest_snapshot_per_project(snapshots).values(), key=lambda s: s.ts) + [base]:
+        for section, into in merged.items():
+            entries = snap.data.get(section)
+            if not isinstance(entries, dict):
+                continue
+            for name, entry in entries.items():
+                held = into.get(name)
+                if (
+                    isinstance(held, dict)
+                    and held.get("source") == "project"
+                    and isinstance(entry, dict)
+                    and entry.get("source") != "project"
+                ):
+                    continue
+                into[name] = entry
+    data = dict(base.data)
+    for section, entries in merged.items():
+        if entries or section in data:
+            data[section] = entries
+    return Snapshot(path=base.path, ts=base.ts, data=data)
+
+
 def _hash_effective_config(effective: dict) -> str:
     encoded = json.dumps(effective, sort_keys=True, default=str).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()

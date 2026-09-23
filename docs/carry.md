@@ -45,10 +45,11 @@ tokens via the project's standing chars/4 approximation):
 
 | Table | What it shows |
 |---|---|
-| `carry_by_tool` | Per tool name: carried-result count, tokens entered, mean turns carried, carry tokens, carry cost, and that tool's carry-token share of the corpus's total cache volume. |
+| `carry_by_tool` | Per tool name: carried-result count, tokens entered, mean turns carried, carry tokens, carry cost, that tool's carry-token share of the corpus's total cache volume, and `saving_if_capped_usd`, the saving from capping that tool's own results at `big_result_tokens`. |
 | `carry_by_agent_type` | Same roll-up, keyed by agent type (`"top-level"` for the main session). |
 | `carry_top_results` | The single most expensive individual carried results, corpus-wide: tool name, agent type, tokens, turns carried, carry cost — no content, no path, no command. |
 | `carry_truncation_savings` | For each configured token cap (default 2,000 and 8,000): how many results exceed it, tokens saved, and USD saved if every one of them had been truncated to that cap. |
+| `carry_output_cap_savings` | For each Claude Code output-cap setting the tool-output check suggests (`carry.OUTPUT_CAPS`: `BASH_MAX_OUTPUT_LENGTH` at 15,000 characters, about 3,750 tokens, over Bash and PowerShell results; `MAX_MCP_OUTPUT_TOKENS` at 10,000 over `mcp__` results): results it covers, results over it, tokens and USD saved, and what carrying those results cost. The check offers a cap only when it saves at least 10% of that cost (`quick_actions.CAP_MIN_SAVING_SHARE`); otherwise it says why not. |
 
 `share_of_cache_volume_pct` is an **attribution share, not a
 partition**: `carry_tokens` double-counts by construction (the same
@@ -82,9 +83,11 @@ change at the point the result is produced — pipe long Bash/PowerShell
 output through `head`/`tail` or a digest script, prefer `Grep` over
 `Read` for large files, and cap agent report length before it enters
 context — so `Recommendation.lever` is `None`. The action names the
-projected saving from the `carry_truncation_savings` row at
-`big_result_tokens` (default 8,000), or at the largest configured cap
-when no row matches.
+projected saving from that tool's own `saving_if_capped_usd` in
+`carry_by_tool` (its results capped at `big_result_tokens`, default
+8,000). (Earlier versions quoted the corpus-wide
+`carry_truncation_savings` row, every tool's saving, as that one
+tool's.)
 
 ## Worked example (synthetic numbers)
 

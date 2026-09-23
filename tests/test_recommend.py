@@ -2058,25 +2058,29 @@ def test_v4_module_rules_fire_via_recommend_and_evidence_resolves(tmp_path: Path
         )
     carry_section = carry.build_section(carry.compute_carry(carry_transcripts, pricing.resolve_model))
 
-    # -- compaction_sim: the module's own worked-example fixture (linear
-    # ctx growth, no real compact_boundary event; docs/compaction-sim.md's
-    # own worked example).
-    k = 20_000
+    # -- compaction_sim: the module's own plateau fixture (an 80,000-token
+    # start, a jump to 280,000, then 40 replies that add nothing; no real
+    # compact_boundary event; docs/compaction-sim.md's worked examples).
     cs_turns = [
+        _turn(message_id="msg_cs_1", request_id="req_cs_1", turn_index=1, ts="2026-09-18T12:00:00.000Z",
+              cache_creation_tokens=80_000, cc_5m=80_000, ctx=80_000),
+        _turn(message_id="msg_cs_2", request_id="req_cs_2", turn_index=2, ts="2026-09-18T12:01:00.000Z",
+              cache_creation_tokens=200_000, cache_read_tokens=80_000, cc_5m=200_000, ctx=280_000),
+    ] + [
         _turn(
             message_id=f"msg_cs_{i}",
             request_id=f"req_cs_{i}",
             turn_index=i,
             ts=f"2026-09-18T12:{i:02d}:00.000Z",
-            cache_creation_tokens=k,
-            cache_read_tokens=(i - 1) * k,
-            cc_5m=k,
+            cache_creation_tokens=0,
+            cache_read_tokens=280_000,
+            cc_5m=0,
             cc_1h=0,
-            ctx=i * k,
+            ctx=280_000,
         )
-        for i in range(1, 21)
+        for i in range(3, 43)
     ]
-    # Five copies, so the modelled saving at 150,000 (about 0.50 USD per
+    # Five copies, so the modelled saving at 100,000 (0.99 USD per
     # session) clears the default 1 USD bar.
     cs_transcripts = [
         TranscriptResult(

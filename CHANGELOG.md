@@ -7,6 +7,98 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Output and thinking tokens were undercounted by more than half.**
+  Claude Code writes a streamed reply as one line per content block, and
+  only the last line carries the full output count and the thinking
+  count; the parser took the first line's. Cached digests are re-parsed
+  (`PARSER_VERSION` 12).
+- **The auto-compact window advice overstated savings several times
+  over.** The simulation dropped a session's context to about 15% after
+  each summary, but the system prompt, tools, CLAUDE.md and skills
+  listing (about 80,000 tokens on a typical corpus) stay. A simulated
+  summary now leaves the session's own starting context plus a summary
+  of your usual size, fires the same distance below the window as your
+  real ones (a 300,000 window fires near 267,000), and is charged for
+  the summary request and the re-cached reply after it. The rule's
+  "at most 2 summaries a session" limit now also applies to the
+  compaction profile goal. When `autoCompactWindow` is already the best
+  point, the compaction check now says so, and says that its last
+  column compares each point with your sessions as they ran.
+- **The model and quality checks gave opposite advice for the same
+  agent.** A cheaper model the quality section found an agent did worse
+  on is no longer suggested for it by the models check, the report's
+  model-tier card or the models profile goal; each says it was left
+  out. A setup clearly worse on some signals and clearly better on
+  others is now "Mixed" rather than "Worse", with no switch offered, and
+  going back to a larger model says it costs more rather than warning
+  about extra replies.
+- **The skills review offered to hide skills Claude Code's own tools
+  need.** The Artifact tool tells Claude to load `artifact-design`,
+  `artifact-capabilities`, `artifact-diagramming` and `workshop`, and
+  the Workflow tool `workflow-authoring`; hidden, those tools'
+  instructions break. They are left out of the hide-all fix, marked
+  "Needed by a Claude Code tool", and offered `name-only` instead.
+- **The skills review offered to hide skills you had deleted.** A skill
+  with no file left on disk was labelled "Built into Claude Code" and
+  offered for hiding, though hiding it saves nothing once it's gone. One
+  that no listing has named for 14 days before the newest one is now
+  "Removed", marked "No longer listed", and gets no fixes.
+- **The CLAUDE.md review called sections agent-only when they weren't.**
+  An agent with a one-word name (`claude`, `Explore`, `Plan`) matched
+  every "Claude Code", `.claude/` path or "plan", so whole files were
+  offered for moving into that agent. A one-word name now counts only
+  in backticks, before "agent" or "subagent", or as a `subagent_type`.
+- **The shell output cap quoted every shell result's cost as its
+  saving.** The tool-output check now prices each cap on the results it
+  would cut (the new `carry_output_cap_savings` table) and offers it
+  only when it saves at least 10% of what those results cost; otherwise
+  it says why not. The `tool-output-carry` recommendation now quotes
+  that tool's own saving (`carry_by_tool`'s new `saving_if_capped_usd`)
+  rather than every tool's.
+- **Failing tests and hook blocks were counted as wasted tool errors.**
+  The parser now records why each tool call failed (the kind only, never
+  the text). A command that ran and reported failure, such as a failing
+  test or build, is no longer wasted (it is counted in `waste_summary`'s
+  new `failed_command_turns`); a hook or Claude Code guard block is its
+  own `blocked` cause with its own lever; a denial counts as
+  `tool-denial`. `tool-error` now means a call that couldn't run as
+  written.
+- **Advice about another project's agents.** Recommendations, `check`,
+  and the dashboard's quick actions and profile goals read agent
+  settings from the newest config snapshot only, which records just the
+  agents of the project it was taken in. Another project's agents showed
+  as "not set", custom agents could be called built into Claude Code,
+  and fixes pointed at `~/.claude/agents` with `--scope user` instead of
+  the project's own agent file. Agents now come from every project's
+  latest snapshot.
+- **Changes already made were still recommended.** Advice is measured
+  over the whole period, so a change made part-way through it kept being
+  offered at its full saving. A change the current config already makes
+  (a model alias such as `sonnet` matches `claude-sonnet-5`) is now left
+  out, and a card with nothing left to change is dropped. Quick actions
+  and profile goals also read an agent's cache lifetime and max turns
+  under the wrong names, so they always showed as "not set".
+- The skills review no longer offers to hide a skill that
+  `~/.claude/settings.json` already hides, or one whose plugin is turned
+  off; offering `user-invocable-only` for a skill set to `off` would have
+  shown it again. Such skills are marked "Already hidden".
+- The dashboard asked for each report once per tab: opening several tabs
+  built the same slow report several times over. Requests for a report
+  that is already being built now wait for that build.
+- **Dashboard layout and wording.** Overview's two "start here" links ran
+  together into one line ("…and howOr check…"). Long prompts on Context
+  files and the sessions table widened the whole page past the window;
+  code blocks now wrap and wide tables scroll in their own box. Money
+  reads `1,234.56 USD` as in the report; times read `2026-09-23 13:26 UTC`
+  rather than raw ISO; session ids show 8 characters with the full id on
+  hover; skill descriptions in Quick actions are shortened; setting values
+  and counts get thousands separators. The Usage tab's "Recent
+  conversation summaries" showed the oldest 50, not the newest, and
+  formatted its transcript number as a quantity ("1,038"). Quick
+  actions' evidence buttons now say what they show and hide.
+
 ## [0.5.0] - 2026-09-23
 
 ### Added

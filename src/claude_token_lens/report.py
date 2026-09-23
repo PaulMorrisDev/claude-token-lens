@@ -1419,26 +1419,23 @@ def build_report(
     carry_stats = carry.compute_carry(all_results, pricing.resolve_model, carry_th)
     model_swap_stats = model_swap.compute_model_swap(all_results, pricing, model_swap_th)
 
-    # snapshot_windows: dict[session_id, int | None] -- compaction_sim.py's
-    # own docstring's exact recipe: reuse context_budget.py's
-    # session_to_project reverse lookup (built from
-    # ContextBudgetStats.projects[project].session_ids, same as
-    # _build_autocompact_table does), just keyed by session id instead of
-    # project, then read each project's latest snapshot's own
-    # effective_config(...).get("autoCompactWindow").
-    latest_snapshots_by_project = snapshots_mod.latest_snapshot_per_project(snapshots) if snapshots else {}
-    session_to_project = {
-        session_id: project for project, acc in cb.projects.items() for session_id in acc.session_ids
-    }
+    # snapshot_windows: dict[session_id, int | None] -- the
+    # autoCompactWindow each session actually ran under: the snapshot its
+    # own project had when it started (``snapshot_for`` with the hashed
+    # project key, so another project's settings never leak in).
     snapshot_windows: dict[str, int | None] = {}
-    for session_id, project in session_to_project.items():
-        snap = latest_snapshots_by_project.get(project)
+    for record in session_records:
+        snap = (
+            snapshots_mod.snapshot_for(record.first_ts, snapshots, session_snapshot_key.get(record.session_id))
+            if snapshots
+            else None
+        )
         configured_window = None
         if snap is not None:
             value = snapshots_mod.effective_config(snap).get("autoCompactWindow")
             if isinstance(value, (int, float)) and not isinstance(value, bool):
-                configured_window = value
-        snapshot_windows[session_id] = configured_window
+                configured_window = int(value)
+        snapshot_windows[record.session_id] = configured_window
 
     compaction_sim_stats = compaction_sim.simulate_compaction_windows(
         all_results, pricing.resolve_model, snapshot_windows, compaction_sim_th
@@ -1665,9 +1662,11 @@ def build_report(
     # corpus's majority archetype and the latest config snapshot (if any)
     # as of "now" -- a per-session snapshot join is not attempted here,
     # matching how ``_build_config_section``/``_build_scorecard_section``
-    # already treat ``snapshots`` as a single corpus-wide input.
+    # already treat ``snapshots`` as a single corpus-wide input. Its agents
+    # are widened to every project's, since the newest snapshot records
+    # only the agents of the project it was taken in.
     corpus_archetype, _archetype_evidence = workstyle.corpus_archetype(session_records)
-    latest_snapshot = snapshots[-1] if snapshots else None
+    latest_snapshot = snapshots_mod.with_every_project_agents(snapshots) if snapshots else None
     report_model.units = units
     report_model.recommendations = recommend(
         report_model,

@@ -15,6 +15,10 @@ change, in one place, so every card reads the same way:
   ``why`` sentence and, where a setting is involved, ``changes``
   (:class:`~claude_token_lens.model.SettingChange`) with the current
   value from the latest config snapshot.
+- **Already applied.** The rules measure the whole period, so a change
+  made part-way through it would still be offered at its full saving. A
+  change the current config already makes is left out, and a card with
+  nothing left to change is dropped.
 - **Amounts** follow the billing mode (:class:`~claude_token_lens.units.Units`).
 
 Titles and actions are rewritten here, not in the rules, so the rules'
@@ -28,6 +32,8 @@ import re
 from dataclasses import dataclass
 from typing import Callable
 
+from . import quality, whatif
+from .fixes import already_set
 from .model import Recommendation, ReportModel, SettingChange
 from .snapshots import Snapshot, effective_config
 from .units import NO_LIMIT_SHARE_HINT, Units
@@ -144,6 +150,8 @@ def _merge_model_tier(recs: list[Recommendation], ctx: _Context) -> list[Recomme
     if not tier:
         return recs
     rest = [r for r in recs if r.id != "model-tier"]
+    worse = quality.worse_models(whatif._Tables(ctx.report).rows("quality", "quality_by_setup"))
+    left_out: list[str] = []
     rows = []
     for rec in tier:
         agent = rec.agent_type or "top-level"
@@ -153,6 +161,14 @@ def _merge_model_tier(recs: list[Recommendation], ctx: _Context) -> list[Recomme
         saving = ctx.cell("model_swap", "model_swap_by_agent_type", agent, "saving_usd")
         observed = ctx.cell("model_swap", "model_swap_by_agent_type", agent, "observed_model")
         if not alt:
+            continue
+        now = ctx.setting_now("model") if agent == "top-level" else ctx.agent_now(agent, "model")
+        if already_set("model", _family_alias(alt), now):
+            # Already on the cheaper model; the saving is from before the change.
+            continue
+        if (agent, _family_alias(alt)) in worse:
+            # The quality section found this agent did worse on that model.
+            left_out.append(f"{_who(agent)} (did worse on {_family_alias(alt)})")
             continue
         rows.append((rec, agent, alt, saving if isinstance(saving, (int, float)) else 0.0, observed))
     if not rows:
@@ -204,6 +220,11 @@ def _merge_model_tier(recs: list[Recommendation], ctx: _Context) -> list[Recomme
             if len(rows) == 1
             else f"{len(rows)} of your agent types ran on a larger model than their work may need. "
             f"The biggest saving is {_who(top[1])}."
+        )
+        + (
+            f" Left out, from the quality section: {', '.join(left_out)}."
+            if left_out
+            else ""
         ),
         action=(
             "Try the cheaper model on a few tasks and compare the results before keeping it."
@@ -246,6 +267,22 @@ def _consolidate_compaction(recs: list[Recommendation], ctx: _Context) -> list[R
     return recs
 
 
+def _drop_applied(recs: list[Recommendation]) -> list[Recommendation]:
+    """Leave out changes the current config already makes. The rules
+    measure the whole period, so a change made part-way through it still
+    shows its full saving; a card whose every change is already in effect
+    is dropped."""
+    out = []
+    for rec in recs:
+        if rec.changes:
+            pending = [c for c in rec.changes if not already_set(c.key, c.value, c.current)]
+            if not pending:
+                continue
+            rec.changes = pending
+        out.append(rec)
+    return out
+
+
 # -- per-rule wording ------------------------------------------------------------
 
 
@@ -259,8 +296,8 @@ def _explain_compaction_window(rec: Recommendation, ctx: _Context) -> None:
         f"reply. A summary at {label} tokens resets that."
     )
     rec.action = (
-        f"Set autoCompactWindow to {label}. Claude Code then summarises the main session when its context "
-        "reaches that size."
+        f"Set autoCompactWindow to {label}. Claude Code then summarises the main session a little before its "
+        "context reaches that size."
     )
     rec.changes = [
         SettingChange(
@@ -275,8 +312,8 @@ def _explain_compaction_window(rec: Recommendation, ctx: _Context) -> None:
     rec.estimated_saving = ctx.money(saving, prefix="About ")
     rec.saving_usd = saving if isinstance(saving, (int, float)) else None
     rec.saving_basis = ctx.basis(
-        "Modelled by replaying your main sessions with summaries at this size, including an allowance for "
-        "re-reading files after each summary. Not measured."
+        "Modelled by replaying your main sessions with summaries at this size, shaped like your past ones: "
+        "the summary itself, re-caching the reply after it, and an allowance for re-reading files. Not measured."
     )
 
 
@@ -556,6 +593,7 @@ def finish(
             explain(rec, ctx)
         if rec.scope == "managed" and rec.changes and "administrator" not in rec.action:
             rec.action += " Your organisation's managed settings set this, so only your administrator can change it."
+    recs = _drop_applied(recs)
     # Most important first: severity, then the largest estimated saving.
     recs.sort(key=lambda r: (_SEVERITY_ORDER.get(r.severity, 3), -(r.saving_usd or 0.0)))
     return recs

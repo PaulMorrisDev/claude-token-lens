@@ -449,6 +449,72 @@ def test_latest_snapshot_per_project_schema1_snapshots_collapse_to_one_bucket():
     assert latest["(unknown project)"] is b
 
 
+# -- schema 2: with_every_project_agents -------------------------------------
+
+
+def _agent(source: str, model: str) -> dict:
+    return {"source": source, "model": model}
+
+
+def test_with_every_project_agents_adds_another_projects_agents_to_the_newest_snapshot():
+    """The hook records only the agents of the project a session started
+    in, so the newest snapshot alone would call another project's agents
+    unknown."""
+    other = _schema2_snapshot(
+        project_slug="revixo",
+        ts="20260920T000000Z",
+        effective={"model": "opus"},
+        agents={"implementer": _agent("project", "haiku")},
+        effective_agents={"implementer": {"source": "project", "model": "haiku"}},
+    )
+    newest = _schema2_snapshot(
+        project_slug="token-lens", ts="20260923T000000Z", effective={"model": "sonnet"}, agents={}, effective_agents={}
+    )
+
+    view = snap_mod.with_every_project_agents([other, newest])
+
+    assert snap_mod.effective_config(view) == {"model": "sonnet"}
+    assert view.ts == newest.ts
+    assert view.data["agents"] == {"implementer": _agent("project", "haiku")}
+    assert view.data["effective_agents"]["implementer"]["model"] == "haiku"
+    assert newest.data["agents"] == {}
+
+
+def test_with_every_project_agents_keeps_a_project_agent_over_a_newer_user_agent_of_the_same_name():
+    project = _schema2_snapshot(
+        project_slug="revixo", ts="20260920T000000Z", agents={"reviewer": _agent("project", "opus")}
+    )
+    user = _schema2_snapshot(
+        project_slug="token-lens", ts="20260923T000000Z", agents={"reviewer": _agent("user", "sonnet")}
+    )
+
+    view = snap_mod.with_every_project_agents([project, user])
+
+    assert view.data["agents"]["reviewer"] == _agent("project", "opus")
+
+
+def test_with_every_project_agents_takes_the_newer_of_two_user_agent_records():
+    older = _schema2_snapshot(project_slug="a", ts="20260920T000000Z", agents={"helper": _agent("user", "opus")})
+    newer = _schema2_snapshot(project_slug="b", ts="20260923T000000Z", agents={"helper": _agent("user", "haiku")})
+
+    view = snap_mod.with_every_project_agents([older, newer])
+
+    assert view.data["agents"]["helper"] == _agent("user", "haiku")
+
+
+def test_with_every_project_agents_reads_settings_from_the_newest_snapshot_that_records_them():
+    settings = _schema2_snapshot(project_slug="a", ts="20260920T000000Z", effective={"model": "sonnet"})
+    schema1 = snap_mod.Snapshot(path=Path("b"), ts="20260923T000000Z", data={"schema": 1, "agents": {}})
+
+    view = snap_mod.with_every_project_agents([settings, schema1])
+
+    assert snap_mod.effective_config(view) == {"model": "sonnet"}
+
+
+def test_with_every_project_agents_is_none_without_snapshots():
+    assert snap_mod.with_every_project_agents([]) is None
+
+
 # -- schema 2: build_effective_config_table ----------------------------------
 
 

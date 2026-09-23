@@ -127,3 +127,103 @@ def test_nothing_is_stored_and_markdown_renders(tmp_path):
     assert "## Hide all 2 unused skills from Claude" in markdown
     assert "## dataviz (Built into Claude Code)" in markdown
     assert "never used" in markdown
+
+
+def test_skills_the_settings_already_hide_get_no_fix(tmp_path):
+    """Their listings in the window predate the change, and suggesting
+    user-invocable-only for a skill set to off would show it again."""
+    config_dir, project = _setup(tmp_path)
+    (config_dir.parent / "settings.json").write_text(
+        json.dumps(
+            {
+                "skillOverrides": {"grill-me": "off"},
+                "enabledPlugins": {"impeccable@impeccable": False, "other@inline": True},
+            }
+        ),
+        encoding="utf-8",
+    )
+    rows = [_usage("grill-me", listed=5), _usage("impeccable:impeccable", listed=5), _usage("dataviz", listed=5)]
+    data = skills_review.review(config_dir, {"skills": rows}, UNITS, PERIOD, projects=[project])
+    by_name = {row["name"]: row for row in data["skills"]}
+
+    assert by_name["grill-me"]["status"] == "hidden" and by_name["grill-me"]["fixes"] == []
+    assert by_name["grill-me"]["hidden"] == "skillOverrides sets it to off"
+    assert by_name["impeccable:impeccable"]["hidden"] == "its plugin is turned off"
+    assert by_name["dataviz"]["status"] == "unused"
+    assert data["unused"] == 1 and data["fixes"] == []
+    assert "Already hidden: skillOverrides sets it to off." in skills_review.render_markdown(data)
+
+
+def test_a_skill_a_claude_code_tool_loads_is_never_offered_for_hiding(tmp_path):
+    """The Workflow tool tells Claude to load workflow-authoring; hidden,
+    that instruction points at a skill Claude can't load. It gets
+    name-only instead, which keeps the name the tool points at."""
+    rows = [
+        _usage("workflow-authoring", listed=5, tokens=60, cost=0.6),
+        _usage("dataviz", listed=5),
+        _usage("grill-me", listed=5),
+    ]
+    data = _review(tmp_path, rows)
+    by_name = {row["name"]: row for row in data["skills"]}
+
+    row = by_name["workflow-authoring"]
+    assert (row["status"], row["needed_by"]) == ("needed by a tool", "Workflow")
+    [fix] = row["fixes"]
+    assert fix["title"] == "List it by name only"
+    assert fix["command"] == (
+        "claude-token-lens apply --set skillOverrides=workflow-authoring:name-only --scope user --dry-run"
+    )
+    # "- workflow-authoring" is about 5 tokens of the 60 kept.
+    assert "0.55 USD" in dict(fix["explainer"])["Expected effect"]
+
+    assert data["unused"] == 2 and data["needed_by_a_tool"] == 1
+    [hide_all] = data["fixes"]
+    assert "workflow-authoring" not in hide_all["command"]
+    assert "Left out: workflow-authoring. Claude Code's own Workflow tool tells Claude to load it" in hide_all["prompt"]
+    assert "Not offered for hiding: Claude Code's Workflow tool tells Claude to load it." in (
+        skills_review.render_markdown(data)
+    )
+
+
+def test_only_the_built_in_skill_of_that_name_counts_as_tool_loaded(tmp_path):
+    config_dir, project = _setup(tmp_path)
+    (config_dir.parent / "skills" / "workshop").mkdir()
+    (config_dir.parent / "skills" / "workshop" / "SKILL.md").write_text("---\nname: workshop\n---\n", encoding="utf-8")
+    data = skills_review.review(config_dir, {"skills": [_usage("workshop", listed=5)]}, UNITS, PERIOD, projects=[project])
+    row = next(row for row in data["skills"] if row["name"] == "workshop")
+    assert (row["source"], row["status"], row["needed_by"]) == ("user", "unused", "")
+
+
+def test_a_skill_no_longer_listed_and_gone_from_disk_is_not_offered_for_hiding(tmp_path):
+    """A workflow deleted weeks ago still has listings in the window;
+    with no file left and no listing since, hiding it saves nothing."""
+    old = {**_usage("scorecard-delta", listed=5), "last_seen": "2026-08-01T09:00:00Z"}
+    dataviz = {**_usage("dataviz", listed=5), "last_seen": "2026-08-01T09:00:00Z"}
+    rows = [old, _usage("grill-me", listed=5), _usage("qa-round", listed=5), dataviz]
+    data = _review(tmp_path, rows)
+    by_name = {row["name"]: row for row in data["skills"]}
+
+    row = by_name["scorecard-delta"]
+    assert (row["source"], row["source_label"], row["status"], row["fixes"]) == (
+        "removed", "Removed", "no longer listed", []
+    )
+    # A skill with a file on disk stays, however long since it was listed.
+    assert by_name["qa-round"]["status"] == "unused"
+    assert by_name["dataviz"]["status"] == "no longer listed"
+    assert data["unused"] == 2
+    [hide_all] = data["fixes"]
+    assert "scorecard-delta" not in hide_all["command"]
+    assert "No longer listed, and no file for it is left on disk" in skills_review.render_markdown(data)
+
+
+def test_a_built_in_skill_listed_recently_is_still_built_in(tmp_path):
+    rows = [_usage("dataviz", listed=5), {**_usage("grill-me", listed=5), "last_seen": "2026-09-30T12:00:00Z"}]
+    data = _review(tmp_path, rows)
+    row = next(row for row in data["skills"] if row["name"] == "dataviz")
+    assert (row["source"], row["status"]) == ("built-in", "unused")
+
+
+def test_a_plugin_enabled_under_any_marketplace_is_not_hidden():
+    settings = {"enabledPlugins": {"impeccable@a": False, "impeccable@b": True}}
+    assert skills_review.hidden_by("impeccable:impeccable", "plugin", settings) == ""
+    assert skills_review.hidden_by("grill-me", "user", {"skillOverrides": {"grill-me": "on"}}) == ""

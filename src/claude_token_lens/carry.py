@@ -251,6 +251,33 @@ class CarryThresholds:
 _DEFAULT_THRESHOLDS = CarryThresholds()
 
 
+@dataclass(slots=True, frozen=True)
+class OutputCap:
+    """A Claude Code setting that caps one kind of tool output, at the
+    value the tool-output check suggests."""
+
+    setting: str
+    #: The value suggested for ``settings.json``'s ``env`` block.
+    value: str
+    #: That value in tokens.
+    cap_tokens: int
+    tools: tuple[str, ...] = ()
+    tool_prefix: str = ""
+
+    def covers(self, tool: str) -> bool:
+        return tool in self.tools or bool(self.tool_prefix and tool.startswith(self.tool_prefix))
+
+
+#: The output caps ``carry_output_cap_savings`` prices, one row each.
+#: ``BASH_MAX_OUTPUT_LENGTH`` counts characters (15,000 is about 3,750
+#: tokens at :data:`_CHARS_PER_TOKEN_APPROX`); ``MAX_MCP_OUTPUT_TOKENS``
+#: counts tokens.
+OUTPUT_CAPS = (
+    OutputCap("BASH_MAX_OUTPUT_LENGTH", "15000", 15_000 // _CHARS_PER_TOKEN_APPROX, tools=("Bash", "PowerShell")),
+    OutputCap("MAX_MCP_OUTPUT_TOKENS", "10000", 10_000, tool_prefix="mcp__"),
+)
+
+
 def _priced_turns(turns: list[Turn]) -> list[Turn]:
     """The subset of ``turns`` that are actually priced -- see
     ``ttl._priced_turns``'s/``topology._priced_turns``'s identical
@@ -398,6 +425,9 @@ class CarryByKeyStats:
     #: construction, see the module docstring), so shares across every
     #: tool/agent-type row do not sum to 100%.
     share_of_cache_volume_pct: float
+    #: What capping this key's own results at ``big_result_tokens`` would
+    #: have saved (see :func:`_truncation_saving`).
+    saving_if_capped_usd: float = 0.0
 
 
 @dataclass(slots=True)
@@ -409,6 +439,22 @@ class TruncationSaving:
     results_affected: int
     tokens_saved: int
     usd_saved: float
+
+
+@dataclass(slots=True)
+class CapSaving:
+    """One ``carry_output_cap_savings`` row: what one of
+    :data:`OUTPUT_CAPS` would have saved on the results it covers."""
+
+    setting: str
+    value: str
+    cap_tokens: int
+    results: int
+    results_affected: int
+    tokens_saved: int
+    usd_saved: float
+    #: What carrying every result the cap covers cost.
+    carry_cost_usd: float
 
 
 @dataclass(slots=True)
@@ -432,13 +478,16 @@ class CarryStats:
     by_agent_type: list[CarryByKeyStats]
     top_results: list[CarriedResult]
     truncation_savings: list[TruncationSaving]
+    cap_savings: list[CapSaving] = field(default_factory=list)
 
 
 def _fold(acc: dict[str, list], key: str, item: CarriedResult) -> None:
     acc.setdefault(key, []).append(item)
 
 
-def _finalize_by_key(grouped: dict[str, list[CarriedResult]], total_cache_volume: float) -> list[CarryByKeyStats]:
+def _finalize_by_key(
+    grouped: dict[str, list[CarriedResult]], total_cache_volume: float, capped_at: int
+) -> list[CarryByKeyStats]:
     rows: list[CarryByKeyStats] = []
     for key, items in grouped.items():
         turns_carried_values = [i.turns_carried for i in items]
@@ -456,6 +505,7 @@ def _finalize_by_key(grouped: dict[str, list[CarriedResult]], total_cache_volume
                 share_of_cache_volume_pct=(
                     100.0 * carry_tokens / total_cache_volume if total_cache_volume > 0 else 0.0
                 ),
+                saving_if_capped_usd=_truncation_saving(items, capped_at).usd_saved,
             )
         )
     rows.sort(key=lambda r: (-r.carry_cost_usd, r.key))
@@ -533,6 +583,23 @@ def compute_carry(
         _fold(by_agent_groups, item.agent_type, item)
 
     top_results = sorted(all_results, key=lambda r: r.carry_cost_usd, reverse=True)[: th.top_n]
+    capped_at = int(th.big_result_tokens)
+    cap_savings = []
+    for cap in OUTPUT_CAPS:
+        covered = [r for r in all_results if cap.covers(r.tool)]
+        saving = _truncation_saving(covered, cap.cap_tokens)
+        cap_savings.append(
+            CapSaving(
+                setting=cap.setting,
+                value=cap.value,
+                cap_tokens=cap.cap_tokens,
+                results=len(covered),
+                results_affected=saving.results_affected,
+                tokens_saved=saving.tokens_saved,
+                usd_saved=saving.usd_saved,
+                carry_cost_usd=sum(r.carry_cost_usd for r in covered),
+            )
+        )
 
     return CarryStats(
         transcripts=transcripts,
@@ -540,10 +607,11 @@ def compute_carry(
         total_cache_volume_tokens=total_cache_volume,
         total_carry_cost_usd=sum(r.carry_cost_usd for r in all_results),
         unpriced_turns=unpriced_turns,
-        by_tool=_finalize_by_key(by_tool_groups, total_cache_volume),
-        by_agent_type=_finalize_by_key(by_agent_groups, total_cache_volume),
+        by_tool=_finalize_by_key(by_tool_groups, total_cache_volume, capped_at),
+        by_agent_type=_finalize_by_key(by_agent_groups, total_cache_volume, capped_at),
         top_results=top_results,
         truncation_savings=[_truncation_saving(all_results, t) for t in th.truncation_tokens],
+        cap_savings=cap_savings,
     )
 
 
@@ -559,6 +627,7 @@ def _by_key_table(name: str, title: str, key_label: str, rows: list[CarryByKeySt
         Column(key="carry_tokens", label="Carry tokens (size x turns)", kind="tokens"),
         Column(key="carry_cost_usd", label="Carry cost", kind="money"),
         Column(key="share_of_cache_volume_pct", label="Share of cache volume", kind="pct"),
+        Column(key="saving_if_capped_usd", label="Saving if capped", kind="money"),
     ]
     table_rows = [
         [
@@ -569,6 +638,7 @@ def _by_key_table(name: str, title: str, key_label: str, rows: list[CarryByKeySt
             r.carry_tokens,
             r.carry_cost_usd,
             r.share_of_cache_volume_pct,
+            r.saving_if_capped_usd,
         ]
         for r in rows
     ]
@@ -582,6 +652,9 @@ def _by_key_table(name: str, title: str, key_label: str, rows: list[CarryByKeySt
             "partition: carry_tokens double-counts by construction (the "
             "same physical cache read on a given turn also carries every "
             "other still-live result), so rows do not sum to 100%.",
+            "saving_if_capped_usd: what capping this row's own results at "
+            "big_result_tokens would have saved, worked out the same way as "
+            "carry_truncation_savings.",
         ],
     )
 
@@ -642,6 +715,37 @@ def _build_truncation_table(stats: CarryStats, th: CarryThresholds) -> Table:
     )
 
 
+def _build_cap_table(stats: CarryStats) -> Table:
+    columns = [
+        Column(key="setting", label="Setting", kind="str"),
+        Column(key="value", label="Suggested value", kind="str"),
+        Column(key="cap_tokens", label="Cap (tokens)", kind="int"),
+        Column(key="results", label="Results it covers", kind="int"),
+        Column(key="results_affected", label="Results affected", kind="int"),
+        Column(key="tokens_saved", label="Tokens saved", kind="tokens"),
+        Column(key="usd_saved", label="Saving", kind="money"),
+        Column(key="carry_cost_usd", label="Carry cost of the results it covers", kind="money"),
+    ]
+    rows = [
+        [s.setting, s.value, s.cap_tokens, s.results, s.results_affected, s.tokens_saved, s.usd_saved,
+         s.carry_cost_usd]
+        for s in stats.cap_savings
+    ]
+    return Table(
+        name="carry_output_cap_savings",
+        title="Saving from Claude Code's output-cap settings",
+        columns=columns,
+        rows=rows,
+        notes=[
+            "One row per setting the tool-output check suggests, at the "
+            "value it suggests, over the results that setting caps: "
+            "worked out the same way as carry_truncation_savings. Results "
+            "from one reply are counted together, so a reply's several "
+            "short outputs can count as one long one: an upper bound.",
+        ],
+    )
+
+
 def build_section(stats: CarryStats, thresholds: CarryThresholds | None = None) -> Section:
     """Render ``stats`` into the ``carry`` report section: per-tool and
     per-agent-type roll-ups, the single most expensive carried results,
@@ -655,6 +759,7 @@ def build_section(stats: CarryStats, thresholds: CarryThresholds | None = None) 
         ),
         _build_top_results_table(stats),
         _build_truncation_table(stats, th),
+        _build_cap_table(stats),
     ]
     notes = list(ASSUMPTIONS) + [f"Thresholds: {' '.join(th.describe())}"]
     if stats.unpriced_turns:
@@ -732,14 +837,10 @@ def _rule_tool_output_carry(report: ReportModel, th: CarryThresholds) -> list[Re
     count_idx = _col_index(table, "result_count")
     cost_idx = _col_index(table, "carry_cost_usd")
     share_idx = _col_index(table, "share_of_cache_volume_pct")
+    saving_idx = _col_index(table, "saving_if_capped_usd")
     if count_idx is None or cost_idx is None or share_idx is None:
         return []
-
-    truncation_table = _table(report, "carry", "carry_truncation_savings")
-    target_t = int(th.big_result_tokens)
-    truncation_row_key = str(target_t) if truncation_table and _row(truncation_table, str(target_t)) else None
-    if truncation_row_key is None and th.truncation_tokens:
-        truncation_row_key = str(th.truncation_tokens[-1])
+    capped_at = int(th.big_result_tokens)
 
     out: list[Recommendation] = []
     for row in table.rows:
@@ -758,26 +859,15 @@ def _rule_tool_output_carry(report: ReportModel, th: CarryThresholds) -> list[Re
             _evidence("Carried results", count, "carry", "carry_by_tool", tool),
         ]
         saving_clause = ""
-        if truncation_row_key is not None:
-            saving_row = _row(truncation_table, truncation_row_key)
-            if saving_row is not None:
-                usd_idx = _col_index(truncation_table, "usd_saved")
-                if usd_idx is not None:
-                    saving = saving_row[usd_idx]
-                    evidence.append(
-                        _evidence(
-                            f"Saving if truncated to {truncation_row_key} tokens",
-                            saving,
-                            "carry",
-                            "carry_truncation_savings",
-                            truncation_row_key,
-                        )
-                    )
-                    if isinstance(saving, (int, float)):
-                        saving_clause = (
-                            f" Capping {tool}'s output at {truncation_row_key} tokens would have "
-                            f"saved approximately ${saving:.2f} in carry cost alone."
-                        )
+        saving = row[saving_idx] if saving_idx is not None else None
+        if isinstance(saving, (int, float)):
+            evidence.append(
+                _evidence(f"Saving if capped at {capped_at} tokens", saving, "carry", "carry_by_tool", tool)
+            )
+            saving_clause = (
+                f" Capping {tool}'s output at {capped_at:,} tokens would have saved about ${saving:.2f} "
+                "in carry cost alone."
+            )
 
         out.append(
             Recommendation(

@@ -81,6 +81,109 @@ def test_model_tier_cards_merge_into_one_with_a_change_per_agent_type():
     assert tier[0].fixes[2]["command"] is None  # a built-in needs a new agent file
 
 
+def test_model_tier_leaves_out_agents_already_on_the_cheaper_model():
+    """The period's saving still counts runs from before the change, so an
+    agent already moved must not be offered it again."""
+    report = _model_swap_report(
+        [
+            ["top-level", "claude-opus-5-5", "claude-sonnet-5", 30.0],
+            ["reviewer", "claude-sonnet-5", "claude-haiku-4-5-20251001", 50.0],
+            ["implementer", "claude-opus-5-5", "claude-sonnet-5", 20.0],
+        ]
+    )
+    snap = Snapshot(
+        path=None,
+        ts="2026-09-20T00:00:00Z",
+        data={
+            "effective": {"model": "claude-sonnet-5"},
+            "agents": {"reviewer": {"source": "project", "model": "haiku"}, "implementer": {"source": "project"}},
+        },
+    )
+    recs = [_tier(a) for a in ("top-level", "reviewer", "implementer")]
+    (tier,) = [r for r in advice.finish(recs, report, snap, Units()) if r.id == "model-tier"]
+    assert [(c.agent, c.value) for c in tier.changes] == [("implementer", "sonnet")]
+    assert tier.saving_usd == 20.0
+
+
+def test_model_tier_leaves_out_an_agent_that_did_worse_on_the_cheaper_model():
+    report = _model_swap_report(
+        [
+            ["reviewer", "claude-sonnet-5", "claude-haiku-4-5-20251001", 50.0],
+            ["implementer", "claude-opus-5-5", "claude-sonnet-5", 20.0],
+        ]
+    )
+    report.sections.append(
+        Section(
+            key="quality",
+            title="Quality",
+            tables=[
+                Table(
+                    name="quality_by_setup",
+                    columns=[Column(key=k, label=k) for k in ("agent_type", "model", "setup_verdict", "compared_model")],
+                    rows=[["reviewer", "claude-haiku-4-5-20251001", "worse", "claude-sonnet-5"]],
+                )
+            ],
+        )
+    )
+    snap = Snapshot(path=None, ts="2026-09-20T00:00:00Z", data={"agents": {}})
+    recs = [_tier("reviewer"), _tier("implementer")]
+    (tier,) = [r for r in advice.finish(recs, report, snap, Units()) if r.id == "model-tier"]
+    assert [c.agent for c in tier.changes] == ["implementer"]
+    assert "Left out, from the quality section: reviewer (did worse on haiku)." in tier.why
+
+
+def test_model_tier_is_dropped_when_every_agent_is_already_moved():
+    report = _model_swap_report([["reviewer", "claude-sonnet-5", "claude-haiku-4-5-20251001", 50.0]])
+    snap = Snapshot(
+        path=None,
+        ts="2026-09-20T00:00:00Z",
+        data={"agents": {"reviewer": {"source": "user", "model": "claude-haiku-4-5-20251001"}}},
+    )
+    out = advice.finish([_tier("reviewer")], report, snap, Units())
+    assert not any(r.id == "model-tier" for r in out)
+
+
+def test_a_custom_agent_missing_from_the_snapshot_is_not_called_built_in():
+    """The hook records only the agents of the project a session started
+    in, so an absent custom agent may still have a file."""
+    report = _model_swap_report([["implementer", "claude-opus-5-5", "claude-sonnet-5", 20.0]])
+    snap = Snapshot(path=None, ts="2026-09-20T00:00:00Z", data={"agents": {}})
+    (tier,) = [r for r in advice.finish([_tier("implementer")], report, snap, Units()) if r.id == "model-tier"]
+    assert not tier.changes[0].new_agent_file
+
+
+def test_cache_ttl_and_effort_cards_are_dropped_when_already_set():
+    report = _model_swap_report([])
+    snap = Snapshot(
+        path=None,
+        ts="2026-09-20T00:00:00Z",
+        data={
+            "effective": {"effortLevel": "Medium"},
+            "agents": {"verification-runner": {"source": "user", "experimental.cacheTtl": "1h"}},
+        },
+    )
+    recs = [
+        Recommendation(
+            id="ttl-switch",
+            severity="advice",
+            agent_type="verification-runner",
+            evidence=[("TTL recommendation", "switch to 1h", "ttl", "verification-runner")],
+        ),
+        Recommendation(id="effort-mismatch", severity="advice"),
+    ]
+    assert advice.finish(recs, report, snap, Units()) == []
+
+
+def test_already_set_matches_model_aliases_and_maps():
+    assert fixes.already_set("model", "sonnet", "claude-sonnet-5")
+    assert not fixes.already_set("model", "haiku", "claude-sonnet-5")
+    assert not fixes.already_set("model", "sonnet", None)
+    assert fixes.already_set("skillOverrides", {"pdf": "off"}, {"pdf": "off", "xlsx": "on"})
+    assert not fixes.already_set("skillOverrides", {"pdf": "off", "xlsx": "off"}, {"pdf": "off"})
+    assert fixes.already_set("omitClaudeMd", True, True)
+    assert not fixes.already_set("maxTurns", 1, True)
+
+
 def _compaction(id_, **kw) -> Recommendation:
     return Recommendation(id=id_, severity="advice", category="settings", lever="autoCompactWindow", **kw)
 

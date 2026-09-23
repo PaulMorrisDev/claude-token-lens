@@ -287,6 +287,31 @@ def test_setups_are_compared_with_the_most_used_one():
     assert rows["claude-opus-5"]["setup_verdict"] == "too_little_data"
 
 
+def test_clearly_worse_on_one_signal_and_clearly_better_on_another_is_mixed():
+    def row(label_key):
+        return {"label_key": label_key, "worse_when": "higher"}
+
+    assert quality.setup_verdict([row("worse"), row("better")]) == "mixed"
+    assert quality.setup_verdict([row("worse"), row("possibly_better")]) == "worse"
+    assert quality.setup_verdict([row("possibly_worse"), row("better")]) == "possibly_worse"
+    # A signal with no direction (replies per run) never makes it mixed.
+    assert quality.setup_verdict([row("worse"), {"label_key": "better", "worse_when": None}]) == "worse"
+
+
+def test_worse_models_names_each_agent_and_model_family_that_did_worse():
+    rows = [
+        {"agent_type": "claude-implementer", "model": "claude-haiku-4-5-20251001", "setup_verdict": "worse",
+         "compared_model": "claude-sonnet-5"},
+        {"agent_type": quality.MAIN, "model": "claude-sonnet-5", "setup_verdict": "worse",
+         "compared_model": "claude-opus-5"},
+        # The same model at another effort: about effort, not the model.
+        {"agent_type": "Explore", "model": "claude-haiku-4-5", "setup_verdict": "worse",
+         "compared_model": "claude-haiku-4-5-20251001"},
+        {"agent_type": "Plan", "model": "claude-sonnet-5", "setup_verdict": "mixed", "compared_model": "claude-opus-5"},
+    ]
+    assert set(quality.worse_models(rows)) == {("claude-implementer", "haiku"), ("top-level", "sonnet")}
+
+
 def test_section_tables_and_columns():
     runs = _setup_runs("claude-sonnet-5", 6, 2) + [quality.Run(group=quality.MAIN, replies=5, human_messages=2)]
     runs[0].tool_errors_by_tool = {"Bash": 2}

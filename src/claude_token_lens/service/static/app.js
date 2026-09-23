@@ -138,7 +138,7 @@
       case "pct":
         return Number(value).toFixed(1) + "%";
       case "money":
-        return Number(value).toFixed(2) + " " + currency;
+        return Number(value).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + " " + currency;
       case "secs":
         return formatSecs(Number(value));
       default:
@@ -904,7 +904,7 @@
       more.addEventListener("click", function () {
         activateTab("recommendations", { focus: true });
       });
-      container.appendChild(more);
+      container.appendChild(el("p", null, [more]));
       var quick = el("button", {
         type: "button",
         class: "link-button",
@@ -913,7 +913,7 @@
       quick.addEventListener("click", function () {
         activateTab("quick", { focus: true });
       });
-      container.appendChild(quick);
+      container.appendChild(el("p", null, [quick]));
     });
   }
 
@@ -1067,9 +1067,9 @@
       "status: " + (health.status || "unknown"),
       "version: " + (health.version || "-"),
       "schema version: " + (health.schema_version === undefined ? "-" : health.schema_version),
-      "watcher last tick finished: " + (watcher.finished_at || "never"),
-      "files scanned / parsed: " + (watcher.files_scanned || 0) + " / " + (watcher.files_parsed || 0),
-      "sessions upserted: " + (watcher.sessions_upserted || 0),
+      "watcher last tick finished: " + (watcher.finished_at ? shortTs(watcher.finished_at) : "never"),
+      "files scanned / parsed: " + thousands(watcher.files_scanned || 0) + " / " + thousands(watcher.files_parsed || 0),
+      "sessions upserted: " + thousands(watcher.sessions_upserted || 0),
       "errors this tick: " + (watcher.errors || 0),
     ];
     var list = el(
@@ -1101,7 +1101,7 @@
     var watcher = health.watcher || {};
     footer.textContent =
       (health.version ? "claude-token-lens " + health.version + " — " : "") +
-      "Service " + (health.status || "unknown") + " — last watcher tick: " + (watcher.finished_at || "never") + " — " + (watcher.files_parsed || 0) + " files parsed, " + (watcher.errors || 0) + " errors.";
+      "Service " + (health.status || "unknown") + " — last watcher tick: " + (watcher.finished_at ? shortTs(watcher.finished_at) : "never") + " — " + thousands(watcher.files_parsed || 0) + " files parsed, " + (watcher.errors || 0) + " errors.";
   }
 
   // ======================================================================
@@ -1177,6 +1177,19 @@
   // Shown only when some sessions ran somewhere else, such as WSL.
   var SOURCE_COLUMN = { key: "source", label: "Where", kind: "str" };
 
+  // "2026-09-23T10:44:22.705Z" -> "2026-09-23 10:44 UTC", for a table cell.
+  function shortTs(ts) {
+    var text = String(ts || "");
+    if (!/^\d{4}-\d\d-\d\dT\d\d:\d\d/.test(text)) return text || "-";
+    return text.slice(0, 16).replace("T", " ") + (/Z$/.test(text) ? " UTC" : "");
+  }
+
+  function sessionCellText(value, col) {
+    if (col.key === "id") return String(value || "").slice(0, 8);
+    if (col.key === "first_ts" || col.key === "last_ts") return shortTs(value);
+    return formatCell(value, col.kind, state.currency);
+  }
+
   function renderSessionsTable(rows, container, detailContainer) {
     if (!rows.length) {
       container.appendChild(el("p", { class: "notice", text: "No sessions in this window." }));
@@ -1200,7 +1213,14 @@
       var tr = el("tr", { class: "clickable", tabIndex: 0, "data-session-id": row.id });
       columns.forEach(function (col) {
         var value = row[col.key];
-        tr.appendChild(el("td", { class: NUMERIC_KINDS[col.kind] ? "num" : null, text: formatCell(value, col.kind, state.currency) }));
+        tr.appendChild(
+          el("td", {
+            class: (NUMERIC_KINDS[col.kind] ? "num " : "") + "col-" + col.key,
+            text: sessionCellText(value, col),
+            // The short session id shows in full on hover.
+            title: col.key === "id" ? String(value || "") : null,
+          })
+        );
       });
       function open() {
         renderSessionDetail(detailContainer, row.id);
@@ -1215,7 +1235,7 @@
       tbody.appendChild(tr);
     });
     table.appendChild(tbody);
-    container.appendChild(table);
+    container.appendChild(el("div", { class: "table-wrap" }, [table]));
   }
 
   function renderSessionDetail(container, sessionId) {
@@ -2591,18 +2611,29 @@
   var COMPACTION_COLUMNS = [
     { key: "transcript_id", label: "Transcript", kind: "str" },
     { key: "ts", label: "Time", kind: "str" },
-    { key: "pre_tokens", label: "Pre tokens", kind: "tokens" },
-    { key: "post_tokens", label: "Post tokens", kind: "tokens" },
-    { key: "dropped_tokens", label: "Dropped tokens", kind: "tokens" },
+    { key: "pre_tokens", label: "Tokens before", kind: "tokens" },
+    { key: "post_tokens", label: "Tokens after", kind: "tokens" },
+    { key: "dropped_tokens", label: "Tokens dropped", kind: "tokens" },
     { key: "trigger", label: "Trigger", kind: "str" },
-    { key: "join_delta_s", label: "Join delta", kind: "secs" },
+    { key: "join_delta_s", label: "Next reply after", kind: "secs" },
   ];
+
+  function compactionCellText(row, col) {
+    // transcript_id is the store's own opaque number, not a quantity.
+    if (col.key === "transcript_id") return row.transcript_id === null || row.transcript_id === undefined ? "-" : "#" + row.transcript_id;
+    if (col.key === "ts") return shortTs(row.ts);
+    return formatCell(row[col.key], col.kind, state.currency);
+  }
 
   function renderCompactionsRaw(rows, container) {
     if (!rows.length) {
       container.appendChild(el("p", { class: "notice", text: "No compactions recorded." }));
       return;
     }
+    // The API lists them oldest first; this table shows the newest.
+    rows = rows.slice().sort(function (a, b) {
+      return String(b.ts || "").localeCompare(String(a.ts || ""));
+    });
     var table = el("table");
     var head = el(
       "thead",
@@ -2625,15 +2656,15 @@
           "tr",
           null,
           COMPACTION_COLUMNS.map(function (col) {
-            return el("td", { class: NUMERIC_KINDS[col.kind] ? "num" : null, text: formatCell(row[col.key], col.kind, state.currency) });
+            return el("td", { class: NUMERIC_KINDS[col.kind] ? "num" : null, text: compactionCellText(row, col) });
           })
         );
       })
     );
     table.appendChild(head);
     table.appendChild(body);
-    container.appendChild(table);
-    if (rows.length > 50) container.appendChild(el("p", { class: "notes", text: "Showing the first 50 of " + rows.length + "." }));
+    container.appendChild(el("div", { class: "table-wrap" }, [table]));
+    if (rows.length > 50) container.appendChild(el("p", { class: "notes", text: "Showing the newest 50 of " + thousands(rows.length) + "." }));
   }
 
   // ======================================================================
@@ -2751,15 +2782,17 @@
       var extras = [];
       if (check.fix_count) extras.push(check.fix_count + (check.fix_count === 1 ? " fix" : " fixes"));
       if (check.tip_count) extras.push(check.tip_count + (check.tip_count === 1 ? " tip" : " tips"));
+      var what = "the evidence" + (extras.length === 2 ? ", " + extras.join(" and ") : extras.length ? " and " + extras[0] : "");
       var button = el("button", {
         type: "button",
-        text: "Show the evidence" + (extras.length === 2 ? ", " + extras.join(" and ") : extras.length ? " and " + extras[0] : ""),
+        text: "Show " + what,
         "aria-expanded": "false",
       });
       var loaded = false;
       button.addEventListener("click", function () {
         var open = button.getAttribute("aria-expanded") === "true";
         button.setAttribute("aria-expanded", open ? "false" : "true");
+        button.textContent = (open ? "Show " : "Hide ") + what;
         detail.hidden = open;
         if (!loaded) {
           loaded = true;
@@ -2904,6 +2937,9 @@
     used: "Used",
     listed: "Listed",
     "not listed": "Not listed",
+    hidden: "Already hidden",
+    "needed by a tool": "Needed by a Claude Code tool",
+    "no longer listed": "No longer listed",
   };
 
   function renderSkills(data, container) {

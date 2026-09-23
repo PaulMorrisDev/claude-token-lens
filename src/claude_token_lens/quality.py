@@ -55,6 +55,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Callable, Iterable
 
+from .fixes import _model_family
 from .model import Column, EventKind, Section, Table, TranscriptResult
 from .pricing import Pricing, price_turn
 
@@ -677,17 +678,47 @@ def setup_rows(runs: list[Run]) -> list[dict]:
 
 
 #: ``setup_verdict`` values, strongest first: a setup is as bad as its
-#: worst signal that has a direction.
-SETUP_VERDICTS = ("worse", "possibly_worse", "better", "possibly_better", "no_clear_difference", "too_little_data")
+#: worst signal that has a direction, except that clearly worse on some
+#: signals and clearly better on others is "mixed".
+SETUP_VERDICTS = (
+    "worse",
+    "mixed",
+    "possibly_worse",
+    "better",
+    "possibly_better",
+    "no_clear_difference",
+    "too_little_data",
+)
 
 
 def setup_verdict(rows: list[dict]) -> str:
-    """One word for a comparison, from its signals that have a direction."""
+    """One word for a comparison, from its signals that have a direction.
+    Clearly worse on one signal and clearly better on another (more failed
+    tool calls, but every run finished) is "mixed": no reason to switch
+    either way."""
     keys = {r["label_key"] for r in rows if r["worse_when"]}
-    for key in SETUP_VERDICTS[:4]:
+    if {"worse", "better"} <= keys:
+        return "mixed"
+    for key in ("worse", "possibly_worse", "better", "possibly_better"):
         if key in keys:
             return key
     return "no_clear_difference" if keys - {"too_little_data"} else "too_little_data"
+
+
+def worse_models(setup_rows: Iterable[dict]) -> dict[tuple[str, str], dict]:
+    """``{(agent, model family): row}`` for each ``quality_by_setup`` row
+    whose setup did clearly worse than the agent's most-used one on a
+    different model, so the models check doesn't suggest that model to
+    that agent. The main session is ``"top-level"``, as in the model-swap
+    table."""
+    out: dict[tuple[str, str], dict] = {}
+    for row in setup_rows:
+        family = _model_family(str(row.get("model") or ""))
+        if row.get("setup_verdict") != "worse" or family == _model_family(str(row.get("compared_model") or "")):
+            continue
+        agent = "top-level" if row.get("agent_type") == MAIN else row.get("agent_type")
+        out.setdefault((agent, family), row)
+    return out
 
 
 def _difference(rows: list[dict]) -> str:
@@ -803,6 +834,7 @@ __all__ = [
     "run_facts",
     "session_runs",
     "SETUP_VERDICTS",
+    "worse_models",
     "setup_rows",
     "setup_verdict",
     "signals_for",

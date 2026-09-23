@@ -15,13 +15,30 @@ Where a skill comes from:
   or a project's ``.claude/skills/<name>/``;
 - ``command``: a ``.claude/commands/<name>.md`` file;
 - ``workflow``: a saved ``.claude/workflows/<name>.js`` script;
-- ``built-in``: anything else (shipped with Claude Code).
+- ``built-in``: anything else (shipped with Claude Code);
+- ``removed``: no file on disk, and last listed more than
+  :data:`REMOVED_AFTER_DAYS` before the newest listing in the window: a
+  skill you deleted, or one Claude Code no longer lists. It gets no
+  fixes, since hiding it would save nothing from now on.
 
 The lever is the ``skillOverrides`` setting (documented values ``on``,
 ``name-only``, ``user-invocable-only``, ``off``), made through the usual
 ``apply --set`` command or a prompt; for your own skills,
 ``disable-model-invocation: true`` in the ``SKILL.md`` frontmatter does
 the same from the file.
+
+A skill that ``~/.claude/settings.json`` already hides (a ``skillOverrides``
+value other than ``on``, or its plugin turned off in ``enabledPlugins``)
+is marked ``hidden`` and gets no fix: its listings in the window predate
+the change, and offering ``user-invocable-only`` for a skill set to
+``off`` would show it again. The settings file is read now, never stored.
+
+A built-in skill that one of Claude Code's own tools tells Claude to load
+(:data:`TOOL_LOADED_SKILLS`: the Artifact tool's page-writing skills, the
+Workflow tool's script reference) is never offered for hiding: hidden,
+the tool's instructions point at a skill Claude can't load. Unused in the
+window only means that tool wasn't used; such a skill is marked ``needed
+by a tool`` and offered ``name-only`` instead, since the tool names it.
 """
 
 from __future__ import annotations
@@ -31,6 +48,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import fixes as fixes_mod
+from .context_files import _CHARS_PER_TOKEN_APPROX, _parse_ts
 from .footprint import home_label
 from .model import Recommendation, SettingChange
 from .units import Units
@@ -40,8 +58,24 @@ from .units import Units
 UNUSED_MIN_LISTINGS = 3
 #: A listing line this long (tokens) is worth shortening.
 LONG_DESCRIPTION_TOKENS = 100
+#: A skill with no file on disk that hasn't been listed for this many
+#: days before the newest listing counts as removed.
+REMOVED_AFTER_DAYS = 14
 #: Newest transcripts read for descriptions, at most.
 _MAX_TRANSCRIPTS = 20
+#: skillOverrides values that already keep a skill's description out of
+#: the listing.
+_HIDING_OVERRIDES = frozenset({"off", "user-invocable-only", "name-only"})
+#: Built-in skills that Claude Code's own tools tell Claude to load, and
+#: the tool. Tool descriptions aren't in transcripts, so this is kept by
+#: hand from Claude Code's current ones.
+TOOL_LOADED_SKILLS = {
+    "artifact-design": "Artifact",
+    "artifact-capabilities": "Artifact",
+    "artifact-diagramming": "Artifact",
+    "workshop": "Artifact",
+    "workflow-authoring": "Workflow",
+}
 
 SOURCE_LABELS = {
     "plugin": "From a plugin",
@@ -50,6 +84,7 @@ SOURCE_LABELS = {
     "command": "Custom command",
     "workflow": "Saved workflow",
     "built-in": "Built into Claude Code",
+    "removed": "Removed",
 }
 
 
@@ -119,6 +154,30 @@ def locate(name: str, claude_root: Path, projects: list[Path]) -> tuple[str, Pat
     return "built-in", None
 
 
+def _user_settings(claude_root: Path) -> dict:
+    try:
+        data = json.loads((claude_root / "settings.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def hidden_by(name: str, source: str, settings: dict) -> str:
+    """Why the user settings already keep ``name`` out of Claude's
+    listing, as a phrase, or ``""`` when they don't."""
+    overrides = settings.get("skillOverrides")
+    value = overrides.get(name) if isinstance(overrides, dict) else None
+    if value in _HIDING_OVERRIDES:
+        return f"skillOverrides sets it to {value}"
+    plugins = settings.get("enabledPlugins")
+    if source == "plugin" and isinstance(plugins, dict):
+        plugin = name.split(":", 1)[0]
+        states = [enabled for key, enabled in plugins.items() if str(key).split("@", 1)[0] == plugin]
+        if states and not any(states):
+            return "its plugin is turned off"
+    return ""
+
+
 @dataclass(slots=True)
 class SkillRow:
     name: str
@@ -126,6 +185,9 @@ class SkillRow:
     source: str
     path: Path | None
     usage: dict
+    hidden: str = ""
+    #: The Claude Code tool that tells Claude to load this skill, or "".
+    needed_by: str = ""
 
 
 def _listed_total(usage: dict) -> int:
@@ -153,6 +215,12 @@ def _saving(units: Units, usd: float, period: str) -> str:
     return f"{text[:1].upper()}{text[1:]}." if text else ""
 
 
+def _listed_at(usage: dict) -> float | None:
+    """When a skill was last listed, as a timestamp, or ``None``."""
+    moment = _parse_ts(usage.get("last_seen"))
+    return moment.timestamp() if moment is not None else None
+
+
 def build_rows(config_dir: Path, context_files: dict, *, projects: list[Path] | None = None) -> list[SkillRow]:
     from .claude_md_review import project_folders, split_worktrees
 
@@ -160,20 +228,75 @@ def build_rows(config_dir: Path, context_files: dict, *, projects: list[Path] | 
     folders = split_worktrees(projects if projects is not None else project_folders(claude_root))[0]
     usage = {row["name"]: row for row in context_files.get("skills") or () if isinstance(row, dict)}
     texts = descriptions(claude_root, set(usage))
+    settings = _user_settings(claude_root)
+    newest = max((t for t in map(_listed_at, usage.values()) if t is not None), default=None)
     rows = []
     for name in sorted(set(usage) | set(texts), key=str.lower):
         source, path = locate(name, claude_root, folders)
-        rows.append(SkillRow(name=name, description=texts.get(name, ""), source=source, path=path, usage=usage.get(name, {})))
+        listed_at = _listed_at(usage.get(name, {}))
+        if source == "built-in" and listed_at is not None and newest - listed_at > REMOVED_AFTER_DAYS * 86400:
+            source = "removed"
+        rows.append(
+            SkillRow(
+                name=name,
+                description=texts.get(name, ""),
+                source=source,
+                path=path,
+                usage=usage.get(name, {}),
+                hidden=hidden_by(name, source, settings),
+                needed_by=TOOL_LOADED_SKILLS.get(name, "") if source == "built-in" else "",
+            )
+        )
     return rows
 
 
-def _unused(row: SkillRow) -> bool:
+def _never_used(row: SkillRow) -> bool:
     u = row.usage
     return _listed_total(u) >= UNUSED_MIN_LISTINGS and not u.get("invoked") and not u.get("attributed_turns")
 
 
+def _unused(row: SkillRow) -> bool:
+    """Never used, still listed, and safe to hide from Claude."""
+    return not row.hidden and not row.needed_by and row.source != "removed" and _never_used(row)
+
+
+def _name_only_fix(row: SkillRow, units: Units, period: str) -> dict:
+    """``name-only`` for a skill a Claude Code tool loads by name: its
+    description goes, the name the tool points at stays."""
+    u = row.usage
+    tokens = int(u.get("listing_tokens") or 0)
+    kept = round(len(f"- {row.name}") / _CHARS_PER_TOKEN_APPROX)
+    saving = float(u.get("listing_cost_usd") or 0.0) * (1 - kept / tokens) if tokens > kept else 0.0
+    rec = Recommendation(
+        id="tool-skill-name-only",
+        title=f"List {row.name} by name only",
+        scope="user",
+        why=(
+            f"Claude Code listed {row.name} in {_reach_text(u.get('listed') or {})} and Claude never used it, "
+            f"but Claude Code's {row.needed_by} tool tells Claude to load it, so hiding it would break that "
+            f"tool's instructions. Listed by name only, it drops its {tokens}-token description."
+        ),
+        estimated_saving=_saving(units, saving, period),
+        saving_basis="Its description, written to the cache at each start and read back on every turn.",
+        changes=[
+            SettingChange(
+                key="skillOverrides",
+                value={row.name: "name-only"},
+                note=f"The {row.needed_by} tool names this skill when Claude should load it, so Claude still can.",
+            )
+        ],
+    )
+    fix = fixes_mod.build_fix(rec, rec.changes[0])
+    fix["title"] = "List it by name only"
+    return fix
+
+
 def build_fixes(row: SkillRow, units: Units, period: str) -> list[dict]:
     out: list[dict] = []
+    if row.hidden or row.source == "removed":
+        return out
+    if row.needed_by and _never_used(row):
+        return [_name_only_fix(row, units, period)]
     u = row.usage
     listing_cost = float(u.get("listing_cost_usd") or 0.0)
     listed = _reach_text(u.get("listed") or {})
@@ -250,7 +373,7 @@ def build_fixes(row: SkillRow, units: Units, period: str) -> list[dict]:
                 "title": "Shorten its description",
                 "explainer": [
                     ["What this changes", "The skill's listing line: the description Claude reads to decide when to use it."],
-                    ["Now and after", f"Now: about {tokens} tokens. After: one or two sentences, about 30 to 50 tokens."],
+                    ["Now and after", f"Now: about {tokens:,} tokens. After: one or two sentences, about 30 to 50 tokens."],
                     ["Where and who it affects", "Every session and subagent that lists the skill."],
                     [
                         "Expected effect",
@@ -270,6 +393,12 @@ def build_fixes(row: SkillRow, units: Units, period: str) -> list[dict]:
 def row_dict(row: SkillRow, units: Units, period: str) -> dict:
     u = row.usage
     status = "unused" if _unused(row) else ("used" if u.get("invoked") or u.get("attributed_turns") else "")
+    if row.needed_by and _never_used(row):
+        status = "needed by a tool"
+    if row.source == "removed":
+        status = "no longer listed"
+    if row.hidden:
+        status = "hidden"
     if not status:
         status = "not listed" if not u else "listed"
     return {
@@ -289,6 +418,8 @@ def row_dict(row: SkillRow, units: Units, period: str) -> dict:
         "resent_tokens": int(u.get("resent_tokens") or 0),
         "status": status,
         "use_text": _use_text(u),
+        "hidden": row.hidden,
+        "needed_by": row.needed_by,
         "fixes": build_fixes(row, units, period),
     }
 
@@ -309,17 +440,33 @@ def review(config_dir: Path, context_files: dict, units: Units, period: str, *, 
     rows.sort(key=lambda r: (r["status"] != "unused", -r["listing_cost_usd"], r["name"].lower()))
     total_cost = sum(r["listing_cost_usd"] for r in rows)
     unused = [r for r in rows if r["status"] == "unused"]
+    kept = [r for r in rows if r["status"] == "needed by a tool"]
     return {
         "period": period,
         "skills": rows,
         "listing_tokens": sum(r["listing_tokens"] for r in rows),
         "listing_cost_text": _amount(units, total_cost, period),
         "unused": len(unused),
-        "fixes": _hide_all_fix(unused, units, period),
+        "needed_by_a_tool": len(kept),
+        "fixes": _hide_all_fix(unused, units, period, kept=kept),
     }
 
 
-def _hide_all_fix(unused: list[dict], units: Units, period: str) -> list[dict]:
+def kept_text(kept: list[dict]) -> str:
+    """Why skills Claude never used aren't in the hide-all list, as a
+    sentence, or ``""``."""
+    if not kept:
+        return ""
+    tools = sorted({r["needed_by"] for r in kept})
+    return (
+        f"Left out: {', '.join(r['name'] for r in kept)}. Claude Code's own "
+        f"{' and '.join(tools)} {'tools tell' if len(tools) != 1 else 'tool tells'} Claude to load "
+        f"{'them' if len(kept) != 1 else 'it'}, so hidden, "
+        f"{'those tools' if len(tools) != 1 else 'that tool'} would break."
+    )
+
+
+def _hide_all_fix(unused: list[dict], units: Units, period: str, *, kept: list[dict] = ()) -> list[dict]:
     """One change that hides every unused skill at once, so you needn't
     copy a fix per skill."""
     if len(unused) < 2:
@@ -340,7 +487,14 @@ def _hide_all_fix(unused: list[dict], units: Units, period: str) -> list[dict]:
             SettingChange(
                 key="skillOverrides",
                 value={r["name"]: "user-invocable-only" for r in unused},
-                note="Skills you still want Claude to pick on its own: take them out of the list first.",
+                note=" ".join(
+                    part
+                    for part in (
+                        "Skills you still want Claude to pick on its own: take them out of the list first.",
+                        kept_text(list(kept)),
+                    )
+                    if part
+                ),
             )
         ],
     )
@@ -367,6 +521,14 @@ def render_markdown(data: dict) -> str:
             lines.append(row["description"])
             lines.append("")
         lines.append(f"About {row['listing_tokens']} tokens; listed in {row['listed_text']}; {row['use_text']}.")
+        if row["hidden"]:
+            lines.append(f"Already hidden: {row['hidden']}.")
+        elif row["status"] == "needed by a tool":
+            lines.append(
+                f"Not offered for hiding: Claude Code's {row['needed_by']} tool tells Claude to load it."
+            )
+        elif row["status"] == "no longer listed":
+            lines.append("No longer listed, and no file for it is left on disk, so hiding it would save nothing.")
         for fix in row["fixes"]:
             lines += _fix_markdown(fix, "###")
         lines.append("")
@@ -380,4 +542,16 @@ def _fix_markdown(fix: dict, heading: str) -> list[str]:
     return lines + [""]
 
 
-__all__ = ["LONG_DESCRIPTION_TOKENS", "SOURCE_LABELS", "UNUSED_MIN_LISTINGS", "descriptions", "locate", "render_markdown", "review"]
+__all__ = [
+    "LONG_DESCRIPTION_TOKENS",
+    "REMOVED_AFTER_DAYS",
+    "SOURCE_LABELS",
+    "TOOL_LOADED_SKILLS",
+    "UNUSED_MIN_LISTINGS",
+    "descriptions",
+    "hidden_by",
+    "kept_text",
+    "locate",
+    "render_markdown",
+    "review",
+]

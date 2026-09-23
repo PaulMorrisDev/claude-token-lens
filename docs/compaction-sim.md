@@ -1,6 +1,6 @@
 # `autoCompactWindow` sweep (`compaction_sim.py`)
 
-Claude Code auto-compacts a session once its context reaches
+Claude Code auto-compacts a session once its context nears
 `autoCompactWindow` tokens — observed in config snapshots (e.g.
 `300000`; a model's own context window is typically 1,000,000 for a
 "[1m]"-aliased model, 200,000 otherwise, per `context_budget.py`'s own
@@ -12,9 +12,9 @@ lever, and it trades off two costs directly against each other:
   `cache_read` rate most of the time — but the context keeps growing
   until the harness's own ceiling forces a much larger rewrite, and every
   turn pays cache-read on a bigger prefix in the meantime.
-- **Compacting more often** (a smaller window) pays a summary-write cost
-  and a rediscovery cost every time, but every later turn carries a
-  smaller context afterwards.
+- **Compacting more often** (a smaller window) pays for the summary
+  request, the re-cache after it and the files re-read after it every
+  time, but every later turn carries a smaller context afterwards.
 
 Every number this module reports leads to a lever
 (`autoCompactWindow`) and a projected saving in dollars — the project's
@@ -30,24 +30,37 @@ total simulated cost to what the session actually cost.
 A **real** compaction (one already recorded as a `compact_boundary`
 event in the transcript) costs, and saves, exactly what it already did —
 this module never re-simulates or removes it. A **simulated** compaction
-is inserted whenever a candidate window's running context would be
-exceeded, and costs:
+is shaped like this corpus's real ones:
 
-1. A **summary write**: the simulated post-compaction token count
-   (context scaled down by this corpus's own observed compression ratio
-   — the median `postTokens`/`preTokens` across real `compact_boundary`
-   events, 0.15 default when this corpus has none), priced as a fresh
-   5-minute cache write.
-2. A **rediscovery allowance**: this corpus's own median post-compaction
-   re-cache write cost, drawn from real compactions' own next-turn
-   behaviour (`compaction.compaction_records_for_transcript`'s
-   `next_turn_write_cost` on a recache-flagged record); $0.00 default
-   when this corpus has none.
+- **When it fires**: once the running context passes the candidate
+  window less a trigger reserve. Claude Code summarises below the
+  window (a 300,000 window fires near 267,000); the reserve is the
+  median `window − preTokens` across real auto compactions in sessions
+  whose configured window is known (0 when there are none).
+- **What it leaves**: the session's own starting context (its first
+  reply's context: system prompt, tools, CLAUDE.md, skills listing,
+  about 80,000 tokens on a typical corpus) plus a summary of this
+  corpus's median `postTokens` (20,000 when there are none). A summary
+  replaces the conversation, not what sits in front of it, and its size
+  barely tracks how long the conversation was. A compaction that would
+  not shrink the context is skipped.
+- **What it costs**:
+  1. The **summary request**, which the transcript never logs: the
+     triggering reply's context, read and written the way that reply's
+     was, with the summary as its output.
+  2. The **reply after it**, re-caching its whole new context: the
+     share of the starting context real compactions still read from
+     cache (the system prompt and tools; median across real ones, 0
+     when there are none) is read, the rest written at that reply's own
+     5-minute/1-hour mix.
 
 Every turn after a simulated compaction has the tokens that summary
 dropped taken out of its context and cache reads (and out of its cache
 writes once the reads are used up), until the next compaction; content
-added after the summary is kept whole. A real compaction resets this. Candidate windows swept:
+added after the summary is kept whole. A real compaction resets this.
+The files a session re-reads after a summary can't be seen in the
+transcript being replayed, so the sweep doesn't charge them; the
+`compaction-window` rule corrects for them instead. Candidate windows swept:
 `100k, 150k, 200k, 250k, 300k, 400k, 500k, none` (`none` = never
 auto-compact; a real compaction already in the transcript is still kept
 under this row — see the "no candidate window" identity below).
@@ -70,13 +83,15 @@ Recommendation rule `compaction-window` (category `settings`, lever
 `compaction_sim_by_window` and names a floor ("at least W"), not a
 single best window:
 
-1. It adds an extra rediscovery cost per simulated compaction on top of
-   the sweep's flat allowance: the allowance × the corpus's mean
-   post-compaction redundant reads per session (the second row of
-   `topology_redundant_reads`), or the allowance again when the
-   `agents` section is missing.
+1. It takes a rediscovery cost off each window's saving, per simulated
+   compaction: the rediscovery allowance (this corpus's own median
+   post-compaction re-cache write cost, from real compactions'
+   `next_turn_write_cost`; $0.00 when there are none) × the corpus's
+   mean post-compaction redundant reads per session (the second row of
+   `topology_redundant_reads`), or one allowance when the `agents`
+   section is missing.
 2. It walks the candidate windows from smallest up, skips any with more
-   than 2 simulated compactions per session, and picks the first whose
+   than `max_compactions_per_session` (2) compactions per session, and picks the first whose
    corrected saving is more than (1 − `switch_pct`) of observed cost
    (5% by default) and more than `switch_usd`.
 
@@ -99,21 +114,24 @@ uniform "candidate minus observed" avoids re-deriving the sign on every
 row. `saving_usd = max(0, -delta_usd)` is always non-negative in both
 modules.
 
-## Worked example
+## Worked examples
 
-A 20-turn synthetic transcript with linearly growing context (20,000
-new tokens written per turn, everything earlier read back from cache —
-`tests/test_compaction_sim.py`'s `_synthetic_20_turn_transcript`, priced
-at the packaged Sonnet 5 rates) costs **$1.76** with no compaction at
-all (`window=none`). Under `window=100,000`, compactions fire at turns
-6, 11 and 16 (each time the context, grown by 20,000 a turn since the
-last summary, passes 100,000 again), and the total drops to
-**$1.138** — a **$0.622 saving (35% cheaper)**. That is three summaries
-a session, so the rule skips 100,000 and names 150,000 (two summaries,
-$0.501 saved) as the floor. That needs `switch_usd` lowered below
-$0.50, as the rule tests do ($0.10); at the default $1.00 this small
-example fires nothing. The full turn-by-turn arithmetic is spelled out
-in that test file's docstrings.
+Both are in `tests/test_compaction_sim.py`, priced at the packaged
+Sonnet 5 rates, with the turn-by-turn arithmetic in the docstrings.
+
+- **A summary that doesn't pay.** 20 turns growing by 20,000 tokens
+  each from a 20,000-token start (`_synthetic_20_turn_transcript`)
+  cost **$1.76** as observed. At `window=100,000` four summaries fire;
+  each costs $0.37 (the summary request's 20,000 output tokens alone
+  are $0.20) against a few cents of reads saved per later turn, so the
+  total rises to **$2.448**.
+- **A summary that does.** An 80,000-token start, a jump to 280,000,
+  then 40 replies that add nothing (`_plateau_transcript`) cost
+  **$2.956**. At any window from 100,000 to 250,000 one summary fires
+  at turn 2 and every later reply carries 100,000 tokens (start plus
+  summary) instead of 280,000: **$1.966**, $0.99 cheaper. The rule
+  names "at least 100,000" once `switch_usd` is lowered below that, as
+  the rule tests do.
 
 ## The "no candidate window" identity
 
@@ -129,20 +147,23 @@ path exists in this module. Asserted directly in
 
 Printed verbatim in the report section's own notes (`ASSUMPTIONS`):
 
-- A simulated compaction resets context to this corpus's own observed
-  compression ratio (0.15 default).
-- A simulated compaction charges a summary-write cost equal to the
-  simulated post-compaction token count, at the 5-minute cache-write
-  rate.
-- A simulated compaction also charges a rediscovery allowance — this
-  corpus's own median post-compaction re-cache write cost ($0.00
-  default, noted).
+- A simulated compaction resets context to the session's own starting
+  context plus a summary of this corpus's median `postTokens` (20,000
+  default); one that would not shrink the context is skipped. (Earlier
+  versions scaled the whole context by a compression ratio, dropping the
+  starting context every reply carries, which overstated savings at
+  small windows several times over.)
+- A candidate window fires at the window less this corpus's median
+  trigger reserve (0 default).
+- A simulated compaction charges the summary request and the reply after
+  it re-caching its whole context, reading the corpus's median cached
+  share of the starting context (0 default) and writing the rest.
+- Files re-read after a summary are not charged by the sweep; the rule
+  corrects for them.
 - Every later turn's context and cache reads shrink by the tokens the
   simulated summary dropped (its cache writes too, once the reads are
   used up), until the next compaction, real or simulated. Content added
-  after the summary is kept whole. (Earlier versions
-  scaled later turns down by the compression ratio instead, which also shrank new
-  content and so overstated savings at small windows.)
+  after the summary is kept whole.
 - A real, observed compaction already in a transcript is kept as-is
   under every candidate window — never re-simulated, never removed.
 - `delta_usd = candidate_cost - observed_cost` (see the sign-convention
@@ -151,8 +172,8 @@ Printed verbatim in the report section's own notes (`ASSUMPTIONS`):
 ## Wiring into the report and CLI
 
 `report.build_report` builds a per-session `snapshot_windows` map (the
-effective `autoCompactWindow` in the latest config snapshot of each
-session's project), calls
+effective `autoCompactWindow` in the config snapshot each session's own
+project had when it started, via `snapshots.snapshot_for`), calls
 `compaction_sim.simulate_compaction_windows(all_results, rates, snapshot_windows, thresholds)`
 and appends `compaction_sim.build_section(...)` after the `carry`
 section. `recommend.recommend()` then runs

@@ -22,10 +22,12 @@ transcript in the window is still listed, with "not seen" usage.
 Findings per file:
 
 - **sections**: size of each heading section;
-- **agent-specific sections**: a section whose heading or text names one
-  of your agents (``.claude/agents/*.md`` or an agent type seen in your
-  sessions) -- every main session and subagent that gets the file pays
-  for it, but only that agent needs it;
+- **agent-specific sections**: a section whose heading names one of your
+  agents (``.claude/agents/*.md`` or an agent type seen in your sessions),
+  or whose text names it twice -- every main session and subagent that
+  gets the file pays for it, but only that agent needs it. A one-word
+  name (``claude``, ``Explore``, ``Plan``) counts only in backticks or
+  next to "agent", since it is also ordinary prose or a path;
 - **duplicates**: paragraphs repeated within the file or across files;
 - **stale references**: backticked paths with a folder in them, ``@``
   imports and ``npm run`` scripts that no longer exist.
@@ -518,10 +520,28 @@ def agent_names(config_dir: Path, projects: list[Path], seen_types: list[str]) -
     return sorted(names, key=str.lower)
 
 
+def _mention_pattern(name: str) -> re.Pattern:
+    """How a section names an agent. A name with a hyphen, underscore or
+    digit (``db-migrator``) is distinctive, so any whole-word use counts.
+    A plain word (``claude``, ``Explore``, ``Plan``) is also prose or a
+    path ("Claude Code", ``.claude/``, "plan the change"), so it counts
+    only in backticks, before "agent" or "subagent", or as a
+    ``subagent_type``."""
+    word = re.escape(name)
+    if re.search(r"[-_\d]", name):
+        return re.compile(r"(?<![\w-])" + word + r"(?![\w-])", re.IGNORECASE)
+    return re.compile(
+        r"`" + word + r"`"
+        + r"|(?<![\w./-])" + word + r"\s+(?:sub)?agent\b(?!\s+SDK)"
+        + r"|\bsubagent_type\W{1,4}" + word + r"\b",
+        re.IGNORECASE,
+    )
+
+
 def _agents_in(heading: str, body: str, names: list[str]) -> list[str]:
     found = []
     for name in names:
-        pattern = re.compile(r"(?<![\w-])" + re.escape(name) + r"(?![\w-])", re.IGNORECASE)
+        pattern = _mention_pattern(name)
         if pattern.search(heading) or len(pattern.findall(body)) >= 2:
             found.append(name)
     return found
@@ -759,7 +779,7 @@ def build_fixes(review: FileReview, units: Units, period: str) -> list[dict]:
                     "always-loaded file. A path-scoped rule (.claude/rules/<name>.md with `paths:` "
                     "frontmatter) loads only when Claude works on matching files; a skill loads only when "
                     "the task calls for it.",
-                    f"Now: {on_demand} tokens in {len(big)} section{'s' if len(big) != 1 else ''} go to {reach}. "
+                    f"Now: {on_demand:,} tokens in {len(big)} section{'s' if len(big) != 1 else ''} go to {reach}. "
                     "After: they load only when relevant.",
                     review,
                     f"Up to {_amount(units, per_token * on_demand, period)} if they are rarely needed."

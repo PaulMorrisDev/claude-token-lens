@@ -712,7 +712,7 @@ def _build_baseline_table(stats: ContextBudgetStats, latest_snapshots: dict[str,
             "every (est) figure here as a rough proxy, never as ground truth.",
             "The \"all\" row sums every project's own sessions into one "
             "mean/median baseline; its memory files, custom agents and MCP "
-            "tools buckets are null because those figures come from each "
+            "tools buckets are left blank because those figures come from each "
             "project's own config snapshot, which cannot be meaningfully "
             "combined across different projects.",
             "\"System prompt and tools (est)\" is the residual: mean "

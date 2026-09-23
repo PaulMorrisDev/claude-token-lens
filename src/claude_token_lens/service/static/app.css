@@ -185,7 +185,12 @@ thead th {
   background: var(--header-bg);
   cursor: pointer;
   user-select: none;
-  white-space: nowrap;
+  vertical-align: bottom;
+}
+
+/* A table wider than the page scrolls inside its own box, not the page. */
+.table-wrap {
+  overflow-x: auto;
 }
 
 thead th .sort-indicator {
@@ -208,6 +213,26 @@ tbody tr.clickable:hover {
 
 td.num, th.num {
   text-align: right;
+}
+
+/* A number and its unit ("5,516.90 USD") stay on one line. */
+td.num {
+  white-space: nowrap;
+}
+
+/* Sessions list: short values on one line, room for the project folder. */
+#sessions-list-table td.col-id,
+#sessions-list-table td.col-first_ts,
+#sessions-list-table td.col-last_ts,
+#sessions-list-table td.col-mode,
+#sessions-list-table td.col-purpose,
+#sessions-list-table td.col-entrypoint {
+  white-space: nowrap;
+}
+
+#sessions-list-table td.col-slug {
+  min-width: 14em;
+  overflow-wrap: anywhere;
 }
 
 .bar-cell {
@@ -577,6 +602,8 @@ details.fix[open] > summary {
 .code-block pre {
   margin: 0;
   padding-right: 4.5rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .copy-button {

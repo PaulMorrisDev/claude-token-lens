@@ -64,7 +64,16 @@ __version__ = "0.5.0"
 #: Bumped to 10 by the same batch: discovery.py records a workflow
 #: agent's end state on ``TranscriptMeta.workflow_agent_state``, which a
 #: version-9 digest (already written by a development build) lacks.
-PARSER_VERSION = 10
+#:
+#: Bumped to 11: parse.py took a turn's usage from the first line of a
+#: streamed reply, whose output_tokens is a partial count and which has no
+#: thinking_tokens; it now keeps the most complete snapshot among the
+#: reply's lines, so older digests undercount output and thinking tokens.
+#:
+#: Bumped to 12: parse.py records why each failed tool call failed
+#: (``Turn.tool_errors_by_kind``), which waste.py needs to tell a failing
+#: test or a hook block from a call that couldn't run.
+PARSER_VERSION = 12
 
 #: Bump when the model.py contract changes in a way that invalidates the
 #: on-disk digest cache (see model.py's module docstring for the contract

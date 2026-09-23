@@ -15,7 +15,12 @@ what you spent" but "here is what you could get back, and how."
 convention `limits.py` follows. A turn's own tool_result blocks
 carrying `is_error: true` become `Turn.tool_error_count`/`Turn.
 tool_error_chars` (the v4-wasted-turns parser addition — length only,
-never the error text itself); everything else is read off
+never the error text itself), and `Turn.tool_errors_by_kind` records why
+each failed (`blocked`, `denied`, `failed` or `misfire`, read from the
+start of the error text and then dropped). A turn whose only failed
+calls are commands that ran and reported failure (a failing test or
+build) isn't wasted: Claude used that output. It is counted in
+`waste_summary`'s `failed_command_turns` and left out. Everything else is read off
 `EventKind`/`Turn.preceding_primary`/`Turn.gap_cause`/`TranscriptMeta.
 stopped_by_user`, all of which already existed.
 
@@ -59,7 +64,8 @@ fixed priority order (a turn is assigned to exactly one cause, so
 | Cause | Detected when | Lever |
 |---|---|---|
 | `max-turns` | The turn's own transcript has `TranscriptMeta.kind != "top-level"` and `TranscriptMeta.stopped_by_user` is true. A **transcript-level override**: every priced turn in a killed subagent transcript is wasted, since that transcript returns no report to its parent regardless of what any one turn did. | Raise the subagent's `maxTurns` budget, or narrow its brief so it finishes — and reports back — inside the turns it's given. |
-| `tool-error` | The turn's own `Turn.tool_error_count > 0` — one of its own tool_use calls came back with a tool_result carrying `is_error: true`. | Write clearer briefs, double-check paths/commands before handing them to a tool, and pre-approve routine permissions. |
+| `tool-error` | The turn's own `Turn.tool_error_count > 0` — one of its own tool_use calls came back with a tool_result carrying `is_error: true` — and at least one of those calls couldn't run as written (`misfire` in `Turn.tool_errors_by_kind`: a wrong path, a malformed command, an edit whose text wasn't found). | Give exact paths and names in briefs, and have Claude check a path exists or read a file before it edits or runs against it. |
+| `blocked` | The same, where a hook or a Claude Code guard blocked the call (`blocked`) and nothing misfired. | Put the rule the hook enforces into the instructions of the agent that keeps hitting it. |
 | `interrupt` | The *next* priced turn's `preceding_primary == EventKind.INTERRUPT` — the turn under scrutiny is the one the user cut off. | Batch instructions and plan the whole step before running it. |
 | `tool-denial` | The *next* priced turn's `preceding_primary == EventKind.TOOL_DENIAL`. | Add the repeatedly-denied tool/command to the permissions allowlist. |
 
@@ -89,7 +95,7 @@ this", which only a corpus-wide denominator can answer directly.
 | Table | What it shows |
 |---|---|
 | `waste_summary` | One "all" row: total priced turns/cost, wasted turns/share of turns, wasted cost (labelled "Recoverable spend ceiling")/share of cost, wasted tokens, the limit-pause-excluded count, and the api-error-retry count. |
-| `waste_by_cause` | One row per cause (`tool-error`, `interrupt`, `tool-denial`, `max-turns`, fixed order) plus an `api-error-retry` row: turns, share of all priced turns, cost, share of all priced cost, tokens, and that cause's own lever text. |
+| `waste_by_cause` | One row per cause (`tool-error`, `blocked`, `interrupt`, `tool-denial`, `max-turns`, fixed order) plus an `api-error-retry` row: turns, share of all priced turns, cost, share of all priced cost, tokens, and that cause's own lever text. |
 | `waste_by_agent_type` | Per-agent-type roll-up (`TranscriptMeta.agent_type`, or `"top-level"`): turns, share of turns, cost, share of cost, tokens. Sorted descending by cost. |
 | `waste_top_sessions` | The 20 sessions with the highest wasted cost: a salted, non-reversible session hash, turns, cost, share of cost, and a `cause:count` cause-mix string (most frequent cause first). |
 
@@ -143,8 +149,8 @@ codebase follows.
 - `max-turns` is a transcript-level override, taking priority over any
   other cause a turn in that transcript might otherwise match.
 - Cause priority for a turn that could match more than one rule:
-  limit-pause exclusion first, then `max-turns`, then `tool-error`,
-  then `interrupt`/`tool-denial`.
+  limit-pause exclusion first, then `max-turns`, then `tool-error`
+  (any misfire), then `blocked`, then `interrupt`/`tool-denial`.
 - `api-error-retry` is counted, never priced.
 - Every `share_pct` column is against the whole corpus's priced
   turns/cost, not just the wasted subset.

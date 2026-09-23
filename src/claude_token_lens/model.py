@@ -233,6 +233,14 @@ Quality-signals addition (see ``quality.py`` for how these are used):
   name once).
 - ``Turn.tool_errors_by_tool: dict = {}`` -- tool name -> how many of
   ``tool_error_count`` came from that tool.
+- ``Turn.tool_errors_by_kind: dict = {}`` -- why each of
+  ``tool_error_count`` failed, from the start of its error text (only
+  the kind is kept): ``blocked`` (a hook or a Claude Code guard stopped
+  it), ``denied`` (you or the permission classifier said no),
+  ``failed`` (a command ran and reported failure: a failing test or
+  build, a timeout) or ``misfire`` (it couldn't run as written: a wrong
+  path, a malformed command, an edit whose text wasn't found). Empty on
+  a digest from before this field existed.
 - ``Turn.edit_target_hashes: tuple[str, ...] = ()`` -- the salted hashes
   of this turn's Edit/Write/NotebookEdit targets only (a subset of
   ``read_target_hashes``), so a file edited again later can be counted
@@ -442,6 +450,9 @@ class Turn:
     #: Quality-signals addition (see module docstring): tool name ->
     #: erroring tool_result count.
     tool_errors_by_tool: dict = field(default_factory=dict)
+    #: Why each erroring tool_result failed, kind -> count (see module
+    #: docstring). The kind only, never the error text.
+    tool_errors_by_kind: dict = field(default_factory=dict)
     #: Quality-signals addition (see module docstring): salted hashes of
     #: Edit/Write/NotebookEdit targets only.
     edit_target_hashes: tuple[str, ...] = ()

@@ -172,19 +172,21 @@ def _agent_has_frontmatter(agent_type: str, snapshot: Snapshot | None) -> bool:
     """Whether ``agent_type`` has its own ``.claude/agents/<type>.md``
     frontmatter file for ``spawn-cost`` (fix A1) to name as a lever.
 
-    When a config snapshot is available, its ``agents`` map (populated by
+    A key in the config snapshot's ``agents`` map (populated by
     ``hooks/snapshot-config.py`` from every agent frontmatter file that
     actually exists on disk -- see ``snapshots.py``'s module docstring)
-    answers this directly: ``agent_type`` has a file if and only if it is
-    a key in that map. Without a snapshot, fall back to a built-in list
-    of Claude Code's own bundled agent types (:data:`_BUILTIN_AGENT_TYPES`)
-    -- anything else is assumed to be a custom agent with its own file,
-    since that's the only kind a corpus would otherwise be spawning.
+    has a file. Otherwise fall back to a built-in list of Claude Code's
+    own bundled agent types (:data:`_BUILTIN_AGENT_TYPES`) -- anything
+    else is assumed to be a custom agent with its own file, since that's
+    the only kind a corpus would otherwise be spawning. A missing key is
+    not proof of no file: the hook records only the agents of the project
+    a session started in, so a project whose sessions took no snapshot
+    leaves its agents out of every map.
     """
     if snapshot is not None:
         agents_map = snapshot.data.get("agents")
-        if isinstance(agents_map, dict):
-            return agent_type in agents_map
+        if isinstance(agents_map, dict) and agent_type in agents_map:
+            return True
     return agent_type not in _BUILTIN_AGENT_TYPES
 
 

@@ -87,6 +87,7 @@ PLACEMENT: dict[str, str] = {
     "carry_by_agent_type": "advanced",
     "carry_top_results": "advanced",
     "carry_truncation_savings": "keep",
+    "carry_output_cap_savings": "advanced",
     "compaction_sim_by_window": "keep",
     "compaction_sim_by_agent_type": "keep",
     "compaction_sim_fidelity": "advanced",
@@ -455,11 +456,12 @@ SECTION_COPY: dict[str, SectionCopy] = {
             "triggered at context sizes from 100,000 to 500,000 tokens. The setting is autoCompactWindow "
             "in settings.json.",
             read="Only the \"As now\" figures are measured; every other cost is simulated. Each simulated "
-            "summary is charged a cache write for the summary and an allowance for re-reading files after "
-            "it, both taken from your own past summaries. The simulation can't see what a summary loses, "
-            "so small windows look better than they are.",
+            "summary is shaped like your own past ones: it fires the same distance below the window, leaves "
+            "your usual starting context plus a summary of the usual size, and is charged for writing the "
+            "summary and re-caching the reply after it. The simulation can't see what a summary loses or "
+            "the files re-read after it, so small windows look better than they are.",
             act="Treat large savings at small windows with caution. The Recommendations tab only suggests a "
-            "minimum window, after adding a stricter allowance for re-reading.",
+            "minimum window, after taking off an allowance for re-reading.",
         ),
     ),
     "model_swap": SectionCopy(
@@ -706,8 +708,9 @@ TABLE_COPY: dict[str, TableCopy] = {
             ),
             "setup_verdict": (
                 "Verdict",
-                "Worse if any signal is clearly worse than in the setup it is compared with, Better if one is clearly "
-                "better and none worse.",
+                "Worse if any signal is clearly worse than in the setup it is compared with and none clearly better, "
+                "Mixed if some are clearly worse and others clearly better, Better if one is clearly better and none "
+                "worse.",
             ),
             "difference": (
                 "Difference",
@@ -721,6 +724,7 @@ TABLE_COPY: dict[str, TableCopy] = {
             "(all subagents)": "All subagents",
             "worse": "Worse",
             "possibly_worse": "Possibly worse",
+            "mixed": "Mixed",
             "better": "Better",
             "possibly_better": "Possibly better",
             "no_clear_difference": "No clear difference",
@@ -2580,8 +2584,8 @@ TABLE_COPY: dict[str, TableCopy] = {
             read="Kept tokens are output size times later replies. Share of cache compares them with every "
             "token read from or written to the cache. The rest is instructions, messages and replies, so "
             "rows don't add up to 100%.",
-            act="A tool above about 25% of the cache is worth capping. The table \"Saving if large tool "
-            "outputs were capped\" shows what that would save.",
+            act="A tool above about 25% of the cache is worth capping. \"Saving if capped\" shows what "
+            "cutting its outputs to 8,000 tokens would have saved.",
         ),
         columns={
             "key": ("Tool", "The tool that produced the output."),
@@ -2599,6 +2603,10 @@ TABLE_COPY: dict[str, TableCopy] = {
             "share_of_cache_volume_pct": (
                 "Share of cache",
                 "Kept tokens as a share of every token read from or written to the cache.",
+            ),
+            "saving_if_capped_usd": (
+                "Saving if capped",
+                "What cutting each of these outputs to 8,000 tokens would have saved, at list price.",
             ),
         },
     ),
@@ -2626,6 +2634,10 @@ TABLE_COPY: dict[str, TableCopy] = {
             "share_of_cache_volume_pct": (
                 "Share of cache",
                 "Kept tokens as a share of every token read from or written to the cache.",
+            ),
+            "saving_if_capped_usd": (
+                "Saving if capped",
+                "What cutting each of these outputs to 8,000 tokens would have saved, at list price.",
             ),
         },
         value_labels={"top-level": "Main session", "unknown": "Subagent (type not recorded)"},
@@ -2666,6 +2678,27 @@ TABLE_COPY: dict[str, TableCopy] = {
             "usd_saved": ("Saving", "Cost of keeping the part over the cap, at list price."),
         },
         value_labels={"2000": "2,000 tokens", "8000": "8,000 tokens"},
+    ),
+    "carry_output_cap_savings": TableCopy(
+        title="Saving from Claude Code's output limits",
+        help=Help(
+            shows="For each Claude Code setting that limits a tool's output, at the value the tool output check "
+            "suggests: how many outputs it would have cut and what that would have saved.",
+            read="Worked out the same way as the table above, but only over the outputs that setting limits. "
+            "Outputs from one reply are counted together, so treat it as an upper bound.",
+            act="Set a limit only if it saves a real share of what those outputs cost. Most shell output is "
+            "short, so a lower shell limit often saves little and hides the end of a long log.",
+        ),
+        columns={
+            "setting": ("Setting", "The environment variable in settings.json."),
+            "value": ("Suggested value", "The value the tool output check suggests."),
+            "cap_tokens": ("Limit (tokens)", "That value in tokens, estimated from characters for the shell limit."),
+            "results": ("Outputs it limits", "Outputs from the tools this setting applies to."),
+            "results_affected": ("Outputs over the limit", "Those outputs larger than the limit."),
+            "tokens_saved": ("Kept tokens saved", "Tokens over the limit, times the later replies they stayed for."),
+            "usd_saved": ("Saving", "Cost of keeping the part over the limit, at list price."),
+            "carry_cost_usd": ("Cost of keeping them", "What keeping every output it applies to cost, at list price."),
+        },
     ),
     # -- savings: auto-compact window -------------------------------------------
     "compaction_sim_by_window": TableCopy(
@@ -2828,6 +2861,11 @@ TABLE_COPY: dict[str, TableCopy] = {
                 "After an API error",
                 "Replies that followed an API error and automatic retry. Counted only, not in wasted cost.",
             ),
+            "failed_command_turns": (
+                "Not wasted: a command failed",
+                "Replies whose only failed tool calls were commands that ran and reported failure, such as a "
+                "failing test or build. Claude used that output, so they aren't counted.",
+            ),
         },
         value_labels={"all": "All sessions"},
     ),
@@ -2835,8 +2873,9 @@ TABLE_COPY: dict[str, TableCopy] = {
         title="Why replies were wasted",
         help=Help(
             shows="Wasted replies by cause, with what each cost and what to change.",
-            read="Each wasted reply has one cause, so the four costed causes add up to the totals above. API "
-            "errors are counted only, never costed.",
+            read="Each wasted reply has one cause, so the costed causes add up to the totals above. API "
+            "errors are counted only, never costed. A failing test or build isn't a failed tool call here: "
+            "Claude used that output.",
             act="Start with the cause that cost the most and follow its suggestion.",
         ),
         columns={
@@ -2849,16 +2888,22 @@ TABLE_COPY: dict[str, TableCopy] = {
             "lever": ("What to change", "The change that stops this kind of waste."),
         },
         value_labels={
-            "tool-error": "A tool call failed",
+            "tool-error": "A tool call couldn't run as written",
+            "blocked": "A hook or guard blocked a tool call",
             "interrupt": "You stopped the reply",
             "tool-denial": "You denied a tool call",
             "max-turns": "Subagent stopped before it reported",
             "api-error-retry": "API error, retried automatically",
             # The builder's lever text (waste.LEVERS), reworded for display.
-            "Write clearer briefs, double-check paths/commands before handing them to a tool, and pre-approve "
-            "routine permissions so a tool call resolves correctly the first time.": (
-                "Give clearer task prompts, check paths and commands before a tool runs them, and pre-approve "
-                "routine permissions."
+            "Give exact paths and names in briefs, and have Claude check a path exists or read a file before "
+            "it edits or runs against it, so a tool call works the first time.": (
+                "Give exact paths and names in your task prompts, and have Claude check a path or read a file "
+                "before it edits or runs a command on it."
+            ),
+            "Put the rule a hook enforces into the instructions of the agent that keeps hitting it (its prompt, "
+            "or CLAUDE.md for the main session), so Claude doesn't try the blocked action first.": (
+                "Put the rule the hook enforces into the instructions of the agent that keeps hitting it: its "
+                "prompt, or CLAUDE.md for the main session."
             ),
             "Batch instructions and plan the whole step before running it, so there is less to interrupt "
             "mid-turn.": "Plan the whole step and give your instructions up front, so there is less to stop midway.",
@@ -3151,7 +3196,7 @@ def diagnostics_table(diagnostics: Diagnostics, hook=None, statusline=None) -> T
     for field_def in dataclasses.fields(Diagnostics):
         value = getattr(diagnostics, field_def.name)
         if isinstance(value, dict):
-            value = ", ".join(f"{k}: {v}" for k, v in sorted(value.items())) if value else "none"
+            value = ", ".join(f"{k}: {v:,}" if isinstance(v, int) else f"{k}: {v}" for k, v in sorted(value.items())) if value else "none"
         elif isinstance(value, bool):
             value = "yes" if value else "no"
         _, meaning = DIAGNOSTIC_LABELS.get(field_def.name, ("", ""))

@@ -70,6 +70,21 @@ def test_flags_agent_sections_duplicates_and_stale_references(tmp_path):
     assert "npm run e2e" in references and "npm run test" not in references
 
 
+def test_a_one_word_agent_name_counts_only_where_it_names_the_agent():
+    """An agent called claude (or Explore, or Plan) is not named by
+    "Claude Code", ".claude/" or "plan the change"."""
+    names = ["claude", "Plan", "db-migrator"]
+    prose = (
+        "Claude Code reads `.claude/rules/` first. Claude should plan the change, then Claude runs the tests. "
+        "See .claude/agents/ and the Claude Agent SDK docs."
+    )
+    assert cmr._agents_in("RevIXO — Claude Code Context", prose, names) == []
+    assert cmr._agents_in("Notes", "Use the Plan agent first. The Plan agent reads only.", names) == ["Plan"]
+    assert cmr._agents_in("Notes", "Spawn `claude` for this; `claude` has every tool.", names) == ["claude"]
+    assert cmr._agents_in("Notes", 'subagent_type: "Plan" and subagent_type="Plan"', names) == ["Plan"]
+    assert cmr._agents_in("db-migrator notes", "", names) == ["db-migrator"]
+
+
 def test_usage_joins_by_hash_and_fixes_carry_the_undo_and_diff_step(tmp_path):
     config_dir, project = _setup(tmp_path)
     file_hash = parse.path_hash(str(project / "CLAUDE.md"), SALT)

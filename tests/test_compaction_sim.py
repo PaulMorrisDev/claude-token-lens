@@ -14,6 +14,8 @@ correlation and cost arithmetic are under test here.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from claude_token_lens import model
@@ -99,6 +101,38 @@ def _synthetic_20_turn_transcript() -> list[model.Turn]:
     return turns
 
 
+def _plateau_transcript() -> list[model.Turn]:
+    """42 priced turns that reach a large context early and stay there:
+    turn 1 writes an 80,000-token starting context, turn 2 writes
+    200,000 more (ctx 280,000), and turns 3-42 read those 280,000 back
+    and add nothing. Every write is at the 5-minute rate; input and
+    output are 0.
+
+    Observed, by hand (write 2.5/1e6, read 0.2/1e6 per token):
+      turn 1: 80,000 written                   -> 0.2
+      turn 2: 200,000 written + 80,000 read    -> 0.516
+      turns 3-42: 280,000 read, 40 times       -> 2.24
+      total = 2.956
+    """
+    turns = [
+        _turn(message_id="msg_1", turn_index=1, ts=_ts(0), ctx=80_000, cache_creation_tokens=80_000, cc_5m=80_000),
+        _turn(
+            message_id="msg_2",
+            turn_index=2,
+            ts=_ts(1),
+            ctx=280_000,
+            cache_creation_tokens=200_000,
+            cache_read_tokens=80_000,
+            cc_5m=200_000,
+        ),
+    ]
+    for i in range(3, 43):
+        turns.append(
+            _turn(message_id=f"msg_{i}", turn_index=i, ts=_ts(i), ctx=280_000, cache_read_tokens=280_000)
+        )
+    return turns
+
+
 # -- replay arithmetic ------------------------------------------------------
 
 
@@ -123,24 +157,30 @@ def test_window_none_has_zero_synthetic_compactions_and_matches_true_observed_co
 
 
 def test_small_window_hand_computed_compaction_count_and_cost():
-    """window=100,000 on the same 20-turn transcript (turn i has
+    """window=100,000 on the 20-turn transcript (turn i has
     ctx = i*20,000: a 20,000-token write plus the rest read) triggers
-    three synthetic compactions. With no real compact_boundary event
-    anywhere in this corpus, the compression ratio and rediscovery
-    allowance both fall back to their defaults (0.15, $0.00). Each
-    summary removes ``ctx - post`` tokens from every later turn's cache
-    reads; the 20,000 tokens each later turn adds are kept whole.
+    four synthetic compactions. With no real compact_boundary event
+    anywhere in this corpus, every measured shape falls back to its
+    default: a 20,000-token summary, no trigger reserve, nothing of the
+    starting context still cached. Each summary resets the context to
+    the starting context (turn 1's 20,000) plus the summary: 40,000.
 
-    By hand (write 2.5/1e6, read 0.2/1e6 per token):
-      turns 1-5 (as observed):        0.05 .. 0.066            -> 0.29
-      turn 6 (ctx 120,000 > 100,000): summary write 18,000     -> 0.045
-      turns 7-10: write 20,000 + read 18,000/38,000/58,000/78,000
-                                     0.0536+0.0576+0.0616+0.0656 -> 0.2384
-      turn 11 (context 118,000):      summary write 17,700     -> 0.04425
-      turns 12-15: reads 17,700 .. 77,700                      -> 0.23816
-      turn 16 (context 117,700):      summary write 17,655     -> 0.0441375
-      turns 17-20: reads 17,655 .. 77,655                      -> 0.238124
-      total = 1.1380715
+    A compaction charges the summary request (the triggering turn as it
+    was, with the summary as output) and the reply after it writing its
+    whole new context. By hand (write 2.5/1e6, read 0.2/1e6, output
+    10/1e6 per token):
+      turns 1-5 (as observed):            0.05 .. 0.066          -> 0.29
+      turn 6 (ctx 120,000 > 100,000):
+        summary request: 20,000 written + 100,000 read + 20,000 out -> 0.27
+        reply: 40,000 written                                     -> 0.1
+      turns 7-9: 20,000 written + 40,000/60,000/80,000 read      -> 0.186
+      turns 10, 14, 18: the same compaction at 120,000            -> 0.37 each
+      turns 11-13, 15-17: as turns 7-9                            -> 0.186 each
+      turns 19-20: as turns 7-8                                   -> 0.12
+      total = 0.29 + 4*0.37 + 3*0.186 + 0.12 = 2.448
+
+    More than the observed 1.76: on a context this small, each summary's
+    own output costs more than the reads it saves.
     """
     turns = _synthetic_20_turn_transcript()
     tr = _top_level_transcript("sess-synthetic", turns)
@@ -148,14 +188,84 @@ def test_small_window_hand_computed_compaction_count_and_cost():
     rows = {r.window: r for r in stats.by_window("top-level")}
 
     row = rows[100_000]
-    assert row.compactions == 3
-    assert row.cost == pytest.approx(1.1380715)
+    assert row.compactions == 4
+    assert row.cost == pytest.approx(2.448)
     assert row.observed_cost == pytest.approx(1.76)
     # Sign convention: candidate - observed, negative = cheaper.
-    assert row.delta_usd == pytest.approx(1.1380715 - 1.76)
-    assert row.delta_usd < 0
-    assert row.saving_usd == pytest.approx(1.76 - 1.1380715)
-    assert row.delta_pct == pytest.approx(100.0 * (1.1380715 - 1.76) / 1.76)
+    assert row.delta_usd == pytest.approx(2.448 - 1.76)
+    assert row.saving_usd == 0.0
+
+
+def test_a_summary_keeps_the_starting_context():
+    """The plateau transcript at window=100,000: one compaction at turn 2
+    (280,000 > 100,000), after which every reply carries the 80,000-token
+    starting context plus the 20,000-token summary, not 20,000 alone.
+
+    By hand: turn 1 0.2; turn 2's summary request 0.516 + 20,000 output
+    (0.2) = 0.716; the reply writing 100,000 = 0.25; turns 3-42 each
+    read 100,000 = 0.02, 40 times = 0.8. Total 1.966, 0.99 below the
+    observed 2.956. The context stays at 100,000, never above the
+    window, so no second summary fires.
+    """
+    tr = _top_level_transcript("sess-plateau", _plateau_transcript())
+    stats = simulate_compaction_windows([tr], SONNET_RATES, {})
+    rows = {r.window: r for r in stats.by_window("top-level")}
+
+    assert rows[None].cost == pytest.approx(2.956)
+    assert rows[100_000].compactions == 1
+    assert rows[100_000].cost == pytest.approx(1.966)
+    assert rows[100_000].mean_ctx == pytest.approx((80_000 + 100_000 + 40 * 100_000) / 42)
+    # Windows at or above the plateau never summarise.
+    assert rows[300_000].compactions == 0
+    assert rows[300_000].cost == pytest.approx(2.956)
+
+
+def test_a_summary_that_would_not_shrink_the_context_is_skipped():
+    """A 150,000-token starting context plus a 20,000-token summary is
+    larger than the 160,000 the session reaches, so no window summarises."""
+    turns = [
+        _turn(turn_index=1, ts=_ts(0), ctx=150_000, cache_creation_tokens=150_000, cc_5m=150_000),
+        _turn(turn_index=2, ts=_ts(1), ctx=160_000, cache_creation_tokens=10_000, cache_read_tokens=150_000, cc_5m=10_000),
+    ]
+    stats = simulate_compaction_windows([_top_level_transcript("sess-big-start", turns)], SONNET_RATES, {})
+    rows = {r.window: r for r in stats.by_window("top-level")}
+    assert rows[100_000].compactions == 0
+    assert rows[100_000].cost == pytest.approx(rows[None].cost)
+
+
+def test_the_trigger_reserve_is_measured_from_real_auto_compactions():
+    """A real auto compaction at 267,000 in a session configured for
+    300,000 puts the trigger 33,000 below each window, so the plateau
+    session (280,000) summarises under a 300,000 window."""
+    measured = _top_level_transcript(
+        "sess-measured",
+        [_turn(turn_index=1, ts=_ts(0), ctx=10_000, cache_creation_tokens=10_000, cc_5m=10_000)],
+        # After its only turn: measured, but not a compaction this replay prices.
+        [Event(kind=EventKind.COMPACT_BOUNDARY, ts=_ts(30), pre_tokens=267_000, post_tokens=20_000, trigger="auto")],
+    )
+    plateau = _top_level_transcript("sess-plateau", _plateau_transcript())
+    stats = simulate_compaction_windows([measured, plateau], SONNET_RATES, {"sess-measured": 300_000})
+    assert stats.shape.trigger_reserve == 33_000
+    assert "trigger_reserve" not in stats.defaults
+    rows = {r.window: r for r in stats.by_window("top-level")}
+    assert rows[300_000].compactions == 1
+    assert rows[400_000].compactions == 0
+
+    no_window = simulate_compaction_windows([measured, plateau], SONNET_RATES, {})
+    assert "trigger_reserve" in no_window.defaults
+    assert {r.window: r for r in no_window.by_window("top-level")}[300_000].compactions == 0
+
+
+def test_the_cached_share_of_the_starting_context_is_measured_from_real_compactions():
+    """The reply after the fidelity transcript's real compaction reads
+    25,000 of its 50,000-token starting context from cache: a share of
+    0.5."""
+    tr = _fidelity_transcript()
+    tr.turns[3] = replace(tr.turns[3], cache_read_tokens=25_000)
+    stats = simulate_compaction_windows([tr], SONNET_RATES, {})
+    assert stats.shape.cached_prefix_share == pytest.approx(0.5)
+    assert stats.shape.summary_tokens == 30_000
+    assert not {"summary_tokens", "cached_prefix_share"} & stats.defaults
 
 
 def test_every_candidate_window_present_and_ordered():
@@ -164,21 +274,6 @@ def test_every_candidate_window_present_and_ordered():
     stats = simulate_compaction_windows([tr], SONNET_RATES, {})
     rows = stats.by_window("top-level")
     assert [r.window for r in rows] == list(CANDIDATE_WINDOWS)
-
-
-def test_smaller_window_never_costs_more_than_a_larger_one_on_a_monotonic_series():
-    """A sanity property on this specific monotonically-growing-ctx
-    fixture (not a general theorem for every transcript shape): forcing
-    more, earlier compactions here only ever removes cache-read volume
-    it would otherwise have paid for, so cost should be non-increasing
-    as the window shrinks."""
-    turns = _synthetic_20_turn_transcript()
-    tr = _top_level_transcript("sess-synthetic", turns)
-    stats = simulate_compaction_windows([tr], SONNET_RATES, {})
-    rows = {r.window: r for r in stats.by_window("top-level")}
-    ordered = [100_000, 150_000, 200_000, 250_000, 300_000, 400_000, 500_000, None]
-    costs = [rows[w].cost for w in ordered]
-    assert costs == sorted(costs)
 
 
 # -- fidelity self-check ------------------------------------------------
@@ -265,14 +360,15 @@ def test_build_section_tables_and_notes():
     assert_privacy(section)
 
 
-def test_build_section_notes_flag_default_ratio_and_allowance():
+def test_build_section_notes_flag_every_default():
     turns = _synthetic_20_turn_transcript()
     tr = _top_level_transcript("sess-synthetic", turns)
     stats = simulate_compaction_windows([tr], SONNET_RATES, {})
     section = build_section(stats)
     joined = " ".join(section.notes)
-    assert "0.150" in joined
-    assert "no real compact_boundary event found" in joined
+    assert "Summary size used: 20,000 tokens (default -- no real compact_boundary event found)" in joined
+    assert "Trigger reserve used: 0 tokens below the window (default" in joined
+    assert "Starting context still cached after a summary: 0% (default" in joined
     assert "no real post-compaction re-cache turn found" in joined
 
 
@@ -295,8 +391,8 @@ def test_thresholds_from_config_flat_dict():
 
 
 def test_thresholds_from_config_nested_dict():
-    th = CompactionSimThresholds.from_config({"thresholds": {"default_compression_ratio": 0.3}})
-    assert th.default_compression_ratio == 0.3
+    th = CompactionSimThresholds.from_config({"thresholds": {"default_summary_tokens": 15_000}})
+    assert th.default_summary_tokens == 15_000
 
 
 def test_thresholds_from_config_none():
@@ -314,17 +410,19 @@ def _base_report(sections: list[model.Section]) -> ReportModel:
     return ReportModel(meta=ReportMeta(), sections=sections, recommendations=[])
 
 
-#: The synthetic transcript costs 1.76 USD in all, so the rule tests
+#: The plateau transcript saves 0.99 USD at best, so the rule tests
 #: lower the default 1 USD bar; nothing else changes.
 _SMALL_FIXTURE_TH = CompactionSimThresholds(switch_usd=0.1)
 
 
+def _plateau_report(th: CompactionSimThresholds | None = None) -> ReportModel:
+    tr = _top_level_transcript("sess-plateau", _plateau_transcript())
+    stats = simulate_compaction_windows([tr], SONNET_RATES, {}, th)
+    return _base_report([build_section(stats, th)])
+
+
 def test_rule_fires_when_saving_clears_both_thresholds():
-    turns = _synthetic_20_turn_transcript()
-    tr = _top_level_transcript("sess-synthetic", turns)
-    stats = simulate_compaction_windows([tr], SONNET_RATES, {})
-    section = build_section(stats)
-    report = _base_report([section])
+    report = _plateau_report()
 
     recs = RULES[0](report, _SMALL_FIXTURE_TH, None)
     assert len(recs) == 1
@@ -333,9 +431,9 @@ def test_rule_fires_when_saving_clears_both_thresholds():
     assert rec.category == "settings"
     assert rec.lever == "autoCompactWindow"
     assert rec.scope == "user"
-    # 100,000 would summarise 3 times a session; 150,000 is the smallest
-    # window with at most 2.
-    assert "150,000" in rec.action
+    # One summary a session at every window below the plateau: the
+    # smallest is the floor.
+    assert "at least 100,000" in rec.action
     assert_privacy(rec)
 
 
@@ -362,11 +460,7 @@ def test_rule_does_not_fire_below_switch_usd_threshold():
 
 
 def test_rule_evidence_resolves_against_the_report():
-    turns = _synthetic_20_turn_transcript()
-    tr = _top_level_transcript("sess-synthetic", turns)
-    stats = simulate_compaction_windows([tr], SONNET_RATES, {})
-    section = build_section(stats)
-    report = _base_report([section])
+    report = _plateau_report()
 
     recs = RULES[0](report, _SMALL_FIXTURE_TH, None)
     assert recs, "expected the rule to fire on this fixture"
@@ -384,17 +478,11 @@ def test_rule_evidence_resolves_against_the_report():
 def test_rule_recommends_a_range_floor_not_a_single_best_window():
     """"compaction-window" now names a floor ("at least W"), not one
     "best" point -- and the action text says so explicitly."""
-    turns = _synthetic_20_turn_transcript()
-    tr = _top_level_transcript("sess-synthetic", turns)
-    stats = simulate_compaction_windows([tr], SONNET_RATES, {})
-    section = build_section(stats)
-    report = _base_report([section])
-
-    recs = RULES[0](report, _SMALL_FIXTURE_TH, None)
+    recs = RULES[0](_plateau_report(), _SMALL_FIXTURE_TH, None)
     assert len(recs) == 1
     rec = recs[0]
-    assert rec.title == "Set autoCompactWindow to at least 150,000"
-    assert "at least 150,000" in rec.action
+    assert rec.title == "Set autoCompactWindow to at least 100,000"
+    assert "at least 100,000" in rec.action
     assert "modelled, not observed" in rec.action
 
 
@@ -430,35 +518,26 @@ def test_rule_gates_out_a_candidate_with_more_than_two_compactions_per_session()
     assert recs[0].title == "Set autoCompactWindow to at least 150,000"
 
 
-def test_rule_conservative_correction_suppresses_a_100k_recommendation_backed_only_by_a_tiny_allowance():
-    """The trigger case for this rule's conservative rewrite: a corpus
-    with no real ``compact_boundary`` event anywhere (so the sweep's own
-    rediscovery allowance falls back to ``thresholds.default_rediscovery_allowance_usd``
-    exactly, per ``_corpus_rediscovery_allowance``) whose configured
-    default allowance is small enough that window=100,000's raw modelled
-    saving alone would clear both switch thresholds, but doubling that
-    same tiny allowance (the fallback correction, since this report
-    carries no ``agents``/``topology_redundant_reads`` table) pushes the
-    saving below ``switch_usd`` -- so 100,000 must not be recommended.
+def test_rule_rediscovery_correction_suppresses_a_saving_that_only_clears_the_bar_before_it():
+    """With no real compaction in the corpus, the rediscovery allowance
+    falls back to ``default_rediscovery_allowance_usd``; this report
+    carries no ``topology_redundant_reads`` table, so the rule takes one
+    allowance off per simulated summary. The sweep itself never charges
+    it.
 
-    By hand, on ``_synthetic_20_turn_transcript`` (window=100,000: one
-    compaction at turn 6; ``observed_cost=1.76``, base cost with a
-    zero allowance = 0.545 -- see
-    ``test_small_window_hand_computed_compaction_count_and_cost``):
-    with ``default_rediscovery_allowance_usd=0.15`` the sweep charges
-    that allowance once (one compaction), so cost = 0.545 + 0.15 = 0.695
-    and raw_saving = 1.76 - 0.695 = 1.065 (> switch_usd=1.00 -- would
-    have fired under the old point-recommendation rule). The
-    conservative correction then subtracts a further
-    0.15 * 1 compaction/session = 0.15, giving an adjusted saving of
-    1.065 - 0.15 = 0.915 (< switch_usd=1.00) -- below threshold.
+    By hand, on ``_plateau_transcript`` (see
+    ``test_a_summary_keeps_the_starting_context``): every window from
+    100,000 to 250,000 summarises once and saves 0.99. With
+    ``switch_usd=0.9`` that fires at 100,000; with a 0.15 allowance the
+    corrected saving is 0.99 - 0.15 = 0.84, below 0.9, so nothing fires.
     """
-    th = CompactionSimThresholds(default_rediscovery_allowance_usd=0.15)
-    turns = _synthetic_20_turn_transcript()
-    tr = _top_level_transcript("sess-synthetic", turns)
-    stats = simulate_compaction_windows([tr], SONNET_RATES, {}, th)
-    section = build_section(stats, th)
-    report = _base_report([section])
+    bar = CompactionSimThresholds(switch_usd=0.9)
+    assert [r.title for r in RULES[0](_plateau_report(bar), bar, None)] == [
+        "Set autoCompactWindow to at least 100,000"
+    ]
 
-    recs = RULES[0](report, th, None)
-    assert not any(rec.title == "Set autoCompactWindow to at least 100,000" for rec in recs)
+    th = CompactionSimThresholds(switch_usd=0.9, default_rediscovery_allowance_usd=0.15)
+    report = _plateau_report(th)
+    by_window = {r[0]: r for r in report.sections[0].tables[0].rows}
+    assert by_window["100,000"][3] == pytest.approx(1.966)  # the sweep's cost is unchanged
+    assert RULES[0](report, th, None) == []

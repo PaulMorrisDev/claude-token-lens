@@ -294,15 +294,22 @@ or re-written at a `cache_write_5m`/`cache_write_1h` rate on a re-cache
   every one been capped there, computed by linear scaling rather than
   re-simulation (carry cost is exactly proportional to a result's own
   token size for a fixed run of later turns).
+- `carry_output_cap_savings` — the same saving for each output-cap
+  setting the tool-output check suggests (`BASH_MAX_OUTPUT_LENGTH` at
+  15,000 characters over Bash and PowerShell results,
+  `MAX_MCP_OUTPUT_TOKENS` at 10,000 tokens over MCP results), with what
+  carrying the results it covers cost. `carry_by_tool` and
+  `carry_by_agent_type` also carry `saving_if_capped_usd`, each row's own
+  saving at `big_result_tokens`.
 
 `recommend.recommend()` runs the `tool-output-carry` rule
 (`carry.RULES`). It fires when a tool's carry-token share of cache
 volume is more than `CarryThresholds.carry_share_pct` (default 25%) on
 at least `min_sample_results` (default 5) carried results. Its action
 names a workflow lever (truncate long Bash/PowerShell output, prefer
-`Grep` over `Read`, cap agent report length) and cites the
-`carry_truncation_savings` row at `big_result_tokens` (default 8,000)
-as the projected saving.
+`Grep` over `Read`, cap agent report length) and cites that tool's own
+`saving_if_capped_usd` (its results capped at `big_result_tokens`,
+default 8,000) as the projected saving.
 
 ## `compaction_sim` (`compaction_sim.py`)
 
@@ -326,20 +333,23 @@ The `autoCompactWindow` sweep: full write-up and worked example in
   `CompactionSimThresholds.fidelity_warn_pct` (default 10%) says the
   model's assumptions don't hold for that session.
 
-A simulated compaction resets context to this corpus's own observed
-compression ratio (median `postTokens`/`preTokens` across real
-`compact_boundary` events; 0.15 default) and charges a summary-write cost
-(the simulated post-compaction token count, priced as a fresh 5-minute
-cache write) plus a rediscovery allowance (this corpus's own median
-post-compaction re-cache write cost from real events; $0.00 default). A
+A simulated compaction fires at the window less this corpus's own
+trigger reserve (median `window − preTokens` across real auto
+compactions under a known window), and resets context to the session's
+own starting context plus a summary of this corpus's median `postTokens`.
+It charges the summary request (never logged in the transcript) and the
+reply after it re-caching its whole context, with the share of the
+starting context real compactions still read from cache read, not
+written. Files re-read after a summary aren't charged by the sweep. A
 real, already-observed compaction is kept as-is under every candidate
 window rather than re-simulated.
 
 `recommend.recommend()` runs the `compaction-window` rule (lever
 `autoCompactWindow`, category `settings`). It names a floor ("at least
 W"), not a single best window: the smallest window with at most 2
-simulated compactions per session whose saving, after an extra
-rediscovery cost taken from `topology_redundant_reads`, is still more
+simulated compactions per session whose saving, after a rediscovery
+cost (this corpus's median post-compaction re-cache write cost per
+redundant read in `topology_redundant_reads`), is still more
 than 5% of observed cost (`1 - switch_pct`) and more than $1.00
 (`switch_usd`). The action says the figure is modelled, not observed.
 See [`docs/compaction-sim.md`](compaction-sim.md#the-report-section).

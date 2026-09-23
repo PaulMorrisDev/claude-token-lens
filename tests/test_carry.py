@@ -239,6 +239,29 @@ def test_truncation_saving_ignores_results_at_or_below_the_cap():
     assert saving.usd_saved == 0.0
 
 
+def test_output_cap_savings_price_each_setting_on_the_results_it_caps():
+    """BASH_MAX_OUTPUT_LENGTH at 15,000 characters (3,750 tokens) cuts
+    only shell output over that size; a large Read is never counted."""
+    turns = [
+        _turn(turn_index=1, tool_result_chars_by_tool={"Bash": 20_000, "Read": 80_000}),  # 5,000 and 20,000 tokens
+        _turn(turn_index=2, tool_result_chars_by_tool={"PowerShell": 8_000}),  # 2,000 tokens: under the cap
+        _turn(turn_index=3, cache_read_tokens=100),
+        _turn(turn_index=4, cache_read_tokens=100),
+    ]
+    stats = compute_carry([_transcript(turns)], SONNET_RATES)
+    shell, mcp = stats.cap_savings
+    bash = next(r for r in stats.top_results if r.tool == "Bash")
+    assert (shell.setting, shell.value, shell.cap_tokens) == ("BASH_MAX_OUTPUT_LENGTH", "15000", 3_750)
+    assert (shell.results, shell.results_affected) == (2, 1)
+    assert shell.tokens_saved == (5_000 - 3_750) * bash.turns_carried
+    assert shell.usd_saved == pytest.approx(bash.carry_cost_usd * (1 - 3_750 / 5_000))
+    assert (mcp.setting, mcp.results, mcp.usd_saved) == ("MAX_MCP_OUTPUT_TOKENS", 0, 0.0)
+
+    section = build_section(stats)
+    table = next(t for t in section.tables if t.name == "carry_output_cap_savings")
+    assert [row[0] for row in table.rows] == ["BASH_MAX_OUTPUT_LENGTH", "MAX_MCP_OUTPUT_TOKENS"]
+
+
 # -- share of cache volume -------------------------------------------------
 
 
@@ -319,6 +342,7 @@ def test_build_section_has_expected_tables():
         "carry_by_agent_type",
         "carry_top_results",
         "carry_truncation_savings",
+        "carry_output_cap_savings",
     ]
     # Assumptions text is carried verbatim into the section's own notes.
     for line in ASSUMPTIONS:
@@ -363,6 +387,21 @@ def test_tool_output_carry_rule_fires_when_share_and_sample_clear_thresholds():
     assert "Read" in rec.title
     assert rec.lever is None
     assert rec.category == "workflow"
+
+
+def test_tool_output_carry_rule_cites_that_tools_own_saving():
+    """A big Bash result alongside the Reads doesn't count towards the
+    saving the rule names for Read."""
+    corpus = _heavy_read_corpus()
+    corpus[0].turns[0].tool_result_chars_by_tool["Bash"] = 400_000
+    stats = compute_carry(corpus, SONNET_RATES)
+    th = CarryThresholds(carry_share_pct=10.0, min_sample_results=3)
+    [rec] = [r for r in RULES[0](_report_with_carry_section(stats, th), th) if "Read" in r.title]
+    read = next(row for row in stats.by_tool if row.key == "Read")
+    assert read.saving_if_capped_usd == pytest.approx(
+        sum(r.carry_cost_usd * (1 - 8_000 / r.tokens) for r in stats.top_results if r.tool == "Read")
+    )
+    assert f"would have saved about ${read.saving_if_capped_usd:.2f}" in rec.action
 
 
 def test_tool_output_carry_rule_does_not_fire_below_share_threshold():
