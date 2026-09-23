@@ -48,7 +48,7 @@ python -m pip install git+https://github.com/PaulMorrisDev/claude-token-lens
 python -m claude_token_lens --version
 ```
 
-The second line should print `claude-token-lens 0.5.1` or later.
+The second line should print `claude-token-lens 0.5.2` or later.
 
 This guide always runs the tool as `python -m claude_token_lens`. The
 shorter `claude-token-lens` works too, but only when pip's Scripts
