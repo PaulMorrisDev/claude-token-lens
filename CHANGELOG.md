@@ -28,6 +28,14 @@ fast-mode flag.
   window yet or it is over ten minutes old. Responses built from a
   report carry `X-Figures-As-Of` (and `X-Figures-Refreshing: 1` while a
   newer one is built).
+- **Every change now ends by telling you to restart Claude Code.**
+  Claude Code reads settings and agent files when it starts, so a
+  session already open kept the old ones with nothing saying so. Every
+  fix on the dashboard and in `report`/`check` output, the Profiles
+  tab's apply command, and `apply`, `apply --revert`, `init`'s connect
+  and hook repair and `uninstall`'s settings removal now say to restart
+  it, and every prompt for Claude asks it to remind you once it has
+  saved.
 - `serve --store PATH` puts the dashboard's database somewhere other
   than `<config-dir>/service.db`, so a second copy (a dev checkout) can
   run beside the logon service without sharing it.
@@ -55,6 +63,13 @@ fast-mode flag.
   database a running `serve` has open.
 - A port already in use is reported in a sentence instead of a
   traceback.
+- The Profiles tab's "Or try it for one session" command was
+  `claude --settings <config-dir>/profiles/<id>.settings.json`: a
+  placeholder, pointing at a file that only `apply <id> --launch`
+  writes. It is now `claude-token-lens apply <id> --launch`, which
+  writes the file and prints the command with its real path, and the
+  tab says when the profile's agent or environment changes can't come
+  along for a one-session trial.
 - `--since` and `--until` given a bare date (`--since 2026-09-01`), as
   the README documents, or a time with no offset, crashed comparing it
   with the transcripts' own times. Both are now read as UTC.

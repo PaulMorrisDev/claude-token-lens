@@ -35,6 +35,7 @@ from zoneinfo import available_timezones
 from . import __version__, baseline as baseline_mod, classify, discovery, installer as installer_mod, onboarding
 from . import helptext, hook_health, probe as probe_mod, recache, snapshots
 from . import statusline as statusline_mod
+from .fixes import RESTART_NOTE
 from .cache import DigestCache
 from .config import Config, ConfigError, load_config, load_session_overrides
 from .corpus import Corpus, load_corpus
@@ -2354,7 +2355,9 @@ def _cmd_init_connect_step(
     except (OSError, ValueError) as exc:
         stdout.write(f"Could not change settings.json: {exc}\n\n")
         return
-    stdout.write("Connected." + (f" The previous settings.json is at {backup}" if backup else "") + "\n\n")
+    stdout.write(
+        "Connected." + (f" The previous settings.json is at {backup}" if backup else "") + f"\n{RESTART_NOTE}\n\n"
+    )
 
 
 def _cmd_init_service_step(
@@ -2704,7 +2707,8 @@ def _cmd_uninstall(args: argparse.Namespace) -> int:
             print("   Dry run: settings.json left unchanged.\n")
         elif _ask("   Remove these entries? settings.json is backed up first.", assume_yes=args.yes):
             backup = footprint.remove_settings_entries(plan)
-            print(f"   Removed. The previous settings.json is at {backup}\n")
+            print(f"   Removed. The previous settings.json is at {backup}")
+            print(f"   {RESTART_NOTE}\n")
         else:
             print("   Left unchanged.\n")
 
@@ -3043,6 +3047,7 @@ def _cmd_apply(args: argparse.Namespace) -> int:
             f"Reverted {args.revert}: restored {len(result.restored)} file(s), "
             f"removed {len(result.deleted)} file(s)."
         )
+        print(RESTART_NOTE)
         return 0
 
     if args.set_values and args.profile:
@@ -3150,6 +3155,7 @@ def _cmd_apply(args: argparse.Namespace) -> int:
         for line in plan.env_lines:
             print(f"  export {line}")
     print(f"To revert: claude-token-lens apply --revert {result.ts}")
+    print(RESTART_NOTE)
     return 0
 
 

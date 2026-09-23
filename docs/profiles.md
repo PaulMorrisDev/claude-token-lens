@@ -94,7 +94,11 @@ config snapshot's allowlisted, non-managed values as a user profile
 (`POST /api/profiles/from-current`), and "Edit settings directly" is a
 form built from `GET /api/profile-schema`. None of these change your
 Claude Code config; only running the command, or Claude acting on the
-prompt with your permission, does.
+prompt with your permission, does. Either way, restart Claude Code
+afterwards: it reads settings and agent files when it starts, so a
+session that is already open keeps the old ones. The dashboard says so
+under the prompt and command, the prompt asks Claude to remind you, and
+`apply` prints it after the change.
 
 A profile only ever names a lever this project can already trace back
 to a real, observable effect in a report — never an invented setting —
@@ -380,7 +384,9 @@ scope; `--project-dir` only appears when
 `project_path` is given; `--allow-tracked` is only added for
 `scope="repo"`, matching that scope writing a version-controlled
 `.claude/settings.json`), and the `--launch` one-session-overlay
-alternative, `claude --settings <config-dir>/profiles/<id>.settings.json`.
+alternative, `claude-token-lens apply <id> --launch` (which writes the
+overlay and prints the `claude --settings <path>` command: the file
+doesn't exist until it runs).
 Raises `ValueError` for an unrecognised `scope`.
 
 The flag is `--project-dir`, not `--project`: every subcommand already

@@ -315,7 +315,9 @@ def test_apply_command_user_scope_has_no_project_flag():
     text = apply_command("interactive-chat", "user")
     apply_line, launch_line = text.splitlines()
     assert apply_line == "claude-token-lens apply interactive-chat"
-    assert launch_line.startswith("claude --settings ")
+    # The overlay file doesn't exist until apply --launch writes it, so
+    # the one-session command is that one, not claude --settings.
+    assert launch_line == "claude-token-lens apply interactive-chat --launch"
 
 
 def test_apply_command_project_local_without_path_omits_project_flag():

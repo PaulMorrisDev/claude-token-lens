@@ -309,9 +309,9 @@ def render_unified_diff(profile_diff: ProfileDiff, *, scope: str) -> str:
 
 def apply_command(profile_id: str, scope: str, project_path: str | None = None) -> str:
     """Two commands, one per line: the exact host-side ``apply``
-    invocation for ``profile_id``/``scope``, and the ``--launch``
-    one-session-overlay alternative (plan: "``--launch`` instead prints
-    a ``claude --settings <profile-settings.json>`` command"). Pure
+    invocation for ``profile_id``/``scope``, and the ``apply --launch``
+    one-session-overlay alternative (which writes the overlay and prints
+    the ``claude --settings <profile-settings.json>`` command). Pure
     string formatting -- no filesystem access (this module never checks
     that ``profile_id`` actually exists), matching every other function
     here.
@@ -344,6 +344,9 @@ def apply_command(profile_id: str, scope: str, project_path: str | None = None) 
         args.append("--allow-tracked")
     apply_cmd = " ".join(args)
 
-    launch_cmd = f"claude --settings <config-dir>/profiles/{profile_id}.settings.json"
+    # ``apply --launch`` writes the overlay file and prints the
+    # ``claude --settings <file>`` command with its real path: the file
+    # doesn't exist until it runs.
+    launch_cmd = f"claude-token-lens apply {profile_id} --launch"
 
     return f"{apply_cmd}\n{launch_cmd}"

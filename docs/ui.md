@@ -203,9 +203,13 @@ what they did", the setup panel and service health.
    greyed and say so), an **Estimated effect** table from
    `POST /api/whatif` (Change / Effect / How it was worked out), then
    "Ask Claude to do it" (the route's `prompt`), "Or run this command"
-   (`dry_run_command`) and "Or try it for one session"
-   (`launch_command`), each with a Copy button, and the unified diff in
-   a collapsed block. The UI never runs a command itself, and never
+   (`dry_run_command`), the reminder to restart Claude Code afterwards,
+   and "Or try it for one session" (`launch_command`,
+   `claude-token-lens apply <id> --launch`, which saves the overlay in
+   this tool's folder and prints the `claude --settings` command; it
+   says when the profile's agent or environment changes can't come
+   along), each with a Copy button, and the unified diff in a collapsed
+   block. The UI never runs a command itself, and never
    fills in a project directory on the user's behalf (`docs/api.md`'s
    own note on why that route never accepts one).
    **Your changes and what they did** (`/api/impact`, all history):
@@ -236,7 +240,9 @@ what they did", the setup panel and service health.
    there are several) it shows "What you're changing" (the six-part
    explainer), "Ask Claude to do it" (the prompt, with a Copy button)
    and, for a plain setting, "Or run this command" (the
-   `apply --set ... --dry-run` line). A card with a
+   `apply --set ... --dry-run` line), then the reminder to restart
+   Claude Code to pick up the change (`fixes.RESTART_NOTE`), which
+   every fix on every tab ends with. A card with a
    `lever` but no `fixes` names the setting and where it lives in plain
    words; a `scope: "managed"` card instead shows "managed by policy,
    raise with your administrator" (plan "Enterprise use") and no fix.

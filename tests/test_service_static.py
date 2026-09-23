@@ -158,6 +158,18 @@ def test_app_js_has_balanced_braces() -> None:
     assert text.count("[") == text.count("]"), "app.js has unbalanced [ ]"
 
 
+def test_app_js_restart_note_matches_fixes() -> None:
+    """The dashboard's reminder to restart Claude Code is the same text
+    the CLI and the reports print (fixes.RESTART_NOTE)."""
+    import re
+
+    from claude_token_lens.fixes import RESTART_NOTE
+
+    match = re.search(r"var RESTART_NOTE =((?:\s*\"[^\"]*\"\s*\+?)+);", _static_text("app.js"))
+    assert match, "app.js no longer defines RESTART_NOTE"
+    assert "".join(re.findall(r'"([^"]*)"', match.group(1))) == RESTART_NOTE
+
+
 def test_pyproject_declares_static_as_package_data() -> None:
     data = tomllib.loads(PYPROJECT_TOML.read_text(encoding="utf-8"))
     package_data = data["tool"]["setuptools"]["package-data"]["claude_token_lens"]

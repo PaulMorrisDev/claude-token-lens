@@ -70,7 +70,8 @@ Every suggested change answers six questions, in this order:
 
 Then offer two ways to make the change: a command
 (`claude-token-lens apply --set ... --dry-run` first) and a prompt for
-Claude.
+Claude, and end with `fixes.RESTART_NOTE`: Claude Code reads settings
+when it starts, so the change needs a restart.
 
 ## Prompts for Claude
 
@@ -81,3 +82,5 @@ A prompt must stand on its own:
 - Say that Claude Code will ask permission before editing files in
   `.claude`.
 - Ask Claude to restate the change and show the diff before saving.
+- End with `fixes.PROMPT_RESTART`, so Claude reminds you to restart
+  Claude Code once the change is saved.

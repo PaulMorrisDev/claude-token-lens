@@ -297,10 +297,16 @@ undo it. Then it gives you two ways to make the change:
   revert refuses to run if the file was edited after the change (so it
   can't throw away your later edits) unless you add `--ignore-changes`.
 
+Then restart Claude Code. It reads settings and agent files when it
+starts, so a session that is already open keeps the old ones
+(`claude --continue` picks your last conversation back up). Every card,
+`apply` and `apply --revert` say so after the change, and each prompt
+asks Claude to remind you once it has saved.
+
 Profiles on the Profiles tab work the same way, for several settings at
 once: a prompt, `claude-token-lens apply <profile> --dry-run`, or a
 one-session trial (`apply <profile> --launch`) that leaves your settings
-files alone. See [section 11](#11-applying-a-profile)
+files alone. Switching profile needs the same restart. See [section 11](#11-applying-a-profile)
 and [`docs/profiles.md`](docs/profiles.md).
 
 ## Glossary
@@ -1227,7 +1233,7 @@ claude-token-lens apply --set omitClaudeMd=true --agent code-reviewer --scope us
 | `--claude-root PATH` | The Claude Code folder holding `settings.json` and `agents/` for `user` scope (default: `$CLAUDE_CONFIG_DIR`, else `~/.claude`) |
 | `--project-dir PATH` | Project directory for `project-local`/`repo` scope. Named `--project-dir`, not `--project` — the global `--project` flag already means "a repeatable project slug to filter a report by", the same collision `snapshot-config`/`probe-config` resolve the same way |
 | `--dry-run` | Explain each change in words (what it controls, now and after, where, trade-off, undo), then print the diff and the command to run, without writing anything |
-| `--launch` | Write a one-session `<config-dir>/profiles/<id>.settings.json` overlay instead of a persisted apply |
+| `--launch` | Write a one-session `<config-dir>/profiles/<id>.settings.json` overlay instead of a persisted apply, and print the `claude --settings <path>` command that starts Claude Code with it |
 | `--allow-tracked` | Allow writing a target file that a git repository already tracks (refused by default for `project-local`/`repo` scope) |
 | `--force` | Create a missing `.claude/agents/<name>.md` file from scratch instead of refusing |
 | `--revert TS` | Undo a previous apply, byte for byte, named by the timestamp `apply` printed at the time. Refused if a file was edited after that apply, since restoring it would discard those edits |
@@ -1235,6 +1241,9 @@ claude-token-lens apply --set omitClaudeMd=true --agent code-reviewer --scope us
 | `--list-backups` | List previous applies (timestamp, profile, scope, file count) and exit |
 | `--set KEY=VALUE` | Change one allowlisted key instead of applying a profile (repeatable). Lists are comma-separated (`tools=Read,Grep`), booleans `true`/`false`. Validated like a profile; recorded as profile `one-off`; never marks a profile active |
 | `--agent NAME` | With `--set`: change `.claude/agents/NAME.md` frontmatter instead of `settings.json` |
+
+An apply or a revert ends by telling you to restart Claude Code: a
+session that is already open keeps the settings it started with.
 
 Every real apply backs up whatever it overwrites first, so `--revert`
 always restores the exact prior state; a managed-settings key is never

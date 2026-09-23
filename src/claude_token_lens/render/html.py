@@ -26,6 +26,7 @@ from __future__ import annotations
 import dataclasses
 import html as _html
 
+from ..fixes import RESTART_NOTE
 from ..model import Diagnostics, ReportModel, Table
 from .tables import SCOPE_LABELS, SEVERITY_LABELS, display_cell, fix_subject, evidence_source, format_evidence_value, help_parts
 
@@ -315,8 +316,9 @@ def _sections_html(model: ReportModel) -> str:
 
 
 def _fix_html(fix: dict) -> str:
-    """One ``fixes.build_fix`` entry, collapsed: explainer, prompt and
-    (for a plain setting) the dry-run command."""
+    """One ``fixes.build_fix`` entry, collapsed: explainer, prompt,
+    (for a plain setting) the dry-run command, and the reminder to
+    restart Claude Code afterwards."""
     subject = fix_subject(fix)
     parts = [f'<details class="help"><summary>{_esc("How to make this change" + subject)}</summary>']
     if fix.get("explainer"):
@@ -331,6 +333,7 @@ def _fix_html(fix: dict) -> str:
             + (f"<p><strong>{_esc(fix['command_warning'])}</strong></p>" if fix.get("command_warning") else "")
             + f"<pre>{_esc(fix['command'])}</pre>"
         )
+    parts.append(f"<p>{_esc(RESTART_NOTE)}</p>")
     parts.append("</details>")
     return "".join(parts)
 

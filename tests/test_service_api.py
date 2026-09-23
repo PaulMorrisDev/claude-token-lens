@@ -36,6 +36,7 @@ import pytest
 
 from claude_token_lens import corpus as corpus_mod
 from claude_token_lens.config import ConfigError, load_config, load_session_overrides
+from claude_token_lens.fixes import PROMPT_RESTART
 from claude_token_lens.pricing import load_pricing
 from claude_token_lens.profiles import catalogue as profile_catalogue
 from claude_token_lens.profiles import schema as profile_schema
@@ -794,7 +795,8 @@ def test_profile_diff_for_catalogue_profile_against_latest_snapshot(server):
     assert data["notes"] == []
     assert isinstance(data["settings"], list) and data["settings"]
     assert "claude-token-lens apply interactive-chat" in data["apply_command"]
-    assert data["launch_command"].startswith("claude --settings")
+    assert data["launch_command"] == "claude-token-lens apply interactive-chat --launch"
+    assert data["prompt"].endswith(PROMPT_RESTART)
     assert_privacy(body)
     _assert_no_leak(json.dumps(body).encode("utf-8"))
 

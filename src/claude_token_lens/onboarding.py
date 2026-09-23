@@ -34,6 +34,7 @@ from typing import IO
 
 from . import baseline as baseline_mod
 from . import discovery, hook_health, snapshots
+from .fixes import RESTART_NOTE
 from .config import (
     Config,
     ConfigError,
@@ -477,7 +478,7 @@ def _offer_hook_repair(health, *, repair_hook: bool, non_interactive: bool, stdi
     except (OSError, ValueError, KeyError, TypeError) as exc:
         stdout.write(f"Could not fix the hook command: {exc}\n\n")
         return
-    stdout.write(f"Fixed. The previous settings.json is at {backup}\n\n")
+    stdout.write(f"Fixed. The previous settings.json is at {backup}\n{RESTART_NOTE}\n\n")
 
 
 def run_init(

@@ -341,7 +341,7 @@ def build_fixes(row: SkillRow, units: Units, period: str) -> list[dict]:
                         f"In {home_label(row.path)}, add `disable-model-invocation: true` to the frontmatter. "
                         f"Why: Claude never used the {row.name} skill on its own, and its description is sent "
                         "at the start of every session and subagent. With this set, only I can start it, with "
-                        f"/{row.name}. Show me the diff before saving. Change nothing else."
+                        f"/{row.name}. Show me the diff before saving. Change nothing else. " + fixes_mod.PROMPT_RESTART
                     ),
                 }
             )
@@ -354,7 +354,7 @@ def build_fixes(row: SkillRow, units: Units, period: str) -> list[dict]:
                 "`description` (and `when_to_use`, if set) in the frontmatter to one or two sentences: what "
                 "the skill does and when to use it, key trigger words first. Keep anything Claude needs to "
                 "decide when to use it; move detail into the body of SKILL.md, which loads only when the skill "
-                "runs. Show me the diff before saving. Change nothing else."
+                "runs. Show me the diff before saving. Change nothing else. " + fixes_mod.PROMPT_RESTART
             )
         else:
             prompt = (
@@ -364,7 +364,7 @@ def build_fixes(row: SkillRow, units: Units, period: str) -> list[dict]:
                 + f"). Add \"{row.name}\": \"name-only\" to skillOverrides in ~/.claude/settings.json, so "
                 "it is listed by name only. Why: a shorter listing at the start of every session. Show me the "
                 "diff before saving. Claude Code will ask my permission to edit files under .claude; that is "
-                "expected. Change nothing else."
+                "expected. Change nothing else. " + fixes_mod.PROMPT_RESTART
             )
         out.append(
             {

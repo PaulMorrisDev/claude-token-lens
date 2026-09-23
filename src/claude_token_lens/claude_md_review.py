@@ -48,6 +48,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import parse as parse_mod
+from .fixes import PROMPT_RESTART
 from .footprint import home_label
 from .units import Units
 
@@ -654,7 +655,8 @@ def _fix(title: str, explainer: list[list[str]], prompt: str) -> dict:
 
 _PROMPT_TAIL = (
     "Before saving, list what you will remove or move and show me the diff. Keep every rule that changes "
-    "how you work; only cut what you can work out from the code or what repeats. Change nothing else."
+    "how you work; only cut what you can work out from the code or what repeats. Change nothing else. "
+    + PROMPT_RESTART
 )
 
 
@@ -761,7 +763,7 @@ def build_fixes(review: FileReview, units: Units, period: str) -> list[dict]:
                         "For each one, find what it should point to now (search the repository and git "
                         "history) and update it, or remove the line if the thing is gone for good. Tell me "
                         "which you updated and which you removed.",
-                        "Show me the diff before saving. Change nothing else.",
+                        "Show me the diff before saving. Change nothing else. " + PROMPT_RESTART,
                     ]
                 ),
             )

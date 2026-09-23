@@ -28,6 +28,18 @@ import shlex
 
 from .model import Recommendation, SettingChange
 
+#: Shown after every fix and profile change, and printed after an apply:
+#: Claude Code reads settings, agent files and CLAUDE.md when it starts,
+#: so the session that made the change keeps the old ones.
+RESTART_NOTE = (
+    "Restart Claude Code to pick up the change. It reads settings and agent files when it starts, so a "
+    "session that is already open keeps the old ones (claude --continue picks your last conversation back up)."
+)
+
+#: The last line of every prompt for Claude that changes Claude Code's
+#: files, so the reminder comes at the moment the change is saved.
+PROMPT_RESTART = "Once it's saved, remind me to restart Claude Code so it picks up the change."
+
 #: key -> (what it controls, trade-off, extra caveat).
 SETTING_TEXT: dict[str, tuple[str, str, str]] = {
     "omitClaudeMd": (
@@ -427,7 +439,7 @@ def prompt_for(rec: Recommendation, change: SettingChange) -> str:
         lines.append("Its effect on startup size isn't documented, so it's an experiment.")
     lines.append(
         "Before saving, restate the change in one sentence and show me the diff. Claude Code will ask "
-        "my permission to edit files under .claude; that is expected. Change nothing else."
+        "my permission to edit files under .claude; that is expected. Change nothing else. " + PROMPT_RESTART
     )
     return "\n".join(lines)
 
@@ -484,7 +496,7 @@ def profile_prompt(name: str, rows: list[dict], scope: str) -> str:
     lines.append(
         "If an agent file doesn't exist, the agent is built into Claude Code: say so and don't create one. "
         "Before saving, restate the changes and show me the diff. Claude Code will ask my permission to "
-        "edit files under .claude; that is expected. Change nothing else."
+        "edit files under .claude; that is expected. Change nothing else. " + PROMPT_RESTART
     )
     return "\n".join(lines)
 

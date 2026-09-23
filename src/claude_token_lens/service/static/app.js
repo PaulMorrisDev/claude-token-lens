@@ -2259,8 +2259,19 @@
       })
     );
     box.appendChild(codeBlockWithCopy(data.dry_run_command || data.apply_command));
+    box.appendChild(restartNote());
     box.appendChild(el("h5", { text: "Or try it for one session" }));
-    box.appendChild(el("p", { class: "notes", text: "Starts Claude Code with these settings on top of yours. Nothing is written." }));
+    box.appendChild(
+      el("p", {
+        class: "notes",
+        text:
+          "It saves these settings to a file in this tool's own folder and prints the command that starts " +
+          "Claude Code with them on top of yours. Your settings files aren't changed." +
+          ((data.agents || []).length || (data.env || []).length
+            ? " A one-session trial carries the settings only, not the agent or environment changes."
+            : ""),
+      })
+    );
     box.appendChild(codeBlockWithCopy(data.launch_command));
     container.appendChild(box);
 
@@ -2616,8 +2627,19 @@
     return "from " + tableLabel + ", " + rowLabel;
   }
 
+  // Shown after every way of making a change (fixes.RESTART_NOTE; a test
+  // keeps the two the same).
+  var RESTART_NOTE =
+    "Restart Claude Code to pick up the change. It reads settings and agent files when it starts, so a " +
+    "session that is already open keeps the old ones (claude --continue picks your last conversation back up).";
+
+  function restartNote() {
+    return el("p", { class: "notice restart-note", text: RESTART_NOTE });
+  }
+
   // One fixes.build_fix entry: the plain explainer, then the prompt
-  // for Claude and (for a plain setting) the dry-run command.
+  // for Claude, (for a plain setting) the dry-run command and the
+  // reminder to restart Claude Code.
   function fixTitle(fix) {
     if (fix.title) return fix.title;
     // Same rule as render/tables.py's fix_subject.
@@ -2650,6 +2672,7 @@
       }
       box.appendChild(codeBlockWithCopy(fix.command));
     }
+    box.appendChild(restartNote());
     return box;
   }
 

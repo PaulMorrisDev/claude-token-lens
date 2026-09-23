@@ -20,7 +20,7 @@ from typing import Callable
 
 from . import carry, quality, whatif
 from .compaction_sim import CompactionSimThresholds
-from .fixes import build_fix, build_fixes
+from .fixes import PROMPT_RESTART, RESTART_NOTE, build_fix, build_fixes
 from .model import Recommendation, SettingChange
 from .profiles import goals
 from .recommend import _BUILTIN_AGENT_TYPES, _NOT_OVERRIDABLE
@@ -447,8 +447,8 @@ def _env_fix(name: str, value: str, default: str, what: str, effect: str) -> dic
         "command_warning": "",
         "prompt": (
             f"In ~/.claude/settings.json, add \"{name}\": \"{value}\" to the \"env\" object (create it if it's "
-            "missing), keeping every other entry. It takes effect in new sessions. Show me the diff before saving. "
-            "Claude Code will ask my permission to edit files under .claude; that is expected."
+            "missing), keeping every other entry. Show me the diff before saving. "
+            "Claude Code will ask my permission to edit files under .claude; that is expected. " + PROMPT_RESTART
         ),
     }
 
@@ -774,6 +774,8 @@ def render_markdown(result: dict) -> str:
             lines += ["", "Prompt for Claude:", "", "```text", fix["prompt"], "```"]
         if fix.get("command"):
             lines += ["", "Command:", "", "```bash", fix["command"], "```"]
+        if fix.get("prompt") or fix.get("command"):
+            lines += ["", RESTART_NOTE]
         lines.append("")
     return "\n".join(lines).rstrip() + "\n"
 

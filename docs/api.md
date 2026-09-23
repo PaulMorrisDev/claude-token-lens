@@ -645,8 +645,10 @@ today.
 
 `apply_command`/`launch_command` are the two lines
 `profiles.diff.apply_command` returns, split apart — the exact
-host-side `claude-token-lens apply` invocation and the `--launch`
-one-session-overlay alternative respectively. `dry_run_command` is
+host-side `claude-token-lens apply` invocation and the
+`claude-token-lens apply <id> --launch` one-session-overlay alternative
+respectively (it writes the overlay, then prints the
+`claude --settings <path>` command with the real path). `dry_run_command` is
 `apply_command` plus `--dry-run`, which the dashboard shows first.
 `prompt` (`fixes.profile_prompt`) asks Claude to make the same changes
 by hand: one line per changed, unmanaged key, naming the file and the
