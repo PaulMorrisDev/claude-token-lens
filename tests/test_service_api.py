@@ -1439,3 +1439,110 @@ def test_profiles_from_current_saves_allowlisted_non_managed_keys(server):
     # A second save without replace=1 is a conflict, not an overwrite.
     resp, _payload = server.post_json("/api/profiles/from-current", {})
     assert resp.status == 409
+
+
+# -- context files, named windows ----------------------------------------
+
+
+def test_claude_md_route_lists_files_and_404s_an_unknown_id(server):
+    (server.options.config_dir.parent / "CLAUDE.md").write_text("# Rules\n\nBe brief.\n", encoding="utf-8")
+    resp, payload = server.get_json("/api/claude-md")
+    assert resp.status == 200
+    data = payload["data"]
+    assert data["period"] == "over the last 30 days"
+    user = next(item for item in data["files"] if item["level"] == "User")
+    resp, payload = server.get_json(f"/api/claude-md/{user['id']}")
+    assert resp.status == 200
+    assert payload["data"]["section_rows"][0]["heading"] == "Rules"
+    resp, _ = server.get_json("/api/claude-md/0123456789abcdef")
+    assert resp.status == 404
+
+
+def test_skills_route_returns_rows_and_fixes(server):
+    resp, payload = server.get_json("/api/skills?window=24h")
+    assert resp.status == 200
+    data = payload["data"]
+    assert data["period"] == "in the last 24 hours"
+    assert isinstance(data["skills"], list) and "fixes" in data
+
+
+@pytest.mark.parametrize("name", ["1h", "today", "24h"])
+def test_named_windows_resolve_to_since(server, name):
+    resp, payload = server.get_json(f"/api/summary?window={name}")
+    assert resp.status == 200
+    assert "sessions" in payload["data"]
+    resp, _raw = server.request("GET", f"/api/report.json?window={name}")
+    assert resp.status == 200
+
+
+def test_since_last_change_window_needs_a_change(server):
+    resp, payload = server.get_json("/api/recommendations?window=change")
+    assert resp.status == 400
+    assert "No change recorded yet" in payload["error"]["message"]
+    resp, payload = server.get_json("/api/summary?window=fortnight")
+    assert resp.status == 400
+
+
+def test_named_window_since_is_rounded_to_the_minute():
+    from datetime import datetime, timezone
+
+    now = datetime(2026, 9, 23, 10, 17, 42, tzinfo=timezone.utc)
+    since, reason = service_api._named_window_since("1h", None, now)
+    assert since == "2026-09-23T09:17:00Z" and reason == ""
+    since, _ = service_api._named_window_since("24h", None, now)
+    assert since == "2026-09-22T10:17:00Z"
+
+
+def test_impact_is_empty_without_changes_and_lists_an_apply(server):
+    resp, payload = server.get_json("/api/impact")
+    assert resp.status == 200
+    assert payload["data"]["changes"] == []
+    assert payload["data"]["min_sessions"] >= 1
+
+    from claude_token_lens.profiles import apply as apply_mod
+    from claude_token_lens.profiles.schema import load_dict
+
+    config_dir = server.options.config_dir
+    claude_root = config_dir.parent / "fake-claude"
+    claude_root.mkdir()
+    plan = apply_mod.plan_apply(
+        load_dict({"id": "one-off", "settings": {"effortLevel": "medium"}}),
+        scope="user", project_path=None, config_dir=config_dir, claude_root=claude_root,
+    )
+    apply_mod.execute(plan, config_dir=config_dir)
+    resp, payload = server.get_json("/api/impact")
+    [change] = payload["data"]["changes"]
+    assert change["change"]["keys"] == ["effortLevel"]
+    assert change["enough"] is False and "so far" in change["verdict"]
+    resp, payload = server.get_json("/api/summary?window=change")
+    assert resp.status == 200
+
+
+def test_profile_goals_lists_goals_and_drafts_one(server):
+    resp, payload = server.get_json("/api/profile-goals")
+    assert resp.status == 200
+    ids = [goal["id"] for goal in payload["data"]["goals"]]
+    assert "recommendations" in ids and "current" in ids
+    resp, payload = server.get_json("/api/profile-goals?goal=cache&window=24h")
+    assert resp.status == 200
+    data = payload["data"]
+    assert data["goal"]["id"] == "cache" and data["period"] == "in the last 24 hours"
+    assert set(data) >= {"candidates", "profile", "whatif"}
+    resp, payload = server.get_json("/api/profile-goals?goal=nope")
+    assert resp.status == 400
+
+
+def test_whatif_estimates_and_validates(server):
+    resp, payload = server.post_json("/api/whatif", {"settings": {"model": "sonnet"}, "agents": {}})
+    assert resp.status == 200
+    [row] = payload["data"]["rows"]
+    assert row["key"] == "model" and row["effect_text"]
+    resp, payload = server.post_json("/api/whatif", {"settings": {"effortLevel": "enormous"}})
+    assert resp.status == 400
+
+
+def test_whatif_rejects_cross_site_posts(server):
+    resp, _raw = server.request(
+        "POST", "/api/whatif", body={"settings": {"model": "sonnet"}}, headers={"Sec-Fetch-Site": "cross-site"}
+    )
+    assert resp.status == 403

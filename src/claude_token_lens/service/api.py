@@ -100,10 +100,11 @@ import tempfile
 import threading
 import time
 import urllib.parse
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
+from zoneinfo import ZoneInfo
 
 from .. import __version__ as _TOOL_VERSION
 from .. import baseline as baseline_mod
@@ -234,10 +235,57 @@ def _parse_iso8601(value: str) -> bool:
     return True
 
 
+#: Short windows the dashboard offers by name (``?window=``), each as the
+#: phrase that follows an amount.
+WINDOW_NAMES = {
+    "1h": "in the last hour",
+    "today": "today",
+    "24h": "in the last 24 hours",
+    "change": "since your last change",
+}
+
+
+def _named_window_since(name: str, config_dir: Path | None, now: datetime | None = None) -> tuple[str | None, str]:
+    """``(since, "")`` for a named window as an ISO timestamp, rounded
+    down to the minute so repeat requests share one cached report, or
+    ``(None, reason)`` when it can't be worked out."""
+    now = now or datetime.now(timezone.utc)
+    if name == "1h":
+        start = now - timedelta(hours=1)
+    elif name == "24h":
+        start = now - timedelta(hours=24)
+    elif name == "today":
+        tz = None
+        if config_dir is not None:
+            try:
+                tz_name = load_config(config_dir).tz
+                tz = ZoneInfo(tz_name) if tz_name else None
+            except Exception:  # noqa: BLE001 -- a bad tz falls back to the machine's own
+                tz = None
+        local = now.astimezone(tz) if tz is not None else now.astimezone()
+        start = local.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
+    elif name == "change":
+        from .. import change_points
+
+        point = change_points.latest(config_dir) if config_dir is not None else None
+        if point is None:
+            return None, (
+                "No change recorded yet. This window starts at your latest `apply` (a profile or a "
+                "one-off change), its undo, or a settings change the config hook saw."
+            )
+        start = point.ts
+    else:
+        return None, f"'window' must be one of {', '.join(WINDOW_NAMES)}"
+    return start.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:00Z"), ""
+
+
 def _window_query(
     query: dict[str, str],
+    *,
+    config_dir: Path | None = None,
 ) -> tuple[tuple[int | None, str | None, str | None], tuple[int, dict] | None]:
-    """Parse the report-backed routes' windowing query params: either
+    """Parse the report-backed routes' windowing query params: ``window``
+    (a named short window, :data:`WINDOW_NAMES`, resolved to ``since``), or
     ``since``/``until`` (ISO 8601, matching the CLI's own ``report
     --since``/``--until``, ``discovery._resolve_window``'s resolution)
     or ``window_days`` -- never both defaulted at once, mirroring the
@@ -249,6 +297,12 @@ def _window_query(
     Returns ``((window_days, since, until), None)`` on success, or
     ``(None, error)`` -- an already-built ``400 bad_request`` response.
     """
+    name = _str_query(query, "window")
+    if name is not None:
+        since, reason = _named_window_since(name, config_dir)
+        if since is None:
+            return None, _bad_request(reason)
+        return (None, since, None), None
     since = _str_query(query, "since")
     until = _str_query(query, "until")
     for label, value in (("since", since), ("until", until)):
@@ -262,9 +316,12 @@ def _window_query(
     return (window_days, since, until), None
 
 
-def _period_text(window_days: int | None, since: str | None, until: str | None) -> str:
+def _period_text(window_days: int | None, since: str | None, until: str | None, *, name: str | None = None) -> str:
     """The window as a phrase that follows an amount: "over the last 30
-    days", "since 2026-09-20T10:00:00Z", "over all time"."""
+    days", "in the last hour", "since 2026-09-20T10:00:00Z", "over all
+    time"."""
+    if name in WINDOW_NAMES:
+        return WINDOW_NAMES[name]
     if since or until:
         return _window_label(window_days, since, until)
     if window_days:
@@ -372,6 +429,11 @@ def make_handler(
 
     report_lock = threading.Lock()
     report_cache: dict = {"token": None, "models": {}}
+
+    def _window_query(query, _parse=globals()["_window_query"]):
+        # Named windows ("since your last change", "today") need this
+        # service's config dir: its apply backups, snapshots and tz.
+        return _parse(query, config_dir=options.config_dir)
 
     service_registered_lock = threading.Lock()
     service_registered_cache: dict = {"checked_at": None, "value": None}
@@ -538,6 +600,11 @@ def make_handler(
         return _ok(data)
 
     def route_summary(store, query, body):
+        if _str_query(query, "window") is not None:
+            window, err = _window_query(query)
+            if err is not None:
+                return err
+            return _ok(store.summary(since=window[1]))
         window_days, err = _int_query(query, "window_days", None, minimum=0)
         if err is not None:
             return err
@@ -1060,12 +1127,12 @@ def make_handler(
         config = load_config(options.config_dir)
         return Units(billing_mode=config.billing, currency=model.meta.pricing.currency)
 
-    def _claude_md_review(window):
+    def _claude_md_review(window, query):
         from .. import claude_md_review
 
         model = _get_report_model(*window)
         review = claude_md_review.build_review(options.config_dir, model.context_files or {})
-        return claude_md_review, review, _report_units(model), _period_text(*window)
+        return claude_md_review, review, _report_units(model), _period_text(*window, name=query.get("window"))
 
     def route_claude_md(store, query, body):
         """Every CLAUDE.md-family file on disk, with how often it was sent
@@ -1074,7 +1141,7 @@ def make_handler(
         window, err = _window_query(query)
         if err is not None:
             return err
-        module, review, units, period = _claude_md_review(window)
+        module, review, units, period = _claude_md_review(window, query)
         return _ok(
             {
                 "period": period,
@@ -1087,7 +1154,7 @@ def make_handler(
         window, err = _window_query(query)
         if err is not None:
             return err
-        module, review, units, period = _claude_md_review(window)
+        module, review, units, period = _claude_md_review(window, query)
         file_id = query.get("id", "")
         item = next((entry for entry in review.files if entry.id == file_id), None)
         if item is None:
@@ -1107,9 +1174,114 @@ def make_handler(
         model = _get_report_model(*window)
         return _ok(
             skills_review.review(
-                options.config_dir, model.context_files or {}, _report_units(model), _period_text(*window)
+                options.config_dir,
+                model.context_files or {},
+                _report_units(model),
+                _period_text(*window, name=query.get("window")),
             )
         )
+
+    def _current_settings() -> tuple[dict, dict]:
+        """The latest snapshot's effective settings and agent fields, or
+        empty when no snapshot is recorded yet."""
+        snapshot = _latest_config_snapshot()
+        if snapshot is None:
+            return {}, {}
+        agents = snapshot.data.get("effective_agents")
+        return snapshots_mod.effective_config(snapshot), agents if isinstance(agents, dict) else {}
+
+    def route_profile_goals(store, query, body):
+        """Without ``goal``: the goals a profile can start from. With it:
+        that goal's candidate changes, each with the value in effect now,
+        the evidence, the trade-off and a what-if estimate."""
+        from ..profiles import goals
+
+        goal = query.get("goal")
+        if not goal:
+            return _ok({"goals": goals.goals_list()})
+        if goal not in goals.GOAL_IDS:
+            return _bad_request(f"unknown goal {goal!r}; expected one of: {', '.join(goals.GOAL_IDS)}")
+        window, err = _window_query(query)
+        if err is not None:
+            return err
+        model = _get_report_model(*window)
+        effective, effective_agents = _current_settings()
+        return _ok(
+            goals.draft(
+                goal,
+                model,
+                _report_units(model),
+                effective=effective,
+                effective_agents=effective_agents,
+                period=_period_text(*window, name=query.get("window")),
+            )
+        )
+
+    def route_whatif(store, query, body):
+        """The estimated effect of ``{settings, agents}`` on the window,
+        looked up in the report's own tables. Reads only; nothing is
+        saved or applied."""
+        from .. import whatif
+
+        if not isinstance(body, dict):
+            return _bad_request("request body must be a JSON object")
+        settings = body.get("settings") or {}
+        agents = body.get("agents") or {}
+        if not isinstance(settings, dict) or not isinstance(agents, dict):
+            return _bad_request("settings and agents must be JSON objects")
+        problems = profile_schema.validate({"id": "whatif", "settings": settings, "agents": agents})
+        if problems:
+            return _bad_request("; ".join(problems))
+        window, err = _window_query(query)
+        if err is not None:
+            return err
+        model = _get_report_model(*window)
+        effective, _agents = _current_settings()
+        return _ok(
+            whatif.estimate(
+                settings,
+                agents,
+                model,
+                _report_units(model),
+                period=_period_text(*window, name=query.get("window")),
+                current=effective,
+            )
+        )
+
+    impact_cache: dict = {"key": None, "data": None}
+
+    def route_impact(store, query, body):
+        """Each change you made (an apply, its undo, or a settings change
+        the config hook saw) with the sessions before it against those
+        after it, on the measures that change should move."""
+        from .. import change_points
+        from .. import impact as impact_mod
+        from . import rebuild
+
+        points = change_points.change_points(options.config_dir)
+        key = (store.change_token(), tuple((p.iso(), p.source, p.backup_ts) for p in points))
+        with report_lock:
+            if impact_cache["key"] == key:
+                return _ok(impact_cache["data"])
+        changes: list = []
+        if points:
+            config = load_config(options.config_dir)
+            rates = load_pricing(path=config.pricing_path, config_dir=options.config_dir)
+            earliest = points[0].ts - timedelta(days=impact_mod.LOOKBACK_DAYS)
+            corpus = rebuild.corpus_from_store(store, since=earliest.strftime("%Y-%m-%dT%H:%M:%SZ"))
+            sessions = impact_mod.session_facts(corpus, rates)
+            units = _report_units(_get_report_model(_DEFAULT_WINDOW_DAYS))
+            changes = impact_mod.impact(points, sessions, units)
+        data = {
+            "changes": changes,
+            "caveat": impact_mod.CAVEAT,
+            "min_sessions": impact_mod.MIN_SESSIONS,
+            "lookback_days": impact_mod.LOOKBACK_DAYS,
+        }
+        with report_lock:
+            impact_cache["key"] = key
+            impact_cache["data"] = data
+        return _ok(data)
 
     def route_recommendations(store, query, body):
         window, err = _window_query(query)
@@ -1152,6 +1324,8 @@ def make_handler(
         "/api/profile-schema": route_profile_schema,
         "/api/claude-md": route_claude_md,
         "/api/skills": route_skills,
+        "/api/impact": route_impact,
+        "/api/profile-goals": route_profile_goals,
         "/api/report.json": _render_report("application/json", lambda model: render_json(model)),
         # Finding 22: charset was missing on the two text-ish renderers
         # (application/json has no encoding ambiguity, but text/markdown
@@ -1170,6 +1344,7 @@ def make_handler(
     post_routes: dict[str, Callable] = {
         "/api/profiles": route_profiles_post,
         "/api/profiles/from-current": route_profiles_from_current,
+        "/api/whatif": route_whatif,
     }
     post_patterns: tuple[tuple[re.Pattern, Callable], ...] = (
         (_SESSION_TAGS_RE, route_set_tag),

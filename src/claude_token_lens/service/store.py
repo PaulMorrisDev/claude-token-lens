@@ -80,6 +80,7 @@ import threading
 import time
 import zlib
 from collections.abc import Callable
+from datetime import datetime
 from pathlib import Path
 
 from . import schema
@@ -1123,7 +1124,7 @@ class Store:
             ],
         }
 
-    def summary(self, *, window_days: int | None = None) -> dict:
+    def summary(self, *, window_days: int | None = None, since: str | None = None) -> dict:
         """Corpus-wide totals: session/transcript counts and cost/token
         sums, optionally restricted to a trailing ``window_days`` window.
 
@@ -1147,7 +1148,7 @@ class Store:
         ``top_level_transcripts + subagent_transcripts``).
         """
         conn = self._connection()
-        if window_days is None:
+        if window_days is None and since is None:
             row = conn.execute(
                 "SELECT COUNT(*) AS sessions, COALESCE(SUM(total_cost), 0) AS total_cost, "
                 "COALESCE(SUM(total_tokens), 0) AS total_tokens FROM sessions"
@@ -1161,7 +1162,13 @@ class Store:
                 "total_tokens": row["total_tokens"],
             }
 
-        cutoff_ns = int((time.time() - window_days * 86400) * 1_000_000_000)
+        if since is not None:
+            # ``since`` (an ISO timestamp, a named short window resolved by
+            # the API) windows by the same top-level mtime rule.
+            cutoff_s = datetime.fromisoformat(since.replace("Z", "+00:00")).timestamp()
+        else:
+            cutoff_s = time.time() - window_days * 86400
+        cutoff_ns = int(cutoff_s * 1_000_000_000)
         qualifying = conn.execute(
             "SELECT session_id FROM transcripts WHERE kind = 'top-level' AND mtime_ns >= ?",
             (cutoff_ns,),
