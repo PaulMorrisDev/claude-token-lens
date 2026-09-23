@@ -124,6 +124,8 @@ _VALID_SCOPES = ("user", "project-local", "repo")
 _TS_FORMAT = "%Y%m%dT%H%M%SZ"
 
 _ACTIVE_PROFILE_FILENAME = "active-profile"
+#: Written into a backup folder by :func:`revert`, so the change reads as undone.
+REVERTED_FILENAME = "reverted.json"
 
 
 class ApplyError(Exception):
@@ -203,6 +205,8 @@ class BackupInfo:
     profile_id: str
     scope: str
     file_count: int
+    #: When :func:`revert` undid it (UTC), or None while it is still in place.
+    reverted_at: str | None = None
 
 
 # -- small filesystem helpers -------------------------------------------
@@ -899,6 +903,11 @@ def revert(ts: str, *, config_dir: str | Path, ignore_changes: bool = False) -> 
             _atomic_write_bytes(target, data)
             restored.append(target)
 
+    # Marks the backup as undone, so ``changes``/``uninstall`` stop
+    # listing it as a change still in place. The backup itself stays.
+    reverted_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    _atomic_write_bytes(config_dir / "backups" / ts / REVERTED_FILENAME, (json.dumps({"reverted_at": reverted_at}) + "\n").encode("utf-8"))
+
     return RevertResult(ts=ts, config_dir=config_dir, restored=tuple(restored), deleted=tuple(deleted))
 
 
@@ -918,12 +927,17 @@ def list_backups(config_dir: str | Path) -> list[BackupInfo]:
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             continue
+        try:
+            reverted_at = json.loads((ts_dir / REVERTED_FILENAME).read_text(encoding="utf-8")).get("reverted_at")
+        except (OSError, json.JSONDecodeError, AttributeError):
+            reverted_at = None
         result.append(
             BackupInfo(
                 ts=str(manifest.get("ts", ts_dir.name)),
                 profile_id=str(manifest.get("profile_id", "")),
                 scope=str(manifest.get("scope", "")),
                 file_count=len(manifest.get("entries", [])),
+                reverted_at=str(reverted_at) if reverted_at else None,
             )
         )
     result.sort(key=lambda b: b.ts)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -521,12 +522,21 @@ def test_safe_print_swallows_any_exception(capsys):
 # -- print_install_fragment / --install flag ---------------------------------
 
 
+#: The interpreter each platform's block names: this Python by full path
+#: on the platform the tests run on (``py -3`` fails silently where the
+#: launcher is missing), the generic form on the other.
+_PY = "/opt/py/bin/python3"
+_WIN_EXE = f'"{_PY}"' if os.name == "nt" else "py -3"
+_POSIX_EXE = f'"{_PY}"' if os.name != "nt" else "python3"
+
+
 def test_print_install_fragment_contains_both_platforms():
-    text = statusline.print_install_fragment()
+    text = statusline.print_install_fragment(python=_PY)
     assert "Windows:" in text
     assert "POSIX" in text
-    assert "py -3 -m claude_token_lens.statusline" in text
-    assert "python3 -m claude_token_lens.statusline" in text
+    windows_command, posix_command = _extract_commands(text)
+    assert windows_command == f"{_WIN_EXE} -m claude_token_lens.statusline"
+    assert posix_command == f"{_POSIX_EXE} -m claude_token_lens.statusline"
     assert '"statusLine"' in text
     # Each platform's JSON fragment must itself be valid JSON.
     for block in text.split("Windows:\n", 1)[1].split("\n\nPOSIX"):
@@ -570,12 +580,12 @@ def test_print_install_fragment_pyz_mode_uses_archive_path_not_dash_m(tmp_path):
     ``installer._serve_argv``'s ``[exe, str(pyz_path), *args]`` shape.
     """
     pyz_path = tmp_path / "claude-token-lens.pyz"
-    text = statusline.print_install_fragment(pyz_path=pyz_path)
+    text = statusline.print_install_fragment(pyz_path=pyz_path, python=_PY)
 
     assert "-m claude_token_lens.statusline" not in text
     windows_command, posix_command = _extract_commands(text)
-    assert windows_command == f'py -3 "{pyz_path}" statusline'
-    assert posix_command == f'python3 "{pyz_path}" statusline'
+    assert windows_command == f'{_WIN_EXE} "{pyz_path}" statusline'
+    assert posix_command == f'{_POSIX_EXE} "{pyz_path}" statusline'
 
 
 def test_print_install_fragment_pyz_mode_resolves_relative_path(tmp_path, monkeypatch):
@@ -583,11 +593,11 @@ def test_print_install_fragment_pyz_mode_resolves_relative_path(tmp_path, monkey
     embedded as an absolute path -- the fragment ends up pasted into
     settings.json and run from an arbitrary working directory later."""
     monkeypatch.chdir(tmp_path)
-    text = statusline.print_install_fragment(pyz_path=Path("claude-token-lens.pyz"))
+    text = statusline.print_install_fragment(pyz_path=Path("claude-token-lens.pyz"), python=_PY)
     windows_command, posix_command = _extract_commands(text)
     abs_path = str((tmp_path / "claude-token-lens.pyz").resolve())
-    assert windows_command == f'py -3 "{abs_path}" statusline'
-    assert posix_command == f'python3 "{abs_path}" statusline'
+    assert windows_command == f'{_WIN_EXE} "{abs_path}" statusline'
+    assert posix_command == f'{_POSIX_EXE} "{abs_path}" statusline'
 
 
 def test_print_install_fragment_auto_detects_pyz_from_sys_argv(monkeypatch, tmp_path):
@@ -602,19 +612,26 @@ def test_print_install_fragment_auto_detects_pyz_from_sys_argv(monkeypatch, tmp_
         zf.writestr("__main__.py", "print('hi')\n")
     monkeypatch.setattr(installer.sys, "argv", [str(archive)])
 
-    text = statusline.print_install_fragment()
+    text = statusline.print_install_fragment(python=_PY)
 
     assert "-m claude_token_lens.statusline" not in text
     windows_command, posix_command = _extract_commands(text)
     abs_path = str(archive.resolve())
-    assert windows_command == f'py -3 "{abs_path}" statusline'
-    assert posix_command == f'python3 "{abs_path}" statusline'
+    assert windows_command == f'{_WIN_EXE} "{abs_path}" statusline'
+    assert posix_command == f'{_POSIX_EXE} "{abs_path}" statusline'
 
 
 def test_print_install_fragment_no_pyz_keeps_dash_m_form():
-    text = statusline.print_install_fragment(pyz_path=None)
-    assert "py -3 -m claude_token_lens.statusline" in text
-    assert "python3 -m claude_token_lens.statusline" in text
+    text = statusline.print_install_fragment(pyz_path=None, python=_PY)
+    windows_command, posix_command = _extract_commands(text)
+    assert windows_command == f"{_WIN_EXE} -m claude_token_lens.statusline"
+    assert posix_command == f"{_POSIX_EXE} -m claude_token_lens.statusline"
+
+
+def test_install_command_names_this_python_by_full_path():
+    # The fragment for this platform never depends on the py launcher or
+    # a python3 on PATH.
+    assert statusline.install_command(pyz_path=None, python=_PY) == f'"{_PY}" -m claude_token_lens.statusline'
 
 
 # -- S1-exports: cache trailing CSV columns ----------------------------------

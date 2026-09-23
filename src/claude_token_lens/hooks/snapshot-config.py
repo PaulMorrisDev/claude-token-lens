@@ -1398,17 +1398,34 @@ def install_hook(config_dir: Path) -> Path:
     return dest
 
 
-def hook_fragment_text() -> str:
+def hook_command(python: str | None = None, script: Path | None = None) -> str:
+    """The SessionStart command for this machine: ``python`` (default:
+    this interpreter) and ``script`` (default: the installed copy under
+    ``<config dir>/hooks``) by their full paths. A ``py -3`` or
+    ``%USERPROFILE%`` command fails silently when the Python launcher is
+    missing, or when Claude Code runs the hook through Git Bash, which
+    does not expand ``%VAR%``."""
+    python = python or sys.executable
+    script = script or (resolve_config_dir(None) / "hooks" / "snapshot-config.py")
+    return f'"{python}" "{script}"'
+
+
+def hook_fragment_text(python: str | None = None, script: Path | None = None) -> str:
     """The settings.json ``hooks`` fragment to paste in, for Windows and
     POSIX, using the commands named in the plan's "Running on other
     people's machines" section (both must exit 0 and print nothing on
     error so a broken Python never blocks a session or blanks the status
-    line — this script already guarantees that).
+    line — this script already guarantees that). The block for the
+    platform this runs on is :func:`hook_command`; the other shows the
+    general shape.
     """
-    windows_command = (
-        r'py -3 "%USERPROFILE%\.claude\token-lens\hooks\snapshot-config.py"'
-    )
-    posix_command = 'python3 "$HOME/.claude/token-lens/hooks/snapshot-config.py"'
+    native = hook_command(python, script)
+    if os.name == "nt":
+        windows_command = native
+        posix_command = 'python3 "$HOME/.claude/token-lens/hooks/snapshot-config.py"'
+    else:
+        windows_command = r'"C:\path\to\python.exe" "C:\Users\<you>\.claude\token-lens\hooks\snapshot-config.py"'
+        posix_command = native
 
     def _fragment(command: str) -> str:
         return json.dumps(

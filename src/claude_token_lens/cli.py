@@ -33,7 +33,7 @@ from pathlib import Path
 from zoneinfo import available_timezones
 
 from . import __version__, baseline as baseline_mod, classify, discovery, installer as installer_mod, onboarding
-from . import helptext, probe as probe_mod, recache, snapshots
+from . import helptext, hook_health, probe as probe_mod, recache, snapshots
 from . import statusline as statusline_mod
 from .cache import DigestCache
 from .config import Config, ConfigError, load_config, load_session_overrides
@@ -82,6 +82,8 @@ SUBCOMMANDS: tuple[str, ...] = (
     "serve",
     "install-service",
     "uninstall-service",
+    "changes",
+    "uninstall",
     "import",
     "team-report",
 )
@@ -546,6 +548,34 @@ def _add_uninstall_service_args(sub: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_uninstall_args(sub: argparse.ArgumentParser) -> None:
+    """Extra flags for ``uninstall``. Without ``--yes`` every step shows
+    what it changes and asks first."""
+    sub.add_argument(
+        "--dry-run",
+        action="store_true",
+        dest="dry_run",
+        help="show every step and change, without changing anything",
+    )
+    sub.add_argument(
+        "--yes",
+        action="store_true",
+        help="make the settings.json and service changes without asking (they are still printed)",
+    )
+    sub.add_argument(
+        "--revert-changes",
+        action="store_true",
+        dest="revert_changes",
+        help="also undo every change 'apply' made that is still in place, newest first",
+    )
+    sub.add_argument(
+        "--delete-data",
+        action="store_true",
+        dest="delete_data",
+        help="also delete this tool's data folder (database, snapshots, usage log, profiles and backups)",
+    )
+
+
 def _add_snapshot_config_args(sub: argparse.ArgumentParser) -> None:
     """Extra flags for the ``snapshot-config`` subcommand only (WP7). Every
     other subcommand stays a bare stub, so this is added just for this one
@@ -704,8 +734,14 @@ def _add_init_args(sub: argparse.ArgumentParser) -> None:
         "--repair-hook",
         action="store_true",
         dest="repair_hook",
-        help="fix a SessionStart hook command whose path was broken by JSON escaping, "
-        "without asking (settings.json is backed up first)",
+        help="fix a SessionStart hook command that cannot run (a path broken by JSON escaping, "
+        "a missing interpreter or a %%VARIABLE%%), without asking (settings.json is backed up first)",
+    )
+    sub.add_argument(
+        "--connect",
+        action="store_true",
+        help="add the config snapshot hook (and a statusline, if you have none) to "
+        "~/.claude/settings.json without asking; the change is still printed and the file backed up first",
     )
     service_group = sub.add_mutually_exclusive_group()
     service_group.add_argument(
@@ -836,6 +872,8 @@ def _make_parser() -> argparse.ArgumentParser:
             "serve": "run the local JSON API + watcher service",
             "install-service": "register 'serve' to start at logon/boot (Scheduled Task / systemd user unit / LaunchAgent)",
             "uninstall-service": "remove a logon/boot registration made by install-service (or by init)",
+            "changes": "list what this tool has installed and changed, and the command that undoes each",
+            "uninstall": "remove the hook, statusline and logon service, optionally undo applied changes and delete data",
             "import": "validate and copy team-aggregate document(s) into <config_dir>/team/",
             "team-report": "cross-machine comparison built from every imported team document",
         }.get(name, f"{name} (not implemented yet)")
@@ -876,6 +914,8 @@ def _make_parser() -> argparse.ArgumentParser:
             _add_install_service_args(sub)
         if name == "uninstall-service":
             _add_uninstall_service_args(sub)
+        if name == "uninstall":
+            _add_uninstall_args(sub)
         if name == "init":
             _add_init_args(sub)
         if name == "baseline":
@@ -1930,7 +1970,7 @@ def _cmd_snapshot_config(args: argparse.Namespace) -> int:
     config_dir = hook.resolve_config_dir(args.config_dir)
 
     if args.print_hook:
-        print(hook.hook_fragment_text())
+        print(hook.hook_fragment_text(script=config_dir / "hooks" / "snapshot-config.py"))
         return 0
 
     if args.install_hook:
@@ -2067,7 +2107,7 @@ def _cmd_init(args: argparse.Namespace) -> int:
     projects_root_path = Path(args.projects_root) if args.projects_root else discovery.projects_root()
 
     hook = _load_snapshot_hook_module()
-    hook_fragment = hook.hook_fragment_text()
+    hook_fragment = hook.hook_fragment_text(script=Path(config_dir) / "hooks" / "snapshot-config.py")
     statusline_fragment = statusline_mod.print_install_fragment()
 
     try:
@@ -2078,6 +2118,7 @@ def _cmd_init(args: argparse.Namespace) -> int:
             non_interactive=args.non_interactive,
             no_install=args.no_install,
             repair_hook=args.repair_hook,
+            connect_step=not args.no_install and (args.connect or not args.non_interactive),
             hook_fragment=hook_fragment,
             statusline_fragment=statusline_fragment,
             # Resolved here rather than relying on run_init's own
@@ -2114,7 +2155,52 @@ def _cmd_init(args: argparse.Namespace) -> int:
     # subprocess/file-write side effects, the same "onboarding.py never
     # itself installs anything" boundary its module docstring already
     # draws for the hook/statusLine fragments above.
+    if not args.no_install and (args.connect or not args.non_interactive):
+        _cmd_init_connect_step(args, config_dir=config_dir, hook=hook)
     return _cmd_init_service_step(args, config_dir=config_dir, projects_root_path=projects_root_path)
+
+
+def _cmd_init_connect_step(args: argparse.Namespace, *, config_dir: Path, hook, stdin=None, stdout=None) -> None:
+    """``init``'s "Connect to Claude Code" step: install the snapshot
+    hook script into this tool's own folder, then show the exact
+    ``settings.json`` change that runs it (and adds a statusline when
+    you have none) and write it only after a yes, or with ``--connect``.
+    ``settings.json`` is backed up first. Commands name this Python and
+    the script by full path, so they need neither the ``py`` launcher
+    nor shell variables."""
+    stdin = stdin if stdin is not None else sys.stdin
+    stdout = stdout if stdout is not None else sys.stdout
+    script = hook.install_hook(config_dir)
+    plan = hook_health.plan_connect(
+        config_dir,
+        hook_command=hook.hook_command(script=script),
+        statusline_command=statusline_mod.install_command(),
+    )
+    stdout.write("Connect to Claude Code\n")
+    if plan.new_text is None:
+        for line in plan.changes:
+            stdout.write(f"- {line}\n")
+        if not plan.changes:
+            stdout.write("- Already connected: settings.json runs the snapshot hook.\n")
+        stdout.write("\n")
+        return
+    stdout.write(f"This adds to {plan.settings_path}:\n")
+    for line in plan.changes:
+        stdout.write(f"- {line}\n")
+    stdout.write("\n" + plan.diff + "\n")
+    stdout.write("To undo it later: claude-token-lens uninstall (or restore the backup named below).\n")
+    if not args.connect:
+        stdout.write("Make this change? settings.json is backed up first. (y/n) [n]: ")
+        stdout.flush()
+        if (stdin.readline() or "").strip().lower() not in ("y", "yes"):
+            stdout.write("Left unchanged. Run 'claude-token-lens init --connect' to make it later.\n\n")
+            return
+    try:
+        backup = hook_health.connect(plan)
+    except (OSError, ValueError) as exc:
+        stdout.write(f"Could not change settings.json: {exc}\n\n")
+        return
+    stdout.write("Connected." + (f" The previous settings.json is at {backup}" if backup else "") + "\n\n")
 
 
 def _cmd_init_service_step(
@@ -2284,6 +2370,140 @@ def _cmd_uninstall_service(args: argparse.Namespace) -> int:
 
     plan = installer_mod.plan_service_install(sys.executable, projects_root_path, config_dir)
     return installer_mod.uninstall(plan, dry_run=args.dry_run)
+
+
+def _cmd_changes(args: argparse.Namespace) -> int:
+    """``changes``: everything this tool has installed or changed on this
+    machine, whether it costs tokens, and the command that undoes it
+    (``footprint.inventory``)."""
+    from . import footprint
+
+    config_dir = _resolve_config_dir(args.config_dir)
+    items = footprint.inventory(config_dir, service_registered=installer_mod.is_registered())
+    print("What claude-token-lens has installed and changed\n")
+    for item in items:
+        print(f"{item.title}: {item.status}")
+        print(f"  Where: {item.where}")
+        print(f"  What it does: {item.what_it_does}")
+        print(f"  Tokens: {item.token_cost}")
+        if item.status in ("installed", "in place"):
+            print(f"  To undo: {item.undo}")
+        print()
+    print("To remove everything: claude-token-lens uninstall --revert-changes --delete-data --dry-run")
+    return 0
+
+
+def _ask(question: str, *, assume_yes: bool) -> bool:
+    if assume_yes:
+        return True
+    sys.stdout.write(question + " (y/n) [n]: ")
+    sys.stdout.flush()
+    return (sys.stdin.readline() or "").strip().lower() in ("y", "yes")
+
+
+def _cmd_uninstall(args: argparse.Namespace) -> int:
+    """``uninstall``: take claude-token-lens back out, step by step.
+
+    1. Remove its SessionStart hook and statusline from settings.json
+       (the diff is shown, and the file backed up first).
+    2. Remove the logon service, if registered.
+    3. With ``--revert-changes``: undo every applied change still in
+       place, newest first (``apply --revert``; a file edited since is
+       skipped and reported, never overwritten).
+    4. With ``--delete-data``: delete the data folder, including the
+       backups, so it runs last and refuses while applied changes are
+       still in place unless they were just reverted.
+
+    The package itself is removed with pip (printed at the end)."""
+    from . import footprint
+
+    config_dir = _resolve_config_dir(args.config_dir)
+    projects_root_path = Path(args.projects_root) if args.projects_root else discovery.projects_root()
+    plan = footprint.plan_uninstall(config_dir)
+    dry = args.dry_run
+    problems = 0
+
+    print("1. Claude Code settings")
+    if plan.new_settings_text is None:
+        print("   Nothing to remove: settings.json does not run this tool.\n")
+    else:
+        for line in plan.settings_changes:
+            print(f"   - {line}")
+        print("\n" + plan.settings_diff)
+        if dry:
+            print("   Dry run: settings.json left unchanged.\n")
+        elif _ask("   Remove these entries? settings.json is backed up first.", assume_yes=args.yes):
+            backup = footprint.remove_settings_entries(plan)
+            print(f"   Removed. The previous settings.json is at {backup}\n")
+        else:
+            print("   Left unchanged.\n")
+
+    print("2. Dashboard at logon")
+    registered = installer_mod.is_registered()
+    if registered is False:
+        print("   Not registered.\n")
+    else:
+        service_plan = installer_mod.plan_service_install(sys.executable, projects_root_path, config_dir)
+        if dry or _ask("   Remove the logon registration?", assume_yes=args.yes):
+            problems += installer_mod.uninstall(service_plan, dry_run=dry) != 0
+        print()
+
+    print("3. Changes applied to your Claude Code settings and agent files")
+    if not plan.applied:
+        print("   None in place.\n")
+    elif not args.revert_changes:
+        print("   Still in place (kept; add --revert-changes to undo them all):")
+        for backup in plan.applied:
+            print(f"   - {backup.ts} ({backup.profile_id}): claude-token-lens apply --revert {backup.ts}")
+        print()
+    else:
+        from .profiles import apply as apply_mod
+
+        for backup in plan.applied:
+            if dry:
+                print(f"   Would undo {backup.ts} ({backup.profile_id}).")
+                continue
+            try:
+                result = apply_mod.revert(backup.ts, config_dir=config_dir)
+            except apply_mod.ApplyError as exc:
+                problems += 1
+                print(f"   Could not undo {backup.ts}:")
+                for reason in exc.reasons:
+                    print(f"     {reason}")
+                continue
+            print(f"   Undid {backup.ts}: {len(result.restored)} restored, {len(result.deleted)} removed.")
+        print()
+
+    print("4. This tool's data folder")
+    if plan.data_dir is None:
+        print("   Nothing to delete.\n")
+    elif not args.delete_data:
+        print(f"   Kept: {footprint.home_label(plan.data_dir)} (add --delete-data to delete it).\n")
+    else:
+        still_applied = [b for b in footprint.plan_uninstall(config_dir).applied] if not dry else (
+            [] if args.revert_changes else plan.applied
+        )
+        if still_applied:
+            problems += 1
+            print(
+                "   Not deleted: it holds the backups for changes still in place, and deleting them would leave "
+                "you no way to undo those changes. Undo them first (--revert-changes).\n"
+            )
+        elif dry:
+            print(f"   Would delete {footprint.home_label(plan.data_dir)}.\n")
+        elif _ask(f"   Delete {footprint.home_label(plan.data_dir)}? This cannot be undone.", assume_yes=args.yes):
+            failures = footprint.delete_data(plan.data_dir)
+            if failures:
+                problems += 1
+                print("   Some files could not be deleted (stop a running dashboard first):")
+                for failure in failures:
+                    print(f"     {failure}")
+            else:
+                print("   Deleted.")
+            print()
+
+    print("Finally, remove the program itself with: pip uninstall claude-token-lens")
+    return 1 if problems else 0
 
 
 def _cmd_baseline(args: argparse.Namespace) -> int:
@@ -2818,6 +3038,10 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_import(args)
     if command == "team-report":
         return _cmd_team_report(args)
+    if command == "changes":
+        return _cmd_changes(args)
+    if command == "uninstall":
+        return _cmd_uninstall(args)
 
     print(f"claude-token-lens {command}: not implemented", file=sys.stderr)
     return 2

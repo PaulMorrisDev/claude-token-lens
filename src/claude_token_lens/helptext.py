@@ -2830,15 +2830,19 @@ DIAGNOSTIC_LABELS: dict[str, tuple[str, str]] = {
 }
 
 
-def diagnostics_table(diagnostics: Diagnostics, hook=None) -> Table:
+def diagnostics_table(diagnostics: Diagnostics, hook=None, statusline=None) -> Table:
     """The parse-quality counters as a plain-English table (the Data
     quality tab, ``GET /api/diagnostics``). Rows keep the raw field name
     as their key, shown through ``value_labels``. ``hook``, a
     ``hook_health.HookHealth``, adds a first row saying whether the
-    config snapshot hook is running."""
+    config snapshot hook is running; ``statusline``, a
+    ``hook_health.statusline_check`` result, adds one for the statusline."""
     rows = []
     if hook is not None:
         rows.append(["snapshot_hook", "working" if hook.ok else "needs attention", hook.summary()])
+    if statusline is not None:
+        working, sentence = statusline
+        rows.append(["statusline", "working" if working else "needs attention", sentence])
     for field_def in dataclasses.fields(Diagnostics):
         value = getattr(diagnostics, field_def.name)
         if isinstance(value, dict):
@@ -2861,7 +2865,7 @@ def diagnostics_table(diagnostics: Diagnostics, hook=None) -> Table:
             read="Most should be zero or small. Large skipped or unreadable counts mean some usage is missing from the other tabs.",
             act="If unrecognised note types or unreadable lines are large, your Claude Code version may be newer than this tool.",
         ),
-        value_labels={"snapshot_hook": "Config snapshot hook"}
+        value_labels={"snapshot_hook": "Config snapshot hook", "statusline": "Statusline (usage limits)"}
         | {key: label for key, (label, _) in DIAGNOSTIC_LABELS.items()},
     )
 

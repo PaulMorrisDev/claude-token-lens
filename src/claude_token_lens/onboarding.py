@@ -412,6 +412,7 @@ def run_init(
     project: list[str] | None = None,
     project_family: str | None = None,
     repair_hook: bool = False,
+    connect_step: bool = False,
 ) -> int:
     """Run the whole ``init`` flow: detect, ask/derive, write
     ``config.toml``/``projects/<slug>.toml``, print the install step,
@@ -501,7 +502,11 @@ def run_init(
     project_path = save_project_config(config_dir, project_slug, project_config)
     stdout.write(f"Wrote {_relative_label(project_path, config_dir)}\n\n")
 
-    if no_install:
+    if connect_step:
+        # cli.py's connect step follows run_init: it shows the exact
+        # settings.json change and asks before writing it.
+        pass
+    elif no_install:
         stdout.write("Install step skipped (--no-install).\n\n")
     else:
         stdout.write(

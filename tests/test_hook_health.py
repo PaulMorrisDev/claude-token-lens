@@ -8,6 +8,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import sys
 from datetime import datetime, timezone
 
 import pytest
@@ -30,7 +31,7 @@ def _claude_dir(tmp_path, command=None, *, script=True):
     script_path.parent.mkdir(parents=True)
     if script:
         script_path.write_text("# hook\n", encoding="utf-8")
-    good = f'python "{script_path}"'
+    good = f'"{sys.executable}" "{script_path}"'
     settings = {
         "model": "opus",
         "hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": command or good}]}]},
@@ -187,3 +188,75 @@ def test_init_repair_hook_fixes_it(tmp_path):
     out = _run_init(config_dir, tmp_path, repair_hook=True)
     assert "Fixed. The previous settings.json is at" in out
     assert json.loads(settings_path.read_text(encoding="utf-8"))["hooks"]["SessionStart"][0]["hooks"][0]["command"] == good
+
+
+def test_missing_interpreter_is_found_and_fixed_with_full_paths(tmp_path):
+    # "py -3" with no Python launcher installed: the script exists, yet
+    # the hook never runs.
+    config_dir, _ = _claude_dir(tmp_path)
+    script = config_dir / "hooks" / "snapshot-config.py"
+    settings_path = config_dir.parent / "settings.json"
+    data = json.loads(settings_path.read_text(encoding="utf-8"))
+    data["hooks"]["SessionStart"][0]["hooks"][0]["command"] = f'no-such-python-launcher -3 "{script}"'
+    settings_path.write_text(json.dumps(data), encoding="utf-8")
+
+    health = hook_health.check(config_dir, now=NOW, python="/usr/bin/python3")
+    assert health.script_exists
+    assert not health.interpreter_found
+    assert not health.ok
+    assert "not installed or not on your PATH" in health.summary()
+    assert health.fixed_command == f'"/usr/bin/python3" "{script.resolve()}"'
+
+
+def test_percent_variable_is_flagged_and_replaced_by_the_full_path(tmp_path, monkeypatch):
+    # Git Bash, which Claude Code uses on Windows, passes %VAR% through
+    # unexpanded.
+    config_dir, _ = _claude_dir(tmp_path)
+    monkeypatch.setenv("TL_TEST_ROOT", str(config_dir))
+    settings_path = config_dir.parent / "settings.json"
+    data = json.loads(settings_path.read_text(encoding="utf-8"))
+    data["hooks"]["SessionStart"][0]["hooks"][0]["command"] = (
+        f'"{sys.executable}" "%TL_TEST_ROOT%{os.sep}hooks{os.sep}snapshot-config.py"'
+    )
+    settings_path.write_text(json.dumps(data), encoding="utf-8")
+
+    health = hook_health.check(config_dir, now=NOW)
+    assert health.percent_vars
+    assert not health.ok
+    assert "%VARIABLE%" in health.summary()
+    script = (config_dir / "hooks" / "snapshot-config.py").resolve()
+    assert health.fixed_command == f'"{sys.executable}" "{script}"'
+    hook_health.repair(health, now=NOW)
+    assert hook_health.check(config_dir, now=NOW).ok
+
+
+def _with_statusline(tmp_path, rows=()):
+    config_dir, _ = _claude_dir(tmp_path)
+    settings_path = config_dir.parent / "settings.json"
+    data = json.loads(settings_path.read_text(encoding="utf-8"))
+    data["statusLine"] = {"type": "command", "command": "python -m claude_token_lens.statusline"}
+    settings_path.write_text(json.dumps(data), encoding="utf-8")
+    lines = ["logged_at,session_id,window,used_percentage,resets_at,source"] + list(rows)
+    (config_dir / "usage-log.csv").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return config_dir
+
+
+def test_statusline_check_explains_desktop_only_use(tmp_path):
+    config_dir = _with_statusline(tmp_path)
+    working, sentence = hook_health.statusline_check(config_dir, {"claude-desktop": {"count": 5, "last_ts": "2026-09-22"}})
+    assert not working
+    assert "All 5 of your sessions ran outside a terminal" in sentence
+
+
+def test_statusline_check_working_and_stale(tmp_path):
+    config_dir = _with_statusline(tmp_path, ["2026-09-20T10:00:00Z,s1,five_hour,12,,statusline"])
+    working, sentence = hook_health.statusline_check(config_dir, {"cli": {"count": 2, "last_ts": "2026-09-20T09:00:00Z"}})
+    assert working and "2026-09-20 10:00" in sentence
+    working, sentence = hook_health.statusline_check(config_dir, {"cli": {"count": 2, "last_ts": "2026-09-22T09:00:00Z"}})
+    assert not working and "terminal sessions ran later" in sentence
+
+
+def test_statusline_check_not_set_up(tmp_path):
+    config_dir, _ = _claude_dir(tmp_path)
+    working, sentence = hook_health.statusline_check(config_dir, {})
+    assert not working and "init --connect" in sentence

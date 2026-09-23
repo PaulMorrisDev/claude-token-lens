@@ -1038,7 +1038,8 @@ def make_handler(
             return err
         model = _get_report_model(*window)
         hook = hook_health.check(options.config_dir)
-        return _ok(to_jsonable(helptext.diagnostics_table(model.diagnostics, hook=hook)))
+        statusline = hook_health.statusline_check(options.config_dir, store.entrypoint_counts())
+        return _ok(to_jsonable(helptext.diagnostics_table(model.diagnostics, hook=hook, statusline=statusline)))
 
     def route_recommendations(store, query, body):
         window, err = _window_query(query)

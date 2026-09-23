@@ -793,7 +793,7 @@ def render_status(payload: dict, now: datetime, effective_ttl_s: int | None) -> 
 # -- install fragment -------------------------------------------------------
 
 
-def print_install_fragment(pyz_path: Path | None = None) -> str:
+def print_install_fragment(pyz_path: Path | None = None, python: str | None = None) -> str:
     """The ``settings.json`` ``statusLine`` fragment to paste in, for
     Windows and POSIX (named ``print_...`` per the WP6 brief; like
     ``hooks/snapshot-config.py``'s ``hook_fragment_text``, it returns the
@@ -814,18 +814,11 @@ def print_install_fragment(pyz_path: Path | None = None) -> str:
     ``[exe, str(pyz_path), *args]`` shape
     ``installer._serve_argv`` already uses for the logon-service action.
     Otherwise (an ordinary installed package/checkout) the fragment keeps
-    the original ``-m`` form.
+    the original ``-m`` form. Either way the block for this platform
+    names ``python`` (default: this interpreter) by its full path; the
+    ``py -3``/``python3`` forms remain only in the other platform's block.
     """
-    if pyz_path is None:
-        pyz_path = installer_mod.detect_pyz_path()
-
-    if pyz_path is not None:
-        abs_pyz = str(Path(pyz_path).resolve())
-        windows_command = f'py -3 "{abs_pyz}" statusline'
-        posix_command = f'python3 "{abs_pyz}" statusline'
-    else:
-        windows_command = "py -3 -m claude_token_lens.statusline"
-        posix_command = "python3 -m claude_token_lens.statusline"
+    windows_command, posix_command = _install_commands(pyz_path, python)
 
     def _fragment(command: str) -> str:
         return json.dumps({"statusLine": {"type": "command", "command": command}}, indent=2)
@@ -840,6 +833,28 @@ def print_install_fragment(pyz_path: Path | None = None) -> str:
         "POSIX (Linux/macOS):\n"
         f"{_fragment(posix_command)}"
     )
+
+
+def install_command(pyz_path: Path | None = None, python: str | None = None) -> str:
+    """The ``statusLine`` command for the platform this runs on."""
+    windows_command, posix_command = _install_commands(pyz_path, python)
+    return windows_command if os.name == "nt" else posix_command
+
+
+def _install_commands(pyz_path: Path | None, python: str | None) -> tuple[str, str]:
+    """(Windows, POSIX) commands. The one for this platform names
+    ``python`` (default: this interpreter) by its full path, so it works
+    without the ``py`` launcher or a ``python3`` on PATH."""
+    if pyz_path is None:
+        pyz_path = installer_mod.detect_pyz_path()
+    exe = f'"{python or sys.executable}"'
+    windows_exe = exe if os.name == "nt" else "py -3"
+    posix_exe = exe if os.name != "nt" else "python3"
+
+    if pyz_path is not None:
+        abs_pyz = str(Path(pyz_path).resolve())
+        return f'{windows_exe} "{abs_pyz}" statusline', f'{posix_exe} "{abs_pyz}" statusline'
+    return f"{windows_exe} -m claude_token_lens.statusline", f"{posix_exe} -m claude_token_lens.statusline"
 
 
 # -- context-window trailing columns (S1-context-budget) -------------------

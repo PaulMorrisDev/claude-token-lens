@@ -1193,6 +1193,16 @@ class Store:
             "total_tokens": row["total_tokens"],
         }
 
+    def entrypoint_counts(self) -> dict[str, dict]:
+        """Sessions per entrypoint (``cli``, ``claude-desktop``, ...),
+        each with its count and newest ``last_ts``: where you run Claude
+        Code, which decides whether a statusline can run at all."""
+        rows = self._connection().execute(
+            "SELECT COALESCE(entrypoint, '') AS entrypoint, COUNT(*) AS n, MAX(last_ts) AS last_ts "
+            "FROM sessions GROUP BY 1"
+        ).fetchall()
+        return {row["entrypoint"]: {"count": row["n"], "last_ts": row["last_ts"]} for row in rows}
+
     def sessions(self, *, limit: int = 50, offset: int = 0) -> list[dict]:
         """The most recent ``limit`` sessions (by ``first_ts`` descending),
         one summary dict each — no transcript paths."""
