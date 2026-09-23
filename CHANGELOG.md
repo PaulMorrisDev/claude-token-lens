@@ -8,8 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 After updating, the first dashboard start re-reads every transcript (a
-few minutes): `PARSER_VERSION` bumped to 13 to pick up each reply's
-fast-mode flag.
+few minutes): `PARSER_VERSION` bumped to 14 to pick up each reply's
+fast-mode flag and the fuller edit records below.
 
 ### Added
 
@@ -55,6 +55,17 @@ fast-mode flag.
 - `serve --store PATH` puts the dashboard's database somewhere other
   than `<config-dir>/service.db`, so a second copy (a dev checkout) can
   run beside the logon service without sharing it.
+- **Edits made through a shell command now count.** The quality
+  signals (edits, files edited, edited again, retried on a larger model)
+  saw only Edit, Write and NotebookEdit. They now also see MultiEdit and
+  the files a Bash or PowerShell command writes with content it
+  authored: `sed -i`, `perl -i`, `Set-Content`/`Add-Content`, a heredoc
+  or `echo` redirected to a file. A program's output captured to a log
+  (`npm test > test.log`) isn't an edit. Relative paths resolve against
+  the directory the command ran in, and Git Bash's `/c/` form matches
+  `C:\`, so the same file changed both ways counts once. Only a salted
+  hash of each path is kept, as before. An edit whose tool call failed
+  (the text to replace wasn't found, you declined it) no longer counts.
 
 ### Fixed
 

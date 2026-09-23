@@ -255,6 +255,20 @@ replies, tool calls and output tokens per run, edits per file, the
 share of output spent thinking, minutes and cost per run. A change in
 these is "higher" or "lower", not better or worse.
 
+**What counts as an edit.** A file changed with Edit, Write, MultiEdit
+or NotebookEdit, or written by a Bash or PowerShell command with
+content the command authored: an in-place `sed -i` or `perl -i`,
+`Set-Content`/`Add-Content`, `[IO.File]::WriteAllText` with an
+absolute path, or a redirection, `tee` or `Out-File` fed by `cat`
+(with a heredoc), `echo`, `printf`, `Get-Content`, a literal string or
+a here-string. A program's output captured to a file (`npm test >
+test.log`) is a log, not an edit, and paths holding a variable or a
+glob are skipped. A relative path is resolved against the directory the
+command ran in, so a file written by a shell command and the same file
+changed with Edit count as one. An edit tool call that failed isn't an
+edit; a shell command that was blocked or denied wrote nothing, but one
+that ran and then failed may have, so its files still count.
+
 **Where outcomes come from.** A background agent's task notification
 carries its task id and status (`completed`, `failed`, `stopped`); its
 transcript is `agent-<task id>.jsonl`, so the two join on the id. A
@@ -276,8 +290,7 @@ or the main session tidying a file afterwards, is often the plan, and
 counting them more than doubled the runs flagged on real history. A run
 started before the cheaper one ended is working alongside it, not
 retrying it. Nothing records why the agent was run
-again and edits made through a shell command aren't seen, so one retry
-is a sign and several are a pattern. Retries stay out of the setup
+again, so one retry is a sign and several are a pattern. Retries stay out of the setup
 comparisons, because the largest model can never be retried on a
 larger one and the test would favour it by construction. Instead, once
 a tenth or more of an agent's runs on a model (of those that edited

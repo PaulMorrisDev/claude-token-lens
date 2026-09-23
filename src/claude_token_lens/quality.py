@@ -55,9 +55,12 @@ the same session after this one's last reply, edited one of the files
 dispatched it judged the cheaper model's work not enough. A different
 agent type or the main session editing the file afterwards doesn't
 count (a reviewer after a writer is often the plan), nor does a run
-working alongside. Edits made through a shell command aren't seen, and
-nothing records why the file was edited again, so one retry is a sign
-and several are a pattern.
+working alongside. Nothing records why the file was edited again, so
+one retry is a sign and several are a pattern.
+
+An edit is a file changed with Edit, Write, MultiEdit or NotebookEdit,
+or written by a Bash or PowerShell command with content it authored
+(``Turn.edit_target_hashes``); a failed edit tool call isn't one.
 
 Retries stay out of the setup comparisons: the largest model can never
 be retried on a larger one, so the test would favour it by construction.
@@ -952,8 +955,11 @@ def build_section(runs: list[Run]) -> Section:
         f"(haiku, sonnet, opus, fable, smallest first), started after it ended, edited one of its files within "
         f"{RETRY_WINDOW.seconds // 3600} hours of its last reply, in the same session. Another agent type or the "
         "main session editing the file afterwards doesn't count, since a reviewer after a writer is often the plan. "
-        "Files are compared by salted hash, and edits made through a shell command aren't seen. Retries aren't part "
-        "of the setup comparisons: the largest model can never be retried on a larger one.",
+        "Files are compared by salted hash. Retries aren't part of the setup comparisons: the largest model can "
+        "never be retried on a larger one.",
+        "An edit is a file changed with Edit, Write, MultiEdit or NotebookEdit, or written by a shell command with "
+        "content it authored (sed -i, Set-Content, a heredoc redirected to a file); a program's output captured to "
+        "a log isn't one, and neither is an edit whose tool call failed.",
     ]
     return Section(
         key="quality",

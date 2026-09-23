@@ -242,9 +242,14 @@ Quality-signals addition (see ``quality.py`` for how these are used):
   path, a malformed command, an edit whose text wasn't found). Empty on
   a digest from before this field existed.
 - ``Turn.edit_target_hashes: tuple[str, ...] = ()`` -- the salted hashes
-  of this turn's Edit/Write/NotebookEdit targets only (a subset of
-  ``read_target_hashes``), so a file edited again later can be counted
-  as a re-edit without keeping any path.
+  of the files this turn edited: Edit/Write/MultiEdit/NotebookEdit
+  targets and the files its Bash/PowerShell commands wrote with content
+  they authored (``shell_writes.py``: ``sed -i``, ``Set-Content``, a
+  heredoc redirected to a file; not a program's output captured to a
+  log), so a file edited again later can be counted as a re-edit without
+  keeping any path. An edit whose tool call failed, or a shell command
+  that was blocked or denied, is left out (from parser version 14; before
+  that, Edit/Write/NotebookEdit targets only, failed or not).
 - ``Turn.human_correction: bool = False`` -- on the turn that follows a
   human message: whether that message looks like it corrects Claude
   ("that's wrong", "still broken", "why did you ..."). A yes/no from a
@@ -444,7 +449,7 @@ class Turn:
     tool_input_chars_by_tool: dict = field(default_factory=dict)
     #: Capture-improvements addition (see module docstring): salted
     #: HMAC-SHA256 hashes (16 hex chars each) of this turn's own
-    #: Read/Edit/Write/NotebookEdit target paths - never the paths
+    #: Read/Edit/Write/MultiEdit/NotebookEdit target paths - never the paths
     #: themselves. See ``parse.set_salt``/``parse.load_or_create_salt``.
     read_target_hashes: tuple[str, ...] = ()
     #: Capture-improvements addition (see module docstring): set on the
@@ -479,7 +484,7 @@ class Turn:
     #: docstring). The kind only, never the error text.
     tool_errors_by_kind: dict = field(default_factory=dict)
     #: Quality-signals addition (see module docstring): salted hashes of
-    #: Edit/Write/NotebookEdit targets only.
+    #: the files this turn edited, by edit tool or shell command.
     edit_target_hashes: tuple[str, ...] = ()
     #: Quality-signals addition (see module docstring): the preceding
     #: human message looks like a correction. Flag only.

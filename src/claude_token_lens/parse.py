@@ -114,6 +114,7 @@ import hashlib
 import hmac
 import json
 import os
+import posixpath
 import re
 import secrets
 import tempfile
@@ -123,6 +124,7 @@ from pathlib import Path
 
 from . import events as events_mod
 from . import jsonl
+from . import shell_writes
 from .model import Diagnostics, Event, EventKind, Turn, TranscriptMeta, TranscriptResult
 
 #: Tool names whose first ``input.command`` becomes a turn's ``cmd_prefix``.
@@ -144,16 +146,24 @@ _AGENT_TOOL_NAMES = ("Agent", "Task")
 
 #: Capture-improvements addition (A3): tool name -> the input key holding
 #: the read/write target path to hash (``Turn.read_target_hashes``).
-#: Deliberately a superset-compatible sibling of ``_EDIT_TOOL_PATH_KEYS``
-#: (adds ``Read``, drops ``MultiEdit`` which has no single top-level path
-#: key) rather than reusing it, since the two fields answer different
-#: questions (edit-location classification vs. read/write-target hashing).
+#: ``_EDIT_TOOL_PATH_KEYS`` plus ``Read``, kept as its own table since the
+#: two answer different questions (edit-location classification vs.
+#: read/write-target hashing).
 _READ_TARGET_PATH_KEYS = {
     "Read": "file_path",
     "Edit": "file_path",
     "Write": "file_path",
+    "MultiEdit": "file_path",
     "NotebookEdit": "notebook_path",
 }
+
+#: Error kinds (``_tool_error_kind``) meaning a shell command never ran, so
+#: the files it would have written weren't. A command that ran and exited
+#: non-zero may still have written them.
+_SHELL_NOT_RUN_KINDS = ("blocked", "denied")
+
+#: MSYS/Git Bash drive form (``/c/Dev/x``), mapped to ``c:/Dev/x``.
+_MSYS_DRIVE_RE = re.compile(r"^/([A-Za-z])(?=/|$)")
 
 _CMD_PREFIX_MAX_CHARS = 40
 
@@ -353,13 +363,16 @@ def load_or_create_salt(config_dir: str | Path | None = None) -> bytes:
 
 def _normalize_path_for_hash(path_value: str) -> str:
     """Normalise a tool_use target path before hashing, so the same real
-    location hashes the same way regardless of slash direction or case
-    (Windows paths are case-insensitive) — deliberately *not* resolving
-    against the filesystem (``Path.resolve()``), since this path may not
-    exist on this machine (e.g. a subagent transcript scrubbed for
-    fixtures) and a hash function must never raise on its input.
+    location hashes the same way regardless of slash direction, case
+    (Windows paths are case-insensitive), Git Bash's ``/c/`` drive form or
+    ``.``/``..`` segments (a shell command's relative path joined to its
+    directory) — deliberately *not* resolving against the filesystem
+    (``Path.resolve()``), since this path may not exist on this machine
+    (e.g. a subagent transcript scrubbed for fixtures) and a hash function
+    must never raise on its input.
     """
-    return path_value.replace("\\", "/").casefold()
+    normalized = _MSYS_DRIVE_RE.sub(r"\1:", path_value.replace("\\", "/"))
+    return posixpath.normpath(normalized).casefold()
 
 
 def _read_target_hash(path_value: str) -> str | None:
@@ -579,11 +592,19 @@ class _PendingTurn:
     tool_errors_by_tool: dict[str, int] = field(default_factory=dict)
     tool_errors_by_kind: dict[str, int] = field(default_factory=dict)
     edit_target_hashes: list[str] = field(default_factory=list)
+    #: tool_use id -> the hashes it added to ``edit_target_hashes``, so
+    #: ``_accumulate_tool_results`` can take back an edit that failed.
+    edit_hashes_by_tool_use: dict[str, list[str]] = field(default_factory=dict)
     #: Fast-mode addition (see model.py's ``Turn.speed`` docstring).
     speed: str | None = None
 
 
-def _merge_content_blocks(pending: _PendingTurn, content, tool_use_names: dict[str, str]) -> None:
+def _merge_content_blocks(
+    pending: _PendingTurn, content, tool_use_names: dict[str, str], cwd: str | None = None
+) -> None:
+    """Fold one line's tool_use blocks into ``pending``. ``cwd`` is the
+    line's own working directory, used only to resolve a shell command's
+    relative write targets before they are hashed."""
     if not isinstance(content, list):
         return
     tmpdir = tempfile.gettempdir().lower()
@@ -629,8 +650,9 @@ def _merge_content_blocks(pending: _PendingTurn, content, tool_use_names: dict[s
             pending.tool_input_chars_by_tool.get(name, 0) + input_chars
         )
 
-        # A3: hash Read/Edit/Write/NotebookEdit targets instead of ever
-        # storing the path itself.
+        # A3: hash Read/Edit/Write/MultiEdit/NotebookEdit targets, and the
+        # files a shell command writes, instead of ever storing the path.
+        edited: list[str] = []
         read_target_key = _READ_TARGET_PATH_KEYS.get(name)
         if read_target_key is not None:
             target_value = tool_input.get(read_target_key)
@@ -639,7 +661,18 @@ def _merge_content_blocks(pending: _PendingTurn, content, tool_use_names: dict[s
                 if hashed is not None:
                     pending.read_target_hashes.append(hashed)
                     if name in _EDIT_TOOL_PATH_KEYS:
-                        pending.edit_target_hashes.append(hashed)
+                        edited.append(hashed)
+        elif name in _SHELL_TOOL_NAMES and _SALT is not None:
+            command = tool_input.get("command")
+            if isinstance(command, str) and command:
+                for target in shell_writes.write_targets(
+                    command, powershell=name == "PowerShell", cwd=cwd if isinstance(cwd, str) else None
+                ):
+                    edited.append(path_hash(target, _SALT))
+        if edited:
+            pending.edit_target_hashes.extend(edited)
+            if isinstance(tool_use_id, str) and tool_use_id:
+                pending.edit_hashes_by_tool_use.setdefault(tool_use_id, []).extend(edited)
 
         if name == "Skill":
             skill_name = tool_input.get("skill")
@@ -687,7 +720,7 @@ def _new_pending(d: dict, tool_use_names: dict[str, str]) -> _PendingTurn:
     if isinstance(usage, dict):
         _apply_usage(pending, usage)
 
-    _merge_content_blocks(pending, message.get("content"), tool_use_names)
+    _merge_content_blocks(pending, message.get("content"), tool_use_names, d.get("cwd"))
     _merge_stop_reason(pending, message)
     return pending
 
@@ -777,7 +810,7 @@ def _merge_into_pending(pending: _PendingTurn, d: dict, tool_use_names: dict[str
     ):
         _apply_usage(pending, usage)
     content = message.get("content") if isinstance(message, dict) else None
-    _merge_content_blocks(pending, content, tool_use_names)
+    _merge_content_blocks(pending, content, tool_use_names, d.get("cwd"))
     _merge_stop_reason(pending, message)
 
 
@@ -887,6 +920,13 @@ def _accumulate_tool_results(
                 current.tool_errors_by_tool[name] = current.tool_errors_by_tool.get(name, 0) + 1
                 kind = _tool_error_kind(block.get("content"))
                 current.tool_errors_by_kind[kind] = current.tool_errors_by_kind.get(kind, 0) + 1
+                # A failed edit changed nothing, so it isn't an edit. A shell
+                # command that ran and failed may still have written its
+                # files; one that was blocked or denied didn't.
+                edited = current.edit_hashes_by_tool_use.pop(tool_use_id, None)
+                if edited and (name not in _SHELL_TOOL_NAMES or kind in _SHELL_NOT_RUN_KINDS):
+                    for hashed in edited:
+                        current.edit_target_hashes.remove(hashed)
 
 
 def _resolve_preceding_tool(previous_turn: Turn | None) -> tuple[str, str | None]:

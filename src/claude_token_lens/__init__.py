@@ -79,7 +79,14 @@ __version__ = "0.5.2"
 #: module docstring), which pricing.py needs to apply a model's fast-mode
 #: rate multiplier. A pre-13 digest has no ``speed`` recorded, so every
 #: transcript is re-parsed once to pick it up.
-PARSER_VERSION = 13
+#:
+#: Bumped to 14 by the edit-capture batch: ``Turn.edit_target_hashes`` now
+#: covers MultiEdit and the files a Bash or PowerShell command writes
+#: (``shell_writes.py``), drops edits whose tool call failed, and paths
+#: are normalised further before hashing (Git Bash's ``/c/`` form, ``.``
+#: and ``..``), so older digests undercount edits and can't match a file
+#: written by a shell command to the same file edited with Edit.
+PARSER_VERSION = 14
 
 #: Bump when the model.py contract changes in a way that invalidates the
 #: on-disk digest cache (see model.py's module docstring for the contract

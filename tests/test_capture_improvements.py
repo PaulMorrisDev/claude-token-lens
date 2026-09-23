@@ -259,7 +259,7 @@ def test_read_target_hash_never_contains_a_path_segment(tmp_path: Path):
         assert segment not in hashed
 
 
-def test_read_target_hashes_cover_read_edit_write_notebookedit_not_multiedit(tmp_path: Path):
+def test_read_target_hashes_cover_read_edit_write_multiedit_notebookedit(tmp_path: Path):
     parse.set_salt(b"d" * 32)
     lines = [
         turn_line(
@@ -276,10 +276,9 @@ def test_read_target_hashes_cover_read_edit_write_notebookedit_not_multiedit(tmp
     path = tmp_path / "session.jsonl"
     write_jsonl(path, lines)
     result = parse_transcript(path, TranscriptMeta(path=str(path)))
-    # Read, Edit, Write, NotebookEdit each hash their own target;
-    # MultiEdit isn't in _READ_TARGET_PATH_KEYS (no single top-level path
-    # key) and contributes nothing.
-    assert len(result.turns[0].read_target_hashes) == 4
+    # Each hashes its own target; all but Read are edits too.
+    assert len(result.turns[0].read_target_hashes) == 5
+    assert len(result.turns[0].edit_target_hashes) == 4
 
 
 def test_load_or_create_salt_persists_across_calls(tmp_path: Path):

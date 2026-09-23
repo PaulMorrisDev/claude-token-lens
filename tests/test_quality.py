@@ -76,6 +76,54 @@ def test_turns_keep_tool_calls_errors_edits_and_stop_reason(tmp_path):
     assert result.turns[-1].stop_reason == "end_turn"
 
 
+def _edits(tmp_path, blocks, results, cwd="C:\\Dev\\app"):
+    result = _parse(tmp_path, [
+        user_str_line("go", timestamp=_ts(0)),
+        _reply(1, *blocks, stop_reason="tool_use", cwd=cwd),
+        user_block_line(results, timestamp=_ts(2)),
+        _reply(3, stop_reason="end_turn"),
+    ])
+    return next(t for t in result.turns if t.tool_use_ids)
+
+
+def test_a_file_written_by_a_shell_command_counts_as_the_same_edit_as_edit(tmp_path):
+    turn = _edits(tmp_path, [
+        tool_use_block("Edit", "t1", {"file_path": "C:\\Dev\\App\\src\\a.py"}),
+        tool_use_block("Bash", "t2", {"command": "cat > src/a.py <<'EOF'\nx = 1\nEOF"}),
+        tool_use_block("Bash", "t3", {"command": "sed -i 's/1/2/' /c/Dev/app/src/./a.py"}),
+        tool_use_block("PowerShell", "t4", {"command": "Set-Content -Path ..\\app\\src\\a.py -Value 'y'"}),
+        tool_use_block("MultiEdit", "t5", {"file_path": "C:/Dev/app/src/a.py", "edits": []}),
+        tool_use_block("Bash", "t6", {"command": "npm test > test.log"}),
+    ], [tool_result_block(f"t{i}", "ok") for i in range(1, 7)])
+    assert len(turn.edit_target_hashes) == 5
+    assert len(set(turn.edit_target_hashes)) == 1
+    assert "a.py" not in repr((turn.edit_target_hashes, turn.read_target_hashes))
+
+
+def test_an_edit_that_failed_is_not_an_edit(tmp_path):
+    turn = _edits(tmp_path, [
+        tool_use_block("Edit", "t1", {"file_path": "C:/Dev/app/a.py"}),
+        tool_use_block("Write", "t2", {"file_path": "C:/Dev/app/b.py"}),
+        tool_use_block("Bash", "t3", {"command": "echo x > c.txt"}),
+        tool_use_block("Bash", "t4", {"command": "echo x > d.txt && false"}),
+    ], [
+        tool_result_block("t1", "<tool_use_error>String to replace not found in file.</tool_use_error>",
+                          is_error=True),
+        tool_result_block("t2", "ok"),
+        tool_result_block("t3", "The user doesn't want to proceed with this tool use.", is_error=True),
+        # The command ran; its file was written before it failed.
+        tool_result_block("t4", "Exit code 1", is_error=True),
+    ])
+    assert len(turn.edit_target_hashes) == 2
+    assert len(turn.read_target_hashes) == 2  # the failed Edit still read its file
+
+
+def test_a_relative_shell_write_with_no_working_directory_is_not_recorded(tmp_path):
+    turn = _edits(tmp_path, [tool_use_block("Bash", "t1", {"command": "echo x > c.txt"})],
+                  [tool_result_block("t1", "ok")], cwd=None)
+    assert turn.edit_target_hashes == ()
+
+
 @pytest.mark.parametrize("text, expected", [
     ("that is wrong, the test still fails", True),
     ("It still doesnt work", True),
