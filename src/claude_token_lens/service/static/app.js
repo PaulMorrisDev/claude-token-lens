@@ -2741,7 +2741,19 @@
       var kind = (table.row_kinds || {})[row.item] || "str";
       var card = el("div", { class: "stat-card" });
       card.appendChild(el("div", { class: "stat-label", text: labelFor(table, row.item) }));
-      card.appendChild(el("div", { class: "stat-value", text: formatCell(row.value, kind, state.currency) }));
+      // UX-1: a money card follows the billing mode (money() mirrors
+      // Units.money); the list-price figure goes underneath when the
+      // headline is a share of the weekly limit, and "list-price
+      // equivalent" does when there's no share to show.
+      var amount = kind === "money" ? money(Number(row.value)) : null;
+      var headline = amount ? amount.primary : formatCell(row.value, kind, state.currency);
+      var underneath = amount ? amount.secondary : "";
+      if (amount && !underneath && / list-price equivalent$/.test(headline)) {
+        headline = headline.replace(/ list-price equivalent$/, "");
+        underneath = "list-price equivalent";
+      }
+      card.appendChild(el("div", { class: "stat-value", text: headline }));
+      if (underneath) card.appendChild(el("div", { class: "stat-hint", text: underneath }));
       card.appendChild(el("div", { text: row.what || "" }));
       if (row.detail) card.appendChild(el("div", { class: "stat-hint", text: row.detail }));
       cards.appendChild(card);

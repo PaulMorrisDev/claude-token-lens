@@ -191,6 +191,19 @@ def test_habits_playbook_caps_featured_cards_and_collapses_the_rest() -> None:
     assert "appendHabitCards" in body
 
 
+def test_habits_digest_money_cards_follow_the_billing_mode() -> None:
+    """UX-1 (F1): the Work habits digest's money cards go through
+    ``money()`` (the ``Units.money`` mirror), not a bare "X USD" from
+    ``formatCell``, so a Pro or Max plan sees a weekly-limit share or a
+    list-price equivalent instead of plain dollars."""
+    app_js = _static_text("app.js")
+    fn_match = re.search(r"function renderHabitsDigest\([\s\S]*?\n  \}\n", app_js)
+    assert fn_match, "app.js no longer defines renderHabitsDigest"
+    body = fn_match.group(0)
+    assert 'kind === "money" ? money(' in body
+    assert "amount.secondary" in body and "list-price equivalent" in body
+
+
 @pytest.mark.parametrize("name", STATIC_FILES)
 def test_no_emoji_code_points(name: str) -> None:
     text = _static_text(name)
