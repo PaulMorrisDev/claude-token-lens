@@ -1,10 +1,13 @@
 # Security policy
 
 claude-token-lens is a local analytics tool. It reads the files Claude
-Code writes; it never calls Claude or any other remote service, and
-uses none of your tokens. This document is a sign-off checklist for a
-corporate security review, written to be verifiable against the code
-rather than taken on trust.
+Code writes; it never calls Claude or any other remote service. It uses
+none of your tokens by default, and none at all unless you opt in to
+the optional **metrics capture** feature (see below), which has Claude
+itself read a short note and write a one-line tag inside your own
+Claude Code session — this tool still never calls Claude directly. This
+document is a sign-off checklist for a corporate security review,
+written to be verifiable against the code rather than taken on trust.
 
 **Status note:** every guarantee below describes what the *current*
 code does. This includes the `claude-token-lens serve` service
@@ -69,13 +72,18 @@ Everything this tool writes by itself lives under `<config-dir>`
 (default `~/.claude/token-lens`, or `$CLAUDE_CONFIG_DIR/token-lens`):
 `config.toml`, `projects/`, `baselines/`, `snapshots/`, `cache/`,
 `usage-log.csv`, `statusline-keys.json`, `salt`, `service.db`,
-`hooks/snapshot-config.py`, `profiles/`, `backups/` and
-`active-profile`. The only other files it writes are output files you
-name on the command line: for example `--out` (`export`,
-`monthly-report`, `scrub-fixture`), `report --html PATH` or `serve
---monthly-report DIR`.
+`hooks/snapshot-config.py`, `profiles/`, `backups/`,
+`active-profile`, and, once metrics capture has been turned on at
+least once: `hooks/capture-hook.py`, `hooks/capture-catalogue.json`
+(a copy of the packaged metric catalogue the hook reads),
+`capture-log.jsonl` (one JSON line per `[capture]` change — the level,
+sample, `until` etc. you set, never anything from a transcript) and
+`signals/YYYY-MM.jsonl` (see "Metrics capture" below). The only other
+files it writes are output files you name on the command line: for
+example `--out` (`export`, `monthly-report`, `scrub-fixture`), `report
+--html PATH` or `serve --monthly-report DIR`.
 
-Four commands change something outside `<config-dir>`. Each prints the
+Five commands change something outside `<config-dir>`. Each prints the
 change before making it:
 
 - **`init`** (connect step): adds a SessionStart hook and, if you have
@@ -83,7 +91,24 @@ change before making it:
   `<config-dir>`. It asks first (default no), or does it without asking
   with `--connect`. `init --repair-hook` rewrites only a broken hook
   command. Both copy the file to `settings.json.bak-<UTC time>` beside
-  it before writing.
+  it before writing. `init`'s later metrics-capture and feedback
+  questions make the same kind of change — see the next bullet.
+- **`capture`** (also reachable through `init`'s metrics-capture and
+  feedback questions): `on`, `level`, `enable`/`disable` and `connect`
+  add the `settings.json` hook entries the chosen metrics need (never
+  more than they need); `off` leaves them in place, inert; `remove`
+  takes them out. Every settings.json change is shown as a diff and
+  made only after a yes (or `--yes`/`--connect`/answering yes to
+  `init`'s question), with the same `settings.json.bak-<UTC time>` copy
+  first. `feedback on|off` and `brief on|off` instead add or remove
+  `~/.claude/skills/tl-feedback/SKILL.md` or `.../tl-brief/SKILL.md`
+  (`--claude-root`'s folder, not `<config-dir>`) — the file (or diff, on
+  an update) is shown in full and written only after a yes; a
+  `SKILL.md` this tool didn't write is left alone rather than
+  overwritten. `[capture]` in `config.toml` itself is written without
+  asking (it is this tool's own file), but only after the same
+  token-cost warning `capture on`/`init` already print. See "Metrics
+  capture" below.
 - **`install-service`** (and `init`'s last step, when you say yes):
   registers `serve` to start at logon. On Windows that is a Scheduled
   Task (`-RunLevel Limited`, no file written); on Linux it writes
@@ -91,11 +116,14 @@ change before making it:
   `~/Library/LaunchAgents/com.claude-token-lens.plist`. `--dry-run`
   prints the plan and does nothing. `uninstall-service` removes it. See
   [docs/deploy.md](docs/deploy.md).
-- **`uninstall`**: removes this tool's hook and statusline from
-  `settings.json` (after the same `.bak-` copy), removes the logon
-  service, and, only with the matching flags, reverts applied changes
-  (`--revert-changes`) and deletes `<config-dir>` (`--delete-data`).
-  It asks before each step unless you pass `--yes`.
+- **`uninstall`**: removes this tool's hooks (including the capture
+  ones) and statusline from `settings.json` (after the same `.bak-`
+  copy), removes the `/tl-feedback`/`/tl-brief` skill files (each shown
+  and asked separately), removes the logon service, and, only with the
+  matching flags, reverts applied changes (`--revert-changes`) and
+  deletes `<config-dir>` (`--delete-data`, which also removes the
+  capture files listed above). It asks before each step unless you pass
+  `--yes`.
 - **`apply`**: see "Applying a profile" below.
 
 Running processes: `install-service`, `uninstall-service`,
@@ -243,10 +271,95 @@ backups stay under `<config-dir>/backups/` until you delete that folder
 place). Full detail:
 [docs/profiles.md#applying-a-profile](docs/profiles.md#applying-a-profile).
 
+## Metrics capture
+
+**Off by default, and reversible.** `init`'s last-but-one question and
+`claude-token-lens capture on|level` are the only ways this turns on;
+`capture off` (or letting the default 14-day time-box run out — see
+[docs/onboarding.md](docs/onboarding.md)) turns it off again without
+removing the settings.json hook entries or the `[capture]` config, so
+turning it back on needs no re-asking of the settings.json/skill
+questions. `capture remove` takes the hook entries back out.
+
+**It uses your tokens, and only while it's on.** Each metric it adds
+makes Claude read one short note and end its reply (or a subagent's
+final report) with one line of closed-vocabulary tags, e.g. `[tl:
+task=bugfix brief=clear]`; `init` and `capture on` print a token-cost
+estimate from your own history before you confirm it (see
+[docs/onboarding.md](docs/onboarding.md) for the exact wording). With
+capture off, none of this happens — Claude Code runs exactly as it does
+without this tool installed.
+
+**No free text is ever kept.** `capture_tags.py` reads only the last
+`TAIL_SCAN_CHARS` (480) characters of a reply, only when the tags are
+the very last thing in it, and checks every key and value against the
+closed vocabularies in `capture_catalogue.py`; anything Claude wrote in
+its own words — an unknown key, an unknown word, a value that doesn't
+match — is dropped, never stored. The one exception is
+`skill=would-help:<name>`, and even that survives only when `<name>`
+matches a skill the same transcript already listed or invoked, not
+whatever string Claude wrote. `/tl-feedback`'s free-text answer (if you
+give one) is read only to check it for question marks/negation, the
+same shape-only treatment `events._CORRECTION_RE` gives your own
+messages elsewhere (see "What is stored" above) — the text itself is
+never kept.
+
+**Signals are salted, like everything else here.** The free signals
+(session end reason, how long you waited before answering a
+notification or a permission prompt) are logged to
+`<config-dir>/signals/YYYY-MM.jsonl` keyed by
+`hmac.new(salt, session_id.encode("utf-8"), hashlib.sha256).hexdigest()[:16]`
+(`signals.session_hash`) — the same reused `<config-dir>/salt` file
+described under "What is stored" above, not a second salt — and
+`test_nothing_is_logged_without_the_salt` (`tests/test_capture_signals.py`)
+asserts nothing is written before a salt exists.
+
+**Hook timing.** The SessionStart and SubagentStart note hooks, and the
+SessionEnd signal hook, run in the foreground (Claude waits for them,
+capped at `CAPTURE_TIMEOUT_S` = 5 seconds) because Claude Code ignores
+what a background hook prints and the note has to reach the
+transcript. At the Deep level, the PostToolUse hook that notes an
+unusually large result or a web call (matcher
+`Bash|Read|Grep|Glob|WebFetch|WebSearch|mcp__.*`) is foreground too, for
+the same reason, adding on the order of 0.1 seconds to a matching tool
+call; at every other level nothing is registered on PostToolUse at all.
+The two free signal hooks, Notification and PermissionRequest, run
+asynchronously (in the background) since nothing needs to read what
+they print.
+
+**Files.** See "What is written, and where" above for
+`hooks/capture-hook.py`, `hooks/capture-catalogue.json`,
+`capture-log.jsonl` and `signals/`, and the `capture` bullet there for
+how the settings.json hook entries and the `tl-feedback`/`tl-brief`
+skill files under `~/.claude/skills/` are added (diff or full text,
+asked, backed up) and removed.
+
+**The dashboard's one write into this.** `POST /api/capture` (see
+"What the dashboard can change" below) is the only way the local
+`serve` UI changes capture settings, and it can only ever change the
+`[capture]` table of Token Lens's *own* `config.toml` — never
+`settings.json`, never a skill file. It is refused (`403`) on anything
+but a loopback request, on top of the DNS-rebinding and cross-site
+checks every other `POST` route gets (see "What a web page can and
+can't do to the service" below); a config error comes back as `409`
+with the equivalent `claude-token-lens capture ...` command to run
+yourself instead (`service/api.py`'s `route_capture_post`).
+
+**Tested.** Besides the tests already named above,
+`tests/test_capture_signals.py` (`test_each_signal_is_one_line_of_closed_words`,
+`test_anything_outside_the_word_lists_is_logged_as_other`,
+`test_nothing_is_logged_without_the_salt`, `test_nothing_is_logged_when_capture_or_the_metric_is_off`),
+`tests/test_capture_parse.py` and `tests/test_privacy.py` all exercise
+this feature's output against the same "no free text, no path, no raw
+session id" checks the rest of this document describes.
+
 ## No outbound network calls
 
-The tool never calls Claude, Anthropic or any other remote service,
-and uses none of your tokens. Outside `src/claude_token_lens/service/`,
+The tool never calls Claude, Anthropic or any other remote service on
+its own, and uses none of your tokens unless you turn on metrics
+capture, which spends tokens inside your own Claude Code session (never
+a call this tool makes itself) — see "Metrics capture" above. Outside
+`src/claude_token_lens/service/`,
 one function imports a networking library: after `install-service` (or
 `init`'s service step) registers the service, `cli.py` makes one `GET
 /api/health` request to the address and port it just registered
@@ -329,10 +442,14 @@ recommendation or profile gives you a prompt to paste into Claude Code
 (which asks your permission before editing anything under `.claude`)
 and a `claude-token-lens apply ... --dry-run` command to run yourself.
 The service's few write routes touch only its own files: session tags
-(`mode`/`purpose`) in the store, and user profiles under
+(`mode`/`purpose`) in the store, user profiles under
 `<config-dir>/profiles/` (`POST /api/profiles`, and `POST
 /api/profiles/from-current`, which saves the allowlisted keys of the
-latest config snapshot there). Both refuse to overwrite an existing
+latest config snapshot there), and the `[capture]` table of Token
+Lens's own `config.toml` (`POST /api/capture` — see "Metrics capture"
+above; it is the one dashboard route that can turn metrics capture on,
+change its level, or turn it off, and it never touches `settings.json`
+or a skill file). Profile writes refuse to overwrite an existing
 profile unless asked to with `?replace=1`, and neither can create or
 change a shipped catalogue profile. `POST /api/whatif` only works out
 an estimate and writes nothing.

@@ -25,8 +25,12 @@ The last question, whether to turn on metrics capture, is
 :func:`ask_capture_level`: it warns that capture uses tokens and shows
 what each level would have cost, and ``cli.py``'s
 ``_cmd_init_capture_step`` saves the answer and adds the hook entries it
-needs, after showing the change and asking. Then :func:`ask_feedback`
-offers the ``/tl-feedback`` skill and its status-line reminder.
+needs, after showing the change and asking. When a level goes on,
+:func:`ask_capture_until` follows with a second question: a default
+time-box (:data:`DEFAULT_CAPTURE_TIMEBOX_DAYS` days) so capture doesn't
+run on forever unnoticed, or "no limit" if asked for. Then
+:func:`ask_feedback` offers the ``/tl-feedback`` skill and its
+status-line reminder.
 """
 
 from __future__ import annotations
@@ -35,7 +39,7 @@ import json
 import os
 import sys
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import IO
 
@@ -61,6 +65,8 @@ __all__ = [
     "gather_answers",
     "capture_answer",
     "ask_capture_level",
+    "capture_no_limit_answer",
+    "ask_capture_until",
     "ask_feedback",
     "feedback_answer",
     "run_init",
@@ -69,6 +75,12 @@ __all__ = [
 #: Default onboarding capture window length in days, when neither the
 #: answers file nor an existing config.toml names one.
 DEFAULT_CAPTURE_WINDOW_DAYS = 7
+
+#: Default length of the metrics-capture time-box :func:`ask_capture_until`
+#: offers when a level is turned on: capture switches itself off this many
+#: days after ``now`` unless the user says otherwise, so it can't run
+#: forever unnoticed. The same length ``capture on --for 14d`` would give.
+DEFAULT_CAPTURE_TIMEBOX_DAYS = 14
 
 _TRUE_STRINGS = frozenset({"y", "yes", "true", "1", "on"})
 
@@ -498,6 +510,79 @@ def ask_capture_level(
     )
     word = raw.strip().lower()
     return _CAPTURE_WORDS.get(word, word), notes
+
+
+def capture_no_limit_answer(answers_path: str | Path | None = None, preset: bool | None = None) -> bool | None:
+    """The time-box question's answer given without asking:
+    ``--capture-no-limit`` (``preset``), else the answers file's
+    ``capture_no_limit`` key, else ``None`` (not answered -- ask, or
+    under ``--non-interactive``, leave today's ``until`` as it is)."""
+    if preset is not None:
+        return preset
+    if answers_path is None:
+        return None
+    raw = load_answers_file(answers_path).get("capture_no_limit")
+    if raw is None:
+        return None
+    return raw if isinstance(raw, bool) else str(raw).strip().lower() in _TRUE_STRINGS
+
+
+def ask_capture_until(
+    *,
+    now: datetime,
+    preset: bool | None = None,
+    answers_path: str | Path | None = None,
+    non_interactive: bool = False,
+    stdin: IO[str] = sys.stdin,
+    stdout: IO[str] = sys.stdout,
+) -> tuple[str | None, list[str]]:
+    """After :func:`ask_capture_level` turns a level on: offers a
+    time-box (:data:`DEFAULT_CAPTURE_TIMEBOX_DAYS` days from ``now``, by
+    default) so capture doesn't run forever unnoticed, reusing the same
+    ISO-8601 ``until`` :func:`~claude_token_lens.config.set_capture` and
+    ``capture on --for``/``--until`` already understand.
+
+    ``preset`` (``--capture-no-limit``) or the answers file's
+    ``capture_no_limit`` key answers it without asking; when true,
+    capture gets no time-box at all. Under ``--non-interactive`` with
+    neither, today's ``until`` is left exactly as it is -- an existing
+    ``--capture-level``/``capture_level`` answer must not suddenly gain
+    a surprise end date it never had before this question existed, the
+    same "adding a flag never changes an existing non-interactive run's
+    behaviour" rule :func:`ask_capture_level`/:func:`ask_feedback`
+    already follow -- and a note says so.
+
+    Returns ``(until, notes)``: ``until`` is an ISO-8601 time, ``""``
+    for an explicit "no limit", or ``None`` (leave ``until`` as it is)
+    only in that ``--non-interactive``-with-no-answer case.
+    """
+    notes: list[str] = []
+    given = capture_no_limit_answer(answers_path, preset)
+    if given is None and non_interactive:
+        notes.append(
+            "capture_no_limit: not given in --answers; today's time limit (if any) is left as it is "
+            "('claude-token-lens capture on --for 30d' sets or changes one)"
+        )
+        return None, notes
+    until = (now + timedelta(days=DEFAULT_CAPTURE_TIMEBOX_DAYS)).isoformat(timespec="seconds")
+    if given is None:
+        stdout.write(
+            "\nMetrics capture will switch itself off on "
+            f"{until[:16].replace('T', ' ')} UTC ({DEFAULT_CAPTURE_TIMEBOX_DAYS} days from now) unless you say "
+            "otherwise. Keep it on longer with 'claude-token-lens capture on --for 30d', or turn off the time "
+            "limit below so it runs until you switch it off.\n"
+        )
+    no_limit = _ask_bool(
+        "capture_no_limit",
+        "Turn off that time limit (capture then runs until you switch it off)",
+        False,
+        answers_data={"capture_no_limit": given} if given is not None else None,
+        non_interactive=non_interactive,
+        stdin=stdin,
+        stdout=stdout,
+        notes=notes,
+    )
+    return ("" if no_limit else until), notes
 
 
 FEEDBACK_INTRO = (
