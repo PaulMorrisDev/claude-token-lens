@@ -8,13 +8,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 After updating, the first dashboard start re-reads every transcript (a
-few minutes): `PARSER_VERSION` bumped to 18 (from 14) to pick up each
+few minutes): `PARSER_VERSION` bumped to 20 (from 14) to pick up each
 reply's fast-mode flag, the fuller edit records, the quality markers,
 the metrics-capture tags and notes below, the feedback tag, the
 capture-integrity fixes below (tag/reminder splitting, forged-tag and
 self-authorisation rejection, the coverage-denominator and per-call
-sizing corrections), and each hook call's event name, real duration and
-whether it was Token Lens's own (below).
+sizing corrections), each hook call's event name, real duration and
+whether it was Token Lens's own, the new parser signals (task and
+structured-output events, the `thinking_drop` cache signal, Claude
+Code's own `cost-state` totals, image and document sizing) and the
+sanitised `ignored_line_types` keys (below).
+
+Metrics capture's own displayed and estimated costs rise: a tag's cost
+now includes carrying it to the next compaction, and a session billed
+under the 1-hour cache TTL prices that write at the 1-hour rate instead
+of the 5-minute one (below).
 
 ### Added
 
@@ -383,6 +391,316 @@ whether it was Token Lens's own (below).
   the session "at most" ceiling used for a change you might only try
   once.
 
+- **`task_status` and `structured_output` attachment lines now get their
+  own event kinds** instead of falling into the generic attachment
+  catch-all: `task_status` keeps only a closed status word
+  (`running`/`completed`/`failed`/`stopped`/`cancelled`, else `other`)
+  and task type (`local_bash`/`local_agent`, else `other`) — never the
+  description, delta summary, output file path or shell command these
+  lines also carry in the real corpus; `structured_output` keeps only
+  the size of its payload, never the payload itself.
+- **A model dropping its own prior extended-thinking blocks
+  (`thinking_drop`, a prefix mismatch) now joins the `CACHE_SIGNAL`
+  family** as a likely cache-bust, alongside thinking being stripped —
+  only the closed drop reason and block/turn counts are kept.
+- **`cost-state` lines (Claude Code's own running cost total for the
+  session) are now read**, numbers only: `totalCostUSD`/
+  `hasUnknownModelCost` land on the session's own metadata as a check on
+  this tool's own pricing. `reconcile.claude_code_reported_costs(corpus,
+  pricing)` pairs each session's self-reported total against this
+  tool's own locally-priced total for the same session — the
+  `cost-state` half of a later cost-gap metric; no Admin CSV, no network
+  call, same as the rest of `reconcile.py`.
+- **A tool_result's or a human prompt's own image/document content
+  blocks are now sized** by Anthropic's documented Standard-tier
+  image-token rule (`tokens = ceil(width/28) * ceil(height/28)`, itself
+  capped at 1568 tokens) instead of silently counting as zero characters
+  — PNG, GIF, JPEG and WebP headers are read just far enough to get
+  their pixel dimensions, never decoded further. A block this parser
+  can't size confidently (a document, an oversized or high-resolution-
+  tier image, a malformed payload) is now counted as **unsized** rather
+  than guessed at (`unsized_blocks`, by block type).
+- **A line type no detection rule recognises at all is now counted
+  separately** from one this parser knows about and deliberately ignores
+  (`unknown_line_types`, apart from the existing `ignored_line_types`) —
+  the type name itself is sanitised to a closed, safe token shape (or
+  counted as `other`) before it ever reaches a diagnostic counter's key,
+  since it comes straight off the wire. Both new counters live on a new
+  `parser_notes` side channel next to `Diagnostics` (present only when
+  non-empty) and are rendered alongside it by every renderer.
+
+### Changed
+
+The report's performance work (building the work-habits facts once per
+report, and the cache-carry and compaction-replay costing off their
+linear paths) changes no figure: each is proven equal to the old
+algorithm to 1e-12 on fixtures and randomised sessions.
+
+- **A `[tl: ...]`/`[result: ...]` tag's cost now includes what it costs
+  to carry**, not only what it cost to write. Every reply after the one
+  that wrote a tag re-sends it as part of the prompt until the next
+  compaction — a cache write into the very next turn, then cache reads
+  after that — priced the same way a note's own carry already was
+  (`context_files._Carry`, one rate for the 5-minute TTL and one for the
+  1-hour TTL, chosen the same way `habits._Rates.write` already chose
+  between them). This lands in both places capture prices a tag: the
+  real, post-hoc `capture.usage()` (already carry-priced tags going into
+  this phase) and the pre-enable `capture.history()`/`capture.estimate()`
+  path used for "what would this level have cost you" projections, which
+  had priced a tag's own output only — found while bringing the two
+  paths to parity. The brief marker (`[spawn: ...]`/`[retry: ...]`) is
+  words inside the *spawning* tool call's own prompt, not a `[tl:]`/
+  `[result:]` tag, and stays priced at output cost alone in both paths,
+  unchanged.
+- **What capture's habits section is worth to `recommend()`, measured
+  rather than assumed.** `recommend()` now runs a second time per report
+  with the habits section stripped, and the capture section's
+  `habit_value` is the dollar total of recommendations that only exist,
+  or grew, with it — matched by `(id, agent_type, lever)`, the larger of
+  a pair taken (never summed) when the same lever is named through more
+  than one route, weighted down to the share of that total capture's own
+  evidence actually reported (vs. inferred from the transcript alone),
+  and normalised per week since capture was turned on. A recommendation
+  capture's evidence argued *against* making no longer inflates this
+  total — it's counted and shown as "held back N", a new row on the
+  Capture tab's own usage table, not folded into the savings figure.
+- **A per-metric worth table** on the Capture tab and in `docs/capture.md`
+  (generated, not hand-edited): each metric's own tokens a week set
+  against the dollar value of the decisions it feeds, so "is this metric
+  worth what it costs" has a direct answer per row instead of one lump
+  sum for the whole level. Hidden below `MIN_GROUP` (5) sessions with
+  notes, the same small-sample floor the rest of Work habits already
+  uses — it built a full row per metric off a single session before this.
+- **`spawn`, `detour` and `useful` (the web-result note and its
+  `PostToolUse` matcher) are retired from the metrics vocabulary** —
+  their evidence didn't hold up against what the transcript already
+  shows on its own. A `config.toml` written before this still loads (the
+  retired ids are accepted, just no longer asked for or shown). The
+  `explore_research` habit now reads `found=no|partial` off the *specific*
+  heavy-research cycles it's judging, rather than a corpus-wide count
+  disconnected from which cycles it's pricing.
+- **Effort index, brief clarity and contradiction flags.** Every rated
+  task now gets a percentile-ranked effort index; `d_level = 2·AUC−1`
+  scores how well self-reported difficulty actually separates the tasks
+  that needed more effort from the ones that didn't (an AUC/Mann-Whitney
+  rank-sum computed directly, no numpy/scipy dependency), with
+  `brief_clarity_index` its twin for reported brief clarity. Contradiction
+  flags (e.g. `check=none` reported on a task the transcript shows was
+  actually redone) feed `_self_report_calibration`, and `confidence()`
+  now downgrades a habit's confidence when its own self-reports don't
+  calibrate against what happened.
+- **`autoCompactWindow` swept per kind of task, not only per session or
+  agent type.** `compaction_sim_by_task` groups the existing window sweep
+  by the task metrics capture reported (`task=`), once at least 5 main
+  sessions have reported the same one — the same shape and recommendation
+  rule as the existing per-agent-type table. The tasks profile goal now
+  drafts that task's own `autoCompactWindow` from it
+  (`goals._task_compaction`):
+  - only when the task's best window saves at least 5%;
+  - only when the corpus-wide sweep says that window summarises no more
+    often than the compaction-window rule allows;
+  - ticked only once the task has 20 sessions behind it.
+- **A note written after a real compaction is priced and shown
+  separately.** The carried prefix a compaction would otherwise have
+  discounted it against is gone by then, so it costs more — the Work
+  habits capture table now shows `sessions_with_notes` and
+  `after_compact_notes`/`after_compact_cost` as their own line rather
+  than silently folding a higher rate into a scope's ordinary cost.
+- **`/api/whatif` and saved profiles now scale to a single kind of
+  task, not just the whole window.** A `?task=` query param (validated
+  against metrics capture's own closed task vocabulary) scales every
+  row down to that task's own share of the window, the same way the
+  tasks goal's own draft already did; a saved profile whose `for` names
+  a task scales the same way. `refreshTotal` passes it through so a
+  saved profile's live total stays scoped to the task it was drafted
+  for instead of pricing against the whole corpus.
+- **One veto-and-gate helper replaces four independent copies of the
+  same model-swap check** (audit finding F9: "model-switch gates differ
+  across goals, habits, model_swap and quality"). `model_gate.py` is
+  now the one place that checks whether the quality section found a
+  model swap did clearly worse (`quality.worse_models`), whether its
+  runs on that model were often retried on a larger one
+  (`quality.retried_models`, `quality.RETRIED_SHARE`), and whether
+  metrics capture said the agent's work needed a larger model or was
+  mostly hard (`habits.unfit_agents`) — used by the models goal, a
+  single task's candidate, the `model-tier` recommendation and the
+  quick-actions tip that explains why a cheaper model wasn't offered.
+  It also closes a gap the corpus-wide `unfit_agents` check never
+  covered: a *task's own* runs saying a larger model was needed even
+  when the agent isn't flagged unfit overall (the "larger model per
+  task" veto), and every check now shares one sample-size floor
+  (`ModelSwapThresholds.min_sessions`) instead of some running with no
+  floor at all.
+- **`habits_by_task` now reports main-session cost per task**, with
+  inheriting subagents' cost folded in rather than left out, and the
+  evidence wording corrected to match.
+- **Quality's redo-rate comparison between setups is now a proper ratio
+  test with a Holm correction across the setups compared**, instead of
+  a raw percentage-point difference. A setup only gets ticked as
+  "cheaper" in the tasks goal once it has at least 20 sessions of its
+  own (shown from 5, so there's something to look at sooner, but not
+  auto-ticked on a small sample); the comparison now also splits by
+  parser/schema version and by resolved effort and speed rather than
+  pooling runs that may not be comparable, adds a main-only cost
+  column, leaves each session's own last message out of the redo-rate
+  count (it can't have been redone yet), and adds a hard-work veto so a
+  setup that only looked cheaper because it skipped the hard tasks
+  doesn't get credit for it.
+- **The config snapshot hook now records the per-model `modelSettings`
+  effort, `maxEffortLevel` (a hard cap), and whether
+  `CLAUDE_CODE_EFFORT_LEVEL` is set** in the environment (a Boolean
+  only — never its value). An `effortLevel` override a profile goal
+  would otherwise suggest is now marked "won't apply to `<model>`; use
+  `--effort`" when the snapshot shows that model has no per-model
+  effort setting to override.
+- **`fastMode` is now priced instead of ignored.** It's in the
+  settings allowlist; `pricing.py` tracks how many turns were actually
+  priced at a fast-mode rate versus standard, and the whatif engine
+  reprices fast-mode turns at standard rates when asked what turning it
+  off would cost (fidelity `simulated`) — fast mode is a documented
+  per-model price premium (2x list price), not free.
+- **The profile catalogue's `for` lists mixed purposes and tasks, and
+  the `ops` task (metrics capture's own closed vocabulary) had no
+  catalogue profile at all** (F11). `workflow-ultracode` — scripted,
+  multi-step automation and maintenance — is now also `ops`'s starting
+  point; `classify.py`'s own comment notes `ops` spans several
+  purposes, so this is the closest fit of the seven catalogue shapes
+  rather than a clean 1:1 match. *Scoped down from the plan's fuller
+  ask (splitting the catalogue's `for` field itself into separate
+  `tasks`/`runs` lists): that's a schema-level change touching
+  `schema.py` validation, `api.py` routes and `app.js` rendering well
+  beyond this fix, so only the concrete `ops` mapping shipped here.*
+- **A goal's own "this catalogue profile is a starting point" note
+  could recommend a profile whose settings actually contradict the
+  draft sitting right above it** (F12). The note is now dropped
+  whenever the named catalogue profile's own settings disagree with a
+  main-session candidate the draft already proposed for the same key.
+- **`omitClaudeMd`'s estimated saving counted Managed policy CLAUDE.md
+  tokens, which still load regardless of the setting** (F13,
+  `fixes.py:46`). `agent_startup_breakdown` now breaks out a
+  `claude_md_managed` column, and the profile goal, the `spawn-
+  claude-md` recommendation and the whatif estimate all subtract it out
+  before pricing or deciding whether there's enough CLAUDE.md to offer
+  the lever at all.
+- **Thinking toggles on models where they do nothing** (F14, V26): you
+  can't turn thinking off on Opus 5.5 or the Fable models, so
+  `alwaysThinkingEnabled` and `MAX_THINKING_TOKENS` do nothing there.
+  The thinking goal's lower-effort candidate is still drafted on those
+  models, because effort still works (V25) and keeps the cache (V13).
+  Its evidence now says the toggles are no way round it, for any agent
+  type whose observed model is one of those. The model-swap table's
+  per-agent-type column supplies that model. The
+  `alwaysThinkingEnabled` diff wording and profiles.md say the same.
+- **`autoCompactWindow`'s whatif estimate is now held to the same
+  compactions-per-session floor the compaction-window rule and the
+  profile goals already use** (EST-P2): a window that would summarise
+  more than `CompactionSimThresholds().max_compactions_per_session`
+  times a session is no longer estimated, however cheap it simulates.
+- **`omitClaudeMd`'s whatif estimate only priced the one cache write
+  each spawn, not what carrying CLAUDE.md across the rest of that
+  spawn's turns costs afterwards** (EST-P10). It's now priced as the
+  greater of the write-only figure (kept as a floor) and the same
+  per-file carry cost (cache reads until the file is re-sent) that
+  `/api/context-files` already reports, with Managed policy CLAUDE.md
+  excluded from both.
+- **CAP-7: a suggest-only hint to step `[capture] level` down one
+  step**, never applied automatically ("no apply button" holds here
+  too — Token Lens never lowers the level itself). `habits.
+  capture_step_down_suggestion` fires only once every metric the step
+  would drop has its own `capture.enough_target` answers *and*
+  `habits.d_level_stability` says the self-report calibration signal
+  that evidence backs has settled: its own two independent,
+  chronological halves' `d_level` land within `D_LEVEL_STABILITY_
+  TOLERANCE` (0.1) of each other — an Assumption, labelled in the
+  docstring. Only essentials/standard/deep are ever a target: stepping
+  essentials down would land on free, which asks Claude nothing at all,
+  a bigger decision already covered by `capture off`/switching a metric
+  off one at a time. The report's `capture` section carries the full,
+  calibration-gated suggestion (new `step_down_target`/
+  `step_down_tokens_saved`/`step_down_weekly_saving` rows and a note
+  with a runnable `claude-token-lens capture level <lower> --dry-run`
+  command and its undo, in numbers and level names only); the Capture
+  tab's banner (`capture_view._step_down_note`) shows a cheaper,
+  readiness-only version of the same command, since checking
+  `d_level_stability` there would need a full habits pass the
+  dashboard's poll doesn't already pay for. Both name the metrics the
+  step drops, the trade-off (they stop collecting; what they feed keeps
+  its evidence so far), where it lands (`[capture] level` in Token
+  Lens's config.toml, and Claude Code's settings.json only where the
+  lower level needs fewer hook entries) and the undo, via one shared
+  `habits.step_down_terms`; the report note gives the session-start and
+  subagent-start token savings separately. `capture level <level>
+  --dry-run` already existed and works (verified live, in a scratch
+  config/claude-root) — no CLI change was needed for that part.
+- **`context_files._Carry`'s `index_at`/`cost` off the linear path**
+  (ROB-P2): `index_at`'s per-call scan over every turn is now a
+  `bisect` over a precomputed sorted-timestamp index, and `cost`'s
+  per-call resummation of every turn's cache rate is now two prefix
+  sums (one for plain reads, one correcting for a rebuilt turn's write
+  rate) plus a direct O(1) correction for "the first turn of the
+  queried range always writes" (P10a's warning: that can't be folded
+  into the rebuilt-only prefix array, since it applies whether or not
+  that first turn is itself in `rebuilt_ids`). `resolve_model` is now
+  cached by model string (never the full `effective_rates` result,
+  which also depends on the turn's own `ctx`/`speed`/`inference_geo`).
+  Reference copies of the pre-change algorithm live in
+  `tests/test_context_files.py`, checked for exact agreement (1e-12) on
+  fixtures and 8 seeds of 120-turn randomised sessions, plus a
+  3,000-turn timing test.
+- **`compaction_sim._replay_transcript`'s uncached `lookup(turn.model)`
+  now caches by model string per window**, the same pattern
+  `habits._Rates._resolve` already used — never applied as an identity
+  shortcut to the window's own `dataclasses.replace`-heavy cost
+  functions, which mutate `turn.ctx` and can cross the long-context
+  threshold.
+- **Post-parse stage measurably faster**: profiled the same way as
+  P10a (`cProfile` around everything after parsing, on the real
+  corpus), post-parse time drops from ~41.8s to ~29.9s (about 29%) with
+  these two fixes on top of P10a's.
+- **D17: `docs/capture.md`'s per-level note sizes now come from
+  `capture_catalogue.rough_tokens`**, the same function the Levels
+  table's rendering already had available, instead of a separate
+  `len(note_text(...)) / 4` calculation that had drifted from it
+  (Essentials showed 182/88 tokens; `rough_tokens` says 201/107, the
+  figure an earlier audit had already measured by hand; Standard and
+  Deep similarly corrected). Regenerated via `capture_catalogue.
+  render_markdown()` — never hand-edit this file — with a new sync test
+  (`test_the_levels_table_note_sizes_match_rough_tokens`). No other doc
+  quoted the stale sizes.
+- **`habits.collect()` walked the whole corpus twice per report** — once
+  for the "Work habits" section, again for "Metrics capture"'s
+  `capture_dependent_value`. `report.build_report` now runs it once and
+  passes the result to both (`habits.section_from`, and a new optional
+  `habits.capture_section(..., h=...)`), falling back to its own
+  `collect()` only on the rare config that resolves a non-default
+  effort-mismatch share threshold, so the two sections can't disagree
+  on it.
+- **Context-carry costing (`carry.py:_extract_results`) re-summed every
+  later turn's cache rate for every carried tool result — O(turns ×
+  tool results) per transcript**, the report's single largest post-parse
+  cost. It now precomputes each turn's rate once, prefix-sums them, and
+  reads off an O(log turns) range sum per tool result instead (`bisect`
+  over turn index, since indices can skip). The now-unused per-pair
+  `_carry_cost_for_turn` is removed.
+- **`ttl.cache_economy`'s `_cache_tokens_at_input_rate` priced every
+  cached turn twice** (once for real, once more with its cache emptied,
+  via `dataclasses.replace`, just to isolate the input-rate cost) —
+  `pricing.effective_rates` already folds in fast-mode, long-context and
+  geo the same way, so it's called once and multiplied directly.
+- **`habits._CarryCost` re-resolved the same turn's effective rates
+  twice**, once each for `.read()` and `.write()`. A new
+  `_Rates.read_write()` resolves once and returns both.
+- Measured on the smoke corpus (`--all-projects --since <30d> --jobs
+  4`), the post-parse stage (everything after transcript parsing) drops
+  from a ~25.0s to a ~16.0s median of 3 runs, about 36% -- short of
+  halving it. The remaining top hot spots are the same shape of problem
+  in `context_files.py`'s `_Carry` (linear `index_at`, an uncached
+  `resolve_model` per turn) and `compaction_sim.py` (an uncached
+  `lookup(turn.model)` per replay window; its own heavy
+  `dataclasses.replace` use doesn't share carry.py's fix, since it
+  changes `ctx` itself, which can cross the long-context threshold) —
+  both out of this phase's file scope, left for a follow-up.
+
 ### Fixed
 
 - **Repeated reads were miscounted.** An edit counted as a read of the
@@ -664,52 +982,6 @@ whether it was Token Lens's own (below).
   dismissal already on disk is treated as merely expired rather than
   needing a migration.
 
-### P9a — Parser signals: task/structured-output events, a new cache
-    signal, cost-state reconciliation, image/document sizing
-
-`PARSER_VERSION` bumped to 18 (from 17): every transcript is re-parsed
-once to pick up the new detection rules and fields below.
-
-- **`task_status` and `structured_output` attachment lines now get their
-  own event kinds** instead of falling into the generic attachment
-  catch-all: `task_status` keeps only a closed status word
-  (`running`/`completed`/`failed`/`stopped`/`cancelled`, else `other`)
-  and task type (`local_bash`/`local_agent`, else `other`) — never the
-  description, delta summary, output file path or shell command these
-  lines also carry in the real corpus; `structured_output` keeps only
-  the size of its payload, never the payload itself.
-- **A model dropping its own prior extended-thinking blocks
-  (`thinking_drop`, a prefix mismatch) now joins the `CACHE_SIGNAL`
-  family** as a likely cache-bust, alongside thinking being stripped —
-  only the closed drop reason and block/turn counts are kept.
-- **`cost-state` lines (Claude Code's own running cost total for the
-  session) are now read**, numbers only: `totalCostUSD`/
-  `hasUnknownModelCost` land on the session's own metadata as a check on
-  this tool's own pricing. `reconcile.claude_code_reported_costs(corpus,
-  pricing)` pairs each session's self-reported total against this
-  tool's own locally-priced total for the same session — the
-  `cost-state` half of a later cost-gap metric; no Admin CSV, no network
-  call, same as the rest of `reconcile.py`.
-- **A tool_result's or a human prompt's own image/document content
-  blocks are now sized** by Anthropic's documented Standard-tier
-  image-token rule (`tokens = ceil(width/28) * ceil(height/28)`, itself
-  capped at 1568 tokens) instead of silently counting as zero characters
-  — PNG, GIF, JPEG and WebP headers are read just far enough to get
-  their pixel dimensions, never decoded further. A block this parser
-  can't size confidently (a document, an oversized or high-resolution-
-  tier image, a malformed payload) is now counted as **unsized** rather
-  than guessed at (`unsized_blocks`, by block type).
-- **A line type no detection rule recognises at all is now counted
-  separately** from one this parser knows about and deliberately ignores
-  (`unknown_line_types`, apart from the existing `ignored_line_types`) —
-  the type name itself is sanitised to a closed, safe token shape (or
-  counted as `other`) before it ever reaches a diagnostic counter's key,
-  since it comes straight off the wire. Both new counters live on a new
-  `parser_notes` side channel next to `Diagnostics` (present only when
-  non-empty) and are rendered alongside it by every renderer.
-
-### P10b — Docs sweep, SECURITY.md corrections, Diagnostics privacy fix
-
 - **`SECURITY.md` corrected against the current code.** It claimed
   `/tl-feedback`'s answer was checked for a question mark or negation
   before being kept — there is no free-text answer at all; all four
@@ -752,49 +1024,6 @@ once to pick up the new detection rules and fields below.
   note's own surrounding text never reach a `Turn`/`Event` field; plus a
   fixture locking in the `ignored_line_types` fix above. Skill names
   already had a dedicated fixture (SEC-P3); not duplicated.
-### P10a — Report performance: Habits built once, cache-carry costing off the linear path
-
-No output change: every figure below comes out identical to before
-(tests hand-compute the equivalence to 1e-12; a live smoke report's
-JSON diffs at zero, generated_at aside, against a frozen transcript
-snapshot run on the pre-change code).
-
-- **`habits.collect()` walked the whole corpus twice per report** — once
-  for the "Work habits" section, again for "Metrics capture"'s
-  `capture_dependent_value`. `report.build_report` now runs it once and
-  passes the result to both (`habits.section_from`, and a new optional
-  `habits.capture_section(..., h=...)`), falling back to its own
-  `collect()` only on the rare config that resolves a non-default
-  effort-mismatch share threshold, so the two sections can't disagree
-  on it.
-- **Context-carry costing (`carry.py:_extract_results`) re-summed every
-  later turn's cache rate for every carried tool result — O(turns ×
-  tool results) per transcript**, the report's single largest post-parse
-  cost. It now precomputes each turn's rate once, prefix-sums them, and
-  reads off an O(log turns) range sum per tool result instead (`bisect`
-  over turn index, since indices can skip). The now-unused per-pair
-  `_carry_cost_for_turn` is removed.
-- **`ttl.cache_economy`'s `_cache_tokens_at_input_rate` priced every
-  cached turn twice** (once for real, once more with its cache emptied,
-  via `dataclasses.replace`, just to isolate the input-rate cost) —
-  `pricing.effective_rates` already folds in fast-mode, long-context and
-  geo the same way, so it's called once and multiplied directly.
-- **`habits._CarryCost` re-resolved the same turn's effective rates
-  twice**, once each for `.read()` and `.write()`. A new
-  `_Rates.read_write()` resolves once and returns both.
-- Measured on the smoke corpus (`--all-projects --since <30d> --jobs
-  4`), the post-parse stage (everything after transcript parsing) drops
-  from a ~25.0s to a ~16.0s median of 3 runs, about 36% -- short of
-  halving it. The remaining top hot spots are the same shape of problem
-  in `context_files.py`'s `_Carry` (linear `index_at`, an uncached
-  `resolve_model` per turn) and `compaction_sim.py` (an uncached
-  `lookup(turn.model)` per replay window; its own heavy
-  `dataclasses.replace` use doesn't share carry.py's fix, since it
-  changes `ctx` itself, which can cross the long-context threshold) —
-  both out of this phase's file scope, left for a follow-up.
-
-### P10c — Doc residue: windowed lists, api.md change sources, report section lists, archetypes
-
 - **`docs/ui.md` no longer says the Sessions list and the Usage tab's
   compaction list ignore the date window.** Both now honour it
   (`app.js`'s `withWindow("/api/sessions?...")` and
@@ -826,263 +1055,6 @@ snapshot run on the pre-change code).
 - Checked the CHANGELOG's latest released version heading against
   `__version__`/`pyproject.toml`: both already read `0.5.2` — no fix
   needed.
-### P5 — Capture value and cost accounting
-
-Metrics capture's own displayed and estimated costs rise: tag carry
-pricing (below) adds a cache-write leg that was missing, and a session
-billed under the 1-hour cache TTL now prices that write at the 1-hour
-rate instead of the 5-minute one.
-
-- **A `[tl: ...]`/`[result: ...]` tag's cost now includes what it costs
-  to carry**, not only what it cost to write. Every reply after the one
-  that wrote a tag re-sends it as part of the prompt until the next
-  compaction — a cache write into the very next turn, then cache reads
-  after that — priced the same way a note's own carry already was
-  (`context_files._Carry`, one rate for the 5-minute TTL and one for the
-  1-hour TTL, chosen the same way `habits._Rates.write` already chose
-  between them). This lands in both places capture prices a tag: the
-  real, post-hoc `capture.usage()` (already carry-priced tags going into
-  this phase) and the pre-enable `capture.history()`/`capture.estimate()`
-  path used for "what would this level have cost you" projections, which
-  had priced a tag's own output only — found while bringing the two
-  paths to parity. The brief marker (`[spawn: ...]`/`[retry: ...]`) is
-  words inside the *spawning* tool call's own prompt, not a `[tl:]`/
-  `[result:]` tag, and stays priced at output cost alone in both paths,
-  unchanged.
-- **What capture's habits section is worth to `recommend()`, measured
-  rather than assumed.** `recommend()` now runs a second time per report
-  with the habits section stripped, and the capture section's
-  `habit_value` is the dollar total of recommendations that only exist,
-  or grew, with it — matched by `(id, agent_type, lever)`, the larger of
-  a pair taken (never summed) when the same lever is named through more
-  than one route, weighted down to the share of that total capture's own
-  evidence actually reported (vs. inferred from the transcript alone),
-  and normalised per week since capture was turned on. A recommendation
-  capture's evidence argued *against* making no longer inflates this
-  total — it's counted and shown as "held back N", a new row on the
-  Capture tab's own usage table, not folded into the savings figure.
-- **A per-metric worth table** on the Capture tab and in `docs/capture.md`
-  (generated, not hand-edited): each metric's own tokens a week set
-  against the dollar value of the decisions it feeds, so "is this metric
-  worth what it costs" has a direct answer per row instead of one lump
-  sum for the whole level. Hidden below `MIN_GROUP` (5) sessions with
-  notes, the same small-sample floor the rest of Work habits already
-  uses — it built a full row per metric off a single session before this.
-- **`spawn`, `detour` and `useful` (the web-result note and its
-  `PostToolUse` matcher) are retired from the metrics vocabulary** —
-  their evidence didn't hold up against what the transcript already
-  shows on its own. A `config.toml` written before this still loads (the
-  retired ids are accepted, just no longer asked for or shown). The
-  `explore_research` habit now reads `found=no|partial` off the *specific*
-  heavy-research cycles it's judging, rather than a corpus-wide count
-  disconnected from which cycles it's pricing.
-- **Effort index, brief clarity and contradiction flags.** Every rated
-  task now gets a percentile-ranked effort index; `d_level = 2·AUC−1`
-  scores how well self-reported difficulty actually separates the tasks
-  that needed more effort from the ones that didn't (an AUC/Mann-Whitney
-  rank-sum computed directly, no numpy/scipy dependency), with
-  `brief_clarity_index` its twin for reported brief clarity. Contradiction
-  flags (e.g. `check=none` reported on a task the transcript shows was
-  actually redone) feed `_self_report_calibration`, and `confidence()`
-  now downgrades a habit's confidence when its own self-reports don't
-  calibrate against what happened.
-- **`autoCompactWindow` swept per kind of task, not only per session or
-  agent type.** `compaction_sim_by_task` groups the existing window sweep
-  by the task metrics capture reported (`task=`), once at least 5 main
-  sessions have reported the same one — the same shape and recommendation
-  rule as the existing per-agent-type table. The tasks profile goal now
-  drafts that task's own `autoCompactWindow` from it
-  (`goals._task_compaction`):
-  - only when the task's best window saves at least 5%;
-  - only when the corpus-wide sweep says that window summarises no more
-    often than the compaction-window rule allows;
-  - ticked only once the task has 20 sessions behind it.
-- **A note written after a real compaction is priced and shown
-  separately.** The carried prefix a compaction would otherwise have
-  discounted it against is gone by then, so it costs more — the Work
-  habits capture table now shows `sessions_with_notes` and
-  `after_compact_notes`/`after_compact_cost` as their own line rather
-  than silently folding a higher rate into a scope's ordinary cost.
-
-### P9c — Suggest-only level step-down, `_Carry`/`compaction_sim` off the linear path, `capture.md` sizes
-
-No output change beyond CAP-7's own new rows/note: `_Carry.index_at`/
-`.cost()` and `compaction_sim._replay_transcript`'s cached model
-resolution are proven equivalent to the pre-change algorithm on
-fixtures and randomised sessions (1e-12, reference copies of the old
-algorithm kept alongside the new tests). A live before/after smoke
-report run on the same real corpus from the same worktree, moments
-apart, shows every remaining diff under 0.05% relative and explainable
-by ordinary corpus growth from other agents running concurrently during
-this phase (matching totals, diagnostics and every other section, never
-a discontinuity) — no frozen corpus snapshot survived from P10a's own
-run to repeat its literal zero-diff check.
-
-- **CAP-7: a suggest-only hint to step `[capture] level` down one
-  step**, never applied automatically ("no apply button" holds here
-  too — Token Lens never lowers the level itself). `habits.
-  capture_step_down_suggestion` fires only once every metric the step
-  would drop has its own `capture.enough_target` answers *and*
-  `habits.d_level_stability` says the self-report calibration signal
-  that evidence backs has settled: its own two independent,
-  chronological halves' `d_level` land within `D_LEVEL_STABILITY_
-  TOLERANCE` (0.1) of each other — an Assumption, labelled in the
-  docstring. Only essentials/standard/deep are ever a target: stepping
-  essentials down would land on free, which asks Claude nothing at all,
-  a bigger decision already covered by `capture off`/switching a metric
-  off one at a time. The report's `capture` section carries the full,
-  calibration-gated suggestion (new `step_down_target`/
-  `step_down_tokens_saved`/`step_down_weekly_saving` rows and a note
-  with a runnable `claude-token-lens capture level <lower> --dry-run`
-  command and its undo, in numbers and level names only); the Capture
-  tab's banner (`capture_view._step_down_note`) shows a cheaper,
-  readiness-only version of the same command, since checking
-  `d_level_stability` there would need a full habits pass the
-  dashboard's poll doesn't already pay for. Both name the metrics the
-  step drops, the trade-off (they stop collecting; what they feed keeps
-  its evidence so far), where it lands (`[capture] level` in Token
-  Lens's config.toml, and Claude Code's settings.json only where the
-  lower level needs fewer hook entries) and the undo, via one shared
-  `habits.step_down_terms`; the report note gives the session-start and
-  subagent-start token savings separately. `capture level <level>
-  --dry-run` already existed and works (verified live, in a scratch
-  config/claude-root) — no CLI change was needed for that part.
-- **`context_files._Carry`'s `index_at`/`cost` off the linear path**
-  (ROB-P2): `index_at`'s per-call scan over every turn is now a
-  `bisect` over a precomputed sorted-timestamp index, and `cost`'s
-  per-call resummation of every turn's cache rate is now two prefix
-  sums (one for plain reads, one correcting for a rebuilt turn's write
-  rate) plus a direct O(1) correction for "the first turn of the
-  queried range always writes" (P10a's warning: that can't be folded
-  into the rebuilt-only prefix array, since it applies whether or not
-  that first turn is itself in `rebuilt_ids`). `resolve_model` is now
-  cached by model string (never the full `effective_rates` result,
-  which also depends on the turn's own `ctx`/`speed`/`inference_geo`).
-  Reference copies of the pre-change algorithm live in
-  `tests/test_context_files.py`, checked for exact agreement (1e-12) on
-  fixtures and 8 seeds of 120-turn randomised sessions, plus a
-  3,000-turn timing test.
-- **`compaction_sim._replay_transcript`'s uncached `lookup(turn.model)`
-  now caches by model string per window**, the same pattern
-  `habits._Rates._resolve` already used — never applied as an identity
-  shortcut to the window's own `dataclasses.replace`-heavy cost
-  functions, which mutate `turn.ctx` and can cross the long-context
-  threshold.
-- **Post-parse stage measurably faster**: profiled the same way as
-  P10a (`cProfile` around everything after parsing, on the real
-  corpus), post-parse time drops from ~41.8s to ~29.9s (about 29%) with
-  these two fixes on top of P10a's.
-- **D17: `docs/capture.md`'s per-level note sizes now come from
-  `capture_catalogue.rough_tokens`**, the same function the Levels
-  table's rendering already had available, instead of a separate
-  `len(note_text(...)) / 4` calculation that had drifted from it
-  (Essentials showed 182/88 tokens; `rough_tokens` says 201/107, the
-  figure an earlier audit had already measured by hand; Standard and
-  Deep similarly corrected). Regenerated via `capture_catalogue.
-  render_markdown()` — never hand-edit this file — with a new sync test
-  (`test_the_levels_table_note_sizes_match_rough_tokens`). No other doc
-  quoted the stale sizes.
-### P6 — Profile tuning: task-scaled whatif, a shared model/quality
-    veto, fastMode pricing, and catalogue/thinking-lever/Managed
-    CLAUDE.md fixes (PROF-01/03/04/05/06/08/11, EST-P2/P10)
-
-- **`/api/whatif` and saved profiles now scale to a single kind of
-  task, not just the whole window.** A `?task=` query param (validated
-  against metrics capture's own closed task vocabulary) scales every
-  row down to that task's own share of the window, the same way the
-  tasks goal's own draft already did; a saved profile whose `for` names
-  a task scales the same way. `refreshTotal` passes it through so a
-  saved profile's live total stays scoped to the task it was drafted
-  for instead of pricing against the whole corpus.
-- **One veto-and-gate helper replaces four independent copies of the
-  same model-swap check** (audit finding F9: "model-switch gates differ
-  across goals, habits, model_swap and quality"). `model_gate.py` is
-  now the one place that checks whether the quality section found a
-  model swap did clearly worse (`quality.worse_models`), whether its
-  runs on that model were often retried on a larger one
-  (`quality.retried_models`, `quality.RETRIED_SHARE`), and whether
-  metrics capture said the agent's work needed a larger model or was
-  mostly hard (`habits.unfit_agents`) — used by the models goal, a
-  single task's candidate, the `model-tier` recommendation and the
-  quick-actions tip that explains why a cheaper model wasn't offered.
-  It also closes a gap the corpus-wide `unfit_agents` check never
-  covered: a *task's own* runs saying a larger model was needed even
-  when the agent isn't flagged unfit overall (the "larger model per
-  task" veto), and every check now shares one sample-size floor
-  (`ModelSwapThresholds.min_sessions`) instead of some running with no
-  floor at all.
-- **`habits_by_task` now reports main-session cost per task**, with
-  inheriting subagents' cost folded in rather than left out, and the
-  evidence wording corrected to match.
-- **Quality's redo-rate comparison between setups is now a proper ratio
-  test with a Holm correction across the setups compared**, instead of
-  a raw percentage-point difference. A setup only gets ticked as
-  "cheaper" in the tasks goal once it has at least 20 sessions of its
-  own (shown from 5, so there's something to look at sooner, but not
-  auto-ticked on a small sample); the comparison now also splits by
-  parser/schema version and by resolved effort and speed rather than
-  pooling runs that may not be comparable, adds a main-only cost
-  column, leaves each session's own last message out of the redo-rate
-  count (it can't have been redone yet), and adds a hard-work veto so a
-  setup that only looked cheaper because it skipped the hard tasks
-  doesn't get credit for it.
-- **The config snapshot hook now records the per-model `modelSettings`
-  effort, `maxEffortLevel` (a hard cap), and whether
-  `CLAUDE_CODE_EFFORT_LEVEL` is set** in the environment (a Boolean
-  only — never its value). An `effortLevel` override a profile goal
-  would otherwise suggest is now marked "won't apply to `<model>`; use
-  `--effort`" when the snapshot shows that model has no per-model
-  effort setting to override.
-- **`fastMode` is now priced instead of ignored.** It's in the
-  settings allowlist; `pricing.py` tracks how many turns were actually
-  priced at a fast-mode rate versus standard, and the whatif engine
-  reprices fast-mode turns at standard rates when asked what turning it
-  off would cost (fidelity `simulated`) — fast mode is a documented
-  per-model price premium (2x list price), not free.
-- **The profile catalogue's `for` lists mixed purposes and tasks, and
-  the `ops` task (metrics capture's own closed vocabulary) had no
-  catalogue profile at all** (F11). `workflow-ultracode` — scripted,
-  multi-step automation and maintenance — is now also `ops`'s starting
-  point; `classify.py`'s own comment notes `ops` spans several
-  purposes, so this is the closest fit of the seven catalogue shapes
-  rather than a clean 1:1 match. *Scoped down from the plan's fuller
-  ask (splitting the catalogue's `for` field itself into separate
-  `tasks`/`runs` lists): that's a schema-level change touching
-  `schema.py` validation, `api.py` routes and `app.js` rendering well
-  beyond this fix, so only the concrete `ops` mapping shipped here.*
-- **A goal's own "this catalogue profile is a starting point" note
-  could recommend a profile whose settings actually contradict the
-  draft sitting right above it** (F12). The note is now dropped
-  whenever the named catalogue profile's own settings disagree with a
-  main-session candidate the draft already proposed for the same key.
-- **`omitClaudeMd`'s estimated saving counted Managed policy CLAUDE.md
-  tokens, which still load regardless of the setting** (F13,
-  `fixes.py:46`). `agent_startup_breakdown` now breaks out a
-  `claude_md_managed` column, and the profile goal, the `spawn-
-  claude-md` recommendation and the whatif estimate all subtract it out
-  before pricing or deciding whether there's enough CLAUDE.md to offer
-  the lever at all.
-- **Thinking toggles on models where they do nothing** (F14, V26): you
-  can't turn thinking off on Opus 5.5 or the Fable models, so
-  `alwaysThinkingEnabled` and `MAX_THINKING_TOKENS` do nothing there.
-  The thinking goal's lower-effort candidate is still drafted on those
-  models, because effort still works (V25) and keeps the cache (V13).
-  Its evidence now says the toggles are no way round it, for any agent
-  type whose observed model is one of those. The model-swap table's
-  per-agent-type column supplies that model. The
-  `alwaysThinkingEnabled` diff wording and profiles.md say the same.
-- **`autoCompactWindow`'s whatif estimate is now held to the same
-  compactions-per-session floor the compaction-window rule and the
-  profile goals already use** (EST-P2): a window that would summarise
-  more than `CompactionSimThresholds().max_compactions_per_session`
-  times a session is no longer estimated, however cheap it simulates.
-- **`omitClaudeMd`'s whatif estimate only priced the one cache write
-  each spawn, not what carrying CLAUDE.md across the rest of that
-  spawn's turns costs afterwards** (EST-P10). It's now priced as the
-  greater of the write-only figure (kept as a floor) and the same
-  per-file carry cost (cache reads until the file is re-sent) that
-  `/api/context-files` already reports, with Managed policy CLAUDE.md
-  excluded from both.
 
 ## [0.5.2] - 2026-09-23
 

@@ -145,7 +145,13 @@ __version__ = "0.5.2"
 #: this parser knows about and deliberately ignores. None of this is
 #: recoverable from an older digest, so every transcript is re-parsed
 #: once to pick it up.
-PARSER_VERSION = 19
+#:
+#: Bumped to 20 by the docs-and-privacy sweep: ``Diagnostics.
+#: ignored_line_types`` now keys on the sanitised line type (or
+#: ``"other"``), like ``unknown_line_types`` already did, instead of the
+#: raw ``type`` straight off the wire. A cached pre-20 digest still holds
+#: the raw keys, so every transcript is re-parsed once to drop them.
+PARSER_VERSION = 20
 
 #: Bump when the model.py contract changes in a way that invalidates the
 #: on-disk digest cache (see model.py's module docstring for the contract

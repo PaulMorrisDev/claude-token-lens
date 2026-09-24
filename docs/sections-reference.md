@@ -1290,7 +1290,8 @@ directly by every renderer (a dedicated block, not a table). Fields
 include `lines`, `unparsable_lines`, `truncated_final_line`,
 `assistant_lines`, `distinct_turns`, `synthetic_turns`,
 `turns_missing_usage`, `ttl_sum_mismatch`, `late_duplicate_ids`,
-`ignored_line_types` (a count per ignored line type), `oversized_lines`,
+`ignored_line_types` (a count per ignored line type, keyed on the
+sanitised type or `other` since `PARSER_VERSION` 20), `oversized_lines`,
 `trailing_events`, `replayed_lines`, `timestamp_parse_failures`,
 `agent_settings`, `modes`, `attachment_catch_all`, `limit_hits`,
 `limit_resumes`, `agents_terminated`,
