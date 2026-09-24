@@ -277,7 +277,13 @@ MAIN_TAG_FIELDS = {
     "plan": "plan", "skill": "skill", "found": "found", "prior": "prior", "detour": "detour", "check": "check",
     "out": "big_output", "useful": "web",
 }
-SUB_TAG_FIELDS = {"fit": "fit", "rules": "rules", "brief": "agent_brief", "missing": "agent_brief"}
+#: ``out`` is in both: the PostToolUse note after a large result reaches
+#: subagents too, and asks them for it in their ``[result: ...]``.
+SUB_TAG_FIELDS = {
+    "fit": "fit", "rules": "rules", "brief": "agent_brief", "missing": "agent_brief", "out": "big_output",
+}
+#: Every ``CaptureTag`` field a tag key fills, in either scope.
+_TAG_FIELDS = tuple(dict.fromkeys([*MAIN_TAG_FIELDS, *SUB_TAG_FIELDS]))
 
 
 def filter_tag(
@@ -290,7 +296,11 @@ def filter_tag(
     as a whole is dropped unless its metric is in ``requested`` --
     closing the gap where a tag Claude wrote unprompted (habit, an
     example it saw, a copied transcript) would otherwise be trusted
-    just because it parses.
+    just because it parses. Keys only the other scope is ever asked for
+    go too, and a subagent's ``[tl: ...]`` doesn't count as a tag (it is
+    only ever asked for ``[result: ...]``): a subagent writing a
+    main-session tag out of habit would otherwise set the task or level
+    of the whole prompt cycle it ran in.
     """
     if not requested:
         return None, None
@@ -298,6 +308,17 @@ def filter_tag(
         result_marker = None
     if cap is not None:
         fields = SUB_TAG_FIELDS if subagent else MAIN_TAG_FIELDS
+        foreign = {
+            name: (() if name == "missing" else None)
+            for name in _TAG_FIELDS
+            if name not in fields and getattr(cap, name) not in (None, ())
+        }
+        if "skill" in foreign:
+            foreign["skill_name"] = None
+        if subagent and cap.has_tl:
+            foreign["has_tl"] = False
+        if foreign:
+            cap = replace(cap, **foreign)
         if not any(metric_id in requested for metric_id in fields.values()):
             # No metric this tag could answer was ever requested: even a
             # well-formed [tl:]/[result:] here is unearned.

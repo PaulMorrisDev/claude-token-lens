@@ -721,6 +721,7 @@ algorithm to 1e-12 on fixtures and randomised sessions.
 
 ### Fixed
 
+- **A subagent's main-session tag no longer sets the task of the prompt it ran in.** Found by validating live capture: an Explore agent asked only for `[result: ...]` also wrote a full `[tl: task=... level=...]` tag, and SEC-P2's filter never checked the main-session keys in a subagent, so they reached the cycle's merged tag. Keys only the other scope is asked for are now dropped, a subagent's `[tl: ...]` no longer counts as a tag, and a subagent's `out=` is kept when a large-output note asked for it. The cost weighting also skips retired metrics (`detour`, `web`) instead of failing on an older transcript. PARSER_VERSION 21: every transcript is re-parsed once.
 - **A catalogue profile's "Estimated effect" on the Profiles tab never
   appeared.** The tab sent the profile's first `for` word
   (`implementation`, `data-exploration`, ...) to `/api/whatif` as its

@@ -151,7 +151,13 @@ __version__ = "0.5.2"
 #: ``"other"``), like ``unknown_line_types`` already did, instead of the
 #: raw ``type`` straight off the wire. A cached pre-20 digest still holds
 #: the raw keys, so every transcript is re-parsed once to drop them.
-PARSER_VERSION = 20
+#:
+#: Bumped to 21: ``capture_tags.filter_tag`` now drops tag keys only the
+#: other scope is asked for, and a subagent's ``[tl: ...]`` no longer
+#: counts as a tag (it could set a whole prompt cycle's task or level);
+#: a subagent's ``out=`` is kept when a large-output note asked for it.
+#: A cached pre-21 digest still holds the unfiltered tags.
+PARSER_VERSION = 21
 
 #: Bump when the model.py contract changes in a way that invalidates the
 #: on-disk digest cache (see model.py's module docstring for the contract
