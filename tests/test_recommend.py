@@ -2236,3 +2236,48 @@ def test_pricing_coverage_names_unknown_models_from_a_built_report(tmp_path):
     assert unknown.dashboard == "advanced" and unknown.help and unknown.help.shows
     rec = next(r for r in model.recommendations if r.id == "pricing-coverage")
     assert "claude-mystery-9" in rec.action
+
+
+# -- effort-mismatch from work Claude reported easy (metrics capture) --------
+
+
+def _habits_section(cycles):
+    from claude_token_lens import habits
+
+    return habits.section_from(habits.Habits(cycles=cycles))
+
+
+def _easy_cycles(n: int, effort: str = "high", thinking: float = 0.6, output: float = 1.0):
+    from claude_token_lens.habits import CycleFact
+    from claude_token_lens.model import CaptureTag
+
+    return [
+        CycleFact(session_id="s", ts=None, week="", cost=1.0, turns=1, tag=CaptureTag(level="easy"), effort=effort,
+                  output_cost=output, thinking_cost=thinking)
+        for _ in range(n)
+    ]
+
+
+def test_effort_mismatch_reads_easy_work_at_high_effort_directly():
+    r = _add_section(_base_report(), _habits_section(_easy_cycles(5) + _easy_cycles(2, effort="max")))
+    rec = next(rec for rec in recommend_fn(r, config=_config(), archetype=None) if rec.id == "effort-mismatch")
+    assert rec.lever == "effortLevel"
+    # Only the effort level with enough easy messages is cited, each fact
+    # from its own habits_effort_fit cell.
+    assert rec.evidence == [
+        ("Easy messages at high effort", 5, "habits.habits_effort_fit", "easy:high"),
+        ("Easy work at high effort, thinking share of output", 60.0, "habits.habits_effort_fit", "easy:high"),
+    ]
+    # Half the thinking on each easy message.
+    assert rec.saving_usd == pytest.approx(5 * 0.3)
+    assert rec.title == "High effort is being spent on easy work"
+
+
+@pytest.mark.parametrize("cycles", [
+    _easy_cycles(4),
+    _easy_cycles(5, thinking=0.2),
+    _easy_cycles(5, effort="medium"),
+])
+def test_effort_mismatch_direct_path_needs_enough_easy_high_effort_thinking(cycles):
+    r = _add_section(_base_report(), _habits_section(cycles))
+    assert not any(rec.id == "effort-mismatch" for rec in recommend_fn(r, config=_config(), archetype=None))

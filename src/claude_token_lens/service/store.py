@@ -1491,4 +1491,34 @@ class Store:
         )
 
 
-__all__ = ["Store", "encode_digest_blob", "decode_digest_blob"]
+def read_session_marks(path: str | Path) -> tuple[dict[str, dict[str, str]], dict[str, dict]]:
+    """``(tags, ratings)`` set on the dashboard's Sessions tab, read from
+    the store at ``path`` without writing to it, for the CLI's own
+    reports: the same shapes as :meth:`Store.all_tags` and
+    :meth:`Store.all_feedback`. Both empty when there is no store, it
+    predates a table, or it can't be read (a lock held too long)."""
+    path = Path(path)
+    if not path.is_file():
+        return {}, {}
+    tags: dict[str, dict[str, str]] = {}
+    ratings: dict[str, dict] = {}
+    try:
+        conn = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True, timeout=2)
+    except sqlite3.Error:
+        return {}, {}
+    conn.row_factory = sqlite3.Row
+    try:
+        with contextlib.closing(conn):
+            tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+            if "session_tags" in tables:
+                for row in conn.execute("SELECT session_id, key, value FROM session_tags"):
+                    tags.setdefault(row["session_id"], {})[row["key"]] = row["value"]
+            if "session_feedback" in tables:
+                for row in conn.execute("SELECT session_id, outcome, slow, worth, helped, set_at FROM session_feedback"):
+                    ratings[row["session_id"]] = Store._feedback_row(row)
+    except sqlite3.Error:
+        return {}, {}
+    return tags, ratings
+
+
+__all__ = ["Store", "encode_digest_blob", "decode_digest_blob", "read_session_marks"]

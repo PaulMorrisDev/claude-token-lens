@@ -1374,3 +1374,57 @@ tr.row-group th {
     border-left-color: #f0b429;
   }
 }
+
+/* -- Work habits tab ------------------------------------------------ */
+
+.habit-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 0.75rem;
+  margin: 0.5rem 0 1rem;
+}
+
+.habit-card {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  min-width: 0;
+}
+
+.habit-card p {
+  margin: 0;
+}
+
+.habit-card .code-block pre {
+  white-space: pre-wrap;
+}
+
+.habit-saving {
+  font-weight: 600;
+}
+
+.habit-try {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.habit-spark-wrap {
+  display: inline-block;
+  margin-left: 0.5rem;
+  vertical-align: middle;
+}
+
+.habit-spark {
+  height: 1.2rem;
+  width: auto;
+  display: block;
+}
+
+@media (max-width: 480px) {
+  .habit-cards {
+    grid-template-columns: 1fr;
+  }
+}

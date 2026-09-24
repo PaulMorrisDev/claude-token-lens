@@ -242,3 +242,23 @@ def test_the_session_note_is_recognised_in_a_transcript(tmp_path):
     assert result.meta.cap_metrics == ("task", "brief", "level", "shift", "retry")
     assert result.turns[0].cap_note_chars == len(wrapped)
     assert result.turns[0].cap.task == "bugfix"
+
+
+# -- the /tl-brief skill -----------------------------------------------------
+
+
+def test_the_brief_skill_is_user_invoked_names_no_model_and_holds_every_checklist():
+    text = cat.brief_skill_text()
+    front, body = text.split("---\n", 2)[1:]
+    assert "name: tl-brief" in front and "disable-model-invocation: true" in front
+    assert "Claude Token Lens" in front and "model:" not in front
+    for task, keys in cat.BRIEF_CHECKLISTS.items():
+        assert f"   - {task}: " + ", ".join(cat.BRIEF_LINES[k][0] for k in keys) in body
+    for _label, template in cat.BRIEF_LINES.values():
+        assert f"   {template}" in body
+    # Every checklist line is a word Claude can write as ``missing=``, or
+    # the research report line.
+    assert set(cat.BRIEF_LINES) - {"report"} == set(cat.TAG_VOCAB["missing"]) - {"none"}
+    assert set(cat.BRIEF_CHECKLISTS) == set(cat.TAG_VOCAB["task"])
+    # About one short turn: the checklist costs little when it runs.
+    assert len(text) / 4 < 500

@@ -62,7 +62,7 @@ reload, a new window or **Redraw figures** picks up a newer report.
 block changes, or every five minutes for fresh figures. While metrics
 capture is on it reads "Metrics capture: Essentials · since <date> ·
 N tokens · <amount> (x% of spend) · tagged on P% of messages", in
-billing units, with a link to the Capture tab and notes when the end
+billing units, with links to the Capture and Work habits tabs and notes when the end
 time has passed, a hook entry is missing, no notes have been seen,
 Claude tags too few messages, or enough has been collected to lower
 the level. While it is off, the banner is a one-line invitation with
@@ -70,8 +70,10 @@ the Essentials estimate from your own last two weeks; **Hide** keeps
 it hidden (`localStorage` `tls:captureInviteHidden`). The feedback
 note ("Finished a piece of work? Run /tl-feedback ...") shows while
 that item is on, and a note with the `capture feedback on` command
-while the `/tl-feedback` skill is on but its file needs installing
-(the banner shows then even if the invitation was hidden).
+while the `/tl-feedback` skill is on but its file needs installing, or
+the `capture brief on` command while brief templates are on but the
+`/tl-brief` skill's file needs installing (the banner shows then even
+if the invitation was hidden).
 
 **The dashboard never changes Claude Code's settings.** There is no
 Apply button. Every fix is a prompt to paste into Claude Code or an
@@ -277,7 +279,21 @@ what they did", the setup panel and service health.
    in progress (`/api/baseline`'s `capture_status`).
 12. **Usage** — the `usage`/`compactions`/`phases` report sections plus a raw
     `/api/compactions` list (all history, the first 50 shown).
-13. **Capture** — `/api/capture`: the cost warning, then where
+13. **Work habits** — the report's `habits` section: the "This week"
+    digest as cards (the three habits worth the most a week, what the
+    habits you already picked up save, what a piece of work that met
+    its goal cost, and how many messages Claude tagged), then "Habits
+    worth trying" as cards, each with its saving a week in billing
+    units, what your sessions show, an example to copy (Copy button),
+    how often it was seen, its source (reported, inferred or your
+    feedback), confidence, its trend with a by-week bar chart, and how
+    the saving is worked out. Then the brief templates, one card per
+    kind of task with a Copy button (`claude-token-lens capture brief
+    on` installs the `/tl-brief` skill that asks for the same lines),
+    then the section's other tables and its notes (capture off, no
+    feedback yet). Every item is a way of working to try: nothing on
+    this tab changes a setting.
+14. **Capture** — `/api/capture`: the cost warning, then where
     capture stands (its setting, what it has cost since it was turned
     on by scope, how often Claude tagged, and what the estimates
     replay), a red-edged notice with the `capture connect` command
@@ -291,7 +307,8 @@ what they did", the setup panel and service health.
     shows its runs over the last 14 days and, while its file is
     missing or out of date, a **Needs installing** badge with the
     `capture feedback on` command (Copy button): the dashboard never
-    writes Claude Code's folder. The status-line rows say so when
+    writes Claude Code's folder. The brief templates row does the same
+    for the `/tl-brief` skill, with `capture brief on`. The status-line rows say so when
     Claude Code's status line isn't this tool's. Metrics that are always
     measured can't be switched off. Switching off a metric switches
     off the ones that need it. Every change that asks Claude for more
@@ -299,7 +316,7 @@ what they did", the setup panel and service health.
     warning again in a dialog. Changes are sent to `POST /api/capture`
     and the tab and banner redraw from its answer; when the file
     can't be written, the tab shows the CLI commands to run instead.
-14. **Data quality** — **What this tool installed, and what to expect**
+15. **Data quality** — **What this tool installed, and what to expect**
     first (`/api/setup`): what to expect in plain words (it never uses
     your Claude tokens, the hook and statusline add none, the first scan
     takes a while, nothing changes until you apply it), then each thing
@@ -312,7 +329,7 @@ what they did", the setup panel and service health.
     each row with what it means (`helptext.diagnostics_table`) — same
     figures as the CLI report's Diagnostics section, so a user comparing
     the UI against a CLI run for the same window sees identical numbers.
-15. **Glossary** — the `GLOSSARY` constant in `app.js`: each term the
+16. **Glossary** — the `GLOSSARY` constant in `app.js`: each term the
     dashboard uses, in plain English. The README's glossary is the same
     list, word for word.
 
@@ -387,7 +404,9 @@ promotes it to its own section needs no corresponding `app.js` change.
 `limits` (v3-limits wiring) is mapped to Cache rather than left to the
 Diagnostics fallback: a usage-cap pause forces exactly the full-expiry
 re-cache cost `recache`/`ttl` already attribute, so its six tables read
-naturally alongside them.
+naturally alongside them. `habits` maps to Work habits, and `capture`
+to Capture, whose one table is report-only: the Capture tab draws its
+own figures from `/api/capture`.
 
 **Savings tab (v4 wiring round).** `carry`/`compaction_sim`/
 `model_swap`/`waste` are mapped to a `"savings"` tab key in the same

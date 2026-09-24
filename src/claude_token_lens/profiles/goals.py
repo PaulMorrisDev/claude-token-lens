@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .. import quality, whatif
+from .. import habits, quality, whatif
 from ..compaction_sim import CompactionSimThresholds
 from ..fixes import LEVER_LABELS, SETTING_TEXT, already_set
 from ..recommend import _NOT_OVERRIDABLE, _SKIPS_CLAUDE_MD
@@ -151,15 +151,19 @@ def _models(draft: _Draft, tables, *, subagents_only: bool) -> None:
     worse = quality.worse_models(tables.rows("quality", "quality_by_setup"))
     worse.update({key: row for key, row in quality.retried_models(tables.rows("quality", "quality_retried")).items()
                   if key not in worse})
+    # Metrics capture: agents whose runs said they needed a larger model,
+    # or whose work was mostly reported hard (advice._merge_model_tier).
+    unfit = habits.unfit_agents(tables.rows("habits", "habits_agents"))
     for row in tables.rows("model_swap", "model_swap_by_agent_type"):
         agent = row.get("agent_type")
         best = row.get("best_cheaper_alternative_model")
         pct = whatif._num(row.get("saving_pct")) or 0.0
         if not best or pct < MIN_SHARE_PCT or (subagents_only and agent == TOP):
             continue
-        if (agent, _alias(best)) in worse:
+        if (agent, _alias(best)) in worse or agent in unfit:
             # The quality check found this agent did worse on that model,
-            # or its runs on it were often retried on a larger one.
+            # or its runs on it were often retried on a larger one; or
+            # Claude reported its work needed a larger model.
             continue
         who = "the main session" if agent == TOP else agent
         draft.add(

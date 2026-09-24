@@ -1675,3 +1675,22 @@ def test_check_lists_every_quick_action_and_runs_one_in_full(tmp_path, capsys):
     assert all(f"`{check_id}`" in out for check_id in CHECK_IDS)
     assert cli.main(["check", "models", *base]) == 0
     assert capsys.readouterr().out.startswith("## Is each agent on the cheapest model")
+
+
+
+def test_cli_reports_merge_the_dashboards_session_tags_over_sessions_toml(tmp_path):
+    from claude_token_lens.service.store import Store
+
+    store = Store(str(tmp_path / "service.db"))
+    store.open()
+    store.upsert_session(session_id="s1", project_slug="p", slug="p", first_ts="2026-09-01T00:00:00Z",
+                         last_ts="2026-09-01T01:00:00Z")
+    store.set_tag("s1", "purpose", "review")
+    store.set_feedback("s1", outcome="missed", slow=["rework"], worth="no", helped=["plan"])
+    store.close()
+    overrides = {"s1": {"mode": "overnight", "purpose": "planning"}, "s2": {"mode": "mixed"}}
+    merged, ratings = cli._merge_dashboard_marks(tmp_path, overrides)
+    assert merged == {"s1": {"mode": "overnight", "purpose": "review"}, "s2": {"mode": "mixed"}}
+    assert overrides["s1"]["purpose"] == "planning"
+    assert ratings["s1"]["outcome"] == "missed" and ratings["s1"]["helped"] == ["plan"]
+    assert cli._merge_dashboard_marks(tmp_path / "none", overrides) == (overrides, {})

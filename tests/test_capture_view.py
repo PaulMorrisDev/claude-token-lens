@@ -195,6 +195,22 @@ def test_a_missing_feedback_skill_is_a_row_note_and_a_banner_note_even_with_capt
     assert _rows(capture_view.view(CaptureConfig(), skill="missing"))["feedback_skill"]["needs_install"] is False
 
 
+def test_a_missing_brief_skill_is_a_row_note_and_a_banner_note():
+    config = CaptureConfig(coaching=["brief_templates"])
+    data = capture_view.view(config, brief_skill="missing")
+    row = _rows(data)["brief_templates"]
+    assert row["needs_install"] is True
+    assert row["install_note"] == capture_view.BRIEF_SKILL_STATES["missing"] == "The /tl-brief skill isn't installed"
+    assert row["install_command"] == capture_view.BRIEF_COMMAND == "claude-token-lens capture brief on"
+    assert data["banner"]["notes"] == [capture_view.BRIEF_SKILL_NOTES["missing"]]
+    assert data["commands"]["brief"] == capture_view.BRIEF_COMMAND
+    installed = capture_view.view(config, brief_skill="installed")
+    assert _rows(installed)["brief_templates"]["needs_install"] is False and installed["banner"]["notes"] == []
+    # The feedback skill's state never marks the brief row, and the other way round.
+    both = capture_view.view(CaptureConfig(feedback=["feedback_skill"]), skill="installed", brief_skill="missing")
+    assert _rows(both)["brief_templates"]["needs_install"] is False
+    assert _rows(both)["feedback_skill"]["needs_install"] is False
+
 def test_feedback_runs_are_priced_over_the_last_days_and_counted_toward_enough():
     use = capture.CaptureUsage(since="", feedback_runs=3, feedback_cost=0.05, feedback_answered=2)
     data = capture_view.view(

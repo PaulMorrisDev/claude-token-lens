@@ -788,6 +788,37 @@ def classify_purpose(f: SessionFeatures, thresholds: dict | None = None) -> tupl
     }
 
 
+#: A task kind metrics capture reported that maps one to one onto a
+#: purpose. The others (feature, bugfix, debug, research, ops, chat) span
+#: several purposes, so the rules decide those sessions.
+REPORTED_PURPOSES = {
+    "review": "review",
+    "test": "test-triage",
+    "plan": "planning",
+    "docs": "docs-or-light-edit",
+    "refactor": "refactor",
+}
+
+#: Purposes the transcript's structure settles whatever Claude reported.
+_STRUCTURAL_PURPOSES = frozenset({"local-llm-pipeline", "workflow-run"})
+
+
+def reported_task(top: TranscriptResult | None) -> tuple[str | None, int]:
+    """The kind of task Claude reported (metrics capture's ``task=``) for
+    at least half of a session's tagged messages, twice or more, and how
+    many messages it tagged."""
+    if top is None:
+        return None, 0
+    tasks = [t.cap.task for t in top.turns if t.cap is not None and t.cap.has_tl and t.cap.task]
+    if len(tasks) < 2:
+        return None, len(tasks)
+    counts: dict[str, int] = {}
+    for task in tasks:
+        counts[task] = counts.get(task, 0) + 1
+    task = max(counts, key=lambda k: (counts[k], k))
+    return (task if 2 * counts[task] >= len(tasks) else None), len(tasks)
+
+
 def classify_session(
     top: TranscriptResult,
     subs: list[TranscriptResult] | None,
@@ -804,6 +835,12 @@ def classify_session(
     is keyed by session id, each value optionally holding ``"mode"``
     and/or ``"purpose"`` (independently — a session can override one and
     let the other run through the rules).
+
+    Without an override, the kind of task metrics capture reported
+    (:func:`reported_task`) decides the purpose where it maps one to one
+    (:data:`REPORTED_PURPOSES`), with ``purpose_source`` ``"reported"``;
+    a local-LLM pipeline or a workflow run still wins, since the
+    transcript shows those outright.
     """
     features = extract_features(
         top, subs, tz, workflows=workflows, entrypoint=entrypoint, thresholds=mode_thresholds
@@ -825,6 +862,11 @@ def classify_session(
     else:
         purpose, purpose_evidence = classify_purpose(features, purpose_thresholds)
         purpose_source = "rule"
+        task, tagged = reported_task(top)
+        if task in REPORTED_PURPOSES and purpose not in _STRUCTURAL_PURPOSES:
+            purpose = REPORTED_PURPOSES[task]
+            purpose_source = "reported"
+            purpose_evidence = {"reported_task": task, "tagged_messages": tagged}
 
     return Classification(
         mode=mode,
@@ -1079,6 +1121,8 @@ __all__ = [
     "classify_mode",
     "classify_purpose",
     "classify_session",
+    "reported_task",
+    "REPORTED_PURPOSES",
     "build_session_record",
     "group_sessions",
     "build_section",

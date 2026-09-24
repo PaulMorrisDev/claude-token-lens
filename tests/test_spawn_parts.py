@@ -274,3 +274,29 @@ def test_fixes_for_workflow_advice_without_a_prompt_are_empty():
 def test_command_for_repo_scope_names_the_project_dir():
     change = SettingChange(target="agent", key="omitClaudeMd", agent="x", value=True)
     assert fixes.command_for(change, "repo").endswith("--scope repo --project-dir . --dry-run")
+
+
+# -- runs that said whether they used CLAUDE.md (metrics capture) ------------
+
+
+def _with_rules(report, agent_type: str, used: int, unused: int):
+    from claude_token_lens import habits
+
+    runs = [habits.AgentFact(session_id="s", agent_type=agent_type, week="", cost=1.0, rules=word)
+            for word, n in (("used", used), ("unused", unused)) for _ in range(n)]
+    report.sections.append(habits.section_from(habits.Habits(agents=runs)))
+    return report
+
+
+def test_omit_claude_md_is_held_back_when_most_runs_said_they_used_it():
+    snap = _snapshot({"reviewer": {"source": "user"}})
+    recs = _recs(_with_rules(_report(_acc("reviewer")), "reviewer", used=2, unused=1), snapshot=snap)
+    assert not any(r.id == "spawn-claude-md" for r in recs)
+
+
+def test_runs_that_said_they_did_not_use_claude_md_are_cited():
+    snap = _snapshot({"reviewer": {"source": "user"}})
+    report = _with_rules(_report(_acc("reviewer")), "reviewer", used=1, unused=3)
+    rec = next(r for r in _recs(report, snapshot=snap) if r.id == "spawn-claude-md")
+    assert ("Runs that said they didn't use CLAUDE.md", 3, "habits.habits_agents", "reviewer") in rec.evidence
+    assert "3 of the 4 runs that said, said they didn't use your CLAUDE.md." in rec.why

@@ -648,3 +648,28 @@ def test_untyped_subagent_is_not_filed_under_top_level():
 
     assert agent_type_label(TranscriptResult(meta=TranscriptMeta(kind="subagent"))) == "unknown"
     assert agent_type_label(TranscriptResult(meta=TranscriptMeta(kind="top-level"))) == "top-level"
+
+
+
+def test_wasted_turns_cites_redone_messages_and_missed_goals_when_there_are_any(tmp_path: Path):
+    from claude_token_lens import habits
+    from claude_token_lens.habits import CycleFact, Piece
+
+    report = _report_with_waste_section(_built_section_for_high_waste_share(tmp_path))
+    th = waste.WasteThresholds(share_pct=10.0, min_sessions=5, min_turns=200)
+    (plain,) = waste.RULES[0](report, th)
+    assert plain.why == ""
+    h = habits.Habits(
+        cycles=[CycleFact(session_id="s", ts=None, week="", cost=1.0, turns=1, redone=n < 1) for n in range(4)],
+        pieces=[Piece("missed", 2.0, 1, None, (), (), "your feedback")] * 2,
+    )
+    report.sections.append(habits.section_from(h))
+    (rec,) = waste.RULES[0](report, th)
+    assert rec.evidence[-2:] == [
+        ("Messages redone or corrected next (%)", 25.0, "habits.habits_by_task", "all"),
+        ("Pieces of work you said missed their goal", 2, "habits.habits_outcomes", "missed"),
+    ]
+    assert rec.why == (
+        "These replies cost money but produced nothing you kept. 25% of your messages were redone or corrected by "
+        "the next one. You said 2 pieces of work missed their goal."
+    )

@@ -34,20 +34,36 @@ WARNING = (
 CONNECT_COMMAND = "claude-token-lens capture connect"
 STATUS_COMMAND = "claude-token-lens capture status"
 FEEDBACK_COMMAND = "claude-token-lens capture feedback on"
+BRIEF_COMMAND = "claude-token-lens capture brief on"
+
+
+def _skill_words(name: str, command: str) -> tuple[dict[str, str], dict[str, str]]:
+    states = {
+        "missing": f"The /{name} skill isn't installed",
+        "outdated": f"The /{name} skill is out of date",
+        "foreign": f"Another skill named {name} is in the way: move it elsewhere first",
+    }
+    notes = {
+        "missing": f"{states['missing']}: {command}",
+        "outdated": f"{states['outdated']}: {command}",
+        "foreign": f"Another skill named {name} is in the way: move it elsewhere, then run {command}",
+    }
+    return states, notes
+
 
 #: What to say when the /tl-feedback skill is on but its file isn't right
-#: (``footprint.feedback_skill_state``). The dashboard never writes it:
+#: (``footprint.feedback_skill_state``), and the same with the command,
+#: for the banner and ``capture status``. The dashboard never writes it:
 #: it lives in Claude Code's own folder.
-SKILL_STATES = {
-    "missing": "The /tl-feedback skill isn't installed",
-    "outdated": "The /tl-feedback skill is out of date",
-    "foreign": "Another skill named tl-feedback is in the way: move it elsewhere first",
-}
-#: The same with the command, for the banner and ``capture status``.
-SKILL_NOTES = {
-    "missing": f"The /tl-feedback skill isn't installed: {FEEDBACK_COMMAND}",
-    "outdated": f"The /tl-feedback skill is out of date: {FEEDBACK_COMMAND}",
-    "foreign": "Another skill named tl-feedback is in the way: move it elsewhere, then run " + FEEDBACK_COMMAND,
+SKILL_STATES, SKILL_NOTES = _skill_words(catalogue.FEEDBACK_SKILL, FEEDBACK_COMMAND)
+#: The same for the /tl-brief skill (brief templates).
+BRIEF_SKILL_STATES, BRIEF_SKILL_NOTES = _skill_words(catalogue.BRIEF_SKILL, BRIEF_COMMAND)
+
+#: A metric that installs a skill -> (its state's key in the feedback
+#: facts, the state words, the command that installs it).
+_SKILL_METRICS = {
+    "feedback_skill": ("skill", SKILL_STATES, FEEDBACK_COMMAND),
+    "brief_templates": ("brief_skill", BRIEF_SKILL_STATES, BRIEF_COMMAND),
 }
 
 #: What to say when a status-line toggle is on but Claude Code's status
@@ -284,7 +300,9 @@ def _metric_row(
         fb_actual, have, want = _feedback_facts(metric.id, {**(feedback or {}), "units": units})
         if fb_actual is not None:
             actual, actual_label = fb_actual, f"Over the last {capture_mod.HISTORY_DAYS} days"
-    needs_install = bool(on and metric.id == "feedback_skill" and skill not in (None, "installed"))
+    install = _SKILL_METRICS.get(metric.id)
+    skill_now = (feedback or {}).get(install[0]) if install else None
+    needs_install = bool(on and install and skill_now not in (None, "installed"))
     no_statusline = bool(on and metric.id in STATUSLINE_NOTES and (feedback or {}).get("statusline") is False)
     return {
         "id": metric.id,
@@ -303,8 +321,8 @@ def _metric_row(
         "asks_claude": asks,
         "needs_hook": bool(on and kind != "derived" and set(metric.hooks) & missing_events),
         "needs_install": needs_install,
-        "install_note": SKILL_STATES.get(skill) if needs_install else None,
-        "install_command": FEEDBACK_COMMAND if needs_install else None,
+        "install_note": install[1].get(skill_now) if needs_install else None,
+        "install_command": install[2] if needs_install else None,
         "statusline_note": STATUSLINE_NOTES[metric.id] if no_statusline else None,
         "estimate": estimate,
         "actual": actual,
@@ -348,13 +366,19 @@ def _plural(count: int, word: str) -> str:
     return f"{count} {word}{'' if count == 1 else 's'}"
 
 
-def _banner(capture, config, levels, measured, use, rows, hooks, started_since, skill=None) -> dict:
+def _banner(
+    capture, config, levels, measured, use, rows, hooks, started_since, skill=None, brief_skill=None
+) -> dict:
     """The banner's lines: a headline, then any notes worth acting on."""
     notes: list[str] = []
     feedback_note = catalogue.FEEDBACK_NOTE if "feedback_note" in capture.feedback else None
-    skill_row = next((r for r in rows if r["id"] == "feedback_skill"), None)
-    if skill_row is not None and skill_row["needs_install"] and skill in SKILL_NOTES:
-        notes.append(SKILL_NOTES[skill])
+    for metric_id, state, words in (
+        ("feedback_skill", skill, SKILL_NOTES),
+        ("brief_templates", brief_skill, BRIEF_SKILL_NOTES),
+    ):
+        skill_row = next((r for r in rows if r["id"] == metric_id), None)
+        if skill_row is not None and skill_row["needs_install"] and state in words:
+            notes.append(words[state])
     if not capture.is_on:
         essentials = next((lv for lv in levels if lv["id"] == "essentials"), None)
         est = essentials["estimate"] if essentials else None
@@ -429,6 +453,7 @@ def view(
     started_since: int = 0,
     feedback_use=None,
     skill: str | None = None,
+    brief_skill: str | None = None,
     ratings: int | None = None,
     statusline: bool | None = None,
     now: datetime | None = None,
@@ -444,7 +469,8 @@ def view(
     ``started_since`` is how many sessions started since then.
     ``feedback_use`` is ``capture.feedback_usage`` over the last
     :data:`capture.HISTORY_DAYS` days, ``skill`` the
-    ``footprint.feedback_skill_state`` of the /tl-feedback skill and
+    ``footprint.feedback_skill_state`` of the /tl-feedback skill,
+    ``brief_skill`` that of the /tl-brief skill and
     ``ratings`` how many sessions you rated on the dashboard (each only
     while its toggle is on). ``statusline`` is whether Claude Code's
     status line is this tool's (``None`` when not checked).
@@ -455,7 +481,13 @@ def view(
     missing_events = set(hooks_data["missing_events"])
     active = capture.active_metrics()
     levels = _levels(capture, past, units)
-    feedback = {"use": feedback_use, "skill": skill, "ratings": ratings, "statusline": statusline}
+    feedback = {
+        "use": feedback_use,
+        "skill": skill,
+        "brief_skill": brief_skill,
+        "ratings": ratings,
+        "statusline": statusline,
+    }
     rows = [
         _metric_row(m, capture, active, past, units, use, signal_sessions, missing_events, feedback)
         for m in catalogue.METRICS
@@ -483,7 +515,9 @@ def view(
             "mode": units.billing_mode if units is not None else "",
             "basis": units.basis() if units is not None else "",
         },
-        "banner": _banner(capture, config, levels, measured, use, rows, hooks_data, started_since, skill),
+        "banner": _banner(
+            capture, config, levels, measured, use, rows, hooks_data, started_since, skill, brief_skill
+        ),
         "feedback": {
             "skill": skill,
             "runs": feedback_use.feedback_runs if feedback_use is not None else None,
@@ -500,7 +534,12 @@ def view(
                 for q in catalogue.FEEDBACK_QUESTIONS
             ],
         },
-        "commands": {"status": STATUS_COMMAND, "connect": CONNECT_COMMAND, "feedback": FEEDBACK_COMMAND},
+        "commands": {
+            "status": STATUS_COMMAND,
+            "connect": CONNECT_COMMAND,
+            "feedback": FEEDBACK_COMMAND,
+            "brief": BRIEF_COMMAND,
+        },
     }
 
 
@@ -545,6 +584,9 @@ def change_commands(before: CaptureConfig, changes: dict) -> list[str]:
 __all__ = [
     "CONNECT_COMMAND",
     "FEEDBACK_COMMAND",
+    "BRIEF_COMMAND",
+    "BRIEF_SKILL_NOTES",
+    "BRIEF_SKILL_STATES",
     "SKILL_NOTES",
     "SKILL_STATES",
     "STATUSLINE_NOTES",

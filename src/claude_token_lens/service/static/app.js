@@ -632,6 +632,10 @@
     quality: "agents",
     workflows: "agents",
     workstyle: "agents",
+    habits: "habits",
+    // The capture section's one table is report-only; the Capture tab
+    // shows its own figures from /api/capture.
+    capture: "capture",
     sessions: "sessions",
     // The Config tab renders the config section's tables once, from
     // /api/config-diff?auto_keys=1 (renderConfig skips it here).
@@ -689,6 +693,7 @@
     profiles: "Profiles",
     recommendations: "Recommendations",
     usage: "Usage",
+    habits: "Work habits",
     capture: "Capture",
     diagnostics: "Data quality",
     glossary: "Glossary",
@@ -712,6 +717,8 @@
       "Groups of settings: make one from a goal with an estimate of its effect, compare it with yours, apply it, and see what each change you made did.",
     recommendations: "Changes worth making, most important first.",
     usage: "Usage over time, by project, and in five-hour blocks.",
+    habits:
+      "How the way you work shapes what it costs, and the habits that would have saved the most in your own sessions, with an example to copy for each.",
     capture:
       "Metrics capture: short notes and tags that tell this tool what each piece of work was and how it went, so suggestions fit how you work. Choose how much, and see what it costs.",
     diagnostics:
@@ -1270,12 +1277,16 @@
     renderCaptureBanner(data);
   }
 
-  function captureTabLink(text) {
+  function tabLink(tabKey, text) {
     var link = el("button", { type: "button", class: "link-button", text: text });
     link.addEventListener("click", function () {
-      activateTab("capture", { focus: true });
+      activateTab(tabKey, { focus: true });
     });
     return link;
+  }
+
+  function captureTabLink(text) {
+    return tabLink("capture", text);
   }
 
   function renderCaptureBanner(data) {
@@ -1290,6 +1301,10 @@
     }
     var line = el("p", { class: "capture-headline" }, [el("span", { text: info.headline + " " })]);
     line.appendChild(captureTabLink(info.on ? "Capture settings" : "See what it captures"));
+    if (info.on) {
+      line.appendChild(document.createTextNode(" "));
+      line.appendChild(tabLink("habits", "Work habits"));
+    }
     if (!info.on) {
       var hide = el("button", { type: "button", class: "link-button capture-hide", text: "Hide" });
       hide.addEventListener("click", function () {
@@ -2433,6 +2448,178 @@
       }
       renderMappedSections(result.report, "agents", container);
     });
+  }
+
+  // ======================================================================
+  // Work habits tab: the habits section's "This week" digest as cards,
+  // the playbook as cards with a by-week sparkline and the example to
+  // copy, brief templates with Copy buttons, then its other tables.
+  // ======================================================================
+
+  function renderHabits(panel) {
+    clear(panel);
+    tabHeading(panel, "habits");
+    var container = el("div", { id: "habits-sections" });
+    panel.appendChild(container);
+    container.appendChild(loadingNode());
+    loadReport().then(function (result) {
+      clear(container);
+      if (result.error) {
+        container.appendChild(errorNotice(result.error));
+        return;
+      }
+      var section = findSection(result.report, "habits");
+      if (!section) {
+        container.appendChild(el("p", { class: "notice", text: "No work-habit figures for this window." }));
+        return;
+      }
+      renderHabitsSection(section, container);
+    });
+  }
+
+  function tableRowsAsObjects(table) {
+    return (table.rows || []).map(function (row) {
+      var out = {};
+      (table.columns || []).forEach(function (column, i) {
+        out[column.key] = row[i];
+      });
+      return out;
+    });
+  }
+
+  function labelFor(table, value) {
+    var labels = table.value_labels || {};
+    return typeof value === "string" && labels[value] ? labels[value] : value;
+  }
+
+  function renderHabitsSection(section, container) {
+    var sectionHelp = helpBlock(section.help);
+    if (sectionHelp) container.appendChild(sectionHelp);
+    var tables = section.tables || [];
+    var byName = {};
+    tables.forEach(function (table) {
+      byName[table.name] = table;
+    });
+    if (byName.habits_digest) renderHabitsDigest(byName.habits_digest, container);
+    if (byName.habits_playbook) renderHabitsPlaybook(byName.habits_playbook, container);
+    if (byName.habits_brief_templates) renderBriefTemplates(byName.habits_brief_templates, container);
+    var rest = tables.filter(function (table) {
+      return ["habits_digest", "habits_playbook", "habits_brief_templates"].indexOf(table.name) === -1;
+    });
+    renderPlacedTables(container, rest, state.currency, "habits");
+    if (section.notes && section.notes.length) {
+      container.appendChild(
+        el(
+          "ul",
+          { class: "notes" },
+          section.notes.map(function (note) {
+            return el("li", { text: note });
+          })
+        )
+      );
+    }
+  }
+
+  function renderHabitsDigest(table, container) {
+    container.appendChild(el("h3", { text: table.title }));
+    var help = helpBlock(table.help);
+    if (help) container.appendChild(help);
+    var rows = tableRowsAsObjects(table);
+    if (!rows.length) {
+      container.appendChild(el("p", { class: "notice", text: "Nothing to show for this window yet." }));
+      return;
+    }
+    var cards = el("div", { class: "stat-cards habits-digest" });
+    rows.forEach(function (row) {
+      var kind = (table.row_kinds || {})[row.item] || "str";
+      var card = el("div", { class: "stat-card" });
+      card.appendChild(el("div", { class: "stat-label", text: labelFor(table, row.item) }));
+      card.appendChild(el("div", { class: "stat-value", text: formatCell(row.value, kind, state.currency) }));
+      card.appendChild(el("div", { text: row.what || "" }));
+      if (row.detail) card.appendChild(el("div", { class: "stat-hint", text: row.detail }));
+      cards.appendChild(card);
+    });
+    container.appendChild(cards);
+  }
+
+  // The playbook's `weeks` column: 0-100 per week, "-" for a week with
+  // too few messages, drawn as a small bar chart.
+  function habitSparkline(weeks, label) {
+    var values = String(weeks || "").split(" ").filter(function (part) {
+      return part !== "";
+    });
+    if (!values.length) return null;
+    var width = 8 * values.length;
+    var height = 24;
+    var parts = ['<svg viewBox="0 0 ' + width + " " + height + '" class="habit-spark" role="img" aria-label="' + escapeHtml(label) + '">'];
+    values.forEach(function (value, i) {
+      if (value === "-") {
+        parts.push('<rect x="' + (i * 8 + 1) + '" y="' + (height - 1) + '" width="6" height="1" fill="var(--border)"></rect>');
+        return;
+      }
+      var h = Math.max(1, Math.round((Number(value) / 100) * (height - 2)));
+      parts.push('<rect x="' + (i * 8 + 1) + '" y="' + (height - h) + '" width="6" height="' + h + '" fill="var(--accent)"></rect>');
+    });
+    parts.push("</svg>");
+    var wrap = el("span", { class: "habit-spark-wrap" });
+    wrap.innerHTML = parts.join("");
+    return wrap;
+  }
+
+  function renderHabitsPlaybook(table, container) {
+    container.appendChild(el("h3", { text: table.title }));
+    var help = helpBlock(table.help);
+    if (help) container.appendChild(help);
+    var rows = tableRowsAsObjects(table);
+    if (!rows.length) {
+      container.appendChild(el("p", { class: "notice", text: "No habit stood out in this window." }));
+      return;
+    }
+    var cards = el("div", { class: "habit-cards" });
+    rows.forEach(function (row) {
+      var card = el("article", { class: "habit-card" });
+      var head = el("div", { class: "profile-card-head" });
+      head.appendChild(el("h4", { text: labelFor(table, row.habit) }));
+      head.appendChild(el("span", { class: "badge", text: labelFor(table, row.theme) }));
+      card.appendChild(head);
+      var saving = row.saving === null || row.saving === undefined ? "Saving not priced" : "About " + formatCell(row.saving, "money", state.currency) + " a week";
+      card.appendChild(el("p", { class: "habit-saving", text: saving }));
+      if (row.evidence) card.appendChild(el("p", { text: row.evidence }));
+      if (row.example) {
+        card.appendChild(el("p", { class: "habit-try", text: "Try:" }));
+        card.appendChild(codeBlockWithCopy(row.example));
+      }
+      var meta = [
+        "Seen " + formatCell(row.n, "int", state.currency),
+        String(labelFor(table, row.source) || ""),
+        "confidence " + String(labelFor(table, row.confidence) || "").toLowerCase(),
+        "trend " + String(labelFor(table, row.trend) || "").toLowerCase(),
+      ].filter(function (part) {
+        return part && part.trim();
+      });
+      var metaLine = el("p", { class: "profile-card-meta", text: meta.join(" | ") });
+      var spark = habitSparkline(row.weeks, "By week, " + labelFor(table, row.trend) + ": " + row.weeks);
+      if (spark) metaLine.appendChild(spark);
+      card.appendChild(metaLine);
+      if (row.basis) card.appendChild(el("p", { class: "cell-hint", text: "How the saving is worked out: " + row.basis + "." }));
+      cards.appendChild(card);
+    });
+    container.appendChild(cards);
+  }
+
+  function renderBriefTemplates(table, container) {
+    container.appendChild(el("h3", { text: table.title }));
+    var help = helpBlock(table.help);
+    if (help) container.appendChild(help);
+    var cards = el("div", { class: "habit-cards" });
+    tableRowsAsObjects(table).forEach(function (row) {
+      var card = el("article", { class: "habit-card" });
+      card.appendChild(el("h4", { text: labelFor(table, row.task) }));
+      if (row.why) card.appendChild(el("p", { class: "profile-card-meta", text: row.why }));
+      card.appendChild(codeBlockWithCopy(row.template || ""));
+      cards.appendChild(card);
+    });
+    container.appendChild(cards);
   }
 
   // ======================================================================
@@ -4088,12 +4275,13 @@
     profiles: renderProfiles,
     recommendations: renderRecommendations,
     usage: renderUsage,
+    habits: renderHabits,
     capture: renderCapture,
     diagnostics: renderDiagnosticsTab,
     glossary: renderGlossary,
   };
 
-  var TAB_ORDER = ["overview", "quick", "sessions", "cache", "ttl", "savings", "agents", "context", "config", "profiles", "recommendations", "usage", "capture", "diagnostics", "glossary"];
+  var TAB_ORDER = ["overview", "quick", "sessions", "cache", "ttl", "savings", "agents", "context", "config", "profiles", "recommendations", "usage", "habits", "capture", "diagnostics", "glossary"];
 
   var renderedTabs = {};
 

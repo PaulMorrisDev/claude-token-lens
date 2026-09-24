@@ -1,0 +1,1753 @@
+"""Work habits: how the way you work shapes what it costs, and the habits
+worth trying (the ``habits`` report section and the Work habits tab).
+
+Everything is worked out per *prompt cycle* (``capture.prompt_cycles``):
+one message of yours and all the work that answered it, subagents at any
+depth included. /tl-feedback runs are left out: they rate the work, they
+aren't part of it.
+
+Every playbook item says where its evidence came from, so you know how
+far to trust it:
+
+- ``reported``: what Claude said about the work in a metrics-capture tag
+  (``[tl: task=... brief=... level=...]``, ``[result: ... fit=... rules=...]``,
+  ``[retry: ...]``). Claude judging its own work is low-trust, which is
+  why ``fit`` only ever holds a cheaper model back.
+- ``inferred``: what the transcripts show without asking anyone: what
+  your messages contained, tool output sizes, reads, retries, loops,
+  context size, permission prompts.
+- ``your feedback``: /tl-feedback answers and your ratings on the
+  dashboard. They outrank the rest.
+
+Savings are list-price USD over the report window, and the playbook
+spreads them over the weeks it covers. Each is a rough figure with its
+basis stated (the ``basis`` column): a habit never moves one number
+cleanly. Carrying a tool result or an agent report is priced from the
+reply after it to the next compaction, one cache write and then a cache
+read per reply at each reply's own rates (fast mode, long context and
+data residency included). That undercounts whenever the cache went cold,
+so it is a floor.
+
+Only words from closed lists, counts and flags reach the tables; nothing
+you or Claude wrote is kept.
+"""
+
+from __future__ import annotations
+
+import bisect
+import statistics
+from collections import Counter
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
+
+from . import capture as capture_mod
+from . import capture_catalogue as catalogue
+from .context_files import _parse_ts
+from .model import PROMPT_FLAGS, Column, EventKind, Feedback, Section, Table, Turn
+from .pricing import Pricing, effective_rates, price_turn
+from .topology import agent_key
+
+_READ_TOOLS = ("Read", "Grep", "Glob")
+_SHELL_TOOLS = ("Bash", "PowerShell")
+#: Agent reports are counted as reports (``short_reports``), not output.
+_REPORT_TOOLS = ("Agent", "Task")
+#: A tool call stopped before it ran (``toolDenialKind``): auto mode
+#: blocked it, or a deny rule or you turned it down.
+_BLOCKED = ("automode-blocked", "automode-unavailable")
+_REFUSED = ("permission-rule", "user-rejected")
+_EXPLORE_AGENT = "Explore"
+_HIGH_EFFORT = ("high", "xhigh", "max")
+
+#: A message whose main session ran this many reads and searches itself
+#: did research an Explore agent could have done.
+RESEARCH_READS = 5
+#: What an Explore agent's report hands back to the main session, about.
+EXPLORE_REPORT_TOKENS = 1_500
+#: An agent report over this many tokens is long.
+LONG_REPORT_TOKENS = 2_000
+#: What a report asked to be short comes back at, about.
+SHORT_REPORT_TOKENS = 800
+#: One reply's tool output this size or bigger is a big output (the
+#: Deep level's own threshold).
+BIG_OUTPUT_TOKENS = catalogue.BIG_OUTPUT_TOKENS
+#: The same command failing this many times in one message is a loop.
+LOOP_FAILURES = 3
+#: Earlier work still in context worth clearing, in tokens.
+STALE_TOKENS = 20_000
+#: A break this long lets the cache go cold (the 1-hour TTL at most).
+LONG_BREAK_S = 3_600
+#: Without a size tag, a message this many replies long was a large ask.
+LARGE_TURNS = 60
+#: A skill Claude reached for after this many replies came late.
+LATE_SKILL_TURNS = 3
+#: How many messages a comparison group needs before it counts.
+MIN_GROUP = 5
+#: How many weeks the trend covers, and the fewest messages a week
+#: needs to count towards it.
+TREND_WEEKS = 8
+TREND_MIN_CYCLES = 3
+#: Known weeks before a fall counts as a habit already picked up.
+TREND_MIN_ADOPTED = 4
+
+#: Playbook item -> (theme, habit to try).
+ITEMS: dict[str, tuple[str, str]] = {
+    "split_large": ("breakdown", "Split large asks into planned steps"),
+    "batch_small": ("breakdown", "Batch small asks into one session"),
+    "clear_between": ("context", "Start a new session between unrelated tasks"),
+    "brief_clearly": ("information", "Say what you want and what done looks like"),
+    "name_files": ("information", "Name the files you already know"),
+    "paste_errors": ("information", "Paste the failing output with a bug"),
+    "explore_research": ("research", "Hand broad searches to an Explore agent"),
+    "plan_hard": ("planning", "Plan hard work before building it"),
+    "skip_plan_easy": ("planning", "Skip plan mode for easy changes"),
+    "skill_early": ("skills", "Run the right skill at the start"),
+    "skill_unneeded": ("skills", "Stop Claude loading skills that don't help"),
+    "short_reports": ("delegation", "Ask agents for short reports"),
+    "better_briefs": ("delegation", "Give agents a complete brief"),
+    "flatten_nesting": ("delegation", "Pass what you know to agents instead of re-reading"),
+    "quiet_output": ("tool_output", "Keep tool output small"),
+    "tool_loops": ("verification", "Stop retrying a failing command"),
+    "targeted_checks": ("verification", "Check each change, and run the full suite once"),
+    "allow_routine": ("waiting", "Allow the commands you always approve"),
+    "state_limits": ("waiting", "Tell Claude up front what not to do"),
+    "effort_fit": ("models", "Use lower effort for easy work"),
+    "outcome_misses": ("outcome", "Look at what came before the misses"),
+}
+
+#: An example of the habit, to copy or adapt.
+EXAMPLES = {
+    "split_large": "Plan this first and list the steps. Then do step 1 only and stop, so I can start a new "
+    "session for step 2.",
+    "batch_small": "While you're in there: also rename parse_row to read_row, and fix the heading in "
+    "README.md.",
+    "clear_between": "/clear, then the new task with the files it involves.",
+    "brief_clearly": "Done when: the login test passes and nothing outside src/auth changes.",
+    "name_files": "In src/auth/login.py, the handler that sets the session cookie ... (rather than 'the "
+    "login code').",
+    "paste_errors": "This fails: <paste the error and the command that shows it>. Fix it in src/...",
+    "explore_research": "Use an Explore agent to find where retries are handled, and report the files and "
+    "functions in under 200 words.",
+    "plan_hard": "Before changing anything, plan this in plan mode and list the files you'll touch.",
+    "skip_plan_easy": "Just make this change, no plan needed: ...",
+    "skill_early": "/<skill> <what you want>, as your first message for this kind of work.",
+    "skill_unneeded": "Add disable-model-invocation: true to that skill's SKILL.md, so it loads only when you "
+    "run it.",
+    "short_reports": "... and report back in under 150 words: the answer and the files, nothing else.",
+    "better_briefs": "Goal: ... Files: ... Done when: ... Report: under 150 words.",
+    "flatten_nesting": "I've already read src/store.py: the part you need is save_rows(). Work from that; "
+    "don't read it again.",
+    "quiet_output": "Run the tests quietly and show only the failures, for example pytest -q 2>&1 | tail -30.",
+    "tool_loops": "If the same command fails twice, stop and tell me what's wrong instead of retrying.",
+    "targeted_checks": "Run only the tests for the files you changed; run the full suite once at the end.",
+    "allow_routine": "/permissions, then allow the commands you approve every time, for example "
+    "Bash(npm test:*).",
+    "state_limits": "Don't run migrations or push; ask me first if you think you need to.",
+    "effort_fit": "Lower the effort (the effortLevel setting) for quick edits, and raise it for hard problems.",
+    "outcome_misses": "Before you start, tell me your plan in three lines and what done will look like.",
+}
+
+#: How each item's saving is worked out.
+BASES = {
+    "split_large": "half of what re-reading the growing context cost in those asks",
+    "batch_small": "the start-up cache write each extra same-day session paid",
+    "clear_between": "the earlier context each reply re-read; half of it after a long break",
+    "brief_clearly": "half the gap to a clear ask of the same kind",
+    "name_files": "half the gap in reads and searches to asks that named a file",
+    "paste_errors": "half the gap to a bug report with the error in it",
+    "explore_research": "carrying the reads and searches, less a short agent report",
+    "plan_hard": "the redos of unplanned hard asks beyond the planned ones' rate",
+    "skip_plan_easy": "what planning easy asks cost",
+    "skill_early": "half of what was spent before Claude reached for the skill",
+    "skill_unneeded": "not estimated",
+    "short_reports": "carrying the part of each long report over a short one",
+    "better_briefs": "what the agent runs restarted for the brief or the task cost",
+    "flatten_nesting": "carrying the files agents read again",
+    "quiet_output": "carrying big outputs; half of it unless Claude said none was needed",
+    "tool_loops": "the attempts after the second at the same failing command",
+    "targeted_checks": "half of what redoing unchecked changes cost",
+    "allow_routine": "the replies after auto mode blocked a request",
+    "state_limits": "the replies after a request was turned down",
+    "effort_fit": "half the thinking on easy asks at high effort or above",
+    "outcome_misses": "not estimated",
+}
+
+#: A ``missing`` word -> what to add to a brief, for the templates (the
+#: /tl-brief skill holds the same lines).
+MISSING_LINES = {k: v for k, v in catalogue.BRIEF_LINES.items() if k != "report"}
+_REPORT_LINE = catalogue.BRIEF_LINES["report"]
+
+#: The checklist a kind of task starts from before your own data adds to it.
+DEFAULT_CHECKLISTS = catalogue.BRIEF_CHECKLISTS
+_DEFAULT_TEMPLATE_TASKS = ("bugfix", "feature", "refactor", "research")
+
+#: A feedback answer's word -> the label you ticked, per question.
+_ANSWER_LABELS = {q.key: {o[0]: o[1] for o in q.options} for q in catalogue.FEEDBACK_QUESTIONS}
+
+
+# -- facts ---------------------------------------------------------------------
+
+
+class _Rates:
+    """Per-token USD rates for each reply, each model resolved once."""
+
+    def __init__(self, pricing: Pricing | None):
+        self.pricing = pricing
+        self._resolved: dict = {}
+
+    def _resolve(self, model: str):
+        if model not in self._resolved:
+            self._resolved[model] = self.pricing.resolve_model(model)
+        return self._resolved[model]
+
+    def cost(self, turn: Turn) -> float:
+        if self.pricing is None:
+            return 0.0
+        return price_turn(turn, self._resolve(turn.model)).total
+
+    def _rates(self, turn: Turn):
+        return None if self.pricing is None else effective_rates(turn, self._resolve(turn.model))
+
+    def read(self, turn: Turn) -> float:
+        rates = self._rates(turn)
+        return rates.cache_read / 1e6 if rates is not None else 0.0
+
+    def write(self, turn: Turn) -> float:
+        rates = self._rates(turn)
+        if rates is None:
+            return 0.0
+        return (rates.cache_write_1h if turn.cc_1h > turn.cc_5m else rates.cache_write_5m) / 1e6
+
+    def output(self, turn: Turn) -> float:
+        rates = self._rates(turn)
+        return rates.output / 1e6 if rates is not None else 0.0
+
+
+def _compacted(turn: Turn) -> bool:
+    return EventKind.COMPACT_BOUNDARY in turn.preceding_event_kinds
+
+
+class _CarryCost:
+    """What keeping tokens in one transcript's context costs from a reply
+    on: a cache write by the next reply, then a cache read by each reply
+    after it until a compaction drops them."""
+
+    def __init__(self, turns: list[Turn], rates: _Rates):
+        self.turns = turns
+        self.costs = [rates.cost(t) for t in turns]
+        self.reads = [rates.read(t) for t in turns]
+        self.writes = [rates.write(t) for t in turns]
+        n = len(turns)
+        self._read_on = [0.0] * (n + 1)
+        for i in range(n - 1, -1, -1):
+            carries = i + 1 < n and not _compacted(turns[i + 1])
+            self._read_on[i] = self.reads[i] + (self._read_on[i + 1] if carries else 0.0)
+
+    def cost(self, i: int, tokens: float) -> float:
+        """Carrying ``tokens`` that came back to reply ``i`` (a tool
+        result or an agent report)."""
+        j = i + 1
+        if tokens <= 0 or j >= len(self.turns) or _compacted(self.turns[j]):
+            return 0.0
+        later = self._read_on[j + 1] if j + 1 < len(self.turns) and not _compacted(self.turns[j + 1]) else 0.0
+        return tokens * (self.writes[j] + later)
+
+
+@dataclass(slots=True)
+class CycleFact:
+    """One message of yours and the work that answered it, as numbers."""
+
+    session_id: str
+    ts: datetime | None
+    week: str
+    cost: float
+    turns: int
+    tag: object = None
+    flags: tuple[str, ...] = ()
+    paste: bool = False
+    #: Tokens in context when the work began beyond what a fresh session
+    #: starts with, and what re-reading them cost across the message.
+    stale_tokens: int = 0
+    stale_cost: float = 0.0
+    #: What writing them to the cache again cost after a long break.
+    stale_rewrite: float = 0.0
+    gap_s: float | None = None
+    effort: str | None = None
+    model: str = ""
+    #: Re-reading the context this message itself built up.
+    growth_cost: float = 0.0
+    reads: int = 0
+    read_tokens: int = 0
+    read_carry: float = 0.0
+    explore_agents: int = 0
+    planned: bool = False
+    plan_cost: float = 0.0
+    #: (tool, tokens, carry cost) per big output.
+    big_outputs: list = field(default_factory=list)
+    #: USD spent on attempts after the second at one failing command.
+    loop_cost: float = 0.0
+    loops: int = 0
+    #: (skill, by_you, replies before it, USD before it).
+    skill_calls: list = field(default_factory=list)
+    compactions: int = 0
+    #: Tool calls auto mode blocked, and those a deny rule or you turned
+    #: down, with what the replies after them cost.
+    blocked: int = 0
+    blocked_cost: float = 0.0
+    refused: int = 0
+    refused_cost: float = 0.0
+    #: Your next message redid this work (``shift=redo``) or corrected it.
+    redone: bool = False
+    redo_cost: float = 0.0
+    output_cost: float = 0.0
+    thinking_cost: float = 0.0
+    #: Your feedback on the work this message belongs to, and where it
+    #: came from ("feedback" for /tl-feedback, "rating" for the dashboard).
+    outcome: str | None = None
+    outcome_source: str | None = None
+
+
+@dataclass(slots=True)
+class AgentFact:
+    """One subagent run, at any depth."""
+
+    session_id: str
+    agent_type: str
+    week: str
+    cost: float
+    depth: int = 1
+    model: str = ""
+    report_tokens: int = 0
+    report_carry: float = 0.0
+    capped: bool = False
+    result: str | None = None
+    fit: str | None = None
+    rules: str | None = None
+    brief: str | None = None
+    missing: tuple[str, ...] = ()
+    retry: str | None = None
+    spawn: str | None = None
+    overlap_reads: int = 0
+    overlap_cost: float = 0.0
+    #: The ``level`` Claude gave the message the agent worked on.
+    level: str | None = None
+
+
+@dataclass(slots=True)
+class Piece:
+    """A piece of work you gave feedback on: the messages one
+    /tl-feedback answer rates, or a session you rated on the dashboard."""
+
+    outcome: str
+    cost: float
+    cycles: int
+    task: str | None
+    slow: tuple[str, ...]
+    helped: tuple[str, ...]
+    source: str
+
+
+@dataclass(slots=True)
+class Habits:
+    """Everything the tables and the playbook are built from."""
+
+    cycles: list[CycleFact] = field(default_factory=list)
+    agents: list[AgentFact] = field(default_factory=list)
+    pieces: list[Piece] = field(default_factory=list)
+    #: (session_id, day, project, start-up premium USD) of sessions that
+    #: were one small ask; ``reported`` when a size tag said so.
+    small_sessions: list = field(default_factory=list)
+    #: Permission prompts per tool, from the free signals.
+    permission_prompts: Counter = field(default_factory=Counter)
+    #: Skills Claude has loaded, so a slash command can be told from one.
+    skill_names: set = field(default_factory=set)
+    commands_run: Counter = field(default_factory=Counter)
+
+    @property
+    def weeks(self) -> list[str]:
+        return sorted({c.week for c in self.cycles if c.week})
+
+    @property
+    def span_weeks(self) -> float:
+        """How many weeks the messages cover (a day at least)."""
+        moments = [c.ts for c in self.cycles if c.ts is not None]
+        if not moments:
+            return 1.0
+        days = max(1.0, (max(moments) - min(moments)).total_seconds() / 86400)
+        return days / 7
+
+
+def _week(moment: datetime | None) -> str:
+    if moment is None:
+        return ""
+    day = moment.astimezone(timezone.utc).date()
+    return (day - timedelta(days=day.weekday())).isoformat()
+
+
+def _moment(ts: str | None) -> datetime | None:
+    moment = _parse_ts(ts) if ts else None
+    if moment is not None and moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment
+
+
+def _rating_feedback(rating) -> Feedback | None:
+    if not isinstance(rating, dict) or not rating.get("outcome"):
+        return None
+    return Feedback(
+        outcome=rating.get("outcome"),
+        slow=tuple(rating.get("slow") or ()),
+        worth=rating.get("worth"),
+        helped=tuple(rating.get("helped") or ()),
+        source="rating",
+    )
+
+
+def _dominant(values) -> str | None:
+    counts = Counter(v for v in values if v)
+    return counts.most_common(1)[0][0] if counts else None
+
+
+def _shell_failed(turn: Turn) -> bool:
+    return bool(turn.cmd_prefix) and any(turn.tool_errors_by_tool.get(tool, 0) for tool in _SHELL_TOOLS)
+
+
+def _session(bundle, rates: _Rates, out: Habits, rating) -> None:
+    top = bundle.top
+    turns = capture_mod._priced(top)
+    if not turns:
+        return
+    cycles = capture_mod.prompt_cycles(top, bundle.subs)
+    carry = _CarryCost(turns, rates)
+    first_turn = turns[0]
+    baseline = max(0, first_turn.ctx - (first_turn.human_prompt_chars or 0) // capture_mod.CHARS_PER_TOKEN)
+
+    rated: dict[int, Feedback] = {}
+    for span in capture_mod.feedback_spans(cycles):
+        if span.feedback.source != "skipped" and span.feedback.outcome and span.cycles:
+            for cycle in span.cycles:
+                rated[id(cycle)] = span.feedback
+            out.pieces.append(_piece(span.feedback, span.cycles, rates, "your feedback"))
+    session_rating = _rating_feedback(rating)
+    work = [c for c in cycles if not capture_mod.is_feedback_run(c)]
+    if session_rating is not None and work:
+        out.pieces.append(_piece(session_rating, work, rates, "dashboard rating"))
+
+    index_of = {id(t): i for i, t in enumerate(turns)}
+    denied = _denials(top, turns)
+    first_read: dict[str, int] = {}
+    for i, turn in enumerate(turns):
+        for h in turn.read_target_hashes:
+            first_read.setdefault(h, i)
+        for name in turn.skills_invoked:
+            out.skill_names.add(name)
+        for name in turn.commands_run:
+            out.commands_run[name] += 1
+
+    facts: list[CycleFact] = []
+    for cycle in work:
+        facts.append(
+            _cycle_fact(bundle.session_id, cycle, carry, index_of, rates, baseline, rated, session_rating, denied)
+        )
+    for fact, cycle, following in zip(facts, work, work[1:] + [None]):
+        if following is None:
+            continue
+        tag = following.tag
+        if (tag is not None and tag.shift == "redo") or following.turns[0].human_correction:
+            fact.redone = True
+            fact.redo_cost = capture_mod._cycle_cost(following, rates.pricing)
+    out.cycles.extend(facts)
+
+    if len(work) == 1 and not work[0].subs and len(work[0].turns) <= 3:
+        tag = work[0].tag
+        if tag is None or tag.size in (None, "xs", "s"):
+            premium = first_turn.cache_creation_tokens * max(0.0, rates.write(first_turn) - rates.read(first_turn))
+            day = facts[0].ts.date().isoformat() if facts and facts[0].ts else ""
+            out.small_sessions.append((bundle.session_id, day, bundle.slug, premium, tag is not None))
+
+    _agents(bundle, cycles, turns, carry, first_read, rates, out)
+
+
+def _denials(top, turns: list[Turn]) -> dict[int, list[str]]:
+    """Each stopped tool call's kind, by the reply that came after it."""
+    stamps = [t.ts or "" for t in turns]
+    out: dict[int, list[str]] = {}
+    for event in top.events:
+        if event.kind != EventKind.TOOL_DENIAL or not event.ts:
+            continue
+        i = bisect.bisect_left(stamps, event.ts)
+        if i < len(turns):
+            out.setdefault(i, []).append(event.subkind or "")
+    return out
+
+
+def _piece(fb: Feedback, cycles, rates: _Rates, source: str) -> Piece:
+    tags = [c.tag for c in cycles if c.tag is not None]
+    return Piece(
+        outcome=fb.outcome,
+        cost=sum(capture_mod._cycle_cost(c, rates.pricing) for c in cycles),
+        cycles=len(cycles),
+        task=_dominant(t.task for t in tags),
+        slow=tuple(w for w in fb.slow if w != "none"),
+        helped=tuple(w for w in fb.helped if w != "none"),
+        source=source,
+    )
+
+
+def _cycle_fact(session_id, cycle, carry: _CarryCost, index_of, rates: _Rates, baseline, rated, session_rating, denied):
+    first = cycle.turns[0]
+    moment = _moment(first.ts)
+    start_ctx = first.ctx - (first.human_prompt_chars or 0) // capture_mod.CHARS_PER_TOKEN
+    stale = max(0, start_ctx - baseline)
+    idx = [index_of[id(t)] for t in cycle.turns]
+    fact = CycleFact(
+        session_id=session_id,
+        ts=moment,
+        week=_week(moment),
+        cost=capture_mod._cycle_cost(cycle, rates.pricing),
+        turns=len(cycle.turns),
+        tag=cycle.tag,
+        flags=tuple(first.prompt_flags),
+        paste=first.human_prompt_has_paste,
+        stale_tokens=stale,
+        stale_cost=stale * sum(carry.reads[i] for i in idx),
+        stale_rewrite=stale * carry.writes[idx[0]],
+        gap_s=first.gap_s,
+        effort=first.effort,
+        model=_dominant(t.model for t in cycle.turns) or "",
+        growth_cost=sum(max(0, t.ctx - first.ctx) * carry.reads[i] for t, i in zip(cycle.turns, idx)),
+        explore_agents=sum(1 for sub in cycle.subs if sub.meta.agent_type == _EXPLORE_AGENT),
+    )
+    fb = rated.get(id(cycle)) or session_rating
+    if fb is not None:
+        fact.outcome = fb.outcome
+        fact.outcome_source = "rating" if fb.source == "rating" else "feedback"
+    failing: dict[str, list[int]] = {}
+    for n, (turn, i) in enumerate(zip(cycle.turns, idx)):
+        fact.reads += sum(turn.tool_calls_by_tool.get(tool, 0) for tool in _READ_TOOLS)
+        tokens = sum(turn.tool_result_chars_by_tool.get(tool, 0) for tool in _READ_TOOLS) // capture_mod.CHARS_PER_TOKEN
+        fact.read_tokens += tokens
+        fact.read_carry += carry.cost(i, tokens)
+        for tool, chars in turn.tool_result_chars_by_tool.items():
+            big = chars // capture_mod.CHARS_PER_TOKEN
+            if big >= BIG_OUTPUT_TOKENS and tool not in _REPORT_TOOLS:
+                fact.big_outputs.append((tool, big, carry.cost(i, big)))
+        if turn.plan_stats is not None and not fact.planned:
+            fact.planned = True
+            fact.plan_cost = sum(carry.costs[j] for j in idx[: n + 1])
+        if _shell_failed(turn):
+            failing.setdefault(turn.cmd_prefix, []).append(i)
+        by_you = set(first.commands_run)
+        for name in turn.skills_invoked:
+            fact.skill_calls.append((name, name in by_you, n, sum(carry.costs[j] for j in idx[:n])))
+        if n and _compacted(turn):
+            fact.compactions += 1
+        for kind in denied.get(i, ()):
+            if kind in _BLOCKED:
+                fact.blocked += 1
+                fact.blocked_cost += carry.costs[i]
+            elif kind in _REFUSED:
+                fact.refused += 1
+                fact.refused_cost += carry.costs[i]
+        output = rates.output(turn)
+        fact.output_cost += turn.output_tokens * output
+        fact.thinking_cost += turn.thinking_tokens * output
+    for attempts in failing.values():
+        if len(attempts) >= LOOP_FAILURES:
+            fact.loops += 1
+            fact.loop_cost += sum(carry.costs[i] for i in attempts[2:])
+    if fact.tag is not None and fact.tag.plan in ("made", "following", "deviated"):
+        fact.planned = True
+    return fact
+
+
+def _agents(bundle, cycles, turns, carry: _CarryCost, first_read, rates: _Rates, out: Habits) -> None:
+    carries = {id(bundle.top): carry}
+    reports: dict[str, tuple[_CarryCost, int, int]] = {}
+    for i, turn in enumerate(turns):
+        for use_id, chars in turn.agent_result_chars.items():
+            reports[use_id] = (carry, i, chars)
+    sub_turns = {}
+    for sub in bundle.subs:
+        priced = capture_mod._priced(sub)
+        sub_turns[id(sub)] = priced
+        sub_carry = _CarryCost(priced, rates)
+        carries[id(sub)] = sub_carry
+        for i, turn in enumerate(priced):
+            for use_id, chars in turn.agent_result_chars.items():
+                reports[use_id] = (sub_carry, i, chars)
+    main_spawn = {}
+    for i, turn in enumerate(turns):
+        for use_id in turn.tool_use_ids:
+            main_spawn[use_id] = i
+    by_agent = {agent_key(sub.meta.agent_id): sub for sub in bundle.subs if sub.meta.agent_id}
+    cycle_of = {id(sub): cycle for cycle in cycles for sub in cycle.subs}
+
+    for sub in bundle.subs:
+        priced = sub_turns[id(sub)]
+        if not priced:
+            continue
+        sub_carry = carries[id(sub)]
+        first = priced[0]
+        cycle = cycle_of.get(id(sub))
+        fact = AgentFact(
+            session_id=bundle.session_id,
+            agent_type=sub.meta.agent_type or "general-purpose",
+            week=_week(_moment(first.ts)),
+            cost=sum(sub_carry.costs),
+            depth=max(1, sub.meta.spawn_depth or 1),
+            model=_dominant(t.model for t in priced) or "",
+            capped="short" in first.prompt_flags,
+            retry=first.retry_marker,
+            spawn=first.spawn_marker,
+            level=cycle.tag.level if cycle is not None and cycle.tag is not None else None,
+        )
+        for turn in reversed(priced):
+            if fact.result is None and turn.result_marker:
+                fact.result = turn.result_marker
+            cap = turn.cap
+            if cap is not None:
+                fact.fit = fact.fit or cap.fit
+                fact.rules = fact.rules or cap.rules
+                fact.brief = fact.brief or cap.brief
+                fact.missing = fact.missing or tuple(cap.missing)
+        found = reports.get(sub.meta.tool_use_id or "")
+        if found is not None:
+            parent_carry, i, chars = found
+            fact.report_tokens = chars // capture_mod.CHARS_PER_TOKEN
+            fact.report_carry = parent_carry.cost(i, fact.report_tokens)
+        spawn_at = _spawn_index(sub, main_spawn, by_agent)
+        if spawn_at is not None:
+            for i, turn in enumerate(priced):
+                hashes = turn.read_target_hashes
+                again = sum(1 for h in hashes if first_read.get(h, spawn_at) < spawn_at)
+                if not again:
+                    continue
+                per_read = turn.tool_result_chars_by_tool.get("Read", 0) / max(1, len(hashes))
+                fact.overlap_reads += again
+                fact.overlap_cost += sub_carry.cost(i, again * per_read / capture_mod.CHARS_PER_TOKEN)
+        out.agents.append(fact)
+
+
+def _spawn_index(sub, main_spawn, by_agent) -> int | None:
+    """The main-session reply that started ``sub``, or its top-level
+    ancestor for a nested spawn."""
+    seen = set()
+    while sub is not None and id(sub) not in seen:
+        seen.add(id(sub))
+        if sub.meta.tool_use_id in main_spawn:
+            return main_spawn[sub.meta.tool_use_id]
+        sub = by_agent.get(agent_key(sub.meta.parent_agent_id)) if sub.meta.parent_agent_id else None
+    return None
+
+
+def collect(corpus, pricing: Pricing | None, *, ratings: dict | None = None, signals: dict | None = None) -> Habits:
+    """Work out the facts for every session in ``corpus``. ``ratings``
+    holds your dashboard ratings by session id (``Store.all_feedback``);
+    ``signals`` the free signals by session id (``signals.by_session``)."""
+    out = Habits()
+    rates = _Rates(pricing)
+    for bundle in corpus.sessions:
+        if bundle.top is None:
+            continue
+        _session(bundle, rates, out, (ratings or {}).get(bundle.session_id))
+    for seen in (signals or {}).values():
+        out.permission_prompts.update(seen.permission_prompts)
+    return out
+
+
+# -- the playbook --------------------------------------------------------------
+
+
+@dataclass(slots=True)
+class Item:
+    key: str
+    saving: float | None
+    n: int
+    sources: tuple[str, ...]
+    evidence: str
+    example: str = ""
+    #: week -> USD the habit addresses, for the trend.
+    waste: dict = field(default_factory=dict)
+
+    @property
+    def source(self) -> str:
+        return " + ".join(self.sources)
+
+
+def _by_week(pairs) -> dict[str, float]:
+    out: dict[str, float] = {}
+    for week, usd in pairs:
+        if week:
+            out[week] = out.get(week, 0.0) + usd
+    return out
+
+
+def _mean(values) -> float | None:
+    values = list(values)
+    return sum(values) / len(values) if values else None
+
+
+def _pct(part: int, whole: int) -> float | None:
+    return 100.0 * part / whole if whole else None
+
+
+def _sources(reported: bool, inferred: bool, feedback: bool = False) -> tuple[str, ...]:
+    return tuple(s for s, on in (("reported", reported), ("inferred", inferred), ("your feedback", feedback)) if on)
+
+
+def _k(tokens: float) -> str:
+    return f"{tokens / 1000:.0f}k" if tokens >= 1000 else f"{tokens:.0f}"
+
+
+def _item_split_large(h: Habits) -> Item | None:
+    big = []
+    for c in h.cycles:
+        reported = c.tag is not None and c.tag.size in ("l", "xl")
+        inferred = (c.tag is None or c.tag.size is None) and (c.compactions or c.turns >= LARGE_TURNS)
+        if reported or inferred:
+            big.append((c, reported))
+    saving = sum(0.5 * c.growth_cost for c, _ in big)
+    if not big or saving <= 0:
+        return None
+    typical = sorted(c.cost for c in h.cycles)[len(h.cycles) // 2]
+    ratio = _mean(c.cost for c, _ in big) / typical if typical else None
+    parts = [f"{len(big)} large asks"]
+    if ratio:
+        parts[0] += f" cost {ratio:.1f}x a typical one"
+    compacted = sum(1 for c, _ in big if c.compactions)
+    if compacted:
+        parts.append(f"{compacted} were compacted part-way")
+    redone = sum(1 for c, _ in big if c.redone)
+    if redone:
+        parts.append(f"{redone} had to be redone")
+    return Item(
+        "split_large", saving, len(big), _sources(any(r for _, r in big), any(not r for _, r in big)),
+        "; ".join(parts) + ".", waste=_by_week((c.week, 0.5 * c.growth_cost) for c, _ in big),
+    )
+
+
+def _item_batch_small(h: Habits) -> Item | None:
+    groups: dict[tuple, list] = {}
+    for entry in h.small_sessions:
+        groups.setdefault((entry[1], entry[2]), []).append(entry)
+    extra = [entry for group in groups.values() if len(group) >= 2 for entry in sorted(group)[1:]]
+    saving = sum(entry[3] for entry in extra)
+    if not extra or saving <= 0:
+        return None
+    week_of = {c.session_id: c.week for c in h.cycles}
+    return Item(
+        "batch_small", saving, len(h.small_sessions),
+        _sources(any(e[4] for e in extra), any(not e[4] for e in extra)),
+        f"{len(h.small_sessions)} sessions were one small ask each; {len(extra)} times you started another "
+        "the same day in the same project, paying the start-up cost again.",
+        waste=_by_week((week_of.get(e[0], ""), e[3]) for e in extra),
+    )
+
+
+def _item_clear_between(h: Habits) -> Item | None:
+    reported, inferred = [], []
+    for c in h.cycles:
+        if c.stale_tokens < STALE_TOKENS:
+            continue
+        tag = c.tag
+        if tag is not None and (tag.shift == "new" or tag.prior == "none"):
+            reported.append((c, c.stale_cost))
+        elif (c.gap_s or 0) >= LONG_BREAK_S and not (
+            tag is not None and (tag.shift in ("build", "grew", "redo") or tag.prior in ("needed", "some"))
+        ):
+            inferred.append((c, 0.5 * (c.stale_rewrite + c.stale_cost)))
+    found = reported + inferred
+    saving = sum(usd for _, usd in found)
+    if not found or saving <= 0:
+        return None
+    parts = []
+    if reported:
+        avg = _mean(c.stale_tokens for c, _ in reported)
+        parts.append(f"{len(reported)} new tasks began with about {_k(avg)} tokens of earlier work still in context")
+    if inferred:
+        avg = _mean(c.stale_tokens for c, _ in inferred)
+        parts.append(
+            f"{len(inferred)} messages came after a break of over an hour with about {_k(avg)} tokens of earlier "
+            "work, which the first reply wrote to the cache again"
+        )
+    return Item(
+        "clear_between", saving, len(found), _sources(bool(reported), bool(inferred)),
+        "; ".join(parts) + ".", waste=_by_week((c.week, usd) for c, usd in found),
+    )
+
+
+def _clear_costs(cycles) -> dict[str, float]:
+    by_task: dict[str, list[float]] = {}
+    for c in cycles:
+        if c.tag is not None and c.tag.brief == "clear" and c.tag.task:
+            by_task.setdefault(c.tag.task, []).append(c.cost)
+    return {task: _mean(costs) for task, costs in by_task.items() if len(costs) >= 3}
+
+
+def _top_missing(cycles, limit: int = 2) -> list[str]:
+    counts = Counter(w for c in cycles if c.tag is not None for w in c.tag.missing if w != "none")
+    return [w for w, _ in counts.most_common(limit)]
+
+
+def _item_brief_clearly(h: Habits) -> Item | None:
+    tagged = [c for c in h.cycles if c.tag is not None and c.tag.brief]
+    unclear = [c for c in tagged if c.tag.brief in ("partial", "vague")]
+    if len(unclear) < MIN_GROUP:
+        return None
+    clear = _clear_costs(h.cycles)
+    gaps = [
+        (c, 0.5 * max(0.0, c.cost - clear[c.tag.task])) for c in unclear if c.tag.task in clear
+    ]
+    saving = sum(usd for _, usd in gaps) if gaps else None
+    parts = [f"{len(unclear)} of {len(tagged)} asks were partial or vague"]
+    compared = [c for c, _ in gaps]
+    if compared:
+        ratio = _mean(c.cost / clear[c.tag.task] for c in compared if clear[c.tag.task])
+        if ratio:
+            parts[0] += f", costing {ratio:.1f}x a clear ask of the same kind"
+    missing = _top_missing(unclear)
+    if missing:
+        parts.append("most often missing: " + ", ".join(MISSING_LINES[w][0].lower() for w in missing if w in MISSING_LINES))
+    example = EXAMPLES["brief_clearly"]
+    if missing and missing[0] in MISSING_LINES:
+        example = MISSING_LINES[missing[0]][1]
+    return Item(
+        "brief_clearly", saving if saving else None, len(unclear), ("reported",), "; ".join(parts) + ".",
+        example=example, waste=_by_week((c.week, usd) for c, usd in gaps),
+    )
+
+
+def _item_name_files(h: Habits) -> Item | None:
+    looked = [c for c in h.cycles if c.reads]
+    named = [c for c in looked if "path" in c.flags]
+    unnamed = [c for c in looked if "path" not in c.flags]
+    if len(named) < MIN_GROUP or len(unnamed) < MIN_GROUP:
+        return None
+    with_path = _mean(c.read_carry for c in named)
+    gaps = [(c, 0.5 * max(0.0, c.read_carry - with_path)) for c in unnamed]
+    saving = sum(usd for _, usd in gaps)
+    reads_named = _mean(c.reads for c in named)
+    reads_unnamed = _mean(c.reads for c in unnamed)
+    if saving <= 0 or reads_unnamed <= reads_named:
+        return None
+    return Item(
+        "name_files", saving, len(unnamed), ("inferred",),
+        f"Asks that named a file ran {reads_named:.1f} reads and searches on average; the {len(unnamed)} that "
+        f"didn't ran {reads_unnamed:.1f}.",
+        waste=_by_week((c.week, usd) for c, usd in gaps),
+    )
+
+
+def _item_paste_errors(h: Habits) -> Item | None:
+    bugs = [c for c in h.cycles if c.tag is not None and c.tag.task in ("bugfix", "debug")]
+    with_error = [c for c in bugs if "error" in c.flags or c.paste]
+    without = [c for c in bugs if not ("error" in c.flags or c.paste)]
+    if len(with_error) < 3 or len(without) < 3:
+        return None
+    avg_with = _mean(c.cost for c in with_error)
+    avg_without = _mean(c.cost for c in without)
+    if not avg_with or avg_without <= avg_with:
+        return None
+    gaps = [(c, 0.5 * max(0.0, c.cost - avg_with)) for c in without]
+    return Item(
+        "paste_errors", sum(usd for _, usd in gaps), len(without), ("reported", "inferred"),
+        f"{len(without)} bug reports came without the error or its output; they cost {avg_without / avg_with:.1f}x "
+        "the ones that had it.",
+        waste=_by_week((c.week, usd) for c, usd in gaps),
+    )
+
+
+def _item_explore_research(h: Habits) -> Item | None:
+    heavy = [c for c in h.cycles if c.reads >= RESEARCH_READS and not c.explore_agents and c.read_tokens]
+    gaps = [
+        (c, c.read_carry * max(0, c.read_tokens - EXPLORE_REPORT_TOKENS) / c.read_tokens) for c in heavy
+    ]
+    saving = sum(usd for _, usd in gaps)
+    if not heavy or saving <= 0:
+        return None
+    parts = [f"{len(heavy)} asks ran {_mean(c.reads for c in heavy):.0f} reads and searches in the main session on "
+             "average, with no Explore agent"]
+    not_found = sum(1 for c in h.cycles if c.tag is not None and c.tag.found == "no")
+    if not_found:
+        parts.append(f"Claude said it didn't find what it looked for {not_found} times")
+    return Item(
+        "explore_research", saving, len(heavy), _sources(bool(not_found), True), "; ".join(parts) + ".",
+        waste=_by_week((c.week, usd) for c, usd in gaps),
+    )
+
+
+def _item_plan_hard(h: Habits) -> Item | None:
+    hard = [c for c in h.cycles if c.tag is not None and c.tag.level == "hard"]
+    unplanned = [c for c in hard if not c.planned]
+    planned = [c for c in hard if c.planned]
+    if len(unplanned) < 3:
+        return None
+    rate_u = sum(c.redone for c in unplanned) / len(unplanned)
+    rate_p = sum(c.redone for c in planned) / len(planned) if len(planned) >= 3 else None
+    if rate_u <= 0 or (rate_p is not None and rate_p >= rate_u):
+        return None
+    share = 1 - rate_p / rate_u if rate_p is not None else 0.5
+    redos = [(c, share * c.redo_cost) for c in unplanned if c.redone]
+    text = f"{len(unplanned)} hard asks went ahead without a plan and {rate_u:.0%} of them were redone"
+    if rate_p is not None:
+        text += f", against {rate_p:.0%} of the {len(planned)} planned ones"
+    return Item(
+        "plan_hard", sum(usd for _, usd in redos), len(unplanned), ("reported", "inferred"), text + ".",
+        waste=_by_week((c.week, usd) for c, usd in redos),
+    )
+
+
+def _item_skip_plan_easy(h: Habits) -> Item | None:
+    easy = [c for c in h.cycles if c.tag is not None and c.tag.level == "easy" and c.planned and c.plan_cost]
+    if len(easy) < 2:
+        return None
+    return Item(
+        "skip_plan_easy", sum(c.plan_cost for c in easy), len(easy), ("reported", "inferred"),
+        f"{len(easy)} easy asks went through plan mode first.",
+        waste=_by_week((c.week, c.plan_cost) for c in easy),
+    )
+
+
+def _item_skill_early(h: Habits) -> Item | None:
+    late = [
+        (c, name, before)
+        for c in h.cycles
+        for name, by_you, replies, before in c.skill_calls
+        if not by_you and replies >= LATE_SKILL_TURNS
+    ]
+    wanted = Counter(
+        c.tag.skill_name for c in h.cycles if c.tag is not None and c.tag.skill == "would-help" and c.tag.skill_name
+    )
+    would_help = sum(1 for c in h.cycles if c.tag is not None and c.tag.skill == "would-help")
+    if not late and not would_help:
+        return None
+    parts = []
+    names = Counter(name for _, name, _ in late) + wanted
+    if late:
+        parts.append(f"Claude reached for a skill after {LATE_SKILL_TURNS} or more replies {len(late)} times")
+    if would_help:
+        parts.append(f"it said a skill would have helped {would_help} times")
+    top = names.most_common(1)[0][0] if names else None
+    example = EXAMPLES["skill_early"] if top is None else f"/{top} <what you want>, as your first message for this kind of work."
+    if top:
+        parts.append(f"most often {top}")
+    saving = sum(0.5 * before for _, _, before in late)
+    return Item(
+        "skill_early", saving or None, len(late) + would_help, _sources(bool(would_help), bool(late)),
+        "; ".join(parts) + ".", example=example, waste=_by_week((c.week, 0.5 * before) for c, _, before in late),
+    )
+
+
+def _item_skill_unneeded(h: Habits) -> Item | None:
+    unneeded = [c for c in h.cycles if c.tag is not None and c.tag.skill == "unneeded" and c.skill_calls]
+    if len(unneeded) < 2:
+        return None
+    names = Counter(name for c in unneeded for name, by_you, _, _ in c.skill_calls if not by_you)
+    text = f"Claude said the skill it loaded wasn't needed in {len(unneeded)} asks"
+    if names:
+        text += " (" + ", ".join(name for name, _ in names.most_common(3)) + ")"
+    return Item("skill_unneeded", None, len(unneeded), ("reported",), text + ".")
+
+
+def _item_short_reports(h: Habits) -> Item | None:
+    long = [a for a in h.agents if a.report_tokens > LONG_REPORT_TOKENS and not a.capped]
+    gaps = [(a, a.report_carry * (a.report_tokens - SHORT_REPORT_TOKENS) / a.report_tokens) for a in long]
+    saving = sum(usd for _, usd in gaps)
+    if not long or saving <= 0:
+        return None
+    with_reports = [a for a in h.agents if a.report_tokens]
+    capped = _pct(sum(a.capped for a in with_reports), len(with_reports))
+    text = (
+        f"{len(long)} agent reports ran over {_k(LONG_REPORT_TOKENS)} tokens, {_k(_mean(a.report_tokens for a in long))} "
+        "on average, and stayed in the main context"
+    )
+    if capped is not None:
+        text += f"; {capped:.0f}% of briefs asked for a short one"
+    return Item(
+        "short_reports", saving, len(long), ("inferred",), text + ".", waste=_by_week((a.week, usd) for a, usd in gaps)
+    )
+
+
+def _item_better_briefs(h: Habits) -> Item | None:
+    restarted = [a for a in h.agents if a.retry in ("brief", "scope")]
+    stuck = [a for a in h.agents if a.result in ("partial", "blocked")]
+    thin = [a for a in h.agents if a.brief in ("partial", "vague")]
+    if len(restarted) + len(stuck) < 2:
+        return None
+    parts = []
+    if restarted:
+        parts.append(f"{len(restarted)} agent runs were started again because of the brief or the task")
+    if stuck:
+        parts.append(f"{len(stuck)} ended partial or blocked")
+    if thin:
+        parts.append(f"agents called {len(thin)} briefs partial or vague")
+    missing = Counter(w for a in h.agents for w in a.missing if w != "none")
+    if missing:
+        parts.append("most often missing: " + ", ".join(MISSING_LINES[w][0].lower() for w, _ in missing.most_common(2) if w in MISSING_LINES))
+    return Item(
+        "better_briefs", sum(a.cost for a in restarted) or None, len(restarted) + len(stuck), ("reported",),
+        "; ".join(parts) + ".", waste=_by_week((a.week, a.cost) for a in restarted),
+    )
+
+
+def _item_flatten_nesting(h: Habits) -> Item | None:
+    overlap = [a for a in h.agents if a.overlap_reads]
+    nested = [a for a in h.agents if a.depth >= 2]
+    saving = sum(a.overlap_cost for a in overlap)
+    if not overlap and len(nested) < 3:
+        return None
+    parts = []
+    if overlap:
+        parts.append(f"agents read {sum(a.overlap_reads for a in overlap)} files the main session had already read")
+    if nested:
+        share = _pct(sum(a.cost for a in nested), sum(a.cost for a in h.agents) or 0)
+        text = f"{len(nested)} agents were started by other agents"
+        if share:
+            text += f" ({share:.0f}% of what agents cost)"
+        parts.append(text)
+    body = "; ".join(parts)
+    return Item(
+        "flatten_nesting", saving or None, sum(a.overlap_reads for a in overlap) + len(nested), ("inferred",),
+        body[:1].upper() + body[1:] + ".", waste=_by_week((a.week, a.overlap_cost) for a in overlap),
+    )
+
+
+def _item_quiet_output(h: Habits) -> Item | None:
+    found = []
+    for c in h.cycles:
+        said = c.tag.out if c.tag is not None else None
+        share = {"unneeded": 1.0, "part": 0.5, "needed": 0.0}.get(said, 0.5)
+        for tool, tokens, cost in c.big_outputs:
+            found.append((c, tool, tokens, share * cost, said is not None))
+    saving = sum(f[3] for f in found)
+    if not found or saving <= 0:
+        return None
+    tool = Counter(f[1] for f in found).most_common(1)[0][0]
+    return Item(
+        "quiet_output", saving, len(found), _sources(any(f[4] for f in found), True),
+        f"{len(found)} tool outputs of {_k(BIG_OUTPUT_TOKENS)} tokens or more, mostly from {tool}, stayed in context "
+        "for the rest of the work.",
+        waste=_by_week((f[0].week, f[3]) for f in found),
+    )
+
+
+def _item_tool_loops(h: Habits) -> Item | None:
+    looping = [c for c in h.cycles if c.loops]
+    saving = sum(c.loop_cost for c in looping)
+    if not looping or saving <= 0:
+        return None
+    loops = sum(c.loops for c in looping)
+    return Item(
+        "tool_loops", saving, loops, ("inferred",),
+        f"A command failed {LOOP_FAILURES} or more times within one message {loops} times.",
+        waste=_by_week((c.week, c.loop_cost) for c in looping),
+    )
+
+
+def _item_targeted_checks(h: Habits) -> Item | None:
+    checked = [c for c in h.cycles if c.tag is not None and c.tag.check]
+    if len(checked) < MIN_GROUP:
+        return None
+    unchecked = [c for c in checked if c.tag.check == "none"]
+    full = [c for c in checked if c.tag.check == "full"]
+    redone = [c for c in unchecked if c.redone]
+    if not redone and len(full) < MIN_GROUP:
+        return None
+    parts = []
+    if unchecked:
+        parts.append(f"{len(unchecked)} changes weren't checked and {len(redone)} of them were redone")
+    if full:
+        parts.append(f"{len(full)} ran the full suite")
+    body = "; ".join(parts)
+    return Item(
+        "targeted_checks", sum(0.5 * c.redo_cost for c in redone) or None, len(checked), ("reported",),
+        body[:1].upper() + body[1:] + ".", waste=_by_week((c.week, 0.5 * c.redo_cost) for c in redone),
+    )
+
+
+def _item_allow_routine(h: Habits) -> Item | None:
+    prompts = sum(h.permission_prompts.values())
+    blocked = [c for c in h.cycles if c.blocked]
+    count = sum(c.blocked for c in blocked)
+    if prompts < 5 and count < 3:
+        return None
+    parts = []
+    if prompts:
+        tools = ", ".join(tool for tool, _ in h.permission_prompts.most_common(2))
+        parts.append(f"Claude asked for permission {prompts} times, mostly for {tools}")
+    if count:
+        parts.append(f"auto mode blocked {count} requests and Claude had to find another way")
+    body = "; ".join(parts)
+    return Item(
+        "allow_routine", sum(c.blocked_cost for c in blocked) or None, prompts + count, ("inferred",),
+        body[:1].upper() + body[1:] + ".", waste=_by_week((c.week, c.blocked_cost) for c in blocked),
+    )
+
+
+def _item_state_limits(h: Habits) -> Item | None:
+    refused = [c for c in h.cycles if c.refused]
+    count = sum(c.refused for c in refused)
+    if count < 3:
+        return None
+    return Item(
+        "state_limits", sum(c.refused_cost for c in refused) or None, count, ("inferred",),
+        f"{count} requests were turned down, by a deny rule or by you, in {len(refused)} messages, and "
+        "Claude had to change course.",
+        waste=_by_week((c.week, c.refused_cost) for c in refused),
+    )
+
+
+def _effort_waste(c: CycleFact) -> float:
+    return 0.5 * c.thinking_cost if c.thinking_cost else 0.25 * c.output_cost
+
+
+def _item_effort_fit(h: Habits) -> Item | None:
+    easy = [c for c in h.cycles if c.tag is not None and c.tag.level == "easy" and c.effort in _HIGH_EFFORT]
+    if len(easy) < 3:
+        return None
+    return Item(
+        "effort_fit", sum(_effort_waste(c) for c in easy), len(easy), ("reported",),
+        f"{len(easy)} easy asks ran at high effort or above.", waste=_by_week((c.week, _effort_waste(c)) for c in easy),
+    )
+
+
+def _item_outcome_misses(h: Habits) -> Item | None:
+    misses = [p for p in h.pieces if p.outcome in ("missed", "stopped")]
+    met = [p for p in h.pieces if p.outcome == "met"]
+    if not misses:
+        return None
+    parts = [f"{len(misses)} pieces of work missed their goal or were stopped"]
+    if met and _mean(p.cost for p in met):
+        parts[0] += f", costing {_mean(p.cost for p in misses) / _mean(p.cost for p in met):.1f}x one that met it"
+    task = _dominant(p.task for p in misses)
+    if task:
+        parts.append(f"mostly {task} work")
+    slow = Counter(w for p in misses for w in p.slow).most_common(1)
+    if slow:
+        parts.append(f"slowed most by: {_ANSWER_LABELS['slow'].get(slow[0][0], slow[0][0]).lower()}")
+    return Item("outcome_misses", None, len(misses), ("your feedback",), "; ".join(parts) + ".")
+
+
+_BUILDERS = (
+    _item_split_large, _item_batch_small, _item_clear_between, _item_brief_clearly, _item_name_files,
+    _item_paste_errors, _item_explore_research, _item_plan_hard, _item_skip_plan_easy, _item_skill_early,
+    _item_skill_unneeded, _item_short_reports, _item_better_briefs, _item_flatten_nesting, _item_quiet_output,
+    _item_tool_loops, _item_targeted_checks, _item_allow_routine, _item_state_limits, _item_effort_fit,
+    _item_outcome_misses,
+)
+
+
+def playbook(h: Habits) -> list[Item]:
+    """The habits worth trying, the largest weekly saving first; items
+    without an estimate come after, most evidence first."""
+    items = [item for item in (build(h) for build in _BUILDERS) if item is not None]
+    items.sort(key=lambda i: (i.saving is None, -(i.saving or 0.0), -i.n))
+    return items
+
+
+def _weekly_rates(h: Habits, item: Item) -> list[float | None]:
+    per_week = Counter(c.week for c in h.cycles if c.week)
+    weeks = h.weeks[-TREND_WEEKS:]
+    return [
+        item.waste.get(w, 0.0) / per_week[w] if per_week[w] >= TREND_MIN_CYCLES else None for w in weeks
+    ]
+
+
+def trend(h: Habits, item: Item) -> tuple[str, str, float]:
+    """``(word, weeks, adopted)``: whether what the habit addresses per
+    message is falling, rising or steady over the last weeks; each week's
+    value scaled to 0-100 (``-`` for a week with too few messages); and
+    the weekly saving the fall already makes."""
+    rates = _weekly_rates(h, item)
+    top = max((r for r in rates if r is not None), default=0.0)
+    weeks = " ".join("-" if r is None else str(round(100 * r / top)) if top else "0" for r in rates)
+    known = [r for r in rates if r is not None]
+    if len(known) < 3:
+        return "new", weeks, 0.0
+    half = len(known) // 2
+    # Medians, so one unusual week doesn't make or break a trend; and the
+    # latest week must not be back above the earlier level.
+    before, after = statistics.median(known[:half]), statistics.median(known[-half:])
+    if before and after <= 0.8 * before and known[-1] <= before:
+        if len(known) < TREND_MIN_ADOPTED:
+            return "falling", weeks, 0.0
+        per_week = Counter(c.week for c in h.cycles if c.week)
+        recent = [per_week[w] for w in h.weeks[-TREND_WEEKS:]][-half:]
+        return "falling", weeks, (before - after) * (_mean(recent) or 0.0)
+    if after >= 1.2 * before and after > 0:
+        return "rising", weeks, 0.0
+    return "steady", weeks, 0.0
+
+
+def confidence(item: Item) -> str:
+    level = "high" if item.n >= 20 else "medium" if item.n >= 8 else "low"
+    if item.sources == ("inferred",) and level == "high":
+        return "medium"
+    return level
+
+
+# -- tables --------------------------------------------------------------------
+
+
+def _money_or_none(usd: float | None) -> float | None:
+    return round(usd, 6) if isinstance(usd, (int, float)) and usd > 0 else None
+
+
+def playbook_table(h: Habits, items: list[Item]) -> Table:
+    weeks = h.span_weeks
+    rows = []
+    for item in items:
+        word, spark, _ = trend(h, item)
+        theme, _title = ITEMS[item.key]
+        rows.append([
+            item.key,
+            theme,
+            _money_or_none(item.saving / weeks if item.saving else None),
+            item.evidence,
+            item.example or EXAMPLES[item.key],
+            BASES[item.key],
+            item.n,
+            item.source,
+            confidence(item),
+            word,
+            spark,
+        ])
+    return Table(
+        name="habits_playbook",
+        title="Habits worth trying",
+        columns=[
+            Column(key="habit", label="Habit", kind="str"),
+            Column(key="theme", label="Theme", kind="str"),
+            Column(key="saving", label="Saving a week", kind="money"),
+            Column(key="evidence", label="What your sessions show", kind="str"),
+            Column(key="example", label="Try", kind="str"),
+            Column(key="basis", label="How the saving is worked out", kind="str"),
+            Column(key="n", label="Seen", kind="int"),
+            Column(key="source", label="Source", kind="str"),
+            Column(key="confidence", label="Confidence", kind="str"),
+            Column(key="trend", label="Trend", kind="str"),
+            Column(key="weeks", label="By week", kind="str"),
+        ],
+        rows=rows,
+        notes=[] if rows else [
+            "Nothing to suggest yet. The more you use Claude Code (and the more metrics capture collects), the "
+            "more this finds."
+        ],
+    )
+
+
+def digest_table(h: Habits, items: list[Item] | None = None) -> Table:
+    """"This week": the three habits worth the most, what the habits you
+    already picked up save, and what a piece of work that met its goal
+    cost."""
+    items = playbook(h) if items is None else items
+    weeks = h.span_weeks
+    rows = []
+    for n, item in enumerate([i for i in items if i.saving][:3], start=1):
+        rows.append([f"top_{n}", ITEMS[item.key][1], _money_or_none(item.saving / weeks), item.evidence])
+    adopted = [(item, trend(h, item)[2]) for item in items]
+    adopted = [(item, usd) for item, usd in adopted if usd > 0]
+    if adopted:
+        rows.append([
+            "adopted", "Habits you already picked up",
+            _money_or_none(sum(usd for _, usd in adopted)),
+            ", ".join(ITEMS[item.key][1] for item, _ in adopted),
+        ])
+    met = [p for p in h.pieces if p.outcome == "met"]
+    if met:
+        rows.append([
+            "cost_per_met", "A piece of work that met its goal", _money_or_none(_mean(p.cost for p in met)),
+            f"{len(met)} of {len(h.pieces)} pieces you gave feedback on",
+        ])
+    tagged = sum(1 for c in h.cycles if c.tag is not None)
+    if tagged:
+        rows.append(["tagged", "Messages Claude tagged", _pct(tagged, len(h.cycles)), f"{tagged} of {len(h.cycles)}"])
+    return Table(
+        name="habits_digest",
+        title="This week",
+        columns=[
+            Column(key="item", label="Item", kind="str"),
+            Column(key="what", label="What", kind="str"),
+            Column(key="value", label="Value", kind="str"),
+            Column(key="detail", label="Detail", kind="str"),
+        ],
+        rows=rows,
+    )
+
+
+def _by_task_table(h: Habits) -> Table:
+    rows = []
+    total = len(h.cycles)
+    if total:
+        rows.append(_task_row("all", h.cycles, total))
+    groups: dict[str, list[CycleFact]] = {}
+    for c in h.cycles:
+        if c.tag is not None and c.tag.task:
+            groups.setdefault(c.tag.task, []).append(c)
+    for task, cycles in sorted(groups.items(), key=lambda kv: -sum(c.cost for c in kv[1])):
+        rows.append(_task_row(task, cycles, total))
+    return Table(
+        name="habits_by_task",
+        title="Kinds of task",
+        columns=[
+            Column(key="task", label="Task", kind="str"),
+            Column(key="cycles", label="Messages", kind="int"),
+            Column(key="share", label="Share", kind="pct"),
+            Column(key="cost", label="Cost", kind="money"),
+            Column(key="avg_cost", label="Per message", kind="money"),
+            Column(key="clear_pct", label="Clear asks", kind="pct"),
+            Column(key="large_pct", label="Large asks", kind="pct"),
+            Column(key="redo_pct", label="Redone", kind="pct"),
+            Column(key="met_pct", label="Met the goal", kind="pct"),
+        ],
+        rows=rows,
+    )
+
+
+def _task_row(task: str, cycles: list[CycleFact], total: int) -> list:
+    briefs = [c for c in cycles if c.tag is not None and c.tag.brief]
+    sizes = [c for c in cycles if c.tag is not None and c.tag.size]
+    rated = [c for c in cycles if c.outcome]
+    cost = sum(c.cost for c in cycles)
+    return [
+        task,
+        len(cycles),
+        _pct(len(cycles), total),
+        cost,
+        cost / len(cycles),
+        _pct(sum(c.tag.brief == "clear" for c in briefs), len(briefs)),
+        _pct(sum(c.tag.size in ("l", "xl") for c in sizes), len(sizes)),
+        _pct(sum(c.redone for c in cycles), len(cycles)),
+        _pct(sum(c.outcome == "met" for c in rated), len(rated)),
+    ]
+
+
+def _briefs_table(h: Habits) -> Table:
+    rows = []
+    for word in catalogue.TAG_VOCAB["brief"]:
+        cycles = [c for c in h.cycles if c.tag is not None and c.tag.brief == word]
+        if not cycles:
+            continue
+        rated = [c for c in cycles if c.outcome]
+        rows.append([
+            word,
+            len(cycles),
+            _mean(c.cost for c in cycles),
+            _pct(sum(c.redone for c in cycles), len(cycles)),
+            _pct(sum(c.outcome == "met" for c in rated), len(rated)),
+            ", ".join(MISSING_LINES[w][0].lower() for w in _top_missing(cycles) if w in MISSING_LINES),
+        ])
+    return Table(
+        name="habits_briefs",
+        title="How clear your asks were",
+        columns=[
+            Column(key="brief", label="Brief", kind="str"),
+            Column(key="cycles", label="Messages", kind="int"),
+            Column(key="avg_cost", label="Per message", kind="money"),
+            Column(key="redo_pct", label="Redone", kind="pct"),
+            Column(key="met_pct", label="Met the goal", kind="pct"),
+            Column(key="missing", label="Most often missing", kind="str"),
+        ],
+        rows=rows,
+    )
+
+
+def _prompt_flags_table(h: Habits) -> Table:
+    rows = []
+    for flag in (*PROMPT_FLAGS, "paste"):
+        with_flag = [c for c in h.cycles if (c.paste if flag == "paste" else flag in c.flags)]
+        without = [c for c in h.cycles if not (c.paste if flag == "paste" else flag in c.flags)]
+        rows.append([
+            flag,
+            len(with_flag),
+            _pct(len(with_flag), len(h.cycles)),
+            _mean(c.cost for c in with_flag),
+            _mean(c.cost for c in without),
+            _mean(c.reads for c in with_flag),
+            _mean(c.reads for c in without),
+        ])
+    return Table(
+        name="habits_prompt_flags",
+        title="What your messages contained",
+        columns=[
+            Column(key="flag", label="Contained", kind="str"),
+            Column(key="cycles", label="Messages", kind="int"),
+            Column(key="share", label="Share", kind="pct"),
+            Column(key="avg_with", label="Per message with it", kind="money"),
+            Column(key="avg_without", label="Per message without it", kind="money"),
+            Column(key="reads_with", label="Reads and searches with it", kind="float"),
+            Column(key="reads_without", label="Reads and searches without it", kind="float"),
+        ],
+        rows=rows if h.cycles else [],
+    )
+
+
+def _templates_table(h: Habits) -> Table:
+    rows = []
+    groups: dict[str, list[CycleFact]] = {}
+    for c in h.cycles:
+        if c.tag is not None and c.tag.task:
+            groups.setdefault(c.tag.task, []).append(c)
+    tasks = [t for t, _ in sorted(groups.items(), key=lambda kv: -len(kv[1]))] or list(_DEFAULT_TEMPLATE_TASKS)
+    for task in tasks:
+        cycles = groups.get(task, [])
+        rows.append(_template_row(task, cycles))
+    return Table(
+        name="habits_brief_templates",
+        title="Brief templates",
+        columns=[
+            Column(key="task", label="Task", kind="str"),
+            Column(key="checklist", label="Checklist", kind="str"),
+            Column(key="why", label="Why these", kind="str"),
+            Column(key="template", label="Template", kind="str"),
+        ],
+        rows=rows,
+    )
+
+
+def template_lines(task: str, cycles=()) -> tuple[list[str], str]:
+    """The checklist keys for ``task`` (your most often missing first,
+    then its defaults) and why."""
+    counts = Counter(w for c in cycles if c.tag is not None for w in c.tag.missing if w in MISSING_LINES)
+    tagged = sum(1 for c in cycles if c.tag is not None and c.tag.missing)
+    mine = [w for w, n in counts.most_common() if tagged and n / tagged >= 0.2]
+    keys = mine + [k for k in DEFAULT_CHECKLISTS.get(task, ("goal", "done")) if k not in mine]
+    if mine:
+        top = mine[0]
+        why = f"{MISSING_LINES[top][0]} was missing in {counts[top]} of {len(cycles)} {task} asks."
+    else:
+        why = "A starting point; metrics capture (Standard) fits it to what your asks leave out."
+    return keys, why
+
+
+def _template_row(task: str, cycles) -> list:
+    keys, why = template_lines(task, cycles)
+    lines = [MISSING_LINES[k] if k in MISSING_LINES else _REPORT_LINE for k in keys]
+    return [task, " / ".join(label for label, _ in lines), why, "\n".join(text for _, text in lines)]
+
+
+def _agents_table(h: Habits) -> Table:
+    rows = []
+    levels = [c for c in h.cycles if c.tag is not None and c.tag.level]
+    if levels:
+        cost = sum(c.cost for c in h.cycles)
+        rows.append([
+            "top-level", len(h.cycles), cost, None, None, None, None, None, None, None, None, None, None,
+            _pct(sum(c.tag.level == "easy" for c in levels), len(levels)),
+            _pct(sum(c.tag.level == "hard" for c in levels), len(levels)),
+            None, None,
+        ])
+    groups: dict[str, list[AgentFact]] = {}
+    for a in h.agents:
+        groups.setdefault(a.agent_type, []).append(a)
+    for agent_type, runs in sorted(groups.items(), key=lambda kv: -sum(a.cost for a in kv[1])):
+        reports = [a for a in runs if a.report_tokens]
+        results = [a for a in runs if a.result]
+        leveled = [a for a in runs if a.level]
+        fits = Counter(a.fit for a in runs if a.fit)
+        rules = Counter(a.rules for a in runs if a.rules)
+        rows.append([
+            agent_type,
+            len(runs),
+            sum(a.cost for a in runs),
+            _mean(a.report_tokens for a in reports),
+            _pct(sum(a.capped for a in runs), len(runs)),
+            _pct(sum(a.result == "done" for a in results), len(results)),
+            sum(1 for a in runs if a.retry),
+            sum(1 for a in runs if a.retry == "model"),
+            fits.get("smaller", 0),
+            fits.get("right", 0),
+            fits.get("larger", 0),
+            rules.get("used", 0),
+            rules.get("unused", 0),
+            _pct(sum(a.level == "easy" for a in leveled), len(leveled)),
+            _pct(sum(a.level == "hard" for a in leveled), len(leveled)),
+            sum(a.overlap_reads for a in runs),
+            sum(1 for a in runs if a.depth >= 2),
+        ])
+    return Table(
+        name="habits_agents",
+        title="How agents were used",
+        columns=[
+            Column(key="agent_type", label="Agent", kind="str"),
+            Column(key="runs", label="Runs", kind="int"),
+            Column(key="cost", label="Cost", kind="money"),
+            Column(key="report_tokens", label="Report", kind="tokens"),
+            Column(key="capped_pct", label="Asked for a short report", kind="pct"),
+            Column(key="done_pct", label="Finished", kind="pct"),
+            Column(key="retried", label="Retried", kind="int"),
+            Column(key="retried_model", label="Retried for the model", kind="int"),
+            Column(key="fit_smaller", label="Smaller would do", kind="int"),
+            Column(key="fit_right", label="Model was right", kind="int"),
+            Column(key="fit_larger", label="Needed larger", kind="int"),
+            Column(key="rules_used", label="Used CLAUDE.md", kind="int"),
+            Column(key="rules_unused", label="Didn't use CLAUDE.md", kind="int"),
+            Column(key="easy_pct", label="Easy work", kind="pct"),
+            Column(key="hard_pct", label="Hard work", kind="pct"),
+            Column(key="overlap_reads", label="Files read again", kind="int"),
+            Column(key="nested", label="Started by an agent", kind="int"),
+        ],
+        rows=rows,
+    )
+
+
+def _effort_table(h: Habits) -> Table:
+    groups: dict[str, list[CycleFact]] = {}
+    for c in h.cycles:
+        if c.tag is not None and c.tag.level:
+            groups.setdefault(f"{c.tag.level}:{c.effort or 'default'}", []).append(c)
+    order = {w: n for n, w in enumerate(catalogue.TAG_VOCAB["level"])}
+    rows = []
+    for key, cycles in sorted(groups.items(), key=lambda kv: (order.get(kv[0].split(":")[0], 9), kv[0])):
+        rated = [c for c in cycles if c.outcome]
+        output = sum(c.output_cost for c in cycles)
+        rows.append([
+            key,
+            len(cycles),
+            _mean(c.cost for c in cycles),
+            _pct(sum(c.thinking_cost for c in cycles), output) if output else None,
+            _pct(sum(c.redone for c in cycles), len(cycles)),
+            _pct(sum(c.outcome == "met" for c in rated), len(rated)),
+            sum(_effort_waste(c) for c in cycles) if key.split(":")[0] == "easy" and key.split(":")[1] in _HIGH_EFFORT else None,
+        ])
+    return Table(
+        name="habits_effort_fit",
+        title="Effort against how hard the work was",
+        columns=[
+            Column(key="setup", label="Work and effort", kind="str"),
+            Column(key="cycles", label="Messages", kind="int"),
+            Column(key="avg_cost", label="Per message", kind="money"),
+            Column(key="thinking_pct", label="Thinking share of output", kind="pct"),
+            Column(key="redo_pct", label="Redone", kind="pct"),
+            Column(key="met_pct", label="Met the goal", kind="pct"),
+            Column(key="saving", label="Lower effort would save, about", kind="money"),
+        ],
+        rows=rows,
+    )
+
+
+def _outcomes_table(h: Habits) -> Table:
+    rows = []
+    for word in catalogue.FEEDBACK_VOCAB["outcome"]:
+        pieces = [p for p in h.pieces if p.outcome == word]
+        if not pieces:
+            continue
+        slow = Counter(w for p in pieces for w in p.slow).most_common(1)
+        helped = Counter(w for p in pieces for w in p.helped).most_common(1)
+        rows.append([
+            word,
+            len(pieces),
+            sum(p.cycles for p in pieces),
+            sum(p.cost for p in pieces),
+            _mean(p.cost for p in pieces),
+            _dominant(p.task for p in pieces) or "",
+            _ANSWER_LABELS["slow"].get(slow[0][0], slow[0][0]) if slow else "",
+            _ANSWER_LABELS["helped"].get(helped[0][0], helped[0][0]) if helped else "",
+            " + ".join(sorted({p.source for p in pieces})),
+        ])
+    return Table(
+        name="habits_outcomes",
+        title="Did the work meet its goal?",
+        columns=[
+            Column(key="outcome", label="Outcome", kind="str"),
+            Column(key="pieces", label="Pieces of work", kind="int"),
+            Column(key="cycles", label="Messages", kind="int"),
+            Column(key="cost", label="Cost", kind="money"),
+            Column(key="avg_cost", label="Per piece", kind="money"),
+            Column(key="task", label="Most often", kind="str"),
+            Column(key="slow", label="Slowed most by", kind="str"),
+            Column(key="helped", label="Would have helped most", kind="str"),
+            Column(key="source", label="Source", kind="str"),
+        ],
+        rows=rows,
+    )
+
+
+def _skills_table(h: Habits) -> Table:
+    stats: dict[str, dict] = {}
+
+    def entry(name):
+        return stats.setdefault(name, {"by_you": 0, "by_claude": 0, "late": 0, "before": [], "helped": 0,
+                                       "unneeded": 0, "would_help": 0})
+
+    for c in h.cycles:
+        for name, by_you, replies, before in c.skill_calls:
+            if by_you:
+                continue
+            e = entry(name)
+            e["by_claude"] += 1
+            if replies >= LATE_SKILL_TURNS:
+                e["late"] += 1
+                e["before"].append(before)
+        tag = c.tag
+        if tag is not None and tag.skill in ("helped", "unneeded"):
+            for name in {n for n, _, _, _ in c.skill_calls}:
+                entry(name)[tag.skill] += 1
+        if tag is not None and tag.skill == "would-help" and tag.skill_name:
+            entry(tag.skill_name)["would_help"] += 1
+    for name in h.skill_names | set(stats):
+        if name in h.commands_run:
+            entry(name)["by_you"] = h.commands_run[name]
+    rows = [
+        [name, e["by_you"], e["by_claude"], e["late"], _mean(e["before"]), e["helped"], e["unneeded"], e["would_help"]]
+        for name, e in sorted(stats.items(), key=lambda kv: -(kv[1]["by_you"] + kv[1]["by_claude"] + kv[1]["would_help"]))
+        if name != catalogue.FEEDBACK_SKILL
+    ]
+    return Table(
+        name="habits_skills",
+        title="When skills ran",
+        columns=[
+            Column(key="skill", label="Skill", kind="str"),
+            Column(key="by_you", label="You ran it", kind="int"),
+            Column(key="by_claude", label="Claude loaded it", kind="int"),
+            Column(key="late", label="Loaded late", kind="int"),
+            Column(key="before", label="Spent before it, typical", kind="money"),
+            Column(key="helped", label="Helped", kind="int"),
+            Column(key="unneeded", label="Wasn't needed", kind="int"),
+            Column(key="would_help", label="Would have helped", kind="int"),
+        ],
+        rows=rows,
+    )
+
+
+def _tool_output_table(h: Habits) -> Table:
+    stats: dict[str, list] = {}
+    for c in h.cycles:
+        for tool, tokens, cost in c.big_outputs:
+            s = stats.setdefault(tool, [0, 0, 0.0])
+            s[0] += 1
+            s[1] += tokens
+            s[2] += cost
+    loops = sum(c.loops for c in h.cycles)
+    rows = [[tool, n, tokens, cost, None] for tool, (n, tokens, cost) in sorted(stats.items(), key=lambda kv: -kv[1][2])]
+    if loops:
+        rows.append(["loops", None, None, sum(c.loop_cost for c in h.cycles), loops])
+    return Table(
+        name="habits_tool_output",
+        title="Big tool output and failing commands",
+        columns=[
+            Column(key="tool", label="Tool", kind="str"),
+            Column(key="outputs", label="Big outputs", kind="int"),
+            Column(key="tokens", label="Tokens", kind="tokens"),
+            Column(key="cost", label="Carrying them cost", kind="money"),
+            Column(key="loops", label="Commands failing again and again", kind="int"),
+        ],
+        rows=rows,
+    )
+
+
+def build_section(corpus, pricing: Pricing | None, *, ratings: dict | None = None, signals: dict | None = None) -> Section:
+    """The "habits" report section. Every table is always there, empty
+    when there's nothing to show, so the report keeps its shape."""
+    h = collect(corpus, pricing, ratings=ratings, signals=signals)
+    return section_from(h)
+
+
+def section_from(h: Habits) -> Section:
+    items = playbook(h)
+    notes = []
+    if h.cycles and not any(c.tag is not None for c in h.cycles):
+        notes.append(
+            "Nothing here was reported by Claude yet: turn on metrics capture (the Capture tab or "
+            "claude-token-lens capture on) for kinds of task, brief quality and how hard the work was."
+        )
+    if h.cycles and not h.pieces:
+        notes.append(
+            "No feedback yet: rate sessions on the Sessions tab or run /tl-feedback to see cost per piece of "
+            "work that met its goal."
+        )
+    return Section(
+        key="habits",
+        title="Work habits",
+        tables=[
+            digest_table(h, items),
+            playbook_table(h, items),
+            _by_task_table(h),
+            _briefs_table(h),
+            _templates_table(h),
+            _agents_table(h),
+            _effort_table(h),
+            _outcomes_table(h),
+            _prompt_flags_table(h),
+            _skills_table(h),
+            _tool_output_table(h),
+        ],
+        notes=notes,
+    )
+
+
+def unfit_agents(rows: list[dict]) -> dict[str, str]:
+    """Agents a cheaper model shouldn't be suggested for, from the
+    ``habits_agents`` rows, with why: Claude said a larger model would
+    suit the work, most of it was hard, or a run was retried for the
+    model. The main session (``top-level``) counts by how hard its work
+    was only."""
+    out: dict[str, str] = {}
+    for row in rows:
+        agent = row.get("agent_type")
+        if not agent:
+            continue
+        larger = row.get("fit_larger") or 0
+        smaller = row.get("fit_smaller") or 0
+        hard = row.get("hard_pct")
+        if larger and larger >= smaller:
+            out[agent] = f"Claude said {larger} of its runs needed a larger model"
+        elif isinstance(hard, (int, float)) and hard >= 50:
+            out[agent] = f"{hard:.0f}% of its work was reported hard"
+        elif (row.get("retried_model") or 0) >= 1:
+            out[agent] = "a run was retried because the model wasn't enough"
+    return out
+
+
+# -- the capture section -------------------------------------------------------
+
+
+def capture_section(corpus, pricing: Pricing | None, capture_config) -> Section:
+    """The "capture" report section: what metrics capture cost while it
+    was on, measured from the transcripts (``capture.usage``)."""
+    level = getattr(capture_config, "level", "off") or "off"
+    since = getattr(capture_config, "enabled_at", "") or ""
+    use = capture_mod.usage(corpus, pricing, since=since)
+    rows = [
+        ["level", catalogue.LEVEL_TITLES.get(level, level)],
+        ["since", since[:10] if since else ""],
+        ["note_tokens", use.note_tokens],
+        ["tag_tokens", use.tag_tokens],
+        ["cost", use.cost],
+        ["share", use.share],
+        ["coverage", use.coverage],
+        ["report_coverage", use.report_coverage],
+        ["feedback_runs", use.feedback_runs],
+        ["feedback_cost", use.feedback_cost],
+    ]
+    table = Table(
+        name="capture_usage",
+        title="What metrics capture cost",
+        columns=[Column(key="metric", label="Metric", kind="str"), Column(key="value", label="Value", kind="str")],
+        rows=rows,
+    )
+    return Section(key="capture", title="Metrics capture", tables=[table])
+
+
+__all__ = [
+    "AgentFact",
+    "CycleFact",
+    "DEFAULT_CHECKLISTS",
+    "EXAMPLES",
+    "Habits",
+    "ITEMS",
+    "Item",
+    "MISSING_LINES",
+    "Piece",
+    "build_section",
+    "capture_section",
+    "collect",
+    "confidence",
+    "digest_table",
+    "playbook",
+    "playbook_table",
+    "section_from",
+    "template_lines",
+    "trend",
+    "unfit_agents",
+]

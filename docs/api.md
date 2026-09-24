@@ -890,9 +890,12 @@ one is built in the background.
 - `feedback`: `skill` (`installed`, `outdated`, `foreign`, `missing`,
   or `null` while the skill is off), `runs` and `answered` (its runs
   over the last `days` days), `ratings` (sessions rated on the
-  dashboard, `null` while that is off) and `questions` (as in
-  `GET /api/session/<id>`'s `feedback_questions`).
-- `commands`: the `status`, `connect` and `feedback` CLI commands.
+  dashboard, `null` while that is off), `questions` (as in
+  `GET /api/session/<id>`'s `feedback_questions`) and `brief_skill`
+  (the `/tl-brief` skill's file, in the same words as `skill`, or
+  `null` while brief templates are off).
+- `commands`: the `status`, `connect`, `feedback` and `brief` CLI
+  commands.
 
 `409` with the `claude-token-lens capture status` command in
 `error.commands` when `config.toml` can't be read.

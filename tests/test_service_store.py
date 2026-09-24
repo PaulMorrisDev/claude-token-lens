@@ -1138,3 +1138,38 @@ def test_migrate_upgrades_a_v5_store_with_the_feedback_table(tmp_path) -> None:
         assert store.feedback_count() == 1
     finally:
         store.close()
+
+
+
+def test_read_session_marks_reads_tags_and_ratings_without_writing(tmp_path) -> None:
+    from claude_token_lens.service.store import read_session_marks
+
+    db_path = tmp_path / "service.db"
+    assert read_session_marks(db_path) == ({}, {})
+    store = Store(str(db_path))
+    store.open()
+    _seed(store)
+    store.set_feedback("session-a", outcome="met", slow=["tools"], worth="yes", helped=[])
+    expected_ratings = store.all_feedback()
+    store.close()
+    before = db_path.read_bytes()
+    tags, ratings = read_session_marks(db_path)
+    assert tags == {"session-a": {"purpose": "refactor-override"}}
+    assert ratings == expected_ratings and ratings["session-a"]["slow"] == ["tools"]
+    assert db_path.read_bytes() == before
+
+
+def test_read_session_marks_of_a_store_without_the_ratings_table_reads_the_tags(tmp_path) -> None:
+    from claude_token_lens.service.store import read_session_marks
+
+    db_path = tmp_path / "service.db"
+    store = Store(str(db_path))
+    store.open()
+    _seed(store)
+    conn = store._connection()
+    conn.execute("DROP TABLE session_feedback")
+    conn.commit()
+    store.close()
+    assert read_session_marks(db_path) == ({"session-a": {"purpose": "refactor-override"}}, {})
+    (tmp_path / "junk.db").write_bytes(b"not a database")
+    assert read_session_marks(tmp_path / "junk.db") == ({}, {})

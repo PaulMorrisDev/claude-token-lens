@@ -740,6 +740,8 @@ def make_handler(
             snapshots=snaps or None,
             session_overrides=overrides,
             usage_log_rows=usage_log_rows,
+            # Your Sessions-tab ratings, for the Work habits tab.
+            ratings=store.all_feedback(),
             # v4 wiring round: without this, waste.WasteStats's salted
             # session-id hash would fall back to report.py's own
             # temp-directory default (see _default_waste_config_dir) --
@@ -1070,6 +1072,11 @@ def make_handler(
                 "feedback", (token, *soft), soft, lambda: _capture_feedback(config), _STALE_REPORT_MAX_AGE_S
             )
             skill = footprint.feedback_skill_state()
+        brief_skill = None
+        if "brief_templates" in capture.coaching:
+            from .. import footprint
+
+            brief_skill = footprint.skill_state(capture_catalogue.BRIEF_SKILL)
         if "dashboard_rating" in capture.feedback:
             ratings = store.feedback_count()
         statusline = None
@@ -1084,7 +1091,8 @@ def make_handler(
         hooks = hook_health.check_capture(hook_health.capture_specs(capture.active_metrics()))
         return capture_view.view(
             capture, past=past, units=units, use=use, hooks=hooks, signal_sessions=signal_sessions,
-            started_since=started, feedback_use=feedback_use, skill=skill, ratings=ratings, statusline=statusline,
+            started_since=started, feedback_use=feedback_use, skill=skill, brief_skill=brief_skill, ratings=ratings,
+            statusline=statusline,
         )
 
     def _capture_conflict(message: str, commands: list[str]) -> tuple[int, dict]:

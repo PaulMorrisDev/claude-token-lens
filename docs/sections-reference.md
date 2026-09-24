@@ -132,16 +132,26 @@ are not real invoice lines.
 - `sessions_by_purpose` — the same columns by `purpose`. First match
   wins, in this order: `local-llm-pipeline`, `workflow-run`, `review`,
   `test-triage`, `planning`, `docs-or-light-edit`, `refactor`,
-  `agent-fanout`, else `general-dev`.
+  `agent-fanout`, else `general-dev`. While metrics capture is on, the
+  kind of task Claude reported (`task=`) for at least half of a
+  session's tagged messages (two or more) decides the purpose where it
+  maps one to one: `review`, `test` (`test-triage`), `plan`
+  (`planning`), `docs` (`docs-or-light-edit`) and `refactor`. The two
+  structural purposes, `local-llm-pipeline` and `workflow-run`, still
+  win.
 - `sessions_detail` — the 50 most recently started sessions, one row
   each: project, mode, purpose, sources (whether each came from a
-  `sessions.toml` override or the rule engine), start time, span, turns
-  and subagent count.
+  `sessions.toml` override, the rule engine, or for the purpose, the
+  task Claude `reported`), start time, span, turns and subagent count.
 
 Per-session `mode`/`purpose` overrides live in
 `<config-dir>/sessions.toml` (`<config-dir>` defaults to
 `~/.claude/token-lens`) and always win over the rule engine
-(`config.load_session_overrides`).
+(`config.load_session_overrides`). Tags set on the dashboard's Sessions
+tab win over `sessions.toml`, in the dashboard and in the CLI's
+`report`, `compare` and `config-diff`, which read them from
+`<config-dir>/service.db` without writing to it
+(`service.store.read_session_marks`).
 
 ## `recache` (`recache.py`)
 
@@ -392,7 +402,14 @@ moving one tier down (fable -> opus -> sonnet -> haiku, via
 `workstyle.model_tier` and `Pricing.aliases`, never a hardcoded id).
 Every figure is a price ceiling at today's usage shape, not a
 prediction: a smaller model may need more turns or fail the task
-outright, and neither possibility is represented here.
+outright, and neither possibility is priced here. With metrics capture
+on, the agent type's `habits_agents` row is cited as evidence (the
+share of its work Claude reported easy, and runs that said a smaller
+model would do), and the merged suggestion leaves out an agent whose
+runs said it needed a larger model, whose work was mostly reported
+hard, or that was retried for the model (`habits.unfit_agents`, used by
+`advice._merge_model_tier` and the Models quick action). None of these
+changes a figure.
 
 - `model_swap_by_agent_type` — spawns, priced turns, unpriced turns
   (unknown model), observed model, observed cost, a `Cost at
@@ -580,6 +597,84 @@ test and privacy are in [concepts](concepts.md#7-quality-signals).
   write a result marker), the share, how many said each word, and about
   how many output tokens writing them took and what that cost at the
   writing model's output price.
+
+## `habits` (`habits.py`)
+
+How the way you work shapes what it costs, and the habits that would
+have saved the most in your own sessions. Built per message of yours (a
+*cycle*: one message you typed and every reply and agent run that
+answered it, `capture.prompt_cycles`) and per subagent run at any
+depth. It reads what metrics capture's tags reported where they are
+there, what the parser measures without asking (whether a message
+named a file or pasted an error, a command failing again and again, a
+skill loaded late), and your ratings from the Sessions tab. Every table
+is always there, empty when there's nothing to show; the notes say when
+capture is off or no feedback has been given.
+
+- `habits_digest` — "This week": the three habits worth the most (saving
+  a week, `top_1` to `top_3`), what the habits you already picked up
+  save (`adopted`), the average cost of a piece of work that met its
+  goal (`cost_per_met`), and the share of messages Claude tagged
+  (`tagged`). The monthly report carries the same digest.
+- `habits_playbook` — one row per habit worth trying (`habits.ITEMS`),
+  the largest weekly saving first: theme, saving a week, what your
+  sessions show, an example to copy, how the saving is worked out, how
+  often it was seen, the source (`reported`, `inferred`, `your
+  feedback`), confidence (`high` from 20 cases, `medium` from 8; inferred
+  alone is never `high`), trend (`new`, `falling`, `rising`, `steady`)
+  and the rate per message over the last eight weeks scaled to 0-100
+  (`-` for a week with fewer than three messages). A fall over at least
+  four known weeks counts as picked up, and the saving it implies goes
+  into the digest's `adopted` row.
+- `habits_by_task` — per kind of task Claude reported (`task=`), after
+  an `all` row: messages, share, cost, per message, and the shares
+  that were clear asks, large asks, redone by your next message (a
+  `shift=redo` tag or a correction), and met their goal.
+- `habits_briefs` — per brief word (`clear`, `partial`, `vague`):
+  messages, per message, redone, met the goal, and the lines most
+  often missing.
+- `habits_brief_templates` — per kind of task (the defaults while
+  nothing is tagged): the checklist, why those lines (the one most
+  often missing from your asks, or a starting point), and the template
+  to copy. The `/tl-brief` skill (`capture brief on`) asks for the same
+  lines, from `capture_catalogue.BRIEF_CHECKLISTS`.
+- `habits_agents` — per agent type (and `top-level` for how hard the main
+  session's work was): runs, cost, typical report size, the share
+  asked for a short report, finished, retried and retried for the
+  model, what the runs said about the model (smaller would do, right,
+  needed larger) and CLAUDE.md (used, didn't use), the shares of work
+  reported easy and hard, files read again that the parent had read,
+  and runs started by another agent.
+- `habits_effort_fit` — per reported level and effort (`easy:high`):
+  messages, per message, thinking share of output, redone, met the
+  goal, and for easy work at high effort or above, what lower effort
+  would save (half the thinking, or a quarter of the output without
+  thinking).
+- `habits_outcomes` — per outcome you gave (`met`, `partly`, `missed`,
+  ...): pieces of work, messages, cost, per piece, the most common kind
+  of task, what slowed it most, what would have helped most, and where
+  the answers came from (`/tl-feedback` or a dashboard rating).
+- `habits_prompt_flags` — per thing a message contained (a file path, a
+  code block, an error, a link, what done means, numbered steps, a
+  paste): messages and share, then cost per message and reads and
+  searches per message with and without it.
+- `habits_skills` — per skill: runs by you, loads by Claude, loads after
+  three or more replies and what had been spent before them, and what
+  the tags said (helped, wasn't needed, would have helped). The
+  `/tl-feedback` skill is left out.
+- `habits_tool_output` — per tool with outputs over the large-output
+  threshold: how many, their tokens and what carrying them cost; then a
+  `loops` row for commands that failed three or more times within one
+  message, and what those attempts cost.
+
+## `capture` (`habits.py`)
+
+- `capture_usage` — what metrics capture cost while it was on, measured
+  from the transcripts (`capture.usage`): the level, since when, note
+  and tag tokens, cost and share of spend, how often Claude tagged its
+  replies and its agent reports, and the `/tl-feedback` runs and their
+  cost. The dashboard's Capture tab shows the same figures from
+  `/api/capture`.
 
 ## `workstyle` (`workstyle.py`)
 
@@ -1061,6 +1156,22 @@ minimum-sample size (`min_sessions`/`min_turns` in `config.toml`'s
 [README section 6](../README.md#6-for-team-leads-and-enterprise)).
 `report --patch-set` renders the whole set as unified-diff-style text
 via `recommend.render_patch_set`.
+
+With metrics capture on, some rules read the `habits` section too. Each
+cites the cell it used:
+
+- `effort-mismatch` comes straight from `habits_effort_fit` when five or
+  more messages Claude reported easy ran at high effort or above with
+  a thinking share over the threshold. Otherwise it falls back to the
+  corpus-wide approximation.
+- `spawn-claude-md` is held back when more of an agent type's runs said
+  they used CLAUDE.md than said they didn't, and cites the ones that
+  didn't.
+- `model-tier` cites `habits_agents` (see `model_swap` above).
+- `wasted-turns` cites the share of messages redone by the next one and
+  the pieces of work you said missed their goal.
+- The `sessions` purpose uses the task Claude reported (see `sessions`
+  above).
 
 ## Diagnostics (`ReportModel.diagnostics`)
 

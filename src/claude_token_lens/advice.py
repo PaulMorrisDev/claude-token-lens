@@ -32,7 +32,7 @@ import re
 from dataclasses import dataclass
 from typing import Callable
 
-from . import quality, whatif
+from . import habits, quality, whatif
 from .fixes import already_set
 from .model import Recommendation, ReportModel, SettingChange
 from .snapshots import Snapshot, effective_config
@@ -153,6 +153,10 @@ def _merge_model_tier(recs: list[Recommendation], ctx: _Context) -> list[Recomme
     tables = whatif._Tables(ctx.report)
     worse = quality.worse_models(tables.rows("quality", "quality_by_setup"))
     retried = quality.retried_models(tables.rows("quality", "quality_retried"))
+    # Metrics capture: agents whose runs said a larger model would suit,
+    # whose work was mostly reported hard, or that were retried for the
+    # model. A veto only: a "smaller would do" never adds a suggestion.
+    unfit = habits.unfit_agents(tables.rows("habits", "habits_agents"))
     left_out: list[str] = []
     rows = []
     for rec in tier:
@@ -167,6 +171,9 @@ def _merge_model_tier(recs: list[Recommendation], ctx: _Context) -> list[Recomme
         now = ctx.setting_now("model") if agent == "top-level" else ctx.agent_now(agent, "model")
         if already_set("model", _family_alias(alt), now):
             # Already on the cheaper model; the saving is from before the change.
+            continue
+        if agent in unfit:
+            left_out.append(f"{_who(agent)} ({unfit[agent]})")
             continue
         if (agent, _family_alias(alt)) in worse:
             # The quality section found this agent did worse on that model.
@@ -228,7 +235,7 @@ def _merge_model_tier(recs: list[Recommendation], ctx: _Context) -> list[Recomme
             f"The biggest saving is {_who(top[1])}."
         )
         + (
-            f" Left out, from the quality section: {', '.join(left_out)}."
+            f" Left out: {', '.join(left_out)}."
             if left_out
             else ""
         ),
@@ -410,6 +417,9 @@ def _explain_ttl_switch(rec: Recommendation, ctx: _Context) -> None:
 
 
 def _explain_effort_mismatch(rec: Recommendation, ctx: _Context) -> None:
+    if any(source == "habits.habits_effort_fit" for _label, _value, source, _row in rec.evidence):
+        _explain_effort_mismatch_reported(rec, ctx)
+        return
     share = _evidence_value(rec, "thinking share")
     rec.title = "High effort is being spent on light work"
     rec.why = (
@@ -428,6 +438,31 @@ def _explain_effort_mismatch(rec: Recommendation, ctx: _Context) -> None:
             scope="managed" if rec.scope == "managed" else "user",
         )
     ]
+
+
+def _explain_effort_mismatch_reported(rec: Recommendation, ctx: _Context) -> None:
+    """The direct path: messages Claude reported as easy that ran at high
+    effort or above (``recommend._effort_mismatch_reported``)."""
+    easy = sum(v for label, v, _s, _r in rec.evidence if label.startswith("Easy messages") and isinstance(v, int))
+    shares = [v for label, v, _s, _r in rec.evidence if "thinking share" in label and isinstance(v, (int, float))]
+    rec.title = "High effort is being spent on easy work"
+    rec.why = (
+        f"Claude reported {easy} of your messages as easy work, yet they ran at high effort or above"
+        + (f", and up to {max(shares):.0f}% of their output was thinking." if shares else ".")
+    )
+    rec.action = "Make medium your default effort, and raise it with /effort for the tasks that need it."
+    rec.changes = [
+        SettingChange(
+            target="settings",
+            key="effortLevel",
+            value="medium",
+            current=ctx.setting_now("effortLevel"),
+            note="Measured on the messages Claude reported as easy (metrics capture).",
+            scope="managed" if rec.scope == "managed" else "user",
+        )
+    ]
+    rec.estimated_saving = ctx.money(rec.saving_usd, prefix="About ")
+    rec.saving_basis = ctx.basis("Half the thinking on those messages, at list price. Not measured.")
 
 
 def _explain_baseline_bloat(rec: Recommendation, ctx: _Context) -> None:

@@ -693,7 +693,9 @@ METRICS: tuple[Metric, ...] = (
         group="coaching",
         section="coaching",
         title="Brief templates",
-        what="Checklists per kind of task, built from what your own requests tend to lack.",
+        what="Checklists per kind of task, built from what your own requests tend to lack, on the Work "
+        "habits tab to copy. Turned on, it also adds a /tl-brief skill you run with a request: Claude "
+        "checks it against its checklist and asks once for anything missing.",
         why="Better first messages, so Claude spends less finding things out.",
         powers=("information",),
     ),
@@ -887,6 +889,84 @@ def feedback_skill_text() -> str:
         '3. After the tag, write one line: "Thanks: Token Lens will use this for your savings tips."',
         "",
         'If the user declines the questions, reply only "No problem." and write no tag.',
+        "",
+    ]
+    return "\n".join(lines)
+
+
+# -- the /tl-brief checklists -----------------------------------------------
+
+#: The brief skill: the user runs it as ``/tl-brief <request>``, from
+#: ``~/.claude/skills/tl-brief/SKILL.md``.
+BRIEF_SKILL = "tl-brief"
+
+#: A checklist line -> ``(label, template line)``. The keys are the
+#: ``missing`` words (``none`` aside), plus ``report`` for research.
+BRIEF_LINES: dict[str, tuple[str, str]] = {
+    "files": ("Files", "Files: <the paths you know are involved>"),
+    "goal": ("Goal", "Goal: <what should be true afterwards, and why>"),
+    "constraints": ("Constraints", "Keep: <what must not change; libraries and patterns to stick to>"),
+    "done": ("Done when", "Done when: <the test, command or behaviour that shows it works>"),
+    "repro": ("Reproduce", "Reproduce: <steps or command>. Error: <paste the failing output>"),
+    "scope": ("Scope", "Only: <what's in scope>. Not: <what to leave alone>"),
+    "report": ("Report", "Report: <how long, and in what form>"),
+}
+
+#: The checklist each kind of task starts from. The Work habits tab puts
+#: the lines your own requests most often lack first; the skill uses these
+#: as they are, so what it holds doesn't change with your data.
+BRIEF_CHECKLISTS: dict[str, tuple[str, ...]] = {
+    "bugfix": ("repro", "files", "done"),
+    "debug": ("repro", "files", "done"),
+    "feature": ("goal", "files", "constraints", "done"),
+    "refactor": ("files", "constraints", "done"),
+    "research": ("goal", "files", "report"),
+    "review": ("files", "scope"),
+    "test": ("files", "done"),
+    "docs": ("goal", "files"),
+    "plan": ("goal", "constraints"),
+    "ops": ("goal", "constraints", "done"),
+    "chat": ("goal",),
+}
+
+
+def brief_skill_text() -> str:
+    """``SKILL.md`` for ``/tl-brief``: check a request against its kind of
+    task's checklist and ask once for what is missing, or start. Like
+    ``/tl-feedback`` it is user-invoked only and names no model."""
+    lines = [
+        "---",
+        f"name: {BRIEF_SKILL}",
+        "description: Check a request against a short checklist for its kind of task before starting, for "
+        "Claude Token Lens.",
+        "disable-model-invocation: true",
+        "---",
+        "",
+        "The user wants their request checked before the work starts, for Claude Token Lens, so less is spent "
+        "finding things out. The request is the text after /tl-brief; when there is none, it is the user's "
+        "previous message.",
+        "",
+        "1. Decide which kind of task it is: " + ", ".join(BRIEF_CHECKLISTS) + ".",
+        "",
+        "2. Check the request against that kind's checklist:",
+        "",
+    ]
+    for task, keys in BRIEF_CHECKLISTS.items():
+        lines.append(f"   - {task}: " + ", ".join(BRIEF_LINES[k][0] for k in keys))
+    lines += [
+        "",
+        "3. If every line is covered, or what is missing can be found with one quick look, start the work "
+        "straight away and don't mention this check.",
+        "",
+        "4. Otherwise ask once, in one short message, for only the missing lines, as lines the user can fill "
+        "in, then wait for the answer before starting:",
+        "",
+    ]
+    for _label, template in BRIEF_LINES.values():
+        lines.append(f"   {template}")
+    lines += [
+        "",
+        "Ask about nothing else, and don't repeat the request back.",
         "",
     ]
     return "\n".join(lines)

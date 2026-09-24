@@ -659,6 +659,86 @@ def test_the_skill_is_listed_and_taken_out_by_uninstall(tmp_path, monkeypatch, c
     assert not _skill(config_dir).exists()
 
 
+# -- brief templates: the /tl-brief skill ----------------------------------------
+
+
+def _brief_skill(config_dir):
+    return config_dir.parent / "skills" / "tl-brief" / "SKILL.md"
+
+
+def test_brief_on_dry_run_writes_nothing_and_a_yes_writes_the_skill(tmp_path):
+    config_dir = _claude(tmp_path, {})
+    rc, out = _capture(config_dir, "brief", "on", "--dry-run")
+    assert rc == 0 and "Brief templates: the /tl-brief skill on." in out
+    assert "Dry run: config.toml left unchanged." in out and "Dry run: the skill is left as it is." in out
+    assert "    name: tl-brief" in out
+    assert not _brief_skill(config_dir).exists() and not (config_dir / "config.toml").exists()
+    rc, out = _capture(config_dir, "brief", "on", stdin="y\n")
+    assert f"This adds the /tl-brief skill, {_brief_skill(config_dir)}:" in out
+    assert "Run /tl-brief in Claude Code followed by your request" in out
+    assert _brief_skill(config_dir).read_text(encoding="utf-8") == cat.brief_skill_text()
+    capture = load_config(config_dir=config_dir).capture
+    assert capture.coaching == ["brief_templates"] and capture.level == "off" and capture.feedback == []
+    assert _settings(config_dir) == {}
+    rc, out = _capture(config_dir, "brief", "on")
+    assert "Brief templates are already on." in out and "The /tl-brief skill is in place" in out
+
+
+def test_brief_off_removes_only_the_brief_skill(tmp_path):
+    config_dir = _claude(tmp_path, {})
+    _capture(config_dir, "feedback", "on", "--yes")
+    _capture(config_dir, "brief", "on", "--yes")
+    rc, out = _capture(config_dir, "brief", "off", stdin="n\n")
+    assert "Left as it is. Run 'claude-token-lens capture brief off'" in out and _brief_skill(config_dir).is_file()
+    rc, out = _capture(config_dir, "brief", "off", "--yes")
+    assert "This removes the /tl-brief skill" in out and not _brief_skill(config_dir).parent.exists()
+    assert _skill(config_dir).is_file()
+    capture = load_config(config_dir=config_dir).capture
+    assert capture.coaching == [] and capture.feedback == ["feedback_skill", "feedback_note"]
+
+
+def test_enabling_brief_templates_installs_the_skill_and_status_says_when_it_is_missing(tmp_path):
+    config_dir = _claude(tmp_path, {})
+    _capture(config_dir, "enable", "brief_templates", "--yes")
+    assert _brief_skill(config_dir).is_file()
+    _brief_skill(config_dir).unlink()
+    assert "The /tl-brief skill isn't installed: claude-token-lens capture brief on" in _capture(config_dir, "status")[1]
+    _capture(config_dir, "connect", "--yes")
+    assert _brief_skill(config_dir).is_file()
+    _capture(config_dir, "disable", "brief_templates", "--yes")
+    assert not _brief_skill(config_dir).exists()
+
+
+def test_someone_elses_tl_brief_is_left_alone(tmp_path):
+    config_dir = _claude(tmp_path, {})
+    skill = _brief_skill(config_dir)
+    skill.parent.mkdir(parents=True)
+    skill.write_text("---\nname: tl-brief\n---\nmine\n", encoding="utf-8")
+    rc, out = _capture(config_dir, "brief", "on", "--yes")
+    assert "holds a skill this tool didn't write, so it is left alone" in out
+    _capture(config_dir, "brief", "off", "--yes")
+    assert skill.read_text(encoding="utf-8") == "---\nname: tl-brief\n---\nmine\n"
+    assert footprint.plan_uninstall(config_dir).brief_skill is None
+
+
+@pytest.mark.parametrize("argv", [["brief"], ["brief", "maybe"]])
+def test_brief_needs_on_or_off(tmp_path, argv):
+    config_dir = _claude(tmp_path, {})
+    rc, out = _capture(config_dir, *argv)
+    assert rc == 2 and "'capture brief' needs on or off" in out
+
+
+def test_the_brief_skill_is_listed_and_taken_out_by_uninstall(tmp_path, monkeypatch, capsys):
+    config_dir = _claude(tmp_path, {})
+    assert "brief_skill" not in {i.key for i in footprint.inventory(config_dir, service_registered=False)}
+    _capture(config_dir, "brief", "on", "--yes")
+    item = {i.key: i for i in footprint.inventory(config_dir, service_registered=False)}["brief_skill"]
+    assert item.status == "installed" and item.undo == "claude-token-lens capture brief off"
+    assert footprint.plan_uninstall(config_dir).brief_skill == _brief_skill(config_dir)
+    cli.main(["uninstall", "--yes", "--config-dir", str(config_dir)])
+    out = capsys.readouterr().out
+    assert "The /tl-brief skill:" in out and not _brief_skill(config_dir).exists()
+
 def _init_feedback(config_dir, *argv, stdin=""):
     out = io.StringIO()
     cli._cmd_init_feedback_step(

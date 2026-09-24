@@ -213,6 +213,14 @@ multi-section `report` output:
    scoping keeps `cache_ground_truth` bounded to the requested window
    there.
 
+4. **Work habits** — the Work habits digest for the month
+   (`habits.digest_table`): the three habits worth the most (a week's
+   saving at this month's pace), what the habits you already picked up
+   save, what a piece of work that met its goal cost, and how many
+   messages Claude tagged. It is left out when there's nothing to say.
+   Dashboard ratings count here too: the command and the service read
+   them from `<config-dir>/service.db`.
+
 Recache/TTL/compaction/topology and the other optimisation-focused
 sections are out of scope for this report — it is a finance artefact,
 not a tuning one; use `report`/`ttl`/`recache`/`compactions` for those.
@@ -257,7 +265,9 @@ time) without producing spurious diffs even at the byte level.
 ### Calling it from code
 
 `monthly.write_monthly_report(corpus, pricing, config, month, out_dir,
-usage_log_rows=None, generated_at=None) -> list[Path]` takes an
+usage_log_rows=None, generated_at=None, ratings=None) -> list[Path]`
+(`ratings`: the dashboard's session ratings, `Store.all_feedback`'s
+shape, for the digest) takes an
 already-loaded `corpus`/`pricing`/`config` rather than loading them
 itself (matching `report.build_report`'s own "caller loads, this
 function only assembles" contract). `month` (`YYYY-MM`) is required:

@@ -188,55 +188,95 @@ def _uses_tokens(capture: CaptureConfig) -> bool:
     return any(capture_catalogue.asks_claude(i) for i in capture.active_metrics())
 
 
-def feedback_skill_path(claude_root: str | Path | None = None) -> Path:
-    """Where ``capture feedback on`` writes the ``/tl-feedback`` skill."""
-    return discovery.claude_root(claude_root) / "skills" / capture_catalogue.FEEDBACK_SKILL / "SKILL.md"
+#: The skills this tool can write into Claude Code's skills folder, and
+#: what each ``SKILL.md`` holds: ``/tl-feedback`` (``capture feedback on``)
+#: and ``/tl-brief`` (``capture brief on``).
+SKILL_TEXTS = {
+    capture_catalogue.FEEDBACK_SKILL: capture_catalogue.feedback_skill_text,
+    capture_catalogue.BRIEF_SKILL: capture_catalogue.brief_skill_text,
+}
 
 
-def is_own_feedback_skill(text: str) -> bool:
-    """Whether a ``SKILL.md`` is the one this tool writes, in any version."""
-    return f"name: {capture_catalogue.FEEDBACK_SKILL}\n" in text and "Claude Token Lens" in text
+def skill_path(name: str, claude_root: str | Path | None = None) -> Path:
+    """Where this tool writes the skill ``name``."""
+    return discovery.claude_root(claude_root) / "skills" / name / "SKILL.md"
 
 
-def read_feedback_skill(claude_root: str | Path | None = None) -> str | None:
-    """The ``/tl-feedback`` ``SKILL.md`` as it is now, or ``None`` when
-    there is none (or it can't be read)."""
+def is_own_skill(name: str, text: str) -> bool:
+    """Whether a ``SKILL.md`` is the ``name`` skill this tool writes, in
+    any version."""
+    return f"name: {name}\n" in text and "Claude Token Lens" in text
+
+
+def read_skill(name: str, claude_root: str | Path | None = None) -> str | None:
+    """The skill's ``SKILL.md`` as it is now, or ``None`` when there is
+    none (or it can't be read)."""
     try:
-        return feedback_skill_path(claude_root).read_text(encoding="utf-8")
+        return skill_path(name, claude_root).read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         return None
 
 
-def feedback_skill_state(claude_root: str | Path | None = None) -> str:
+def skill_state(name: str, claude_root: str | Path | None = None) -> str:
     """``installed`` (this version), ``outdated`` (an earlier one),
     ``foreign`` (a SKILL.md there this tool didn't write) or ``missing``."""
-    text = read_feedback_skill(claude_root)
+    text = read_skill(name, claude_root)
     if text is None:
         return "missing"
-    if not is_own_feedback_skill(text):
+    if not is_own_skill(name, text):
         return "foreign"
-    return "installed" if text == capture_catalogue.feedback_skill_text() else "outdated"
+    return "installed" if text == SKILL_TEXTS[name]() else "outdated"
 
 
-def write_feedback_skill(claude_root: str | Path | None = None) -> Path:
-    """Write the ``/tl-feedback`` skill (a temporary file, then a rename)."""
-    path = feedback_skill_path(claude_root)
+def write_skill(name: str, claude_root: str | Path | None = None) -> Path:
+    """Write the skill (a temporary file, then a rename)."""
+    path = skill_path(name, claude_root)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(capture_catalogue.feedback_skill_text(), encoding="utf-8", newline="\n")
+    tmp.write_text(SKILL_TEXTS[name](), encoding="utf-8", newline="\n")
     os.replace(tmp, path)
     return path
 
 
-def remove_feedback_skill(claude_root: str | Path | None = None) -> Path:
-    """Delete the ``/tl-feedback`` skill, and its folder once empty."""
-    path = feedback_skill_path(claude_root)
+def remove_skill(name: str, claude_root: str | Path | None = None) -> Path:
+    """Delete the skill, and its folder once empty."""
+    path = skill_path(name, claude_root)
     path.unlink()
     try:
         path.parent.rmdir()
     except OSError:
         pass
     return path
+
+
+def feedback_skill_path(claude_root: str | Path | None = None) -> Path:
+    """Where ``capture feedback on`` writes the ``/tl-feedback`` skill."""
+    return skill_path(capture_catalogue.FEEDBACK_SKILL, claude_root)
+
+
+def is_own_feedback_skill(text: str) -> bool:
+    """Whether a ``SKILL.md`` is the ``/tl-feedback`` this tool writes."""
+    return is_own_skill(capture_catalogue.FEEDBACK_SKILL, text)
+
+
+def read_feedback_skill(claude_root: str | Path | None = None) -> str | None:
+    """The ``/tl-feedback`` ``SKILL.md`` as it is now, or ``None``."""
+    return read_skill(capture_catalogue.FEEDBACK_SKILL, claude_root)
+
+
+def feedback_skill_state(claude_root: str | Path | None = None) -> str:
+    """:func:`skill_state` of ``/tl-feedback``."""
+    return skill_state(capture_catalogue.FEEDBACK_SKILL, claude_root)
+
+
+def write_feedback_skill(claude_root: str | Path | None = None) -> Path:
+    """Write the ``/tl-feedback`` skill."""
+    return write_skill(capture_catalogue.FEEDBACK_SKILL, claude_root)
+
+
+def remove_feedback_skill(claude_root: str | Path | None = None) -> Path:
+    """Delete the ``/tl-feedback`` skill."""
+    return remove_skill(capture_catalogue.FEEDBACK_SKILL, claude_root)
 
 
 def capture_setting(config_dir: str | Path) -> CaptureConfig:
@@ -342,6 +382,27 @@ def inventory(
                 undo="claude-token-lens capture feedback off",
             )
         )
+    brief_name = capture_catalogue.BRIEF_SKILL
+    brief_text = read_skill(brief_name, claude_root)
+    own_brief = brief_text is not None and is_own_skill(brief_name, brief_text)
+    if own_brief or "brief_templates" in capture.coaching:
+        items.append(
+            FootprintItem(
+                key="brief_skill",
+                title="The /tl-brief skill",
+                status="installed" if own_brief else "not installed",
+                where=home_label(skill_path(brief_name, claude_root)),
+                what_it_does=(
+                    "A skill you run with a request: Claude checks it against a short checklist for its kind of "
+                    "task and asks once for anything missing. Claude never runs it by itself."
+                ),
+                token_cost=(
+                    "None until you run it: Claude doesn't see its description. Each run adds the checklist, "
+                    "about 400 tokens, and at most one short question."
+                ),
+                undo="claude-token-lens capture brief off",
+            )
+        )
     items.append(
         FootprintItem(
             key="service",
@@ -431,6 +492,8 @@ class UninstallPlan:
     data_dir: Path | None = None
     #: The ``/tl-feedback`` skill this tool wrote, when it is there.
     feedback_skill: Path | None = None
+    #: The ``/tl-brief`` skill this tool wrote, when it is there.
+    brief_skill: Path | None = None
 
 
 def plan_uninstall(config_dir: str | Path, *, claude_root: str | Path | None = None) -> UninstallPlan:
@@ -443,6 +506,9 @@ def plan_uninstall(config_dir: str | Path, *, claude_root: str | Path | None = N
     skill_text = read_feedback_skill(claude_root)
     if skill_text is not None and is_own_feedback_skill(skill_text):
         plan.feedback_skill = feedback_skill_path(claude_root)
+    brief_text = read_skill(capture_catalogue.BRIEF_SKILL, claude_root)
+    if brief_text is not None and is_own_skill(capture_catalogue.BRIEF_SKILL, brief_text):
+        plan.brief_skill = skill_path(capture_catalogue.BRIEF_SKILL, claude_root)
     if settings is None:
         return plan
 
@@ -528,10 +594,14 @@ __all__ = [
     "home_label",
     "inventory",
     "is_own_feedback_skill",
+    "is_own_skill",
     "is_own_statusline",
     "plan_uninstall",
     "read_feedback_skill",
+    "read_skill",
     "remove_feedback_skill",
+    "remove_skill",
     "remove_settings_entries",
     "write_feedback_skill",
+    "write_skill",
 ]

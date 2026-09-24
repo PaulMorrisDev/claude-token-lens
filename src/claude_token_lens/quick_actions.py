@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from . import carry, quality, whatif
+from . import capture_catalogue, carry, discovery, habits, quality, whatif
 from .compaction_sim import CompactionSimThresholds
 from .fixes import PROMPT_RESTART, RESTART_NOTE, build_fix, build_fixes
 from .model import Recommendation, SettingChange
@@ -195,11 +195,13 @@ def _models(ctx: Context) -> dict:
 
 def _models_left_out(ctx: Context, rows: list[dict]) -> list[dict]:
     """A tip for each cheaper model the models goal skipped because the
-    quality check found that agent did worse on it, or its runs on it
-    were often retried on a larger one."""
+    quality check found that agent did worse on it, its runs on it were
+    often retried on a larger one, or Claude reported its work needed a
+    larger model (metrics capture)."""
     tables = whatif._Tables(ctx.model)
     worse = quality.worse_models(tables.rows("quality", "quality_by_setup"))
     retried = quality.retried_models(tables.rows("quality", "quality_retried"))
+    unfit = habits.unfit_agents(tables.rows("habits", "habits_agents"))
     tips = []
     for row in rows:
         agent, best = row.get("agent_type"), row.get("best_cheaper_alternative_model")
@@ -214,6 +216,8 @@ def _models_left_out(ctx: Context, rows: list[dict]) -> list[dict]:
             )
         elif key in retried:
             reason = retried[key]["reason"] + "."
+        elif agent in unfit:
+            reason = unfit[agent] + "."
         else:
             continue
         tips.append({
@@ -372,6 +376,7 @@ def _skills(ctx: Context) -> dict:
         }
         for r in kept
     ]
+    tips += _skill_timing_tips(ctx)
     if not unused:
         return _result("ok", f"Claude used every listed skill it can do without {ctx.period}.", tips=tips)
     return _result(
@@ -384,6 +389,35 @@ def _skills(ctx: Context) -> dict:
         + [{**fix, "title": f"{r['name']}: list it by name only"} for r in kept for fix in r["fixes"]],
         tips=tips,
     )
+
+
+#: Times a skill must be loaded late, or said not to be needed, for a tip.
+MIN_SKILL_TIMING = 2
+
+
+def _skill_timing_tips(ctx: Context) -> list[dict]:
+    """Skills Claude reached for late, or said weren't needed, from the
+    Work habits section's ``habits_skills`` (metrics capture)."""
+    tips = []
+    for row in whatif._Tables(ctx.model).rows("habits", "habits_skills"):
+        name = row.get("skill")
+        late = int(whatif._num(row.get("late")) or 0)
+        unneeded = int(whatif._num(row.get("unneeded")) or 0)
+        if late >= MIN_SKILL_TIMING:
+            before = _money(ctx, row.get("before")) if whatif._num(row.get("before")) else ""
+            tips.append({
+                "title": f"{name}: run it at the start",
+                "text": f"Claude loaded it after three or more replies {late} times"
+                + (f", with about {before} already spent each time" if before else "")
+                + f". Start that kind of task with /{name} so the work follows it from the first reply.",
+            })
+        if unneeded >= MIN_SKILL_TIMING:
+            tips.append({
+                "title": f"{name}: often not needed",
+                "text": f"Claude said it wasn't needed {unneeded} times. Setting disable-model-invocation: true in "
+                "its SKILL.md keeps Claude from loading it by itself; you can still run it as /" + str(name) + ".",
+            })
+    return tips
 
 
 def _claude_md(ctx: Context) -> dict:
@@ -516,6 +550,14 @@ def _tool_output(ctx: Context) -> dict:
             "text": "File reads are the largest thing carried in your context. Naming the function or line range "
                     "(\"read handle_request in api.py\") keeps whole files out of every later reply.",
         })
+    loops = next((r for r in tables.rows("habits", "habits_tool_output") if r.get("tool") == "loops"), None)
+    if loops and (whatif._num(loops.get("loops")) or 0) >= 1:
+        tips.append({
+            "title": "Stop a failing command sooner",
+            "text": f"{int(whatif._num(loops.get('loops')) or 0)} commands failed three or more times within one "
+            f"message, costing about {_money(ctx, loops.get('cost'), period=True)}. Ask Claude to stop after two failed tries "
+            "at the same command and tell you what it saw.",
+        })
     if not fixes and not tips:
         return _result("ok", "No one tool's output dominates your context.", table=table)
     if not fixes and all(t["title"].endswith("would save little") for t in tips):
@@ -546,19 +588,45 @@ def _habits(ctx: Context) -> dict:
     )
     recs = _recommendations(ctx, _HABIT_RECS)
     tips = [{"title": rec.title, "text": rec.action or rec.why} for rec in recs]
+    playbook = _playbook_tips(ctx, tables)
+    tips += playbook
     fixes = _rec_fixes(recs)
-    if not recs and not causes:
+    if not recs and not causes and not playbook:
         return _result("no_data", "Not enough sessions in this window.")
-    if not recs:
+    if not recs and not playbook:
         return _result("ok", "No habit stands out as costing tokens.", table=table)
+    ways = len(recs) + len(playbook)
     return _result(
         "act",
-        f"{len(recs)} way{'s' if len(recs) != 1 else ''} of working cost tokens {ctx.period}. These are habits, not "
-        "settings: nothing changes unless you change how you work.",
+        f"{ways} way{'s' if ways != 1 else ''} of working cost tokens {ctx.period}. These are habits, not "
+        "settings: nothing changes unless you change how you work. The Work habits tab has the rest.",
         table=table,
         fixes=fixes,
         tips=tips,
     )
+
+
+#: Habits from the Work habits playbook shown as tips.
+PLAYBOOK_TIPS = 3
+
+
+def _playbook_tips(ctx: Context, tables) -> list[dict]:
+    """The Work habits playbook's top habits (``habits_playbook``, ranked
+    by saving), each with its evidence, an example and the saving."""
+    tips = []
+    for row in tables.rows("habits", "habits_playbook")[:PLAYBOOK_TIPS]:
+        key = row.get("habit")
+        title = habits.ITEMS.get(key, ("", key))[1]
+        saving = _money(ctx, row.get("saving")) if whatif._num(row.get("saving")) else ""
+        tips.append({
+            "title": title,
+            "text": " ".join(part for part in (
+                row.get("evidence") or "",
+                f"Try: {row.get('example')}" if row.get("example") else "",
+                f"About {saving} a week ({row.get('source')})." if saving else "",
+            ) if part),
+        })
+    return tips
 
 
 #: An agent is struggling when, over at least ``quality.MIN_RUNS`` runs,
@@ -604,50 +672,91 @@ _REASON_TIPS = {
 }
 
 
-def _markers_fix(ctx: Context, tables) -> dict | None:
-    """The prompt that adds :data:`quality.MARKER_LINES` to CLAUDE.md, when
-    agents ran in this window, none of them wrote a marker and CLAUDE.md
-    doesn't have the lines yet."""
+def _capture_on(tables) -> bool:
+    """Whether metrics capture was on when the report was built (the
+    capture section's level row; off when the section is missing)."""
+    level = next((r.get("value") for r in tables.rows("capture", "capture_usage") if r.get("metric") == "level"), None)
+    return level not in (None, "", capture_catalogue.LEVEL_TITLES["off"])
+
+
+def _capture_fix(ctx: Context, tables) -> dict | None:
+    """Metrics capture at Essentials, offered when agents ran in this
+    window, none wrote a ``[result: ...]`` marker, capture is off and
+    CLAUDE.md doesn't ask for the markers itself. While capture is on, the
+    prompt that removes the older :data:`quality.MARKER_HEADING` section
+    from CLAUDE.md instead: capture asks for the same markers."""
+    claude_md = discovery.claude_root() / "CLAUDE.md"
+    try:
+        has_section = quality.MARKER_HEADING in claude_md.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        has_section = False
+    if _capture_on(tables):
+        return _remove_markers_fix() if has_section else None
+    if has_section:
+        return None
     markers = {r.get("marker"): r for r in tables.rows("quality", "quality_markers")}
     result = markers.get("[result: ...]") or {}
     if not (whatif._num(result.get("of_runs")) or 0) or (whatif._num(result.get("runs")) or 0):
         return None
-    claude_md = ctx.config_dir.parent / "CLAUDE.md"
-    try:
-        if quality.MARKER_HEADING in claude_md.read_text(encoding="utf-8", errors="replace"):
-            return None
-    except OSError:
-        pass
+    metrics = capture_catalogue.level_metrics("essentials")
+    main = round(len(capture_catalogue.note_text(metrics, "main")) / carry._CHARS_PER_TOKEN_APPROX)
+    sub = round(len(capture_catalogue.note_text(metrics, "subagent")) / carry._CHARS_PER_TOKEN_APPROX)
+    return {
+        "key": None,
+        "agent": None,
+        "title": "Turn on metrics capture",
+        "explainer": [
+            ["What this adds", "Metrics capture at its Essentials level. A hook adds a short note at each session "
+             "and subagent start asking Claude to end its reply to each of your messages with a one-line tag (the "
+             "kind of task, how clear the ask was, how hard the work was, whether it changed course), a subagent "
+             "to end its report with [result: done], [result: partial] or [result: blocked], and a rerun to say "
+             "why it was run again. This tool keeps only those words, never the text around them."],
+            ["Why", "Without them this check guesses: a retry on a larger model counts against the cheaper one even "
+             "when the brief was the problem, and an agent that stopped half-done looks finished. With them, "
+             "retries and unfinished runs are counted from what Claude said, and the Work habits tab can rank "
+             "habits by kind of task."],
+            ["What it costs", f"A note of about {main} tokens at each session start and about {sub} at each "
+             "subagent start, read from the prompt cache after the first reply, and about 15 output tokens per "
+             "message. The Capture tab estimates it from your own recent sessions before you turn it on, and the "
+             "banner shows what it has cost while it's on."],
+            ["Where and who it affects", "~/.claude/settings.json gets the hook entries (the command shows the "
+             "change and asks first); this tool's own config.toml holds the level. Every session, in every "
+             "project, until you turn it off; the Capture tab can sample sessions or set an end date."],
+            ["How to undo it", "claude-token-lens capture off stops the notes at once; claude-token-lens capture "
+             "remove also takes the hook entries out of settings.json."],
+        ],
+        "command": "claude-token-lens capture on --level essentials --dry-run",
+        "command_warning": "",
+        "prompt": (
+            "Run claude-token-lens capture on --level essentials --dry-run and tell me what it would change and what "
+            "it would cost. Don't run it without --dry-run: I'll do that myself."
+        ),
+    }
+
+
+def _remove_markers_fix() -> dict:
     tokens = round(len(quality.MARKER_LINES) / carry._CHARS_PER_TOKEN_APPROX)
     return {
         "key": None,
         "agent": None,
-        "title": "Record why agents are run again and whether they finished",
+        "title": "Remove the older markers section from CLAUDE.md",
         "explainer": [
-            ["What this adds", "Two lines in CLAUDE.md. When Claude starts an agent again because its last run's work "
-             "wasn't good enough, it begins the brief with [retry: model], [retry: brief], [retry: tools] or "
-             "[retry: other]. A subagent ends its last reply with [result: done], [result: partial] or "
-             "[result: blocked]. This dashboard keeps only that word, never the text around it."],
-            ["Why", "Without them this check guesses: a retry on a larger model counts against the cheaper one even "
-             "when the brief was the problem, and an agent that stopped half-done looks finished. With them, a "
-             "brief or tools retry never counts against the model (and gets its own tip), a model retry counts even "
-             "for a different agent, and partial or blocked counts as didn't finish."],
-            ["What it costs", f"About {tokens} tokens of CLAUDE.md on every session and most subagents, read from "
-             "the prompt cache after the first reply (a tenth of the input price). About "
-             f"{quality.MARKER_TOKENS} output tokens each time Claude writes a marker; Markers Claude wrote "
-             "(Agents tab) shows what they cost."],
-            ["Where and who it affects", "~/.claude/CLAUDE.md: every session, in every project. Explore and Plan "
-             "start without CLAUDE.md, and so does an agent whose file sets omitClaudeMd, so they won't write a "
-             "result marker."],
-            ["How to undo it", "Ask Claude: Remove the \"" + quality.MARKER_HEADING + "\" section from "
-             "~/.claude/CLAUDE.md, keeping everything else. Show me the diff before saving."],
+            ["What this changes", "Removes the \"" + quality.MARKER_HEADING + "\" section from ~/.claude/CLAUDE.md, "
+             "keeping everything else."],
+            ["Why", "Metrics capture asks Claude for the same [retry: ...] and [result: ...] markers, and only while "
+             "it's on. With the section in place Claude is asked twice, and still asked after capture is off."],
+            ["What it saves", f"About {tokens} tokens of CLAUDE.md on every session and most subagents, read from "
+             "the prompt cache after the first reply."],
+            ["Where and who it affects", "~/.claude/CLAUDE.md: every session, in every project."],
+            ["How to undo it", "Ask Claude to add this section back to the end of ~/.claude/CLAUDE.md:\n\n"
+             + quality.MARKER_LINES],
         ],
         "command": None,
         "command_warning": "",
         "prompt": (
-            "Add this section to the end of ~/.claude/CLAUDE.md (create the file if it's missing), keeping everything "
-            "else as it is:\n\n" + quality.MARKER_LINES + "\n\nShow me the diff before saving. "
-            "Claude Code will ask my permission to edit files under .claude; that is expected. " + PROMPT_RESTART
+            "Remove the \"" + quality.MARKER_HEADING + "\" section from ~/.claude/CLAUDE.md, keeping everything else. "
+            "Show me the diff before saving. Claude Code will ask my permission to edit files under .claude; that "
+            "is expected. " + PROMPT_RESTART
         ),
     }
 
@@ -753,7 +862,18 @@ def _quality(ctx: Context) -> dict:
                 agent = _who(row.get("agent_type"))
                 tips.append({"title": title.format(agent=agent),
                              "text": text.format(n=n, model=goals._alias(row.get("model") or "") or "the model")})
-    marker_fix = _markers_fix(ctx, tables)
+    missed = next((r for r in tables.rows("habits", "habits_outcomes") if r.get("outcome") == "missed"), None)
+    if missed and (whatif._num(missed.get("pieces")) or 0) >= 1:
+        slow = missed.get("slow") or ""
+        helped = missed.get("helped") or ""
+        tips.append({
+            "title": "Work you said missed its goal",
+            "text": f"{int(whatif._num(missed.get('pieces')) or 0)} pieces of work missed their goal"
+            + (f", costing {_money(ctx, missed.get('cost'))}." if whatif._num(missed.get("cost")) else ".")
+            + (f" Most often slowed by: {slow}." if slow else "")
+            + (f" Would have helped most: {helped}." if helped else ""),
+        })
+    marker_fix = _capture_fix(ctx, tables)
     if marker_fix is not None:
         fixes.append(marker_fix)
     for row in mixed:
