@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from . import capture_catalogue, carry, discovery, habits, quality, whatif
+from . import capture_catalogue, carry, discovery, habits, model_gate, quality, whatif
 from .compaction_sim import CompactionSimThresholds
 from .fixes import PROMPT_RESTART, RESTART_NOTE, build_fix, build_fixes
 from .model import Recommendation, SettingChange
@@ -204,9 +204,7 @@ def _models_left_out(ctx: Context, rows: list[dict]) -> list[dict]:
     often retried on a larger one, or Claude reported its work needed a
     larger model (metrics capture)."""
     tables = whatif._Tables(ctx.model)
-    worse = quality.worse_models(tables.rows("quality", "quality_by_setup"))
-    retried = quality.retried_models(tables.rows("quality", "quality_retried"))
-    unfit = habits.unfit_agents(tables.rows("habits", "habits_agents"))
+    worse, retried, unfit = model_gate.raw(tables)
     tips = []
     for row in rows:
         agent, best = row.get("agent_type"), row.get("best_cheaper_alternative_model")

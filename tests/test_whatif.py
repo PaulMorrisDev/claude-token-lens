@@ -19,8 +19,13 @@ def _table(name: str, rows: list[dict]):
 def _model(**extra):
     sections = [
         NS(key="model_swap", tables=[_table("model_swap_by_agent_type", [
-            {"agent_type": "top-level", "observed_cost": 100.0, "cost_claude-sonnet-4-5": 60.0, "cost_claude-haiku-4-5": 20.0},
-            {"agent_type": "Explore", "observed_cost": 10.0, "cost_claude-sonnet-4-5": 6.0, "cost_claude-haiku-4-5": 2.0},
+            # observed_model (PROF-11/F14): a model that doesn't gate
+            # goals._thinking's effortLevel/effort candidate (V26 --
+            # Opus 5.5 and the Fable models are the ones that do).
+            {"agent_type": "top-level", "observed_model": "claude-sonnet-5",
+             "observed_cost": 100.0, "cost_claude-sonnet-4-5": 60.0, "cost_claude-haiku-4-5": 20.0},
+            {"agent_type": "Explore", "observed_model": "claude-haiku-4-5",
+             "observed_cost": 10.0, "cost_claude-sonnet-4-5": 6.0, "cost_claude-haiku-4-5": 2.0},
         ])]),
         NS(key="ttl", tables=[_table("ttl_by_agent_type", [
             {"agent_type": "top-level", "cost_observed": 50.0, "cost_all_5m": 55.0, "cost_all_1h": 45.0},
@@ -36,6 +41,12 @@ def _model(**extra):
         ])]),
         NS(key="agents", tables=[_table("topology_effort_by_agent_type", [
             {"agent_type": "top-level", "thinking_share": 40.0},
+        ])]),
+        # PROF-08: replies actually billed at a fast-mode rate this
+        # window, and what the same replies would have cost standard.
+        NS(key="usage", tables=[_table("pricing_fast_applied", [
+            {"model_id": "claude-opus-5-5", "turns": 4, "tokens": 40_000, "cost": 20.0, "standard_cost": 10.0},
+            {"model_id": "claude-sonnet-5", "turns": 2, "tokens": 10_000, "cost": 5.0, "standard_cost": 3.0},
         ])]),
     ]
     context_files = {"skills": [
@@ -84,9 +95,74 @@ def test_compaction_compares_against_the_current_window():
     assert unknown["fidelity"] == "none" and "200000" in unknown["basis"]
 
 
+def test_compaction_is_not_estimated_past_the_same_compactions_per_session_floor_the_goal_uses():
+    # EST-P2: whatif._compact holds a candidate window to the same
+    # CompactionSimThresholds().max_compactions_per_session floor
+    # goals._compaction already filters its own candidates by.
+    model = _model()
+    [table] = next(s for s in model.sections if s.key == "compaction_sim").tables
+    table.rows.append(["50,000", 40.0, 2.5])  # window, cost, compactions_per_session
+    row = whatif.estimate({"autoCompactWindow": 50000}, {}, model, UNITS, period=PERIOD)["rows"][0]
+    assert row["fidelity"] == "none"
+    assert "2.5" in row["basis"] and "2" in row["basis"]
+
+
 def test_omit_claude_md_is_measured_per_spawn():
     [row] = _estimate(agents={"Explore": {"omitClaudeMd": True}})["rows"]
     assert row["fidelity"] == "measured"
+    assert row["saving_usd"] == 5000 * 100 * 3.75 / 1_000_000
+
+
+def test_omit_claude_md_excludes_managed_claude_md_which_still_loads():
+    # PROF-11/F13: Managed policy CLAUDE.md loads regardless of
+    # omitClaudeMd, so only the remaining 3,000 tokens are priced.
+    model = _model()
+    [table] = next(s for s in model.sections if s.key == "agent_startup").tables
+    table.columns.append(NS(key="claude_md_managed"))
+    table.rows[0].append(2000)
+    row = whatif.estimate({}, {"Explore": {"omitClaudeMd": True}}, model, UNITS, period=PERIOD)["rows"][0]
+    assert row["fidelity"] == "measured"
+    assert row["saving_usd"] == 3000 * 100 * 3.75 / 1_000_000
+    assert "Managed policy CLAUDE.md (2,000 tokens) still loads either way." in row["basis"]
+
+
+def test_omit_claude_md_not_estimated_when_only_managed_claude_md_is_seen():
+    model = _model()
+    [table] = next(s for s in model.sections if s.key == "agent_startup").tables
+    table.columns.append(NS(key="claude_md_managed"))
+    table.rows[0].append(5000)  # equal to the total: nothing left to omit
+    row = whatif.estimate({}, {"Explore": {"omitClaudeMd": True}}, model, UNITS, period=PERIOD)["rows"][0]
+    assert row["fidelity"] == "none"
+
+
+def test_omit_claude_md_prices_the_carry_cost_when_higher_than_the_write_floor():
+    # EST-P10: carrying CLAUDE.md across the rest of a spawn's turns
+    # (cache reads until it's re-sent) usually costs more than the one
+    # write the floor above prices. Managed CLAUDE.md's own carry cost
+    # is excluded too (F13 -- it still loads either way).
+    context_files = {"files": [
+        {"type": "Project", "cost_by_reach": {"Explore": 5.0}},
+        {"type": "Managed", "cost_by_reach": {"Explore": 100.0}},
+    ]}
+    model = _model(context_files=context_files)
+    row = whatif.estimate({}, {"Explore": {"omitClaudeMd": True}}, model, UNITS, period=PERIOD)["rows"][0]
+    assert row["saving_usd"] == 5.0
+    assert row["fidelity"] == "measured"
+    assert "Carrying it across the rest of each spawn's turns" in row["basis"]
+
+
+def test_omit_claude_md_never_prices_below_the_write_floor():
+    context_files = {"files": [{"type": "Project", "cost_by_reach": {"Explore": 0.5}}]}
+    model = _model(context_files=context_files)
+    row = whatif.estimate({}, {"Explore": {"omitClaudeMd": True}}, model, UNITS, period=PERIOD)["rows"][0]
+    assert row["saving_usd"] == 5000 * 100 * 3.75 / 1_000_000
+    assert "Carrying it across the rest of each spawn's turns" not in row["basis"]
+
+
+def test_omit_claude_md_ignores_another_agents_carry_cost():
+    context_files = {"files": [{"type": "Project", "cost_by_reach": {"reviewer": 50.0}}]}
+    model = _model(context_files=context_files)
+    row = whatif.estimate({}, {"Explore": {"omitClaudeMd": True}}, model, UNITS, period=PERIOD)["rows"][0]
     assert row["saving_usd"] == 5000 * 100 * 3.75 / 1_000_000
 
 
@@ -99,6 +175,30 @@ def test_effort_is_never_estimated_but_says_how_much_was_thinking():
     [row] = _estimate({"effortLevel": "medium"})["rows"]
     assert row["saving_usd"] is None and row["effect_text"] == "Not estimated"
     assert "40%" in row["basis"]
+
+
+# -- PROF-08: fastMode, repriced from pricing_fast_applied -------------------
+
+
+def test_fast_mode_off_reprices_fast_applied_turns_at_standard():
+    [row] = _estimate({"fastMode": False})["rows"]
+    # 20.0 - 10.0 (opus) + 5.0 - 3.0 (sonnet) -- every model row summed.
+    assert row["saving_usd"] == 12.0
+    assert row["fidelity"] == "simulated"
+    assert row["effect_text"] == f"Saves 12.00 USD {PERIOD}"
+
+
+def test_fast_mode_on_is_not_simulated():
+    [row] = _estimate({"fastMode": True})["rows"]
+    assert row["saving_usd"] is None and row["fidelity"] == "none"
+    assert row["basis"] == "This change isn't simulated."
+
+
+def test_fast_mode_off_without_fast_applied_data_is_not_estimated():
+    model = NS(sections=[])
+    [row] = whatif.estimate({"fastMode": False}, {}, model, UNITS)["rows"]
+    assert row["saving_usd"] is None and row["fidelity"] == "none"
+    assert "No fast-priced replies in this window" in row["basis"]
 
 
 def test_total_counts_only_estimated_rows_and_notes_overlap():

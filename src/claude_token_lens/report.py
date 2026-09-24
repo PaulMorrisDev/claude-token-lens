@@ -1628,6 +1628,14 @@ def build_report(
                 usage_section,
                 tables=[*usage_section.tables, pricing_coverage.as_fast_priced_as_standard_table()],
             )
+        if pricing_coverage.fast_applied:
+            # PROF-08: the mirror image above -- replies actually priced
+            # at a fast-mode rate, and what they'd have cost standard.
+            # whatif._fast_mode reads this table for the fastMode lever.
+            usage_section = dataclasses.replace(
+                usage_section,
+                tables=[*usage_section.tables, pricing_coverage.as_fast_applied_table()],
+            )
         sections.append(usage_section)
 
     if units.elasticity is not None and _want("elasticity"):

@@ -59,8 +59,11 @@ its snapshot's `effective` config implies one of these).
 - `hooks` — `{event_name: entry_count}`. Never the commands a hook runs.
 - `enabled_plugins` — plugin names from this layer's `enabledPlugins`.
 - The named safe scalars, verbatim: `model`, `effort_level`,
+  `max_effort_level` (PROF-03, a hard cap — see "PROF-03" below),
   `always_thinking_enabled`, `auto_compact_window`, `prompt_cache_ttl`,
   `subagent_prompt_cache_ttl`, `cleanup_period_days`, `output_style`.
+- `model_settings` (PROF-03) — `{model_id: {effortLevel}}`, redacted per
+  model — see "PROF-03" below.
 - `statusline_present` — a boolean, never the statusline command itself.
 
 ## Redaction rule (settings and agent frontmatter alike)
@@ -78,9 +81,15 @@ future Claude Code version degrades safely instead of leaking its value.
 `alwaysThinkingEnabled`, `includeCoAuthoredBy` (COV-09: a plain Boolean,
 docs/en/settings-reference.md — deprecated since v2.0.62 in favour of
 `attribution`, but still honoured by Claude Code until a layer sets
-`attribution.commit`/`attribution.pr`, so still worth recording).
+`attribution.commit`/`attribution.pr`, so still worth recording),
+`maxEffortLevel` (PROF-03, a hard cap on effort level, same short
+enum-like string posture as `effortLevel` itself), `fastMode` (PROF-08,
+a plain Boolean, docs/en/settings-reference.md — a documented per-model
+price premium, `pricing.toml`'s `[.fast]` tables, traded for a faster
+reply; lets a "turn it off" profile candidate skip itself when it's
+already off).
 
-Three keys get their own summary shape instead of either "kept verbatim"
+Four keys get their own summary shape instead of either "kept verbatim"
 or the generic marker:
 
 - `statusLine` → a bare `true`/`false` (a report only ever needs "is a
@@ -95,6 +104,18 @@ or the generic marker:
   trailer strings themselves**, since those can hold anything the layer
   author wrote; only whether each was customised, plus the plain
   `sessionUrl` Boolean verbatim.
+- `modelSettings` (**PROF-03**) → `{model_id: {"effortLevel":
+  str|None}}` — per-model effort overrides (`docs/en/settings-reference.md`):
+  for each model id the layer names, only its own `effortLevel`, never
+  any other sub-key a future Claude Code version might add per model.
+  Model ids run through the same `_clip_name` every other name in this
+  schema gets. A per-model `effortLevel` here, or `CLAUDE_CODE_EFFORT_LEVEL`
+  being set at all (`content_layers.effort_level_env_set` above), both
+  beat the top-level `effortLevel` scalar for that model — so a profile
+  goal drafting an `effortLevel` change checks both and, when either
+  applies, appends "Won't apply to `<model>`: … use `--effort` instead"
+  to the candidate's evidence rather than silently implying the profile
+  alone would move it (`profiles/goals.py`'s `_effort_override_note`).
 
 `effective`/`effective_provenance` merge exactly this same key set
 (`SETTINGS_SUMMARY_KEYS`) across the four layers — a value there has
@@ -282,6 +303,11 @@ layer the plan's "Configuration layers" section lists:
   names and a marketplace count, never plugin content.
 - `claude_config_dir_set` — whether `CLAUDE_CONFIG_DIR` is set at all
   (never its value, which is a path).
+- `effort_level_env_set` (PROF-03) — whether `CLAUDE_CODE_EFFORT_LEVEL`
+  is set at all, never its value. It beats every settings-layer effort
+  lever (`effortLevel`, `modelSettings.<id>.effortLevel`) and `--effort`/
+  `/effort` too, so a profile candidate that would set `effortLevel`
+  checks this flag first — see "PROF-03" under `effective` below.
 
 ## `project_slug`
 

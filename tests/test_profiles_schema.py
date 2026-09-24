@@ -62,6 +62,7 @@ def test_validate_accepts_minimal_profile():
         ("alwaysThinkingEnabled", True),
         ("autoCompactEnabled", False),
         ("cleanupPeriodDays", 30),
+        ("fastMode", False),  # PROF-08
     ],
 )
 def test_validate_accepts_every_settings_key(key, value):

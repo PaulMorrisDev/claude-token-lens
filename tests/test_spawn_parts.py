@@ -106,6 +106,29 @@ def test_large_claude_md_on_a_custom_agent_suggests_omit_claude_md():
     assert not any(r.id == "spawn-cost" and r.agent_type == "reviewer" for r in recs)
 
 
+def test_managed_claude_md_is_excluded_from_the_omit_claude_md_saving():
+    # PROF-11/F13: Managed policy CLAUDE.md still loads regardless of
+    # omitClaudeMd, so it's excluded from the saving and cited on its own.
+    acc = _acc("reviewer", claude_md=5000.0)
+    acc.claude_md_by_source = {"Managed": [2000.0] * acc.spawns, "Project": [3000.0] * acc.spawns}
+    snap = _snapshot({"reviewer": {"source": "user"}})
+    recs = _recs(_report(acc), snapshot=snap, units=Units())
+    rec = next(r for r in recs if r.id == "spawn-claude-md")
+    # Only the 3,000 non-managed tokens count: 3,000 x 10 x 3.75 / 1e6 = 0.1125 USD.
+    assert rec.estimated_saving == "0.11 USD across the spawns in this report."
+    assert "Managed policy CLAUDE.md (2,000 tokens) still loads either way." in rec.why
+    labels = {label for label, *_ in rec.evidence}
+    assert "Managed policy CLAUDE.md per spawn (still loads)" in labels
+
+
+def test_omit_claude_md_never_offered_when_only_managed_claude_md_is_seen():
+    acc = _acc("reviewer", claude_md=5000.0)
+    acc.claude_md_by_source = {"Managed": [5000.0] * acc.spawns}
+    snap = _snapshot({"reviewer": {"source": "user"}})
+    recs = _recs(_report(acc), snapshot=snap, units=Units())
+    assert not any(r.id == "spawn-claude-md" for r in recs)
+
+
 def test_explore_and_plan_never_get_omit_claude_md():
     recs = _recs(_report(_acc("Explore"), _acc("Plan")))
     assert not any(r.id == "spawn-claude-md" for r in recs)

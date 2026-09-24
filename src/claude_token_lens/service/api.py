@@ -1892,14 +1892,19 @@ def make_handler(
             )
         )
 
-    def _current_settings() -> tuple[dict, dict]:
-        """The latest snapshot's effective settings, and every project's
-        agent fields, or empty when no snapshot is recorded yet."""
+    def _current_settings() -> tuple[dict, dict, bool]:
+        """The latest snapshot's effective settings, every project's agent
+        fields, and (PROF-03) whether ``CLAUDE_CODE_EFFORT_LEVEL`` is set
+        -- content_layers' own flag, never a value that could be
+        anything else -- or empty/``False`` when no snapshot is recorded
+        yet."""
         snapshot = _config_snapshot_with_every_project_agents()
         if snapshot is None:
-            return {}, {}
+            return {}, {}, False
         agents = snapshot.data.get("effective_agents")
-        return snapshots_mod.effective_config(snapshot), agents if isinstance(agents, dict) else {}
+        content_layers = snapshot.data.get("content_layers")
+        env_set = bool(isinstance(content_layers, dict) and content_layers.get("effort_level_env_set"))
+        return snapshots_mod.effective_config(snapshot), agents if isinstance(agents, dict) else {}, env_set
 
     def route_profile_goals(store, query, body):
         """Without ``goal``: the goals a profile can start from. With it:
@@ -1921,7 +1926,7 @@ def make_handler(
                 f"unknown task {task!r}; expected one of: {', '.join(capture_catalogue.TAG_VOCAB['task'])}"
             )
         model = _get_report_model(*window)
-        effective, effective_agents = _current_settings()
+        effective, effective_agents, effort_level_env_set = _current_settings()
         return _ok(
             goals.draft(
                 goal,
@@ -1931,6 +1936,7 @@ def make_handler(
                 effective_agents=effective_agents,
                 period=_period_text(*window, name=query.get("window")),
                 task=task,
+                effort_level_env_set=effort_level_env_set,
             )
         )
 
@@ -1951,10 +1957,16 @@ def make_handler(
         (``backtest.calibration_multipliers``) -- logging always records
         the *uncalibrated* estimate (``row["uncalibrated_usd"]`` when
         present), so calibrating an already-calibrated number never
-        compounds."""
+        compounds. PROF-01: a ``?task=`` query param scales every row
+        down to that kind of task's own share of the window, the same
+        way the tasks goal's own draft does
+        (``profiles.goals._scale_whatif``) -- for the tasks goal's live
+        total as you tick candidates, and for a saved profile whose
+        ``for`` names a task."""
         from .. import backtest as backtest_mod
         from .. import config as config_mod
         from .. import whatif
+        from ..profiles import goals
 
         if not isinstance(body, dict):
             return _bad_request("request body must be a JSON object")
@@ -1965,20 +1977,29 @@ def make_handler(
         problems = profile_schema.validate({"id": "whatif", "settings": settings, "agents": agents})
         if problems:
             return _bad_request("; ".join(problems))
+        task = query.get("task") or None
+        if task is not None and task not in capture_catalogue.TAG_VOCAB["task"]:
+            return _bad_request(
+                f"unknown task {task!r}; expected one of: {', '.join(capture_catalogue.TAG_VOCAB['task'])}"
+            )
         window, err = _window_query(query)
         if err is not None:
             return err
         model = _get_report_model(*window)
-        effective, _agents = _current_settings()
+        effective, _agents, _env_set = _current_settings()
+        units = _report_units(model)
+        period = _period_text(*window, name=query.get("window"))
         result = whatif.estimate(
             settings,
             agents,
             model,
-            _report_units(model),
-            period=_period_text(*window, name=query.get("window")),
+            units,
+            period=period,
             current=effective,
             calibration=backtest_mod.calibration_multipliers(store),
         )
+        if task is not None:
+            result = goals._scale_whatif(result, whatif._Tables(model), task, units, period)
         if body.get("log") is True:
             for row in result["rows"]:
                 predicted_usd = row["uncalibrated_usd"] if row["uncalibrated_usd"] is not None else row["saving_usd"]
@@ -2012,7 +2033,7 @@ def make_handler(
         from .. import quick_actions
 
         model = _get_report_model(*window)
-        effective, effective_agents = _current_settings()
+        effective, effective_agents, _env_set = _current_settings()
         return quick_actions, quick_actions.Context(
             model=model,
             units=_report_units(model),

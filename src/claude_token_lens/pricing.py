@@ -19,11 +19,15 @@ Three things live here:
 :class:`PricingCoverage` is a small accumulator later report code uses to
 track how much of the corpus was actually priced, for the "unknown
 model" table and the ``pricing-coverage`` recommendation. It also tracks
-two narrower cases of "priced, but only approximately": turns priced by
-closest (prefix) match (``ResolvedRates.approximate`` — see
-``Pricing.resolve_model``) rather than their own rate-card row, and
-fast-flagged turns priced at a model's standard rate for lack of a
-``[.fast]`` table (see :class:`FastRule` and ``price_turn``).
+three narrower cases of "priced, but only approximately" or "priced,
+worth a second look": turns priced by closest (prefix) match
+(``ResolvedRates.approximate`` — see ``Pricing.resolve_model``) rather
+than their own rate-card row, fast-flagged turns priced at a model's
+standard rate for lack of a ``[.fast]`` table (see :class:`FastRule` and
+``price_turn``), and — PROF-08, the mirror image of that last one —
+turns actually priced at a fast-mode rate, alongside what they'd have
+cost standard: ``whatif._fast_mode`` reads this last one to price
+turning ``fastMode`` off.
 """
 
 from __future__ import annotations
@@ -817,6 +821,17 @@ class PricingCoverage:
     #: flagged ``usage.speed == "fast"`` that were priced at standard
     #: rates because their model carries no ``[.fast]`` table.
     fast_priced_as_standard: dict[str, dict[str, int]] = field(default_factory=dict)
+    #: PROF-08: observed model id -> {"turns": int, "tokens": int, "cost":
+    #: float, "standard_cost": float}, for turns actually priced at a
+    #: model's fast-mode rate (``breakdown.fast_applied``) -- the mirror
+    #: image of ``fast_priced_as_standard`` above. ``cost`` is what was
+    #: actually charged; ``standard_cost`` is what the same turn would
+    #: have cost at that model's standard rate instead (the server-tool
+    #: fee, which the fast multiplier never touches -- see
+    #: ``price_turn``'s docstring -- is added back unscaled). Feeds
+    #: ``whatif._fast_mode``'s "turn fastMode off" estimate, the one
+    #: table it reads rather than re-deriving.
+    fast_applied: dict[str, dict] = field(default_factory=dict)
 
     def add(
         self,
@@ -857,6 +872,21 @@ class PricingCoverage:
             fast_entry["turns"] += 1
             fast_entry["tokens"] += tokens
 
+        if breakdown.fast_applied and resolved is not None and resolved.rates.fast is not None:
+            multiplier = resolved.rates.fast.multiplier
+            standard_cost = (
+                (breakdown.total - breakdown.server_tool_cost) / multiplier + breakdown.server_tool_cost
+                if multiplier
+                else breakdown.total
+            )
+            applied_entry = self.fast_applied.setdefault(
+                model_id, {"turns": 0, "tokens": 0, "cost": 0.0, "standard_cost": 0.0}
+            )
+            applied_entry["turns"] += 1
+            applied_entry["tokens"] += tokens
+            applied_entry["cost"] += breakdown.total
+            applied_entry["standard_cost"] += standard_cost
+
     @property
     def coverage_pct(self) -> float:
         """Priced tokens as a percentage of all tokens seen. 100.0 when
@@ -877,6 +907,11 @@ class PricingCoverage:
         """Total turns flagged ``usage.speed == "fast"`` that were priced
         at standard rates for lack of a ``[.fast]`` table."""
         return sum(entry["turns"] for entry in self.fast_priced_as_standard.values())
+
+    @property
+    def fast_applied_turns(self) -> int:
+        """PROF-08: total turns actually priced at a fast-mode rate."""
+        return sum(entry["turns"] for entry in self.fast_applied.values())
 
     def as_table(self) -> Table:
         """The unknown-model table: one row per unresolved model id."""
@@ -956,6 +991,41 @@ class PricingCoverage:
         return Table(
             name="pricing_fast_priced_as_standard",
             title="Fast turns priced at standard rate",
+            columns=columns,
+            rows=rows,
+            notes=notes,
+        )
+
+    def as_fast_applied_table(self) -> Table:
+        """PROF-08: one row per model id seen with ``usage.speed ==
+        "fast"`` actually priced at its fast-mode rate -- what it cost,
+        and what the same turns would have cost at that model's standard
+        rate instead. The mirror image of
+        :meth:`as_fast_priced_as_standard_table`: that one is turns
+        priced fast but billed standard for lack of a rate; this one is
+        turns billed fast, and what standard would have cost. Read by
+        ``whatif._fast_mode`` for a "turn fastMode off" estimate."""
+        columns = [
+            Column(key="model_id", label="Model", kind="str"),
+            Column(key="turns", label="Turns", kind="int"),
+            Column(key="tokens", label="Tokens", kind="tokens"),
+            Column(key="cost", label="Cost at fast rate", kind="money"),
+            Column(key="standard_cost", label="Cost at standard rate", kind="money"),
+        ]
+        rows = [
+            [model_id, entry["turns"], entry["tokens"], entry["cost"], entry["standard_cost"]]
+            for model_id, entry in sorted(self.fast_applied.items())
+        ]
+        notes = []
+        if self.fast_applied:
+            notes.append(
+                "These replies were actually priced at their model's fast-mode rate (a documented multiplier "
+                "over its standard rate). \"Cost at standard rate\" is what the same replies would have cost "
+                "with fast mode off."
+            )
+        return Table(
+            name="pricing_fast_applied",
+            title="Fast-priced replies",
             columns=columns,
             rows=rows,
             notes=notes,

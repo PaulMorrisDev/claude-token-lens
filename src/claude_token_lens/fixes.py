@@ -154,7 +154,8 @@ SETTING_TEXT.update(
         ),
         "alwaysThinkingEnabled": (
             "Whether Claude always thinks before replying.",
-            "Thinking is billed as output, so replies cost more.",
+            "Thinking is billed as output, so replies cost more. It has no effect on Opus 5.5 or the Fable "
+            "models, which always think; a lower effort is what thinks less there.",
             "",
         ),
         "autoCompactEnabled": (
@@ -172,6 +173,14 @@ SETTING_TEXT.update(
             "Deprecated: Claude Code still honours it, but only until the newer `attribution` setting is "
             "used, which offers more control (a custom commit trailer, PR text, and a session-link toggle).",
             "",
+        ),
+        # PROF-08/D5: fast mode is a documented per-model price premium (a
+        # flat multiplier over standard rates), traded for a faster reply.
+        "fastMode": (
+            "Whether replies are billed at a model's fast-mode rate, a documented premium over its standard "
+            "rate, for a faster reply.",
+            "Turning it off saves money on every reply that would have run fast, but replies come back slower.",
+            "Only a few models document a fast rate; on every other model this setting has no effect.",
         ),
     }
 )
@@ -246,6 +255,7 @@ LEVER_LABELS = {
     "env.DISABLE_PROMPT_CACHING_FABLE": "Prompt caching (env override, Fable)",
     "env.ENABLE_TOOL_SEARCH": "MCP tool search (env override)",
     "env.CLAUDE_CODE_MAX_OUTPUT_TOKENS": "Output token cap (env override)",
+    "fastMode": "Fast mode (price premium for a faster reply)",
 }
 
 _SCOPE_WHERE = {

@@ -537,6 +537,88 @@ def test_model_pricing_absent_reduces_to_not_present():
     assert hook._redact_model_pricing({}) == {"present": False, "model_ids": []}
 
 
+def test_model_settings_and_max_effort_level_kept_safe(home, project):
+    """PROF-03/F3: modelSettings reduces to each named model's own
+    effortLevel (the one sub-value a recommendation needs to check
+    whether a ticked effortLevel would even apply); maxEffortLevel is a
+    plain safe scalar like effortLevel itself. Both flow into the raw
+    per-layer redaction, the named schema-2 scalars, and effective/
+    effective_provenance."""
+    config_dir = home / ".claude" / "token-lens"
+    settings_path = home / ".claude" / "settings.json"
+    settings = json.loads(settings_path.read_text(encoding="utf-8"))
+    settings["maxEffortLevel"] = "high"
+    settings["modelSettings"] = {
+        "claude-opus-5-5": {"effortLevel": "medium"},
+        "claude-haiku-4-5-20251001": {"somethingUnexpected": "should not leak"},
+    }
+    settings_path.write_text(json.dumps(settings), encoding="utf-8")
+
+    stdin = json.dumps({"session_id": "s", "cwd": str(project)})
+    result = _run_hook(config_dir=config_dir, cwd=project, stdin_text=stdin)
+    assert result.returncode == 0
+
+    snapshot = _latest_snapshot(config_dir)
+    raw_text = json.dumps(snapshot)
+    user_settings = snapshot["user_settings"]
+    assert user_settings["maxEffortLevel"] == "high"
+    assert user_settings["modelSettings"] == {
+        "claude-opus-5-5": {"effortLevel": "medium"},
+        "claude-haiku-4-5-20251001": {"effortLevel": None},
+    }
+    assert "somethingUnexpected" not in raw_text and "should not leak" not in raw_text
+
+    expected_model_settings = {
+        "claude-opus-5-5": {"effortLevel": "medium"},
+        "claude-haiku-4-5-20251001": {"effortLevel": None},
+    }
+    user_layer = snapshot["settings_layers"]["user"]
+    assert user_layer["max_effort_level"] == "high"
+    assert user_layer["model_settings"] == expected_model_settings
+
+    assert snapshot["effective"]["maxEffortLevel"] == "high"
+    assert snapshot["effective_provenance"]["maxEffortLevel"] == "user"
+    assert snapshot["effective"]["modelSettings"] == expected_model_settings
+    assert snapshot["effective_provenance"]["modelSettings"] == "user"
+
+
+def test_model_settings_absent_reduces_to_empty_dict():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("snapshot_config_hook", _HOOK_PATH)
+    hook = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(hook)
+    assert hook._redact_model_settings(None) == {}
+    assert hook._redact_model_settings({}) == {}
+    assert hook._redact_model_settings({"claude-opus-5-5": "not-a-dict"}) == {}
+
+
+def test_effort_level_env_set_is_recorded_as_a_flag_never_a_value(home, project):
+    config_dir = home / ".claude" / "token-lens"
+    stdin = json.dumps({"session_id": "s", "cwd": str(project)})
+
+    result = _run_hook(config_dir=config_dir, cwd=project, stdin_text=stdin)
+    assert result.returncode == 0
+    assert _latest_snapshot(config_dir)["content_layers"]["effort_level_env_set"] is False
+
+    # Ensure the second run's timestamp-based filename cannot collide with
+    # the first if the clock hasn't ticked a whole second yet (see
+    # test_min_interval_zero_always_writes_even_with_identical_content).
+    time.sleep(1.1)
+    result = _run_hook(
+        config_dir=config_dir, cwd=project, stdin_text=stdin,
+        extra_env={"CLAUDE_CODE_EFFORT_LEVEL": "xhigh"},
+        # The default 300s min-interval throttle would otherwise skip this
+        # second write entirely (test_min_interval_skips_identical_content),
+        # silently leaving the first (env-unset) snapshot as "latest".
+        extra_args=["--min-interval", "0"],
+    )
+    assert result.returncode == 0
+    snapshot = _latest_snapshot(config_dir)
+    assert snapshot["content_layers"]["effort_level_env_set"] is True
+    assert "xhigh" not in json.dumps(snapshot)
+
+
 def test_parse_frontmatter_block_sequence_list():
     """COV-10: a YAML block sequence (``key:`` followed by ``- item``
     lines) collects into an actual list, the conventional way a skill's

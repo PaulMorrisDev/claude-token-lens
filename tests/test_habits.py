@@ -47,9 +47,10 @@ def pricing():
     return load_pricing(path=FIXTURES / "pricing_min.toml")
 
 
-def _cycle(week: str = WEEKS[0], cost: float = 1.0, tag: CaptureTag | None = None, **kw) -> CycleFact:
+def _cycle(week: str = WEEKS[0], cost: float = 1.0, tag: CaptureTag | None = None, session_id: str = "s1",
+           **kw) -> CycleFact:
     ts = datetime.fromisoformat(week).replace(tzinfo=timezone.utc) if week else None
-    return CycleFact(session_id="s1", ts=ts, week=week, cost=cost, turns=1, tag=tag, **kw)
+    return CycleFact(session_id=session_id, ts=ts, week=week, cost=cost, turns=1, tag=tag, **kw)
 
 
 def _agent(**kw) -> AgentFact:
@@ -1174,10 +1175,18 @@ def test_self_report_calibration_carries_the_cap_6_fields_and_flips_on_a_frequen
 # -- the best setup per kind of task -----------------------------------------------
 
 
-def _setup_cycles(n, *, model, effort, cost, task="bugfix", level="normal", redone=0, outcome=None):
+def _setup_cycles(n, *, model, effort, cost, task="bugfix", level="normal", redone=0, outcome=None, session=None,
+                   speed=None, main_cost=None):
+    """``n`` cycles of one setup, as one session each -- so, per PROF-04,
+    exactly one of them (the last) is left out of the went-well/redone
+    rate. ``session`` defaults to a group-specific id so different
+    setups in the same test don't share a session and cross-exclude
+    each other's cycles."""
     tag = CaptureTag(task=task, level=level)
+    session = session or f"{model}-{effort}-{level}-{task}"
     return [
-        _cycle(tag=tag, cost=cost, model=model, effort=effort, redone=i < redone, outcome=outcome)
+        _cycle(tag=tag, cost=cost, model=model, effort=effort, redone=i < redone, outcome=outcome,
+               session_id=session, speed=speed, main_cost=cost if main_cost is None else main_cost)
         for i in range(n)
     ]
 
@@ -1199,30 +1208,49 @@ def test_feedback_decides_went_well_before_the_next_message_does():
 
 def test_the_cheapest_setup_that_went_as_well_as_your_usual_one_is_named():
     h = Habits(cycles=[
-        *_setup_cycles(8, model="claude-opus-5-5", effort="high", cost=2.0, redone=1),
+        *_setup_cycles(25, model="claude-opus-5-5", effort="high", cost=2.0, redone=2),
         *_setup_cycles(6, model="claude-sonnet-5", effort="medium", cost=0.5, redone=1),
-        # Cheaper still, but redone too often.
-        *_setup_cycles(5, model="claude-haiku-4-5-20251001", effort="low", cost=0.1, redone=3),
+        # Cheaper still, but redone far more often -- big enough on both
+        # sides (n=25, n=20) to clear quality.MIN_DENOMINATOR and let
+        # the ratio test actually catch it.
+        *_setup_cycles(20, model="claude-haiku-4-5-20251001", effort="low", cost=0.1, redone=14),
     ])
     rows = [r for r in _rows(_table(habits.section_from(h), "habits_setups")) if r["level"] == "all"]
     by_setup = {(r["model"], r["effort"]): r for r in rows}
-    usual = by_setup[("opus", "high")]
-    cheaper = by_setup[("sonnet", "medium")]
-    assert usual["verdict"] == "usual" and usual["cycles"] == 8 and usual["ok_pct"] == pytest.approx(87.5)
+    usual = by_setup[("claude-opus-5-5", "high")]
+    cheaper = by_setup[("claude-sonnet-5", "medium")]
+    # One cycle per setup (the last of its session) is left out of the
+    # went-well rate (PROF-04): 24 of 25 opus messages are rated, 2 redone.
+    assert usual["verdict"] == "usual" and usual["cycles"] == 25 and usual["ok_pct"] == pytest.approx(2200 / 24)
     assert cheaper["verdict"] == "cheaper" and cheaper["saving_pct"] == pytest.approx(75.0)
-    assert by_setup[("haiku", "low")]["verdict"] == "" and by_setup[("haiku", "low")]["saving_pct"] is None
+    haiku = by_setup[("claude-haiku-4-5-20251001", "low")]
+    assert haiku["verdict"] == "" and haiku["saving_pct"] is None
     # The levels Claude reported get rows of their own, after all of them.
     assert {r["level"] for r in _rows(_table(habits.section_from(h), "habits_setups"))} == {"all", "normal"}
 
 
-def test_a_setup_within_the_tolerance_still_counts_as_doing_as_well():
+def test_a_cheaper_setup_with_no_clear_quality_difference_is_named():
     h = Habits(cycles=[
         *_setup_cycles(22, model="claude-opus-5-5", effort="high", cost=2.0),
         *_setup_cycles(20, model="claude-sonnet-5", effort="high", cost=1.0, redone=1),
     ])
     rows = {r["model"]: r for r in _rows(_table(habits.section_from(h), "habits_setups")) if r["level"] == "all"}
-    assert rows["sonnet"]["ok_pct"] == pytest.approx(95.0)
-    assert rows["sonnet"]["verdict"] == "cheaper"
+    # 19 of 20 sonnet messages are rated (the last is excluded), 1 redone.
+    assert rows["claude-sonnet-5"]["ok_pct"] == pytest.approx(1800 / 19)
+    assert rows["claude-sonnet-5"]["verdict"] == "cheaper"
+
+
+def test_a_cheaper_setup_that_was_retried_far_more_often_is_not_named():
+    h = Habits(cycles=[
+        *_setup_cycles(22, model="claude-opus-5-5", effort="high", cost=2.0, redone=2),
+        # Much cheaper by raw cost, but a statistically clear jump in the
+        # redo rate (2/21 vs 14/19 rated) -- the ratio test with Holm
+        # correction catches this even though the old tolerance-based
+        # check (a flat 5-point band) would have too, by luck.
+        *_setup_cycles(20, model="claude-haiku-4-5-20251001", effort="high", cost=0.2, redone=14),
+    ])
+    rows = {r["model"]: r for r in _rows(_table(habits.section_from(h), "habits_setups")) if r["level"] == "all"}
+    assert rows["claude-haiku-4-5-20251001"]["verdict"] not in ("cheaper",)
 
 
 def test_too_few_messages_on_either_side_name_no_cheaper_setup():
@@ -1244,23 +1272,28 @@ def test_untagged_messages_have_no_setup_rows():
     assert _table(habits.section_from(h), "habits_setups").rows == []
 
 
-def test_a_setup_that_only_saw_easy_work_is_compared_on_easy_work():
+def test_a_setup_thats_mostly_hard_work_is_not_named_cheaper_at_the_all_level():
     h = Habits(cycles=[
-        *_setup_cycles(6, model="claude-opus-5-5", effort="high", cost=1.0, level="easy"),
-        *_setup_cycles(6, model="claude-opus-5-5", effort="high", cost=3.0, level="hard"),
-        *_setup_cycles(6, model="claude-sonnet-5", effort="high", cost=0.8, level="easy"),
+        *_setup_cycles(25, model="claude-opus-5-5", effort="high", cost=2.0, level="normal"),
+        # Cheap and never redone, but every message was hard work --
+        # it looks like a good deal only because of what it was used
+        # for. The hard-work veto (PROF-04) keeps it out of the mixed
+        # "all" row even though nothing here would trip the ratio test.
+        *_setup_cycles(20, model="claude-sonnet-5", effort="high", cost=0.5, level="hard"),
     ])
     rows = {r["model"]: r for r in _rows(_table(habits.section_from(h), "habits_setups")) if r["level"] == "all"}
-    # Raw, sonnet looks 60% cheaper; on the easy work both ran it is 20%.
-    assert rows["sonnet"]["avg_cost"] == pytest.approx(0.8) and rows["opus"]["avg_cost"] == pytest.approx(2.0)
-    assert rows["sonnet"]["verdict"] == "cheaper" and rows["sonnet"]["saving_pct"] == pytest.approx(20.0)
+    assert rows["claude-sonnet-5"]["verdict"] == "" and rows["claude-sonnet-5"]["saving_pct"] is None
 
 
-def test_too_little_shared_work_gives_no_verdict():
+def test_a_setup_with_only_some_hard_work_can_still_be_named_cheaper():
     h = Habits(cycles=[
-        *_setup_cycles(2, model="claude-opus-5-5", effort="high", cost=1.0, level="easy"),
-        *_setup_cycles(10, model="claude-opus-5-5", effort="high", cost=3.0, level="hard"),
-        *_setup_cycles(6, model="claude-sonnet-5", effort="high", cost=0.8, level="easy"),
+        *_setup_cycles(25, model="claude-opus-5-5", effort="high", cost=2.0, level="normal"),
+        # Same cheap setup, but only a quarter of its messages were
+        # hard -- below the veto's 50% floor, so the ratio test (which
+        # sees nothing wrong here) decides instead.
+        *_setup_cycles(15, model="claude-sonnet-5", effort="high", cost=0.5, level="normal"),
+        *_setup_cycles(5, model="claude-sonnet-5", effort="high", cost=0.5, level="hard"),
     ])
     rows = {r["model"]: r for r in _rows(_table(habits.section_from(h), "habits_setups")) if r["level"] == "all"}
-    assert rows["sonnet"]["verdict"] == ""
+    assert rows["claude-sonnet-5"]["verdict"] == "cheaper"
+    assert rows["claude-sonnet-5"]["saving_pct"] == pytest.approx(75.0)

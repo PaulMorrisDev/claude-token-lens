@@ -32,7 +32,7 @@ import re
 from dataclasses import dataclass
 from typing import Callable
 
-from . import habits, quality, whatif
+from . import model_gate, whatif
 from .fixes import already_set
 from .model import Recommendation, ReportModel, SettingChange
 from .snapshots import Snapshot, effective_config
@@ -156,12 +156,10 @@ def _merge_model_tier(recs: list[Recommendation], ctx: _Context) -> list[Recomme
         return recs
     rest = [r for r in recs if r.id != "model-tier"]
     tables = whatif._Tables(ctx.report)
-    worse = quality.worse_models(tables.rows("quality", "quality_by_setup"))
-    retried = quality.retried_models(tables.rows("quality", "quality_retried"))
     # Metrics capture: agents whose runs said a larger model would suit,
     # whose work was mostly reported hard, or that were retried for the
     # model. A veto only: a "smaller would do" never adds a suggestion.
-    unfit = habits.unfit_agents(tables.rows("habits", "habits_agents"))
+    worse, retried, unfit = model_gate.raw(tables)
     left_out: list[str] = []
     rows = []
     for rec in tier:

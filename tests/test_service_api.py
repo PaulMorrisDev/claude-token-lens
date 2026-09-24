@@ -1921,6 +1921,21 @@ def test_whatif_estimates_and_validates(server):
     assert resp.status == 400
 
 
+def test_whatif_task_param_validates_and_scales_the_total(server):
+    # No metrics capture in this fixture's corpus, so habits_by_task has
+    # no per-task cost to scale by -- PROF-01's scaling degrades to "not
+    # estimated" rather than leaving the unscaled (too large) figure in.
+    resp, payload = server.post_json("/api/whatif?task=not-a-task", {"settings": {"model": "sonnet"}, "agents": {}})
+    assert resp.status == 400 and "unknown task" in payload["error"]["message"]
+    resp, payload = server.post_json("/api/whatif?task=bugfix", {"settings": {"model": "sonnet"}, "agents": {}})
+    assert resp.status == 200
+    data = payload["data"]
+    [row] = data["rows"]
+    assert row["saving_usd"] is None and "no per-task cost" in row["basis"]
+    # Whatever the rows say, the total is exactly their own sum (PROF-01).
+    assert data["total_usd"] == sum(r["saving_usd"] for r in data["rows"] if r["saving_usd"] is not None)
+
+
 def test_whatif_rejects_cross_site_posts(server):
     resp, _raw = server.request(
         "POST", "/api/whatif", body={"settings": {"model": "sonnet"}}, headers={"Sec-Fetch-Site": "cross-site"}

@@ -126,6 +126,9 @@ FOR_TASKS: dict[str, tuple[str, ...]] = {
     "quick-question": ("chat",),
     "pairing": ("chat",),
     "docs": ("docs",),
+    # PROF-11/F11: workflow-ultracode's own "ops" for-word (see its
+    # notes) -- the one task word this dict used to leave unmapped.
+    "ops": ("ops",),
 }
 
 #: Purposes the transcript's own structure decides (a local-LLM pipeline,
