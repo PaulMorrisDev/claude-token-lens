@@ -496,3 +496,94 @@ def test_deep_wait_summary_wording():
     assert text == (
         "Deep's large-output/web hook waited ≈0.1s (median, p90 ≈0.9s) over 10 calls this week."
     )
+
+
+# -- settings policies that stop the user's own hooks running at all -------
+
+
+def _policy_roots(tmp_path, *, user=None, managed=None, drop_in=None):
+    claude_root = tmp_path / "claude"
+    claude_root.mkdir()
+    if user is not None:
+        (claude_root / "settings.json").write_text(json.dumps(user), encoding="utf-8")
+    managed_dir = tmp_path / "managed"
+    managed_dir.mkdir()
+    if managed is not None:
+        (managed_dir / "managed-settings.json").write_text(json.dumps(managed), encoding="utf-8")
+    if drop_in is not None:
+        (managed_dir / "managed-settings.d").mkdir()
+        (managed_dir / "managed-settings.d" / "10-hooks.json").write_text(json.dumps(drop_in), encoding="utf-8")
+    return claude_root, managed_dir
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "expected"),
+    [
+        ({}, None),
+        ({"user": {"hooks": {}}}, None),
+        ({"managed": {"allowManagedHooksOnly": True}}, hook_health.POLICY_MANAGED_ONLY),
+        ({"managed": {"allowManagedHooksOnly": False}}, None),
+        ({"drop_in": {"allowManagedHooksOnly": True}}, hook_health.POLICY_MANAGED_ONLY),
+        ({"managed": {"disableAllHooks": True, "allowManagedHooksOnly": True}}, hook_health.POLICY_ALL_OFF_MANAGED),
+        ({"user": {"disableAllHooks": True}}, hook_health.POLICY_ALL_OFF),
+        ({"user": {"disableAllHooks": False}}, None),
+    ],
+)
+def test_hook_policy_reads_managed_and_user_settings(tmp_path, kwargs, expected):
+    claude_root, managed_dir = _policy_roots(tmp_path, **kwargs)
+    assert hook_health.hook_policy(claude_root, managed_dir) == expected
+
+
+def test_hook_policy_treats_an_unreadable_file_as_no_policy(tmp_path):
+    claude_root, managed_dir = _policy_roots(tmp_path)
+    (managed_dir / "managed-settings.json").write_text("{not json", encoding="utf-8")
+    (claude_root / "settings.json").write_text("[1, 2]", encoding="utf-8")
+    assert hook_health.hook_policy(claude_root, managed_dir) is None
+
+
+def test_hook_policy_defaults_to_the_platform_managed_dir(tmp_path, monkeypatch):
+    claude_root, managed_dir = _policy_roots(tmp_path, managed={"allowManagedHooksOnly": True})
+    monkeypatch.setattr(hook_health, "managed_settings_dir", lambda: managed_dir)
+    assert hook_health.hook_policy(claude_root) == hook_health.POLICY_MANAGED_ONLY
+
+
+def test_capture_health_under_a_policy_is_not_ok_and_says_why(tmp_path):
+    claude_root, managed_dir = _policy_roots(tmp_path, managed={"allowManagedHooksOnly": True})
+    wanted = hook_health.capture_specs(["task"])
+    health = hook_health.check_capture(wanted, claude_root=claude_root, managed_dir=managed_dir)
+    assert health.blocked_by == hook_health.POLICY_MANAGED_ONLY
+    assert not health.ok
+    assert health.summary() == hook_health.POLICY_TEXT[hook_health.POLICY_MANAGED_ONLY]
+    assert "capture connect" not in health.summary()
+
+
+def test_capture_health_with_nothing_needed_ignores_the_policy(tmp_path):
+    claude_root, managed_dir = _policy_roots(tmp_path, user={"disableAllHooks": True})
+    health = hook_health.check_capture((), claude_root=claude_root, managed_dir=managed_dir)
+    assert health.summary() == "No capture hooks are needed or installed."
+
+
+def test_snapshot_hook_health_under_a_policy_is_not_ok_and_says_why(tmp_path):
+    script = tmp_path / "hooks" / hook_health.HOOK_SCRIPT_NAME
+    script.parent.mkdir()
+    script.write_text("# hook", encoding="utf-8")
+    command = f'"{sys.executable}" "{script}"'
+    user = {"disableAllHooks": True, "hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": command}]}]}}
+    claude_root, managed_dir = _policy_roots(tmp_path, user=user)
+    health = hook_health.check(tmp_path, claude_root=claude_root, managed_dir=managed_dir)
+    assert health.command == command
+    assert not health.ok
+    assert health.fixed_command is None
+    assert hook_health.POLICY_TEXT[hook_health.POLICY_ALL_OFF] in health.summary()
+
+
+def test_hooks_block_under_a_policy_offers_no_connect_command(tmp_path):
+    from claude_token_lens import capture_view
+
+    claude_root, managed_dir = _policy_roots(tmp_path, managed={"disableAllHooks": True})
+    health = hook_health.check_capture(hook_health.capture_specs(["task"]), claude_root=claude_root, managed_dir=managed_dir)
+    block = capture_view.hooks_block(health)
+    assert block["ok"] is False
+    assert block["blocked_by"] == hook_health.POLICY_ALL_OFF_MANAGED
+    assert block["summary"] == hook_health.POLICY_TEXT[hook_health.POLICY_ALL_OFF_MANAGED]
+    assert capture_view.hooks_block(None)["blocked_by"] is None

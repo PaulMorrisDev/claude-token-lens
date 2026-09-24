@@ -144,6 +144,9 @@ class HookHealth:
     last_snapshot_days: float | None = None
     #: A corrected command, when one can be worked out and its script exists.
     fixed_command: str | None = None
+    #: A :data:`POLICY_TEXT` key when a settings policy stops Claude Code
+    #: running the user's hooks at all (:func:`hook_policy`).
+    blocked_by: str | None = None
 
     @property
     def ok(self) -> bool:
@@ -153,6 +156,7 @@ class HookHealth:
             and not self.mis_escaped
             and self.interpreter_found
             and not self.percent_vars
+            and self.blocked_by is None
         )
 
     def summary(self) -> str:
@@ -162,6 +166,8 @@ class HookHealth:
         else:
             days = int(self.last_snapshot_days)
             age = "Last config snapshot: " + ("today" if days == 0 else f"{days} day{'s' if days != 1 else ''} ago")
+        if self.blocked_by is not None:
+            return f"{age}. {POLICY_TEXT[self.blocked_by]}"
         if self.command is None:
             return f"{age}. No SessionStart hook runs {HOOK_SCRIPT_NAME} (see 'claude-token-lens snapshot-config --print-hook')."
         if self.mis_escaped:
@@ -193,6 +199,83 @@ def settings_path(claude_root: str | Path | None = None) -> Path:
     finds it (``$CLAUDE_CONFIG_DIR``, else ``~/.claude``). Never next to
     ``--config-dir``, which can point this tool's folder anywhere."""
     return discovery.claude_root(claude_root) / "settings.json"
+
+
+#: Why Claude Code won't run a hook from the user's settings.json at all,
+#: whatever the entry says (docs/en/settings-reference.md: "What runs
+#: under allowManagedHooksOnly" -- "user, project, and local hooks ... are
+#: blocked", and the status line narrows to managed settings; and
+#: ``disableAllHooks`` -- "In managed settings: Claude Code disables every
+#: configured hook"; "In any other settings file: Claude Code disables
+#: user, project, local, and plugin hooks"). A closed vocabulary.
+POLICY_MANAGED_ONLY = "managed_only"
+POLICY_ALL_OFF_MANAGED = "all_off_managed"
+POLICY_ALL_OFF = "all_off"
+
+POLICY_TEXT = {
+    POLICY_MANAGED_ONLY: (
+        "Your organisation's managed settings allow only the hooks they deploy (allowManagedHooksOnly), so "
+        "Claude Code won't run hooks from your own settings.json (capture's and the config-snapshot hook "
+        "included) or a custom status line. Reports and the dashboard still work from your transcripts; "
+        "ask your administrator if you need the hooks."
+    ),
+    POLICY_ALL_OFF_MANAGED: (
+        "Your organisation's managed settings turn off every hook (disableAllHooks), so Claude Code won't "
+        "run capture's hooks, the config-snapshot hook or a custom status line. Reports and the dashboard "
+        "still work from your transcripts."
+    ),
+    POLICY_ALL_OFF: (
+        "settings.json sets disableAllHooks, so Claude Code runs none of your hooks (capture's and the "
+        "config-snapshot hook included) and no custom status line. Remove it, or set it to false, to let "
+        "them run."
+    ),
+}
+
+
+def managed_settings_dir() -> Path:
+    """The platform's system managed-settings directory. The same rule as
+    ``hooks/snapshot-config.py``'s ``default_managed_settings_dir`` (a
+    standalone script this package can't import; a test keeps the two in
+    step): ``%ProgramFiles%\\ClaudeCode`` on Windows, ``/Library/
+    Application Support/ClaudeCode`` on macOS, ``/etc/claude-code``
+    elsewhere."""
+    if sys.platform == "win32":
+        return Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "ClaudeCode"
+    if sys.platform == "darwin":
+        return Path("/Library/Application Support/ClaudeCode")
+    return Path("/etc/claude-code")
+
+
+def _read_json_object(path: Path) -> dict:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def hook_policy(claude_root: str | Path | None = None, managed_dir: str | Path | None = None) -> str | None:
+    """A :data:`POLICY_TEXT` key when a settings file stops Claude Code
+    running the user's own hooks, else ``None``. Reads the file-based
+    managed settings (``managed-settings.json`` and its
+    ``managed-settings.d/*.json`` drop-ins) and the user settings.json.
+    Managed settings delivered another way (the Windows registry, a macOS
+    profile, server-managed settings) aren't visible on disk, nor is a
+    project's own ``disableAllHooks``; there, capture status's measured
+    "0 sessions captured" is the tell. Never raises."""
+    base = Path(managed_dir) if managed_dir is not None else managed_settings_dir()
+    managed = [_read_json_object(base / "managed-settings.json")]
+    try:
+        managed += [_read_json_object(p) for p in sorted((base / "managed-settings.d").glob("*.json"))]
+    except OSError:
+        pass
+    if any(doc.get("disableAllHooks") is True for doc in managed):
+        return POLICY_ALL_OFF_MANAGED
+    if any(doc.get("allowManagedHooksOnly") is True for doc in managed):
+        return POLICY_MANAGED_ONLY
+    if _read_json_object(settings_path(claude_root)).get("disableAllHooks") is True:
+        return POLICY_ALL_OFF
+    return None
 
 
 def _event_entries(settings: dict, event: str) -> list[tuple[str, dict]]:
@@ -441,6 +524,7 @@ def check(
     now: datetime | None = None,
     python: str | None = None,
     claude_root: str | Path | None = None,
+    managed_dir: str | Path | None = None,
 ) -> HookHealth:
     """Inspect Claude Code's ``settings.json`` (see :func:`settings_path`)
     and the snapshot history in ``config_dir``. Never raises: an
@@ -450,6 +534,7 @@ def check(
     config_dir = Path(config_dir)
     now = now or datetime.now(timezone.utc)
     health = HookHealth(settings_path=settings_path(claude_root))
+    health.blocked_by = hook_policy(claude_root, managed_dir)
     health.last_snapshot_days = _newest_snapshot_days(config_dir, now)
     try:
         settings = json.loads(health.settings_path.read_text(encoding="utf-8"))
@@ -802,14 +887,20 @@ class CaptureHookHealth:
     modified: tuple[HookSpec, ...] = ()
     #: Plain sentences, one per problem with an entry that is there.
     problems: list[str] = field(default_factory=list)
+    #: A :data:`POLICY_TEXT` key when a settings policy stops Claude Code
+    #: running these entries at all (:func:`hook_policy`); ``capture
+    #: connect`` can't fix that.
+    blocked_by: str | None = None
 
     @property
     def ok(self) -> bool:
-        return not self.missing and not self.problems
+        return not self.missing and not self.problems and self.blocked_by is None
 
     def summary(self) -> str:
         if not self.needed and not self.extra:
             return "No capture hooks are needed or installed."
+        if self.blocked_by is not None:
+            return POLICY_TEXT[self.blocked_by]
         if self.ok:
             return "The capture hooks are set up." + (
                 " settings.json also runs capture hooks no chosen metric needs; they add nothing."
@@ -826,6 +917,7 @@ def check_capture(
     claude_root: str | Path | None = None,
     config_dir: str | Path | None = None,
     check_python: bool = False,
+    managed_dir: str | Path | None = None,
 ) -> CaptureHookHealth:
     """Compare settings.json's capture entries with ``wanted``. Never
     raises: an unreadable settings file reads as no entries.
@@ -840,6 +932,7 @@ def check_capture(
     needs ``tomllib`` to read config.toml at all -- left off by default
     since spawning a process isn't free."""
     health = CaptureHookHealth(settings_path=settings_path(claude_root), needed=tuple(wanted))
+    health.blocked_by = hook_policy(claude_root, managed_dir)
     try:
         settings = json.loads(health.settings_path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -1192,6 +1285,10 @@ __all__ = [
     "HookErrorStat",
     "HookHealth",
     "HookSpec",
+    "POLICY_ALL_OFF",
+    "POLICY_ALL_OFF_MANAGED",
+    "POLICY_MANAGED_ONLY",
+    "POLICY_TEXT",
     "backup_path",
     "capture_specs",
     "check",
@@ -1199,7 +1296,9 @@ __all__ = [
     "connect",
     "count_hook_errors",
     "hook_command",
+    "hook_policy",
     "install_hook_files",
+    "managed_settings_dir",
     "measure_deep_wait",
     "plan_capture",
     "plan_connect",

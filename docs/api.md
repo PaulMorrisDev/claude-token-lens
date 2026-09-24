@@ -940,9 +940,14 @@ one is built in the background.
   (`main`, `subagent`, `tool`, `brief`) and a `daily` series.
 - `history`: what the estimates replay (`days`, `sessions`,
   `subagents`, `cycles`), `null` with no history.
-- `hooks`: `ok` (`true` when nothing is missing), `summary`, `missing`,
-  `missing_events`, `problems` (a count: problem text can hold a
-  path) and `connect_command`.
+- `hooks`: `ok` (`true` when nothing is missing and no settings policy
+  stops the hooks running), `summary`, `missing`, `missing_events`,
+  `problems` (a count: problem text can hold a path),
+  `connect_command`, and `blocked_by`: `null`, or why Claude Code won't
+  run the user's own hooks at all — `managed_only` (managed
+  `allowManagedHooksOnly`), `all_off_managed` (managed
+  `disableAllHooks`) or `all_off` (`disableAllHooks` in the user
+  settings.json). `connect_command` can't fix a `blocked_by`.
 - `billing`: `mode` and `basis` (what the amounts are).
 - `roi`: what capture is costing against what depends on it, both
   spread over a week (`capture.weekly_cost`,

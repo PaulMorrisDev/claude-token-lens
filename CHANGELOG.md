@@ -26,6 +26,19 @@ of the 5-minute one (below).
 
 ### Added
 
+- **Token Lens now says when a settings policy stops its hooks running.**
+  On a machine whose managed settings set `allowManagedHooksOnly` or
+  `disableAllHooks` (read from `managed-settings.json` and its
+  `managed-settings.d/` drop-ins), or whose own settings.json sets
+  `disableAllHooks`, Claude Code runs none of the hooks you add
+  yourself. `capture on`/`connect` now say so before showing the
+  change, and `capture status`, the Capture tab, the banner and the
+  Data quality tab's snapshot-hook row name the policy instead of
+  reporting the hooks as set up or offering `capture connect`, which
+  can't fix it. `/api/capture`'s `hooks` gains `blocked_by`. Policies
+  delivered another way (the Windows registry, a macOS profile,
+  server-managed settings) aren't visible on disk; there, capture
+  status's measured "0 sessions captured" is the tell.
 - **Metrics capture (opt-in, off by default, and it uses tokens while
   it's on).** Turn it on and Claude ends each reply — and a subagent's
   final report — with a one-line, closed-vocabulary tag such as

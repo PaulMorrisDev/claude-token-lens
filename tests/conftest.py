@@ -38,9 +38,16 @@ def _isolated_claude_config_dir(tmp_path_factory, monkeypatch):
     monkeypatch.setenv("USERPROFILE", str(fake_home))
     # init looks for WSL distros through wsl.exe; a developer machine
     # with Ubuntu installed would otherwise get an extra question.
-    from claude_token_lens import discovery
+    from claude_token_lens import discovery, hook_health
 
     monkeypatch.setattr(discovery, "find_wsl_projects_roots", lambda run=None: [])
+    # hook_health.hook_policy reads the machine's own managed-settings.json;
+    # a machine under an organisation's hook policy would otherwise change
+    # what every hook-health test sees.
+    # The real function stays reachable for the one test that checks it.
+    managed = fake_home / "managed-settings"
+    monkeypatch.setattr(hook_health, "_real_managed_settings_dir", hook_health.managed_settings_dir, raising=False)
+    monkeypatch.setattr(hook_health, "managed_settings_dir", lambda: managed)
 
 
 @pytest.fixture(autouse=True)

@@ -143,9 +143,12 @@ def hooks_block(health) -> dict:
     if health is None:
         return {
             "ok": None, "summary": "", "missing": [], "missing_events": [], "problems": 0,
-            "connect_command": CONNECT_COMMAND,
+            "connect_command": CONNECT_COMMAND, "blocked_by": None,
         }
-    if health.ok:
+    blocked_by = getattr(health, "blocked_by", None)
+    if health.ok or blocked_by is not None:
+        # A settings policy (hook_health.POLICY_TEXT) is the one reason
+        # 'capture connect' can't fix, so its sentence stands alone.
         summary = health.summary()
     else:
         # One sentence however many are missing: the banner shows this on
@@ -171,6 +174,7 @@ def hooks_block(health) -> dict:
         "missing_events": sorted({spec.event for spec in health.missing}),
         "problems": len(health.problems),
         "connect_command": CONNECT_COMMAND,
+        "blocked_by": blocked_by,
     }
 
 
