@@ -91,6 +91,7 @@ function.
 
 from __future__ import annotations
 
+from bisect import bisect_right
 from dataclasses import dataclass, field
 from typing import Callable
 
@@ -305,24 +306,6 @@ def _turn_read_write_rates(turn: Turn, rates: RatesArg) -> tuple[float, float]:
     return read_rate, write_rate
 
 
-def _carry_cost_for_turn(turn: Turn, result_tokens: float, rates: RatesArg) -> float:
-    """The dollar cost of carrying ``result_tokens`` worth of an earlier
-    result through this one later turn: ``result_tokens`` split between
-    the read/write rate in proportion to the turn's own observed
-    ``cache_read_tokens``/``cache_creation_tokens`` mix (see the module
-    docstring's "carry cost" paragraph). ``0.0`` when the turn carried no
-    cache volume at all (e.g. a turn that fell entirely outside any
-    cached prefix) or ``result_tokens`` is non-positive.
-    """
-    cache_volume = turn.cache_read_tokens + turn.cache_creation_tokens
-    if cache_volume <= 0 or result_tokens <= 0:
-        return 0.0
-    read_rate, write_rate = _turn_read_write_rates(turn, rates)
-    read_share = turn.cache_read_tokens / cache_volume
-    write_share = turn.cache_creation_tokens / cache_volume
-    return result_tokens * (read_share * read_rate + write_share * write_rate)
-
-
 @dataclass(slots=True)
 class CarriedResult:
     """One tool result's own carry record within a single transcript --
@@ -367,33 +350,62 @@ def _carry_end_index(entry_index: int, boundary_indices: list[int], last_index: 
 
 def _extract_results(result: TranscriptResult, lookup: RatesLookup) -> list[CarriedResult]:
     """Every carried result in one transcript, per the module docstring's
-    model. Returns ``[]`` for a transcript with no priced turns."""
+    model. Returns ``[]`` for a transcript with no priced turns.
+
+    Perf (ROB-P3-adjacent, this module's own O(turns_with_results *
+    turns_carried) blow-up -- see H5/S5): a later turn's per-token carry
+    rate (``read_share * read_rate + write_share * write_rate``) depends
+    only on that later turn and the rate card, never on which earlier
+    result is being carried through it -- :func:`_truncation_saving`'s
+    own docstring already relies on this ("carry_cost_usd is linear in
+    the result's own token count... the per-turn read/write rate mix
+    doesn't depend on the result's size"). The old code called
+    ``lookup``/``price_turn`` once per ``(result, later turn)`` pair, up
+    to ``O(turns_with_results * turns_carried)`` times over a whole
+    transcript. Priced once per turn here instead, then summed over a
+    range in O(log turns) via a prefix sum + :func:`bisect.bisect_right`
+    (turn_index can skip integers -- an unpriced turn in between, e.g. --
+    so a direct ``range()`` over indices isn't safe to replace with
+    positional arithmetic).
+    """
     priced = _priced_turns(result.turns)
     if not priced:
         return []
     agent_type = agent_type_label(result)
     boundary_indices = _boundary_turn_indices(priced)
     last_index = priced[-1].turn_index
-    by_index = {t.turn_index: t for t in priced}
+
+    turn_indices = [t.turn_index for t in priced]
+    per_turn_rate = [0.0] * len(priced)
+    for i, later_turn in enumerate(priced):
+        cache_volume = later_turn.cache_read_tokens + later_turn.cache_creation_tokens
+        if cache_volume <= 0:
+            continue
+        read_rate, write_rate = _turn_read_write_rates(later_turn, lookup(later_turn.model))
+        read_share = later_turn.cache_read_tokens / cache_volume
+        write_share = later_turn.cache_creation_tokens / cache_volume
+        per_turn_rate[i] = read_share * read_rate + write_share * write_rate
+    prefix_rate = [0.0] * (len(priced) + 1)
+    for i, rate in enumerate(per_turn_rate):
+        prefix_rate[i + 1] = prefix_rate[i] + rate
 
     out: list[CarriedResult] = []
-    for turn in priced:
+    for i, turn in enumerate(priced):
         if not turn.tool_result_chars_by_tool:
             continue
         end_index = _carry_end_index(turn.turn_index, boundary_indices, last_index)
         turns_carried = max(0, end_index - turn.turn_index)
+        # Every priced turn strictly after this one (position i+1, since
+        # turn_indices is sorted ascending and turn is priced[i] itself)
+        # up to and including end_index.
+        right = bisect_right(turn_indices, end_index)
+        rate_sum = prefix_rate[right] - prefix_rate[i + 1] if right > i + 1 else 0.0
         for tool_name, chars in turn.tool_result_chars_by_tool.items():
             if chars <= 0:
                 continue
             tokens = round(chars / _CHARS_PER_TOKEN_APPROX)
             if tokens <= 0:
                 continue
-            cost = 0.0
-            for idx in range(turn.turn_index + 1, end_index + 1):
-                later_turn = by_index.get(idx)
-                if later_turn is None:
-                    continue
-                cost += _carry_cost_for_turn(later_turn, tokens, lookup(later_turn.model))
             out.append(
                 CarriedResult(
                     tool=tool_name,
@@ -402,7 +414,7 @@ def _extract_results(result: TranscriptResult, lookup: RatesLookup) -> list[Carr
                     tokens=tokens,
                     turns_carried=turns_carried,
                     carry_tokens=tokens * turns_carried,
-                    carry_cost_usd=cost,
+                    carry_cost_usd=tokens * rate_sum,
                 )
             )
     return out

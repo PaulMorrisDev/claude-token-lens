@@ -415,6 +415,18 @@ class _Rates:
         rates = self._rates(turn)
         return rates.output / 1e6 if rates is not None else 0.0
 
+    def read_write(self, turn: Turn) -> tuple[float, float]:
+        """``(read(turn), write(turn))`` from one shared ``_rates(turn)``
+        call -- perf (ROB-P3-adjacent, S5): ``_CarryCost.__init__`` used
+        to call ``.read()`` and ``.write()`` in two separate passes, each
+        independently re-resolving the same turn's effective rates."""
+        rates = self._rates(turn)
+        if rates is None:
+            return 0.0, 0.0
+        read = rates.cache_read / 1e6
+        write = (rates.cache_write_1h if turn.cc_1h > turn.cc_5m else rates.cache_write_5m) / 1e6
+        return read, write
+
 
 def _compacted(turn: Turn) -> bool:
     return EventKind.COMPACT_BOUNDARY in turn.preceding_event_kinds
@@ -428,8 +440,11 @@ class _CarryCost:
     def __init__(self, turns: list[Turn], rates: _Rates):
         self.turns = turns
         self.costs = [rates.cost(t) for t in turns]
-        self.reads = [rates.read(t) for t in turns]
-        self.writes = [rates.write(t) for t in turns]
+        # Perf: read_write() shares one _rates(t) call for both, instead
+        # of .read()/.write() each re-resolving it in a separate pass.
+        read_write = [rates.read_write(t) for t in turns]
+        self.reads = [r for r, _w in read_write]
+        self.writes = [w for _r, w in read_write]
         n = len(turns)
         self._read_on = [0.0] * (n + 1)
         for i in range(n - 1, -1, -1):
@@ -2316,16 +2331,30 @@ def capture_dependent_value(h: Habits, items: list[Item] | None = None) -> float
     return sum(i.saving for i in dependent) / h.span_weeks
 
 
-def capture_section(corpus, pricing: Pricing | None, capture_config, *, ratings: dict | None = None) -> Section:
+def capture_section(
+    corpus, pricing: Pricing | None, capture_config, *, ratings: dict | None = None, h: Habits | None = None
+) -> Section:
     """The "capture" report section: what metrics capture cost while it
     was on, measured from the transcripts (``capture.usage``), a week
     (``capture.weekly_cost``), and what the habits that depend on it or
-    your feedback are worth a week (``capture_dependent_value``)."""
+    your feedback are worth a week (``capture_dependent_value``).
+
+    ``h``, when given, is a :func:`collect` result the caller already
+    built for the "habits" section (perf, S5/ROB-P3: avoids a second
+    ``collect`` pass over the same corpus). It's only reused as-is when
+    its ``effort_share_threshold_pct`` is this function's own default
+    (30.0) -- ``build_section``'s caller may resolve that threshold from
+    config (UX-3), which this section has never done, so reusing a
+    differently-thresholded ``h`` could change ``capture_dependent_value``
+    for a config that overrides it. Otherwise a fresh, unthresholded
+    ``collect`` runs exactly as before."""
     level = getattr(capture_config, "level", "off") or "off"
     since = getattr(capture_config, "enabled_at", "") or ""
     use = capture_mod.usage(corpus, pricing, since=since)
     weekly = capture_mod.weekly_cost(use)
-    value = capture_dependent_value(collect(corpus, pricing, ratings=ratings))
+    if h is None or h.effort_share_threshold_pct != 30.0:
+        h = collect(corpus, pricing, ratings=ratings)
+    value = capture_dependent_value(h)
     rows = [
         ["level", catalogue.LEVEL_TITLES.get(level, level)],
         ["since", since[:10] if since else ""],

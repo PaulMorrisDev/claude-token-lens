@@ -316,6 +316,109 @@ def test_unresolved_model_prices_carry_contribution_at_zero_and_is_counted():
     assert stats.unpriced_turns == 1
 
 
+# -- P10a perf rewrite: cross-check against an independent, naive O(k*T) reference --
+
+
+def _naive_carried_costs(turns: list[model.Turn], lookup) -> dict[tuple[int, str], float]:
+    """An independent, deliberately un-optimized re-derivation of
+    carry.py's documented model (module docstring's "The model,
+    precisely" section) -- (turn.turn_index, tool) -> carry_cost_usd,
+    computed by walking every later turn one at a time for every result
+    (the same shape ``_extract_results`` used before P10a's prefix-sum/
+    bisect rewrite). Used to cross-check :func:`compute_carry`'s output
+    is unchanged (equal within 1e-12) after that rewrite, independently
+    of carry.py's own (now optimized) internals."""
+    from claude_token_lens.pricing import price_turn
+
+    priced = [t for t in turns if t.turn_index > 0]
+    by_index = {t.turn_index: t for t in priced}
+    boundary_indices = sorted(t.turn_index for t in priced if EventKind.COMPACT_BOUNDARY in t.preceding_event_kinds)
+    last_index = priced[-1].turn_index
+
+    out: dict[tuple[int, str], float] = {}
+    for turn in priced:
+        if not turn.tool_result_chars_by_tool:
+            continue
+        end_index = last_index
+        for boundary in boundary_indices:
+            if boundary > turn.turn_index:
+                end_index = boundary - 1
+                break
+        for tool_name, chars in turn.tool_result_chars_by_tool.items():
+            if chars <= 0:
+                continue
+            tokens = round(chars / 4)
+            if tokens <= 0:
+                continue
+            cost = 0.0
+            for idx in range(turn.turn_index + 1, end_index + 1):
+                later = by_index.get(idx)
+                if later is None:
+                    continue
+                cache_volume = later.cache_read_tokens + later.cache_creation_tokens
+                if cache_volume <= 0:
+                    continue
+                rates = lookup(later.model)
+                breakdown = price_turn(later, rates)
+                read_rate = breakdown.cache_read_cost / later.cache_read_tokens if later.cache_read_tokens > 0 else 0.0
+                write_rate = (
+                    breakdown.cache_write_cost / later.cache_creation_tokens
+                    if later.cache_creation_tokens > 0
+                    else 0.0
+                )
+                read_share = later.cache_read_tokens / cache_volume
+                write_share = later.cache_creation_tokens / cache_volume
+                cost += tokens * (read_share * read_rate + write_share * write_rate)
+            out[(turn.turn_index, tool_name)] = cost
+    return out
+
+
+def test_extract_results_matches_naive_reference_with_gaps_boundary_and_mixed_models():
+    """Stress case for the prefix-sum/bisect rewrite: turn_index skips
+    integers (5 and 8 are missing -- an unpriced/absent turn in the
+    middle of a carry range), two models alternate, several turns carry
+    no cache volume at all, and a compaction boundary cuts some carry
+    ranges short. Every (entry turn, tool)'s carry_cost_usd must equal
+    the naive per-later-turn reference within 1e-12."""
+    haiku_rates = PRICING.resolve_model("claude-haiku-4-5-20251001")
+
+    def lookup(model_id: str):
+        return haiku_rates if model_id == "claude-haiku-4-5-20251001" else SONNET_RATES
+
+    turn_indices = [1, 2, 3, 4, 6, 7, 9, 10, 11, 12, 13, 14]
+    turns = []
+    for n, idx in enumerate(turn_indices):
+        kwargs = dict(turn_index=idx, message_id=f"msg_{idx}", model="claude-haiku-4-5-20251001" if idx % 2 else "claude-sonnet-5")
+        if idx == 1:
+            kwargs["tool_result_chars_by_tool"] = {"Read": 4_000}
+        elif idx == 3:
+            kwargs["tool_result_chars_by_tool"] = {"Bash": 8_000, "Grep": 2_000}
+        elif idx == 7:
+            kwargs["tool_result_chars_by_tool"] = {"Read": 12_000}
+        # A mix of pure-read, pure-write, mixed, and zero-cache-volume
+        # later turns (n cycles through 4 cases).
+        case = n % 4
+        if case == 1:
+            kwargs["cache_read_tokens"] = 100 * idx
+        elif case == 2:
+            kwargs["cache_creation_tokens"] = 50 * idx
+            kwargs["cc_5m"] = 50 * idx
+        elif case == 3:
+            kwargs["cache_read_tokens"] = 40 * idx
+            kwargs["cache_creation_tokens"] = 20 * idx
+            kwargs["cc_1h"] = 20 * idx
+        if idx == 10:
+            kwargs["preceding_event_kinds"] = (EventKind.COMPACT_BOUNDARY,)
+        turns.append(_turn(**kwargs))
+
+    stats = compute_carry([_transcript(turns)], lookup, CarryThresholds(top_n=100))
+    expected = _naive_carried_costs(turns, lookup)
+    assert len(stats.top_results) == len(expected)
+    for result in stats.top_results:
+        want = expected[(result.entry_turn_index, result.tool)]
+        assert result.carry_cost_usd == pytest.approx(want, abs=1e-12, rel=1e-12)
+
+
 # -- privacy ---------------------------------------------------------------
 
 

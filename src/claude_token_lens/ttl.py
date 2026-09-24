@@ -64,7 +64,7 @@ from datetime import datetime, timezone
 from typing import Callable
 
 from .model import Column, CostBreakdown, Section, Table, TranscriptResult, Turn
-from .pricing import ModelRates, ResolvedRates, price_turn
+from .pricing import ModelRates, ResolvedRates, effective_rates, price_turn
 from .recache import RecacheThresholds
 
 #: Plan Appendix A4's TTL simulation assumptions, printed verbatim in the
@@ -307,38 +307,33 @@ def _write_cost(turn: Turn, rates: RatesArg, ttl_seconds: int, tokens: int) -> f
     return price_turn(turn, rates, write_split={ttl_seconds: tokens}, read_tokens=0).cache_write_cost
 
 
-def _cache_tokens_at_input_rate(
-    turn: Turn, rates: RatesArg, real: CostBreakdown | None = None
-) -> float:
+def _cache_tokens_at_input_rate(turn: Turn, rates: RatesArg) -> float:
     """What ``turn``'s cache tokens (``cache_read_tokens +
     cache_creation_tokens``) would have cost if there were no caching at
     all and they were priced as plain input tokens instead — the
     "uncached-equivalent" figure ``cache_economy`` and the cache-economy
     table need.
 
-    Computed via two ``price_turn`` calls rather than reading
-    ``rates.input`` directly: a synthetic turn that folds the cache
-    tokens into ``input_tokens`` (zeroing the cache fields) is priced,
-    and the turn's own real ``input_cost`` is subtracted back out. Both
-    calls see the same ``ctx`` (only the token *bucket* changes, not the
-    prefix size) and the same geo, so any long-context or geo multiplier
-    ``price_turn`` applies is identical on both sides and cancels
-    exactly in the subtraction, leaving only the cache tokens' cost at
-    the (possibly multiplied) input rate — still entirely price_turn's
-    own rate resolution, never re-derived here.
+    Perf (ROB-P3-adjacent, S5): this used to build a synthetic turn via
+    ``dataclasses.replace`` (folding the cache tokens into
+    ``input_tokens``, zeroing the cache fields) and price it a second
+    time via ``price_turn``, then subtract the turn's own real
+    ``input_cost`` back out. That always cancelled down to exactly
+    ``cache_tokens`` priced at the effective input rate: folding cache
+    tokens into ``input_tokens`` leaves ``ctx``/``speed``/
+    ``inference_geo`` — the fields the long-context, fast-mode and geo
+    multipliers key off — untouched, so those multipliers are identical
+    on both sides of the subtraction (see :func:`pricing.effective_rates`,
+    which already resolves exactly that per-turn effective input rate
+    without pricing a synthetic turn or allocating a second ``Turn``).
     """
-    if real is None:
-        real = price_turn(turn, rates)
-    synthetic = dataclasses.replace(
-        turn,
-        input_tokens=turn.input_tokens + turn.cache_read_tokens + turn.cache_creation_tokens,
-        cache_creation_tokens=0,
-        cache_read_tokens=0,
-        cc_5m=0,
-        cc_1h=0,
-    )
-    inflated = price_turn(synthetic, rates)
-    return inflated.input_cost - real.input_cost
+    cache_tokens = turn.cache_read_tokens + turn.cache_creation_tokens
+    if cache_tokens <= 0:
+        return 0.0
+    turn_rates = effective_rates(turn, rates)
+    if turn_rates is None:
+        return 0.0
+    return cache_tokens / 1_000_000 * turn_rates.input
 
 
 def _recache_classification(t: Turn, th: TtlThresholds | None = None) -> str | None:
@@ -706,7 +701,7 @@ def cache_economy(
         tokens_read += t.cache_read_tokens
         write_usd += breakdown.cache_write_cost
         read_usd += breakdown.cache_read_cost
-        uncached_equivalent_usd += _cache_tokens_at_input_rate(t, turn_rates, breakdown)
+        uncached_equivalent_usd += _cache_tokens_at_input_rate(t, turn_rates)
     net_saving_usd = uncached_equivalent_usd - (write_usd + read_usd)
     cache_roi = net_saving_usd / write_usd if write_usd > 0 else 0.0
     return {
