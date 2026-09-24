@@ -1579,7 +1579,10 @@ def build_report(
 
     if _want("habits"):
         sections.append(
-            habits.build_section(corpus, pricing, ratings=ratings, signals=_capture_signals(corpus, config_dir))
+            habits.build_section(
+                corpus, pricing, ratings=ratings, signals=_capture_signals(corpus, config_dir),
+                model_swap=model_swap_stats,
+            )
         )
 
     if _want("workflows"):

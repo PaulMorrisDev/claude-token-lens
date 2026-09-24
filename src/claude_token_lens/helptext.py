@@ -144,6 +144,7 @@ PLACEMENT: dict[str, str] = {
     "habits_agents": "keep",
     "habits_effort_fit": "keep",
     "habits_setups": "keep",
+    "habits_agents_by_task": "keep",
     "habits_outcomes": "keep",
     "habits_prompt_flags": "advanced",
     "habits_skills": "advanced",
@@ -872,6 +873,31 @@ TABLE_COPY: dict[str, TableCopy] = {
             "default": "Default",
             "usual": "Your usual",
             "cheaper": "Cheaper, did as well",
+        },
+    ),
+    "habits_agents_by_task": TableCopy(
+        title="Agents by kind of task",
+        help=Help(
+            shows="Each kind of task Claude reported, split by the subagent type that answered it: its runs, "
+            "what a run cost, whether it finished, and whether its runs said the model fit.",
+            read="Finished and model fit are the agent's own reports, the same signals as How agents were used, "
+            "just split by task. A cheaper model is named only when enough runs of that pairing point to one, "
+            "none of them said they needed a larger model or were mostly hard work, and the quality check hasn't "
+            "found that model worse for this agent.",
+            act="On the Profiles tab, the goal A profile for one kind of task offers this cheaper model as a "
+            "candidate when the evidence here supports one.",
+        ),
+        columns={
+            "task": ("Task", "The kind of task Claude reported."),
+            "agent_type": ("Agent", "The subagent type that answered it."),
+            "runs": ("Runs", "Its runs on this task, at any depth."),
+            "avg_cost": ("Per run", "The average cost of a run."),
+            "done_pct": ("Finished", "Runs that said done, out of those that said."),
+            "fit_smaller": ("Smaller would do", "Runs that said a smaller model would have done."),
+            "fit_right": ("Model was right", "Runs that said the model fit."),
+            "fit_larger": ("Needed larger", "Runs that said a larger model would have done better."),
+            "cheaper_model": ("Cheaper model", "A cheaper model the evidence supports for this pairing, if any."),
+            "cheaper_saving_pct": ("Cheaper by", "What that model would have saved, against the model it ran on."),
         },
     ),
     "habits_outcomes": TableCopy(

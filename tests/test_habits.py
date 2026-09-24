@@ -224,6 +224,7 @@ def test_every_table_is_there_even_with_nothing_to_show():
         "habits_agents",
         "habits_effort_fit",
         "habits_setups",
+        "habits_agents_by_task",
         "habits_outcomes",
         "habits_prompt_flags",
         "habits_skills",
@@ -343,8 +344,8 @@ def test_collect_turns_tags_ratings_and_agent_reports_into_facts(tmp_path, prici
         "partly", "dashboard rating", "bugfix", ("rework",), ()
     )
     (agent,) = h.agents
-    assert (agent.agent_type, agent.result, agent.fit, agent.rules, agent.level) == (
-        "Explore", "done", "larger", "unused", "hard"
+    assert (agent.agent_type, agent.result, agent.fit, agent.rules, agent.level, agent.task) == (
+        "Explore", "done", "larger", "unused", "hard", "bugfix"
     )
 
 
@@ -355,6 +356,56 @@ def test_the_agents_table_feeds_the_model_veto(tmp_path, pricing):
     assert habits.unfit_agents(list(rows.values()))["Explore"] == "Claude said 1 of its runs needed a larger model"
     by_task = {r["task"]: r for r in _rows(_table(section, "habits_by_task"))}
     assert by_task["all"]["cycles"] == 2 and by_task["bugfix"]["redo_pct"] == pytest.approx(50.0)
+
+
+# -- agents by kind of task --------------------------------------------------------------
+
+
+def _swap(alt, pct, state="cheaper_available"):
+    return NS(tier_verdict=NS(state=state, alt_model=alt, saving_pct=pct))
+
+
+def test_agents_are_joined_to_the_task_of_the_message_that_spawned_them(tmp_path, pricing):
+    h = habits.collect(_tagged_session(tmp_path), pricing)
+    (agent,) = h.agents
+    assert agent.task == "bugfix"
+
+
+def test_agents_without_a_task_are_left_out_of_the_by_task_table():
+    h = Habits(agents=[_agent(agent_type="reviewer", task=None, cost=1.0)])
+    assert _table(habits.section_from(h), "habits_agents_by_task").rows == []
+
+
+def test_a_cheaper_model_is_named_only_with_enough_runs_no_veto_and_a_real_saving():
+    unvetoed = [_agent(agent_type="reviewer", task="bugfix", cost=2.0, result="done") for _ in range(habits.MIN_GROUP)]
+    vetoed = [
+        _agent(agent_type="Explore", task="bugfix", cost=1.0, result="done", fit="larger"),
+        *[_agent(agent_type="Explore", task="bugfix", cost=1.0, result="done") for _ in range(habits.MIN_GROUP - 1)],
+    ]
+    h = Habits(agents=[*unvetoed, *vetoed])
+    model_swap = NS(by_key={
+        "reviewer": _swap("claude-sonnet-4-5", 30.0),
+        "Explore": _swap("claude-haiku-4-5-20251001", 40.0),
+    })
+    rows = {r["agent_type"]: r for r in _rows(_table(habits.section_from(h, model_swap=model_swap), "habits_agents_by_task"))}
+    assert rows["reviewer"]["task"] == "bugfix" and rows["reviewer"]["runs"] == habits.MIN_GROUP
+    assert (rows["reviewer"]["cheaper_model"], rows["reviewer"]["cheaper_saving_pct"]) == ("sonnet", 30.0)
+    # Explore's runs said one of them needed a larger model: unfit_agents holds it back.
+    assert rows["Explore"]["fit_larger"] == 1 and rows["Explore"]["cheaper_model"] is None
+
+
+def test_too_few_runs_or_too_small_a_saving_name_no_cheaper_model():
+    few = Habits(agents=[_agent(agent_type="reviewer", task="bugfix", cost=1.0) for _ in range(habits.MIN_GROUP - 1)])
+    small = Habits(agents=[_agent(agent_type="reviewer", task="bugfix", cost=1.0) for _ in range(habits.MIN_GROUP)])
+    swap = NS(by_key={"reviewer": _swap("claude-sonnet-4-5", habits.CHEAPER_MODEL_MIN_PCT - 1)})
+    assert _rows(_table(habits.section_from(few, model_swap=NS(by_key={"reviewer": _swap("claude-sonnet-4-5", 30.0)})),
+                         "habits_agents_by_task"))[0]["cheaper_model"] is None
+    assert _rows(_table(habits.section_from(small, model_swap=swap), "habits_agents_by_task"))[0]["cheaper_model"] is None
+
+
+def test_without_model_swap_data_no_cheaper_model_is_named():
+    h = Habits(agents=[_agent(agent_type="reviewer", task="bugfix", cost=1.0) for _ in range(habits.MIN_GROUP)])
+    assert _rows(_table(habits.section_from(h), "habits_agents_by_task"))[0]["cheaper_model"] is None
 
 
 def test_the_capture_section_says_what_capture_cost_and_since_when(tmp_path, pricing):

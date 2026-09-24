@@ -47,13 +47,25 @@ session's model is yours to decide, with a picker for the kind of task
 cheaper setup says what your usual one is. Either way the note names the
 catalogue profile whose `for` list covers that kind of task. The
 setups still ran on different work within a level, so treat the match
-as a lead. Save the
+as a lead. The draft also offers a cheaper model, ticked, for each
+subagent type that most often answered that kind of task, when its
+`habits_agents_by_task` runs support one and nothing vetoes it — the
+same checks the corpus-wide "cheaper models where it's safe" goal uses
+(a worse setup or a retried model from the quality check, or an agent
+whose runs said, or were mostly, hard work). Every candidate's
+estimated saving is scaled to that task's own share of the window
+(`habits_by_task`'s per-task cost against the total, or the agent's
+task share against its own for an agent candidate); without a clean
+share to scale by, the candidate says so instead of showing a number
+that reprices more than that task's work. Save the
 profile, then launch Claude with it for that kind of work (its detail's
 "Or try it for one session" command).
 
 The same table is on the Profiles tab as **Best setup for each kind of
 task**, all levels together and then by how hard Claude said the work
-was.
+was. The agent candidates' own table, **Agents by kind of task**
+(`habits_agents_by_task`), is on the Work habits tab rather than
+repeated here.
 
 **Subagents and CLAUDE.md.** With metrics capture at Standard, each
 subagent run says whether it used your CLAUDE.md. "Spend less on

@@ -664,6 +664,14 @@ capture is off or no feedback has been given.
   half the usual setup's messages; the per-message and went-well
   columns stay as measured. Shown on the Profiles tab; the `tasks` profile
   goal drafts from its `all` rows.
+- `habits_agents_by_task` — `habits_agents`, split by the kind of task
+  Claude reported for the message that spawned each run: per task and
+  agent type, runs, per run, finished, and what the runs said about the
+  model (smaller would do, right, needed larger). Names a cheaper model
+  only when at least `MIN_GROUP` runs support it, the saving clears
+  `CHEAPER_MODEL_MIN_PCT`, and `habits.unfit_agents` doesn't veto the
+  agent type. Shown on the Profiles tab; the `tasks` profile goal drafts
+  agent candidates from it (vetoed again there by the quality check).
 - `habits_outcomes` — per outcome you gave (`met`, `partly`, `missed`,
   ...): pieces of work, messages, cost, per piece, the most common kind
   of task, what slowed it most, what would have helped most, and where

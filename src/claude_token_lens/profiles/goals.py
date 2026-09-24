@@ -350,6 +350,105 @@ def _tasks(draft: _Draft, tables, task: str | None) -> tuple[list[str], str | No
     return tasks, task, note
 
 
+def _task_agents(draft: _Draft, tables, task: str) -> None:
+    """Cheaper-model candidates for the agent types that most often
+    answered ``task``'s work (metrics capture's ``habits_agents_by_task``),
+    vetoed exactly as ``_models`` vetoes its corpus-wide draft: a setup
+    the quality check found worse, one often retried for the model, or
+    an agent whose runs said, or were mostly, hard work
+    (``habits.unfit_agents``)."""
+    worse = quality.worse_models(tables.rows("quality", "quality_by_setup"))
+    worse.update({key: row for key, row in quality.retried_models(tables.rows("quality", "quality_retried")).items()
+                  if key not in worse})
+    unfit = habits.unfit_agents(tables.rows("habits", "habits_agents"))
+    rows = [r for r in tables.rows("habits", "habits_agents_by_task") if r.get("task") == task]
+    for row in sorted(rows, key=lambda r: -(whatif._num(r.get("runs")) or 0.0)):
+        agent = row.get("agent_type")
+        best = row.get("cheaper_model")
+        pct = whatif._num(row.get("cheaper_saving_pct")) or 0.0
+        if not agent or not best or pct < MIN_SHARE_PCT:
+            continue
+        if (agent, best) in worse or agent in unfit:
+            continue
+        draft.add(
+            "model",
+            agent,
+            best,
+            ticked=pct >= 20.0,
+            evidence=f"{agent}'s {task} runs in this window would have cost {pct:.0f}% less on {best}.",
+        )
+
+
+def _task_share(tables, task: str) -> float | None:
+    """This task's share (%) of everything ``habits_by_task`` covers in
+    the window, from its own ``cost`` column against the ``all`` row's.
+    Used to scale down a main-session estimate that reprices the whole
+    window (``whatif`` has no notion of a task). ``None`` without the
+    data to compare."""
+    by_task = {r.get("task"): r for r in tables.rows("habits", "habits_by_task")}
+    task_row, all_row = by_task.get(task), by_task.get("all")
+    total = whatif._num(all_row.get("cost")) if all_row else None
+    if task_row is None or not total:
+        return None
+    return 100.0 * (whatif._num(task_row.get("cost")) or 0.0) / total
+
+
+def _task_agent_share(tables, task: str, agent: str) -> float | None:
+    """This task's share (%) of ``agent``'s total cost, from
+    ``habits_agents_by_task`` (runs at this task, times its cost per
+    run) against ``habits_agents``' own total. ``None`` without the data
+    to compare."""
+    row = next(
+        (r for r in tables.rows("habits", "habits_agents_by_task") if r.get("task") == task and r.get("agent_type") == agent),
+        None,
+    )
+    total_row = tables.row("habits", "habits_agents", agent)
+    total = whatif._num(total_row.get("cost")) if total_row else None
+    if row is None or not total:
+        return None
+    task_cost = (whatif._num(row.get("runs")) or 0.0) * (whatif._num(row.get("avg_cost")) or 0.0)
+    return 100.0 * task_cost / total
+
+
+def _scale_estimate(row: dict, pct: float | None, units: Units, period: str) -> dict:
+    """A ``whatif`` row reprices *all* of a setup's observed work in the
+    window, but a task's draft is for that task's share of it alone.
+    Scale the saving down to ``pct``; without a clean share to scale by,
+    drop the number rather than leave the unscaled (too large) one."""
+    row = dict(row)
+    if row.get("saving_usd") is None:
+        return row
+    if pct is None:
+        row["saving_usd"] = None
+        row["fidelity"] = "none"
+        row["effect_text"] = "Not estimated"
+        row["basis"] = "Not estimated: no per-task cost to scale this window's reprice by."
+        return row
+    row["saving_usd"] = round(row["saving_usd"] * pct / 100.0, 6)
+    row["effect_text"] = whatif._effect_text(row["saving_usd"], units, period)
+    row["basis"] = row.get("basis", "") + f" Scaled to this task's {pct:.0f}% share of what was repriced above."
+    return row
+
+
+def _task_share_for(tables, task: str, agent: str | None) -> float | None:
+    return _task_share(tables, task) if agent is None else _task_agent_share(tables, task, agent)
+
+
+def _scale_whatif(result: dict, tables, task: str, units: Units, period: str) -> dict:
+    """Scale every row of a combined ``whatif.estimate`` result to
+    ``task``'s share, and recompute the total from the scaled rows."""
+    rows = [_scale_estimate(row, _task_share_for(tables, task, row.get("agent")), units, period) for row in result["rows"]]
+    estimated = [row for row in rows if row["saving_usd"] is not None]
+    total = sum(row["saving_usd"] for row in estimated)
+    out = dict(result)
+    out["rows"] = rows
+    out["total_usd"] = round(total, 6)
+    out["total_text"] = whatif._effect_text(total, units, period) if estimated else ""
+    out["estimated"] = len(estimated)
+    out["not_estimated"] = len(rows) - len(estimated)
+    return out
+
+
 def draft(
     goal_id: str,
     model,
@@ -374,6 +473,8 @@ def draft(
     note = None
     if goal.id == "tasks":
         tasks, task, note = _tasks(d, tables, task)
+        if task is not None:
+            _task_agents(d, tables, task)
     else:
         task = None
     if goal.id == "recommendations":
@@ -396,10 +497,17 @@ def draft(
         _thinking(d, tables, subagents_only=False)
     for candidate in d.candidates:
         settings, agents = _as_profile([candidate])
-        candidate["estimate"] = whatif.estimate(settings, agents, model, units, period=period,
-                                                current=d.effective)["rows"][0]
+        estimate = whatif.estimate(settings, agents, model, units, period=period, current=d.effective)["rows"][0]
+        if goal.id == "tasks" and task is not None:
+            # whatif reprices all of that setup's work in the window;
+            # a task's own draft only covers its share of it.
+            estimate = _scale_estimate(estimate, _task_share_for(tables, task, candidate["agent"]), units, period)
+        candidate["estimate"] = estimate
     ticked = [c for c in d.candidates if c["ticked"]]
     settings, agents = _as_profile(ticked)
+    combined = whatif.estimate(settings, agents, model, units, period=period, current=d.effective)
+    if goal.id == "tasks" and task is not None:
+        combined = _scale_whatif(combined, tables, task, units, period)
     return {
         "goal": {"id": goal.id, "title": goal.title, "what": goal.what},
         "period": period,
@@ -409,7 +517,7 @@ def draft(
         "note": note,
         "candidates": d.candidates,
         "profile": {"settings": settings, "agents": agents},
-        "whatif": whatif.estimate(settings, agents, model, units, period=period, current=d.effective),
+        "whatif": combined,
     }
 
 
