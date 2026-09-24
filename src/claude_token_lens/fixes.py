@@ -164,6 +164,12 @@ SETTING_TEXT.update(
             "Logs older than this are gone, including from this tool's reports.",
             "",
         ),
+        "includeCoAuthoredBy": (
+            "Whether Claude adds a co-authored-by line to git commits and pull requests it creates.",
+            "Deprecated: Claude Code still honours it, but only until the newer `attribution` setting is "
+            "used, which offers more control (a custom commit trailer, PR text, and a session-link toggle).",
+            "",
+        ),
     }
 )
 
@@ -191,6 +197,7 @@ LEVER_LABELS = {
     "disallowedTools": "Tools it may not use",
     "skills": "Skills loaded at start",
     "mcpServers": "MCP servers it may use",
+    "includeCoAuthoredBy": "Co-authored-by line on commits (deprecated)",
 }
 
 _SCOPE_WHERE = {

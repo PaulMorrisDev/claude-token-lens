@@ -18,7 +18,7 @@ import pytest
 from claude_token_lens.config import Config
 from claude_token_lens.corpus import load_corpus
 from claude_token_lens.pricing import load_pricing
-from claude_token_lens.report import _SECTION_ORDER, build_report
+from claude_token_lens.report import _SECTION_ORDER, _apply_autocompact_pct_override, build_report
 from claude_token_lens.render.csv_out import write_csv_dir
 from claude_token_lens.render.html import render_html
 from claude_token_lens.render.json_out import render_json
@@ -384,6 +384,112 @@ def test_snapshots_add_config_section(tmp_path):
 
     report_none = build_report(corpus, PRICING, Config(), projects=("proj-two",), window="w", snapshots=None)
     assert "config" not in [s.key for s in report_none.sections]
+
+
+# -- COV-09: CLAUDE_AUTOCOMPACT_PCT_OVERRIDE feeds compaction_sim -----------
+
+
+def test_autocompact_pct_override_scales_the_configured_window():
+    snap = Snapshot(
+        path="cfg1",
+        ts="2026-09-01T00:00:00.000Z",
+        data={"env_numeric_caps": {"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": 50}},
+    )
+    assert _apply_autocompact_pct_override(300_000, snap) == 150_000
+
+
+def test_autocompact_pct_override_ignored_when_absent_or_out_of_range():
+    no_override = Snapshot(path="cfg1", ts="2026-09-01T00:00:00.000Z", data={})
+    assert _apply_autocompact_pct_override(300_000, no_override) == 300_000
+
+    # docs/en/env-vars.md: "1-100" -- 0 and 150 are both out of range and
+    # must not change the configured window.
+    zero = Snapshot(path="cfg1", ts="2026-09-01T00:00:00.000Z", data={"env_numeric_caps": {"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": 0}})
+    assert _apply_autocompact_pct_override(300_000, zero) == 300_000
+    over = Snapshot(path="cfg1", ts="2026-09-01T00:00:00.000Z", data={"env_numeric_caps": {"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": 150}})
+    assert _apply_autocompact_pct_override(300_000, over) == 300_000
+
+
+def test_autocompact_pct_override_changes_the_report_end_to_end(tmp_path):
+    """Same corpus and window, two snapshots differing only in
+    CLAUDE_AUTOCOMPACT_PCT_OVERRIDE -- confirms build_report's own
+    snapshot_windows loop (not just the helper in isolation) actually
+    picks the override up and it changes what compaction_sim simulates.
+    """
+    corpus = _two_session_corpus(tmp_path)
+    base_data = {"effective": {"autoCompactWindow": 300_000}}
+    snap_no_override = Snapshot(path="cfg1", ts="2020-01-01T00:00:00.000Z", data=base_data)
+    snap_with_override = Snapshot(
+        path="cfg2",
+        ts="2020-01-01T00:00:00.000Z",
+        data={**base_data, "env_numeric_caps": {"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": 10}},
+    )
+
+    report_a = build_report(
+        corpus, PRICING, Config(), projects=("proj-two",), window="w", snapshots=[snap_no_override], phases=True
+    )
+    report_b = build_report(
+        corpus, PRICING, Config(), projects=("proj-two",), window="w", snapshots=[snap_with_override], phases=True
+    )
+
+    sim_a = next(s for s in report_a.sections if s.key == "compaction_sim")
+    sim_b = next(s for s in report_b.sections if s.key == "compaction_sim")
+    # Not asserting exact figures (the sweep's internals aren't this
+    # test's concern) -- just that feeding a much lower effective window
+    # (10% of 300,000 = 30,000) changed the simulation's own output
+    # versus the unscaled 300,000 window, proving the override reached it.
+    assert sim_a.tables != sim_b.tables
+
+
+# -- COV-02: observed model/effort vs. settings -> config-drift table -------
+
+
+def test_config_drift_table_carries_observed_effort_level(tmp_path):
+    """``sessions_with_observed``'s ``observed`` dict now carries
+    ``effortLevel`` (the settings key it's compared against) alongside
+    ``model``, sourced from each top-level transcript's own dominant
+    ``Turn.effort`` (``_dominant_transcript_effort``) -- the effort half
+    of COV-02's "CLI/overlay layer, inferred when the transcript's model
+    or effort disagrees with the settings". A snapshot whose effective
+    ``effortLevel`` disagrees with what every turn actually ran under
+    must produce an ``effortLevel`` row in the ``config-drift`` table.
+    """
+    project_dir = tmp_path / "proj-effort"
+    project_dir.mkdir()
+    _write_top(project_dir, "session-001", n_turns=2, effort="high")
+    corpus = load_corpus([project_dir])
+
+    snap = Snapshot(
+        path="cfg1",
+        ts="2020-01-01T00:00:00.000Z",
+        data={"effective": {"effortLevel": "low"}},
+    )
+    report = build_report(corpus, PRICING, Config(), projects=("proj-effort",), window="w", snapshots=[snap])
+
+    config = next(s for s in report.sections if s.key == "config")
+    drift = next(t for t in config.tables if t.name == "config-drift")
+    effort_rows = [row for row in drift.rows if row[1] == "effortLevel"]
+    assert effort_rows, f"expected an effortLevel drift row, got: {drift.rows}"
+    assert effort_rows[0][2] == "low"  # snapshot_value
+    assert effort_rows[0][3] == "high"  # observed_value
+
+
+def test_config_drift_table_no_effort_row_when_settings_agree(tmp_path):
+    project_dir = tmp_path / "proj-effort-agree"
+    project_dir.mkdir()
+    _write_top(project_dir, "session-001", n_turns=2, effort="high")
+    corpus = load_corpus([project_dir])
+
+    snap = Snapshot(
+        path="cfg1",
+        ts="2020-01-01T00:00:00.000Z",
+        data={"effective": {"effortLevel": "high"}},
+    )
+    report = build_report(corpus, PRICING, Config(), projects=("proj-effort-agree",), window="w", snapshots=[snap])
+
+    config = next(s for s in report.sections if s.key == "config")
+    drift = next(t for t in config.tables if t.name == "config-drift")
+    assert not [row for row in drift.rows if row[1] == "effortLevel"]
 
 
 def test_include_restricts_to_named_sections(tmp_path):

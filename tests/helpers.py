@@ -403,7 +403,12 @@ def assert_privacy(result) -> None:
 #: this one field is the plugin naming scheme itself, not a leak, the
 #: same reasoning that already exempts "model" for a Vertex "@date"
 #: suffix.
-_PRIVACY_DEEP_AT_SIGN_ALLOWED_KEYS = _PRIVACY_AT_SIGN_ALLOWED_FIELDS | {"enabled_plugins"}
+_PRIVACY_DEEP_AT_SIGN_ALLOWED_KEYS = _PRIVACY_AT_SIGN_ALLOWED_FIELDS | {
+    "enabled_plugins",
+    # COV-03 (P7a): the deep-merged, cross-layer counterpart of
+    # enabled_plugins above -- same "name@marketplace" plugin-id shape.
+    "effective_enabled_plugins",
+}
 
 
 def assert_privacy_deep(obj) -> None:

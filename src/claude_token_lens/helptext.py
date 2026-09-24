@@ -165,6 +165,7 @@ PLACEMENT: dict[str, str] = {
     "config-layers": "advanced",
     "config-groups": "advanced",
     "config-drift": "keep",
+    "env-levers": "keep",
     # context budget
     "context_budget_baseline": "keep",
     "context_budget_autocompact": "advanced",
@@ -3628,17 +3629,33 @@ TABLE_COPY: dict[str, TableCopy] = {
     "config-drift": TableCopy(
         title="Settings that did not take effect",
         help=Help(
-            shows="Sessions where the model Claude actually used differs from the model in your settings.",
-            read="Only the model is checked. A mismatch usually means something overrode the setting, "
-            "such as an environment variable, a command-line flag or a model switch during the session.",
-            act="If sessions ran on a pricier model than you set, check your shell profile and launch "
-            "command for a model override.",
+            shows="Sessions where the model or effort level Claude actually used differs from your settings.",
+            read="Only the model and effort level are checked. A mismatch usually means something overrode "
+            "the setting, such as an environment variable, a command-line flag or a switch during the session.",
+            act="If sessions ran on a pricier model or a higher effort level than you set, check your shell "
+            "profile and launch command for an override.",
         ),
         columns={
             "session_id": ("Session", "The session's id."),
             "key": ("Setting", "The setting that was checked."),
             "snapshot_value": ("In your settings", "The value your settings files gave when the session started."),
-            "observed_value": ("Actually used", "The model the main session used for most of its replies."),
+            "observed_value": ("Actually used", "The model or effort level the main session mostly used."),
+        },
+    ),
+    "env-levers": TableCopy(
+        title="Environment variable and attribution levers",
+        help=Help(
+            shows="Whether specific environment variables and settings are set, and their value when that's "
+            "safe to show.",
+            read="Each row is one lever this report can suggest a change for, such as turning prompt caching "
+            "back on. \"Present\" means it's set somewhere in your settings, not necessarily where you'd "
+            "expect.",
+            act="See the matching recommendation for what to change and how to undo it.",
+        ),
+        columns={
+            "name": ("Name", "The environment variable or setting name."),
+            "present": ("Set", "Whether it's set at all."),
+            "value": ("Value", "Its value, when that's safe to show."),
         },
     ),
     # Run-time named: one table per changed setting, "config-diff-<setting>";

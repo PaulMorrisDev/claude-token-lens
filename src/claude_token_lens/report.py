@@ -62,7 +62,14 @@ Deviations from the task brief, reported rather than made silently (see
   in hand) and, once a session's own dominant top-level model is known,
   ``build_config_drift_table`` (fix #15: model comparisons are alias-
   normalised via ``pricing.resolve_model``, so this no longer reports
-  100% drift on ``model``). ``snapshots.claude_json_cross_check`` is
+  100% drift on ``model``). COV-02: the same table also carries an
+  ``effortLevel`` row per session once a dominant top-level effort is
+  known (``_dominant_transcript_effort``) -- together these are the
+  "CLI/overlay layer" the plan asks for: a disagreement between the
+  snapshot's effective settings and what the transcript actually ran
+  under is evidence of a shell env var, a ``--model``/``--effort`` CLI
+  flag, or a ``--settings`` one-launch overlay the config hook never
+  sees. ``snapshots.claude_json_cross_check`` is
   still not surfaced as a report table: unlike the other five functions
   fix #14 names, it has no existing ``build_*_table`` wrapper to reuse
   (only the raw dict-returning comparison), and it also needs a full
@@ -277,6 +284,30 @@ def _dominant_transcript_model(tr: TranscriptResult) -> str | None:
         if not turn.model:
             continue
         counts[turn.model] = counts.get(turn.model, 0) + 1
+    if not counts:
+        return None
+    return max(counts.items(), key=lambda kv: (kv[1], kv[0]))[0]
+
+
+def _dominant_transcript_effort(tr: TranscriptResult) -> str | None:
+    """COV-02: the most-observed ``Turn.effort`` across ``tr``'s own priced
+    turns, ties broken lexicographically -- the effort-side counterpart to
+    :func:`_dominant_transcript_model`, feeding the same "observed" side of
+    :func:`snapshots.build_config_drift_table` under the ``effortLevel``
+    key (the settings key it's compared against; see
+    ``SAFE_SETTINGS_KEYS`` in ``hooks/snapshot-config.py``). ``turn.effort``
+    already uses the same enum as ``effortLevel``
+    (``low``/``medium``/``high``/``xhigh``/``max``, docs/profiles.md), so no
+    alias normalisation is needed the way ``model`` needs
+    ``pricing.resolve_model`` -- plain equality in ``detect_drift`` is
+    correct here. ``None`` when nothing resolves (no priced turns, or none
+    carried an effort value).
+    """
+    counts: dict[str, int] = {}
+    for turn in _priced_turns(tr):
+        if not turn.effort:
+            continue
+        counts[turn.effort] = counts.get(turn.effort, 0) + 1
     if not counts:
         return None
     return max(counts.items(), key=lambda kv: (kv[1], kv[0]))[0]
@@ -1001,6 +1032,10 @@ def _build_config_section(
     if snaps:
         tables.append(snapshots_mod.build_effective_config_table(snaps))
         tables.append(snapshots_mod.build_config_layers_table(snaps))
+        # COV-09: gives recommend.py's env-var-lever rules a real, citable
+        # table row (see build_env_levers_table's own docstring) -- read
+        # from the same corpus-wide snapshot recommend() itself uses.
+        tables.append(snapshots_mod.build_env_levers_table(snaps))
         tables.append(snapshots_mod.build_config_groups_table(snaps, sessions_with_metrics))
         if sessions_with_observed:
             tables.append(
@@ -1090,6 +1125,30 @@ def _build_recache_section(
         rows=group_rows,
     )
     return dataclasses.replace(section, tables=[*section.tables, group_table])
+
+
+def _apply_autocompact_pct_override(configured_window: int, snap: Snapshot) -> int:
+    """COV-09 (P7a): ``CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`` (docs/en/env-vars.md)
+    sets what percentage (1-100) of ``autoCompactWindow`` auto-compaction
+    actually triggers at -- "the variable can't raise the threshold, so
+    values above the default percentage are ignored", i.e. it only ever
+    lowers the real trigger point below the configured window. The
+    caller's ``snapshot_windows`` is "the autoCompactWindow each session
+    actually ran under" (its own comment), so the override, when present
+    and in range, has to scale ``configured_window`` down here for that
+    to stay true -- ``compaction_sim.simulate_compaction_windows`` would
+    otherwise anchor the "already observed compaction" baseline to a
+    window the session never really compacted at. Returns
+    ``configured_window`` unchanged when the override is absent, out of
+    the documented 1-100 range, or not an int (a snapshot's
+    ``env_numeric_caps`` only ever holds ints -- see
+    hooks/snapshot-config.py's ``env_numeric_caps`` assembly -- but a
+    hand-built test snapshot could pass anything).
+    """
+    pct = (snap.data.get("env_numeric_caps") or {}).get("CLAUDE_AUTOCOMPACT_PCT_OVERRIDE")
+    if isinstance(pct, int) and not isinstance(pct, bool) and 1 <= pct <= 100:
+        return int(configured_window * pct / 100)
+    return configured_window
 
 
 # -- build_report -----------------------------------------------------------
@@ -1226,6 +1285,14 @@ def build_report(
     #: deliberately top-level only (a subagent's own model is a separate
     #: question from "did this session's own settings take effect").
     session_observed_model: dict[str, str] = {}
+    #: COV-02: same idea, for the top-level transcript's own dominant
+    #: effort -- the "CLI/overlay layer" the plan asks for is this pair
+    #: (observed model, observed effort) read back from the transcript and
+    #: compared against the snapshot's effective settings; a disagreement
+    #: is evidence of a shell env var, ``--model``/``--effort`` CLI flag,
+    #: or ``--settings`` overlay the config hook can't see (see
+    #: ``detect_drift``'s own docstring).
+    session_observed_effort: dict[str, str] = {}
     all_workflow_runs: list[WorkflowRun] = []
 
     overview = _OverviewAcc()
@@ -1310,6 +1377,10 @@ def build_report(
 
             if tr is top and dominant_model:
                 session_observed_model[record.session_id] = dominant_model
+            if tr is top:
+                dominant_effort = _dominant_transcript_effort(tr)
+                if dominant_effort:
+                    session_observed_effort[record.session_id] = dominant_effort
 
             if ph is not None:
                 ph.add_transcript(tr, pricing)
@@ -1461,7 +1532,7 @@ def build_report(
         if snap is not None:
             value = snapshots_mod.effective_config(snap).get("autoCompactWindow")
             if isinstance(value, (int, float)) and not isinstance(value, bool):
-                configured_window = int(value)
+                configured_window = _apply_autocompact_pct_override(int(value), snap)
         snapshot_windows[record.session_id] = configured_window
 
     compaction_sim_stats = compaction_sim.simulate_compaction_windows(
@@ -1614,10 +1685,25 @@ def build_report(
                 "session_id": record.session_id,
                 "first_ts": record.first_ts,
                 "project_key": session_snapshot_key.get(record.session_id),
-                "observed": {"model": session_observed_model[record.session_id]},
+                "observed": {
+                    **(
+                        {"model": session_observed_model[record.session_id]}
+                        if record.session_id in session_observed_model
+                        else {}
+                    ),
+                    # COV-02: effort's own key on the "observed" dict is
+                    # "effortLevel" (not "effort") to match the settings
+                    # key detect_drift compares it against -- see
+                    # SAFE_SETTINGS_KEYS/effective_config.
+                    **(
+                        {"effortLevel": session_observed_effort[record.session_id]}
+                        if record.session_id in session_observed_effort
+                        else {}
+                    ),
+                },
             }
             for record in session_records
-            if record.session_id in session_observed_model
+            if record.session_id in session_observed_model or record.session_id in session_observed_effort
         ]
         sections.append(
             _build_config_section(

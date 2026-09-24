@@ -149,6 +149,59 @@ sizing corrections).
   hash of each path is kept, as before. An edit whose tool call failed
   (the text to replace wasn't found, you declined it) no longer counts.
 
+#### P7a: config coverage (COV-02/03/05/09/10, PROF-09)
+
+- **The effective-settings view only ever showed the highest-priority
+  layer's own `env`/permissions/hooks/plugins/MCP-server lists, hiding
+  whatever a lower layer added underneath.** These now deep-merge across
+  every settings layer with the rule each actually has: `env` and
+  `enabledPlugins` per-name (highest layer wins per name, not per file),
+  permission and hook counts additively (a lower layer's rule or hook
+  still applies), and `enabledMcpjsonServers`/`disabledMcpjsonServers`
+  as a union where a rejection at any layer wins. A stray `mcpServers`
+  settings key was also being merged even though Claude Code never
+  writes settings there (only `managedMcpServers`, managed-layer-only,
+  is real) — that dead-code path is removed.
+- **On Windows, the system managed-settings scan looked in
+  `%ProgramData%\ClaudeCode`, and `~/.claude.json` was always read from
+  the home directory.** Both were doc/code conflicts against Claude
+  Code's own docs: the managed directory is `%ProgramFiles%\ClaudeCode`,
+  and `managed-mcp.json` lives there too, not under the project's own
+  `claude_root`; `.claude.json` now honours `CLAUDE_CONFIG_DIR` the same
+  way `settings.json` does.
+- **Five new recommendations for easy-to-miss environment-variable and
+  deprecated-setting levers**: any `DISABLE_PROMPT_CACHING*` variant set
+  (high severity — this quietly turns off prompt caching entirely);
+  `ANTHROPIC_BASE_URL` set without `ENABLE_TOOL_SEARCH` on a config with
+  several MCP servers or plugins; `CLAUDE_CODE_MAX_OUTPUT_TOKENS` set
+  (shrinks the effective context window ahead of auto-compaction);
+  `CLAUDE_CODE_SUBAGENT_MODEL` set on an archetype that spawns
+  subagents (names the exact model-resolution order, and that it never
+  reaches the built-in Explore/Plan subagents); and the deprecated
+  `includeCoAuthoredBy` set without the `attribution` setting that
+  replaces it. Each recommendation explains the trade-off and how to
+  undo it in place, since an environment variable has no single
+  settings file to write a fix into yet. `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`
+  now also scales the simulated auto-compact window in the compaction
+  simulation, so that simulation matches what a session with the
+  override actually ran under instead of the unscaled default.
+- **Config scanning now covers more of what a project or skill
+  actually configures.** Agent directories are scanned recursively
+  (a nested agent directory previously went uncounted); each CLAUDE.md
+  file's own `@import` count is recorded; each skill's `model`/
+  `effort`/`context`/`paths` frontmatter is summarised (never its body
+  or description); and an installed plugin's own skill names and agent
+  count are recorded (best-effort, its default `skills/`/`agents/`
+  layout).
+- **A session's own observed model or effort could silently diverge
+  from what its settings snapshot says is configured** (a shell-profile
+  env var or a `--settings`/`--model`/`--effort` CLI override the
+  config hook can't see) with only the model half ever surfacing in the
+  config-drift table. The report now also feeds each session's own
+  dominant observed effort in alongside its dominant observed model, so
+  a settings/effort mismatch shows up the same way a settings/model
+  mismatch already did.
+
 ### Fixed
 
 - **Repeated reads were miscounted.** An edit counted as a read of the
