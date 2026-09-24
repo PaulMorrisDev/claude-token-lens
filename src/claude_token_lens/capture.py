@@ -35,6 +35,10 @@ from .topology import agent_key
 
 CHARS_PER_TOKEN = 4
 
+#: Days of your own sessions replayed to estimate what capture would
+#: cost (``capture status``, ``init`` and the Capture tab).
+HISTORY_DAYS = 14
+
 #: What Claude Code adds around a hook note, by hook event.
 _WRAP = {event: catalogue.NOTE_WRAP_CHARS + len(event) for event in ("SessionStart", "SubagentStart", "PostToolUse")}
 
@@ -549,17 +553,20 @@ def estimate(past: History, ids, sample: int = 100) -> Estimate:
     reply = reply + _TAG_FRAME_CHARS if reply else 0
     report = sum(m.out_chars for m in enabled if m.sub_line)
     report = report + _TAG_FRAME_CHARS if report else 0
-    brief = sum(m.out_chars for m in enabled if m.main_extra or m.sub_extra)
+    # A brief's [spawn:]/[retry:] words, per subagent; the feedback
+    # reminder's line, at most once per message of yours.
+    brief = sum(m.out_chars for m in enabled if (m.main_extra or m.sub_extra) and m.group != "feedback")
+    reminder = sum(m.out_chars for m in enabled if m.main_extra and m.group == "feedback")
     cost = (
         main * past.main_note
         + sub * past.sub_note
         + no_rules * past.sub_note_no_rules
-        + reply * past.reply_tag
+        + (reply + reminder) * past.reply_tag
         + report * past.report_tag
         + brief * past.brief_tag
     )
     note_tokens = main * past.main_notes + max(sub, no_rules) * past.sub_notes
-    tag_tokens = reply * past.cycles + report * past.subagents + brief * past.subagents
+    tag_tokens = (reply + reminder) * past.cycles + report * past.subagents + brief * past.subagents
     for metric_id, count, note, tag in (
         ("big_output", past.big_outputs, past.big_output_note, past.big_output_tag),
         ("web", past.web_results, past.web_note, past.web_tag),
@@ -616,6 +623,7 @@ __all__ = [
     "Cycle",
     "ENOUGH",
     "Estimate",
+    "HISTORY_DAYS",
     "History",
     "ScopeUse",
     "enough_data",

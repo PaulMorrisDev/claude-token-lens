@@ -38,7 +38,7 @@ inline SVG charts, `prefers-color-scheme` dark."
 One page (`index.html`), one `<nav>` of tabs (`TAB_ORDER`), each
 rendering from its own `/api/*` route(s). A tab is rendered the first
 time it is opened and kept until the window changes; tabs have no
-background poll. Fourteen tabs ship, in the order below.
+background poll. Fifteen tabs ship, in the order below.
 
 **The health banner and footer** are on every tab, from `/api/health`
 (`pollHealth()`: every 3 seconds while its `status` is `"starting"`,
@@ -56,11 +56,27 @@ finished and, once a report has loaded, the time the oldest figures
 drawn are from (`X-Figures-As-Of`). A tab keeps the figures it drew; a
 reload, a new window or **Redraw figures** picks up a newer report.
 
+**The capture banner** sits under the health banner on every tab
+(`#capture-banner`, `role="status"`). `pollHealth()` hands it
+`/api/health`'s `capture` block; it fetches `/api/capture` when that
+block changes, or every five minutes for fresh figures. While metrics
+capture is on it reads "Metrics capture: Essentials · since <date> ·
+N tokens · <amount> (x% of spend) · tagged on P% of messages", in
+billing units, with a link to the Capture tab and notes when the end
+time has passed, a hook entry is missing, no notes have been seen,
+Claude tags too few messages, or enough has been collected to lower
+the level. While it is off, the banner is a one-line invitation with
+the Essentials estimate from your own last two weeks; **Hide** keeps
+it hidden (`localStorage` `tls:captureInviteHidden`). The feedback
+note ("Finished a piece of work? Run /tl-feedback ...") shows while
+that item is on.
+
 **The dashboard never changes Claude Code's settings.** There is no
 Apply button. Every fix is a prompt to paste into Claude Code or an
 `apply ... --dry-run` command to run yourself, each with a Copy button.
 The only things the dashboard writes are profile files in this tool's
-own folder and session tags in its own store. Amounts follow the
+own folder, session tags in its own store and the `[capture]` table
+in its own `config.toml` (the Capture tab). Amounts follow the
 billing mode (`docs/writing-help.md`, "Amounts").
 
 **The window picker** sits in the header: Last hour, Today, Last 24
@@ -255,7 +271,24 @@ what they did", the setup panel and service health.
    in progress (`/api/baseline`'s `capture_status`).
 12. **Usage** — the `usage`/`compactions`/`phases` report sections plus a raw
     `/api/compactions` list (all history, the first 50 shown).
-13. **Data quality** — **What this tool installed, and what to expect**
+13. **Capture** — `/api/capture`: the cost warning, then where
+    capture stands (its setting, what it has cost since it was turned
+    on by scope, how often Claude tagged, and what the estimates
+    replay), a red-edged notice with the `capture connect` command
+    (Copy button) when `settings.json` lacks a hook entry a chosen
+    metric needs, the level cards (Off, Free, Essentials, Standard,
+    Deep, Custom) each with what it adds and its weekly estimate, the
+    sampling and end-time selects, and every metric grouped by where
+    it is captured: a checkbox, what it captures, what Claude writes
+    for it, why, what it helps with, its estimate against its actual
+    cost, and how much has been collected. Metrics that are always
+    measured can't be switched off. Switching off a metric switches
+    off the ones that need it. Every change that asks Claude for more
+    (a level, a metric or a larger sample) first shows the cost
+    warning again in a dialog. Changes are sent to `POST /api/capture`
+    and the tab and banner redraw from its answer; when the file
+    can't be written, the tab shows the CLI commands to run instead.
+14. **Data quality** — **What this tool installed, and what to expect**
     first (`/api/setup`): what to expect in plain words (it never uses
     your Claude tokens, the hook and statusline add none, the first scan
     takes a while, nothing changes until you apply it), then each thing
@@ -268,7 +301,7 @@ what they did", the setup panel and service health.
     each row with what it means (`helptext.diagnostics_table`) — same
     figures as the CLI report's Diagnostics section, so a user comparing
     the UI against a CLI run for the same window sees identical numbers.
-14. **Glossary** — the `GLOSSARY` constant in `app.js`: each term the
+15. **Glossary** — the `GLOSSARY` constant in `app.js`: each term the
     dashboard uses, in plain English. The README's glossary is the same
     list, word for word.
 

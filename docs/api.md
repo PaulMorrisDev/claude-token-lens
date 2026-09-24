@@ -195,7 +195,7 @@ Liveness/diagnostics probe (also the Docker healthcheck target — plan:
 `serve` binds its port before its first scan, so it answers from the
 first second.
 
-`data`: `{"status": "ok"|"starting"|"degraded"|"stale", "message": str|null, "scan": WatcherState-as-dict|null, "version": str, "schema_version": int, "transcripts_missing": int, "watcher": WatcherStats-as-dict, "service_registered": true|false|null}`.
+`data`: `{"status": "ok"|"starting"|"degraded"|"stale", "message": str|null, "scan": WatcherState-as-dict|null, "version": str, "schema_version": int, "transcripts_missing": int, "watcher": WatcherStats-as-dict, "service_registered": true|false|null, "capture": {...}|null}`.
 
 `status` says whether the figures are keeping up, and `message` says
 what it means in plain words (`null` when `"ok"`). The HTTP status is
@@ -261,6 +261,17 @@ A scan that fails outright records `tick failed: <reason>` in
 SQLite's own message for a database error (it names no path or
 transcript text); other errors give their type only, since their
 messages can carry a path.
+
+`capture` is metrics capture's setting, cheap enough to read on every
+poll (`config.toml` and `settings.json` only): `level`, `title`,
+`describe` (such as `"Essentials (since 2026-09-20, 25% of sessions)"`),
+`on`, `expired` (its end time has passed), `effective` (on and not
+expired), `enabled_at`, `until`, `sample`, `metrics`, `feedback`,
+`coaching`, `projects_limited` (only whether `[capture] projects` is
+set, never the patterns) and `hooks_ok` (whether `settings.json` runs
+every hook the chosen metrics need; `true` when they need none). The
+dashboard fetches `GET /api/capture` for its banner when this block
+changes. `capture` is `null` when `config.toml` can't be read.
 
 ### `GET /api/summary`
 
@@ -401,10 +412,12 @@ resolution). `/api/summary` accepts `window` and `window_days` only.
 `/api/sessions` and `/api/compactions` accept them all but, unlike the
 report routes, list everything when none is given. Every other route
 (`/api/health`, `/api/session/<id>`, `/api/recache`, `/api/baseline`,
-`/api/profiles*`, `/api/impact`, `/api/setup`) ignores them.
+`/api/profiles*`, `/api/impact`, `/api/setup`, `/api/capture`) ignores them.
 
 **Caching.** The service builds each window's report once per store
-change (`Store.change_token()`) and keeps the last eight. When the store
+change (`Store.change_token()`) or `config.toml` change (its
+modification time: a new billing mode or capture setting changes the
+figures) and keeps the last eight. When the store
 has changed since a window's report was built (a live session writes
 every few seconds), a request is answered from the kept report at once
 and a rebuild starts in the background (one at a time), so a tab never
@@ -814,6 +827,58 @@ costs in tokens and how to undo it, plus what to expect
 
 `data`: `{"items": [{"key", "title", "status", "where", "what_it_does", "token_cost", "undo"}, ...], "expectations": [{"title", "text"}, ...], "uninstall_command"}`.
 
+### `GET /api/capture`
+
+Metrics capture for the Capture tab and the banner on every tab
+(`capture_view.view`): the setting, each level and metric with what it
+captures, why and what it costs on your own usage, and what capture
+has cost since it was turned on. Built from `[capture]` in
+`config.toml`, the metric catalogue (`capture_catalogue.py`), the
+last 14 days replayed as if capture had been on (`capture.estimate`),
+and the notes and tags measured in transcripts since `enabled_at`
+(`capture.usage`). The replay is kept for 30 minutes and the measured
+part until the store changes; an older copy is served while a fresh
+one is built in the background.
+
+`data`: `{"config", "warning", "samples", "levels", "sections", "measured", "history", "hooks", "billing", "banner", "commands"}`:
+
+- `config`: the same block as `/api/health`'s `capture`, without `hooks_ok`.
+- `warning`: the cost warning the dashboard repeats before any change
+  that uses more tokens.
+- `samples`: the allowed sampling percentages, `[100, 50, 25, 10]`.
+- `levels`: one card each for `off`, `free`, `essentials`, `standard`,
+  `deep` and `custom`: `title`, `summary`, `adds` (metric titles over
+  the level before), `metrics`, `asks_claude`, `current`, `rough`
+  (token sizes from the catalogue) and `estimate` (`tokens_per_week`,
+  `tokens_text`, `usd`, `text`, `share_pct`, `share_text`; `null`
+  when it costs nothing or there is no history).
+- `sections`: the metrics grouped as on the page. Each has `id`,
+  `kind` (`level`, `derived`, `feedback` or `coaching`), `group`,
+  `title`, `what`, `why`, `powers`, `tag` (what Claude writes),
+  `hooks`, `requires`, `on`, `toggle` (`false` for metrics that are
+  always measured), `asks_claude`, `needs_hook` (on, but its hook
+  entry is missing), `estimate` and `actual` (`{usd, text}` a week and
+  since it was turned on), and `answers`/`target`/`enough` (whether
+  enough has been collected for firm suggestions).
+- `measured`: `null` while off; otherwise `since`, `sessions`,
+  `subagents`, `notes`, `note_tokens`, `tag_tokens`, the amount and
+  share of spend, coverage (`coverage_pct`: the share of messages
+  Claude tagged; `report_coverage_pct` for agent reports), `scopes`
+  (`main`, `subagent`, `tool`, `brief`) and a `daily` series.
+- `history`: what the estimates replay (`days`, `sessions`,
+  `subagents`, `cycles`), `null` with no history.
+- `hooks`: `ok` (`true` when nothing is missing), `summary`, `missing`,
+  `missing_events`, `problems` (a count: problem text can hold a
+  path) and `connect_command`.
+- `billing`: `mode` and `basis` (what the amounts are).
+- `banner`: `on`, `headline`, `notes` (end time passed, hook entries
+  missing, no notes seen, low coverage, enough collected) and
+  `feedback_note`.
+- `commands`: the `status` and `connect` CLI commands.
+
+`409` with the `claude-token-lens capture status` command in
+`error.commands` when `config.toml` can't be read.
+
 ### `GET /api/report.md` / `GET /api/report.html` / `GET /api/report.json`
 
 The full report in each format, built from the store instead of a fresh
@@ -852,6 +917,39 @@ taking precedence over `sessions.toml`.
 
 `data`: `{"session_id": str, "tags": {key: value}}` (the session's full
 tag set after the write).
+
+### `POST /api/capture`
+
+Changes metrics capture in this tool's own `config.toml` (`[capture]`,
+through `config.set_capture`, which writes atomically and logs the
+change to `capture-log.jsonl`). It never touches Claude Code's
+`settings.json`: when a chosen metric needs a hook entry that isn't
+there, the answer's `hooks` block names the `capture connect` command
+to run.
+
+Body: a JSON object with any of these keys:
+
+- `level`: `off`, `free`, `essentials`, `standard` or `deep`.
+- `metrics`: the level metrics to capture (a custom set). Not with
+  `level`.
+- `feedback`, `coaching`: the feedback and live-coaching items to
+  switch on (the list replaces the current one).
+- `sample`: `100`, `50`, `25` or `10` (percent of sessions).
+- `until`: an ISO 8601 time in the future when capture switches
+  itself off, or `""` for no end.
+
+Only from this machine: `403` unless the request comes from a
+loopback address, on top of the cross-site checks above (a service
+bound to `0.0.0.0` for a container still can't be switched from
+another machine). `400` on an unknown key or value, both `level` and
+`metrics`, or a past `until`. `409` when `config.toml` can't be read
+or written (such as a read-only file system); its `error.commands`
+lists the `claude-token-lens capture ...` commands that make the
+same change from a terminal. The message never quotes the error,
+which can hold a path.
+
+`data`: `GET /api/capture`'s answer after the change, plus
+`changed` (`false` when it was already set that way).
 
 ### `POST /api/profiles`
 
@@ -990,7 +1088,8 @@ every request would make every tab switch in the UI (`docs/ui.md`)
 re-parse the whole corpus. The implementation caches the assembled
 `ReportModel` in-process, keyed by `(window_days, since, until,
 change_token)` (a named `window` is first turned into its `since`,
-rounded to the minute), where `change_token` is `Store.change_token()` (S1-integration fix 1.f) — a
+rounded to the minute), where `change_token` is `Store.change_token()` (S1-integration fix 1.f),
+paired with `config.toml`'s modification time — a
 single string combining `(COUNT(*), MAX(updated_at))` over `transcripts`
 and `(COUNT(*), MAX(ts))` over `snapshots`. A cache hit only requires
 this token to be unchanged since the entry was built; any transcript or

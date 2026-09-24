@@ -751,6 +751,10 @@ LEVEL_METRIC_IDS = tuple(m.id for m in METRICS if m.group in LEVEL_GROUPS)
 FEEDBACK_IDS = tuple(m.id for m in METRICS if m.group == "feedback")
 COACHING_IDS = tuple(m.id for m in METRICS if m.group == "coaching")
 
+#: The persistent feedback note (``feedback_note``): the status line's
+#: second line and the dashboard banner show it word for word.
+FEEDBACK_NOTE = "Finished a piece of work? Run /tl-feedback: a few ticks make your savings tips fit how you work."
+
 #: The note's fixed lines. ``{tag}`` in :data:`SUB_TAG_INTRO` is the
 #: ``[result: ...]`` shape (:data:`SUB_TAG` or :data:`SUB_TAG_WITH_KEYS`).
 NOTE_INTRO = "The user turned on Token Lens metrics capture, to see where their tokens go."

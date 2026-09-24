@@ -324,3 +324,12 @@ def test_enough_data_counts_answers_against_each_target():
     assert capture.enough_data(use, "big_output") == (0, capture.ENOUGH["tool"])
     assert capture.enough_data(use, "waits", signal_sessions=5) == (5, capture.ENOUGH["signal"])
     assert capture.enough_target("no-such-metric") == 0
+
+
+def test_estimate_prices_the_feedback_reminder_once_per_message():
+    past = capture.History(days=14, cycles=10, subagents=3, main_notes=2, main_note=1e-6, reply_tag=2e-6, brief_tag=5e-6)
+    est = capture.estimate(past, ("feedback_reminder",))
+    note = len(catalogue.note_text(("feedback_reminder",), "main")) + capture._WRAP["SessionStart"]
+    out = catalogue.METRICS_BY_ID["feedback_reminder"].out_chars
+    assert est.cost == pytest.approx(note * 1e-6 + out * 2e-6)
+    assert est.tag_tokens == round(out * 10 / 4)

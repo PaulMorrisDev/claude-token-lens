@@ -33,12 +33,13 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import available_timezones
 
-from . import __version__, baseline as baseline_mod, capture_catalogue, classify, discovery, installer as installer_mod
+from . import __version__, baseline as baseline_mod, capture_catalogue, capture_view, classify, discovery, installer as installer_mod
 from . import onboarding
 from . import helptext, hook_health, probe as probe_mod, recache, snapshots
 from . import statusline as statusline_mod
 from .fixes import RESTART_NOTE
 from .cache import DigestCache
+from .capture import HISTORY_DAYS as CAPTURE_HISTORY_DAYS
 from .config import CAPTURE_SAMPLES, CaptureConfig, Config, ConfigError, load_config, load_session_overrides, set_capture
 from .corpus import Corpus, load_corpus
 from .parse import load_or_create_salt
@@ -2398,7 +2399,7 @@ def _cmd_init_capture_step(
         return
     if config.capture.is_on and given is None:
         stdout.write(
-            f"\nMetrics capture is {_capture_describe(config.capture)}. "
+            f"\nMetrics capture is {capture_view.describe(config.capture)}. "
             "'claude-token-lens capture' shows what it costs and changes it.\n"
         )
         return
@@ -2434,7 +2435,7 @@ def _cmd_init_capture_step(
     if level == "off":
         stdout.write("Metrics capture switched off.\n")
         return
-    stdout.write(f"Saved to config.toml: metrics capture {_capture_describe(capture)}.\n")
+    stdout.write(f"Saved to config.toml: metrics capture {capture_view.describe(capture)}.\n")
     wanted = hook_health.capture_specs(capture.active_metrics())
     if args.no_install or not (args.connect or not args.non_interactive):
         if hook_health.check_capture(wanted, claude_root=claude_root).missing:
@@ -2836,24 +2837,6 @@ def _capture_until(args: argparse.Namespace, now: datetime) -> str | None:
     return (now + timedelta(hours=hours)).isoformat(timespec="seconds")
 
 
-def _capture_level_title(capture: CaptureConfig) -> str:
-    return capture_catalogue.LEVEL_TITLES.get(capture.level, capture.level)
-
-
-def _capture_describe(capture: CaptureConfig) -> str:
-    """One line: the level and, when on, its date, end and sample."""
-    if not capture.is_on:
-        return "Off"
-    parts = [_capture_level_title(capture)]
-    if capture.enabled_at:
-        parts.append(f"since {capture.enabled_at[:10]}")
-    if capture.until:
-        parts.append(f"until {capture.until[:16].replace('T', ' ')}")
-    if capture.sample < 100:
-        parts.append(f"{capture.sample}% of sessions")
-    return parts[0] + (f" ({', '.join(parts[1:])})" if len(parts) > 1 else "")
-
-
 def _capture_cost_lines(ids) -> list[str]:
     """Plain lines on what ``ids`` add to Claude's context and replies."""
     rough = capture_catalogue.rough_tokens(ids)
@@ -2869,10 +2852,6 @@ def _capture_cost_lines(ids) -> list[str]:
     if rough["tool_note"]:
         lines.append(f"about {rough['tool_note']} tokens of note after each large or web tool result")
     return lines
-
-
-#: Days of your own sessions replayed to estimate what capture would cost.
-CAPTURE_HISTORY_DAYS = 14
 
 
 def _capture_corpus(args: argparse.Namespace, config: Config, config_dir: Path, *, days=None, since=None) -> Corpus:
@@ -2907,17 +2886,6 @@ def _capture_history(args: argparse.Namespace, config: Config, config_dir: Path)
     return capture.history(corpus, rates, days=CAPTURE_HISTORY_DAYS), _report_units(corpus, rates, config, config_dir)
 
 
-def _capture_amount(units, usd: float, period: str = "") -> str:
-    """``usd`` for the billing mode (a share of the weekly limit on a
-    subscription, when it can be worked out)."""
-    if usd <= 0:
-        return "nothing"
-    if units.billing_mode != "subscription" and usd < 0.005:
-        return f"under {format_cell(0.01, 'money', units.currency)}" + (f" {period}" if period else "")
-    amount = units.money(usd, period=period)
-    return amount.text() if amount is not None else "nothing"
-
-
 def _plural(count: int, word: str) -> str:
     return f"{count} {word}{'' if count == 1 else 's'}"
 
@@ -2942,8 +2910,8 @@ def _capture_estimate_lines(past, units, sample: int = 100) -> list[str]:
             lines.append(f"  {title:<11} nothing: it only logs a few events to a local file")
             continue
         tokens = round((est.note_tokens + est.tag_tokens) * 7 / est.days) if est.days else 0
-        share = f", {format_cell(est.share, 'pct')} of what you spent" if est.share is not None else ""
-        amount = _capture_amount(units, est.per_week, "a week")
+        share = f", {capture_view.share_text(est.share)} of what you spent" if est.share is not None else ""
+        amount = capture_view.amount_text(units, est.per_week, "a week")
         lines.append(f"  {title:<11} about {format_cell(tokens, 'tokens')} tokens and {amount}{share}")
     return lines
 
@@ -2956,11 +2924,11 @@ def _capture_usage_lines(use, units) -> list[str]:
             "turned on."
         ]
     since = f" since {use.since[:10]}" if use.since else ""
-    share = f", {format_cell(use.share, 'pct')} of what those sessions cost" if use.share is not None else ""
+    share = f", {capture_view.share_text(use.share)} of what those sessions cost" if use.share is not None else ""
     lines = [
         f"Measured{since}: {_plural(use.sessions, 'session')} and {_plural(use.subagents, 'subagent')} captured",
         f"  about {format_cell(use.note_tokens, 'tokens')} tokens of note and {format_cell(use.tag_tokens, 'tokens')} "
-        f"tokens of tag: {_capture_amount(units, use.cost)}{share}",
+        f"tokens of tag: {capture_view.amount_text(units, use.cost)}{share}",
     ]
     if use.coverage is not None:
         reports = (
@@ -3058,7 +3026,7 @@ def _capture_settings_step(
 def _capture_status(
     capture: CaptureConfig, *, config_dir: Path, claude_root: Path, stdout, args=None, config: Config | None = None
 ) -> int:
-    stdout.write(f"Metrics capture: {_capture_describe(capture)}\n")
+    stdout.write(f"Metrics capture: {capture_view.describe(capture)}\n")
     ids = capture.active_metrics()
     if capture.is_on:
         if capture.expired():
@@ -3180,7 +3148,7 @@ def _cmd_capture(args: argparse.Namespace, *, stdin=None, stdout=None, now: date
         stdout.write(f"{exc}\n")
         return 2
     if preview != current:
-        stdout.write(f"Metrics capture: {_capture_describe(current)} -> {_capture_describe(preview)}\n")
+        stdout.write(f"Metrics capture: {capture_view.describe(current)} -> {capture_view.describe(preview)}\n")
         if action == "disable":
             also = [m for m in current.active_metrics() if m not in preview.active_metrics() and m not in args.values]
             if also:
@@ -3214,7 +3182,7 @@ def _cmd_capture(args: argparse.Namespace, *, stdin=None, stdout=None, now: date
                 return 2
             stdout.write("Saved to config.toml. It takes effect in new sessions and subagents.\n")
     elif action != "connect":
-        stdout.write(f"Metrics capture is already {_capture_describe(current)}.\n")
+        stdout.write(f"Metrics capture is already {capture_view.describe(current)}.\n")
 
     if action == "off":
         if hook_health.check_capture((), claude_root=claude_root).extra:

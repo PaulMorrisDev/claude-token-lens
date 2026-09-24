@@ -74,5 +74,17 @@ class Units:
             basis="from your own usage-limit readings against the tokens used between them",
         )
 
+    def basis(self) -> str:
+        """One sentence on what amounts mean in this billing mode, for
+        the line that introduces them."""
+        if self.billing_mode != "subscription":
+            return "Amounts are what the tokens cost at list price."
+        if self.elasticity is not None and elasticity_mod.express_in_window(1.0, self.elasticity) is not None:
+            return (
+                "Amounts are shares of your weekly usage limit, worked out from your own usage-limit readings, "
+                "with list-price equivalents alongside."
+            )
+        return f"Amounts are list-price equivalents, not what you are charged. {NO_LIMIT_SHARE_HINT}"
+
 
 __all__ = ["Amount", "NO_LIMIT_SHARE_HINT", "Units"]

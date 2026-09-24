@@ -1025,6 +1025,10 @@ class ReportMeta:
     billing_mode: str = "api"  # "api" | "subscription"
     #: Why ``billing_mode`` has its value (``Config.billing_source``).
     billing_source: str = ""
+    #: What amounts mean in this billing mode (``units.Units.basis``):
+    #: list price, a share of the weekly limit, or list-price
+    #: equivalents when that share can't be worked out.
+    amounts_basis: str = ""
     #: TTL/RE-CACHE/etc. assumption text, rendered as the report's
     #: "## Assumptions" block. See the module docstring's deviation note.
     assumptions: list[str] = field(default_factory=list)

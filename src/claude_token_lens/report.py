@@ -1664,6 +1664,7 @@ def build_report(
         thresholds=thresholds_dict,
         billing_mode=config.billing,
         billing_source=config.billing_source,
+        amounts_basis=units.basis(),
         assumptions=assumptions,
     )
 
