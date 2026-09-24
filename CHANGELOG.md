@@ -635,6 +635,46 @@ once to pick up the new detection rules and fields below.
   note's own surrounding text never reach a `Turn`/`Event` field; plus a
   fixture locking in the `ignored_line_types` fix above. Skill names
   already had a dedicated fixture (SEC-P3); not duplicated.
+### P10a — Report performance: Habits built once, cache-carry costing off the linear path
+
+No output change: every figure below comes out identical to before
+(tests hand-compute the equivalence to 1e-12; a live smoke report's
+JSON diffs at zero, generated_at aside, against a frozen transcript
+snapshot run on the pre-change code).
+
+- **`habits.collect()` walked the whole corpus twice per report** — once
+  for the "Work habits" section, again for "Metrics capture"'s
+  `capture_dependent_value`. `report.build_report` now runs it once and
+  passes the result to both (`habits.section_from`, and a new optional
+  `habits.capture_section(..., h=...)`), falling back to its own
+  `collect()` only on the rare config that resolves a non-default
+  effort-mismatch share threshold, so the two sections can't disagree
+  on it.
+- **Context-carry costing (`carry.py:_extract_results`) re-summed every
+  later turn's cache rate for every carried tool result — O(turns ×
+  tool results) per transcript**, the report's single largest post-parse
+  cost. It now precomputes each turn's rate once, prefix-sums them, and
+  reads off an O(log turns) range sum per tool result instead (`bisect`
+  over turn index, since indices can skip). The now-unused per-pair
+  `_carry_cost_for_turn` is removed.
+- **`ttl.cache_economy`'s `_cache_tokens_at_input_rate` priced every
+  cached turn twice** (once for real, once more with its cache emptied,
+  via `dataclasses.replace`, just to isolate the input-rate cost) —
+  `pricing.effective_rates` already folds in fast-mode, long-context and
+  geo the same way, so it's called once and multiplied directly.
+- **`habits._CarryCost` re-resolved the same turn's effective rates
+  twice**, once each for `.read()` and `.write()`. A new
+  `_Rates.read_write()` resolves once and returns both.
+- Measured on the smoke corpus (`--all-projects --since <30d> --jobs
+  4`), the post-parse stage (everything after transcript parsing) drops
+  from a ~25.0s to a ~16.0s median of 3 runs, about 36% -- short of
+  halving it. The remaining top hot spots are the same shape of problem
+  in `context_files.py`'s `_Carry` (linear `index_at`, an uncached
+  `resolve_model` per turn) and `compaction_sim.py` (an uncached
+  `lookup(turn.model)` per replay window; its own heavy
+  `dataclasses.replace` use doesn't share carry.py's fix, since it
+  changes `ctx` itself, which can cross the long-context threshold) —
+  both out of this phase's file scope, left for a follow-up.
 
 ## [0.5.2] - 2026-09-23
 

@@ -1686,14 +1686,17 @@ def build_report(
     if _want("workstyle"):
         sections.append(workstyle.build_section(session_records))
 
+    # Perf (S5/ROB-P3): collect() walks the whole corpus, so build it once
+    # here and pass it to both the "habits" and "capture" sections below
+    # instead of each calling habits.build_section()/capture_section()
+    # with their own independent collect() pass over the same corpus.
+    _habits_built: habits.Habits | None = None
     if _want("habits"):
-        sections.append(
-            habits.build_section(
-                corpus, pricing, ratings=ratings, signals=_capture_signals(corpus, config_dir),
-                model_swap=model_swap_stats,
-                effort_share_threshold_pct=_effort_mismatch_share_threshold(config),
-            )
+        _habits_built = habits.collect(
+            corpus, pricing, ratings=ratings, signals=_capture_signals(corpus, config_dir),
+            effort_share_threshold_pct=_effort_mismatch_share_threshold(config),
         )
+        sections.append(habits.section_from(_habits_built, model_swap=model_swap_stats))
 
     if _want("workflows"):
         sections.append(workflows.build_section(all_workflow_runs))
@@ -1759,7 +1762,7 @@ def build_report(
         )
 
     if _want("capture"):
-        sections.append(habits.capture_section(corpus, pricing, config.capture, ratings=ratings))
+        sections.append(habits.capture_section(corpus, pricing, config.capture, ratings=ratings, h=_habits_built))
 
     if _want("scorecard"):
         sections.append(_build_scorecard_section(rs, ls, ts, tp, cs, pricing_coverage, diagnostics, session_records, snapshots, config, scorecard_th, pricing))
