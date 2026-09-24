@@ -181,6 +181,14 @@ _CAPTURE_HISTORY_MAX_AGE_S = 6 * 3600.0
 #: (``signals.Signal.event``).
 _SIGNAL_METRICS = {"end": "session_end", "wait": "waits", "perm": "permissions"}
 
+#: G5: the largest POST body this server will read off the socket, on
+#: any route. Every current POST body (a profile, a tag list, a feedback
+#: payload) is small hand-typed or hand-picked JSON -- 64 KB is generous
+#: headroom over that, while still bounding the memory and json.loads
+#: cost of a body from an untrusted local process (F5/SEC-P6: no auth
+#: token gates these routes, only Origin/Sec-Fetch-Site and Host).
+_MAX_POST_BODY_BYTES = 64 * 1024
+
 
 def _now_utc_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -329,6 +337,10 @@ def _internal_error(message: str) -> tuple[int, dict]:
 
 def _not_implemented(message: str) -> tuple[int, dict]:
     return _error(501, "not_implemented", message)
+
+
+def _payload_too_large(message: str) -> tuple[int, dict]:
+    return _error(413, "payload_too_large", message)
 
 
 def _int_query(
@@ -484,6 +496,19 @@ def _find_section(model, key: str):
         if section.key == key:
             return section
     return None
+
+
+def _min_sessions_gate(before: int, after: int, need: int) -> dict | None:
+    """P4 leftover: a structured ``{reason, have, need}`` object for a
+    minimum-sample-size gate, ``None`` once ``need`` is met on both
+    sides -- the emptyState() counterpart to a route's own prose verdict
+    (e.g. ``impact.compare``'s ``verdict``/``enough``), which stays as
+    is; this is additive, read only from data the caller already built,
+    never a substitute for it."""
+    have = min(before, after)
+    if have >= need:
+        return None
+    return {"reason": "min_sessions", "have": have, "need": need}
 
 
 # -- make_handler ---------------------------------------------------------
@@ -915,7 +940,10 @@ def make_handler(
         except (ConfigError, OSError, ValueError):
             return None
         block = capture_view.config_block(capture)
-        hooks = hook_health.check_capture(hook_health.capture_specs(capture.active_metrics()))
+        # config_dir=: cheap (a few small hook files hashed, no subprocess,
+        # no transcript read) but still catches an outdated or hand-edited
+        # hook file (SEC-P7/ROB-P7), not just a missing settings.json entry.
+        hooks = hook_health.check_capture(hook_health.capture_specs(capture.active_metrics()), config_dir=options.config_dir)
         block["hooks_ok"] = hooks.ok
         return block
 
@@ -1010,6 +1038,7 @@ def make_handler(
         from .. import signals as signals_mod
         from ..corpus import _session_first_ts
         from ..discovery import _parse_bound
+        from ..report import _capture_signals
         from . import rebuild
 
         rates = _capture_rates(config)
@@ -1017,7 +1046,9 @@ def make_handler(
         use = capture_mod.usage(corpus, rates, since=enabled_at)
         weekly_cost = capture_mod.weekly_cost(use)
         dependent_value = habits_mod.capture_dependent_value(
-            habits_mod.collect(corpus, rates, ratings=store.all_feedback())
+            habits_mod.collect(
+                corpus, rates, ratings=store.all_feedback(), signals=_capture_signals(corpus, options.config_dir),
+            )
         )
         start = _parse_bound(enabled_at)
         started = 0
@@ -1098,7 +1129,9 @@ def make_handler(
             except (OSError, ValueError):
                 settings = None
             statusline = footprint.is_own_statusline(settings if isinstance(settings, dict) else None)
-        hooks = hook_health.check_capture(hook_health.capture_specs(capture.active_metrics()))
+        hooks = hook_health.check_capture(
+            hook_health.capture_specs(capture.active_metrics()), config_dir=options.config_dir
+        )
         return capture_view.view(
             capture, past=past, units=units, use=use, hooks=hooks, signal_sessions=signal_sessions,
             started_since=started, feedback_use=feedback_use, skill=skill, brief_skill=brief_skill, ratings=ratings,
@@ -1323,6 +1356,7 @@ def make_handler(
                 "source": "catalogue",
                 "archetype": p.archetype,
                 "for": list(p.for_),
+                "tasks": list(profile_catalogue.tasks_for(p)),
                 "updated_at": None,
             }
             for p in profile_catalogue.list_profiles()
@@ -1334,6 +1368,7 @@ def make_handler(
                 "source": "user",
                 "archetype": None,
                 "for": [],
+                "tasks": [],
                 "updated_at": row["updated_at"],
             }
             for row in store.profiles()
@@ -1463,7 +1498,20 @@ def make_handler(
         profile to -- see that route's own docstring). ``None`` if
         neither exists, or the on-disk file no longer parses (never lets
         a malformed file 500 the route -- this project's usual "skip,
-        don't crash" posture for a foreign/edited-by-hand file)."""
+        don't crash" posture for a foreign/edited-by-hand file).
+
+        SEC-P4/F4: ``profile_id`` reaches here straight from the URL
+        path, percent-decoded (see the route dispatcher's ``unquote``),
+        so ``..%2F..%2Fetc%2Fpasswd`` or ``C:%5CWindows%5C...`` would
+        otherwise interpolate real ``/``/``\\`` separators into the path
+        built below and read a file outside ``<config_dir>/profiles/``.
+        Checked against the same closed id shape a profile must already
+        satisfy to be saved (``profile_schema._ID_RE``,
+        ``^[a-z0-9-]{1,40}$``) before it ever touches the filesystem;
+        every catalogue id already matches it too.
+        """
+        if not profile_schema._ID_RE.match(profile_id):
+            return None
         if profile_id in profile_catalogue.CATALOGUE_IDS:
             return profile_catalogue.get(profile_id)
         path = Path(options.config_dir) / "profiles" / f"{profile_id}.toml"
@@ -1598,6 +1646,7 @@ def make_handler(
                 "source": "catalogue" if profile_id in profile_catalogue.CATALOGUE_IDS else "user",
                 "archetype": profile.archetype,
                 "for": list(profile.for_),
+                "tasks": list(profile_catalogue.tasks_for(profile)),
                 "notes": profile.notes,
                 "settings": dict(profile.settings),
                 "agents": {name: dict(keys) for name, keys in profile.agents.items()},
@@ -1608,15 +1657,18 @@ def make_handler(
 
     def route_session_explain(store, query, body):
         from .explain import explain_session
-        from ..units import Units
 
         session_id = query.get("id", "")
         detail = store.session(session_id)
         if detail is None:
             return _not_found("session not found")
-        config = load_config(options.config_dir)
-        rates = load_pricing(path=config.pricing_path, config_dir=options.config_dir)
-        units = Units(billing_mode=config.billing, currency=rates.currency)
+        rates = load_pricing(path=load_config(options.config_dir).pricing_path, config_dir=options.config_dir)
+        # UX-1: the same units.Units a full report would carry (with a
+        # real elasticity fit under a subscription, from this machine's
+        # own statusline usage-limit readings) rather than a bare
+        # Units(billing_mode, currency) that always fell back to
+        # "list-price equivalent" -- same idiom _compute_impact uses.
+        units = _report_units(_get_report_model(_DEFAULT_WINDOW_DAYS))
         explained = explain_session(
             detail, store.session_parts(session_id), rates, units, store.median_session_cost()
         )
@@ -1789,7 +1841,13 @@ def make_handler(
         model = _get_report_model(*window)
         hook = hook_health.check(options.config_dir)
         statusline = hook_health.statusline_check(options.config_dir, store.entrypoint_counts())
-        return _ok(to_jsonable(helptext.diagnostics_table(model.diagnostics, hook=hook, statusline=statusline)))
+        return _ok(
+            to_jsonable(
+                helptext.diagnostics_table(
+                    model.diagnostics, hook=hook, statusline=statusline, parser_notes=model.parser_notes
+                )
+            )
+        )
 
     def _report_units(model):
         from ..units import Units
@@ -1853,14 +1911,19 @@ def make_handler(
             )
         )
 
-    def _current_settings() -> tuple[dict, dict]:
-        """The latest snapshot's effective settings, and every project's
-        agent fields, or empty when no snapshot is recorded yet."""
+    def _current_settings() -> tuple[dict, dict, bool]:
+        """The latest snapshot's effective settings, every project's agent
+        fields, and (PROF-03) whether ``CLAUDE_CODE_EFFORT_LEVEL`` is set
+        -- content_layers' own flag, never a value that could be
+        anything else -- or empty/``False`` when no snapshot is recorded
+        yet."""
         snapshot = _config_snapshot_with_every_project_agents()
         if snapshot is None:
-            return {}, {}
+            return {}, {}, False
         agents = snapshot.data.get("effective_agents")
-        return snapshots_mod.effective_config(snapshot), agents if isinstance(agents, dict) else {}
+        content_layers = snapshot.data.get("content_layers")
+        env_set = bool(isinstance(content_layers, dict) and content_layers.get("effort_level_env_set"))
+        return snapshots_mod.effective_config(snapshot), agents if isinstance(agents, dict) else {}, env_set
 
     def route_profile_goals(store, query, body):
         """Without ``goal``: the goals a profile can start from. With it:
@@ -1882,7 +1945,7 @@ def make_handler(
                 f"unknown task {task!r}; expected one of: {', '.join(capture_catalogue.TAG_VOCAB['task'])}"
             )
         model = _get_report_model(*window)
-        effective, effective_agents = _current_settings()
+        effective, effective_agents, effort_level_env_set = _current_settings()
         return _ok(
             goals.draft(
                 goal,
@@ -1892,14 +1955,37 @@ def make_handler(
                 effective_agents=effective_agents,
                 period=_period_text(*window, name=query.get("window")),
                 task=task,
+                effort_level_env_set=effort_level_env_set,
             )
         )
 
     def route_whatif(store, query, body):
         """The estimated effect of ``{settings, agents}`` on the window,
         looked up in the report's own tables. Reads only; nothing is
-        saved or applied."""
+        saved or applied -- unless the body also carries ``"log": true``
+        (EST-P5), in which case every row whose ``saving_usd`` could be
+        estimated is appended to ``prediction-log.jsonl``
+        (``config.append_prediction_log``) so ``backtest.py`` can later
+        check it against what actually happened. The log is opt-in
+        because most ``/api/whatif`` calls are the dashboard exploring
+        "what if" interactively as you drag a slider -- only a change
+        you actually mean to track is worth a prediction row. EST-P6:
+        once at least 3 of your own past predictions for a given kind of
+        change have been judged, its estimate here is calibrated by how
+        that change actually turned out for you before
+        (``backtest.calibration_multipliers``) -- logging always records
+        the *uncalibrated* estimate (``row["uncalibrated_usd"]`` when
+        present), so calibrating an already-calibrated number never
+        compounds. PROF-01: a ``?task=`` query param scales every row
+        down to that kind of task's own share of the window, the same
+        way the tasks goal's own draft does
+        (``profiles.goals._scale_whatif``) -- for the tasks goal's live
+        total as you tick candidates, and for a saved profile whose
+        ``for`` names a task."""
+        from .. import backtest as backtest_mod
+        from .. import config as config_mod
         from .. import whatif
+        from ..profiles import goals
 
         if not isinstance(body, dict):
             return _bad_request("request body must be a JSON object")
@@ -1910,27 +1996,67 @@ def make_handler(
         problems = profile_schema.validate({"id": "whatif", "settings": settings, "agents": agents})
         if problems:
             return _bad_request("; ".join(problems))
+        # One task, or several comma-separated (a catalogue profile's
+        # ``for`` covers more than one; their shares add).
+        tasks = tuple(dict.fromkeys(t for t in (query.get("task") or "").split(",") if t))
+        unknown = [t for t in tasks if t not in capture_catalogue.TAG_VOCAB["task"]]
+        if unknown:
+            return _bad_request(
+                f"unknown task {unknown[0]!r}; expected one of: {', '.join(capture_catalogue.TAG_VOCAB['task'])}"
+            )
+        task = tasks or None
         window, err = _window_query(query)
         if err is not None:
             return err
         model = _get_report_model(*window)
-        effective, _agents = _current_settings()
-        return _ok(
-            whatif.estimate(
-                settings,
-                agents,
-                model,
-                _report_units(model),
-                period=_period_text(*window, name=query.get("window")),
-                current=effective,
-            )
+        effective, _agents, _env_set = _current_settings()
+        units = _report_units(model)
+        period = _period_text(*window, name=query.get("window"))
+        result = whatif.estimate(
+            settings,
+            agents,
+            model,
+            units,
+            period=period,
+            current=effective,
+            calibration=backtest_mod.calibration_multipliers(store),
         )
+        if task is not None:
+            result = goals._scale_whatif(result, whatif._Tables(model), task, units, period)
+        if body.get("log") is True:
+            for row in result["rows"]:
+                predicted_usd = row["uncalibrated_usd"] if row["uncalibrated_usd"] is not None else row["saving_usd"]
+                fidelity = row["uncalibrated_fidelity"] or row["fidelity"]
+                if predicted_usd is None:
+                    continue
+                config_mod.append_prediction_log(
+                    options.config_dir,
+                    source="whatif",
+                    measure_key=row["key"],
+                    agent=row["agent"],
+                    predicted_usd=predicted_usd,
+                    predicted_pct=None,
+                    fidelity=fidelity,
+                )
+        return _ok(result)
+
+    def route_predictions_seen(store, query, body):
+        """EST-P5: record that the dashboard has actually shown you a
+        prediction (``Store.mark_prediction_seen``), by its
+        ``prediction-log.jsonl``/``predictions`` row id."""
+        if not isinstance(body, dict):
+            return _bad_request("request body must be a JSON object")
+        prediction_id = body.get("id")
+        if not isinstance(prediction_id, str) or not prediction_id:
+            return _bad_request("'id' must be a non-empty string")
+        seen = store.mark_prediction_seen(prediction_id)
+        return _ok({"id": prediction_id, "seen": seen})
 
     def _quick_context(window, query):
         from .. import quick_actions
 
         model = _get_report_model(*window)
-        effective, effective_agents = _current_settings()
+        effective, effective_agents, _env_set = _current_settings()
         return quick_actions, quick_actions.Context(
             model=model,
             units=_report_units(model),
@@ -2044,6 +2170,14 @@ def make_handler(
             sessions = impact_mod.session_facts(corpus, rates)
             units = _report_units(_get_report_model(_DEFAULT_WINDOW_DAYS))
             changes = impact_mod.impact(points, sessions, units)
+            for change in changes:
+                # P4 leftover: a structured gate the dashboard's
+                # emptyState() can key off, alongside the existing prose
+                # verdict -- same "enough" predicate impact.compare
+                # already computed (min_sessions on both sides).
+                change["gate"] = _min_sessions_gate(
+                    change["before_sessions"], change["after_sessions"], impact_mod.MIN_SESSIONS
+                )
         data = {
             "changes": changes,
             "caveat": impact_mod.CAVEAT,
@@ -2053,6 +2187,93 @@ def make_handler(
         with report_lock:
             if started >= impact_cache["started"]:
                 impact_cache.update(key=key, data=data, started=started, as_of=as_of)
+        return data
+
+    backtest_cache: dict = {"key": None, "data": None, "started": 0.0, "as_of": None, "building": False}
+
+    def _backtest_key(store):
+        from .. import change_points
+
+        points = change_points.change_points(options.config_dir)
+        point_key = tuple((p.iso(), p.source, p.backup_ts) for p in points)
+        predictions_key = tuple(sorted((p["id"], p["judged_at"]) for p in store.predictions()))
+        return (store.change_token(), point_key, predictions_key)
+
+    def route_backtest(store, query, body):
+        """EST-P4: every logged prediction (``POST /api/whatif`` with
+        ``"log": true``) matched to the change point it turned into and
+        judged against the sessions before and after (``backtest.py``),
+        plus whatever is still waiting on more data or a match. Cached
+        like ``/api/impact`` -- a store or prediction-log change serves
+        the kept answer and judges any newly-eligible predictions in the
+        background, while a genuinely new set of change points is worked
+        out at once."""
+        key = _backtest_key(store)
+        now = time.monotonic()
+        refresh = False
+        with report_lock:
+            kept = backtest_cache["data"]
+            kept_key = backtest_cache["key"]
+            if kept is not None and kept_key == key:
+                _note_as_of(backtest_cache["as_of"], False)
+                return _ok(kept)
+            if (
+                kept is not None
+                and kept_key[1] == key[1]
+                and now - backtest_cache["started"] <= _STALE_REPORT_MAX_AGE_S
+            ):
+                refresh = not backtest_cache["building"]
+                if refresh:
+                    backtest_cache["building"] = True
+                _note_as_of(backtest_cache["as_of"], True)
+            else:
+                kept = None
+        if kept is not None:
+            if refresh:
+
+                def run():
+                    try:
+                        with background_builds:
+                            _compute_backtest(key)
+                    except BaseException:  # noqa: BLE001 -- the next request retries
+                        pass
+                    finally:
+                        with report_lock:
+                            backtest_cache["building"] = False
+                        store.close()
+
+                threading.Thread(target=run, name="claude-token-lens-backtest", daemon=True).start()
+            return _ok(kept)
+        data = _compute_backtest(key)
+        _note_as_of(backtest_cache["as_of"] or _now_utc_iso(), False)
+        return _ok(data)
+
+    def _compute_backtest(key):
+        from .. import backtest as backtest_mod
+        from .. import change_points
+        from . import rebuild
+
+        started = time.monotonic()
+        as_of = _now_utc_iso()
+        config = load_config(options.config_dir)
+        rates = load_pricing(path=config.pricing_path, config_dir=options.config_dir)
+        # Unlike _compute_impact, this can't narrow the corpus to "since
+        # the earliest change point" first -- EST-P9's transcript-derived
+        # points need a corpus before they can even be listed (the same
+        # chicken-and-egg change_points.py's own docstring notes), so the
+        # corpus comes first here and the points are worked out from it.
+        corpus = rebuild.corpus_from_store(store)
+        units = _report_units(_get_report_model(_DEFAULT_WINDOW_DAYS))
+        judged = backtest_mod.judge_predictions(store, corpus, rates, units, options.config_dir)
+        predictions = store.predictions()
+        data = {
+            "predictions": backtest_mod.present(predictions, units),
+            "judged_just_now": judged,
+            "verdicts": list(backtest_mod.VERDICTS),
+        }
+        with report_lock:
+            if started >= backtest_cache["started"]:
+                backtest_cache.update(key=key, data=data, started=started, as_of=as_of)
         return data
 
     def route_recommendations(store, query, body):
@@ -2097,6 +2318,7 @@ def make_handler(
         "/api/claude-md": route_claude_md,
         "/api/skills": route_skills,
         "/api/impact": route_impact,
+        "/api/backtest": route_backtest,
         "/api/profile-goals": route_profile_goals,
         "/api/quick-actions": route_quick_actions,
         "/api/setup": route_setup,
@@ -2122,6 +2344,7 @@ def make_handler(
         "/api/profiles": route_profiles_post,
         "/api/profiles/from-current": route_profiles_from_current,
         "/api/whatif": route_whatif,
+        "/api/predictions/seen": route_predictions_seen,
     }
     post_patterns: tuple[tuple[re.Pattern, Callable], ...] = (
         (_SESSION_TAGS_RE, route_set_tag),
@@ -2350,11 +2573,34 @@ def make_handler(
                 return "cross-site requests are not allowed on this route"
             return None
 
+        def _drain_body(self, length: int) -> None:
+            """Read and discard exactly ``length`` bytes from the socket,
+            in bounded chunks (G5). Used for a body over
+            ``_MAX_POST_BODY_BYTES``: it still must be consumed off the
+            wire -- an HTTP/1.1 keep-alive connection with it left unread
+            would corrupt the next request on the same connection, same
+            as the plain read below -- but ``length`` itself is
+            attacker-controlled (``Content-Length``) and exactly what the
+            cap exists to bound, so this never allocates a buffer sized
+            to it the way a single ``self.rfile.read(length)`` would."""
+            remaining = length
+            while remaining > 0:
+                chunk = self.rfile.read(min(65536, remaining))
+                if not chunk:
+                    return  # client closed early; nothing left to drain
+                remaining -= len(chunk)
+
         def do_POST(self) -> None:  # noqa: N802 - stdlib method name
             try:
                 length = int(self.headers.get("Content-Length") or 0)
             except ValueError:
                 length = 0
+            if length > _MAX_POST_BODY_BYTES:
+                self._drain_body(length)
+                self._write_json(
+                    *_payload_too_large(f"request body must be <= {_MAX_POST_BODY_BYTES} bytes")
+                )
+                return
             # Read (and discard, on rejection) the body unconditionally,
             # before any check that might return early -- this is an
             # HTTP/1.1 keep-alive connection, and leaving unread bytes in

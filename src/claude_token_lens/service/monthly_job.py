@@ -83,8 +83,8 @@ class MonthlyReportJob:
             roots = [self.options.projects_root, *self.options.extra_projects_roots]
             root = ", ".join(str(r) for r in roots)
             project_dirs = discovery.resolve_project_dirs(roots, all_projects=True, exclude_projects=exclude)
-            cache = DigestCache(config_dir)
             salt = load_or_create_salt(config_dir)
+            cache = DigestCache(config_dir, salt=salt)
             paths = monthly_mod.run_monthly_report(
                 config=config,
                 pricing=pricing,

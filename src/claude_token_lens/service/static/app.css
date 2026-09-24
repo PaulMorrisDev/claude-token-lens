@@ -123,8 +123,15 @@ body {
   padding-top: 1.25rem;
 }
 
+/* UX-6/9: this used to suppress the panel's own focus ring outright --
+   each panel is a tabindex="0" ARIA tabpanel a keyboard user lands on
+   right after activating its tab (see app.js's activateTab), so that
+   left it with no visible focus indicator at all (WCAG 2.4.7).
+   Restored to the same outline every other focusable control here
+   uses. */
 .panel:focus-visible {
-  outline: none;
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .panel h2 {
@@ -399,6 +406,16 @@ td.num {
 .rec-severity-advice { border-left-color: #a06a00; }
 .rec-severity-info { border-left-color: var(--accent); }
 
+/* UX-6/9: unlike .severity-action/.severity-advice (below) and
+   .capture-banner.capture-on/.capture-warning (further down), these two
+   had no dark-mode override at all, so a recommendation card's severity
+   border stayed at the light-mode red/amber -- harsher against the dark
+   background than every other severity indicator in the app. */
+@media (prefers-color-scheme: dark) {
+  .rec-severity-action { border-left-color: #ff6b5e; }
+  .rec-severity-advice { border-left-color: #f0b429; }
+}
+
 .rec-meta {
   color: var(--muted);
   font-size: 0.8rem;
@@ -618,12 +635,20 @@ details.fix[open] > summary {
 }
 
 .timeline-legend .swatch {
-  display: inline-block;
-  width: 0.7em;
-  height: 0.7em;
-  border-radius: 50%;
+  /* UX-6/9: used to be a plain circular color dot (border-radius: 50%);
+     now wraps a small SVG icon that draws the marker's real shape (see
+     app.js's markerGlyph/swatchIcon), so the shape itself -- not a
+     forced circle -- is what the viewer sees. */
+  display: inline-flex;
+  width: 0.9em;
+  height: 0.9em;
   margin-right: 0.3em;
   vertical-align: middle;
+}
+
+.timeline-legend .swatch svg {
+  width: 100%;
+  height: 100%;
 }
 
 .placeholder-box {
@@ -817,6 +842,15 @@ details.fix[open] > summary {
 
 .advanced-detail > summary {
   font-weight: 600;
+}
+
+/* UX-6/9: the raw settings-file diff (app.js's profile launch card, "Show
+   the file changes") is a bare <pre> with no wrap rule of its own, unlike
+   .code-block pre / .rec pre elsewhere -- a long line forced the whole
+   panel to scroll horizontally instead of wrapping in place. */
+.advanced-detail pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .col-help-btn {
@@ -1015,7 +1049,11 @@ tr.row-group th {
 
 .lever-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  /* UX-6/9: a bare 320px minimum track forces horizontal overflow on a
+     viewport narrower than that (a phone in portrait, once app-shell's
+     own side padding is subtracted) -- min(320px, 100%) caps the track
+     at the container's own width instead. */
+  grid-template-columns: repeat(auto-fill, minmax(min(320px, 100%), 1fr));
   gap: 0.75rem 1.25rem;
 }
 

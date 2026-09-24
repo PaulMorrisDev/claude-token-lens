@@ -192,6 +192,30 @@ def test_write_monthly_report_five_hour_blocks_only_for_subscription_billing(tmp
     assert "Five-hour blocks used" in text_sub
 
 
+def test_write_monthly_report_finance_summary_has_no_bare_dollar_and_uses_units_under_a_subscription(tmp_path):
+    """UX-1: the digest's money cells (module docstring's "uses Units"
+    wiring item) route through ``model.units``, so a subscription's
+    "Total cost" reads as a list-price-equivalent/weekly-usage-limit
+    figure, never a bare "$", and the API report is unaffected."""
+    corpus = _build_month_corpus(tmp_path / "projects")
+    out_dir_api = tmp_path / "out-api"
+    out_dir_sub = tmp_path / "out-sub"
+    md_api, _ = monthly.write_monthly_report(corpus, PRICING, Config(billing="api"), "2026-09", out_dir_api)
+    md_sub, _ = monthly.write_monthly_report(corpus, PRICING, Config(billing="subscription"), "2026-09", out_dir_sub)
+    text_api = md_api.read_text(encoding="utf-8")
+    text_sub = md_sub.read_text(encoding="utf-8")
+    assert "$" not in text_api
+    assert "$" not in text_sub
+    total_cost_row_sub = next(line for line in text_sub.splitlines() if "| Total cost" in line)
+    # No elasticity fit is logged for this synthetic corpus, so Units
+    # falls back to its "list-price equivalent" phrasing (units.py's
+    # NO_LIMIT_SHARE_HINT branch) -- still proof the subscription path
+    # was actually taken, not silently skipped.
+    assert "list-price equivalent" in total_cost_row_sub
+    total_cost_row_api = next(line for line in text_api.splitlines() if "| Total cost" in line)
+    assert "list-price equivalent" not in total_cost_row_api
+
+
 def test_write_monthly_report_html_has_table_markup(tmp_path):
     corpus = _build_month_corpus(tmp_path / "projects")
     out_dir = tmp_path / "out"

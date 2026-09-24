@@ -14,14 +14,16 @@ import json
 import os
 import threading
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 
-from claude_token_lens import PARSER_VERSION
+from claude_token_lens import PARSER_VERSION, config, signals
 from claude_token_lens.service.contracts import ServeOptions
 from claude_token_lens.service.store import Store
 from claude_token_lens.service.watcher import LIVE_FILE_WINDOW_S, FileWatcher
+from claude_token_lens.tools import log_usage
 
 from helpers import assert_privacy, turn_line, write_jsonl
 
@@ -334,6 +336,94 @@ def test_scan_profiles_never_ingests_a_catalogue_id(tmp_path: Path, store: Store
 
     assert stats.errors == 0
     assert store.profiles() == []
+
+
+# -- EST-P5: prediction-log.jsonl ingestion ---------------------------------
+
+
+def test_scan_predictions_ingests_every_record_under_config_dir(tmp_path: Path, store: Store):
+    from claude_token_lens import config as config_mod
+
+    options = _options(tmp_path)
+    config_mod.append_prediction_log(
+        options.config_dir,
+        source="whatif",
+        measure_key="model",
+        agent=None,
+        predicted_usd=1.5,
+        predicted_pct=None,
+        fidelity="ceiling",
+    )
+
+    watcher = FileWatcher(store, options)
+    stats = watcher.run_once()
+
+    assert_privacy(stats)
+    assert stats.errors == 0
+    predictions = store.predictions()
+    assert_privacy(predictions)
+    assert len(predictions) == 1
+    assert predictions[0]["source"] == "whatif"
+    assert predictions[0]["measure_key"] == "model"
+    assert predictions[0]["predicted_usd"] == 1.5
+
+
+def test_scan_predictions_is_a_no_op_on_an_unchanged_repeat_tick(tmp_path: Path, store: Store):
+    from claude_token_lens import config as config_mod
+
+    options = _options(tmp_path)
+    config_mod.append_prediction_log(
+        options.config_dir,
+        source="whatif",
+        measure_key="model",
+        agent=None,
+        predicted_usd=1.5,
+        predicted_pct=None,
+        fidelity="ceiling",
+    )
+
+    watcher = FileWatcher(store, options)
+    watcher.run_once()
+    first = store.predictions()
+
+    watcher.run_once()
+    second = store.predictions()
+
+    assert len(second) == len(first) == 1
+    assert second[0]["id"] == first[0]["id"]
+
+
+def test_scan_predictions_ingests_each_new_line_appended_later(tmp_path: Path, store: Store):
+    from claude_token_lens import config as config_mod
+
+    options = _options(tmp_path)
+    config_mod.append_prediction_log(
+        options.config_dir,
+        source="whatif",
+        measure_key="model",
+        agent=None,
+        predicted_usd=1.0,
+        predicted_pct=None,
+        fidelity="ceiling",
+    )
+
+    watcher = FileWatcher(store, options)
+    watcher.run_once()
+    assert len(store.predictions()) == 1
+
+    config_mod.append_prediction_log(
+        options.config_dir,
+        source="whatif",
+        measure_key="rebuild_share",
+        agent="reviewer",
+        predicted_usd=None,
+        predicted_pct=-10.0,
+        fidelity="simulated",
+    )
+    watcher.run_once()
+    predictions = store.predictions()
+    assert len(predictions) == 2
+    assert {p["measure_key"] for p in predictions} == {"model", "rebuild_share"}
 
 
 # -- incremental re-parse ---------------------------------------------------
@@ -1093,3 +1183,100 @@ def test_a_large_tick_reports_finding_then_reading_then_storing(
     watcher.run_once()
 
     assert phases == [("finding", 0), ("reading", 3), ("storing", 2), (None, 0)]
+
+
+# -- SEC-P8/G7: signal/capture-log pruning is unconditional -----------------
+
+
+def _write_signal_month_file(config_dir: Path, year: int, month: int) -> Path:
+    signals.signals_dir(config_dir).mkdir(parents=True, exist_ok=True)
+    path = signals.signals_dir(config_dir) / f"{year:04d}-{month:02d}.jsonl"
+    path.write_text("", encoding="utf-8")
+    return path
+
+
+def _write_capture_log(config_dir: Path, *timestamps: datetime) -> None:
+    config_dir.mkdir(parents=True, exist_ok=True)
+    lines = [
+        json.dumps({"ts": ts.isoformat(timespec="seconds"), "level": "essentials", "changed": {}}, sort_keys=True)
+        for ts in timestamps
+    ]
+    (config_dir / config.CAPTURE_LOG_NAME).write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def test_run_once_prunes_old_signals_and_capture_log_with_no_retention_days_set(tmp_path: Path, store: Store):
+    # Previously this whole block (store rows, signal files, capture-log)
+    # was skipped entirely unless the user set retention_days -- G7 found
+    # capture-log.jsonl (and, the same way, signal files) grew forever by
+    # default. Now the telemetry files are pruned unconditionally, at the
+    # 180-day default, even with retention_days left at None.
+    options = _options(tmp_path)
+    old_signal = _write_signal_month_file(options.config_dir, 2020, 1)
+    recent_signal = _write_signal_month_file(
+        options.config_dir, datetime.now(timezone.utc).year, datetime.now(timezone.utc).month
+    )
+    now = datetime.now(timezone.utc)
+    _write_capture_log(options.config_dir, now - timedelta(days=200), now - timedelta(days=5))
+
+    watcher = FileWatcher(store, options)
+    watcher.run_once()
+
+    assert not old_signal.exists()
+    assert recent_signal.exists()
+    log = config.load_capture_log(options.config_dir)
+    assert len(log) == 1
+    assert log[0]["ts"] == (now - timedelta(days=5)).isoformat(timespec="seconds")
+
+
+def test_run_once_uses_an_explicit_retention_days_for_signals_and_capture_log(tmp_path: Path, store: Store):
+    # An explicit retention_days narrower than the 180-day default must
+    # still reach the signal/capture-log path, not just store rows.
+    options = _options(tmp_path, retention_days=30)
+    old_signal = _write_signal_month_file(options.config_dir, 2020, 1)
+    now = datetime.now(timezone.utc)
+    _write_capture_log(options.config_dir, now - timedelta(days=60), now - timedelta(days=1))
+
+    watcher = FileWatcher(store, options)
+    watcher.run_once()
+
+    assert not old_signal.exists()
+    log = config.load_capture_log(options.config_dir)
+    assert len(log) == 1
+    assert log[0]["ts"] == (now - timedelta(days=1)).isoformat(timespec="seconds")
+
+
+def test_run_once_prunes_old_usage_log_rows_with_no_retention_days_set(tmp_path: Path, store: Store):
+    # SIG-5: usage-log.csv is written unconditionally on every statusline
+    # refresh (capture on or off), so -- like signals/capture-log above --
+    # it must be pruned on every tick even when nobody set retention_days.
+    options = _options(tmp_path)
+    csv_path = log_usage.default_usage_log_path(options.config_dir)
+    now = datetime.now(timezone.utc)
+    old = {"session_id": "old", "window": "five_hour", "used_percentage": 1.0, "resets_at": "r"}
+    recent = {"session_id": "recent", "window": "five_hour", "used_percentage": 2.0, "resets_at": "r"}
+    log_usage.append_rows(csv_path, [old], now=now - timedelta(days=200))
+    log_usage.append_rows(csv_path, [recent], now=now - timedelta(days=5))
+
+    watcher = FileWatcher(store, options)
+    watcher.run_once()
+
+    rows = log_usage.load_usage_log(csv_path)
+    assert len(rows) == 1
+    assert rows[0]["session_id"] == "recent"
+
+
+def test_run_once_uses_an_explicit_retention_days_for_usage_log(tmp_path: Path, store: Store):
+    options = _options(tmp_path, retention_days=30)
+    csv_path = log_usage.default_usage_log_path(options.config_dir)
+    now = datetime.now(timezone.utc)
+    old = {"session_id": "old", "window": "five_hour", "used_percentage": 1.0, "resets_at": "r"}
+    recent = {"session_id": "recent", "window": "five_hour", "used_percentage": 2.0, "resets_at": "r"}
+    log_usage.append_rows(csv_path, [old], now=now - timedelta(days=60))
+    log_usage.append_rows(csv_path, [recent], now=now - timedelta(days=1))
+
+    watcher = FileWatcher(store, options)
+    watcher.run_once()
+
+    rows = log_usage.load_usage_log(csv_path)
+    assert len(rows) == 1
+    assert rows[0]["session_id"] == "recent"

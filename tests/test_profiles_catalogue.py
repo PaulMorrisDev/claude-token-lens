@@ -149,7 +149,25 @@ def test_for_words_normalise_to_the_task_vocabulary():
         assert set(tasks) <= vocab
 
 
-def test_every_task_but_ops_has_a_catalogue_profile():
+def test_tasks_for_normalises_catalogue_words_and_keeps_task_words():
+    # F11: a catalogue word maps to its tasks, a saved task profile's
+    # `for=[task]` stands for itself, and a way of running covers none.
+    by_id = {p.id: p for p in catalogue_mod.list_profiles()}
+    assert catalogue_mod.tasks_for(by_id["implementation-heavy"]) == (
+        "feature", "bugfix", "debug", "refactor", "test", "review",
+    )
+    assert catalogue_mod.tasks_for(by_id["overnight-batch"]) == ()
+    saved = loads_profile('id = "mine"\nfor = ["bugfix"]\n')
+    assert catalogue_mod.tasks_for(saved) == ("bugfix",)
+    vocab = set(capture_catalogue.TAG_VOCAB["task"])
+    for profile in by_id.values():
+        assert set(catalogue_mod.tasks_for(profile)) <= vocab
+
+
+def test_every_task_has_a_catalogue_profile():
+    # PROF-11/F11: "ops" used to be the one task word no catalogue
+    # profile covered; workflow-ultracode's own "ops" for-word closes
+    # that gap (see its notes for why that profile, of the seven).
     covered = {task: catalogue_mod.task_profile(task) for task in capture_catalogue.TAG_VOCAB["task"]}
     assert covered == {
         "feature": "implementation-heavy",
@@ -161,9 +179,10 @@ def test_every_task_but_ops_has_a_catalogue_profile():
         "test": "implementation-heavy",
         "research": "discovery-scrape",
         "plan": "planning-requirements",
-        "ops": None,
+        "ops": "workflow-ultracode",
         "chat": "interactive-chat",
     }
+    assert None not in covered.values()
 
 
 def test_tasks_for_reads_the_profiles_for_list():
@@ -174,6 +193,9 @@ def test_tasks_for_reads_the_profiles_for_list():
 def test_a_reported_task_beats_a_guessed_purpose_but_not_a_structural_one():
     assert suggest("single-model", ["general-dev"], ["research"]) == "discovery-scrape"
     assert suggest("single-model", ["general-dev", "agent-fanout"], ["plan"]) == "overseer-fanout"
-    # A task no profile covers falls through to the purposes.
-    assert suggest("single-model", ["review"], ["ops"]) == "implementation-heavy"
-    assert suggest("chat-only", [], ["ops", "chat"]) == "interactive-chat"
+    # PROF-11/F11: ops now has its own catalogue profile, so it wins
+    # over the guessed purpose, same as every other reported task.
+    assert suggest("single-model", ["review"], ["ops"]) == "workflow-ultracode"
+    # A task no profile covers (not even in the task vocabulary) falls
+    # through to the next task, then the purposes.
+    assert suggest("chat-only", [], ["not-a-real-task", "chat"]) == "interactive-chat"

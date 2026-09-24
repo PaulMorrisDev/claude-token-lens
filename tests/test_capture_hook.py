@@ -151,6 +151,28 @@ def test_a_subagent_that_compacts_gets_the_subagent_note_again(tmp_path):
     assert _note(config_dir, main) == cat.note_text(cat.level_metrics("essentials"), "main")
 
 
+def test_a_workflow_nested_subagent_that_compacts_gets_the_subagent_note(tmp_path):
+    """SURV-2: a workflow run's own agents sit one level deeper than an
+    ordinary subagent (``subagents/workflows/<run_id>/agent-<hex>.jsonl``,
+    see ``discovery.py``'s module docstring) -- its transcript's
+    immediate parent is the run id, not literally ``subagents``, so
+    ``_in_subagent`` must walk every ancestor, not just the immediate
+    parent, to still recognise it.
+    """
+    config_dir = _config(tmp_path, '[capture]\nlevel = "essentials"\n')
+    for path in (
+        "/home/u/.claude/projects/p/s1/subagents/workflows/wf_1/agent-a1.jsonl",
+        r"C:\Users\u\.claude\projects\p\s1\subagents\workflows\wf_1\agent-a1.jsonl",
+    ):
+        assert _note(config_dir, _start(source="compact", transcript_path=path)) == cat.note_text(
+            cat.level_metrics("essentials"), "subagent"
+        )
+    # The agent-*.jsonl filename alone is also enough, regardless of
+    # which folder it sits under.
+    odd_shape = _start(source="compact", transcript_path="/home/u/.claude/projects/p/s1/somewhere/agent-a1.jsonl")
+    assert _note(config_dir, odd_shape) == cat.note_text(cat.level_metrics("essentials"), "subagent")
+
+
 def test_sampling_keeps_a_session_in_or_out_for_its_whole_length(tmp_path):
     config_dir = _config(tmp_path, '[capture]\nlevel = "essentials"\nsample = 10\n')
     inside, outside = _session_id(10, inside=True), _session_id(10, inside=False)
@@ -167,6 +189,39 @@ def test_a_skipped_project_gets_nothing(tmp_path):
     assert _note(skip, _start(cwd="/work/app"))
     left_out = _config(tmp_path / "left", 'exclude_projects = ["scratch"]\n\n[capture]\nlevel = "essentials"\n')
     assert _note(left_out, _start(cwd="/tmp/scratch")) == ""
+
+
+def test_a_bad_pattern_is_skipped_and_the_rest_still_apply(tmp_path):
+    """SEC-P5: ``config.toml`` isn't only ever written by Token Lens's own
+    validated ``write_config_values`` -- it can be hand-edited, or come
+    from an older version -- so the hook must not let one unparseable
+    regex (an unbalanced paren, say) take the whole call down with it
+    (``main`` catches everything and exits 0 regardless, but that used to
+    mean no note for the *whole* session, not just a miss on the one bad
+    pattern). A good ``exclude_projects`` pattern alongside the bad one
+    must still exclude its project, and a project the bad pattern doesn't
+    (and can't validly) match must still get its note.
+    """
+    config_dir = _config(
+        tmp_path,
+        'exclude_projects = ["scratch", "(unbalanced"]\n\n[capture]\nlevel = "essentials"\n',
+    )
+    assert _note(config_dir, _start(cwd="/tmp/scratch")) == ""
+    assert _note(config_dir, _start(cwd="/work/app"))
+
+
+def test_project_allowed_treats_a_bad_pattern_as_a_non_match():
+    bad = "(unbalanced"
+    # A bad exclude pattern never excludes (fails open on that one entry,
+    # not closed) but a good one alongside it still does.
+    assert HOOK.project_allowed("app", [], ["scratch", bad]) is True
+    assert HOOK.project_allowed("scratch", [], ["scratch", bad]) is False
+    # Same for a bad !-exclude inside ``projects``.
+    assert HOOK.project_allowed("secret", [f"!{bad}"], []) is True
+    # And for a bad plain include: it just never matches, same as any
+    # other pattern that doesn't -- an unrelated good include still works.
+    assert HOOK.project_allowed("client-a", [bad, "client-a"], []) is True
+    assert HOOK.project_allowed("client-b", [bad], []) is False
 
 
 def test_capture_past_its_end_adds_nothing(tmp_path):

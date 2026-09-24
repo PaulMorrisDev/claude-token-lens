@@ -74,6 +74,14 @@ def test_model_tier_cards_merge_into_one_with_a_change_per_agent_type():
     assert reviewer.target == "agent" and reviewer.scope == "repo" and not reviewer.new_agent_file
     assert main.target == "settings" and main.key == "model"
     assert builtin.new_agent_file
+    # PROF-02: an agent-level change has no session-only path (unlike a
+    # settings change, which --launch can scope to one session), so it's
+    # labelled persistent and given the plain saving figure -- no "At
+    # most" session-ceiling framing, unlike the top-level change.
+    assert reviewer.note == "Persistent: affects every task this agent runs, not just one session."
+    assert reviewer.saving and not reviewer.saving.startswith("At most")
+    assert main.note == "This changes the model for your main session in every project."
+    assert main.saving.startswith("At most")
     assert tier[0].saving_usd == 90.0
     assert tier[0].estimated_saving.startswith("At most 90.00 USD")
     fixes.attach_fixes(tier)
@@ -348,13 +356,13 @@ def test_model_tier_leaves_out_an_agent_whose_runs_said_they_needed_a_larger_mod
         ]
     )
     runs = [habits.AgentFact(session_id="s", agent_type="reviewer", week="", cost=1.0, fit=fit)
-            for fit in ("larger", "larger", "smaller")]
+            for fit in ("larger", "larger", "larger", "smaller", "smaller")]
     report.sections.append(habits.section_from(habits.Habits(agents=runs)))
     snap = Snapshot(path=None, ts="2026-09-20T00:00:00Z", data={"agents": {}})
     (tier,) = [r for r in advice.finish([_tier("reviewer"), _tier("implementer")], report, snap, Units())
                if r.id == "model-tier"]
     assert [c.agent for c in tier.changes] == ["implementer"]
-    assert "Left out: reviewer (Claude said 2 of its runs needed a larger model)." in tier.why
+    assert "Left out: reviewer (Claude said 3 of its runs needed a larger model)." in tier.why
 
 
 def test_effort_mismatch_from_reported_work_is_explained_as_measured():
@@ -381,3 +389,28 @@ def test_effort_mismatch_from_reported_work_is_explained_as_measured():
     )
     assert out.changes[0].key == "effortLevel" and out.changes[0].value == "medium"
     assert out.estimated_saving.startswith("About ")
+
+
+def test_effort_mismatch_change_keeps_the_recommendations_own_scope():
+    # COV-01: every _EXPLAIN entry used to flatten anything but "managed"
+    # down to "user" (`scope="managed" if rec.scope == "managed" else
+    # "user"`), silently dropping a "project-local"/"repo" scope
+    # recommend.py had already worked out. _advice_scope should carry it
+    # through unchanged (aside from the compaction_sim.py "project" ->
+    # "repo" alias, exercised elsewhere).
+    rec = Recommendation(
+        id="effort-mismatch",
+        severity="advice",
+        category="settings",
+        title="x",
+        lever="effortLevel",
+        scope="project-local",
+        evidence=[
+            ("Easy messages at high effort", 6, "habits.habits_effort_fit", "easy:high"),
+        ],
+    )
+    report = ReportModel(meta=ReportMeta(pricing=PricingMeta(coverage_pct=100.0)), sections=[],
+                         diagnostics=Diagnostics(lines=1000))
+    snap = Snapshot(path=None, ts="2026-09-20T00:00:00Z", data={"effective": {}})
+    (out,) = [r for r in advice.finish([rec], report, snap, Units()) if r.id == "effort-mismatch"]
+    assert out.changes[0].scope == "project-local"

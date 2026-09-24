@@ -6,12 +6,12 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 
-from claude_token_lens import capture, capture_catalogue as catalogue, capture_view
+from claude_token_lens import capture, capture_catalogue as catalogue, capture_view, habits
 from claude_token_lens.config import CaptureConfig
 from claude_token_lens.hook_health import CaptureHookHealth, HookSpec
 from claude_token_lens.units import Units
 
-from helpers import assert_privacy
+from helpers import assert_privacy, elasticity_with_slope
 
 API = Units(billing_mode="api")
 
@@ -57,8 +57,8 @@ def _on(**kw) -> CaptureConfig:
     return CaptureConfig(level="essentials", enabled_at="2026-09-20T10:00:00+00:00", **kw)
 
 
-def _use(**kw) -> capture.CaptureUsage:
-    use = capture.CaptureUsage(since="2026-09-20T10:00:00+00:00", sessions=4, subagents=6, spend=10.0, **kw)
+def _use(*, sessions: int = 4, **kw) -> capture.CaptureUsage:
+    use = capture.CaptureUsage(since="2026-09-20T10:00:00+00:00", sessions=sessions, subagents=6, spend=10.0, **kw)
     use._add("main", note_chars=4000, note_cost=0.02, tag_chars=400, tag_cost=0.01)
     use.by_metric = {"task": 0.012, "result": 0.004}
     return use
@@ -85,6 +85,88 @@ def test_on_notes_low_coverage_enough_data_and_expiry():
     assert any(note.startswith("Its end time (2026-09-21 00:00) has passed") for note in notes)
     assert any("tagged only 20.0% of your messages" in note for note in notes)
     assert any(note.startswith("Enough collected for every metric on") for note in notes)
+
+
+# -- CAP-7: a specific step-down command once its evidence is ready ---------
+
+
+def test_step_down_note_names_the_specific_command_once_its_dropped_metrics_are_ready():
+    dropped = [
+        i for i in catalogue.level_metrics("standard")
+        if i not in catalogue.level_metrics("essentials")
+    ]
+    assert dropped  # sanity: standard really does add something over essentials
+    use = _use(cycles=30, tagged_cycles=30)
+    use.answers = {i: capture.enough_target(i) for i in dropped}
+    capture_config = CaptureConfig(level="standard", enabled_at="2026-09-20T10:00:00+00:00")
+    data = capture_view.view(capture_config, units=API, use=use)
+    notes = data["banner"]["notes"]
+    step = [n for n in notes if n.startswith("Every metric Standard adds over Essentials has enough collected (")]
+    assert len(step) == 1
+    # What changes, where, the trade-off and the undo -- a command, never an apply.
+    assert all(i in step[0] for i in dropped)
+    assert "stops collecting them" in step[0]
+    assert "[capture] level in Token Lens's config.toml" in step[0] and "settings.json" in step[0]
+    assert (
+        "'claude-token-lens capture level essentials --dry-run' shows what stepping down would change and writes "
+        "nothing; 'claude-token-lens capture level standard' undoes it."
+    ) in step[0]
+    # The specific command replaces the generic "lower the level" note, not both at once.
+    assert not any(note.startswith("Enough collected for every metric on") for note in notes)
+
+
+def test_step_down_note_is_none_below_essentials_or_when_not_every_dropped_metric_is_ready():
+    dropped = [
+        i for i in catalogue.level_metrics("standard")
+        if i not in catalogue.level_metrics("essentials")
+    ]
+    use = _use(cycles=30, tagged_cycles=30)
+    use.answers = {i: capture.enough_target(i) for i in dropped[:-1]}  # the last one is short
+    data = capture_view.view(
+        CaptureConfig(level="standard", enabled_at="2026-09-20T10:00:00+00:00"), units=API, use=use
+    )
+    assert not any("shows what stepping down would change" in n for n in data["banner"]["notes"])
+    # essentials has no lower step in the ladder at all (free asks Claude nothing).
+    essentials_use = _use(cycles=30, tagged_cycles=30)
+    essentials_use.answers = {m: 1000 for m in catalogue.level_metrics("essentials")}
+    essentials_data = capture_view.view(_on(), units=API, use=essentials_use)
+    assert not any("shows what stepping down would change" in n for n in essentials_data["banner"]["notes"])
+    assert any(
+        note.startswith("Enough collected for every metric on") for note in essentials_data["banner"]["notes"]
+    )
+
+
+# -- CAP-5 (gap 4): what each metric is worth ------------------------------
+
+
+def test_worth_table_prices_each_asked_metric_a_week_against_what_it_feeds():
+    now = datetime(2026, 10, 4, 10, tzinfo=timezone.utc)  # 2 weeks after enabled_at
+    data = capture_view.view(_on(), units=API, use=_use(sessions=habits.MIN_GROUP), now=now)
+    worth = {row["id"]: row for row in data["worth"]}
+    assert worth["task"]["usd"] == 0.012 / 2
+    assert worth["task"]["feeds"] == [catalogue.THEMES.get(p, p) for p in catalogue.METRICS_BY_ID["task"].powers]
+    assert worth["result"]["usd"] == 0.004 / 2
+    # Sorted priciest first.
+    assert [row["id"] for row in data["worth"]] == ["task", "result"]
+    # A metric that's on but never measured a dollar (or off, or derived,
+    # like "found") doesn't show up.
+    assert "session_end" not in worth
+
+
+def test_worth_table_is_empty_without_a_start_time_or_before_capture_is_on():
+    assert capture_view.view(CaptureConfig(), units=API)["worth"] == []
+    assert capture_view.view(_on(), units=API)["worth"] == []  # no `use` passed
+
+
+def test_worth_table_is_empty_below_min_group_sessions_with_notes():
+    """SURV-8: a metric-worth table built from a handful of sessions is
+    noise, not a trend -- the same ``habits.MIN_GROUP`` gate other
+    small-sample tables use. ``_use()``'s default ``sessions=4`` is one
+    short of ``habits.MIN_GROUP`` (5)."""
+    now = datetime(2026, 10, 4, 10, tzinfo=timezone.utc)
+    data = capture_view.view(_on(), units=API, use=_use(), now=now)
+    assert data["worth"] == []
+    assert data["worth_min_sessions"] == habits.MIN_GROUP
 
 
 # -- capture ROI: what it costs against what depends on it -----------------
@@ -117,6 +199,22 @@ def test_roi_adds_no_banner_note_when_nothing_was_spent():
     data = capture_view.view(_on(), units=API, use=_use(), weekly_cost=0.0, dependent_value=None)
     assert data["roi"]["cost"]["usd"] == 0.0
     assert not any("Capture cost about" in note for note in data["banner"]["notes"])
+
+
+def test_roi_banner_has_no_bare_dollar_or_doubled_about_or_doubled_weekly_under_a_subscription():
+    """UX-2 / finding F3: a subscription's ROI banner note must route
+    through Units, never a bare "$", never double "about" (the "about"
+    manually prepended in ``_banner`` used to collide with a subscription
+    share's own "about X% of your weekly usage limit"), and never say
+    "...weekly usage limit a week" (the roi cost/value used to keep the
+    "a week" period suffix even once the primary text already read as a
+    share of the *weekly* usage limit)."""
+    subscription = Units(billing_mode="subscription", elasticity=elasticity_with_slope())
+    data = capture_view.view(_on(), units=subscription, use=_use(), weekly_cost=2.0, dependent_value=5.0)
+    note = next(n for n in data["banner"]["notes"] if n.startswith("Capture cost"))
+    assert "$" not in note
+    assert "about about" not in note.lower()
+    assert "usage limit a week" not in note.lower()
 
 
 def test_on_with_no_notes_seen_says_the_hook_may_be_blocked():
@@ -168,7 +266,7 @@ def test_change_commands():
     assert capture_view.change_commands(before, {"level": "deep"}) == ["claude-token-lens capture level deep"]
     assert capture_view.change_commands(before, {"metrics": ["task", "fit"]}) == [
         "claude-token-lens capture enable fit",
-        "claude-token-lens capture disable brief level shift retry session_end waits permissions",
+        "claude-token-lens capture disable brief level shift retry session_end waits permissions turn_signals",
     ]
     assert capture_view.change_commands(before, {"feedback": ["feedback_note"], "sample": 50}) == [
         "claude-token-lens capture enable feedback_note",

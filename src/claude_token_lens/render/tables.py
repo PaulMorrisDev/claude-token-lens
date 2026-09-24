@@ -29,6 +29,7 @@ import typing
 
 if typing.TYPE_CHECKING:
     from ..model import ReportModel
+    from ..units import Units
 
 _KINDS = ("str", "int", "float", "pct", "money", "tokens", "secs")
 
@@ -51,7 +52,7 @@ def _format_secs(value: float) -> str:
     return sign + " ".join(parts)
 
 
-def format_cell(value, kind: str, currency: str = "USD") -> str:
+def format_cell(value, kind: str, currency: str = "USD", units: "Units | None" = None) -> str:
     """Render ``value`` as display text for a table column of the given
     ``kind``.
 
@@ -65,7 +66,14 @@ def format_cell(value, kind: str, currency: str = "USD") -> str:
     - float: thousands separators, 2 decimal places.
     - pct: 1 decimal place with a trailing ``%``, e.g. ``12.3%``.
     - money: 2 decimal places with a trailing currency code,
-      e.g. ``12.34 USD``.
+      e.g. ``12.34 USD`` -- or, when ``units`` is given (the hard
+      constraint: amounts follow the billing mode, ``units.Units.money``),
+      that amount phrased for the billing mode: a Pro/Max share of the
+      weekly usage limit with its list-price equivalent alongside, or the
+      plain currency-suffixed figure for API billing. ``currency`` is
+      only the fallback used when ``units`` is absent or the value isn't
+      phraseable (zero, negative or non-finite -- ``units.money`` returns
+      ``None`` for those, and a table cell still has to show something).
     - tokens: integers with thousands separators, e.g. ``12,345``.
     - secs: compact duration, e.g. ``1m 23s``.
     """
@@ -89,6 +97,10 @@ def format_cell(value, kind: str, currency: str = "USD") -> str:
     if kind == "pct":
         return f"{float(value):.1f}%"
     if kind == "money":
+        if units is not None:
+            amount = units.money(float(value))
+            if amount is not None:
+                return amount.text()
         return f"{float(value):,.2f} {currency}"
     if kind == "tokens":
         return f"{int(round(float(value))):,}"
@@ -140,14 +152,16 @@ def resolve_evidence_column_kind(model: "ReportModel", source_table: str, row_ke
     return "str"
 
 
-def format_evidence_value(model: "ReportModel", value, source_table: str, row_key, currency: str = "USD") -> str:
+def format_evidence_value(
+    model: "ReportModel", value, source_table: str, row_key, currency: str = "USD", units: "Units | None" = None
+) -> str:
     """Render one ``Recommendation.evidence`` value exactly as it reads in
     its home table: resolve the cited column's ``kind`` (see
     :func:`resolve_evidence_column_kind`) and format ``value`` through
     :func:`format_cell` with it.
     """
     kind = resolve_evidence_column_kind(model, source_table, row_key, value)
-    return format_cell(value, kind, currency)
+    return format_cell(value, kind, currency, units)
 
 
 #: ``Recommendation.severity`` and ``.scope`` in plain words; app.js keeps
@@ -188,7 +202,7 @@ def evidence_source(model: "ReportModel", source_table: str, row_key) -> str:
     return f"from {source_table}, {row_key}"
 
 
-def display_cell(value, column, table, currency: str = "USD") -> str:
+def display_cell(value, column, table, currency: str = "USD", units: "Units | None" = None) -> str:
     """``format_cell`` plus the table's display labels
     (``Table.value_labels``, e.g. "top-level" -> "Main session"). Only
     the Markdown and HTML renderers use this: JSON and CSV keep the raw
@@ -196,19 +210,19 @@ def display_cell(value, column, table, currency: str = "USD") -> str:
     labels = getattr(table, "value_labels", None) or {}
     if isinstance(value, str) and value in labels:
         return labels[value]
-    return format_cell(value, column.kind, currency)
+    return format_cell(value, column.kind, currency, units)
 
 
-def display_row(row, table, currency: str = "USD") -> list[str]:
+def display_row(row, table, currency: str = "USD", units: "Units | None" = None) -> list[str]:
     """:func:`display_cell` for a whole row, using ``Table.row_kinds``
     for the row's "str"-kind cells when it names the row."""
     row_kind = table.row_kinds.get(row[0]) if row and isinstance(row[0], str) else None
     out = []
     for i, (value, column) in enumerate(zip(row, table.columns)):
         if row_kind and i > 0 and column.kind == "str" and isinstance(value, (int, float)) and not isinstance(value, bool):
-            out.append(format_cell(value, row_kind, currency))
+            out.append(format_cell(value, row_kind, currency, units))
         else:
-            out.append(display_cell(value, column, table, currency))
+            out.append(display_cell(value, column, table, currency, units))
     return out
 
 

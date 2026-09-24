@@ -20,16 +20,24 @@ connect``):
   counts as one too.
 - ``SubagentStart``: the subagent note, at every depth.
 - ``PostToolUse``: a one-line note after a large tool result or a web
-  result, for the Deep level. Claude Code ignores what a background
-  hook prints, so this entry runs in the foreground, matched only to
-  tools whose results can be large, and returns at once for the rest.
-- ``SessionEnd``, ``Notification`` and ``PermissionRequest`` (the last
-  two async): one line each in ``<config-dir>/signals/YYYY-MM.jsonl``
-  saying why a session ended, what Claude waited for, or which tool
-  asked for permission. A line holds the time, a salted hash of the
+  result, for the Deep level. An async hook's ``additionalContext``
+  does reach Claude (docs/en/hooks.md), but only on the next
+  conversation turn -- a full reply late for a note about the result
+  Claude just saw -- so this entry runs in the foreground instead,
+  matched only to tools whose results can be large, and returns at once
+  for the rest.
+- ``SessionEnd``, ``Notification``, ``PermissionRequest``, ``Stop`` and
+  ``StopFailure`` (all but ``SessionEnd`` async): one line each in
+  ``<config-dir>/signals/YYYY-MM.jsonl`` saying why a session ended, what
+  Claude waited for, which tool asked for permission, whether a turn
+  ended normally or the Stop hook was asked again, or the kind of API
+  error that ended one. A line holds the time, a salted hash of the
   session id, and a word from a fixed list or a tool name; never a
-  message, a tool's input or a path. Nothing is logged until Token Lens
-  has made its salt.
+  message, a tool's input, a path, ``last_assistant_message``,
+  ``error_details`` or a cron's ``prompt``. ``Stop`` fires on every turn,
+  so only a sample of its calls is logged (:data:`_TURN_SAMPLE_PCT`);
+  ``StopFailure`` is rare enough that every one is kept. Nothing is
+  logged until Token Lens has made its salt.
 
 What the note says comes from ``capture-catalogue.json`` next to this
 script, written from ``claude_token_lens.capture_catalogue``;
@@ -52,7 +60,6 @@ import json
 import os
 import re
 import sys
-import tomllib
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -72,11 +79,43 @@ SALT_FILE = "salt"
 _SALT_BYTES = 32
 
 #: The short event names in a signal line.
-_SIGNAL_CODES = {"SessionEnd": "end", "Notification": "wait", "PermissionRequest": "perm"}
+_SIGNAL_CODES = {
+    "SessionEnd": "end",
+    "Notification": "wait",
+    "PermissionRequest": "perm",
+    "Stop": "turn",
+    "StopFailure": "fail",
+}
+
+#: Stop fires on every turn (unlike SessionEnd/Notification/
+#: PermissionRequest, which are comparatively rare), and only the
+#: aggregate rate of normal-vs-reentrant turns is of any use, so only
+#: this share of Stop calls is logged -- independent of, and on top of,
+#: the session-level ``capture.sample`` that ``_capture_for`` already
+#: applies. StopFailure is not sampled: a failed turn is rare and worth
+#: keeping every time.
+_TURN_SAMPLE_PCT = 10
 
 #: Notification types (and, for older Claude Code versions without them,
-#: the start of the message) -> what Claude waited for.
-_WAIT_TYPES = {"permission_prompt": "permission", "idle_prompt": "idle", "elicitation_dialog": "question"}
+#: the start of the message) -> what Claude waited for. The full list
+#: (SIG-1, curl-verified against docs/en/hooks.md) is
+#: ``permission_prompt``, ``idle_prompt``, ``auth_success``,
+#: ``elicitation_dialog``, ``elicitation_url_dialog``,
+#: ``elicitation_complete``, ``elicitation_response``,
+#: ``agent_needs_input``, ``agent_completed``, ``quota_auto_resume_fired``,
+#: ``quota_auto_resume_stale``, ``quota_auto_resume_disabled``; anything
+#: not mapped here (a completion notice, not a wait, or a type newer
+#: than this list) reads as "other".
+_WAIT_TYPES = {
+    "permission_prompt": "permission",
+    "idle_prompt": "idle",
+    "elicitation_dialog": "question",
+    "elicitation_url_dialog": "question",
+    "agent_needs_input": "agent",
+    "quota_auto_resume_fired": "quota",
+    "quota_auto_resume_stale": "quota",
+    "quota_auto_resume_disabled": "quota",
+}
 _WAIT_MESSAGES = (("Claude needs your permission", "permission"), ("Claude is waiting for your input", "idle"))
 
 #: What a tool name may look like to be logged; anything else is "other".
@@ -98,7 +137,15 @@ def load_catalogue(path: Path | None = None) -> dict:
 
 
 def load_config(config_dir: Path) -> dict:
-    """``config.toml`` as a dict (``{}`` when there is none)."""
+    """``config.toml`` as a dict (``{}`` when there is none, or on a
+    Python older than 3.11, which has no ``tomllib`` at all -- ROB-P8:
+    the import lives here, inside ``main``'s catch-everything, rather
+    than at module level, where it would raise before ``main`` ever
+    runs and break the "always exits 0" contract)."""
+    try:
+        import tomllib
+    except ImportError:
+        return {}
     try:
         text = (config_dir / "config.toml").read_text(encoding="utf-8")
     except FileNotFoundError:
@@ -126,18 +173,33 @@ def sampled_in(session_id: str, sample: int) -> bool:
     return bucket < sample
 
 
+def _pattern_matches(pattern: str, slug: str) -> bool:
+    """``re.search(pattern, slug, re.IGNORECASE)``, treating a malformed
+    ``pattern`` as simply not matching (SEC-P5) rather than raising --
+    ``main`` swallows every error and exits 0 regardless, so an
+    unguarded ``re.error`` here didn't crash anything, but it took the
+    *whole* hook call down with it (no note for the whole session, not
+    just this one bad pattern), the same "one bad pattern shouldn't cost
+    you the rest of the list" posture ``discovery.resolve_project_dirs``
+    and ``corpus._filter_excluded_dirs`` already take."""
+    try:
+        return bool(re.search(pattern, slug, re.IGNORECASE))
+    except re.error:
+        return False
+
+
 def project_allowed(slug: str, projects: list, exclude_projects: list) -> bool:
     """``projects`` holds slug patterns capture runs in, and ``!pattern``
     ones it skips; an empty list means every project. A project Token
     Lens leaves out altogether (``exclude_projects``) is skipped too."""
     for pattern in exclude_projects:
-        if isinstance(pattern, str) and re.search(pattern, slug, re.IGNORECASE):
+        if isinstance(pattern, str) and _pattern_matches(pattern, slug):
             return False
     includes = [p for p in projects if isinstance(p, str) and not p.startswith("!")]
     for pattern in projects:
-        if isinstance(pattern, str) and pattern.startswith("!") and re.search(pattern[1:], slug, re.IGNORECASE):
+        if isinstance(pattern, str) and pattern.startswith("!") and _pattern_matches(pattern[1:], slug):
             return False
-    return not includes or any(re.search(p, slug, re.IGNORECASE) for p in includes)
+    return not includes or any(_pattern_matches(p, slug) for p in includes)
 
 
 def _parse_time(value: str) -> datetime | None:
@@ -184,6 +246,13 @@ def build_note(catalogue: dict, ids, scope: str, agent_type: str = "") -> str:
         return ""
     text = catalogue["text"]
     out = [f"{catalogue['marker']}{catalogue['version']} {','.join(codes)}", text["intro"]]
+    # CAP-1: an extra marked extra_before_tag (feedback_reminder) tells
+    # Claude to end its reply with something too, so it goes before the
+    # tag block, not after -- the tag instruction stays the last thing
+    # the note asks for. Same split as capture_catalogue.note_text.
+    before_tag = [x for m, x in zip(enabled, extras) if x and main and m.get("extra_before_tag")]
+    after_tag = [x for m, x in zip(enabled, extras) if x and not (main and m.get("extra_before_tag"))]
+    out += before_tag
     if any(lines):
         if main:
             out.append(text["main_tag_intro"])
@@ -193,7 +262,7 @@ def build_note(catalogue: dict, ids, scope: str, agent_type: str = "") -> str:
         out += [line for line in lines if line]
         if main:
             out.append(text["skip_key_line"])
-    out += [x for x in extras if x]
+    out += after_tag
     return "\n".join(out)
 
 
@@ -204,23 +273,31 @@ def build_tool_note(catalogue: dict, metric_id: str) -> str:
     return f"{catalogue['marker']}{catalogue['version']} {metric_id}\n{metric['tool_note']}"
 
 
-def _result_chars(response) -> int:
-    if isinstance(response, str):
-        return len(response)
-    try:
-        return len(json.dumps(response, ensure_ascii=False))
-    except (TypeError, ValueError):
-        return 0
-
-
 def _in_subagent(payload: dict) -> bool:
     """Whether a SessionStart comes from a subagent's compaction. It
-    carries no agent fields today, only the transcript it belongs to,
-    which sits in the session's ``subagents`` folder."""
+    carries no agent fields today, only the transcript it belongs to.
+
+    A subagent transcript always sits somewhere under the session's
+    ``subagents`` folder -- directly, for an ordinary subagent
+    (``subagents/agent-<hex>.jsonl``), or one level deeper for a
+    workflow-nested one (``subagents/workflows/<run_id>/agent-<hex>.jsonl``
+    -- see ``discovery.py``'s module docstring for why that shape
+    exists), so this checks every ancestor directory (SURV-2), not just
+    the immediate parent as before -- the workflow-nested shape's
+    immediate parent is the run id, never literally ``subagents``. The
+    filename itself (``agent-*.jsonl``, the same glob
+    ``discovery.find_subagents`` globs by) is a second, independent
+    signal, for a transcript path shape this doesn't otherwise recognise.
+    """
     if payload.get("agent_id"):
         return True
     transcript = payload.get("transcript_path")
-    return isinstance(transcript, str) and Path(transcript.replace("\\", "/")).parent.name == "subagents"
+    if not isinstance(transcript, str):
+        return False
+    path = Path(transcript.replace("\\", "/"))
+    if path.name.startswith("agent-") and path.name.endswith(".jsonl"):
+        return True
+    return "subagents" in path.parent.parts
 
 
 def _capture_for(payload: dict, config: dict, now: datetime) -> dict | None:
@@ -245,8 +322,12 @@ def _capture_for(payload: dict, config: dict, now: datetime) -> dict | None:
     return capture
 
 
-def note_for(payload: dict, config: dict, catalogue: dict, now: datetime | None = None) -> str:
-    """The note this hook call should add, or ``""``."""
+def note_for(payload: dict, config: dict, catalogue: dict, now: datetime | None = None, raw_len: int = 0) -> str:
+    """The note this hook call should add, or ``""``. ``raw_len`` (ROB-P8)
+    is the length of the whole stdin payload as Claude Code sent it: a
+    cheap stand-in for the tool result's own size that costs no extra
+    JSON re-encoding, close enough for a threshold this coarse (the
+    result is normally most of the payload)."""
     capture = _capture_for(payload, config, now or datetime.now(timezone.utc))
     if capture is None:
         return ""
@@ -260,11 +341,8 @@ def note_for(payload: dict, config: dict, catalogue: dict, now: datetime | None 
             return ""
         return build_note(catalogue, ids, "subagent" if _in_subagent(payload) else "main", agent_type)
     if event == "PostToolUse":
-        tool = payload.get("tool_name")
-        if "web" in ids and tool in catalogue["web_tools"]:
-            return build_tool_note(catalogue, "web")
         threshold = catalogue["big_output_tokens"] * _CHARS_PER_TOKEN
-        if "big_output" in ids and _result_chars(payload.get("tool_response")) >= threshold:
+        if "big_output" in ids and raw_len >= threshold:
             return build_tool_note(catalogue, "big_output")
     return ""
 
@@ -285,6 +363,20 @@ def session_hash(salt: bytes, session_id: str) -> str:
     return hmac.new(salt, session_id.encode("utf-8"), hashlib.sha256).hexdigest()[:16]
 
 
+def _turn_sampled(session_id: str, now: datetime, pct: int) -> bool:
+    """Whether this particular Stop call is in the sampled share -- the
+    same hash-modulo shape as :func:`sampled_in`, but keyed by the call's
+    own timestamp too (not just the session id), so it varies turn to
+    turn within one session instead of being all-or-nothing for it."""
+    if pct >= 100:
+        return True
+    if pct <= 0:
+        return False
+    key = f"{session_id}:{now.isoformat()}"
+    bucket = int(hashlib.sha256(key.encode("utf-8")).hexdigest()[:8], 16) % 100
+    return bucket < pct
+
+
 def _wait_kind(payload: dict) -> str:
     notification_type = payload.get("notification_type")
     if notification_type:
@@ -298,8 +390,15 @@ def _wait_kind(payload: dict) -> str:
 
 
 def signal_for(payload: dict, config: dict, catalogue: dict, salt: bytes | None, now: datetime | None = None) -> dict | None:
-    """The line to log for a SessionEnd, Notification or PermissionRequest
-    call, or ``None`` when its metric is off or there's no salt."""
+    """The line to log for a SessionEnd, Notification, PermissionRequest,
+    Stop or StopFailure call, or ``None`` when its metric is off, there's
+    no salt, or (Stop only) this call fell outside the turn sample.
+
+    Reads only ``payload["reason"]``/``notification_type"]``/
+    ``message"]``/``tool_name"]``/``stop_hook_active"]``/``error"]`` --
+    never ``last_assistant_message``, ``error_details`` or a
+    ``session_crons`` entry's ``prompt``, so none of those free-text
+    fields can ever reach a signal line."""
     event = payload.get("hook_event_name")
     metric = catalogue["signal_events"].get(event) if isinstance(event, str) else None
     session_id = payload.get("session_id")
@@ -309,15 +408,22 @@ def signal_for(payload: dict, config: dict, catalogue: dict, salt: bytes | None,
     capture = _capture_for(payload, config, now)
     if capture is None or metric not in active_ids(catalogue, capture):
         return None
+    if event == "Stop" and not _turn_sampled(session_id, now, _TURN_SAMPLE_PCT):
+        return None
     record = {"ts": now.strftime("%Y-%m-%dT%H:%M:%SZ"), "sid": session_hash(salt, session_id), "e": _SIGNAL_CODES[event]}
     if event == "SessionEnd":
         reason = payload.get("reason")
         record["reason"] = reason if reason in catalogue["session_end_reasons"] else "other"
     elif event == "Notification":
         record["kind"] = _wait_kind(payload)
-    else:
+    elif event == "PermissionRequest":
         tool = payload.get("tool_name")
         record["tool"] = tool if isinstance(tool, str) and _TOOL_NAME_RE.fullmatch(tool) else "other"
+    elif event == "Stop":
+        record["state"] = "reentrant" if payload.get("stop_hook_active") else "normal"
+    else:  # StopFailure
+        error = payload.get("error")
+        record["error"] = error if error in catalogue["stop_failure_errors"] else "unknown"
     if payload.get("agent_id"):
         record["sub"] = 1
     return record
@@ -335,23 +441,34 @@ def _run(argv: list[str]) -> None:
     parser = argparse.ArgumentParser(prog="capture-hook.py")
     parser.add_argument("--config-dir", default=None)
     args = parser.parse_args(argv)
-    # Claude Code sends UTF-8 whatever the console's code page is.
+    # Claude Code sends UTF-8 whatever the console's code page is. Read
+    # to the end no matter what: leaving stdin unread on an early return
+    # is the kind of thing that has surprised a caller elsewhere in the
+    # hooks ecosystem, and it costs nothing here.
     raw = sys.stdin.buffer.read().decode("utf-8", errors="replace")
-    payload = json.loads(raw) if raw.strip() else {}
-    if not isinstance(payload, dict):
-        return
+    # ROB-P8: config_dir/config are worked out and checked BEFORE the
+    # payload is parsed. Most calls are on a machine where capture is
+    # off (it is opt-in), so this skips json.loads on the -- sometimes
+    # large -- payload, and load_catalogue()'s own file read, for the
+    # common case, without changing what a call that IS captured sees.
     config_dir = resolve_config_dir(args.config_dir)
     try:
         config = load_config(config_dir)
     except (OSError, ValueError):
         return  # an unreadable or half-written config reads as off
+    capture = config.get("capture")
+    if not isinstance(capture, dict) or capture.get("level", "off") == "off":
+        return
+    payload = json.loads(raw) if raw.strip() else {}
+    if not isinstance(payload, dict):
+        return
     catalogue = load_catalogue()
     if payload.get("hook_event_name") in catalogue["signal_events"]:
         record = signal_for(payload, config, catalogue, read_salt(config_dir))
         if record:
             write_signal(config_dir, catalogue, record)
         return
-    note = note_for(payload, config, catalogue)
+    note = note_for(payload, config, catalogue, raw_len=len(raw))
     if note:
         output = {"hookSpecificOutput": {"hookEventName": payload.get("hook_event_name"), "additionalContext": note}}
         sys.stdout.write(json.dumps(output))

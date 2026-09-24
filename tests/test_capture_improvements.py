@@ -291,6 +291,33 @@ def test_load_or_create_salt_persists_across_calls(tmp_path: Path):
     assert (config_dir / "salt").exists()
 
 
+def test_load_or_create_salt_missing_file_regenerates(tmp_path: Path):
+    """A missing salt file (the common, expected "first use" case) is
+    still treated as "no salt yet" and silently regenerated."""
+    config_dir = tmp_path / "token-lens"
+    salt = parse.load_or_create_salt(config_dir)
+    assert len(salt) == 32
+
+
+def test_load_or_create_salt_other_read_errors_propagate(monkeypatch, tmp_path: Path):
+    """SEC-P8/G7: a read failure that is not "the file doesn't exist"
+    (a permission problem, a dead network mount, ...) must not be folded
+    into the same silent-regenerate path as a missing file -- doing so
+    would rotate the salt on what is usually a transient condition,
+    breaking every session-id hash this tool has already written
+    (signals/, a cache's provenance header) without telling anyone."""
+    config_dir = tmp_path / "token-lens"
+    config_dir.mkdir(parents=True)
+    (config_dir / "salt").write_bytes(b"x" * 32)
+
+    def _boom(self, *a, **k):
+        raise PermissionError("denied")
+
+    monkeypatch.setattr(Path, "read_bytes", _boom)
+    with pytest.raises(PermissionError):
+        parse.load_or_create_salt(config_dir)
+
+
 def test_load_or_create_salt_survives_a_newline_byte(monkeypatch, tmp_path: Path):
     """Regression test for a real (not merely flaky-test) bug: the file
     was opened via ``os.open`` without ``os.O_BINARY``, which on Windows

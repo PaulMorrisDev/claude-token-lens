@@ -9,13 +9,15 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from claude_token_lens import events, parse, quality
+from claude_token_lens import capture_catalogue as catalogue, events, parse, quality
 from claude_token_lens.model import EventKind, TranscriptMeta
 from claude_token_lens.parse import parse_transcript
 from claude_token_lens.pricing import load_pricing
+from claude_token_lens.units import Units
 
 from helpers import (
     attachment_line,
+    elasticity_with_slope,
     queue_operation_line,
     tool_result_block,
     tool_use_block,
@@ -49,6 +51,17 @@ def _parse(tmp_path, lines, name="t.jsonl", **meta):
 def _agent(tmp_path, lines, agent_id="abc", agent_type="Explore"):
     return _parse(tmp_path, lines, f"agent-{agent_id}.jsonl", kind="subagent", agent_id=f"agent-{agent_id}",
                   agent_type=agent_type)
+
+
+def _note(second: int, ids, *, agent_type: str = "") -> dict:
+    """A SubagentStart note (SEC-P2): a ``[result: ...]`` only counts
+    when its own transcript has seen one asking for it."""
+    text = catalogue.note_text(ids, "subagent", agent_type)
+    wrapped = f"<system-reminder>\nSubagentStart hook additional context: {text}\n</system-reminder>"
+    line = attachment_line("hook_additional_context", rendered=wrapped, content=[text], hookName="SubagentStart",
+                           hookEvent="SubagentStart", toolUseID="SubagentStart")
+    line["timestamp"] = _ts(second)
+    return line
 
 
 # -- what the parser keeps ----------------------------------------------------------
@@ -310,6 +323,22 @@ def test_share_text(value, text):
     assert quality.value_text(quality.SIGNAL_BY_KEY["tool_errors"], value) == text
 
 
+def test_value_text_money_unit_has_no_bare_dollar_under_a_subscription():
+    """UX-2: no packaged ``Signal`` currently has ``unit="money"``, but
+    ``value_text``'s money branch is still wired through ``build_section``/
+    ``setup_rows``'s ``money`` callable for defense-in-depth -- this
+    exercises that branch directly against a synthetic money-unit signal,
+    since no real one reaches it today."""
+    money_signal = quality.Signal(
+        key="synthetic_cost", label="Synthetic cost", num=lambda r: 0.0, den=lambda r: 1.0,
+        kind="per_run", worse="higher", scope="all", of="cost", unit="money",
+    )
+    units = Units(billing_mode="subscription", currency="USD", elasticity=elasticity_with_slope())
+    text = quality.value_text(money_signal, 1.23, money=units.money_text)
+    assert "$" not in text
+    assert "about about" not in text.lower()
+
+
 def test_main_only_signals_are_not_compared_for_agents():
     keys = {s.key for s in quality.signals_for("Explore")}
     assert "corrections" not in keys and "unfinished" in keys
@@ -513,12 +542,13 @@ def test_a_brief_starting_with_a_retry_marker_keeps_only_the_reason(tmp_path, te
 ])
 def test_a_reply_ending_with_a_result_marker_keeps_only_the_word(tmp_path, texts, word):
     blocks = [{"type": "text", "text": t} for t in texts]
-    result = _agent(tmp_path, [user_str_line("brief", timestamp=_ts(0)), _reply(1, *blocks)])
+    result = _agent(tmp_path, [_note(0, ["result"]), user_str_line("brief", timestamp=_ts(0)), _reply(1, *blocks)])
     assert result.turns[-1].result_marker == word
 
 
 def test_run_facts_take_the_markers_and_a_blocked_run_did_not_finish(tmp_path):
     result = _agent(tmp_path, [
+        _note(0, ["result"]),
         user_str_line("[retry: tools] run the migration", timestamp=_ts(0)),
         _reply(1, {"type": "text", "text": "Checked the schema."}),
         user_str_line("go on", timestamp=_ts(2)),
@@ -593,7 +623,7 @@ def test_markers_table_counts_who_could_have_written_them_and_what_they_cost(tmp
     pricing = load_pricing()
 
     def agent(name, agent_type, first, last, model="claude-haiku-4-5"):
-        return _parse(tmp_path, [user_str_line(first, timestamp=_ts(0)),
+        return _parse(tmp_path, [_note(0, ["result"], agent_type=agent_type), user_str_line(first, timestamp=_ts(0)),
                                  _reply(1, {"type": "text", "text": last}, model=model)],
                       f"agent-{name}.jsonl", kind="subagent", agent_id=f"agent-{name}", agent_type=agent_type)
 
@@ -632,6 +662,7 @@ def test_marker_cost_is_priced_at_the_writing_turn_fast_mode_included(tmp_path):
         _reply(3, model="claude-opus-5-5"),
     ], "top.jsonl", kind="top-level")
     sub = _parse(tmp_path, [
+        _note(1, ["result"], agent_type="claude-implementer"),
         user_str_line("[retry: brief] write it", timestamp=_ts(1)),
         _reply(2, {"type": "text", "text": "Done.\n[result: done]"}, model="claude-opus-5-5", speed="fast"),
     ], "agent-a1.jsonl", kind="subagent", agent_id="agent-a1", agent_type="claude-implementer", tool_use_id="toolu_A")

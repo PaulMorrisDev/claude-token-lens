@@ -11,9 +11,10 @@ from pathlib import Path
 from claude_token_lens import skills_review
 from claude_token_lens.units import Units
 
-from helpers import attachment_line, write_jsonl
+from helpers import attachment_line, elasticity_with_slope, write_jsonl
 
 UNITS = Units(billing_mode="api", currency="USD")
+SUBSCRIPTION_UNITS = Units(billing_mode="subscription", currency="USD", elasticity=elasticity_with_slope())
 PERIOD = "over the last 30 days"
 
 
@@ -127,6 +128,23 @@ def test_nothing_is_stored_and_markdown_renders(tmp_path):
     assert "## Hide all 2 unused skills from Claude" in markdown
     assert "## dataviz (Built into Claude Code)" in markdown
     assert "never used" in markdown
+
+
+def test_markdown_listing_cost_line_has_no_bare_dollar_or_doubled_about_under_a_subscription(tmp_path):
+    """UX-2 / finding F3: the opening "Skill listings take about N
+    tokens..." line's cost clause must route through Units, never a bare
+    "$", and must not double "about" (a subscription's own share text
+    already opens with "about X% of your weekly usage limit")."""
+    config_dir, project = _setup(tmp_path)
+    data = skills_review.review(
+        config_dir, {"skills": [_usage("dataviz", listed=5), _usage("grill-me", listed=4)]},
+        SUBSCRIPTION_UNITS, PERIOD, projects=[project],
+    )
+    markdown = skills_review.render_markdown(data)
+    opening = markdown.splitlines()[2]  # "# Skills review", "", "Skill listings take about..."
+    assert opening.startswith("Skill listings take about")
+    assert "$" not in opening
+    assert "about about" not in opening.lower()
 
 
 def test_skills_the_settings_already_hide_get_no_fix(tmp_path):

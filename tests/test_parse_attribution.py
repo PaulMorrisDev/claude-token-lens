@@ -12,10 +12,11 @@ directly, so it proves the acceptance criterion end to end.
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 from claude_token_lens.model import EventKind, TranscriptMeta
-from claude_token_lens.parse import parse_transcript
+from claude_token_lens.parse import _escape_newlines, _redact_paths, parse_transcript
 
 from helpers import (
     assert_privacy,
@@ -326,6 +327,103 @@ def test_preceding_cmd_prefix_inherits_redaction(tmp_path: Path):
 
     assert result.turns[1].preceding_cmd_prefix == "cd <path> && pytest"
     assert_privacy(result)
+
+
+# -- H1/ROB-P1: a huge command is capped before redaction, not after. ---
+
+
+def test_cmd_prefix_parses_a_1mb_heredoc_command_fast(tmp_path: Path):
+    # H1: _AT_TOKEN_RE's [^\s"']*@[^\s"']* backtracks quadratically over
+    # a long run with no "@" and no whitespace -- exactly the shape of a
+    # base64 heredoc body. Uncapped, this used to make redaction (and
+    # so parsing) of a single such turn take tens of seconds or worse;
+    # capping the command to 512 characters before _redact_paths ever
+    # sees it bounds that to a constant-size scan regardless of the
+    # command's real length.
+    huge_body = "A" * 1_000_000
+    command = f"cat <<'EOF' > /tmp/out.b64\n{huge_body}\nEOF"
+    lines = [
+        turn_line(
+            message_id="msg_1",
+            content=[tool_use_block("Bash", "tu1", {"command": command})],
+        ),
+    ]
+    path = tmp_path / "session.jsonl"
+    write_jsonl(path, lines)
+
+    start = time.monotonic()
+    result = parse_transcript(path, TranscriptMeta(path=str(path)))
+    elapsed = time.monotonic() - start
+
+    assert elapsed < 1.0, f"parsing a 1MB heredoc command took {elapsed:.2f}s"
+    turn = result.turns[0]
+    assert huge_body not in (turn.cmd_prefix or "")
+    assert len(turn.cmd_prefix or "") <= 40
+    assert_privacy(result)
+
+
+def test_cmd_prefix_capped_redaction_matches_uncapped_on_ordinary_fixtures(tmp_path: Path):
+    # "Matches the uncapped version on fixtures": for any command whose
+    # first 512 characters hold everything relevant to the kept 40-char
+    # prefix -- true of every realistic shell command, where words are
+    # whitespace-separated so the cap only ever drops whole trailing
+    # words far past the 40-char keep boundary -- capping the redaction
+    # input must not change the result at all.
+    fixtures = [
+        "cd C:\\Users\\paulm\\secret_project && ls -la",
+        "cat /home/paulm/.ssh/id_rsa",
+        "cd /home/paulm/project && " + "echo ok && " * 60,
+        "git commit -m \"" + "fix things " * 60 + "\"",
+        "npm test -- " + "--grep pattern " * 60,
+    ]
+    for i, command in enumerate(fixtures):
+        lines = [
+            turn_line(
+                message_id=f"msg_{i}",
+                content=[tool_use_block("Bash", f"tu{i}", {"command": command})],
+            ),
+        ]
+        path = tmp_path / f"session_{i}.jsonl"
+        write_jsonl(path, lines)
+
+        result = parse_transcript(path, TranscriptMeta(path=str(path)))
+        capped_prefix = result.turns[0].cmd_prefix
+
+        uncapped_prefix = _redact_paths(_escape_newlines(command))[:40]
+        assert capped_prefix == uncapped_prefix, (command, capped_prefix, uncapped_prefix)
+        assert_privacy(result)
+
+
+def test_cmd_prefix_cut_boundary_never_leaves_an_unredacted_fragment(tmp_path: Path):
+    # A pathological command where the one sensitive token starts early
+    # but runs unbroken (no whitespace) past the 512-character cap: the
+    # whole-token-safe cut drops it entirely rather than keep a raw,
+    # un-redacted fragment of it. This is a deliberate divergence from
+    # the uncapped result (which would have collapsed the whole token to
+    # a placeholder like "<path>"/"<url>"/"<user@host>") in favour of the
+    # safer outcome -- nothing sensitive ever appears in cmd_prefix
+    # either way.
+    commands = [
+        "cat /tmp/" + "x" * 600,
+        "curl https://x.example/a?token=" + "t" * 600,
+        "ssh paulm@build-host-" + "x" * 550 + ".example.internal",
+    ]
+    for i, command in enumerate(commands):
+        lines = [
+            turn_line(
+                message_id=f"msg_{i}",
+                content=[tool_use_block("Bash", f"tu{i}", {"command": command})],
+            ),
+        ]
+        path = tmp_path / f"session_{i}.jsonl"
+        write_jsonl(path, lines)
+
+        result = parse_transcript(path, TranscriptMeta(path=str(path)))
+        turn = result.turns[0]
+        assert "x" * 550 not in (turn.cmd_prefix or "")
+        assert "t" * 550 not in (turn.cmd_prefix or "")
+        assert "paulm@" not in (turn.cmd_prefix or "")
+        assert_privacy(result)
 
 
 # -- Task 8: agent-setting/mode values and attachment_catch_all counters. --

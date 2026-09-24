@@ -783,13 +783,17 @@ def test_ask_capture_until_answers_file_false_applies_the_default_box_without_as
     assert out.getvalue() == ""
 
 
-def test_ask_capture_until_non_interactive_without_an_answer_leaves_until_untouched():
-    # Assumption: keeps today's behaviour (no time-box) rather than
-    # silently adopting the new default -- see onboarding.ask_capture_until's
-    # own docstring and the cli.py --capture-no-limit flag help text.
+def test_ask_capture_until_non_interactive_without_an_answer_applies_the_default_box():
+    # CAP-8: a scripted/unattended init is exactly the case the default
+    # most needs to reach -- capture left running forever with nobody
+    # watching is the failure mode this question exists to prevent, not
+    # a surprise end date. This reverses the tool's earlier assumption
+    # (leave `until` untouched under --non-interactive with no answer);
+    # it now follows the same "no answer -> the derived default, and a
+    # note says so" rule every other onboarding question already uses.
     until, notes = onboarding.ask_capture_until(now=_NOW, non_interactive=True, stdout=io.StringIO())
-    assert until is None
-    assert notes and "capture_no_limit: not given in --answers" in notes[0]
+    assert until == "2026-10-08T06:00:00+00:00"
+    assert notes and "capture_no_limit: not given in --answers; used default 'n'" in notes[0]
 
 
 def test_ask_capture_until_non_interactive_with_a_preset_needs_no_stdin():

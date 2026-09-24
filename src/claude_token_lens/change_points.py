@@ -7,6 +7,14 @@ Each change to metrics capture (``capture-log.jsonl``, written by
 ``config.set_capture``) is one too: it changes what Claude writes and
 what it costs.
 
+EST-P9: when a corpus is on hand (``change_points(config_dir, corpus)``),
+a session's transcript can show a change nothing else caught -- a
+CLAUDE.md or memory size change of :data:`CLAUDE_MD_CHANGE_PCT` percent
+or more, or the dominant model or effort level shifting -- between one
+session and the next in the same project. These are ``source
+"transcript"`` points, timestamped at the first session that shows the
+new value.
+
 Used for the "Since my last change" window and for the before-and-after
 comparison in :mod:`impact`. Reads ``<config_dir>/backups/*/manifest.json``,
 ``<config_dir>/snapshots/`` and ``<config_dir>/capture-log.jsonl``;
@@ -16,6 +24,7 @@ writes nothing.
 from __future__ import annotations
 
 import json
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -23,10 +32,14 @@ from pathlib import Path
 from . import capture_catalogue
 from . import config as config_mod
 from . import snapshots as snapshots_mod
+from .model import EventKind
 from .profiles import apply as apply_mod
 from .profiles.frontmatter import parse_frontmatter
 
 _TS_FORMAT = "%Y%m%dT%H%M%SZ"
+#: A CLAUDE.md/memory size change at least this big (either way, from one
+#: session to the next in the same project) is a change point (EST-P9).
+CLAUDE_MD_CHANGE_PCT = 10.0
 
 #: Snapshot sections whose change is a change to how Claude Code runs.
 #: ``env_names`` (which variables are set, not their values) and
@@ -37,7 +50,7 @@ _BEHAVIOUR_PREFIXES = ("effective.", "agents.", "user_settings.", "project_setti
 @dataclass(slots=True)
 class ChangePoint:
     ts: datetime
-    #: "apply", "revert", "config" or "capture".
+    #: "apply", "revert", "config", "capture" or "transcript".
     source: str
     label: str
     #: Settings keys that changed, as ``key`` or ``agent: key``, when known.
@@ -252,9 +265,130 @@ def _capture_points(config_dir: Path) -> list[ChangePoint]:
     return points
 
 
-def change_points(config_dir: Path | str) -> list[ChangePoint]:
+# -- EST-P9: change points a transcript itself shows -----------------------
+
+
+def _dominant(values) -> str:
+    """The most common non-empty value (mirrors quality.py's own
+    ``_dominant``, duplicated here since a session's dominant model/effort
+    isn't otherwise available without a full ``quality.Run``)."""
+    counts = Counter(v for v in values if v)
+    return counts.most_common(1)[0][0] if counts else ""
+
+
+def _priced_turns(top) -> list:
+    return [turn for turn in top.turns if turn.turn_index > 0]
+
+
+def _claude_md_chars(top) -> int:
+    """CLAUDE.md/memory characters injected before this session's first
+    priced turn (CONTEXT_INJECT events, subkind "instructions" or
+    "nested_memory") -- the same events context_budget.py's startup
+    accounting counts, duplicated minimally here since EST-P9 only needs
+    the total, not the per-source breakdown."""
+    turns = _priced_turns(top)
+    first_ts = _parse_iso(turns[0].ts) if turns else None
+    total = 0
+    for event in top.events:
+        if event.kind != EventKind.CONTEXT_INJECT or event.subkind not in ("instructions", "nested_memory"):
+            continue
+        if first_ts is not None:
+            event_ts = _parse_iso(event.ts)
+            if event_ts is not None and event_ts >= first_ts:
+                continue
+        total += event.size_chars or 0
+    return total
+
+
+@dataclass(slots=True)
+class _SessionSignature:
+    start: datetime
+    project: str
+    claude_md_chars: int
+    model: str
+    effort: str
+
+
+def _session_signature(bundle) -> _SessionSignature | None:
+    top = bundle.top
+    if top is None:
+        return None
+    turns = _priced_turns(top)
+    start = next((t for t in (_parse_iso(turn.ts) for turn in turns) if t is not None), None)
+    if start is None:
+        return None
+    return _SessionSignature(
+        start=start,
+        project=bundle.project_dir,
+        claude_md_chars=_claude_md_chars(top),
+        model=_dominant(turn.model for turn in turns),
+        effort=_dominant(turn.effort or "" for turn in turns) or "default",
+    )
+
+
+_TRANSCRIPT_KEY_LABELS = {"model": "Model", "effortLevel": "Effort level", "claude_md_chars": "CLAUDE.md size"}
+
+
+def _join(bits: list[str]) -> str:
+    if len(bits) <= 1:
+        return bits[0] if bits else ""
+    if len(bits) == 2:
+        return f"{bits[0]} and {bits[1]}"
+    return f"{', '.join(bits[:-1])} and {bits[-1]}"
+
+
+def _transcript_label(keys: list[str]) -> str:
+    bits = [_TRANSCRIPT_KEY_LABELS[k] for k in ("model", "effortLevel", "claude_md_chars") if k in keys]
+    return f"{_join(bits)} changed" if bits else "Your setup changed"  # pragma: no cover
+
+
+def _transcript_points(corpus) -> list[ChangePoint]:
+    """A change point wherever one project's sessions show a CLAUDE.md or
+    memory size change of :data:`CLAUDE_MD_CHANGE_PCT` percent or more,
+    or the dominant model or effort level used differs from the previous
+    session in the same project (EST-P9). Consecutive sessions only, so a
+    slow drift across many small sessions doesn't fire repeatedly."""
+    signatures = sorted(
+        (sig for sig in (_session_signature(bundle) for bundle in corpus.sessions) if sig is not None),
+        key=lambda s: s.start,
+    )
+    points: list[ChangePoint] = []
+    previous: dict[str, _SessionSignature] = {}
+    for sig in signatures:
+        before = previous.get(sig.project)
+        previous[sig.project] = sig
+        if before is None:
+            continue
+        keys: list[str] = []
+        changes: list[dict] = []
+        if before.model and sig.model and before.model != sig.model:
+            keys.append("model")
+            changes.append({"key": "model", "agent": None, "old": before.model, "new": sig.model})
+        if before.effort and sig.effort and before.effort != sig.effort:
+            keys.append("effortLevel")
+            changes.append({"key": "effortLevel", "agent": None, "old": before.effort, "new": sig.effort})
+        base = before.claude_md_chars
+        change_pct = (abs(sig.claude_md_chars - base) / base * 100.0) if base > 0 else (
+            100.0 if sig.claude_md_chars > 0 else 0.0
+        )
+        if change_pct >= CLAUDE_MD_CHANGE_PCT:
+            keys.append("claude_md_chars")
+            changes.append({"key": "claude_md_chars", "agent": None, "old": base, "new": sig.claude_md_chars})
+        if not keys:
+            continue
+        points.append(
+            ChangePoint(ts=sig.start, source="transcript", label=_transcript_label(keys), keys=keys, changes=changes)
+        )
+    return points
+
+
+def change_points(config_dir: Path | str, corpus=None) -> list[ChangePoint]:
     """Every change point, oldest first. A snapshot difference that spans
-    an apply or revert is that change seen again, not a second one."""
+    an apply or revert is that change seen again, not a second one.
+    ``corpus``, when given, adds transcript-derived points too (EST-P9,
+    see the module docstring) -- opt-in, since building a corpus is more
+    than ``config_dir`` alone can do, and most callers (the "since my
+    last change" window) don't have one on hand yet."""
     config_dir = Path(config_dir)
     applied = _apply_points(config_dir)
     points = list(applied)
@@ -263,6 +397,8 @@ def change_points(config_dir: Path | str) -> list[ChangePoint]:
             continue
         points.append(point)
     points.extend(_capture_points(config_dir))
+    if corpus is not None:
+        points.extend(_transcript_points(corpus))
     points.sort(key=lambda p: p.ts)
     return points
 

@@ -10,11 +10,12 @@ import json
 import os
 import sys
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 
 from claude_token_lens import helptext, hook_health, onboarding
-from claude_token_lens.model import Diagnostics
+from claude_token_lens.model import Diagnostics, Event, EventKind, TranscriptResult
 
 NOW = datetime(2026, 9, 22, 12, 0, tzinfo=timezone.utc)
 
@@ -213,7 +214,7 @@ def test_missing_interpreter_is_found_and_fixed_with_full_paths(tmp_path):
     assert not health.interpreter_found
     assert not health.ok
     assert "not installed or not on your PATH" in health.summary()
-    assert health.fixed_command == f'"/usr/bin/python3" "{script.resolve()}"'
+    assert health.fixed_command == f'"/usr/bin/python3" -I -S "{script.resolve()}"'
 
 
 def test_percent_variable_is_written_out_keeping_the_users_interpreter(tmp_path, monkeypatch):
@@ -250,7 +251,7 @@ def test_percent_variable_with_a_missing_interpreter_names_a_python_by_full_path
 
     health = hook_health.check(config_dir, now=NOW)
     script = (config_dir / "hooks" / "snapshot-config.py").resolve()
-    assert health.fixed_command == f'"{hook_health.stable_python()}" "{script}"'
+    assert health.fixed_command == f'"{hook_health.stable_python()}" -I -S "{script}"'
 
 
 def test_a_hook_command_prefers_the_base_interpreter_over_a_venv(monkeypatch, tmp_path):
@@ -260,6 +261,36 @@ def test_a_hook_command_prefers_the_base_interpreter_over_a_venv(monkeypatch, tm
     assert hook_health.stable_python() == str(base)
     monkeypatch.setattr(sys, "_base_executable", str(tmp_path / "gone.exe"), raising=False)
     assert hook_health.stable_python() == sys.executable
+
+
+def test_hook_command_runs_python_isolated_and_without_site():
+    script = Path("C:/token-lens/hooks/capture-hook.py")
+    command = hook_health.hook_command(script, python="C:/Python311/python.exe")
+    assert command == f'"C:/Python311/python.exe" -I -S "{script}"'
+
+
+@pytest.mark.parametrize("bad_python", ['C:/weird"quote/python.exe', "C:/weird$var/python.exe", "C:/weird`tick/python.exe"])
+def test_hook_command_refuses_a_python_path_with_an_unsafe_character(bad_python):
+    assert hook_health.hook_command(Path("C:/token-lens/hooks/capture-hook.py"), python=bad_python) is None
+
+
+@pytest.mark.parametrize("bad_script", ['C:/weird"quote/capture-hook.py', "C:/weird$var/capture-hook.py", "C:/weird`tick/capture-hook.py"])
+def test_hook_command_refuses_a_script_path_with_an_unsafe_character(bad_script):
+    assert hook_health.hook_command(Path(bad_script), python="C:/Python311/python.exe") is None
+
+
+def test_hook_command_refuses_a_unc_path():
+    assert hook_health.hook_command(
+        Path(r"\\server\share\token-lens\hooks\capture-hook.py"), python="C:/Python311/python.exe"
+    ) is None
+
+
+def test_hook_command_doubles_a_trailing_backslash_so_the_quote_still_closes():
+    # A folder path ending in a bare backslash would otherwise escape the
+    # closing quote in both Windows argv parsing and a POSIX
+    # double-quoted string (what Git Bash reads the command as).
+    command = hook_health.hook_command(Path("capture-hook.py"), python="C:/oddly\\")
+    assert command == '"C:/oddly\\\\" -I -S "capture-hook.py"'
 
 
 def _with_statusline(tmp_path, rows=()):
@@ -307,4 +338,156 @@ def test_repair_keeps_arguments_after_the_script(tmp_path, monkeypatch):
     (claude / "settings.json").write_text(json.dumps(settings), encoding="utf-8")
     health = hook_health.check(config_dir, now=NOW, python=sys.executable)
     assert not health.interpreter_found
-    assert health.fixed_command == f'"{sys.executable}" "{script.resolve()}" --config-dir "{config_dir}"'
+    assert health.fixed_command == f'"{sys.executable}" -I -S "{script.resolve()}" --config-dir "{config_dir}"'
+
+
+# -- SURV-HE: count_hook_errors / HookErrorHealth ----------------------------
+
+
+def _hook_event(subkind: str, hook_name: str | None = "PreToolUse") -> Event:
+    detail = {} if hook_name is None else {"hookName": hook_name}
+    return Event(kind=EventKind.HOOK_OUTPUT, subkind=subkind, detail=detail)
+
+
+def _result(*events: Event) -> TranscriptResult:
+    return TranscriptResult(events=list(events))
+
+
+def test_count_hook_errors_tallies_calls_and_errors_by_hook_name():
+    results = [
+        _result(
+            _hook_event("hook_success", "PreToolUse"),
+            _hook_event("hook_success", "PreToolUse"),
+            _hook_event("hook_non_blocking_error", "PreToolUse"),
+        ),
+        _result(_hook_event("hook_success", "PostToolUse")),
+    ]
+    health = hook_health.count_hook_errors(results)
+    by_name = {s.hook_name: s for s in health.stats}
+    assert by_name["PreToolUse"].calls == 3
+    assert by_name["PreToolUse"].errors == 1
+    assert by_name["PreToolUse"].error_rate == pytest.approx(1 / 3)
+    assert by_name["PostToolUse"].calls == 1
+    assert by_name["PostToolUse"].errors == 0
+
+
+def test_count_hook_errors_ignores_non_call_subkinds():
+    # A blocking error is often a hook doing exactly what it's for; the
+    # rest aren't a pass/fail outcome of the hook at all. None of these
+    # should move a hook's calls or errors.
+    results = [
+        _result(
+            _hook_event("hook_blocking_error", "PreToolUse"),
+            _hook_event("hook_cancelled", "PreToolUse"),
+            _hook_event("hook_system_message", "PreToolUse"),
+            _hook_event("capture_note", "SessionStart"),
+            Event(kind=EventKind.HOOK_OUTPUT, subkind="stop_hook_summary"),
+        )
+    ]
+    assert hook_health.count_hook_errors(results).stats == ()
+
+
+def test_count_hook_errors_ignores_non_hook_output_events():
+    results = [_result(Event(kind=EventKind.REMINDER, subkind="hook_success", detail={"hookName": "PreToolUse"}))]
+    assert hook_health.count_hook_errors(results).stats == ()
+
+
+def test_count_hook_errors_skips_a_call_with_no_hook_name():
+    results = [_result(_hook_event("hook_success", hook_name=None))]
+    assert hook_health.count_hook_errors(results).stats == ()
+
+
+def test_count_hook_errors_stats_are_sorted_by_hook_name():
+    results = [_result(_hook_event("hook_success", "SessionStart"), _hook_event("hook_success", "PreToolUse"))]
+    names = [s.hook_name for s in hook_health.count_hook_errors(results).stats]
+    assert names == ["PreToolUse", "SessionStart"]
+
+
+def test_worst_ignores_a_hook_below_the_minimum_call_count():
+    # 100% errors, but only 3 calls -- too little to act on.
+    stats = (hook_health.HookErrorStat("Flaky", calls=3, errors=3),)
+    assert hook_health.HookErrorHealth(stats=stats).worst() is None
+
+
+def test_worst_picks_the_highest_error_rate_among_hooks_with_enough_calls():
+    stats = (
+        hook_health.HookErrorStat("Mild", calls=100, errors=10),
+        hook_health.HookErrorStat("Severe", calls=20, errors=15),
+        hook_health.HookErrorStat("TooFewCalls", calls=5, errors=5),
+    )
+    assert hook_health.HookErrorHealth(stats=stats).worst().hook_name == "Severe"
+
+
+def test_recommendation_is_none_under_the_failure_threshold():
+    stats = (hook_health.HookErrorStat("PreToolUse", calls=100, errors=49),)
+    assert hook_health.HookErrorHealth(stats=stats).recommendation() is None
+
+
+def test_recommendation_is_none_with_no_stats_at_all():
+    assert hook_health.HookErrorHealth().recommendation() is None
+
+
+def test_recommendation_names_the_hook_and_failure_share_over_the_threshold():
+    stats = (hook_health.HookErrorStat("PreToolUse", calls=100, errors=60),)
+    text = hook_health.HookErrorHealth(stats=stats).recommendation()
+    assert text is not None
+    assert "PreToolUse" in text
+    assert "60%" in text
+    assert "100 calls" in text
+    assert "settings.json" in text
+
+
+# -- CAP-9/F10: measure_deep_wait / DeepWaitStats ----------------------------
+
+
+def _call_event(hook_name: str, duration_ms, *, capture: bool = True, subkind: str = "hook_success") -> Event:
+    detail: dict = {"hookName": hook_name}
+    if duration_ms is not None:
+        detail["durationMs"] = duration_ms
+    if capture:
+        detail["capture"] = True
+    return Event(kind=EventKind.HOOK_OUTPUT, subkind=subkind, detail=detail)
+
+
+def test_measure_deep_wait_computes_median_and_p90():
+    # 8 quick calls at 100ms, 2 slow ones at 900ms.
+    durations = [100] * 8 + [900] * 2
+    results = [_result(*[_call_event("PostToolUse", ms) for ms in durations])]
+    stats = hook_health.measure_deep_wait(results)
+    assert stats.calls == 10
+    assert stats.median_ms == 100.0
+    assert stats.p90_ms == 900.0
+
+
+def test_measure_deep_wait_ignores_a_post_tool_use_call_without_the_capture_flag():
+    # A third-party PostToolUse hook: no "capture" key at all.
+    results = [_result(_call_event("PostToolUse", 500, capture=False))]
+    assert hook_health.measure_deep_wait(results) == hook_health.DeepWaitStats()
+
+
+def test_measure_deep_wait_ignores_own_hook_calls_under_a_different_event():
+    # Token Lens's own SessionStart/SubagentStart calls aren't Deep's wait.
+    results = [_result(_call_event("SessionStart", 140))]
+    assert hook_health.measure_deep_wait(results) == hook_health.DeepWaitStats()
+
+
+def test_measure_deep_wait_counts_a_failed_call_too():
+    # Claude Code waited for the hook to finish whether or not it errored.
+    results = [_result(_call_event("PostToolUse", 300, subkind="hook_non_blocking_error"))]
+    stats = hook_health.measure_deep_wait(results)
+    assert stats.calls == 1
+    assert stats.median_ms == 300.0
+
+
+def test_measure_deep_wait_with_nothing_to_measure_returns_empty_stats():
+    stats = hook_health.measure_deep_wait([_result()])
+    assert stats == hook_health.DeepWaitStats()
+    assert stats.summary() is None
+
+
+def test_deep_wait_summary_wording():
+    stats = hook_health.DeepWaitStats(calls=10, median_ms=100.0, p90_ms=900.0)
+    text = stats.summary()
+    assert text == (
+        "Deep's large-output/web hook waited ≈0.1s (median, p90 ≈0.9s) over 10 calls this week."
+    )

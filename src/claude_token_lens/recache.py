@@ -445,7 +445,7 @@ def build_section(stats: RecacheStats, pricing: Pricing, th: RecacheThresholds, 
         _cooccurrence_table(all_turns, behavioural_turns, total_behavioural, total_priced),
         _attachment_subsplit_table(recache_turns),
         _by_agent_type_table(records),
-        _huge_context_table(all_turns, th),
+        _huge_context_table(all_turns, th, pricing),
     ]
 
     notes = [f"Thresholds: {' '.join(th.describe())}"]
@@ -978,8 +978,19 @@ def _by_agent_type_table(records: list[_Record]) -> Table:
     )
 
 
-def _huge_context_table(all_turns: list[Turn], th: RecacheThresholds) -> Table:
-    huge_turns = [t for t in all_turns if t.ctx >= th.huge_ctx]
+def _huge_context_table(all_turns: list[Turn], th: RecacheThresholds, pricing: Pricing) -> Table:
+    # D2/D4/COV-12: "huge" used to mean a flat 200k tokens for every
+    # turn, whatever model it ran on -- on a natively 1M-context Claude 5
+    # model (V24) that is only a fifth of the window, not the
+    # near-the-limit signal the metric means to flag. Each turn is now
+    # compared to its own resolved model's context_window_tokens; a turn
+    # whose model doesn't resolve (or no ``pricing``) falls back to
+    # th.huge_ctx, same as every turn got before this fix.
+    def _threshold_for(turn: Turn) -> int:
+        resolved = pricing.resolve_model(turn.model) if pricing is not None else None
+        return resolved.rates.context_window_tokens if resolved is not None else th.huge_ctx
+
+    huge_turns = [t for t in all_turns if t.ctx >= _threshold_for(t)]
     total_cache_read = sum(t.cache_read_tokens for t in all_turns)
     huge_cache_read = sum(t.cache_read_tokens for t in huge_turns)
     return Table(
@@ -1004,9 +1015,14 @@ def _huge_context_table(all_turns: list[Turn], th: RecacheThresholds) -> Table:
             ]
         ],
         notes=[
-            f"huge_ctx = {th.huge_ctx:,} tokens. This is a context-hygiene "
-            "metric, not a pricing surcharge: the docs state 4.6+ models "
-            "bill the full 1M-token context window at standard rates.",
+            f"huge_ctx = {th.huge_ctx:,} tokens on a model whose context "
+            "window doesn't resolve against the rate card; a turn on a "
+            "resolved model is instead compared to that model's own "
+            "context window (1,000,000 for a natively 1M-context Claude "
+            "5 model, per the docs, 200,000 otherwise). This is a "
+            "context-hygiene metric, not a pricing surcharge: the docs "
+            "state 4.6+ models bill the full 1M-token context window at "
+            "standard rates.",
         ],
     )
 

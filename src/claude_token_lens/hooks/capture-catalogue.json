@@ -5,7 +5,8 @@
   "free": [
    "session_end",
    "waits",
-   "permissions"
+   "permissions",
+   "turn_signals"
   ],
   "essentials": [
    "task",
@@ -16,7 +17,8 @@
    "retry",
    "session_end",
    "waits",
-   "permissions"
+   "permissions",
+   "turn_signals"
   ],
   "standard": [
    "task",
@@ -30,13 +32,13 @@
    "plan",
    "skill",
    "found",
-   "spawn",
    "fit",
    "rules",
    "agent_brief",
    "session_end",
    "waits",
-   "permissions"
+   "permissions",
+   "turn_signals"
   ],
   "deep": [
    "task",
@@ -50,18 +52,16 @@
    "plan",
    "skill",
    "found",
-   "spawn",
    "fit",
    "rules",
    "agent_brief",
    "prior",
-   "detour",
    "check",
    "big_output",
-   "web",
    "session_end",
    "waits",
-   "permissions"
+   "permissions",
+   "turn_signals"
   ]
  },
  "feedback_ids": [
@@ -77,6 +77,7 @@
    "requires": [],
    "main_line": "task: feature|bugfix|refactor|debug|docs|review|test|research|plan|ops|chat (the kind of work asked for)",
    "main_extra": "",
+   "extra_before_tag": false,
    "sub_line": "",
    "sub_extra": "",
    "tool_note": ""
@@ -87,6 +88,7 @@
    "requires": [],
    "main_line": "brief: clear|partial|vague (how complete the request was)",
    "main_extra": "",
+   "extra_before_tag": false,
    "sub_line": "",
    "sub_extra": "",
    "tool_note": ""
@@ -97,6 +99,7 @@
    "requires": [],
    "main_line": "level: easy|normal|hard (how hard the work was)",
    "main_extra": "",
+   "extra_before_tag": false,
    "sub_line": "",
    "sub_extra": "",
    "tool_note": ""
@@ -107,6 +110,7 @@
    "requires": [],
    "main_line": "shift: new|build|grew|redo, only when it applies (a new unrelated task; building on the last one; the scope grew; redoing earlier work)",
    "main_extra": "",
+   "extra_before_tag": false,
    "sub_line": "",
    "sub_extra": "",
    "tool_note": ""
@@ -117,6 +121,7 @@
    "requires": [],
    "main_line": "",
    "main_extra": "",
+   "extra_before_tag": false,
    "sub_line": "done: you finished the task; partial: some of it; blocked: you could not go on",
    "sub_extra": "",
    "tool_note": ""
@@ -127,6 +132,7 @@
    "requires": [],
    "main_line": "",
    "main_extra": "When you start an agent again because its last run fell short, begin the brief with [retry: model|brief|tools|scope|other].",
+   "extra_before_tag": false,
    "sub_line": "",
    "sub_extra": "Re-running an agent? Begin its brief with [retry: model|brief|tools|scope|other].",
    "tool_note": ""
@@ -137,6 +143,7 @@
    "requires": [],
    "main_line": "size: xs|s|m|l|xl (how big the work was)",
    "main_extra": "",
+   "extra_before_tag": false,
    "sub_line": "",
    "sub_extra": "",
    "tool_note": ""
@@ -147,6 +154,7 @@
    "requires": [],
    "main_line": "missing: files,goal,constraints,done,repro,scope or none (what the request lacked that you had to find or guess; a comma list)",
    "main_extra": "",
+   "extra_before_tag": false,
    "sub_line": "",
    "sub_extra": "",
    "tool_note": ""
@@ -157,6 +165,7 @@
    "requires": [],
    "main_line": "plan: none|made|following|deviated (no plan; you wrote one; you worked to one; you departed from it)",
    "main_extra": "",
+   "extra_before_tag": false,
    "sub_line": "",
    "sub_extra": "",
    "tool_note": ""
@@ -167,6 +176,7 @@
    "requires": [],
    "main_line": "skill: helped|unneeded|would-help|none (whether a skill you ran helped; would-help:<name> if one of the listed skills would have)",
    "main_extra": "",
+   "extra_before_tag": false,
    "sub_line": "",
    "sub_extra": "",
    "tool_note": ""
@@ -177,18 +187,9 @@
    "requires": [],
    "main_line": "found: yes|partial|no (for research or search work: whether you found what was asked)",
    "main_extra": "",
+   "extra_before_tag": false,
    "sub_line": "",
    "sub_extra": "",
-   "tool_note": ""
-  },
-  {
-   "id": "spawn",
-   "group": "standard",
-   "requires": [],
-   "main_line": "",
-   "main_extra": "When you hand work to an agent, begin the brief with [spawn: parallel|isolate|cheaper|specialist|review]: why an agent.",
-   "sub_line": "",
-   "sub_extra": "Starting an agent? Begin its brief with [spawn: parallel|isolate|cheaper|specialist|review].",
    "tool_note": ""
   },
   {
@@ -199,6 +200,7 @@
    ],
    "main_line": "",
    "main_extra": "",
+   "extra_before_tag": false,
    "sub_line": "fit: smaller|right|larger (could a smaller model have done this task, or did it need a larger one)",
    "sub_extra": "",
    "tool_note": ""
@@ -211,6 +213,7 @@
    ],
    "main_line": "",
    "main_extra": "",
+   "extra_before_tag": false,
    "sub_line": "rules: used|unused (did you use the CLAUDE.md or memory instructions you were given)",
    "sub_extra": "",
    "tool_note": ""
@@ -223,6 +226,7 @@
    ],
    "main_line": "",
    "main_extra": "",
+   "extra_before_tag": false,
    "sub_line": "brief: clear|partial|vague (how complete your brief was); missing: files,goal,scope,done or none (what it lacked)",
    "sub_extra": "",
    "tool_note": ""
@@ -233,16 +237,7 @@
    "requires": [],
    "main_line": "prior: needed|some|none (how much of the earlier conversation this work needed)",
    "main_extra": "",
-   "sub_line": "",
-   "sub_extra": "",
-   "tool_note": ""
-  },
-  {
-   "id": "detour",
-   "group": "deep",
-   "requires": [],
-   "main_line": "detour: none|dead-end|reread|overbuilt|env|flaky (the main time sink, if any)",
-   "main_extra": "",
+   "extra_before_tag": false,
    "sub_line": "",
    "sub_extra": "",
    "tool_note": ""
@@ -253,6 +248,7 @@
    "requires": [],
    "main_line": "check: targeted|full|build|run|manual|none (how you verified the change)",
    "main_extra": "",
+   "extra_before_tag": false,
    "sub_line": "",
    "sub_extra": "",
    "tool_note": ""
@@ -263,19 +259,10 @@
    "requires": [],
    "main_line": "",
    "main_extra": "",
+   "extra_before_tag": false,
    "sub_line": "",
    "sub_extra": "",
    "tool_note": "That tool result was large. Add out=needed|part|unneeded (how much of it you needed) to the tag that ends your final reply."
-  },
-  {
-   "id": "web",
-   "group": "deep",
-   "requires": [],
-   "main_line": "",
-   "main_extra": "",
-   "sub_line": "",
-   "sub_extra": "",
-   "tool_note": "Add useful=yes|part|no (whether that web result helped) to the tag that ends your final reply."
   },
   {
    "id": "session_end",
@@ -283,6 +270,7 @@
    "requires": [],
    "main_line": "",
    "main_extra": "",
+   "extra_before_tag": false,
    "sub_line": "",
    "sub_extra": "",
    "tool_note": ""
@@ -293,6 +281,7 @@
    "requires": [],
    "main_line": "",
    "main_extra": "",
+   "extra_before_tag": false,
    "sub_line": "",
    "sub_extra": "",
    "tool_note": ""
@@ -303,6 +292,18 @@
    "requires": [],
    "main_line": "",
    "main_extra": "",
+   "extra_before_tag": false,
+   "sub_line": "",
+   "sub_extra": "",
+   "tool_note": ""
+  },
+  {
+   "id": "turn_signals",
+   "group": "free",
+   "requires": [],
+   "main_line": "",
+   "main_extra": "",
+   "extra_before_tag": false,
    "sub_line": "",
    "sub_extra": "",
    "tool_note": ""
@@ -312,7 +313,8 @@
    "group": "feedback",
    "requires": [],
    "main_line": "",
-   "main_extra": "When you finish a piece of work the user asked for, end your reply with: Finished? Run /tl-feedback: a few ticks make your savings tips fit how you work.",
+   "main_extra": "When you finish a piece of work the user asked for, add before your tag: Finished? Run /tl-feedback: a few ticks make your savings tips fit how you work.",
+   "extra_before_tag": true,
    "sub_line": "",
    "sub_extra": "",
    "tool_note": ""
@@ -338,10 +340,13 @@
  "signal_events": {
   "SessionEnd": "session_end",
   "Notification": "waits",
-  "PermissionRequest": "permissions"
+  "PermissionRequest": "permissions",
+  "Stop": "turn_signals",
+  "StopFailure": "turn_signals"
  },
  "session_end_reasons": [
   "clear",
+  "resume",
   "logout",
   "prompt_input_exit",
   "bypass_permissions_disabled",
@@ -351,11 +356,27 @@
   "permission",
   "idle",
   "question",
+  "agent",
+  "quota",
   "other"
  ],
- "signals_dir": "signals",
- "web_tools": [
-  "WebFetch",
-  "WebSearch"
- ]
+ "turn_states": [
+  "normal",
+  "reentrant"
+ ],
+ "stop_failure_errors": [
+  "rate_limit",
+  "overloaded",
+  "authentication_failed",
+  "oauth_org_not_allowed",
+  "account_on_hold",
+  "billing_error",
+  "invalid_request",
+  "model_not_found",
+  "server_error",
+  "max_output_tokens",
+  "cloud_credential_error",
+  "unknown"
+ ],
+ "signals_dir": "signals"
 }

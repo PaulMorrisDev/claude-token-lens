@@ -118,7 +118,14 @@
   // ``toLocaleString("en-US", ...)`` is used (fixed locale, not the
   // browser's own) for thousands separators so output stays
   // deterministic regardless of the viewer's system locale.
-  function formatCell(value, kind, currency) {
+  // UX-1: unitsAware requests units.Units.money's billing-mode phrasing
+  // (moneyText() below) for a "money" cell instead of the plain
+  // currency-suffixed number -- opt-in per call site (every existing
+  // sortable data-grid column keeps the plain, always-parseable number;
+  // this mirrors render/tables.py::format_cell, whose own `units`
+  // parameter the report's own table renderers likewise never pass --
+  // only prose call sites, like the habits playbook card below, do).
+  function formatCell(value, kind, currency, unitsAware) {
     currency = currency || "USD";
     if (value === null || value === undefined) return "-";
     if (typeof value === "boolean") return value ? "Yes" : "No";
@@ -138,12 +145,67 @@
       case "pct":
         return Number(value).toFixed(1) + "%";
       case "money":
+        if (unitsAware) return moneyText(Number(value));
         return Number(value).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + " " + currency;
       case "secs":
         return formatSecs(Number(value));
       default:
         return String(value);
     }
+  }
+
+  // Mirrors units.Units.money (src/claude_token_lens/units.py): usd (a
+  // list-price amount over opts.period, e.g. "a week") phrased for the
+  // billing mode from state.units (UX-1's report.meta.units -- {mode,
+  // share_per_usd, period_label, basis}, set when a report loads).
+  // Returns null for a non-positive or non-finite amount, same contract
+  // as the Python original. share_per_usd is already the window-%-per-
+  // USD slope (elasticity.express_in_window(1.0, ...)), so a share for
+  // an arbitrary usd is just usd * share_per_usd -- linear, no curve
+  // fit needed client-side.
+  function money(usd, opts) {
+    opts = opts || {};
+    var period = opts.period || "";
+    if (typeof usd !== "number" || !isFinite(usd) || usd <= 0) return null;
+    var suffix = period ? " " + period : "";
+    var dollars = formatCell(usd, "money", state.currency);
+    var unitsInfo = state.units || {};
+    if (unitsInfo.mode !== "subscription") {
+      return { primary: dollars + suffix, secondary: "", basis: "at list price" };
+    }
+    var sharePerUsd = unitsInfo.share_per_usd;
+    if (sharePerUsd === null || sharePerUsd === undefined) {
+      return { primary: dollars + " list-price equivalent" + suffix, secondary: "", basis: unitsInfo.basis || "" };
+    }
+    var share = usd * sharePerUsd;
+    var shareText = share < 1 ? share.toFixed(2) + "%" : formatCell(share, "pct");
+    return {
+      primary: "about " + shareText + " of your " + (unitsInfo.period_label || "weekly usage limit") + suffix,
+      secondary: dollars + " list-price equivalent",
+      basis: unitsInfo.basis || "",
+    };
+  }
+
+  // Mirrors units.Units.money_text/Amount.phrase: a one-line amount
+  // that is never empty, for a spot that used to interpolate a raw
+  // "$" + value.toFixed(2). opts.prefix (e.g. "about ") is joined
+  // without doubling "about" when money()'s own primary text already
+  // opens with it (a subscription's "about X% of your weekly usage
+  // limit" -- finding F3's "about about" bug, mirrored client-side).
+  function moneyText(usd, opts) {
+    opts = opts || {};
+    var prefix = opts.prefix || "";
+    var amount = money(usd, opts);
+    var text = amount ? (amount.secondary ? amount.primary + " (" + amount.secondary + ")" : amount.primary) : null;
+    if (text === null) {
+      var value = typeof usd === "number" && isFinite(usd) ? usd : 0;
+      return formatCell(value, "money", state.currency);
+    }
+    if (!prefix) return text;
+    var strippedPrefix = prefix.replace(/\.$/, "").trim().toLowerCase();
+    if (strippedPrefix === "about" && text.toLowerCase().indexOf("about ") === 0) return text;
+    var joiner = /[ \-‑]$/.test(prefix) ? "" : " ";
+    return prefix + joiner + text;
   }
 
   function cellSortValue(value) {
@@ -232,6 +294,12 @@
     // gets its own cache entry.
     reportPromises: {},
     currency: "USD",
+    // UX-1: report.meta.units {mode, share_per_usd, period_label,
+    // basis} (model.py's ReportMeta.units) -- the billing-mode facts
+    // money()/moneyText() below need to phrase an amount client-side.
+    // null until the first report loads, same as currency defaulting
+    // to "USD" until then.
+    units: null,
     // The one window every tab reads (the picker in the header): a
     // number of days, or a named window the server resolves ("1h",
     // "today", "24h", "change", "all").
@@ -275,6 +343,9 @@
         var report = body.ok === true ? body.data && body.data.report : body.report;
         if (report && report.meta && report.meta.pricing && report.meta.pricing.currency) {
           state.currency = report.meta.pricing.currency;
+        }
+        if (report && report.meta && report.meta.units) {
+          state.units = report.meta.units;
         }
         return { report: report, asOf: asOf };
       });
@@ -1182,6 +1253,24 @@
   function renderHealthBanner(health, previous) {
     var banner = document.getElementById("health-banner");
     if (!banner) return;
+    // UX-6/9: this is an aria-live="polite" region polled every 3-60s
+    // (see pollHealth) -- rebuilding its children on every poll, even
+    // when nothing about to be shown actually changed, used to tear
+    // down and recreate the same <p>/<progress> each time, and a
+    // screen reader has no way to tell that apart from genuinely new
+    // content, so it re-announced an unchanged "Scanning... 4 of 12"
+    // every few seconds. Skip the rebuild entirely when what would be
+    // shown is identical to what is already on screen.
+    var scanNow = (health && health.scan) || {};
+    var sig = !health
+      ? "unreachable"
+      : health.status === "ok"
+        ? previous === "starting" || banner.getAttribute("data-scan-finished") === "true"
+          ? "scan-finished"
+          : "hidden"
+        : ["active", health.status, health.message || "", scanNow.total || 0, scanNow.done || 0].join("|");
+    if (banner.getAttribute("data-render-sig") === sig) return;
+    banner.setAttribute("data-render-sig", sig);
     clear(banner);
     banner.className = "health-banner";
     if (!health) {
@@ -1289,13 +1378,60 @@
     return tabLink("capture", text);
   }
 
+  // UX-6/9: both the capture-invite "Hide" and a notes dismissal used to
+  // be (or would otherwise have been) permanent, via a bare "1" in
+  // localStorage -- once hidden, hidden forever, even after the notes
+  // themselves changed. A snoozed key instead stores the dismissal
+  // timestamp; snoozed() below treats it as expired past BANNER_SNOOZE_MS,
+  // so a quiet banner returns on its own after a week rather than needing
+  // the config wiped to see it again. A legacy bare "1" reads as an
+  // ancient timestamp and is therefore already-expired -- it naturally
+  // self-heals to "not hidden" the first time this runs, with no
+  // migration code needed.
+  var BANNER_SNOOZE_MS = 7 * 24 * 60 * 60 * 1000;
+
+  function snoozed(key) {
+    var raw = storageGet(key);
+    if (!raw) return false;
+    var ts = Number(raw);
+    return isFinite(ts) && Date.now() - ts < BANNER_SNOOZE_MS;
+  }
+
+  function notesSignature(notes) {
+    return (notes || []).join("\n");
+  }
+
+  // The notes list keys its own snooze to its exact current content
+  // (timestamp + signature, "|"-joined) so notes that changed since the
+  // dismissal -- a new warning, say -- show again immediately rather
+  // than staying suppressed for the rest of the week.
+  function notesSnoozed(notes) {
+    var raw = storageGet("tls:captureNotesHidden");
+    if (!raw) return false;
+    var sep = raw.indexOf("|");
+    if (sep === -1) return false;
+    var ts = Number(raw.slice(0, sep));
+    return isFinite(ts) && raw.slice(sep + 1) === notesSignature(notes) && Date.now() - ts < BANNER_SNOOZE_MS;
+  }
+
   function renderCaptureBanner(data) {
     var banner = document.getElementById("capture-banner");
     if (!banner) return;
-    clear(banner);
     var info = data.banner || {};
+    var notes = info.notes || [];
+    var notesVisible = notes.length > 0 && !notesSnoozed(notes);
+    var inviteHidden = !info.on && snoozed("tls:captureInviteHidden");
+    var hidden = inviteHidden && !info.feedback_note && !notesVisible;
+    // Same "skip the rebuild when nothing shown would change" guard as
+    // renderHealthBanner -- this is an aria-live="polite" region too,
+    // and gets re-rendered on every capture poll (see updateCaptureBanner),
+    // not only on an actual content change.
+    var sig = hidden ? "hidden" : ["shown", info.on ? "1" : "0", info.headline || "", info.feedback_note || "", notesVisible ? notesSignature(notes) : ""].join("~");
+    if (banner.getAttribute("data-render-sig") === sig) return;
+    banner.setAttribute("data-render-sig", sig);
+    clear(banner);
     banner.className = "capture-banner " + (info.on ? "capture-on" : "capture-off");
-    if (!info.on && storageGet("tls:captureInviteHidden") === "1" && !info.feedback_note && !(info.notes || []).length) {
+    if (hidden) {
       banner.hidden = true;
       return;
     }
@@ -1306,25 +1442,31 @@
       line.appendChild(tabLink("habits", "Work habits"));
     }
     if (!info.on) {
-      var hide = el("button", { type: "button", class: "link-button capture-hide", text: "Hide" });
+      var hide = el("button", { type: "button", class: "link-button capture-hide", text: "Hide for a week" });
       hide.addEventListener("click", function () {
-        storageSet("tls:captureInviteHidden", "1");
+        storageSet("tls:captureInviteHidden", String(Date.now()));
         renderCaptureBanner(data);
       });
       line.appendChild(document.createTextNode(" "));
       line.appendChild(hide);
     }
     banner.appendChild(line);
-    if ((info.notes || []).length) {
+    if (notesVisible) {
       banner.appendChild(
         el(
           "ul",
           { class: "capture-notes" },
-          info.notes.map(function (note) {
+          notes.map(function (note) {
             return el("li", { text: note });
           })
         )
       );
+      var dismissNotes = el("button", { type: "button", class: "link-button capture-hide", text: "Dismiss for a week" });
+      dismissNotes.addEventListener("click", function () {
+        storageSet("tls:captureNotesHidden", Date.now() + "|" + notesSignature(notes));
+        renderCaptureBanner(data);
+      });
+      banner.appendChild(dismissNotes);
     }
     if (info.feedback_note) banner.appendChild(el("p", { class: "capture-feedback-note", text: info.feedback_note }));
     banner.hidden = false;
@@ -1522,9 +1664,12 @@
       }
     }
     if (data.roi && data.roi.cost && data.roi.cost.usd > 0) {
+      // UX-2: roi.cost.text/roi.value.text already carry their own
+      // "about" (capture_view.py's _roi) -- not repeated here, or a
+      // subscription's would double into "about about X%...".
       var roiText = data.roi.measured
-        ? "Capture cost about " + data.roi.cost.text + "; suggestions that rely on it are worth about " + data.roi.value.text + "."
-        : "Capture cost about " + data.roi.cost.text + "; nothing measured yet relies on it.";
+        ? "Capture cost " + data.roi.cost.text + "; suggestions that rely on it are worth " + data.roi.value.text + "."
+        : "Capture cost " + data.roi.cost.text + "; nothing measured yet relies on it.";
       container.appendChild(el("p", { class: "notes", text: roiText }));
     }
     if (data.history && data.history.sessions) {
@@ -2002,23 +2147,23 @@
     );
     purposeLabel.appendChild(purposeSelect);
 
-    var applyBtn = el("button", { type: "button", text: "Apply tags" });
+    var saveTagsBtn = el("button", { type: "button", text: "Save tags" });
     var tagStatus = el("span", { class: "notes" });
     tagControls.appendChild(modeLabel);
     tagControls.appendChild(purposeLabel);
-    tagControls.appendChild(applyBtn);
+    tagControls.appendChild(saveTagsBtn);
     tagControls.appendChild(tagStatus);
     wrap.appendChild(tagControls);
 
-    applyBtn.addEventListener("click", function () {
-      applyBtn.disabled = true;
+    saveTagsBtn.addEventListener("click", function () {
+      saveTagsBtn.disabled = true;
       tagStatus.textContent = "Saving…";
       var updates = [];
       if (modeSelect.value) updates.push(["mode", modeSelect.value]);
       if (purposeSelect.value) updates.push(["purpose", purposeSelect.value]);
       if (!updates.length) {
         tagStatus.textContent = "Choose a mode or purpose first.";
-        applyBtn.disabled = false;
+        saveTagsBtn.disabled = false;
         return;
       }
       Promise.all(
@@ -2030,7 +2175,7 @@
           });
         })
       ).then(function (results) {
-        applyBtn.disabled = false;
+        saveTagsBtn.disabled = false;
         var failed = results.filter(function (r) {
           return !r.body || r.body.ok !== true;
         });
@@ -2157,6 +2302,69 @@
     return set;
   }
 
+  // UX-6/9: every timeline marker used to be an identical circle,
+  // distinguished only by fill colour -- color alone (WCAG 1.4.1), so a
+  // colorblind viewer or a low-color display can't tell recache from
+  // compaction from spawn, etc. Each kind now also gets its own shape;
+  // colour stays as a second, redundant cue rather than the only one.
+  // ``titleText`` is optional (the legend's own tiny icons pass none).
+  function markerGlyph(shape, cx, cy, r, fill, titleText) {
+    var title = titleText ? "<title>" + titleText + "</title>" : "";
+    var pts;
+    switch (shape) {
+      case "square":
+        return (
+          '<rect x="' + (cx - r * 0.9).toFixed(1) + '" y="' + (cy - r * 0.9).toFixed(1) +
+          '" width="' + (r * 1.8).toFixed(1) + '" height="' + (r * 1.8).toFixed(1) +
+          '" fill="' + fill + '">' + title + "</rect>"
+        );
+      case "triangle-up":
+      case "triangle-down":
+        var flip = shape === "triangle-down" ? -1 : 1;
+        pts = [
+          [cx, cy - flip * r * 1.3],
+          [cx - r * 1.2, cy + flip * r * 0.9],
+          [cx + r * 1.2, cy + flip * r * 0.9],
+        ];
+        return (
+          '<polygon points="' +
+          pts.map(function (p) { return p[0].toFixed(1) + "," + p[1].toFixed(1); }).join(" ") +
+          '" fill="' + fill + '">' + title + "</polygon>"
+        );
+      case "diamond":
+        pts = [
+          [cx, cy - r * 1.3],
+          [cx + r * 1.3, cy],
+          [cx, cy + r * 1.3],
+          [cx - r * 1.3, cy],
+        ];
+        return (
+          '<polygon points="' +
+          pts.map(function (p) { return p[0].toFixed(1) + "," + p[1].toFixed(1); }).join(" ") +
+          '" fill="' + fill + '">' + title + "</polygon>"
+        );
+      case "plus":
+        return (
+          '<rect x="' + (cx - r * 0.35).toFixed(1) + '" y="' + (cy - r * 1.2).toFixed(1) +
+          '" width="' + (r * 0.7).toFixed(1) + '" height="' + (r * 2.4).toFixed(1) + '" fill="' + fill + '"></rect>' +
+          '<rect x="' + (cx - r * 1.2).toFixed(1) + '" y="' + (cy - r * 0.35).toFixed(1) +
+          '" width="' + (r * 2.4).toFixed(1) + '" height="' + (r * 0.7).toFixed(1) + '" fill="' + fill + '">' + title + "</rect>"
+        );
+      case "x":
+        return (
+          '<line x1="' + (cx - r * 1.1).toFixed(1) + '" y1="' + (cy - r * 1.1).toFixed(1) +
+          '" x2="' + (cx + r * 1.1).toFixed(1) + '" y2="' + (cy + r * 1.1).toFixed(1) +
+          '" stroke="' + fill + '" stroke-width="1.6"></line>' +
+          '<line x1="' + (cx - r * 1.1).toFixed(1) + '" y1="' + (cy + r * 1.1).toFixed(1) +
+          '" x2="' + (cx + r * 1.1).toFixed(1) + '" y2="' + (cy - r * 1.1).toFixed(1) +
+          '" stroke="' + fill + '" stroke-width="1.6">' + title + "</line>"
+        );
+      case "circle":
+      default:
+        return '<circle cx="' + cx.toFixed(1) + '" cy="' + cy.toFixed(1) + '" r="' + r + '" fill="' + fill + '">' + title + "</circle>";
+    }
+  }
+
   function buildSessionTimeline(session) {
     var series = findPerTurnSeries(session);
     if (!series) {
@@ -2203,6 +2411,9 @@
     // dynamic value embedded below is either a fixed-precision number
     // or passed through `escapeHtml`.
     var markerColors = { recache: "#c0392b", compaction: "#a06a00", spawn: "#2563eb", human: "#1a7f37" };
+    // UX-6/9: one shape per kind (see markerGlyph above), never reused
+    // across the two marker sets below -- 7 kinds, 7 distinct shapes.
+    var markerShapes = { recache: "circle", compaction: "square", spawn: "triangle-up", human: "diamond" };
     // v3-limits wiring: distinct colours from markerColors above, drawn
     // in the blank strip above the context-size line (y well below
     // `padding`) rather than pinned to a turn's own point -- a
@@ -2213,6 +2424,7 @@
     // between the session's own `first_ts`/`last_ts` (docs/limits.md's
     // "Session-timeline marker contract" / docs/ui.md).
     var limitMarkerColors = { limit_hit: "#9333ea", limit_resume: "#0891b2", agent_terminated: "#ea580c" };
+    var limitMarkerShapes = { limit_hit: "triangle-down", limit_resume: "plus", agent_terminated: "x" };
     var svgParts = [];
     svgParts.push(
       '<svg viewBox="0 0 ' + width + " " + height + '" class="timeline-svg" role="img" aria-label="' +
@@ -2249,15 +2461,7 @@
       kinds.forEach(function (kind) {
         var label = escapeHtml("Turn " + (turnIndex || i + 1) + ": " + kind);
         svgParts.push(
-          '<circle cx="' +
-            points[i][0].toFixed(1) +
-            '" cy="' +
-            points[i][1].toFixed(1) +
-            '" r="3" fill="' +
-            (markerColors[kind] || "var(--muted)") +
-            '"><title>' +
-            label +
-            "</title></circle>"
+          markerGlyph(markerShapes[kind] || "circle", points[i][0], points[i][1], 3, markerColors[kind] || "var(--muted)", label)
         );
       });
     });
@@ -2278,15 +2482,7 @@
         var label = escapeHtml(marker.kind + (subkind ? " (" + subkind + ")" : "") + " at " + marker.ts);
         limitKindsSeen[marker.kind] = true;
         svgParts.push(
-          '<circle cx="' +
-            mx.toFixed(1) +
-            '" cy="' +
-            my +
-            '" r="3" fill="' +
-            (limitMarkerColors[marker.kind] || "var(--muted)") +
-            '"><title>' +
-            label +
-            "</title></circle>"
+          markerGlyph(limitMarkerShapes[marker.kind] || "circle", mx, my, 3, limitMarkerColors[marker.kind] || "var(--muted)", label)
         );
       });
     }
@@ -2294,16 +2490,21 @@
 
     var wrap = el("div", { html: svgParts.join("") });
     var legend = el("div", { class: "timeline-legend" });
+    // UX-6/9: the legend's own swatch mirrors the marker's real shape
+    // (not just a colour dot), via the same markerGlyph a viewer just
+    // saw drawn on the chart -- so the legend stays a genuine key
+    // rather than a second color-only cue.
+    function swatchIcon(shape, fill) {
+      return el("span", { class: "swatch", html: '<svg viewBox="0 0 14 14" width="14" height="14" aria-hidden="true">' + markerGlyph(shape, 7, 7, 3, fill) + "</svg>" });
+    }
     Object.keys(markerColors).forEach(function (kind) {
-      var swatch = el("span", { class: "swatch" });
-      swatch.style.background = markerColors[kind];
-      legend.appendChild(el("span", null, [swatch, document.createTextNode(kind)]));
+      legend.appendChild(el("span", null, [swatchIcon(markerShapes[kind] || "circle", markerColors[kind]), document.createTextNode(kind)]));
     });
     Object.keys(limitMarkerColors).forEach(function (kind) {
       if (!limitKindsSeen[kind]) return;
-      var swatch = el("span", { class: "swatch" });
-      swatch.style.background = limitMarkerColors[kind];
-      legend.appendChild(el("span", null, [swatch, document.createTextNode(kind.replace(/_/g, " "))]));
+      legend.appendChild(
+        el("span", null, [swatchIcon(limitMarkerShapes[kind] || "circle", limitMarkerColors[kind]), document.createTextNode(kind.replace(/_/g, " "))])
+      );
     });
     wrap.appendChild(legend);
     if (session.truncated) {
@@ -2540,7 +2741,19 @@
       var kind = (table.row_kinds || {})[row.item] || "str";
       var card = el("div", { class: "stat-card" });
       card.appendChild(el("div", { class: "stat-label", text: labelFor(table, row.item) }));
-      card.appendChild(el("div", { class: "stat-value", text: formatCell(row.value, kind, state.currency) }));
+      // UX-1: a money card follows the billing mode (money() mirrors
+      // Units.money); the list-price figure goes underneath when the
+      // headline is a share of the weekly limit, and "list-price
+      // equivalent" does when there's no share to show.
+      var amount = kind === "money" ? money(Number(row.value)) : null;
+      var headline = amount ? amount.primary : formatCell(row.value, kind, state.currency);
+      var underneath = amount ? amount.secondary : "";
+      if (amount && !underneath && / list-price equivalent$/.test(headline)) {
+        headline = headline.replace(/ list-price equivalent$/, "");
+        underneath = "list-price equivalent";
+      }
+      card.appendChild(el("div", { class: "stat-value", text: headline }));
+      if (underneath) card.appendChild(el("div", { class: "stat-hint", text: underneath }));
       card.appendChild(el("div", { text: row.what || "" }));
       if (row.detail) card.appendChild(el("div", { class: "stat-hint", text: row.detail }));
       cards.appendChild(card);
@@ -2572,6 +2785,11 @@
     return wrap;
   }
 
+  //: UX-4/7: habits shown as cards before the rest collapse into <details>
+  //: (F3: "uncapped playbook" -- every habit got a card, largest and
+  //: smallest saving alike, crowding out the ones worth trying first).
+  var PLAYBOOK_CARD_LIMIT = 5;
+
   function renderHabitsPlaybook(table, container) {
     container.appendChild(el("h3", { text: table.title }));
     var help = helpBlock(table.help);
@@ -2581,15 +2799,46 @@
       container.appendChild(el("p", { class: "notice", text: "No habit stood out in this window." }));
       return;
     }
+    var featured = rows.slice(0, PLAYBOOK_CARD_LIMIT);
+    var rest = rows.slice(PLAYBOOK_CARD_LIMIT);
     var cards = el("div", { class: "habit-cards" });
+    appendHabitCards(table, featured, cards);
+    container.appendChild(cards);
+    if (rest.length) {
+      var more = el("details", { class: "help" });
+      more.appendChild(el("summary", { text: rest.length + " more habit" + (rest.length === 1 ? "" : "s") + " worth trying" }));
+      var restCards = el("div", { class: "habit-cards" });
+      appendHabitCards(table, rest, restCards);
+      more.appendChild(restCards);
+      container.appendChild(more);
+    }
+  }
+
+  function appendHabitCards(table, rows, cards) {
     rows.forEach(function (row) {
       var card = el("article", { class: "habit-card" });
       var head = el("div", { class: "profile-card-head" });
       head.appendChild(el("h4", { text: labelFor(table, row.habit) }));
       head.appendChild(el("span", { class: "badge", text: labelFor(table, row.theme) }));
       card.appendChild(head);
-      var saving = row.saving === null || row.saving === undefined ? "Saving not priced" : "About " + formatCell(row.saving, "money", state.currency) + " a week";
-      card.appendChild(el("p", { class: "habit-saving", text: saving }));
+      // UX-1/UX-2: routed through moneyText so a subscription reads "about
+      // X% of your weekly usage limit" instead of a bare "$" figure; "a
+      // week" is dropped under a subscription since the primary text
+      // already says "...weekly usage limit" (finding F3's "weekly ...
+      // a week" doubling, mirrored client-side -- see capture_view.py's
+      // _roi for the same call).
+      // UX-3: a habit apply_covered_by (habits.py) matched to a rule that
+      // fired shows no saving of its own -- it would double-count the
+      // rule's -- and names the rule instead.
+      if (row.covered_by) {
+        card.appendChild(el("p", { class: "habit-saving", text: "Already covered by “" + row.covered_by + "” in Recommendations." }));
+      } else {
+        var savingPeriod = (state.units || {}).mode === "subscription" ? "" : "a week";
+        var saving = row.saving === null || row.saving === undefined
+          ? "Saving not priced"
+          : moneyText(row.saving, { period: savingPeriod, prefix: "About " });
+        card.appendChild(el("p", { class: "habit-saving", text: saving }));
+      }
       if (row.evidence) card.appendChild(el("p", { text: row.evidence }));
       if (row.example) {
         card.appendChild(el("p", { class: "habit-try", text: "Try:" }));
@@ -2607,10 +2856,25 @@
       var spark = habitSparkline(row.weeks, "By week, " + labelFor(table, row.trend) + ": " + row.weeks);
       if (spark) metaLine.appendChild(spark);
       card.appendChild(metaLine);
-      if (row.basis) card.appendChild(el("p", { class: "cell-hint", text: "How the saving is worked out: " + row.basis + "." }));
+      // UX-3: basis explains a saving figure that isn't shown once covered.
+      if (row.basis && !row.covered_by) card.appendChild(el("p", { class: "cell-hint", text: "How the saving is worked out: " + row.basis + "." }));
+      // UX-8: same where/trade-off/undo shape as a recommendation's fix
+      // explainer (renderFix below), collapsed by default so it doesn't
+      // crowd out the habit itself.
+      if (row.where || row.trade_off || row.how_to_undo) {
+        var explainer = el("details", { class: "help" });
+        explainer.appendChild(el("summary", { text: "Where, trade-off and how to undo it" }));
+        var list = el("dl", { class: "fix-explainer" });
+        [["Where", row.where], ["Trade-off", row.trade_off], ["How to undo it", row.how_to_undo]].forEach(function (pair) {
+          if (!pair[1]) return;
+          list.appendChild(el("dt", { text: pair[0] }));
+          list.appendChild(el("dd", { text: pair[1] }));
+        });
+        explainer.appendChild(list);
+        card.appendChild(explainer);
+      }
       cards.appendChild(card);
     });
-    container.appendChild(cards);
   }
 
   function renderBriefTemplates(table, container) {
@@ -2792,6 +3056,10 @@
     panel.appendChild(el("h3", { text: "Your changes and what they did" }));
     panel.appendChild(impactContainer);
     loadInto(impactContainer, "/api/impact", renderImpact);
+    var backtestContainer = el("div", { id: "profiles-backtest" });
+    panel.appendChild(el("h3", { text: "Did your estimates come true?" }));
+    panel.appendChild(backtestContainer);
+    loadInto(backtestContainer, "/api/backtest", renderBacktest);
     var editorDetails = el("details", { class: "advanced-detail" });
     editorDetails.appendChild(el("summary", { text: "Edit settings directly" }));
     editorDetails.appendChild(formContainer);
@@ -2964,14 +3232,24 @@
     return table;
   }
 
+  // UX-6/9: used to fire-and-forget navigator.clipboard.writeText and
+  // always flip the button to "Copied" regardless of what happened --
+  // an insecure context, a denied permission or any other rejection of
+  // the Promise it returns (not just a missing API, which the old
+  // try/catch did cover) left the button falsely claiming success.
+  // Returns a Promise<boolean> so the caller can tell the two apart.
   function copyToClipboard(text) {
     try {
       if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(text);
+        return navigator.clipboard.writeText(text).then(
+          function () { return true; },
+          function () { return false; }
+        );
       }
     } catch (err) {
-      /* clipboard unavailable (insecure context, permissions) -- silently do nothing */
+      /* clipboard unavailable (insecure context, permissions) -- fall through */
     }
+    return Promise.resolve(false);
   }
 
   function codeBlockWithCopy(text) {
@@ -2979,11 +3257,12 @@
     var pre = el("pre", { text: text || "" });
     var button = el("button", { type: "button", class: "copy-button", text: "Copy" });
     button.addEventListener("click", function () {
-      copyToClipboard(text || "");
-      button.textContent = "Copied";
-      setTimeout(function () {
-        button.textContent = "Copy";
-      }, 1500);
+      copyToClipboard(text || "").then(function (ok) {
+        button.textContent = ok ? "Copied" : "Couldn't copy - select the text above";
+        setTimeout(function () {
+          button.textContent = "Copy";
+        }, 1500);
+      });
     });
     wrap.appendChild(pre);
     wrap.appendChild(button);
@@ -2994,7 +3273,7 @@
     clear(container);
     container.appendChild(el("h3", { text: "What " + (profile.name || profile.id) + " changes" }));
     var scopeRow = el("div", { class: "pager" });
-    scopeRow.appendChild(el("label", { for: "profile-scope", text: "Apply it to:" }));
+    scopeRow.appendChild(el("label", { for: "profile-scope", text: "Target file:" }));
     var scopeSelect = el("select", { id: "profile-scope" });
     Object.keys(PROFILE_SCOPE_LABELS).forEach(function (scope) {
       scopeSelect.appendChild(el("option", { value: scope, text: PROFILE_SCOPE_LABELS[scope] }));
@@ -3040,7 +3319,7 @@
         text: "It shows the change without writing anything. Run it again without --dry-run to make the change; the output tells you how to undo it.",
       })
     );
-    box.appendChild(codeBlockWithCopy(data.dry_run_command || data.apply_command));
+    box.appendChild(codeBlockWithCopy(data.dry_run_command));
     box.appendChild(restartNote());
     box.appendChild(el("h5", { text: "Or try it for one session" }));
     box.appendChild(
@@ -3442,8 +3721,12 @@
       });
       box.appendChild(list);
     }
-    box.appendChild(el("h5", { text: "Ask Claude to do it" }));
-    box.appendChild(codeBlockWithCopy(fix.prompt));
+    // UX-8: a purely informational workflow card (fixes.build_fixes) has
+    // an explainer but no prompt -- nothing to ask Claude to do.
+    if (fix.prompt) {
+      box.appendChild(el("h5", { text: "Ask Claude to do it" }));
+      box.appendChild(codeBlockWithCopy(fix.prompt));
+    }
     if (fix.command) {
       box.appendChild(el("h5", { text: "Or run this command" }));
       box.appendChild(
@@ -3619,6 +3902,24 @@
   // additions: a plain table of display strings, and a status badge.
   // ======================================================================
 
+  // P4 leftover / UX-6/9: one consistent "not enough data yet" box,
+  // instead of each tab building its own ad hoc paragraph (renderImpact,
+  // renderBacktest and the quick actions' no_data cards used to each
+  // have a slightly different one). `gate` is the structured
+  // {reason, have, need} object some routes now carry (see api.py's
+  // _min_sessions_gate, currently /api/impact) -- when given, its
+  // numbers are appended so the box reads "2 of 3 sessions so far"
+  // rather than only the prose message repeating what "not enough" means.
+  function emptyState(message, gate) {
+    var box = el("div", { class: "placeholder-box empty-state" });
+    var text = message || "Not enough data yet.";
+    if (gate && typeof gate.have === "number" && typeof gate.need === "number") {
+      text += " (" + gate.have + " of " + gate.need + " so far.)";
+    }
+    box.appendChild(el("p", { text: text }));
+    return box;
+  }
+
   function simpleTable(columns, rows, caption) {
     var wrap = el("div", { class: "table-wrap" });
     if (caption) wrap.appendChild(el("h4", { text: caption }));
@@ -3692,7 +3993,11 @@
     var card = el("article", { class: "rec quick-card" });
     card.appendChild(el("div", { class: "quick-head" }, [statusBadge(check.status), el("h4", { text: check.question })]));
     card.appendChild(el("p", { class: "notes", text: check.why }));
-    card.appendChild(el("p", { class: "quick-summary", text: check.summary }));
+    if (check.status === "no_data") {
+      card.appendChild(emptyState(check.summary));
+    } else {
+      card.appendChild(el("p", { class: "quick-summary", text: check.summary }));
+    }
     var detail = el("div", { class: "quick-detail" });
     if (check.status !== "no_data") {
       var extras = [];
@@ -4075,7 +4380,8 @@
     function refreshTotal() {
       var ticket = ++pending;
       total.textContent = "Working out the estimate…";
-      postJson(withWindow("/api/whatif"), chosen()).then(function (result) {
+      var url = withWindow("/api/whatif") + (draft.task ? "&task=" + encodeURIComponent(draft.task) : "");
+      postJson(url, chosen()).then(function (result) {
         if (ticket !== pending) return;
         var body = result.body;
         if (!body || body.ok !== true) {
@@ -4112,6 +4418,7 @@
       postJson("/api/profiles", {
         id: id,
         name: name.value || draft.goal.title,
+        for: draft.task ? [draft.task] : [],
         settings: picked.settings,
         agents: picked.agents,
         notes: "Made from the goal \"" + draft.goal.title + "\" " + (draft.period || "") + ".",
@@ -4137,7 +4444,12 @@
       ((results[1] && results[1].settings) || []).concat((results[1] && results[1].agents) || []).forEach(function (lever) {
         labels[lever.key] = lever.label;
       });
-      postJson(withWindow("/api/whatif"), { settings: p.settings || {}, agents: p.agents || {} }).then(function (res) {
+      // F11: `tasks` is the profile's `for` words normalised to the task
+      // vocabulary (a catalogue word like "implementation" isn't one, and
+      // /api/whatif rejects it); several scale by their combined share.
+      var tasks = p.tasks && p.tasks.length ? p.tasks.join(",") : "";
+      var url = withWindow("/api/whatif") + (tasks ? "&task=" + encodeURIComponent(tasks) : "");
+      postJson(url, { settings: p.settings || {}, agents: p.agents || {} }).then(function (res) {
         var data = res.body && res.body.ok === true ? res.body.data : null;
         if (!data || !data.rows.length) return;
         clear(container);
@@ -4163,7 +4475,7 @@
     var changes = data.changes || [];
     if (!changes.length) {
       container.appendChild(
-        el("p", { class: "notes", text: "No changes recorded yet. After you apply a profile or a fix, or change a setting, this shows the sessions before it against those after it." })
+        emptyState("No changes recorded yet. After you apply a profile or a fix, or change a setting, this shows the sessions before it against those after it.")
       );
       return;
     }
@@ -4173,7 +4485,11 @@
       var card = el("article", { class: "rec impact-card" });
       card.appendChild(el("h4", { text: change.label + (change.reverted ? " (since undone)" : "") }));
       card.appendChild(el("p", { class: "profile-card-meta", text: String(change.ts || "").replace("T", " ").replace("Z", " UTC") + (change.keys && change.keys.length ? " · " + change.keys.join(", ") : "") }));
-      card.appendChild(el("p", { class: "quick-summary", text: item.verdict }));
+      if (item.gate) {
+        card.appendChild(emptyState(item.verdict, item.gate));
+      } else {
+        card.appendChild(el("p", { class: "quick-summary", text: item.verdict }));
+      }
       if (item.enough) {
         card.appendChild(
           simpleTable(
@@ -4232,6 +4548,42 @@
       }
       container.appendChild(card);
     });
+  }
+
+  // EST-P4/P8: did a saving estimate come true? Rows are
+  // backtest.present()'s own display-ready shape (predicted_text,
+  // measured_text and verdict_text are already server-formatted
+  // sentences) -- this just lays them out in a table, no client-side
+  // money or verdict logic, per docs/ui.md's "server formats, dashboard
+  // shows" rule.
+  function renderBacktest(data, container) {
+    var predictions = (data && data.predictions) || [];
+    if (!predictions.length) {
+      container.appendChild(
+        emptyState("No estimates logged yet. Estimates shown in “What if?” are logged automatically, then checked here once the sessions to judge them arrive.")
+      );
+      return;
+    }
+    container.appendChild(
+      el("p", {
+        class: "notes",
+        text: "Estimates from “What if?”, checked against what actually happened after a matching change.",
+      })
+    );
+    container.appendChild(
+      simpleTable(
+        [{ label: "Change" }, { label: "When" }, { label: "Estimated" }, { label: "Measured" }, { label: "Verdict" }],
+        predictions.map(function (row) {
+          return [
+            row.agent ? row.agent + ": " + row.measure_key : row.measure_key,
+            String(row.ts || "").replace("T", " ").replace("Z", " UTC"),
+            row.predicted_text,
+            row.measured_text || "—",
+            row.verdict_text,
+          ];
+        })
+      )
+    );
   }
 
   // ======================================================================
@@ -4308,6 +4660,15 @@
     ["CLAUDE.md", "Instruction files Claude reads at the start of every session, and of most subagents: yours, each project's, and rule files. Every line is paid for on every reply that re-reads it."],
     ["Skill", "A packaged set of instructions Claude can load when a task needs it. Its name and description are listed to Claude at the start of every session, used or not."],
     ["Quality signal", "A sign of whether the work went well, not just what it cost: tool calls that failed, agent runs that didn't finish, your corrections. Compared across models and efforts, and before and after each change you make."],
+    ["Metrics capture", "An opt-in feature, off by default, that has Claude tell you in a one-line tag what a piece of work was about and how it went. It costs tokens while it's on; init's last questions and claude-token-lens capture turn it on, change what it asks for, or turn it off."],
+    ["Capture level", "How much metrics capture asks for: off, free, essentials, standard or deep, each adding more of it. Set at init or with claude-token-lens capture level."],
+    ["Tag", "The one-line, closed-vocabulary note metrics capture has Claude add to a reply, such as [tl: task=bugfix brief=clear] or [result: done fit=right]. Only words from a fixed list are kept; nothing Claude writes in its own words is."],
+    ["Prompt cycle", "One message of yours and everything Claude did to answer it, subagents at any depth included. The unit metrics capture and the Work habits tab measure by."],
+    ["Work habits", "The tab (and report section) that turns prompt cycles into habits worth trying, each showing where its evidence came from — reported by Claude, inferred from the transcript, or your own feedback — and a rough saving."],
+    ["Feedback skill", "/tl-feedback, a skill you can add that you run after a piece of work to rate whether it delivered, what slowed it, whether it was worth the tokens, and what would have helped. Works at any capture level, even off."],
+    ["Brief templates", "Checklists per kind of task on the Work habits tab, built from what your own requests tend to lack. Turned on, it also adds a /tl-brief skill that checks a request against its checklist and asks once for anything missing before Claude starts."],
+    ["Sampling", "Running metrics capture in only a share of sessions (100, 50, 25 or 10 percent, [capture] sample) to spend fewer tokens on it. Picked at random, per session."],
+    ["Time-box", "The date metrics capture switches itself back off. 14 days by default from when you turn a level on — at init, capture on/level, or the Capture page — so turning it on doesn't mean it runs unattended forever; --for/--capture-for sets another length, --no-limit/--capture-no-limit turns the limit off entirely, or you can say so when asked."],
   ];
 
   function renderGlossary(panel) {

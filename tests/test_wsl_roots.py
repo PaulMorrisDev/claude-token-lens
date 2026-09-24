@@ -257,6 +257,37 @@ def test_update_from_a_local_folder(capsys):
     assert not any("install-service" in call for call in runner.calls)
 
 
+def test_update_refreshes_hook_files_with_the_new_version(capsys, tmp_path):
+    # ROB-P7: a hook file this tool itself changed since the last install
+    # is refreshed with the *new* package, via its own subprocess (this
+    # process still has the old one loaded) -- config_dir is its own argv
+    # entry, never interpolated into the -c source (ROB-P9).
+    calls = []
+
+    def runner(command, **kwargs):
+        calls.append(list(command))
+        if "pip" in command:
+            return subprocess.CompletedProcess(command, 0)
+        if len(command) > 2 and "refresh_hook_files" in command[2]:
+            assert command[-1] == str(cli._resolve_config_dir(str(tmp_path)))
+            return subprocess.CompletedProcess(command, 0, stdout="2\n")
+        if "-c" in command:
+            return subprocess.CompletedProcess(command, 0, stdout="9.9.9\n")
+        return subprocess.CompletedProcess(command, 0)
+
+    args = _update_args("--config-dir", str(tmp_path), "--no-service")
+    rc = cli._cmd_update(args, runner=runner, is_registered_fn=lambda: True)
+    assert rc == 0
+    assert "Refreshed 2 hook files this version changed." in capsys.readouterr().out
+
+
+def test_update_says_nothing_when_no_hook_file_needed_refreshing(capsys, tmp_path):
+    runner = _Runner()  # every "-c" call, including the refresh one, answers "9.9.9\n"
+    args = _update_args("--config-dir", str(tmp_path), "--no-service")
+    cli._cmd_update(args, runner=runner, is_registered_fn=lambda: True)
+    assert "Refreshed" not in capsys.readouterr().out
+
+
 def test_install_service_probe_flags_an_old_copy_on_the_port(capsys):
     cli._probe_service_after_install(
         "windows",

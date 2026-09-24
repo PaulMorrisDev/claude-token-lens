@@ -114,12 +114,15 @@ convention — see ``model.py``'s own module docstring):
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Callable, Sequence
+from typing import TYPE_CHECKING, Callable, Sequence
 
 from . import workstyle
 from .model import Column, Recommendation, ReportModel, Section, Table, TranscriptResult, Turn, agent_type_label
 from .pricing import Pricing, price_turn
 from .snapshots import Snapshot, managed_keys
+
+if TYPE_CHECKING:
+    from .units import Units
 
 #: See module docstring's tier-order deviation note: kept in lock-step
 #: with (never imported from) ``workstyle._TIER_FAMILIES`` — the
@@ -238,7 +241,7 @@ class ModelSwapThresholds:
         ``RecacheThresholds.describe``/``TtlThresholds.describe``."""
         return [
             f"saving_pct_min = {self.saving_pct_min:.1f}% and saving_usd_min = "
-            f"${self.saving_usd_min:.2f}: a one-tier-down swap is only surfaced as a "
+            f"{self.saving_usd_min:.2f} USD: a one-tier-down swap is only surfaced as a "
             "recommendation when the ceiling saving at today's volumes clears both -- "
             "both conditions, independently blocking.",
             f"min_sessions = {self.min_sessions} and min_turns = {self.min_turns}: a "
@@ -452,11 +455,17 @@ def _lever_label(key: str) -> str:
     return f"model in {key}.md"
 
 
-def build_section(stats: ModelSwapStats, thresholds: ModelSwapThresholds | None = None) -> Section:
+def build_section(
+    stats: ModelSwapStats, thresholds: ModelSwapThresholds | None = None, units: "Units | None" = None
+) -> Section:
     """Render a finished :class:`ModelSwapStats` as the report's
     ``model_swap`` section: ``model_swap_by_agent_type`` (one row per
     agent type) and ``model_swap_summary`` (the corpus-wide ceiling for
-    moving every Fable/Opus subagent type one tier down).
+    moving every Fable/Opus subagent type one tier down). ``units``
+    (UX-2) rephrases the "best cheaper alternative" label's saving for
+    the report's billing mode -- ``compute_model_swap`` builds
+    ``TierVerdict.label`` before a billing config is known, so it always
+    carries a plain-USD fallback.
     """
     th = thresholds or _DEFAULT_THRESHOLDS
 
@@ -493,6 +502,10 @@ def build_section(stats: ModelSwapStats, thresholds: ModelSwapThresholds | None 
         row_stats = stats.by_key[key]
         verdict = row_stats.tier_verdict
         lever = _lever_label(key)
+        label = verdict.label
+        if units is not None and verdict.state == "cheaper_available":
+            saving_text = units.money_text(verdict.saving_usd)
+            label = f"{verdict.alt_model} (saves {saving_text}, {verdict.saving_pct:.1f}%, at today's volumes)"
         row = [
             row_stats.key,
             row_stats.spawns,
@@ -506,7 +519,7 @@ def build_section(stats: ModelSwapStats, thresholds: ModelSwapThresholds | None 
         row.extend(
             [
                 verdict.alt_model,
-                verdict.label,
+                label,
                 verdict.saving_usd,
                 verdict.saving_pct,
                 lever,
@@ -739,9 +752,14 @@ def _rule_model_tier(
             frontmatter_note = f'Set "model": "{alt_model}" in settings.json'
         else:
             frontmatter_note = f"Set `model: {alt_model}` in .claude/agents/{agent_type}.md's frontmatter"
+        # UX-2: units may be unset (a caller without a billing config) --
+        # money_text still gives a plain currency-suffixed number rather
+        # than a bare "$" in that case.
+        units = report.units
+        saving_text = units.money_text(saving_usd) if units is not None else f"${saving_usd:,.2f}"
         action = _action_with_scope(
             f"{frontmatter_note} (currently effectively {observed_model}). "
-            f"Ceiling saving at today's volumes: ${saving_usd:,.2f} ({saving_pct:.1f}%) -- token "
+            f"Ceiling saving at today's volumes: {saving_text} ({saving_pct:.1f}%) -- token "
             "volumes and turn counts are held constant, so a smaller model may need more turns "
             "or fail tasks outright; verify quality before committing.",
             scope,

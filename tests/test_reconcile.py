@@ -22,7 +22,7 @@ from claude_token_lens.config import Config
 from claude_token_lens.corpus import load_corpus
 from claude_token_lens.pricing import load_pricing, price_turn
 
-from helpers import assert_privacy, turn_line, write_jsonl
+from helpers import assert_privacy, ignorable_line, turn_line, write_jsonl
 
 PRICING = load_pricing()
 CONFIG = Config()
@@ -415,6 +415,324 @@ def test_reconcile_section_passes_privacy_scan(tmp_path):
     corpus = load_corpus([project_dir])
 
     section = reconcile_mod.reconcile(corpus, PRICING, CONFIG, admin_rows=[], by=("day", "model"))
+    assert_privacy(section)
+
+
+# -- claude_code_reported_costs (SURV-5, PARSER_VERSION 19) ------------------
+#
+# The ``cost-state`` half of plan P9's later "Q1 gap metric": pairs a
+# session's self-reported ``TranscriptMeta.cc_cost_usd`` against this
+# tool's own locally-priced total for that same session. No admin CSV, no
+# network call -- see reconcile.py's own module docstring.
+
+
+def test_claude_code_reported_costs_pairs_self_report_with_local_total(tmp_path):
+    root = tmp_path / "projects"
+    project_dir = root / "proj"
+    project_dir.mkdir(parents=True)
+    write_jsonl(
+        project_dir / "s1.jsonl",
+        [
+            turn_line(
+                timestamp="2026-08-05T09:00:00.000Z",
+                input_tokens=500,
+                output_tokens=80,
+            ),
+            ignorable_line("cost-state", totalCostUSD=1.23, hasUnknownModelCost=False),
+        ],
+    )
+    corpus = load_corpus([project_dir])
+
+    costs = reconcile_mod.claude_code_reported_costs(corpus, PRICING)
+    assert len(costs) == 1
+    entry = costs[0]
+    assert entry.session_id == "s1"
+    assert entry.cc_cost_usd == 1.23
+    assert entry.cc_has_unknown_model is False
+    turn = corpus.sessions[0].top.turns[0]
+    expected_local = price_turn(turn, PRICING.resolve_model(turn.model)).total
+    assert entry.local_cost_usd == pytest.approx(expected_local)
+
+
+def test_claude_code_reported_costs_uses_last_cost_state_line(tmp_path):
+    # A running total: the last line in file order is the most complete.
+    root = tmp_path / "projects"
+    project_dir = root / "proj"
+    project_dir.mkdir(parents=True)
+    write_jsonl(
+        project_dir / "s1.jsonl",
+        [
+            turn_line(timestamp="2026-08-05T09:00:00.000Z"),
+            ignorable_line("cost-state", totalCostUSD=0.10, hasUnknownModelCost=False),
+            ignorable_line("cost-state", totalCostUSD=0.55, hasUnknownModelCost=True),
+        ],
+    )
+    corpus = load_corpus([project_dir])
+
+    costs = reconcile_mod.claude_code_reported_costs(corpus, PRICING)
+    assert len(costs) == 1
+    assert costs[0].cc_cost_usd == 0.55
+    assert costs[0].cc_has_unknown_model is True
+
+
+def test_claude_code_reported_costs_skips_sessions_without_cost_state(tmp_path):
+    root = tmp_path / "projects"
+    project_dir = root / "proj"
+    project_dir.mkdir(parents=True)
+    _write_session(project_dir, "s1", "2026-08-05T09:00:00.000Z")
+    corpus = load_corpus([project_dir])
+
+    assert reconcile_mod.claude_code_reported_costs(corpus, PRICING) == []
+
+
+def test_claude_code_reported_costs_passes_privacy_scan(tmp_path):
+    root = tmp_path / "projects"
+    project_dir = root / "proj"
+    project_dir.mkdir(parents=True)
+    write_jsonl(
+        project_dir / "s1.jsonl",
+        [
+            turn_line(timestamp="2026-08-05T09:00:00.000Z"),
+            ignorable_line("cost-state", totalCostUSD=2.5, hasUnknownModelCost=False),
+        ],
+    )
+    corpus = load_corpus([project_dir])
+    costs = reconcile_mod.claude_code_reported_costs(corpus, PRICING)
+    assert_privacy(costs)
+
+
+# -- Q1 gap metric: cost_ground_truth_gaps / build_cost_ground_truth_gap_table --
+
+
+def _sig4_capture_on(config_dir: Path, level: str = "free") -> None:
+    """A minimal ``config.toml`` with capture switched on -- required
+    before ``statusline._write_ground_truth_signal`` will write anything
+    at all (see its own ``_capture_table`` gate), mirroring
+    ``test_statusline.py``'s own ``_sig4_config`` fixture."""
+    config_dir.mkdir(parents=True, exist_ok=True)
+    (config_dir / "config.toml").write_text(f'[capture]\nlevel = "{level}"\n', encoding="utf-8")
+
+
+def _sig4_signal(config_dir: Path, session_id: str, cost_usd: float, now) -> None:
+    from claude_token_lens import statusline
+
+    statusline._write_ground_truth_signal(config_dir, {"session_id": session_id, "cost": {"total_cost_usd": cost_usd}}, now)
+
+
+def test_cost_ground_truth_gaps_prefers_cost_state_over_statusline(tmp_path):
+    from datetime import datetime, timezone
+
+    from claude_token_lens.parse import load_or_create_salt
+
+    root = tmp_path / "projects"
+    project_dir = root / "proj"
+    project_dir.mkdir(parents=True)
+    write_jsonl(
+        project_dir / "s1.jsonl",
+        [
+            turn_line(timestamp="2026-08-05T09:00:00.000Z", input_tokens=500, output_tokens=80),
+            ignorable_line("cost-state", totalCostUSD=1.23, hasUnknownModelCost=False),
+        ],
+    )
+    corpus = load_corpus([project_dir])
+    config_dir = tmp_path / "config"
+    load_or_create_salt(config_dir)
+    _sig4_capture_on(config_dir)
+    now = datetime(2026, 8, 5, 10, 0, 0, tzinfo=timezone.utc)
+    # A statusline SIG-4 line also exists for this session, at a
+    # different figure -- cost-state must still win.
+    _sig4_signal(config_dir, "s1", 9.99, now)
+
+    gaps = reconcile_mod.cost_ground_truth_gaps(corpus, PRICING, config_dir)
+    assert len(gaps) == 1
+    assert gaps[0].source == "cost_state"
+    assert gaps[0].cc_cost_usd == 1.23
+
+
+def test_cost_ground_truth_gaps_falls_back_to_statusline_without_cost_state(tmp_path):
+    from datetime import datetime, timezone
+
+    from claude_token_lens.parse import load_or_create_salt
+
+    root = tmp_path / "projects"
+    project_dir = root / "proj"
+    project_dir.mkdir(parents=True)
+    _write_session(project_dir, "s1", "2026-08-05T09:00:00.000Z", input_tokens=500, output_tokens=80)
+    corpus = load_corpus([project_dir])
+    config_dir = tmp_path / "config"
+    load_or_create_salt(config_dir)
+    _sig4_capture_on(config_dir)
+    now = datetime(2026, 8, 5, 10, 0, 0, tzinfo=timezone.utc)
+    _sig4_signal(config_dir, "s1", 0.42, now)
+
+    gaps = reconcile_mod.cost_ground_truth_gaps(corpus, PRICING, config_dir)
+    assert len(gaps) == 1
+    assert gaps[0].source == "statusline"
+    assert gaps[0].cc_cost_usd == 0.42
+    turn = corpus.sessions[0].top.turns[0]
+    expected_local = price_turn(turn, PRICING.resolve_model(turn.model)).total
+    assert gaps[0].local_cost_usd == pytest.approx(expected_local)
+    assert gaps[0].gap_usd == pytest.approx(expected_local - 0.42)
+
+
+def test_cost_ground_truth_gaps_empty_without_any_ground_truth(tmp_path):
+    root = tmp_path / "projects"
+    project_dir = root / "proj"
+    project_dir.mkdir(parents=True)
+    _write_session(project_dir, "s1", "2026-08-05T09:00:00.000Z")
+    corpus = load_corpus([project_dir])
+    assert reconcile_mod.cost_ground_truth_gaps(corpus, PRICING, None) == []
+    assert reconcile_mod.cost_ground_truth_gaps(corpus, PRICING, tmp_path / "no-such-config") == []
+
+
+def test_cost_ground_truth_gaps_never_creates_the_salt(tmp_path):
+    """SIG-4's read-only-salt posture (see ``statusline.py``'s and
+    ``report._capture_signals``'s docstrings) applies to this reader too:
+    a config dir with a signals folder but no salt file yet must not get
+    one created just by reading gaps."""
+    root = tmp_path / "projects"
+    project_dir = root / "proj"
+    project_dir.mkdir(parents=True)
+    _write_session(project_dir, "s1", "2026-08-05T09:00:00.000Z")
+    corpus = load_corpus([project_dir])
+    config_dir = tmp_path / "config"
+    (config_dir / "signals").mkdir(parents=True)
+
+    gaps = reconcile_mod.cost_ground_truth_gaps(corpus, PRICING, config_dir)
+
+    assert gaps == []
+    assert not (config_dir / "salt").exists()
+
+
+def test_cost_ground_truth_gaps_passes_privacy_scan(tmp_path):
+    from datetime import datetime, timezone
+
+    from claude_token_lens.parse import load_or_create_salt
+
+    root = tmp_path / "projects"
+    project_dir = root / "proj"
+    project_dir.mkdir(parents=True)
+    _write_session(project_dir, "s1", "2026-08-05T09:00:00.000Z")
+    corpus = load_corpus([project_dir])
+    config_dir = tmp_path / "config"
+    load_or_create_salt(config_dir)
+    _sig4_capture_on(config_dir)
+    _sig4_signal(config_dir, "s1", 0.42, datetime(2026, 8, 5, 10, 0, 0, tzinfo=timezone.utc))
+
+    gaps = reconcile_mod.cost_ground_truth_gaps(corpus, PRICING, config_dir)
+    assert_privacy(gaps)
+
+
+def test_build_cost_ground_truth_gap_table_none_when_no_gaps():
+    assert reconcile_mod.build_cost_ground_truth_gap_table([]) is None
+
+
+def test_build_cost_ground_truth_gap_table_basic_shape():
+    gaps = [
+        reconcile_mod.CostGroundTruthGap(
+            session_id="s1", source="cost_state", cc_cost_usd=1.0, local_cost_usd=1.1, gap_usd=0.1, gap_pct=10.0
+        )
+    ]
+    table = reconcile_mod.build_cost_ground_truth_gap_table(gaps)
+    assert table.name == "cost_ground_truth_gap"
+    col_index = {c.key: i for i, c in enumerate(table.columns)}
+    row = table.rows[0]
+    assert row[col_index["session_id"]] == "s1"
+    assert row[col_index["source"]] == "cost_state"
+    assert row[col_index["gap_usd"]] == pytest.approx(0.1)
+    assert row[col_index["gap_pct"]] == pytest.approx(10.0)
+    assert any("Gap = " in n for n in table.notes)
+
+
+def _gap(i: int, cc: float, local: float) -> "reconcile_mod.CostGroundTruthGap":
+    return reconcile_mod.CostGroundTruthGap(
+        session_id=f"s{i}",
+        source="cost_state",
+        cc_cost_usd=cc,
+        local_cost_usd=local,
+        gap_usd=local - cc,
+        gap_pct=reconcile_mod._pct_of(cc, local),
+    )
+
+
+def test_build_cost_ground_truth_gap_table_notes_the_median_gap_once_threshold_and_sample_size_met():
+    # 12 sessions, each 20% higher locally than Claude Code's own figure
+    # -- comfortably past both the 5% and >=10-session thresholds.
+    gaps = [_gap(i, 1.0, 1.2) for i in range(12)]
+    table = reconcile_mod.build_cost_ground_truth_gap_table(gaps)
+    assert any("median" in n and "20%" in n for n in table.notes)
+
+
+def test_build_cost_ground_truth_gap_table_says_nothing_below_ten_sessions():
+    # Same 20% gap, but only 9 sessions -- below the plan's own
+    # ">= 10 sessions" floor, so no note even though the gap is large.
+    gaps = [_gap(i, 1.0, 1.2) for i in range(9)]
+    table = reconcile_mod.build_cost_ground_truth_gap_table(gaps)
+    assert not any("median" in n for n in table.notes)
+
+
+def test_build_cost_ground_truth_gap_table_says_nothing_below_five_percent():
+    # 12 sessions, comfortably past the sample-size floor, but only a 1%
+    # gap -- below the plan's own "> 5%" threshold.
+    gaps = [_gap(i, 1.0, 1.01) for i in range(12)]
+    table = reconcile_mod.build_cost_ground_truth_gap_table(gaps)
+    assert not any("median" in n for n in table.notes)
+
+
+def test_build_cost_ground_truth_gap_table_median_note_uses_billing_mode_units(tmp_path):
+    from claude_token_lens.units import Units
+
+    # Each session's gap is $0.50 (cc=$1.00, local=$1.50); the note phrases
+    # the *median* per-session gap, not a sum across sessions.
+    gaps = [_gap(i, 1.0, 1.5) for i in range(12)]
+    table = reconcile_mod.build_cost_ground_truth_gap_table(gaps, units=Units(billing_mode="api", currency="USD"))
+    median_note = next(n for n in table.notes if "median" in n)
+    assert "0.50 USD" in median_note
+
+
+def test_reconcile_adds_the_gap_table_only_when_config_dir_has_ground_truth(tmp_path):
+    """A session with no ``cost-state`` line contributes nothing to the
+    gap metric on its own -- the table only appears once ``config_dir``
+    is given *and* actually carries SIG-4 ground truth for it. (A
+    ``cost-state`` line, by contrast, needs no ``config_dir`` at all --
+    see ``test_cost_ground_truth_gaps_prefers_cost_state_over_statusline``
+    -- so it is deliberately left out of this fixture.)"""
+    from datetime import datetime, timezone
+
+    from claude_token_lens.parse import load_or_create_salt
+
+    root = tmp_path / "projects"
+    project_dir = root / "proj"
+    project_dir.mkdir(parents=True)
+    _write_session(project_dir, "s1", "2026-08-05T09:00:00.000Z")
+    corpus = load_corpus([project_dir])
+
+    without_config_dir = reconcile_mod.reconcile(corpus, PRICING, CONFIG, admin_rows=[])
+    assert len(without_config_dir.tables) == 1
+
+    config_dir = tmp_path / "config"
+    load_or_create_salt(config_dir)
+    _sig4_capture_on(config_dir)
+    _sig4_signal(config_dir, "s1", 0.01, datetime(2026, 8, 5, 10, 0, 0, tzinfo=timezone.utc))
+
+    with_config_dir = reconcile_mod.reconcile(corpus, PRICING, CONFIG, admin_rows=[], config_dir=config_dir)
+    assert len(with_config_dir.tables) == 2
+    assert with_config_dir.tables[1].name == "cost_ground_truth_gap"
+
+
+def test_reconcile_gap_table_section_passes_privacy_scan(tmp_path):
+    root = tmp_path / "projects"
+    project_dir = root / "proj"
+    project_dir.mkdir(parents=True)
+    write_jsonl(
+        project_dir / "s1.jsonl",
+        [
+            turn_line(timestamp="2026-08-05T09:00:00.000Z"),
+            ignorable_line("cost-state", totalCostUSD=0.01, hasUnknownModelCost=False),
+        ],
+    )
+    corpus = load_corpus([project_dir])
+    section = reconcile_mod.reconcile(corpus, PRICING, CONFIG, admin_rows=[], config_dir=tmp_path / "config")
     assert_privacy(section)
 
 

@@ -204,9 +204,15 @@ def _reach_text(reach: dict) -> str:
     return ", ".join(parts) or "none in this window"
 
 
-def _amount(units: Units, usd: float, period: str) -> str:
+def _amount(units: Units, usd: float, period: str, *, prefix: str = "") -> str:
     amount = units.money(usd, period=period)
-    return amount.text() if amount is not None else ""
+    if amount is None:
+        return ""
+    # UX-2: Amount.phrase avoids "about about X% of your weekly usage
+    # limit" -- a subscription's own share text already opens with
+    # "about" (units.Units.money), so a plain f"{prefix}{...}"
+    # concatenation would otherwise double it (finding F3).
+    return amount.phrase(prefix)
 
 
 def _saving(units: Units, usd: float, period: str) -> str:
@@ -507,9 +513,17 @@ def render_markdown(data: dict) -> str:
     lines = ["# Skills review", ""]
     if not data["skills"]:
         return "# Skills review\n\nNo skill listings found in this window.\n"
+    cost_text = data["listing_cost_text"]
+    # UX-2: cost_text is already a rendered string here (not an Amount),
+    # so Amount.phrase's dedup is redone by hand -- a subscription's own
+    # text already opens with "about" (units.Units.money), which would
+    # otherwise double into "about about X%..." (finding F3).
+    cost_clause = ""
+    if cost_text:
+        cost_clause = f", {cost_text}" if cost_text.lower().startswith("about ") else f", about {cost_text}"
     lines.append(
         f"Skill listings take about {data['listing_tokens']} tokens at the start of each session and subagent"
-        + (f", about {data['listing_cost_text']}." if data["listing_cost_text"] else ".")
+        + cost_clause + "."
     )
     lines.append("")
     for fix in data.get("fixes") or ():

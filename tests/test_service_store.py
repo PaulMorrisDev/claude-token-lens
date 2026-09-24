@@ -534,13 +534,17 @@ def test_migrate_backs_up_and_rebuilds_a_newer_than_code_store(tmp_path) -> None
     """Review B2: a recorded schema_version newer than the running
     code's own is the one case (besides "no ladder step") a migration
     genuinely can't serve -- but the old file must be copied aside
-    first, never just silently dropped."""
+    first, never just silently dropped. ROB-P6: a rating and a tag
+    aren't re-derivable from transcripts the way the rest of the store
+    is, so they must survive the rebuild itself, not just the backup."""
     from claude_token_lens.service import schema
 
     db_path = tmp_path / "newer.db"
     store = Store(str(db_path))
     store.open()
     _seed(store)
+    store.set_feedback("session-a", outcome="delivered", slow=(), worth="yes", helped=())
+    store.set_tag("session-a", "purpose", "refactor")
     assert store.summary()["sessions"] == 1
     store.close()
 
@@ -560,10 +564,105 @@ def test_migrate_backs_up_and_rebuilds_a_newer_than_code_store(tmp_path) -> None
         assert reopened.schema_version() == schema.SCHEMA_VERSION
         assert reopened.summary()["sessions"] == 0
 
-        backup_path = db_path.with_name(db_path.name + f".bak-{newer_version}")
-        assert backup_path.exists(), "no backup was made before the newer-than-code store was rebuilt"
+        # ROB-P6: a timestamped, never-overwritten backup, not the bare
+        # "<path>.bak-<version>" of before.
+        backups = list(tmp_path.glob(f"newer.db.bak-{newer_version}-*"))
+        assert len(backups) == 1, "no (or more than one) backup was made before the newer-than-code store was rebuilt"
+
+        # The rating and the tag survive the drop-and-rebuild, even though
+        # "session-a" doesn't exist in the freshly recreated sessions table
+        # yet (the next watcher tick repopulates it).
+        assert reopened.feedback("session-a") == {
+            "outcome": "delivered", "slow": [], "worth": "yes", "helped": [], "set_at": reopened.feedback("session-a")["set_at"],
+        }
+        assert reopened.all_tags().get("session-a") == {"purpose": "refactor"}
     finally:
         reopened.close()
+
+
+def test_a_second_rebuild_of_the_same_version_gets_its_own_backup(tmp_path) -> None:
+    """ROB-P6: the backup must never be overwritten -- two drop-and-
+    rebuilds of a store recorded at the same unmigratable version (e.g.
+    two 'serve' starts against a downgraded install) each get their own
+    file, not one silently clobbering the other's data."""
+    from claude_token_lens.service import schema
+
+    db_path = tmp_path / "store.db"
+    Store(str(db_path)).open()
+    newer_version = schema.SCHEMA_VERSION + 1
+
+    def _mark_newer() -> None:
+        conn = sqlite3.connect(str(db_path))
+        conn.execute(
+            "INSERT INTO meta (key, value) VALUES ('schema_version', ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (str(newer_version),),
+        )
+        conn.commit()
+        conn.close()
+
+    _mark_newer()
+    Store(str(db_path)).open()
+    _mark_newer()
+    Store(str(db_path)).open()
+
+    backups = list(tmp_path.glob(f"store.db.bak-{newer_version}-*"))
+    assert len(backups) == 2, f"expected two distinct backups, found {[p.name for p in backups]}"
+
+
+def test_a_v7_to_v6_to_v7_round_trip_keeps_the_ratings(tmp_path, monkeypatch) -> None:
+    """ROB-P6: session_feedback and session_tags are exported before a
+    drop-and-rebuild and re-imported after, so a store that briefly looks
+    older or newer than this build's own SCHEMA_VERSION -- e.g. an
+    install downgraded and then upgraded again -- doesn't lose your
+    ratings and tags along the way, even though the rest of the store
+    (freely re-derivable from transcripts, or -- for a prediction, EST-P5
+    -- from prediction-log.jsonl) is dropped and starts empty."""
+    from claude_token_lens.service import schema
+
+    db_path = tmp_path / "roundtrip.db"
+    store = Store(str(db_path))
+    store.open()  # built fresh at the real, current SCHEMA_VERSION (7)
+    _seed(store)
+    store.set_feedback("session-a", outcome="delivered", slow=("scope",), worth="yes", helped=("clearer-brief",))
+    store.set_tag("session-a", "purpose", "refactor")
+    store.upsert_prediction(
+        prediction_id="pred-1", ts="2026-09-20T09:00:00Z", source="whatif", measure_key="model",
+        agent=None, predicted_usd=1.5, predicted_pct=None, fidelity="ceiling",
+    )
+    store.close()
+
+    # "Downgrade": a build that only knows up to v6 opens this v7 store.
+    # v7 is newer than that build's own SCHEMA_VERSION, so migrate() takes
+    # the backup-then-drop-and-rebuild path (same branch as the test
+    # above), stamping the store back down to "6".
+    monkeypatch.setattr(schema, "SCHEMA_VERSION", schema.SCHEMA_VERSION - 1)
+    downgraded = Store(str(db_path))
+    downgraded.open()
+    assert downgraded.schema_version() == 6
+    downgraded.close()
+
+    # Upgrade back to the real, current build: v6 -> v7 walks the
+    # additive MIGRATIONS ladder (it never drops a table), so this step
+    # alone was never the risk -- the ratings must already have survived
+    # the downgrade step above to still be here now.
+    monkeypatch.undo()
+    upgraded = Store(str(db_path))
+    upgraded.open()
+    try:
+        assert upgraded.schema_version() == schema.SCHEMA_VERSION == 7
+        assert upgraded.feedback("session-a") == {
+            "outcome": "delivered", "slow": ["scope"], "worth": "yes", "helped": ["clearer-brief"],
+            "set_at": upgraded.feedback("session-a")["set_at"],
+        }
+        assert upgraded.all_tags().get("session-a") == {"purpose": "refactor"}
+        # Predictions aren't ROB-P6-protected (unlike ratings/tags, a
+        # prediction is re-ingestible from prediction-log.jsonl on the
+        # next watcher tick) -- the round trip's drop-and-rebuild loses
+        # it, and that's fine by design.
+        assert upgraded.predictions() == []
+    finally:
+        upgraded.close()
 
 
 def test_migrate_is_idempotent(store: Store) -> None:
@@ -1114,6 +1213,64 @@ def test_retention_prune_removes_old_ratings(store: Store) -> None:
     assert store.all_feedback() == {}
 
 
+def test_upsert_prediction_is_idempotent_on_its_id(store: Store) -> None:
+    inserted = store.upsert_prediction(
+        prediction_id="pred-1", ts="2026-09-20T09:00:00Z", source="whatif", measure_key="model",
+        agent=None, predicted_usd=1.5, predicted_pct=None, fidelity="ceiling",
+    )
+    again = store.upsert_prediction(
+        prediction_id="pred-1", ts="2026-09-20T09:00:00Z", source="whatif", measure_key="model",
+        agent=None, predicted_usd=9.9, predicted_pct=None, fidelity="ceiling",
+    )
+    assert inserted is True and again is False
+    [row] = store.predictions()
+    assert row["predicted_usd"] == 1.5  # the second (differing) write was ignored
+
+
+def test_mark_prediction_seen_and_judge_prediction(store: Store) -> None:
+    store.upsert_prediction(
+        prediction_id="pred-1", ts="2026-09-20T09:00:00Z", source="whatif", measure_key="agent_cost",
+        agent="Explore", predicted_usd=2.0, predicted_pct=None, fidelity="ceiling",
+    )
+    assert store.mark_prediction_seen("pred-1") is True
+    assert store.mark_prediction_seen("pred-1") is False  # already seen
+    assert store.mark_prediction_seen("no-such-id") is False
+    assert store.predictions(judged=False)[0]["seen_at"]
+    assert store.predictions(judged=True) == []
+
+    store.judge_prediction(
+        "pred-1", change_ts="2026-09-21T09:00:00Z", verdict="as_estimated", measured_usd=1.8, measured_pct=None
+    )
+    [judged] = store.predictions(judged=True)
+    assert judged["verdict"] == "as_estimated" and judged["measured_usd"] == 1.8 and judged["judged_at"]
+    assert store.predictions(judged=False) == []
+
+
+def test_prune_predictions_drops_stale_unjudged_and_old_judged_rows(store: Store) -> None:
+    store.upsert_prediction(
+        prediction_id="fresh", ts="2026-09-20T09:00:00Z", source="whatif", measure_key="model",
+        agent=None, predicted_usd=1.0, predicted_pct=None, fidelity="ceiling",
+    )
+    store.upsert_prediction(
+        prediction_id="stale-unjudged", ts="2026-01-01T09:00:00Z", source="whatif", measure_key="model",
+        agent=None, predicted_usd=1.0, predicted_pct=None, fidelity="ceiling",
+    )
+    store.upsert_prediction(
+        prediction_id="old-judged", ts="2025-01-01T09:00:00Z", source="whatif", measure_key="model",
+        agent=None, predicted_usd=1.0, predicted_pct=None, fidelity="ceiling",
+    )
+    store.judge_prediction(
+        "old-judged", change_ts="2025-01-02T09:00:00Z", verdict="smaller", measured_usd=0.1, measured_pct=None
+    )
+    conn = store._connection()
+    conn.execute("UPDATE predictions SET judged_at = '2025-01-02T09:00:00Z' WHERE id = 'old-judged'")
+
+    removed = store.prune_predictions(now="2026-09-24T09:00:00Z")
+    assert removed == 2
+    remaining = {row["id"] for row in store.predictions()}
+    assert remaining == {"fresh"}
+
+
 def test_migrate_upgrades_a_v5_store_with_the_feedback_table(tmp_path) -> None:
     from claude_token_lens.service import schema
     from claude_token_lens.service import store as store_mod
@@ -1131,7 +1288,7 @@ def test_migrate_upgrades_a_v5_store_with_the_feedback_table(tmp_path) -> None:
     store = Store(str(db_path))
     store.open()
     try:
-        assert store.schema_version() == schema.SCHEMA_VERSION == 6
+        assert store.schema_version() == schema.SCHEMA_VERSION == 7
         assert store.session("session-a") is not None
         assert store.tags("session-a") == {"purpose": "refactor-override"}
         store.set_feedback("session-a", outcome="met", worth="yes")

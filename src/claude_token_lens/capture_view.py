@@ -20,6 +20,7 @@ from datetime import datetime
 
 from . import capture as capture_mod
 from . import capture_catalogue as catalogue
+from . import habits
 from .config import CAPTURE_SAMPLES, CaptureConfig
 from .render.tables import format_cell
 
@@ -87,16 +88,19 @@ LOW_COVERAGE_MIN_CYCLES = 20
 NO_NOTES_MIN_SESSIONS = 3
 
 
-def amount_text(units, usd: float, period: str = "") -> str:
+def amount_text(units, usd: float, period: str = "", *, prefix: str = "") -> str:
     """``usd`` phrased for the billing mode (a share of the weekly limit
     on a subscription, when it can be worked out); ``"nothing"`` for
-    zero."""
+    zero. ``prefix`` (UX-2, e.g. ``"about "``) is joined via
+    ``Amount.phrase``, which avoids doubling "about" when the phrased
+    text already opens with it -- not applied to the tiny-API-amount
+    "under $0.01" branch, which already reads as an approximation."""
     if usd <= 0:
         return "nothing"
     if units.billing_mode != "subscription" and usd < 0.005:
         return f"under {format_cell(0.01, 'money', units.currency)}" + (f" {period}" if period else "")
     amount = units.money(usd, period=period)
-    return amount.text() if amount is not None else "nothing"
+    return amount.phrase(prefix) if amount is not None else "nothing"
 
 
 def describe(capture: CaptureConfig) -> str:
@@ -185,8 +189,11 @@ def _tokens(value: int) -> str:
     return format_cell(value, "tokens")
 
 
-def _money(units, usd: float, period: str = "") -> dict:
-    return {"usd": round(usd, 6), "text": amount_text(units, usd, period) if units is not None else ""}
+def _money(units, usd: float, period: str = "", *, prefix: str = "") -> dict:
+    return {
+        "usd": round(usd, 6),
+        "text": amount_text(units, usd, period, prefix=prefix) if units is not None else "",
+    }
 
 
 def _estimate_block(est, units) -> dict:
@@ -333,6 +340,37 @@ def _metric_row(
     }
 
 
+def _worth(rows: list[dict], capture: CaptureConfig, use, units, now: datetime | None = None) -> list[dict]:
+    """CAP-5 (gap 4): each active, asked metric's measured cost a week
+    against the decisions it feeds (``powers``, already worked out on
+    each row) -- the same trace ``capture_catalogue.render_markdown``
+    gives statically (rough output tokens per occurrence), measured here
+    from your own transcripts instead, in money a week (``use.by_metric``
+    only splits cost, not raw tokens, per metric). Empty while there's no
+    start time to spread a week's figure over, nothing measured yet, or
+    (SURV-8) fewer than ``habits.MIN_GROUP`` sessions have a note to
+    measure from yet -- a metric's per-note weighting looks stable well
+    before that many sessions, and a table built from one session's notes
+    (formerly a dozen rows from a single session) is noise, not a trend."""
+    if use is None or not capture.enabled_at:
+        return []
+    if use.sessions < habits.MIN_GROUP:
+        return []
+    weeks = capture_mod.weeks_since(capture.enabled_at, now)
+    if not weeks:
+        return []
+    worth = []
+    for row in rows:
+        if not row["on"] or not row["asks_claude"]:
+            continue
+        total = use.by_metric.get(row["id"], 0.0)
+        if total <= 0:
+            continue
+        worth.append({"id": row["id"], "title": row["title"], "feeds": row["powers"], **_money(units, total / weeks, "a week")})
+    worth.sort(key=lambda r: r["usd"], reverse=True)
+    return worth
+
+
 def _measured(use, units) -> dict | None:
     if use is None:
         return None
@@ -358,6 +396,10 @@ def _measured(use, units) -> dict | None:
             scope: {"note_tokens": s.note_tokens, "tag_tokens": s.tag_tokens, **_money(units, s.cost)}
             for scope, s in sorted(use.scopes.items())
         },
+        # SURV-3: notes landing after a compact boundary, shown as their
+        # own line rather than folded into a scope's cost -- the carried
+        # prefix a compaction would have discounted them against is gone.
+        "after_compact": {"notes": use.after_compact_notes, **_money(units, use.after_compact_cost)},
         "daily": [{"day": day, "usd": round(usd, 6)} for day, usd in sorted(use.daily.items())],
     }
 
@@ -374,11 +416,48 @@ def _roi(weekly_cost: float | None, dependent_value: float | None, units) -> dic
     not a zero, while nothing measured yet depends on either."""
     if weekly_cost is None:
         return None
+    # UX-2: weekly_cost/dependent_value are already per-week figures. A
+    # subscription's own phrasing already says "of your weekly usage
+    # limit" (units.Units.money), so period="a week" there would read as
+    # "weekly usage limit a week" -- only stated for API billing, where
+    # the phrased amount is just a dollar figure. Both amounts also carry
+    # "about " via Amount.phrase, which dedupes against a subscription's
+    # own "about" rather than doubling it (_banner/app.js's ROI note
+    # doesn't repeat "about" itself, relying on this).
+    period = "a week" if units is None or units.billing_mode != "subscription" else ""
     return {
-        "cost": _money(units, weekly_cost, "a week"),
-        "value": _money(units, dependent_value, "a week") if dependent_value is not None else None,
+        "cost": _money(units, weekly_cost, period, prefix="about "),
+        "value": _money(units, dependent_value, period, prefix="about ") if dependent_value is not None else None,
         "measured": dependent_value is not None,
     }
+
+
+def _step_down_note(capture: CaptureConfig, rows: list[dict]) -> str | None:
+    """CAP-7: a specific one-level step-down command, once every metric
+    a step down would actually drop has enough of its own evidence
+    (the same per-metric readiness the "Enough collected" note below
+    already uses, scoped to just those metrics rather than every active
+    one). Cheap -- only looks at ``rows``, already built from
+    ``capture.usage``, no new replay -- so it runs on every ``/api/
+    capture`` poll. Unlike ``habits.capture_step_down_suggestion`` (the
+    report's own CAP-7 note), this never checks whether ``d_level`` has
+    settled: that needs a full habits pass over the corpus, which this
+    endpoint doesn't already pay for and polling shouldn't add. The
+    report's capture section carries the fuller, calibration-gated
+    suggestion; this is the lighter dashboard hint the "if cheap"
+    allowance covers."""
+    target = habits.CAPTURE_STEP_DOWN.get(capture.level)
+    if target is None:
+        return None
+    dropped_ids = set(catalogue.level_metrics(capture.level)) - set(catalogue.level_metrics(target))
+    dropped_rows = [r for r in rows if r["id"] in dropped_ids and r["asks_claude"]]
+    if not dropped_rows or any(r["enough"] is not True for r in dropped_rows):
+        return None
+    return (
+        f"Every metric {catalogue.LEVEL_TITLES[capture.level]} adds over {catalogue.LEVEL_TITLES[target]} has "
+        f"enough collected ({', '.join(r['id'] for r in dropped_rows)}). "
+        + habits.step_down_terms(capture.level, target)
+    )
 
 
 def _banner(
@@ -446,16 +525,22 @@ def _banner(
             f"Claude tagged only {_pct(use.coverage)} of your messages, so some figures rest on few answers."
         )
     if roi is not None and roi["cost"]["usd"] > 0 and roi["cost"]["text"]:
+        # UX-2: roi["cost"]["text"]/["value"]["text"] already carry their
+        # own "about" (see _roi) -- not repeated here, or a subscription's
+        # would double into "about about X%...".
         if roi["measured"]:
             notes.append(
-                f"Capture cost about {roi['cost']['text']}; suggestions that rely on it are worth about "
+                f"Capture cost {roi['cost']['text']}; suggestions that rely on it are worth "
                 f"{roi['value']['text']}."
             )
         else:
-            notes.append(f"Capture cost about {roi['cost']['text']}; nothing measured yet relies on it.")
+            notes.append(f"Capture cost {roi['cost']['text']}; nothing measured yet relies on it.")
     counted = [r for r in rows if r["enough"] is not None and r["asks_claude"]]
     ready = [r for r in counted if r["enough"]]
-    if counted and len(ready) == len(counted):
+    step_note = _step_down_note(capture, rows)
+    if step_note is not None:
+        notes.append(step_note)
+    elif counted and len(ready) == len(counted):
         notes.append("Enough collected for every metric on: you could lower the level to save its cost.")
     elif ready:
         notes.append(
@@ -527,6 +612,7 @@ def view(
         for section, title in catalogue.SECTIONS.items()
     ]
     measured = _measured(use, units)
+    worth = _worth(rows, capture, use, units, now)
     history = (
         {"days": past.days, "sessions": past.sessions, "subagents": past.subagents, "cycles": past.cycles}
         if past is not None
@@ -540,6 +626,10 @@ def view(
         "levels": levels,
         "sections": [s for s in sections if s["metrics"]],
         "measured": measured,
+        "worth": worth,
+        # SURV-8: so a consumer can explain an empty ``worth`` as "N of
+        # <worth_min_sessions> sessions with notes" rather than silence.
+        "worth_min_sessions": habits.MIN_GROUP,
         "history": history,
         "hooks": hooks_data,
         "billing": {

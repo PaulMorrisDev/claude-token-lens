@@ -106,6 +106,25 @@ figure already computed for that block onto ``current.tool_error_chars``
 The same loop reads the start of each error's text to record why it
 failed (:func:`_tool_error_kind`, ``Turn.tool_errors_by_kind``); only
 the kind is kept.
+
+Parser-signals batch (SURV-5/6/7, ``PARSER_VERSION`` 19, see model.py's
+and events.py's own module docstrings): ``"cost-state"`` joins the
+``elif line_type ==`` chain above ``events_mod.classify_line`` the same
+way ``"mode"``/``"agent-setting"`` already do -- its own value (the last
+``totalCostUSD``/``hasUnknownModelCost`` seen) is read directly onto
+``final_meta`` rather than carried as an ``Event``, and the type itself
+now sits in ``events._IGNORABLE_TYPES`` so it lands in the long-standing
+``Diagnostics.ignored_line_types`` bucket like every other deliberately-
+ignored type. ``parser_notes["unknown_line_types"]``/``["unsized_blocks"]``
+are two new counters that don't fit ``Diagnostics`` (whose field list
+this phase was told not to touch): the former is populated in the
+existing ``EventKind.UNKNOWN`` branch below (a type classify_line had no
+rule for at all, sanitised via ``events.sanitize_line_type``); the
+latter is populated by ``_tool_result_length`` for a tool_result's own
+image/document blocks and folded in from a HUMAN_TEXT event's own
+``detail["unsized_blocks"]`` for a top-level human-prompt image (see
+``events.content_block_size``) -- one counter, two sources, both flagged
+"unsized" rather than guessed at when this parser can't size a block.
 """
 
 from __future__ import annotations
@@ -188,6 +207,15 @@ _MSYS_DRIVE_RE = re.compile(r"^/([A-Za-z])(?=/|$)")
 
 _CMD_PREFIX_MAX_CHARS = 40
 
+#: H1/ROB-P1: only the first ``_CMD_PREFIX_MAX_CHARS`` of a redacted
+#: command are ever kept, but ``_redact_paths``'s regexes previously ran
+#: on the whole, unbounded ``input.command`` string first -- a command
+#: embedding a huge unbroken blob (a base64 heredoc, say) paid to
+#: redact content nobody stores. ``_cap_command_for_redaction`` below
+#: caps the input to this many characters first, well above
+#: ``_CMD_PREFIX_MAX_CHARS`` so the kept prefix is unaffected.
+_CMD_REDACT_INPUT_MAX_CHARS = 512
+
 #: Usage-limits addition (see module docstring): event kinds whose
 #: presence among a turn's preceding events marks its gap as a usage-cap
 #: pause rather than idle/behavioural time (``Turn.gap_cause``).
@@ -244,6 +272,30 @@ _URL_TOKEN_RE = re.compile(r"""https?://[^\s"']+|www\.[^\s"']+""")
 _AT_TOKEN_RE = re.compile(r"""[^\s"']*@[^\s"']*""")
 
 
+def _cap_command_for_redaction(command: str) -> str:
+    """``command`` capped to ``_CMD_REDACT_INPUT_MAX_CHARS`` (H1/ROB-P1),
+    at a whitespace boundary rather than a hard character cut: a token
+    straddling the cutoff -- e.g. an ``ssh user@host`` target whose
+    ``@`` lands just past it -- is dropped whole rather than left as an
+    identity-bearing fragment whose own redaction trigger got cut off.
+    A command with no whitespace at all in its first
+    ``_CMD_REDACT_INPUT_MAX_CHARS`` characters (one huge unbroken token
+    -- a base64 heredoc, say) falls back to a hard cut: every
+    ``_redact_paths`` pattern is a run of non-whitespace/quote
+    characters with no required closing delimiter, so a hard cut mid
+    such a token still matches (and still collapses to the same fixed
+    placeholder) all the way to the truncated end, same as the
+    uncapped input would past that point.
+    """
+    if len(command) <= _CMD_REDACT_INPUT_MAX_CHARS:
+        return command
+    head = command[:_CMD_REDACT_INPUT_MAX_CHARS]
+    for i in range(len(head) - 1, -1, -1):
+        if head[i].isspace():
+            return head[:i]
+    return head
+
+
 def _redact_paths(text: str) -> str:
     """Replace every absolute- or relative-path-shaped token in ``text``
     with ``<path>``, every URL with ``<url>``, and every ``@``-bearing
@@ -251,7 +303,10 @@ def _redact_paths(text: str) -> str:
     ``<user@host>`` — keeping the surrounding verb/flags intact. Called
     before truncation so a path, URL, or user@host/email near the
     40-char cutoff can't leak a partial drive letter, username fragment,
-    query string, or domain.
+    query string, or domain. The caller already caps ``text`` to
+    ``_CMD_REDACT_INPUT_MAX_CHARS`` (H1/ROB-P1) before it reaches here,
+    at a whitespace boundary, so this never walks more of a huge
+    command than the kept prefix could ever need.
 
     URLs are redacted first: ``_ABS_PATH_TOKEN_RE``'s drive-letter
     alternative (``[A-Za-z]:[\\/]``) is happy to match the single
@@ -337,28 +392,35 @@ def load_or_create_salt(config_dir: str | Path | None = None) -> bytes:
     ``_default_token_lens_dir()``. Does not call ``set_salt`` itself — the
     caller decides when the process-wide salt is wired up.
 
-    Fix #4: any read failure — not just a missing file (``PermissionError``,
-    ``IsADirectoryError``, a dead network mount, ...) — is treated as "no
-    salt yet" rather than propagating and crashing the caller, and a salt
-    file whose length is not exactly :data:`_SALT_LENGTH_BYTES` (a
-    zero-byte file from an interrupted first write, a truncated sync, a
-    hand-edited file) is likewise treated as absent and regenerated —
-    returning it unsalted would defeat the whole hashing mechanism (a
-    zero-length salt makes ``_read_target_hash`` produce a plain,
-    rainbow-table-able HMAC). The replacement file is created via
-    ``os.open`` with ``O_CREAT`` and mode ``0o600`` together, so a
-    brand-new file is never briefly world-readable between creation and a
-    separate ``chmod`` call; ``chmod`` still runs afterwards (best-effort,
-    ignored on Windows, which has no equivalent bit) to cover the
-    overwrite-an-existing-but-invalid-file branch, where ``O_CREAT``'s mode
-    argument has no effect on an already-existing inode's permissions.
+    Fix #4, narrowed by SEC-P8/G7: only a missing file (``FileNotFoundError``)
+    is treated as "no salt yet" and silently regenerated. A read failure
+    that means the file is *there* but unreadable right now
+    (``PermissionError``, ``IsADirectoryError``, a dead network mount, ...)
+    propagates instead of being folded into the same "missing" case --
+    the old, broader ``except OSError`` would rotate the salt on a
+    transient permission problem exactly as if the file had never
+    existed, silently breaking every session-id hash correlation this
+    tool has ever written to ``signals/`` or a cache's provenance header,
+    for a condition that is usually temporary. A salt file whose length
+    is not exactly :data:`_SALT_LENGTH_BYTES` (a zero-byte file from an
+    interrupted first write, a truncated sync, a hand-edited file) is
+    still treated as absent and regenerated -- returning it unsalted
+    would defeat the whole hashing mechanism (a zero-length salt makes
+    ``_read_target_hash`` produce a plain, rainbow-table-able HMAC). The
+    replacement file is created via ``os.open`` with ``O_CREAT`` and mode
+    ``0o600`` together, so a brand-new file is never briefly
+    world-readable between creation and a separate ``chmod`` call;
+    ``chmod`` still runs afterwards (best-effort, ignored on Windows,
+    which has no equivalent bit) to cover the overwrite-an-existing-but-
+    invalid-file branch, where ``O_CREAT``'s mode argument has no effect
+    on an already-existing inode's permissions.
     """
     directory = Path(config_dir) if config_dir is not None else _default_token_lens_dir()
     directory.mkdir(parents=True, exist_ok=True)
     salt_path = directory / _SALT_FILENAME
     try:
         existing = salt_path.read_bytes()
-    except OSError:
+    except FileNotFoundError:
         existing = None
     if existing is not None and len(existing) == _SALT_LENGTH_BYTES:
         return existing
@@ -605,7 +667,11 @@ class _PendingTurn:
     tool_error_count: int = 0
     tool_error_chars: int = 0
     #: Context-files addition (see model.py's ``Turn.skills_invoked``).
-    skills_invoked: list[str] = field(default_factory=list)
+    #: SEC-P3: keyed by the ``Skill`` tool_use's own id rather than
+    #: appended eagerly, so a call whose result later errors can be taken
+    #: back (mirrors ``edit_hashes_by_tool_use`` below) instead of
+    #: self-authorising its own name for this same turn's tag claim.
+    skill_calls_by_tool_use: dict[str, str] = field(default_factory=dict)
     #: Quality-signals addition (see model.py's ``Turn.stop_reason``/
     #: ``tool_errors_by_tool``/``edit_target_hashes``).
     stop_reason: str | None = None
@@ -672,7 +738,8 @@ def _merge_content_blocks(
         if pending.cmd_prefix is None and name in _SHELL_TOOL_NAMES:
             command = tool_input.get("command")
             if isinstance(command, str) and command:
-                redacted = _redact_paths(_escape_newlines(command))
+                capped = _cap_command_for_redaction(command)
+                redacted = _redact_paths(_escape_newlines(capped))
                 pending.cmd_prefix = redacted[:_CMD_PREFIX_MAX_CHARS]
         path_key = _EDIT_TOOL_PATH_KEYS.get(name)
         if path_key is not None:
@@ -725,9 +792,17 @@ def _merge_content_blocks(
                 pending.edit_hashes_by_tool_use.setdefault(tool_use_id, []).extend(edited)
 
         if name == "Skill":
+            # SEC-P3: only a name shaped like a real skill is even a
+            # candidate, and it's provisional until the call comes back
+            # without an error -- see _accumulate_tool_results.
             skill_name = tool_input.get("skill")
-            if isinstance(skill_name, str) and skill_name:
-                pending.skills_invoked.append(skill_name)
+            if (
+                isinstance(skill_name, str)
+                and capture_tags.SKILL_NAME_RE.match(skill_name)
+                and isinstance(tool_use_id, str)
+                and tool_use_id
+            ):
+                pending.skill_calls_by_tool_use[tool_use_id] = skill_name
         elif name == "ExitPlanMode":
             plan = tool_input.get("plan")
             if isinstance(plan, str) and plan:
@@ -871,16 +946,31 @@ def _merge_into_pending(pending: _PendingTurn, d: dict, tool_use_names: dict[str
     _merge_stop_reason(pending, message)
 
 
-def _tool_result_length(content) -> int:
+def _tool_result_length(content, unsized_blocks: dict[str, int]) -> int:
     if isinstance(content, str):
         return len(content)
     if isinstance(content, list):
         total = 0
         for block in content:
-            if isinstance(block, dict) and block.get("type") == "text":
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "text":
                 text = block.get("text")
                 if isinstance(text, str):
                     total += len(text)
+                continue
+            # Parser-signals addition (SURV-7, see events.py's module
+            # docstring): an image/document block nested in a tool_result's
+            # own content, sized by the same documented token rule as a
+            # top-level human-prompt image -- previously silently counted
+            # as 0 chars (plan finding S4: 1,207 blocks).
+            chars, block_type = events_mod.content_block_size(block)
+            if block_type is None:
+                continue
+            if chars is not None:
+                total += chars
+            else:
+                unsized_blocks[block_type] = unsized_blocks.get(block_type, 0) + 1
         return total
     return 0
 
@@ -935,6 +1025,7 @@ def _accumulate_tool_results(
     tool_use_names: dict[str, str],
     tool_result_chars: dict[str, int],
     tool_result_calls: dict[str, int],
+    unsized_blocks: dict[str, int],
     current: _PendingTurn | None = None,
 ) -> None:
     message = d.get("message")
@@ -954,7 +1045,7 @@ def _accumulate_tool_results(
         name = tool_use_names.pop(tool_use_id, None) if isinstance(tool_use_id, str) else None
         if name is None:
             continue
-        length = _tool_result_length(block.get("content"))
+        length = _tool_result_length(block.get("content"), unsized_blocks)
         tool_result_chars[name] = tool_result_chars.get(name, 0) + length
         tool_result_calls[name] = tool_result_calls.get(name, 0) + 1
         if (
@@ -984,6 +1075,11 @@ def _accumulate_tool_results(
                 if edited and (name not in _SHELL_TOOL_NAMES or kind in _SHELL_NOT_RUN_KINDS):
                     for hashed in edited:
                         current.edit_target_hashes.remove(hashed)
+                # SEC-P3: a Skill call that errored never happened as far
+                # as "known skills" is concerned -- take back its
+                # provisional name so it can't self-authorise this same
+                # turn's own tag claim.
+                current.skill_calls_by_tool_use.pop(tool_use_id, None)
             # Metrics-capture addition: the report a synchronous agent
             # handed back (a background agent's launch message is not its
             # report; that arrives later as a task notification), and
@@ -1130,9 +1226,14 @@ def _finalize_turn(
     result_marker: str | None = None
     feedback = pending.feedback
     if pending.last_text_tail:
-        known_skills = set(skill_names or ()) | set(pending.skills_invoked)
+        known_skills = set(skill_names or ()) | set(pending.skill_calls_by_tool_use.values())
         cap, result_marker = capture_tags.parse_reply_tags(pending.last_text_tail, known_skills)
-        feedback = capture_tags.parse_feedback_tag(pending.last_text_tail) or feedback
+        # SEC-P1: the answers to /tl-feedback's own question (or a
+        # declined question) beat a `[tl-fb: ...]` tag -- Claude could
+        # forge that tag in any reply, but not the AskUserQuestion call
+        # its answers are read from.
+        if feedback is None:
+            feedback = capture_tags.parse_feedback_tag(pending.last_text_tail)
 
     # Usage-limits addition (see module docstring): a limit-hit/resume
     # among the events preceding this turn means the gap to the previous
@@ -1190,7 +1291,7 @@ def _finalize_turn(
         gap_cause=gap_cause,
         tool_error_count=pending.tool_error_count,
         tool_error_chars=pending.tool_error_chars,
-        skills_invoked=tuple(pending.skills_invoked),
+        skills_invoked=tuple(pending.skill_calls_by_tool_use.values()),
         stop_reason=pending.stop_reason,
         tool_calls_by_tool=dict(pending.tool_calls_by_tool),
         tool_errors_by_tool=dict(pending.tool_errors_by_tool),
@@ -1217,9 +1318,10 @@ def parse_transcript(path: str | Path, meta: TranscriptMeta) -> TranscriptResult
 
     ``meta`` is provenance the caller already knows (from
     ``discovery.py``) — this function fills in ``turns``, ``events``,
-    ``diagnostics``, ``tool_result_chars`` and ``tool_result_calls``
-    around it; it never mutates ``meta`` (see module docstring for the
-    ``claude_version``/``entrypoint``/``provider`` derivation this
+    ``diagnostics``, ``tool_result_chars``, ``tool_result_calls`` and
+    ``parser_notes`` around it; it never mutates ``meta`` (see module
+    docstring for the ``claude_version``/``entrypoint``/``provider``/
+    ``cc_cost_usd``/``cc_cost_has_unknown_model`` derivation this
     function's *returned* meta copy adds on top).
     """
     line_stats = jsonl.LineStats()
@@ -1232,6 +1334,19 @@ def parse_transcript(path: str | Path, meta: TranscriptMeta) -> TranscriptResult
     #: Deliberately not scoped to the current turn: a tool_result can
     #: reference a tool_use from an earlier turn.
     tool_use_names: dict[str, str] = {}
+    #: Parser-signals addition (SURV-6/7, see model.py's module
+    #: docstring): counters for ``TranscriptResult.parser_notes``, kept
+    #: apart from ``Diagnostics`` (off limits this phase). ``unsized_blocks``
+    #: is shared by the tool_result path (``_tool_result_length``, below)
+    #: and the human-prompt path (a HUMAN_TEXT event's own
+    #: ``detail["unsized_blocks"]``, folded in once that event is built).
+    unsized_blocks: dict[str, int] = {}
+    unknown_line_types: dict[str, int] = {}
+    #: Parser-signals addition (SURV-5): the last ``cost-state`` line's
+    #: own ``totalCostUSD``/``hasUnknownModelCost`` (a running total, so
+    #: the last one seen in file order is the most complete).
+    cc_cost_usd: float | None = None
+    cc_cost_has_unknown_model = False
     #: Batch C addition: first non-empty ``entrypoint``/``version`` field
     #: seen on any raw line, in file order. Every line type carries these
     #: (when present), not just assistant lines.
@@ -1352,7 +1467,7 @@ def parse_transcript(path: str | Path, meta: TranscriptMeta) -> TranscriptResult
             continue
 
         if line_type == "user":
-            _accumulate_tool_results(d, tool_use_names, tool_result_chars, tool_result_calls, current)
+            _accumulate_tool_results(d, tool_use_names, tool_result_chars, tool_result_calls, unsized_blocks, current)
         elif line_type == "agent-setting":
             value = d.get("agentSetting")
             if isinstance(value, str) and value:
@@ -1361,6 +1476,14 @@ def parse_transcript(path: str | Path, meta: TranscriptMeta) -> TranscriptResult
             value = d.get("mode")
             if isinstance(value, str) and value:
                 diagnostics.modes[value] = diagnostics.modes.get(value, 0) + 1
+        elif line_type == "cost-state":
+            # Parser-signals addition (SURV-5): numbers only, no OTel --
+            # feeds reconcile.claude_code_reported_costs (see that
+            # module's own docstring).
+            cost_raw = d.get("totalCostUSD")
+            if isinstance(cost_raw, (int, float)) and not isinstance(cost_raw, bool):
+                cc_cost_usd = float(cost_raw)
+                cc_cost_has_unknown_model = bool(d.get("hasUnknownModelCost"))
         elif line_type == "attachment":
             attachment = d.get("attachment")
             if isinstance(attachment, dict) and attachment.get("type") == "skill_listing":
@@ -1370,8 +1493,16 @@ def parse_transcript(path: str | Path, meta: TranscriptMeta) -> TranscriptResult
 
         event = events_mod.classify_line(d)
         if event is None:
-            diagnostics.ignored_line_types[line_type] = (
-                diagnostics.ignored_line_types.get(line_type, 0) + 1
+            # P10b privacy fix: ignored_line_types is a Diagnostics dict
+            # field, so its key -- like unknown_line_types's below -- must
+            # be the sanitised type, never the raw (attacker-controlled)
+            # ``type`` verbatim. This dict isn't walked by
+            # tests/test_privacy.py's generic length check (see that
+            # module's docstring), so an unsanitised key here would never
+            # have been caught by it.
+            safe_line_type = events_mod.sanitize_line_type(line_type)
+            diagnostics.ignored_line_types[safe_line_type] = (
+                diagnostics.ignored_line_types.get(safe_line_type, 0) + 1
             )
             continue
         events.append(event)
@@ -1379,9 +1510,22 @@ def parse_transcript(path: str | Path, meta: TranscriptMeta) -> TranscriptResult
         if line_type == "attachment":
             attachments_since_current.append(event.subkind or "")
         if event.kind == EventKind.UNKNOWN:
-            diagnostics.ignored_line_types[line_type] = (
-                diagnostics.ignored_line_types.get(line_type, 0) + 1
+            # Parser-signals addition (SURV-6, see model.py's module
+            # docstring): apart from ignored_line_types above, which also
+            # holds types the parser recognises and deliberately drops --
+            # this is specifically a type classify_line had no rule for
+            # at all. Sanitised: ``type`` is attacker-controlled input.
+            sanitized_type = events_mod.sanitize_line_type(line_type)
+            diagnostics.ignored_line_types[sanitized_type] = (
+                diagnostics.ignored_line_types.get(sanitized_type, 0) + 1
             )
+            unknown_line_types[sanitized_type] = unknown_line_types.get(sanitized_type, 0) + 1
+        if event.kind == EventKind.HUMAN_TEXT:
+            # Parser-signals addition (SURV-7): fold a human prompt's own
+            # unsized image/document blocks into the same counter the
+            # tool_result path (_tool_result_length) uses.
+            for block_type, count in (event.detail.get("unsized_blocks") or {}).items():
+                unsized_blocks[block_type] = unsized_blocks.get(block_type, 0) + count
         if event.kind == EventKind.ATTACHMENT:
             subkind = event.subkind or ""
             diagnostics.attachment_catch_all[subkind] = (
@@ -1441,6 +1585,18 @@ def parse_transcript(path: str | Path, meta: TranscriptMeta) -> TranscriptResult
                 cap_version = version
             cap_codes.update(dict.fromkeys(event.detail.get("codes") or ()))
 
+    # SEC-P2: a turn's tag is trusted only for what a note this
+    # transcript actually saw asked for -- empty when it never saw one
+    # at all (capture_tags.filter_tag).
+    requested = frozenset(cap_codes) if cap_injections else frozenset()
+    subagent = meta.kind != "top-level"
+    for i, turn in enumerate(turns):
+        if turn.cap is None and turn.result_marker is None:
+            continue
+        cap, result_marker = capture_tags.filter_tag(turn.cap, turn.result_marker, requested=requested, subagent=subagent)
+        if cap is not turn.cap or result_marker != turn.result_marker:
+            turns[i] = replace(turn, cap=cap, result_marker=result_marker)
+
     final_meta = replace(
         meta,
         entrypoint=meta.entrypoint if meta.entrypoint is not None else first_entrypoint,
@@ -1449,7 +1605,17 @@ def parse_transcript(path: str | Path, meta: TranscriptMeta) -> TranscriptResult
         cap_version=cap_version,
         cap_metrics=tuple(cap_codes),
         cap_injections=cap_injections,
+        cc_cost_usd=cc_cost_usd,
+        cc_cost_has_unknown_model=cc_cost_has_unknown_model,
     )
+
+    # Parser-signals addition (SURV-6/7): only present when non-empty, so
+    # a transcript that saw neither carries no side-channel at all.
+    parser_notes: dict[str, dict[str, int]] = {}
+    if unknown_line_types:
+        parser_notes["unknown_line_types"] = unknown_line_types
+    if unsized_blocks:
+        parser_notes["unsized_blocks"] = unsized_blocks
 
     return TranscriptResult(
         meta=final_meta,
@@ -1458,6 +1624,7 @@ def parse_transcript(path: str | Path, meta: TranscriptMeta) -> TranscriptResult
         diagnostics=diagnostics,
         tool_result_chars=tool_result_chars,
         tool_result_calls=tool_result_calls,
+        parser_notes=parser_notes,
     )
 
 

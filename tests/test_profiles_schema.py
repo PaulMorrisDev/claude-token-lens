@@ -62,6 +62,7 @@ def test_validate_accepts_minimal_profile():
         ("alwaysThinkingEnabled", True),
         ("autoCompactEnabled", False),
         ("cleanupPeriodDays", 30),
+        ("fastMode", False),  # PROF-08
     ],
 )
 def test_validate_accepts_every_settings_key(key, value):
@@ -127,6 +128,17 @@ def test_validate_rejects_unknown_top_level_key():
 def test_validate_rejects_unknown_settings_key():
     problems = validate(_valid_doc(settings={"notARealKey": 1}))
     assert any(p == "settings.notARealKey: unknown key" for p in problems)
+
+
+def test_validate_accepts_xhigh_effort_level():
+    # C3/COV-08: recommend.py, habits.py and helptext.py already use
+    # "xhigh" as an effort level (Opus 5.5 supports low/medium/high/
+    # xhigh/max, V25); the schema used to reject it.
+    assert validate(_valid_doc(settings={"effortLevel": "xhigh"})) == []
+
+
+def test_validate_accepts_xhigh_agent_effort():
+    assert validate(_valid_doc(agents={"claude-implementer": {"effort": "xhigh"}})) == []
 
 
 def test_validate_rejects_unknown_agent_key():
@@ -402,8 +414,36 @@ def test_recommend_py_lever_literals_are_the_expected_set():
     source currently contains, so a newly added rule with a lever this
     test (and ``RECOMMEND_LEVER_MAP``) doesn't yet know about fails here
     first, loudly, instead of silently shipping an unrepresentable lever.
+
+    COV-09 added four of these (recommend.py's env-lever rules): three
+    ``"env:NAME"``-prefixed literals the regex can see directly, plus
+    ``"includeCoAuthoredBy"``. A fifth env-lever rule
+    (``env-disable-prompt-caching``) picks its own lever name dynamically
+    at runtime (``f"env:{name}"`` for whichever ``DISABLE_PROMPT_CACHING*``
+    variant is actually set) and so has no fixed literal for this
+    source-regex scan to find at all -- see
+    ``test_every_recommend_py_lever_literal_is_representable`` below,
+    which is parametrized over this same set and would need a direct
+    call to catch that one, exercised instead by
+    ``tests/test_recommend.py``'s own env-disable-prompt-caching tests.
+
+    COV-01 removed ``"effortLevel"`` from this set: the two effort-
+    mismatch rules used to construct ``Recommendation(lever="effortLevel",
+    ...)`` directly, a bare literal this scan could see, but now resolve
+    their scope first via ``_lever_scope("effortLevel", snapshot)`` and
+    pass the result along as a variable (``lever=lever``) -- same
+    "evades the static scan" situation as the dynamic env-lever rule
+    above, so it gets the same direct-call treatment in
+    ``test_effort_level_lever_is_representable`` below instead.
     """
-    assert _recommend_py_lever_literals() == {"mcpServers", "omitClaudeMd", "effortLevel"}
+    assert _recommend_py_lever_literals() == {
+        "mcpServers",
+        "omitClaudeMd",
+        "env:ENABLE_TOOL_SEARCH",
+        "env:CLAUDE_CODE_MAX_OUTPUT_TOKENS",
+        "env:CLAUDE_CODE_SUBAGENT_MODEL",
+        "includeCoAuthoredBy",
+    }
 
 
 @pytest.mark.parametrize("lever", sorted(_recommend_py_lever_literals()))
@@ -415,8 +455,38 @@ def test_every_recommend_py_lever_literal_is_representable(lever):
         assert key in SETTINGS_ALLOWLIST, f"lever {lever!r} maps to unknown settings key {key!r}"
     elif scope_kind == "agent frontmatter":
         assert key in AGENT_ALLOWLIST, f"lever {lever!r} maps to unknown agent key {key!r}"
-    else:  # pragma: no cover - no "env" lever exists in recommend.py today
+    else:
+        # COV-09: an "env:NAME"-prefixed lever.
         assert scope_kind == "env" and key in ENV_ALLOWLIST
+
+
+def test_env_disable_prompt_caching_dynamic_lever_is_representable():
+    """The one env-lever rule this file's regex-based scan can't see (its
+    lever name is chosen at runtime, not a fixed literal -- see the
+    docstring above) -- checked directly against every name it could
+    possibly emit, so it isn't silently unrepresentable just because it
+    evades the static scan.
+    """
+    for name in (
+        "DISABLE_PROMPT_CACHING",
+        "DISABLE_PROMPT_CACHING_SONNET",
+        "DISABLE_PROMPT_CACHING_OPUS",
+        "DISABLE_PROMPT_CACHING_HAIKU",
+        "DISABLE_PROMPT_CACHING_FABLE",
+    ):
+        resolved = recommend_lever_key(f"env:{name}")
+        assert resolved == ("env", name)
+        assert resolved[1] in ENV_ALLOWLIST
+
+
+def test_effort_level_lever_is_representable():
+    """COV-01: ``"effortLevel"`` no longer appears as a bare ``lever="..."``
+    literal in recommend.py (see the docstring above), so it evades
+    ``_recommend_py_lever_literals``'s static scan -- checked directly
+    instead, same as the dynamic env-lever rule just above."""
+    resolved = recommend_lever_key("effortLevel")
+    assert resolved == ("settings", "effortLevel")
+    assert resolved[1] in SETTINGS_ALLOWLIST
 
 
 def test_ttl_top_level_lever_is_representable():

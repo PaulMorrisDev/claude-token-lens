@@ -1,6 +1,6 @@
 id = "workflow-ultracode"
 name = "Workflow (ultracode)"
-for = ["workflow-run", "scripted-multi-phase"]
+for = ["workflow-run", "scripted-multi-phase", "ops"]
 archetype = "workflow-heavy"
 notes = """
 For the workflow-heavy archetype (workstyle.detect_archetype: at least \
@@ -19,6 +19,12 @@ per-agent-type lever). No effortLevel override: a scripted workflow's \
 own phases already fix what each step does, so the effort-mismatch \
 rule's docs/general-dev concern (agents.topology_effort_tokens's \
 thinking_share column) does not apply the same way here.
+
+PROF-11/F11: also the starting point for "ops" work Claude reported \
+(metrics capture's closed task vocabulary) -- scripted, multi-step \
+automation and maintenance is the closest fit of the seven catalogue \
+shapes to what "ops" names, though classify.py's own comment notes ops \
+spans several purposes, so no catalogue profile is a clean 1:1 match.
 """
 
 [settings]

@@ -27,8 +27,9 @@ header and one of two top-level shapes:
 
 `error.code` is a short, stable, machine-matchable string:
 `bad_request` (`400`), `forbidden` (`403`), `not_found` (`404`),
-`method_not_allowed` (`405`), `conflict` (`409`) or `internal_error`
-(`500`). `error.message` is a one-line human-readable explanation. The
+`method_not_allowed` (`405`), `conflict` (`409`), `payload_too_large`
+(`413`) or `internal_error` (`500`). `error.message` is a one-line
+human-readable explanation. The
 HTTP status code carries the same information for clients that don't
 want to parse the body: `200` for `ok: true` on every route except
 `POST /api/profiles` and `POST /api/profiles/from-current`, which are
@@ -180,6 +181,19 @@ a victim's behalf, not a deliberate local caller. `service/static/app.js`
 sends `Content-Type: application/json` on every one of its own `POST`
 calls, so the UI itself is unaffected. A `POST` whose `Host` is not on
 the allowlist above is also `403 forbidden`.
+
+## Body size limit (G5)
+
+Every `POST` route caps its request body at 64 KB, checked against
+`Content-Length` before the body is parsed — `413 payload_too_large`
+otherwise. An oversized body is still read off the socket and discarded
+(in bounded chunks, never as one allocation sized to the declared
+length), so the connection stays open for a next request exactly like
+every other rejection above. This service has no authentication (see
+"Local only" above), so the cap bounds the memory and JSON-parse cost
+any local process can force per request, regardless of the cross-site
+checks above. Every route's actual body (a profile, a tag, a feedback
+payload) is small hand-typed or hand-picked JSON, well under the cap.
 
 ## Routes
 
@@ -444,13 +458,13 @@ footer.
 - **`window`** (optional) — a named window, used by the dashboard's
   header picker: `1h` (the last hour), `today` (since midnight in
   `config.toml`'s `tz`, else the machine's zone), `24h`, `change` (since
-  your latest `apply`, its undo, or a settings change the config hook
-  saw; `400` when none is recorded yet) or `all` (no limit). Anything
-  else is `400`. A named window takes precedence over the other three
-  params. It is turned into a `since` rounded down to the minute, so
-  repeat requests share one cached report. A session counts when its
-  last reply falls inside the window (so it was active then), and it
-  then counts in full.
+  your latest `apply`, its undo, a settings change the config hook saw,
+  or a change to metrics capture; `400` when none is recorded yet) or
+  `all` (no limit). Anything else is `400`. A named window takes
+  precedence over the other three params. It is turned into a `since`
+  rounded down to the minute, so repeat requests share one cached report.
+  A session counts when its last reply falls inside the window (so it
+  was active then), and it then counts in full.
 - **`window_days`** (int, at least 1, optional) — the last N days;
   defaults to 30 when neither `since` nor `until` is given.
 - **`since`** / **`until`** (ISO 8601, optional) — when either is
@@ -597,10 +611,14 @@ the store) plus every user profile written under
 watcher's `_scan_profiles`), each tagged with which of the two it came
 from.
 
-`data`: `{"profiles": [{"id", "name", "source": "catalogue"|"user", "archetype": str|null, "for": [str, ...], "updated_at": str|null}, ...], "suggested_profile_id": str|null}`.
+`data`: `{"profiles": [{"id", "name", "source": "catalogue"|"user", "archetype": str|null, "for": [str, ...], "tasks": [str, ...], "updated_at": str|null}, ...], "suggested_profile_id": str|null}`.
 
 A catalogue entry's `archetype`/`for` come straight from its shipped
-TOML document; a user entry never carries them (the `profiles` table
+TOML document; `tasks` is `for` normalised to the capture task
+vocabulary (`profiles.catalogue.tasks_for`: `implementation` becomes
+`feature`, `bugfix`, `debug`; a way of running such as `fanout` covers
+none), the form `POST /api/whatif`'s `task` takes. A user entry never
+carries them (the `profiles` table
 only indexes `id`/`name`/`updated_at` — no `toml_path`, never
 API-returned). `updated_at` is `null` for a catalogue entry (nothing to
 timestamp). `suggested_profile_id` is the latest recorded baseline's own
@@ -625,7 +643,7 @@ names a profile may set (`profiles.schema.ENV_ALLOWLIST`).
 One profile's contents. `404` if `<id>` names neither a catalogue id
 nor an existing `<config_dir>/profiles/<id>.toml`.
 
-`data`: `{"id", "name", "source": "catalogue"|"user", "archetype", "for": [str, ...], "notes", "settings": {key: value}, "agents": {name: {key: value}}, "env": {NAME: value}, "setting_count": int}`.
+`data`: `{"id", "name", "source": "catalogue"|"user", "archetype", "for": [str, ...], "tasks": [str, ...], "notes", "settings": {key: value}, "agents": {name: {key: value}}, "env": {NAME: value}, "setting_count": int}`.
 `setting_count` counts settings, agent keys and environment variables
 together.
 
@@ -705,8 +723,9 @@ been captured. `capture_status.summary` is the same one-line status
 ### `GET /api/quick-actions`
 
 One answer per way of saving tokens (`quick_actions.CHECKS`): models,
-effort, compaction, cache, tools, skills, claude-md, tool-output and
-habits. Each check always answers, including "nothing to do".
+effort, compaction, cache, tools, skills, claude-md, tool-output,
+habits and quality. Each check always answers, including "nothing to
+do".
 
 Query: the windowing params above.
 
@@ -811,23 +830,26 @@ settings with `POST /api/profiles/from-current` instead.
 
 ### `GET /api/impact`
 
-Each change you made (an `apply`, its undo, or a settings change the
-config hook saw), with the sessions before it against those after it,
-on the measures that change should move.
+Each change you made (an `apply`, its undo, a settings change the
+config hook saw, or a change to metrics capture), with the sessions
+before it against those after it, on the measures that change should
+move.
 
 Takes no window: each change is compared over its own before and after
 periods, looking back at most `lookback_days`.
 
-`data`: `{"changes": [{"change": {"ts", "source", "label", "keys", "changes", "backup_ts", "reverted"}, "before_sessions", "after_sessions", "enough", "verdict", "measures": [{"label", "before", "after", "before_n", "after_n", "change_pct", "direction"}, ...], "quality": [{"group", "label", "before_runs", "after_runs", "verdict", "judged", "min_runs", "signals": [{"key", "label", "kind", "worse_when", "unit", "before", "after", "before_text", "after_text", "before_counts", "after_counts", "before_runs", "after_runs", "p", "label_key", "verdict"}, ...]}, ...]}, ...], "caveat", "min_sessions", "lookback_days"}`.
+`data`: `{"changes": [{"change": {"ts", "source", "label", "keys", "changes", "backup_ts", "reverted"}, "before_sessions", "after_sessions", "enough", "gate", "verdict", "measures": [{"label", "before", "after", "before_n", "after_n", "change_pct", "direction"}, ...], "quality": [{"group", "label", "before_runs", "after_runs", "verdict", "judged", "min_runs", "signals": [{"key", "label", "kind", "worse_when", "unit", "before", "after", "before_text", "after_text", "before_counts", "after_counts", "before_runs", "after_runs", "p", "label_key", "verdict"}, ...]}, ...]}, ...], "caveat", "min_sessions", "lookback_days"}`.
 Newest change first, at most ten. `change.source` is `apply`, `revert`,
 `config` (a settings change the hook saw) or `capture` (a metrics
 capture change from `capture-log.jsonl`, whose keys are `capture.<field>`
 and are measured by capture's own tokens per session and the share of
 messages Claude tagged). `enough` is false until each side has
-`min_sessions` sessions. `before`/`after` are display text in the
-billing mode's units; `direction` is `lower`, `higher`, `same` or
-`null`. For an `apply` that is not yet undone, `backup_ts` is what
-`claude-token-lens apply --revert <backup_ts>` takes.
+`min_sessions` sessions; `gate` is the same check as a structured
+`{"reason": "min_sessions", "have", "need"}` object for a UI empty
+state, or `null` once `enough` is true. `before`/`after` are display
+text in the billing mode's units; `direction` is `lower`, `higher`,
+`same` or `null`. For an `apply` that is not yet undone, `backup_ts` is
+what `claude-token-lens apply --revert <backup_ts>` takes.
 
 `quality` judges the change on the runs of each agent it changed (or
 the main session, for any other setting): one entry per group, with a
@@ -841,6 +863,27 @@ side); the Profiles tab folds those groups into one line. `kind` is
 such as replies per run), `no_clear_change` or `too_little_data`; `p` is
 the two-sided p-value before the Holm correction, `null` with too little
 data. `worse_when` is `"higher"`, or `null` for a neutral measure.
+
+### `GET /api/backtest`
+
+Did your estimates come true? Every prediction `POST /api/whatif` has
+logged (with `"log": true`), matched to the change point it turned
+into and judged against the sessions before and after that change —
+the same before/after windowing and ratio test `/api/impact` uses
+(`backtest.py`). Takes no window: each prediction is judged over its
+own before and after periods.
+
+`data`: `{"predictions": [{"id", "ts", "source", "measure_key", "agent", "predicted_usd", "predicted_pct", "fidelity", "seen_at", "change_ts", "judged_at", "verdict", "measured_usd", "measured_pct", "predicted_text", "measured_text", "verdict_text"}, ...], "judged_just_now", "verdicts"}`.
+Newest prediction first. `verdict` is `null` until a matching change
+point closes the window enough to judge it, then one of the closed set
+`as_estimated`, `smaller`, `larger`, `opposite` or `too_little_data`
+(`verdicts` lists them). `predicted_text`, `measured_text` and
+`verdict_text` are server-formatted, billing-mode-aware sentences
+(`backtest.present`) — the dashboard never formats a dollar amount or a
+verdict itself. `measured_usd`/`measured_text` stay `null` until
+judged. `judged_just_now` is how many predictions this call judged for
+the first time (a stale answer can be served while a change is worked
+out in the background, as with `/api/impact`).
 
 ### `GET /api/setup`
 
@@ -863,7 +906,7 @@ and the notes and tags measured in transcripts since `enabled_at`
 part until the store changes; an older copy is served while a fresh
 one is built in the background.
 
-`data`: `{"config", "warning", "samples", "levels", "sections", "measured", "history", "hooks", "billing", "roi", "banner", "commands"}`:
+`data`: `{"config", "warning", "samples", "levels", "sections", "measured", "history", "hooks", "billing", "roi", "banner", "feedback", "commands"}`:
 
 - `config`: the same block as `/api/health`'s `capture`, without `hooks_ok`.
 - `warning`: the cost warning the dashboard repeats before any change
@@ -943,6 +986,18 @@ Query: `window`, `window_days`, or `since`/`until` (see "Report-backed routes:
 windowing query params" above) — this is what makes `/api/report.json?
 since=...&until=...` byte-equivalent to `report --since ... --until
 ...`, not just to `report --days N`.
+
+`report.json`'s `meta` carries `billing_mode`/`amounts_basis` (the
+report's own headline billing-mode facts) and, alongside them,
+`meta.units`: `{mode, share_per_usd, period_label, basis}` (UX-1) --
+the same facts in the shape `Units.money`'s JS mirror (`app.js`'s
+`money()`) needs to phrase an arbitrary amount client-side without a
+round trip through a table cell. `mode` is `billing_mode`;
+`share_per_usd` is the percentage points of the weekly usage limit one
+list-price dollar is worth, or `null` without an accepted elasticity
+fit yet; `period_label` is what that share is "of" (`"weekly usage
+limit"`); `basis` repeats `amounts_basis` so a consumer of `meta.units`
+alone still has the caveat text.
 
 ## Mutating routes
 
@@ -1082,13 +1137,61 @@ Body: `{"settings": {...}, "agents": {"<agent>": {...}}}`, checked with
 `profiles.schema.validate` (`400` on a bad key or value, or when the
 body, `settings` or `agents` is not a JSON object).
 
-Query: the windowing params above.
+Query: the windowing params above, and `task`: one kind of task from
+the capture vocabulary, or several comma-separated. Every row is then
+scaled to that task's share of the window (several tasks' shares add up),
+and a row with no per-task cost to scale by is not estimated. An unknown
+task is a `400`.
 
-`data`: `{"period", "rows": [{"key", "agent", "value", "saving_usd", "fidelity", "fidelity_text", "basis", "effect_text"}, ...], "total_usd", "total_text", "estimated", "not_estimated", "total_note"}`.
+`data`: `{"period", "rows": [{"key", "agent", "value", "saving_usd", "fidelity", "fidelity_text", "basis", "effect_text", "uncalibrated_usd", "uncalibrated_fidelity"}, ...], "total_usd", "total_text", "estimated", "not_estimated", "total_note"}`.
 `saving_usd` is `null` when a change is not estimated. `fidelity` says
 how it was worked out (`fidelity_text` in plain words) and `basis`
-explains it in a sentence. `effect_text` and `total_text` are in the
-billing mode's units; `estimated`/`not_estimated` are counts of rows.
+explains it in a sentence: `"ceiling"` (a `model` change -- the same
+tokens repriced at the new model's rate, same "ceiling" sense as
+`/api/model-swap`'s own saving column, not a real simulation since a
+different model may need more or fewer replies for the same work),
+`"simulated"` (`autoCompactWindow`, a cache-TTL change -- real sessions
+replayed with the new value), `"measured"` (`omitClaudeMd` -- the
+greater of per spawn times the spawns in the window, and the carry cost
+of the turns it's read back from cache until re-sent, EST-P10),
+`"estimated"` (`skillOverrides`,
+`enabledPlugins` -- from the size of what stops being sent), `"none"`
+(not estimated) or `"calibrated"` (EST-P6: scaled by how this same kind
+of change actually turned out for you before, see below).
+`effect_text` and `total_text` are in the billing mode's units;
+`estimated`/`not_estimated` are counts of rows.
+
+**EST-P6 calibration.** Once at least
+`backtest.MIN_JUDGED_FOR_CALIBRATION` (3) of your own past predictions
+for the same `(agent, key)` have been judged (`GET /api/backtest`), a
+row's `saving_usd` here is scaled by the mean of those predictions'
+`measured_usd / predicted_usd` ratios (`backtest.calibration_multipliers`)
+and its `fidelity` becomes `"calibrated"`. `uncalibrated_usd` and
+`uncalibrated_fidelity` hold the value and fidelity calibration
+replaced — `null` on every row where calibration wasn't applicable or
+didn't apply.
+
+**EST-P5 logging.** Body may also carry `"log": true`. Every row whose
+saving could be estimated is then appended to this tool's own
+`prediction-log.jsonl` (`config.append_prediction_log`) — always the
+*uncalibrated* estimate (`uncalibrated_usd`/`uncalibrated_fidelity`
+when present, `saving_usd`/`fidelity` otherwise), so calibrating an
+already-calibrated number never compounds. The dashboard sets this
+only for a change you mean to track, not for interactive "what if"
+exploration. A logged row reaches `GET /api/backtest` once the file
+watcher's next tick ingests it (`service.watcher._scan_predictions`)
+and `POST /api/predictions/seen` marks it shown.
+
+### `POST /api/predictions/seen`
+
+Records that the dashboard has actually shown you one logged
+prediction (`Store.mark_prediction_seen`).
+
+Body: `{"id": str}` — the `predictions` row id from `GET /api/backtest`.
+`400` when `id` is missing or not a non-empty string.
+
+`data`: `{"id", "seen"}`. `seen` is `false` when the id doesn't match
+any prediction, or it was already marked seen.
 
 ## Managed-settings routes
 

@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .. import habits, quality, whatif
+from .. import habits, model_gate, whatif
 from ..compaction_sim import CompactionSimThresholds
 from ..fixes import LEVER_LABELS, SETTING_TEXT, already_set
 from ..recommend import _NOT_OVERRIDABLE, _SKIPS_CLAUDE_MD
@@ -103,6 +103,12 @@ class _Draft:
     effective: dict
     effective_agents: dict
     candidates: list
+    #: PROF-03/F3: whether CLAUDE_CODE_EFFORT_LEVEL is set for this
+    #: session (never its value -- see hooks/snapshot-config.py's
+    #: content_layers). It beats every settings.json effort lever, so an
+    #: effortLevel candidate warns rather than implying the profile
+    #: alone would move it.
+    effort_level_env_set: bool = False
 
     def now(self, key: str, agent: str | None):
         if agent is None:
@@ -161,19 +167,14 @@ def _from_recommendations(draft: _Draft, recommendations, keys: set[str] | None 
 
 
 def _models(draft: _Draft, tables, *, subagents_only: bool) -> None:
-    worse = quality.worse_models(tables.rows("quality", "quality_by_setup"))
-    worse.update({key: row for key, row in quality.retried_models(tables.rows("quality", "quality_retried")).items()
-                  if key not in worse})
-    # Metrics capture: agents whose runs said they needed a larger model,
-    # or whose work was mostly reported hard (advice._merge_model_tier).
-    unfit = habits.unfit_agents(tables.rows("habits", "habits_agents"))
+    gate = model_gate.build(tables)
     for row in tables.rows("model_swap", "model_swap_by_agent_type"):
         agent = row.get("agent_type")
         best = row.get("best_cheaper_alternative_model")
         pct = whatif._num(row.get("saving_pct")) or 0.0
         if not best or pct < MIN_SHARE_PCT or (subagents_only and agent == TOP):
             continue
-        if (agent, _alias(best)) in worse or agent in unfit:
+        if gate.vetoed(agent, _alias(best)):
             # The quality check found this agent did worse on that model,
             # or its runs on it were often retried on a larger one; or
             # Claude reported its work needed a larger model.
@@ -253,13 +254,45 @@ def _compaction(draft: _Draft, tables) -> None:
     )
 
 
+#: PROF-11/F14: "You can't turn thinking off on Opus 5.5 or the Fable
+#: models. The session toggle, alwaysThinkingEnabled, and
+#: MAX_THINKING_TOKENS=0 have no effect there" (V26, model-config docs).
+#: Effort still works there (V25 lists Opus 5.5's levels, and V13 says an
+#: effort change keeps the cache on both), so the lower-effort candidate
+#: is still drafted; its evidence just says the thinking toggles are no
+#: way round it on these models. Substring match against the
+#: model_swap table's own "observed model" label (id, plus an optional
+#: "(+N more)" suffix when an agent type mixed models) -- "claude-opus-
+#: 5-5" is exact (V26 names that generation only, not every Opus), and
+#: both Fable ids ("claude-fable-5-1", "claude-fable-5") share the
+#: "fable" substring.
+_THINKING_ALWAYS_ON = ("claude-opus-5-5", "fable")
+
+
+def _thinking_always_on(observed_model: str | None) -> bool:
+    return bool(observed_model) and any(needle in observed_model for needle in _THINKING_ALWAYS_ON)
+
+
 def _thinking(draft: _Draft, tables, *, subagents_only: bool) -> None:
+    # model_swap_by_agent_type's own "observed model" column, keyed by
+    # agent type -- the same join goals.py's model-swap veto (model_gate)
+    # relies on report data for, rather than settings.json's configured
+    # model, which can be stale or overridden per agent file.
+    observed_models = {
+        row.get("agent_type"): row.get("observed_model")
+        for row in tables.rows("model_swap", "model_swap_by_agent_type")
+    }
     for row in tables.rows("agents", "topology_effort_by_agent_type"):
         agent = row.get("agent_type")
         share = whatif._num(row.get("thinking_share")) or 0.0
         if share < THINKING_PCT or (subagents_only and agent == TOP):
             continue
         is_top = agent == TOP
+        always_on = (
+            " Thinking can't be switched off on this model, so alwaysThinkingEnabled and MAX_THINKING_TOKENS do "
+            "nothing here; effort is the lever that still works."
+            if _thinking_always_on(observed_models.get(agent)) else ""
+        )
         draft.add(
             "effortLevel" if is_top else "effort",
             None if is_top else agent,
@@ -267,7 +300,7 @@ def _thinking(draft: _Draft, tables, *, subagents_only: bool) -> None:
             ticked=False,
             evidence=(
                 f"Thinking was {share:.0f}% of {'the main session' if is_top else agent}'s output. How much less "
-                "a lower effort thinks isn't measured, so this isn't ticked for you."
+                "a lower effort thinks isn't measured, so this isn't ticked for you." + always_on
             ),
         )
 
@@ -276,8 +309,11 @@ def _omit_claude_md(draft: _Draft, tables) -> None:
     # Metrics capture: what each agent type's runs said about CLAUDE.md.
     said = {row.get("agent_type"): row for row in tables.rows("habits", "habits_agents")}
     for row in tables.rows("agent_startup", "agent_startup_breakdown"):
-        tokens = whatif._num(row.get("claude_md")) or 0.0
         agent = row.get("agent_type")
+        # PROF-11/F13: Managed policy CLAUDE.md still loads regardless of
+        # omitClaudeMd, so it never counts towards what this would save.
+        managed = whatif._num(row.get("claude_md_managed")) or 0.0
+        tokens = max(0.0, (whatif._num(row.get("claude_md")) or 0.0) - managed)
         if tokens < 1000 or agent == TOP:
             continue
         told = said.get(agent) or {}
@@ -287,6 +323,8 @@ def _omit_claude_md(draft: _Draft, tables) -> None:
             # Most of its runs that said, said they used it.
             continue
         evidence = f"About {round(tokens):,} CLAUDE.md tokens at each of {int(whatif._num(row.get('spawns')) or 0)} spawns."
+        if managed:
+            evidence += f" Managed policy CLAUDE.md ({round(managed):,} tokens) still loads either way."
         if unused:
             evidence += f" {unused} of the {used + unused} runs that said, said they didn't use it."
         else:
@@ -307,6 +345,28 @@ def _setups_by_task(tables) -> dict[str, list[dict]]:
 def _setup_text(row: dict) -> str:
     effort = row.get("effort")
     return f"{row.get('model')}" + (f" at {effort} effort" if effort and effort != "default" else "")
+
+
+def _effort_override_note(draft: _Draft, model_id: str | None) -> str:
+    """F3/PROF-03: a per-model ``modelSettings`` effort, or
+    ``CLAUDE_CODE_EFFORT_LEVEL`` being set at all (``hooks/snapshot-config.py``'s
+    ``content_layers``), both beat the top-level ``effortLevel`` scalar a
+    profile's ``effortLevel`` change would set -- for the env var, for
+    every model; for ``modelSettings``, for the one model it names. A
+    candidate for it says so plainly rather than implying the profile
+    alone will move it: applying it still writes the setting (it's a
+    legitimate default for every other model), but this one needs
+    ``--effort`` instead."""
+    if not model_id:
+        return ""
+    if draft.effort_level_env_set:
+        return f" Won't apply to {model_id}: CLAUDE_CODE_EFFORT_LEVEL is set for this session; use --effort instead."
+    model_settings = draft.effective.get("modelSettings")
+    if isinstance(model_settings, dict):
+        for key, entry in model_settings.items():
+            if isinstance(entry, dict) and entry.get("effortLevel") and _alias(str(key)) == _alias(model_id):
+                return f" Won't apply to {model_id}: it already has its own effort level set; use --effort instead."
+    return ""
 
 
 def _tasks(draft: _Draft, tables, task: str | None) -> tuple[list[str], str | None, str]:
@@ -339,28 +399,98 @@ def _tasks(draft: _Draft, tables, task: str | None) -> tuple[list[str], str | No
             f"{int(whatif._num(usual.get('cycles')) or 0)} messages), compared level for level. They still ran on "
             "different work, so it's a lead, not proof."
         )
-        if cheaper.get("model") != usual.get("model") and cheaper.get("model") in habits._FAMILIES:
-            draft.add("model", None, cheaper["model"], ticked=False, evidence=evidence)
+        # habits_setups' "model" column is the full resolved id (split by
+        # version -- F6); the draft, like every other model candidate,
+        # takes the portable family alias.
+        cheaper_model = _alias(cheaper.get("model") or "")
+        if cheaper_model != _alias(usual.get("model") or "") and cheaper_model in habits._FAMILIES:
+            draft.add("model", None, cheaper_model, ticked=False, evidence=evidence)
         if cheaper.get("effort") != usual.get("effort") and cheaper.get("effort") in _EFFORT_LEVELS:
-            draft.add("effortLevel", None, cheaper["effort"], ticked=True, evidence=evidence)
+            # PROF-04: only ticked once the cheaper setup has enough
+            # messages behind it to trust, not just enough to show.
+            tick = (whatif._num(cheaper.get("cycles")) or 0) >= habits.TICK_MIN_GROUP
+            draft.add(
+                "effortLevel", None, cheaper["effort"], ticked=tick,
+                evidence=evidence + _effort_override_note(draft, cheaper.get("model")),
+            )
         note = f"Save it, then launch Claude with it when you start {task} work."
     profile_id = catalogue.task_profile(task)
-    if profile_id is not None:
+    if profile_id is not None and not _catalogue_conflicts(draft, profile_id):
         note += f" The catalogue profile {profile_id} is also a starting point for this kind of task."
     return tasks, task, note
+
+
+def _catalogue_conflicts(draft: _Draft, profile_id: str) -> bool:
+    """PROF-11/F12: True when ``profile_id``'s own settings disagree with
+    a main-session candidate this draft already proposed for the same
+    key -- citing it as "a starting point" right under that candidate
+    would then contradict the draft above it."""
+    profile = catalogue.get(profile_id)
+    if profile is None:
+        return False
+    for candidate in draft.candidates:
+        if candidate["agent"] is not None:
+            continue
+        catalogue_value = profile.settings.get(candidate["key"])
+        if catalogue_value is not None and catalogue_value != candidate["value"]:
+            return True
+    return False
+
+
+def _task_compaction(draft: _Draft, tables, task: str) -> None:
+    """EST-P8: ``task``'s own best ``autoCompactWindow``, from the
+    compaction sweep's per-task split (``compaction_sim_by_task``, which
+    only lists a task at least ``compaction_sim.MIN_TASK_SESSIONS`` main
+    sessions reported). That split keeps no per-task summary count, so
+    the corpus-wide ``compaction_sim_by_window`` count for the same
+    window stands in for the rule's compactions-per-session limit, as in
+    :func:`_compaction`. Ticked only once the task has
+    ``habits.TICK_MIN_GROUP`` sessions behind it (PROF-04)."""
+    row = next((r for r in tables.rows("compaction_sim", "compaction_sim_by_task") if r.get("task") == task), None)
+    if row is None or str(row.get("best_window")) == "none":
+        return
+    saving_pct = -(whatif._num(row.get("delta_pct")) or 0.0)
+    if saving_pct < MIN_SHARE_PCT:
+        return
+    window = str(row.get("best_window")).replace(",", "")
+    overall = next(
+        (r for r in tables.rows("compaction_sim", "compaction_sim_by_window")
+         if str(r.get("window")).replace(",", "") == window),
+        None,
+    )
+    per_session = whatif._num(overall.get("compactions_per_session")) if overall else None
+    if per_session is None or per_session > CompactionSimThresholds().max_compactions_per_session:
+        return
+    sessions = int(whatif._num(row.get("sessions")) or 0)
+    draft.add(
+        "autoCompactWindow",
+        None,
+        int(window),
+        ticked=sessions >= habits.TICK_MIN_GROUP,
+        evidence=(
+            f"Your {sessions} {task} sessions replayed with summaries at {row.get('best_window')} tokens cost "
+            f"{saving_pct:.0f}% less."
+        ),
+    )
 
 
 def _task_agents(draft: _Draft, tables, task: str) -> None:
     """Cheaper-model candidates for the agent types that most often
     answered ``task``'s work (metrics capture's ``habits_agents_by_task``),
     vetoed exactly as ``_models`` vetoes its corpus-wide draft: a setup
-    the quality check found worse, one often retried for the model, or
-    an agent whose runs said, or were mostly, hard work
-    (``habits.unfit_agents``)."""
-    worse = quality.worse_models(tables.rows("quality", "quality_by_setup"))
-    worse.update({key: row for key, row in quality.retried_models(tables.rows("quality", "quality_retried")).items()
-                  if key not in worse})
-    unfit = habits.unfit_agents(tables.rows("habits", "habits_agents"))
+    the quality check found worse, one often retried for the model, an
+    agent whose runs said, or were mostly, hard work
+    (``habits.unfit_agents``), or this task's own slice of its runs
+    needing a larger model (``model_gate``, all wired through
+    ``habits.habits_agents_by_task``'s ``cheaper_model`` column, which
+    is already ``None`` when that row's own "larger model per task"
+    veto fired -- see ``habits._agents_by_task_table``). F8: ``cheaper_model``/
+    ``cheaper_saving_pct`` are ``_model_swap_alt``'s corpus-wide verdict for
+    the agent type (every task it ran, not just this one) -- only the
+    veto and the run count are task-specific -- so the evidence says so,
+    rather than implying the saving percentage was measured on this
+    task's own runs alone."""
+    gate = model_gate.build(tables)
     rows = [r for r in tables.rows("habits", "habits_agents_by_task") if r.get("task") == task]
     for row in sorted(rows, key=lambda r: -(whatif._num(r.get("runs")) or 0.0)):
         agent = row.get("agent_type")
@@ -368,29 +498,39 @@ def _task_agents(draft: _Draft, tables, task: str) -> None:
         pct = whatif._num(row.get("cheaper_saving_pct")) or 0.0
         if not agent or not best or pct < MIN_SHARE_PCT:
             continue
-        if (agent, best) in worse or agent in unfit:
+        if gate.vetoed(agent, best):
             continue
+        runs = int(whatif._num(row.get("runs")) or 0)
         draft.add(
             "model",
             agent,
             best,
             ticked=pct >= 20.0,
-            evidence=f"{agent}'s {task} runs in this window would have cost {pct:.0f}% less on {best}.",
+            evidence=(
+                f"{agent} runs {pct:.0f}% cheaper on {best} across every task it did; "
+                f"{task} was {runs} of its runs in this window."
+            ),
         )
 
 
 def _task_share(tables, task: str) -> float | None:
-    """This task's share (%) of everything ``habits_by_task`` covers in
-    the window, from its own ``cost`` column against the ``all`` row's.
-    Used to scale down a main-session estimate that reprices the whole
-    window (``whatif`` has no notion of a task). ``None`` without the
-    data to compare."""
+    """This task's share (%) of the *main session's* cost in the window,
+    from ``habits_by_task``'s ``main_cost`` column against the ``all``
+    row's. Used to scale down a main-session estimate (a model or
+    effortLevel change to the top-level settings) that reprices the
+    whole window (``whatif`` has no notion of a task). ``main_cost``,
+    not ``cost``, on purpose (F7): the reprice being scaled only ever
+    covers the main session's own share of the work, never the
+    subagents ``cost`` also counts, so scaling it by a share of the
+    *whole* piece of work (main and subagents together) would be
+    scaling a main-only number by the wrong denominator. ``None``
+    without the data to compare."""
     by_task = {r.get("task"): r for r in tables.rows("habits", "habits_by_task")}
     task_row, all_row = by_task.get(task), by_task.get("all")
-    total = whatif._num(all_row.get("cost")) if all_row else None
+    total = whatif._num(all_row.get("main_cost")) if all_row else None
     if task_row is None or not total:
         return None
-    return 100.0 * (whatif._num(task_row.get("cost")) or 0.0) / total
+    return 100.0 * (whatif._num(task_row.get("main_cost")) or 0.0) / total
 
 
 def _task_agent_share(tables, task: str, agent: str) -> float | None:
@@ -410,11 +550,15 @@ def _task_agent_share(tables, task: str, agent: str) -> float | None:
     return 100.0 * task_cost / total
 
 
-def _scale_estimate(row: dict, pct: float | None, units: Units, period: str) -> dict:
+def _scale_estimate(row: dict, pct: float | None, units: Units, period: str, whose: str = "this task's") -> dict:
     """A ``whatif`` row reprices *all* of a setup's observed work in the
     window, but a task's draft is for that task's share of it alone.
     Scale the saving down to ``pct``; without a clean share to scale by,
-    drop the number rather than leave the unscaled (too large) one."""
+    drop the number rather than leave the unscaled (too large) one.
+    ``uncalibrated_usd`` (EST-P6, set only when calibration adjusted the
+    row) is scaled the same way, so a task-scoped ``/api/whatif`` call
+    that also logs a prediction (PROF-01) logs the right raw figure --
+    not the whole window's."""
     row = dict(row)
     if row.get("saving_usd") is None:
         return row
@@ -425,8 +569,10 @@ def _scale_estimate(row: dict, pct: float | None, units: Units, period: str) -> 
         row["basis"] = "Not estimated: no per-task cost to scale this window's reprice by."
         return row
     row["saving_usd"] = round(row["saving_usd"] * pct / 100.0, 6)
+    if row.get("uncalibrated_usd") is not None:
+        row["uncalibrated_usd"] = round(row["uncalibrated_usd"] * pct / 100.0, 6)
     row["effect_text"] = whatif._effect_text(row["saving_usd"], units, period)
-    row["basis"] = row.get("basis", "") + f" Scaled to this task's {pct:.0f}% share of what was repriced above."
+    row["basis"] = row.get("basis", "") + f" Scaled to {whose} {pct:.0f}% share of what was repriced above."
     return row
 
 
@@ -434,10 +580,25 @@ def _task_share_for(tables, task: str, agent: str | None) -> float | None:
     return _task_share(tables, task) if agent is None else _task_agent_share(tables, task, agent)
 
 
-def _scale_whatif(result: dict, tables, task: str, units: Units, period: str) -> dict:
+def _tasks_share_for(tables, tasks: tuple[str, ...], agent: str | None) -> float | None:
+    """The combined share of several tasks (a catalogue profile's ``for``
+    covers more than one): each is a share of the same total, so they
+    add. A task with no row of its own adds nothing; ``None`` only when
+    none of them has a share to give."""
+    shares = [share for share in (_task_share_for(tables, task, agent) for task in tasks) if share is not None]
+    return sum(shares) if shares else None
+
+
+def _scale_whatif(result: dict, tables, task: str | tuple[str, ...], units: Units, period: str) -> dict:
     """Scale every row of a combined ``whatif.estimate`` result to
-    ``task``'s share, and recompute the total from the scaled rows."""
-    rows = [_scale_estimate(row, _task_share_for(tables, task, row.get("agent")), units, period) for row in result["rows"]]
+    ``task``'s share (or the combined share of several tasks), and
+    recompute the total from the scaled rows."""
+    tasks = (task,) if isinstance(task, str) else tuple(task)
+    whose = "this task's" if len(tasks) == 1 else "these tasks'"
+    rows = [
+        _scale_estimate(row, _tasks_share_for(tables, tasks, row.get("agent")), units, period, whose)
+        for row in result["rows"]
+    ]
     estimated = [row for row in rows if row["saving_usd"] is not None]
     total = sum(row["saving_usd"] for row in estimated)
     out = dict(result)
@@ -458,22 +619,25 @@ def draft(
     effective_agents: dict | None = None,
     period: str = "",
     task: str | None = None,
+    effort_level_env_set: bool = False,
 ) -> dict:
     """The candidate changes for ``goal_id``, each with its what-if row.
     Raises ``KeyError`` for an unknown goal. ``task``: for the ``tasks``
     goal, the kind of task to draft for (the first with a cheaper setup
-    when it's missing or not in the data)."""
+    when it's missing or not in the data). ``effort_level_env_set``:
+    PROF-03, see ``_Draft``."""
     goal = next(g for g in GOALS if g.id == goal_id) if goal_id in GOAL_IDS else None
     if goal is None:
         raise KeyError(goal_id)
     tables = whatif._Tables(model)
-    d = _Draft(goal, dict(effective or {}), dict(effective_agents or {}), [])
+    d = _Draft(goal, dict(effective or {}), dict(effective_agents or {}), [], effort_level_env_set)
     recommendations = getattr(model, "recommendations", ()) or ()
     tasks: list[str] = []
     note = None
     if goal.id == "tasks":
         tasks, task, note = _tasks(d, tables, task)
         if task is not None:
+            _task_compaction(d, tables, task)
             _task_agents(d, tables, task)
     else:
         task = None

@@ -12,7 +12,16 @@ it); "after" is those started from the change until the next one.
 
 Sessions differ in size and kind of work, so a difference is a signal,
 not proof; with fewer than :data:`MIN_SESSIONS` on either side there is
-no verdict at all.
+no verdict at all. Where there are enough sessions, each measure also
+gets a ratio test: a ratio-of-sums estimate with delta-method variance,
+Holm-corrected across the measures compared in one call (the same math
+as :mod:`quality`, duplicated here since the pairs a measure draws from
+sessions aren't :class:`quality.Run` signals). The "after" side is
+stratum-reweighted to "before"'s mix of task/purpose (EST-P3) first, so
+a change in the kind of work people did after a change doesn't read as
+the change's own effect. ``label_key`` carries the closed verdict:
+``lower``, ``possibly_lower``, ``higher``, ``possibly_higher``,
+``no_clear_change`` or ``too_little_data``.
 
 A change to metrics capture is measured by what capture itself adds
 per session (its notes and tags, in tokens) and how many of your
@@ -27,10 +36,12 @@ shows up here.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
 from . import capture as capture_mod
+from . import classify as classify_mod
 from . import quality, recache
 from .change_points import ChangePoint
 from .model import EventKind, TranscriptResult
@@ -46,6 +57,8 @@ NOISE_PCT = 5.0
 #: Changes this close together (one apply writing several files, say)
 #: share their before and after instead of cutting each other's short.
 TOGETHER = timedelta(minutes=10)
+#: Two-sided significance threshold for the ratio test (see module docstring).
+ALPHA = quality.ALPHA
 
 CAVEAT = (
     "Sessions differ in size and kind of work, so read a difference as a signal, not proof. "
@@ -84,6 +97,15 @@ class _Transcript:
 class SessionFacts:
     start: datetime
     main: _Transcript
+    #: Empty unless built by session_facts(); tests may build these directly.
+    session_id: str = ""
+    #: The kind of task Claude reported (metrics capture's task=), or None
+    #: without at least two tagged messages agreeing (see classify.reported_task).
+    task: str | None = None
+    #: Heuristic purpose and mode (classify.classify_session), used to
+    #: stratify the "after" side onto "before"'s mix of work (EST-P3).
+    purpose: str = ""
+    mode: str = ""
     #: Your messages, and how many of them Claude tagged.
     messages: int = 0
     tagged: int = 0
@@ -121,7 +143,11 @@ def _transcript(result: TranscriptResult, pricing: Pricing) -> _Transcript:
 
 def session_facts(corpus, pricing: Pricing) -> list[SessionFacts]:
     """One :class:`SessionFacts` per session with a top-level transcript
-    and a start time, oldest first."""
+    and a start time, oldest first. ``task``/``purpose``/``mode`` are
+    classified standalone (no ``sessions.toml`` overrides or timezone --
+    ``corpus.SessionBundle`` carries neither), which only affects a
+    manual per-session override or timezone-sensitive mode evidence, not
+    the signal EST-P3 stratifies on."""
     out: list[SessionFacts] = []
     for bundle in corpus.sessions:
         top = bundle.top
@@ -131,10 +157,18 @@ def session_facts(corpus, pricing: Pricing) -> list[SessionFacts]:
         if start is None:
             continue
         cycles = capture_mod.prompt_cycles(top)
+        task, _tagged = classify_mod.reported_task(top)
+        classification = classify_mod.classify_session(
+            top, bundle.subs, {}, None, workflows=len(bundle.workflows), entrypoint=top.meta.entrypoint
+        )
         out.append(
             SessionFacts(
                 start=start,
                 main=_transcript(top, pricing),
+                session_id=bundle.session_id,
+                task=task,
+                purpose=classification.purpose,
+                mode=classification.mode,
                 spawns=[(sub.meta.agent_type or "(unknown)", _transcript(sub, pricing)) for sub in bundle.subs],
                 runs=quality.session_runs(bundle, pricing),
                 messages=len(cycles),
@@ -143,6 +177,12 @@ def session_facts(corpus, pricing: Pricing) -> list[SessionFacts]:
         )
     out.sort(key=lambda s: s.start)
     return out
+
+
+def stratum(session: SessionFacts) -> str:
+    """EST-P3's stratification key: the capture-reported task where we
+    have one, else the heuristic purpose, else a catch-all bucket."""
+    return session.task or session.purpose or "(unspecified)"
 
 
 # -- measures ------------------------------------------------------------
@@ -161,36 +201,106 @@ def _mean(values: list[float]) -> float | None:
     return sum(values) / len(values) if values else None
 
 
-def _value(measure: Measure, sessions: list[SessionFacts]) -> tuple[float | None, int]:
-    """The measure over ``sessions``, and how many sessions or spawns it rests on."""
+def _pairs(measure: Measure, sessions: list[SessionFacts]) -> list[tuple[float, float]]:
+    """(numerator, denominator) pairs this measure draws from ``sessions``,
+    one per session or per spawn. A ratio of sums, so a per-turn or
+    per-message measure naturally weights by how many turns or messages a
+    session had; a plain per-session measure (denominator 1) reduces to a
+    plain average."""
     if measure.agent is not None:
         spawns = [facts for s in sessions for agent, facts in s.spawns if agent == measure.agent]
         if measure.key == "agent_cost":
-            return _mean([f.cost for f in spawns]), len(spawns)
-        return _mean([float(f.startup_tokens) for f in spawns]), len(spawns)
+            return [(f.cost, 1.0) for f in spawns]
+        return [(float(f.startup_tokens), 1.0) for f in spawns]
     if measure.key == "cost_per_session":
-        return _mean([s.cost for s in sessions]), len(sessions)
+        return [(s.cost, 1.0) for s in sessions]
     if measure.key == "cost_per_turn":
-        turns = sum(s.main.turns for s in sessions)
-        return (sum(s.main.cost for s in sessions) / turns if turns else None), len(sessions)
+        return [(s.main.cost, float(s.main.turns)) for s in sessions]
     if measure.key == "rebuild_share":
-        writes = sum(s.main.write_tokens for s in sessions)
-        return (100.0 * sum(s.main.rebuild_tokens for s in sessions) / writes if writes else None), len(sessions)
+        return [(100.0 * s.main.rebuild_tokens, float(s.main.write_tokens)) for s in sessions]
     if measure.key == "summaries":
-        return _mean([float(s.main.summaries) for s in sessions]), len(sessions)
+        return [(float(s.main.summaries), 1.0) for s in sessions]
     if measure.key == "peak_context":
-        return _mean([float(s.main.peak_context) for s in sessions]), len(sessions)
+        return [(float(s.main.peak_context), 1.0) for s in sessions]
     if measure.key == "startup_tokens":
-        return _mean([float(s.main.startup_tokens) for s in sessions]), len(sessions)
+        return [(float(s.main.startup_tokens), 1.0) for s in sessions]
     if measure.key == "capture_tokens":
-        return _mean([
-            (s.main.capture_chars + sum(f.capture_chars for _agent, f in s.spawns)) / capture_mod.CHARS_PER_TOKEN
+        return [
+            (
+                (s.main.capture_chars + sum(f.capture_chars for _agent, f in s.spawns)) / capture_mod.CHARS_PER_TOKEN,
+                1.0,
+            )
             for s in sessions
-        ]), len(sessions)
+        ]
     if measure.key == "tagged_share":
-        messages = sum(s.messages for s in sessions)
-        return (100.0 * sum(s.tagged for s in sessions) / messages if messages else None), len(sessions)
-    return None, 0  # pragma: no cover
+        return [(100.0 * s.tagged, float(s.messages)) for s in sessions]
+    return []  # pragma: no cover
+
+
+def _ratio_estimate(pairs: list[tuple[float, float]]) -> quality.Estimate:
+    """Ratio-of-sums estimate with delta-method variance -- the same
+    math as :func:`quality.estimate`, duplicated here since impact's
+    pairs aren't quality.Run signals."""
+    pairs = [(y, x) for y, x in pairs if x > 0]
+    total_x = sum(x for _y, x in pairs)
+    total_y = sum(y for y, _x in pairs)
+    if total_x <= 0:
+        return quality.Estimate(None, total_y, total_x, len(pairs), None)
+    ratio = total_y / total_x
+    n = len(pairs)
+    variance = None
+    if n >= 2:
+        variance = n / (n - 1) * sum((y - ratio * x) ** 2 for y, x in pairs) / total_x**2
+    return quality.Estimate(ratio, total_y, total_x, n, variance)
+
+
+def _stratified_estimate(
+    measure: Measure, before: list[SessionFacts], after: list[SessionFacts]
+) -> quality.Estimate:
+    """The "after" estimate, standardised to "before"'s stratum mix
+    (EST-P3): each stratum's own after-side ratio, weighted by that
+    stratum's share of "before". A stratum with no after-side sessions
+    of its own falls back to the pooled (unweighted) after estimate for
+    its contribution; with only one stratum (the common case, when
+    tasks/purposes aren't set) this reduces exactly to the pooled
+    estimate."""
+    pooled = _ratio_estimate(_pairs(measure, after))
+    if not before or not after:
+        return pooled
+    weights: dict[str, float] = {}
+    for session in before:
+        key = stratum(session)
+        weights[key] = weights.get(key, 0.0) + 1.0
+    total = sum(weights.values())
+    if total <= 0:
+        return pooled
+    value = 0.0
+    variance = 0.0
+    have_variance = True
+    contributed = False
+    for key, count in weights.items():
+        weight = count / total
+        group = [s for s in after if stratum(s) == key]
+        est = _ratio_estimate(_pairs(measure, group)) if group else pooled
+        if est.value is None:
+            est = pooled
+        if est.value is None:
+            continue
+        contributed = True
+        value += weight * est.value
+        if est.variance is None:
+            have_variance = False
+        else:
+            variance += (weight**2) * est.variance
+    if not contributed:
+        return pooled
+    return quality.Estimate(value, pooled.num, pooled.den, pooled.runs, variance if have_variance else None)
+
+
+def _value(measure: Measure, sessions: list[SessionFacts]) -> tuple[float | None, int]:
+    """The measure over ``sessions``, and how many sessions or spawns it rests on."""
+    est = _ratio_estimate(_pairs(measure, sessions))
+    return est.value, est.runs
 
 
 _COST = Measure("cost_per_session", "Cost per session", "money")
@@ -257,6 +367,64 @@ def _text(kind: str, value: float | None, units: Units) -> str:
     return f"{round(value):,} tokens"
 
 
+def _p_value(z: float) -> float:
+    return math.erfc(abs(z) / math.sqrt(2.0))
+
+
+def _enough_estimate(est: quality.Estimate) -> bool:
+    return est.value is not None and est.runs >= MIN_SESSIONS
+
+
+def _measure_row(measure: Measure, before: list[SessionFacts], after: list[SessionFacts], units: Units) -> dict:
+    old = _ratio_estimate(_pairs(measure, before))
+    new = _stratified_estimate(measure, before, after)
+    change_pct = (new.value - old.value) / old.value * 100.0 if old.value and new.value is not None else None
+    row = {
+        "label": measure.label,
+        "before": _text(measure.kind, old.value, units),
+        "after": _text(measure.kind, new.value, units),
+        "before_value": old.value,
+        "after_value": new.value,
+        "before_n": old.runs,
+        "after_n": new.runs,
+        "change_pct": round(change_pct, 1) if change_pct is not None else None,
+        "direction": (
+            None if change_pct is None else "same" if abs(change_pct) < NOISE_PCT
+            else "lower" if change_pct < 0 else "higher"
+        ),
+        "p": None,
+        "label_key": "too_little_data",
+    }
+    if _enough_estimate(old) and _enough_estimate(new):
+        variance = (old.variance or 0.0) + (new.variance or 0.0)
+        diff = new.value - old.value
+        if variance > 0:
+            row["p"] = _p_value(diff / math.sqrt(variance))
+        else:
+            row["p"] = 1.0 if diff == 0 else 0.0
+        row["label_key"] = "no_clear_change"
+    return row
+
+
+def _label_rows(rows: list[dict]) -> None:
+    """Holm-corrected significance labels across the measures compared in
+    one :func:`compare` call (mirrors :func:`quality.compare_runs`)."""
+    tested = sorted((r for r in rows if r["p"] is not None), key=lambda r: r["p"])
+    m = len(tested)
+    holding = True
+    for rank, row in enumerate(tested):
+        significant_alone = row["p"] < ALPHA
+        holding = holding and row["p"] < ALPHA / (m - rank)
+        if not significant_alone:
+            continue
+        direction = "higher" if row["after_value"] > row["before_value"] else "lower"
+        row["label_key"] = direction if holding else f"possibly_{direction}"
+    for row in rows:
+        row["label_text"] = quality.LABELS[row["label_key"]]
+        if row["p"] is not None:
+            row["p"] = round(row["p"], 4)
+
+
 def compare(
     point: ChangePoint,
     sessions: list[SessionFacts],
@@ -274,25 +442,8 @@ def compare(
     before = [s for s in sessions if start <= s.start < point.ts]
     after = [s for s in sessions if point.ts <= s.start < end]
     enough = len(before) >= MIN_SESSIONS and len(after) >= MIN_SESSIONS
-    rows = []
-    for measure in measures_for(point):
-        old, old_n = _value(measure, before)
-        new, new_n = _value(measure, after)
-        change_pct = ((new - old) / old * 100.0) if old and new is not None else None
-        rows.append(
-            {
-                "label": measure.label,
-                "before": _text(measure.kind, old, units),
-                "after": _text(measure.kind, new, units),
-                "before_n": old_n,
-                "after_n": new_n,
-                "change_pct": round(change_pct, 1) if change_pct is not None else None,
-                "direction": (
-                    None if change_pct is None else "same" if abs(change_pct) < NOISE_PCT
-                    else "lower" if change_pct < 0 else "higher"
-                ),
-            }
-        )
+    rows = [_measure_row(measure, before, after, units) for measure in measures_for(point)]
+    _label_rows(rows)
     return {
         "change": point.to_dict(),
         "before_sessions": len(before),
@@ -379,4 +530,5 @@ __all__ = [
     "measures_for",
     "quality_groups",
     "session_facts",
+    "stratum",
 ]

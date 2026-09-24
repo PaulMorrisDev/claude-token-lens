@@ -97,6 +97,16 @@ def test_a_bare_result_tag_is_still_the_result_marker():
     assert tag is not None and not tag.has_tl
 
 
+def test_the_feedback_reminder_line_does_not_hide_a_tag_on_either_side():
+    # CAP-1: the note now asks for the reminder line before the tag, but
+    # the parser tolerates either order.
+    reminder = capture_catalogue.FEEDBACK_REMINDER_LINE
+    tag, _ = capture_tags.parse_reply_tags(f"Fixed it.\n\n[tl: task=bugfix]\n{reminder}")
+    assert tag is not None and tag.task == "bugfix"  # tag then reminder
+    tag, _ = capture_tags.parse_reply_tags(f"Fixed it.\n\n{reminder}\n[tl: task=bugfix]")
+    assert tag is not None and tag.task == "bugfix"  # reminder then tag
+
+
 def test_a_would_help_skill_keeps_its_name_only_when_the_transcript_knows_it():
     tag, _ = capture_tags.parse_reply_tags("x [tl: skill=would-help:grill-me]", {"grill-me"})
     assert (tag.skill, tag.skill_name) == ("would-help", "grill-me")
@@ -129,6 +139,7 @@ def test_every_vocabulary_word_is_short_and_plain():
 
 def test_the_reply_tag_and_brief_markers_land_on_the_turns(tmp_path):
     result = _parse(tmp_path, [
+        _note("Token Lens metrics capture (tl-cap v1 task,level,skill): ..."),
         attachment_line("skill_listing", rendered="- grill-me: x", names=["grill-me"]),
         user_str_line("[spawn: specialist] [retry: scope] fix the flaky test in tests/test_x.py", origin={"kind": "human"}),
         _reply("Fixed.\n[tl: task=test level=hard skill=would-help:grill-me]"),
@@ -138,6 +149,51 @@ def test_the_reply_tag_and_brief_markers_land_on_the_turns(tmp_path):
     assert (turn.cap.task, turn.cap.level, turn.cap.skill_name) == ("test", "hard", "grill-me")
     assert "path" in turn.prompt_flags
     assert_privacy(result)
+
+
+def test_a_malformed_skill_name_never_reaches_skills_invoked(tmp_path):
+    # SEC-P3: SKILL_NAME_PATTERN gates a Skill tool_use's own "skill"
+    # input before it's ever trusted as a real invocation.
+    result = _parse(tmp_path, [
+        turn_line(content=[tool_use_block("Skill", "tu1", {"skill": "not a skill name!"})]),
+    ])
+    assert result.turns[0].skills_invoked == ()
+
+
+def test_a_skill_call_that_errors_cannot_self_authorise_a_later_tag(tmp_path):
+    # SEC-P3: a Skill call becomes provisional evidence (skill_names)
+    # for a *later* reply's `[tl: skill=would-help:...]` claim -- but
+    # only while it stands. One that comes back with is_error: true is
+    # taken back before it ever reaches Turn.skills_invoked, so it can't
+    # self-authorise the very claim about the skill it tried and failed.
+    result = _parse(tmp_path, [
+        _note("Token Lens metrics capture (tl-cap v1 skill): ..."),
+        turn_line(content=[
+            tool_use_block("Skill", "tu1", {"skill": "grill-me"}),
+        ]),
+        user_block_line([tool_result_block("tu1", "denied", is_error=True)]),
+        _reply("Never mind.\n[tl: skill=would-help:grill-me]"),
+    ])
+    assert result.turns[0].skills_invoked == ()
+    reply = result.turns[-1]
+    assert reply.cap is not None and reply.cap.skill == "would-help"
+    assert reply.cap.skill_name is None
+
+
+def test_a_skill_call_that_succeeds_can_authorise_a_later_tag(tmp_path):
+    # Positive control for the previous test: a genuinely successful
+    # call is real evidence, and still validates a later claim about it.
+    result = _parse(tmp_path, [
+        _note("Token Lens metrics capture (tl-cap v1 skill): ..."),
+        turn_line(content=[
+            tool_use_block("Skill", "tu1", {"skill": "grill-me"}),
+        ]),
+        user_block_line([tool_result_block("tu1", "done")]),
+        _reply("Never mind.\n[tl: skill=would-help:grill-me]"),
+    ])
+    assert result.turns[0].skills_invoked == ("grill-me",)
+    reply = result.turns[-1]
+    assert reply.cap is not None and reply.cap.skill_name == "grill-me"
 
 
 def test_the_last_text_block_decides(tmp_path):
@@ -169,6 +225,28 @@ def test_a_capture_note_without_rendered_adds_the_wrapper_it_is_shown_in():
     without = events.classify_line(_note(text, hook="SubagentStart", rendered=False))
     assert without.size_chars == with_rendered.size_chars
     assert without.detail["hook"] == "SubagentStart"
+
+
+def test_a_pre_rendered_capture_note_still_takes_the_fallback_path(tmp_path):
+    """SURV-10: a hook_additional_context line from a Claude Code version
+    that doesn't yet send ``rendered`` (real example: 2.1.258) carries no
+    ``rendered`` field at all -- not ``null``, simply absent -- and must
+    still take the fallback path (``_rendered_size_chars`` ->
+    ``_attachment_content_chars``), not silently come back sized ``None``.
+
+    Pinned against real numbers, not just internal consistency: the
+    essentials level's SessionStart note is exactly 729 characters, and
+    the wrapper Claude Code puts around a hook's additional context
+    (``_HOOK_CONTEXT_WRAPPER_CHARS``, 63) plus ``len("SessionStart")``
+    (12) is exactly 75, for 804 total.
+    """
+    text = capture_catalogue.note_text(capture_catalogue.level_metrics("essentials"), "main")
+    assert len(text) == 729
+    line = _note(text, hook="SessionStart", rendered=False)
+    assert "rendered" not in line
+    event = events.classify_line(line)
+    assert (event.kind, event.subkind) == (EventKind.HOOK_OUTPUT, "capture_note")
+    assert event.size_chars == 804
 
 
 def test_other_hook_context_is_unchanged():
@@ -293,7 +371,7 @@ def test_a_task_notification_is_sized(tmp_path):
 
 def test_the_new_fields_survive_the_digest_cache(tmp_path):
     result = _parse(tmp_path, [
-        _note("Token Lens metrics capture (tl-cap v1 task): ..."),
+        _note("Token Lens metrics capture (tl-cap v1 task,missing): ..."),
         user_str_line("[spawn: isolate] do it in src/a.py", origin={"kind": "human"}),
         turn_line(content=[tool_use_block("ExitPlanMode", "tu_p", {"plan": "1. a\n2. b"})]),
         user_block_line([tool_result_block("tu_p", "ok")]),

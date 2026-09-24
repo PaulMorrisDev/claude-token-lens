@@ -96,8 +96,14 @@ def test_each_capture_change_is_a_change_point(tmp_path):
         "Changed metrics capture",
         "Turned metrics capture off",
     ]
-    assert points[0].keys == ["capture.level"]
-    assert points[0].changes == [{"key": "capture.level", "agent": None, "old": "off", "new": "essentials"}]
+    # CAP-8: the first, off -> on call also gets the default time-box, so
+    # its own log entry (and this change point) carries a "until" change
+    # too, alongside "level".
+    assert points[0].keys == ["capture.level", "capture.until"]
+    assert points[0].changes == [
+        {"key": "capture.level", "agent": None, "old": "off", "new": "essentials"},
+        {"key": "capture.until", "agent": None, "old": "", "new": "2026-09-15T09:00:00+00:00"},
+    ]
     assert points[2].keys == ["capture.sample"]
     assert change_points.latest(tmp_path).label == "Turned metrics capture off"
 
@@ -110,3 +116,74 @@ def test_a_broken_capture_log_line_is_skipped(tmp_path):
     )
     [point] = change_points.change_points(tmp_path)
     assert point.label == "Turned metrics capture on: Free"
+
+
+# -- EST-P9: change points a transcript itself shows -------------------------
+
+
+def _session_file(project_dir, session_id, *, claude_md_chars, model, ts_prefix):
+    from helpers import attachment_line, turn_line, write_jsonl
+
+    # attachment_line() has no timestamp kwarg of its own (unlike
+    # turn_line()/_base_line()'s other builders) -- set it directly so
+    # the instructions event lands before the session's first turn.
+    instructions = attachment_line(
+        "instructions",
+        files=[{"path": "C:/repo/CLAUDE.md", "type": "Project", "content": "x" * claude_md_chars}],
+    )
+    instructions["timestamp"] = f"{ts_prefix}T08:59:55.000Z"
+    lines = [
+        instructions,
+        turn_line(timestamp=f"{ts_prefix}T09:00:00.000Z", model=model),
+        turn_line(timestamp=f"{ts_prefix}T09:00:05.000Z", model=model),
+    ]
+    write_jsonl(project_dir / f"{session_id}.jsonl", lines)
+
+
+def test_a_big_claude_md_size_change_between_sessions_is_a_change_point(tmp_path):
+    from claude_token_lens.corpus import load_corpus
+
+    project_dir = tmp_path / "proj"
+    project_dir.mkdir()
+    _session_file(project_dir, "s1", claude_md_chars=1000, model="claude-sonnet-5", ts_prefix="2026-09-10")
+    _session_file(project_dir, "s2", claude_md_chars=2000, model="claude-sonnet-5", ts_prefix="2026-09-17")
+    corpus = load_corpus([project_dir])
+    [point] = change_points.change_points(tmp_path, corpus)
+    assert point.source == "transcript"
+    assert point.keys == ["claude_md_chars"]
+    assert point.changes == [{"key": "claude_md_chars", "agent": None, "old": 1000, "new": 2000}]
+    assert point.label == "CLAUDE.md size changed"
+
+
+def test_a_small_claude_md_size_change_is_not_a_change_point(tmp_path):
+    from claude_token_lens.corpus import load_corpus
+
+    project_dir = tmp_path / "proj"
+    project_dir.mkdir()
+    _session_file(project_dir, "s1", claude_md_chars=1000, model="claude-sonnet-5", ts_prefix="2026-09-10")
+    _session_file(project_dir, "s2", claude_md_chars=1050, model="claude-sonnet-5", ts_prefix="2026-09-17")
+    corpus = load_corpus([project_dir])
+    assert change_points.change_points(tmp_path, corpus) == []
+
+
+def test_a_dominant_model_shift_between_sessions_is_a_change_point(tmp_path):
+    from claude_token_lens.corpus import load_corpus
+
+    project_dir = tmp_path / "proj"
+    project_dir.mkdir()
+    _session_file(project_dir, "s1", claude_md_chars=0, model="claude-sonnet-5", ts_prefix="2026-09-10")
+    _session_file(project_dir, "s2", claude_md_chars=0, model="claude-opus-5", ts_prefix="2026-09-17")
+    corpus = load_corpus([project_dir])
+    [point] = change_points.change_points(tmp_path, corpus)
+    assert point.source == "transcript"
+    assert point.keys == ["model"]
+    assert point.changes == [{"key": "model", "agent": None, "old": "claude-sonnet-5", "new": "claude-opus-5"}]
+    assert point.label == "Model changed"
+
+
+def test_without_a_corpus_transcript_points_are_left_out(tmp_path):
+    """change_points(config_dir) with no corpus is the "since my last
+    change" caller's path -- it can't classify transcript signatures
+    without one, so it just doesn't try."""
+    assert change_points.change_points(tmp_path) == []
+    assert change_points.change_points(tmp_path, corpus=None) == []

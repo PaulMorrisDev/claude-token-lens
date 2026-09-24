@@ -687,6 +687,7 @@ def test_profiles_listing_has_no_toml_path(server):
             "source": "user",
             "archetype": None,
             "for": [],
+            "tasks": [],
             "updated_at": user_entries[0]["updated_at"],
         }
     ]
@@ -838,6 +839,31 @@ def test_profile_diff_notes_missing_snapshot_when_store_has_none(tmp_path, monke
 def test_profile_diff_unknown_id_is_not_found(server):
     resp, body = server.get_json("/api/profiles/does-not-exist/diff")
     assert resp.status == 404
+
+
+# -- SEC-P4/F4: path traversal via the <id> path segment -----------------
+#
+# The route regex (``[^/]+``) only ever sees one raw path segment, so a
+# literal ".." with a real "/" would already be blocked by matching a
+# *different* route (or none). Percent-encoding the separator
+# (``%2F``/``%5C``) hides it from the regex; the dispatcher's own
+# ``urllib.parse.unquote`` then decodes it back into a real ``/``/``\``
+# before ``_load_profile_by_id`` ever sees it -- ``_ID_RE`` is the guard
+# that must catch the decoded id.
+
+
+@pytest.mark.parametrize("suffix", ["", "/diff"])
+@pytest.mark.parametrize(
+    "encoded_id",
+    [
+        "..%2F..%2F..%2Fetc%2Fpasswd",
+        "C:%5CWindows%5Csystem32%5Cdrivers%5Cetc%5Chosts",
+    ],
+)
+def test_profile_route_rejects_percent_encoded_path_traversal(server, encoded_id, suffix):
+    resp, body = server.get_json(f"/api/profiles/{encoded_id}{suffix}")
+    assert resp.status == 404
+    assert body["ok"] is False
 
 
 def test_profile_diff_rejects_a_user_profile_row_with_no_backing_file(server):
@@ -1001,6 +1027,49 @@ def test_post_with_no_content_type_and_no_body_is_bad_request(server):
     body = json.loads(raw)
     assert resp.status == 400
     assert body["error"]["code"] == "bad_request"
+
+
+def test_post_body_over_64kb_is_payload_too_large(server):
+    """G5: a POST body over the 64 KB cap is rejected with 413, on any
+    route -- checked here against ``/api/sessions/<id>/tags``, but the
+    cap lives in ``do_POST`` itself, ahead of routing."""
+    oversized = json.dumps({"key": "mode", "value": "x" * (65536)}).encode("utf-8")
+    assert len(oversized) > 65536
+    resp, raw = server.request(
+        "POST",
+        f"/api/sessions/{server.session_id}/tags",
+        raw_body=oversized,
+        headers={"Content-Type": "application/json"},
+    )
+    body = json.loads(raw)
+    assert resp.status == 413
+    assert body["ok"] is False
+    assert body["error"]["code"] == "payload_too_large"
+    # Nothing was written.
+    resp2, session_body = server.get_json(f"/api/session/{server.session_id}")
+    assert session_body["data"]["tags"].get("mode") != "x" * 65536
+
+
+def test_post_body_at_64kb_limit_is_not_rejected_for_size(server):
+    """The cap is inclusive of exactly 64 KB -- a body at that size must
+    still reach routing/validation, not be turned away as too large."""
+    # Pad the value so the whole JSON body lands at exactly 65536 bytes.
+    padding_len = 65536 - len(json.dumps({"key": "mode", "value": ""}).encode("utf-8"))
+    body_obj = {"key": "mode", "value": "x" * padding_len}
+    raw_body = json.dumps(body_obj).encode("utf-8")
+    assert len(raw_body) == 65536
+    resp, raw = server.request(
+        "POST",
+        f"/api/sessions/{server.session_id}/tags",
+        raw_body=raw_body,
+        headers={"Content-Type": "application/json"},
+    )
+    body = json.loads(raw)
+    # Not size-rejected -- it fails (or succeeds) on ordinary validation
+    # instead, never on the 413 path.
+    assert resp.status != 413
+    assert resp.status == 200
+    assert body["data"]["tags"]["mode"] == "x" * padding_len
 
 
 # -- report-backed routes -----------------------------------------------------
@@ -1605,7 +1674,7 @@ def test_profile_schema_lists_every_allowlisted_key_in_plain_words(server):
     assert {lever["key"] for lever in data["agents"]} == set(profile_schema.AGENT_ALLOWLIST)
     effort = next(lever for lever in data["settings"] if lever["key"] == "effortLevel")
     assert effort["label"] == "Effort level"
-    assert effort["values"] == ["low", "medium", "high", "max"]
+    assert effort["values"] == ["low", "medium", "high", "xhigh", "max"]
     assert effort["description"]
     assert all(lever["description"] for lever in data["settings"] + data["agents"])
     assert [scope["key"] for scope in data["scopes"]] == ["user", "project-local", "repo"]
@@ -1638,6 +1707,22 @@ def test_session_explain_gives_template_sentences(server):
     assert round(sum(row["share_pct"] for row in data["cost_split"])) == 100
     resp, _raw = server.request("GET", "/api/session/unknown/explain")
     assert resp.status == 404
+
+
+def test_session_explain_headline_has_no_bare_dollar_under_a_subscription(server):
+    """UX-1: route_session_explain now builds its ``Units`` the same way
+    every other report-backed route does (``_report_units(_get_report_model
+    (...))``, same idiom ``_compute_impact`` uses) instead of a bare
+    ``Units(billing_mode, currency)`` with no elasticity fit -- this
+    corpus logs no usage-limit readings, so the fit still falls back to
+    "list-price equivalent", but the billing mode itself must still be
+    honoured end to end."""
+    (server.options.config_dir / "config.toml").write_text('billing = "subscription"\n', encoding="utf-8")
+    resp, raw = server.request("GET", f"/api/session/{server.session_id}/explain")
+    assert resp.status == 200
+    data = json.loads(raw)["data"]
+    assert "$" not in data["headline"]
+    assert "list-price equivalent" in data["headline"]
 
 
 def test_profiles_from_current_saves_allowlisted_non_managed_keys(server):
@@ -1758,8 +1843,81 @@ def test_impact_is_empty_without_changes_and_lists_an_apply(server):
     [change] = payload["data"]["changes"]
     assert change["change"]["keys"] == ["effortLevel"]
     assert change["enough"] is False and "so far" in change["verdict"]
+    # P4 leftover: a structured gate alongside the prose verdict, for
+    # the dashboard's emptyState() helper.
+    from claude_token_lens import impact as impact_mod
+
+    assert change["gate"] == {"reason": "min_sessions", "have": 0, "need": impact_mod.MIN_SESSIONS}
     resp, payload = server.get_json("/api/summary?window=change")
     assert resp.status == 200
+
+
+def test_impact_gate_is_null_once_both_sides_have_enough_sessions(server):
+    """The other half of the P4-leftover gate: once a change has
+    ``min_sessions`` real sessions on each side, ``enough`` is true and
+    ``gate`` -- unlike ``verdict``, which always has *some* text -- goes
+    back to ``None`` rather than a stale or misleading reason."""
+    from claude_token_lens import impact as impact_mod
+    from claude_token_lens.service import api as service_api
+
+    before = impact_mod.MIN_SESSIONS
+    after = impact_mod.MIN_SESSIONS
+    assert service_api._min_sessions_gate(before, after, impact_mod.MIN_SESSIONS) is None
+    assert service_api._min_sessions_gate(before - 1, after, impact_mod.MIN_SESSIONS) == {
+        "reason": "min_sessions",
+        "have": before - 1,
+        "need": impact_mod.MIN_SESSIONS,
+    }
+    # The gate reports whichever side is thinner.
+    assert service_api._min_sessions_gate(before, 0, impact_mod.MIN_SESSIONS)["have"] == 0
+
+
+def test_backtest_is_empty_without_predictions(server):
+    resp, payload = server.get_json("/api/backtest")
+    assert resp.status == 200
+    assert payload["data"]["predictions"] == []
+    assert set(payload["data"]) >= {"predictions", "judged_just_now", "verdicts"}
+    assert "too_little_data" in payload["data"]["verdicts"]
+
+
+def test_backtest_lists_a_logged_prediction_after_a_matching_apply(server):
+    from claude_token_lens.profiles import apply as apply_mod
+    from claude_token_lens.profiles.schema import load_dict
+    from claude_token_lens.service.watcher import FileWatcher
+
+    resp, payload = server.post_json("/api/whatif", {"settings": {"model": "sonnet"}, "agents": {}, "log": True})
+    assert resp.status == 200
+
+    config_dir = server.options.config_dir
+    claude_root = config_dir.parent / "fake-claude"
+    claude_root.mkdir()
+    plan = apply_mod.plan_apply(
+        load_dict({"id": "one-off", "settings": {"model": "sonnet"}}),
+        scope="user", project_path=None, config_dir=config_dir, claude_root=claude_root,
+    )
+    apply_mod.execute(plan, config_dir=config_dir)
+
+    # In production a running FileWatcher's own tick ingests
+    # prediction-log.jsonl into the store (_scan_predictions); this test
+    # server runs no watcher of its own, so run one tick by hand.
+    FileWatcher(server.store, server.options).run_once()
+
+    resp, payload = server.get_json("/api/backtest")
+    assert resp.status == 200
+    [prediction] = payload["data"]["predictions"]
+    assert prediction["measure_key"] == "model"
+    assert prediction["source"] == "whatif"
+    assert prediction["predicted_text"]
+    # Judged or not (the seeded corpus may not clear MIN_SESSIONS on
+    # both sides), the verdict is always one of the closed set or None.
+    assert prediction["verdict"] in (None, *payload["data"]["verdicts"])
+
+
+def test_backtest_is_cached_between_calls_with_no_new_data(server):
+    resp1, payload1 = server.get_json("/api/backtest")
+    resp2, payload2 = server.get_json("/api/backtest")
+    assert resp1.status == resp2.status == 200
+    assert payload1["data"] == payload2["data"]
 
 
 def test_profile_goals_lists_goals_and_drafts_one(server):
@@ -1789,11 +1947,146 @@ def test_whatif_estimates_and_validates(server):
     assert resp.status == 400
 
 
+def test_whatif_task_param_validates_and_scales_the_total(server):
+    # No metrics capture in this fixture's corpus, so habits_by_task has
+    # no per-task cost to scale by -- PROF-01's scaling degrades to "not
+    # estimated" rather than leaving the unscaled (too large) figure in.
+    resp, payload = server.post_json("/api/whatif?task=not-a-task", {"settings": {"model": "sonnet"}, "agents": {}})
+    assert resp.status == 400 and "unknown task" in payload["error"]["message"]
+    resp, payload = server.post_json("/api/whatif?task=bugfix", {"settings": {"model": "sonnet"}, "agents": {}})
+    assert resp.status == 200
+    data = payload["data"]
+    [row] = data["rows"]
+    assert row["saving_usd"] is None and "no per-task cost" in row["basis"]
+    # Whatever the rows say, the total is exactly their own sum (PROF-01).
+    assert data["total_usd"] == sum(r["saving_usd"] for r in data["rows"] if r["saving_usd"] is not None)
+
+
+def test_whatif_task_param_takes_several_tasks(server):
+    # F11: a catalogue profile's normalised tasks arrive comma-separated.
+    resp, payload = server.post_json("/api/whatif?task=feature,bugfix", {"settings": {"model": "sonnet"}, "agents": {}})
+    assert resp.status == 200
+    resp, payload = server.post_json("/api/whatif?task=bugfix,implementation", {"settings": {"model": "sonnet"}})
+    assert resp.status == 400 and "'implementation'" in payload["error"]["message"]
+
+
+def test_a_catalogue_profile_carries_its_for_words_as_tasks(server):
+    # F11: the Profiles tab scales a profile's estimate by these; the raw
+    # `for` words ("implementation", ...) aren't tasks /api/whatif accepts.
+    expected = ["feature", "bugfix", "debug", "refactor", "test", "review"]
+    resp, body = server.get_json("/api/profiles/implementation-heavy")
+    assert resp.status == 200
+    assert body["data"]["tasks"] == expected
+    resp, body = server.get_json("/api/profiles")
+    entry = next(p for p in body["data"]["profiles"] if p["id"] == "implementation-heavy")
+    assert entry["tasks"] == expected
+
+
 def test_whatif_rejects_cross_site_posts(server):
     resp, _raw = server.request(
         "POST", "/api/whatif", body={"settings": {"model": "sonnet"}}, headers={"Sec-Fetch-Site": "cross-site"}
     )
     assert resp.status == 403
+
+
+def test_whatif_without_log_flag_writes_no_prediction(server):
+    from claude_token_lens import config as config_mod
+
+    resp, payload = server.post_json("/api/whatif", {"settings": {"model": "sonnet"}, "agents": {}})
+    assert resp.status == 200
+    assert config_mod.load_prediction_log(server.options.config_dir) == []
+
+
+def test_whatif_log_flag_appends_a_prediction_per_estimated_row(server):
+    from claude_token_lens import config as config_mod
+
+    resp, payload = server.post_json(
+        "/api/whatif", {"settings": {"model": "sonnet"}, "agents": {}, "log": True}
+    )
+    assert resp.status == 200
+    [row] = payload["data"]["rows"]
+    assert row["saving_usd"] is not None
+    records = config_mod.load_prediction_log(server.options.config_dir)
+    assert len(records) == 1
+    assert records[0]["source"] == "whatif"
+    assert records[0]["measure_key"] == "model"
+    assert records[0]["predicted_usd"] == row["saving_usd"]
+    assert records[0]["fidelity"] == row["fidelity"]
+
+
+def test_whatif_log_flag_skips_rows_that_could_not_be_estimated(server):
+    from claude_token_lens import config as config_mod
+
+    resp, payload = server.post_json(
+        "/api/whatif", {"settings": {"effortLevel": "medium"}, "agents": {}, "log": True}
+    )
+    assert resp.status == 200
+    assert payload["data"]["rows"][0]["saving_usd"] is None
+    assert config_mod.load_prediction_log(server.options.config_dir) == []
+
+
+def test_whatif_calibrates_once_three_predictions_for_the_key_are_judged(server):
+    from claude_token_lens import config as config_mod
+
+    for i in range(3):
+        pid = f"pred-{i}"
+        server.store.upsert_prediction(
+            prediction_id=pid, ts="2026-09-20T09:00:00Z", source="whatif", measure_key="model",
+            agent=None, predicted_usd=1.0, predicted_pct=None, fidelity="ceiling",
+        )
+        server.store.judge_prediction(pid, change_ts="2026-09-21T09:00:00Z", verdict="larger", measured_usd=2.0, measured_pct=None)
+
+    resp, payload = server.post_json("/api/whatif", {"settings": {"model": "sonnet"}, "agents": {}, "log": True})
+    assert resp.status == 200
+    [row] = payload["data"]["rows"]
+    assert row["fidelity"] == "calibrated"
+    raw = row["uncalibrated_usd"]
+    assert raw is not None
+    assert row["saving_usd"] == raw * 2.0
+
+    # Logging records the raw, uncalibrated estimate -- not the
+    # calibrated one -- so future judging never compounds a correction.
+    records = config_mod.load_prediction_log(server.options.config_dir)
+    logged = [r for r in records if r["measure_key"] == "model" and r["fidelity"] == "ceiling"]
+    assert len(logged) == 1
+    assert logged[0]["predicted_usd"] == raw
+
+
+def test_predictions_seen_marks_a_logged_prediction(server):
+    from claude_token_lens import config as config_mod
+
+    prediction_id = config_mod.append_prediction_log(
+        server.options.config_dir,
+        source="whatif",
+        measure_key="model",
+        agent=None,
+        predicted_usd=1.0,
+        predicted_pct=None,
+        fidelity="ceiling",
+    )
+    server.store.upsert_prediction(
+        prediction_id=prediction_id,
+        ts="2026-09-20T09:00:00Z",
+        source="whatif",
+        measure_key="model",
+        agent=None,
+        predicted_usd=1.0,
+        predicted_pct=None,
+        fidelity="ceiling",
+    )
+    resp, payload = server.post_json("/api/predictions/seen", {"id": prediction_id})
+    assert resp.status == 200
+    assert payload["data"] == {"id": prediction_id, "seen": True}
+    [row] = server.store.predictions()
+    assert row["seen_at"] is not None
+
+
+def test_predictions_seen_rejects_a_missing_id(server):
+    resp, payload = server.post_json("/api/predictions/seen", {})
+    assert resp.status == 400
+    resp, payload = server.post_json("/api/predictions/seen", {"id": "does-not-exist"})
+    assert resp.status == 200
+    assert payload["data"]["seen"] is False
 
 
 def test_quick_actions_list_and_detail(server):
@@ -1883,6 +2176,34 @@ def test_post_capture_saves_the_level_and_names_the_hooks_it_needs(server):
     # The same change again changes nothing.
     resp, payload = server.post_json("/api/capture", {"level": "essentials"})
     assert payload["data"]["changed"] is False
+
+
+def test_post_capture_turning_on_with_no_until_gets_the_default_time_box(server):
+    # CAP-8: the dashboard's level picker posts only {"level": ...} when
+    # turning capture on (its own "until" control only renders once
+    # capture is already on) -- this is exactly the path the default
+    # must reach, via config.set_capture's own centralized logic.
+    from datetime import datetime, timedelta, timezone
+
+    from claude_token_lens import capture_catalogue
+
+    resp, payload = server.post_json("/api/capture", {"level": "essentials"})
+    assert resp.status == 200
+    until = payload["data"]["config"]["until"]
+    assert until
+    days = (datetime.fromisoformat(until) - datetime.now(timezone.utc)).total_seconds() / 86400
+    assert capture_catalogue.DEFAULT_CAPTURE_TIMEBOX_DAYS - 1 < days <= capture_catalogue.DEFAULT_CAPTURE_TIMEBOX_DAYS
+
+
+def test_post_capture_explicit_empty_until_means_no_limit(server):
+    # The API's own way to opt out (until: "") must not be overridden by
+    # the default -- only an omitted "until" key gets one.
+    resp, payload = server.post_json("/api/capture", {"level": "essentials", "until": ""})
+    assert resp.status == 200
+    assert payload["data"]["config"]["until"] == ""
+    # Bumping the level with "until" left out again keeps that choice.
+    resp, payload = server.post_json("/api/capture", {"level": "deep"})
+    assert payload["data"]["config"]["until"] == ""
 
 
 def test_post_capture_picks_metrics_sampling_end_and_feedback(server):

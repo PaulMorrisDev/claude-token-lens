@@ -359,6 +359,65 @@ Feedback addition (``PARSER_VERSION`` 16):
 - ``TranscriptMeta.cap_version`` / ``cap_metrics`` / ``cap_injections``
   -- the capture note format version seen, the metric codes the notes
   asked for, and how many notes were injected.
+
+Parser-signals addition (``PARSER_VERSION`` 19 -- plan SURV-4/5/6/7, see
+``events.py``/``parse.py``'s own module docstrings). Every new value is a
+count, a closed word (with an "other" fallback) or a raw number off a
+``cost-state`` line -- never message text, a path or a command:
+
+- ``EventKind.TASK_STATUS`` / ``EventKind.STRUCTURED_OUTPUT`` -- a
+  ``task_status``/``structured_output`` attachment gets its own kind
+  instead of falling into the generic ``ATTACHMENT`` catch-all.
+  ``Event.detail`` carries ``status``/``task_type`` (closed words, never
+  ``description``/``deltaSummary``/``outputFilePath``/``shell``) for the
+  former, and ``size_chars`` only (the JSON-encoded length of ``data``,
+  never ``data`` itself) for the latter.
+- ``thinking_drop`` joins ``events._CACHE_SIGNAL_TYPES`` (a likely
+  cache-bust): a model dropped its own prior extended-thinking blocks.
+  ``Event.detail`` carries ``reason`` (closed word, else "other"),
+  ``blockCount`` and ``turnCount`` -- never the dropped blocks'
+  ``first``/``last`` text, ``blockHashes``, ``requestId``,
+  ``querySource`` or ``model``.
+- ``TranscriptResult.parser_notes: dict[str, dict[str, int]] = {}`` /
+  ``ReportModel.parser_notes: dict = {}`` -- a side channel for counters
+  that don't fit ``Diagnostics`` (whose field list is pinned 1:1 to
+  ``helptext.DIAGNOSTIC_LABELS`` by ``tests/test_help_coverage.py``, and
+  which this phase was told not to touch). Two keys so far:
+  ``unknown_line_types`` -- top-level line types ``events.classify_line``
+  had no rule for at all (kept apart from the long-standing
+  ``Diagnostics.ignored_line_types``, which also holds types the parser
+  recognises and deliberately drops), by sanitised type name (see
+  ``events.sanitize_line_type``: a closed token pattern, capped length,
+  else "other" -- a raw ``type`` field is attacker-controlled input, not
+  a trusted enum). ``unsized_blocks`` -- ``image``/``document`` content
+  blocks (in a tool_result or a human prompt) whose token count this
+  parser did not attempt to estimate, by block type, because no
+  documented deterministic rule covers them (a PDF page's cost is only
+  documented as an approximate per-page range) or the image needs the
+  high-resolution tier's downscaling this parser doesn't implement.
+  Merged manually alongside (not inside) ``report._merge_diagnostics``,
+  and rendered by ``helptext.diagnostics_table``'s own
+  ``_PARSER_NOTE_LABELS`` (not ``DIAGNOSTIC_LABELS``).
+- ``Event.size_chars`` on an ``image``/``document`` content block this
+  parser CAN size (standard-tier image: ``events.image_token_estimate``)
+  is the block's token estimate converted back to chars at the project's
+  usual ``_CHARS_PER_TOKEN_APPROX`` (4), so it composes with the existing
+  char-based totals (``tool_result_chars``, ``human_prompt_chars``)
+  without a second unit system. ``parse._tool_result_length`` and
+  ``events._human_text_metrics`` both now add this for ``image``/
+  ``document`` blocks instead of silently treating them as 0 chars.
+- ``TranscriptMeta.cc_cost_usd: float | None = None`` /
+  ``cc_cost_has_unknown_model: bool = False`` -- a ``cost-state`` line's
+  own ``totalCostUSD`` (numbers only; the last such line seen in the
+  transcript, since the field is a running total) and its
+  ``hasUnknownModelCost`` flag, so ``reconcile.claude_code_reported_costs``
+  can hand P9's later Q1 gap metric "what Claude Code itself thinks this
+  session cost" next to this tool's own per-turn pricing for the same
+  session. ``cost-state`` joins ``events._IGNORABLE_TYPES`` (it is a
+  known, deliberately-ignored-as-an-event type, like ``mode``/
+  ``agent-setting`` before it) since its value is read directly in
+  ``parse.parse_transcript`` rather than carried as an ``Event``. No
+  OTel, no per-model breakdown -- just the one total and its flag.
 """
 
 from __future__ import annotations
@@ -385,6 +444,11 @@ class EventKind(StrEnum):
     REMINDER = "reminder"
     CONTEXT_INJECT = "context_inject"
     QUEUE_OPERATION = "queue_operation"
+    #: Parser-signals addition (see module docstring): a ``task_status`` or
+    #: ``structured_output`` attachment gets its own kind instead of the
+    #: generic ATTACHMENT catch-all below.
+    TASK_STATUS = "task_status"
+    STRUCTURED_OUTPUT = "structured_output"
     ATTACHMENT = "attachment"
     META = "meta"
     TOOL_DENIAL = "tool_denial"
@@ -689,6 +753,10 @@ class TranscriptMeta:
     cap_version: int | None = None
     cap_metrics: tuple[str, ...] = ()
     cap_injections: int = 0
+    #: Parser-signals addition (see module docstring): the last
+    #: ``cost-state`` line's own ``totalCostUSD``/``hasUnknownModelCost``.
+    cc_cost_usd: float | None = None
+    cc_cost_has_unknown_model: bool = False
 
 
 @dataclass(slots=True)
@@ -777,6 +845,9 @@ class TranscriptResult:
     diagnostics: Diagnostics = field(default_factory=Diagnostics)
     tool_result_chars: dict = field(default_factory=dict)
     tool_result_calls: dict = field(default_factory=dict)
+    #: Parser-signals addition (see module docstring): counters that don't
+    #: fit ``Diagnostics`` -- ``unknown_line_types``, ``unsized_blocks``.
+    parser_notes: dict = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -846,6 +917,13 @@ class CostBreakdown:
     output_cost: float = 0.0
     cache_write_cost: float = 0.0
     cache_read_cost: float = 0.0
+    #: ``turn.web_search_requests`` priced at the rate card's
+    #: ``[server_tools].web_search_per_1000`` (0.0 when the rate card
+    #: sets no rate, or the model didn't resolve). Included in ``total``.
+    #: ``web_fetch_requests`` has no documented per-request rate, so it
+    #: is counted but never priced (see pricing.toml's ``[server_tools]``
+    #: comment).
+    server_tool_cost: float = 0.0
     total: float = 0.0
     long_context_applied: bool = False
     model_known: bool = False
@@ -991,10 +1069,13 @@ class Recommendation:
     evidence: list = field(default_factory=list)
     #: WP10-merge addition (additive, defaulted): where ``lever`` applies —
     #: "user" (``~/.claude/settings.json``), "repo" (project
-    #: ``.claude/settings.json`` / frontmatter), or "managed" (an
-    #: org-pushed managed-settings key, which the user cannot change
-    #: locally). Replaces the earlier ``"[managed] "`` string prefix on
-    #: ``title`` that ``recommend.py`` used to encode the same fact.
+    #: ``.claude/settings.json`` / frontmatter, checked in), "project-local"
+    #: (COV-01 addition: project ``.claude/settings.local.json``, per-
+    #: machine, never checked in — no per-agent-file equivalent), or
+    #: "managed" (an org-pushed managed-settings key, which the user
+    #: cannot change locally). Replaces the earlier ``"[managed] "``
+    #: string prefix on ``title`` that ``recommend.py`` used to encode
+    #: the same fact.
     scope: str = "user"
     #: Fix R13 (additive): the agent type this recommendation is about,
     #: e.g. "claude-implementer", or "top-level" for the main session
@@ -1057,6 +1138,19 @@ class ReportMeta:
     #: list price, a share of the weekly limit, or list-price
     #: equivalents when that share can't be worked out.
     amounts_basis: str = ""
+    #: UX-1: ``{mode, share_per_usd, period_label, basis}`` -- the same
+    #: billing-mode facts as ``billing_mode``/``amounts_basis`` above, in
+    #: the shape ``units.Units.money``'s JS mirror (app.js's own
+    #: ``money()``) needs to phrase an arbitrary amount client-side
+    #: without a round trip through a table cell: ``mode`` is
+    #: ``billing_mode``; ``share_per_usd`` is the percentage points of
+    #: the weekly usage limit one list-price dollar is worth
+    #: (``elasticity.express_in_window(1.0, ...)``), or ``None`` when
+    #: there's no accepted fit yet; ``period_label`` is what that share
+    #: is "of" ("weekly usage limit"); ``basis`` is ``amounts_basis``
+    #: again, kept alongside so a consumer of ``meta.units`` alone (no
+    #: other ``meta`` field) still has the caveat text.
+    units: dict = field(default_factory=dict)
     #: TTL/RE-CACHE/etc. assumption text, rendered as the report's
     #: "## Assumptions" block. See the module docstring's deviation note.
     assumptions: list[str] = field(default_factory=list)
@@ -1076,6 +1170,10 @@ class ReportModel:
     #: (``context_files.ContextFileStats.to_dict``): hashes, names, sizes,
     #: counts and estimated costs only.
     context_files: dict = field(default_factory=dict)
+    #: Parser-signals addition (see module docstring): corpus-wide totals
+    #: of ``TranscriptResult.parser_notes``, merged the same way as
+    #: ``context_files`` -- alongside, not inside, ``_merge_diagnostics``.
+    parser_notes: dict = field(default_factory=dict)
     #: How amounts are phrased for this report's billing mode
     #: (``units.Units``), for routes that phrase amounts after the fact.
     #: Typed loosely because this module imports nothing from the

@@ -10,11 +10,12 @@ metrics, and a worked example against a real, scrubbed transcript.
 in this order: `overview`, `usage`, `elasticity` (only under
 subscription billing with usage-log readings), `sessions`, `recache`, `ttl`,
 `limits`, `carry`, `compaction_sim`, `model_swap`, `waste`,
-`compactions`, `agent_startup`, `agents`, `quality`, `workstyle`, `workflows`,
-`phases` (only with `--phases`), `config` (only when config snapshots
-exist), `context_budget`, `scorecard`, and `baseline_comparison` (only
-with `--baseline`). `claude-token-lens report` prints it. This file
-groups sections by topic, so its order differs.
+`compactions`, `agent_startup`, `agents`, `quality`, `workstyle`, `habits`,
+`workflows`, `phases` (only with `--phases`), `config` (only when config
+snapshots exist), `context_budget`, `capture`, `scorecard`, and
+`baseline_comparison` (only with `--baseline`). `claude-token-lens
+report` prints it. This file groups sections by topic, so its order
+differs.
 
 These sections are not part of the assembled report: `config_diff`,
 `compare`, `reconcile` and `team_report` (each printed by its own
@@ -93,6 +94,17 @@ respects.
   `pricing.PricingCoverage.as_fast_priced_as_standard_table`, appended
   onto this section only when at least one such reply exists. Shown
   under the Usage tab's advanced detail.
+- `pricing_fast_applied` (PROF-08) — the mirror image of the table
+  above: one row per model id seen with at least one reply *actually*
+  billed at its `[models."<id>".fast]` rate: `model_id`, `turns`,
+  `tokens`, `cost` (what was actually billed), `standard_cost` (what the
+  same replies would have cost at that model's standard rate instead,
+  with the flat per-request server-tool fee — never scaled by the fast
+  multiplier — added back unscaled on both sides). Built by
+  `pricing.PricingCoverage.as_fast_applied_table`, appended onto this
+  section only when at least one such reply exists. Shown under the
+  Usage tab's advanced detail; read by `whatif._fast_mode` to price a
+  profile's `fastMode = false` candidate.
 - `cache_ground_truth` (S1-exports) — one row per session: `session_id`,
   `rows_logged`, `warm_share` (percentage of *logged rows* — statusline
   refreshes, not wall-clock time — where `statusline.py`'s real,
@@ -362,6 +374,11 @@ The `autoCompactWindow` sweep: full write-up and worked example in
   each subagent type) sessions, observed cost, best candidate window,
   its cost, the saving vs. observed (0 floor), the delta in percent, and
   a recommendation string naming the window.
+- `compaction_sim_by_task` — the same best-window roll-up as
+  `compaction_sim_by_agent_type`, keyed by the kind of task metrics
+  capture reported (`task=`) instead of agent type, main sessions only.
+  A task appears only once at least `MIN_TASK_SESSIONS` (5, mirroring
+  `habits.MIN_GROUP`) main sessions reported it (EST-P8).
 - `compaction_sim_fidelity` — for each top-level session whose project
   snapshot carries a known configured `autoCompactWindow`: that
   configured window, the simulated cost at it, the observed cost, and
@@ -611,11 +628,15 @@ skill loaded late), and your ratings from the Sessions tab. Every table
 is always there, empty when there's nothing to show; the notes say when
 capture is off or no feedback has been given.
 
-- `habits_digest` — "This week": the three habits worth the most (saving
+- `habits_digest` — "Weekly pace (last N days)": the three habits worth the most (saving
   a week, `top_1` to `top_3`), what the habits you already picked up
   save (`adopted`), the average cost of a piece of work that met its
   goal (`cost_per_met`), and the share of messages Claude tagged
-  (`tagged`). The monthly report carries the same digest.
+  (`tagged`). The monthly report carries the same digest. `N` is
+  `Habits.span_days`; a saving is only spread into a per-week rate once
+  there's a full week of it (`Habits.span_weeks`, UX-4/7/F3) -- under 7
+  days it's the raw total observed so far, not a figure stretched by
+  dividing by a fraction of a week.
 - `habits_playbook` — one row per habit worth trying (`habits.ITEMS`),
   the largest weekly saving first: theme, saving a week, what your
   sessions show, an example to copy, how the saving is worked out, how
@@ -623,9 +644,17 @@ capture is off or no feedback has been given.
   feedback`), confidence (`high` from 20 cases, `medium` from 8; inferred
   alone is never `high`), trend (`new`, `falling`, `rising`, `steady`)
   and the rate per message over the last eight weeks scaled to 0-100
-  (`-` for a week with fewer than three messages). A fall over at least
-  four known weeks counts as picked up, and the saving it implies goes
-  into the digest's `adopted` row.
+  (`-` for a week with fewer than three messages), then where trying it
+  affects things, its trade-off and how to undo it (`where`,
+  `trade_off`, `how_to_undo` -- UX-8, the same three-part shape as a
+  recommendation's fix explainer), and `covered_by`: the recommendation
+  already reporting this same saving, when one fired this report, in
+  which case `saving` is blank rather than double-counted (UX-3,
+  `habits.COVERED_BY`/`apply_covered_by`). A fall over at least four
+  known weeks counts as picked up, and the saving it implies goes into
+  the digest's `adopted` row. The dashboard shows the top 5 habits as
+  cards; the rest collapse into a "more habits worth trying" `<details>`
+  (UX-4/7).
 - `habits_by_task` — per kind of task Claude reported (`task=`), after
   an `all` row: messages, share, cost, per message, and the shares
   that were clear asks, large asks, redone by your next message (a
@@ -706,12 +735,35 @@ capture is off or no feedback has been given.
   from the transcripts (`capture.usage`): the level, since when, note
   and tag tokens, cost and share of spend, how often Claude tagged its
   replies and its agent reports, and the `/tl-feedback` runs and their
-  cost, then what it has cost a week since it began (`capture.weekly_cost`)
-  next to what the habits worth trying that need its reports or your
-  feedback are worth a week (`habits.capture_dependent_value`) — a note
-  says so instead of a value when nothing measured yet depends on
-  either. The dashboard's Capture tab and banner show the same figures
-  from `/api/capture`'s `roi` field.
+  cost; `sessions_with_notes` (main sessions that carried a capture
+  note) and `after_compact_notes`/`after_compact_cost` (SURV-3: notes
+  landing at or after a real compact boundary, priced at the fuller
+  post-compaction rate and broken out as their own line rather than
+  folded into a scope's cost); then what it has cost a week since it
+  began (`capture.weekly_cost`) next to what the habits worth trying
+  that need its reports or your feedback are worth a week
+  (`habits.capture_dependent_value`) — a note says so instead of a
+  value when nothing measured yet depends on either. The dashboard's
+  Capture tab and banner show the same figures from `/api/capture`'s
+  `roi` field; its per-metric "worth" table (SURV-8) is hidden until at
+  least `habits.MIN_GROUP` sessions have a note to measure from.
+  `step_down_target`/`step_down_tokens_saved`/`step_down_weekly_saving`
+  (CAP-7, `habits.capture_step_down_suggestion`) carry a suggestion to
+  step the `[capture] level` down one step (`essentials`/`standard`/
+  `deep` only -- `free` asks Claude nothing, so there's no smaller step
+  to suggest), blank/zero when there isn't one: every metric the step
+  would drop needs enough of its own answers (the per-metric bar
+  `capture_view`'s "Enough collected" note also uses) *and*
+  `habits.d_level_stability` needs to say the self-report calibration
+  signal that evidence backs has settled, not just have enough of it. A
+  note spells it out with a runnable `claude-token-lens capture level
+  <lower> --dry-run` command and the command that undoes it -- this
+  never changes `config.toml` itself ("no apply button": Token Lens
+  never lowers the level on its own). The Capture tab's banner shows a
+  cheaper, unstable-signal-agnostic version of the same command
+  (`capture_view._step_down_note`) once the dropped metrics alone have
+  enough answers, since checking `d_level_stability` there would need a
+  full habits pass the dashboard's poll doesn't already pay for.
 
 ## `workstyle` (`workstyle.py`)
 
@@ -891,6 +943,19 @@ figure and a correct Admin figure can still legitimately differ
 other tools, workspace filters on the Admin export, UTC-day-boundary
 disagreement, and an unknown model priced at zero locally).
 
+`reconcile.claude_code_reported_costs(corpus, pricing)` (SURV-5,
+`PARSER_VERSION` 19) is a second, separate comparison the same module
+now offers: one `ClaudeCodeCost` per session whose top-level transcript
+carried at least one `cost-state` line (most don't — an infrequent,
+apparently version-gated line), pairing Claude Code's own self-reported
+running total (`TranscriptMeta.cc_cost_usd`/`cc_cost_has_unknown_model`)
+against this tool's own locally-priced total for that same session.
+Unlike `reconcile_by_period` above, this needs no Admin CSV and makes no
+network call — it is the `cost-state` half of plan P9's later "Q1 gap
+metric" (the other half, a statusline ground-truth signal, is separate,
+later work); this phase stops at supplying the paired numbers, not the
+gap-metric table/note/threshold display itself.
+
 ## `usage_windows` (`tools/log_usage.py`)
 
 Not to be confused with the report's own [`usage`](#usage-usagepy)
@@ -929,9 +994,14 @@ average. No tables and one note when nothing was measured.
   `task_prompt`, `claude_md`, `skills_listing`, `tool_lists`,
   `hook_context`, `other_attachments`, `system_prompt` and
   `tool_definitions` (the last two only when a system-prompt snapshot
-  was recorded), `not_recorded` (the rest), `measured_pct`, and
+  was recorded), `not_recorded` (the rest), `measured_pct`,
   `write_price` (the first turn's model's 5-minute cache-write list
-  price per million tokens, used to price each part).
+  price per million tokens, used to price each part), and
+  `claude_md_managed` (PROF-11/F13 — the share of `claude_md` that is
+  Managed policy CLAUDE.md, which still loads regardless of
+  `omitClaudeMd`; `goals._omit_claude_md`, `whatif._omit_claude_md` and
+  recommend.py's `spawn-claude-md` rule all subtract it out before
+  pricing what `omitClaudeMd` would save).
 - `agent_startup_unused` — per agent type: spawns measured, the skills
   list size, spawns given it and spawns that called the Skill tool,
   spawns offered MCP tools and spawns that called one, the CLAUDE.md
@@ -1220,7 +1290,8 @@ directly by every renderer (a dedicated block, not a table). Fields
 include `lines`, `unparsable_lines`, `truncated_final_line`,
 `assistant_lines`, `distinct_turns`, `synthetic_turns`,
 `turns_missing_usage`, `ttl_sum_mismatch`, `late_duplicate_ids`,
-`ignored_line_types` (a count per ignored line type), `oversized_lines`,
+`ignored_line_types` (a count per ignored line type, keyed on the
+sanitised type or `other` since `PARSER_VERSION` 20), `oversized_lines`,
 `trailing_events`, `replayed_lines`, `timestamp_parse_failures`,
 `agent_settings`, `modes`, `attachment_catch_all`, `limit_hits`,
 `limit_resumes`, `agents_terminated`,
@@ -1236,6 +1307,22 @@ against the rate card, not at parse time). `recommend.py`'s
 `data-quality` rule reads this field directly to decide whether its
 unparsable-lines/ttl-mismatch clauses additionally fire, alongside the
 `scorecard.dimensions` `data_quality` row it cites as evidence.
+
+Parser-signals addition (`PARSER_VERSION` 19): `ReportModel.parser_notes`
+is a sibling side channel next to `Diagnostics`, not one of its fields —
+kept separate because it holds counters that don't fit the closed
+per-field merge `report._merge_diagnostics` already does. Two keys,
+each a `dict[str, int]`, rendered the same way as a `Diagnostics` field
+directly below it: `unknown_line_types` (a count per sanitised, closed-
+shape line-`type` token that no detection rule in `events.classify_line`
+recognised at all — distinct from `ignored_line_types` above, which
+also covers types the parser *does* recognise and deliberately drops)
+and `unsized_blocks` (a count per content-block type — `image`/
+`document` — this parser could not size by Anthropic's documented
+image-token rule, from either a tool_result's or a human prompt's own
+content blocks; see `events.content_block_size`). Both are present only
+when non-empty, so a corpus that never saw either carries no side
+channel at all.
 
 ## Worked example
 

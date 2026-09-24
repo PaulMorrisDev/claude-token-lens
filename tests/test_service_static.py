@@ -36,7 +36,7 @@ from pathlib import Path
 
 import pytest
 
-from claude_token_lens import capture_view, footprint, helptext, quick_actions, skills_review
+from claude_token_lens import backtest, capture_view, footprint, helptext, quick_actions, skills_review
 from claude_token_lens.config import CaptureConfig, Config
 from claude_token_lens.corpus import load_corpus
 from claude_token_lens.pricing import load_pricing
@@ -53,6 +53,7 @@ from helpers import turn_line, write_jsonl
 REPO_ROOT = Path(__file__).resolve().parent.parent
 STATIC_DIR = REPO_ROOT / "src" / "claude_token_lens" / "service" / "static"
 API_MD = REPO_ROOT / "docs" / "api.md"
+README_MD = REPO_ROOT / "README.md"
 PYPROJECT_TOML = REPO_ROOT / "pyproject.toml"
 
 STATIC_FILES = ("index.html", "app.js", "app.css")
@@ -134,6 +135,84 @@ def test_no_inline_script_bodies(name: str) -> None:
     text = _static_text(name)
     for tag in re.findall(r"<script\b[^>]*>", text, flags=re.IGNORECASE):
         assert "src=" in tag.lower(), f"{name} has a <script> tag without src=: {tag!r}"
+
+
+def test_no_button_label_or_handler_says_apply() -> None:
+    """UX-8/F2: the "No Apply button" hard constraint -- the dashboard
+    only ever offers a prompt or a ``claude-token-lens ... --dry-run``
+    command; it never claims to apply a Claude Code config change
+    itself (the one documented exception, the Capture page writing
+    ``[capture]`` into this tool's own config.toml, is a settings
+    toggle, not a button labelled "Apply"). Regression test for "Apply
+    it to:"/"Apply tags" (now "Target file:"/"Save tags") and the latent
+    ``data.apply_command`` fallback (both since removed from
+    ``app.js``): no button's visible text may start with the word
+    "Apply", and no JS identifier naming a button or its click handler
+    may combine "apply" with "btn"/"button"/"handler". Prose that
+    explains the CLI's own ``apply`` subcommand (e.g. "you then apply it
+    with the ... command it shows") is unaffected -- only labels and
+    handler/variable names are checked.
+    """
+    app_js = _static_text("app.js")
+    index_html = _static_text("index.html")
+
+    button_labels = re.findall(r'el\("button",\s*\{[\s\S]*?text:\s*"([^"]*)"', app_js)
+    button_labels += re.findall(r"<button\b[^>]*>([^<]*)</button>", index_html)
+    offenders = [label for label in button_labels if re.match(r"(?i)^apply\b", label)]
+    assert not offenders, f"a button label starts with \"Apply\": {offenders!r}"
+
+    handler_names = re.findall(r"\b([A-Za-z_$][\w$]*)\b", app_js)
+    apply_handlers = [
+        name
+        for name in set(handler_names)
+        if re.search(r"(?i)apply", name) and re.search(r"(?i)btn|button|handler", name)
+    ]
+    assert not apply_handlers, f"app.js has an apply-named button/handler identifier: {apply_handlers!r}"
+
+    assert "apply_command" not in app_js, "app.js must not read the removed data.apply_command fallback"
+
+
+def test_habits_playbook_caps_featured_cards_and_collapses_the_rest() -> None:
+    """UX-4/7 (F3: "uncapped playbook"): only the top
+    ``PLAYBOOK_CARD_LIMIT`` habits get a card outright; the rest render
+    into a collapsed ``<details>`` so the tab isn't a wall of cards down
+    to the least useful habit. Regression test for
+    ``renderHabitsPlaybook``/``appendHabitCards`` in app.js."""
+    app_js = _static_text("app.js")
+    limit_match = re.search(r"var PLAYBOOK_CARD_LIMIT = (\d+);", app_js)
+    assert limit_match, "app.js no longer defines PLAYBOOK_CARD_LIMIT"
+    assert int(limit_match.group(1)) == 5
+
+    fn_match = re.search(r"function renderHabitsPlaybook\([\s\S]*?\n  \}\n", app_js)
+    assert fn_match, "app.js no longer defines renderHabitsPlaybook"
+    body = fn_match.group(0)
+    assert "PLAYBOOK_CARD_LIMIT" in body
+    assert '"details"' in body and "more habit" in body, "the rest of the playbook must collapse into a <details>"
+    assert "appendHabitCards" in body
+
+
+def test_habits_digest_money_cards_follow_the_billing_mode() -> None:
+    """UX-1 (F1): the Work habits digest's money cards go through
+    ``money()`` (the ``Units.money`` mirror), not a bare "X USD" from
+    ``formatCell``, so a Pro or Max plan sees a weekly-limit share or a
+    list-price equivalent instead of plain dollars."""
+    app_js = _static_text("app.js")
+    fn_match = re.search(r"function renderHabitsDigest\([\s\S]*?\n  \}\n", app_js)
+    assert fn_match, "app.js no longer defines renderHabitsDigest"
+    body = fn_match.group(0)
+    assert 'kind === "money" ? money(' in body
+    assert "amount.secondary" in body and "list-price equivalent" in body
+
+
+def test_a_profile_estimate_scales_by_its_normalised_tasks() -> None:
+    """F11: renderProfileEstimate sends the profile's ``tasks`` (its
+    ``for`` words normalised to the task vocabulary), never a raw ``for``
+    word such as "implementation", which /api/whatif rejects."""
+    app_js = _static_text("app.js")
+    fn_match = re.search(r"function renderProfileEstimate\([\s\S]*?\n  \}\n", app_js)
+    assert fn_match, "app.js no longer defines renderProfileEstimate"
+    body = fn_match.group(0)
+    assert "p.tasks" in body and "p.for" not in body
 
 
 @pytest.mark.parametrize("name", STATIC_FILES)
@@ -457,6 +536,7 @@ def _build_fixture_data(tmp_path: Path) -> tuple[dict, dict]:
     canned["/api/skills"] = skills_review.review(config_dir, report.context_files or {}, units, period, projects=[])
     canned["/api/claude-md"] = {"period": period, "transcripts": 0, "files": []}
     canned["/api/impact"] = {"changes": [], "caveat": "", "min_sessions": 3, "lookback_days": 30}
+    canned["/api/backtest"] = {"predictions": [], "judged_just_now": 0, "verdicts": list(backtest.VERDICTS)}
     canned["/api/setup"] = {
         "items": [item.as_dict() for item in footprint.inventory(config_dir, service_registered=False)],
         "expectations": [{"title": title, "text": text} for title, text in footprint.EXPECTATIONS],
@@ -881,6 +961,93 @@ def test_tab_titles_match_the_tab_buttons() -> None:
     assert app_js.count('el("h2"') == 1
 
 
+def _readme_tab_table_names() -> list[str]:
+    text = README_MD.read_text(encoding="utf-8")
+    section = re.search(r"## What each tab answers\n\n(.+?)\n\n", text, re.S)
+    assert section, "README.md's tab table section has changed shape"
+    rows = section.group(1).splitlines()[2:]  # drop the header row and its --- separator
+    return [row.split("|")[1].strip() for row in rows]
+
+
+def test_readme_tab_table_matches_the_tab_buttons() -> None:
+    """D8: the README's "What each tab answers" table once listed 14
+    tabs while the dashboard shipped 16 -- Work habits and Capture were
+    never added. Regression test: the table's rows, in order, must name
+    exactly the tabs `index.html` renders, in the same order."""
+    html = _static_text("index.html")
+    buttons = re.findall(r'data-tab="[a-z]+">([^<]+)</button>', html)
+    assert _readme_tab_table_names() == buttons
+
+
+def _readme_glossary_terms() -> dict[str, str]:
+    text = README_MD.read_text(encoding="utf-8")
+    section = re.search(r"## Glossary\n\n(.+?)\n\n## Reference", text, re.S)
+    assert section, "README.md's Glossary section has changed shape"
+    entries = re.findall(r"^- \*\*([^*]+)\*\*: (.+)$", section.group(1), re.M)
+    assert entries, "no glossary entries found in README.md"
+    return {name: re.sub(r"`([^`]*)`", r"\1", body) for name, body in entries}
+
+
+def test_glossary_tab_matches_the_readme_glossary() -> None:
+    """D9: the README's glossary once listed 40 terms while app.js's
+    GLOSSARY (the dashboard's Glossary tab) had 31 -- the metrics-capture
+    terms (Metrics capture, Capture level, Tag, Prompt cycle, Work
+    habits, Feedback skill, Brief templates, Sampling, Time-box) were
+    never carried over. Regression test: both must name the same terms
+    with the same wording (README's backtick code-spans read as plain
+    text on the dashboard, since GLOSSARY renders via `.textContent`)."""
+    app_js = _static_text("app.js")
+    match = re.search(r"var GLOSSARY = \[([\s\S]*?)\n  \];", app_js)
+    assert match, "app.js no longer defines GLOSSARY"
+    pairs = re.findall(r'\["([^"]+)", "([^"]+)"\]', match.group(1))
+    assert pairs, "GLOSSARY has no entries"
+    app_glossary = dict(pairs)
+    assert app_glossary == _readme_glossary_terms()
+
+
+def _readme_section_table_keys() -> list[str]:
+    text = README_MD.read_text(encoding="utf-8")
+    section = re.search(
+        r"\| Section key \| Title \| Module \| What it answers \|\n\|---\|---\|---\|---\|\n(.+?)\n\n", text, re.S
+    )
+    assert section, "README.md's report-sections table has changed shape"
+    return [row.split("|")[1].strip().strip("`") for row in section.group(1).splitlines()]
+
+
+def _sections_reference_order() -> list[str]:
+    text = (REPO_ROOT / "docs" / "sections-reference.md").read_text(encoding="utf-8")
+    match = re.search(r"in this order:(.+?only with `--baseline`\))", text, re.S)
+    assert match, "docs/sections-reference.md's section-order sentence has changed shape"
+    return re.findall(r"`([a-z_]+)`", match.group(1))
+
+
+def test_readme_and_sections_reference_list_every_report_section_in_order() -> None:
+    """D13: report.build_report's actual _SECTION_ORDER (plus
+    baseline_comparison, appended unconditionally after it) once ran
+    ahead of both docs -- habits and capture were missing from each
+    list, and the README table also lacked elasticity, agent_startup,
+    context_budget and baseline_comparison. Regression test: both docs
+    must name every section build_report can emit, in its exact order."""
+    from claude_token_lens.report import _SECTION_ORDER
+
+    expected = [*_SECTION_ORDER, "baseline_comparison"]
+    assert _readme_section_table_keys() == expected
+    assert _sections_reference_order() == expected
+
+
+def test_readme_workstyle_row_names_every_archetype() -> None:
+    """D15: the README's workstyle row once named six archetypes while
+    workstyle.py detects seven -- `mixed`, the fallback when none of the
+    other six match, was missing. Regression test: the row's backtick
+    archetype names must match workstyle.py's real set."""
+    from claude_token_lens.workstyle import _ARCHETYPE_DESCRIPTIONS
+
+    text = README_MD.read_text(encoding="utf-8")
+    row = next(line for line in text.splitlines() if line.startswith("| `workstyle` |"))
+    named = set(re.findall(r"`([a-z-]+)`", row)) - {"workstyle", "workstyle.py"}
+    assert named == set(_ARCHETYPE_DESCRIPTIONS)
+
+
 def _function_source(app_js: str, name: str) -> str:
     start = app_js.index("function " + name + "(")
     end = app_js.index("\n  function ", start + 1)
@@ -907,4 +1074,159 @@ def test_capture_tab_repeats_the_cost_warning_before_using_more_tokens() -> None
         assert "confirmCapture(" in src and "data.warning" in src, name
     post = _function_source(app_js, "postCapture")
     assert 'postJson("/api/capture"' in post and "error.commands" in post
+
+
+# -- P9b: UX-6/9 (accessibility, mobile, dark-mode fixes) and the P4 --------
+# -- leftovers (emptyState()/API gate) --------------------------------------
+
+
+def test_panel_focus_ring_is_restored() -> None:
+    """.panel:focus-visible used to suppress the outline outright
+    (``outline: none``) even though each tab panel is a tabindex="0"
+    ARIA tabpanel a keyboard user lands on right after switching tabs --
+    a WCAG 2.4.7 gap. It must use the same visible outline every other
+    focusable control in this file uses."""
+    app_css = _static_text("app.css")
+    match = re.search(r"\.panel:focus-visible\s*\{([^}]*)\}", app_css)
+    assert match, "app.css no longer defines .panel:focus-visible"
+    body = match.group(1)
+    assert "outline: none" not in body
+    assert "outline: 2px solid var(--accent)" in body
+
+
+def test_lever_grid_column_minimum_shrinks_on_narrow_viewports() -> None:
+    """A bare ``minmax(320px, 1fr)`` forces horizontal overflow once the
+    viewport (minus app-shell's own side padding) drops under 320px --
+    the fix wraps the minimum in min(320px, 100%) so the track can't
+    exceed the container's own width."""
+    app_css = _static_text("app.css")
+    match = re.search(r"\.lever-grid\s*\{([^}]*)\}", app_css)
+    assert match, "app.css no longer defines .lever-grid"
+    assert "minmax(min(320px, 100%), 1fr)" in match.group(1)
+
+
+def test_advanced_detail_raw_diff_wraps_instead_of_overflowing() -> None:
+    """The raw settings-file diff (profile launch card, "Show the file
+    changes") is a bare <pre> with no wrap rule of its own elsewhere --
+    unlike .code-block pre / .rec pre, a long line forced the whole
+    panel to scroll horizontally."""
+    app_css = _static_text("app.css")
+    match = re.search(r"\.advanced-detail pre\s*\{([^}]*)\}", app_css)
+    assert match, "app.css no longer defines .advanced-detail pre"
+    body = match.group(1)
+    assert "white-space: pre-wrap" in body
+    assert "overflow-wrap: anywhere" in body
+
+
+def test_recommendation_severity_border_has_a_dark_mode_override() -> None:
+    """.severity-action/.severity-advice and .capture-banner.capture-on/
+    .capture-warning both already switch to a lighter red/amber in dark
+    mode; .rec-severity-action/.rec-severity-advice (the recommendation
+    card's own left border) used the same light-mode colors with no
+    dark-mode override at all."""
+    app_css = _static_text("app.css")
+    assert re.search(
+        r"@media \(prefers-color-scheme: dark\)\s*\{\s*\.rec-severity-action\s*\{\s*border-left-color:\s*#ff6b5e;\s*\}\s*"
+        r"\.rec-severity-advice\s*\{\s*border-left-color:\s*#f0b429;\s*\}",
+        app_css,
+    ), "no dark-mode override found for .rec-severity-action/.rec-severity-advice"
+
+
+def test_timeline_markers_use_a_distinct_shape_per_kind_not_only_color() -> None:
+    """Every timeline marker used to be an identical <circle>,
+    distinguished only by fill color (WCAG 1.4.1) -- a colorblind viewer
+    or a low-color display can't tell recache from compaction from
+    spawn. All 7 marker kinds (4 turn markers + 3 usage-limit markers)
+    must now map to 7 distinct shapes, and the legend's own swatch must
+    draw the real shape (markerGlyph), not just a color dot."""
+    app_js = _static_text("app.js")
+    glyph = _function_source(app_js, "markerGlyph")
+    for shape in ("square", "triangle-up", "triangle-down", "diamond", "plus", "x", "circle"):
+        assert ('"' + shape + '"') in glyph, shape
+
+    timeline = _function_source(app_js, "buildSessionTimeline")
+    shapes_match = re.search(r"var markerShapes = (\{[^}]*\});", timeline)
+    limit_shapes_match = re.search(r"var limitMarkerShapes = (\{[^}]*\});", timeline)
+    assert shapes_match and limit_shapes_match
+    shapes = dict(re.findall(r'(\w+):\s*"([\w-]+)"', shapes_match.group(1)))
+    limit_shapes = dict(re.findall(r'(\w+):\s*"([\w-]+)"', limit_shapes_match.group(1)))
+    all_kinds = {**shapes, **limit_shapes}
+    assert len(all_kinds) == 7, all_kinds
+    assert len(set(all_kinds.values())) == 7, "two marker kinds share a shape: " + repr(all_kinds)
+    # The legend draws the same glyph, not a plain color circle.
+    assert "swatchIcon" in timeline and "markerGlyph(shape" in timeline
+
+
+def test_copy_button_only_claims_success_when_the_clipboard_write_succeeded() -> None:
+    """copyToClipboard used to fire-and-forget navigator.clipboard.write-
+    Text and the button always flipped to "Copied" regardless of what
+    happened -- a rejected promise (insecure context, denied permission)
+    left it falsely claiming success."""
+    app_js = _static_text("app.js")
+    copy_fn = _function_source(app_js, "copyToClipboard")
+    assert "return navigator.clipboard.writeText(text).then(" in copy_fn
+    assert "return Promise.resolve(false)" in copy_fn
+
+    code_block = _function_source(app_js, "codeBlockWithCopy")
+    assert "copyToClipboard(text || \"\").then(function (ok) {" in code_block
+    assert 'button.textContent = ok ? "Copied" :' in code_block
+
+
+def test_health_banner_skips_rebuilding_when_nothing_shown_would_change() -> None:
+    """renderHealthBanner is an aria-live="polite" region polled every
+    3-60s (pollHealth); it used to clear() and rebuild its children on
+    every single poll even when the message was identical, which some
+    screen readers re-announce as if it were new content."""
+    app_js = _static_text("app.js")
+    fn = _function_source(app_js, "renderHealthBanner")
+    assert 'banner.getAttribute("data-render-sig") === sig) return' in fn
+    assert 'banner.setAttribute("data-render-sig", sig)' in fn
+    # The guard's early return must come before the rebuild, not after.
+    assert fn.index('=== sig) return') < fn.index("clear(banner)")
+
+
+def test_capture_banner_also_skips_rebuilding_when_unchanged() -> None:
+    app_js = _static_text("app.js")
+    fn = _function_source(app_js, "renderCaptureBanner")
+    assert 'banner.getAttribute("data-render-sig") === sig) return' in fn
+    assert 'banner.setAttribute("data-render-sig", sig)' in fn
+
+
+def test_capture_banner_dismissal_is_a_seven_day_snooze_not_permanent() -> None:
+    """Both the capture-invite "Hide" and a dismissed notes list used to
+    store a bare "1" forever (or would have) -- once hidden, hidden for
+    good, even after the notes themselves changed. UX-6/9 wants a 7-day
+    snooze instead, so a quiet banner returns on its own."""
+    app_js = _static_text("app.js")
+    assert "var BANNER_SNOOZE_MS = 7 * 24 * 60 * 60 * 1000;" in app_js
+    snoozed_fn = _function_source(app_js, "snoozed")
+    assert "Date.now() - ts < BANNER_SNOOZE_MS" in snoozed_fn
+    notes_fn = _function_source(app_js, "notesSnoozed")
+    assert "Date.now() - ts < BANNER_SNOOZE_MS" in notes_fn
+    banner_fn = _function_source(app_js, "renderCaptureBanner")
+    assert 'storageSet("tls:captureInviteHidden", String(Date.now()))' in banner_fn
+    assert 'storageSet("tls:captureNotesHidden", Date.now() + "|" + notesSignature(notes))' in banner_fn
+    # No more permanent "1" writes for either dismissal.
+    assert '"tls:captureInviteHidden", "1"' not in app_js
+
+
+def test_empty_state_helper_exists_and_is_used_for_not_enough_data_states() -> None:
+    """One consistent "not enough data yet" box (P4's leftover
+    emptyState() helper) instead of each tab building its own ad hoc
+    paragraph, and it folds in the structured {reason, have, need}
+    ``gate`` object api.py now attaches to /api/impact's per-change
+    rows when a helper has one."""
+    app_js = _static_text("app.js")
+    helper = _function_source(app_js, "emptyState")
+    assert "gate.have" in helper and "gate.need" in helper
+
+    quick_card = _function_source(app_js, "renderQuickCard")
+    assert "emptyState(check.summary)" in quick_card
+
+    impact = _function_source(app_js, "renderImpact")
+    assert "emptyState(item.verdict, item.gate)" in impact
+    assert "emptyState(\"No changes recorded yet" in impact
+
+    backtest_fn = _function_source(app_js, "renderBacktest")
+    assert "emptyState(\"No estimates logged yet" in backtest_fn
 

@@ -332,7 +332,7 @@ def inventory(
     )
     capture = capture_setting(config_dir)
     capture_health = hook_health.check_capture(
-        hook_health.capture_specs(capture.active_metrics()), claude_root=claude_root
+        hook_health.capture_specs(capture.active_metrics()), claude_root=claude_root, config_dir=config_dir
     )
     installed = capture_health.needed + capture_health.extra
     installed = tuple(spec for spec in installed if spec not in capture_health.missing)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import csv
 import io
 import json
 import os
@@ -1162,7 +1163,7 @@ def test_context_window_row_values_field_name_fallbacks():
     }
     values = statusline._context_window_row_values(payload)
     assert values is not None
-    session_id, used_percentage, used_tokens, size, autocompact = values
+    session_id, used_percentage, used_tokens, size, cache_read_tokens = values
     assert used_tokens == 1000
     assert size == 200000
     assert used_percentage == 25  # 100 - remaining_percentage
@@ -1170,6 +1171,92 @@ def test_context_window_row_values_field_name_fallbacks():
 
 def test_context_window_size_falls_back_to_size_field():
     assert statusline._context_window_size({"size": 100000}) == 100000
+
+
+def test_cache_read_tokens_field_reads_current_usage(tmp_path):
+    """SIG-5: column 9 used to look for an undocumented "autocompact"
+    key that never appears on a real payload -- it's repurposed to
+    ``current_usage.cache_read_input_tokens`` instead, same position."""
+    assert statusline._cache_read_tokens_field({"current_usage": {"cache_read_input_tokens": 4000}}) == 4000
+    assert statusline._cache_read_tokens_field({"current_usage": None}) is None  # before the first API call
+    assert statusline._cache_read_tokens_field({}) is None
+    # The dead field, if a payload somehow still carried it, is ignored.
+    assert statusline._cache_read_tokens_field({"autoCompactThreshold": 155_000}) is None
+
+
+# -- SIG-5: tail reads and retention pruning ---------------------------------
+
+
+def _write_ground_truth_csv(csv_path: Path, rows: list[list]) -> None:
+    with open(csv_path, "w", encoding="utf-8", newline="") as fh:
+        writer = csv.writer(fh)
+        writer.writerow(statusline._GROUND_TRUTH_HEADER)
+        writer.writerows(rows)
+
+
+def test_last_context_window_key_finds_a_row_within_the_tail_window(tmp_path):
+    csv_path = tmp_path / "usage-log.csv"
+    _write_ground_truth_csv(
+        csv_path,
+        [
+            ["2026-09-01T00:00:00Z", "s1", "context_window", "10.0", "", "statusline",
+             "111", "222", "", "0", "100", "50", "0", "", "", ""],
+            ["2026-09-01T00:00:01Z", "s2", "context_window", "50.0", "", "statusline",
+             "1000", "2000", "", "1", "300", "250", "3", "ttl", "40", "ttl:3"],
+        ],
+    )
+    key = statusline._last_context_window_key(csv_path)
+    assert key == ("s2", 50.0, 1000.0, 2000.0, None, 1.0, 3.0, "ttl:3")
+
+
+def test_last_context_window_key_is_bounded_to_the_tail_window(tmp_path):
+    """SIG-5: this now scans only the final _TAIL_BYTES, backwards --
+    not the whole file. A context-window row sitting further back than
+    that is invisible to a fresh scan (the documented trade-off: a row
+    that could have been deduped gets appended again instead), whereas
+    the old full-file forward scan would still have found it."""
+    csv_path = tmp_path / "usage-log.csv"
+    old_row = [
+        "2026-09-01T00:00:00Z", "s1", "context_window", "50.0", "", "statusline",
+        "1000", "2000", "", "1", "300", "250", "0", "", "", "",
+    ]
+    filler = ["2026-09-01T00:00:01Z", "filler", "five_hour", "10.0", "r", "statusline"] + [""] * 10
+    _write_ground_truth_csv(csv_path, [old_row] + [filler] * 4000)
+    assert csv_path.stat().st_size > statusline._TAIL_BYTES
+
+    assert statusline._last_context_window_key(csv_path) is None
+
+
+def test_ensure_ground_truth_header_already_full_width_is_a_noop_even_when_large(tmp_path):
+    csv_path = tmp_path / "usage-log.csv"
+    row = ["2026-09-01T00:00:00Z", "s1", "five_hour", "10.0", "r", "statusline"] + [""] * 10
+    _write_ground_truth_csv(csv_path, [row] * 4000)
+    assert csv_path.stat().st_size > statusline._TAIL_BYTES
+    text_before = csv_path.read_text(encoding="utf-8")
+
+    statusline._ensure_ground_truth_header(csv_path)
+
+    assert csv_path.read_text(encoding="utf-8") == text_before
+
+
+def test_ensure_ground_truth_header_short_header_upgrades_a_large_file(tmp_path):
+    """SIG-5: the width check now peeks at only the first line, but the
+    migration itself -- when one is actually needed -- still reads and
+    rewrites the whole file correctly, however large."""
+    csv_path = tmp_path / "usage-log.csv"
+    with open(csv_path, "w", encoding="utf-8", newline="") as fh:
+        fh.write("logged_at,session_id,window,used_percentage,resets_at,source\n")
+        for i in range(4000):
+            fh.write(f"2026-09-01T00:00:{i % 60:02d}Z,s1,five_hour,10.0,r,statusline\n")
+    assert csv_path.stat().st_size > statusline._TAIL_BYTES
+
+    statusline._ensure_ground_truth_header(csv_path)
+
+    with open(csv_path, "r", encoding="utf-8", newline="") as fh:
+        rows = list(csv.reader(fh))
+    assert rows[0] == list(statusline._GROUND_TRUTH_HEADER)
+    assert len(rows) == 4001
+    assert all(len(r) == len(statusline._GROUND_TRUTH_HEADER) for r in rows[1:])
 
 
 # -- payload key-name recording -----------------------------------------
@@ -1318,6 +1405,14 @@ def test_no_capture_config_prints_one_line(tmp_path, monkeypatch, capsys):
     assert _lines(tmp_path, monkeypatch, capsys, {"context_window": {"used_tokens": 10000}}) == ["ctx 10k"]
 
 
+def test_feedback_note_is_imported_lazily_not_on_every_prompt_refresh():
+    # ROB-P10: statusline.py runs on every prompt refresh (its hot path);
+    # capture_catalogue (and everything it pulls in) should only load
+    # when a feedback note is actually about to be shown, not eagerly at
+    # module import time.
+    assert not hasattr(statusline, "FEEDBACK_NOTE")
+
+
 def test_the_feedback_note_is_a_second_line_and_line_one_is_unchanged(tmp_path, monkeypatch, capsys):
     _capture_config(tmp_path, '[capture]\nfeedback = ["feedback_skill", "feedback_note"]\n')
     lines = _lines(tmp_path, monkeypatch, capsys, {"context_window": {"used_tokens": 10000}})
@@ -1336,7 +1431,7 @@ def test_a_large_last_output_beats_the_note(tmp_path, monkeypatch, capsys):
     _capture_config(tmp_path, '[capture]\nfeedback = ["feedback_note"]\ncoaching = ["coaching_line"]\n')
     transcript = _jsonl(tmp_path / "t.jsonl", [_prompt(), _reply([_use("a")]), _result("a", 40_000)])
     lines = _lines(tmp_path, monkeypatch, capsys, {"context_window": {"used_tokens": 30000}, "transcript_path": transcript})
-    assert lines[0].startswith("ctx 30k") and lines[1].startswith("last tool output ~10k tokens stays in context")
+    assert lines[0].startswith("ctx 30k") and lines[1].startswith("last output ~10k: try quieter cmd")
 
 
 def test_the_note_shows_when_no_hint_fires(tmp_path, monkeypatch, capsys):
@@ -1354,7 +1449,7 @@ def test_coaching_alone_prints_nothing_extra_when_no_hint_fires(tmp_path, monkey
 def test_hint_large_context_at_the_end_of_a_turn(tmp_path):
     tail = [_prompt(), _reply([{"type": "text", "text": "done"}], stop="end_turn")]
     hint = statusline.coaching_hint({"context_window": {"used_tokens": 150_000}}, tail, NOW)
-    assert hint is not None and hint[1] == "ctx 150k: starting something new? /clear first, or every message re-reads it"
+    assert hint is not None and hint[1] == "ctx 150k: new task? /clear first or it re-reads"
     # Mid-turn (Claude still working) it waits.
     assert statusline.coaching_hint({"context_window": {"used_tokens": 150_000}}, tail[:1] + [_reply([_use("a")])], NOW) is None
 
@@ -1363,7 +1458,7 @@ def test_hint_many_reads_counts_only_the_current_message(tmp_path):
     old = [_reply([_use(f"o{i}", "Read") for i in range(6)])]
     current = [_reply([_use(f"r{i}", "Read" if i % 2 else "Grep") for i in range(5)])] + [_result(f"r{i}", 800) for i in range(5)]
     hint = statusline.coaching_hint({}, [_prompt(), *old, _prompt("next"), *current], NOW)
-    assert hint is not None and hint[1].startswith("5 reads and searches this message: an Explore agent")
+    assert hint is not None and hint[1].startswith("5 reads this msg: try an Explore agent")
     fewer = [_reply([_use(f"r{i}", "Read") for i in range(4)])] + [_result(f"r{i}", 800) for i in range(4)]
     assert statusline.coaching_hint({}, [_prompt(), *old, _prompt("next"), *fewer], NOW) is None
 
@@ -1372,24 +1467,245 @@ def test_hint_cache_about_to_go_cold(tmp_path):
     expires = NOW.timestamp() + 40
     payload = {"context_window": {"used_tokens": 80_000}, "prompt_cache": {"warm": True, "ttl": "5m", "expires_at": expires}}
     hint = statusline.coaching_hint(payload, [], NOW)
-    assert hint is not None and hint[1] == "cache goes cold in 40s: reply now, or the next message writes all 80k again"
+    assert hint is not None and hint[1] == "cache cold in 40s: reply now or re-pay 80k"
     payload["prompt_cache"]["expires_at"] = NOW.timestamp() + 200
     assert statusline.coaching_hint(payload, [], NOW) is None
     # Estimated from the last reply's time when the payload has no cache block.
     tail = [_prompt(), _reply([_use("a")], ts="2026-09-24T11:55:30Z")]
     hint = statusline.coaching_hint({"context_window": {"used_tokens": 80_000}}, tail, NOW)
-    assert hint is not None and hint[1].startswith("cache goes cold in 30s")
+    assert hint is not None and hint[1].startswith("cache cold in 30s")
 
 
 def test_the_biggest_hint_wins(tmp_path):
     tail = [_prompt(), _reply([_use("a")]), _result("a", 140_000), _reply([{"type": "text", "text": "ok"}], stop="end_turn")]
     hint = statusline.coaching_hint({"context_window": {"used_tokens": 120_000}}, tail, NOW)
     # The 35k-token output outweighs a quarter of the 120k context...
-    assert hint is not None and hint[1].startswith("last tool output ~35k tokens")
+    assert hint is not None and hint[1].startswith("last output ~35k")
     # ...and a quarter of a 200k context outweighs a 10k output.
     tail[2] = _result("a", 40_000)
     hint = statusline.coaching_hint({"context_window": {"used_tokens": 200_000}}, tail, NOW)
-    assert hint is not None and hint[1].startswith("ctx 200k: starting something new?")
+    assert hint is not None and hint[1].startswith("ctx 200k: new task?")
+
+
+def test_a_hint_is_capped_at_the_ux5_budget_even_for_a_huge_number(tmp_path):
+    tail = [_prompt(), _reply([{"type": "text", "text": "done"}], stop="end_turn")]
+    hint = statusline.coaching_hint({"context_window": {"used_tokens": 123_456_789}}, tail, NOW)
+    assert hint is not None and len(hint[1]) <= statusline._MAX_HINT_LEN
+
+
+def test_capture_lines_is_off_past_its_until(tmp_path):
+    config_dir = _capture_config(
+        tmp_path, '[capture]\nfeedback = ["feedback_note"]\ncoaching = ["coaching_line"]\nuntil = "2026-09-24T11:00:00Z"\n'
+    )
+    assert statusline._capture_lines(config_dir, NOW) == (False, False)  # NOW is 12:00, past 11:00
+    config_dir = _capture_config(
+        tmp_path, '[capture]\nfeedback = ["feedback_note"]\ncoaching = ["coaching_line"]\nuntil = "2026-09-24T13:00:00Z"\n'
+    )
+    assert statusline._capture_lines(config_dir, NOW) == (True, True)
+    # No "until" at all: on, same as before this check existed.
+    config_dir = _capture_config(tmp_path, '[capture]\nfeedback = ["feedback_note"]\ncoaching = ["coaching_line"]\n')
+    assert statusline._capture_lines(config_dir, NOW) == (True, True)
+
+
+def test_second_line_is_silent_past_the_capture_until(tmp_path):
+    config_dir = _capture_config(tmp_path, '[capture]\nfeedback = ["feedback_note"]\nuntil = "2026-09-24T11:00:00Z"\n')
+    assert statusline.second_line({"session_id": "s1"}, config_dir, NOW) is None
+
+
+def _ctx_payload(tokens: int, session_id: str = "s1") -> dict:
+    return {"session_id": session_id, "context_window": {"used_tokens": tokens}}
+
+
+def _clear_hint_payload(tmp_path, tokens: int, session_id: str = "s1") -> dict:
+    tail = [_prompt(), _reply([{"type": "text", "text": "done"}], stop="end_turn")]
+    return {**_ctx_payload(tokens, session_id), "transcript_path": _jsonl(tmp_path / "t.jsonl", tail)}
+
+
+def test_hint_cooldown_suppresses_the_same_kind_then_lifts(tmp_path):
+    """UX-5: a hint kind that just showed for this session is suppressed
+    on the very next refresh, but can show again once its cooldown
+    elapses -- otherwise it would repeat on every single prompt."""
+    config_dir = _capture_config(tmp_path, '[capture]\ncoaching = ["coaching_line"]\n')
+    payload = _clear_hint_payload(tmp_path, 150_000)
+    first = statusline.second_line(payload, config_dir, NOW)
+    assert first == "ctx 150k: new task? /clear first or it re-reads"
+    soon = NOW.replace(second=1)
+    assert statusline.second_line(payload, config_dir, soon) is None
+    later = datetime.fromtimestamp(NOW.timestamp() + statusline._HINT_COOLDOWN_S + 1, tz=timezone.utc)
+    assert statusline.second_line(payload, config_dir, later) == first
+
+
+def test_hint_hysteresis_rearms_early_once_the_stake_grows_enough(tmp_path):
+    """UX-5: a hint kind on cooldown can still interrupt it once its
+    stake has grown past _HINT_REARM_FACTOR times what it was last
+    time -- a merely flickering value cannot."""
+    config_dir = _capture_config(tmp_path, '[capture]\ncoaching = ["coaching_line"]\n')
+    first = statusline.second_line(_clear_hint_payload(tmp_path, 150_000), config_dir, NOW)
+    assert first == "ctx 150k: new task? /clear first or it re-reads"
+    soon = NOW.replace(second=1)
+    # 160k -> stake 40000, only ~1.07x the 37500 that just fired: still suppressed.
+    assert statusline.second_line(_clear_hint_payload(tmp_path, 160_000), config_dir, soon) is None
+    # 250k -> stake 62500, ~1.67x: past the 1.5x hysteresis margin, fires early.
+    assert statusline.second_line(_clear_hint_payload(tmp_path, 250_000), config_dir, soon) == (
+        "ctx 250k: new task? /clear first or it re-reads"
+    )
+
+
+def test_feedback_note_shows_once_per_session_then_stops(tmp_path):
+    config_dir = _capture_config(tmp_path, '[capture]\nfeedback = ["feedback_note"]\n')
+    assert statusline.second_line({"session_id": "s1"}, config_dir, NOW) == FEEDBACK_NOTE
+    later = datetime.fromtimestamp(NOW.timestamp() + 10_000, tz=timezone.utc)
+    assert statusline.second_line({"session_id": "s1"}, config_dir, later) is None
+    # A different session starts with none of that state.
+    assert statusline.second_line({"session_id": "s2"}, config_dir, later) == FEEDBACK_NOTE
+
+
+def test_gating_is_skipped_without_a_session_id(tmp_path):
+    """No ``session_id`` means nowhere to key the state file, so the note
+    shows every time rather than being silently dropped -- same as
+    before this cooldown/once-per-session state existed."""
+    config_dir = _capture_config(tmp_path, '[capture]\nfeedback = ["feedback_note"]\n')
+    assert statusline.second_line({}, config_dir, NOW) == FEEDBACK_NOTE
+    assert statusline.second_line({}, config_dir, NOW) == FEEDBACK_NOTE
+
+
+def test_state_file_survives_being_missing_or_corrupt(tmp_path):
+    config_dir = _capture_config(tmp_path, '[capture]\nfeedback = ["feedback_note"]\n')
+    (config_dir / statusline._STATE_FILENAME).write_text("not json", encoding="utf-8")
+    assert statusline.second_line({"session_id": "s1"}, config_dir, NOW) == FEEDBACK_NOTE
+
+
+# -- SIG-4: the statusline's own cost/recache ground truth -------------------
+
+
+def _sig4_config(tmp_path, level="free", until=None):
+    body = f'[capture]\nlevel = "{level}"\n'
+    if until:
+        body += f'until = "{until}"\n'
+    return _capture_config(tmp_path, body)
+
+
+def test_ground_truth_values_reads_cost_and_recache():
+    cost, recache = statusline._ground_truth_values(
+        {"cost": {"total_cost_usd": 0.5}, "prompt_cache": {"recache_tokens_if_cold": 2000}}
+    )
+    assert cost == 0.5 and recache == 2000
+    assert statusline._ground_truth_values({}) == (None, None)
+
+
+def test_ground_truth_signal_is_salted_numbers_only_and_gated_by_level(tmp_path):
+    from claude_token_lens import signals
+    from claude_token_lens.parse import load_or_create_salt
+
+    config_dir = _sig4_config(tmp_path)
+    salt = load_or_create_salt(config_dir)
+    payload = {
+        "session_id": "s1",
+        "cost": {"total_cost_usd": 1.2345678},
+        "prompt_cache": {"recache_tokens_if_cold": 45000},
+    }
+    statusline._write_ground_truth_signal(config_dir, payload, NOW)
+    path = signals.signals_dir(config_dir) / "2026-09.jsonl"
+    lines = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    assert len(lines) == 2
+    cost_line = next(r for r in lines if r["e"] == "cost")
+    recache_line = next(r for r in lines if r["e"] == "recache")
+    # Numbers only: no field beyond the timestamp, the salted id and the
+    # event's own number.
+    assert set(cost_line) == {"ts", "sid", "e", "usd"}
+    assert set(recache_line) == {"ts", "sid", "e", "tokens"}
+    assert cost_line["sid"] == recache_line["sid"] == signals.session_hash(salt, "s1")
+    assert cost_line["sid"] != "s1"
+    assert cost_line["usd"] == pytest.approx(1.2345678, rel=1e-6)
+    assert recache_line["tokens"] == 45000
+
+
+def test_ground_truth_signal_is_a_noop_when_capture_is_off(tmp_path):
+    from claude_token_lens.parse import load_or_create_salt
+
+    config_dir = _sig4_config(tmp_path, level="off")
+    load_or_create_salt(config_dir)
+    statusline._write_ground_truth_signal(config_dir, {"session_id": "s1", "cost": {"total_cost_usd": 1.0}}, NOW)
+    assert not (config_dir / "signals").exists()
+
+
+def test_ground_truth_signal_respects_capture_until(tmp_path):
+    from claude_token_lens.parse import load_or_create_salt
+
+    config_dir = _sig4_config(tmp_path, until="2026-09-24T11:00:00Z")
+    load_or_create_salt(config_dir)
+    statusline._write_ground_truth_signal(config_dir, {"session_id": "s1", "cost": {"total_cost_usd": 1.0}}, NOW)
+    assert not (config_dir / "signals").exists()
+
+
+def test_ground_truth_signal_never_creates_the_salt(tmp_path):
+    config_dir = _sig4_config(tmp_path)
+    statusline._write_ground_truth_signal(config_dir, {"session_id": "s1", "cost": {"total_cost_usd": 1.0}}, NOW)
+    assert not (config_dir / "salt").exists()
+    assert not (config_dir / "signals").exists()
+
+
+def test_ground_truth_signal_skips_a_payload_with_no_numbers_to_report(tmp_path):
+    from claude_token_lens.parse import load_or_create_salt
+
+    config_dir = _sig4_config(tmp_path)
+    load_or_create_salt(config_dir)
+    statusline._write_ground_truth_signal(config_dir, {"session_id": "s1"}, NOW)
+    assert not (config_dir / "signals").exists()
+
+
+def test_ground_truth_signal_is_throttled_per_session_then_lifts(tmp_path):
+    from claude_token_lens import signals
+    from claude_token_lens.parse import load_or_create_salt
+
+    config_dir = _sig4_config(tmp_path)
+    load_or_create_salt(config_dir)
+    statusline._write_ground_truth_signal(config_dir, {"session_id": "s1", "cost": {"total_cost_usd": 1.0}}, NOW)
+    soon = NOW.replace(second=1)
+    statusline._write_ground_truth_signal(config_dir, {"session_id": "s1", "cost": {"total_cost_usd": 2.0}}, soon)
+    path = signals.signals_dir(config_dir) / "2026-09.jsonl"
+    lines = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    assert len(lines) == 1 and lines[0]["usd"] == 1.0
+    later = datetime.fromtimestamp(NOW.timestamp() + statusline._SIG4_THROTTLE_S + 1, tz=timezone.utc)
+    statusline._write_ground_truth_signal(config_dir, {"session_id": "s1", "cost": {"total_cost_usd": 3.0}}, later)
+    lines = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    assert len(lines) == 2 and lines[1]["usd"] == 3.0
+
+
+def test_ground_truth_signal_rotates_by_month(tmp_path):
+    from claude_token_lens import signals
+    from claude_token_lens.parse import load_or_create_salt
+
+    config_dir = _sig4_config(tmp_path)
+    load_or_create_salt(config_dir)
+    statusline._write_ground_truth_signal(config_dir, {"session_id": "s1", "cost": {"total_cost_usd": 1.0}}, NOW)
+    next_month = NOW.replace(month=10, day=1)
+    statusline._write_ground_truth_signal(
+        config_dir, {"session_id": "s1", "cost": {"total_cost_usd": 2.0}}, next_month
+    )
+    folder = signals.signals_dir(config_dir)
+    assert sorted(p.name for p in folder.iterdir()) == ["2026-09.jsonl", "2026-10.jsonl"]
+
+
+def test_main_writes_the_ground_truth_signal_end_to_end(tmp_path, monkeypatch, capsys):
+    from claude_token_lens import signals
+    from claude_token_lens.parse import load_or_create_salt
+
+    config_dir = _sig4_config(tmp_path)
+    salt = load_or_create_salt(config_dir)
+    payload = {
+        "session_id": "s1",
+        "context_window": {"used_tokens": 1000},
+        "cost": {"total_cost_usd": 0.42},
+    }
+    _lines(tmp_path, monkeypatch, capsys, payload)
+    # main() stamps its own now() -- just check today's month file got a
+    # correctly-salted cost line, not an exact timestamp.
+    from datetime import datetime as _dt
+
+    path = signals.signals_dir(config_dir) / f"{_dt.now(timezone.utc).strftime('%Y-%m')}.jsonl"
+    lines = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    assert lines == [{"ts": lines[0]["ts"], "sid": signals.session_hash(salt, "s1"), "e": "cost", "usd": 0.42}]
 
 
 def test_a_reply_stamped_ahead_of_the_clock_never_shows_more_than_the_ttl(tmp_path):

@@ -74,9 +74,7 @@ def test_each_note_line_lists_only_words_the_parser_keeps_and_main_lines_list_th
     result = cat.METRICS_BY_ID["result"]
     assert set(cat.RESULT_WORDS) <= _words_in(result.sub_line)
     assert "[retry: " + "|".join(cat.RETRY_REASONS) + "]" in cat.METRICS_BY_ID["retry"].main_extra
-    assert "[spawn: " + "|".join(cat.SPAWN_REASONS) + "]" in cat.METRICS_BY_ID["spawn"].main_extra
     assert "out=" + "|".join(cat.TAG_VOCAB["out"]) in cat.METRICS_BY_ID["big_output"].tool_note
-    assert "useful=" + "|".join(cat.TAG_VOCAB["useful"]) in cat.METRICS_BY_ID["web"].tool_note
 
 
 def test_levels_nest_and_deep_is_every_level_metric():
@@ -110,7 +108,7 @@ def test_notes_stay_within_their_token_budget(level):
 
 def test_notes_are_worded_as_facts_and_requests_not_orders():
     texts = [cat.note_text(cat.level_metrics("deep") + cat.FEEDBACK_IDS, s) for s in ("main", "subagent")]
-    texts += [cat.tool_note_text(i) for i in ("big_output", "web")]
+    texts += [cat.tool_note_text(i) for i in ("big_output",)]
     for text in texts:
         assert not re.search(r"\b(must|IMPORTANT|ALWAYS|NEVER|CRITICAL)\b", text), text
         assert "the user turned on" in text.lower() or text.startswith(cat.NOTE_MARKER)
@@ -124,7 +122,7 @@ def test_the_note_marker_names_exactly_the_metrics_it_asks_for():
     assert version == cat.NOTE_VERSION
     assert set(codes) == {m.id for m in cat.METRICS if m.id in ids and (m.main_line or m.main_extra)}
     _, sub_codes = capture_tags.parse_note_codes(cat.note_text(ids, "subagent"))
-    assert set(sub_codes) == {"result", "retry", "spawn", "fit", "rules", "agent_brief"}
+    assert set(sub_codes) == {"result", "retry", "fit", "rules", "agent_brief"}
 
 
 def test_free_signals_and_feedback_toggles_alone_add_no_subagent_note():
@@ -153,9 +151,12 @@ def test_hook_entries_follow_the_metrics():
         ("capture-hook.py", "SessionEnd", "", False),
         ("capture-hook.py", "Notification", "", True),
         ("capture-hook.py", "PermissionRequest", "", True),
+        ("capture-hook.py", "Stop", "", True),
+        ("capture-hook.py", "StopFailure", "", True),
     )
     assert cat.hook_specs(cat.level_metrics("free")) == signals
     assert cat.hook_specs(["waits"]) == (signals[1],)
+    assert cat.hook_specs(["turn_signals"]) == signals[3:]
     assert cat.hook_specs(cat.level_metrics("essentials")) == (
         ("capture-hook.py", "SessionStart", "startup|clear|compact", False),
         ("capture-hook.py", "SubagentStart", "", False),
@@ -163,18 +164,22 @@ def test_hook_entries_follow_the_metrics():
     assert cat.hook_specs(cat.level_metrics("deep"))[2] == (
         "capture-hook.py", "PostToolUse", "Bash|Read|Grep|Glob|WebFetch|WebSearch|mcp__.*", False,
     )
-    assert cat.hook_specs(["web"]) == (("capture-hook.py", "PostToolUse", "WebFetch|WebSearch", False),)
+    assert cat.hook_specs(["web"]) == ()
     assert cat.hook_specs(["result"]) == (("capture-hook.py", "SubagentStart", "", False),)
 
 
 def test_only_signals_the_transcripts_lack_get_a_hook():
     """The transcripts already record instruction files, commands and
-    skills, task lists and API errors, so those are always measured;
-    only why sessions end, waits and permission prompts need a hook."""
+    skills, task lists and API errors, so those are always measured; only
+    why sessions end, waits, permission prompts and how a turn ends need
+    a hook (the last one -- ``turn_signals`` -- an independent, hook-level
+    cross-check next to the transcript's own API-error record, not a
+    replacement for it: ``stop_failure`` stays hookless, derived)."""
     free = {m.id: m for m in cat.METRICS if m.group == "free"}
     assert set(free) == set(cat.SIGNAL_EVENTS.values())
     for event, metric_id in cat.SIGNAL_EVENTS.items():
-        assert free[metric_id].hooks == (event,) and not cat.asks_claude(metric_id)
+        assert event in free[metric_id].hooks and not cat.asks_claude(metric_id)
+    assert cat.METRICS_BY_ID["turn_signals"].hooks == ("Stop", "StopFailure")
     for metric_id in ("instructions_loaded", "prompt_expansion", "tasks", "stop_failure"):
         assert cat.METRICS_BY_ID[metric_id].group == "derived" and not cat.METRICS_BY_ID[metric_id].hooks
 
@@ -219,6 +224,26 @@ def test_the_capture_doc_is_the_catalogue_markdown():
     text = doc.read_text(encoding="utf-8")
     for m in cat.METRICS:
         assert f"(`{m.id}`)" in text, m.id
+
+
+@pytest.mark.parametrize("level", ["essentials", "standard", "deep"])
+def test_the_levels_table_note_sizes_match_rough_tokens(level):
+    """D17: the checked-in doc's "Note at session start"/"Note per
+    subagent start" columns come from :func:`capture_catalogue.rough_tokens`
+    -- the same function the Capture page and CAP-7's step-down saving
+    estimate read -- not a separate chars/4 calculation that silently
+    drops the hook-wrapper overhead ``rough_tokens`` includes (an earlier
+    audit caught the two having drifted apart, 201/107 measured against
+    182/88 then checked in for Essentials). This pins the doc's own
+    numbers to ``rough_tokens`` directly, so a future edit to either one
+    without regenerating the other fails here, not just in the
+    whole-document sync test above."""
+    doc = Path(__file__).resolve().parent.parent / "docs" / "capture.md"
+    text = doc.read_text(encoding="utf-8")
+    sizes = cat.rough_tokens(cat.level_metrics(level))
+    row = next(line for line in text.splitlines() if line.startswith(f"| {cat.LEVEL_TITLES[level]} |"))
+    assert f"~{sizes['session_note']} tokens" in row, row
+    assert f"~{sizes['subagent_note']} tokens" in row, row
 
 
 # -- round trip: what the note asks for is what the parser reads ----------

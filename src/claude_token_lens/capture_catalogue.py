@@ -91,6 +91,13 @@ SPAWN_REASONS = ("parallel", "isolate", "cheaper", "specialist", "review")
 #: dropped too (see ``capture_tags.parse_reply_tags``).
 SKILL_NAME_PATTERN = r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}"
 
+#: The line Claude writes when ``feedback_reminder`` is on (below), word
+#: for word. The note asks for it *before* the ``[tl: ...]`` tag (CAP-1),
+#: and ``capture_tags`` strips it from a reply's tail before matching the
+#: trailing tag, so it doesn't matter if Claude writes them the other
+#: way round.
+FEEDBACK_REMINDER_LINE = "Finished? Run /tl-feedback: a few ticks make your savings tips fit how you work."
+
 
 # -- the metrics -----------------------------------------------------------
 
@@ -98,6 +105,17 @@ SKILL_NAME_PATTERN = r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}"
 #: levels before it; ``custom`` is any other set (see :func:`level_of`).
 LEVELS = ("off", "free", "essentials", "standard", "deep")
 CUSTOM_LEVEL = "custom"
+
+#: CAP-8: how long a fresh "off" -> "on" switch runs before switching
+#: itself off again, when nothing says otherwise -- so capture never runs
+#: forever unnoticed just because nobody thought to time-box it. Shared by
+#: ``onboarding.ask_capture_until`` (the interactive/answers-file question)
+#: and ``config.set_capture`` (the actual default, applied at every path
+#: that can turn capture on: non-interactive ``init``, ``capture on``/
+#: ``level``, and ``POST /api/capture``) -- defined here, rather than in
+#: either of those, since ``onboarding`` imports from ``config`` and both
+#: already depend on this module.
+DEFAULT_CAPTURE_TIMEBOX_DAYS = 14
 
 #: Display names for the levels, as the dashboard and CLI show them.
 LEVEL_TITLES = {
@@ -115,10 +133,10 @@ LEVEL_SUMMARIES = {
     "free": "Local signals from hooks that log to a file. Uses no Claude tokens.",
     "essentials": "Claude tags each piece of work: what kind it was, how clear the request was, how hard, "
     "and when the task changed. Subagents say whether they finished.",
-    "standard": "Adds size, what the request lacked, planning, skills, research, why an agent was used, "
+    "standard": "Adds size, what the request lacked, planning, skills, research, "
     "and each subagent's view of its model, rules and brief.",
-    "deep": "Adds how much earlier context was needed, detours, how the change was checked, and a "
-    "short rating after large tool outputs and web results.",
+    "deep": "Adds how much earlier context was needed, how the change was checked, and a "
+    "short rating after large tool outputs.",
 }
 
 #: Suggestion themes a metric can feed (``Metric.powers``), in the order
@@ -186,15 +204,58 @@ WEB_TOOLS = ("WebFetch", "WebSearch")
 #: from waiting on it.
 BIG_OUTPUT_TOOLS = ("Bash", "Read", "Grep", "Glob", *WEB_TOOLS, "mcp__.*")
 
-#: Hook event -> the free signal it records.
-SIGNAL_EVENTS = {"SessionEnd": "session_end", "Notification": "waits", "PermissionRequest": "permissions"}
+#: Hook event -> the free signal it records. ``Stop`` and ``StopFailure``
+#: both feed ``turn_signals`` (SIG-3): an independent, hook-level check
+#: next to what the parser already derives from the transcript for a
+#: turn's own outcome (``model.py``'s ``EventKind.API_ERROR``/``subkind``).
+SIGNAL_EVENTS = {
+    "SessionEnd": "session_end",
+    "Notification": "waits",
+    "PermissionRequest": "permissions",
+    "Stop": "turn_signals",
+    "StopFailure": "turn_signals",
+}
 
-#: Why a session ended, as SessionEnd reports it; anything else is "other".
-SESSION_END_REASONS = ("clear", "logout", "prompt_input_exit", "bypass_permissions_disabled", "other")
+#: Why a session ended, as SessionEnd reports it; anything else is
+#: "other". ``bypass_permissions_disabled`` was removed in Claude Code
+#: v2.1.234 (docs/en/hooks.md, curl-verified) -- it is kept here only so
+#: an old signal line that still holds it reads back correctly; a
+#: current SessionEnd never sends it again. ``resume`` (also
+#: curl-verified) was missing outright (SIG-1).
+SESSION_END_REASONS = ("clear", "resume", "logout", "prompt_input_exit", "bypass_permissions_disabled", "other")
 
 #: What Claude waited for: a permission prompt, your next message, a
-#: question it asked (an MCP elicitation), or something else.
-WAIT_KINDS = ("permission", "idle", "question", "other")
+#: question it asked (an MCP elicitation), someone else's input in an
+#: agent view or team, a claude.ai usage limit's auto-resume, or
+#: something else (SIG-1; the full Notification type list is
+#: curl-verified against docs/en/hooks.md).
+WAIT_KINDS = ("permission", "idle", "question", "agent", "quota", "other")
+
+#: How a turn ended, as the ``Stop`` hook reports it (SIG-3): normally, or
+#: re-entrant (``stop_hook_active`` -- Claude Code already ran a Stop hook
+#: for this turn and is asking again, usually because a hook blocked the
+#: first attempt).
+TURN_STATES = ("normal", "reentrant")
+
+#: The ``StopFailure`` hook's ``error`` field (SIG-3, curl-verified
+#: against docs/en/hooks.md): the closed set of API-error kinds Claude
+#: Code itself distinguishes. Never its optional ``error_details`` or
+#: ``last_assistant_message`` -- for ``StopFailure`` the latter holds the
+#: raw API error string, so it never reaches a signal line.
+STOP_FAILURE_ERRORS = (
+    "rate_limit",
+    "overloaded",
+    "authentication_failed",
+    "oauth_org_not_allowed",
+    "account_on_hold",
+    "billing_error",
+    "invalid_request",
+    "model_not_found",
+    "server_error",
+    "max_output_tokens",
+    "cloud_credential_error",
+    "unknown",
+)
 
 #: Folder under the data folder that holds the signal files, one per
 #: month (``YYYY-MM.jsonl``).
@@ -236,6 +297,11 @@ class Metric:
     #: A line of its own in the main or subagent note.
     main_extra: str = ""
     sub_extra: str = ""
+    #: Put ``main_extra`` before the ``[tl: ...]`` tag block instead of
+    #: after it (CAP-1): for an extra that itself tells Claude to end its
+    #: reply with something, which would otherwise compete with the tag
+    #: instruction for "the last thing in the reply".
+    extra_before_tag: bool = False
     #: The note a PostToolUse hook adds after a matching tool result.
     tool_note: str = ""
     #: Other metrics it can't work without (a subagent's extras ride on
@@ -412,22 +478,6 @@ METRICS: tuple[Metric, ...] = (
         out_chars=6,
     ),
     Metric(
-        id="spawn",
-        group="standard",
-        section="subagents",
-        title="Why an agent was used",
-        what="When Claude hands work to an agent, why: to run in parallel, to keep the main context clean, "
-        "for a cheaper model, for a specialist, or for a review.",
-        why="Whether delegating paid off, for example isolated agents that send back long reports.",
-        powers=("delegation",),
-        tag="[spawn: parallel|isolate|cheaper|specialist|review]",
-        hooks=("SessionStart", "SubagentStart"),
-        main_extra="When you hand work to an agent, begin the brief with "
-        "[spawn: parallel|isolate|cheaper|specialist|review]: why an agent.",
-        sub_extra="Starting an agent? Begin its brief with [spawn: parallel|isolate|cheaper|specialist|review].",
-        out_chars=5,
-    ),
-    Metric(
         id="fit",
         group="standard",
         section="subagents",
@@ -489,20 +539,6 @@ METRICS: tuple[Metric, ...] = (
         out_chars=10,
     ),
     Metric(
-        id="detour",
-        group="deep",
-        section="main",
-        title="Detours",
-        what="The main time sink, if any: a dead end, rereading files, building more than asked, "
-        "environment trouble, or flaky tests.",
-        why="Waste the transcript's shape can't show.",
-        powers=("breakdown", "verification", "information"),
-        tag="detour=none|dead-end|reread|overbuilt|env|flaky",
-        hooks=("SessionStart",),
-        main_line="detour: none|dead-end|reread|overbuilt|env|flaky (the main time sink, if any)",
-        out_chars=11,
-    ),
-    Metric(
         id="check",
         group="deep",
         section="main",
@@ -523,7 +559,8 @@ METRICS: tuple[Metric, ...] = (
         title="Large tool outputs",
         what=f"After a tool result of about {BIG_OUTPUT_TOKENS:,} tokens or more, how much of it Claude "
         "needed: all, part or none. Claude Code waits for the hook after each shell, read, search, web or "
-        "MCP result, which adds a fraction of a second to each.",
+        "MCP result; 'capture status' shows how long that has actually added, measured from your own "
+        "sessions.",
         why="Quieter commands, offset reads and output caps where big outputs weren't needed.",
         powers=("tool_output",),
         tag="out=needed|part|unneeded",
@@ -531,21 +568,6 @@ METRICS: tuple[Metric, ...] = (
         tool_note="That tool result was large. Add out=needed|part|unneeded (how much of it you needed) to "
         "the tag that ends your final reply.",
         out_chars=9,
-    ),
-    Metric(
-        id="web",
-        group="deep",
-        section="tools",
-        title="Web results",
-        what="After a web search or fetch, whether the result was useful. Claude Code waits for the hook "
-        "after each one, which adds a fraction of a second.",
-        why="Web research against handing Claude the page or document yourself.",
-        powers=("research",),
-        tag="useful=yes|part|no",
-        hooks=("PostToolUse",),
-        tool_note="Add useful=yes|part|no (whether that web result helped) to the tag that ends your final "
-        "reply.",
-        out_chars=10,
     ),
     # -- Free local signals ----------------------------------------------
     Metric(
@@ -579,6 +601,18 @@ METRICS: tuple[Metric, ...] = (
         why="Denials that led to rework, and allowlist suggestions.",
         powers=("waiting",),
         hooks=("PermissionRequest",),
+    ),
+    Metric(
+        id="turn_signals",
+        group="free",
+        section="signals",
+        title="How turns end",
+        what="Whether each turn ended normally or Claude Code re-asked the Stop hook, and the kind of API "
+        "error on a failed turn (rate limit, overloaded and so on) -- never the error's own text.",
+        why="An independent, hook-level check next to what the transcript already shows about limit hits "
+        "and API errors.",
+        powers=("waiting", "outcome"),
+        hooks=("Stop", "StopFailure"),
     ),
     # -- Always measured --------------------------------------------------
     # The transcripts already record these, so they need no hook: the
@@ -739,8 +773,9 @@ METRICS: tuple[Metric, ...] = (
         why="For people without the status line. Costs a few output tokens each time.",
         powers=("outcome",),
         hooks=("SessionStart",),
-        main_extra="When you finish a piece of work the user asked for, end your reply with: "
-        "Finished? Run /tl-feedback: a few ticks make your savings tips fit how you work.",
+        main_extra="When you finish a piece of work the user asked for, add before your tag: "
+        f"{FEEDBACK_REMINDER_LINE}",
+        extra_before_tag=True,
         out_chars=80,
     ),
     Metric(
@@ -761,6 +796,16 @@ LEVEL_METRIC_IDS = tuple(m.id for m in METRICS if m.group in LEVEL_GROUPS)
 #: Metrics switched on one by one (``[capture] feedback``/``coaching``).
 FEEDBACK_IDS = tuple(m.id for m in METRICS if m.group == "feedback")
 COACHING_IDS = tuple(m.id for m in METRICS if m.group == "coaching")
+
+#: CAP-5: metric ids retired from :data:`METRICS` (no longer asked, priced,
+#: or shown), kept here only so a ``config.toml`` written before the
+#: retirement still loads: ``_capture_list``'s config-file validation
+#: allows them through, and ``with_requirements``/``active_metrics``
+#: silently drop them (they are not in :data:`METRICS_BY_ID`) rather than
+#: ever asking Claude for them again. Their words stay in
+#: :data:`TAG_VOCAB` (``detour``, ``useful``) and :data:`SPAWN_REASONS` so
+#: a transcript recorded before the retirement still parses.
+RETIRED_METRIC_IDS: tuple[str, ...] = ("detour", "web", "spawn")
 
 #: The persistent feedback note (``feedback_note``): the status line's
 #: second line and the dashboard banner show it word for word.
@@ -1053,6 +1098,13 @@ def note_text(ids, scope: str, agent_type: str = "") -> str:
     if not codes:
         return ""
     out = [f"{NOTE_MARKER}{NOTE_VERSION} {','.join(codes)}", NOTE_INTRO]
+    # CAP-1: an extra marked extra_before_tag (feedback_reminder) tells
+    # Claude to end its reply with something too, so it goes before the
+    # tag block, not after -- the tag instruction stays the last thing
+    # the note asks for.
+    before_tag = [x for m, x in zip(enabled, extras) if x and main and m.extra_before_tag]
+    after_tag = [x for m, x in zip(enabled, extras) if x and not (main and m.extra_before_tag)]
+    out += before_tag
     if any(lines):
         if main:
             out.append(MAIN_TAG_INTRO)
@@ -1062,11 +1114,11 @@ def note_text(ids, scope: str, agent_type: str = "") -> str:
         out += [line for line in lines if line]
         if main:
             out.append(SKIP_KEY_LINE)
-    out += [x for x in extras if x]
+    out += after_tag
     return "\n".join(out)
 
 
-def tool_note_text(metric_id: str, tool_name: str = "") -> str:
+def tool_note_text(metric_id: str) -> str:
     """The note a PostToolUse hook adds after a large result
     (``big_output``) or a web result (``web``)."""
     metric = METRICS_BY_ID.get(metric_id)
@@ -1075,15 +1127,36 @@ def tool_note_text(metric_id: str, tool_name: str = "") -> str:
     return f"{NOTE_MARKER}{NOTE_VERSION} {metric.id}\n{metric.tool_note}"
 
 
+#: The literal tool names each PostToolUse-triggered metric matches
+#: (see ``hook_specs``'s own matchers): an MCP wildcard entry
+#: ("mcp__.*") isn't a real tool name, so it's left out.
+_POST_TOOL_USE_TOOLS = {"big_output": BIG_OUTPUT_TOOLS}
+
+
+def tool_suffix_chars(metric_id: str) -> int:
+    """CAP-10: Claude Code's own PostToolUse wrap names the specific
+    tool that matched, not the whole matcher pattern (its own debug log
+    shows ``"PostToolUse:Write"``, not ``"PostToolUse:Bash|Read|..."``)
+    -- estimated here, before any real note has been measured, as the
+    average length of ``metric_id``'s own matcher's literal tool names,
+    plus the ``:`` that joins it to the event name."""
+    names = [t for t in _POST_TOOL_USE_TOOLS.get(metric_id, ()) if "*" not in t]
+    return round(sum(len(t) for t in names) / len(names)) + 1 if names else 0
+
+
 def hook_specs(ids) -> tuple[tuple[str, str, str, bool], ...]:
     """The Claude Code hook entries the metrics in ``ids`` need, as
     ``(script, event, matcher, async)``: the note at session and agent
     start, after tool results for Deep's tool notes, and the free
     signals' events. Every entry that adds a note runs in the
-    foreground, since Claude Code ignores what a background hook
-    prints; the tool note's matcher keeps that wait to the tools whose
-    results can be large. SessionEnd runs as the session closes, when
-    nothing waits on it; the other signals run in the background."""
+    foreground: an async hook's ``additionalContext``/``systemMessage``
+    does reach Claude (docs/en/hooks.md), but only on the next
+    conversation turn, which would put a session/agent-start note one
+    turn late and a Deep tool note a full reply behind the result it's
+    about, so these stay synchronous; the tool note's matcher keeps
+    that wait to the tools whose results can be large. SessionEnd runs
+    as the session closes, when nothing waits on it; the other signals
+    run in the background."""
     wanted = set(ids)
     main = any(m.id in wanted and (m.main_line or m.main_extra) for m in METRICS)
     sub = any(m.id in wanted and (m.sub_line or m.sub_extra) for m in METRICS)
@@ -1094,8 +1167,6 @@ def hook_specs(ids) -> tuple[tuple[str, str, str, bool], ...]:
         specs.append((HOOK_SCRIPT, "SubagentStart", "", False))
     if "big_output" in wanted:
         specs.append((HOOK_SCRIPT, "PostToolUse", "|".join(BIG_OUTPUT_TOOLS), False))
-    elif "web" in wanted:
-        specs.append((HOOK_SCRIPT, "PostToolUse", "|".join(WEB_TOOLS), False))
     for event in SIGNAL_EVENTS:
         if SIGNAL_EVENTS[event] in wanted:
             specs.append((HOOK_SCRIPT, event, "", event != "SessionEnd"))
@@ -1118,6 +1189,7 @@ def export_json() -> dict:
                 "requires": list(m.requires),
                 "main_line": m.main_line,
                 "main_extra": m.main_extra,
+                "extra_before_tag": m.extra_before_tag,
                 "sub_line": m.sub_line,
                 "sub_extra": m.sub_extra,
                 "tool_note": m.tool_note,
@@ -1139,8 +1211,9 @@ def export_json() -> dict:
         "signal_events": dict(SIGNAL_EVENTS),
         "session_end_reasons": list(SESSION_END_REASONS),
         "wait_kinds": list(WAIT_KINDS),
+        "turn_states": list(TURN_STATES),
+        "stop_failure_errors": list(STOP_FAILURE_ERRORS),
         "signals_dir": SIGNALS_DIR,
-        "web_tools": list(WEB_TOOLS),
     }
 
 
@@ -1171,7 +1244,10 @@ def rough_tokens(ids) -> dict[str, int]:
     main, sub = note_text(ids, "main"), note_text(ids, "subagent")
     reply = sum(m.out_chars for m in enabled if m.main_line or m.main_extra)
     report = sum(m.out_chars for m in enabled if m.sub_line or m.sub_extra)
-    tool = max((len(tool_note_text(m.id)) for m in enabled if m.tool_note), default=0)
+    tool = max(
+        (len(tool_note_text(m.id)) + tool_suffix_chars(m.id) for m in enabled if m.tool_note),
+        default=0,
+    )
     return {
         "session_note": round((len(main) + NOTE_WRAP_CHARS + len("SessionStart")) / 4) if main else 0,
         "subagent_note": round((len(sub) + NOTE_WRAP_CHARS + len("SubagentStart")) / 4) if sub else 0,
@@ -1288,10 +1364,14 @@ def render_markdown() -> str:
     p("|---|---|---|---|")
     for level in LEVELS:
         ids = level_metrics(level)
-        main_tokens = round(len(note_text(ids, "main")) / 4)
-        sub_tokens = round(len(note_text(ids, "subagent")) / 4)
-        main_cell = f"~{main_tokens} tokens" if main_tokens else "–"
-        sub_cell = f"~{sub_tokens} tokens" if sub_tokens else "–"
+        # D17: the same rough_tokens() the Capture page and CAP-7's
+        # step-down suggestion use, not a separate chars/4 calculation
+        # that quietly drops the hook-wrapper overhead rough_tokens()
+        # includes -- the two drifted apart (an earlier audit measured
+        # 201/107 for Essentials against a checked-in 182/88 here).
+        sizes = rough_tokens(ids)
+        main_cell = f"~{sizes['session_note']} tokens" if sizes["session_note"] else "–"
+        sub_cell = f"~{sizes['subagent_note']} tokens" if sizes["subagent_note"] else "–"
         p(f"| {LEVEL_TITLES[level]} | {LEVEL_SUMMARIES[level]} | {main_cell} | {sub_cell} |")
     p(
         f"| {LEVEL_TITLES[CUSTOM_LEVEL]} | Any other set of metrics, turned on one by one (`capture enable`/"
@@ -1299,12 +1379,31 @@ def render_markdown() -> str:
     )
     p("")
     p(
-        "These are rough sizes — characters in the note divided by four — and don't include the tag Claude "
-        "writes back (each metric below says roughly how many output tokens its own words cost) or Claude "
-        "Code's own hook-wrapper overhead. The Capture tab replays your last 14 days of transcripts against "
-        "each level before you turn it on, and once it's on, measures the real note and tag cost from what "
-        "Claude Code actually recorded — read that number, not this one, when it matters."
+        "These are rough sizes — the note's characters divided by four, plus Claude Code's own hook-wrapper "
+        "overhead (the system-reminder tags around it) — and don't include the tag Claude writes back (each "
+        "metric below says roughly how many output tokens its own words cost). The Capture tab replays your "
+        "last 14 days of transcripts against each level before you turn it on, and once it's on, measures the "
+        "real note and tag cost from what Claude Code actually recorded — read that number, not this one, "
+        "when it matters."
     )
+    p("")
+
+    # -- Worth (CAP-5, gap 4) ------------------------------------------------
+    p("## What each metric is worth")
+    p("")
+    p(
+        "Gap 4: every metric here has to earn its keep — something has to actually read it and turn it into "
+        "a decision, not just log it. This table is that trace: each metric's rough cost against what it "
+        "feeds. The Capture page shows the same thing measured from your own transcripts, in tokens a week "
+        "instead of per occurrence."
+    )
+    p("")
+    p("| Metric | Level | ~Output tokens each time | Feeds |")
+    p("|---|---|---|---|")
+    for m in METRICS:
+        cost_cell = f"~{max(1, round(m.out_chars / 4))}" if m.out_chars else "–"
+        feeds = ", ".join(THEMES.get(theme, theme) for theme in m.powers) if m.powers else "–"
+        p(f"| {m.title} (`{m.id}`) | {_metric_group_label(m)} | {cost_cell} | {feeds} |")
     p("")
 
     # -- Metrics grouped by scope ------------------------------------------
@@ -1354,9 +1453,8 @@ def render_markdown() -> str:
     )
     p("")
     p(
-        "Starting an agent again after its last run fell short, or handing work to one at all, is marked at "
-        f"the start of its brief instead of the end of a report: `{METRICS_BY_ID['retry'].tag}` and "
-        f"`{METRICS_BY_ID['spawn'].tag}`."
+        "Starting an agent again after its last run fell short is marked at the start of its brief instead "
+        f"of the end of a report: `{METRICS_BY_ID['retry'].tag}`."
     )
     p("")
     p(f"The `/tl-feedback` skill ends with its own line: `{_feedback_tag_words()}`.")
@@ -1379,7 +1477,9 @@ def render_markdown() -> str:
     p(
         "Free local signals never involve Claude at all: a hook logs the session id (hashed with this "
         "tool's own salt), the event word, and — for a permission prompt — the tool name, never its "
-        "arguments, to a local file under `<config-dir>/signals/`."
+        "arguments, to a local file under `<config-dir>/signals/`. Those files, and the `capture-log.jsonl` "
+        "record of every on/off/level change, aren't kept forever: `serve`'s watcher (or `capture prune` by "
+        "hand) deletes entries past your configured retention, a default applying when none is set."
     )
     p("")
     p(
@@ -1400,12 +1500,31 @@ def render_markdown() -> str:
         "`--yes`. Every other change writes only this tool's own `config.toml`."
     )
     p("")
-    p("- `claude-token-lens capture status` — the level, what's on, since when, and the cost measured so far.")
     p(
-        "- `claude-token-lens capture on [--level LEVEL] [--for DURATION | --until DATE] [--sample N] "
-        "[--yes] [--dry-run]` — turn it on (default level: Essentials)."
+        "- `claude-token-lens capture status` — the level, what's on, since when, and the cost measured so "
+        "far. While big_output or web is on, it also prints Deep's actual measured wait (median and p90, "
+        "over the last 7 days). It also flags any hook — Token Lens's own or one of yours — that failed on "
+        "most of its calls over the last 14 days, naming it (event name only, never a matcher or tool name), "
+        "where to find it in `settings.json`, the trade-off, and the undo; this is only ever a printed "
+        "prompt, never an automatic change."
+    )
+    p(
+        "- `claude-token-lens capture on [--level LEVEL] [--for DURATION | --until DATE | --no-limit] "
+        "[--sample N] [--yes] [--dry-run]` — turn it on (default level: Essentials)."
     )
     p("- `claude-token-lens capture level LEVEL` — change the level.")
+    p("")
+    p(
+        f"A fresh switch from off to on — at `init`, `capture on`/`level`, or the Capture page — gets a "
+        f"{DEFAULT_CAPTURE_TIMEBOX_DAYS}-day time-box by default, so turning it on doesn't mean it runs "
+        "unattended forever: it switches itself back off on its own unless you say otherwise. `--for "
+        "DURATION` (a number and `h`, `d` or `w`, e.g. `30d`) or `--until DATE` picks another length or "
+        "end date; `--no-limit` turns the time-box off entirely, so capture runs until you switch it off "
+        "yourself. `init` has the same three choices as `--capture-for DURATION`, `--capture-level LEVEL "
+        "--capture-no-limit`, or (interactively, or under `--non-interactive` with neither given) the "
+        "default. Changing the level of capture that's already on leaves an existing time-box (or the "
+        "lack of one) exactly as it is — the default only ever applies to a fresh switch-on."
+    )
     p(
         "- `claude-token-lens capture enable METRIC...` / `capture disable METRIC...` — turn individual "
         "metrics on or off; the level becomes Custom once the set no longer matches a preset."
@@ -1418,6 +1537,12 @@ def render_markdown() -> str:
     p("- `claude-token-lens capture remove` — switch off and take those hook entries back out.")
     p("- `claude-token-lens capture feedback on|off` — the `/tl-feedback` skill and its status-line reminder.")
     p("- `claude-token-lens capture brief on|off` — the `/tl-brief` skill.")
+    p(
+        "- `claude-token-lens capture prune [--dry-run]` — delete signal files and `capture-log.jsonl` "
+        "records past your configured retention (`retention_days` in `config.toml`, or a default when it's "
+        "unset); `serve`'s watcher already runs this same cleanup on every tick, so this is for anyone not "
+        "running it."
+    )
     p(
         "- `claude-token-lens changes` and `claude-token-lens uninstall` also cover metrics capture: they "
         "list everything it installed and can remove all of it — hooks, skills and signal files included."

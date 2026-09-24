@@ -47,6 +47,7 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 from .. import __version__
+from .. import hook_health
 from .. import parse as parse_mod
 from ..cache import DigestCache
 from .contracts import ServeOptions
@@ -160,6 +161,13 @@ def run(options: ServeOptions, *, once: bool = False, allow_remote: bool = False
 
 
 def _run_locked(options: ServeOptions, store_path: Path, lock: StoreLock, *, once: bool) -> int:
+    # ROB-P7: pick up a hook file this tool itself changed since it was
+    # last installed (a pip upgrade that ran without --no-service, or one
+    # 'update' couldn't reach) -- cheap (a few small files hashed, no
+    # transcript read), and a no-op when metrics capture was never
+    # connected (no <config_dir>/hooks folder yet).
+    hook_health.refresh_hook_files(options.config_dir)
+
     store = Store(store_path)
     store.open()
 
@@ -177,12 +185,21 @@ def _run_locked(options: ServeOptions, store_path: Path, lock: StoreLock, *, onc
     # the other, and so the watcher's own bulk-prewarm pool
     # (``FileWatcher._prewarm_cache``) has somewhere to persist parsed
     # results across ticks.
-    cache = DigestCache(options.config_dir)
     # Salt the path and skill-name hashes the same way the CLI does, so a
     # digest cached by either carries the same hashes (CLAUDE.md and
-    # skills review join on them).
+    # skills review join on them). Loaded before the cache below
+    # (SEC-P8) so it can be threaded into DigestCache itself too --
+    # otherwise a cache entry from a since-rotated salt would keep
+    # matching on mtime/size/fingerprint alone and get served with
+    # hashes that no longer agree with anything parsed fresh.
     salt = parse_mod.load_or_create_salt(options.config_dir)
     parse_mod.set_salt(salt)
+    cache = DigestCache(options.config_dir, salt=salt)
+    # ROB-P4/P5: once per serve process (not once per poll tick -- a
+    # stale PARSER_VERSION folder only ever appears after a code deploy,
+    # never mid-run), the same "sweep it where the cache is first opened
+    # for real work" placement _load_corpus_for_args uses for the CLI.
+    cache.prune_stale_versions()
     watcher = FileWatcher(store, options, cache=cache, salt=salt)
 
     # serve --monthly-report DIR: write last month's report into DIR when

@@ -4,6 +4,7 @@ per-session override round-tripping (``src/claude_token_lens/config.py``).
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -11,7 +12,9 @@ import pytest
 from claude_token_lens.config import (
     Config,
     ConfigError,
+    append_prediction_log,
     load_config,
+    load_prediction_log,
     load_session_overrides,
     save_session_override,
 )
@@ -131,6 +134,18 @@ def test_exclude_projects_non_string_item_raises_config_error(tmp_path):
         load_config(config_dir=token_lens_dir)
 
 
+def test_exclude_projects_bad_regex_raises_config_error_at_load(tmp_path):
+    """SEC-P5: compiled at load, same as ``capture.projects`` -- a typo'd
+    regex is a ConfigError the user sees right away, not something that
+    silently degrades later, once per call, deep inside discovery/corpus.
+    """
+    token_lens_dir = tmp_path / "token-lens"
+    token_lens_dir.mkdir()
+    (token_lens_dir / "config.toml").write_text('exclude_projects = ["ok", "(unbalanced"]\n', encoding="utf-8")
+    with pytest.raises(ConfigError, match="exclude_projects"):
+        load_config(config_dir=token_lens_dir)
+
+
 # --------------------------------------------------------------------
 # load_config: [savers] table (v4-saver-roi)
 # --------------------------------------------------------------------
@@ -207,6 +222,28 @@ def test_retention_days_bool_rejected_as_not_an_integer(tmp_path):
     (token_lens_dir / "config.toml").write_text("retention_days = true\n", encoding="utf-8")
     with pytest.raises(ConfigError, match="retention_days"):
         load_config(config_dir=token_lens_dir)
+
+
+@pytest.mark.parametrize("bad", [0, -1, 36501, -36500])
+def test_retention_days_out_of_bounds_raises_config_error(tmp_path, bad):
+    """SEC-P5: 1-36500. 0 or negative would prune everything (including
+    the session in progress) on the very next poll tick; an absurdly
+    large value is almost certainly a typo (days entered as hours, an
+    extra digit) rather than a real "keep forever" choice."""
+    token_lens_dir = tmp_path / "token-lens"
+    token_lens_dir.mkdir()
+    (token_lens_dir / "config.toml").write_text(f"retention_days = {bad}\n", encoding="utf-8")
+    with pytest.raises(ConfigError, match="retention_days"):
+        load_config(config_dir=token_lens_dir)
+
+
+@pytest.mark.parametrize("edge", [1, 36500])
+def test_retention_days_at_the_boundary_is_accepted(tmp_path, edge):
+    token_lens_dir = tmp_path / "token-lens"
+    token_lens_dir.mkdir()
+    (token_lens_dir / "config.toml").write_text(f"retention_days = {edge}\n", encoding="utf-8")
+    config = load_config(config_dir=token_lens_dir)
+    assert config.retention_days == edge
 
 
 def test_provider_defaults_to_none():
@@ -451,3 +488,76 @@ def test_explicit_billing_wins_over_usage_log(tmp_path):
     assert config.billing_source == "set in config.toml"
     (tmp_path / "config.toml").write_text('billing = "auto"\n', encoding="utf-8")
     assert load_config(config_dir=tmp_path).billing == "subscription"
+
+
+# --------------------------------------------------------------------
+# EST-P5: prediction-log.jsonl
+# --------------------------------------------------------------------
+
+
+def test_append_prediction_log_writes_a_record_and_returns_its_id(tmp_path):
+    prediction_id = append_prediction_log(
+        tmp_path,
+        source="whatif",
+        measure_key="model",
+        agent=None,
+        predicted_usd=1.23,
+        predicted_pct=None,
+        fidelity="ceiling",
+        now=datetime(2026, 9, 20, 9, tzinfo=timezone.utc),
+    )
+    assert len(prediction_id) == 16
+    [record] = load_prediction_log(tmp_path)
+    assert record == {
+        "id": prediction_id,
+        "ts": "2026-09-20T09:00:00+00:00",
+        "source": "whatif",
+        "measure_key": "model",
+        "agent": None,
+        "predicted_usd": 1.23,
+        "predicted_pct": None,
+        "fidelity": "ceiling",
+    }
+
+
+def test_append_prediction_log_generates_a_fresh_id_each_call(tmp_path):
+    first = append_prediction_log(
+        tmp_path, source="whatif", measure_key="model", agent=None,
+        predicted_usd=1.0, predicted_pct=None, fidelity="estimated",
+    )
+    second = append_prediction_log(
+        tmp_path, source="whatif", measure_key="model", agent=None,
+        predicted_usd=2.0, predicted_pct=None, fidelity="estimated",
+    )
+    assert first != second
+    assert [record["id"] for record in load_prediction_log(tmp_path)] == [first, second]
+
+
+def test_append_prediction_log_records_an_agent_scoped_prediction(tmp_path):
+    append_prediction_log(
+        tmp_path, source="whatif", measure_key="rebuild_share", agent="reviewer",
+        predicted_usd=None, predicted_pct=-15.0, fidelity="simulated",
+    )
+    [record] = load_prediction_log(tmp_path)
+    assert record["agent"] == "reviewer"
+    assert record["predicted_pct"] == -15.0
+    assert record["predicted_usd"] is None
+
+
+def test_load_prediction_log_on_a_missing_file_is_empty(tmp_path):
+    assert load_prediction_log(tmp_path / "does-not-exist") == []
+
+
+def test_load_prediction_log_skips_unparseable_or_incomplete_lines(tmp_path):
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    (tmp_path / "prediction-log.jsonl").write_text(
+        "not json\n"
+        '{"id": "abc", "source": "whatif"}\n'  # missing ts
+        '{"ts": "2026-09-20T09:00:00+00:00", "source": "whatif"}\n'  # missing id
+        '{"id": "def", "ts": "2026-09-20T09:00:00+00:00", "source": "whatif", '
+        '"measure_key": "model", "agent": null, "predicted_usd": 1.0, '
+        '"predicted_pct": null, "fidelity": "ceiling"}\n',
+        encoding="utf-8",
+    )
+    [record] = load_prediction_log(tmp_path)
+    assert record["id"] == "def"

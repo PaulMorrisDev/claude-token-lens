@@ -180,7 +180,13 @@ permissions where the OS supports it); without a salt in effect
 rather than falling back to an unsalted, offline-crackable hash. Because
 the hash is keyed to a salt private to one machine's `<config-dir>`, it
 cannot be correlated against a hash produced on a different machine or
-after the salt file is rotated/deleted.
+after the salt file is rotated/deleted. The on-disk digest cache
+(`cache.py`) enforces the "after rotation" half of that: each entry's
+header carries a hash of the salt that wrote it (never the raw salt),
+and `DigestCache.get` misses rather than serving a hit when a caller
+that was itself given a salt finds a different one on the entry —
+without this, a cache entry written before a salt rotation would go on
+being served afterward, quietly carrying hashes keyed to the old salt.
 
 **The `claude-token-lens serve` service's SQLite store**
 (`<config-dir>/service.db`) is a narrow, documented exception to "no
@@ -298,15 +304,18 @@ its own words — an unknown key, an unknown word, a value that doesn't
 match — is dropped, never stored. The one exception is
 `skill=would-help:<name>`, and even that survives only when `<name>`
 matches a skill the same transcript already listed or invoked, not
-whatever string Claude wrote. `/tl-feedback`'s free-text answer (if you
-give one) is read only to check it for question marks/negation, the
-same shape-only treatment `events._CORRECTION_RE` gives your own
-messages elsewhere (see "What is stored" above) — the text itself is
-never kept.
+whatever string Claude wrote. `/tl-feedback` itself has no free-text
+field to scrub in the first place: all four of its questions (outcome,
+what slowed it, worth, what would have helped) are answered by ticking
+from a closed list of options — the same lists `POST
+/api/sessions/<id>/feedback` and the dashboard's own rating checkboxes
+accept (see "What the dashboard can change" below).
 
-**Signals are salted, like everything else here.** The free signals
-(session end reason, how long you waited before answering a
-notification or a permission prompt) are logged to
+**Signals are salted, like everything else here.** The free signals —
+why a session ended, and what kind of thing Claude was waiting on when
+it sent a `Notification` or asked permission (your permission, your
+next message, a clarifying question, a sub-agent, a usage-limit pause,
+or other — never how long you took to answer) — are logged to
 `<config-dir>/signals/YYYY-MM.jsonl` keyed by
 `hmac.new(salt, session_id.encode("utf-8"), hashlib.sha256).hexdigest()[:16]`
 (`signals.session_hash`) — the same reused `<config-dir>/salt` file
@@ -316,15 +325,31 @@ asserts nothing is written before a salt exists.
 
 **Hook timing.** The SessionStart and SubagentStart note hooks, and the
 SessionEnd signal hook, run in the foreground (Claude waits for them,
-capped at `CAPTURE_TIMEOUT_S` = 5 seconds) because Claude Code ignores
-what a background hook prints and the note has to reach the
-transcript. At the Deep level, the PostToolUse hook that notes an
-unusually large result or a web call (matcher
-`Bash|Read|Grep|Glob|WebFetch|WebSearch|mcp__.*`) is foreground too, for
-the same reason, adding on the order of 0.1 seconds to a matching tool
-call (only `WebFetch|WebSearch` when a custom set turns on the web
-metric alone); without either metric nothing is registered on
-PostToolUse at all.
+capped at `CAPTURE_TIMEOUT_S` = 5 seconds). An async hook's
+`additionalContext` does still reach Claude (Claude Code delivers it on
+the *next* conversation turn), but that's too late for a note about a
+tool result Claude just saw, so these stay synchronous. At the Deep
+level, the PostToolUse hook that notes an unusually large result or a
+web call (matcher `Bash|Read|Grep|Glob|WebFetch|WebSearch|mcp__.*`) is
+foreground too, for the same reason. Claude Code records each hook
+call's real `durationMs`; `capture status` prints your own median and
+p90 wait for this hook over the last 7 days ("Deep's large-output/web
+hook waited...") whenever big_output or web is on (only
+`WebFetch|WebSearch` matter when a custom set turns on the web metric
+alone); without either metric nothing is registered on PostToolUse at
+all.
+
+**Hook health is bucketed, not named.** `hook_health.count_hook_errors`
+tallies every hook attachment Claude Code writes to a transcript —
+yours as well as Token Lens's own — by the closed hook-*event* name
+only (`PreToolUse`, `PostToolUse`, and so on; `events._HOOK_EVENT_NAMES`,
+verified against Claude Code's own docs). The matcher/tool-name suffix
+after the `:` (e.g. the `Bash` in `PreToolUse:Bash`, or an MCP server's
+own name in `PreToolUse:mcp__server__tool`) is always dropped before it
+reaches `Event.detail` — never kept, never shown — so `capture status`'s
+"this hook keeps failing" prompt can never leak which MCP servers or
+tools you have configured. It is a prompt only: nothing here ever
+writes to `settings.json`.
 The two free signal hooks, Notification and PermissionRequest, run
 asynchronously (in the background) since nothing needs to read what
 they print.
@@ -354,25 +379,48 @@ yourself instead (`service/api.py`'s `route_capture_post`).
 `tests/test_capture_parse.py` and `tests/test_privacy.py` all exercise
 this feature's output against the same "no free text, no path, no raw
 session id" checks the rest of this document describes.
+`tests/test_parse_events.py` (`test_hook_output_mcp_matched_hook_name_never_reaches_detail`,
+`test_hook_output_command_string_never_reaches_detail`) and
+`tests/test_capture_cli.py` (`test_status_never_prints_a_raw_matcher_or_tool_name`)
+cover hook health specifically: an MCP tool/matcher name or a hook
+command's own path never reaches `Event.detail` or `capture status`'s
+output.
 
 ## No outbound network calls
 
 The tool never calls Claude, Anthropic or any other remote service on
 its own, and uses none of your tokens unless you turn on metrics
 capture, which spends tokens inside your own Claude Code session (never
-a call this tool makes itself) — see "Metrics capture" above. Outside
-`src/claude_token_lens/service/`,
-one function imports a networking library: after `install-service` (or
-`init`'s service step) registers the service, `cli.py` makes one `GET
-/api/health` request to the address and port it just registered
-(`127.0.0.1:8765` by default), to report whether the service is
-already answering. It never contacts any other address. No other module
-imports `socket`, `urllib`, `http.client`, `requests` or equivalent. The package
-has zero third-party dependencies (`pyproject.toml`'s
-`dependencies = []`); `rich` is an optional, opt-in extra for nicer
-terminal output, not a networking dependency. Pricing comes from a
-user-edited local `pricing.toml`, never a live lookup — there is no
-code path that could fetch it.
+a call this tool makes itself) — see "Metrics capture" above.
+
+**`update` is the one command that reaches the real internet**, and it
+does so through `pip`, not through this tool's own networking code:
+`_cmd_update` (`cli.py`) shells out to `pip install --upgrade
+--force-reinstall --no-deps <source>`, where `<source>` (`--from`)
+defaults to this project's own GitHub repository
+(`UPDATE_SOURCE = "git+https://github.com/PaulMorrisDev/claude-token-lens"`)
+— pip clones whatever commit is at the tip of that repository's default
+branch when you run it (unpinned; pass `--from` a tag, a
+commit-pinned URL or a local folder for anything more reproducible).
+`--dry-run` prints the exact `pip` command without running it. If the
+dashboard is registered to start at logon, `update` then runs the
+newly-installed copy's `install-service`, which — the same as a bare
+`install-service` or `init`'s service step — probes its own
+freshly-(re)started copy over loopback: up to two `GET /api/health`
+requests (`_http_health_ok`, then `_http_health_version` once that
+succeeds) to the address and port it just registered
+(`127.0.0.1:8765` by default), never any other address, purely to
+print whether it came back up and on which version.
+
+Outside `src/claude_token_lens/service/` and `update`'s `pip`
+subprocess above, no module imports `socket`, `urllib`, `http.client`,
+`requests` or equivalent — `cli.py`'s two `urllib.request.urlopen`
+calls (`_http_health_ok`, `_http_health_version`) are the only ones,
+both loopback-only as just described. The package has zero third-party
+dependencies (`pyproject.toml`'s `dependencies = []`); `rich` is an
+optional, opt-in extra for nicer terminal output, not a networking
+dependency. Pricing comes from a user-edited local `pricing.toml`,
+never a live lookup — there is no code path that could fetch it.
 
 For the CLI's analytics/report subcommands this is a structural
 guarantee: nothing to call out to, because they contain no networking
@@ -428,6 +476,12 @@ it through your browser:
   send. See [docs/api.md](docs/api.md#cross-site-protection-review-s3).
 - **No CORS.** The service never sends `Access-Control-Allow-*`
   headers, so another site's script can't read a response.
+- **Body size.** Every `POST` body is capped at 64 KB — checked
+  against `Content-Length` before anything is read off the socket —
+  `413` otherwise. Since there's no login, this also bounds how much
+  memory and JSON-parse work any local process (not just a web page)
+  can force per request. See
+  [docs/api.md](docs/api.md#body-size-limit-g5).
 - **Response headers.** Every response carries
   `Content-Security-Policy: default-src 'self'` (scripts only from the
   service itself), `X-Content-Type-Options: nosniff` and
@@ -444,17 +498,26 @@ recommendation or profile gives you a prompt to paste into Claude Code
 (which asks your permission before editing anything under `.claude`)
 and a `claude-token-lens apply ... --dry-run` command to run yourself.
 The service's few write routes touch only its own files: session tags
-(`mode`/`purpose`) in the store, user profiles under
-`<config-dir>/profiles/` (`POST /api/profiles`, and `POST
-/api/profiles/from-current`, which saves the allowlisted keys of the
-latest config snapshot there), and the `[capture]` table of Token
-Lens's own `config.toml` (`POST /api/capture` — see "Metrics capture"
-above; it is the one dashboard route that can turn metrics capture on,
-change its level, or turn it off, and it never touches `settings.json`
-or a skill file). Profile writes refuse to overwrite an existing
-profile unless asked to with `?replace=1`, and neither can create or
-change a shipped catalogue profile. `POST /api/whatif` only works out
-an estimate and writes nothing.
+(`mode`/`purpose`) and your `/tl-feedback` rating (`POST
+/api/sessions/<id>/feedback` — the same closed checkbox vocabulary the
+skill itself writes, `capture_catalogue.FEEDBACK_VOCAB`; an unknown
+field or value is `400`, and nothing ticked clears a rating) in the
+store, user profiles under `<config-dir>/profiles/` (`POST
+/api/profiles`, and `POST /api/profiles/from-current`, which saves the
+allowlisted keys of the latest config snapshot there), and the
+`[capture]` table of Token Lens's own `config.toml` (`POST
+/api/capture` — see "Metrics capture" above; it is the one dashboard
+route that can turn metrics capture on, change its level, or turn it
+off, and it never touches `settings.json` or a skill file). Profile
+writes refuse to overwrite an existing profile unless asked to with
+`?replace=1`, and neither can create or change a shipped catalogue
+profile. `POST /api/whatif` only works out an estimate and writes
+nothing. `POST /api/predictions/seen` (EST-P5) only flips a `seen` flag,
+by its own row id, on one of this tool's own logged "what if?"
+predictions already in the store, so the Profiles tab's "Did your
+estimates come true?" table can tell a prediction you've looked at from
+one still waiting on you — it names no session, setting or transcript
+content.
 
 The service's on-disk SQLite store (`<config-dir>/service.db`) is
 always a derived cache rebuilt from the same transcripts the CLI

@@ -43,8 +43,9 @@ import json
 import os
 import re
 import tomllib
+import uuid
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from . import capture_catalogue
@@ -72,9 +73,36 @@ _ALLOWED_PROJECT_KIND = frozenset({"work", "personal"})
 #: is in or out by a hash of its id, and its subagents follow it.
 CAPTURE_SAMPLES = (100, 50, 25, 10)
 
+#: SEC-P5: bounds on ``retention_days``. 1 (never 0 or negative, which
+#: would prune everything, including the session in progress) through
+#: 36500 (100 years -- large enough that no real "keep forever" user
+#: needs more, small enough to catch a typo like an extra zero or a
+#: value pasted in milliseconds/hours by mistake).
+RETENTION_DAYS_MIN = 1
+RETENTION_DAYS_MAX = 36500
+
+#: SEC-P8/G7: how long a capture signal file (``signals.prune``) or a
+#: ``capture-log.jsonl`` record (:func:`prune_capture_log`) is kept when
+#: the user hasn't set an explicit ``retention_days`` of their own --
+#: unlike :attr:`Config.retention_days` (which only takes effect when the
+#: user opts in, since it prunes visible report data), this is Token
+#: Lens's own background telemetry and is never allowed to grow forever
+#: just because nobody configured a retention window (previously: G7
+#: found capture-log.jsonl was never pruned at all, under any setting).
+#: An explicit ``retention_days`` still overrides this default in both
+#: directions -- see ``service/watcher.py``'s per-tick prune call.
+SIGNAL_RETENTION_DEFAULT_DAYS = 180
+
 #: Every change to ``[capture]`` is appended here, one JSON object per
 #: line, so a change can be lined up against the costs around it.
 CAPTURE_LOG_NAME = "capture-log.jsonl"
+
+#: EST-P5: every whatif estimate worth checking against what actually
+#: happened is appended here, one JSON object per line -- see
+#: :func:`append_prediction_log`. Ingested into the store's
+#: ``predictions`` table by ``service.watcher._scan_predictions``, the
+#: same way ``CAPTURE_LOG_NAME`` feeds ``change_points._capture_points``.
+PREDICTION_LOG_NAME = "prediction-log.jsonl"
 
 
 class ConfigError(Exception):
@@ -390,6 +418,18 @@ def _build_config(data: dict, path: Path) -> Config:
         isinstance(item, str) for item in exclude_projects
     ):
         raise ConfigError(f"config file {path}: 'exclude_projects' must be a list of strings")
+    # SEC-P5: compiled here, at load, the same as 'capture.projects' just
+    # above -- so a typo'd regex is a load-time ConfigError the user sees
+    # right away, not a pattern that silently stops excluding anything
+    # once it reaches discovery.resolve_project_dirs/corpus's own
+    # skip-and-carry-on compilation (still needed there as defense in
+    # depth for a caller that builds the list itself, e.g. ``serve
+    # --exclude-project``, without going through this loader).
+    for pattern in exclude_projects:
+        try:
+            re.compile(pattern, re.IGNORECASE)
+        except re.error as exc:
+            raise ConfigError(f"config file {path}: 'exclude_projects' has a bad pattern {pattern!r} ({exc})") from exc
     config.exclude_projects = list(exclude_projects)
 
     extra_projects_roots = data.get("extra_projects_roots", [])
@@ -404,6 +444,11 @@ def _build_config(data: dict, path: Path) -> Config:
         not isinstance(retention_days, int) or isinstance(retention_days, bool)
     ):
         raise ConfigError(f"config file {path}: 'retention_days' must be an integer")
+    if retention_days is not None and not (RETENTION_DAYS_MIN <= retention_days <= RETENTION_DAYS_MAX):
+        raise ConfigError(
+            f"config file {path}: 'retention_days' must be between {RETENTION_DAYS_MIN} and "
+            f"{RETENTION_DAYS_MAX}, got {retention_days}"
+        )
     config.retention_days = retention_days
 
     provider = data.get("provider")
@@ -479,7 +524,13 @@ def _build_capture_config(table: dict, path: Path) -> CaptureConfig:
     if not isinstance(level, str) or level not in levels:
         raise ConfigError(f"config file {path}: 'capture.level' must be one of {list(levels)}, got {level!r}")
     capture.level = level
-    capture.metrics = _capture_list(table, "metrics", path, capture_catalogue.LEVEL_METRIC_IDS)
+    # CAP-5: a config.toml written before a metric's retirement may still
+    # list it (``capture_catalogue.RETIRED_METRIC_IDS``) -- accepted here
+    # so the file keeps loading; ``with_requirements``/``active_metrics``
+    # drop it from what's actually asked or shown.
+    capture.metrics = _capture_list(
+        table, "metrics", path, capture_catalogue.LEVEL_METRIC_IDS + capture_catalogue.RETIRED_METRIC_IDS
+    )
     sample = table.get("sample", capture.sample)
     if isinstance(sample, bool) or sample not in CAPTURE_SAMPLES:
         raise ConfigError(
@@ -688,8 +739,35 @@ def load_session_overrides(config_dir: str | Path | None = None) -> dict[str, di
     return result
 
 
+#: TOML basic-string escapes with their own short form (SEC-P5); every
+#: other C0 control character or DEL falls back to \\uXXXX below, so a
+#: stray control byte in a value (a pasted purpose, a slug, an exclude
+#: pattern) can never produce a literal control character inside the
+#: written ``"..."`` string -- which would be invalid TOML and, read
+#: back by the capture hook's own ``tomllib.loads``, would silently
+#: blank the whole config rather than just that one field.
+_TOML_SHORT_ESCAPES = {
+    "\\": "\\\\",
+    '"': '\\"',
+    "\b": "\\b",
+    "\t": "\\t",
+    "\n": "\\n",
+    "\f": "\\f",
+    "\r": "\\r",
+}
+
+
 def _toml_escape_string(value: str) -> str:
-    return value.replace("\\", "\\\\").replace('"', '\\"')
+    out = []
+    for ch in value:
+        short = _TOML_SHORT_ESCAPES.get(ch)
+        if short is not None:
+            out.append(short)
+        elif ch == "\x7f" or ord(ch) < 0x20:
+            out.append(f"\\u{ord(ch):04x}")
+        else:
+            out.append(ch)
+    return "".join(out)
 
 
 def _toml_string(value: str) -> str:
@@ -721,7 +799,11 @@ def _write_sessions_toml(path: Path, sessions_table: dict[str, dict]) -> None:
         lines.append("")
     path.parent.mkdir(parents=True, exist_ok=True)
     text = "\n".join(lines).rstrip("\n") + "\n" if lines else ""
-    path.write_text(text, encoding="utf-8")
+    # SEC-P5: same atomic-write-plus-reparse posture as the config.toml
+    # writer below, for the same reason -- a bad escape here would
+    # otherwise corrupt sessions.toml, which (unlike config.toml) has no
+    # ".new fallback" to catch it.
+    _write_atomic(path, text, verify_toml=True)
 
 
 def save_session_override(
@@ -834,9 +916,9 @@ def write_config_values(config_dir: str | Path | None, updates: dict) -> Path:
         text = _dump_toml_table(merged)
     except ConfigError:
         new_path = resolved_dir / "config.toml.new"
-        _write_atomic(new_path, _dump_toml_table(_flat_part(merged)))
+        _write_atomic(new_path, _dump_toml_table(_flat_part(merged)), verify_toml=True)
         return new_path
-    _write_atomic(path, text)
+    _write_atomic(path, text, verify_toml=True)
     return path
 
 
@@ -850,9 +932,22 @@ def _flat_part(data: dict) -> dict:
     }
 
 
-def _write_atomic(path: Path, text: str) -> None:
+def _write_atomic(path: Path, text: str, *, verify_toml: bool = False) -> None:
     """Write ``text`` to ``path`` through a temporary file and a rename,
-    so a reader (the capture hook, say) never sees half a file."""
+    so a reader (the capture hook, say) never sees half a file.
+
+    ``verify_toml`` (SEC-P5) re-parses ``text`` with ``tomllib`` first and
+    raises :class:`ConfigError` without touching ``path`` at all if it
+    doesn't come back as valid TOML -- a belt-and-braces check that a
+    writer bug (a value ``_toml_format_value`` didn't escape correctly,
+    say) can never replace a good ``config.toml`` with one that Token
+    Lens, or the capture hook's own ``tomllib.loads``, can't read back.
+    """
+    if verify_toml:
+        try:
+            tomllib.loads(text)
+        except tomllib.TOMLDecodeError as exc:
+            raise ConfigError(f"internal error: generated TOML for {path} does not parse back: {exc}") from exc
     tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
     try:
         tmp.write_text(text, encoding="utf-8")
@@ -904,7 +999,11 @@ def set_capture(
     ``metrics``); ``metrics`` picks metrics one by one, and the level
     becomes the preset they match, else ``"custom"``. Switching from off
     to on stamps ``enabled_at``; switching off clears it and ``until``.
-    The new table is validated before anything is written, the write is
+    A switch from off to on that leaves ``until`` unsaid (``None``) gets
+    :data:`~claude_token_lens.capture_catalogue.DEFAULT_CAPTURE_TIMEBOX_DAYS`
+    days by default (CAP-8), so capture can't run forever unnoticed --
+    pass ``until=""`` for a deliberate "no limit" instead. The new table
+    is validated before anything is written, the write is
     atomic, and every change is appended to ``capture-log.jsonl``. Raises
     :class:`ConfigError` for a bad value, or when ``config.toml`` can't be
     rewritten in place (the change then sits in ``config.toml.new``).
@@ -937,12 +1036,28 @@ def set_capture(
         table["feedback"] = _in_catalogue_order(feedback, capture_catalogue.FEEDBACK_IDS)
     if coaching is not None:
         table["coaching"] = _in_catalogue_order(coaching, capture_catalogue.COACHING_IDS)
-    stamp = (now or datetime.now(timezone.utc)).astimezone(timezone.utc).isoformat(timespec="seconds")
+    moment = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    stamp = moment.isoformat(timespec="seconds")
     if table["level"] == "off":
         table["enabled_at"] = ""
         table["until"] = ""
     elif not current.is_on:
         table["enabled_at"] = stamp
+        # CAP-8: a fresh "off" -> "on" switch gets a default time-box when
+        # nothing says otherwise, so capture can't run forever unnoticed
+        # just because nobody set one. An explicit --until/--for/"" (a
+        # deliberate "no limit") already set table["until"] above, and an
+        # *existing* until can't reach this branch at all -- it's cleared
+        # to "" whenever level is "off", which is the only way to get here
+        # -- so this is exactly the "skipped when --capture-no-limit/--for/
+        # --until is given or an until exists" case the audit calls for.
+        # Every path that can turn capture on (non-interactive init,
+        # 'capture on'/'level', POST /api/capture) funnels through this one
+        # place, so none of them need to duplicate the default themselves.
+        if until is None:
+            table["until"] = (
+                moment + timedelta(days=capture_catalogue.DEFAULT_CAPTURE_TIMEBOX_DAYS)
+            ).isoformat(timespec="seconds")
 
     if table == _capture_table(current):
         return current
@@ -985,10 +1100,121 @@ def load_capture_log(config_dir: str | Path | None = None) -> list[dict]:
     return records
 
 
+def prune_capture_log(
+    config_dir: str | Path | None = None,
+    retention_days: int = SIGNAL_RETENTION_DEFAULT_DAYS,
+    now: datetime | None = None,
+) -> int:
+    """Drop every ``capture-log.jsonl`` record older than
+    ``retention_days`` (G7: this file was never pruned at all -- the
+    same retention idea :func:`~claude_token_lens.signals.prune` already
+    applies to capture signal files). A record whose line can't be
+    parsed back as ``{"ts": <str>, ...}`` (never written by
+    :func:`_append_capture_log` itself, but see :func:`load_capture_log`'s
+    own tolerant-read posture) is dropped along with the rest -- a prune
+    pass is also a chance to repair the file, not just trim it, and such
+    a line was already invisible to :func:`load_capture_log`'s own reader
+    either way. Rewritten atomically via :func:`_write_atomic`. Returns
+    how many lines were removed; a missing file, or one with nothing to
+    remove, is a no-op returning 0.
+    """
+    path = _resolve_config_dir(config_dir) / CAPTURE_LOG_NAME
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return 0
+    if not lines:
+        return 0
+
+    cutoff = (now or datetime.now(timezone.utc)) - timedelta(days=retention_days)
+    kept = []
+    for line in lines:
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(record, dict) or not isinstance(record.get("ts"), str):
+            continue
+        try:
+            ts = datetime.fromisoformat(record["ts"])
+        except ValueError:
+            continue
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        if ts >= cutoff:
+            kept.append(line)
+
+    removed = len(lines) - len(kept)
+    if removed == 0:
+        return 0
+    text = "".join(f"{line}\n" for line in kept)
+    _write_atomic(path, text)
+    return removed
+
+
+def append_prediction_log(
+    config_dir: str | Path,
+    *,
+    source: str,
+    measure_key: str,
+    agent: str | None,
+    predicted_usd: float | None,
+    predicted_pct: float | None,
+    fidelity: str,
+    now: datetime | None = None,
+) -> str:
+    """Log one whatif estimate worth checking against what actually
+    happened (EST-P5), so it can later be matched to a real change point
+    and judged (``backtest.py``). ``source``/``measure_key``/``fidelity``
+    are short enum-like strings (never free text -- see
+    ``service/schema.py``'s "Version 7" paragraph); ``agent`` is an agent
+    type or ``None`` for a main-session/global change. Returns the
+    prediction's own generated id (a stable key so re-ingesting the same
+    log line twice, e.g. on a later watcher tick, is a no-op)."""
+    resolved_dir = _resolve_config_dir(config_dir)
+    resolved_dir.mkdir(parents=True, exist_ok=True)
+    prediction_id = uuid.uuid4().hex[:16]
+    stamp = (now or datetime.now(timezone.utc)).astimezone(timezone.utc).isoformat(timespec="seconds")
+    record = {
+        "id": prediction_id,
+        "ts": stamp,
+        "source": source,
+        "measure_key": measure_key,
+        "agent": agent,
+        "predicted_usd": predicted_usd,
+        "predicted_pct": predicted_pct,
+        "fidelity": fidelity,
+    }
+    with open(resolved_dir / PREDICTION_LOG_NAME, "a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record, sort_keys=True) + "\n")
+    return prediction_id
+
+
+def load_prediction_log(config_dir: str | Path | None = None) -> list[dict]:
+    """Every prediction recorded in ``prediction-log.jsonl``, oldest
+    first; lines that aren't a prediction record are skipped."""
+    path = _resolve_config_dir(config_dir) / PREDICTION_LOG_NAME
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    records = []
+    for line in lines:
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(record, dict) and isinstance(record.get("id"), str) and isinstance(record.get("ts"), str):
+            records.append(record)
+    return records
+
+
 __all__ = [
     "TOKEN_LENS_DIRNAME",
     "CAPTURE_LOG_NAME",
+    "PREDICTION_LOG_NAME",
     "CAPTURE_SAMPLES",
+    "SIGNAL_RETENTION_DEFAULT_DAYS",
     "CaptureConfig",
     "ConfigError",
     "Config",
@@ -999,6 +1225,9 @@ __all__ = [
     "write_config_values",
     "set_capture",
     "load_capture_log",
+    "prune_capture_log",
+    "append_prediction_log",
+    "load_prediction_log",
     "load_session_overrides",
     "save_session_override",
 ]

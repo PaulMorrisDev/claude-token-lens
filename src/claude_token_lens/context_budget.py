@@ -99,23 +99,26 @@ _CHARS_PER_TOKEN_APPROX = 4
 #: listing costs about this many tokens".
 _AGENT_LISTING_TOKENS_PER_AGENT = 60
 
-#: Same literal ``pricing._CONTEXT_WINDOW_SUFFIX`` value, duplicated
+#: A snapshot's ``autoCompactWindow``/observed-threshold pair counts as
+#: "drifted" once they disagree by more than this fraction.
+_DRIFT_RATIO = 0.10
+
+#: Assumed model context window when no statusline ground truth is
+#: available for a project AND the project's model setting can't be
+#: resolved against a rate card (no ``pricing`` given, or no model set)
+#: -- see the module docstring. D2/D4/COV-12: this used to be the *only*
+#: window this module ever assumed, gated on the model alias literally
+#: ending in "[1m]" rather than on which model was actually set --
+#: wrong for a bare "sonnet"/"opus"/"fable" alias on a Claude 5 model,
+#: which is natively 1M (V24) with no "[1m]" suffix needed. Same literal
+#: value as ``pricing._DEFAULT_CONTEXT_WINDOW_TOKENS``, duplicated
 #: rather than imported (that name is a private module constant of
 #: ``pricing.py``, and this project's convention is to duplicate a small
 #: constant like this rather than reach across a module's underscore
 #: boundary -- see e.g. ``compaction.py``'s own ``RecacheThresholds``
 #: import instead of copying ctx_floor/cr_ratio, which is the opposite
 #: choice made for a *shared, evolving* threshold pair; this one is a
-#: single frozen string literal).
-_CONTEXT_WINDOW_SUFFIX = "[1m]"
-
-#: A snapshot's ``autoCompactWindow``/observed-threshold pair counts as
-#: "drifted" once they disagree by more than this fraction.
-_DRIFT_RATIO = 0.10
-
-#: Assumed model context window sizes when no statusline ground truth is
-#: available for a project -- see the module docstring.
-_ASSUMED_CONTEXT_WINDOW_1M = 1_000_000
+#: single frozen number).
 _ASSUMED_CONTEXT_WINDOW_DEFAULT = 200_000
 
 
@@ -539,7 +542,7 @@ def load_context_window_rows(csv_path: str | Path) -> list[dict]:
     ``statusline.main``'s context-window append -- see that module's
     docstring), as ``{"session_id", "context_window_used_tokens",
     "context_window_size", "context_window_used_percentage",
-    "context_window_autocompact_threshold"}`` dicts, in file order.
+    "context_window_cache_read_tokens"}`` dicts, in file order.
 
     Reads the file positionally via ``csv.reader`` rather than
     ``log_usage.load_usage_log``'s ``csv.DictReader`` (a fixed six-column
@@ -577,7 +580,7 @@ def load_context_window_rows(csv_path: str | Path) -> list[dict]:
                     "context_window_used_tokens": used_tokens,
                     "context_window_size": _parse_number(raw_row[7]) if len(raw_row) > 7 else None,
                     "context_window_used_percentage": _parse_number(raw_row[3]) if len(raw_row) > 3 else None,
-                    "context_window_autocompact_threshold": (
+                    "context_window_cache_read_tokens": (
                         _parse_number(raw_row[8]) if len(raw_row) > 8 else None
                     ),
                 }
@@ -732,6 +735,7 @@ def _build_autocompact_table(
     stats: ContextBudgetStats,
     latest_snapshots: dict[str, Snapshot],
     usage_log_rows: list[dict] | None,
+    pricing: Pricing | None,
 ) -> Table:
     columns = [
         Column(key="project", label="Project", kind="str"),
@@ -763,13 +767,22 @@ def _build_autocompact_table(
         window_size = statusline_window_by_project.get(project)
         source = "statusline"
         if window_size is None:
-            # Fix #25: the "[1m]" alias only ever appears in a *setting*
+            # Fix #25: the model setting only ever appears in a *setting*
             # (project config), never on an observed transcript model --
             # read it from the project's own snapshot rather than from
-            # any session's Turn.model.
+            # any session's Turn.model. D2/D4/COV-12: resolve that
+            # setting (an alias like "sonnet", or "sonnet[1m]") against
+            # the rate card's per-model context_window_tokens, rather
+            # than assuming 200k unless the alias literally ends in
+            # "[1m]" -- a bare "sonnet"/"opus"/"fable" alias is natively
+            # 1M on a Claude 5 model (V24) with no such suffix needed.
             model_alias = _model_alias_from_snapshot(snapshot)
-            saw_1m_alias = bool(model_alias) and model_alias.endswith(_CONTEXT_WINDOW_SUFFIX)
-            window_size = _ASSUMED_CONTEXT_WINDOW_1M if saw_1m_alias else _ASSUMED_CONTEXT_WINDOW_DEFAULT
+            resolved = pricing.resolve_model(model_alias) if pricing is not None and model_alias else None
+            window_size = (
+                resolved.rates.context_window_tokens
+                if resolved is not None
+                else _ASSUMED_CONTEXT_WINDOW_DEFAULT
+            )
             source = "assumed"
 
         observed_threshold = compaction.effective_autocompact_threshold(acc.compaction_records)
@@ -893,6 +906,7 @@ def build_section(
     *,
     snapshots: list[Snapshot] | None = None,
     usage_log_rows: list[dict] | None = None,
+    pricing: Pricing | None = None,
 ) -> Section:
     """Build the "Context budget" report section (key
     ``"context_budget"``). See the module docstring for the three tables.
@@ -909,6 +923,14 @@ def build_section(
     throughout; the autocompact table then falls back to an assumed
     context-window size and the statusline table renders empty with an
     explanatory note.
+
+    ``pricing`` (D2/D4/COV-12), when given, resolves a project's model
+    setting against the rate card's per-model ``context_window_tokens``
+    for the autocompact table's assumed window, instead of the flat
+    200,000-token default every project without statusline ground truth
+    used to get regardless of which model it actually set -- same
+    optional/degrade-gracefully convention as ``limits.build_section``'s
+    own ``pricing`` parameter.
 
     Skips cleanly (no tables, one note) when ``stats`` has never seen a
     top-level transcript at all -- the same "still return a Section,
@@ -930,7 +952,7 @@ def build_section(
 
     tables = [
         _build_baseline_table(stats, latest_snapshots),
-        _build_autocompact_table(stats, latest_snapshots, usage_log_rows),
+        _build_autocompact_table(stats, latest_snapshots, usage_log_rows, pricing),
         _build_statusline_table(usage_log_rows),
     ]
 
@@ -961,6 +983,16 @@ def _build_startup_table(stats: ContextBudgetStats) -> Table:
         Column(key="not_recorded", label="Not recorded", kind="tokens"),
         Column(key="measured_pct", label="Share explained", kind="pct"),
         Column(key="write_price", label="Cache-write price per million tokens", kind="money"),
+        # PROF-11/F13: the share of the "claude_md" column above that is
+        # Managed policy CLAUDE.md -- it loads regardless of
+        # omitClaudeMd, so a caller pricing what omitClaudeMd would save
+        # subtracts this out first (goals._omit_claude_md,
+        # whatif._omit_claude_md, recommend.py's spawn-claude-md rule).
+        Column(
+            key="claude_md_managed",
+            label="...of which, Managed policy CLAUDE.md (still loads either way)",
+            kind="tokens",
+        ),
     ]
     rows: list[list] = []
     for agent_type in sorted(stats.agents, key=lambda key: -stats.agents[key].spawns):
@@ -972,10 +1004,11 @@ def _build_startup_table(stats: ContextBudgetStats) -> Table:
         known = sum(parts.values())
         not_recorded = max(0.0, startup - known)
         measured_pct = min(100.0, known / startup * 100) if startup else None
+        managed_claude_md = _mean_or_zero(acc.claude_md_by_source.get("Managed"))
         rows.append(
             [agent_type, acc.spawns, acc.fork_spawns, startup]
             + [parts[part] for part in STARTUP_PARTS]
-            + [not_recorded, measured_pct, fmean(acc.write_prices) if acc.write_prices else None]
+            + [not_recorded, measured_pct, fmean(acc.write_prices) if acc.write_prices else None, managed_claude_md]
         )
     return Table(
         name="agent_startup_breakdown",
@@ -990,6 +1023,9 @@ def _build_startup_table(stats: ContextBudgetStats) -> Table:
             "system-prompt snapshot for the spawn; otherwise they sit in \"Not recorded\".",
             "Forks inherit the parent's conversation and prompt cache, so they are counted but kept "
             "out of the averages.",
+            "\"CLAUDE.md and memory\" includes Managed policy CLAUDE.md (broken out in the last "
+            "column): omitClaudeMd skips only the project's own CLAUDE.md files, never a policy one, "
+            "which still loads regardless.",
         ],
     )
 

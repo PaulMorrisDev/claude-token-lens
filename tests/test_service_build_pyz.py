@@ -65,6 +65,37 @@ def test_built_pyz_excludes_pycache_and_tests(built_pyz: Path) -> None:
     assert not any(name.startswith("tests/") for name in names)
 
 
+def test_built_pyz_carries_pyc_files_next_to_their_source(built_pyz: Path) -> None:
+    # ROB-P10: byte-compiled so zipimport never has to parse and compile
+    # every .py from inside the zip on each run -- legacy layout (no
+    # __pycache__, which the test above forbids), so "module.pyc" sits
+    # right next to "module.py".
+    with zipfile.ZipFile(built_pyz) as zf:
+        names = set(zf.namelist())
+    assert "claude_token_lens/cli.pyc" in names
+    assert "claude_token_lens/__main__.pyc" in names
+
+
+def test_built_pyz_still_imports_with_only_the_pyc_present(built_pyz: Path, tmp_path: Path) -> None:
+    # Proves the shipped .pyc is actually what zipimport loads (not just
+    # sitting there unused): with the package's .py source deleted from a
+    # copy of the archive, the CLI still runs from bytecode alone. The
+    # archive-root __main__.py (zipapp's own entry-point stub, added
+    # after compileall runs, so it has no .pyc counterpart) is kept --
+    # zipapp requires one of __main__.py/__main__.pyc to exist there.
+    pyc_only = tmp_path / "pyc-only.pyz"
+    with zipfile.ZipFile(built_pyz) as src, zipfile.ZipFile(pyc_only, "w") as dst:
+        for item in src.infolist():
+            if item.filename.endswith(".py") and item.filename != "__main__.py":
+                continue
+            dst.writestr(item, src.read(item.filename))
+    result = subprocess.run(
+        [sys.executable, str(pyc_only), "--version"], capture_output=True, text=True, timeout=30
+    )
+    assert result.returncode == 0
+    assert "claude-token-lens" in result.stdout
+
+
 def test_built_pyz_runs_version_and_exits_zero(built_pyz: Path) -> None:
     result = subprocess.run(
         [sys.executable, str(built_pyz), "--version"],

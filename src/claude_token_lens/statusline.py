@@ -57,9 +57,16 @@ appends three new **trailing** columns directly with the stdlib
 8. ``context_window_size`` -- ``context_window.context_window_size``,
    falling back to ``context_window.total_tokens`` (the payload's own
    size key is not documented; both spellings are accepted).
-9. ``context_window_autocompact_threshold`` -- the first numeric field
-   on ``context_window`` whose key contains ``"autocompact"``
-   (case-insensitive; the exact key name isn't documented either).
+9. ``context_window_cache_read_tokens`` --
+   ``context_window.current_usage.cache_read_input_tokens``. (SIG-5:
+   this column originally looked for an undocumented "autocompact
+   threshold" key that turned out not to exist anywhere in the real
+   payload -- re-verified against Claude Code's own statusline docs --
+   so every row carried an empty ninth column forever. Repurposed in
+   place, same position, rather than dropped: dropping it would shift
+   every column after it and break every positional reader below, in
+   :func:`load_usage_log_ground_truth` and in
+   ``context_budget.load_context_window_rows``.)
 
 The row's own ``window`` column is the sentinel ``"context_window"`` (never
 one of :data:`tools.log_usage.WINDOW_NAMES`, so a plain
@@ -271,6 +278,45 @@ A hint that fires beats the note: it is about this moment, the note is
 always true. Neither ever reaches Claude: Claude Code shows the status
 line to you and sends it nowhere, so both cost no tokens. No escape codes,
 bounded to :data:`_MAX_LINE_LEN` like the first line.
+
+UX-5: which hint kind last fired and whether the note has shown yet are
+tracked per session in ``<config_dir>/statusline-state.json``
+(:func:`_read_state`/:func:`_write_state`, an atomic best-effort write,
+never a lock -- this is a hot path). A hint kind is suppressed for
+:data:`_HINT_COOLDOWN_S` after it last showed unless its stake has since
+grown past :data:`_HINT_REARM_FACTOR` times (:func:`_gate_hint`); the
+note shows at most once per session (:func:`_record_hint`). Both are
+skipped -- a firing hint or note always shows -- without a ``config_dir``
+or a ``session_id`` to key the state on.
+
+SIG-4 addition: whenever capture is on (any level but ``off``, not past
+``until``) and a salt already exists on disk, :func:`main` also appends
+this session's cost/recache **ground truth** -- ``cost.total_cost_usd``
+and ``prompt_cache.recache_tokens_if_cold``, straight from the payload,
+never derived from the transcript -- as one or two numbers-only lines to
+the same ``signals/YYYY-MM.jsonl`` files SIG-2/3's hook lines go to
+(salted the same way, :func:`_write_ground_truth_signal`), at most once
+every :data:`_SIG4_THROTTLE_S` seconds per session (the same state file
+above, a ``sig4_ts`` field). ``reconcile.py``'s Q1 gap metric and the
+cache ground-truth checks read them back through
+``signals.SessionSignals.statusline_cost_usd``/``recache_tokens``,
+independent of anything derived from the transcript.
+
+SIG-5 addition: ``usage-log.csv`` is appended to on every single
+statusline refresh (both the ``rate_limits`` path and the context-window/
+cache path above), so it only ever grows. Two of its own hot-path reads
+used to load the whole file just to answer a small question and are now
+bounded-tail reads instead, mirroring :func:`_last_assistant_line`'s
+:data:`_TAIL_BYTES` transcript read: :func:`_last_context_window_key`
+(the dedupe check before appending a context-window row) and
+:func:`_ensure_ground_truth_header` (whose common case now only peeks at
+the first line; the full read is reserved for the rare one-time header
+migration). ``tools.log_usage._read_existing_keys`` gets the identical
+fix on the ``rate_limits`` side. Growth itself is bounded separately, by
+:func:`~claude_token_lens.tools.log_usage.prune_usage_log`, wired into
+``serve``'s watcher tick and the ``capture prune`` command next to
+``signals.prune``/``config.prune_capture_log`` (see that function's own
+docstring).
 """
 
 from __future__ import annotations
@@ -285,7 +331,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import installer as installer_mod
-from .capture_catalogue import FEEDBACK_NOTE
 from .model import Column, Table
 from .tools import log_usage
 
@@ -914,7 +959,7 @@ _CONTEXT_WINDOW_SENTINEL = "context_window"
 _GROUND_TRUTH_TRAILING_COLUMNS = (
     "context_window_used_tokens",
     "context_window_size",
-    "context_window_autocompact_threshold",
+    "context_window_cache_read_tokens",
     "cache_warm",
     "cache_ttl_s",
     "cache_expires_in_s",
@@ -944,9 +989,27 @@ def _ensure_ground_truth_header(csv_path: Path) -> None:
     file in place. A no-op when the file doesn't exist yet (the normal
     append path below creates it with the full header) or already has
     at least as many columns.
+
+    SIG-5: the width check used to read every row of the file on every
+    single call -- i.e. every statusline refresh, forever -- just to look
+    at ``rows[0]``. It now peeks at only the first line first; the full
+    read (and the rewrite that follows it) only happens on the rare path
+    where a migration is actually needed, which then never recurs since
+    the file carries the full header from then on.
     """
     if not csv_path.exists():
         return
+    try:
+        with open(csv_path, "r", encoding="utf-8", newline="") as fh:
+            first_line = fh.readline()
+    except OSError:
+        return
+    if not first_line:
+        return
+    header = next(csv.reader([first_line]), None)
+    if header is None or len(header) >= len(_GROUND_TRUTH_HEADER):
+        return
+
     try:
         with open(csv_path, "r", encoding="utf-8", newline="") as fh:
             reader = csv.reader(fh)
@@ -954,9 +1017,6 @@ def _ensure_ground_truth_header(csv_path: Path) -> None:
     except OSError:
         return
     if not rows:
-        return
-    header = rows[0]
-    if len(header) >= len(_GROUND_TRUTH_HEADER):
         return
 
     width = len(_GROUND_TRUTH_HEADER)
@@ -983,23 +1043,34 @@ def _context_window_size(context_window: dict) -> float | None:
     return _numeric(context_window.get("size"))
 
 
-def _autocompact_field(context_window: dict) -> float | None:
-    """The first numeric value on ``context_window`` whose key contains
-    "autocompact" (case-insensitive) -- the payload's own key name for
-    this isn't documented (see the module docstring's deviation note)."""
-    for key in sorted(context_window):
-        if "autocompact" not in key.lower():
-            continue
-        value = _numeric(context_window.get(key))
-        if value is not None:
-            return value
-    return None
+def _cache_read_tokens_field(context_window: dict) -> float | None:
+    """``context_window.current_usage.cache_read_input_tokens`` -- cache
+    reads in the model's own live context-window accounting, as ground
+    truth alongside (not instead of) the separate ``prompt_cache``-
+    derived cache columns this module already writes.
+
+    SIG-5: this column used to look for an "autocompact threshold" key
+    on ``context_window`` -- no such field exists on the real payload
+    (re-verified against Claude Code's statusline docs), so it read as
+    ``None`` on every row, forever. Rather than drop the column (and
+    shift every trailing column after it, breaking every positional
+    reader below and in ``context_budget.py``), it's repurposed in
+    place to a field that *does* exist: ``current_usage`` is ``null``
+    before the first API response and again right after ``/compact``
+    (same nullability :func:`_context_window_used_tokens` already
+    handles for its sibling fields), tolerated the same way here.
+    """
+    current_usage = context_window.get("current_usage")
+    if not isinstance(current_usage, dict):
+        return None
+    return _numeric(current_usage.get("cache_read_input_tokens"))
 
 
 def _context_window_row_values(payload: dict) -> tuple[str, float | None, float, float | None, float | None] | None:
-    """``(session_id, used_percentage, used_tokens, size, autocompact)``,
-    or ``None`` when ``context_window`` is missing/not a dict, or its
-    ``used_tokens`` isn't numeric (nothing worth logging otherwise)."""
+    """``(session_id, used_percentage, used_tokens, size,
+    cache_read_tokens)``, or ``None`` when ``context_window`` is
+    missing/not a dict, or its ``used_tokens`` isn't numeric (nothing
+    worth logging otherwise)."""
     context_window = payload.get("context_window")
     if not isinstance(context_window, dict):
         return None
@@ -1010,8 +1081,8 @@ def _context_window_row_values(payload: dict) -> tuple[str, float | None, float,
     session_id = session_id if isinstance(session_id, str) else ""
     used_percentage = _context_window_used_percentage(context_window)
     size = _context_window_size(context_window)
-    autocompact = _autocompact_field(context_window)
-    return (session_id, used_percentage, used_tokens, size, autocompact)
+    cache_read_tokens = _cache_read_tokens_field(context_window)
+    return (session_id, used_percentage, used_tokens, size, cache_read_tokens)
 
 
 # -- cache ground-truth trailing columns (S1-exports) -----------------------
@@ -1080,30 +1151,54 @@ def _last_context_window_key(csv_path: Path) -> tuple | None:
     the S1-exports spec (and review finding 5's cumulative-counts
     column): a change in any of them alone counts as a new row even when
     every context-window column stays the same (see the module
-    docstring)."""
+    docstring).
+
+    SIG-5: this used to read the whole file on every append -- i.e.
+    every statusline refresh, against a file that only ever grows -- just
+    to find one row. It now scans only the final :data:`_TAIL_BYTES`,
+    backwards, the same bounded-tail pattern :func:`_last_assistant_line`
+    already uses for the transcript: a truncated line inside that window
+    (the seek landed mid-row) simply fails the sentinel check like any
+    other non-matching row and is skipped, rather than being read
+    further back. The trade-off is the same one accepted there --  if no
+    context-window row happens to fall within the tail (an unlikely run
+    of cache-only rows long enough to fill it), this returns ``None`` and
+    a row that could otherwise have been deduped gets appended again: a
+    bounded, self-correcting cost for a diagnostic log, not a correctness
+    bug.
+    """
     if not csv_path.exists():
         return None
-    last_key: tuple | None = None
     try:
-        with open(csv_path, "r", encoding="utf-8", newline="") as fh:
-            reader = csv.reader(fh)
-            next(reader, None)  # header
-            for row in reader:
-                if len(row) < 3 or row[2] != _CONTEXT_WINDOW_SENTINEL:
-                    continue
-                last_key = (
-                    row[1] if len(row) > 1 else "",
-                    _parse_csv_number(row[3]) if len(row) > 3 else None,
-                    _parse_csv_number(row[6]) if len(row) > 6 else None,
-                    _parse_csv_number(row[7]) if len(row) > 7 else None,
-                    _parse_csv_number(row[8]) if len(row) > 8 else None,
-                    _parse_csv_number(row[9]) if len(row) > 9 else None,
-                    _parse_csv_number(row[12]) if len(row) > 12 else None,
-                    row[15] if len(row) > 15 else "",
-                )
+        size = csv_path.stat().st_size
+        with open(csv_path, "rb") as fh:
+            fh.seek(max(0, size - _TAIL_BYTES))
+            tail = fh.read()
     except OSError:
         return None
-    return last_key
+
+    text = tail.decode("utf-8", errors="replace")
+    for raw_line in reversed(text.split("\n")):
+        line = raw_line.strip("\r")
+        if not line.strip():
+            continue
+        try:
+            row = next(csv.reader([line]))
+        except csv.Error:
+            continue
+        if len(row) < 3 or row[2] != _CONTEXT_WINDOW_SENTINEL:
+            continue
+        return (
+            row[1] if len(row) > 1 else "",
+            _parse_csv_number(row[3]) if len(row) > 3 else None,
+            _parse_csv_number(row[6]) if len(row) > 6 else None,
+            _parse_csv_number(row[7]) if len(row) > 7 else None,
+            _parse_csv_number(row[8]) if len(row) > 8 else None,
+            _parse_csv_number(row[9]) if len(row) > 9 else None,
+            _parse_csv_number(row[12]) if len(row) > 12 else None,
+            row[15] if len(row) > 15 else "",
+        )
+    return None
 
 
 def _append_context_window_row(csv_path: Path, payload: dict, now: datetime) -> None:
@@ -1118,9 +1213,9 @@ def _append_context_window_row(csv_path: Path, payload: dict, now: datetime) -> 
         return
 
     if context_values is not None:
-        _, used_percentage, used_tokens, size, autocompact = context_values
+        _, used_percentage, used_tokens, size, cache_read_tokens = context_values
     else:
-        used_percentage = used_tokens = size = autocompact = None
+        used_percentage = used_tokens = size = cache_read_tokens = None
     if cache_values is not None:
         (
             cache_warm,
@@ -1143,7 +1238,7 @@ def _append_context_window_row(csv_path: Path, payload: dict, now: datetime) -> 
         used_percentage,
         used_tokens,
         size,
-        autocompact,
+        cache_read_tokens,
         cache_warm,
         cache_misses,
         cache_miss_causes_str or "",
@@ -1175,7 +1270,7 @@ def _append_context_window_row(csv_path: Path, payload: dict, now: datetime) -> 
                 "statusline",
                 used_tokens if used_tokens is not None else "",
                 size if size is not None else "",
-                autocompact if autocompact is not None else "",
+                cache_read_tokens if cache_read_tokens is not None else "",
                 "" if cache_warm is None else int(cache_warm),
                 cache_ttl_s if cache_ttl_s is not None else "",
                 cache_expires_in_s if cache_expires_in_s is not None else "",
@@ -1193,7 +1288,7 @@ def load_usage_log_ground_truth(csv_path: str | Path) -> list[dict]:
     columns and the S1-exports ``cache_*`` columns -- as one dict per
     row: ``{"logged_at", "session_id", "context_window_used_percentage",
     "context_window_used_tokens", "context_window_size",
-    "context_window_autocompact_threshold", "cache_warm", "cache_ttl_s",
+    "context_window_cache_read_tokens", "cache_warm", "cache_ttl_s",
     "cache_expires_in_s", "cache_misses", "cache_last_miss_cause",
     "cache_recache_tokens_if_cold", "cache_miss_causes"}``. ``logged_at``
     is the row's own first column (the shared ``log_usage.CSV_FIELDS``
@@ -1240,7 +1335,7 @@ def load_usage_log_ground_truth(csv_path: str | Path) -> list[dict]:
                     "context_window_used_percentage": _at(3),
                     "context_window_used_tokens": _at(6),
                     "context_window_size": _at(7),
-                    "context_window_autocompact_threshold": _at(8),
+                    "context_window_cache_read_tokens": _at(8),
                     "cache_warm": None if cache_warm_raw is None else bool(cache_warm_raw),
                     "cache_ttl_s": _at(10),
                     "cache_expires_in_s": _at(11),
@@ -1612,12 +1707,44 @@ _CHARS_PER_TOKEN = 4
 _READ_TOOLS = frozenset({"Read", "Grep", "Glob"})
 
 
-def _capture_lines(config_dir: Path | None) -> tuple[bool, bool]:
-    """``(feedback note on, coaching line on)`` from ``config.toml``'s
-    ``[capture]``; both off when it's missing or malformed."""
+def _parse_capture_until(value: str) -> datetime | None:
+    """Same small parse as capture-hook.py's own ``_parse_time``: this hot
+    path can't import that hyphenated filename as a module, so it's
+    duplicated here rather than shared."""
+    try:
+        parsed = datetime.fromisoformat(value)
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _capture_table(config_dir: Path | None, now: datetime) -> dict | None:
+    """The ``[capture]`` table from ``config.toml``, or ``None`` when
+    it's missing/malformed, or ``now`` is past its ``until``. Shared by
+    :func:`_capture_lines` (feedback/coaching) and SIG-4's
+    :func:`_write_ground_truth_signal` (the free-tier ``level`` gate)."""
     data = _read_config_toml(config_dir)
     capture = data.get("capture") if data is not None else None
     if not isinstance(capture, dict):
+        return None
+    until = capture.get("until") or ""
+    if isinstance(until, str) and until:
+        stop = _parse_capture_until(until)
+        if stop is None or now >= stop:
+            return None
+    return capture
+
+
+def _capture_lines(config_dir: Path | None, now: datetime) -> tuple[bool, bool]:
+    """``(feedback note on, coaching line on)`` from ``config.toml``'s
+    ``[capture]``; both off when it's missing or malformed, or ``now`` is
+    past its ``until`` (UX-5: this used to be the one capture gate that
+    didn't check ``until`` -- capture-hook.py's own ``_capture_for`` has
+    always checked it for the note/tag hooks)."""
+    capture = _capture_table(config_dir, now)
+    if capture is None:
         return False, False
     feedback = capture.get("feedback")
     coaching = capture.get("coaching")
@@ -1712,32 +1839,46 @@ def _k(tokens: float) -> str:
     return f"{round(tokens / 1000.0)}k"
 
 
-def coaching_hint(payload: dict, tail: list[dict], now: datetime) -> tuple[float, str] | None:
-    """The live hint most worth showing, as ``(tokens at stake, text)``,
-    or ``None`` when none applies. ``tail`` is :func:`_tail_records`.
+#: UX-5: every generated hint (not the feedback note, which is shown
+#: word for word -- see the module docstring) is capped here, well under
+#: :data:`_MAX_LINE_LEN`, so the templates below stay terse by
+#: construction and this is only the backstop for an unusually large
+#: number.
+_MAX_HINT_LEN = 60
 
-    - **cache about to go cold**: the last :data:`_COACH_COLD_S` seconds
-      of a warm cache; the next message would write the whole context
-      again at the cache-write price instead of reading it.
-    - **large context at the end of a turn**: ``/clear`` before starting
-      something new, or every message re-reads it.
-    - **large last tool output** in the current message: it stays in
-      context for every later message.
-    - **many reads and searches** in the current message: an Explore
-      agent reads in its own context and sends back a summary.
+
+def coaching_hint(payload: dict, tail: list[dict], now: datetime) -> tuple[float, str, str] | None:
+    """The live hint most worth showing, as ``(tokens at stake, text,
+    kind)``, or ``None`` when none applies. ``tail`` is
+    :func:`_tail_records`. ``kind`` is a stable id (UX-5's per-kind
+    cooldown/hysteresis state keys on it; see :func:`_gate_hint`), not
+    shown itself.
+
+    - **cache about to go cold** (``"cache_cold"``): the last
+      :data:`_COACH_COLD_S` seconds of a warm cache; the next message
+      would write the whole context again at the cache-write price
+      instead of reading it.
+    - **large context at the end of a turn** (``"clear_context"``):
+      ``/clear`` before starting something new, or every message
+      re-reads it.
+    - **large last tool output** (``"quiet_output"``) in the current
+      message: it stays in context for every later message.
+    - **many reads and searches** (``"explore_reads"``) in the current
+      message: an Explore agent reads in its own context and sends back
+      a summary.
 
     Stakes are rough token counts, only for picking one hint: the context
     for the cache, a quarter of it for ``/clear`` (it pays only if you
     change task), the output's size, and the reads' result sizes.
     """
-    hints: list[tuple[float, str]] = []
+    hints: list[tuple[float, str, str]] = []
     context_window = payload.get("context_window")
     ctx = _context_window_used_tokens(context_window) if isinstance(context_window, dict) else None
     last_assistant = next((d for d in reversed(tail) if d.get("type") == "assistant"), None)
 
     remaining = _cache_remaining_s(payload, last_assistant, now)
     if ctx is not None and ctx >= _COACH_COLD_MIN_TOKENS and remaining is not None and 0 < remaining <= _COACH_COLD_S:
-        hints.append((ctx, f"cache goes cold in {int(remaining)}s: reply now, or the next message writes all {_k(ctx)} again"))
+        hints.append((ctx, f"cache cold in {int(remaining)}s: reply now or re-pay {_k(ctx)}", "cache_cold"))
 
     last = tail[-1] if tail else None
     message = last.get("message") if last is not None else None
@@ -1746,7 +1887,7 @@ def coaching_hint(payload: dict, tail: list[dict], now: datetime) -> tuple[float
         and isinstance(message, dict) and message.get("stop_reason") == "end_turn"
     )
     if ctx is not None and ctx >= _COACH_CTX_TOKENS and turn_over:
-        hints.append((ctx / 4, f"ctx {_k(ctx)}: starting something new? /clear first, or every message re-reads it"))
+        hints.append((ctx / 4, f"ctx {_k(ctx)}: new task? /clear first or it re-reads", "clear_context"))
 
     start = max((i for i, d in enumerate(tail) if _is_human_prompt(d)), default=-1)
     current = tail[start + 1 :]
@@ -1763,27 +1904,239 @@ def coaching_hint(payload: dict, tail: list[dict], now: datetime) -> tuple[float
     if results:
         output = _result_chars(results[-1]) / _CHARS_PER_TOKEN
         if output >= _COACH_OUTPUT_TOKENS:
-            hints.append((output, f"last tool output ~{_k(output)} tokens stays in context: try a quieter command, | tail or an offset read"))
+            hints.append((output, f"last output ~{_k(output)}: try quieter cmd or offset read", "quiet_output"))
     if len(reads) >= _COACH_READS:
         read_tokens = sum(_result_chars(b) for b in results if str(b.get("tool_use_id")) in reads) / _CHARS_PER_TOKEN
-        hints.append((read_tokens, f"{len(reads)} reads and searches this message: an Explore agent keeps them out of this context"))
+        hints.append((read_tokens, f"{len(reads)} reads this msg: try an Explore agent instead", "explore_reads"))
 
-    return max(hints, key=lambda hint: hint[0]) if hints else None
+    if not hints:
+        return None
+    stake, text, kind = max(hints, key=lambda hint: hint[0])
+    return stake, text[:_MAX_HINT_LEN], kind
+
+
+#: UX-5: a hint kind is suppressed for this long after it last showed,
+#: so the same coaching line doesn't nag on every single prompt refresh.
+_HINT_COOLDOWN_S = 300
+#: ...unless it has gotten at least this much worse since then --
+#: hysteresis, so a genuinely escalating situation (context climbing
+#: from 100k to 180k, say) can still interrupt the cooldown, while one
+#: merely flickering at the same level cannot.
+_HINT_REARM_FACTOR = 1.5
+#: Sentinel ``kind`` for the feedback note in the state file below --
+#: never returned by :func:`coaching_hint`, so it can't collide with a
+#: real hint kind.
+_FEEDBACK_KIND = "__feedback__"
+_STATE_FILENAME = "statusline-state.json"
+#: A session's row is dropped once untouched this long, so the state
+#: file never grows unbounded across every session token-lens has ever
+#: rendered a status line for.
+_STATE_MAX_AGE_S = 24 * 3600
+
+
+def _read_state(config_dir: Path) -> dict:
+    """Best-effort read of the per-session hint/feedback state; ``{}`` on
+    any I/O or parse problem -- this is a hot path, a bad state file must
+    degrade to "show it" rather than raise or blank the status line."""
+    try:
+        with open(Path(config_dir) / _STATE_FILENAME, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _write_state(config_dir: Path, data: dict) -> None:
+    """Best-effort atomic write (temp file + ``os.replace``, the same
+    pattern :func:`_ensure_ground_truth_header` uses) -- never raises."""
+    try:
+        tmp = Path(config_dir) / f"{_STATE_FILENAME}.tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(data, fh)
+        os.replace(tmp, Path(config_dir) / _STATE_FILENAME)
+    except OSError:
+        pass
+
+
+def _gate_hint(state: dict, session_id: str, kind: str, stake: float, now_ts: float) -> bool:
+    """Whether a hint of ``kind`` may show now: never shown this session,
+    its cooldown has elapsed, or ``stake`` has grown past
+    :data:`_HINT_REARM_FACTOR` times what it was last time it showed."""
+    sessions = state.get("sessions")
+    session = sessions.get(session_id) if isinstance(sessions, dict) else None
+    prior = session.get("hints", {}).get(kind) if isinstance(session, dict) else None
+    if not isinstance(prior, dict):
+        return True
+    last_ts = _numeric(prior.get("ts"))
+    if last_ts is not None and now_ts - last_ts >= _HINT_COOLDOWN_S:
+        return True
+    last_stake = _numeric(prior.get("stake"))
+    return last_stake is not None and last_stake > 0 and stake >= last_stake * _HINT_REARM_FACTOR
+
+
+def _record_hint(state: dict, session_id: str, kind: str, stake: float | None, now_ts: float) -> None:
+    """Mutates ``state`` in place: stamps ``kind`` as shown for
+    ``session_id`` now, and prunes any session untouched for
+    :data:`_STATE_MAX_AGE_S`."""
+    sessions = state.get("sessions")
+    if not isinstance(sessions, dict):
+        sessions = state["sessions"] = {}
+    for stale in [sid for sid, row in sessions.items() if not isinstance(row, dict) or
+                  now_ts - (_numeric(row.get("touched_at")) or 0) > _STATE_MAX_AGE_S]:
+        del sessions[stale]
+    session = sessions.setdefault(session_id, {})
+    session["touched_at"] = now_ts
+    if kind == _FEEDBACK_KIND:
+        session["feedback_shown"] = True
+    else:
+        session.setdefault("hints", {})[kind] = {"ts": now_ts, "stake": stake}
+
+
+#: SIG-4: the statusline's own cost/recache ground truth is throttled to
+#: at most one write every this many seconds per session -- this hot
+#: path runs on every prompt refresh, far more often than a session's
+#: running cost or recache figure meaningfully changes.
+_SIG4_THROTTLE_S = 60
+
+
+def _read_ground_truth_salt(config_dir: Path) -> bytes | None:
+    """Token Lens's salt, read-only. SIG-4 never creates it -- like every
+    consumer outside ``parse.load_or_create_salt``'s own callers and
+    capture-hook.py's writer, this hot path must never be the thing that
+    brings the salt into existence (see ``report.py``'s
+    ``_capture_signals``, the precedent this mirrors). A statusline
+    invocation that runs before anything else has created it simply
+    logs nothing until it does."""
+    try:
+        salt = (Path(config_dir) / "salt").read_bytes()
+    except OSError:
+        return None
+    return salt if len(salt) == 32 else None
+
+
+def _ground_truth_values(payload: dict) -> tuple[float | None, float | None]:
+    """``(cost usd, recache tokens)`` from the payload's own
+    ``cost.total_cost_usd`` / ``prompt_cache.recache_tokens_if_cold`` --
+    the two fields the module docstring already documents (the first
+    "accepted, not currently rendered"; the second already read for the
+    cache segment). Re-verified against Claude Code's statusline docs.
+    Clamped to ``signals._MAX_SIGNAL_NUMBER`` so a value this module
+    would happily write is never one ``signals.load`` then silently
+    drops as invalid."""
+    from .signals import _MAX_SIGNAL_NUMBER
+
+    cost_obj = payload.get("cost")
+    cost = _numeric(cost_obj.get("total_cost_usd")) if isinstance(cost_obj, dict) else None
+    if cost is not None:
+        cost = min(max(cost, 0.0), _MAX_SIGNAL_NUMBER)
+    prompt_cache = payload.get("prompt_cache")
+    recache = _numeric(prompt_cache.get("recache_tokens_if_cold")) if isinstance(prompt_cache, dict) else None
+    if recache is not None:
+        recache = min(max(recache, 0.0), _MAX_SIGNAL_NUMBER)
+    return cost, recache
+
+
+def _write_ground_truth_signal(config_dir: Path | None, payload: dict, now: datetime) -> None:
+    """SIG-4: append this session's cost/recache ground truth as one or
+    two numbers-only lines to this month's ``signals/YYYY-MM.jsonl``
+    (the same files SIG-2/3's hook lines go to), gated the same way as
+    those (``[capture]`` on -- any level other than ``off``, not past
+    ``until``), throttled to :data:`_SIG4_THROTTLE_S` per session via
+    the same state file UX-5's hint cooldown uses (a ``sig4_ts`` field
+    alongside its ``hints``/``feedback_shown``).
+
+    Does nothing at all -- silently, this is a hot path -- without a
+    ``config_dir``, a string ``session_id``, capture switched on, a
+    salt already on disk (never created here), or any numeric field to
+    report.
+    """
+    session_id = payload.get("session_id")
+    if config_dir is None or not isinstance(session_id, str) or not session_id:
+        return
+    capture = _capture_table(config_dir, now)
+    if capture is None or capture.get("level", "off") == "off":
+        return
+    cost, recache = _ground_truth_values(payload)
+    if cost is None and recache is None:
+        return
+    now_ts = (now if now.tzinfo is not None else now.replace(tzinfo=timezone.utc)).timestamp()
+    state = _read_state(config_dir)
+    sessions = state.get("sessions")
+    session = sessions.get(session_id) if isinstance(sessions, dict) else None
+    last_ts = _numeric(session.get("sig4_ts")) if isinstance(session, dict) else None
+    if last_ts is not None and now_ts - last_ts < _SIG4_THROTTLE_S:
+        return
+    salt = _read_ground_truth_salt(config_dir)
+    if salt is None:
+        return
+    from . import signals as signals_mod
+
+    sid = signals_mod.session_hash(salt, session_id)
+    stamp = now if now.tzinfo is not None else now.replace(tzinfo=timezone.utc)
+    ts = stamp.strftime("%Y-%m-%dT%H:%M:%SZ")
+    records = []
+    if cost is not None:
+        records.append({"ts": ts, "sid": sid, "e": "cost", "usd": round(cost, 6)})
+    if recache is not None:
+        records.append({"ts": ts, "sid": sid, "e": "recache", "tokens": round(recache)})
+    try:
+        folder = signals_mod.signals_dir(config_dir)
+        folder.mkdir(parents=True, exist_ok=True)
+        with open(folder / f"{ts[:7]}.jsonl", "a", encoding="utf-8", newline="\n") as handle:
+            for record in records:
+                handle.write(json.dumps(record, separators=(",", ":")) + "\n")
+    except OSError:
+        return
+    if not isinstance(sessions, dict):
+        sessions = state["sessions"] = {}
+    row = sessions.setdefault(session_id, {})
+    row["touched_at"] = now_ts
+    row["sig4_ts"] = now_ts
+    _write_state(config_dir, state)
 
 
 def second_line(payload: dict, config_dir: Path | None, now: datetime) -> str | None:
     """The optional second status line (see the module docstring): a
-    coaching hint when one fires, else the feedback note, else ``None``."""
-    feedback_on, coaching_on = _capture_lines(config_dir)
-    text = None
+    coaching hint when one fires and isn't on cooldown, else the
+    feedback note (once per session), else ``None``.
+
+    UX-5: which hint kinds have shown recently, and whether the note has
+    shown at all, is tracked per session in a small state file under
+    ``config_dir`` (:func:`_gate_hint`/:func:`_record_hint`) -- without a
+    ``config_dir`` or a ``session_id`` there's nowhere to key that state,
+    so gating is skipped and a firing hint or note always shows, same as
+    before this state existed.
+    """
+    feedback_on, coaching_on = _capture_lines(config_dir, now)
+    now_ts = (now if now.tzinfo is not None else now.replace(tzinfo=timezone.utc)).timestamp()
+    session_id = payload.get("session_id")
+    gated = config_dir is not None and isinstance(session_id, str) and session_id
+    state = _read_state(config_dir) if gated else {}
+    text: str | None = None
+    shown_kind: str | None = None
+    shown_stake: float | None = None
     if coaching_on:
         transcript_path = payload.get("transcript_path")
         tail = _tail_records(transcript_path) if isinstance(transcript_path, str) and transcript_path else []
         hint = coaching_hint(payload, tail, now)
         if hint is not None:
-            text = hint[1]
+            stake, hint_text, kind = hint
+            if not gated or _gate_hint(state, session_id, kind, stake, now_ts):
+                text, shown_kind, shown_stake = hint_text, kind, stake
     if text is None and feedback_on:
-        text = FEEDBACK_NOTE
+        # ROB-P10: lazy -- this module runs on every prompt refresh
+        # (the statusline's hot path), and capture_catalogue is only
+        # needed for its one FEEDBACK_NOTE constant when feedback is on.
+        from .capture_catalogue import FEEDBACK_NOTE
+
+        sessions = state.get("sessions") if gated else None
+        session = sessions.get(session_id) if isinstance(sessions, dict) else None
+        already_shown = isinstance(session, dict) and session.get("feedback_shown") is True
+        if not gated or not already_shown:
+            text, shown_kind = FEEDBACK_NOTE, _FEEDBACK_KIND
+    if gated and shown_kind is not None:
+        _record_hint(state, session_id, shown_kind, shown_stake, now_ts)
+        _write_state(config_dir, state)
     if text is None:
         return None
     return text.replace("\n", " ").replace("\r", " ")[:_MAX_LINE_LEN]
@@ -1868,6 +2221,11 @@ def main(argv: list[str] | None = None) -> int:
         extra = second_line(payload, config_dir, now)
         if extra:
             _safe_print(extra)
+    except Exception:
+        pass
+
+    try:
+        _write_ground_truth_signal(config_dir, payload, now)
     except Exception:
         pass
 

@@ -5,36 +5,73 @@ computes -- no new simulation:
 - a model for the main session or an agent: ``model_swap_by_agent_type``
   (the same tokens repriced);
 - ``autoCompactWindow``: ``compaction_sim_by_window`` (sessions replayed
-  with that window);
+  with that window; EST-P2 -- not estimated past
+  ``CompactionSimThresholds().max_compactions_per_session``, the same
+  floor the compaction-window rule and the profile goals hold every
+  candidate window to);
 - a cache lifetime (``promptCacheTtl``, ``subagentPromptCacheTtl``, an
   agent's ``experimental.cacheTtl``): ``ttl_by_agent_type`` (every cache
   write replayed at 5 minutes or 1 hour);
-- an agent's ``omitClaudeMd``: ``agent_startup_breakdown`` (the CLAUDE.md
-  tokens each spawn writes);
+- an agent's ``omitClaudeMd``: the greater of ``agent_startup_breakdown``
+  (the CLAUDE.md tokens each spawn writes -- the floor) and EST-P10's
+  own carry cost from ``ReportModel.context_files`` (the same cache
+  reads until it's re-sent that carrying any other text costs). Managed
+  policy CLAUDE.md is excluded from both (PROF-11/F13 -- it still loads
+  regardless of ``omitClaudeMd``);
 - ``skillOverrides`` and ``enabledPlugins``: each skill's listing cost
   from ``ReportModel.context_files``;
 - effort: no estimate, only how much of that agent's output was
   thinking (``topology_effort_by_agent_type``), since how much less a
   lower effort thinks isn't measured.
+- ``fastMode`` turned off: ``pricing_fast_applied`` (PROF-08 -- every
+  reply this window actually billed at a fast-mode rate, repriced at
+  its model's standard rate). Turning it *on* isn't estimated: there is
+  no per-reply "would this one have been sped up" figure for replies
+  that weren't already fast.
 
-Each row says how it was worked out (``fidelity``): "simulated",
-"measured per spawn", "estimated" or "not estimated". A negative
-``saving_usd`` means the change costs more.
+Each row says how it was worked out (``fidelity``): "ceiling",
+"simulated", "measured per spawn", "estimated" or "not estimated". A
+negative ``saving_usd`` means the change costs more.
+
+EST-P6: given a ``calibration`` lookup (``backtest.calibration_multipliers``,
+built from judged predictions -- ``estimate``'s own caller passes it in,
+since this module stays "look it up in tables already computed", never
+touching the store itself), a row whose ``(agent, key)`` has learned a
+multiplier is scaled by it and its fidelity becomes "calibrated": this
+kind of change's estimate, adjusted by how it actually turned out for
+you before, not just repriced or replayed.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .compaction_sim import CompactionSimThresholds
 from .units import Units
 
 TOP = "top-level"
 
 FIDELITY_TEXT = {
+    # E3/EST-P1: a model reprice is a *ceiling* on the saving, not a
+    # simulation -- it assumes the same tokens at the new model's rate,
+    # but a different model may need more (or fewer) replies for the
+    # same work, which this doesn't capture. Kept distinct from
+    # "simulated" (autoCompactWindow, cache TTL) below, which replays
+    # real sessions rather than just repricing their tokens.
+    "ceiling": "Ceiling: the same tokens repriced at the new model's rate. The real "
+    "saving could be smaller (or the change could cost more) if that model needs "
+    "more replies for the same work.",
     "simulated": "Simulated: your own sessions replayed with the new value.",
     "measured": "Measured per spawn, then multiplied by the spawns in this window.",
     "estimated": "Estimated from the size of what stops being sent.",
     "none": "Not estimated.",
+    # EST-P6: applied only once at least 3 of your own past predictions
+    # for this exact kind of change have been judged against what
+    # actually happened (backtest.calibration_multipliers) -- before
+    # that, an estimate keeps its own ceiling/simulated/measured/
+    # estimated fidelity above unchanged.
+    "calibrated": "Adjusted by how this kind of change has actually turned out for you before (at least 3 "
+    "judged predictions), not just its own ceiling, simulation or estimate.",
 }
 
 
@@ -102,7 +139,7 @@ def _model(tables: _Tables, agent: str, value, key: str, label: str | None) -> d
         label,
         value,
         observed - new,
-        "simulated",
+        "ceiling",
         f"Worked out by repricing {who}'s replies in this window at {column[len('cost_'):]}. "
         "A different model may need more or fewer replies for the same work, which this doesn't capture.",
     )
@@ -139,6 +176,18 @@ def _compact(tables: _Tables, value, current) -> dict:
             "autoCompactWindow", None, value, None, "none",
             f"Only these windows are simulated: {options}." if options else "No sessions to replay.",
         )
+    # EST-P2: the same floor the compaction-window rule and the profile
+    # goals' own _compaction already hold every candidate to -- a window
+    # that summarises more than this often per session loses too much
+    # detail to trust, however cheap it simulates.
+    limit = CompactionSimThresholds().max_compactions_per_session
+    compactions = _num(new.get("compactions_per_session"))
+    if compactions is not None and compactions > limit:
+        return _row(
+            "autoCompactWindow", None, value, None, "none",
+            f"Not estimated: {int(value):,} tokens would summarise about {compactions:.1f} times a session, "
+            f"more than the {limit:g} this project trusts a window to lose that much detail that often.",
+        )
     saving = (_num(base.get("cost")) or 0.0) - (_num(new.get("cost")) or 0.0)
     return _row(
         "autoCompactWindow", None, value, saving, "simulated",
@@ -148,18 +197,50 @@ def _compact(tables: _Tables, value, current) -> dict:
     )
 
 
-def _omit_claude_md(tables: _Tables, agent: str, label: str) -> dict:
-    row = tables.row("agent_startup", "agent_startup_breakdown", agent)
-    tokens, spawns, price = (
-        (_num(row.get("claude_md")), _num(row.get("spawns")), _num(row.get("write_price"))) if row else (None, None, None)
+def _claude_md_carry_usd(context_files: dict, agent: str) -> float:
+    """EST-P10: what carrying CLAUDE.md actually costs -- not just the
+    one cache write each spawn, but a cache read on every later turn
+    until it's re-sent (``context_files._Carry``, the same accounting
+    ``/api/context-files`` already reports). Summed over every file this
+    ``agent`` was reached by except Managed policy CLAUDE.md (PROF-11/
+    F13: still loads regardless of ``omitClaudeMd``, so never part of
+    what this saves)."""
+    return sum(
+        _num((f.get("cost_by_reach") or {}).get(agent)) or 0.0
+        for f in (context_files or {}).get("files") or ()
+        if isinstance(f, dict) and f.get("type") != "Managed"
     )
+
+
+def _omit_claude_md(tables: _Tables, context_files: dict, agent: str, label: str) -> dict:
+    row = tables.row("agent_startup", "agent_startup_breakdown", agent)
+    if not row:
+        return _row("omitClaudeMd", label, True, None, "none", f"No CLAUDE.md measured at {agent}'s start.")
+    # PROF-11/F13: Managed policy CLAUDE.md still loads regardless of
+    # omitClaudeMd, so it's never part of what this saves.
+    managed = _num(row.get("claude_md_managed")) or 0.0
+    tokens = max(0.0, (_num(row.get("claude_md")) or 0.0) - managed)
+    spawns, price = _num(row.get("spawns")), _num(row.get("write_price"))
     if not tokens or not spawns or not price:
         return _row("omitClaudeMd", label, True, None, "none", f"No CLAUDE.md measured at {agent}'s start.")
-    return _row(
-        "omitClaudeMd", label, True, tokens * spawns * price / 1_000_000, "measured",
+    floor = tokens * spawns * price / 1_000_000
+    note = (
         f"About {round(tokens):,} CLAUDE.md tokens written at each of {int(spawns)} spawns. The agent then "
-        "works without your project's rules.",
+        "works without your project's rules."
     )
+    if managed:
+        note += f" Managed policy CLAUDE.md ({round(managed):,} tokens) still loads either way."
+    # EST-P10: once written, CLAUDE.md is also carried -- read back from
+    # cache on every later turn of that spawn until it's re-sent -- which
+    # this window's own context-files accounting already prices. Never
+    # below the write-only floor above: the two are measured different
+    # ways (startup-window events vs. per-file inject events), so a
+    # partial or missing carry reading falls back to it rather than
+    # understating the saving.
+    carried = _claude_md_carry_usd(context_files, agent)
+    if carried > floor:
+        note += " Carrying it across the rest of each spawn's turns, until it's re-sent, costs still more."
+    return _row("omitClaudeMd", label, True, max(floor, carried), "measured", note)
 
 
 def _skills(context_files: dict, overrides: dict) -> dict:
@@ -201,6 +282,27 @@ def _plugins(context_files: dict, plugins: dict) -> dict:
     )
 
 
+def _fast_mode(tables: _Tables) -> dict:
+    """PROF-08: turning ``fastMode`` off, repriced from
+    ``pricing_fast_applied`` -- every reply this window actually billed
+    at a fast-mode rate (a documented multiplier over standard), against
+    what the same replies would have cost at their model's standard rate
+    instead. Only the "off" direction is simulated (see the module
+    docstring): there's no measured "would this reply have been sped up"
+    figure for replies that weren't already fast, so turning it *on* is
+    never dispatched here."""
+    rows = tables.rows("usage", "pricing_fast_applied")
+    if not rows:
+        return _row("fastMode", None, False, None, "none", "No fast-priced replies in this window.")
+    cost = sum(_num(r.get("cost")) or 0.0 for r in rows)
+    standard = sum(_num(r.get("standard_cost")) or 0.0 for r in rows)
+    return _row(
+        "fastMode", None, False, cost - standard, "simulated",
+        "Every reply this window actually billed at a fast-mode rate, repriced at its model's standard rate. "
+        "Fast mode trades a price premium for a faster reply, so this prices the trade, not the time it costs.",
+    )
+
+
 def _effort(tables: _Tables, agent: str | None, value, key: str) -> dict:
     row = tables.row("agents", "topology_effort_by_agent_type", agent or TOP)
     share = _num(row.get("thinking_share")) if row else None
@@ -221,10 +323,20 @@ def estimate(
     *,
     period: str = "",
     current: dict | None = None,
+    calibration: dict[tuple[str | None, str], float] | None = None,
 ) -> dict:
     """One row per change in ``settings`` and ``agents`` (``{agent:
     {key: value}}``), plus a total of the rows that could be estimated.
-    ``current`` is the settings in effect now, where known."""
+    ``current`` is the settings in effect now, where known. ``calibration``
+    (EST-P6, see the module docstring) is a ``(agent, key) -> multiplier``
+    lookup; a row whose pair is in it has its ``saving_usd`` scaled by
+    that multiplier and its fidelity set to "calibrated" -- the value
+    and fidelity it would otherwise have had move to
+    ``uncalibrated_usd``/``uncalibrated_fidelity`` (``None`` on every
+    other row), so a caller logging a prediction to check later
+    (``route_whatif``'s ``"log": true``) can still log the raw estimate
+    rather than one already adjusted by a past prediction's own outcome
+    -- calibrating a calibrated number would compound, not correct."""
     tables = _Tables(model)
     current = current or {}
     context_files = getattr(model, "context_files", None) or {}
@@ -245,6 +357,8 @@ def estimate(
             rows.append(_plugins(context_files, value))
         elif key == "effortLevel":
             rows.append(_effort(tables, None, value, key))
+        elif key == "fastMode" and value is False:
+            rows.append(_fast_mode(tables))
         else:
             rows.append(_row(key, None, value, None, "none", "This change isn't simulated."))
     for agent, levers in (agents or {}).items():
@@ -254,11 +368,24 @@ def estimate(
             elif key in ("experimental.cacheTtl", "cacheTtl"):
                 rows.append(_ttl(tables, [agent], value, "experimental.cacheTtl", agent))
             elif key == "omitClaudeMd" and value is True:
-                rows.append(_omit_claude_md(tables, agent, agent))
+                rows.append(_omit_claude_md(tables, context_files, agent, agent))
             elif key == "effort":
                 rows.append(_effort(tables, agent, value, key))
             else:
                 rows.append(_row(key, agent, value, None, "none", "This change isn't simulated."))
+    for row in rows:
+        row["uncalibrated_usd"] = None
+        row["uncalibrated_fidelity"] = None
+    if calibration:
+        for row in rows:
+            if row["saving_usd"] is None:
+                continue
+            multiplier = calibration.get((row["agent"], row["key"]))
+            if multiplier is not None:
+                row["uncalibrated_usd"] = row["saving_usd"]
+                row["uncalibrated_fidelity"] = row["fidelity"]
+                row["saving_usd"] = round(row["saving_usd"] * multiplier, 6)
+                row["fidelity"] = "calibrated"
     total = sum(row["saving_usd"] for row in rows if row["saving_usd"] is not None)
     for row in rows:
         row["effect_text"] = _effect_text(row["saving_usd"], units, period)

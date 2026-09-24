@@ -33,6 +33,19 @@ Deviations from the plan/brief, reported rather than made silently (see
   ``"managed"`` when the lever's underlying settings key appears in
   ``snapshots.managed_keys(snapshot)``, in which case ``action`` also
   states "managed by policy, raise with your administrator".
+- **COV-01 update: ``scope`` gained a fourth value, ``"project-local"``**
+  (``.claude/settings.local.json``, per-machine, never checked in --
+  ``docs/config-layers.md``'s layer model), matching the vocabulary
+  ``fixes.PROFILE_SCOPE_WHERE``/``apply.py``'s ``--scope`` flag already
+  used. For a plain settings-key lever, ``_lever_scope`` now names the
+  layer that actually supplies its effective value today
+  (``snapshots.effective_provenance``), not always ``"user"`` -- a
+  recommendation must never tell you to edit a file a higher layer
+  already overrides (finding D5). A per-agent frontmatter lever is
+  unaffected: ``docs/config-layers.md``'s ``effective_agents`` section
+  confirms agent files have no project-local/project-shared split
+  (``source`` is only ever ``"user"``/``"project"``), so that branch
+  keeps its plain ``"repo"``.
 - A5's ``ttl-switch`` clause "suppressed for subagents in subscription
   mode" is already implemented inside ``ttl.build_section`` itself (the
   ``recommendation`` cell reads back as ``"no material difference
@@ -124,7 +137,7 @@ from . import carry, compaction_sim, elasticity, model_swap, waste
 from .config import Config
 from .context_budget import _READ_ONLY_TOOLS
 from .model import Recommendation, ReportModel, Section, SettingChange, Table
-from .snapshots import Snapshot, managed_keys
+from .snapshots import Snapshot, effective_provenance, managed_keys
 from .units import NO_LIMIT_SHARE_HINT, Units
 
 #: Purposes ``classify.classify_purpose`` can return that count as
@@ -457,15 +470,45 @@ def _lever_managed_keys(lever: str) -> tuple[str, ...]:
     return (lever,)
 
 
+#: ``snapshots.effective_provenance``'s layer names
+#: (``snapshots.SETTINGS_LAYER_NAMES``), mapped to the ``"user"``/
+#: ``"project-local"``/``"repo"``/``"managed"`` vocabulary this module's
+#: ``scope`` field and ``fixes.py``'s ``_SETTINGS_WHERE``/``command_for``
+#: use (COV-01). A layer name absent here (there is none today) would
+#: fall back to ``"user"`` at each call site below, same as an unset key.
+_PROVENANCE_SCOPE = {
+    "managed": "managed",
+    "project_local": "project-local",
+    "project_shared": "repo",
+    "user": "user",
+}
+
+
 def _lever_scope(lever: str | None, snapshot: Snapshot | None) -> tuple[str | None, str]:
     """Returns ``(lever, scope)`` -- ``lever`` unchanged (bare, never
     prefixed). ``scope`` is ``"repo"`` when ``lever`` is a per-agent
-    frontmatter path, else ``"user"``; upgraded to ``"managed"`` when any
-    of ``lever``'s underlying settings keys appears in
-    ``snapshots.managed_keys(snapshot)``."""
+    frontmatter path (agent files have no project-local split -- see the
+    module docstring's COV-01 note). For a plain settings key, COV-01
+    reads ``snapshots.effective_provenance`` to name the layer that
+    actually supplies its value today (``"user"``/``"project-local"``/
+    ``"repo"``/``"managed"``), falling back to ``"user"`` when the key
+    has no effective value in any layer yet (nothing overrides it, so
+    "user" is where a new value would land by default). Either way,
+    upgraded to ``"managed"`` when any of ``lever``'s underlying settings
+    keys appears in ``snapshots.managed_keys(snapshot)`` -- a locked-down
+    key is "managed" scope even before a session's own config sets it,
+    since a recommendation could never be applied locally regardless of
+    what ``effective_provenance`` shows today."""
     if lever is None:
         return lever, "user"
-    scope = "repo" if _AGENT_LEVER_RE.search(lever) else "user"
+    if _AGENT_LEVER_RE.search(lever):
+        scope = "repo"
+    else:
+        scope = "user"
+        if snapshot is not None:
+            layer = effective_provenance(snapshot).get(lever)
+            if layer in _PROVENANCE_SCOPE:
+                scope = _PROVENANCE_SCOPE[layer]
     if snapshot is not None:
         keys = set(managed_keys(snapshot))
         if keys and any(k in keys for k in _lever_managed_keys(lever)):
@@ -868,9 +911,17 @@ def _rule_baseline_bloat(
         return []
     if snapshot is None:
         return []
-    prefix_count = len((snapshot.data.get("mcp_servers") or {}).get("names") or []) + len(
-        snapshot.data.get("enabled_plugins") or []
-    )
+    # COV-03 (P7a): prefer the deep-merged, per-layer-precedence
+    # effective_enabled_plugins (schema 2) over the old user-layer-only
+    # enabled_plugins (schema 1) when a snapshot carries it -- this rule
+    # exists to answer "how much baseline bloat comes from plugins", so
+    # it should count what's actually enabled across every settings
+    # layer, not just what the user layer names. Falls back to the old
+    # field for a snapshot captured before this field existed.
+    plugin_names = snapshot.data.get("effective_enabled_plugins")
+    if not isinstance(plugin_names, list):
+        plugin_names = snapshot.data.get("enabled_plugins") or []
+    prefix_count = len((snapshot.data.get("mcp_servers") or {}).get("names") or []) + len(plugin_names)
     if prefix_count < th.baseline_bloat_min_mcp_or_plugins:
         return []
 
@@ -954,6 +1005,362 @@ def _rule_baseline_bloat(
             action=action,
             lever="mcpServers",
             evidence=evidence,
+        )
+    ]
+
+
+# -- COV-09: env-var / deprecated-setting lever rules ---------------------
+#
+# Every rule below reads its gating condition straight from ``snapshot``
+# (the same "current config" snapshot ``_rule_baseline_bloat`` above reads
+# ``mcp_servers``/``enabled_plugins`` from), since none of these five
+# levers has a per-project group-by table of its own -- only presence/
+# value facts. Evidence still cites a real, already-rendered table cell:
+# ``snapshots.build_env_levers_table`` (wired into report.py's "config"
+# section as ``config.env-levers``) exists for exactly this, one row per
+# lever keyed by its bare name (see that function's own docstring). No
+# ``RecommendThresholds`` fields needed: every condition here is "is this
+# lever set" (COV-09), not "does a metric cross a numeric line".
+#
+# COV-07/COV-11 (P7b): the ambiguity the paragraph below used to describe
+# ("a shell profile, or a settings.json env block are both legitimate")
+# is now resolved -- guidance always goes through the settings.json
+# ``env`` block, matching ``fixes.py``'s ``_where``/``prompt_for`` and
+# ``apply --set env.NAME=value`` (``cli._one_off_profile``). A rule below
+# populates ``changes`` with a real ``SettingChange(key="env.NAME", ...)``
+# only when it proposes a concrete value (``env-tool-search``); the two
+# that propose *removing* a value (``env-disable-prompt-caching``,
+# ``env-max-output-tokens``) still get a ``SettingChange``, but with
+# ``value=None``/``suggested=...`` -- ``apply`` has no "unset" primitive
+# (only ``--set``), so these get the full where/trade-off/undo explainer
+# and a prompt, never a fabricated command that would write a value
+# nobody asked for. The remaining two (``env-subagent-model``, purely
+# informational; ``env-attribution-deprecated``, whose real target,
+# ``attribution.commit``, is not on ``profiles.schema.SETTINGS_ALLOWLIST``)
+# still have no ``SettingChange`` and instead pick up a where/trade-off/
+# undo explainer from ``fixes._WORKFLOW_EXPLAINER``. Every rule's own
+# ``action`` text keeps stating the concrete undo/change itself too (the
+# id/where/trade-off/undo hard constraint every rule card must meet on
+# its own, independent of whether a fix is also attached).
+
+
+def _env_lever_scope(name: str, snapshot: Snapshot | None) -> str:
+    """COV-01: the scope ``name``'s effective source layer maps to
+    (``"user"``/``"project-local"``/``"repo"``/``"managed"``), the same
+    four-way vocabulary ``_lever_scope`` gives a settings.json key --
+    but these are env vars: ``_lever_scope``'s ``managed_keys()`` lookup
+    only walks settings.json keys, so it can't answer this.
+    ``effective_env_provenance`` (COV-03, ``build_effective_env_names``)
+    already names the winning layer per env var name, so this reads that
+    directly and maps it through the same ``_PROVENANCE_SCOPE`` table,
+    falling back to ``"user"`` when the name has no effective value in
+    any layer yet.
+    """
+    if snapshot is None:
+        return "user"
+    provenance = snapshot.data.get("effective_env_provenance")
+    if isinstance(provenance, dict):
+        layer = provenance.get(name)
+        if layer in _PROVENANCE_SCOPE:
+            return _PROVENANCE_SCOPE[layer]
+    return "user"
+
+
+#: Highest-precedence-first, for picking one scope to report when several
+#: env var names are set at different layers (``env-disable-prompt-
+#: caching`` can fire on more than one name at once) -- "advice must never
+#: target a layer that a higher layer overrides" (COV-01) means the most
+#: overriding layer among the set names is the one worth naming.
+_SCOPE_PRECEDENCE: tuple[str, ...] = ("managed", "project-local", "repo", "user")
+
+
+#: docs/en/env-vars.md: one global switch plus a per-model-family override.
+_DISABLE_PROMPT_CACHING_NAMES: tuple[str, ...] = (
+    "DISABLE_PROMPT_CACHING",
+    "DISABLE_PROMPT_CACHING_SONNET",
+    "DISABLE_PROMPT_CACHING_OPUS",
+    "DISABLE_PROMPT_CACHING_HAIKU",
+    "DISABLE_PROMPT_CACHING_FABLE",
+)
+
+
+def _rule_env_disable_prompt_caching(report: ReportModel, snapshot: Snapshot | None) -> list[Recommendation]:
+    """COV-09, "high severity" per the plan (``severity="action"``, this
+    codebase's vocabulary -- see the module docstring's severity note
+    elsewhere in this file): any of the five ``DISABLE_PROMPT_CACHING*``
+    levers (docs/en/env-vars.md) turns prompt caching off for some or all
+    models, which is usually accidental -- caching is what makes a
+    multi-turn session cheap. The snapshot only records whether each name
+    is *set* (never its value, matching every other env lever's privacy
+    posture -- snapshot-config.py's ``_ENV_NAME_PREFIXES`` comment: "names
+    only, values never recorded"), so the action states the doc's own
+    caveat: only a value of ``1`` actually disables caching.
+    """
+    if snapshot is None:
+        return []
+    env_names = set(snapshot.data.get("env_names") or [])
+    set_names = [name for name in _DISABLE_PROMPT_CACHING_NAMES if name in env_names]
+    if not set_names:
+        return []
+
+    evidence = [_evidence(name, True, "config", "env-levers", name) for name in set_names]
+    scopes = [_env_lever_scope(name, snapshot) for name in set_names]
+    scope = next((s for s in _SCOPE_PRECEDENCE if s in scopes), "user")
+    named = " and ".join(set_names)
+    action = (
+        f"{named} {'is' if len(set_names) == 1 else 'are'} set in this environment. If set to `1`, this "
+        "turns prompt caching off for the model(s) it names, so every request re-sends and re-processes "
+        "the full prefix instead of reading it from cache -- usually far more expensive, not less. Ask "
+        f"Claude to find where {set_names[0] if len(set_names) == 1 else 'these'} "
+        f"{'is' if len(set_names) == 1 else 'are'} set (a shell profile, or settings.json's `env` block) "
+        "and remove it, unless you're deliberately testing without caching. To undo by hand: unset the "
+        "variable, or delete its `env` entry in settings.json."
+    )
+    # COV-07/COV-11: the fix is removing the value, not setting a new one
+    # -- ``apply`` has no unset primitive, so each name gets a
+    # judgement-needed SettingChange (explainer + prompt, no command)
+    # rather than a fabricated "set it to 0" nobody asked for.
+    changes = [
+        SettingChange(
+            target="settings",
+            key=f"env.{name}",
+            current="set",
+            suggested="removed, unless you're deliberately testing without caching",
+            scope=_env_lever_scope(name, snapshot),
+        )
+        for name in set_names
+    ]
+    return [
+        Recommendation(
+            id="env-disable-prompt-caching",
+            severity="action",
+            category="settings",
+            archetypes=_ALL_ARCHETYPES,
+            title="Prompt caching is disabled by an environment variable",
+            action=_action_with_scope(action, scope),
+            lever=f"env:{set_names[0]}" if len(set_names) == 1 else "env:DISABLE_PROMPT_CACHING",
+            scope=scope,
+            evidence=evidence,
+            changes=changes,
+        )
+    ]
+
+
+def _rule_env_tool_search(
+    report: ReportModel, th: RecommendThresholds, snapshot: Snapshot | None, archetype: str | None
+) -> list[Recommendation]:
+    """COV-09: ``ENABLE_TOOL_SEARCH`` (docs/en/env-vars.md) controls MCP
+    tool search -- unset, Claude Code already defers MCP tools by default
+    on the Anthropic API, *except* when ``ANTHROPIC_BASE_URL`` points at a
+    non-first-party host, where tool search is off by default unless this
+    is set to ``true``. The snapshot records names only (never the URL
+    value), so this can't tell a first-party override from a proxy --
+    the action states that caveat rather than assuming a proxy. Gated on
+    the same "meaningful MCP footprint" signal ``baseline-bloat`` uses
+    (mirrors that rule's own snapshot read), since tool search only helps
+    a session that actually loads several MCP servers.
+    """
+    if archetype in _NO_SUBAGENT_ARCHETYPES or snapshot is None:
+        return []
+    env_names = set(snapshot.data.get("env_names") or [])
+    if "ANTHROPIC_BASE_URL" not in env_names or "ENABLE_TOOL_SEARCH" in env_names:
+        return []
+    mcp_count = len((snapshot.data.get("mcp_servers") or {}).get("names") or [])
+    if mcp_count < th.baseline_bloat_min_mcp_or_plugins:
+        return []
+
+    scope = _env_lever_scope("ENABLE_TOOL_SEARCH", snapshot)
+    action = (
+        f"ANTHROPIC_BASE_URL is set and {mcp_count} MCP servers are configured, but "
+        "ENABLE_TOOL_SEARCH isn't set. If ANTHROPIC_BASE_URL points at a non-Anthropic proxy or "
+        "gateway, Claude Code disables MCP tool search by default there, so every tool's full "
+        "schema loads on every turn instead of only the ones a request actually needs. If your "
+        "proxy forwards `tool_reference` blocks, set ENABLE_TOOL_SEARCH=true to turn it back on. "
+        "If ANTHROPIC_BASE_URL is set to the standard Anthropic endpoint, this doesn't apply -- "
+        "this snapshot only records that the variable is set, not what it points at. To undo: "
+        "unset ENABLE_TOOL_SEARCH, or remove its `env` entry in settings.json."
+    )
+    # COV-07/COV-11: the one env-lever rule with a concrete recommended
+    # value, so this is the one that gets a real apply --dry-run command.
+    change = SettingChange(
+        target="settings",
+        key="env.ENABLE_TOOL_SEARCH",
+        value="true",
+        current=None,
+        note="Only set this if your proxy actually forwards tool_reference blocks -- a snapshot can't tell.",
+        scope=scope,
+    )
+    return [
+        Recommendation(
+            id="env-tool-search",
+            severity="advice",
+            category="settings",
+            archetypes=_ALL_ARCHETYPES,
+            title="ANTHROPIC_BASE_URL is set without ENABLE_TOOL_SEARCH",
+            action=_action_with_scope(action, scope),
+            lever="env:ENABLE_TOOL_SEARCH",
+            scope=scope,
+            evidence=[
+                _evidence("ENABLE_TOOL_SEARCH", False, "config", "env-levers", "ENABLE_TOOL_SEARCH"),
+            ],
+            changes=[change],
+        )
+    ]
+
+
+def _rule_env_max_output_tokens(report: ReportModel, snapshot: Snapshot | None) -> list[Recommendation]:
+    """COV-09: ``CLAUDE_CODE_MAX_OUTPUT_TOKENS`` (docs/en/env-vars.md)
+    raises the output-token cap; the same doc notes this "reduces the
+    effective context window available before auto-compaction triggers",
+    a direct trade-off worth surfacing whenever it's set. Cites the
+    ``compactions`` evidence ``compaction-churn`` uses, when that section
+    fired-worthy data exists, to connect the two.
+    """
+    if snapshot is None:
+        return []
+    caps = snapshot.data.get("env_numeric_caps")
+    value = caps.get("CLAUDE_CODE_MAX_OUTPUT_TOKENS") if isinstance(caps, dict) else None
+    if not isinstance(value, int):
+        return []
+
+    evidence = [_evidence("CLAUDE_CODE_MAX_OUTPUT_TOKENS", str(value), "config", "env-levers", "CLAUDE_CODE_MAX_OUTPUT_TOKENS")]
+    mean_per_session = _cell(report, "compactions", "compactions_summary", "Compactions per session (mean)", "value")
+    context_note = ""
+    if isinstance(mean_per_session, (int, float)):
+        evidence.append(
+            _evidence("Compactions per session (mean)", mean_per_session, "compactions", "compactions_summary", "Compactions per session (mean)")
+        )
+        context_note = f" This corpus already compacts {mean_per_session:.1f} times per session on average."
+
+    scope = _env_lever_scope("CLAUDE_CODE_MAX_OUTPUT_TOKENS", snapshot)
+    action = (
+        f"CLAUDE_CODE_MAX_OUTPUT_TOKENS is set to {value:,}. Raising it reduces the effective "
+        "context window available before auto-compaction triggers, since more of the context "
+        f"budget is reserved for a single reply.{context_note} If this was set to work around a "
+        "truncated reply rather than as a deliberate trade-off, consider lowering it or unsetting "
+        "it (Claude Code then uses the model's own default cap). To undo: unset the variable, or "
+        "remove its `env` entry in settings.json."
+    )
+    # COV-07/COV-11: the recommended value needs judgement (how much
+    # lower, or removed outright), so this gets an explainer + prompt but
+    # no apply command (same "value=None" convention as env-disable-
+    # prompt-caching above) -- ``current`` is the one env lever whose
+    # actual number the snapshot keeps (env_numeric_caps), so "Now" can
+    # show it exactly rather than just "set".
+    change = SettingChange(
+        target="settings",
+        key="env.CLAUDE_CODE_MAX_OUTPUT_TOKENS",
+        current=value,
+        suggested="a lower cap, or removed entirely so Claude Code uses the model's own default",
+        scope=scope,
+    )
+    return [
+        Recommendation(
+            id="env-max-output-tokens",
+            severity="advice",
+            category="settings",
+            archetypes=_ALL_ARCHETYPES,
+            title="CLAUDE_CODE_MAX_OUTPUT_TOKENS raises the output cap",
+            action=_action_with_scope(action, scope),
+            lever="env:CLAUDE_CODE_MAX_OUTPUT_TOKENS",
+            scope=scope,
+            evidence=evidence,
+            changes=[change],
+        )
+    ]
+
+
+def _rule_env_subagent_model(report: ReportModel, snapshot: Snapshot | None, archetype: str | None) -> list[Recommendation]:
+    """COV-09: ``CLAUDE_CODE_SUBAGENT_MODEL`` (docs/en/sub-agents.md
+    "Choose a model") only applies when nothing else assigns a model --
+    the per-invocation ``model`` parameter and the agent definition's own
+    ``model`` frontmatter (including ``inherit``) both take precedence
+    over it (the V17 order), and it never reaches the built-in Explore or
+    Plan subagents at all (only ``CLAUDE_CODE_SUBAGENT_MODEL_FORCE``
+    does). Presence-only, like every other env lever here.
+    """
+    if archetype in _NO_SUBAGENT_ARCHETYPES or snapshot is None:
+        return []
+    env_names = set(snapshot.data.get("env_names") or [])
+    if "CLAUDE_CODE_SUBAGENT_MODEL" not in env_names:
+        return []
+
+    scope = _env_lever_scope("CLAUDE_CODE_SUBAGENT_MODEL", snapshot)
+    action = (
+        "CLAUDE_CODE_SUBAGENT_MODEL sets the default model for subagents, agent-team teammates and "
+        "workflow agents that aren't otherwise assigned one -- but Claude Code resolves the model in "
+        "this order: (1) a model passed for that specific spawn, (2) the subagent definition's own "
+        "`model` frontmatter (including `model: inherit`), (3) this variable, (4) the main "
+        "conversation's model. An agent file with its own `model:` field, or a spawn that names one "
+        "explicitly, ignores this variable entirely. It also never reaches the built-in Explore or "
+        "Plan subagents -- only CLAUDE_CODE_SUBAGENT_MODEL_FORCE does. Check your agent files if a "
+        "subagent isn't running on the model this variable names. To undo: unset the variable, or "
+        "remove its `env` entry in settings.json."
+    )
+    return [
+        Recommendation(
+            id="env-subagent-model",
+            severity="info",
+            category="settings",
+            archetypes=_ALL_ARCHETYPES,
+            title="CLAUDE_CODE_SUBAGENT_MODEL is set",
+            action=_action_with_scope(action, scope),
+            lever="env:CLAUDE_CODE_SUBAGENT_MODEL",
+            scope=scope,
+            evidence=[
+                _evidence("CLAUDE_CODE_SUBAGENT_MODEL", True, "config", "env-levers", "CLAUDE_CODE_SUBAGENT_MODEL"),
+            ],
+        )
+    ]
+
+
+def _rule_attribution_deprecated(report: ReportModel, snapshot: Snapshot | None) -> list[Recommendation]:
+    """COV-09: ``includeCoAuthoredBy`` (settings.json) was replaced by
+    ``attribution`` (docs/en/settings-reference.md: "Deprecated since
+    v2.0.62 ... Claude Code still reads it, but new configurations should
+    set `attribution`"). Fires only when ``includeCoAuthoredBy`` is set
+    *and* ``attribution`` is not -- once ``attribution.commit``/``.pr`` is
+    set, Claude Code ignores ``includeCoAuthoredBy`` outright (same doc),
+    so there is nothing to migrate once that's already happened.
+    """
+    if snapshot is None:
+        return []
+    effective = snapshot.data.get("effective")
+    if not isinstance(effective, dict) or "includeCoAuthoredBy" not in effective or "attribution" in effective:
+        return []
+
+    # COV-01: a real settings.json key (unlike its four sibling rules
+    # above), so this uses _lever_scope like every other plain-key rule
+    # rather than the managed-only check the other four env names need
+    # _env_lever_scope for.
+    _lever, scope = _lever_scope("includeCoAuthoredBy", snapshot)
+    action = (
+        "includeCoAuthoredBy is set in settings.json. Claude Code still honours it, but "
+        "`attribution` (added in v2.0.62) replaces it and can also change or hide the pull-request "
+        "attribution text and the session link separately, not just the commit trailer. Ask Claude "
+        "to translate your `includeCoAuthoredBy` value into an equivalent `attribution.commit` "
+        "setting (`false` becomes an empty commit trailer) and show you the diff before saving. To "
+        "undo: remove the `attribution` key, `includeCoAuthoredBy` (still valid) takes over again."
+    )
+    return [
+        Recommendation(
+            id="env-attribution-deprecated",
+            severity="info",
+            category="settings",
+            archetypes=_ALL_ARCHETYPES,
+            title="includeCoAuthoredBy is deprecated in favour of attribution",
+            action=_action_with_scope(action, scope),
+            lever="includeCoAuthoredBy",
+            scope=scope,
+            evidence=[
+                _evidence(
+                    "includeCoAuthoredBy",
+                    str(effective.get("includeCoAuthoredBy")),
+                    "config",
+                    "env-levers",
+                    "includeCoAuthoredBy",
+                ),
+            ],
         )
     ]
 
@@ -1098,7 +1505,15 @@ def _rule_spawn_parts(
         read_only = used(agent_type, "read_only_spawns")
         all_read_only = isinstance(read_only, int) and read_only == spawns
 
-        claude_md = part(agent_type, "claude_md")
+        claude_md_total = part(agent_type, "claude_md")
+        # PROF-11/F13: Managed policy CLAUDE.md still loads regardless of
+        # omitClaudeMd, so it never counts towards what this would save.
+        claude_md_managed = part(agent_type, "claude_md_managed") or 0.0
+        claude_md = (
+            max(0.0, claude_md_total - claude_md_managed)
+            if isinstance(claude_md_total, (int, float))
+            else claude_md_total
+        )
         # Metrics capture: whether its runs said they used CLAUDE.md. Held
         # back when most that said, said they did.
         rules_used = _cell(report, "habits", "habits_agents", agent_type, "rules_used") or 0
@@ -1114,14 +1529,19 @@ def _rule_spawn_parts(
             why = f"Each {agent_type} spawn starts with about {claude_md:,.0f} tokens of CLAUDE.md files and memory."
             if all_read_only:
                 why += " Every measured spawn only searched or read files, so it rarely needs your working rules."
+            if claude_md_managed:
+                why += f" Managed policy CLAUDE.md ({claude_md_managed:,.0f} tokens) still loads either way."
+                rules_evidence = [
+                    _evidence("Managed policy CLAUDE.md per spawn (still loads)", claude_md_managed, "agent_startup", "agent_startup_breakdown", agent_type)
+                ]
             if rules_unused:
                 why += (
                     f" {rules_unused} of the {rules_used + rules_unused} runs that said, said they didn't use "
                     "your CLAUDE.md."
                 )
-                rules_evidence = [
+                rules_evidence.append(
                     _evidence("Runs that said they didn't use CLAUDE.md", rules_unused, "habits", "habits_agents", agent_type)
-                ]
+                )
             out.append(
                 Recommendation(
                     id="spawn-claude-md",
@@ -1436,7 +1856,9 @@ _HIGH_EFFORT_LEVELS = ("high", "xhigh", "max")
 _EFFORT_MIN_MESSAGES = 5
 
 
-def _effort_mismatch_reported(report: ReportModel, th: RecommendThresholds) -> list[Recommendation]:
+def _effort_mismatch_reported(
+    report: ReportModel, th: RecommendThresholds, snapshot: Snapshot | None
+) -> list[Recommendation]:
     """``effort-mismatch`` from messages Claude reported as easy work
     (metrics capture's ``level``) that ran at high effort or above: the
     Work habits section's ``habits_effort_fit`` rows, joined per message,
@@ -1471,6 +1893,7 @@ def _effort_mismatch_reported(report: ReportModel, th: RecommendThresholds) -> l
             _evidence(f"Easy work at {effort} effort, thinking share of output", row[share_idx], "habits", "habits_effort_fit", row[0])
         )
     saving = sum(row[saving_idx] for row in rows if isinstance(row[saving_idx], (int, float)))
+    lever, scope = _lever_scope("effortLevel", snapshot)
     return [
         Recommendation(
             id="effort-mismatch",
@@ -1478,18 +1901,22 @@ def _effort_mismatch_reported(report: ReportModel, th: RecommendThresholds) -> l
             category="settings",
             archetypes=_ALL_ARCHETYPES,
             title="High effort is being spent on easy work",
-            action=(
+            action=_action_with_scope(
                 "Lower effortLevel -- Claude reported these messages as easy work, yet most of their output "
-                "was thinking."
+                "was thinking.",
+                scope,
             ),
-            lever="effortLevel",
+            lever=lever,
+            scope=scope,
             evidence=evidence,
             saving_usd=saving or None,
         )
     ]
 
 
-def _rule_effort_mismatch(report: ReportModel, th: RecommendThresholds) -> list[Recommendation]:
+def _rule_effort_mismatch(
+    report: ReportModel, th: RecommendThresholds, snapshot: Snapshot | None
+) -> list[Recommendation]:
     """Direct from reported work levels when metrics capture has them
     (:func:`_effort_mismatch_reported`); otherwise the fallback below.
 
@@ -1498,7 +1925,7 @@ def _rule_effort_mismatch(report: ReportModel, th: RecommendThresholds) -> list[
     session counts are read from two independent group-bys with no report
     table joining them by session -- this is an approximation, not a per-
     session join, and both ``action`` and the module docstring say so."""
-    direct = _effort_mismatch_reported(report, th)
+    direct = _effort_mismatch_reported(report, th, snapshot)
     if direct:
         return direct
     purpose_table = _table(report, "sessions", "sessions_by_purpose")
@@ -1521,6 +1948,7 @@ def _rule_effort_mismatch(report: ReportModel, th: RecommendThresholds) -> list[
     evidence = [_evidence("High-effort thinking share of output", thinking_share, "agents", "topology_effort_tokens", "high")]
     for purpose, sessions in docs_purpose_rows:
         evidence.append(_evidence(f"{purpose} sessions in corpus", sessions, "sessions", "sessions_by_purpose", purpose))
+    lever, scope = _lever_scope("effortLevel", snapshot)
     return [
         Recommendation(
             id="effort-mismatch",
@@ -1528,13 +1956,15 @@ def _rule_effort_mismatch(report: ReportModel, th: RecommendThresholds) -> list[
             category="settings",
             archetypes=_ALL_ARCHETYPES,
             title="High effort is being spent on light editing work",
-            action=(
+            action=_action_with_scope(
                 "Lower effortLevel for docs/general-dev sessions -- thinking tokens dominate "
                 "output there without a matching increase in edit complexity. (Approximation: "
                 "the thinking share is corpus-wide, not joined to these specific sessions -- "
-                "no report table links effort level to session purpose.)"
+                "no report table links effort level to session purpose.)",
+                scope,
             ),
-            lever="effortLevel",
+            lever=lever,
+            scope=scope,
             evidence=evidence,
         )
     ]
@@ -1806,11 +2236,19 @@ def recommend(
     recs.extend(_rule_long_context_share(report, th, snapshot))
     recs.extend(_rule_cache_read_dominance(report, th))
     recs.extend(_rule_baseline_bloat(report, th, snapshot, archetype))
+    # COV-09: env-var / deprecated-setting lever rules (see their shared
+    # comment block above _env_lever_scope for why they don't use
+    # RecommendThresholds or SettingChange).
+    recs.extend(_rule_env_disable_prompt_caching(report, snapshot))
+    recs.extend(_rule_env_tool_search(report, th, snapshot, archetype))
+    recs.extend(_rule_env_max_output_tokens(report, snapshot))
+    recs.extend(_rule_env_subagent_model(report, snapshot, archetype))
+    recs.extend(_rule_attribution_deprecated(report, snapshot))
     recs.extend(_rule_agent_report_size(report, th, archetype))
     part_recs, covered_agents = _rule_spawn_parts(report, th, archetype, snapshot, units)
     recs.extend(part_recs)
     recs.extend(_rule_spawn_cost(report, th, archetype, snapshot, covered_agents))
-    recs.extend(_rule_effort_mismatch(report, th))
+    recs.extend(_rule_effort_mismatch(report, th, snapshot))
     if _section(report, "phases") is not None:
         recs.extend(_rule_discovery_share(report, th))
     recs.extend(_rule_pricing_coverage(report))

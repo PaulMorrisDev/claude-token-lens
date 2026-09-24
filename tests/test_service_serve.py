@@ -91,6 +91,33 @@ def test_once_uses_the_store_path_when_given(tmp_path: Path):
     assert not (tmp_path / "config" / serve.STORE_FILENAME).exists()
 
 
+def test_serve_start_refreshes_an_outdated_hook_file(tmp_path: Path):
+    """ROB-P7: a hook file this tool itself wrote, now older than what
+    this version ships, is refreshed as soon as ``serve`` starts -- not
+    just on the next ``capture connect``."""
+    import hashlib
+    import json
+    from importlib import resources
+
+    from claude_token_lens import capture_catalogue as cat
+
+    root = tmp_path / "projects"
+    config_dir = tmp_path / "config"
+    hooks_dir = config_dir / "hooks"
+    hooks_dir.mkdir(parents=True)
+    packaged = (resources.files("claude_token_lens") / "hooks" / cat.HOOK_SCRIPT).read_bytes()
+    old = b"# an older copy this tool wrote\n"
+    (hooks_dir / cat.HOOK_SCRIPT).write_bytes(old)
+    (hooks_dir / ".manifest.json").write_text(
+        json.dumps({cat.HOOK_SCRIPT: hashlib.sha256(old).hexdigest()}), encoding="utf-8"
+    )
+    options = ServeOptions(projects_root=root, config_dir=config_dir)
+
+    assert serve.run(options, once=True) == 0
+
+    assert (hooks_dir / cat.HOOK_SCRIPT).read_bytes() == packaged
+
+
 def test_a_store_another_serve_holds_is_refused(tmp_path: Path, capsys):
     root = tmp_path / "projects"
     root.mkdir(parents=True)

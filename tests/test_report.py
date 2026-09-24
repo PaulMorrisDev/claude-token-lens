@@ -18,7 +18,7 @@ import pytest
 from claude_token_lens.config import Config
 from claude_token_lens.corpus import load_corpus
 from claude_token_lens.pricing import load_pricing
-from claude_token_lens.report import _SECTION_ORDER, build_report
+from claude_token_lens.report import _SECTION_ORDER, _apply_autocompact_pct_override, build_report
 from claude_token_lens.render.csv_out import write_csv_dir
 from claude_token_lens.render.html import render_html
 from claude_token_lens.render.json_out import render_json
@@ -135,6 +135,21 @@ def test_subagents_are_never_double_counted(tmp_path):
     assert totals["priced_turns"] == 7
 
 
+def test_capture_section_gets_a_held_back_row_from_the_recommend_diff(tmp_path):
+    """EST-P7 + CAP-3 wiring: build_report runs recommend() a second time
+    without the habits section and folds the diff into the capture
+    section afterwards. This corpus is too small for recommend() to
+    surface anything (its own min-sample gate), so the diff is empty --
+    this only proves the wiring runs end to end and leaves a well-formed
+    row, not the arithmetic (that's habits.py's own unit tests)."""
+    corpus = _two_session_corpus(tmp_path)
+    report = build_report(corpus, PRICING, Config(), projects=("proj-two",), window="last 7 days")
+    capture = next(s for s in report.sections if s.key == "capture")
+    rows = {row[0]: row[1] for row in capture.tables[0].rows}
+    assert rows["held_back"] == 0
+    assert rows["habit_value"] is None
+
+
 # -- group-sum invariant -----------------------------------------------------
 
 
@@ -209,6 +224,34 @@ def test_scorecard_ctx_stats_use_top_level_transcripts_only(tmp_path, monkeypatc
     # magnitude bigger.
     assert inputs.median_top_level_ctx == pytest.approx(150.0)
     assert inputs.p90_top_level_ctx == pytest.approx(200.0)
+
+
+def test_scorecard_context_hygiene_threshold_scales_for_1m_window_model(tmp_path):
+    """D2/COV-12: ``ScorecardThresholds.context_p90_ctx``'s defaults
+    (50k/100k/150k/200k) were sized for the 200k-window assumption. A
+    corpus run entirely on ``claude-sonnet-5`` (natively 1M, V24) with a
+    p90 top-level ctx of 300_000 scored "very poor" (level 1) against
+    the flat default even though 300k tokens is a small fraction of that
+    model's actual window; report assembly now scales the thresholds by
+    the corpus's own resolved model window (5x here), landing 300_000 at
+    level 4 instead.
+    """
+    project_dir = tmp_path / "proj-1m"
+    project_dir.mkdir()
+    # turn_line's default model is claude-sonnet-5 (1M context in the
+    # packaged pricing.toml), so no override is needed here.
+    _write_session_with_ctx_values(
+        project_dir, "session-1m", top_ctx_values=[50_000, 100_000, 250_000, 300_000], sub_ctx_values=[]
+    )
+
+    corpus = load_corpus([project_dir])
+    report = build_report(corpus, PRICING, Config(), projects=("proj-1m",), window="w")
+    scorecard_section = next(s for s in report.sections if s.key == "scorecard")
+    dim_table = next(t for t in scorecard_section.tables if t.name == "dimensions")
+    row = next(r for r in dim_table.rows if r[0] == "context_hygiene")
+
+    assert row[4] == pytest.approx(300_000.0)  # value: p90_top_level_ctx
+    assert row[1] == 4  # level: level 1 under the unscaled 200k-tuned default
 
 
 def test_overview_long_context_share_is_top_level_turn_count_basis(tmp_path):
@@ -358,6 +401,112 @@ def test_snapshots_add_config_section(tmp_path):
     assert "config" not in [s.key for s in report_none.sections]
 
 
+# -- COV-09: CLAUDE_AUTOCOMPACT_PCT_OVERRIDE feeds compaction_sim -----------
+
+
+def test_autocompact_pct_override_scales_the_configured_window():
+    snap = Snapshot(
+        path="cfg1",
+        ts="2026-09-01T00:00:00.000Z",
+        data={"env_numeric_caps": {"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": 50}},
+    )
+    assert _apply_autocompact_pct_override(300_000, snap) == 150_000
+
+
+def test_autocompact_pct_override_ignored_when_absent_or_out_of_range():
+    no_override = Snapshot(path="cfg1", ts="2026-09-01T00:00:00.000Z", data={})
+    assert _apply_autocompact_pct_override(300_000, no_override) == 300_000
+
+    # docs/en/env-vars.md: "1-100" -- 0 and 150 are both out of range and
+    # must not change the configured window.
+    zero = Snapshot(path="cfg1", ts="2026-09-01T00:00:00.000Z", data={"env_numeric_caps": {"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": 0}})
+    assert _apply_autocompact_pct_override(300_000, zero) == 300_000
+    over = Snapshot(path="cfg1", ts="2026-09-01T00:00:00.000Z", data={"env_numeric_caps": {"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": 150}})
+    assert _apply_autocompact_pct_override(300_000, over) == 300_000
+
+
+def test_autocompact_pct_override_changes_the_report_end_to_end(tmp_path):
+    """Same corpus and window, two snapshots differing only in
+    CLAUDE_AUTOCOMPACT_PCT_OVERRIDE -- confirms build_report's own
+    snapshot_windows loop (not just the helper in isolation) actually
+    picks the override up and it changes what compaction_sim simulates.
+    """
+    corpus = _two_session_corpus(tmp_path)
+    base_data = {"effective": {"autoCompactWindow": 300_000}}
+    snap_no_override = Snapshot(path="cfg1", ts="2020-01-01T00:00:00.000Z", data=base_data)
+    snap_with_override = Snapshot(
+        path="cfg2",
+        ts="2020-01-01T00:00:00.000Z",
+        data={**base_data, "env_numeric_caps": {"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": 10}},
+    )
+
+    report_a = build_report(
+        corpus, PRICING, Config(), projects=("proj-two",), window="w", snapshots=[snap_no_override], phases=True
+    )
+    report_b = build_report(
+        corpus, PRICING, Config(), projects=("proj-two",), window="w", snapshots=[snap_with_override], phases=True
+    )
+
+    sim_a = next(s for s in report_a.sections if s.key == "compaction_sim")
+    sim_b = next(s for s in report_b.sections if s.key == "compaction_sim")
+    # Not asserting exact figures (the sweep's internals aren't this
+    # test's concern) -- just that feeding a much lower effective window
+    # (10% of 300,000 = 30,000) changed the simulation's own output
+    # versus the unscaled 300,000 window, proving the override reached it.
+    assert sim_a.tables != sim_b.tables
+
+
+# -- COV-02: observed model/effort vs. settings -> config-drift table -------
+
+
+def test_config_drift_table_carries_observed_effort_level(tmp_path):
+    """``sessions_with_observed``'s ``observed`` dict now carries
+    ``effortLevel`` (the settings key it's compared against) alongside
+    ``model``, sourced from each top-level transcript's own dominant
+    ``Turn.effort`` (``_dominant_transcript_effort``) -- the effort half
+    of COV-02's "CLI/overlay layer, inferred when the transcript's model
+    or effort disagrees with the settings". A snapshot whose effective
+    ``effortLevel`` disagrees with what every turn actually ran under
+    must produce an ``effortLevel`` row in the ``config-drift`` table.
+    """
+    project_dir = tmp_path / "proj-effort"
+    project_dir.mkdir()
+    _write_top(project_dir, "session-001", n_turns=2, effort="high")
+    corpus = load_corpus([project_dir])
+
+    snap = Snapshot(
+        path="cfg1",
+        ts="2020-01-01T00:00:00.000Z",
+        data={"effective": {"effortLevel": "low"}},
+    )
+    report = build_report(corpus, PRICING, Config(), projects=("proj-effort",), window="w", snapshots=[snap])
+
+    config = next(s for s in report.sections if s.key == "config")
+    drift = next(t for t in config.tables if t.name == "config-drift")
+    effort_rows = [row for row in drift.rows if row[1] == "effortLevel"]
+    assert effort_rows, f"expected an effortLevel drift row, got: {drift.rows}"
+    assert effort_rows[0][2] == "low"  # snapshot_value
+    assert effort_rows[0][3] == "high"  # observed_value
+
+
+def test_config_drift_table_no_effort_row_when_settings_agree(tmp_path):
+    project_dir = tmp_path / "proj-effort-agree"
+    project_dir.mkdir()
+    _write_top(project_dir, "session-001", n_turns=2, effort="high")
+    corpus = load_corpus([project_dir])
+
+    snap = Snapshot(
+        path="cfg1",
+        ts="2020-01-01T00:00:00.000Z",
+        data={"effective": {"effortLevel": "high"}},
+    )
+    report = build_report(corpus, PRICING, Config(), projects=("proj-effort-agree",), window="w", snapshots=[snap])
+
+    config = next(s for s in report.sections if s.key == "config")
+    drift = next(t for t in config.tables if t.name == "config-drift")
+    assert not [row for row in drift.rows if row[1] == "effortLevel"]
+
+
 def test_include_restricts_to_named_sections(tmp_path):
     corpus = _two_session_corpus(tmp_path)
     report = build_report(
@@ -501,6 +650,27 @@ def test_report_meta_is_fully_populated(tmp_path):
     assert meta.assumptions  # ttl + recache assumptions merged in
     assert meta.tool_version
     assert meta.generated_at.endswith("Z")
+    # UX-1: meta.units {mode, share_per_usd, period_label, basis} -- the
+    # JS mirror's (app.js money()) only source of billing-mode facts.
+    assert meta.units["mode"] == "api"
+    assert meta.units["share_per_usd"] is None  # API billing has no window share
+    assert meta.units["period_label"] == "weekly usage limit"
+    assert meta.units["basis"] == meta.amounts_basis
+
+
+def test_report_meta_units_reflects_subscription_billing_with_no_elasticity_fit(tmp_path):
+    """UX-1: under a subscription with no elasticity fit yet (this
+    corpus logs no statusline usage-limit samples), ``meta.units``
+    still reports ``mode == "subscription"`` and a ``None`` share
+    rather than crashing or silently defaulting to API's shape."""
+    corpus = _two_session_corpus(tmp_path)
+    report = build_report(
+        corpus, PRICING, Config(billing="subscription"), projects=("proj-two",), window="last 7 days"
+    )
+    assert report.meta.units["mode"] == "subscription"
+    assert report.meta.units["share_per_usd"] is None
+    assert report.meta.units["period_label"] == "weekly usage limit"
+    assert report.meta.units["basis"] == report.meta.amounts_basis
 
 
 def test_thresholds_min_sample_reflects_recommend_overrides_not_config_defaults(tmp_path):

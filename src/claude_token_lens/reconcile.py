@@ -44,19 +44,48 @@ than imported from ``report.py`` -- see that module's own docstring, and
 ``report.py``/``usage.py``/``workflows.py``/``phases.py``/``cli.py``'s,
 for the convention this follows. Every cost figure comes from
 ``pricing.price_turn`` -- never recomputed independently.
+
+Parser-signals addition (SURV-5, ``PARSER_VERSION`` 19): :func:`claude_code_reported_costs`
+reads a session's own ``cost-state`` line (``TranscriptMeta.cc_cost_usd``,
+parsed by ``parse.py``) next to this tool's own per-turn pricing for the
+same session, per plan P9's later "Q1 gap metric" wording -- "reconcile
+shows Claude Code's own cost vs Token Lens's cost for each session ...
+from SIG-4 and cost-state".
+
+Q1 gap metric (P9b): :func:`cost_ground_truth_gaps` builds on that --
+one row per session with either kind of ground truth, ``cost-state``
+preferred when a session has both (it is a validated per-transcript
+running total; ``statusline.py``'s own SIG-4 line is a periodic,
+possibly mid-session, last-seen snapshot -- see that module's own
+docstring). :func:`build_cost_ground_truth_gap_table` turns those into
+the ``cost_ground_truth_gap`` table :func:`reconcile` adds whenever a
+``config_dir`` is given, with the plan's own threshold note (median
+absolute gap over 5%, across at least 10 sessions with a computable
+gap) phrased in the caller's billing-mode units (:mod:`units`). Reading
+SIG-4 signals follows the same read-only-salt posture
+``report._capture_signals`` established (duplicated here, not
+imported -- see this module's own duplication convention above): never
+creates the salt file, so a corpus with capture off, or on but no salt
+yet, simply contributes no ``statusline`` rows. Numbers only, no
+network call and no OTel, same as every other function in this module.
 """
 
 from __future__ import annotations
 
 import csv
+import statistics
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from .config import Config
 from .corpus import Corpus, SessionBundle
 from .model import Column, Section, Table, TranscriptResult, Turn
 from .pricing import Pricing, price_turn
+
+if TYPE_CHECKING:
+    from .units import Units
 
 #: The three ``--by`` groupings the CLI understands.
 BY_CHOICES: tuple[tuple[str, ...], ...] = (("day",), ("model",), ("day", "model"))
@@ -305,6 +334,222 @@ def _utc_day(ts: str | None) -> str | None:
     return dt.astimezone(timezone.utc).date().isoformat()
 
 
+@dataclass(slots=True)
+class ClaudeCodeCost:
+    """One session's self-reported cost next to this tool's own pricing
+    for the same session (SURV-5, the ``cost-state`` half of plan P9's
+    "Q1 gap metric" -- see :func:`cost_ground_truth_gaps` for the half
+    that also folds in SIG-4's statusline ground truth and the module
+    docstring for the metric as a whole).
+    """
+
+    session_id: str = ""
+    #: Claude Code's own reported total (``TranscriptMeta.cc_cost_usd``,
+    #: from a ``cost-state`` line's own ``totalCostUSD`` -- the last one
+    #: seen in the session's top-level transcript, since it's a running
+    #: total).
+    cc_cost_usd: float = 0.0
+    #: Whether Claude Code itself flagged an unpriced/unknown model
+    #: anywhere in this session's own usage
+    #: (``TranscriptMeta.cc_cost_has_unknown_model``).
+    cc_has_unknown_model: bool = False
+    #: This tool's own per-turn pricing (``pricing.price_turn``) summed
+    #: across the session's top-level transcript and every subagent
+    #: transcript under it -- the same total the rest of this module
+    #: calls "local" cost.
+    local_cost_usd: float = 0.0
+
+
+def _local_cost_for_bundle(bundle: SessionBundle, pricing: Pricing) -> float:
+    """This tool's own per-turn pricing, summed across a session's
+    top-level transcript and every subagent transcript under it -- the
+    same total :func:`claude_code_reported_costs` and
+    :func:`cost_ground_truth_gaps` both call "local" cost."""
+    total = 0.0
+    for tr in _transcripts_of(bundle):
+        for turn in _priced_turns(tr):
+            resolved = pricing.resolve_model(turn.model)
+            total += price_turn(turn, resolved).total
+    return total
+
+
+def claude_code_reported_costs(corpus: Corpus, pricing: Pricing) -> list[ClaudeCodeCost]:
+    """One :class:`ClaudeCodeCost` per session whose top-level transcript
+    carried at least one ``cost-state`` line -- most sessions carry none
+    (an infrequent, apparently version-gated line: 25 occurrences across
+    a 2,617-file real-corpus survey), so this list is typically much
+    shorter than ``corpus.sessions``. Read-only, numbers only, no OTel --
+    see this module's own docstring's rule that it never makes a network
+    call, which extends to never building any telemetry pipeline either.
+    """
+    out: list[ClaudeCodeCost] = []
+    for bundle in corpus.sessions:
+        top = bundle.top
+        if top is None or top.meta.cc_cost_usd is None:
+            continue
+        out.append(
+            ClaudeCodeCost(
+                session_id=top.meta.session_id,
+                cc_cost_usd=top.meta.cc_cost_usd,
+                cc_has_unknown_model=top.meta.cc_cost_has_unknown_model,
+                local_cost_usd=_local_cost_for_bundle(bundle, pricing),
+            )
+        )
+    return out
+
+
+def _session_signals_by_id(corpus: Corpus, config_dir: str | Path | None):
+    """The free signals metrics capture logged under ``config_dir``, by
+    session id -- duplicated from ``report._capture_signals`` rather than
+    imported (see this module's own docstring on that convention).
+    ``None`` without a config directory, a signals folder or the salt the
+    hook hashed session ids with (never created here -- SIG-4, like
+    SIG-2/3 before it, only ever reads an existing salt)."""
+    if config_dir is None:
+        return None
+    from . import parse, signals
+
+    try:
+        if not signals.signals_dir(config_dir).is_dir() or not (Path(config_dir) / "salt").is_file():
+            return None
+        salt = parse.load_or_create_salt(config_dir)
+        return signals.by_session(signals.load(config_dir), [b.session_id for b in corpus.sessions], salt)
+    except (OSError, ValueError):
+        return None
+
+
+@dataclass(slots=True)
+class CostGroundTruthGap:
+    """One session's local-vs-ground-truth cost gap for the Q1 gap
+    metric (see the module docstring). ``source`` is ``"cost_state"`` or
+    ``"statusline"`` -- which ground-truth channel supplied
+    ``cc_cost_usd`` for this row; ``cost_state`` wins when a session
+    carries both (see :func:`cost_ground_truth_gaps`). ``gap_usd`` is
+    local minus the ground truth, matching this module's existing
+    "delta = local minus X" convention; ``gap_pct`` is that gap as a
+    percentage of the ground truth, ``None`` when the ground truth is
+    ``0.0`` (nothing to take a percentage of)."""
+
+    session_id: str
+    source: str
+    cc_cost_usd: float
+    local_cost_usd: float
+    gap_usd: float
+    gap_pct: float | None
+
+
+def cost_ground_truth_gaps(corpus: Corpus, pricing: Pricing, config_dir: str | Path | None) -> list[CostGroundTruthGap]:
+    """One :class:`CostGroundTruthGap` per session that carries *either*
+    ground-truth signal: a ``cost-state`` line (preferred -- a validated
+    running total logged straight from the transcript) or, when a
+    session has no ``cost-state`` line at all, SIG-4's statusline
+    ``cost`` signal (a periodic, possibly mid-session, last-seen
+    snapshot -- see ``statusline.py``'s own docstring). A session with
+    neither contributes nothing here; that is the ordinary case (see
+    :func:`claude_code_reported_costs`'s own docstring on how rare
+    ``cost-state`` is), which is exactly why SIG-4 exists as a second,
+    much more common source of the same kind of ground truth.
+    """
+    out: list[CostGroundTruthGap] = []
+    covered: set[str] = set()
+    for cc in claude_code_reported_costs(corpus, pricing):
+        out.append(
+            CostGroundTruthGap(
+                session_id=cc.session_id,
+                source="cost_state",
+                cc_cost_usd=cc.cc_cost_usd,
+                local_cost_usd=cc.local_cost_usd,
+                gap_usd=cc.local_cost_usd - cc.cc_cost_usd,
+                gap_pct=_pct_of(cc.cc_cost_usd, cc.local_cost_usd),
+            )
+        )
+        covered.add(cc.session_id)
+
+    by_session = _session_signals_by_id(corpus, config_dir)
+    if not by_session:
+        return out
+    for bundle in corpus.sessions:
+        session_id = bundle.session_id
+        if session_id in covered:
+            continue
+        seen = by_session.get(session_id)
+        if seen is None or seen.statusline_cost_usd is None:
+            continue
+        local_cost = _local_cost_for_bundle(bundle, pricing)
+        out.append(
+            CostGroundTruthGap(
+                session_id=session_id,
+                source="statusline",
+                cc_cost_usd=seen.statusline_cost_usd,
+                local_cost_usd=local_cost,
+                gap_usd=local_cost - seen.statusline_cost_usd,
+                gap_pct=_pct_of(seen.statusline_cost_usd, local_cost),
+            )
+        )
+    return out
+
+
+#: Q1 gap metric: the median absolute gap, as a percentage of the ground
+#: truth, above which :func:`build_cost_ground_truth_gap_table` adds a
+#: note -- the plan's own "> 5%" wording.
+_GAP_NOTE_THRESHOLD_PCT = 5.0
+#: ... and only once there are at least this many sessions with a
+#: computable gap -- the plan's own "across >= 10 sessions" wording; a
+#: median of fewer than that is too noisy to call out.
+_GAP_NOTE_MIN_SESSIONS = 10
+
+
+def build_cost_ground_truth_gap_table(gaps: list[CostGroundTruthGap], units: "Units | None" = None) -> Table | None:
+    """The ``cost_ground_truth_gap`` table: one row per
+    :class:`CostGroundTruthGap`, sorted by session id for a stable
+    order, plus the plan's own median-gap note when the threshold is
+    crossed. ``None`` when ``gaps`` is empty -- nothing to show, and
+    :func:`reconcile` leaves the table out entirely rather than adding
+    an empty one.
+    """
+    if not gaps:
+        return None
+    rows = sorted(gaps, key=lambda g: g.session_id)
+    pct_values = [abs(g.gap_pct) for g in gaps if g.gap_pct is not None]
+
+    notes = [
+        "Gap = Token Lens's own local pricing minus Claude Code's own reported cost (cost-state when a "
+        "session has it, else the statusline's own SIG-4 ground truth); gap % is relative to Claude Code's "
+        "own figure.",
+        "Known reasons a correct local figure and Claude Code's own figure can still differ: an unknown "
+        "model is priced at zero locally; cost-state is a running total as of when the transcript last "
+        "wrote it, which can be mid-session; the statusline's own figure resets on /clear and may be "
+        "logged mid-session too.",
+    ]
+    if len(pct_values) >= _GAP_NOTE_MIN_SESSIONS:
+        median_pct = statistics.median(pct_values)
+        if median_pct > _GAP_NOTE_THRESHOLD_PCT:
+            median_usd = statistics.median([g.gap_usd for g in gaps if g.gap_pct is not None])
+            amount = units.money(abs(median_usd)) if units is not None else None
+            amount_text = amount.phrase() if amount is not None else f"${abs(median_usd):,.2f}"
+            direction = "higher" if median_usd >= 0 else "lower"
+            notes.append(
+                f"Local pricing runs a median {median_pct:.0f}% {direction} than Claude Code's own reported "
+                f"cost across {len(pct_values)} sessions (about {amount_text}) -- above the 5% threshold "
+                "worth a closer look."
+            )
+
+    return Table(
+        name="cost_ground_truth_gap",
+        title="Local cost vs Claude Code's own reported cost",
+        columns=[
+            Column(key="session_id", label="Session", kind="str"),
+            Column(key="source", label="Ground truth", kind="str"),
+            Column(key="cc_cost_usd", label="Claude Code's own cost", kind="money"),
+            Column(key="local_cost_usd", label="Local cost", kind="money"),
+            Column(key="gap_usd", label="Gap", kind="money"),
+            Column(key="gap_pct", label="Gap (% of Claude Code's own cost)", kind="pct"),
+        ],
+        rows=[[g.session_id, g.source, g.cc_cost_usd, g.local_cost_usd, g.gap_usd, g.gap_pct] for g in rows],
+        notes=notes,
+    )
+
+
 def _collect_local_rows(corpus: Corpus, pricing: Pricing) -> list[dict]:
     """One row per priced turn in ``corpus``, same canonical shape
     :func:`parse_admin_csv` produces, so both sides can be grouped and
@@ -416,11 +661,21 @@ def reconcile(
     by: tuple[str, ...] = ("day",),
     since: str | None = None,
     until: str | None = None,
+    config_dir: str | Path | None = None,
+    units: "Units | None" = None,
 ) -> Section:
     """Build the ``reconcile`` :class:`Section`: one ``reconcile_by_period``
     table comparing this tool's own local per-turn accounting against
     ``admin_rows`` (:attr:`AdminCsvResult.rows`), grouped by ``by``
-    (one of :data:`BY_CHOICES`).
+    (one of :data:`BY_CHOICES`), plus the Q1 gap metric's own
+    ``cost_ground_truth_gap`` table (see the module docstring) whenever
+    there's ground truth to show it against -- unlike the Admin-CSV
+    table, that one needs no export at all: a ``cost-state`` line needs
+    nothing further, and SIG-4's statusline ground truth needs only
+    ``config_dir`` (to read, never write, the signals it already logged
+    on this machine). So the table appears whenever either source has
+    something for at least one session, rather than being gated on this
+    command's own required ``--admin-csv``.
 
     ``since``/``until`` (ISO ``YYYY-MM-DD`` date strings, either or both
     ``None``) restrict both sides to the same window before grouping, so
@@ -428,7 +683,10 @@ def reconcile(
     rather than the whole corpus. Delta is always local minus Admin;
     delta-% is that delta as a percentage of the Admin figure (Admin
     being the export a caller is reconciling *against*), never a
-    significance claim.
+    significance claim. The gap table isn't windowed by ``since``/
+    ``until`` itself -- it's already scoped to whatever ``corpus`` the
+    caller assembled (the CLI's own ``--since``/``--until``/project
+    selection), one row per session rather than per day.
     """
     if by not in BY_CHOICES:
         raise ValueError(f"reconcile: bad by={by!r}, expected one of {BY_CHOICES}")
@@ -495,7 +753,14 @@ def reconcile(
         rows=rows,
         notes=notes,
     )
-    return Section(key="reconcile", title="Admin CSV reconciliation", tables=[table], notes=notes)
+    tables = [table]
+    # Q1 gap metric: its own table, own notes (kept separate from the
+    # Admin-CSV table's notes above -- two different comparisons, each
+    # with its own caveats) -- added only when there's something to show.
+    gap_table = build_cost_ground_truth_gap_table(cost_ground_truth_gaps(corpus, pricing, config_dir), units)
+    if gap_table is not None:
+        tables.append(gap_table)
+    return Section(key="reconcile", title="Admin CSV reconciliation", tables=tables, notes=notes)
 
 
 __all__ = [
@@ -505,4 +770,9 @@ __all__ = [
     "reconcile",
     "BY_CHOICES",
     "KNOWN_DIFFERENCE_REASONS",
+    "ClaudeCodeCost",
+    "claude_code_reported_costs",
+    "CostGroundTruthGap",
+    "cost_ground_truth_gaps",
+    "build_cost_ground_truth_gap_table",
 ]

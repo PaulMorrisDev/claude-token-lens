@@ -80,7 +80,11 @@ DEFAULT_CAPTURE_WINDOW_DAYS = 7
 #: offers when a level is turned on: capture switches itself off this many
 #: days after ``now`` unless the user says otherwise, so it can't run
 #: forever unnoticed. The same length ``capture on --for 14d`` would give.
-DEFAULT_CAPTURE_TIMEBOX_DAYS = 14
+#: Defined in :mod:`capture_catalogue` (CAP-8: :func:`~claude_token_lens.
+#: config.set_capture` needs it too, and can't import this module, which
+#: already imports :mod:`~claude_token_lens.config`) and re-exported here
+#: under its established name.
+DEFAULT_CAPTURE_TIMEBOX_DAYS = capture_catalogue.DEFAULT_CAPTURE_TIMEBOX_DAYS
 
 _TRUE_STRINGS = frozenset({"y", "yes", "true", "1", "on"})
 
@@ -535,7 +539,7 @@ def ask_capture_until(
     non_interactive: bool = False,
     stdin: IO[str] = sys.stdin,
     stdout: IO[str] = sys.stdout,
-) -> tuple[str | None, list[str]]:
+) -> tuple[str, list[str]]:
     """After :func:`ask_capture_level` turns a level on: offers a
     time-box (:data:`DEFAULT_CAPTURE_TIMEBOX_DAYS` days from ``now``, by
     default) so capture doesn't run forever unnoticed, reusing the same
@@ -545,25 +549,21 @@ def ask_capture_until(
     ``preset`` (``--capture-no-limit``) or the answers file's
     ``capture_no_limit`` key answers it without asking; when true,
     capture gets no time-box at all. Under ``--non-interactive`` with
-    neither, today's ``until`` is left exactly as it is -- an existing
-    ``--capture-level``/``capture_level`` answer must not suddenly gain
-    a surprise end date it never had before this question existed, the
-    same "adding a flag never changes an existing non-interactive run's
-    behaviour" rule :func:`ask_capture_level`/:func:`ask_feedback`
-    already follow -- and a note says so.
+    neither, the default time-box is used, the same "no answer -> the
+    derived default, and a note says so" rule every other onboarding
+    question already follows (CAP-8: a scripted, unattended ``init`` is
+    exactly the case this default most needs to reach -- capture left
+    running forever with nobody watching is the failure mode, not a
+    surprise end date). This is only ever reached from ``off``, so there
+    is never an *existing* ``until`` for it to clobber; ``ask_capture_until``
+    is skipped entirely when capture is already on and no new level was
+    asked for (see ``_cmd_init_capture_step``).
 
-    Returns ``(until, notes)``: ``until`` is an ISO-8601 time, ``""``
-    for an explicit "no limit", or ``None`` (leave ``until`` as it is)
-    only in that ``--non-interactive``-with-no-answer case.
+    Returns ``(until, notes)``: ``until`` is an ISO-8601 time, or ``""``
+    for an explicit "no limit".
     """
     notes: list[str] = []
     given = capture_no_limit_answer(answers_path, preset)
-    if given is None and non_interactive:
-        notes.append(
-            "capture_no_limit: not given in --answers; today's time limit (if any) is left as it is "
-            "('claude-token-lens capture on --for 30d' sets or changes one)"
-        )
-        return None, notes
     until = (now + timedelta(days=DEFAULT_CAPTURE_TIMEBOX_DAYS)).isoformat(timespec="seconds")
     if given is None:
         stdout.write(

@@ -622,9 +622,15 @@ def _reach_text(usage: dict | None) -> str:
     return ", ".join(parts) or "not seen in your sessions in this window"
 
 
-def _amount(units: Units, usd: float, period: str) -> str:
+def _amount(units: Units, usd: float, period: str, *, prefix: str = "") -> str:
     amount = units.money(usd, period=period)
-    return amount.text() if amount is not None else "too small to measure"
+    if amount is None:
+        return "too small to measure"
+    # UX-2: Amount.phrase avoids "About about X% of your weekly usage
+    # limit" -- a subscription's own share text already opens with
+    # "about" (units.Units.money), so a plain f"{prefix}{...}"
+    # concatenation would otherwise double it (finding F3).
+    return amount.phrase(prefix)
 
 
 def _explainer(what: str, now_after: str, review: FileReview, effect: str, tradeoff: str) -> list[list[str]]:
@@ -816,7 +822,11 @@ def build_fixes(review: FileReview, units: Units, period: str) -> list[dict]:
                     "read from the code itself.",
                     f"Now: about {review.tokens:,} tokens, sent to {reach}. After: aim for about {target:,}.",
                     review,
-                    f"About {_amount(units, cost / 2, period)} if you halve it." if cost else "A smaller startup.",
+                    (
+                        f"{_amount(units, cost / 2, period, prefix='About ')} if you halve it."
+                        if cost
+                        else "A smaller startup."
+                    ),
                     "Cutting too much loses rules Claude needs. Review the diff line by line.",
                 ),
                 "\n".join(

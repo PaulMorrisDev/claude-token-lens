@@ -37,6 +37,7 @@ from pathlib import Path
 import pytest
 
 from claude_token_lens import __version__, baseline as baseline_mod, cli, discovery
+from claude_token_lens.snapshots import snapshot_project_key
 
 from helpers import assert_privacy, turn_line, write_jsonl
 
@@ -283,6 +284,60 @@ def test_cmd_apply_claude_root_flag_overrides_default(tmp_path):
     assert not (Path(os.environ["CLAUDE_CONFIG_DIR"]) / "settings.json").exists()
 
 
+def test_cmd_apply_project_scope_uses_that_projects_own_snapshot_not_the_newest_overall(tmp_path, capsys):
+    """COV-04: apply used to resolve `latest_snapshot` as `snaps[-1]` --
+    whichever project snapshotted most recently, anywhere -- even for a
+    project-scoped apply. A provenance-based warning built from the
+    wrong project's snapshot would be meaningless. Two projects here:
+    project-b's snapshot is the newer one overall but carries no
+    provenance conflict; project-a's own (older) snapshot does. Only
+    picking project-a's own snapshot surfaces the warning.
+    """
+    config_dir = tmp_path / "tl"
+    project_a = tmp_path / "project-a"
+    project_b = tmp_path / "project-b"
+    (project_a / ".claude").mkdir(parents=True)
+    (project_b / ".claude").mkdir(parents=True)
+
+    snapshots_dir = config_dir / "snapshots"
+    snapshots_dir.mkdir(parents=True)
+    (snapshots_dir / "20260101T000000Z.json").write_text(
+        json.dumps(
+            {
+                "ts": "20260101T000000Z",
+                "schema_version": 2,
+                "project_slug": snapshot_project_key(discovery.slug_for(str(project_a))),
+                "effective": {"model": "haiku"},
+                "effective_provenance": {"model": "project_local"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (snapshots_dir / "20260201T000000Z.json").write_text(
+        json.dumps(
+            {
+                "ts": "20260201T000000Z",
+                "schema_version": 2,
+                "project_slug": snapshot_project_key(discovery.slug_for(str(project_b))),
+                "effective": {"model": "haiku"},
+                "effective_provenance": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    exit_code = cli.main(
+        [
+            "apply", "--set", "model=haiku", "--scope", "repo", "--project-dir", str(project_a),
+            "--config-dir", str(config_dir), "--dry-run",
+        ]
+    )
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "Already overridden by a higher-precedence layer" in out
+    assert "model: already set by" in out
+
+
 def test_cmd_apply_dry_run_exits_nonzero_when_plan_would_be_refused(tmp_path, capsys):
     """Fix S1: a --dry-run whose real apply would refuse (here: a
     profile naming an agent with no corresponding file, and no
@@ -332,6 +387,54 @@ def test_baseline_list_and_show_round_trip(tmp_path, monkeypatch, capsys):
     assert "# Onboarding baseline report" in show_out
     assert "## Suggested profile" in show_out
     assert_privacy({"out": show_out})
+
+
+def test_backtest_reports_no_predictions_without_a_store(tmp_path, capsys):
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    exit_code = cli.main(["backtest", "--config-dir", str(config_dir)])
+    err = capsys.readouterr().err
+    assert exit_code == 1
+    assert "no predictions logged yet" in err
+
+
+def test_backtest_lists_judged_and_pending_predictions(tmp_path, capsys):
+    from claude_token_lens.service.serve import STORE_FILENAME
+    from claude_token_lens.service.store import Store
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    store = Store(config_dir / STORE_FILENAME)
+    store.open()
+    store.upsert_prediction(
+        prediction_id="pred-judged",
+        ts="2026-09-20T09:00:00Z",
+        source="whatif",
+        measure_key="model",
+        agent=None,
+        predicted_usd=1.0,
+        predicted_pct=None,
+        fidelity="ceiling",
+    )
+    store.judge_prediction("pred-judged", change_ts="2026-09-21T09:00:00Z", verdict="as_estimated", measured_usd=1.1, measured_pct=-10.0)
+    store.upsert_prediction(
+        prediction_id="pred-pending",
+        ts="2026-09-22T09:00:00Z",
+        source="whatif",
+        measure_key="promptCacheTtl",
+        agent=None,
+        predicted_usd=0.5,
+        predicted_pct=None,
+        fidelity="simulated",
+    )
+    store.close()
+
+    exit_code = cli.main(["backtest", "--config-dir", str(config_dir)])
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert "model" in out and "as_estimated" in out
+    assert "1 prediction still waiting on a match or more data." in out
+    assert_privacy({"out": out})
 
 
 def test_no_argv_with_no_data_exits_1(capsys):
@@ -1661,6 +1764,90 @@ def test_cmd_apply_set_merges_a_skill_override_by_name(tmp_path, capsys):
     }
     assert cli.main(["apply", "--set", "skillOverrides=pdf:sometimes", "--config-dir", str(config_dir),
                      "--claude-root", str(claude_root), "--dry-run"]) == 2
+
+
+def test_cmd_apply_set_env_writes_the_settings_env_block(tmp_path, capsys):
+    # COV-07/COV-11: apply --set env.NAME=value writes into the target
+    # settings file's own "env" object, exactly like any other --set key
+    # -- no more "export this yourself" guidance.
+    claude_root = tmp_path / "claude"
+    config_dir = tmp_path / "tl"
+    claude_root.mkdir()
+    settings = claude_root / "settings.json"
+    settings.write_text('{"env": {"SOME_OTHER_VAR": "keep-me"}}', encoding="utf-8")
+    command = [
+        "apply", "--set", "env.ENABLE_TOOL_SEARCH=true",
+        "--config-dir", str(config_dir), "--claude-root", str(claude_root),
+    ]
+    assert cli.main([*command, "--dry-run"]) == 0
+    out = capsys.readouterr().out
+    assert "Change: env.ENABLE_TOOL_SEARCH" in out
+    assert '"ENABLE_TOOL_SEARCH": "true"' in out
+    assert "export" not in out.lower()
+    assert json.loads(settings.read_text(encoding="utf-8")) == {"env": {"SOME_OTHER_VAR": "keep-me"}}
+
+    assert cli.main(command) == 0
+    assert json.loads(settings.read_text(encoding="utf-8")) == {
+        "env": {"SOME_OTHER_VAR": "keep-me", "ENABLE_TOOL_SEARCH": "true"}
+    }
+
+
+def test_cmd_apply_set_rejects_mixing_env_and_settings_keys(tmp_path, capsys):
+    config_dir = tmp_path / "tl"
+    claude_root = tmp_path / "claude"
+    exit_code = cli.main(
+        [
+            "apply", "--set", "env.ENABLE_TOOL_SEARCH=true", "--set", "effortLevel=medium",
+            "--config-dir", str(config_dir), "--claude-root", str(claude_root), "--dry-run",
+        ]
+    )
+    assert exit_code == 2
+    assert "can't be mixed" in capsys.readouterr().err
+
+
+def test_cmd_apply_set_env_rejects_agent_flag(tmp_path, capsys):
+    config_dir = tmp_path / "tl"
+    claude_root = tmp_path / "claude"
+    exit_code = cli.main(
+        [
+            "apply", "--set", "env.ENABLE_TOOL_SEARCH=true", "--agent", "reviewer",
+            "--config-dir", str(config_dir), "--claude-root", str(claude_root), "--dry-run",
+        ]
+    )
+    assert exit_code == 2
+    assert "doesn't apply to an environment variable" in capsys.readouterr().err
+
+
+def test_cmd_apply_launch_prints_effort_flag_when_profile_sets_effort_level(tmp_path, capsys):
+    # PROF-02: --launch --dry-run prints `claude --settings <file> --effort
+    # <level>` for session-only use, since a launch overlay has no other
+    # way to carry effortLevel along with it.
+    config_dir = tmp_path / "tl"
+    claude_root = tmp_path / "claude"
+    profile_path = tmp_path / "sample.toml"
+    _write_profile_toml(profile_path, settings={"effortLevel": "high"})
+
+    exit_code = cli.main(
+        ["apply", str(profile_path), "--launch", "--config-dir", str(config_dir), "--claude-root", str(claude_root)]
+    )
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert re.search(r"claude --settings \S+ --effort high", out)
+    assert "Session-only" in out
+
+
+def test_cmd_apply_launch_omits_effort_flag_without_an_effort_level(tmp_path, capsys):
+    config_dir = tmp_path / "tl"
+    claude_root = tmp_path / "claude"
+    profile_path = tmp_path / "sample.toml"
+    _write_profile_toml(profile_path, settings={"outputStyle": "concise"})
+
+    exit_code = cli.main(
+        ["apply", str(profile_path), "--launch", "--config-dir", str(config_dir), "--claude-root", str(claude_root)]
+    )
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "--effort" not in out
 
 
 def test_check_lists_every_quick_action_and_runs_one_in_full(tmp_path, capsys):

@@ -1736,6 +1736,67 @@ def test_cache_economy_zero_write_usd_gives_zero_roi():
     assert result["cache_roi"] == 0.0
 
 
+def test_cache_tokens_at_input_rate_folds_in_fast_long_context_and_geo():
+    """P10a perf rewrite: ``_cache_tokens_at_input_rate`` used to price a
+    synthetic turn (cache tokens folded into ``input_tokens``) a second
+    time via ``price_turn`` and subtract the real ``input_cost`` back
+    out; it now reads the effective input rate straight from
+    ``pricing.effective_rates``. Cross-checks that rewrite against a
+    model whose fast, long-context and geo-uplift rules are all active
+    at once -- the multipliers ``effective_rates`` folds in, in the same
+    order ``price_turn`` applies them -- so a mistake in that folding
+    (e.g. dropping the geo uplift) would show up here even though it
+    wouldn't in the plain-``SONNET_RATES`` tests above.
+    """
+    from claude_token_lens.pricing import FastRule, LongContextRule, ModelRates, ResolvedRates
+
+    model_rates = ModelRates(
+        canonical_id="test-model",
+        input=2.0,
+        output=10.0,
+        cache_write_5m=2.5,
+        cache_write_1h=4.0,
+        cache_read=0.2,
+        geo_multipliers={"us": 1.25},
+        long_context=LongContextRule(threshold_tokens=1_000, multiplier=2.0),
+        fast=FastRule(multiplier=1.5),
+    )
+    rates = ResolvedRates(canonical_id="test-model", rates=model_rates)
+    turn = _turn(
+        input_tokens=1_000,
+        output_tokens=100,
+        cache_read_tokens=500,
+        cache_creation_tokens=300,
+        cc_5m=300,
+        ctx=2_000,  # >= long_context.threshold_tokens
+        speed="fast",
+        inference_geo="us",
+    )
+    # input rate: 2.0 (base) * 1.5 (fast) * 2.0 (long_context) * 1.25 (geo) = 7.5.
+    expected_rate = 2.0 * 1.5 * 2.0 * 1.25
+    expected = (500 + 300) / 1_000_000 * expected_rate
+
+    result = cache_economy([turn], rates)
+    assert result["uncached_equivalent_usd"] == pytest.approx(expected, abs=1e-12, rel=1e-12)
+
+    # Cross-check against the old two-price_turn-calls-and-subtract shape
+    # directly (not just the hand-computed rate above), so a change to
+    # price_turn's own multiplier order would also be caught here.
+    real = price_turn(turn, rates)
+    synthetic = dataclasses.replace(
+        turn,
+        input_tokens=turn.input_tokens + turn.cache_read_tokens + turn.cache_creation_tokens,
+        cache_creation_tokens=0,
+        cache_read_tokens=0,
+        cc_5m=0,
+        cc_1h=0,
+    )
+    inflated = price_turn(synthetic, rates)
+    assert result["uncached_equivalent_usd"] == pytest.approx(
+        inflated.input_cost - real.input_cost, abs=1e-12, rel=1e-12
+    )
+
+
 # -- build_section: new tables, notes, window_start caveat ----------------
 
 

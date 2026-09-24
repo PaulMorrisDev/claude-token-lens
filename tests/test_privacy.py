@@ -33,14 +33,16 @@ import dataclasses
 import re
 from pathlib import Path
 
-from claude_token_lens.model import Column, Recommendation, Section, Table, TranscriptMeta
+from claude_token_lens.model import Column, EventKind, Recommendation, Section, Table, TranscriptMeta
 from claude_token_lens.parse import parse_transcript
 
 from helpers import (
     assert_privacy,
     attachment_line,
+    ignorable_line,
     system_line,
     tool_use_block,
+    tool_result_block,
     turn_line,
     user_block_line,
     user_str_line,
@@ -213,6 +215,28 @@ def test_privacy_tool_result_text_is_never_stored(tmp_path: Path):
     _assert_no_violations(result)
 
 
+def test_privacy_a_malformed_skill_name_never_reaches_skills_invoked(tmp_path: Path):
+    # SEC-P3: a Skill tool_use's own "skill" input is free text Claude
+    # controls. This value is short and has no drive-letter/URL/@ shape,
+    # so neither the length cap above nor assert_privacy's shape scan
+    # would catch it on their own -- SKILL_NAME_PATTERN is the actual
+    # gate (a space isn't in its allowed character set), and it must
+    # keep a string like this out of Turn.skills_invoked altogether.
+    lines = [
+        turn_line(
+            message_id="msg_1",
+            input_tokens=100,
+            output_tokens=10,
+            content=[tool_use_block("Skill", "tu1", {"skill": "leak project codename"})],
+        ),
+    ]
+    path = tmp_path / "session.jsonl"
+    write_jsonl(path, lines)
+    result = parse_transcript(path, TranscriptMeta(path=str(path)))
+    assert result.turns[0].skills_invoked == ()
+    _assert_no_violations(result)
+
+
 def test_privacy_mcp_instructions_delta_text_is_never_stored(tmp_path: Path):
     huge_instructions = "## some-mcp-server\nlots of instruction text here " * 200
     lines = [
@@ -258,12 +282,233 @@ def test_privacy_every_event_kind_fixture(tmp_path: Path):
         attachment_line("environment", rendered="y" * 500),
         attachment_line("queued_command"),
         attachment_line("an_unclassified_future_type"),
+        # Parser-signals batch (SURV-4/5/6, PARSER_VERSION 19): the three
+        # new line shapes this phase adds, in the same broad sweep.
+        attachment_line("thinking_drop", newlyDropped={"reason": "prefix_mismatch", "blockCount": 2, "turnCount": 1}),
+        attachment_line("task_status", status="completed", taskType="local_bash"),
+        attachment_line("structured_output", data={"ok": True}),
+        ignorable_line("cost-state", totalCostUSD=1.23, hasUnknownModelCost=False),
         turn_line(message_id="msg_2", input_tokens=50, output_tokens=5),
     ]
     path = tmp_path / "session.jsonl"
     write_jsonl(path, lines)
     result = parse_transcript(path, TranscriptMeta(path=str(path)))
     assert len(result.events) >= 20
+    _assert_no_violations(result)
+
+
+# -- Parser-signals batch (SURV-4/5/6/7, PARSER_VERSION 19): dedicated ---
+# -- fixtures for each new field/kind, per the phase brief's own          -
+# -- "add privacy fixtures for each new field or kind" requirement.       -
+
+
+def test_privacy_thinking_drop_never_carries_identifying_fields(tmp_path: Path):
+    # newlyDropped can carry far more than reason/blockCount/turnCount in
+    # the real corpus (request ids, model names, the actual dropped block
+    # hashes/content) -- _thinking_drop_detail must only ever pick out the
+    # three closed fields, never pass the rest through.
+    lines = [
+        attachment_line(
+            "thinking_drop",
+            newlyDropped={
+                "reason": "prefix_mismatch",
+                "blockCount": 3,
+                "turnCount": 1,
+                "first": "here is the actual thinking text that was dropped",
+                "last": "and the final dropped block's text too",
+                "clientChange": True,
+                "blockHashes": ["deadbeef" * 8, "cafebabe" * 8],
+                "requestId": "req_secret_12345",
+                "querySource": "user-secret-source",
+                "model": "claude-opus-5-secret-snapshot",
+            },
+        ),
+    ]
+    path = tmp_path / "session.jsonl"
+    write_jsonl(path, lines)
+    result = parse_transcript(path, TranscriptMeta(path=str(path)))
+    events = [e for e in result.events if e.subkind == "thinking_drop"]
+    assert len(events) == 1
+    detail = events[0].detail
+    assert set(detail) <= {"reason", "blockCount", "turnCount"}
+    assert detail["reason"] == "prefix_mismatch"
+    forbidden = ("first", "last", "clientChange", "blockHashes", "requestId", "querySource", "model", "dropped text")
+    for token in forbidden:
+        assert token not in repr(detail)
+    _assert_no_violations(result)
+
+
+def test_privacy_thinking_drop_unknown_reason_becomes_other(tmp_path: Path):
+    lines = [
+        attachment_line("thinking_drop", newlyDropped={"reason": "some-new-internal-reason-code", "blockCount": 1}),
+    ]
+    path = tmp_path / "session.jsonl"
+    write_jsonl(path, lines)
+    result = parse_transcript(path, TranscriptMeta(path=str(path)))
+    events = [e for e in result.events if e.subkind == "thinking_drop"]
+    assert events[0].detail["reason"] == "other"
+    assert "some-new-internal-reason-code" not in repr(events[0].detail)
+    _assert_no_violations(result)
+
+
+def test_privacy_task_status_never_reaches_description_or_paths(tmp_path: Path):
+    # Mirrors test_privacy_a_malformed_skill_name_never_reaches_skills_invoked:
+    # a task_status line carries plenty of identifying/free-text fields in
+    # the real corpus (description, deltaSummary, outputFilePath, shell) --
+    # _task_status_detail must only ever surface the two closed-vocabulary
+    # words, never these.
+    long_path = "C:\\Users\\paulm\\secret-project\\output\\result.json"
+    lines = [
+        attachment_line(
+            "task_status",
+            status="completed",
+            taskType="local_bash",
+            description="refactor the auth module to fix the login bug for jane.doe@acme.com",
+            deltaSummary="changed 14 files, added retry logic",
+            outputFilePath=long_path,
+            shell="/bin/bash -c 'cat ~/.ssh/id_rsa'",
+        ),
+    ]
+    path = tmp_path / "session.jsonl"
+    write_jsonl(path, lines)
+    result = parse_transcript(path, TranscriptMeta(path=str(path)))
+    events = [e for e in result.events if e.kind == EventKind.TASK_STATUS]
+    assert len(events) == 1
+    detail = events[0].detail
+    assert set(detail) <= {"status", "task_type"}
+    assert detail == {"status": "completed", "task_type": "local_bash"}
+    forbidden = ("refactor", "jane.doe", "acme.com", "changed 14 files", "Users", "paulm", "ssh", "id_rsa")
+    for token in forbidden:
+        assert token not in repr(detail)
+    _assert_no_violations(result)
+
+
+def test_privacy_task_status_unknown_words_become_other(tmp_path: Path):
+    lines = [
+        attachment_line("task_status", status="some-future-status", taskType="some-future-type"),
+    ]
+    path = tmp_path / "session.jsonl"
+    write_jsonl(path, lines)
+    result = parse_transcript(path, TranscriptMeta(path=str(path)))
+    events = [e for e in result.events if e.kind == EventKind.TASK_STATUS]
+    assert events[0].detail == {"status": "other", "task_type": "other"}
+    _assert_no_violations(result)
+
+
+def test_privacy_structured_output_data_is_never_stored_only_its_size(tmp_path: Path):
+    long_free_text = "this is the actual structured payload content " * 20
+    lines = [
+        attachment_line(
+            "structured_output",
+            data={"summary": long_free_text, "path": "C:\\Users\\paulm\\secret\\out.json"},
+        ),
+    ]
+    path = tmp_path / "session.jsonl"
+    write_jsonl(path, lines)
+    result = parse_transcript(path, TranscriptMeta(path=str(path)))
+    events = [e for e in result.events if e.kind == EventKind.STRUCTURED_OUTPUT]
+    assert len(events) == 1
+    event = events[0]
+    assert not event.detail
+    assert event.size_chars is not None and event.size_chars > 0
+    assert "structured payload content" not in repr(event)
+    assert "Users" not in repr(event)
+    _assert_no_violations(result)
+
+
+def test_privacy_cost_state_total_is_always_a_plain_float(tmp_path: Path):
+    # totalCostUSD is a line straight from Claude Code's own on-disk
+    # transcript, not validated input -- a malicious/malformed value must
+    # never end up stored verbatim (e.g. as a string) on TranscriptMeta.
+    lines = [
+        ignorable_line("cost-state", totalCostUSD="1.23; DROP TABLE users", hasUnknownModelCost=False),
+        ignorable_line("cost-state", totalCostUSD=4.56, hasUnknownModelCost=True),
+    ]
+    path = tmp_path / "session.jsonl"
+    write_jsonl(path, lines)
+    result = parse_transcript(path, TranscriptMeta(path=str(path)))
+    meta = result.meta
+    # The malformed first line is ignored (not int/float); the second,
+    # well-formed line is the last one seen and wins.
+    assert meta.cc_cost_usd == 4.56
+    assert isinstance(meta.cc_cost_usd, float)
+    assert meta.cc_cost_has_unknown_model is True
+    assert "DROP TABLE" not in repr(meta)
+    _assert_no_violations(result)
+
+
+def test_privacy_unknown_line_type_is_sanitised_not_stored_verbatim(tmp_path: Path):
+    malicious_type = "evil<script>alert(1)</script>" + ("x" * 100)
+    lines = [
+        ignorable_line(malicious_type),
+        ignorable_line("also-not-a-real-type"),
+    ]
+    path = tmp_path / "session.jsonl"
+    write_jsonl(path, lines)
+    result = parse_transcript(path, TranscriptMeta(path=str(path)))
+    unknown = result.parser_notes.get("unknown_line_types", {})
+    assert malicious_type not in unknown
+    assert "<script>" not in repr(result.parser_notes)
+    # Bucketed to "other" (fails the closed token-pattern) rather than
+    # dropped, so the count is still visible.
+    assert unknown.get("other", 0) >= 1
+    for key in unknown:
+        assert len(key) <= 40
+        assert "<" not in key and ">" not in key
+    _assert_no_violations(result)
+
+
+def test_privacy_image_and_document_blocks_never_leak_bytes_or_paths(tmp_path: Path):
+    # A 1x1 PNG (valid header, tiny) plus a bogus/oversized "image" and a
+    # document block -- content_block_size must only ever produce counts
+    # (sized into size_chars, or bucketed into unsized_blocks), never the
+    # base64 payload, decoded bytes, or any path-shaped string.
+    tiny_png_b64 = (
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+    )
+    lines = [
+        turn_line(
+            message_id="msg_1",
+            input_tokens=100,
+            output_tokens=10,
+            content=[tool_use_block("Read", "tu1", {"file_path": "x"})],
+        ),
+        user_block_line(
+            [
+                tool_result_block(
+                    "tu1",
+                    [
+                        {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": tiny_png_b64}},
+                        {"type": "document", "source": {"type": "base64", "media_type": "application/pdf", "data": "not-real-pdf-bytes"}},
+                        {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "not-a-real-image"}},
+                    ],
+                )
+            ]
+        ),
+        user_str_line(
+            "look at this",
+            message={
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "look at this"},
+                    {
+                        "type": "image",
+                        "source": {"type": "base64", "media_type": "image/png", "data": tiny_png_b64},
+                    },
+                ],
+            },
+        ),
+    ]
+    path = tmp_path / "session.jsonl"
+    write_jsonl(path, lines)
+    result = parse_transcript(path, TranscriptMeta(path=str(path)))
+    blob = repr(result.parser_notes) + repr(result.events) + repr(result.tool_result_chars)
+    assert tiny_png_b64 not in blob
+    assert "not-real-pdf-bytes" not in blob
+    assert "not-a-real-image" not in blob
+    # Only counts, keyed by closed block-type labels.
+    for counts in result.parser_notes.get("unsized_blocks", {}).values():
+        assert isinstance(counts, int)
     _assert_no_violations(result)
 
 
@@ -461,3 +706,224 @@ def test_redacted_commands_never_leak_through_any_renderer(tmp_path: Path):
     write_csv_dir(report, csv_dir)
     csv_text = "\n".join(p.read_text(encoding="utf-8") for p in csv_dir.rglob("*.csv"))
     _assert_clean("csv", csv_text)
+
+
+# -- P10b: capture tags/notes, feedback and Diagnostics dict keys --------
+#
+# Skill names already have their own fixture above
+# (test_privacy_a_malformed_skill_name_never_reaches_skills_invoked,
+# SEC-P3) -- not duplicated here. These fill the remaining gaps: no
+# fixture in this file had ever put a `[tl: ...]`/`[tl-fb: ...]` tag or a
+# capture note on a real parsed Turn/Event before (test_capture_parse.py
+# covers the string-level parsing with the looser assert_privacy scan;
+# this is the integration proof under the stricter 64-char _walk), and
+# none had exercised Diagnostics's own dict-typed fields, which (per the
+# module docstring above) the generic walk deliberately does not open.
+
+
+def test_privacy_capture_tag_never_carries_unknown_keys_or_paths(tmp_path: Path):
+    # capture_tags.parse_reply_tags already drops unknown keys/words at
+    # the string level (test_capture_parse.py's
+    # test_unknown_keys_words_and_paths_are_dropped) -- this is the
+    # integration proof that once a [tl: ...] tag lands on Turn.cap, the
+    # walk (which recurses into CaptureTag like any other dataclass
+    # field) never finds a leftover long or free-text value either.
+    # SEC-P2 (capture_tags.filter_tag): a tag is trusted only for what
+    # this transcript's own capture note asked for, so the note has to
+    # precede the reply or the whole tag is dropped as unearned.
+    lines = [
+        attachment_line(
+            "hook_additional_context",
+            rendered="tl-cap v1 task,brief,level,shift,missing",
+            content=["tl-cap v1 task,brief,level,shift,missing"],
+            hookName="SessionStart",
+            hookEvent="SessionStart",
+            toolUseID="SessionStart",
+        ),
+        turn_line(
+            message_id="msg_1",
+            input_tokens=100,
+            output_tokens=10,
+            content=[
+                {
+                    "type": "text",
+                    "text": (
+                        "Fixed the bug.\n\n"
+                        "[tl: task=bugfix brief=clear level=normal shift=build "
+                        "secret=C:\\Users\\paulm\\secret.py "
+                        "notes=jane.doe@acme.com missing=files,done]"
+                    ),
+                }
+            ],
+        ),
+    ]
+    path = tmp_path / "session.jsonl"
+    write_jsonl(path, lines)
+    result = parse_transcript(path, TranscriptMeta(path=str(path)))
+    turn = result.turns[0]
+    assert turn.cap is not None
+    assert (turn.cap.task, turn.cap.brief, turn.cap.level, turn.cap.shift) == ("bugfix", "clear", "normal", "build")
+    assert turn.cap.missing == ("files", "done")
+    forbidden = ("secret", "Users", "paulm", "jane.doe", "acme.com")
+    for token in forbidden:
+        assert token not in repr(turn.cap)
+    _assert_no_violations(result)
+
+
+def test_privacy_feedback_tag_never_carries_unknown_keys_or_free_text(tmp_path: Path):
+    lines = [
+        turn_line(
+            message_id="msg_1",
+            input_tokens=100,
+            output_tokens=10,
+            content=[
+                {
+                    "type": "text",
+                    "text": (
+                        "Rated the last piece of work.\n\n"
+                        "[tl-fb: outcome=met slow=unclear,tools worth=yes helped=context "
+                        "note=contact+jane.doe@acme.com path=C:\\Users\\paulm\\secret]"
+                    ),
+                }
+            ],
+        ),
+    ]
+    path = tmp_path / "session.jsonl"
+    write_jsonl(path, lines)
+    result = parse_transcript(path, TranscriptMeta(path=str(path)))
+    turn = result.turns[0]
+    assert turn.feedback is not None
+    assert turn.feedback.source == "tag"
+    assert turn.feedback.outcome == "met"
+    assert set(turn.feedback.slow) == {"unclear", "tools"}
+    assert turn.feedback.worth == "yes"
+    assert set(turn.feedback.helped) == {"context"}
+    forbidden = ("acme.com", "jane.doe", "Users", "paulm", "note=", "path=")
+    for token in forbidden:
+        assert token not in repr(turn.feedback)
+    _assert_no_violations(result)
+
+
+def test_privacy_feedback_answers_drop_free_text_other(tmp_path: Path):
+    # SEC-P1/SECURITY.md: /tl-feedback's four questions are checkbox-only
+    # on the dashboard, but AskUserQuestion always offers a free-text
+    # "Other" option -- feedback_from_answers must drop anything that
+    # isn't one of the question's own closed labels, never store what
+    # someone typed into "Other".
+    question_text = "Did this piece of work deliver what you expected?"
+    lines = [
+        turn_line(
+            message_id="msg_ask",
+            input_tokens=50,
+            output_tokens=10,
+            content=[
+                tool_use_block(
+                    "AskUserQuestion",
+                    "tu_ask",
+                    {
+                        "questions": [
+                            {
+                                "header": "TL outcome",
+                                "question": question_text,
+                                "options": ["Yes", "Partly", "No", "Stopped early"],
+                            }
+                        ]
+                    },
+                )
+            ],
+        ),
+        user_block_line(
+            [tool_result_block("tu_ask", "Recorded.")],
+            toolUseResult={
+                "questions": [{"header": "TL outcome", "question": question_text}],
+                "answers": {
+                    question_text: "Other: it leaked my ssh key at ~/.ssh/id_rsa and emailed paulm@example.com"
+                },
+            },
+        ),
+        turn_line(message_id="msg_2", input_tokens=20, output_tokens=5),
+    ]
+    path = tmp_path / "session.jsonl"
+    write_jsonl(path, lines)
+    result = parse_transcript(path, TranscriptMeta(path=str(path)))
+    # The answer lands on the turn that asked the question (msg_ask), the
+    # same way tool_result_chars_by_tool/agent_result_chars do -- not on
+    # the turn that follows it (msg_2).
+    turn = next(t for t in result.turns if t.message_id == "msg_ask")
+    assert turn.feedback is not None
+    assert turn.feedback.source == "skipped"  # the free-text answer matched no known label
+    assert turn.feedback.outcome is None
+    forbidden = ("ssh", "id_rsa", "example.com", "leaked")
+    for token in forbidden:
+        assert token not in repr(turn.feedback)
+    _assert_no_violations(result)
+
+
+def test_privacy_capture_note_size_is_kept_never_its_text(tmp_path: Path):
+    # A capture note's own content is a closed-vocabulary question list
+    # today, but it's still hook-script output, not a trusted enum -- only
+    # its length (Turn.cap_note_chars) and the closed detail (version,
+    # codes, hook event) may ever reach a Turn/Event; the note text itself
+    # must never.
+    secret = "session token abc123 for jane.doe@acme.com at C:\\Users\\paulm\\project"
+    note_text = f"tl-cap v1 task,brief,level -- {secret}"
+    wrapped = f"<system-reminder>\nSessionStart hook additional context: {note_text}\n</system-reminder>"
+    lines = [
+        attachment_line(
+            "hook_additional_context",
+            rendered=wrapped,
+            content=[note_text],
+            hookName="SessionStart",
+            hookEvent="SessionStart",
+            toolUseID="SessionStart",
+        ),
+        turn_line(message_id="msg_1", input_tokens=100, output_tokens=10),
+    ]
+    path = tmp_path / "session.jsonl"
+    write_jsonl(path, lines)
+    result = parse_transcript(path, TranscriptMeta(path=str(path)))
+    turn = result.turns[0]
+    assert turn.cap_note_chars == len(wrapped)
+    note_events = [e for e in result.events if e.subkind == "capture_note"]
+    assert len(note_events) == 1
+    detail = note_events[0].detail
+    assert set(detail) == {"v", "codes", "hook"}
+    assert detail["v"] == 1
+    assert detail["codes"] == ["task", "brief", "level"]
+    blob = repr(result.events) + repr(result.turns)
+    forbidden = ("acme.com", "jane.doe", "Users", "paulm", "abc123", "session token")
+    for token in forbidden:
+        assert token not in blob
+    _assert_no_violations(result)
+
+
+def test_privacy_diagnostics_ignored_line_type_is_sanitised_not_stored_verbatim(tmp_path: Path):
+    # P10b fix: ignored_line_types (a Diagnostics dict field, populated
+    # from the raw, attacker-controlled top-level `type` of a line the
+    # parser deliberately drops -- an exact _IGNORABLE_TYPES member, an
+    # ignorable file-history-*/artifact-* prefix match, or an UNKNOWN
+    # event) used to store that `type` verbatim as a dict key. Its sibling
+    # counter, parser_notes["unknown_line_types"], already sanitised the
+    # same class of value (see
+    # test_privacy_unknown_line_type_is_sanitised_not_stored_verbatim
+    # above) -- ignored_line_types was the one place this had been missed.
+    # Neither the generic _walk (dict fields aren't walked key-by-key,
+    # see this module's docstring) nor assert_privacy would have caught
+    # this, so it's asserted directly.
+    malicious_prefix_type = "file-history-" + "<script>alert(1)</script>" + ("y" * 100)
+    malicious_unknown_type = "evil<script>alert(2)</script>" + ("z" * 100)
+    lines = [
+        ignorable_line(malicious_prefix_type),
+        ignorable_line(malicious_unknown_type),
+    ]
+    path = tmp_path / "session.jsonl"
+    write_jsonl(path, lines)
+    result = parse_transcript(path, TranscriptMeta(path=str(path)))
+    ignored = result.diagnostics.ignored_line_types
+    assert malicious_prefix_type not in ignored
+    assert malicious_unknown_type not in ignored
+    assert "<script>" not in repr(ignored)
+    for key in ignored:
+        assert len(key) <= 40
+        assert "<" not in key and ">" not in key
+    _assert_no_violations(result)

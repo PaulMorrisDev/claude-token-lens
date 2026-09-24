@@ -14,12 +14,57 @@ Costs rise with depth, so capture comes in levels, each including every metric o
 |---|---|---|---|
 | Off | Nothing is captured and no tokens are used. | – | – |
 | Free | Local signals from hooks that log to a file. Uses no Claude tokens. | – | – |
-| Essentials | Claude tags each piece of work: what kind it was, how clear the request was, how hard, and when the task changed. Subagents say whether they finished. | ~182 tokens | ~88 tokens |
-| Standard | Adds size, what the request lacked, planning, skills, research, why an agent was used, and each subagent's view of its model, rules and brief. | ~342 tokens | ~196 tokens |
-| Deep | Adds how much earlier context was needed, detours, how the change was checked, and a short rating after large tool outputs and web results. | ~405 tokens | ~196 tokens |
+| Essentials | Claude tags each piece of work: what kind it was, how clear the request was, how hard, and when the task changed. Subagents say whether they finished. | ~201 tokens | ~107 tokens |
+| Standard | Adds size, what the request lacked, planning, skills, research, and each subagent's view of its model, rules and brief. | ~330 tokens | ~190 tokens |
+| Deep | Adds how much earlier context was needed, how the change was checked, and a short rating after large tool outputs. | ~371 tokens | ~190 tokens |
 | Custom | Any other set of metrics, turned on one by one (`capture enable`/`capture disable`). | depends what's on | depends what's on |
 
-These are rough sizes — characters in the note divided by four — and don't include the tag Claude writes back (each metric below says roughly how many output tokens its own words cost) or Claude Code's own hook-wrapper overhead. The Capture tab replays your last 14 days of transcripts against each level before you turn it on, and once it's on, measures the real note and tag cost from what Claude Code actually recorded — read that number, not this one, when it matters.
+These are rough sizes — the note's characters divided by four, plus Claude Code's own hook-wrapper overhead (the system-reminder tags around it) — and don't include the tag Claude writes back (each metric below says roughly how many output tokens its own words cost). The Capture tab replays your last 14 days of transcripts against each level before you turn it on, and once it's on, measures the real note and tag cost from what Claude Code actually recorded — read that number, not this one, when it matters.
+
+## What each metric is worth
+
+Gap 4: every metric here has to earn its keep — something has to actually read it and turn it into a decision, not just log it. This table is that trace: each metric's rough cost against what it feeds. The Capture page shows the same thing measured from your own transcripts, in tokens a week instead of per occurrence.
+
+| Metric | Level | ~Output tokens each time | Feeds |
+|---|---|---|---|
+| Kind of task (`task`) | Essentials | ~3 | Profiles per kind of task, Cost per finished piece of work, Model and effort fit |
+| How clear the request was (`brief`) | Essentials | ~3 | Giving Claude information |
+| How hard the work was (`level`) | Essentials | ~3 | Model and effort fit, Profiles per kind of task, Planning |
+| Task changes (`shift`) | Essentials | ~1 | Breaking down work, Clearing context, Planning |
+| Did the agent finish (`result`) | Essentials | ~4 | Delegating to agents, Model and effort fit, Cost per finished piece of work |
+| Why an agent was run again (`retry`) | Essentials | ~1 | Delegating to agents, Model and effort fit |
+| Size of the work (`size`) | Standard | ~2 | Breaking down work |
+| What the request lacked (`missing`) | Standard | ~4 | Giving Claude information, Researching |
+| Planning (`plan`) | Standard | ~2 | Planning |
+| Skills (`skill`) | Standard | ~3 | Using skills |
+| Research result (`found`) | Standard | ~2 | Researching |
+| Agent model fit (`fit`) | Standard | ~2 | Model and effort fit, Delegating to agents |
+| Agent used your rules (`rules`) | Standard | ~2 | Delegating to agents |
+| Agent brief quality (`agent_brief`) | Standard | ~6 | Delegating to agents, Giving Claude information |
+| Earlier context needed (`prior`) | Deep | ~2 | Clearing context |
+| How changes were checked (`check`) | Deep | ~3 | Checking changes |
+| Large tool outputs (`big_output`) | Deep | ~2 | Tool output |
+| Why sessions end (`session_end`) | Free | – | Breaking down work, Clearing context |
+| Waiting on you (`waits`) | Free | – | Waiting and permissions |
+| Permission decisions (`permissions`) | Free | – | Waiting and permissions |
+| How turns end (`turn_signals`) | Free | – | Waiting and permissions, Cost per finished piece of work |
+| Instruction files loaded (`instructions_loaded`) | Always measured, no hook | – | Giving Claude information |
+| Commands and skills you ran (`prompt_expansion`) | Always measured, no hook | – | Using skills |
+| Task lists (`tasks`) | Always measured, no hook | – | Breaking down work |
+| API errors (`stop_failure`) | Always measured, no hook | – | Cost per finished piece of work |
+| What your messages contain (`prompt_features`) | Always measured, no hook | – | Giving Claude information |
+| What agent briefs contain (`brief_features`) | Always measured, no hook | – | Delegating to agents, Giving Claude information |
+| Plans (`plan_features`) | Always measured, no hook | – | Planning |
+| Skill timing (`skill_timing`) | Always measured, no hook | – | Using skills |
+| Agent chains (`spawn_tree`) | Always measured, no hook | – | Delegating to agents |
+| Repeated failures (`tool_loops`) | Always measured, no hook | – | Checking changes, Tool output |
+| Where research happens (`research_split`) | Always measured, no hook | – | Researching, Delegating to agents |
+| Coaching line (`coaching_line`) | Live coaching, any level | – | Clearing context, Tool output, Researching |
+| Brief templates (`brief_templates`) | Live coaching, any level | – | Giving Claude information |
+| Feedback skill (`feedback_skill`) | Feedback, any level | – | Cost per finished piece of work |
+| Feedback reminder in the status line (`feedback_note`) | Feedback, any level | – | Cost per finished piece of work |
+| Feedback reminder from Claude (`feedback_reminder`) | Feedback, any level | ~20 | Cost per finished piece of work |
+| Rate sessions on the dashboard (`dashboard_rating`) | Feedback, any level | – | Cost per finished piece of work |
 
 ## Main session
 
@@ -103,16 +148,6 @@ These are rough sizes — characters in the note divided by four — and don't i
 - **Hook:** SessionStart
 - **Powers:** Clearing context
 
-### Detours (`detour`)
-
-- **Level:** Deep
-- **Captures:** The main time sink, if any: a dead end, rereading files, building more than asked, environment trouble, or flaky tests.
-- **Why:** Waste the transcript's shape can't show.
-- **Tag:** `detour=none|dead-end|reread|overbuilt|env|flaky`
-- **Costs:** about 3 output tokens each time
-- **Hook:** SessionStart
-- **Powers:** Breaking down work, Checking changes, Giving Claude information
-
 ### How changes were checked (`check`)
 
 - **Level:** Deep
@@ -144,16 +179,6 @@ These are rough sizes — characters in the note divided by four — and don't i
 - **Costs:** about 1 output token each time
 - **Hook:** SessionStart, SubagentStart
 - **Powers:** Delegating to agents, Model and effort fit
-
-### Why an agent was used (`spawn`)
-
-- **Level:** Standard
-- **Captures:** When Claude hands work to an agent, why: to run in parallel, to keep the main context clean, for a cheaper model, for a specialist, or for a review.
-- **Why:** Whether delegating paid off, for example isolated agents that send back long reports.
-- **Tag:** `[spawn: parallel|isolate|cheaper|specialist|review]`
-- **Costs:** about 1 output token each time
-- **Hook:** SessionStart, SubagentStart
-- **Powers:** Delegating to agents
 
 ### Agent model fit (`fit`)
 
@@ -239,22 +264,12 @@ These are rough sizes — characters in the note divided by four — and don't i
 ### Large tool outputs (`big_output`)
 
 - **Level:** Deep
-- **Captures:** After a tool result of about 8,000 tokens or more, how much of it Claude needed: all, part or none. Claude Code waits for the hook after each shell, read, search, web or MCP result, which adds a fraction of a second to each.
+- **Captures:** After a tool result of about 8,000 tokens or more, how much of it Claude needed: all, part or none. Claude Code waits for the hook after each shell, read, search, web or MCP result; 'capture status' shows how long that has actually added, measured from your own sessions.
 - **Why:** Quieter commands, offset reads and output caps where big outputs weren't needed.
 - **Tag:** `out=needed|part|unneeded`
 - **Costs:** about 2 output tokens each time
 - **Hook:** PostToolUse
 - **Powers:** Tool output
-
-### Web results (`web`)
-
-- **Level:** Deep
-- **Captures:** After a web search or fetch, whether the result was useful. Claude Code waits for the hook after each one, which adds a fraction of a second.
-- **Why:** Web research against handing Claude the page or document yourself.
-- **Tag:** `useful=yes|part|no`
-- **Costs:** about 2 output tokens each time
-- **Hook:** PostToolUse
-- **Powers:** Researching
 
 ## Free local signals
 
@@ -284,6 +299,15 @@ These are rough sizes — characters in the note divided by four — and don't i
 - **Tag:** No tag. A hook records it directly; Claude is never asked.
 - **Hook:** PermissionRequest
 - **Powers:** Waiting and permissions
+
+### How turns end (`turn_signals`)
+
+- **Level:** Free
+- **Captures:** Whether each turn ended normally or Claude Code re-asked the Stop hook, and the kind of API error on a failed turn (rate limit, overloaded and so on) -- never the error's own text.
+- **Why:** An independent, hook-level check next to what the transcript already shows about limit hits and API errors.
+- **Tag:** No tag. A hook records it directly; Claude is never asked.
+- **Hook:** Stop, StopFailure
+- **Powers:** Waiting and permissions, Cost per finished piece of work
 
 ## Always measured
 
@@ -392,7 +416,7 @@ These are rough sizes — characters in the note divided by four — and don't i
 - **Level:** Feedback, any level
 - **Captures:** Claude adds one line suggesting /tl-feedback when it finishes a piece of work.
 - **Why:** For people without the status line. Costs a few output tokens each time.
-- **Tag:** No fixed key. The note asks for a line: "When you finish a piece of work the user asked for, end your reply with: Finished? Run /tl-feedback: a few ticks make your savings tips fit how you work."
+- **Tag:** No fixed key. The note asks for a line: "When you finish a piece of work the user asked for, add before your tag: Finished? Run /tl-feedback: a few ticks make your savings tips fit how you work."
 - **Costs:** about 20 output tokens each time
 - **Hook:** SessionStart
 - **Powers:** Cost per finished piece of work
@@ -417,7 +441,7 @@ Every note (`capture-hook.py` builds the same text from `capture-catalogue.json`
 
 A subagent's note asks for `[result: done|partial|blocked]` when nothing else needs a key of its own, or `[result: done|partial|blocked key=word ...]` once Standard's extra keys are on: "End your final report with one line, [result: done|partial|blocked key=word ...], using only these words:"
 
-Starting an agent again after its last run fell short, or handing work to one at all, is marked at the start of its brief instead of the end of a report: `[retry: model|brief|tools|scope|other]` and `[spawn: parallel|isolate|cheaper|specialist|review]`.
+Starting an agent again after its last run fell short is marked at the start of its brief instead of the end of a report: `[retry: model|brief|tools|scope|other]`.
 
 The `/tl-feedback` skill ends with its own line: `[tl-fb: outcome=met|partly|missed|stopped slow=unclear,rework,tools,none worth=yes|fair|no helped=context,plan,smaller,none]`.
 
@@ -427,7 +451,7 @@ If Claude writes more than one tag, the last one wins, key by key.
 
 Claude writes closed vocabularies only. Every `[tl: ...]`, `[result: ...]`, `[retry: ...]`, `[spawn: ...]` and `[tl-fb: ...]` word is checked against the lists on this page; anything else — an unknown word, a key outside those lists, free text, a path — is dropped by the parser and never stored. The one exception that can carry a name is `skill=would-help:<name>`, and only when `<name>` matches a skill this transcript actually listed or invoked in the window; any other name is cut down to a bare `would-help`.
 
-Free local signals never involve Claude at all: a hook logs the session id (hashed with this tool's own salt), the event word, and — for a permission prompt — the tool name, never its arguments, to a local file under `<config-dir>/signals/`.
+Free local signals never involve Claude at all: a hook logs the session id (hashed with this tool's own salt), the event word, and — for a permission prompt — the tool name, never its arguments, to a local file under `<config-dir>/signals/`. Those files, and the `capture-log.jsonl` record of every on/off/level change, aren't kept forever: `serve`'s watcher (or `capture prune` by hand) deletes entries past your configured retention, a default applying when none is set.
 
 "Always measured" metrics read only what Claude Code's own transcript already contains — instruction files loaded, commands and skills run, task counts, API errors, and simple yes/no facts about a message's shape (does it name a file path, does it contain a code block) — and keep only those flags and counts, never the text itself.
 
@@ -435,13 +459,16 @@ Free local signals never involve Claude at all: a hook logs the session id (hash
 
 The hook script and its catalogue (`capture-hook.py`, `capture-catalogue.json`) live side by side under `<config-dir>/hooks/`. Only `capture on` and `capture connect` ever change `~/.claude/settings.json` — and only after showing the diff and asking first, unless you pass `--yes`. Every other change writes only this tool's own `config.toml`.
 
-- `claude-token-lens capture status` — the level, what's on, since when, and the cost measured so far.
-- `claude-token-lens capture on [--level LEVEL] [--for DURATION | --until DATE] [--sample N] [--yes] [--dry-run]` — turn it on (default level: Essentials).
+- `claude-token-lens capture status` — the level, what's on, since when, and the cost measured so far. While big_output or web is on, it also prints Deep's actual measured wait (median and p90, over the last 7 days). It also flags any hook — Token Lens's own or one of yours — that failed on most of its calls over the last 14 days, naming it (event name only, never a matcher or tool name), where to find it in `settings.json`, the trade-off, and the undo; this is only ever a printed prompt, never an automatic change.
+- `claude-token-lens capture on [--level LEVEL] [--for DURATION | --until DATE | --no-limit] [--sample N] [--yes] [--dry-run]` — turn it on (default level: Essentials).
 - `claude-token-lens capture level LEVEL` — change the level.
+
+A fresh switch from off to on — at `init`, `capture on`/`level`, or the Capture page — gets a 14-day time-box by default, so turning it on doesn't mean it runs unattended forever: it switches itself back off on its own unless you say otherwise. `--for DURATION` (a number and `h`, `d` or `w`, e.g. `30d`) or `--until DATE` picks another length or end date; `--no-limit` turns the time-box off entirely, so capture runs until you switch it off yourself. `init` has the same three choices as `--capture-for DURATION`, `--capture-level LEVEL --capture-no-limit`, or (interactively, or under `--non-interactive` with neither given) the default. Changing the level of capture that's already on leaves an existing time-box (or the lack of one) exactly as it is — the default only ever applies to a fresh switch-on.
 - `claude-token-lens capture enable METRIC...` / `capture disable METRIC...` — turn individual metrics on or off; the level becomes Custom once the set no longer matches a preset.
 - `claude-token-lens capture off` — stop the notes and tags at once, without touching settings.json.
 - `claude-token-lens capture connect` — add the settings.json hook entries the metrics you've chosen need.
 - `claude-token-lens capture remove` — switch off and take those hook entries back out.
 - `claude-token-lens capture feedback on|off` — the `/tl-feedback` skill and its status-line reminder.
 - `claude-token-lens capture brief on|off` — the `/tl-brief` skill.
+- `claude-token-lens capture prune [--dry-run]` — delete signal files and `capture-log.jsonl` records past your configured retention (`retention_days` in `config.toml`, or a default when it's unset); `serve`'s watcher already runs this same cleanup on every tick, so this is for anyone not running it.
 - `claude-token-lens changes` and `claude-token-lens uninstall` also cover metrics capture: they list everything it installed and can remove all of it — hooks, skills and signal files included.

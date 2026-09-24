@@ -71,7 +71,13 @@ def _build_home(tmp_path: Path) -> Path:
         "permissions": {"allow": ["Bash(git *)"], "deny": []},
         # Not on the allowlist and not bool/int -> must redact to str(len).
         "statusLine": {"type": "command", "command": "some-status-command"},
-        "mcpServers": {"filesystem": {}, "github": {}},
+        # COV-03/D6 fix: mcpServers is never a settings.json key at any
+        # scope (docs/en/settings-reference.md has no such entry -- only
+        # managedMcpServers, Managed-scope only); kept here, commented,
+        # only to document that this fixture used to (incorrectly) rely
+        # on it being read from here. Personal MCP servers actually live
+        # in ~/.claude.json -- see test_hook_writes_redacted_snapshot,
+        # which writes its own.
         "enabledMcpjsonServers": ["filesystem"],
         "enabledPlugins": {"my-plugin@marketplace": True},
     }
@@ -176,6 +182,11 @@ def test_assert_privacy_is_blind_to_a_nested_dict_leak_but_deep_variant_catches_
 
 def test_hook_writes_redacted_snapshot(tmp_path, home, project):
     config_dir = home / ".claude" / "token-lens"
+    # Personal MCP servers actually live in ~/.claude.json (COV-03/D6 fix
+    # -- see the comment in _build_home).
+    (home / ".claude" / ".claude.json").write_text(
+        json.dumps({"mcpServers": {"filesystem": {}, "github": {}}}), encoding="utf-8"
+    )
     stdin = json.dumps(
         {
             "session_id": "sess-1",
@@ -425,31 +436,57 @@ def test_managed_settings_default_platform_path_used_when_no_override(home, proj
     assert "managed_keys" in snapshot
 
 
-@pytest.mark.skipif(sys.platform != "win32", reason="exercises the Windows default path branch")
-def test_managed_settings_default_windows_path_honours_programdata_env(tmp_path, home, project):
-    # No --managed-path override: point the well-known ProgramData env var
-    # at a throwaway directory and prove default_managed_settings_path()'s
-    # Windows branch (<ProgramData>/ClaudeCode/managed-settings.json) is
-    # what actually gets read, not a hardcoded literal path.
-    fake_program_data = tmp_path / "fake-programdata"
-    managed_dir = fake_program_data / "ClaudeCode"
-    managed_dir.mkdir(parents=True)
-    (managed_dir / "managed-settings.json").write_text(
-        json.dumps({"effortLevel": "high"}), encoding="utf-8"
+def test_managed_settings_dir_windows_honours_programfiles_env(monkeypatch):
+    # COV-05 fix: default_managed_settings_dir()'s Windows branch used to
+    # be <ProgramData>/ClaudeCode -- the legacy path
+    # docs/en/managed-settings.md now says Claude Code no longer reads
+    # ("Claude Code doesn't read the legacy Windows path
+    # C:\ProgramData\ClaudeCode\managed-settings.json"). The current one is
+    # <ProgramFiles>/ClaudeCode.
+    #
+    # This is a direct, in-process call rather than a subprocess test (the
+    # rest of this file's usual style): ProgramFiles is one of the handful
+    # of Windows environment variables that a *child* process can silently
+    # re-resolve to the real machine value regardless of what's in the
+    # explicit env block a parent passes to CreateProcess, which made a
+    # subprocess version of this test flaky on some machines even though
+    # the function under test was correct.
+    hook = _load_hook_module()
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setenv("ProgramFiles", r"C:\fake-program-files")
+    assert hook.default_managed_settings_dir() == Path(r"C:\fake-program-files\ClaudeCode")
+    assert hook.default_managed_settings_path() == Path(
+        r"C:\fake-program-files\ClaudeCode\managed-settings.json"
     )
 
-    config_dir = home / ".claude" / "token-lens"
-    stdin = json.dumps({"session_id": "s", "cwd": str(project)})
-    result = _run_hook(
-        config_dir=config_dir,
-        cwd=project,
-        stdin_text=stdin,
-        extra_env={"ProgramData": str(fake_program_data)},
+    monkeypatch.delenv("ProgramFiles", raising=False)
+    assert hook.default_managed_settings_dir() == Path(r"C:\Program Files\ClaudeCode")
+
+
+def test_managed_settings_dir_non_windows_platforms(monkeypatch):
+    hook = _load_hook_module()
+
+    monkeypatch.setattr(sys, "platform", "darwin")
+    assert hook.default_managed_settings_dir() == Path(
+        "/Library/Application Support/ClaudeCode"
     )
-    assert result.returncode == 0
-    snapshot = _latest_snapshot(config_dir)
-    assert snapshot["managed_settings"]["effortLevel"] == "high"
-    assert snapshot["managed_keys"] == ["effortLevel"]
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    assert hook.default_managed_settings_dir() == Path("/etc/claude-code")
+
+
+def test_resolve_dot_claude_json_path_honours_claude_config_dir(monkeypatch, tmp_path):
+    hook = _load_hook_module()
+
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    assert hook.resolve_dot_claude_json_path() == tmp_path / ".claude.json"
+
+    config_dir = tmp_path / "elsewhere"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
+    assert hook.resolve_dot_claude_json_path() == config_dir / ".claude.json"
 
 
 
@@ -498,6 +535,111 @@ def test_model_pricing_absent_reduces_to_not_present():
     spec.loader.exec_module(hook)
     assert hook._redact_model_pricing(None) == {"present": False, "model_ids": []}
     assert hook._redact_model_pricing({}) == {"present": False, "model_ids": []}
+
+
+def test_model_settings_and_max_effort_level_kept_safe(home, project):
+    """PROF-03/F3: modelSettings reduces to each named model's own
+    effortLevel (the one sub-value a recommendation needs to check
+    whether a ticked effortLevel would even apply); maxEffortLevel is a
+    plain safe scalar like effortLevel itself. Both flow into the raw
+    per-layer redaction, the named schema-2 scalars, and effective/
+    effective_provenance."""
+    config_dir = home / ".claude" / "token-lens"
+    settings_path = home / ".claude" / "settings.json"
+    settings = json.loads(settings_path.read_text(encoding="utf-8"))
+    settings["maxEffortLevel"] = "high"
+    settings["modelSettings"] = {
+        "claude-opus-5-5": {"effortLevel": "medium"},
+        "claude-haiku-4-5-20251001": {"somethingUnexpected": "should not leak"},
+    }
+    settings_path.write_text(json.dumps(settings), encoding="utf-8")
+
+    stdin = json.dumps({"session_id": "s", "cwd": str(project)})
+    result = _run_hook(config_dir=config_dir, cwd=project, stdin_text=stdin)
+    assert result.returncode == 0
+
+    snapshot = _latest_snapshot(config_dir)
+    raw_text = json.dumps(snapshot)
+    user_settings = snapshot["user_settings"]
+    assert user_settings["maxEffortLevel"] == "high"
+    assert user_settings["modelSettings"] == {
+        "claude-opus-5-5": {"effortLevel": "medium"},
+        "claude-haiku-4-5-20251001": {"effortLevel": None},
+    }
+    assert "somethingUnexpected" not in raw_text and "should not leak" not in raw_text
+
+    expected_model_settings = {
+        "claude-opus-5-5": {"effortLevel": "medium"},
+        "claude-haiku-4-5-20251001": {"effortLevel": None},
+    }
+    user_layer = snapshot["settings_layers"]["user"]
+    assert user_layer["max_effort_level"] == "high"
+    assert user_layer["model_settings"] == expected_model_settings
+
+    assert snapshot["effective"]["maxEffortLevel"] == "high"
+    assert snapshot["effective_provenance"]["maxEffortLevel"] == "user"
+    assert snapshot["effective"]["modelSettings"] == expected_model_settings
+    assert snapshot["effective_provenance"]["modelSettings"] == "user"
+
+
+def test_model_settings_absent_reduces_to_empty_dict():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("snapshot_config_hook", _HOOK_PATH)
+    hook = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(hook)
+    assert hook._redact_model_settings(None) == {}
+    assert hook._redact_model_settings({}) == {}
+    assert hook._redact_model_settings({"claude-opus-5-5": "not-a-dict"}) == {}
+
+
+def test_effort_level_env_set_is_recorded_as_a_flag_never_a_value(home, project):
+    config_dir = home / ".claude" / "token-lens"
+    stdin = json.dumps({"session_id": "s", "cwd": str(project)})
+
+    result = _run_hook(config_dir=config_dir, cwd=project, stdin_text=stdin)
+    assert result.returncode == 0
+    assert _latest_snapshot(config_dir)["content_layers"]["effort_level_env_set"] is False
+
+    # Ensure the second run's timestamp-based filename cannot collide with
+    # the first if the clock hasn't ticked a whole second yet (see
+    # test_min_interval_zero_always_writes_even_with_identical_content).
+    time.sleep(1.1)
+    result = _run_hook(
+        config_dir=config_dir, cwd=project, stdin_text=stdin,
+        extra_env={"CLAUDE_CODE_EFFORT_LEVEL": "xhigh"},
+        # The default 300s min-interval throttle would otherwise skip this
+        # second write entirely (test_min_interval_skips_identical_content),
+        # silently leaving the first (env-unset) snapshot as "latest".
+        extra_args=["--min-interval", "0"],
+    )
+    assert result.returncode == 0
+    snapshot = _latest_snapshot(config_dir)
+    assert snapshot["content_layers"]["effort_level_env_set"] is True
+    assert "xhigh" not in json.dumps(snapshot)
+
+
+def test_parse_frontmatter_block_sequence_list():
+    """COV-10: a YAML block sequence (``key:`` followed by ``- item``
+    lines) collects into an actual list, the conventional way a skill's
+    ``paths:`` frontmatter field is written -- not just the inline
+    ``[a, b]`` form :func:`_parse_scalar` already handled.
+    """
+    hook = _load_hook_module()
+    text = """---
+name: example
+paths:
+  - src/**/*.py
+  - docs/**
+model: haiku
+---
+
+Body.
+"""
+    parsed = hook.parse_frontmatter(text)
+    assert parsed["paths"] == ["src/**/*.py", "docs/**"]
+    assert parsed["model"] == "haiku"
+    assert parsed["name"] == "example"
 
 
 def test_desktop_session_cleanup_period_days_kept_verbatim(home, project):
@@ -817,6 +959,110 @@ def test_settings_layer_permissions_and_hooks_are_counts_only(home, project):
     assert "echo hi" not in raw_text
 
 
+def test_effective_env_permissions_hooks_plugins_mcpjson_deep_merge(tmp_path, home, project):
+    """COV-03/D6: env/permissions/hooks/enabledPlugins/enabledMcpjsonServers
+    used to be read from a single layer (env/permissions/hooks: the user
+    layer's own per-layer summary only; enabledPlugins/enabledMcpjsonServers:
+    the user layer's raw keys directly). Deep-merges all four layers with
+    each key's actual merge rule: per-name precedence for env and
+    enabledPlugins, additive union for hooks, unique-string union for
+    permissions, and union-with-rejection-wins for the mcpjson lists.
+    """
+    config_dir = home / ".claude" / "token-lens"
+
+    managed_path = tmp_path / "managed-settings.json"
+    managed_path.write_text(
+        json.dumps(
+            {
+                "env": {"ANTHROPIC_MANAGED_ONLY": "x"},
+                "permissions": {"allow": ["Managed(rule)"], "deny": [], "ask": []},
+                "hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": "m1"}]}]},
+                "enabledPlugins": {"plugin-a": True},
+                "enabledMcpjsonServers": ["from-managed"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    (project / ".claude" / "settings.local.json").write_text(
+        json.dumps(
+            {
+                "env": {"CLAUDE_LOCAL_ONLY": "y"},
+                "permissions": {
+                    "allow": ["Local(rule)"],
+                    "deny": ["Local(deny)"],
+                    "ask": [],
+                    "defaultMode": "acceptEdits",
+                },
+                "hooks": {"PreToolUse": [{"hooks": [{"type": "command", "command": "l1"}]}]},
+                "enabledPlugins": {"plugin-a": False, "plugin-b": True},
+                "disabledMcpjsonServers": ["blocked-one", "filesystem"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    # project_shared already has {"model": "sonnet", "permissions": {"allow":
+    # ["Read(**)"]}} from _build_project(); left as-is, its allow rule
+    # ("Read(**)") is part of the expected union below.
+
+    user_settings_path = home / ".claude" / "settings.json"
+    user_settings = json.loads(user_settings_path.read_text(encoding="utf-8"))
+    user_settings["hooks"] = {
+        "SessionStart": [
+            {"hooks": [{"type": "command", "command": "u1"}]},
+            {"hooks": [{"type": "command", "command": "u2"}]},
+        ]
+    }
+    # user_settings already has permissions.allow == ["Bash(git *)"],
+    # enabledPlugins == {"my-plugin@marketplace": True} and
+    # enabledMcpjsonServers == ["filesystem"] from _build_home().
+    user_settings_path.write_text(json.dumps(user_settings), encoding="utf-8")
+
+    stdin = json.dumps({"session_id": "s", "cwd": str(project)})
+    result = _run_hook(
+        config_dir=config_dir,
+        cwd=project,
+        stdin_text=stdin,
+        extra_args=["--managed-path", str(managed_path)],
+    )
+    assert result.returncode == 0
+    snapshot = _latest_snapshot(config_dir)
+
+    # env: names from every layer, provenance is the highest-precedence
+    # layer that actually sets each one.
+    assert set(snapshot["effective_env_names"]) >= {"ANTHROPIC_MANAGED_ONLY", "CLAUDE_LOCAL_ONLY"}
+    assert snapshot["effective_env_provenance"]["ANTHROPIC_MANAGED_ONLY"] == "managed"
+    assert snapshot["effective_env_provenance"]["CLAUDE_LOCAL_ONLY"] == "project_local"
+
+    # permissions: unique-string union across all four layers, not just
+    # the user layer's own 1-entry allow list.
+    assert snapshot["effective_permissions"] == {
+        "allow_count": 4,  # Managed(rule), Local(rule), Read(**), Bash(git *)
+        "deny_count": 1,  # Local(deny)
+        "ask_count": 0,
+        "default_mode": "acceptEdits",
+    }
+
+    # hooks: additive counts across layers, not one layer's own count.
+    assert snapshot["effective_hooks"] == {"SessionStart": 3, "PreToolUse": 1}
+
+    # enabledPlugins: per-plugin-name, highest-precedence layer wins --
+    # "plugin-a" is true in managed (highest) and false in project_local,
+    # so managed's true wins, not a union of "true anywhere".
+    assert snapshot["effective_enabled_plugins"] == ["my-plugin@marketplace", "plugin-a", "plugin-b"]
+
+    # mcpjson servers: union of enabled/disabled across layers, with a
+    # rejection anywhere winning over an approval anywhere ("filesystem"
+    # is enabled by user but also disabled by project_local).
+    assert snapshot["effective_mcpjson_servers"] == {
+        "enabled": ["from-managed"],
+        "disabled": ["blocked-one", "filesystem"],
+    }
+
+    assert_privacy_deep(snapshot)
+
+
 # -- schema 2: effective_agents -----------------------------------------------
 
 
@@ -924,7 +1170,13 @@ def test_claude_json_matches_project_by_normcase_realpath(home, project):
             }
         },
     }
-    (home / ".claude.json").write_text(json.dumps(dot_claude_json), encoding="utf-8")
+    # COV-05a fix: resolve_dot_claude_json_path() now honours
+    # CLAUDE_CONFIG_DIR the same way resolve_claude_root() always has --
+    # _run_hook always sets CLAUDE_CONFIG_DIR to `home / ".claude"`, so
+    # .claude.json now lives under it, not beside it (see that function's
+    # docstring for the doc citation: "so Claude Code writes .claude.json
+    # inside the volume").
+    (home / ".claude" / ".claude.json").write_text(json.dumps(dot_claude_json), encoding="utf-8")
 
     stdin = json.dumps({"session_id": "s", "cwd": str(project)})
     result = _run_hook(config_dir=config_dir, cwd=project, stdin_text=stdin)
@@ -955,7 +1207,7 @@ def test_claude_json_matches_project_by_normcase_realpath(home, project):
 
 def test_claude_json_no_matching_project_entry(home, project):
     config_dir = home / ".claude" / "token-lens"
-    (home / ".claude.json").write_text(
+    (home / ".claude" / ".claude.json").write_text(
         json.dumps({"projects": {"/some/other/project": {}}}), encoding="utf-8"
     )
     stdin = json.dumps({"session_id": "s", "cwd": str(project)})
@@ -976,7 +1228,7 @@ def test_claude_json_missing_file_degrades_cleanly(home, project):
 
 def test_claude_json_corrupt_file_never_raises(home, project):
     config_dir = home / ".claude" / "token-lens"
-    (home / ".claude.json").write_text("{not valid json!!!", encoding="utf-8")
+    (home / ".claude" / ".claude.json").write_text("{not valid json!!!", encoding="utf-8")
     stdin = json.dumps({"session_id": "s", "cwd": str(project)})
     result = _run_hook(config_dir=config_dir, cwd=project, stdin_text=stdin)
     assert result.returncode == 0
@@ -1028,11 +1280,23 @@ def test_content_layers_claude_md_rules_commands_and_skills(home, project):
     assert claude_md["project_local_bytes"] == len("local only")
     assert claude_md["nested_count"] == 1
     assert claude_md["nested_bytes"] == len("nested memory")
+    # COV-10: none of these fixture files use @import syntax.
+    assert claude_md["user_imports"] == 0
+    assert claude_md["project_root_imports"] == 0
+    assert claude_md["project_local_imports"] == 0
 
     assert content["rules"] == {"count": 2, "bytes": len("rule one") + len("rule two")}
     assert content["commands"] == {"count": 1, "bytes": len("command body")}
     assert content["skills"]["project"]["names"] == ["my-skill"]
     assert content["skills"]["project"]["total_bytes"] == len("skill body")
+    # COV-10/PROF-09: no frontmatter in this fixture's SKILL.md -> every
+    # field degrades to None/0, never an error.
+    assert content["skills"]["project"]["config"]["my-skill"] == {
+        "model": None,
+        "effort": None,
+        "context": None,
+        "paths_count": 0,
+    }
 
     # Fix #3: deep-scan the whole snapshot -- content_layers is itself a
     # dict of dicts (claude_md, rules, commands, skills), the exact shape
@@ -1045,6 +1309,164 @@ def test_content_layers_claude_md_rules_commands_and_skills(home, project):
     assert "command body" not in raw_text
     assert "skill body" not in raw_text
     assert "must not be counted" not in raw_text
+
+
+def test_skill_frontmatter_summary_kept_as_closed_scalars(tmp_path, home, project):
+    """COV-10/PROF-09: a skill's model/effort/context are kept as short
+    scalars (so a recommendation can suggest a per-skill model:/effort:),
+    but paths (a glob list that can embed a real project path) is reduced
+    to a count -- and the skill's body/description text never appears
+    anywhere in the snapshot.
+    """
+    config_dir = home / ".claude" / "token-lens"
+    skill_dir = project / ".claude" / "skills" / "tuned-skill"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        """---
+name: tuned-skill
+description: A free-text description that must never be stored.
+model: haiku
+effort: low
+context: fork
+paths:
+  - src/**/*.py
+  - docs/secret-project-name/**
+when_to_use: Free text that must also never be stored.
+---
+
+Body text that must never appear in the snapshot.
+""",
+        encoding="utf-8",
+    )
+
+    stdin = json.dumps({"session_id": "s", "cwd": str(project)})
+    result = _run_hook(config_dir=config_dir, cwd=project, stdin_text=stdin)
+    assert result.returncode == 0
+    snapshot = _latest_snapshot(config_dir)
+    raw_text = json.dumps(snapshot)
+
+    config = snapshot["content_layers"]["skills"]["project"]["config"]["tuned-skill"]
+    assert config == {"model": "haiku", "effort": "low", "context": "fork", "paths_count": 2}
+
+    assert "free-text description" not in raw_text
+    assert "must also never be stored" not in raw_text
+    assert "Body text that must never appear" not in raw_text
+    assert "secret-project-name" not in raw_text
+    assert_privacy_deep(snapshot)
+
+
+def test_claude_md_import_references_counted_not_stored(home, project):
+    """COV-10/D9: @path imports are counted, never recorded verbatim --
+    and an @ inside a fenced code block or inline code span is not an
+    import reference at all (docs/en/memory.md), so it must not count.
+    """
+    config_dir = home / ".claude" / "token-lens"
+    (project / "CLAUDE.md").write_text(
+        "Reference a README: @README.md and a guide: @docs/guide.md\n\n"
+        "```\nNot an import: @fake/inside/fence.md\n```\n\n"
+        "Also not an import: `@fake/inside/span.md`\n",
+        encoding="utf-8",
+    )
+
+    stdin = json.dumps({"session_id": "s", "cwd": str(project)})
+    result = _run_hook(config_dir=config_dir, cwd=project, stdin_text=stdin)
+    assert result.returncode == 0
+    snapshot = _latest_snapshot(config_dir)
+    raw_text = json.dumps(snapshot)
+
+    assert snapshot["content_layers"]["claude_md"]["project_root_imports"] == 2
+    assert "README.md" not in raw_text
+    assert "docs/guide.md" not in raw_text
+
+
+def test_managed_mcp_looked_up_in_managed_settings_directory(tmp_path, home, project):
+    """COV-05b: managed-mcp.json used to be looked up in claude_root
+    (~/.claude), which is never where it actually lives -- it sits beside
+    managed-settings.json in the platform's system managed-settings
+    directory (docs/en/managed-settings.md), reached here via
+    --managed-path's own directory.
+    """
+    config_dir = home / ".claude" / "token-lens"
+    managed_dir = tmp_path / "system-managed"
+    managed_dir.mkdir()
+    managed_path = managed_dir / "managed-settings.json"
+    managed_path.write_text(json.dumps({}), encoding="utf-8")
+    (managed_dir / "managed-mcp.json").write_text(
+        json.dumps({"mcpServers": {"org-search": {}}}), encoding="utf-8"
+    )
+    # The old (wrong) lookup location -- must NOT be read from here.
+    (home / ".claude" / "managed-mcp.json").write_text(
+        json.dumps({"mcpServers": {"should-not-be-read": {}}}), encoding="utf-8"
+    )
+
+    stdin = json.dumps({"session_id": "s", "cwd": str(project)})
+    result = _run_hook(
+        config_dir=config_dir,
+        cwd=project,
+        stdin_text=stdin,
+        extra_args=["--managed-path", str(managed_path)],
+    )
+    assert result.returncode == 0
+    snapshot = _latest_snapshot(config_dir)
+    raw_text = json.dumps(snapshot)
+
+    content = snapshot["content_layers"]
+    assert content["managed_mcp_present"] is True
+    assert content["managed_mcp"] == {"present": True, "names": ["org-search"]}
+    assert "should-not-be-read" not in raw_text
+
+
+def test_agents_scanned_recursively_into_subfolders(home, project):
+    """COV-10/D9: "Claude Code scans .claude/agents/ and ~/.claude/agents/
+    recursively, so you can organize definitions into subfolders"
+    (docs/en/sub-agents.md) -- a project agent nested under a subfolder
+    must still be discovered, not just files directly under agents/.
+    """
+    config_dir = home / ".claude" / "token-lens"
+    nested_agents_dir = project / ".claude" / "agents" / "review"
+    nested_agents_dir.mkdir(parents=True)
+    (nested_agents_dir / "security.md").write_text(
+        """---
+name: security-reviewer
+description: Nested subfolder agent.
+model: sonnet
+---
+
+Body.
+""",
+        encoding="utf-8",
+    )
+
+    stdin = json.dumps({"session_id": "s", "cwd": str(project)})
+    result = _run_hook(config_dir=config_dir, cwd=project, stdin_text=stdin)
+    assert result.returncode == 0
+    snapshot = _latest_snapshot(config_dir)
+
+    assert "security-reviewer" in snapshot["agents"]
+    assert snapshot["agents"]["security-reviewer"]["source"] == "project"
+    assert snapshot["content_layers"]["agents_summary"]["project_count"] >= 1
+
+
+def test_plugin_content_skills_and_agents_counted(home, project):
+    """COV-10: installed plugins' own skills (names) and agents (count)
+    are scanned using each plugin's default layout."""
+    config_dir = home / ".claude" / "token-lens"
+    plugin_dir = home / ".claude" / "plugins" / "my-plugin"
+    (plugin_dir / "skills" / "reviewer").mkdir(parents=True)
+    (plugin_dir / "skills" / "reviewer" / "SKILL.md").write_text(
+        "---\nname: reviewer\n---\nBody.\n", encoding="utf-8"
+    )
+    agents_dir = plugin_dir / "agents" / "review"
+    agents_dir.mkdir(parents=True)
+    (agents_dir / "security.md").write_text("---\nname: security\n---\nBody.\n", encoding="utf-8")
+
+    stdin = json.dumps({"session_id": "s", "cwd": str(project)})
+    result = _run_hook(config_dir=config_dir, cwd=project, stdin_text=stdin)
+    assert result.returncode == 0
+    snapshot = _latest_snapshot(config_dir)
+
+    plugin_content = snapshot["content_layers"]["plugin_content"]
+    assert plugin_content["my-plugin"] == {"skills": ["reviewer"], "agents_count": 1}
 
 
 def test_content_layers_mcp_json_and_claude_config_dir_flag(home, project):
@@ -1111,6 +1533,44 @@ def test_snapshot_project_key_matches_the_hooks_stored_slug():
     spec.loader.exec_module(hook)
     raw = hook._project_slug("/home/alice/my-project")
     assert snap_mod.snapshot_project_key(raw) == hook._redact_slug(raw)
+
+
+# -- hook_command / hook_fragment_text (ROB-P8/ROB-P9, install-time only) --
+
+
+def _load_hook_module():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("snapshot_config_hook", _HOOK_PATH)
+    hook = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(hook)
+    return hook
+
+
+def test_hook_command_runs_python_isolated_and_without_site():
+    hook = _load_hook_module()
+    script = Path("C:/token-lens/hooks/snapshot-config.py")
+    command = hook.hook_command(python="C:/Python311/python.exe", script=script)
+    assert command == f'"C:/Python311/python.exe" -I -S "{script}"'
+
+
+@pytest.mark.parametrize("bad", ['C:/weird"quote/python.exe', "C:/weird$var/python.exe", "C:/weird`tick/python.exe"])
+def test_hook_command_refuses_an_unsafe_python_path(bad):
+    hook = _load_hook_module()
+    assert hook.hook_command(python=bad, script=Path("script.py")) is None
+
+
+def test_hook_command_refuses_a_unc_script_path():
+    hook = _load_hook_module()
+    unc = Path(r"\\server\share\snapshot-config.py")
+    assert hook.hook_command(python="C:/Python311/python.exe", script=unc) is None
+
+
+def test_hook_fragment_text_explains_when_the_command_cant_be_built():
+    hook = _load_hook_module()
+    text = hook.hook_fragment_text(python='C:/weird"quote/python.exe', script=Path("script.py"))
+    assert "Could not build a safe hook command" in text
+    assert "SessionStart" not in text  # no broken JSON fragment is printed
 
 
 def test_hook_with_config_dir_elsewhere_reads_claude_settings_not_its_parent(tmp_path, home, project):

@@ -126,15 +126,33 @@ def test_cycles_run_from_each_message_to_the_next_and_collect_nested_agents(tmp_
 
 def test_the_last_tag_in_a_cycle_is_the_one_that_counts(tmp_path):
     top = _top(tmp_path, [
-        _ask(0),
-        _reply(1, text="Looking.\n[tl: task=debug]"),
-        _reply(2, text="Found it.\n[tl: task=bugfix]"),
-        _ask(3),
-        _reply(4, text="untagged"),
+        _note(0, ["task"]),
+        _ask(1),
+        _reply(2, text="Looking.\n[tl: task=debug]"),
+        _reply(3, text="Found it.\n[tl: task=bugfix]"),
+        _ask(4),
+        _reply(5, text="untagged"),
     ])
     first, second = capture.prompt_cycles(top)
     assert first.tag.task == "bugfix"
     assert second.tag is None
+
+
+def test_a_cycles_tags_merge_key_by_key(tmp_path):
+    # CAP-10: a retry's tag winning "task" doesn't erase a key only the
+    # earlier tag answered -- they merge key by key, not tag-for-tag.
+    top = _top(tmp_path, [
+        _note(0, ["task", "level", "shift"]),
+        _ask(1),
+        _reply(2, text="Looking.\n[tl: task=debug level=hard]"),
+        _reply(3, text="Found it.\n[tl: task=bugfix shift=redo]"),
+    ])
+    [cycle] = capture.prompt_cycles(top)
+    turn2, turn3 = top.turns[0], top.turns[1]
+    tag = cycle.tag
+    assert (tag.task, tag.level, tag.shift) == ("bugfix", "hard", "redo")
+    assert tag.has_tl is True
+    assert tag.chars == turn2.cap.chars + turn3.cap.chars
 
 
 # -- measured use ------------------------------------------------------------------
@@ -176,7 +194,10 @@ def test_usage_prices_notes_until_the_compaction_and_tags_at_the_writer_rate(tmp
     assert main.note_cost == pytest.approx(note_chars * (WRITE + READ))
     assert main.note_tokens == round(note_chars / 4)
     tag = len("[tl: task=bugfix brief=clear]") + 1
-    assert main.tag_cost == pytest.approx(tag * OUT)
+    # CAP-2: the tag is Claude's own output on turn 1 (OUT), then sits in
+    # context and is cache-written once more into turn 2's prompt (WRITE);
+    # the compaction before turn 3 drops it before it is ever read back.
+    assert main.tag_cost == pytest.approx(tag * (OUT + WRITE))
     # The agent's note is written once; its report tag is output.
     agent = use.scopes["subagent"]
     assert agent.note_cost == pytest.approx(sub_note_chars * WRITE)
@@ -198,13 +219,52 @@ def test_usage_prices_notes_until_the_compaction_and_tags_at_the_writer_rate(tmp
     assert "level" not in use.answers
 
 
+def test_a_note_after_a_compact_boundary_is_priced_and_counted_separately(tmp_path, pricing):
+    """SURV-3: a note whose own turn lands at or after a real
+    compact_boundary is tallied under after_compact_notes/
+    after_compact_cost in addition to its ordinary scope -- the carried
+    prefix a compaction would otherwise have discounted it against is
+    gone by then."""
+    before = _note(0, ["task"])
+    after = _note(4, ["task"])
+    top = _top(tmp_path, [
+        before,
+        _ask(1),
+        _reply(2, text="Looking.\n[tl: task=debug]"),
+        system_line("compact_boundary", timestamp=_ts(3)),
+        after,
+        _ask(5),
+        _reply(6, text="Done.\n[tl: task=bugfix]"),
+    ])
+    use = capture.usage(_corpus(top), pricing)
+    assert use.notes == 2
+    assert use.after_compact_notes == 1
+    assert use.after_compact_cost == pytest.approx(_chars(after) * WRITE)
+    # Both notes individually cost the same write-only amount here, so the
+    # scope total (both notes) is strictly more than the after-compact
+    # share (one of them).
+    assert use.after_compact_cost < use.scopes["main"].note_cost
+
+
+def test_no_after_compact_notes_without_a_real_compaction(tmp_path, pricing):
+    top, sub, _, _ = _captured_session(tmp_path)
+    use = capture.usage(_corpus(top, sub), pricing)
+    # _captured_session's only note (t=0) precedes its one compaction, so
+    # nothing here lands after a boundary.
+    assert use.after_compact_notes == 0
+    assert use.after_compact_cost == 0.0
+
+
 def test_fast_mode_doubles_what_the_fast_turn_wrote_and_carried(tmp_path, pricing):
     top, sub, note_chars, _ = _captured_session(tmp_path, speed="fast")
     use = capture.usage(_corpus(top, sub), pricing)
     # The first turn ran fast: its cache write, its tag and the spawn word
     # it wrote cost double; the next turn's read does not.
     assert use.scopes["main"].note_cost == pytest.approx(note_chars * (2 * WRITE + READ))
-    assert use.scopes["main"].tag_cost == pytest.approx((len("[tl: task=bugfix brief=clear]") + 1) * 2 * OUT)
+    # The tag's own output doubles (turn 1 ran fast), but turn 2 -- the
+    # turn that carries it forward into its prompt -- did not, so that
+    # carry-write portion stays at the normal rate.
+    assert use.scopes["main"].tag_cost == pytest.approx((len("[tl: task=bugfix brief=clear]") + 1) * (2 * OUT + WRITE))
     assert use.scopes["brief"].tag_cost == pytest.approx((len("[spawn: isolate]") + 1) * 2 * OUT)
 
 
@@ -220,6 +280,56 @@ def test_sessions_without_a_capture_note_are_not_counted(tmp_path, pricing):
     top = _top(tmp_path, [_ask(0), _reply(1, text="Done.\n[tl: task=bugfix]")])
     use = capture.usage(_corpus(top), pricing)
     assert (use.sessions, use.cycles, use.cost, use.coverage, use.share) == (0, 0, 0.0, None, None)
+
+
+def test_a_feedback_run_cycle_is_left_out_of_the_coverage_denominator(tmp_path, pricing):
+    # CAP-10: a /tl-feedback run answers /tl-feedback's own question, not
+    # the one an ordinary reply reports on -- it shouldn't count against
+    # coverage just because it never wrote a [tl: ...] task tag either.
+    top = _top(tmp_path, [
+        _note(0, ["task"]),
+        user_str_line(
+            "<command-message>tl-feedback</command-message>\n<command-name>/tl-feedback</command-name>",
+            timestamp=_ts(1),
+        ),
+        _reply(2, text="Thanks: Token Lens will use this for your savings tips."),
+        _ask(3),
+        _reply(4, text="Done.\n[tl: task=bugfix]"),
+    ])
+    use = capture.usage(_corpus(top), pricing)
+    assert (use.cycles, use.tagged_cycles) == (1, 1)
+    assert use.coverage == 100.0
+
+
+def test_a_max_tokens_cycle_is_left_out_of_the_coverage_denominator(tmp_path, pricing):
+    # CAP-10: a reply cut off by max_tokens never got to write its tag.
+    cut_off = _reply(2, text="Still working")
+    cut_off["message"]["stop_reason"] = "max_tokens"
+    top = _top(tmp_path, [
+        _note(0, ["task"]),
+        _ask(1),
+        cut_off,
+        _ask(3),
+        _reply(4, text="Done.\n[tl: task=bugfix]"),
+    ])
+    use = capture.usage(_corpus(top), pricing)
+    assert (use.cycles, use.tagged_cycles) == (1, 1)
+    assert use.coverage == 100.0
+
+
+def test_an_interrupted_cycle_is_left_out_of_the_coverage_denominator(tmp_path, pricing):
+    # CAP-10: the user cut Claude off before it could write its tag.
+    top = _top(tmp_path, [
+        _note(0, ["task"]),
+        _ask(1),
+        _reply(2, text="cut off mid-thought"),
+        user_str_line("[Request interrupted by user]", timestamp=_ts(3)),
+        _ask(4, "try again"),
+        _reply(5, text="Done.\n[tl: task=bugfix]"),
+    ])
+    use = capture.usage(_corpus(top), pricing)
+    assert (use.cycles, use.tagged_cycles) == (1, 1)
+    assert use.coverage == 100.0
 
 
 def test_a_tool_note_counts_in_the_tool_scope(tmp_path, pricing):
@@ -273,14 +383,43 @@ def test_history_prices_one_character_in_each_place(tmp_path, pricing):
     assert past.main_note == pytest.approx(WRITE + 3 * READ)
     assert past.sub_note == pytest.approx(WRITE + READ)
     assert past.sub_note_no_rules == pytest.approx(WRITE)
-    assert past.reply_tag == pytest.approx(2 * OUT)
+    # CAP-2: each cycle's reply tag prices its own output plus, when a
+    # later turn follows it, one cache-write carry into that turn. The
+    # first cycle's tag (turn 3 of 4) carries into the 4th; the second
+    # cycle's tag is the corpus's last turn, so it has nothing to carry
+    # into.
+    assert past.reply_tag == pytest.approx(2 * OUT + WRITE)
+    # Both subagents' report tags are their transcript's own last turn,
+    # so neither has a later turn to carry into -- unchanged from output
+    # cost alone.
     assert past.report_tag == pytest.approx(2 * OUT)
+    # The brief marker isn't a [tl:]/[result:] tag -- it stays priced at
+    # output cost alone here too, same as the real usage() path's own
+    # _add_brief_markers.
     assert past.brief_tag == pytest.approx(2 * OUT)
     # The 40k-character result arrives with the third turn, carried to the end.
     assert past.big_outputs == 1
     assert past.big_output_note == pytest.approx(WRITE + READ)
-    assert past.big_output_tag == pytest.approx(OUT)
+    # CAP-2: the big-output tag is written with the 3rd (of 4) turns and
+    # carried into the 4th.
+    assert past.big_output_tag == pytest.approx(OUT + WRITE)
     assert past.spend > 0
+
+
+def test_big_output_notes_are_estimated_per_call_not_per_turn(tmp_path, pricing):
+    # CAP-10: two big results from the same tool in one turn cost two
+    # notes, not one -- Claude Code fires PostToolUse per call, not once
+    # per turn regardless of how many of its calls crossed the threshold.
+    big = "x" * 35_000
+    top = _top(tmp_path, [
+        _ask(0),
+        _reply(1, tool_use_block("Bash", "toolu_B", {"command": "make"}),
+               tool_use_block("Bash", "toolu_C", {"command": "test"})),
+        user_block_line([tool_result_block("toolu_B", big), tool_result_block("toolu_C", big)], timestamp=_ts(2)),
+        _reply(3),
+    ])
+    past = capture.history(_corpus(top), pricing, days=7)
+    assert past.big_outputs == 2
 
 
 def test_estimates_rise_with_the_level_and_scale_with_sampling(tmp_path, pricing):
@@ -321,7 +460,7 @@ def test_enough_data_counts_answers_against_each_target():
     use = capture.CaptureUsage(answers={"task": 12})
     assert capture.enough_data(use, "task") == (12, capture.ENOUGH["main"])
     assert capture.enough_data(use, "fit") == (0, capture.ENOUGH["subagent"])
-    assert capture.enough_data(use, "spawn") == (0, capture.ENOUGH["brief"])
+    assert capture.enough_data(use, "retry") == (0, capture.ENOUGH["brief"])
     assert capture.enough_data(use, "big_output") == (0, capture.ENOUGH["tool"])
     assert capture.enough_data(use, "waits", signal_sessions=5) == (5, capture.ENOUGH["signal"])
     assert capture.enough_target("no-such-metric") == 0

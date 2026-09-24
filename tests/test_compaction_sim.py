@@ -24,13 +24,17 @@ from claude_token_lens.compaction_sim import (
     CANDIDATE_WINDOWS,
     RULES,
     CompactionSimThresholds,
+    _rediscovery_allowance_usd_used,
+    _replay_transcript,
+    _Shape,
     build_section,
     simulate_compaction_windows,
 )
 from claude_token_lens.model import Event, EventKind, ReportModel, ReportMeta, TranscriptMeta, TranscriptResult
 from claude_token_lens.pricing import load_pricing
+from claude_token_lens.units import Units
 
-from helpers import assert_privacy
+from helpers import assert_privacy, elasticity_with_slope
 
 PRICING = load_pricing()
 SONNET_RATES = PRICING.resolve_model("claude-sonnet-5")
@@ -134,6 +138,39 @@ def _plateau_transcript() -> list[model.Turn]:
 
 
 # -- replay arithmetic ------------------------------------------------------
+
+
+def test_replay_transcript_caches_model_resolution_by_string():
+    """SURV-9: ``lookup(turn.model)`` used to run uncached on every turn
+    of every window replayed, even though a transcript only ever uses a
+    handful of distinct model strings. It's now cached by model string,
+    local to one ``_replay_transcript`` call (the same pattern as
+    ``habits._Rates._resolve``) -- so a 10-turn, 2-model transcript
+    resolves each model once, not ten times, and the cache must not
+    change what gets priced: the result with a call-counting ``lookup``
+    matches one built straight from ``Pricing.resolve_model`` with no
+    wrapper at all."""
+    models = ["claude-sonnet-5", "claude-opus-5-5"]
+    turns = [
+        _turn(
+            message_id=f"msg_{i}", turn_index=i, ts=_ts(i), model=models[i % 2],
+            ctx=i * 10_000, cache_creation_tokens=10_000, cache_read_tokens=(i - 1) * 10_000, cc_5m=10_000,
+        )
+        for i in range(1, 11)
+    ]
+    calls: list[str] = []
+
+    def counting_lookup(model_id: str):
+        calls.append(model_id)
+        return PRICING.resolve_model(model_id)
+
+    result = _replay_transcript(turns, counting_lookup, None, _Shape(), {})
+    reference = _replay_transcript(turns, PRICING.resolve_model, None, _Shape(), {})
+
+    assert sorted(set(calls)) == sorted(models)
+    assert len(calls) == 2  # one resolve per distinct model, not per turn
+    assert result == reference
+    assert result.cost > 0
 
 
 def test_window_none_has_zero_synthetic_compactions_and_matches_true_observed_cost():
@@ -344,11 +381,17 @@ def test_build_section_tables_and_notes():
 
     assert section.key == "compaction_sim"
     names = [t.name for t in section.tables]
-    assert names == ["compaction_sim_by_window", "compaction_sim_by_agent_type", "compaction_sim_fidelity"]
+    assert names == [
+        "compaction_sim_by_window",
+        "compaction_sim_by_agent_type",
+        "compaction_sim_by_task",
+        "compaction_sim_fidelity",
+    ]
 
     by_window = next(t for t in section.tables if t.name == "compaction_sim_by_window")
     assert [row[0] for row in by_window.rows] == [
-        "100,000", "150,000", "200,000", "250,000", "300,000", "400,000", "500,000", "none",
+        "100,000", "150,000", "200,000", "250,000", "300,000", "400,000", "500,000",
+        "600,000", "700,000", "800,000", "900,000", "967,000", "none",
     ]
 
     by_type = next(t for t in section.tables if t.name == "compaction_sim_by_agent_type")
@@ -380,6 +423,127 @@ def test_build_section_empty_corpus_notes_instead_of_crashing():
     assert by_window.notes
 
 
+# -- EST-P8: per-task compaction aggregate -----------------------------------
+
+
+def _tag_task(turns: list[model.Turn], task: str) -> list[model.Turn]:
+    """Give every turn the same self-reported ``task=`` tag: guarantees
+    ``_reported_task``'s majority-of-tagged-turns gate regardless of how
+    many turns a transcript has."""
+    return [replace(t, cap=model.CaptureTag(task=task, has_tl=True)) for t in turns]
+
+
+def test_by_task_needs_min_task_sessions_before_it_reports_a_task():
+    """A task reported by fewer than MIN_TASK_SESSIONS main sessions is
+    tallied but never surfaced -- same "small group" gate as
+    habits.MIN_GROUP (kept local to this module; see MIN_TASK_SESSIONS's
+    docstring)."""
+    from claude_token_lens.compaction_sim import MIN_TASK_SESSIONS
+
+    results = [
+        _top_level_transcript(f"sess-{i}", _tag_task(_synthetic_20_turn_transcript(), "review"))
+        for i in range(MIN_TASK_SESSIONS - 1)
+    ]
+    stats = simulate_compaction_windows(results, SONNET_RATES, {})
+    assert stats.by_task() == {}
+
+
+def test_by_task_reports_once_min_task_sessions_is_reached():
+    from claude_token_lens.compaction_sim import MIN_TASK_SESSIONS
+
+    results = [
+        _top_level_transcript(f"sess-{i}", _tag_task(_synthetic_20_turn_transcript(), "review"))
+        for i in range(MIN_TASK_SESSIONS)
+    ]
+    stats = simulate_compaction_windows(results, SONNET_RATES, {})
+    by_task = stats.by_task()
+    assert set(by_task) == {"review"}
+    row = by_task["review"]
+    assert row.sessions == MIN_TASK_SESSIONS
+    # Every session here is a main session, all tagged "review", so the
+    # per-task roll-up must land on the same cheapest window and costs as
+    # the equivalent by_key() roll-up for "top-level".
+    by_key = stats.by_key()
+    assert row.best_window == by_key["top-level"].best_window
+    assert row.observed_cost == pytest.approx(by_key["top-level"].observed_cost)
+    assert row.best_cost == pytest.approx(by_key["top-level"].best_cost)
+
+
+def test_by_task_ignores_subagent_transcripts():
+    """A subagent run's ``cap.task`` is never tallied: task aggregation is
+    restricted to main sessions in ``add_transcript`` (a subagent has no
+    self-reported "kind of task" of its own)."""
+    from claude_token_lens.compaction_sim import MIN_TASK_SESSIONS
+
+    results = [
+        TranscriptResult(
+            meta=TranscriptMeta(kind="subagent", agent_type="Explore"),
+            turns=_tag_task(_synthetic_20_turn_transcript(), "review"),
+        )
+        for _ in range(MIN_TASK_SESSIONS)
+    ]
+    stats = simulate_compaction_windows(results, SONNET_RATES, {})
+    assert stats.by_task() == {}
+
+
+def test_by_task_ignores_a_session_with_fewer_than_two_tagged_turns():
+    """A single tagged turn never counts toward any task -- mirrors
+    ``classify.reported_task``'s own ``len(tasks) < 2`` gate exactly."""
+    from claude_token_lens.compaction_sim import MIN_TASK_SESSIONS
+
+    results = []
+    for i in range(MIN_TASK_SESSIONS):
+        turns = _synthetic_20_turn_transcript()
+        turns[0] = replace(turns[0], cap=model.CaptureTag(task="review", has_tl=True))
+        results.append(_top_level_transcript(f"sess-{i}", turns))
+    stats = simulate_compaction_windows(results, SONNET_RATES, {})
+    assert stats.by_task() == {}
+
+
+def test_by_task_ignores_a_session_with_no_majority_task():
+    """Three tagged turns split three ways never reaches "at least half,
+    twice or more" for any one task -- mirrors ``classify.reported_task``'s
+    own majority gate exactly."""
+    from claude_token_lens.compaction_sim import MIN_TASK_SESSIONS
+
+    results = []
+    for i in range(MIN_TASK_SESSIONS):
+        turns = _synthetic_20_turn_transcript()
+        turns[0] = replace(turns[0], cap=model.CaptureTag(task="review", has_tl=True))
+        turns[1] = replace(turns[1], cap=model.CaptureTag(task="test-triage", has_tl=True))
+        turns[2] = replace(turns[2], cap=model.CaptureTag(task="planning", has_tl=True))
+        results.append(_top_level_transcript(f"sess-{i}", turns))
+    stats = simulate_compaction_windows(results, SONNET_RATES, {})
+    assert stats.by_task() == {}
+
+
+def test_build_section_by_task_table_renders_rows_and_recommendation():
+    from claude_token_lens.compaction_sim import MIN_TASK_SESSIONS
+
+    results = [
+        _top_level_transcript(f"sess-{i}", _tag_task(_synthetic_20_turn_transcript(), "review"))
+        for i in range(MIN_TASK_SESSIONS)
+    ]
+    stats = simulate_compaction_windows(results, SONNET_RATES, {})
+    section = build_section(stats)
+    by_task = next(t for t in section.tables if t.name == "compaction_sim_by_task")
+    assert [row[0] for row in by_task.rows] == ["review"]
+    row = dict(zip([c.key for c in by_task.columns], by_task.rows[0]))
+    assert row["sessions"] == MIN_TASK_SESSIONS
+    assert row["recommendation"]
+    assert_privacy(section)
+
+
+def test_build_section_by_task_table_notes_when_no_task_clears_the_gate():
+    turns = _synthetic_20_turn_transcript()
+    tr = _top_level_transcript("sess-synthetic", turns)
+    stats = simulate_compaction_windows([tr], SONNET_RATES, {})
+    section = build_section(stats)
+    by_task = next(t for t in section.tables if t.name == "compaction_sim_by_task")
+    assert by_task.rows == []
+    assert by_task.notes
+
+
 # -- thresholds -------------------------------------------------------------
 
 
@@ -406,8 +570,10 @@ def test_thresholds_describe_nonempty():
 # -- rule: compaction-window -----------------------------------------------
 
 
-def _base_report(sections: list[model.Section]) -> ReportModel:
-    return ReportModel(meta=ReportMeta(), sections=sections, recommendations=[])
+def _base_report(sections: list[model.Section], units=None) -> ReportModel:
+    report = ReportModel(meta=ReportMeta(), sections=sections, recommendations=[])
+    report.units = units
+    return report
 
 
 #: The plateau transcript saves 0.99 USD at best, so the rule tests
@@ -415,10 +581,10 @@ def _base_report(sections: list[model.Section]) -> ReportModel:
 _SMALL_FIXTURE_TH = CompactionSimThresholds(switch_usd=0.1)
 
 
-def _plateau_report(th: CompactionSimThresholds | None = None) -> ReportModel:
+def _plateau_report(th: CompactionSimThresholds | None = None, units=None) -> ReportModel:
     tr = _top_level_transcript("sess-plateau", _plateau_transcript())
     stats = simulate_compaction_windows([tr], SONNET_RATES, {}, th)
-    return _base_report([build_section(stats, th)])
+    return _base_report([build_section(stats, th, units=units)], units=units)
 
 
 def test_rule_fires_when_saving_clears_both_thresholds():
@@ -435,6 +601,17 @@ def test_rule_fires_when_saving_clears_both_thresholds():
     # smallest is the floor.
     assert "at least 100,000" in rec.action
     assert_privacy(rec)
+
+
+def test_rule_action_has_no_bare_dollar_under_a_subscription():
+    """UX-2 / finding F1-F2: a subscription's Recommendation.action must
+    route through Units, never a raw f"${...:.2f}"."""
+    units = Units(billing_mode="subscription", currency="USD", elasticity=elasticity_with_slope())
+    report = _plateau_report(units=units)
+
+    [rec] = RULES[0](report, _SMALL_FIXTURE_TH, None)
+    assert "$" not in rec.action
+    assert "about about" not in rec.action.lower()
 
 
 def test_rule_does_not_fire_when_no_transcripts():
@@ -541,3 +718,20 @@ def test_rule_rediscovery_correction_suppresses_a_saving_that_only_clears_the_ba
     by_window = {r[0]: r for r in report.sections[0].tables[0].rows}
     assert by_window["100,000"][3] == pytest.approx(1.966)  # the sweep's cost is unchanged
     assert RULES[0](report, th, None) == []
+
+
+def test_rediscovery_allowance_used_note_round_trips_through_its_new_no_dollar_format():
+    """UX-2 regression: ``build_section``'s "Rediscovery allowance used:
+    ..." note dropped its bare "$" (it now reads "X.XXXX <currency>"
+    instead of "$X.XXXX", see the module's own UX-2 comment there) --
+    ``_rediscovery_allowance_usd_used`` must still read the number back
+    out of that note rather than silently falling through to the
+    *reading* call's own ``default_rediscovery_allowance_usd`` (which
+    would happen if its prefix match still expected a "$")."""
+    build_th = CompactionSimThresholds(switch_usd=0.9, default_rediscovery_allowance_usd=0.1234)
+    report = _plateau_report(build_th)  # note baked in at 0.1234 (this fixture's own default branch)
+
+    # A different thresholds object, with a distinct default, at read time:
+    # correct parsing returns the note's 0.1234, not this object's 0.9999.
+    read_th = CompactionSimThresholds(default_rediscovery_allowance_usd=0.9999)
+    assert _rediscovery_allowance_usd_used(report, read_th) == pytest.approx(0.1234)

@@ -19,9 +19,11 @@ from claude_token_lens import waste
 from claude_token_lens.model import Column, Recommendation, ReportModel, Section, Table, TranscriptMeta
 from claude_token_lens.parse import parse_transcript
 from claude_token_lens.pricing import ModelRates, Pricing
+from claude_token_lens.units import Units
 
 from helpers import (
     assert_privacy,
+    elasticity_with_slope,
     system_line,
     tool_result_block,
     tool_use_block,
@@ -552,8 +554,12 @@ def _overview_section(sessions: int, priced_turns: int) -> Section:
     )
 
 
-def _report_with_waste_section(waste_section: Section, sessions: int = 10, priced_turns: int = 500) -> ReportModel:
-    return ReportModel(sections=[_overview_section(sessions, priced_turns), waste_section])
+def _report_with_waste_section(
+    waste_section: Section, sessions: int = 10, priced_turns: int = 500, units=None
+) -> ReportModel:
+    report = ReportModel(sections=[_overview_section(sessions, priced_turns), waste_section])
+    report.units = units
+    return report
 
 
 def _built_section_for_high_waste_share(tmp_path: Path) -> Section:
@@ -586,6 +592,19 @@ def test_rule_fires_when_share_exceeds_threshold_and_min_sample_met(tmp_path: Pa
     assert rec.id == "wasted-turns"
     assert isinstance(rec, Recommendation)
     assert "tool-error" in rec.action
+
+
+def test_rule_action_has_no_bare_dollar_under_a_subscription(tmp_path: Path):
+    """UX-2 / finding F1-F2: a subscription's Recommendation.action must
+    route through Units, never a raw f"${...:,.2f}"."""
+    section = _built_section_for_high_waste_share(tmp_path)  # 90% wasted cost share
+    units = Units(billing_mode="subscription", currency="USD", elasticity=elasticity_with_slope())
+    report = _report_with_waste_section(section, sessions=10, priced_turns=500, units=units)
+
+    th = waste.WasteThresholds(share_pct=10.0, min_sessions=5, min_turns=200)
+    [rec] = waste.RULES[0](report, th)
+    assert "$" not in rec.action
+    assert "about about" not in rec.action.lower()
 
 
 def test_rule_does_not_fire_below_threshold(tmp_path: Path):

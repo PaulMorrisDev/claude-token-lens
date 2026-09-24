@@ -45,7 +45,10 @@ draft offers its effort ticked and its model unticked, since the main
 session's model is yours to decide, with a picker for the kind of task
 (the first with a cheaper setup is shown first). A kind of task with no
 cheaper setup says what your usual one is. Either way the note names the
-catalogue profile whose `for` list covers that kind of task. The
+catalogue profile whose `for` list covers that kind of task -- unless
+that profile's own settings disagree with what the draft just proposed
+for the main session (PROF-11/F12: naming it then would contradict the
+draft above it), in which case the note leaves it out. The
 setups still ran on different work within a level, so treat the match
 as a lead. The draft also offers a cheaper model, ticked, for each
 subagent type that most often answered that kind of task, when its
@@ -79,12 +82,22 @@ The estimate reads the report's own tables and runs no new simulation:
 
 | Change | Read from | How it is worked out |
 |---|---|---|
-| `model` (main session or an agent) | model-swap table | Simulated: the same tokens repriced |
-| `autoCompactWindow` | summary-point sweep | Simulated: your sessions replayed |
+| `model` (main session or an agent) | model-swap table | Ceiling: the same tokens repriced at the new model's rate -- the real change could be smaller if that model needs more replies |
+| `autoCompactWindow` | summary-point sweep | Simulated: your sessions replayed; not estimated past `CompactionSimThresholds().max_compactions_per_session` summaries a session (EST-P2, the same floor the compaction-window rule and this goal's own candidates are held to) |
 | `promptCacheTtl`, `subagentPromptCacheTtl`, an agent's `experimental.cacheTtl` | cache-lifetime simulation | Simulated: every cache write replayed at 5 minutes or 1 hour |
-| an agent's `omitClaudeMd = true` | CLAUDE.md tokens per spawn | Measured per spawn, times the spawns in the window |
+| an agent's `omitClaudeMd = true` | CLAUDE.md tokens per spawn, minus Managed policy CLAUDE.md (still loads either way -- F13); `context_files`' own carry cost for the agent, minus Managed there too | Measured per spawn, times the spawns in the window -- or the carry cost (EST-P10: cache reads until it's re-sent), whichever is greater |
 | `skillOverrides`, `enabledPlugins` (turning one off) | each skill's listing cost (Context files) | Estimated from what stops being sent |
 | `effortLevel`, an agent's `effort` | thinking share of output | Not estimated: shows the thinking share only |
+| `fastMode = false` | fast-priced replies this window | Simulated: every reply this window actually billed at a fast-mode rate, repriced at its model's standard rate |
+
+Turning `fastMode` *on* is never estimated: there's no measured "would
+this reply have been sped up" figure for replies that weren't already
+fast.
+
+`effortLevel`/`effort` is never drafted for an agent type whose
+observed model (the model-swap table's own per-agent-type column) is
+Opus 5.5 or a Fable model: thinking can't be turned down on those
+models, so the lever has nothing to show for itself there (V26).
 
 Any other key says "not estimated" rather than guessing. Changes
 overlap, so a total of several rows is rough. Each profile's detail
@@ -130,6 +143,22 @@ side.
 Sessions differ in size and kind of work, so a difference is a signal,
 not proof.
 
+**Did your estimates come true?** Below "Your changes and what they
+did" is a table of every what-if estimate the dashboard logged for you
+(`GET /api/backtest`, `backtest.py`; see `docs/backtest.md` for the
+method) — a change, when it was estimated, what it predicted, what
+actually happened once a matching real change and enough sessions came
+in, and a verdict: about as estimated, smaller, larger, the opposite
+direction, or not enough sessions yet to judge. Only a change the
+dashboard tracked on your behalf is logged; exploring the "what if"
+sliders interactively never is. Once at least 3 of your own past
+estimates for the same kind of change have been judged, later what-if
+estimates of that kind are calibrated by how it actually turned out for
+you before — their fidelity shows as "calibrated" instead of "ceiling",
+"simulated", "measured" or "estimated" (see the fidelity table above),
+and the estimate itself is scaled by the mean ratio of what was
+measured to what was predicted across those judged points.
+
 The Profiles tab also shows one card per profile with the settings it
 changes by their plain labels. Opening one shows a table of Setting /
 Now / After / Set in for the scope you pick, then three ways to use it:
@@ -172,7 +201,7 @@ see "What a profile cannot do" below).
 | `archetype` | one of the seven workstyle archetypes, or absent | The `workstyle.detect_archetype` corpus shape this profile targets. |
 | `settings` | table | `settings.json`-layer overrides — see the settings table below. |
 | `agents` | table of `agents.<name>` sub-tables | Per-agent frontmatter overrides — see the agent table below. |
-| `env` | table | Environment variable *names* this profile mentions (values are always supplied by the user at apply time, never stored in the profile — see "What a profile cannot do"). |
+| `env` | table | Environment variable name/value pairs (allowlisted names only — see "What a profile cannot do"), written into the target settings file's own `"env"` object by `apply` (see "Environment variables" below). |
 | `notes` | string | Free text citing the real report table/column that justifies this profile's settings. Never fabricated numbers. |
 
 `schema.validate(d) -> list[str]` returns every problem with a
@@ -205,7 +234,7 @@ description), `name-only` (listed by name, which costs fewer tokens),
 | Key | Type | Allowed values | Doc reference |
 |---|---|---|---|
 | `model` | string | any | `docs/config-layers.md#the-layer-model` |
-| `effortLevel` | enum | `low`, `medium`, `high`, `max` | `docs/config-layers.md#what-each-layer-records-settings_layerslayer` |
+| `effortLevel` | enum | `low`, `medium`, `high`, `xhigh`, `max` | `docs/config-layers.md#what-each-layer-records-settings_layerslayer` |
 | `autoCompactWindow` | int | 0–1,000,000 | `docs/config-layers.md#what-each-layer-records-settings_layerslayer` |
 | `outputStyle` | string | any | `docs/config-layers.md#what-each-layer-records-settings_layerslayer` |
 | `promptCacheTtl` | enum | `5m`, `1h` | `docs/api.md#get-apittl` |
@@ -217,13 +246,15 @@ description), `name-only` (listed by name, which costs fewer tokens),
 | `alwaysThinkingEnabled` | bool | — | `docs/config-layers.md#redaction-rule-settings-and-agent-frontmatter-alike` |
 | `autoCompactEnabled` | bool | — | `docs/config-layers.md#redaction-rule-settings-and-agent-frontmatter-alike` |
 | `cleanupPeriodDays` | int | 0–3,650 | `docs/config-layers.md#redaction-rule-settings-and-agent-frontmatter-alike` |
+| `includeCoAuthoredBy` | bool | — | `docs/config-layers.md#redaction-rule-settings-and-agent-frontmatter-alike` |
+| `fastMode` | bool | — | `docs/config-layers.md#redaction-rule-settings-and-agent-frontmatter-alike` |
 
 ### `agents.<name>` (per-agent frontmatter overrides)
 
 | Key | Type | Allowed values | Doc reference |
 |---|---|---|---|
 | `model` | string | any | `docs/config-layers.md#effective_agents` |
-| `effort` | enum | `low`, `medium`, `high`, `max` | `docs/config-layers.md#effective_agents` |
+| `effort` | enum | `low`, `medium`, `high`, `xhigh`, `max` | `docs/config-layers.md#effective_agents` |
 | `maxTurns` | int | 1–1,000,000 | `docs/config-layers.md#effective_agents` |
 | `omitClaudeMd` | bool | — | `docs/sections-reference.md` |
 | `memory` | string | any | `docs/config-layers.md#content_layers` |
@@ -252,6 +283,9 @@ free-form string the user supplies when the profile is applied (see
 `ANTHROPIC_DEFAULT_OPUS_MODEL`, `ANTHROPIC_DEFAULT_SONNET_MODEL`,
 `ANTHROPIC_DEFAULT_HAIKU_MODEL`, `ANTHROPIC_DEFAULT_FABLE_MODEL`
 (doc reference for all: `docs/config-layers.md#environment-variables`).
+`MAX_THINKING_TOKENS`, like the `alwaysThinkingEnabled` setting, has no
+effect on Opus 5.5 or the Fable models, which always think; there, a
+lower effort is what thinks less.
 
 ### Archetypes
 
@@ -275,7 +309,7 @@ real report table/column rather than an invented number.
 | `implementation-heavy` | implementation, refactor, test-triage, review | `plan-high-implement-low` | `effortLevel=medium`, `subagentPromptCacheTtl=5m`; `agents.claude-implementer.model=sonnet`, `.effort=medium`, `.maxTurns=60`, `.omitClaudeMd=false`, `."experimental.cacheTtl"=5m` | `agents.topology_spawn_write`'s `mean_write` column (recommend.py's spawn-cost rule threshold — `omitClaudeMd` is left `false` deliberately, since the rule only recommends flipping it once a specific corpus clears the threshold); `ttl.ttl_by_agent_type`'s per-agent-type lever text. |
 | `overseer-fanout` | fanout, multi-agent-coordination | `overseer-fanout` | `effortLevel=high`, `subagentPromptCacheTtl=5m`; `agents.claude-implementer.effort=medium`, `.maxTurns=60` | `agents.topology_report_proxy`'s `mean_proxy` column (agent-report-size rule); `agents.topology_spawn_write`'s `mean_write` column (spawn-cost rule) for the top/implementer effort split. |
 | `overnight-batch` | overnight-run, unattended-batch | `overseer-fanout` | `subagentPromptCacheTtl=1h`, `autoCompactWindow=300000`, `cleanupPeriodDays=30`; `agents.verification-runner."experimental.cacheTtl"=1h` | `classify.classify_mode`'s "overnight" mode (span > 4h, max human gap > 60min); `ttl.ttl_by_agent_type`'s `gaps_over_1h`/`gap_p90_s` columns; `compactions.compactions_summary`'s "Compactions per session (mean)" / dropped-token-share rows for the raised `autoCompactWindow`. |
-| `workflow-ultracode` | workflow-run, scripted-multi-phase | `workflow-heavy` | `subagentPromptCacheTtl=5m`; `agents.claude-implementer.maxTurns=40`, `."experimental.cacheTtl"=5m` | `workflows.workflows_summary`'s "Total workflow runs" row and `workflows.workflows_detail`'s per-run `agent_count`/`phases` columns; `ttl.ttl_by_agent_type`'s per-agent-type lever (short-gap scripted phases). |
+| `workflow-ultracode` | workflow-run, scripted-multi-phase, ops | `workflow-heavy` | `subagentPromptCacheTtl=5m`; `agents.claude-implementer.maxTurns=40`, `."experimental.cacheTtl"=5m` | `workflows.workflows_summary`'s "Total workflow runs" row and `workflows.workflows_detail`'s per-run `agent_count`/`phases` columns; `ttl.ttl_by_agent_type`'s per-agent-type lever (short-gap scripted phases). |
 
 `list_profiles() -> list[Profile]` returns all seven, in the order
 above; `get(profile_id) -> Profile | None` returns one by id or `None`
@@ -310,13 +344,16 @@ words (`catalogue.FOR_TASKS`, `catalogue.task_profile`):
 | `data-exploration`, `web-research`, `database-exploration` | `research` |
 | `chat`, `quick-question`, `pairing` | `chat` |
 | `docs` | `docs` |
+| `ops` | `ops` |
 
 So `feature`, `bugfix`, `debug`, `refactor`, `test` and `review` lead to
 `implementation-heavy`, `plan` to `planning-requirements`, `research` to
-`discovery-scrape`, and `chat` and `docs` to `interactive-chat`. `ops`
-has no profile and falls through. The other `for` words (`fanout`,
-`overnight-run`, `workflow-run`, ...) name a way of running rather than
-a kind of task.
+`discovery-scrape`, `chat` and `docs` to `interactive-chat`, and `ops`
+(PROF-11/F11) to `workflow-ultracode` -- scripted, multi-step automation
+is the closest of the seven catalogue shapes to what `ops` names, though
+it spans several purposes (`classify.py`), so no profile is a clean fit.
+The other `for` words (`fanout`, `overnight-run`, `workflow-run`, ...)
+name a way of running rather than a kind of task.
 
 **Purpose overrides (checked first, in list order):**
 
@@ -494,10 +531,16 @@ environment-variable surface expose. It is not, and cannot become:
   (`recommend.py`'s own category split between a settings-level lever
   and workflow advice) is not representable — a profile can only ever
   nudge a *setting*, never a prompting style or a run's shape.
-- **An environment variable *value*.** `env` in a profile is a
-  *name allowlist* — the schema never stores or transmits an actual
-  secret or value; the user supplies that at apply time, in their own
-  shell.
+- **An arbitrary environment variable, or a secret.** `env` in a
+  profile is a *name allowlist* (`ENV_ALLOWLIST` in `schema.py`) — a
+  profile can only ever set one of a fixed list of behavioural knobs
+  (cache TTLs, output-token caps, model overrides and the like), never
+  an unlisted name. None of the allowlisted names are credential-shaped
+  (no API key, token, or password lever exists), so `apply` writing a
+  profile's `env` values into the target settings file's `"env"` object
+  (see "Environment variables" below) never risks persisting a secret —
+  the allowlist, not a blanket "never written" rule, is what keeps this
+  safe.
 - **A path to a real file.** A profile names keys, never files. Where
   a change lands is decided by `apply`'s `--scope` and `--project-dir`
   (see "Applying a profile"). `diff.py` is pure, and `schema.py`'s
@@ -689,18 +732,32 @@ letting the second apply silently overwrite the first's backup.
 
 `--launch` writes only `<config-dir>/profiles/<id>.settings.json` — a
 plain `settings.json`-shaped JSON object holding the profile's
-non-managed settings keys — and prints the matching `claude --settings
-<path>` command. No backup, no manifest, no `active-profile` update, no
-existing file read or merged: this is a one-off overlay for a single
-session, not a change to any of the layered settings files.
+non-managed settings keys, plus its non-managed `env` entries folded
+into their own `"env"` sub-object (see "Environment variables" below)
+— and prints the matching `claude --settings <path> [--effort <level>]`
+command (`--effort` appears when the profile sets `effortLevel`, since
+a launch overlay is session-only and the flag is the only way to carry
+that setting along on the same command line). No backup, no manifest,
+no `active-profile` update, no existing file read or merged: this is a
+one-off overlay for a single session, not a change to any of the
+layered settings files.
 
-### Environment variables: printed, never written
+### Environment variables: written into the settings file's `env` block
 
-A profile's `env` names are printed as `export NAME=value` lines (both
-in `--dry-run` and after a real apply) — never written to any file.
-This matches `env` being a name allowlist in the first place (see "What
-a profile cannot do" above): the value the profile carries is applied
-by the user exporting it in their own shell.
+**COV-07/COV-11 (P7b) superseded this section's earlier "printed,
+never written" description.** A profile's `env` entries are merged into
+the target settings file's own `"env"` object exactly like any other
+settings key — same backup, revert, git-tracked-file refusal and
+managed-key exclusion as everything else `apply` writes (managed-key
+exclusion is whole-`"env"`-block, not per-name, matching every other
+settings key's own all-or-nothing granularity). `apply --set
+env.NAME=value --dry-run` previews the change the same way any other
+`--set` does. This was `env` being a name-only allowlist in an earlier
+reading of the plan (see the `env` field's row above): the schema has
+always stored real string values (`schema.validate`'s `env.{name}: value
+must be a string` check), and the same settings.json `"env"` object is
+what `hooks/snapshot-config.py`'s `effective_env_provenance` already
+reads its layers from — so it was always the real, persisted mechanism.
 
 ### Managed keys
 

@@ -194,7 +194,12 @@ def test_a_feedback_run_is_read_from_its_tag(tmp_path):
     run = [turn for turn in result.turns if turn.turn_index > 0][1:]
     assert run[0].commands_run == ("tl-feedback",)
     assert run[0].human_prompt_chars is not None
-    # The tag outranks what the answers said.
+    # The answers landed on the AskUserQuestion turn; this reply's own
+    # text has only the tag, so that's what it's read from (SEC-P1's
+    # answers-beat-tag rule picks between the two at the cycle level --
+    # see test_each_answer_rates_the_work_since_the_previous_feedback).
+    assert run[0].feedback == Feedback(outcome="partly", slow=("unclear", "rework"), worth="fair",
+                                       helped=("context",), source="answers")
     assert run[-1].feedback == Feedback(outcome="met", worth="yes", source="tag")
 
 
@@ -245,7 +250,9 @@ def test_each_answer_rates_the_work_since_the_previous_feedback(tmp_path):
     cycles = capture.prompt_cycles(_parse(tmp_path, lines))
     assert len(cycles) == 8
     spans = capture.feedback_spans(cycles)
-    assert [span.feedback.source for span in spans] == ["answers", "skipped", "tag"]
+    # SEC-P1: the third run's answers (on the AskUserQuestion turn) beat
+    # its own tag (on the reply after it) -- answers always outrank a tag.
+    assert [span.feedback.source for span in spans] == ["answers", "skipped", "answers"]
     assert [[cycles.index(c) for c in span.cycles] for span in spans] == [[0, 1], [3], [5, 6]]
     assert [cycles.index(span.run) for span in spans] == [2, 4, 7]
     assert [capture.is_feedback_run(c) for c in cycles] == [False, False, True, False, True, False, False, True]
@@ -254,6 +261,19 @@ def test_each_answer_rates_the_work_since_the_previous_feedback(tmp_path):
 def test_feedback_run_first_thing_rates_nothing(tmp_path):
     spans = capture.feedback_spans(capture.prompt_cycles(_parse(tmp_path, _run(0, ANSWERS))))
     assert len(spans) == 1 and spans[0].cycles == []
+
+
+def test_a_forged_tag_outside_a_feedback_run_is_ignored(tmp_path):
+    # SEC-P1: `[tl-fb: ...]` is free text Claude could write in any
+    # reply; it counts only when the cycle it's in actually ran the
+    # /tl-feedback skill.
+    lines = [_ask(0), _reply(1, text="Done.\n\n[tl-fb: outcome=met worth=yes]")]
+    top = _parse(tmp_path, lines)
+    cycles = capture.prompt_cycles(top)
+    assert len(cycles) == 1
+    assert capture.is_feedback_run(cycles[0]) is False
+    assert capture.cycle_feedback(cycles[0]) is None
+    assert capture.feedback_spans(cycles) == []
 
 
 # -- what the runs cost -----------------------------------------------------------

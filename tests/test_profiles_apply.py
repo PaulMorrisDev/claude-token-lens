@@ -1,6 +1,9 @@
 """Tests for ``profiles/apply.py``: ``plan_apply``, ``execute``,
-``revert``, ``list_backups``, ``write_launch_overlay`` and
-``env_lines_for_profile``.
+``revert``, ``list_backups`` and ``write_launch_overlay``. COV-07/
+COV-11: a profile's ``env`` entries are written into the target
+settings file's own ``"env"`` object, same as any other settings key
+(see ``plan_apply``'s tests below) -- there is no more separate
+env-lines-only code path.
 
 Every test builds its own ``home``/``project``/``config_dir`` under
 ``tmp_path`` -- this module is the one place in the package that writes
@@ -478,43 +481,117 @@ def test_managed_agent_key_is_excluded_via_agents_wildcard(tmp_path):
     assert not any(a.kind == "agent_frontmatter" for a in plan.actions)
 
 
-def test_managed_env_key_is_excluded_from_env_lines(tmp_path):
+def test_managed_env_block_excludes_all_env_changes(tmp_path):
+    # COV-07/COV-11: managed_keys is top-level settings.json key names
+    # only, so "is env managed" is a whole-"env"-block question -- there
+    # is no per-name managed signal at this layer (matching how any other
+    # settings key, e.g. "model", is all-or-nothing too).
     home = tmp_path / "home"
     claude_root = home / ".claude"
     config_dir = home / ".claude" / "token-lens"
     profile = _profile(
         settings={}, env={"CLAUDE_CODE_PROMPT_CACHE_TTL": "5m", "MAX_THINKING_TOKENS": "1024"}
     )
-    snapshot = _snapshot(managed_keys=["CLAUDE_CODE_PROMPT_CACHE_TTL"])
+    snapshot = _snapshot(managed_keys=["env"])
     plan = apply_mod.plan_apply(
         profile, scope="user", project_path=None, config_dir=config_dir, claude_root=claude_root, snapshot=snapshot
     )
     assert "env.CLAUDE_CODE_PROMPT_CACHE_TTL" in plan.skipped_managed
-    assert not any(line.startswith("CLAUDE_CODE_PROMPT_CACHE_TTL=") for line in plan.env_lines)
-    assert "MAX_THINKING_TOKENS=1024" in plan.env_lines
+    assert "env.MAX_THINKING_TOKENS" in plan.skipped_managed
+    assert not any(a.kind == "settings" for a in plan.actions)
 
 
 # --------------------------------------------------------------------
-# env_lines_for_profile
+# a profile's env entries, written into the settings file's "env" object
 # --------------------------------------------------------------------
 
 
-def test_env_lines_for_profile_orders_by_allowlist_and_excludes_managed():
+def test_env_entries_are_merged_into_the_settings_files_env_object(tmp_path):
+    home = tmp_path / "home"
+    claude_root = home / ".claude"
+    claude_root.mkdir(parents=True)
+    (claude_root / "settings.json").write_text(
+        json.dumps({"model": "opus", "env": {"SOME_OTHER_VAR": "keep-me"}}), encoding="utf-8"
+    )
+    config_dir = home / ".claude" / "token-lens"
     profile = _profile(
         settings={},
-        env={
+        env={"MAX_THINKING_TOKENS": "1024", "CLAUDE_CODE_PROMPT_CACHE_TTL": "5m"},
+    )
+    plan = apply_mod.plan_apply(
+        profile, scope="user", project_path=None, config_dir=config_dir, claude_root=claude_root
+    )
+    settings_action = next(a for a in plan.actions if a.kind == "settings")
+    written = json.loads(settings_action.new_bytes.decode("utf-8"))
+    # The env entries the profile names are added; an existing env entry
+    # it doesn't mention, and every other settings key, are untouched.
+    assert written == {
+        "model": "opus",
+        "env": {
+            "SOME_OTHER_VAR": "keep-me",
             "MAX_THINKING_TOKENS": "1024",
             "CLAUDE_CODE_PROMPT_CACHE_TTL": "5m",
         },
-    )
-    lines = apply_mod.env_lines_for_profile(profile, managed_keys=set())
-    # ENV_ALLOWLIST order lists CLAUDE_CODE_PROMPT_CACHE_TTL before
-    # MAX_THINKING_TOKENS -- assert the profile's own two lines come out
-    # in that fixed order, not insertion/dict order.
-    assert lines == ("CLAUDE_CODE_PROMPT_CACHE_TTL=5m", "MAX_THINKING_TOKENS=1024")
+    }
 
-    lines_excluded = apply_mod.env_lines_for_profile(profile, managed_keys={"MAX_THINKING_TOKENS"})
-    assert lines_excluded == ("CLAUDE_CODE_PROMPT_CACHE_TTL=5m",)
+
+# --------------------------------------------------------------------
+# COV-04: plan.overridden -- a write whose effective value already comes
+# from a higher-precedence layer
+# --------------------------------------------------------------------
+
+
+def test_overridden_warns_when_a_higher_layer_already_supplies_a_settings_key(tmp_path):
+    home = tmp_path / "home"
+    project = tmp_path / "proj"
+    config_dir = home / ".claude" / "token-lens"
+    claude_root = home / ".claude"
+    (project / ".claude").mkdir(parents=True)
+    profile = _profile(settings={"model": "haiku"})
+    # project-local (rank 1) outranks repo/project_shared (rank 2) in
+    # SETTINGS_LAYER_NAMES, so a repo-scope write of "model" here would
+    # have no visible effect: project-local already wins.
+    snapshot = _snapshot(effective_provenance={"model": "project_local"})
+    plan = apply_mod.plan_apply(
+        profile,
+        scope="repo",
+        project_path=project,
+        config_dir=config_dir,
+        claude_root=claude_root,
+        snapshot=snapshot,
+    )
+    assert len(plan.overridden) == 1
+    assert plan.overridden[0].startswith("model: already set by")
+    assert "local settings" in plan.overridden[0]
+    # Never blocks -- the write still happens, just with a warning.
+    assert any(a.kind == "settings" for a in plan.actions)
+    assert not plan.blocked
+
+
+def test_overridden_warns_for_an_env_key_via_its_own_provenance_field(tmp_path):
+    home = tmp_path / "home"
+    config_dir = home / ".claude" / "token-lens"
+    claude_root = home / ".claude"
+    profile = _profile(settings={}, env={"ENABLE_TOOL_SEARCH": "true"})
+    # env provenance lives in a different snapshot field than settings
+    # provenance (effective_env_provenance, not effective_provenance).
+    snapshot = _snapshot(effective_env_provenance={"ENABLE_TOOL_SEARCH": "project_shared"})
+    plan = apply_mod.plan_apply(
+        profile, scope="user", project_path=None, config_dir=config_dir, claude_root=claude_root, snapshot=snapshot
+    )
+    assert plan.overridden == ("env.ENABLE_TOOL_SEARCH: already set by this project's shared settings "
+                                "(.claude/settings.json), which takes precedence",)
+
+
+def test_overridden_is_empty_without_a_snapshot(tmp_path):
+    home = tmp_path / "home"
+    config_dir = home / ".claude" / "token-lens"
+    claude_root = home / ".claude"
+    profile = _profile(settings={"model": "haiku"}, env={"ENABLE_TOOL_SEARCH": "true"})
+    plan = apply_mod.plan_apply(
+        profile, scope="user", project_path=None, config_dir=config_dir, claude_root=claude_root, snapshot=None
+    )
+    assert plan.overridden == ()
 
 
 # --------------------------------------------------------------------
@@ -565,6 +642,27 @@ def test_write_launch_overlay_excludes_managed_keys(tmp_path):
     path = apply_mod.write_launch_overlay(profile, config_dir=config_dir, managed_keys={"effortLevel"})
     written = json.loads(path.read_text(encoding="utf-8"))
     assert written == {"outputStyle": "concise"}
+
+
+def test_write_launch_overlay_includes_env_entries(tmp_path):
+    # COV-07/COV-11: a launch overlay is itself a settings.json-shaped
+    # file, so a profile's env entries fold into its own "env" object the
+    # same way plan_apply folds them into a real settings.json.
+    home = tmp_path / "home"
+    config_dir = home / ".claude" / "token-lens"
+    profile = _profile(settings={"effortLevel": "high"}, env={"ENABLE_TOOL_SEARCH": "true"})
+    path = apply_mod.write_launch_overlay(profile, config_dir=config_dir)
+    written = json.loads(path.read_text(encoding="utf-8"))
+    assert written == {"effortLevel": "high", "env": {"ENABLE_TOOL_SEARCH": "true"}}
+
+
+def test_write_launch_overlay_excludes_env_when_env_block_is_managed(tmp_path):
+    home = tmp_path / "home"
+    config_dir = home / ".claude" / "token-lens"
+    profile = _profile(settings={"effortLevel": "high"}, env={"ENABLE_TOOL_SEARCH": "true"})
+    path = apply_mod.write_launch_overlay(profile, config_dir=config_dir, managed_keys={"env"})
+    written = json.loads(path.read_text(encoding="utf-8"))
+    assert written == {"effortLevel": "high"}
 
 
 # --------------------------------------------------------------------

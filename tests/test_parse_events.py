@@ -92,6 +92,93 @@ def test_hook_output_attachment_type():
     assert events.classify_line(line).kind == EventKind.HOOK_OUTPUT
 
 
+def test_hook_output_captures_the_hook_event_name_not_the_matcher():
+    # SURV-HE: the event bucket is kept (closed vocabulary), the
+    # matcher/tool-name suffix after ":" is always dropped (G7).
+    line = attachment_line("hook_non_blocking_error", hookName="PreToolUse:Bash")
+    event = events.classify_line(line)
+    assert event.detail == {"hookName": "PreToolUse"}
+
+
+def test_hook_output_unrecognised_hook_event_becomes_other():
+    line = attachment_line("hook_blocking_error", hookName="SomeFutureEvent:Foo")
+    assert events.classify_line(line).detail == {"hookName": "other"}
+
+
+def test_hook_output_missing_hook_name_becomes_other():
+    line = attachment_line("hook_success")
+    assert events.classify_line(line).detail == {"hookName": "other"}
+
+
+def test_hook_output_mcp_matched_hook_name_never_reaches_detail():
+    # The exact G7 shape: an MCP tool's name in the matcher must never
+    # survive into Event.detail, even bucketed under a real hook event.
+    line = attachment_line("hook_non_blocking_error", hookName="PreToolUse:mcp__some_server__do_thing")
+    detail = events.classify_line(line).detail
+    assert detail == {"hookName": "PreToolUse"}
+    assert "mcp__some_server__do_thing" not in str(detail)
+
+
+def test_hook_output_capture_note_detail_has_no_hook_name_key():
+    # The capture-note path keeps its own, narrower "hook" vocabulary
+    # (_CAPTURE_NOTE_HOOKS) and must not also gain a "hookName" key.
+    line = attachment_line(
+        "hook_additional_context",
+        hookName="SessionStart",
+        hookEvent="SessionStart",
+        content=["Token Lens metrics capture (tl-cap v1 task): ..."],
+    )
+    event = events.classify_line(line)
+    assert event.subkind == "capture_note"
+    assert "hookName" not in event.detail
+
+
+# -- CAP-9/F10: durationMs and the "own hook" flag ----------------------
+
+
+def test_hook_output_keeps_the_real_duration():
+    line = attachment_line("hook_success", hookName="SessionStart:startup", durationMs=140)
+    assert events.classify_line(line).detail == {"hookName": "SessionStart", "durationMs": 140}
+
+
+def test_hook_output_missing_duration_has_no_duration_key():
+    line = attachment_line("hook_success", hookName="SessionStart:startup")
+    detail = events.classify_line(line).detail
+    assert "durationMs" not in detail
+
+
+def test_hook_output_non_numeric_duration_is_dropped():
+    line = attachment_line("hook_success", hookName="SessionStart:startup", durationMs="not-a-number")
+    assert "durationMs" not in events.classify_line(line).detail
+
+
+def test_hook_output_flags_a_call_that_ran_token_lens_own_hook_script():
+    command = '"C:\\Python311\\python.exe" -I -S "C:\\Users\\me\\scratch\\tl\\hooks\\capture-hook.py" --config-dir "C:\\Users\\me\\scratch\\tl"'
+    line = attachment_line("hook_success", hookName="PostToolUse:Bash", durationMs=210, command=command)
+    detail = events.classify_line(line).detail
+    assert detail == {"hookName": "PostToolUse", "durationMs": 210, "capture": True}
+
+
+def test_hook_output_a_third_party_hooks_command_is_never_flagged_as_capture():
+    line = attachment_line(
+        "hook_success", hookName="PostToolUse:Bash", durationMs=5, command='"/usr/bin/some-other-hook.sh"'
+    )
+    detail = events.classify_line(line).detail
+    assert "capture" not in detail
+
+
+def test_hook_output_command_string_never_reaches_detail():
+    # Only a bool may ever come from `command` -- the path itself (which
+    # can carry a username) must never land in Event.detail.
+    command = 'python.exe "C:\\Users\\alice\\scratch\\tl\\hooks\\capture-hook.py"'
+    line = attachment_line("hook_success", hookName="PostToolUse:Bash", command=command)
+    detail = events.classify_line(line).detail
+    assert detail == {"hookName": "PostToolUse", "capture": True}
+    assert "alice" not in str(detail)
+    assert "command" not in detail
+    assert "\\" not in str(detail)
+
+
 def test_cache_signal_model():
     line = attachment_line("model", identity={"modelId": "claude-sonnet-5"})
     event = events.classify_line(line)

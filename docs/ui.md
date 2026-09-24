@@ -38,7 +38,7 @@ inline SVG charts, `prefers-color-scheme` dark."
 One page (`index.html`), one `<nav>` of tabs (`TAB_ORDER`), each
 rendering from its own `/api/*` route(s). A tab is rendered the first
 time it is opened and kept until the window changes; tabs have no
-background poll. Fifteen tabs ship, in the order below.
+background poll. Sixteen tabs ship, in the order below.
 
 **The health banner and footer** are on every tab, from `/api/health`
 (`pollHealth()`: every 3 seconds while its `status` is `"starting"`,
@@ -97,9 +97,8 @@ window's numbers (review finding 21). `loadReport()`'s cache is keyed by
 the window for the same reason. The short windows (last hour, today,
 last 24 hours, since my last change) carry a note: a session active in
 the window counts in full. A few panels always cover all history and
-ignore the picker: the Sessions list, the Cache tab's rebuild counts,
-the Usage tab's compaction list, the baseline panel, "Your changes and
-what they did", the setup panel and service health.
+ignore the picker: the Cache tab's rebuild counts, the baseline panel,
+"Your changes and what they did", the setup panel and service health.
 
 1. **Overview** — top to bottom: a line naming the billing mode and
    why it was chosen (from `report.meta`); **Start here**; four stat
@@ -123,7 +122,7 @@ what they did", the setup panel and service health.
    the same `renderFix` the Recommendations tab uses, and habit tips.
    The same checks run in the terminal as `claude-token-lens check`.
 3. **Sessions** — `/api/sessions`, 50 rows a page, newest first, with
-   Previous/Next buttons (all history, not the window); the report's
+   Previous/Next buttons (windowed, like the rest of the tab); the report's
    `sessions` section follows below it. A row click (or Enter) renders
    that session's detail inline in the same panel rather
    than switching to a separate tab (feature #5, "root-causing one
@@ -289,8 +288,8 @@ what they did", the setup panel and service health.
    tab's baseline panel appears above the list while a capture window is
    in progress (`/api/baseline`'s `capture_status`).
 12. **Usage** — the `usage`/`compactions`/`phases` report sections plus a raw
-    `/api/compactions` list (all history, the first 50 shown).
-13. **Work habits** — the report's `habits` section: the "This week"
+    `/api/compactions` list (windowed, newest first, the first 50 shown).
+13. **Work habits** — the report's `habits` section: the "Weekly pace"
     digest as cards (the three habits worth the most a week, what the
     habits you already picked up save, what a piece of work that met
     its goal cost, and how many messages Claude tagged), then "Habits
@@ -398,7 +397,7 @@ stdlib-only test suite.
 
 The UI shipped in `static/index.html` + `app.js` + `app.css` follows
 this document's Constraints, Data flow and Testing sections, and the
-Tabs section above describes the shipped fourteen-tab structure
+Tabs section above describes the shipped sixteen-tab structure
 directly.
 
 **Generic Section/Table rendering** for Sessions/Cache/TTL/Agents/Config/Usage/

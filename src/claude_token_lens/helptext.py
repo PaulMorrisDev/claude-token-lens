@@ -46,6 +46,7 @@ PLACEMENT: dict[str, str] = {
     "pricing_unknown_models": "advanced",
     "pricing_closest_match": "advanced",
     "pricing_fast_priced_as_standard": "advanced",
+    "pricing_fast_applied": "advanced",
     # usage limits (subscription with usage-log readings)
     "elasticity_budget": "keep",
     "elasticity_recent_burn": "keep",
@@ -86,6 +87,7 @@ PLACEMENT: dict[str, str] = {
     "limits_reset_hour_histogram": "advanced",
     "limits_by_agent_type": "advanced",
     "limits_csv_cross_check": "advanced",
+    "limits_signals_cross_check": "advanced",
     # savings
     "carry_by_tool": "keep",
     "carry_by_agent_type": "advanced",
@@ -94,6 +96,7 @@ PLACEMENT: dict[str, str] = {
     "carry_output_cap_savings": "advanced",
     "compaction_sim_by_window": "keep",
     "compaction_sim_by_agent_type": "keep",
+    "compaction_sim_by_task": "advanced",
     "compaction_sim_fidelity": "advanced",
     "model_swap_by_agent_type": "keep",
     "model_swap_summary": "keep",
@@ -165,6 +168,7 @@ PLACEMENT: dict[str, str] = {
     "config-layers": "advanced",
     "config-groups": "advanced",
     "config-drift": "keep",
+    "env-levers": "keep",
     # context budget
     "context_budget_baseline": "keep",
     "context_budget_autocompact": "advanced",
@@ -186,6 +190,7 @@ PLACEMENT: dict[str, str] = {
     "finance_summary": "report",
     "pricing_rates": "report",
     "reconcile_by_period": "report",
+    "cost_ground_truth_gap": "report",
     "savers_detected": "report",
     "savers_effect_by_stratum": "report",
     "savers_overhead": "report",
@@ -656,11 +661,12 @@ TABLE_COPY: dict[str, TableCopy] = {
     ),
     # -- quality signals ----------------------------------------------------
     "habits_digest": TableCopy(
-        title="This week",
+        title="",  # UX-4/7: the builder's title names the actual day span
         help=Help(
             shows="The three habits worth the most to you right now, what the habits you already picked up are "
             "saving, and what a piece of work that met its goal cost.",
-            read="Savings are a week's worth at your recent pace. A habit counts as picked up when what it "
+            read="Savings are a week's worth at your recent pace once there's a week of it; under 7 days, it's the "
+            "raw total so far, not stretched into a weekly rate. A habit counts as picked up when what it "
             "addresses per message fell by a fifth or more over recent weeks.",
             act="Start with the first habit: Habits worth trying below has an example to copy for each.",
         ),
@@ -711,6 +717,13 @@ TABLE_COPY: dict[str, TableCopy] = {
             "confidence": ("Confidence", "High with 20 or more cases, medium with 8 or more, else low."),
             "trend": ("Trend", "Whether it's getting better or worse over recent weeks."),
             "weeks": ("By week", "What it addresses per message, by week, the worst week as 100."),
+            "where": ("Where and who it affects", "Where trying this habit shows up and who it affects."),
+            "trade_off": ("Trade-off", "What trying this habit costs or risks."),
+            "how_to_undo": ("How to undo it", "How to go back if it doesn't work out."),
+            "covered_by": (
+                "Already covered by",
+                "The recommendation that already reports this saving, when one has fired -- blank otherwise.",
+            ),
         },
         value_labels={
             **{key: title for key, (_theme, title) in HABIT_ITEMS.items()},
@@ -739,6 +752,8 @@ TABLE_COPY: dict[str, TableCopy] = {
             "share": ("Share", "Out of all your messages."),
             "cost": ("Cost", "What the work cost, subagents included."),
             "avg_cost": ("Per message", "The average cost of one."),
+            "main_cost": ("Cost (main session only)", "What the work cost the main session alone, leaving out "
+                          "any subagents it spawned."),
             "clear_pct": ("Clear asks", "Messages Claude called clear, out of those it rated."),
             "large_pct": ("Large asks", "Messages Claude sized large or extra large."),
             "redo_pct": ("Redone", "Messages whose work was redone or corrected by your next message."),
@@ -846,21 +861,26 @@ TABLE_COPY: dict[str, TableCopy] = {
         title="Best setup for each kind of task",
         help=Help(
             shows="Each kind of task Claude reported, all together and by how hard it said the work was, with "
-            "the model and effort that answered it: what a message cost and how often the work went well.",
+            "the exact model, effort and speed that answered it: what a message cost and how often the work "
+            "went well.",
             read="Went well is your feedback where you gave it, otherwise whether your next message redid the "
-            "work. The cheaper setup cost less per message and went well about as often as your usual one, over "
-            "at least 5 messages each, compared level for level on the work both ran, so easy work alone doesn't "
-            "make a setup look cheap. It's still a lead, not proof.",
+            "work; the last message of each session is left out, since nothing after it confirms how that one "
+            "went. Shown from 5 messages each side; a cheaper setup that's mostly hard work at the all-levels row "
+            "is held back even if nothing else looks wrong, since that's what made it look cheap, not the setup "
+            "itself. A cheaper setup is only ticked to apply once it has at least 20 messages behind it.",
             act="On the Profiles tab, start from the goal A profile for one kind of task, save it, and launch "
             "Claude with it for that kind of work.",
         ),
         columns={
             "task": ("Task", "The kind of task Claude reported."),
             "level": ("How hard", "How hard Claude said the work was. All is every level together."),
-            "model": ("Model", "The model most of the work ran on."),
+            "model": ("Model", "The exact model version most of the work ran on."),
             "effort": ("Effort", "The effort it ran at."),
+            "speed": ("Speed", "Standard or fast mode."),
             "cycles": ("Messages", "Messages with this setup."),
-            "avg_cost": ("Per message", "The average cost of the work."),
+            "avg_cost": ("Per message", "The average cost of the work, subagents included."),
+            "main_avg_cost": ("Per message (main session only)", "The average cost of the main session's own "
+                               "share of the work, leaving out any subagents it spawned."),
             "ok_pct": ("Went well", "Met its goal by your feedback, or not redone by your next message."),
             "rated": ("With your feedback", "Messages your feedback covers."),
             "verdict": ("Setup", "Your usual setup, and the cheaper one that did as well."),
@@ -1850,6 +1870,26 @@ TABLE_COPY: dict[str, TableCopy] = {
             "model_id": ("Model", "The model name exactly as Claude Code recorded it."),
             "turns": ("Replies", "Fast-mode replies from this model."),
             "tokens": ("", "All tokens in those replies, including cache reads."),
+        },
+    ),
+    "pricing_fast_applied": TableCopy(
+        title="Fast-priced replies",
+        help=Help(
+            shows="One row per model with at least one reply actually billed at its fast-mode rate. Shown only "
+            "when there is at least one. PROF-08: fuels the Profiles \"fastMode\" lever's estimate.",
+            read="\"Cost at fast rate\" is what these replies were actually billed; \"Cost at standard rate\" is "
+            "what the same replies would have cost with fast mode off -- the price premium fast mode charges "
+            "for a faster reply.",
+            act="Draft a profile that turns fastMode off to see the saving, if the extra speed isn't worth its "
+            "price.",
+        ),
+        columns={
+            "model_id": ("Model", "The model name exactly as Claude Code recorded it."),
+            "turns": ("Replies", "Fast-mode replies from this model."),
+            "tokens": ("", "All tokens in those replies, including cache reads."),
+            "cost": ("Cost at fast rate", "What these replies were actually billed, at the fast-mode rate."),
+            "standard_cost": ("Cost at standard rate", "What the same replies would have cost at the model's "
+                               "standard rate, with fast mode off."),
         },
     ),
     # -- usage limits -------------------------------------------------------------
@@ -3368,6 +3408,37 @@ TABLE_COPY: dict[str, TableCopy] = {
             "no material difference": "No clear saving",
         },
     ),
+    "compaction_sim_by_task": TableCopy(
+        title="Best auto-compact window for each kind of task",
+        help=Help(
+            shows="For each kind of task metrics capture has seen enough of in your main sessions: the window "
+            "with the lowest simulated cost, and the saving against your real cost.",
+            read="Savings are simulated and never below zero. \"No clear saving\" means the best window saves "
+            "under 5% of the cost, or under $1.00 at list price. A kind of task only appears once you have "
+            "enough sessions reporting it.",
+            act="Save a window per kind of task as a profile, the same way as a model or effort choice.",
+        ),
+        columns={
+            "task": ("Kind of task", "The kind of task, as reported by metrics capture."),
+            "sessions": ("Sessions", "How many main sessions reported this kind of task."),
+            "observed_cost": ("Real cost", "Measured cost of those sessions, at list price."),
+            "best_window": ("Best window (tokens)", "The window with the lowest simulated cost."),
+            "best_cost": ("Cost at best window", "Simulated cost at that window, at list price."),
+            "saving_usd": (
+                "Simulated saving",
+                "Real cost minus cost at the best window, at list price. Never below 0.",
+            ),
+            "delta_pct": (
+                "Change (%)",
+                "Simulated change at the best window, against real cost. Negative means cheaper.",
+            ),
+            "recommendation": ("Suggestion", "Whether the simulated saving is big enough to act on."),
+        },
+        value_labels={
+            "none": "As now (no extra summaries)",
+            "no material difference": "No clear saving",
+        },
+    ),
     "compaction_sim_fidelity": TableCopy(
         title="Simulation check against your real sessions",
         help=Help(
@@ -3628,17 +3699,33 @@ TABLE_COPY: dict[str, TableCopy] = {
     "config-drift": TableCopy(
         title="Settings that did not take effect",
         help=Help(
-            shows="Sessions where the model Claude actually used differs from the model in your settings.",
-            read="Only the model is checked. A mismatch usually means something overrode the setting, "
-            "such as an environment variable, a command-line flag or a model switch during the session.",
-            act="If sessions ran on a pricier model than you set, check your shell profile and launch "
-            "command for a model override.",
+            shows="Sessions where the model or effort level Claude actually used differs from your settings.",
+            read="Only the model and effort level are checked. A mismatch usually means something overrode "
+            "the setting, such as an environment variable, a command-line flag or a switch during the session.",
+            act="If sessions ran on a pricier model or a higher effort level than you set, check your shell "
+            "profile and launch command for an override.",
         ),
         columns={
             "session_id": ("Session", "The session's id."),
             "key": ("Setting", "The setting that was checked."),
             "snapshot_value": ("In your settings", "The value your settings files gave when the session started."),
-            "observed_value": ("Actually used", "The model the main session used for most of its replies."),
+            "observed_value": ("Actually used", "The model or effort level the main session mostly used."),
+        },
+    ),
+    "env-levers": TableCopy(
+        title="Environment variable and attribution levers",
+        help=Help(
+            shows="Whether specific environment variables and settings are set, and their value when that's "
+            "safe to show.",
+            read="Each row is one lever this report can suggest a change for, such as turning prompt caching "
+            "back on. \"Present\" means it's set somewhere in your settings, not necessarily where you'd "
+            "expect.",
+            act="See the matching recommendation for what to change and how to undo it.",
+        ),
+        columns={
+            "name": ("Name", "The environment variable or setting name."),
+            "present": ("Set", "Whether it's set at all."),
+            "value": ("Value", "Its value, when that's safe to show."),
         },
     ),
     # Run-time named: one table per changed setting, "config-diff-<setting>";
@@ -3791,13 +3878,34 @@ DIAGNOSTIC_LABELS: dict[str, tuple[str, str]] = {
 }
 
 
-def diagnostics_table(diagnostics: Diagnostics, hook=None, statusline=None) -> Table:
+#: Parser-signals addition (SURV-6/7, see model.py's module docstring):
+#: ``ReportModel.parser_notes`` key -> (label, meaning), the same shape
+#: as ``DIAGNOSTIC_LABELS`` but deliberately a separate dict -- this
+#: phase was told not to edit ``DIAGNOSTIC_LABELS`` (and ``parser_notes``
+#: isn't a ``Diagnostics`` field to begin with).
+_PARSER_NOTE_LABELS: dict[str, tuple[str, str]] = {
+    "unknown_line_types": (
+        "Unrecognised line types",
+        "Kinds of log line no rule in this tool recognises at all, with counts -- unlike \"Line types skipped\" above, which also includes kinds this tool knows about and intentionally ignores.",
+    ),
+    "unsized_blocks": (
+        "Unsized image/document content",
+        "Image or document content this tool could not estimate a token count for (an oversized image, or a PDF page, whose cost isn't a fixed formula), by kind, with counts. Left out of context-size figures.",
+    ),
+}
+
+
+def diagnostics_table(diagnostics: Diagnostics, hook=None, statusline=None, parser_notes: dict | None = None) -> Table:
     """The parse-quality counters as a plain-English table (the Data
     quality tab, ``GET /api/diagnostics``). Rows keep the raw field name
     as their key, shown through ``value_labels``. ``hook``, a
     ``hook_health.HookHealth``, adds a first row saying whether the
     config snapshot hook is running; ``statusline``, a
-    ``hook_health.statusline_check`` result, adds one for the statusline."""
+    ``hook_health.statusline_check`` result, adds one for the statusline.
+    ``parser_notes`` (``ReportModel.parser_notes``) adds one row per key
+    it carries, labelled via ``_PARSER_NOTE_LABELS`` -- a side channel
+    for counters that don't fit the ``Diagnostics`` dataclass, see that
+    module's docstring."""
     rows = []
     if hook is not None:
         rows.append(["snapshot_hook", "working" if hook.ok else "needs attention", hook.summary()])
@@ -3812,6 +3920,10 @@ def diagnostics_table(diagnostics: Diagnostics, hook=None, statusline=None) -> T
             value = "yes" if value else "no"
         _, meaning = DIAGNOSTIC_LABELS.get(field_def.name, ("", ""))
         rows.append([field_def.name, value, meaning])
+    for note_key, label_pair in _PARSER_NOTE_LABELS.items():
+        counts = (parser_notes or {}).get(note_key) or {}
+        value = ", ".join(f"{k}: {v:,}" for k, v in sorted(counts.items())) if counts else "none"
+        rows.append([note_key, value, label_pair[1]])
     return Table(
         name="data_quality",
         title="What could be read",
@@ -3827,7 +3939,8 @@ def diagnostics_table(diagnostics: Diagnostics, hook=None, statusline=None) -> T
             act="If unrecognised note types or unreadable lines are large, your Claude Code version may be newer than this tool.",
         ),
         value_labels={"snapshot_hook": "Config snapshot hook", "statusline": "Statusline (usage limits)"}
-        | {key: label for key, (label, _) in DIAGNOSTIC_LABELS.items()},
+        | {key: label for key, (label, _) in DIAGNOSTIC_LABELS.items()}
+        | {key: label for key, (label, _) in _PARSER_NOTE_LABELS.items()},
     )
 
 

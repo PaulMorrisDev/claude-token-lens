@@ -3,6 +3,8 @@ contract (``quick_actions``)."""
 
 from __future__ import annotations
 
+import re
+from pathlib import Path
 from types import SimpleNamespace as NS
 
 import pytest
@@ -14,6 +16,8 @@ from claude_token_lens.model import Recommendation
 from claude_token_lens.units import Units
 
 from test_whatif import _model, _table
+
+API_MD = Path(__file__).resolve().parent.parent / "docs" / "api.md"
 
 UNITS = Units(billing_mode="api", currency="USD")
 FIX_KEYS = {"key", "agent", "explainer", "command", "command_warning", "prompt", "title"}
@@ -64,6 +68,23 @@ def test_every_check_answers_with_a_valid_status_and_fix_contract(tmp_path):
         for fix in result["fixes"]:
             assert FIX_KEYS <= set(fix), (check_id, fix)
             assert fix["prompt"] and fix["title"], check_id
+
+
+def test_check_ids_documented_in_api_md_match_the_code():
+    """docs/api.md's ``GET /api/quick-actions`` summary once dropped
+    "quality" (added after "habits") from its prose id list. Regression
+    test: the sentence must name exactly ``quick_actions.CHECK_IDS``, in
+    order."""
+    text = API_MD.read_text(encoding="utf-8")
+    match = re.search(
+        r"One answer per way of saving tokens \(`quick_actions\.CHECKS`\):(.+?)\.\s*Each check always answers",
+        text,
+        re.S,
+    )
+    assert match, "docs/api.md's quick-actions summary sentence has changed shape"
+    ids_text = " ".join(match.group(1).split())
+    ids = [part.strip() for part in re.split(r",| and ", ids_text) if part.strip()]
+    assert ids == list(qa.CHECK_IDS)
 
 
 def test_an_empty_report_is_no_data_everywhere_but_never_fails(tmp_path):
@@ -427,6 +448,43 @@ def test_habits_shows_the_top_of_the_playbook_as_tips(tmp_path):
     assert tips[0]["text"] == (
         f"tool_loops evidence. Try: tool_loops example. About {qa._money(_ctx(tmp_path), 2.0)} a week (inferred)."
     )
+
+
+def test_playbook_tips_skip_a_habit_already_covered_by_a_fired_recommendation(tmp_path):
+    """UX-3, "quick actions deduped by theme": a habit ``apply_covered_by``
+    (habits.py) has already matched to a fired rule is skipped here too --
+    it's already said, via ``_HABIT_RECS`` or the Recommendations section,
+    so a tip repeating it would say the same thing twice."""
+    model = _full_model()
+    model.recommendations = []
+    rows = [dict(row, covered_by="") for row in _PLAYBOOK]
+    rows[0]["covered_by"] = "High effort is being spent on easy work"  # tool_loops, the top saving
+    model.sections.append(_habits_tables(habits_playbook=rows))
+    result = qa.run("habits", _ctx(tmp_path, model=model))
+    tips = result["tips"][-qa.PLAYBOOK_TIPS:]
+    # tool_loops is skipped; the next 3 rows take its place.
+    assert [t["title"] for t in tips] == [
+        "Ask agents for short reports", "Name the files you already know", "Keep tool output small",
+    ]
+
+
+def test_playbook_tips_pick_at_most_one_habit_per_theme(tmp_path):
+    """Two rows sharing a theme (both "delegation") only contribute their
+    top-saving row; a lower-ranked row with a fresh theme takes the
+    second slot instead of being crowded out."""
+    model = _full_model()
+    model.recommendations = []
+    rows = [dict(row) for row in _PLAYBOOK]
+    rows[0]["theme"] = "delegation"  # tool_loops, saving 2.0
+    rows[1]["theme"] = "delegation"  # short_reports, saving 1.0 -- same theme, skipped
+    rows[2]["theme"] = "breakdown"  # name_files, saving 0.5
+    rows[3]["theme"] = "information"  # quiet_output, saving 0.25
+    model.sections.append(_habits_tables(habits_playbook=rows))
+    result = qa.run("habits", _ctx(tmp_path, model=model))
+    tips = result["tips"][-qa.PLAYBOOK_TIPS:]
+    assert [t["title"] for t in tips] == [
+        "Stop retrying a failing command", "Name the files you already know", "Keep tool output small",
+    ]
 
 
 def test_skills_late_or_not_needed_become_tips(tmp_path):

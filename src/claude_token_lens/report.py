@@ -62,7 +62,14 @@ Deviations from the task brief, reported rather than made silently (see
   in hand) and, once a session's own dominant top-level model is known,
   ``build_config_drift_table`` (fix #15: model comparisons are alias-
   normalised via ``pricing.resolve_model``, so this no longer reports
-  100% drift on ``model``). ``snapshots.claude_json_cross_check`` is
+  100% drift on ``model``). COV-02: the same table also carries an
+  ``effortLevel`` row per session once a dominant top-level effort is
+  known (``_dominant_transcript_effort``) -- together these are the
+  "CLI/overlay layer" the plan asks for: a disagreement between the
+  snapshot's effective settings and what the transcript actually ran
+  under is evidence of a shell env var, a ``--model``/``--effort`` CLI
+  flag, or a ``--settings`` one-launch overlay the config hook never
+  sees. ``snapshots.claude_json_cross_check`` is
   still not surfaced as a report table: unlike the other five functions
   fix #14 names, it has no existing ``build_*_table`` wrapper to reuse
   (only the raw dict-returning comparison), and it also needs a full
@@ -277,6 +284,30 @@ def _dominant_transcript_model(tr: TranscriptResult) -> str | None:
         if not turn.model:
             continue
         counts[turn.model] = counts.get(turn.model, 0) + 1
+    if not counts:
+        return None
+    return max(counts.items(), key=lambda kv: (kv[1], kv[0]))[0]
+
+
+def _dominant_transcript_effort(tr: TranscriptResult) -> str | None:
+    """COV-02: the most-observed ``Turn.effort`` across ``tr``'s own priced
+    turns, ties broken lexicographically -- the effort-side counterpart to
+    :func:`_dominant_transcript_model`, feeding the same "observed" side of
+    :func:`snapshots.build_config_drift_table` under the ``effortLevel``
+    key (the settings key it's compared against; see
+    ``SAFE_SETTINGS_KEYS`` in ``hooks/snapshot-config.py``). ``turn.effort``
+    already uses the same enum as ``effortLevel``
+    (``low``/``medium``/``high``/``xhigh``/``max``, docs/profiles.md), so no
+    alias normalisation is needed the way ``model`` needs
+    ``pricing.resolve_model`` -- plain equality in ``detect_drift`` is
+    correct here. ``None`` when nothing resolves (no priced turns, or none
+    carried an effort value).
+    """
+    counts: dict[str, int] = {}
+    for turn in _priced_turns(tr):
+        if not turn.effort:
+            continue
+        counts[turn.effort] = counts.get(turn.effort, 0) + 1
     if not counts:
         return None
     return max(counts.items(), key=lambda kv: (kv[1], kv[0]))[0]
@@ -747,6 +778,27 @@ def _recommend_min_sample_values(config: Config) -> tuple[int, int]:
     return recommend_th.min_sessions, recommend_th.min_turns
 
 
+def _effort_mismatch_share_threshold(config: Config) -> float:
+    """UX-3: the thinking-share percent ``habits.py``'s ``effort_fit``
+    item gates on, resolved from the same ``[thresholds.recommend]``
+    config the ``effort-mismatch`` rule reads (``recommend
+    .RecommendThresholds.effort_mismatch_thinking_share_pct``) -- one
+    shared effort threshold instead of an independent number in each
+    module. Same defensive posture as ``_recommend_min_sample_values``
+    above: falls back to the class default if ``recommend.py`` isn't
+    importable."""
+    from . import recommend as recommend_mod
+
+    recommend_th_cls = getattr(recommend_mod, "RecommendThresholds", None)
+    if recommend_th_cls is None:
+        return 30.0
+
+    recommend_th = recommend_th_cls.from_config(
+        config.thresholds.get("recommend") if isinstance(config.thresholds, dict) else None, config
+    )
+    return recommend_th.effort_mismatch_thinking_share_pct
+
+
 def _merge_diagnostics(acc: Diagnostics, d: Diagnostics) -> None:
     """Fold one transcript's :class:`Diagnostics` into the running
     corpus-wide total: sum every int counter, merge every dict counter
@@ -774,6 +826,19 @@ def _merge_diagnostics(acc: Diagnostics, d: Diagnostics) -> None:
         acc.modes[key] = acc.modes.get(key, 0) + value
     for key, value in d.attachment_catch_all.items():
         acc.attachment_catch_all[key] = acc.attachment_catch_all.get(key, 0) + value
+
+
+def _merge_parser_notes(acc: dict[str, dict[str, int]], notes: dict[str, dict[str, int]]) -> None:
+    """Fold one transcript's ``TranscriptResult.parser_notes`` into the
+    running corpus-wide total, the same two-level dict-of-counters merge
+    ``_merge_diagnostics`` above does for its own dict fields -- kept as
+    a sibling function (not a ``Diagnostics`` field) per this phase's own
+    brief: don't edit ``_merge_diagnostics``/``DIAGNOSTIC_LABELS``.
+    """
+    for note_key, counts in notes.items():
+        bucket = acc.setdefault(note_key, {})
+        for key, value in counts.items():
+            bucket[key] = bucket.get(key, 0) + value
 
 
 # -- workstyle feature extraction (no existing helper does this: see
@@ -1001,6 +1066,10 @@ def _build_config_section(
     if snaps:
         tables.append(snapshots_mod.build_effective_config_table(snaps))
         tables.append(snapshots_mod.build_config_layers_table(snaps))
+        # COV-09: gives recommend.py's env-var-lever rules a real, citable
+        # table row (see build_env_levers_table's own docstring) -- read
+        # from the same corpus-wide snapshot recommend() itself uses.
+        tables.append(snapshots_mod.build_env_levers_table(snaps))
         tables.append(snapshots_mod.build_config_groups_table(snaps, sessions_with_metrics))
         if sessions_with_observed:
             tables.append(
@@ -1090,6 +1159,30 @@ def _build_recache_section(
         rows=group_rows,
     )
     return dataclasses.replace(section, tables=[*section.tables, group_table])
+
+
+def _apply_autocompact_pct_override(configured_window: int, snap: Snapshot) -> int:
+    """COV-09 (P7a): ``CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`` (docs/en/env-vars.md)
+    sets what percentage (1-100) of ``autoCompactWindow`` auto-compaction
+    actually triggers at -- "the variable can't raise the threshold, so
+    values above the default percentage are ignored", i.e. it only ever
+    lowers the real trigger point below the configured window. The
+    caller's ``snapshot_windows`` is "the autoCompactWindow each session
+    actually ran under" (its own comment), so the override, when present
+    and in range, has to scale ``configured_window`` down here for that
+    to stay true -- ``compaction_sim.simulate_compaction_windows`` would
+    otherwise anchor the "already observed compaction" baseline to a
+    window the session never really compacted at. Returns
+    ``configured_window`` unchanged when the override is absent, out of
+    the documented 1-100 range, or not an int (a snapshot's
+    ``env_numeric_caps`` only ever holds ints -- see
+    hooks/snapshot-config.py's ``env_numeric_caps`` assembly -- but a
+    hand-built test snapshot could pass anything).
+    """
+    pct = (snap.data.get("env_numeric_caps") or {}).get("CLAUDE_AUTOCOMPACT_PCT_OVERRIDE")
+    if isinstance(pct, int) and not isinstance(pct, bool) and 1 <= pct <= 100:
+        return int(configured_window * pct / 100)
+    return configured_window
 
 
 # -- build_report -----------------------------------------------------------
@@ -1226,11 +1319,22 @@ def build_report(
     #: deliberately top-level only (a subagent's own model is a separate
     #: question from "did this session's own settings take effect").
     session_observed_model: dict[str, str] = {}
+    #: COV-02: same idea, for the top-level transcript's own dominant
+    #: effort -- the "CLI/overlay layer" the plan asks for is this pair
+    #: (observed model, observed effort) read back from the transcript and
+    #: compared against the snapshot's effective settings; a disagreement
+    #: is evidence of a shell env var, ``--model``/``--effort`` CLI flag,
+    #: or ``--settings`` overlay the config hook can't see (see
+    #: ``detect_drift``'s own docstring).
+    session_observed_effort: dict[str, str] = {}
     all_workflow_runs: list[WorkflowRun] = []
 
     overview = _OverviewAcc()
     pricing_coverage = PricingCoverage()
     diagnostics = Diagnostics()
+    #: Parser-signals addition (SURV-6/7, see model.py's module
+    #: docstring): merged alongside, not inside, ``_merge_diagnostics``.
+    parser_notes: dict[str, dict[str, int]] = {}
 
     rs = recache.RecacheStats(recache_th)
     ls = limits.LimitStats()
@@ -1296,6 +1400,7 @@ def build_report(
 
         for tr in transcripts:
             _merge_diagnostics(diagnostics, tr.diagnostics)
+            _merge_parser_notes(parser_notes, tr.parser_notes)
 
             rs.add(tr, pricing.resolve_model)
             ls.add(tr, pricing.resolve_model)
@@ -1310,6 +1415,10 @@ def build_report(
 
             if tr is top and dominant_model:
                 session_observed_model[record.session_id] = dominant_model
+            if tr is top:
+                dominant_effort = _dominant_transcript_effort(tr)
+                if dominant_effort:
+                    session_observed_effort[record.session_id] = dominant_effort
 
             if ph is not None:
                 ph.add_transcript(tr, pricing)
@@ -1461,7 +1570,7 @@ def build_report(
         if snap is not None:
             value = snapshots_mod.effective_config(snap).get("autoCompactWindow")
             if isinstance(value, (int, float)) and not isinstance(value, bool):
-                configured_window = int(value)
+                configured_window = _apply_autocompact_pct_override(int(value), snap)
         snapshot_windows[record.session_id] = configured_window
 
     compaction_sim_stats = compaction_sim.simulate_compaction_windows(
@@ -1519,6 +1628,14 @@ def build_report(
                 usage_section,
                 tables=[*usage_section.tables, pricing_coverage.as_fast_priced_as_standard_table()],
             )
+        if pricing_coverage.fast_applied:
+            # PROF-08: the mirror image above -- replies actually priced
+            # at a fast-mode rate, and what they'd have cost standard.
+            # whatif._fast_mode reads this table for the fastMode lever.
+            usage_section = dataclasses.replace(
+                usage_section,
+                tables=[*usage_section.tables, pricing_coverage.as_fast_applied_table()],
+            )
         sections.append(usage_section)
 
     if units.elasticity is not None and _want("elasticity"):
@@ -1539,25 +1656,38 @@ def build_report(
     if _want("ttl"):
         sections.append(ttl.build_section(ts, billing_mode=config.billing, thresholds=ttl_th))
 
+    # Computed once, reused by both the limits cross-check below and the
+    # habits section further down -- signals.by_session() re-reads and
+    # re-joins the same signal files either way, so this avoids doing it
+    # twice per report.
+    capture_signals = _capture_signals(corpus, config_dir)
+
     if _want("limits"):
         limits_section = limits.build_section(ls, pricing, limits_th)
+        extra_tables = []
         if usage_log_rows:
             # Same dataclasses.replace-a-table-on pattern the "usage"
             # section above uses for cache_ground_truth: csv_cross_check
             # needs the already-loaded usage-log rows, which this
             # module doesn't otherwise keep.
-            cross_check_table = limits.csv_cross_check(usage_log_rows, ls, limits_th)
-            limits_section = dataclasses.replace(limits_section, tables=[*limits_section.tables, cross_check_table])
+            extra_tables.append(limits.csv_cross_check(usage_log_rows, ls, limits_th))
+        if capture_signals:
+            # SIG-2: the free "waits"/"turn_signals" signals cross-check
+            # the same transcript-derived hit count, independent of the
+            # usage-log.csv the block above needs.
+            extra_tables.append(limits.signals_cross_check(capture_signals, ls))
+        if extra_tables:
+            limits_section = dataclasses.replace(limits_section, tables=[*limits_section.tables, *extra_tables])
         sections.append(limits_section)
 
     if _want("carry"):
         sections.append(carry.build_section(carry_stats, carry_th))
 
     if _want("compaction_sim"):
-        sections.append(compaction_sim.build_section(compaction_sim_stats, compaction_sim_th))
+        sections.append(compaction_sim.build_section(compaction_sim_stats, compaction_sim_th, units=units))
 
     if _want("model_swap"):
-        sections.append(model_swap.build_section(model_swap_stats, model_swap_th))
+        sections.append(model_swap.build_section(model_swap_stats, model_swap_th, units=units))
 
     if _want("waste"):
         sections.append(waste.build_section(ws, waste_th))
@@ -1572,18 +1702,22 @@ def build_report(
         sections.append(topology.build_section(tp))
 
     if _want("quality"):
-        sections.append(quality.build_section(quality.corpus_runs(corpus, pricing)))
+        sections.append(quality.build_section(quality.corpus_runs(corpus, pricing), units=units))
 
     if _want("workstyle"):
         sections.append(workstyle.build_section(session_records))
 
+    # Perf (S5/ROB-P3): collect() walks the whole corpus, so build it once
+    # here and pass it to both the "habits" and "capture" sections below
+    # instead of each calling habits.build_section()/capture_section()
+    # with their own independent collect() pass over the same corpus.
+    _habits_built: habits.Habits | None = None
     if _want("habits"):
-        sections.append(
-            habits.build_section(
-                corpus, pricing, ratings=ratings, signals=_capture_signals(corpus, config_dir),
-                model_swap=model_swap_stats,
-            )
+        _habits_built = habits.collect(
+            corpus, pricing, ratings=ratings, signals=capture_signals,
+            effort_share_threshold_pct=_effort_mismatch_share_threshold(config),
         )
+        sections.append(habits.section_from(_habits_built, model_swap=model_swap_stats))
 
     if _want("workflows"):
         sections.append(workflows.build_section(all_workflow_runs))
@@ -1614,10 +1748,25 @@ def build_report(
                 "session_id": record.session_id,
                 "first_ts": record.first_ts,
                 "project_key": session_snapshot_key.get(record.session_id),
-                "observed": {"model": session_observed_model[record.session_id]},
+                "observed": {
+                    **(
+                        {"model": session_observed_model[record.session_id]}
+                        if record.session_id in session_observed_model
+                        else {}
+                    ),
+                    # COV-02: effort's own key on the "observed" dict is
+                    # "effortLevel" (not "effort") to match the settings
+                    # key detect_drift compares it against -- see
+                    # SAFE_SETTINGS_KEYS/effective_config.
+                    **(
+                        {"effortLevel": session_observed_effort[record.session_id]}
+                        if record.session_id in session_observed_effort
+                        else {}
+                    ),
+                },
             }
             for record in session_records
-            if record.session_id in session_observed_model
+            if record.session_id in session_observed_model or record.session_id in session_observed_effort
         ]
         sections.append(
             _build_config_section(
@@ -1629,13 +1778,15 @@ def build_report(
         )
 
     if _want("context_budget"):
-        sections.append(context_budget.build_section(cb, snapshots=snapshots, usage_log_rows=usage_log_rows))
+        sections.append(
+            context_budget.build_section(cb, snapshots=snapshots, usage_log_rows=usage_log_rows, pricing=pricing)
+        )
 
     if _want("capture"):
-        sections.append(habits.capture_section(corpus, pricing, config.capture, ratings=ratings))
+        sections.append(habits.capture_section(corpus, pricing, config.capture, ratings=ratings, h=_habits_built))
 
     if _want("scorecard"):
-        sections.append(_build_scorecard_section(rs, ls, ts, tp, cs, pricing_coverage, diagnostics, session_records, snapshots, config, scorecard_th))
+        sections.append(_build_scorecard_section(rs, ls, ts, tp, cs, pricing_coverage, diagnostics, session_records, snapshots, config, scorecard_th, pricing))
 
     if baseline_record is not None:
         # Deliberately not gated by _want()/include -- see build_report's
@@ -1704,6 +1855,14 @@ def build_report(
         billing_source=config.billing_source,
         amounts_basis=units.basis(),
         assumptions=assumptions,
+        units={
+            "mode": units.billing_mode,
+            "share_per_usd": (
+                elasticity.express_in_window(1.0, units.elasticity) if units.elasticity is not None else None
+            ),
+            "period_label": "weekly usage limit",
+            "basis": units.basis(),
+        },
     )
 
     # Fixes 2/3: these two counters are pricing-time totals (every turn
@@ -1715,7 +1874,12 @@ def build_report(
     diagnostics.pricing_fast_priced_as_standard_turns = pricing_coverage.fast_priced_as_standard_turns
 
     report_model = ReportModel(
-        meta=meta, sections=sections, recommendations=[], diagnostics=diagnostics, context_files=cf.to_dict()
+        meta=meta,
+        sections=sections,
+        recommendations=[],
+        diagnostics=diagnostics,
+        context_files=cf.to_dict(),
+        parser_notes=parser_notes,
     )
 
     # WP10b: recommendations are computed from the already-assembled
@@ -1737,7 +1901,39 @@ def build_report(
         snapshot=latest_snapshot,
         units=units,
     )
+
+    # EST-P7 + CAP-3: what the habits section buys recommend() -- run it
+    # again on a variant with that section stripped and diff by (id,
+    # agent_type, lever); recommend() doesn't read the "capture" section
+    # (only "habits"), so this second run is otherwise identical. The
+    # capture section, already in `sections` (mutated in place, so
+    # report_model.sections sees it too), gets its habit_value/held_back
+    # patched with the result.
+    if _want("capture") and _want("habits"):
+        without_habits_model = dataclasses.replace(
+            report_model, sections=[s for s in sections if s.key != "habits"], recommendations=[],
+        )
+        without_habits_recs = recommend(
+            without_habits_model,
+            config=config,
+            archetype=corpus_archetype,
+            snapshot=latest_snapshot,
+            units=units,
+        )
+        for i, section in enumerate(sections):
+            if section.key == "capture":
+                sections[i] = habits.patch_capture_recommend_value(
+                    section, corpus, pricing, config.capture, ratings=ratings,
+                    with_habits=report_model.recommendations, without_habits=without_habits_recs,
+                    h=_habits_built,
+                )
+                break
+
     fixes.attach_fixes(report_model.recommendations)
+    # UX-3: a habit covered by a rule that fired here shouldn't report
+    # its own saving too -- see habits.COVERED_BY. Also after recommend()
+    # runs, for the same reason: which rules fired isn't known before it.
+    habits.apply_covered_by(report_model)
     # Display copy last: it never touches table names, column keys or row
     # values, so recommend() above sees exactly what the builders emitted.
     helptext.annotate(report_model)
@@ -1795,6 +1991,32 @@ def _recache_shares(all_turns: list[Turn]) -> tuple[float | None, float | None]:
     return 100.0 * total_cc_recache / total_cc_all, 100.0 * total_cc_limit / total_cc_all
 
 
+#: The context window ``ScorecardThresholds.context_p90_ctx``'s literal
+#: defaults were tuned for (D2/COV-12): scaled against whatever a
+#: corpus's own model actually resolves to, below.
+_SCORECARD_DEFAULT_CONTEXT_WINDOW = 200_000
+
+
+def _representative_context_window(all_turns: list[Turn], pricing: Pricing) -> int:
+    """The context-window size (COV-12) of the most-used resolvable model
+    among ``all_turns`` -- used to scale ``scorecard.py``'s
+    ``context_p90_ctx`` thresholds (D2), which were sized for a
+    200k-window model and otherwise unfairly score a corpus run on a
+    natively 1M-window model (V24) as having "poor" context hygiene just
+    for using the window it actually has. Falls back to
+    :data:`_SCORECARD_DEFAULT_CONTEXT_WINDOW` when nothing resolves.
+    """
+    counts: dict[str, int] = {}
+    for t in all_turns:
+        if t.model:
+            counts[t.model] = counts.get(t.model, 0) + 1
+    for model in sorted(counts, key=lambda m: counts[m], reverse=True):
+        resolved = pricing.resolve_model(model)
+        if resolved is not None:
+            return resolved.rates.context_window_tokens
+    return _SCORECARD_DEFAULT_CONTEXT_WINDOW
+
+
 def _build_scorecard_section(
     rs: recache.RecacheStats,
     ls: limits.LimitStats,
@@ -1807,8 +2029,18 @@ def _build_scorecard_section(
     snaps: list[Snapshot] | None,
     config: Config,
     th: scorecard.ScorecardThresholds,
+    pricing: Pricing,
 ) -> Section:
     all_turns = [r.turn for r in rs.records]
+    # D2/COV-12: only scale when the caller hasn't already customised
+    # context_p90_ctx via [thresholds.scorecard] -- an explicit override
+    # is respected as-is, same convention as every other *_th.from_config
+    # value in this module.
+    if th.context_p90_ctx == scorecard.ScorecardThresholds().context_p90_ctx:
+        window = _representative_context_window(all_turns, pricing)
+        if window and window != _SCORECARD_DEFAULT_CONTEXT_WINDOW:
+            scale = window / _SCORECARD_DEFAULT_CONTEXT_WINDOW
+            th = dataclasses.replace(th, context_p90_ctx=tuple(v * scale for v in th.context_p90_ctx))
     total_cc_all = sum(t.cache_creation_tokens for t in all_turns)
     recache_share_pct, limit_recache_share_pct = _recache_shares(all_turns)
 

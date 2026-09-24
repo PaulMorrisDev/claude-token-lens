@@ -131,7 +131,7 @@ import statistics
 from collections import Counter
 from dataclasses import dataclass, replace
 from datetime import datetime
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 from .compaction import CompactionRecord, compaction_records_for_transcript
 from .model import (
@@ -147,6 +147,9 @@ from .model import (
 from .pricing import ModelRates, ResolvedRates, price_turn
 from .recache import RecacheThresholds
 from .snapshots import Snapshot, effective_provenance, managed_keys
+
+if TYPE_CHECKING:
+    from .units import Units
 
 #: Assumptions this module's simulation makes, printed verbatim in the
 #: report section's notes (same convention as ``ttl.ASSUMPTIONS``).
@@ -183,6 +186,14 @@ ASSUMPTIONS: list[str] = [
 #: ``None`` meaning "never auto-compact" (real, already-observed
 #: compactions are still kept under ``None`` -- see the module
 #: docstring's "no candidate window" identity).
+#:
+#: D2/COV-12: widened past 500_000 to cover the natively-1M-context
+#: models (Fable 5.1, Fable 5, Sonnet 5, Opus 4.7+ -- V24), which
+#: compact by default at about 967,000 tokens rather than the ~200k a
+#: pre-Fable-5 model assumes; a corpus running one of those models would
+#: otherwise never see a realistic candidate near its actual window.
+#: Values must stay ascending (excluding ``None``) -- callers rely on
+#: "first candidate that fires" being the smallest one.
 CANDIDATE_WINDOWS: tuple[int | None, ...] = (
     100_000,
     150_000,
@@ -191,11 +202,46 @@ CANDIDATE_WINDOWS: tuple[int | None, ...] = (
     300_000,
     400_000,
     500_000,
+    600_000,
+    700_000,
+    800_000,
+    900_000,
+    967_000,
     None,
 )
 
 def _window_label(window: int | None) -> str:
     return "none" if window is None else f"{window:,}"
+
+
+#: EST-P8: a kind of task's ``autoCompactWindow`` candidates are only
+#: rendered once at least this many main sessions reported that task
+#: (metrics capture's ``task=``) -- the same "small group, don't report on
+#: it" threshold as ``habits.MIN_GROUP``, kept as a local constant rather
+#: than an import: this module's docstring limits its dependencies to
+#: model.py/pricing.py/recache.py/compaction.py, and ``habits.py`` pulls
+#: in ``classify.py``, which itself imports ``limits.py`` -- which imports
+#: this module, so reaching for either would cycle back here.
+MIN_TASK_SESSIONS = 5
+
+
+def _reported_task(turns: list[Turn]) -> str | None:
+    """EST-P8: the kind of task Claude reported (metrics capture's
+    ``task=``) for at least half of this transcript's tagged turns, twice
+    or more. Mirrors ``classify.reported_task`` exactly (same closed
+    vocabulary, same majority gate) as a local re-implementation, for the
+    same reason :func:`_real_compaction_turn_indices` re-implements
+    ``compaction.py``'s own join instead of importing it -- see the
+    module docstring and :data:`MIN_TASK_SESSIONS`.
+    """
+    tasks = [t.cap.task for t in turns if t.cap is not None and t.cap.has_tl and t.cap.task]
+    if len(tasks) < 2:
+        return None
+    counts: dict[str, int] = {}
+    for task in tasks:
+        counts[task] = counts.get(task, 0) + 1
+    task = max(counts, key=lambda k: (counts[k], k))
+    return task if 2 * counts[task] >= len(tasks) else None
 
 
 # -- thresholds ---------------------------------------------------------
@@ -296,12 +342,12 @@ class CompactionSimThresholds:
             f"default_cached_prefix_share = {self.default_cached_prefix_share:.2f}: used when "
             "this corpus has no real compaction to measure how much of the starting context "
             "stays cached after one.",
-            f"default_rediscovery_allowance_usd = ${self.default_rediscovery_allowance_usd:.2f}: "
+            f"default_rediscovery_allowance_usd = {self.default_rediscovery_allowance_usd:.2f} USD: "
             "used when this corpus has no real post-compaction re-cache turn to measure "
             "a rediscovery allowance from.",
             f"max_compactions_per_session = {self.max_compactions_per_session:g}: no window "
             "that summarises more often than this per session is suggested.",
-            f"switch_pct = {self.switch_pct:.2f} and switch_usd = ${self.switch_usd:.2f}: a "
+            f"switch_pct = {self.switch_pct:.2f} and switch_usd = {self.switch_usd:.2f} USD: a "
             "window switch is recommended only when the best candidate window's cost is "
             "below switch_pct of the observed cost AND saves more than switch_usd -- both "
             "conditions, independently blocking.",
@@ -566,7 +612,23 @@ def _replay_transcript(
     """Walk ``priced_turns`` in order under candidate ``window``. See the
     module docstring's algorithm description and its "no candidate
     window" identity (``window=None`` reproduces the true observed cost
-    exactly, since ``dropped`` then never leaves 0)."""
+    exactly, since ``dropped`` then never leaves 0).
+
+    SURV-9: ``lookup(turn.model)`` used to run uncached on every turn of
+    every window this is replayed for, even though almost every turn of
+    a session shares the same handful of model strings. ``resolved``
+    caches just that resolve step, by model string, the same pattern as
+    ``habits._Rates._resolve`` -- one dict local to this call, so it
+    naturally resets per window (a candidate ``window`` never changes
+    which model a turn used, so the cache is safe to share across the
+    whole replay, but never needs to outlive it). This is *not* ttl.py's
+    identity shortcut (skipping a ``dataclasses.replace`` when nothing
+    would change): ``_shrunk_cost``/``_summary_request_cost``/
+    ``_recached_reply_cost`` below build a genuinely different turn on
+    almost every call (``ctx`` shrunk by ``dropped``, or reset to
+    ``new_ctx`` after a simulated compaction), and ``ctx`` alone can
+    cross a model's long-context pricing threshold -- so only the
+    turn-independent resolve step is cached, never a priced result."""
     if not priced_turns:
         return _ReplayResult()
     starting_ctx = float(priced_turns[0].ctx)
@@ -577,8 +639,11 @@ def _replay_transcript(
     cost = 0.0
     compactions = 0
     ctx_sum = 0.0
+    resolved: dict[str, RatesArg] = {}
     for i, turn in enumerate(priced_turns):
-        rates = lookup(turn.model)
+        if turn.model not in resolved:
+            resolved[turn.model] = lookup(turn.model)
+        rates = resolved[turn.model]
         real_count = real_after.get(i, 0)
         if real_count:
             # A real compact_boundary event already reset context here --
@@ -680,10 +745,12 @@ class CompactionSimTypeStats:
     def saving_usd(self) -> float:
         return max(0.0, -self.delta_usd)
 
-    def recommendation(self, th: CompactionSimThresholds) -> str:
+    def recommendation(self, th: CompactionSimThresholds, units: "Units | None" = None) -> str:
         """Mirrors ``TtlTypeStats.recommendation``'s switch-gating
         shape: a switch is only worth stating when it clears both
-        ``switch_pct`` and ``switch_usd``."""
+        ``switch_pct`` and ``switch_usd``. ``units`` (UX-2) phrases the
+        saving for the report's billing mode; a bare "$" number without
+        it, for a caller that hasn't been given one."""
         if self.observed_cost <= 0:
             return "no material difference"
         pct_ok = self.best_cost < th.switch_pct * self.observed_cost
@@ -691,7 +758,8 @@ class CompactionSimTypeStats:
         if self.best_window is None:
             return "no material difference"
         if pct_ok and usd_ok:
-            return f"switch to autoCompactWindow={self.best_window:,} (saves ${self.saving_usd:.2f})"
+            saving_text = units.money_text(self.saving_usd) if units is not None else f"${self.saving_usd:.2f}"
+            return f"switch to autoCompactWindow={self.best_window:,} (saves {saving_text})"
         return "no material difference"
 
 
@@ -718,7 +786,9 @@ class CompactionSimStats:
     transcripts, keyed by ``(agent-type key, candidate window)`` --
     ``"top-level"`` for the main session, otherwise
     ``TranscriptMeta.agent_type`` (``"unknown"`` fallback), same
-    convention as ``ttl.TtlStats``/``compaction.CompactionStats``.
+    convention as ``ttl.TtlStats``/``compaction.CompactionStats``. Also
+    keeps a second, parallel accumulation by ``(reported task, candidate
+    window)`` for main sessions only (EST-P8; see :meth:`by_task`).
     """
 
     def __init__(
@@ -736,6 +806,10 @@ class CompactionSimStats:
         self._acc: dict[tuple[str, int | None], _WindowAccumulator] = {}
         self._sessions_by_key: dict[str, int] = {}
         self._fidelity_rows: list[CompactionSimFidelityRow] = []
+        #: EST-P8: same shape as ``_acc``/``_sessions_by_key`` above, keyed
+        #: by reported task instead of agent-type key, main sessions only.
+        self._task_acc: dict[tuple[str, int | None], _WindowAccumulator] = {}
+        self._sessions_by_task: dict[str, int] = {}
 
     def add_transcript(
         self,
@@ -750,6 +824,11 @@ class CompactionSimStats:
         key = "top-level" if tr.meta.kind == "top-level" else (tr.meta.agent_type or "unknown")
         real_after = _real_compaction_turn_indices(tr, priced_turns, th)
         self._sessions_by_key[key] = self._sessions_by_key.get(key, 0) + 1
+        # EST-P8: task aggregation only makes sense for a main session --
+        # a subagent run has no self-reported "kind of task" of its own.
+        task = _reported_task(tr.turns) if tr.meta.kind == "top-level" else None
+        if task is not None:
+            self._sessions_by_task[task] = self._sessions_by_task.get(task, 0) + 1
 
         results_by_window: dict[int | None, _ReplayResult] = {}
         for window in CANDIDATE_WINDOWS:
@@ -760,6 +839,12 @@ class CompactionSimStats:
             acc.ctx_sum += result.ctx_sum
             acc.ctx_turns += result.turns
             acc.cost += result.cost
+            if task is not None:
+                tacc = self._task_acc.setdefault((task, window), _WindowAccumulator())
+                tacc.compactions += result.compactions
+                tacc.ctx_sum += result.ctx_sum
+                tacc.ctx_turns += result.turns
+                tacc.cost += result.cost
 
         if tr.meta.kind == "top-level" and snapshot_window is not None:
             observed_cost = results_by_window[None].cost
@@ -828,6 +913,36 @@ class CompactionSimStats:
             )
         return out
 
+    def by_task(self) -> dict[str, CompactionSimTypeStats]:
+        """EST-P8: every reported task's best candidate window, same shape
+        as :meth:`by_key`, keyed by task instead of agent type -- a task
+        appears only once at least :data:`MIN_TASK_SESSIONS` main sessions
+        reported it."""
+        out: dict[str, CompactionSimTypeStats] = {}
+        for task in sorted(self._sessions_by_task):
+            sessions = self._sessions_by_task[task]
+            if sessions < MIN_TASK_SESSIONS:
+                continue
+            observed_acc = self._task_acc.get((task, None))
+            observed_cost = observed_acc.cost if observed_acc else 0.0
+            best_window: int | None = None
+            best_cost: float | None = None
+            for window in CANDIDATE_WINDOWS:
+                acc = self._task_acc.get((task, window))
+                if acc is None:
+                    continue
+                if best_cost is None or acc.cost < best_cost:
+                    best_cost = acc.cost
+                    best_window = window
+            out[task] = CompactionSimTypeStats(
+                key=task,
+                sessions=sessions,
+                observed_cost=observed_cost,
+                best_window=best_window,
+                best_cost=best_cost if best_cost is not None else observed_cost,
+            )
+        return out
+
     @property
     def fidelity_rows(self) -> list[CompactionSimFidelityRow]:
         return list(self._fidelity_rows)
@@ -880,17 +995,24 @@ def simulate_compaction_windows(
 # -- report section -----------------------------------------------------
 
 
-def build_section(stats: CompactionSimStats, thresholds: CompactionSimThresholds | None = None) -> Section:
+def build_section(
+    stats: CompactionSimStats,
+    thresholds: CompactionSimThresholds | None = None,
+    units: "Units | None" = None,
+) -> Section:
     """Render a :class:`CompactionSimStats` roll-up as the report's
     "Compaction-window sweep" section: ``compaction_sim_by_window``
     (top-level sessions only), ``compaction_sim_by_agent_type`` (every
-    key's best window, top-level and subagent), and
+    key's best window, top-level and subagent), ``compaction_sim_by_task``
+    (every reported task's best window, main sessions only, EST-P8), and
     ``compaction_sim_fidelity`` (top-level sessions with a known
     configured window). Notes print :data:`ASSUMPTIONS` verbatim, the
     summary size, trigger reserve, cached share and rediscovery allowance
     actually used (flagging a default), ``thresholds.describe()``, and a
     fidelity warning
-    for any session above ``thresholds.fidelity_warn_pct``.
+    for any session above ``thresholds.fidelity_warn_pct``. ``units``
+    (UX-2) phrases the per-agent-type recommendation string's saving and
+    the rediscovery-allowance note for the report's billing mode.
     """
     th = thresholds or _DEFAULT_THRESHOLDS
 
@@ -949,11 +1071,46 @@ def build_section(stats: CompactionSimStats, thresholds: CompactionSimThresholds
                 row.best_cost,
                 row.saving_usd,
                 row.delta_pct,
-                row.recommendation(th),
+                row.recommendation(th, units),
             ]
             for key, row in sorted(by_key.items())
         ],
         notes=(["No transcripts with priced turns in this corpus."] if not by_key else []),
+    )
+
+    by_task_columns = [
+        Column(key="task", label="Kind of task", kind="str"),
+        Column(key="sessions", label="Sessions", kind="int"),
+        Column(key="observed_cost", label="Observed cost", kind="money"),
+        Column(key="best_window", label="Best window", kind="str"),
+        Column(key="best_cost", label="Best cost", kind="money"),
+        Column(key="saving_usd", label="Saving if switched (USD, 0 floor)", kind="money"),
+        Column(key="delta_pct", label="Delta at best window (%, negative = cheaper)", kind="pct"),
+        Column(key="recommendation", label="Recommendation", kind="str"),
+    ]
+    by_task = stats.by_task()
+    by_task_table = Table(
+        name="compaction_sim_by_task",
+        title="Compaction-window sweep: best window by kind of task",
+        columns=by_task_columns,
+        rows=[
+            [
+                task,
+                row.sessions,
+                row.observed_cost,
+                _window_label(row.best_window),
+                row.best_cost,
+                row.saving_usd,
+                row.delta_pct,
+                row.recommendation(th),
+            ]
+            for task, row in sorted(by_task.items())
+        ],
+        notes=(
+            [f"No kind of task reported by at least {MIN_TASK_SESSIONS} main sessions in this corpus."]
+            if not by_task
+            else []
+        ),
     )
 
     fidelity_columns = [
@@ -1005,7 +1162,19 @@ def build_section(stats: CompactionSimStats, thresholds: CompactionSimThresholds
             else " (this corpus's own median across real compactions)."
         )
     )
-    allowance_note = f"Rediscovery allowance used: ${stats.rediscovery_allowance_usd:.4f}"
+    # UX-2 note: this is a per-read calibration constant (this corpus's
+    # own median re-cache cost), not a "you could save/spend" amount --
+    # like thresholds.describe() below, it stays at its native 4-decimal
+    # precision rather than going through units.money_text, which rounds
+    # to 2 decimals (losing this sub-cent figure entirely) and, for a
+    # subscription, would phrase a per-unit constant as a usage-limit
+    # share, which reads as a saving rather than an input. It still
+    # never prints a bare "$" (hard constraint UX-2): a trailing currency
+    # code stands in for the symbol.
+    _allowance_currency = units.currency if units is not None else "USD"
+    allowance_note = (
+        f"Rediscovery allowance used: {stats.rediscovery_allowance_usd:.4f} {_allowance_currency}"
+    )
     if stats.rediscovery_allowance_is_default:
         allowance_note += " (default -- no real post-compaction re-cache turn found)."
     else:
@@ -1025,7 +1194,7 @@ def build_section(stats: CompactionSimStats, thresholds: CompactionSimThresholds
     return Section(
         key="compaction_sim",
         title="Compaction-window sweep",
-        tables=[by_window_table, by_type_table, fidelity_table],
+        tables=[by_window_table, by_type_table, by_task_table, fidelity_table],
         notes=notes,
     )
 
@@ -1109,13 +1278,13 @@ def _table(report: ReportModel, section_key: str, table_name: str):
 def _rediscovery_allowance_usd_used(report: ReportModel, thresholds: CompactionSimThresholds) -> float:
     """The rediscovery allowance :func:`simulate_compaction_windows`
     actually charged per simulated compaction in this report, read back
-    out of ``build_section``'s own ``"Rediscovery allowance used: $X"``
-    note (the only place that number is rendered -- see
+    out of ``build_section``'s own ``"Rediscovery allowance used: X.XXXX
+    <currency>"`` note (the only place that number is rendered -- see
     ``build_section``'s notes list above). Falls back to
     ``thresholds.default_rediscovery_allowance_usd`` when the
     ``compaction_sim`` section or that note isn't present (e.g. a
     report filtered down to a single other section)."""
-    prefix = "Rediscovery allowance used: $"
+    prefix = "Rediscovery allowance used: "
     for section in report.sections:
         if section.key != "compaction_sim":
             continue
@@ -1195,20 +1364,26 @@ def _rule_compaction_window(
     if not observed_cost:
         return []
 
+    # UX-2 note: allowance_usd is the same per-read calibration constant
+    # build_section's own note explains (see there for why it stays at
+    # 4-decimal precision instead of units.money_text -- a per-unit
+    # input, not a saving) and, likewise, never prints a bare "$".
     allowance_usd = _rediscovery_allowance_usd_used(report, thresholds)
+    allowance_currency = report.units.currency if report.units is not None else "USD"
     redundant_reads_mean = _post_compaction_redundant_reads_mean(report)
     if redundant_reads_mean is not None:
         extra_per_compaction_usd = allowance_usd * redundant_reads_mean
         allowance_source = (
             f"this corpus's own post-compaction redundant-read rate "
             f"({redundant_reads_mean:.2f} redundant reads/session, from topology_redundant_reads), "
-            f"each priced at ${allowance_usd:.4f}, the median re-cache after a real summary"
+            f"each priced at {allowance_usd:.4f} {allowance_currency}, the median re-cache after a real summary"
         )
     else:
         extra_per_compaction_usd = allowance_usd
         allowance_source = (
-            f"topology_redundant_reads unavailable in this report, so one ${allowance_usd:.4f} "
-            "re-cache (the median after a real summary) per simulated summary as a fallback"
+            f"topology_redundant_reads unavailable in this report, so one "
+            f"{allowance_usd:.4f} {allowance_currency} re-cache (the median after a real "
+            "summary) per simulated summary as a fallback"
         )
 
     chosen: tuple[str, float, float, float] | None = None  # (label, compactions_per_session, raw_saving, adjusted_saving)
@@ -1241,14 +1416,23 @@ def _rule_compaction_window(
     has_fidelity_rows = bool(fidelity_table and fidelity_table.rows)
 
     scope, file_note = _scope_and_lever_note(snapshot)
+    # UX-2: units may be unset (a caller without a billing config) --
+    # money_text still gives a plain currency-suffixed number rather than
+    # a bare "$" in that case.
+    units = report.units
+    adjusted_saving_text = (
+        units.money_text(adjusted_saving_usd) if units is not None else f"${adjusted_saving_usd:.2f}"
+    )
+    observed_cost_text = units.money_text(observed_cost) if units is not None else f"${observed_cost:.2f}"
+    raw_saving_text = units.money_text(raw_saving_usd) if units is not None else f"${raw_saving_usd:.2f}"
     action = (
         f"Set autoCompactWindow to at least {label} in {file_note}. This is a modelled, not "
         f"observed, range floor: smaller windows compact more often, and the replay can't see "
         f"the files a session re-reads after a summary, so only the smallest window clearing the "
         f"threshold after a rediscovery correction ({allowance_source}) is named, rather than a "
         f"single 'best' point. Projected saving at {label}: "
-        f"${adjusted_saving_usd:.2f} vs the observed cost of ${observed_cost:.2f} "
-        f"(raw modelled saving before this correction: ${raw_saving_usd:.2f})."
+        f"{adjusted_saving_text} vs the observed cost of {observed_cost_text} "
+        f"(raw modelled saving before this correction: {raw_saving_text})."
     )
     if has_fidelity_rows:
         action += (
