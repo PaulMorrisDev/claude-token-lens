@@ -45,6 +45,12 @@ class Check:
     question: str
     why: str
     run: Callable[[Context], dict]
+    #: Additive: the recommendation rule ids (recommend.recommend's own
+    #: ``Recommendation.id`` values, plus the other rule modules it folds
+    #: in) this check draws its fixes or evidence tables from -- empty
+    #: for a check with no rule behind it (e.g. "skills", "quality",
+    #: which read their own tables directly).
+    rule_ids: tuple[str, ...] = ()
 
 
 # -- helpers ---------------------------------------------------------------
@@ -989,24 +995,28 @@ def _quality(ctx: Context) -> dict:
 CHECKS: tuple[Check, ...] = (
     Check("models", "Is each agent on the cheapest model that does the job?",
           "Every reply is priced by its model; a cheaper model for routine agents is usually the largest saving.",
-          _models),
+          _models, ("model-tier",)),
     Check("effort", "Is anything thinking more than the work needs?",
-          "Thinking is billed as output, the most expensive kind of token.", _effort),
+          "Thinking is billed as output, the most expensive kind of token.", _effort, ("effort-mismatch",)),
     Check("compaction", "When should conversations be summarised?",
           "Every reply re-reads the whole conversation, so the point it's summarised at sets the cost of each reply.",
-          _compaction),
+          _compaction, ("compaction-window", "compaction-churn")),
     Check("cache", "Which cache lifetime is cheaper for you?",
-          "A 5-minute cache is cheaper to write; a 1-hour one survives longer pauses without rebuilding.", _cache),
+          "A 5-minute cache is cheaper to write; a 1-hour one survives longer pauses without rebuilding.", _cache,
+          ("ttl-switch",)),
     Check("tools", "Do agents carry tools, MCP servers or skills they never use?",
-          "Everything an agent is offered is sent each time it starts, used or not.", _tools),
+          "Everything an agent is offered is sent each time it starts, used or not.", _tools,
+          ("spawn-unused-mcp", "spawn-unused-skills", "spawn-read-only-tools", "baseline-bloat")),
     Check("skills", "Which skills are listed to Claude but never used?",
           "Each skill's name and description is sent at every session and subagent start.", _skills),
     Check("claude-md", "Which CLAUDE.md files cost most?",
-          "CLAUDE.md files are sent at the start of every session and most subagents.", _claude_md),
+          "CLAUDE.md files are sent at the start of every session and most subagents.", _claude_md,
+          ("spawn-claude-md", "spawn-shared-claude-md")),
     Check("tool-output", "Do tool results fill your context?",
-          "A tool's output stays in the conversation and is re-read on every later reply.", _tool_output),
+          "A tool's output stays in the conversation and is re-read on every later reply.", _tool_output,
+          ("tool-output-carry",)),
     Check("habits", "Do any habits cost tokens?",
-          "Pauses, retries and long reports cost tokens that no setting can save.", _habits),
+          "Pauses, retries and long reports cost tokens that no setting can save.", _habits, tuple(sorted(_HABIT_RECS))),
     Check("quality", "Is any agent struggling?",
           "A cheaper model or a lower effort only saves money if the work still gets done.", _quality),
 )
@@ -1018,7 +1028,14 @@ def run(check_id: str, ctx: Context) -> dict:
     check = next((c for c in CHECKS if c.id == check_id), None)
     if check is None:
         raise KeyError(check_id)
-    return {"id": check.id, "question": check.question, "why": check.why, "period": ctx.period, **check.run(ctx)}
+    return {
+        "id": check.id,
+        "question": check.question,
+        "why": check.why,
+        "period": ctx.period,
+        "rule_ids": list(check.rule_ids),
+        **check.run(ctx),
+    }
 
 
 def run_all(ctx: Context) -> list[dict]:
@@ -1026,7 +1043,7 @@ def run_all(ctx: Context) -> list[dict]:
     out = []
     for check in CHECKS:
         result = run(check.id, ctx)
-        out.append({key: result[key] for key in ("id", "question", "why", "status", "summary")}
+        out.append({key: result[key] for key in ("id", "question", "why", "status", "summary", "rule_ids")}
                    | {"fix_count": len(result["fixes"]), "tip_count": len(result["tips"])})
     return out
 

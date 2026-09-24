@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import re
 import shlex
 
 import pytest
@@ -201,6 +202,52 @@ def test_shared_claude_md_comes_with_a_prompt():
     rec = next(r for r in recs if r.id == "spawn-shared-claude-md")
     assert rec.fixes and rec.fixes[0]["command"] is None
     assert "move" in rec.fixes[0]["prompt"]
+
+
+# -- recommendation key --------------------------------------------------
+
+
+def test_recommendation_keys_are_unique_across_a_realistic_multi_agent_corpus():
+    """``key`` (Task Group B, item 5) disambiguates a rule id that fires
+    once per agent type: three agent types large enough to each trip
+    spawn-claude-md still get one recommendation apiece, and every
+    recommendation across the whole run gets its own key."""
+    snap = _snapshot({
+        "reviewer": {"source": "user"},
+        "implementer": {"source": "user"},
+        "Report Writer": {"source": "user"},
+    })
+    recs = _recs(
+        _report(_acc("reviewer"), _acc("implementer"), _acc("Report Writer")),
+        snapshot=snap,
+        units=Units(),
+    )
+    claude_md_recs = [r for r in recs if r.id == "spawn-claude-md"]
+    assert {r.agent_type for r in claude_md_recs} == {"reviewer", "implementer", "Report Writer"}
+    keys = [r.key for r in recs]
+    assert keys and all(keys)
+    assert len(keys) == len(set(keys)), keys
+    # Every key stays URL-safe even for an agent type named with a space
+    # and capitals.
+    assert all(re.fullmatch(r"[a-z0-9._:-]+", key) for key in keys), keys
+    by_agent = {r.agent_type: r.key for r in claude_md_recs}
+    assert by_agent["reviewer"] == "spawn-claude-md:reviewer"
+    assert by_agent["Report Writer"] == "spawn-claude-md:report-writer"
+
+
+def test_recommendation_keys_are_stable_across_two_runs():
+    """The same corpus recommended twice (e.g. two dashboard requests a
+    few seconds apart) gets exactly the same keys back."""
+    snap = _snapshot({
+        "reviewer": {"source": "user"},
+        "implementer": {"source": "user"},
+    })
+
+    def _run():
+        report = _report(_acc("reviewer"), _acc("implementer"))
+        return {r.key for r in _recs(report, snapshot=snap, units=Units())}
+
+    assert _run() == _run()
 
 
 # -- fix contract ------------------------------------------------------------

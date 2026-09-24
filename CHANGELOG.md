@@ -460,6 +460,18 @@ of the 5-minute one (below).
   `meta` gains `rates`: every priced model's own per-million-token rates
   and a few derived ratios, keyed by model id, straight from
   `pricing.toml`.
+- **Recommendations, quick actions and habits carry the ids a dashboard
+  needs to link between them.** Every recommendation (`/api/recommendations`,
+  `report.json`) gains `key`: `id` alone repeats across agent types (the
+  same rule fires once per subagent type), so `key` adds a slug of
+  `agent_type` when one is set, stays URL-safe (`[a-z0-9._:-]`) and stable
+  across two runs of the same corpus, for a link such as
+  `#/actions/recommendations?id=<key>`. Each quick-action check
+  (`/api/quick-actions`, `/api/quick-actions/<id>`) gains `rule_ids`: the
+  recommendation rule ids that check draws its fixes or evidence from,
+  `[]` for a check with no rule behind it. Each habit in the "Habits
+  worth trying" table gains `covered_by_rule`, the rule id behind its
+  existing `covered_by` title, once that rule has actually fired.
 
 ### Changed
 

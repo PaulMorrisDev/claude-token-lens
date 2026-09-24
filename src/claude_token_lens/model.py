@@ -1103,6 +1103,14 @@ class Recommendation:
     #: dicts with ``explainer`` (list of (heading, text)), ``command`` and
     #: ``prompt``.
     fixes: list = field(default_factory=list)
+    #: Additive: a deterministic, URL-safe (``[a-z0-9._:-]``) identity for
+    #: this recommendation -- ``id`` alone repeats across agent types (the
+    #: same rule fires once per subagent type), so ``recommend.recommend``
+    #: fills this in as its very last step from ``id`` plus a slug of
+    #: ``agent_type`` when one is set. Stable across two runs of the same
+    #: corpus; a dashboard link uses it as
+    #: ``#/actions/recommendations?id=<key>``.
+    key: str = ""
 
 
 @dataclass(slots=True)
