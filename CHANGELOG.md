@@ -636,6 +636,40 @@ once to pick up the new detection rules and fields below.
   fixture locking in the `ignored_line_types` fix above. Skill names
   already had a dedicated fixture (SEC-P3); not duplicated.
 
+### P10c — Doc residue: windowed lists, api.md change sources, report section lists, archetypes
+
+- **`docs/ui.md` no longer says the Sessions list and the Usage tab's
+  compaction list ignore the date window.** Both now honour it
+  (`app.js`'s `withWindow("/api/sessions?...")` and
+  `withWindow("/api/compactions")`, backed by `route_sessions`/
+  `route_compactions`'s own `_listing_window`) — confirmed against the
+  other panels the same sentence names (the Cache tab's rebuild counts,
+  the baseline panel, "Your changes and what they did", the setup panel
+  and service health), which genuinely still cover all history.
+- **`docs/api.md` now names metrics capture as a source of change points**
+  in both the `change` window's description and `/api/impact`'s intro
+  sentence — `change_points.py` already treats a `capture-log.jsonl`
+  entry as one (`source: "capture"`), and the API's own 400 error text
+  already said so; only the docs were behind. `/api/capture`'s `data`
+  key list now includes `feedback`, which was already fully documented
+  below it but missing from the summary tuple.
+- **The README's "Reading the report sections" table and
+  `docs/sections-reference.md`'s order sentence now list every section
+  `report.build_report` actually emits, in its real order**
+  (`report._SECTION_ORDER` plus the unconditionally-appended
+  `baseline_comparison`): both were missing `habits` and `capture`, and
+  the README table was also missing `elasticity`, `agent_startup`,
+  `context_budget` and `baseline_comparison`. New regression test
+  `test_readme_and_sections_reference_list_every_report_section_in_order`
+  (`test_service_static.py`) keeps both in sync with `_SECTION_ORDER`.
+- **The README's workstyle row now names all seven archetypes**
+  (`workstyle.py` detects `mixed` — the fallback when none of the other
+  six match — alongside the six named ones), with a new
+  `test_readme_workstyle_row_names_every_archetype` regression test.
+- Checked the CHANGELOG's latest released version heading against
+  `__version__`/`pyproject.toml`: both already read `0.5.2` — no fix
+  needed.
+
 ## [0.5.2] - 2026-09-23
 
 ### Fixed
