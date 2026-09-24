@@ -911,6 +911,15 @@ def _add_init_args(sub: argparse.ArgumentParser) -> None:
         help="answer the feedback question without asking: add the /tl-feedback skill and its status-line "
         "reminder (on), or not (off)",
     )
+    sub.add_argument(
+        "--capture-no-limit",
+        action="store_true",
+        dest="capture_no_limit",
+        help="answer the metrics capture time-box question without asking: no time limit, so capture runs "
+        f"until you switch it off (default: it switches itself off after "
+        f"{onboarding.DEFAULT_CAPTURE_TIMEBOX_DAYS} days; 'claude-token-lens capture on --for 30d' picks "
+        "another length once it's on)",
+    )
 
 
 def _add_baseline_args(sub: argparse.ArgumentParser) -> None:
@@ -2432,12 +2441,14 @@ def _cmd_init_capture_step(
     """``init``'s last question: metrics capture
     (:func:`onboarding.ask_capture_level`, which warns that it uses
     tokens and shows what each level would have cost over your last
-    :data:`CAPTURE_HISTORY_DAYS` days). A level other than ``off`` is
-    saved to config.toml, then the settings.json entries it needs are
-    shown and added after a yes (or ``--connect``), as in ``capture on``;
-    when init isn't connecting to Claude Code, the command that adds them
-    is printed. Capture already on is left as it is unless
-    ``--capture-level`` or the answers file names a level."""
+    :data:`CAPTURE_HISTORY_DAYS` days). A level other than ``off``
+    is followed by :func:`onboarding.ask_capture_until`'s time-box
+    question, then both are saved to config.toml together; the
+    settings.json entries the level needs are shown and added after a
+    yes (or ``--connect``), as in ``capture on``; when init isn't
+    connecting to Claude Code, the command that adds them is printed.
+    Capture already on is left as it is unless ``--capture-level`` or
+    the answers file names a level."""
     stdin = stdin if stdin is not None else sys.stdin
     stdout = stdout if stdout is not None else sys.stdout
     now = now or datetime.now(timezone.utc)
@@ -2477,8 +2488,20 @@ def _cmd_init_capture_step(
         if not notes:
             stdout.write("Metrics capture left off.\n")
         return
+    until = None
+    if level != "off":
+        until, timebox_notes = onboarding.ask_capture_until(
+            now=now,
+            preset=True if args.capture_no_limit else None,
+            answers_path=args.answers,
+            non_interactive=args.non_interactive,
+            stdin=stdin,
+            stdout=stdout,
+        )
+        for note in timebox_notes:
+            stdout.write(f"(derived) {note}\n")
     try:
-        capture = set_capture(config_dir, level=level, now=now)
+        capture = set_capture(config_dir, level=level, until=until, now=now)
     except ConfigError as exc:
         stdout.write(f"{exc}\n")
         return

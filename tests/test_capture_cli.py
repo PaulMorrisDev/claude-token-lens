@@ -490,13 +490,56 @@ def test_init_warns_shows_estimates_and_connects_after_a_yes(tmp_path):
     config_dir = _claude(tmp_path, {})
     _api_billing(config_dir)
     _session(config_dir)
-    out = _init_capture(config_dir, stdin="standard\ny\n")
+    out = _init_capture(config_dir, stdin="standard\n\ny\n")
     assert "This uses your tokens" in out and "[tl: task=bugfix brief=clear], which you will see" in out
     assert "What each level would have cost over your last 14 days" in out
     assert "Metrics capture level: off, free, essentials, standard, deep [off]:" in out
-    assert "Saved to config.toml: metrics capture Standard (since 2026-09-24)." in out
+    assert "Metrics capture will switch itself off on 2026-10-08 06:00 UTC (14 days from now)" in out
+    assert "claude-token-lens capture on --for 30d" in out
+    assert "Turn off that time limit (capture then runs until you switch it off) (y/n) [n]:" in out
+    assert "Saved to config.toml: metrics capture Standard (since 2026-09-24, until 2026-10-08 06:00)." in out
     assert load_config(config_dir).capture.level == "standard"
+    assert load_config(config_dir).capture.until == "2026-10-08T06:00:00+00:00"
     assert len(_entries(_settings(config_dir))) == len(hook_health.capture_specs(cat.level_metrics("standard")))
+
+
+def test_init_time_box_question_yes_turns_the_limit_off(tmp_path):
+    config_dir = _claude(tmp_path, {})
+    out = _init_capture(config_dir, stdin="essentials\ny\n")
+    assert "Turn off that time limit" in out
+    assert load_config(config_dir).capture.level == "essentials"
+    assert load_config(config_dir).capture.until == ""
+
+
+def test_init_capture_no_limit_flag_skips_the_question(tmp_path):
+    config_dir = _claude(tmp_path, {})
+    out = _init_capture(config_dir, "--capture-no-limit", stdin="essentials\n")
+    assert "Turn off that time limit" not in out
+    assert load_config(config_dir).capture.level == "essentials"
+    assert load_config(config_dir).capture.until == ""
+
+
+def test_init_capture_no_limit_answers_file(tmp_path):
+    config_dir = _claude(tmp_path, {})
+    answers = tmp_path / "answers.json"
+    answers.write_text(json.dumps({"capture_level": "essentials", "capture_no_limit": True}), encoding="utf-8")
+    out = _init_capture(config_dir, "--non-interactive", "--no-install", "--answers", str(answers))
+    assert "Turn off that time limit" not in out
+    assert load_config(config_dir).capture.level == "essentials"
+    assert load_config(config_dir).capture.until == ""
+
+
+def test_non_interactive_init_with_explicit_level_keeps_no_time_box_by_default(tmp_path):
+    # Assumption: a --non-interactive run naming a level explicitly (flag
+    # or --answers) keeps today's behaviour -- no time-box -- unless the
+    # new --capture-no-limit flag or the capture_no_limit answers key is
+    # also given; the safer "leave existing until untouched" choice, so a
+    # scripted init never silently grows a surprise end date.
+    config_dir = _claude(tmp_path, {})
+    out = _init_capture(config_dir, "--non-interactive", "--no-install", "--capture-level", "essentials")
+    assert "(derived) capture_no_limit: not given in --answers; today's time limit" in out
+    assert load_config(config_dir).capture.level == "essentials"
+    assert load_config(config_dir).capture.until == ""
 
 
 @pytest.mark.parametrize("typed, level", [("", "off"), ("n", "off"), ("yes", "essentials"), ("Deep", "deep")])

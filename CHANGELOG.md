@@ -8,11 +8,76 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 After updating, the first dashboard start re-reads every transcript (a
-few minutes): `PARSER_VERSION` bumped to 14 to pick up each reply's
-fast-mode flag, the fuller edit records and the markers below.
+few minutes): `PARSER_VERSION` bumped to 16 (from 14) to pick up each
+reply's fast-mode flag, the fuller edit records, the quality markers,
+the metrics-capture tags and notes below, and the feedback tag.
 
 ### Added
 
+- **Metrics capture (opt-in, off by default, and it uses tokens while
+  it's on).** Turn it on and Claude ends each reply — and a subagent's
+  final report — with a one-line, closed-vocabulary tag such as
+  `[tl: task=bugfix brief=clear]`, at one of four levels (Free,
+  Essentials, Standard, Deep) that each add more of it; nothing outside
+  the fixed word lists is ever kept. `init`'s last-but-one question
+  offers it, after a warning that it costs tokens and a table of what
+  each level would have cost over your own last 14 days; turning a
+  level on asks one more question, a 14-day time-box that switches
+  capture back off by itself unless you turn the limit off or set a
+  different length (`capture on --for`). `claude-token-lens capture`
+  (`status`/`on`/`off`/`level`/`enable`/`disable`/`connect`/`remove`)
+  changes it at any other time, always showing the `settings.json` diff
+  first and asking before writing it. See
+  [`docs/capture.md`](docs/capture.md).
+- **A capture banner and Capture tab on the dashboard.** A banner under
+  the health banner, on every tab, shows the running token cost,
+  coverage, and a note when hooks are missing, no notes have been seen,
+  the time-box has passed, or there isn't enough data yet. The Capture
+  tab adds level cards, a row per metric (what it captures, the exact
+  tag, why, what it feeds, estimate against actual cost, how much has
+  been collected), and sampling and time-box controls, each repeating
+  the cost warning before anything that spends more tokens. Turning
+  something on writes only `[capture]` in Token Lens's own
+  `config.toml`, from a loopback request; it never touches Claude
+  Code's `settings.json` itself — a missing hook entry shows the
+  `capture connect` command to run instead.
+- **Free capture signals, and none of them need a level.** How a
+  session ended, how long you waited on a notification or a permission
+  prompt, and (already in every transcript, so no hook is needed) which
+  instruction files, commands, skills, task lists and API errors came
+  up are logged to `<config-dir>/signals/`, keyed by a salted hash of
+  the session id rather than the id itself.
+- **The `/tl-feedback` skill and a second status line.** `capture
+  feedback on` (or saying yes to `init`'s last question) adds an
+  optional skill you run after a piece of work to rate whether it
+  delivered, what slowed it, whether it was worth the tokens and what
+  would have helped — shown in full and written only after a yes, and
+  it works at any capture level, even off. The statusline can now show
+  a second line: a live coaching hint (a large context building up,
+  a large last tool result, many reads so far) or a reminder to run
+  `/tl-feedback`; the first line is unchanged.
+- **Work habits tab and habit playbook.** A new section, built per
+  message and per agent run, turns everything metrics capture and your
+  own feedback have reported into a weekly digest and a playbook of
+  habits worth trying, each with its evidence, a rough saving, and
+  where the evidence came from (what Claude reported, what the
+  transcript shows, or your own feedback, in that order of trust).
+  Brief templates — checklists per kind of task, built from what your
+  own requests tend to lack — and an optional `/tl-brief` skill that
+  checks a new request against its checklist are part of the same tab.
+  The model-tier, effort-fit, spawn-CLAUDE.md and wasted-turns checks,
+  and session purpose, now also read what capture reported, and
+  `report`, `compare` and `config-diff` read the dashboard's own tags
+  and ratings.
+- **Profiles tuned per kind of task.** Once enough sessions carry a
+  reported task, the Work habits tab breaks cost and how often the
+  work went well down by task, model and effort, and picks the
+  cheapest setup that did as well as your usual one; a new "A profile
+  for one kind of task" goal on the Profiles tab drafts from it, and
+  `compare` can stratify by task the same way. A `capture` change (a
+  level, enabling a metric) now counts as a change point the same way
+  an `apply` does, measured by capture's own token cost and the share
+  of messages tagged.
 - **Claude can say why it re-ran an agent and whether one finished.**
   "Is any agent struggling?" offers two lines for `~/.claude/CLAUDE.md`
   (about 100 tokens, read from the prompt cache after each session's
@@ -83,6 +148,33 @@ fast-mode flag, the fuller edit records and the markers below.
 
 ### Fixed
 
+- **Repeated reads were miscounted.** An edit counted as a read of the
+  same file, and a read straight after an edit to it counted again too
+  (870 -> 138 repeated reads on a real corpus once fixed). Agent report
+  size also used the agent's own last output tokens instead of the
+  result its parent actually received (or the task notification for a
+  background agent), and `hook_system_message` lines — shown to you
+  only, never sent to Claude — were counted as context.
+- **Fast mode was ignored when pricing a quality marker's cost** (the
+  `[tl: ...]`/`[result: ...]` tags and capture notes): every marker
+  priced at a turn's standard rate even when that turn ran at 2x fast
+  mode, long-context or data-residency rates. Marker cost is now priced
+  at the turn that actually wrote it, using the same effective rate the
+  context-carry figures already use.
+- **A `.pyz` or wheel install could ship or run without the capture
+  hook script.** `hooks/capture-hook.py` is now installed from package
+  resources the same way the config-snapshot hook already was (fixing
+  `install_hook` inside a `.pyz`), and was missing from package data
+  entirely for a wheel build; a test now checks every hook file is
+  actually shipped.
+- **A live coaching hint could claim more cache life than a lifetime
+  allows.** When a reply's own timestamp was stamped ahead of the
+  clock (clock skew, a resumed session), the cache-freshness estimate
+  behind the statusline's coaching line could read past a full TTL. It
+  is now capped at the cache lifetime in effect.
+- A skill run with a slash (`/tl-feedback`, `/tl-brief`) wasn't
+  recorded in `commands_run`, because Claude Code writes it inside a
+  `<command-message>` block first; it is now.
 - **The dashboard could stop updating for good and still report
   healthy.** When the database was busy at the moment the background
   scanner started a scan (a second `serve` on the same database, say),
