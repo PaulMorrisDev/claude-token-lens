@@ -1,0 +1,215 @@
+"""``capture_catalogue``: the metric catalogue, its levels, the note the
+capture hook adds, and the JSON the hook reads. The note and the parser
+must agree word for word, or a tag Claude writes as asked would be
+dropped.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+from importlib import resources
+from pathlib import Path
+
+import pytest
+
+from claude_token_lens import capture_catalogue as cat
+from claude_token_lens import capture_tags
+from claude_token_lens.model import TranscriptMeta
+from claude_token_lens.parse import parse_transcript
+
+from helpers import attachment_line, turn_line, user_str_line, write_jsonl
+
+#: Rough token budgets per note (characters / 4), main and subagent.
+#: Real costs are measured from transcripts; these stop a note growing
+#: unnoticed.
+_BUDGETS = {
+    "essentials": (190, 95),
+    "standard": (350, 205),
+    "deep": (420, 205),
+}
+
+
+def test_every_metric_says_what_it_captures_why_and_what_it_feeds():
+    ids = [m.id for m in cat.METRICS]
+    assert len(ids) == len(set(ids))
+    for m in cat.METRICS:
+        assert re.fullmatch(r"[a-z_]{2,24}", m.id), m.id
+        assert m.group in cat.GROUPS, m.id
+        assert m.section in cat.SECTIONS, m.id
+        assert m.title and m.what.endswith(".") and m.why.endswith("."), m.id
+        assert m.powers and set(m.powers) <= set(cat.THEMES), m.id
+        assert set(m.requires) <= set(ids), m.id
+
+
+def test_metrics_claude_writes_have_a_tag_and_a_note_and_the_rest_have_neither():
+    for m in cat.METRICS:
+        asks = bool(m.main_line or m.sub_line or m.main_extra or m.sub_extra or m.tool_note)
+        if m.group in ("essentials", "standard", "deep"):
+            assert asks and m.tag and m.hooks and m.out_chars > 0, m.id
+        elif m.id == "feedback_reminder":
+            assert asks and m.hooks == ("SessionStart",)
+        else:
+            assert not asks, m.id
+            assert m.out_chars == 0, m.id
+        if m.group in ("derived", "coaching") or m.id in ("feedback_note", "dashboard_rating"):
+            assert not m.hooks, m.id
+
+
+def _words_in(line: str) -> set[str]:
+    return set(re.findall(r"[a-z][a-z-]*", line))
+
+
+def test_each_note_line_lists_only_words_the_parser_keeps_and_main_lines_list_them_all():
+    for m in cat.METRICS:
+        for scope, line in (("main", m.main_line), ("sub", m.sub_line)):
+            if not line or m.id == "result":
+                continue
+            for key, words, or_none in re.findall(r"(?:^|; )([a-z]+): ([a-z|,-]+)( or none)?", line):
+                assert key in cat.TAG_VOCAB, (m.id, key)
+                listed = set(re.split(r"[|,]", words.strip(","))) | ({"none"} if or_none else set())
+                assert listed <= set(cat.TAG_VOCAB[key]), (m.id, key)
+                if scope == "main":
+                    assert listed == set(cat.TAG_VOCAB[key]), (m.id, key)
+    result = cat.METRICS_BY_ID["result"]
+    assert set(cat.RESULT_WORDS) <= _words_in(result.sub_line)
+    assert "[retry: " + "|".join(cat.RETRY_REASONS) + "]" in cat.METRICS_BY_ID["retry"].main_extra
+    assert "[spawn: " + "|".join(cat.SPAWN_REASONS) + "]" in cat.METRICS_BY_ID["spawn"].main_extra
+    assert "out=" + "|".join(cat.TAG_VOCAB["out"]) in cat.METRICS_BY_ID["big_output"].tool_note
+    assert "useful=" + "|".join(cat.TAG_VOCAB["useful"]) in cat.METRICS_BY_ID["web"].tool_note
+
+
+def test_levels_nest_and_deep_is_every_level_metric():
+    sets = [set(cat.level_metrics(level)) for level in cat.LEVELS]
+    assert sets[0] == set()
+    for smaller, larger in zip(sets, sets[1:]):
+        assert smaller < larger
+    assert sets[-1] == set(cat.LEVEL_METRIC_IDS)
+    assert set(cat.level_metrics("free")) == {m.id for m in cat.METRICS if m.group == "free"}
+
+
+@pytest.mark.parametrize("level", cat.LEVELS)
+def test_a_preset_is_recognised_from_its_metrics(level):
+    assert cat.level_of(cat.level_metrics(level)) == level
+
+
+def test_a_subset_is_custom_and_a_subagent_extra_brings_result():
+    assert cat.level_of(["task", "size"]) == "custom"
+    assert cat.with_requirements(["fit", "task"]) == ("task", "result", "fit")
+    assert cat.with_requirements(["coaching_line", "nope"]) == ()
+    assert cat.active_metrics("custom", ["rules"], ["feedback_reminder"]) == ("result", "rules", "feedback_reminder")
+    assert cat.active_metrics("essentials", ["size"]) == cat.level_metrics("essentials")
+
+
+@pytest.mark.parametrize("level", ["essentials", "standard", "deep"])
+def test_notes_stay_within_their_token_budget(level):
+    ids = cat.level_metrics(level)
+    main, sub = (len(cat.note_text(ids, scope)) / 4 for scope in ("main", "subagent"))
+    assert main <= _BUDGETS[level][0] and sub <= _BUDGETS[level][1], (main, sub)
+
+
+def test_notes_are_worded_as_facts_and_requests_not_orders():
+    texts = [cat.note_text(cat.level_metrics("deep") + cat.FEEDBACK_IDS, s) for s in ("main", "subagent")]
+    texts += [cat.tool_note_text(i) for i in ("big_output", "web")]
+    for text in texts:
+        assert not re.search(r"\b(must|IMPORTANT|ALWAYS|NEVER|CRITICAL)\b", text), text
+        assert "the user turned on" in text.lower() or text.startswith(cat.NOTE_MARKER)
+        assert all(len(line) <= 160 for line in text.splitlines()), text
+
+
+def test_the_note_marker_names_exactly_the_metrics_it_asks_for():
+    ids = cat.level_metrics("standard")
+    main = cat.note_text(ids, "main")
+    version, codes = capture_tags.parse_note_codes(main)
+    assert version == cat.NOTE_VERSION
+    assert set(codes) == {m.id for m in cat.METRICS if m.id in ids and (m.main_line or m.main_extra)}
+    _, sub_codes = capture_tags.parse_note_codes(cat.note_text(ids, "subagent"))
+    assert set(sub_codes) == {"result", "retry", "spawn", "fit", "rules", "agent_brief"}
+
+
+def test_free_signals_and_feedback_toggles_alone_add_no_subagent_note():
+    assert cat.note_text(cat.level_metrics("free"), "main") == ""
+    assert cat.note_text(cat.level_metrics("free"), "subagent") == ""
+    assert cat.note_text(["feedback_reminder"], "subagent") == ""
+    reminder = cat.note_text(["feedback_reminder"], "main")
+    assert "/tl-feedback" in reminder and "[tl:" not in reminder
+
+
+def test_setup_agents_get_no_note_and_explore_is_not_asked_about_rules():
+    ids = cat.level_metrics("standard")
+    assert cat.note_text(ids, "subagent", "statusline-setup") == ""
+    explore = cat.note_text(ids, "subagent", "Explore")
+    assert "fit:" in explore and "rules:" not in explore and "missing:" not in explore
+    assert "rules:" in cat.note_text(ids, "subagent", "general-purpose")
+
+
+def test_a_subagent_tag_shape_follows_whether_it_has_extra_keys():
+    assert "[result: done|partial|blocked]," in cat.note_text(cat.level_metrics("essentials"), "subagent")
+    assert "key=word" in cat.note_text(cat.level_metrics("standard"), "subagent")
+
+
+def test_hook_entries_follow_the_metrics():
+    assert cat.hook_specs(cat.level_metrics("free")) == ()
+    assert cat.hook_specs(cat.level_metrics("essentials")) == (
+        ("capture-note.py", "SessionStart", "startup|clear|compact", False),
+        ("capture-note.py", "SubagentStart", "", False),
+    )
+    assert cat.hook_specs(cat.level_metrics("deep"))[-1] == ("capture-note.py", "PostToolUse", "", True)
+    assert cat.hook_specs(["web"]) == (("capture-note.py", "PostToolUse", "WebFetch|WebSearch", True),)
+    assert cat.hook_specs(["result"]) == (("capture-note.py", "SubagentStart", "", False),)
+
+
+def test_the_packaged_json_is_the_catalogue_export():
+    packaged = resources.files("claude_token_lens") / "hooks" / cat.CATALOGUE_FILE
+    assert packaged.read_text(encoding="utf-8") == cat.catalogue_json_text(), (
+        "regenerate src/claude_token_lens/hooks/capture-catalogue.json from capture_catalogue.catalogue_json_text()"
+    )
+    data = json.loads(cat.catalogue_json_text())
+    known = {m["id"] for m in data["metrics"]}
+    for ids in data["levels"].values():
+        assert set(ids) <= known
+
+
+def test_pyproject_ships_the_json():
+    pyproject = Path(__file__).resolve().parent.parent / "pyproject.toml"
+    assert f"hooks/{cat.CATALOGUE_FILE}" in pyproject.read_text(encoding="utf-8")
+
+
+# -- round trip: what the note asks for is what the parser reads ----------
+
+
+def test_a_tag_written_as_the_deep_note_asks_is_read_back_whole():
+    tag, _ = capture_tags.parse_reply_tags(
+        "Done.\n\n[tl: task=bugfix brief=clear level=hard shift=new size=m missing=files,repro plan=made "
+        "skill=none found=yes prior=none detour=reread check=targeted out=part useful=no]"
+    )
+    assert (tag.task, tag.brief, tag.level, tag.shift, tag.size) == ("bugfix", "clear", "hard", "new", "m")
+    assert tag.missing == ("files", "repro")
+    assert (tag.plan, tag.skill, tag.found, tag.prior, tag.detour, tag.check) == (
+        "made", "none", "yes", "none", "reread", "targeted",
+    )
+    assert (tag.out, tag.useful) == ("part", "no")
+
+
+def test_a_report_tag_written_as_the_standard_note_asks_is_read_back_whole():
+    tag, result = capture_tags.parse_reply_tags(
+        "Report.\n[result: partial fit=larger rules=unused brief=vague missing=goal,done]"
+    )
+    assert result == "partial"
+    assert (tag.fit, tag.rules, tag.brief, tag.missing) == ("larger", "unused", "vague", ("goal", "done"))
+
+
+def test_the_session_note_is_recognised_in_a_transcript(tmp_path):
+    note = cat.note_text(cat.level_metrics("essentials"), "main")
+    wrapped = f"<system-reminder>\nSessionStart hook additional context: {note}\n</system-reminder>"
+    path = tmp_path / "s.jsonl"
+    write_jsonl(path, [
+        attachment_line("hook_additional_context", rendered=wrapped, content=[note], hookName="SessionStart",
+                        hookEvent="SessionStart", toolUseID="SessionStart"),
+        user_str_line("fix it", origin={"kind": "human"}),
+        turn_line(content=[{"type": "text", "text": "Fixed.\n[tl: task=bugfix brief=clear level=easy]"}]),
+    ])
+    result = parse_transcript(path, TranscriptMeta(path=str(path)))
+    assert result.meta.cap_metrics == ("task", "brief", "level", "shift", "retry")
+    assert result.turns[0].cap_note_chars == len(wrapped)
+    assert result.turns[0].cap.task == "bugfix"

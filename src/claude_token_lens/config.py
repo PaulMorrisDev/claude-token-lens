@@ -17,6 +17,12 @@ dependency beyond ``model.py``/the standard library):
   every entry; :func:`save_session_override` rewrites one entry in
   place, preserving every other session's entry untouched.
 
+``config.toml``'s ``[capture]`` table (:class:`CaptureConfig`) switches
+metrics capture on and off; :func:`set_capture` is the one writer, and
+logs every change to ``capture-log.jsonl``. Its metric ids come from
+``capture_catalogue``, a data-only module, so this module still needs
+nothing from the package beyond it.
+
 ``tomllib`` (stdlib, read-only) has no counterpart writer, so
 :func:`save_session_override` serialises TOML by hand — see
 ``_write_sessions_toml``. The format it writes back is deliberately the
@@ -33,10 +39,15 @@ posture ``pricing.py``/``snapshots.py`` take for optional structure.
 from __future__ import annotations
 
 import csv
+import json
 import os
+import re
 import tomllib
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
+
+from . import capture_catalogue
 
 #: Directory name under the resolved Claude config root holding
 #: claude-token-lens's own files. Mirrors ``pricing.TOKEN_LENS_DIRNAME``.
@@ -55,6 +66,15 @@ _ALLOWED_APPLY_SCOPE = frozenset({"user", "project-local", "repo"})
 #: this is a softer per-project label ``init`` records when the user says
 #: a project is personal without necessarily wanting it excluded outright.
 _ALLOWED_PROJECT_KIND = frozenset({"work", "personal"})
+
+
+#: Share of sessions capture may run in (``[capture] sample``): a session
+#: is in or out by a hash of its id, and its subagents follow it.
+CAPTURE_SAMPLES = (100, 50, 25, 10)
+
+#: Every change to ``[capture]`` is appended here, one JSON object per
+#: line, so a change can be lined up against the costs around it.
+CAPTURE_LOG_NAME = "capture-log.jsonl"
 
 
 class ConfigError(Exception):
@@ -85,6 +105,65 @@ class ProjectConfig:
     launch_overlays: bool | None = None
     #: "user" | "project-local" | "repo" | None.
     apply_scope: str | None = None
+
+
+@dataclass(slots=True)
+class CaptureConfig:
+    """``config.toml``'s ``[capture]`` table: whether metrics capture is on,
+    and how much of it. See ``capture_catalogue`` for the metrics and
+    levels, and ``hooks/capture-note.py`` for the hook that reads this.
+    """
+
+    #: One of ``capture_catalogue.LEVELS``, or ``"custom"``.
+    level: str = "off"
+    #: The metric ids switched on when ``level`` is ``"custom"``; empty
+    #: otherwise (a preset level decides its own).
+    metrics: list[str] = field(default_factory=list)
+    #: Percent of sessions captured, one of :data:`CAPTURE_SAMPLES`.
+    sample: int = 100
+    #: ISO-8601 time capture stops by itself, or ``""`` for never.
+    until: str = ""
+    #: Project slug regexes (``re.search``, case-insensitive) capture runs
+    #: in; one starting ``!`` leaves matching projects out. Empty means
+    #: every project.
+    projects: list[str] = field(default_factory=list)
+    #: Feedback toggles switched on (``capture_catalogue.FEEDBACK_IDS``).
+    feedback: list[str] = field(default_factory=list)
+    #: Live coaching toggles switched on
+    #: (``capture_catalogue.COACHING_IDS``).
+    coaching: list[str] = field(default_factory=list)
+    #: ISO-8601 time capture was last switched on, or ``""`` while off.
+    enabled_at: str = ""
+
+    @property
+    def is_on(self) -> bool:
+        return self.level != "off"
+
+    def active_metrics(self) -> tuple[str, ...]:
+        """Every metric switched on, level and feedback toggles together
+        (``capture_catalogue.active_metrics``)."""
+        return capture_catalogue.active_metrics(self.level, self.metrics, self.feedback)
+
+    def expired(self, now: datetime | None = None) -> bool:
+        """Whether ``until`` has passed (``False`` when unset)."""
+        stop = _parse_iso(self.until)
+        if stop is None:
+            return False
+        return (now or datetime.now(timezone.utc)) >= stop
+
+
+def _parse_iso(value: str) -> datetime | None:
+    """An ISO-8601 date or time as an aware UTC ``datetime`` (a bare date
+    is its midnight UTC; a naive time is taken as UTC), or ``None``."""
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 @dataclass(slots=True)
@@ -180,6 +259,8 @@ class Config:
     #: auto-detection regex — for a saver whose name gives no lexical
     #: hint at all (a codename, an acronym).
     savers: list[str] = field(default_factory=list)
+    #: Metrics capture (``[capture]``). Off unless the user opts in.
+    capture: CaptureConfig = field(default_factory=CaptureConfig)
 
     def describe(self) -> list[str]:
         """Lines for the report header (plan "Renderers and CLI"
@@ -218,6 +299,9 @@ class Config:
             lines.append(f"projects: {sorted(self.projects)}")
         if self.savers:
             lines.append(f"savers: {self.savers}")
+        if self.capture.is_on:
+            sample = f", {self.capture.sample}% of sessions" if self.capture.sample != 100 else ""
+            lines.append(f"capture: {self.capture.level}{sample}")
         return lines
 
 
@@ -366,7 +450,56 @@ def _build_config(data: dict, path: Path) -> Config:
         raise ConfigError(f"config file {path}: 'savers.names' must be a list of strings")
     config.savers = list(saver_names)
 
+    capture = data.get("capture", {})
+    if not isinstance(capture, dict):
+        raise ConfigError(f"config file {path}: 'capture' must be a table, e.g. [capture]\nlevel = \"essentials\"")
+    config.capture = _build_capture_config(capture, path)
+
     return config
+
+
+def _capture_list(table: dict, key: str, path: Path, allowed=None) -> list[str]:
+    value = table.get(key, [])
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise ConfigError(f"config file {path}: 'capture.{key}' must be a list of strings")
+    if allowed is not None:
+        unknown = [item for item in value if item not in allowed]
+        if unknown:
+            raise ConfigError(
+                f"config file {path}: 'capture.{key}' has unknown {', '.join(repr(u) for u in unknown)}; "
+                f"known: {', '.join(allowed)}"
+            )
+    return list(value)
+
+
+def _build_capture_config(table: dict, path: Path) -> CaptureConfig:
+    capture = CaptureConfig()
+    levels = (*capture_catalogue.LEVELS, capture_catalogue.CUSTOM_LEVEL)
+    level = table.get("level", capture.level)
+    if not isinstance(level, str) or level not in levels:
+        raise ConfigError(f"config file {path}: 'capture.level' must be one of {list(levels)}, got {level!r}")
+    capture.level = level
+    capture.metrics = _capture_list(table, "metrics", path, capture_catalogue.LEVEL_METRIC_IDS)
+    sample = table.get("sample", capture.sample)
+    if isinstance(sample, bool) or sample not in CAPTURE_SAMPLES:
+        raise ConfigError(
+            f"config file {path}: 'capture.sample' must be one of {list(CAPTURE_SAMPLES)}, got {sample!r}"
+        )
+    capture.sample = sample
+    for key in ("until", "enabled_at"):
+        value = table.get(key, "")
+        if not isinstance(value, str) or (value and _parse_iso(value) is None):
+            raise ConfigError(f"config file {path}: 'capture.{key}' must be an ISO-8601 date or time, got {value!r}")
+        setattr(capture, key, value)
+    capture.projects = _capture_list(table, "projects", path)
+    for pattern in capture.projects:
+        try:
+            re.compile(pattern[1:] if pattern.startswith("!") else pattern)
+        except re.error as exc:
+            raise ConfigError(f"config file {path}: 'capture.projects' has a bad pattern {pattern!r} ({exc})") from exc
+    capture.feedback = _capture_list(table, "feedback", path, capture_catalogue.FEEDBACK_IDS)
+    capture.coaching = _capture_list(table, "coaching", path, capture_catalogue.COACHING_IDS)
+    return capture
 
 
 def _build_project_config(data: dict, path: Path) -> ProjectConfig:
@@ -701,14 +834,158 @@ def write_config_values(config_dir: str | Path | None, updates: dict) -> Path:
         text = _dump_toml_table(merged)
     except ConfigError:
         new_path = resolved_dir / "config.toml.new"
-        new_path.write_text(_dump_toml_table({k: v for k, v in merged.items() if not isinstance(v, dict)}), encoding="utf-8")
+        _write_atomic(new_path, _dump_toml_table(_flat_part(merged)))
         return new_path
-    path.write_text(text, encoding="utf-8")
+    _write_atomic(path, text)
     return path
+
+
+def _flat_part(data: dict) -> dict:
+    """What :func:`_dump_toml_table` can write of ``data``: every
+    top-level value and every one-level table (``[savers]``,
+    ``[capture]``, ...), less only the tables nested inside a table."""
+    return {
+        key: ({k: v for k, v in value.items() if not isinstance(v, dict)} if isinstance(value, dict) else value)
+        for key, value in data.items()
+    }
+
+
+def _write_atomic(path: Path, text: str) -> None:
+    """Write ``text`` to ``path`` through a temporary file and a rename,
+    so a reader (the capture hook, say) never sees half a file."""
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    try:
+        tmp.write_text(text, encoding="utf-8")
+        os.replace(tmp, path)
+    finally:
+        if tmp.exists():
+            tmp.unlink()
+
+
+# -- [capture] writer --------------------------------------------------------
+
+
+def _capture_table(capture: CaptureConfig) -> dict:
+    return {
+        "level": capture.level,
+        "metrics": list(capture.metrics),
+        "sample": capture.sample,
+        "until": capture.until,
+        "projects": list(capture.projects),
+        "feedback": list(capture.feedback),
+        "coaching": list(capture.coaching),
+        "enabled_at": capture.enabled_at,
+    }
+
+
+def _in_catalogue_order(chosen: list[str], known: tuple[str, ...]) -> list[str]:
+    """``chosen`` with known ids in catalogue order first; unknown ids are
+    kept, last, for validation to name."""
+    wanted = set(chosen)
+    return [i for i in known if i in wanted] + [i for i in dict.fromkeys(chosen) if i not in known]
+
+
+def set_capture(
+    config_dir: str | Path | None,
+    *,
+    level: str | None = None,
+    metrics: list[str] | None = None,
+    sample: int | None = None,
+    until: str | None = None,
+    projects: list[str] | None = None,
+    feedback: list[str] | None = None,
+    coaching: list[str] | None = None,
+    now: datetime | None = None,
+) -> CaptureConfig:
+    """Change ``config.toml``'s ``[capture]`` table and return the result.
+
+    Only the arguments given change. ``level`` picks a preset (clearing
+    ``metrics``); ``metrics`` picks metrics one by one, and the level
+    becomes the preset they match, else ``"custom"``. Switching from off
+    to on stamps ``enabled_at``; switching off clears it and ``until``.
+    The new table is validated before anything is written, the write is
+    atomic, and every change is appended to ``capture-log.jsonl``. Raises
+    :class:`ConfigError` for a bad value, or when ``config.toml`` can't be
+    rewritten in place (the change then sits in ``config.toml.new``).
+    """
+    resolved_dir = _resolve_config_dir(config_dir)
+    path = resolved_dir / "config.toml"
+    current = _build_config(_read_toml(path, what="config file") or {}, path).capture
+    table = _capture_table(current)
+    if level is not None:
+        table["level"] = level
+        table["metrics"] = []
+    if metrics is not None:
+        unknown = [m for m in metrics if m not in capture_catalogue.LEVEL_METRIC_IDS]
+        if unknown:
+            raise ConfigError(
+                f"unknown capture metric {', '.join(repr(u) for u in unknown)}; "
+                f"known: {', '.join(capture_catalogue.LEVEL_METRIC_IDS)}"
+            )
+        chosen = list(capture_catalogue.with_requirements(metrics))
+        table["level"] = capture_catalogue.level_of(chosen)
+        table["metrics"] = chosen if table["level"] == capture_catalogue.CUSTOM_LEVEL else []
+    if sample is not None:
+        table["sample"] = sample
+    if until is not None:
+        table["until"] = until
+    if projects is not None:
+        table["projects"] = list(projects)
+    if feedback is not None:
+        table["feedback"] = _in_catalogue_order(feedback, capture_catalogue.FEEDBACK_IDS)
+    if coaching is not None:
+        table["coaching"] = _in_catalogue_order(coaching, capture_catalogue.COACHING_IDS)
+    stamp = (now or datetime.now(timezone.utc)).astimezone(timezone.utc).isoformat(timespec="seconds")
+    if table["level"] == "off":
+        table["enabled_at"] = ""
+        table["until"] = ""
+    elif not current.is_on:
+        table["enabled_at"] = stamp
+
+    if table == _capture_table(current):
+        return current
+    written = write_config_values(resolved_dir, {"capture": table})
+    if written.name != "config.toml":
+        raise ConfigError(
+            f"could not update {path} in place; the change was written to {written} for you to merge by hand"
+        )
+    updated = _build_capture_config(table, path)
+    _append_capture_log(resolved_dir, stamp, current, updated)
+    return updated
+
+
+def _append_capture_log(config_dir: Path, stamp: str, before: CaptureConfig, after: CaptureConfig) -> None:
+    old, new = asdict(before), asdict(after)
+    changed = {key: {"from": old[key], "to": new[key]} for key in new if old[key] != new[key] and key != "enabled_at"}
+    record = {"ts": stamp, "level": after.level, "changed": changed}
+    with open(config_dir / CAPTURE_LOG_NAME, "a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record, sort_keys=True) + "\n")
+
+
+def load_capture_log(config_dir: str | Path | None = None) -> list[dict]:
+    """Every ``[capture]`` change recorded in ``capture-log.jsonl``, oldest
+    first; lines that aren't a change record are skipped."""
+    path = _resolve_config_dir(config_dir) / CAPTURE_LOG_NAME
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    records = []
+    for line in lines:
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(record, dict) and isinstance(record.get("ts"), str):
+            records.append(record)
+    return records
 
 
 __all__ = [
     "TOKEN_LENS_DIRNAME",
+    "CAPTURE_LOG_NAME",
+    "CAPTURE_SAMPLES",
+    "CaptureConfig",
     "ConfigError",
     "Config",
     "ProjectConfig",
@@ -716,6 +993,8 @@ __all__ = [
     "load_project_configs",
     "save_project_config",
     "write_config_values",
+    "set_capture",
+    "load_capture_log",
     "load_session_overrides",
     "save_session_override",
 ]

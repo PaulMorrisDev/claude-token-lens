@@ -12,9 +12,18 @@ Every value is a closed vocabulary: a word outside it is dropped by the
 parser (``capture_tags.py``), so no free text Claude writes is ever stored.
 It has no imports from the rest of the package, so the parser, the hook
 script's generated JSON and the dashboard all read the same lists.
+
+It also holds every metric capture can switch on (:data:`METRICS`): what
+each captures and why, the level it belongs to, the hook events it
+needs, and the lines of the note that asks Claude for it
+(:func:`note_text`). ``hooks/capture-catalogue.json`` is the part the
+hook script needs (:func:`export_json`).
 """
 
 from __future__ import annotations
+
+import json
+from dataclasses import dataclass
 
 #: The marker every capture note carries, followed by the note format
 #: version and the codes of the metrics it asks for
@@ -79,5 +88,798 @@ SPAWN_REASONS = ("parallel", "isolate", "cheaper", "specialist", "review")
 #: A skill name kept with ``skill=would-help:<name>``: the same shape as a
 #: Claude Code skill or plugin skill name. Anything else is cut to a bare
 #: ``would-help``, and a name that matches no skill in the transcript is
-#: dropped too (see ``capture_tags.parse_tl_tag``).
+#: dropped too (see ``capture_tags.parse_reply_tags``).
 SKILL_NAME_PATTERN = r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}"
+
+
+# -- the metrics -----------------------------------------------------------
+
+#: Capture levels, cheapest first. Each includes every metric of the
+#: levels before it; ``custom`` is any other set (see :func:`level_of`).
+LEVELS = ("off", "free", "essentials", "standard", "deep")
+CUSTOM_LEVEL = "custom"
+
+#: What each level adds, for the init question and the Capture page.
+LEVEL_SUMMARIES = {
+    "off": "Nothing is captured and no tokens are used.",
+    "free": "Local signals from hooks that log to a file. Uses no Claude tokens.",
+    "essentials": "Claude tags each piece of work: what kind it was, how clear the request was, how hard, "
+    "and when the task changed. Subagents say whether they finished.",
+    "standard": "Adds size, what the request lacked, planning, skills, research, why an agent was used, "
+    "and each subagent's view of its model, rules and brief.",
+    "deep": "Adds how much earlier context was needed, detours, how the change was checked, and a "
+    "short rating after large tool outputs and web results.",
+}
+
+#: Suggestion themes a metric can feed (``Metric.powers``), in the order
+#: the Work habits tab shows them.
+THEMES = {
+    "breakdown": "Breaking down work",
+    "information": "Giving Claude information",
+    "research": "Researching",
+    "planning": "Planning",
+    "skills": "Using skills",
+    "delegation": "Delegating to agents",
+    "tool_output": "Tool output",
+    "verification": "Checking changes",
+    "context": "Clearing context",
+    "waiting": "Waiting and permissions",
+    "outcome": "Cost per finished piece of work",
+    "models": "Model and effort fit",
+    "profiles": "Profiles per kind of task",
+}
+
+#: Where a metric is captured, in the order the Capture page groups them.
+SECTIONS = {
+    "main": "Main session",
+    "subagents": "Subagents and briefs, at any depth",
+    "skills_plans": "Skills and plans",
+    "tools": "Tool calls",
+    "signals": "Free local signals",
+    "derived": "Always measured",
+    "coaching": "Live coaching",
+    "feedback": "Your feedback",
+}
+
+#: Metric groups. ``free`` to ``deep`` are the capture levels; ``derived``
+#: is always on and costs nothing; ``feedback`` and ``coaching`` are
+#: switched on one by one at any level.
+GROUPS = ("derived", "free", "essentials", "standard", "deep", "feedback", "coaching")
+
+#: Metric groups that make up the levels, in level order.
+LEVEL_GROUPS = ("free", "essentials", "standard", "deep")
+
+#: SessionStart sources the note is added on. ``resume`` is left out: a
+#: resumed session already carries the note from its start.
+SESSION_START_MATCHER = "startup|clear|compact"
+
+#: Built-in agents that do no user work (they set up Claude Code itself):
+#: they get no note.
+SKIP_AGENT_TYPES = ("statusline-setup", "output-style-setup")
+
+#: Built-in agents that start without your CLAUDE.md files, so asking
+#: whether they used its rules, or rating a brief they're given by
+#: Claude Code itself, tells nothing.
+NO_RULES_AGENT_TYPES = ("Explore", "Plan")
+
+#: A tool result at least this many tokens long gets a ``big_output``
+#: note (Deep). Measured as characters / 4.
+BIG_OUTPUT_TOKENS = 8000
+
+#: Tools whose results get a ``web`` note (Deep).
+WEB_TOOLS = ("WebFetch", "WebSearch")
+
+#: The hook script that adds capture notes, and the catalogue it reads,
+#: installed side by side under ``<config-dir>/hooks/``.
+NOTE_SCRIPT = "capture-note.py"
+CATALOGUE_FILE = "capture-catalogue.json"
+
+
+@dataclass(frozen=True, slots=True)
+class Metric:
+    """One thing capture can measure, and everything the Capture page,
+    the note hook and the cost estimates need to know about it."""
+
+    id: str
+    #: One of :data:`GROUPS`.
+    group: str
+    #: One of :data:`SECTIONS`.
+    section: str
+    #: Short name for the Capture page.
+    title: str
+    #: What it captures, in plain words.
+    what: str
+    #: Why it's worth capturing: what it lets Token Lens tell you.
+    why: str
+    #: :data:`THEMES` it feeds.
+    powers: tuple[str, ...] = ()
+    #: How Claude writes it, for the Capture page (empty when Claude
+    #: writes nothing).
+    tag: str = ""
+    #: Hook events it needs in Claude Code's settings.json.
+    hooks: tuple[str, ...] = ()
+    #: The line explaining its key in the main session's ``[tl: ...]``
+    #: tag, and in a subagent's ``[result: ...]`` tag.
+    main_line: str = ""
+    sub_line: str = ""
+    #: A line of its own in the main or subagent note.
+    main_extra: str = ""
+    sub_extra: str = ""
+    #: The note a PostToolUse hook adds after a matching tool result.
+    tool_note: str = ""
+    #: Other metrics it can't work without (a subagent's extras ride on
+    #: ``result``).
+    requires: tuple[str, ...] = ()
+    #: About how many characters Claude writes for it each time.
+    out_chars: int = 0
+
+
+_TASK_WORDS = "|".join(TAG_VOCAB["task"])
+
+METRICS: tuple[Metric, ...] = (
+    # -- Essentials -------------------------------------------------------
+    Metric(
+        id="task",
+        group="essentials",
+        section="main",
+        title="Kind of task",
+        what="What kind of work each of your messages asked for: feature, bugfix, refactor, debug, docs, "
+        "review, test, research, plan, ops or chat.",
+        why="Cost per kind of task, and a profile tuned to each kind. Replaces Token Lens's guess from the "
+        "session's shape.",
+        powers=("profiles", "outcome", "models"),
+        tag="task=" + _TASK_WORDS,
+        hooks=("SessionStart",),
+        main_line=f"task: {_TASK_WORDS} (the kind of work asked for)",
+        out_chars=13,
+    ),
+    Metric(
+        id="brief",
+        group="essentials",
+        section="main",
+        title="How clear the request was",
+        what="Whether your request was clear, partly clear or vague.",
+        why="What vague requests cost you in extra turns, and how to brief Claude better.",
+        powers=("information",),
+        tag="brief=clear|partial|vague",
+        hooks=("SessionStart",),
+        main_line="brief: clear|partial|vague (how complete the request was)",
+        out_chars=13,
+    ),
+    Metric(
+        id="level",
+        group="essentials",
+        section="main",
+        title="How hard the work was",
+        what="Whether the work was easy, normal or hard.",
+        why="Whether your model and effort fit the work: a lighter setup for easy work, and no cheaper-model "
+        "suggestion for hard work.",
+        powers=("models", "profiles", "planning"),
+        tag="level=easy|normal|hard",
+        hooks=("SessionStart",),
+        main_line="level: easy|normal|hard (how hard the work was)",
+        out_chars=12,
+    ),
+    Metric(
+        id="shift",
+        group="essentials",
+        section="main",
+        title="Task changes",
+        what="When the work changed: a new unrelated task, building on the last one, the scope growing, or "
+        "redoing earlier work.",
+        why="Task switching, scope creep and rework, and when a fresh session or plan mode would have been "
+        "cheaper.",
+        powers=("breakdown", "context", "planning"),
+        tag="shift=new|build|grew|redo",
+        hooks=("SessionStart",),
+        main_line="shift: new|build|grew|redo, only when it applies (a new unrelated task; building on the "
+        "last one; the scope grew; redoing earlier work)",
+        out_chars=5,
+    ),
+    Metric(
+        id="result",
+        group="essentials",
+        section="subagents",
+        title="Did the agent finish",
+        what="Each subagent's own account of whether it finished its task, finished part of it, or was "
+        "blocked.",
+        why="Which agents and models deliver, and which get re-run.",
+        powers=("delegation", "models", "outcome"),
+        tag="[result: done|partial|blocked]",
+        hooks=("SubagentStart",),
+        sub_line="done: you finished the task; partial: some of it; blocked: you could not go on",
+        out_chars=15,
+    ),
+    Metric(
+        id="retry",
+        group="essentials",
+        section="subagents",
+        title="Why an agent was run again",
+        what="When Claude starts an agent again because its last run fell short, the reason: model, brief, "
+        "tools, scope or other.",
+        why="Why agents are re-run, and a guard that stops Token Lens suggesting a cheaper model for work "
+        "that needed a stronger one.",
+        powers=("delegation", "models"),
+        tag="[retry: model|brief|tools|scope|other]",
+        hooks=("SessionStart", "SubagentStart"),
+        main_extra="When you start an agent again because its last run fell short, begin the brief with "
+        "[retry: model|brief|tools|scope|other].",
+        sub_extra="Re-running an agent? Begin its brief with [retry: model|brief|tools|scope|other].",
+        out_chars=2,
+    ),
+    # -- Standard ---------------------------------------------------------
+    Metric(
+        id="size",
+        group="standard",
+        section="main",
+        title="Size of the work",
+        what="How big each piece of work was, from xs to xl.",
+        why="How you break work down: big asks that end in compaction or rework, and tiny asks that each "
+        "pay the start-up cost.",
+        powers=("breakdown",),
+        tag="size=xs|s|m|l|xl",
+        hooks=("SessionStart",),
+        main_line="size: xs|s|m|l|xl (how big the work was)",
+        out_chars=7,
+    ),
+    Metric(
+        id="missing",
+        group="standard",
+        section="main",
+        title="What the request lacked",
+        what="What your request left Claude to find or guess: files, goal, constraints, what done means, "
+        "how to reproduce, scope, or none.",
+        why="What to put in your prompts, or once in CLAUDE.md, so Claude stops searching for it.",
+        powers=("information", "research"),
+        tag="missing=files,goal,constraints,done,repro,scope|none",
+        hooks=("SessionStart",),
+        main_line="missing: files,goal,constraints,done,repro,scope or none (what the request lacked that you "
+        "had to find or guess; a comma list)",
+        out_chars=14,
+    ),
+    Metric(
+        id="plan",
+        group="standard",
+        section="skills_plans",
+        title="Planning",
+        what="Whether the work had no plan, a plan was made, a plan was followed, or the work departed from "
+        "it.",
+        why="How accurate plans are, and whether planning first saves rework on hard tasks.",
+        powers=("planning",),
+        tag="plan=none|made|following|deviated",
+        hooks=("SessionStart",),
+        main_line="plan: none|made|following|deviated (no plan; you wrote one; you worked to one; you departed "
+        "from it)",
+        out_chars=10,
+    ),
+    Metric(
+        id="skill",
+        group="standard",
+        section="skills_plans",
+        title="Skills",
+        what="Whether a skill helped, wasn't needed, or one of your listed skills would have helped (and "
+        "which).",
+        why="When to invoke a skill, skills that don't pay for their context, and skills you forget to use.",
+        powers=("skills",),
+        tag="skill=helped|unneeded|would-help[:name]|none",
+        hooks=("SessionStart",),
+        main_line="skill: helped|unneeded|would-help|none (whether a skill you ran helped; would-help:<name> "
+        "if one of the listed skills would have)",
+        out_chars=11,
+    ),
+    Metric(
+        id="found",
+        group="standard",
+        section="main",
+        title="Research result",
+        what="For research and search work, whether Claude found what was asked.",
+        why="How you research: when to give Claude pointers, and when an Explore agent is cheaper.",
+        powers=("research",),
+        tag="found=yes|partial|no",
+        hooks=("SessionStart",),
+        main_line="found: yes|partial|no (for research or search work: whether you found what was asked)",
+        out_chars=6,
+    ),
+    Metric(
+        id="spawn",
+        group="standard",
+        section="subagents",
+        title="Why an agent was used",
+        what="When Claude hands work to an agent, why: to run in parallel, to keep the main context clean, "
+        "for a cheaper model, for a specialist, or for a review.",
+        why="Whether delegating paid off, for example isolated agents that send back long reports.",
+        powers=("delegation",),
+        tag="[spawn: parallel|isolate|cheaper|specialist|review]",
+        hooks=("SessionStart", "SubagentStart"),
+        main_extra="When you hand work to an agent, begin the brief with "
+        "[spawn: parallel|isolate|cheaper|specialist|review]: why an agent.",
+        sub_extra="Starting an agent? Begin its brief with [spawn: parallel|isolate|cheaper|specialist|review].",
+        out_chars=5,
+    ),
+    Metric(
+        id="fit",
+        group="standard",
+        section="subagents",
+        title="Agent model fit",
+        what="Each subagent's view of whether a smaller model would have done its task, or it needed a "
+        "larger one.",
+        why="Agent model tuning. Used only to rule a cheaper model out, never to recommend one.",
+        powers=("models", "delegation"),
+        tag="fit=smaller|right|larger",
+        hooks=("SubagentStart",),
+        sub_line="fit: smaller|right|larger (could a smaller model have done this task, or did it need a "
+        "larger one)",
+        requires=("result",),
+        out_chars=10,
+    ),
+    Metric(
+        id="rules",
+        group="standard",
+        section="subagents",
+        title="Agent used your rules",
+        what="Whether each subagent used the CLAUDE.md and memory instructions it was given.",
+        why="Which agents could start without your CLAUDE.md files (omitClaudeMd), saving their start-up "
+        "tokens.",
+        powers=("delegation",),
+        tag="rules=used|unused",
+        hooks=("SubagentStart",),
+        sub_line="rules: used|unused (did you use the CLAUDE.md or memory instructions you were given)",
+        requires=("result",),
+        out_chars=10,
+    ),
+    Metric(
+        id="agent_brief",
+        group="standard",
+        section="subagents",
+        title="Agent brief quality",
+        what="Each subagent's view of how complete its brief was, and what it lacked: files, goal, scope or "
+        "what done means.",
+        why="Brief quality per agent type, and better agent definitions and brief templates.",
+        powers=("delegation", "information"),
+        tag="brief=clear|partial|vague missing=files,goal,scope,done|none",
+        hooks=("SubagentStart",),
+        sub_line="brief: clear|partial|vague (how complete your brief was); missing: files,goal,scope,done or "
+        "none (what it lacked)",
+        requires=("result",),
+        out_chars=24,
+    ),
+    # -- Deep -------------------------------------------------------------
+    Metric(
+        id="prior",
+        group="deep",
+        section="main",
+        title="Earlier context needed",
+        what="How much of the earlier conversation each reply needed.",
+        why="A direct measure of when /clear was safe, and what it would have saved.",
+        powers=("context",),
+        tag="prior=needed|some|none",
+        hooks=("SessionStart",),
+        main_line="prior: needed|some|none (how much of the earlier conversation this work needed)",
+        out_chars=10,
+    ),
+    Metric(
+        id="detour",
+        group="deep",
+        section="main",
+        title="Detours",
+        what="The main time sink, if any: a dead end, rereading files, building more than asked, "
+        "environment trouble, or flaky tests.",
+        why="Waste the transcript's shape can't show.",
+        powers=("breakdown", "verification", "information"),
+        tag="detour=none|dead-end|reread|overbuilt|env|flaky",
+        hooks=("SessionStart",),
+        main_line="detour: none|dead-end|reread|overbuilt|env|flaky (the main time sink, if any)",
+        out_chars=11,
+    ),
+    Metric(
+        id="check",
+        group="deep",
+        section="main",
+        title="How changes were checked",
+        what="How a change was verified: targeted tests, the full suite, a build, running it, by hand, or "
+        "not at all.",
+        why="Unchecked changes that later needed redoing, and full-suite output carried in context.",
+        powers=("verification",),
+        tag="check=targeted|full|build|run|manual|none",
+        hooks=("SessionStart",),
+        main_line="check: targeted|full|build|run|manual|none (how you verified the change)",
+        out_chars=12,
+    ),
+    Metric(
+        id="big_output",
+        group="deep",
+        section="tools",
+        title="Large tool outputs",
+        what=f"After a tool result of about {BIG_OUTPUT_TOKENS:,} tokens or more, how much of it Claude "
+        "needed: all, part or none.",
+        why="Quieter commands, offset reads and output caps where big outputs weren't needed.",
+        powers=("tool_output",),
+        tag="out=needed|part|unneeded",
+        hooks=("PostToolUse",),
+        tool_note="That tool result was large. Add out=needed|part|unneeded (how much of it you needed) to "
+        "the tag that ends your final reply.",
+        out_chars=9,
+    ),
+    Metric(
+        id="web",
+        group="deep",
+        section="tools",
+        title="Web results",
+        what="After a web search or fetch, whether the result was useful.",
+        why="Web research against handing Claude the page or document yourself.",
+        powers=("research",),
+        tag="useful=yes|part|no",
+        hooks=("PostToolUse",),
+        tool_note="Add useful=yes|part|no (whether that web result helped) to the tag that ends your final "
+        "reply.",
+        out_chars=10,
+    ),
+    # -- Free local signals ----------------------------------------------
+    Metric(
+        id="session_end",
+        group="free",
+        section="signals",
+        title="Why sessions end",
+        what="Why each session ended: /clear, exit, logout or other.",
+        why="Session length and batching tips, alongside task changes.",
+        powers=("breakdown", "context"),
+        hooks=("SessionEnd",),
+    ),
+    Metric(
+        id="waits",
+        group="free",
+        section="signals",
+        title="Waiting on you",
+        what="When Claude waited for your permission or input, and how long until you answered.",
+        why="How often Claude sat waiting, and allow rules for routine commands.",
+        powers=("waiting",),
+        hooks=("Notification",),
+    ),
+    Metric(
+        id="permissions",
+        group="free",
+        section="signals",
+        title="Permission decisions",
+        what="Permission prompts and denials: the tool name and the decision, never its arguments.",
+        why="Denials that led to rework, and allowlist suggestions.",
+        powers=("waiting",),
+        hooks=("PermissionRequest",),
+    ),
+    Metric(
+        id="instructions_loaded",
+        group="free",
+        section="signals",
+        title="Instruction files loaded",
+        what="Instruction files loaded during a session: kind, salted hash and size.",
+        why="What nested CLAUDE.md and rules files cost as they load.",
+        powers=("information",),
+        hooks=("InstructionsLoaded",),
+    ),
+    Metric(
+        id="prompt_expansion",
+        group="free",
+        section="signals",
+        title="Commands and skills you ran",
+        what="Slash commands and skills you ran: name, expanded size and when in the session.",
+        why="When you invoke skills, and what they add to context.",
+        powers=("skills",),
+        hooks=("UserPromptSubmit",),
+    ),
+    Metric(
+        id="tasks",
+        group="free",
+        section="signals",
+        title="Task lists",
+        what="How many tasks Claude created and completed.",
+        why="How work is split into tasks, and how many get finished.",
+        powers=("breakdown",),
+        hooks=("TaskCreated", "TaskCompleted"),
+    ),
+    Metric(
+        id="stop_failure",
+        group="free",
+        section="signals",
+        title="API errors",
+        what="The kind of each API error that stopped a turn.",
+        why="Turns lost to errors.",
+        powers=("outcome",),
+        hooks=("StopFailure",),
+    ),
+    # -- Always measured --------------------------------------------------
+    Metric(
+        id="prompt_features",
+        group="derived",
+        section="derived",
+        title="What your messages contain",
+        what="Whether each message names a file, has a code block, an error or stack trace, a URL, "
+        "done-criteria wording or numbered steps, and whether it's short. Only yes/no is kept.",
+        why="How you give Claude information, measured without asking Claude: cost per task with and "
+        "without file paths or errors.",
+        powers=("information",),
+    ),
+    Metric(
+        id="brief_features",
+        group="derived",
+        section="derived",
+        title="What agent briefs contain",
+        what="The same checks for the briefs Claude writes for agents, and whether a short report was asked "
+        "for.",
+        why="Brief quality per agent type, and long reports that weren't capped.",
+        powers=("delegation", "information"),
+    ),
+    Metric(
+        id="plan_features",
+        group="derived",
+        section="skills_plans",
+        title="Plans",
+        what="Each plan you approved or rejected: steps, files named and length.",
+        why="Plan size against what the work then cost.",
+        powers=("planning",),
+    ),
+    Metric(
+        id="skill_timing",
+        group="derived",
+        section="skills_plans",
+        title="Skill timing",
+        what="How far into a piece of work a skill ran, and whether you or Claude started it.",
+        why="Starting skills earlier, and skills Claude reaches for on its own.",
+        powers=("skills",),
+    ),
+    Metric(
+        id="spawn_tree",
+        group="derived",
+        section="derived",
+        title="Agent chains",
+        what="Cost per chain of agents and depth, and files an agent read that its parent had already read.",
+        why="Flatter chains, and passing findings to agents instead of having them re-read.",
+        powers=("delegation",),
+    ),
+    Metric(
+        id="tool_loops",
+        group="derived",
+        section="derived",
+        title="Repeated failures",
+        what="The same command failing again and again in one piece of work.",
+        why="Flaky tests and environment trouble that burn tokens.",
+        powers=("verification", "tool_output"),
+    ),
+    Metric(
+        id="research_split",
+        group="derived",
+        section="derived",
+        title="Where research happens",
+        what="Search and read tokens in the main session against those in Explore agents.",
+        why="When to hand research to an agent.",
+        powers=("research", "delegation"),
+    ),
+    # -- Live coaching ----------------------------------------------------
+    Metric(
+        id="coaching_line",
+        group="coaching",
+        section="coaching",
+        title="Coaching line",
+        what="A second status line with a live hint from your session, such as a large context before a "
+        "new task, a large last output, or many reads so far.",
+        why="Advice where you work, at the moment it applies. The status line is never sent to Claude.",
+        powers=("context", "tool_output", "research"),
+    ),
+    Metric(
+        id="brief_templates",
+        group="coaching",
+        section="coaching",
+        title="Brief templates",
+        what="Checklists per kind of task, built from what your own requests tend to lack.",
+        why="Better first messages, so Claude spends less finding things out.",
+        powers=("information",),
+    ),
+    # -- Feedback ---------------------------------------------------------
+    Metric(
+        id="feedback_skill",
+        group="feedback",
+        section="feedback",
+        title="Feedback skill",
+        what="A /tl-feedback skill you run after a piece of work: four checkbox questions about the "
+        "outcome, what slowed it, whether it was worth the tokens, and what would have helped.",
+        why="Cost per piece of work that met its goal, which outranks what Claude reports about itself.",
+        powers=("outcome",),
+        tag="[tl-fb: outcome=… slow=… worth=… helped=…]",
+    ),
+    Metric(
+        id="feedback_note",
+        group="feedback",
+        section="feedback",
+        title="Feedback reminder in the status line",
+        what="A second status line reminding you to run /tl-feedback, and the same line on the dashboard "
+        "banner.",
+        why="A reminder that costs nothing: the status line is never sent to Claude.",
+        powers=("outcome",),
+    ),
+    Metric(
+        id="feedback_reminder",
+        group="feedback",
+        section="feedback",
+        title="Feedback reminder from Claude",
+        what="Claude adds one line suggesting /tl-feedback when it finishes a piece of work.",
+        why="For people without the status line. Costs a few output tokens each time.",
+        powers=("outcome",),
+        hooks=("SessionStart",),
+        main_extra="When you finish a piece of work the user asked for, end your reply with: "
+        "Finished? Run /tl-feedback: a few ticks make your savings tips fit how you work.",
+        out_chars=80,
+    ),
+    Metric(
+        id="dashboard_rating",
+        group="feedback",
+        section="feedback",
+        title="Rate sessions on the dashboard",
+        what="The same checkboxes on the dashboard's Sessions tab, kept in Token Lens's own store.",
+        why="Feedback without spending tokens.",
+        powers=("outcome",),
+    ),
+)
+
+METRICS_BY_ID: dict[str, Metric] = {m.id: m for m in METRICS}
+
+#: Metrics a capture level turns on (every group from ``free`` to ``deep``).
+LEVEL_METRIC_IDS = tuple(m.id for m in METRICS if m.group in LEVEL_GROUPS)
+#: Metrics switched on one by one (``[capture] feedback``/``coaching``).
+FEEDBACK_IDS = tuple(m.id for m in METRICS if m.group == "feedback")
+COACHING_IDS = tuple(m.id for m in METRICS if m.group == "coaching")
+
+#: The note's fixed lines. ``{tag}`` in :data:`SUB_TAG_INTRO` is the
+#: ``[result: ...]`` shape (:data:`SUB_TAG` or :data:`SUB_TAG_WITH_KEYS`).
+NOTE_INTRO = "The user turned on Token Lens metrics capture, to see where their tokens go."
+MAIN_TAG_INTRO = (
+    "End your final reply to each user message with one line, [tl: key=word ...], using only these keys and words:"
+)
+SUB_TAG_INTRO = "End your final report with one line, {tag}, using only these words:"
+SUB_TAG = "[result: done|partial|blocked]"
+SUB_TAG_WITH_KEYS = "[result: done|partial|blocked key=word ...]"
+SKIP_KEY_LINE = "Leave out a key you can't judge."
+
+
+def level_metrics(level: str) -> tuple[str, ...]:
+    """The metric ids a preset level turns on (``()`` for ``off`` or an
+    unknown level)."""
+    if level not in LEVELS or level == "off":
+        return ()
+    upto = LEVEL_GROUPS[: LEVEL_GROUPS.index(level) + 1]
+    return tuple(m.id for m in METRICS if m.group in upto)
+
+
+def with_requirements(ids) -> tuple[str, ...]:
+    """``ids`` in catalogue order, plus any metric they need (a subagent's
+    extras need ``result``); unknown ids and ids outside the levels are
+    dropped."""
+    wanted = {i for i in ids if i in METRICS_BY_ID and METRICS_BY_ID[i].group in LEVEL_GROUPS}
+    for i in list(wanted):
+        wanted.update(METRICS_BY_ID[i].requires)
+    return tuple(m.id for m in METRICS if m.id in wanted)
+
+
+def level_of(ids) -> str:
+    """The preset level whose metrics are exactly ``ids``, else
+    ``custom``; ``off`` for none."""
+    chosen = set(with_requirements(ids))
+    if not chosen:
+        return "off"
+    for level in LEVELS[1:]:
+        if chosen == set(level_metrics(level)):
+            return level
+    return CUSTOM_LEVEL
+
+
+def active_metrics(level: str, metrics=(), feedback=()) -> tuple[str, ...]:
+    """Every metric switched on: the level's own (or ``metrics`` when the
+    level is ``custom``), then the feedback toggles that ride in the
+    note."""
+    ids = with_requirements(metrics) if level == CUSTOM_LEVEL else level_metrics(level)
+    return ids + tuple(i for i in FEEDBACK_IDS if i in set(feedback))
+
+
+def note_text(ids, scope: str, agent_type: str = "") -> str:
+    """The note the hook adds for ``scope`` (``"main"`` at session start,
+    ``"subagent"`` at agent start) with the metrics in ``ids`` switched
+    on; ``""`` when none of them asks anything there.
+
+    ``hooks/capture-note.py`` builds the same text from
+    ``capture-catalogue.json`` (:func:`export_json`); a test holds the two
+    to the same output.
+    """
+    if scope == "subagent" and agent_type in SKIP_AGENT_TYPES:
+        return ""
+    wanted = set(ids)
+    enabled = [m for m in METRICS if m.id in wanted]
+    if scope == "subagent" and agent_type in NO_RULES_AGENT_TYPES:
+        enabled = [m for m in enabled if m.id not in ("rules", "agent_brief")]
+    main = scope == "main"
+    lines = [(m.main_line if main else m.sub_line) for m in enabled]
+    extras = [(m.main_extra if main else m.sub_extra) for m in enabled]
+    codes = [m.id for m, line, x in zip(enabled, lines, extras) if line or x]
+    if not codes:
+        return ""
+    out = [f"{NOTE_MARKER}{NOTE_VERSION} {','.join(codes)}", NOTE_INTRO]
+    if any(lines):
+        if main:
+            out.append(MAIN_TAG_INTRO)
+        else:
+            keys = any(line for m, line in zip(enabled, lines) if m.id != "result")
+            out.append(SUB_TAG_INTRO.format(tag=SUB_TAG_WITH_KEYS if keys else SUB_TAG))
+        out += [line for line in lines if line]
+        if main:
+            out.append(SKIP_KEY_LINE)
+    out += [x for x in extras if x]
+    return "\n".join(out)
+
+
+def tool_note_text(metric_id: str, tool_name: str = "") -> str:
+    """The note a PostToolUse hook adds after a large result
+    (``big_output``) or a web result (``web``)."""
+    metric = METRICS_BY_ID.get(metric_id)
+    if metric is None or not metric.tool_note:
+        return ""
+    return f"{NOTE_MARKER}{NOTE_VERSION} {metric.id}\n{metric.tool_note}"
+
+
+def hook_specs(ids) -> tuple[tuple[str, str, str, bool], ...]:
+    """The Claude Code hook entries the metrics in ``ids`` need, as
+    ``(script, event, matcher, async)``: the note hook at session and
+    agent start, and after tool results for Deep's tool notes. (The free
+    signals' entries are added with the signals hook.)"""
+    wanted = set(ids)
+    main = any(m.id in wanted and (m.main_line or m.main_extra) for m in METRICS)
+    sub = any(m.id in wanted and (m.sub_line or m.sub_extra) for m in METRICS)
+    specs: list[tuple[str, str, str, bool]] = []
+    if main:
+        specs.append((NOTE_SCRIPT, "SessionStart", SESSION_START_MATCHER, False))
+    if sub:
+        specs.append((NOTE_SCRIPT, "SubagentStart", "", False))
+    if "big_output" in wanted:
+        specs.append((NOTE_SCRIPT, "PostToolUse", "", True))
+    elif "web" in wanted:
+        specs.append((NOTE_SCRIPT, "PostToolUse", "|".join(WEB_TOOLS), True))
+    return tuple(specs)
+
+
+
+def export_json() -> dict:
+    """What ``hooks/capture-note.py`` needs from this module, as JSON-safe
+    data. The packaged ``hooks/capture-catalogue.json`` is this, written
+    by :func:`catalogue_json_text` (a test keeps it in step)."""
+    return {
+        "version": NOTE_VERSION,
+        "marker": NOTE_MARKER,
+        "levels": {level: list(level_metrics(level)) for level in LEVELS[1:]},
+        "feedback_ids": list(FEEDBACK_IDS),
+        "metrics": [
+            {
+                "id": m.id,
+                "group": m.group,
+                "requires": list(m.requires),
+                "main_line": m.main_line,
+                "main_extra": m.main_extra,
+                "sub_line": m.sub_line,
+                "sub_extra": m.sub_extra,
+                "tool_note": m.tool_note,
+            }
+            for m in METRICS
+            if m.group in LEVEL_GROUPS or m.main_extra or m.sub_extra
+        ],
+        "text": {
+            "intro": NOTE_INTRO,
+            "main_tag_intro": MAIN_TAG_INTRO,
+            "sub_tag_intro": SUB_TAG_INTRO,
+            "sub_tag": SUB_TAG,
+            "sub_tag_with_keys": SUB_TAG_WITH_KEYS,
+            "skip_key_line": SKIP_KEY_LINE,
+        },
+        "skip_agent_types": list(SKIP_AGENT_TYPES),
+        "no_rules_agent_types": list(NO_RULES_AGENT_TYPES),
+        "big_output_tokens": BIG_OUTPUT_TOKENS,
+        "web_tools": list(WEB_TOOLS),
+    }
+
+
+def catalogue_json_text() -> str:
+    """:func:`export_json` as the exact text of the packaged file."""
+    return json.dumps(export_json(), indent=1, ensure_ascii=False) + "\n"
