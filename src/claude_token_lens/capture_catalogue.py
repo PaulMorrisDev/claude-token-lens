@@ -1315,10 +1315,14 @@ def render_markdown() -> str:
     p("|---|---|---|---|")
     for level in LEVELS:
         ids = level_metrics(level)
-        main_tokens = round(len(note_text(ids, "main")) / 4)
-        sub_tokens = round(len(note_text(ids, "subagent")) / 4)
-        main_cell = f"~{main_tokens} tokens" if main_tokens else "–"
-        sub_cell = f"~{sub_tokens} tokens" if sub_tokens else "–"
+        # D17: the same rough_tokens() the Capture page and CAP-7's
+        # step-down suggestion use, not a separate chars/4 calculation
+        # that quietly drops the hook-wrapper overhead rough_tokens()
+        # includes -- the two drifted apart (an earlier audit measured
+        # 201/107 for Essentials against a checked-in 182/88 here).
+        sizes = rough_tokens(ids)
+        main_cell = f"~{sizes['session_note']} tokens" if sizes["session_note"] else "–"
+        sub_cell = f"~{sizes['subagent_note']} tokens" if sizes["subagent_note"] else "–"
         p(f"| {LEVEL_TITLES[level]} | {LEVEL_SUMMARIES[level]} | {main_cell} | {sub_cell} |")
     p(
         f"| {LEVEL_TITLES[CUSTOM_LEVEL]} | Any other set of metrics, turned on one by one (`capture enable`/"
@@ -1326,11 +1330,12 @@ def render_markdown() -> str:
     )
     p("")
     p(
-        "These are rough sizes — characters in the note divided by four — and don't include the tag Claude "
-        "writes back (each metric below says roughly how many output tokens its own words cost) or Claude "
-        "Code's own hook-wrapper overhead. The Capture tab replays your last 14 days of transcripts against "
-        "each level before you turn it on, and once it's on, measures the real note and tag cost from what "
-        "Claude Code actually recorded — read that number, not this one, when it matters."
+        "These are rough sizes — the note's characters divided by four, plus Claude Code's own hook-wrapper "
+        "overhead (the system-reminder tags around it) — and don't include the tag Claude writes back (each "
+        "metric below says roughly how many output tokens its own words cost). The Capture tab replays your "
+        "last 14 days of transcripts against each level before you turn it on, and once it's on, measures the "
+        "real note and tag cost from what Claude Code actually recorded — read that number, not this one, "
+        "when it matters."
     )
     p("")
 

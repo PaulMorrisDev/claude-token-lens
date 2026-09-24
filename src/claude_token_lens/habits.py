@@ -1564,6 +1564,19 @@ def _rated_outcomes(h: Habits) -> list[CycleFact]:
     return [c for c in h.cycles if c.outcome and c.outcome_source != "tag"]
 
 
+def _d_level_of(rated: list[CycleFact]) -> float | None:
+    """The ``d_level`` core (``2 * AUC - 1`` for reported ``level``
+    discriminating a missed outcome), factored out of :func:`d_level` so
+    :func:`d_level_stability` (CAP-7) can run it twice, on two halves of
+    the same rated population, without duplicating the AUC/``MIN_GROUP``
+    logic or risking the two ever drifting apart. ``None`` under
+    ``MIN_GROUP`` messages, same as :func:`d_level`."""
+    if len(rated) < MIN_GROUP:
+        return None
+    auc = _auc([_LEVEL_ORDER[c.tag.level] for c in rated], [c.outcome == "missed" for c in rated])
+    return None if auc is None else 2 * auc - 1
+
+
 def d_level(h: Habits) -> float | None:
     """CAP-6: ``2 * AUC - 1`` for reported ``level`` (easy < normal <
     hard) discriminating your feedback's outcome (``missed`` as the
@@ -1573,10 +1586,46 @@ def d_level(h: Habits) -> float | None:
     across all three words at once. ``None`` under ``MIN_GROUP`` rated
     messages."""
     rated = [c for c in _rated_outcomes(h) if c.tag is not None and c.tag.level in _LEVEL_ORDER]
-    if len(rated) < MIN_GROUP:
+    return _d_level_of(rated)
+
+
+#: CAP-7: how far apart the first and second half's ``d_level`` may be
+#: and still count as settled (:func:`d_level_stability`).
+#: Assumption: a tenth of the full -1..1 range, because that is the
+#: same order of magnitude ``_self_report_calibration`` already treats
+#: as decisive on its own (whether ``d_level`` is positive or negative
+#: at all, not its exact digit), and small enough that two random
+#: halves of a genuinely-tracking self-report rarely straddle it by
+#: chance once each half already clears ``MIN_GROUP``.
+D_LEVEL_STABILITY_TOLERANCE = 0.1
+
+
+def d_level_stability(h: Habits) -> dict | None:
+    """CAP-7: whether ``d_level`` has settled -- the precondition a
+    metrics-capture level step-down suggestion checks before it trusts
+    the calibration signal it would cite. Splits the rated cycles
+    chronologically (oldest first, untimed cycles sorted first as the
+    oldest-looking) into two halves and computes :func:`_d_level_of` on
+    each independently. ``None`` while either half has fewer than
+    ``MIN_GROUP`` rated messages (so at least ``2 * MIN_GROUP`` total is
+    needed before this has anything to say), or while either half's AUC
+    itself is undefined (all one outcome within that half).
+
+    Assumption: "stable" means the two halves' ``d_level`` are within
+    :data:`D_LEVEL_STABILITY_TOLERANCE` of each other -- close enough
+    that more evidence looks unlikely to flip the picture, not that the
+    two numbers must match exactly."""
+    rated = sorted(
+        (c for c in _rated_outcomes(h) if c.tag is not None and c.tag.level in _LEVEL_ORDER),
+        key=lambda c: c.ts or datetime.min.replace(tzinfo=timezone.utc),
+    )
+    if len(rated) < 2 * MIN_GROUP:
         return None
-    auc = _auc([_LEVEL_ORDER[c.tag.level] for c in rated], [c.outcome == "missed" for c in rated])
-    return None if auc is None else 2 * auc - 1
+    mid = len(rated) // 2
+    first, second = _d_level_of(rated[:mid]), _d_level_of(rated[mid:])
+    if first is None or second is None:
+        return None
+    return {"first": first, "second": second, "stable": abs(first - second) < D_LEVEL_STABILITY_TOLERANCE}
 
 
 def brief_clarity_index(h: Habits) -> float | None:
@@ -2631,6 +2680,98 @@ def capture_dependent_value(
     return total / (weeks or h.span_weeks)
 
 
+#: CAP-7: the level immediately below each -- only among the levels
+#: that ask Claude anything at all (``essentials``, ``standard``,
+#: ``deep``; see ``capture_catalogue.LEVEL_GROUPS``). Assumption:
+#: stepping ``essentials`` down would land on ``free``, which asks
+#: Claude nothing (``capture_catalogue.LEVEL_SUMMARIES``) -- a bigger,
+#: different decision than trimming one level's worth of evidence, and
+#: already covered by ``capture off`` and by switching a metric off one
+#: at a time (the existing "Enough collected for every metric" note in
+#: ``capture_view._banner``), so a CAP-7 suggestion never proposes it.
+CAPTURE_STEP_DOWN = {"deep": "standard", "standard": "essentials"}
+
+
+def step_down_terms(current: str, target: str) -> str:
+    """CAP-7's what/where/trade-off/undo sentence, shared by the report's
+    capture-section note and the Capture page's hint
+    (``capture_view._step_down_note``): ``capture level`` writes
+    ``[capture] level`` and re-syncs the capture hook entries in Claude
+    Code's ``settings.json`` (``cli._cmd_capture``), and ``--dry-run``
+    shows that diff without writing."""
+    return (
+        "Stepping down stops collecting them; what they feed keeps what's been gathered but gets no new answers. "
+        "It changes [capture] level in Token Lens's config.toml, and Claude Code's settings.json only where "
+        f"{catalogue.LEVEL_TITLES[target]} needs fewer hook entries. "
+        f"'claude-token-lens capture level {target} --dry-run' shows what stepping down would change and writes "
+        f"nothing; 'claude-token-lens capture level {current}' undoes it."
+    )
+
+
+def capture_step_down_suggestion(
+    h: Habits, capture_config, use: capture_mod.CaptureUsage | None
+) -> dict | None:
+    """CAP-7: suggest-only (Token Lens never lowers the level itself --
+    "no apply button" holds here too) hint that stepping the
+    ``[capture] level`` down one step looks safe: every metric that step
+    would drop has enough of its own evidence to trust dropping it,
+    *and* the self-report signal that evidence backs has stopped moving.
+    ``None`` unless both hold, or there's nothing to check against yet
+    (``use`` is ``None``, the level isn't in :data:`CAPTURE_STEP_DOWN`,
+    or the step would drop nothing Claude is asked for).
+
+    Ready: every dropped metric that asks Claude anything
+    (``capture_catalogue.asks_claude``) has at least
+    ``capture.enough_target`` answers -- the same per-metric bar
+    ``capture_view``'s own "Enough collected" banner note already uses
+    (CAP-5/gap 4), just checked against the specific metrics a step down
+    would actually drop rather than every metric that's on.
+
+    Stable: :func:`d_level_stability` says so. A step down is never
+    suggested from readiness alone -- only once ``d_level`` has settled,
+    so the suggestion isn't chasing a number still swinging with each
+    new rated message.
+
+    The token sizes are the static per-occurrence figures
+    (``capture_catalogue.rough_tokens``, the same ones ``docs/capture.md``
+    shows). The dollar saving is each dropped metric's own *measured*
+    cost since capture started (``use.by_metric``, the figure
+    ``capture_view._worth`` already shows per metric) divided by the
+    weeks since -- measured from your own transcripts, not re-derived
+    from the static token sizes and a separately modeled request rate.
+    ``None`` while there's no start time to spread it over."""
+    level = getattr(capture_config, "level", "off") or "off"
+    target = CAPTURE_STEP_DOWN.get(level)
+    if target is None or use is None:
+        return None
+    dropped = tuple(
+        i for i in catalogue.level_metrics(level)
+        if i not in catalogue.level_metrics(target) and catalogue.asks_claude(i)
+    )
+    if not dropped:
+        return None
+    if any(use.answers.get(i, 0) < capture_mod.enough_target(i) for i in dropped):
+        return None
+    stability = d_level_stability(h)
+    if stability is None or not stability["stable"]:
+        return None
+    since = getattr(capture_config, "enabled_at", "") or ""
+    weeks = capture_mod.weeks_since(since) if since else None
+    measured = sum(use.by_metric.get(i, 0.0) for i in dropped)
+    current_sizes = catalogue.rough_tokens(catalogue.level_metrics(level))
+    target_sizes = catalogue.rough_tokens(catalogue.level_metrics(target))
+    return {
+        "current": level,
+        "target": target,
+        "dropped_metrics": len(dropped),
+        "session_note_tokens_saved": max(0, current_sizes["session_note"] - target_sizes["session_note"]),
+        "subagent_note_tokens_saved": max(0, current_sizes["subagent_note"] - target_sizes["subagent_note"]),
+        "weekly_usd_saved": (measured / weeks) if weeks else None,
+        "command": f"claude-token-lens capture level {target} --dry-run",
+        "undo_command": f"claude-token-lens capture level {level}",
+    }
+
+
 def capture_section(
     corpus, pricing: Pricing | None, capture_config, *, ratings: dict | None = None, h: Habits | None = None
 ) -> Section:
@@ -2657,7 +2798,15 @@ def capture_section(
     their own line rather than folded into a scope's cost. The
     EST-P7/CAP-3 recommend-diff value isn't available yet here --
     ``report.build_report`` patches ``habit_value``/``held_back`` in once
-    it has run ``recommend()`` with and without the habits section."""
+    it has run ``recommend()`` with and without the habits section.
+
+    CAP-7's ``step_down_target``/``step_down_tokens_saved``/
+    ``step_down_weekly_saving`` rows carry
+    :func:`capture_step_down_suggestion`'s numbers (blank/zero when it
+    has nothing to suggest); a note spells it out, in numbers and level
+    names only, once there is one -- a suggestion, never applied here or
+    anywhere else (no apply button: Token Lens never lowers the level
+    itself)."""
     level = getattr(capture_config, "level", "off") or "off"
     since = getattr(capture_config, "enabled_at", "") or ""
     use = capture_mod.usage(corpus, pricing, since=since)
@@ -2665,6 +2814,7 @@ def capture_section(
     if h is None or h.effort_share_threshold_pct != 30.0:
         h = collect(corpus, pricing, ratings=ratings)
     value = capture_dependent_value(h, since=since)
+    suggestion = capture_step_down_suggestion(h, capture_config, use)
     rows = [
         ["level", catalogue.LEVEL_TITLES.get(level, level)],
         ["since", since[:10] if since else ""],
@@ -2682,16 +2832,37 @@ def capture_section(
         ["weekly_cost", weekly],
         ["habit_value", value],
         ["held_back", 0],
+        ["step_down_target", suggestion["target"] if suggestion else ""],
+        [
+            "step_down_tokens_saved",
+            (suggestion["session_note_tokens_saved"] + suggestion["subagent_note_tokens_saved"])
+            if suggestion else 0,
+        ],
+        ["step_down_weekly_saving", (suggestion["weekly_usd_saved"] or 0) if suggestion else 0],
     ]
+    notes = [] if value is not None else [
+        "Nothing measured yet relies on metrics capture or your feedback, so there's nothing to weigh its "
+        "cost against."
+    ]
+    if suggestion is not None:
+        target = suggestion["target"]
+        dropped = [
+            i for i in catalogue.level_metrics(level)
+            if i not in catalogue.level_metrics(target) and catalogue.asks_claude(i)
+        ]
+        notes.append(
+            f"Every metric {catalogue.LEVEL_TITLES[level]} adds over {catalogue.LEVEL_TITLES[target]} "
+            f"has enough of its own evidence ({', '.join(dropped)}) and self-report calibration has settled: "
+            f"stepping down would save about {suggestion['session_note_tokens_saved']} tokens per session start "
+            f"and {suggestion['subagent_note_tokens_saved']} per subagent start. "
+            + step_down_terms(level, target)
+        )
     table = Table(
         name="capture_usage",
         title="What metrics capture cost",
         columns=[Column(key="metric", label="Metric", kind="str"), Column(key="value", label="Value", kind="str")],
         rows=rows,
-        notes=[] if value is not None else [
-            "Nothing measured yet relies on metrics capture or your feedback, so there's nothing to weigh its "
-            "cost against."
-        ],
+        notes=notes,
     )
     return Section(key="capture", title="Metrics capture", tables=[table])
 
@@ -2751,6 +2922,7 @@ def patch_capture_recommend_value(
 
 __all__ = [
     "AgentFact",
+    "CAPTURE_STEP_DOWN",
     "CycleFact",
     "DEFAULT_CHECKLISTS",
     "EXAMPLES",

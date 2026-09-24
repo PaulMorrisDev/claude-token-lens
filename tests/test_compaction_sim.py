@@ -25,6 +25,8 @@ from claude_token_lens.compaction_sim import (
     RULES,
     CompactionSimThresholds,
     _rediscovery_allowance_usd_used,
+    _replay_transcript,
+    _Shape,
     build_section,
     simulate_compaction_windows,
 )
@@ -136,6 +138,39 @@ def _plateau_transcript() -> list[model.Turn]:
 
 
 # -- replay arithmetic ------------------------------------------------------
+
+
+def test_replay_transcript_caches_model_resolution_by_string():
+    """SURV-9: ``lookup(turn.model)`` used to run uncached on every turn
+    of every window replayed, even though a transcript only ever uses a
+    handful of distinct model strings. It's now cached by model string,
+    local to one ``_replay_transcript`` call (the same pattern as
+    ``habits._Rates._resolve``) -- so a 10-turn, 2-model transcript
+    resolves each model once, not ten times, and the cache must not
+    change what gets priced: the result with a call-counting ``lookup``
+    matches one built straight from ``Pricing.resolve_model`` with no
+    wrapper at all."""
+    models = ["claude-sonnet-5", "claude-opus-5-5"]
+    turns = [
+        _turn(
+            message_id=f"msg_{i}", turn_index=i, ts=_ts(i), model=models[i % 2],
+            ctx=i * 10_000, cache_creation_tokens=10_000, cache_read_tokens=(i - 1) * 10_000, cc_5m=10_000,
+        )
+        for i in range(1, 11)
+    ]
+    calls: list[str] = []
+
+    def counting_lookup(model_id: str):
+        calls.append(model_id)
+        return PRICING.resolve_model(model_id)
+
+    result = _replay_transcript(turns, counting_lookup, None, _Shape(), {})
+    reference = _replay_transcript(turns, PRICING.resolve_model, None, _Shape(), {})
+
+    assert sorted(set(calls)) == sorted(models)
+    assert len(calls) == 2  # one resolve per distinct model, not per turn
+    assert result == reference
+    assert result.cost > 0
 
 
 def test_window_none_has_zero_synthetic_compactions_and_matches_true_observed_cost():
