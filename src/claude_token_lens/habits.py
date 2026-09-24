@@ -1246,7 +1246,8 @@ def _self_report_note(h: Habits) -> str | None:
     if calibration["contradicts"]:
         return (
             f"Work Claude called easy missed its goal {easy:.0f}% of the time, more often than normal work at "
-            f"{normal:.0f}%: treat what it calls easy with caution, including the effort suggestion above."
+            f"{normal:.0f}%: treat what it calls easy with caution. Habits built on it (effort, planning) show low "
+            "confidence."
         )
     return (
         f"Work Claude called easy missed its goal {easy:.0f}% of the time, no more often than normal work at "
