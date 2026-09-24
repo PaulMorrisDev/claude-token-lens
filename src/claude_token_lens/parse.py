@@ -106,6 +106,25 @@ figure already computed for that block onto ``current.tool_error_chars``
 The same loop reads the start of each error's text to record why it
 failed (:func:`_tool_error_kind`, ``Turn.tool_errors_by_kind``); only
 the kind is kept.
+
+Parser-signals batch (SURV-5/6/7, ``PARSER_VERSION`` 19, see model.py's
+and events.py's own module docstrings): ``"cost-state"`` joins the
+``elif line_type ==`` chain above ``events_mod.classify_line`` the same
+way ``"mode"``/``"agent-setting"`` already do -- its own value (the last
+``totalCostUSD``/``hasUnknownModelCost`` seen) is read directly onto
+``final_meta`` rather than carried as an ``Event``, and the type itself
+now sits in ``events._IGNORABLE_TYPES`` so it lands in the long-standing
+``Diagnostics.ignored_line_types`` bucket like every other deliberately-
+ignored type. ``parser_notes["unknown_line_types"]``/``["unsized_blocks"]``
+are two new counters that don't fit ``Diagnostics`` (whose field list
+this phase was told not to touch): the former is populated in the
+existing ``EventKind.UNKNOWN`` branch below (a type classify_line had no
+rule for at all, sanitised via ``events.sanitize_line_type``); the
+latter is populated by ``_tool_result_length`` for a tool_result's own
+image/document blocks and folded in from a HUMAN_TEXT event's own
+``detail["unsized_blocks"]`` for a top-level human-prompt image (see
+``events.content_block_size``) -- one counter, two sources, both flagged
+"unsized" rather than guessed at when this parser can't size a block.
 """
 
 from __future__ import annotations
@@ -927,16 +946,31 @@ def _merge_into_pending(pending: _PendingTurn, d: dict, tool_use_names: dict[str
     _merge_stop_reason(pending, message)
 
 
-def _tool_result_length(content) -> int:
+def _tool_result_length(content, unsized_blocks: dict[str, int]) -> int:
     if isinstance(content, str):
         return len(content)
     if isinstance(content, list):
         total = 0
         for block in content:
-            if isinstance(block, dict) and block.get("type") == "text":
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "text":
                 text = block.get("text")
                 if isinstance(text, str):
                     total += len(text)
+                continue
+            # Parser-signals addition (SURV-7, see events.py's module
+            # docstring): an image/document block nested in a tool_result's
+            # own content, sized by the same documented token rule as a
+            # top-level human-prompt image -- previously silently counted
+            # as 0 chars (plan finding S4: 1,207 blocks).
+            chars, block_type = events_mod.content_block_size(block)
+            if block_type is None:
+                continue
+            if chars is not None:
+                total += chars
+            else:
+                unsized_blocks[block_type] = unsized_blocks.get(block_type, 0) + 1
         return total
     return 0
 
@@ -991,6 +1025,7 @@ def _accumulate_tool_results(
     tool_use_names: dict[str, str],
     tool_result_chars: dict[str, int],
     tool_result_calls: dict[str, int],
+    unsized_blocks: dict[str, int],
     current: _PendingTurn | None = None,
 ) -> None:
     message = d.get("message")
@@ -1010,7 +1045,7 @@ def _accumulate_tool_results(
         name = tool_use_names.pop(tool_use_id, None) if isinstance(tool_use_id, str) else None
         if name is None:
             continue
-        length = _tool_result_length(block.get("content"))
+        length = _tool_result_length(block.get("content"), unsized_blocks)
         tool_result_chars[name] = tool_result_chars.get(name, 0) + length
         tool_result_calls[name] = tool_result_calls.get(name, 0) + 1
         if (
@@ -1283,9 +1318,10 @@ def parse_transcript(path: str | Path, meta: TranscriptMeta) -> TranscriptResult
 
     ``meta`` is provenance the caller already knows (from
     ``discovery.py``) — this function fills in ``turns``, ``events``,
-    ``diagnostics``, ``tool_result_chars`` and ``tool_result_calls``
-    around it; it never mutates ``meta`` (see module docstring for the
-    ``claude_version``/``entrypoint``/``provider`` derivation this
+    ``diagnostics``, ``tool_result_chars``, ``tool_result_calls`` and
+    ``parser_notes`` around it; it never mutates ``meta`` (see module
+    docstring for the ``claude_version``/``entrypoint``/``provider``/
+    ``cc_cost_usd``/``cc_cost_has_unknown_model`` derivation this
     function's *returned* meta copy adds on top).
     """
     line_stats = jsonl.LineStats()
@@ -1298,6 +1334,19 @@ def parse_transcript(path: str | Path, meta: TranscriptMeta) -> TranscriptResult
     #: Deliberately not scoped to the current turn: a tool_result can
     #: reference a tool_use from an earlier turn.
     tool_use_names: dict[str, str] = {}
+    #: Parser-signals addition (SURV-6/7, see model.py's module
+    #: docstring): counters for ``TranscriptResult.parser_notes``, kept
+    #: apart from ``Diagnostics`` (off limits this phase). ``unsized_blocks``
+    #: is shared by the tool_result path (``_tool_result_length``, below)
+    #: and the human-prompt path (a HUMAN_TEXT event's own
+    #: ``detail["unsized_blocks"]``, folded in once that event is built).
+    unsized_blocks: dict[str, int] = {}
+    unknown_line_types: dict[str, int] = {}
+    #: Parser-signals addition (SURV-5): the last ``cost-state`` line's
+    #: own ``totalCostUSD``/``hasUnknownModelCost`` (a running total, so
+    #: the last one seen in file order is the most complete).
+    cc_cost_usd: float | None = None
+    cc_cost_has_unknown_model = False
     #: Batch C addition: first non-empty ``entrypoint``/``version`` field
     #: seen on any raw line, in file order. Every line type carries these
     #: (when present), not just assistant lines.
@@ -1418,7 +1467,7 @@ def parse_transcript(path: str | Path, meta: TranscriptMeta) -> TranscriptResult
             continue
 
         if line_type == "user":
-            _accumulate_tool_results(d, tool_use_names, tool_result_chars, tool_result_calls, current)
+            _accumulate_tool_results(d, tool_use_names, tool_result_chars, tool_result_calls, unsized_blocks, current)
         elif line_type == "agent-setting":
             value = d.get("agentSetting")
             if isinstance(value, str) and value:
@@ -1427,6 +1476,14 @@ def parse_transcript(path: str | Path, meta: TranscriptMeta) -> TranscriptResult
             value = d.get("mode")
             if isinstance(value, str) and value:
                 diagnostics.modes[value] = diagnostics.modes.get(value, 0) + 1
+        elif line_type == "cost-state":
+            # Parser-signals addition (SURV-5): numbers only, no OTel --
+            # feeds reconcile.claude_code_reported_costs (see that
+            # module's own docstring).
+            cost_raw = d.get("totalCostUSD")
+            if isinstance(cost_raw, (int, float)) and not isinstance(cost_raw, bool):
+                cc_cost_usd = float(cost_raw)
+                cc_cost_has_unknown_model = bool(d.get("hasUnknownModelCost"))
         elif line_type == "attachment":
             attachment = d.get("attachment")
             if isinstance(attachment, dict) and attachment.get("type") == "skill_listing":
@@ -1448,6 +1505,19 @@ def parse_transcript(path: str | Path, meta: TranscriptMeta) -> TranscriptResult
             diagnostics.ignored_line_types[line_type] = (
                 diagnostics.ignored_line_types.get(line_type, 0) + 1
             )
+            # Parser-signals addition (SURV-6, see model.py's module
+            # docstring): apart from ignored_line_types above, which also
+            # holds types the parser recognises and deliberately drops --
+            # this is specifically a type classify_line had no rule for
+            # at all. Sanitised: ``type`` is attacker-controlled input.
+            sanitized_type = events_mod.sanitize_line_type(line_type)
+            unknown_line_types[sanitized_type] = unknown_line_types.get(sanitized_type, 0) + 1
+        if event.kind == EventKind.HUMAN_TEXT:
+            # Parser-signals addition (SURV-7): fold a human prompt's own
+            # unsized image/document blocks into the same counter the
+            # tool_result path (_tool_result_length) uses.
+            for block_type, count in (event.detail.get("unsized_blocks") or {}).items():
+                unsized_blocks[block_type] = unsized_blocks.get(block_type, 0) + count
         if event.kind == EventKind.ATTACHMENT:
             subkind = event.subkind or ""
             diagnostics.attachment_catch_all[subkind] = (
@@ -1527,7 +1597,17 @@ def parse_transcript(path: str | Path, meta: TranscriptMeta) -> TranscriptResult
         cap_version=cap_version,
         cap_metrics=tuple(cap_codes),
         cap_injections=cap_injections,
+        cc_cost_usd=cc_cost_usd,
+        cc_cost_has_unknown_model=cc_cost_has_unknown_model,
     )
+
+    # Parser-signals addition (SURV-6/7): only present when non-empty, so
+    # a transcript that saw neither carries no side-channel at all.
+    parser_notes: dict[str, dict[str, int]] = {}
+    if unknown_line_types:
+        parser_notes["unknown_line_types"] = unknown_line_types
+    if unsized_blocks:
+        parser_notes["unsized_blocks"] = unsized_blocks
 
     return TranscriptResult(
         meta=final_meta,
@@ -1536,6 +1616,7 @@ def parse_transcript(path: str | Path, meta: TranscriptMeta) -> TranscriptResult
         diagnostics=diagnostics,
         tool_result_chars=tool_result_chars,
         tool_result_calls=tool_result_calls,
+        parser_notes=parser_notes,
     )
 
 

@@ -231,6 +231,13 @@ def _diagnostics_lines(model: ReportModel) -> list[str]:
         if isinstance(value, dict):
             value = ", ".join(f"{k}={v}" for k, v in value.items()) if value else "-"
         lines.append(f"{field_def.name}: {value}")
+    # Parser-signals addition (SURV-6/7, see model.py's module docstring):
+    # ReportModel.parser_notes is a sibling side channel to Diagnostics,
+    # not one of its fields, so it's printed the same way just below
+    # (same convention render/markdown.py's own _render_diagnostics uses).
+    for note_key, counts in model.parser_notes.items():
+        value = ", ".join(f"{k}={v}" for k, v in counts.items()) if counts else "-"
+        lines.append(f"{note_key}: {value}")
     return lines
 
 

@@ -131,7 +131,21 @@ __version__ = "0.5.2"
 #: new ``count_hook_errors``/``measure_deep_wait`` both read these
 #: straight off already-parsed events; a pre-18 digest has none of them,
 #: so every transcript is re-parsed once to pick them up.
-PARSER_VERSION = 18
+#: Bumped to 19 by the parser-signals batch (SURV-4/5/6/7): ``thinking_drop``
+#: joins the CACHE_SIGNAL family; ``task_status``/``structured_output``
+#: attachments get their own ``EventKind``s instead of falling into the
+#: generic ATTACHMENT catch-all; ``cost-state`` lines are read for their
+#: own ``totalCostUSD``/``hasUnknownModelCost`` (``TranscriptMeta.
+#: cc_cost_usd``/``cc_cost_has_unknown_model``) instead of falling
+#: through to UNKNOWN; a tool_result's or human prompt's own image/
+#: document content blocks are sized by the documented image-token rule
+#: instead of silently counting as 0 chars; and a line type no detection
+#: rule recognises at all is now counted separately
+#: (``TranscriptResult.parser_notes["unknown_line_types"]``) from one
+#: this parser knows about and deliberately ignores. None of this is
+#: recoverable from an older digest, so every transcript is re-parsed
+#: once to pick it up.
+PARSER_VERSION = 19
 
 #: Bump when the model.py contract changes in a way that invalidates the
 #: on-disk digest cache (see model.py's module docstring for the contract

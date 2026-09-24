@@ -39,10 +39,23 @@ pause is a stronger explanation for a gap than a plain interrupt.
 call, not part of the brief's explicit precedence list — a terminated
 subagent is a more specific/important signal than a generic
 notification, but not as strong as an interrupt or a human message).
+
+Parser-signals batch (SURV-4/6/7, ``PARSER_VERSION`` 19, see model.py's
+module docstring for the new ``EventKind``/``TranscriptResult`` fields):
+new row 10.5 (``TASK_STATUS``/``STRUCTURED_OUTPUT``, ranked alongside
+``QUEUE_OPERATION`` in ``PRECEDENCE``), ``thinking_drop`` joining the
+``CACHE_SIGNAL`` family (rule 7), and a shared image/document block
+sizing helper (:func:`content_block_size`, :func:`image_token_estimate`)
+used both by :func:`_human_text_metrics` here and by ``parse.py``'s
+``_tool_result_length``. :func:`sanitize_line_type` is this batch's other
+export, used by ``parse.py`` for the new ``parser_notes
+["unknown_line_types"]`` counter (SURV-6) so a corrupted/hostile ``type``
+field can never reach a diagnostic counter's key verbatim.
 """
 
 from __future__ import annotations
 
+import base64
 import json
 import re
 from typing import Iterable, Sequence
@@ -68,6 +81,11 @@ _IGNORABLE_TYPES = frozenset(
         "atis-latch",
         "mode",
         "frame-link",
+        #: Parser-signals addition (see model.py's module docstring): a
+        #: known, deliberately-ignored-as-an-event type, like "mode"/
+        #: "agent-setting" above -- its own totalCostUSD/hasUnknownModelCost
+        #: are read directly by parse.parse_transcript instead.
+        "cost-state",
     }
 )
 _IGNORABLE_PREFIXES = ("file-history-", "artifact-")
@@ -184,6 +202,11 @@ _CACHE_SIGNAL_TYPES = frozenset(
     {
         "model",
         "thinking_stripped",
+        #: Parser-signals addition (SURV-4, see model.py's module
+        #: docstring): a model dropped its own prior extended-thinking
+        #: blocks (a prefix mismatch) -- a likely cache-bust, same family
+        #: as "thinking_stripped".
+        "thinking_drop",
         "ultra_effort_enter",
         "ultra_effort_exit",
         "deferred_tools_delta",
@@ -563,6 +586,206 @@ def _leading_tag_name(text: str) -> str | None:
     return match.group(1) if match else None
 
 
+# -- Image/document block sizing (parser-signals addition, SURV-7) ------
+#
+# Anthropic's documented image-token rule (platform.claude.com/docs, the
+# vision page, curled and hand-verified against the doc's own example
+# table -- 200x200 -> 64, 1000x1000 -> 1296, 1092x1092 -> 1521 tokens,
+# all exact matches): tokens = ceil(width/28) * ceil(height/28) (28x28px
+# patches), for an image at or under the "Standard" resolution tier's cap
+# (long edge <= 1568px, <= 1568 tokens -- every model today except Claude
+# 4.7+, which gets a "High-resolution" tier this parser does not
+# implement). An image over that cap, or whose dimensions this parser
+# can't read at all, is flagged unsized (``parser_notes
+# ["unsized_blocks"]``) rather than guessed at, per this phase's brief.
+# A document (PDF) block is always flagged unsized: pdf-support.md gives
+# only an approximate per-page range (1,500-3,000 tokens/page for text,
+# plus the same image formula per page), not a deterministic formula
+# computable from the block alone.
+
+#: Project-wide chars<->token approximation, duplicated locally per the
+#: convention every other module using it documents (savers.py,
+#: topology.py, context_budget.py, ...) -- used only to convert an
+#: exactly-computed image token count back into the chars unit the rest
+#: of this module's sizing (``_rendered_size_chars``, ``_human_text_metrics``)
+#: already works in.
+_CHARS_PER_TOKEN_APPROX = 4
+
+_IMAGE_TOKEN_PATCH_PX = 28
+_STANDARD_TIER_MAX_LONG_EDGE_PX = 1568
+_STANDARD_TIER_MAX_TOKENS = 1568
+#: How much of an image's own base64 ``source.data`` this module decodes
+#: to look for its dimensions -- comfortably more than any PNG/GIF/WebP
+#: header needs, and more than a JPEG's own pre-SOF metadata (EXIF/ICC
+#: segments) commonly runs to; a JPEG whose SOF marker sits past this
+#: prefix is flagged unsized rather than decoding the whole image just to
+#: read a handful of header bytes. Kept a multiple of 4 so slicing the
+#: base64 string here never breaks its own padding.
+_IMAGE_HEADER_PROBE_B64_CHARS = 200_000
+
+
+def image_token_estimate(width: int, height: int) -> int | None:
+    """Anthropic's documented image-token rule for one image already
+    known to be ``width`` x ``height`` px, or ``None`` when it falls
+    outside the Standard resolution tier this parser implements (see
+    module docstring section above) -- never guesses at the
+    High-resolution tier's (Claude 4.7+) downscaling.
+    """
+    if width <= 0 or height <= 0:
+        return None
+    if max(width, height) > _STANDARD_TIER_MAX_LONG_EDGE_PX:
+        return None
+    tokens = -(-width // _IMAGE_TOKEN_PATCH_PX) * -(-height // _IMAGE_TOKEN_PATCH_PX)
+    return tokens if tokens <= _STANDARD_TIER_MAX_TOKENS else None
+
+
+def _png_dimensions(data: bytes) -> tuple[int, int] | None:
+    if len(data) < 24 or data[:8] != b"\x89PNG\r\n\x1a\n" or data[12:16] != b"IHDR":
+        return None
+    width = int.from_bytes(data[16:20], "big")
+    height = int.from_bytes(data[20:24], "big")
+    return (width, height) if width and height else None
+
+
+def _gif_dimensions(data: bytes) -> tuple[int, int] | None:
+    if len(data) < 10 or data[:6] not in (b"GIF87a", b"GIF89a"):
+        return None
+    width = int.from_bytes(data[6:8], "little")
+    height = int.from_bytes(data[8:10], "little")
+    return (width, height) if width and height else None
+
+
+#: JPEG Start-Of-Frame markers (baseline/progressive/... -- every SOFn
+#: except the DHT/DAC-adjacent 0xC4/0xC8/0xCC, which are not frame markers).
+_JPEG_SOF_MARKERS = frozenset({0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF})
+
+
+def _jpeg_dimensions(data: bytes) -> tuple[int, int] | None:
+    if len(data) < 4 or data[:2] != b"\xff\xd8":
+        return None
+    offset = 2
+    length = len(data)
+    while offset + 1 < length:
+        if data[offset] != 0xFF:
+            offset += 1
+            continue
+        marker = data[offset + 1]
+        if marker == 0xFF:  # fill byte between markers
+            offset += 1
+            continue
+        if marker in (0x01, 0xD8) or 0xD0 <= marker <= 0xD7:  # no-length markers
+            offset += 2
+            continue
+        if marker == 0xD9 or offset + 4 > length:  # EOI, or truncated
+            return None
+        if marker in _JPEG_SOF_MARKERS:
+            if offset + 9 > length:
+                return None
+            height = int.from_bytes(data[offset + 5:offset + 7], "big")
+            width = int.from_bytes(data[offset + 7:offset + 9], "big")
+            return (width, height) if width and height else None
+        seg_len = int.from_bytes(data[offset + 2:offset + 4], "big")
+        if seg_len < 2:
+            return None
+        offset += 2 + seg_len
+    return None
+
+
+def _webp_dimensions(data: bytes) -> tuple[int, int] | None:
+    """VP8 (lossy)/VP8L (lossless)/VP8X (extended) chunk dimensions --
+    WebP has no single fixed-offset header field, unlike PNG/GIF."""
+    if len(data) < 30 or data[:4] != b"RIFF" or data[8:12] != b"WEBP":
+        return None
+    fourcc = data[12:16]
+    payload = data[20:]
+    if fourcc == b"VP8 ":
+        # 3-byte frame tag, 3-byte start code, then 2+2 little-endian
+        # dims (bottom 14 bits each; top 2 bits are an unused scale).
+        if len(payload) < 10 or payload[3:6] != b"\x9d\x01\x2a":
+            return None
+        width = int.from_bytes(payload[6:8], "little") & 0x3FFF
+        height = int.from_bytes(payload[8:10], "little") & 0x3FFF
+        return (width, height) if width and height else None
+    if fourcc == b"VP8L":
+        if len(payload) < 5 or payload[0] != 0x2F:
+            return None
+        b1, b2, b3, b4 = payload[1], payload[2], payload[3], payload[4]
+        width = 1 + (((b2 & 0x3F) << 8) | b1)
+        height = 1 + (((b4 & 0x0F) << 10) | (b3 << 2) | ((b2 & 0xC0) >> 6))
+        return (width, height) if width and height else None
+    if fourcc == b"VP8X":
+        if len(payload) < 10:
+            return None
+        width = 1 + int.from_bytes(payload[4:7], "little")
+        height = 1 + int.from_bytes(payload[7:10], "little")
+        return (width, height) if width and height else None
+    return None
+
+
+_IMAGE_DIMENSION_PARSERS = {
+    "image/png": _png_dimensions,
+    "image/jpeg": _jpeg_dimensions,
+    "image/gif": _gif_dimensions,
+    "image/webp": _webp_dimensions,
+}
+
+
+def content_block_size(block: dict) -> tuple[int | None, str | None]:
+    """``(size_chars, block_type)`` for one ``image``/``document`` content
+    block -- shared by ``_human_text_metrics`` (a top-level block in a
+    human prompt) and ``parse._tool_result_length`` (a block nested in a
+    tool_result's own content). ``block_type`` is ``"image"``/
+    ``"document"`` when this function recognises the block's own ``type``
+    at all, else ``None`` (not a block kind this function sizes -- the
+    caller's own dispatch, e.g. "text", stands). ``size_chars`` is
+    ``None`` when ``block_type`` is not ``None`` but the block could not
+    be sized (see module docstring section above); the caller counts
+    that in ``parser_notes["unsized_blocks"]``. The block's own image
+    bytes are decoded transiently to read a handful of header bytes and
+    never retained.
+    """
+    block_type = block.get("type")
+    if block_type not in ("image", "document"):
+        return None, None
+    if block_type == "document":
+        return None, "document"
+    source = block.get("source")
+    if not isinstance(source, dict) or source.get("type") != "base64":
+        return None, "image"
+    parser = _IMAGE_DIMENSION_PARSERS.get(source.get("media_type"))
+    data_b64 = source.get("data")
+    if parser is None or not isinstance(data_b64, str):
+        return None, "image"
+    probe = data_b64 if len(data_b64) <= _IMAGE_HEADER_PROBE_B64_CHARS else data_b64[:_IMAGE_HEADER_PROBE_B64_CHARS]
+    try:
+        raw = base64.b64decode(probe, validate=False)
+    except (ValueError, TypeError):
+        return None, "image"
+    dims = parser(raw)
+    if dims is None:
+        return None, "image"
+    tokens = image_token_estimate(*dims)
+    if tokens is None:
+        return None, "image"
+    return tokens * _CHARS_PER_TOKEN_APPROX, "image"
+
+
+#: A JSONL line's own top-level ``type`` field, sanitised to a safe,
+#: closed-shape token for ``parser_notes["unknown_line_types"]`` (SURV-6):
+#: every real ``type`` observed across the whole detection table is a
+#: short lowercase word, optionally hyphenated/underscored (see
+#: ``_IGNORABLE_TYPES``, ``_CACHE_SIGNAL_TYPES``, ... above) -- the same
+#: shape ``_COMMAND_NAME_RE`` already trusts for a slash-command name.
+#: ``type`` is attacker-controlled input off the wire, not a trusted
+#: enum, so anything outside this shape (or too long) becomes "other"
+#: rather than reaching a diagnostic counter's key verbatim.
+_LINE_TYPE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,39}$")
+
+
+def sanitize_line_type(line_type: object) -> str:
+    return line_type if isinstance(line_type, str) and _LINE_TYPE_RE.match(line_type) else "other"
+
+
 #: Capture-improvements addition (A4, see model.py's ``Turn.
 #: human_prompt_chars``/``human_prompt_has_paste`` docstrings): a text
 #: block at or beyond this length is treated as pasted, same as the
@@ -675,14 +898,22 @@ def _looks_like_correction(texts: list[str]) -> bool:
     return any(_CORRECTION_RE.search(text[:_CORRECTION_SCAN_CHARS]) for text in texts if text)
 
 
-def _human_text_metrics(d: dict, str_content: str | None) -> tuple[int, bool]:
-    """Chars and paste-flag for a HUMAN_TEXT line's own text content (A4):
-    sums the plain string content, or every ``text`` block's length for a
-    list-content line, and flags a paste when any one text block exceeds
-    ``_PASTE_CHAR_THRESHOLD`` chars or contains ``_PASTE_MARKER`` — never
-    retaining the text itself.
+def _human_text_metrics(d: dict, str_content: str | None) -> tuple[int, bool, dict[str, int]]:
+    """Chars, paste-flag and unsized-block counts for a HUMAN_TEXT (or
+    TASK_NOTIFICATION) line's own content (A4, extended by SURV-7): sums
+    the plain string content, every ``text`` block's length, plus every
+    sizeable top-level ``image``/``document`` block's own token-rule
+    estimate (``content_block_size``) for a list-content line -- these
+    used to silently count as 0 chars. Flags a paste when any one text
+    block exceeds ``_PASTE_CHAR_THRESHOLD`` chars or contains
+    ``_PASTE_MARKER``. Never retains any block's own content.
+    ``unsized_counts`` is block type -> count for a block this function
+    recognises (image/document) but could not size -- the caller folds
+    it into ``parser_notes["unsized_blocks"]``.
     """
     texts: list[str] = []
+    block_chars = 0
+    unsized_counts: dict[str, int] = {}
     if str_content is not None:
         texts.append(str_content)
     else:
@@ -690,20 +921,31 @@ def _human_text_metrics(d: dict, str_content: str | None) -> tuple[int, bool]:
         content = message.get("content") if isinstance(message, dict) else None
         if isinstance(content, list):
             for block in content:
-                if isinstance(block, dict) and block.get("type") == "text":
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") == "text":
                     text = block.get("text")
                     if isinstance(text, str):
                         texts.append(text)
-    total_chars = sum(len(text) for text in texts)
+                    continue
+                chars, block_type = content_block_size(block)
+                if block_type is None:
+                    continue
+                if chars is not None:
+                    block_chars += chars
+                else:
+                    unsized_counts[block_type] = unsized_counts.get(block_type, 0) + 1
+    total_chars = sum(len(text) for text in texts) + block_chars
     has_paste = any(len(text) > _PASTE_CHAR_THRESHOLD or _PASTE_MARKER in text for text in texts)
-    return total_chars, has_paste
+    return total_chars, has_paste, unsized_counts
 
 
 def _human_text_detail(d: dict, str_content: str | None) -> tuple[int, dict]:
-    """Size and the detail flags for a HUMAN_TEXT line: ``has_paste``
-    and (quality signals) ``correction``, whether the message looks like
-    it corrects Claude. Flags only -- never the text."""
-    human_chars, has_paste = _human_text_metrics(d, str_content)
+    """Size and the detail flags for a HUMAN_TEXT line: ``has_paste``,
+    ``unsized_blocks`` (SURV-7, only when non-empty) and (quality
+    signals) ``correction``, whether the message looks like it corrects
+    Claude. Flags only -- never the text."""
+    human_chars, has_paste, unsized_counts = _human_text_metrics(d, str_content)
     if str_content is not None:
         texts = [str_content]
     else:
@@ -715,6 +957,8 @@ def _human_text_detail(d: dict, str_content: str | None) -> tuple[int, dict]:
             if isinstance(block, dict) and block.get("type") == "text" and isinstance(block.get("text"), str)
         ]
     detail: dict = {"has_paste": has_paste, "correction": _looks_like_correction(texts)}
+    if unsized_counts:
+        detail["unsized_blocks"] = unsized_counts
     retry = spawn = None
     for text in texts:
         if text and (retry is None or spawn is None):
@@ -896,6 +1140,64 @@ def _delta_detail(attachment_type: str, attachment: dict) -> dict:
     return detail
 
 
+# -- task_status / structured_output (parser-signals addition, SURV-4) --
+
+#: ``thinking_drop.newlyDropped.reason`` -- only "prefix_mismatch" is
+#: observed in the real corpus; any other/future value is "other" rather
+#: than stored verbatim.
+_THINKING_DROP_REASONS = frozenset({"prefix_mismatch"})
+
+
+def _thinking_drop_detail(attachment: dict) -> dict:
+    dropped = attachment.get("newlyDropped")
+    if not isinstance(dropped, dict):
+        return {}
+    detail: dict = {}
+    reason = dropped.get("reason")
+    if isinstance(reason, str):
+        detail["reason"] = reason if reason in _THINKING_DROP_REASONS else "other"
+    for key in ("blockCount", "turnCount"):
+        value = dropped.get(key)
+        if isinstance(value, int) and not isinstance(value, bool):
+            detail[key] = value
+    return detail
+
+
+#: ``task_status.status`` -- "running"/"completed" observed; "failed"/
+#: "stopped"/"cancelled" kept as forward-compatible closed words (the same
+#: vocabulary ``_TASK_STATUS_RE``'s task-notification status uses above),
+#: anything else "other".
+_TASK_STATUS_WORDS = frozenset({"running", "completed", "failed", "stopped", "cancelled"})
+#: ``task_status.taskType`` -- "local_bash"/"local_agent" observed.
+_TASK_TYPE_WORDS = frozenset({"local_bash", "local_agent"})
+
+
+def _task_status_detail(attachment: dict) -> dict:
+    """Closed status words only -- never ``description``, ``deltaSummary``,
+    ``outputFilePath`` (a real filesystem path, confirmed in the real
+    corpus) or ``shell``."""
+    detail: dict = {}
+    status = attachment.get("status")
+    if isinstance(status, str):
+        detail["status"] = status if status in _TASK_STATUS_WORDS else "other"
+    task_type = attachment.get("taskType")
+    if isinstance(task_type, str):
+        detail["task_type"] = task_type if task_type in _TASK_TYPE_WORDS else "other"
+    return detail
+
+
+def _structured_output_size(attachment: dict) -> int | None:
+    """Size only -- the JSON-encoded length of ``data``, an arbitrary
+    tool-defined structured payload (schema varies per skill/tool) never
+    otherwise inspected or stored."""
+    if "data" not in attachment:
+        return None
+    try:
+        return len(json.dumps(attachment["data"], separators=(",", ":")))
+    except (TypeError, ValueError):
+        return None
+
+
 def classify_line(d: dict) -> Event | None:
     """Classify one already-parsed JSONL line per plan Appendix A2.
 
@@ -1017,6 +1319,8 @@ def classify_line(d: dict) -> Event | None:
         elif attachment_type == "thinking_stripped":
             if attachment.get("scope") is not None:
                 detail["scope"] = attachment.get("scope")
+        elif attachment_type == "thinking_drop":
+            detail = _thinking_drop_detail(attachment)
         elif attachment_type in _DELTA_COUNT_KEYS:
             detail = _delta_detail(attachment_type, attachment)
         return Event(
@@ -1065,6 +1369,22 @@ def classify_line(d: dict) -> Event | None:
             ts=ts,
             size_chars=size_chars,
             detail=_task_notification_detail(prompt if isinstance(prompt, str) else None),
+        )
+
+    # 10.5. TASK_STATUS / STRUCTURED_OUTPUT (parser-signals addition,
+    # SURV-4: their own kinds instead of the generic ATTACHMENT catch-all
+    # below -- closed status words / a size only, see the two helpers'
+    # own docstrings for what is deliberately never captured.)
+    if attachment_type == "task_status":
+        return Event(
+            kind=EventKind.TASK_STATUS, subkind=attachment_type, ts=ts, detail=_task_status_detail(attachment)
+        )
+    if attachment_type == "structured_output":
+        return Event(
+            kind=EventKind.STRUCTURED_OUTPUT,
+            subkind=attachment_type,
+            ts=ts,
+            size_chars=_structured_output_size(attachment),
         )
 
     # 11. ATTACHMENT (catch-all for any attachment type not listed above)
@@ -1198,6 +1518,10 @@ PRECEDENCE: tuple[EventKind, ...] = (
     EventKind.CACHE_SIGNAL,  # other band: every other CACHE_SIGNAL subkind
     EventKind.HOOK_OUTPUT,
     EventKind.QUEUE_OPERATION,
+    # Parser-signals addition: not ranked by the plan; placed here
+    # (harness-plumbing kinds, same band as QUEUE_OPERATION/HOOK_OUTPUT).
+    EventKind.TASK_STATUS,
+    EventKind.STRUCTURED_OUTPUT,
     EventKind.CONTEXT_INJECT,
     EventKind.REMINDER,
     EventKind.TOOL_DENIAL,
@@ -1226,6 +1550,8 @@ _PRECEDENCE_SUBKIND_FILTER: tuple[frozenset[str] | None, ...] = (
     None,  # other band: matches any CACHE_SIGNAL the high-band entry didn't
     None,
     None,
+    None,  # TASK_STATUS
+    None,  # STRUCTURED_OUTPUT
     None,
     None,
     None,
@@ -1269,4 +1595,7 @@ __all__ = [
     "primary_kind",
     "classify_synthetic_text",
     "parse_limit_reset_clause",
+    "image_token_estimate",
+    "content_block_size",
+    "sanitize_line_type",
 ]
