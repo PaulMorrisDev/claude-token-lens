@@ -2596,7 +2596,9 @@ def _cmd_init_feedback_step(
     config.toml, then the skill is shown and written after a yes (or
     ``--connect``), as in ``capture feedback on``; when init isn't
     connecting to Claude Code, that command is printed. Feedback already
-    on is left as it is unless ``--feedback`` or the answers file says."""
+    on is left as it is unless ``--feedback`` or the answers file says;
+    when it's on without its skill file (picking Deep turns it on), the
+    question is skipped and the skill is offered as above."""
     stdin = stdin if stdin is not None else sys.stdin
     stdout = stdout if stdout is not None else sys.stdout
     now = now or datetime.now(timezone.utc)
@@ -2609,11 +2611,23 @@ def _cmd_init_feedback_step(
     current = config.capture
     was_on = "feedback_skill" in current.feedback
     if was_on and given is None:
-        stdout.write("\nThe /tl-feedback skill is on. 'claude-token-lens capture feedback off' turns it off.\n")
-        return
-    on, notes = onboarding.ask_feedback(
-        preset=given, non_interactive=args.non_interactive, stdin=stdin, stdout=stdout
-    )
+        from . import footprint
+
+        if footprint.read_feedback_skill(claude_root) == capture_catalogue.feedback_skill_text():
+            stdout.write("\nThe /tl-feedback skill is on. 'claude-token-lens capture feedback off' turns it off.\n")
+            return
+        # On in config.toml without its skill file: picking Deep just
+        # turned it on (config.set_capture), or the file went missing.
+        stdout.write(
+            "\nThe /tl-feedback survey is on"
+            + (", as part of Deep" if current.level == "deep" else "")
+            + ". 'claude-token-lens capture feedback off' turns it off.\n"
+        )
+        on, notes = True, []
+    else:
+        on, notes = onboarding.ask_feedback(
+            preset=given, non_interactive=args.non_interactive, stdin=stdin, stdout=stdout
+        )
     for note in notes:
         stdout.write(f"(derived) {note}\n")
     if on != was_on:
@@ -3639,6 +3653,11 @@ def _cmd_capture(args: argparse.Namespace, *, stdin=None, stdout=None, now: date
         return 0
     if preview != current:
         stdout.write(f"Metrics capture: {capture_view.describe(current)} -> {capture_view.describe(preview)}\n")
+        if any(i not in current.feedback for i in preview.feedback) and preview.level == "deep":
+            stdout.write(
+                "Deep also turns on the /tl-feedback survey, its reminder note, and Claude's one-line reminder "
+                "to run it. 'claude-token-lens capture feedback off' turns them off.\n"
+            )
         if action == "disable":
             also = [m for m in current.active_metrics() if m not in preview.active_metrics() and m not in args.values]
             if also:
@@ -3680,7 +3699,9 @@ def _cmd_capture(args: argparse.Namespace, *, stdin=None, stdout=None, now: date
         (capture_catalogue.FEEDBACK_SKILL, skill_on, "feedback_skill" in original.feedback),
         (capture_catalogue.BRIEF_SKILL, brief_on, "brief_templates" in original.coaching),
     ):
-        if (action in ("enable", "disable") and now_on != was_on) or (action == "connect" and now_on):
+        # on/level change the skills only through a switch into Deep
+        # (config.set_capture adds its feedback items).
+        if (action in ("on", "level", "enable", "disable") and now_on != was_on) or (action == "connect" and now_on):
             _capture_skill_step(
                 now_on,
                 claude_root=claude_root,

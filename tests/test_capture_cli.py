@@ -456,6 +456,27 @@ def test_feedback_toggles_are_switched_on_their_own_list(tmp_path):
     assert load_config(config_dir=config_dir).capture.feedback == ["feedback_skill"]
 
 
+def test_level_deep_turns_on_the_feedback_survey_and_writes_its_skill(tmp_path):
+    config_dir = _claude(tmp_path, {})
+    rc, out = _capture(config_dir, "level", "deep", "--yes")
+    assert rc == 0 and "Deep also turns on the /tl-feedback survey" in out
+    assert "feedback_reminder" in out  # priced with the rest of what Deep adds
+    assert _skill(config_dir).read_text(encoding="utf-8") == cat.feedback_skill_text()
+    assert load_config(config_dir=config_dir).capture.feedback == list(cat.DEEP_FEEDBACK_IDS)
+    _capture(config_dir, "feedback", "off", "--yes")
+    assert not _skill(config_dir).exists()
+    rc, out = _capture(config_dir, "level", "deep", "--yes")
+    assert "Metrics capture is already Deep" in out and not _skill(config_dir).exists()
+
+
+def test_level_deep_dry_run_shows_the_skill_and_writes_nothing(tmp_path):
+    config_dir = _claude(tmp_path, {})
+    rc, out = _capture(config_dir, "on", "--level", "deep", "--dry-run")
+    assert "Deep also turns on the /tl-feedback survey" in out
+    assert "Dry run: config.toml left unchanged." in out and "Dry run: the skill is left as it is." in out
+    assert not _skill(config_dir).exists() and not (config_dir / "config.toml").exists()
+
+
 @pytest.mark.parametrize("argv, message", [
     (["enable", "mood"], "unknown metric mood"),
     (["enable"], "needs one or more metric ids"),
@@ -1176,6 +1197,18 @@ def _init_feedback(config_dir, *argv, stdin=""):
         stdin=io.StringIO(stdin), stdout=out, now=NOW,
     )
     return out.getvalue()
+
+
+def test_init_at_deep_skips_the_feedback_question_and_adds_the_skill(tmp_path):
+    config_dir = _claude(tmp_path, {})
+    _init_capture(config_dir, "--non-interactive", "--connect", "--capture-level", "deep")
+    assert load_config(config_dir).capture.feedback == list(cat.DEEP_FEEDBACK_IDS)
+    out = _init_feedback(config_dir, "--non-interactive")
+    assert "The /tl-feedback survey is on, as part of Deep." in out
+    assert "Add the skill with: claude-token-lens capture feedback on" in out and not _skill(config_dir).exists()
+    _init_feedback(config_dir, "--non-interactive", "--connect")
+    assert _skill(config_dir).read_text(encoding="utf-8") == cat.feedback_skill_text()
+    assert "The /tl-feedback skill is on." in _init_feedback(config_dir, "--non-interactive")
 
 
 def test_init_offers_the_skill_and_writes_it_after_two_yeses(tmp_path):

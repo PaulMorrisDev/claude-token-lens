@@ -91,6 +91,13 @@ def test_a_preset_is_recognised_from_its_metrics(level):
     assert cat.level_of(cat.level_metrics(level)) == level
 
 
+@pytest.mark.parametrize("level", cat.LEVELS)
+def test_only_deep_brings_the_feedback_survey_and_its_reminders(level):
+    extra = cat.DEEP_FEEDBACK_IDS if level == "deep" else ()
+    assert cat.level_includes(level) == cat.level_metrics(level) + extra
+    assert set(cat.DEEP_FEEDBACK_IDS) == set(cat.FEEDBACK_IDS) - {"dashboard_rating"}
+
+
 def test_a_subset_is_custom_and_a_subagent_extra_brings_result():
     assert cat.level_of(["task", "size"]) == "custom"
     assert cat.with_requirements(["fit", "task"]) == ("task", "result", "fit")
@@ -240,7 +247,7 @@ def test_the_levels_table_note_sizes_match_rough_tokens(level):
     whole-document sync test above."""
     doc = Path(__file__).resolve().parent.parent / "docs" / "capture.md"
     text = doc.read_text(encoding="utf-8")
-    sizes = cat.rough_tokens(cat.level_metrics(level))
+    sizes = cat.rough_tokens(cat.level_includes(level))
     row = next(line for line in text.splitlines() if line.startswith(f"| {cat.LEVEL_TITLES[level]} |"))
     assert f"~{sizes['session_note']} tokens" in row, row
     assert f"~{sizes['subagent_note']} tokens" in row, row

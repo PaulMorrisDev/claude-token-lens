@@ -131,6 +131,37 @@ def test_metrics_one_by_one_become_custom_or_the_preset_they_match(tmp_path):
     assert set_capture(tmp_path, metrics=[], now=NOW).level == "off"
 
 
+def test_switching_into_deep_turns_its_feedback_survey_on(tmp_path):
+    deep = set_capture(tmp_path, level="deep", now=NOW)
+    assert deep.feedback == list(capture_catalogue.DEEP_FEEDBACK_IDS)
+    assert "feedback_reminder" in deep.active_metrics()
+    # Added to what was already on, in catalogue order, and logged.
+    other = tmp_path / "other"
+    set_capture(other, level="standard", feedback=["dashboard_rating"], now=NOW)
+    assert set_capture(other, level="deep", now=NOW).feedback == list(capture_catalogue.FEEDBACK_IDS)
+    assert "feedback" in load_capture_log(other)[-1]["changed"]
+
+
+def test_metrics_that_add_up_to_deep_turn_its_feedback_on_too(tmp_path):
+    deep = set_capture(tmp_path, metrics=list(capture_catalogue.level_metrics("deep")), now=NOW)
+    assert deep.level == "deep" and deep.feedback == list(capture_catalogue.DEEP_FEEDBACK_IDS)
+
+
+def test_an_explicit_feedback_choice_wins_over_deep(tmp_path):
+    assert set_capture(tmp_path, level="deep", feedback=[], now=NOW).feedback == []
+
+
+def test_deep_s_feedback_stays_as_you_leave_it(tmp_path):
+    set_capture(tmp_path, level="deep", now=NOW)
+    # Leaving Deep keeps it.
+    assert set_capture(tmp_path, level="standard", now=NOW).feedback == list(capture_catalogue.DEEP_FEEDBACK_IDS)
+    # Turned off while at Deep, picking Deep again doesn't bring it back:
+    # only a switch into Deep does.
+    set_capture(tmp_path, level="deep", now=NOW)
+    set_capture(tmp_path, feedback=[], now=NOW)
+    assert set_capture(tmp_path, level="deep", now=NOW).feedback == []
+
+
 def test_turning_capture_off_clears_the_stamp_and_the_end_date(tmp_path):
     set_capture(tmp_path, level="essentials", until="2026-10-01T00:00:00+00:00", now=NOW)
     off = set_capture(tmp_path, level="off", now=NOW)

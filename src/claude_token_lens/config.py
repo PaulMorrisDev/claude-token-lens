@@ -1002,7 +1002,11 @@ def set_capture(
     A switch from off to on that leaves ``until`` unsaid (``None``) gets
     :data:`~claude_token_lens.capture_catalogue.DEFAULT_CAPTURE_TIMEBOX_DAYS`
     days by default (CAP-8), so capture can't run forever unnoticed --
-    pass ``until=""`` for a deliberate "no limit" instead. The new table
+    pass ``until=""`` for a deliberate "no limit" instead. A switch into
+    Deep (by ``level`` or by ``metrics`` that add up to it) also turns on
+    :data:`~claude_token_lens.capture_catalogue.DEEP_FEEDBACK_IDS`, unless
+    the same call passes ``feedback``; leaving Deep keeps them. The skill
+    file itself is the caller's to write. The new table
     is validated before anything is written, the write is
     atomic, and every change is appended to ``capture-log.jsonl``. Raises
     :class:`ConfigError` for a bad value, or when ``config.toml`` can't be
@@ -1034,6 +1038,10 @@ def set_capture(
         table["projects"] = list(projects)
     if feedback is not None:
         table["feedback"] = _in_catalogue_order(feedback, capture_catalogue.FEEDBACK_IDS)
+    elif table["level"] == "deep" and current.level != "deep":
+        table["feedback"] = _in_catalogue_order(
+            table["feedback"] + list(capture_catalogue.DEEP_FEEDBACK_IDS), capture_catalogue.FEEDBACK_IDS
+        )
     if coaching is not None:
         table["coaching"] = _in_catalogue_order(coaching, capture_catalogue.COACHING_IDS)
     moment = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)

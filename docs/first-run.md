@@ -127,7 +127,7 @@ pressing Enter through all of them is a reasonable first pass:
 | How many days to collect data before the first baseline | How long `baseline` waits before it has enough data for a confident first read (default 7) |
 | Claude Code also runs in WSL: Ubuntu on this computer. Include those sessions? | Asked only when `init` finds Claude Code sessions inside a WSL distro (it runs `wsl -l -q` and looks in each distro's `/home/*/.claude/projects`). Yes adds the folder to `config.toml`'s `extra_projects_roots`, and the dashboard and every command read it alongside your Windows folder. Default yes; `--non-interactive` adds it and says so |
 | Metrics capture level: off, free, essentials, standard, deep | Asked last, after a warning that this uses your Claude tokens and a table of what each level would have cost over your last 14 days of your own sessions. Default `off`. Turning a level on asks one more question — a 14-day time-box that switches capture back off by itself unless you say otherwise — see "Metrics capture" below |
-| Add the /tl-feedback skill? | A short survey you can run yourself after a piece of work, at any capture level (even off). Default no. See "Metrics capture" below |
+| Add the /tl-feedback skill? | A short survey you can run yourself after a piece of work, at any capture level (even off). Default no; skipped when you picked Deep, which includes it. See "Metrics capture" below |
 
 Running it unattended (a script, or just to skip the prompts) derives
 every answer instead of asking, and prints exactly what it derived and

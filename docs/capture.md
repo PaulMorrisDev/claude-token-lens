@@ -16,7 +16,7 @@ Costs rise with depth, so capture comes in levels, each including every metric o
 | Free | Local signals from hooks that log to a file. Uses no Claude tokens. | – | – |
 | Essentials | Claude tags each piece of work: what kind it was, how clear the request was, how hard, and when the task changed. Subagents say whether they finished. | ~201 tokens | ~107 tokens |
 | Standard | Adds size, what the request lacked, planning, skills, research, and each subagent's view of its model, rules and brief. | ~330 tokens | ~190 tokens |
-| Deep | Adds how much earlier context was needed, how the change was checked, and a short rating after large tool outputs. | ~371 tokens | ~190 tokens |
+| Deep | Adds how much earlier context was needed, how the change was checked, and a short rating after large tool outputs. Also turns on the /tl-feedback survey, its reminder note, and Claude's one-line reminder to run it when a piece of work is done. | ~414 tokens | ~190 tokens |
 | Custom | Any other set of metrics, turned on one by one (`capture enable`/`capture disable`). | depends what's on | depends what's on |
 
 These are rough sizes — the note's characters divided by four, plus Claude Code's own hook-wrapper overhead (the system-reminder tags around it) — and don't include the tag Claude writes back (each metric below says roughly how many output tokens its own words cost). The Capture tab replays your last 14 days of transcripts against each level before you turn it on, and once it's on, measures the real note and tag cost from what Claude Code actually recorded — read that number, not this one, when it matters.
@@ -61,9 +61,9 @@ Gap 4: every metric here has to earn its keep — something has to actually read
 | Where research happens (`research_split`) | Always measured, no hook | – | Researching, Delegating to agents |
 | Coaching line (`coaching_line`) | Live coaching, any level | – | Clearing context, Tool output, Researching |
 | Brief templates (`brief_templates`) | Live coaching, any level | – | Giving Claude information |
-| Feedback skill (`feedback_skill`) | Feedback, any level | – | Cost per finished piece of work |
-| Feedback reminder in the status line (`feedback_note`) | Feedback, any level | – | Cost per finished piece of work |
-| Feedback reminder from Claude (`feedback_reminder`) | Feedback, any level | ~20 | Cost per finished piece of work |
+| Feedback skill (`feedback_skill`) | Feedback, any level; switching to Deep turns it on | – | Cost per finished piece of work |
+| Feedback reminder in the status line (`feedback_note`) | Feedback, any level; switching to Deep turns it on | – | Cost per finished piece of work |
+| Feedback reminder from Claude (`feedback_reminder`) | Feedback, any level; switching to Deep turns it on | ~20 | Cost per finished piece of work |
 | Rate sessions on the dashboard (`dashboard_rating`) | Feedback, any level | – | Cost per finished piece of work |
 
 ## Main session
@@ -397,7 +397,7 @@ Gap 4: every metric here has to earn its keep — something has to actually read
 
 ### Feedback skill (`feedback_skill`)
 
-- **Level:** Feedback, any level
+- **Level:** Feedback, any level; switching to Deep turns it on
 - **Captures:** A /tl-feedback skill you run after a piece of work: four checkbox questions about the outcome, what slowed it, whether it was worth the tokens, and what would have helped.
 - **Why:** Cost per piece of work that met its goal, which outranks what Claude reports about itself.
 - **Tag:** `[tl-fb: outcome=met|partly|missed|stopped slow=unclear,rework,tools,none worth=yes|fair|no helped=context,plan,smaller,none]`
@@ -405,7 +405,7 @@ Gap 4: every metric here has to earn its keep — something has to actually read
 
 ### Feedback reminder in the status line (`feedback_note`)
 
-- **Level:** Feedback, any level
+- **Level:** Feedback, any level; switching to Deep turns it on
 - **Captures:** A second status line reminding you to run /tl-feedback, and the same line on the dashboard banner.
 - **Why:** A reminder that costs nothing: the status line is never sent to Claude.
 - **Tag:** No tag. Nothing is asked of Claude; see "Captures" above for how it is kept.
@@ -413,7 +413,7 @@ Gap 4: every metric here has to earn its keep — something has to actually read
 
 ### Feedback reminder from Claude (`feedback_reminder`)
 
-- **Level:** Feedback, any level
+- **Level:** Feedback, any level; switching to Deep turns it on
 - **Captures:** Claude adds one line suggesting /tl-feedback when it finishes a piece of work.
 - **Why:** For people without the status line. Costs a few output tokens each time.
 - **Tag:** No fixed key. The note asks for a line: "When you finish a piece of work the user asked for, add before your tag: Finished? Run /tl-feedback: a few ticks make your savings tips fit how you work."

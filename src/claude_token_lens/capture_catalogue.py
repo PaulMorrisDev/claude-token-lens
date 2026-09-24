@@ -136,7 +136,8 @@ LEVEL_SUMMARIES = {
     "standard": "Adds size, what the request lacked, planning, skills, research, "
     "and each subagent's view of its model, rules and brief.",
     "deep": "Adds how much earlier context was needed, how the change was checked, and a "
-    "short rating after large tool outputs.",
+    "short rating after large tool outputs. Also turns on the /tl-feedback survey, its reminder note, "
+    "and Claude's one-line reminder to run it when a piece of work is done.",
 }
 
 #: Suggestion themes a metric can feed (``Metric.powers``), in the order
@@ -171,7 +172,8 @@ SECTIONS = {
 
 #: Metric groups. ``free`` to ``deep`` are the capture levels; ``derived``
 #: is always on and costs nothing; ``feedback`` and ``coaching`` are
-#: switched on one by one at any level.
+#: switched on one by one at any level (switching into Deep turns the
+#: :data:`DEEP_FEEDBACK_IDS` on too).
 GROUPS = ("derived", "free", "essentials", "standard", "deep", "feedback", "coaching")
 
 #: Metric groups that make up the levels, in level order.
@@ -796,6 +798,14 @@ LEVEL_METRIC_IDS = tuple(m.id for m in METRICS if m.group in LEVEL_GROUPS)
 #: Metrics switched on one by one (``[capture] feedback``/``coaching``).
 FEEDBACK_IDS = tuple(m.id for m in METRICS if m.group == "feedback")
 COACHING_IDS = tuple(m.id for m in METRICS if m.group == "coaching")
+#: The feedback items a switch into Deep turns on as well
+#: (``config.set_capture``): the /tl-feedback survey, its reminder note,
+#: and Claude's one-line reminder to run it. Deep is the level for
+#: someone who wants the fullest picture, and outcomes from the survey
+#: outrank what Claude reports about itself. Leaving Deep keeps them;
+#: ``capture feedback off`` takes them out. The dashboard rating stays a
+#: choice of its own.
+DEEP_FEEDBACK_IDS = ("feedback_skill", "feedback_note", "feedback_reminder")
 
 #: CAP-5: metric ids retired from :data:`METRICS` (no longer asked, priced,
 #: or shown), kept here only so a ``config.toml`` written before the
@@ -1046,6 +1056,14 @@ def level_metrics(level: str) -> tuple[str, ...]:
     return tuple(m.id for m in METRICS if m.group in upto)
 
 
+def level_includes(level: str) -> tuple[str, ...]:
+    """Everything picking ``level`` turns on: :func:`level_metrics`,
+    plus :data:`DEEP_FEEDBACK_IDS` for Deep. What the level cards, the
+    estimates and ``docs/capture.md`` show and price."""
+    extra = DEEP_FEEDBACK_IDS if level == "deep" else ()
+    return level_metrics(level) + extra
+
+
 def with_requirements(ids) -> tuple[str, ...]:
     """``ids`` in catalogue order, plus any metric they need (a subagent's
     extras need ``result``); unknown ids and ids outside the levels are
@@ -1276,6 +1294,8 @@ _GROUP_LABELS = {
 
 
 def _metric_group_label(metric: Metric) -> str:
+    if metric.id in DEEP_FEEDBACK_IDS:
+        return f"{_GROUP_LABELS[metric.group]}; switching to Deep turns it on"
     return LEVEL_TITLES.get(metric.group) or _GROUP_LABELS[metric.group]
 
 
@@ -1363,7 +1383,7 @@ def render_markdown() -> str:
     p("| Level | What it adds | Note at session start | Note per subagent start |")
     p("|---|---|---|---|")
     for level in LEVELS:
-        ids = level_metrics(level)
+        ids = level_includes(level)
         # D17: the same rough_tokens() the Capture page and CAP-7's
         # step-down suggestion use, not a separate chars/4 calculation
         # that quietly drops the hook-wrapper overhead rough_tokens()

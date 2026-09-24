@@ -38,6 +38,9 @@ def test_off_invites_with_the_essentials_estimate():
     levels = {level["id"]: level for level in data["levels"]}
     assert levels["free"]["estimate"] is None  # no Claude tokens
     assert levels["essentials"]["estimate"]["usd"] < levels["deep"]["estimate"]["usd"]
+    assert "Feedback reminder from Claude" in levels["deep"]["adds"]
+    assert "Feedback reminder from Claude" not in levels["standard"]["adds"]
+    assert levels["deep"]["metrics"][-3:] == list(catalogue.DEEP_FEEDBACK_IDS)
     assert levels["off"]["current"] is True
     rows = _rows(data)
     assert rows["task"]["on"] is False and rows["task"]["estimate"]["usd"] > 0
