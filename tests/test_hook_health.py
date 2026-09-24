@@ -432,9 +432,14 @@ def test_recommendation_names_the_hook_and_failure_share_over_the_threshold():
     text = hook_health.HookErrorHealth(stats=stats).recommendation()
     assert text is not None
     assert "PreToolUse" in text
+    assert "60 times" in text
     assert "60%" in text
-    assert "100 calls" in text
-    assert "settings.json" in text
+    assert "100 runs Claude Code recorded" in text
+    # The hook can live in any settings layer or a plugin, not just the
+    # user settings.json (a real case: a project's own .claude/settings.json).
+    assert "~/.claude/settings.json" in text
+    assert "project's .claude/settings.json and .claude/settings.local.json" in text
+    assert "plugins" in text
 
 
 # -- CAP-9/F10: measure_deep_wait / DeepWaitStats ----------------------------

@@ -30,7 +30,7 @@ it tallies each hook event's non-blocking errors (``PreToolUse``,
 ``PostToolUse``, and so on; never the matcher or tool-name suffix, so an
 MCP server name never surfaces) across already-parsed transcripts, and
 :meth:`HookErrorHealth.recommendation` turns a hook that fails on most
-of its calls into one plain-English prompt naming where it's configured,
+of its recorded runs into one plain-English prompt naming where to look for it,
 the latency/noise trade-off, and the undo. It only ever prints; nothing
 here writes to settings.json on that account.
 
@@ -1077,9 +1077,17 @@ class HookErrorHealth:
         if worst is None or worst.error_rate < _RECOMMEND_ERROR_RATE:
             return None
         pct = round(worst.error_rate * 100)
+        # Claude Code writes a hook_success attachment only for some passing
+        # runs (one real corpus: 2 PreToolUse successes against 38,840
+        # non-blocking errors), so the share is of *recorded* runs and can
+        # overstate the real one -- the count leads. The hook can sit in
+        # any settings layer or a plugin, not just the user settings.json.
         return (
-            f"Your {worst.hook_name} hook(s) failed (non-blocking) on {pct}% of {worst.calls} calls this window "
-            f"-- see settings.json's hooks.{worst.hook_name} list to find which one. Trade-off: every failing "
+            f"Your {worst.hook_name} hook(s) failed (non-blocking) {worst.errors} times this window, "
+            f"{pct}% of the {worst.calls} runs Claude Code recorded (it doesn't record every run that "
+            f"passes, so the real share can be lower). To find which one, check hooks.{worst.hook_name} in "
+            "~/.claude/settings.json, in each project's .claude/settings.json and .claude/settings.local.json, "
+            "and in your enabled plugins. Trade-off: every failing "
             "call still adds that hook's own latency before the tool runs, and a hook failing this often can "
             "bury a real capture-hook failure in the same noise; the failing entry is probably doing little for "
             "you either way. Undo: whatever it was for stops working once you remove or fix it, so put it back "

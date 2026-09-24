@@ -163,9 +163,12 @@ of the 5-minute one (below).
   matcher/tool-name suffix, so an MCP server or tool name can never
   surface) is tallied by outcome; `capture status` now prints one plain
   prompt when a hook's non-blocking-error rate crosses 50% over at
-  least 20 calls, naming it, its failure share, where to find it in
-  `settings.json`, the latency/noise trade-off, and the undo. This only
-  ever prints — nothing here changes `settings.json`.
+  least 20 recorded runs, naming it, its failure count and share of
+  recorded runs (Claude Code doesn't record every run that passes, so
+  the real share can be lower), where to look for it (the user,
+  project and local settings files and enabled plugins), the
+  latency/noise trade-off, and the undo. This only ever prints —
+  nothing here changes `settings.json`.
 - **`capture status` now shows Deep's actual measured wait**, replacing
   the old, unsourced "a fraction of a second" guess: the big_output/web
   PostToolUse hook's real `durationMs` (Claude Code records one on every
