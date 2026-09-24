@@ -1568,6 +1568,10 @@ def test_static_file_is_served_from_a_real_static_dir(tmp_path, monkeypatch):
     static_dir.mkdir()
     (static_dir / "index.html").write_text("<html>hello</html>", encoding="utf-8")
     (static_dir / "app.js").write_text("console.log('hi');", encoding="utf-8")
+    (static_dir / "app.css").write_text("body {}", encoding="utf-8")
+    (static_dir / "mark.svg").write_text("<svg></svg>", encoding="utf-8")
+    (static_dir / "fonts").mkdir()
+    (static_dir / "fonts" / "face.woff2").write_bytes(b"wOF2")
 
     config_dir = tmp_path / "config"
     config_dir.mkdir()
@@ -1585,8 +1589,19 @@ def test_static_file_is_served_from_a_real_static_dir(tmp_path, monkeypatch):
 
         resp2, raw2 = handle.request("GET", "/static/app.js")
         assert resp2.status == 200
-        assert resp2.getheader("Content-Type") in ("text/javascript", "application/javascript")
+        # Pinned, not left to mimetypes (which reads the Windows registry):
+        # a module script with any other type fails under nosniff.
+        assert resp2.getheader("Content-Type") == "text/javascript"
         assert b"console.log" in raw2
+
+        for path, expected in (
+            ("/static/app.css", "text/css; charset=utf-8"),
+            ("/static/mark.svg", "image/svg+xml"),
+            ("/static/fonts/face.woff2", "font/woff2"),
+        ):
+            resp3, _raw3 = handle.request("GET", path)
+            assert resp3.status == 200, path
+            assert resp3.getheader("Content-Type") == expected, path
     finally:
         handle.close()
         store.close()

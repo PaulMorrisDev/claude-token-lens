@@ -2,14 +2,16 @@
 
 Three things are checked here:
 
-1. Egress/safety of the three ``service/static/`` files: they exist,
-   ``index.html`` references only its own two sibling assets, and none
-   of the three contains a bare ``http(s)://`` literal, an inline
+1. Egress/safety of the first-party ``service/static/`` files (every
+   ``*.html``/``*.js``/``*.css`` directly in it; the pinned third-party
+   ``vendor/`` and ``fonts/`` trees are covered by their own tests):
+   ``index.html`` references only same-origin ``/static/`` files that
+   exist, and none of them contains a bare ``http(s)://`` literal, an inline
    ``<script>`` body, an ``on<event>=`` handler attribute, a dynamic
    ``import(``/``eval(`` call, an ``@import url(http...)``, or an emoji
    code point -- the same "no external reference, no inline execution"
    posture ``SECURITY.md`` and ``docs/ui.md`` require of this UI.
-2. ``app.js`` actually calls every documented ``GET`` route in
+2. The dashboard's modules call every documented ``GET`` route in
    ``docs/api.md`` (minus the two routes this test deliberately
    excludes -- see ``_EXCLUDED_ROUTE_PREFIXES``), and ``service/static/*``
    is registered as package data in ``pyproject.toml``.
@@ -56,7 +58,24 @@ API_MD = REPO_ROOT / "docs" / "api.md"
 README_MD = REPO_ROOT / "README.md"
 PYPROJECT_TOML = REPO_ROOT / "pyproject.toml"
 
+#: The files the dashboard cannot start without.
 STATIC_FILES = ("index.html", "app.js", "app.css")
+
+#: A floor on how many first-party ES modules the glob below must find, so
+#: a glob that silently matches nothing (or only app.js) fails loudly
+#: instead of turning every scan in this file into a no-op.
+_MIN_JS_MODULES = 1
+
+
+def _first_party_files() -> list[Path]:
+    """Every first-party file the page loads: the ``*.html``, ``*.js`` and
+    ``*.css`` files directly in ``static/``. The vendored d3 and the fonts
+    live in the ``vendor/`` and ``fonts/`` subdirectories, which this
+    never descends into."""
+    return sorted(p for p in STATIC_DIR.iterdir() if p.is_file() and p.suffix in (".html", ".js", ".css"))
+
+
+FIRST_PARTY_FILES = tuple(p.name for p in _first_party_files())
 
 #: Documented GET routes this test does not require app.js to fetch:
 #: the profile-diff route is only ever reached from a click handler
@@ -98,6 +117,78 @@ def _static_text(name: str) -> str:
     return (STATIC_DIR / name).read_text(encoding="utf-8")
 
 
+def _js_modules() -> list[Path]:
+    modules = [p for p in _first_party_files() if p.suffix == ".js"]
+    assert len(modules) >= _MIN_JS_MODULES, f"found only {len(modules)} first-party JS files: {modules}"
+    return modules
+
+
+def _app_js() -> str:
+    """All first-party JavaScript, one module after another. Source checks
+    that used to read the single app.js read this, so they keep holding
+    wherever a function lives after the module split."""
+    return "\n".join(p.read_text(encoding="utf-8") for p in _js_modules())
+
+
+def _skip_js_string_or_comment(src: str, i: int) -> int:
+    """If ``src[i]`` opens a string, template or comment, return the index
+    just past it; otherwise return ``i`` unchanged."""
+    ch = src[i]
+    if ch in "\"'`":
+        j = i + 1
+        while j < len(src) and src[j] != ch:
+            j += 2 if src[j] == "\\" else 1
+        return j + 1
+    if src.startswith("//", i):
+        end = src.find("\n", i)
+        return len(src) if end == -1 else end
+    if src.startswith("/*", i):
+        end = src.find("*/", i + 2)
+        return len(src) if end == -1 else end + 2
+    return i
+
+
+def _balanced_end(src: str, open_index: int) -> int:
+    """Index just past the bracket that closes ``src[open_index]``,
+    skipping strings and comments."""
+    pairs = {"{": "}", "(": ")", "[": "]"}
+    stack = []
+    i = open_index
+    while i < len(src):
+        skipped = _skip_js_string_or_comment(src, i)
+        if skipped != i:
+            i = skipped
+            continue
+        ch = src[i]
+        if ch in pairs:
+            stack.append(pairs[ch])
+        elif stack and ch == stack[-1]:
+            stack.pop()
+            if not stack:
+                return i + 1
+        i += 1
+    raise AssertionError(f"unbalanced bracket opened at {open_index}")
+
+
+def _function_source(app_js: str, name: str) -> str:
+    """The full source of ``function NAME(...) {...}``, at any indent, in
+    any first-party module: from the ``function`` keyword to its matching
+    closing brace."""
+    match = re.search(r"(?<![\w$.])function\s+" + re.escape(name) + r"\s*\(", app_js)
+    assert match, f"no function {name}() in the dashboard's modules"
+    params_end = _balanced_end(app_js, match.end() - 1)
+    body_start = app_js.index("{", params_end)
+    return app_js[match.start() : _balanced_end(app_js, body_start)]
+
+
+def _declaration_source(app_js: str, name: str) -> str:
+    """The source of a top-level ``[export] var|let|const NAME = ...``
+    object or array literal, from the keyword to its closing bracket."""
+    match = re.search(r"(?:export\s+)?(?:var|let|const)\s+" + re.escape(name) + r"\s*=\s*", app_js)
+    assert match, f"no declaration of {name} in the dashboard's modules"
+    return app_js[match.start() : _balanced_end(app_js, match.end())]
+
+
 # -- deliverable 1: file existence / index.html reference restriction ----
 
 
@@ -107,18 +198,38 @@ def test_all_three_static_files_exist() -> None:
         assert path.is_file(), f"missing {path}"
 
 
+def test_first_party_glob_finds_every_module() -> None:
+    assert set(STATIC_FILES) <= set(FIRST_PARTY_FILES), FIRST_PARTY_FILES
+    assert len(_js_modules()) >= _MIN_JS_MODULES
+
+
 def test_index_html_references_only_its_own_static_assets() -> None:
+    """Every ``href``/``src`` in index.html is a same-origin ``/static/``
+    file that exists on disk, and a preloaded font carries
+    ``crossorigin`` (fonts are fetched in CORS mode, so a preload without
+    it is fetched twice)."""
     html = _static_text("index.html")
-    hrefs = re.findall(r'href="([^"]+)"', html)
-    srcs = re.findall(r'src="([^"]+)"', html)
-    referenced = set(hrefs) | set(srcs)
-    assert referenced == {"/static/app.css", "/static/app.js"}, referenced
+    referenced = set(re.findall(r'(?:href|src)="([^"]+)"', html))
+    assert {"/static/app.css", "/static/app.js"} <= referenced, referenced
+    for ref in referenced:
+        assert ref.startswith("/static/"), f"index.html references {ref!r}, outside /static/"
+        assert (STATIC_DIR / ref[len("/static/") :]).is_file(), f"index.html references missing file {ref!r}"
+    for tag in re.findall(r"<link\b[^>]*>", html):
+        if 'rel="preload"' in tag and 'as="font"' in tag:
+            assert "crossorigin" in tag, f"font preload without crossorigin: {tag}"
+
+
+def test_index_html_loads_app_js_as_an_es_module() -> None:
+    """The dashboard is native ES modules with no build step: app.js is
+    the one entry point, loaded as a module, and imports the rest."""
+    html = _static_text("index.html")
+    assert '<script type="module" src="/static/app.js"></script>' in html
 
 
 # -- deliverable 1: forbidden-substring / no-emoji scans -----------------
 
 
-@pytest.mark.parametrize("name", STATIC_FILES)
+@pytest.mark.parametrize("name", FIRST_PARTY_FILES)
 def test_no_forbidden_substrings(name: str) -> None:
     text = _static_text(name)
     for label, pattern in _FORBIDDEN_SUBSTRING_PATTERNS.items():
@@ -126,9 +237,9 @@ def test_no_forbidden_substrings(name: str) -> None:
         assert not matches, f"{name} contains forbidden pattern ({label}): {matches!r}"
 
 
-@pytest.mark.parametrize("name", STATIC_FILES)
+@pytest.mark.parametrize("name", FIRST_PARTY_FILES)
 def test_no_inline_script_bodies(name: str) -> None:
-    """Every ``<script ...>`` tag in the three files must carry a
+    """Every ``<script ...>`` tag in the first-party files must carry a
     ``src=`` attribute -- i.e. it loads an external (same-origin) file
     rather than running an inline body, per the CSP's ``script-src
     'self'`` and the brief's "no inline <script>" constraint."""
@@ -146,14 +257,14 @@ def test_no_button_label_or_handler_says_apply() -> None:
     toggle, not a button labelled "Apply"). Regression test for "Apply
     it to:"/"Apply tags" (now "Target file:"/"Save tags") and the latent
     ``data.apply_command`` fallback (both since removed from
-    ``app.js``): no button's visible text may start with the word
+    the dashboard): no button's visible text may start with the word
     "Apply", and no JS identifier naming a button or its click handler
     may combine "apply" with "btn"/"button"/"handler". Prose that
     explains the CLI's own ``apply`` subcommand (e.g. "you then apply it
     with the ... command it shows") is unaffected -- only labels and
     handler/variable names are checked.
     """
-    app_js = _static_text("app.js")
+    app_js = _app_js()
     index_html = _static_text("index.html")
 
     button_labels = re.findall(r'el\("button",\s*\{[\s\S]*?text:\s*"([^"]*)"', app_js)
@@ -178,14 +289,12 @@ def test_habits_playbook_caps_featured_cards_and_collapses_the_rest() -> None:
     into a collapsed ``<details>`` so the tab isn't a wall of cards down
     to the least useful habit. Regression test for
     ``renderHabitsPlaybook``/``appendHabitCards`` in app.js."""
-    app_js = _static_text("app.js")
-    limit_match = re.search(r"var PLAYBOOK_CARD_LIMIT = (\d+);", app_js)
-    assert limit_match, "app.js no longer defines PLAYBOOK_CARD_LIMIT"
+    app_js = _app_js()
+    limit_match = re.search(r"(?:export\s+)?(?:var|let|const) PLAYBOOK_CARD_LIMIT = (\d+);", app_js)
+    assert limit_match, "the dashboard no longer defines PLAYBOOK_CARD_LIMIT"
     assert int(limit_match.group(1)) == 5
 
-    fn_match = re.search(r"function renderHabitsPlaybook\([\s\S]*?\n  \}\n", app_js)
-    assert fn_match, "app.js no longer defines renderHabitsPlaybook"
-    body = fn_match.group(0)
+    body = _function_source(app_js, "renderHabitsPlaybook")
     assert "PLAYBOOK_CARD_LIMIT" in body
     assert '"details"' in body and "more habit" in body, "the rest of the playbook must collapse into a <details>"
     assert "appendHabitCards" in body
@@ -196,10 +305,8 @@ def test_habits_digest_money_cards_follow_the_billing_mode() -> None:
     ``money()`` (the ``Units.money`` mirror), not a bare "X USD" from
     ``formatCell``, so a Pro or Max plan sees a weekly-limit share or a
     list-price equivalent instead of plain dollars."""
-    app_js = _static_text("app.js")
-    fn_match = re.search(r"function renderHabitsDigest\([\s\S]*?\n  \}\n", app_js)
-    assert fn_match, "app.js no longer defines renderHabitsDigest"
-    body = fn_match.group(0)
+    app_js = _app_js()
+    body = _function_source(app_js, "renderHabitsDigest")
     assert 'kind === "money" ? money(' in body
     assert "amount.secondary" in body and "list-price equivalent" in body
 
@@ -208,14 +315,12 @@ def test_a_profile_estimate_scales_by_its_normalised_tasks() -> None:
     """F11: renderProfileEstimate sends the profile's ``tasks`` (its
     ``for`` words normalised to the task vocabulary), never a raw ``for``
     word such as "implementation", which /api/whatif rejects."""
-    app_js = _static_text("app.js")
-    fn_match = re.search(r"function renderProfileEstimate\([\s\S]*?\n  \}\n", app_js)
-    assert fn_match, "app.js no longer defines renderProfileEstimate"
-    body = fn_match.group(0)
+    app_js = _app_js()
+    body = _function_source(app_js, "renderProfileEstimate")
     assert "p.tasks" in body and "p.for" not in body
 
 
-@pytest.mark.parametrize("name", STATIC_FILES)
+@pytest.mark.parametrize("name", FIRST_PARTY_FILES)
 def test_no_emoji_code_points(name: str) -> None:
     text = _static_text(name)
     offenders = [ch for ch in text if _is_emoji_code_point(ord(ch))]
@@ -225,16 +330,80 @@ def test_no_emoji_code_points(name: str) -> None:
 # -- deliverable 1: app.js sanity + package-data registration -----------
 
 
-def test_app_js_has_balanced_braces() -> None:
-    text = _static_text("app.js")
+@pytest.mark.parametrize("name", [n for n in FIRST_PARTY_FILES if n.endswith(".js")])
+def test_app_js_has_balanced_braces(name: str) -> None:
+    text = _static_text(name)
     # Braces inside string/regex literals or comments could in principle
     # throw this simple counter off, but a genuinely broken brace count
     # is exactly the failure mode this smoke check exists to catch, and
     # `node --check` (run manually during development, not a repo
     # dependency here) already validates full syntax.
-    assert text.count("{") == text.count("}"), "app.js has unbalanced { }"
-    assert text.count("(") == text.count(")"), "app.js has unbalanced ( )"
-    assert text.count("[") == text.count("]"), "app.js has unbalanced [ ]"
+    assert text.count("{") == text.count("}"), f"{name} has unbalanced {{ }}"
+    assert text.count("(") == text.count(")"), f"{name} has unbalanced ( )"
+    assert text.count("[") == text.count("]"), f"{name} has unbalanced [ ]"
+
+
+def _js_code_only(src: str) -> str:
+    """``src`` with comments removed and every string or template emptied,
+    so a name only counts where it is real code."""
+    out = []
+    i = 0
+    while i < len(src):
+        skipped = _skip_js_string_or_comment(src, i)
+        if skipped != i:
+            if src[i] in "\"'`":
+                out.append(src[i] * 2)
+            i = skipped
+            continue
+        out.append(src[i])
+        i += 1
+    return "".join(out)
+
+
+_IMPORT_RE = re.compile(r'^import\s*\{([^}]*)\}\s*from\s*"\./([\w-]+\.js)";', re.M)
+_EXPORT_RE = re.compile(r"^export\s+(?:function|var|let|const)\s+([A-Za-z_$][\w$]*)", re.M)
+_DECLARED_RE = re.compile(r"(?:\b(?:var|let|const|function)\s+|\bcatch\s*\()([A-Za-z_$][\w$]*)")
+_PARAMS_RE = re.compile(r"\bfunction\b[^(]*\(([^)]*)\)")
+
+
+def test_es_modules_import_what_they_use_and_never_import_in_a_cycle() -> None:
+    """A module that uses another module's function without importing it
+    only fails when that code path runs, so check it here: every name a
+    module uses from another module is imported, every import names a
+    real export, and the import graph has no cycles (a cycle can leave a
+    ``var`` undefined while the modules load)."""
+    modules = {p.name: p.read_text(encoding="utf-8") for p in _js_modules()}
+    exports = {name: set(_EXPORT_RE.findall(text)) for name, text in modules.items()}
+    graph = {}
+    for name, text in modules.items():
+        imported = set()
+        graph[name] = set()
+        for names, target in _IMPORT_RE.findall(text):
+            assert target in modules, f"{name} imports missing module {target}"
+            graph[name].add(target)
+            for item in (n.strip() for n in names.split(",")):
+                if not item:
+                    continue
+                assert item in exports[target], f"{name} imports {item}, which {target} does not export"
+                imported.add(item)
+        code = _js_code_only(text)
+        local = set(_DECLARED_RE.findall(code))
+        for params in _PARAMS_RE.findall(code):
+            local.update(p.strip() for p in params.split(",") if p.strip())
+        for other, names in exports.items():
+            if other == name:
+                continue
+            for used in names - imported - local:
+                if re.search(r"(?<![\w$.])" + re.escape(used) + r"(?![\w$])(?!\s*:)", code):
+                    raise AssertionError(f"{name} uses {used} from {other} without importing it")
+
+    def visit(node: str, path: list[str]) -> None:
+        for nxt in graph[node]:
+            assert nxt not in path, "import cycle: " + " -> ".join([*path, nxt])
+            visit(nxt, [*path, nxt])
+
+    for name in graph:
+        visit(name, [name])
 
 
 def test_app_js_restart_note_matches_fixes() -> None:
@@ -244,8 +413,8 @@ def test_app_js_restart_note_matches_fixes() -> None:
 
     from claude_token_lens.fixes import RESTART_NOTE
 
-    match = re.search(r"var RESTART_NOTE =((?:\s*\"[^\"]*\"\s*\+?)+);", _static_text("app.js"))
-    assert match, "app.js no longer defines RESTART_NOTE"
+    match = re.search(r"(?:export\s+)?(?:var|let|const) RESTART_NOTE =((?:\s*\"[^\"]*\"\s*\+?)+);", _app_js())
+    assert match, "the dashboard no longer defines RESTART_NOTE"
     assert "".join(re.findall(r'"([^"]*)"', match.group(1))) == RESTART_NOTE
 
 
@@ -264,8 +433,8 @@ def _documented_get_routes() -> list[str]:
     return [r for r in routes if r not in _EXCLUDED_ROUTE_PREFIXES]
 
 
-def test_every_documented_get_route_is_fetched_by_app_js() -> None:
-    app_js = _static_text("app.js")
+def test_every_documented_get_route_is_fetched_by_the_dashboard() -> None:
+    app_js = _app_js()
     routes = _documented_get_routes()
     assert routes  # sanity: the exclusion list didn't eat everything
     for route in routes:
@@ -273,14 +442,14 @@ def test_every_documented_get_route_is_fetched_by_app_js() -> None:
         # built up via string concatenation in app.js, not present
         # verbatim -- match on the literal prefix before "<" instead.
         prefix = route.split("<")[0]
-        assert prefix in app_js, f"app.js never fetches documented route {route!r} (looked for prefix {prefix!r})"
+        assert prefix in app_js, f"the dashboard never fetches documented route {route!r} (looked for prefix {prefix!r})"
 
 
 # -- deliverable 3: fixture HTTP server -----------------------------------
 
 _CONTENT_TYPES = {
     ".html": "text/html; charset=utf-8",
-    ".js": "application/javascript; charset=utf-8",
+    ".js": "text/javascript",
     ".css": "text/css; charset=utf-8",
 }
 
@@ -582,7 +751,7 @@ def test_fixture_server_serves_index_at_root(fixture_server: str) -> None:
 @pytest.mark.parametrize(
     ("name", "expected_type"),
     [
-        ("app.js", "application/javascript"),
+        ("app.js", "text/javascript"),
         ("app.css", "text/css"),
     ],
 )
@@ -637,13 +806,9 @@ def test_app_js_load_report_accepts_the_unwrapped_report_json_shape() -> None:
     contains neither ``body.report`` nor an ``ok === false`` failure
     check) and passes once ``loadReport()`` accepts the unwrapped shape.
     """
-    app_js = _static_text("app.js")
-    start = app_js.index("function loadReport(")
-    # Slice to the next top-level function declaration so the assertions
-    # below are scoped to loadReport()'s own body, not a coincidental
-    # match elsewhere in the file.
-    end = app_js.index("\n  function ", start + 1)
-    load_report_src = app_js[start:end]
+    # Scoped to loadReport()'s own body, not a coincidental match
+    # elsewhere in the dashboard.
+    load_report_src = _function_source(_app_js(), "loadReport")
     assert "body.report" in load_report_src, (
         "loadReport() must read the unwrapped report.json shape's `body.report` directly"
     )
@@ -668,13 +833,11 @@ def test_load_report_cache_is_keyed_by_the_selected_window() -> None:
     ``state.reportPromise`` field, and ``loadReport()`` taking no
     parameter and always fetching the bare ``/api/report.json`` URL).
     """
-    app_js = _static_text("app.js")
+    app_js = _app_js()
     assert "reportPromise:" not in app_js, "the report cache must not be a single unkeyed promise"
     assert "reportPromises" in app_js, "the report cache should be keyed (by the selected window)"
 
-    start = app_js.index("function loadReport(")
-    end = app_js.index("\n  function ", start + 1)
-    load_report_src = app_js[start:end]
+    load_report_src = _function_source(app_js, "loadReport")
     assert "state.window" in load_report_src, "loadReport() must key its cache by the selected window"
     assert 'withWindow("/api/report.json")' in load_report_src, (
         "loadReport() must forward the window to /api/report.json"
@@ -683,9 +846,7 @@ def test_load_report_cache_is_keyed_by_the_selected_window() -> None:
     # The window now lives in the header picker and applies to every tab:
     # a change must drop every rendered tab and redraw the one on screen,
     # so no tab keeps showing the previous window's numbers.
-    picker_start = app_js.index("function initWindowPicker(")
-    picker_end = app_js.index("\n  function ", picker_start + 1)
-    picker_src = app_js[picker_start:picker_end]
+    picker_src = _function_source(app_js, "initWindowPicker")
     change_listener_src = picker_src[picker_src.index('addEventListener("change"') :]
     assert "state.window = select.value" in change_listener_src
     assert "delete renderedTabs[key]" in change_listener_src
@@ -700,10 +861,7 @@ def test_section_tab_map_includes_recache_by_group() -> None:
     source (no ``recache_by_group`` key in the map) and passes once it
     is added, mapped to the same ``"cache"`` tab.
     """
-    app_js = _static_text("app.js")
-    start = app_js.index("var SECTION_TAB_MAP")
-    end = app_js.index("};", start) + 2
-    section_tab_map_src = app_js[start:end]
+    section_tab_map_src = _declaration_source(_app_js(), "SECTION_TAB_MAP")
     assert "recache_by_group" in section_tab_map_src
     assert re.search(r'recache_by_group\s*:\s*"cache"', section_tab_map_src), (
         "recache_by_group should map to the same Cache tab as recache"
@@ -724,22 +882,16 @@ def test_savings_tab_wires_up_ids_routes_and_section_map() -> None:
     assert 'id="panel-savings"' in html
     assert 'aria-labelledby="tab-savings"' in html
 
-    app_js = _static_text("app.js")
+    app_js = _app_js()
     assert '"savings"' in app_js
     assert "renderSavings" in app_js
 
-    tab_order_line = re.search(r"var TAB_ORDER\s*=\s*\[[^\]]+\];", app_js)
-    assert tab_order_line is not None
-    assert '"savings"' in tab_order_line.group(0)
+    assert '"savings"' in _declaration_source(app_js, "TAB_ORDER")
 
-    tab_renderers_start = app_js.index("var TAB_RENDERERS")
-    tab_renderers_end = app_js.index("};", tab_renderers_start) + 2
-    tab_renderers_src = app_js[tab_renderers_start:tab_renderers_end]
+    tab_renderers_src = _declaration_source(app_js, "TAB_RENDERERS")
     assert re.search(r"savings\s*:\s*renderSavings", tab_renderers_src)
 
-    section_tab_map_start = app_js.index("var SECTION_TAB_MAP")
-    section_tab_map_end = app_js.index("};", section_tab_map_start) + 2
-    section_tab_map_src = app_js[section_tab_map_start:section_tab_map_end]
+    section_tab_map_src = _declaration_source(app_js, "SECTION_TAB_MAP")
     for section_key in ("carry", "compaction_sim", "model_swap", "waste"):
         assert re.search(section_key + r'\s*:\s*"savings"', section_tab_map_src), (
             f"{section_key} should map to the Savings tab, not fall through to Diagnostics"
@@ -757,10 +909,7 @@ def test_render_baseline_shows_the_project_slug_not_the_raw_row_id() -> None:
     with no ``row.project_slug`` anywhere in the function) and passes
     once the column reads ``row.project_slug`` instead.
     """
-    app_js = _static_text("app.js")
-    start = app_js.index("function renderBaseline(")
-    end = app_js.index("\n  function ", start + 1)
-    render_baseline_src = app_js[start:end]
+    render_baseline_src = _function_source(_app_js(), "renderBaseline")
     assert "row.project_slug" in render_baseline_src, (
         "the Project column must render the joined, redacted project_slug"
     )
@@ -778,7 +927,7 @@ def test_app_js_timeline_never_uses_math_max_apply() -> None:
     ``buildSessionTimeline``) and passes once it's replaced with a plain
     loop.
     """
-    app_js = _static_text("app.js")
+    app_js = _app_js()
     assert "Math.max.apply" not in app_js
     assert ".apply(" not in app_js
 
@@ -792,10 +941,7 @@ def test_app_js_timeline_draws_a_circle_for_a_single_turn_session() -> None:
     push, no ``points.length`` branch) and passes once
     ``buildSessionTimeline`` draws a ``<circle>`` for the one-point case.
     """
-    app_js = _static_text("app.js")
-    start = app_js.index("function buildSessionTimeline(")
-    end = app_js.index("\n  function ", start + 1)
-    timeline_src = app_js[start:end]
+    timeline_src = _function_source(_app_js(), "buildSessionTimeline")
     assert "points.length === 1" in timeline_src or "points.length == 1" in timeline_src, (
         "buildSessionTimeline must special-case a single-point series"
     )
@@ -868,7 +1014,7 @@ def test_loadinto_render_callbacks_take_data_first_container_second() -> None:
     pre-fix source (`renderSummaryCards(container, summary)`) and
     passes once the parameter order matches every other callback.
     """
-    app_js = _static_text("app.js")
+    app_js = _app_js()
     names = _loadinto_named_render_callbacks(app_js)
     assert names, "no named render callbacks found -- has loadInto's call pattern changed?"
 
@@ -898,10 +1044,7 @@ def test_render_health_shows_a_logon_banner_when_service_not_registered() -> Non
     ``renderHealth``/``renderBaseline``-style assertions -- there is no
     browser in this test process.
     """
-    app_js = _static_text("app.js")
-    start = app_js.index("function renderHealth(")
-    end = app_js.index("\n  function ", start + 1)
-    render_health_src = app_js[start:end]
+    render_health_src = _function_source(_app_js(), "renderHealth")
 
     assert "service_registered" in render_health_src, "renderHealth never reads health.service_registered"
     assert "=== false" in render_health_src, "the banner must be conditional on service_registered === false"
@@ -928,9 +1071,8 @@ def test_fixture_server_404s_unknown_session(fixture_server: str) -> None:
 
 
 def _js_object_keys(app_js: str, var_name: str) -> dict[str, str]:
-    start = app_js.index("var " + var_name)
-    end = app_js.index("};", start) + 2
-    return dict(re.findall(r'^\s*"?([a-z_]+)"?\s*:\s*"([^"]*)"', app_js[start:end], re.MULTILINE))
+    source = _declaration_source(app_js, var_name)
+    return dict(re.findall(r'^\s*"?([a-z_]+)"?\s*:\s*"([^"]*)"', source, re.MULTILINE))
 
 
 def test_every_report_section_is_mapped_to_a_tab() -> None:
@@ -939,9 +1081,9 @@ def test_every_report_section_is_mapped_to_a_tab() -> None:
     purpose, and on a tab that exists."""
     from claude_token_lens.report import _SECTION_ORDER
 
-    app_js = _static_text("app.js")
+    app_js = _app_js()
     mapping = _js_object_keys(app_js, "SECTION_TAB_MAP")
-    tab_order = re.findall(r'"([a-z]+)"', re.search(r"var TAB_ORDER\s*=\s*\[[^\]]+\];", app_js).group(0))
+    tab_order = re.findall(r'"([a-z]+)"', _declaration_source(app_js, "TAB_ORDER"))
     unmapped = [key for key in _SECTION_ORDER if key != "overview" and key not in mapping]
     assert unmapped == []
     assert all(tab in tab_order for tab in mapping.values())
@@ -950,7 +1092,7 @@ def test_every_report_section_is_mapped_to_a_tab() -> None:
 def test_tab_titles_match_the_tab_buttons() -> None:
     """Each tab's one h2 (TAB_TITLES) reads the same as its button, and
     every tab has an intro line."""
-    app_js = _static_text("app.js")
+    app_js = _app_js()
     html = _static_text("index.html")
     titles = _js_object_keys(app_js, "TAB_TITLES")
     intros = _js_object_keys(app_js, "TAB_INTROS")
@@ -996,10 +1138,8 @@ def test_glossary_tab_matches_the_readme_glossary() -> None:
     never carried over. Regression test: both must name the same terms
     with the same wording (README's backtick code-spans read as plain
     text on the dashboard, since GLOSSARY renders via `.textContent`)."""
-    app_js = _static_text("app.js")
-    match = re.search(r"var GLOSSARY = \[([\s\S]*?)\n  \];", app_js)
-    assert match, "app.js no longer defines GLOSSARY"
-    pairs = re.findall(r'\["([^"]+)", "([^"]+)"\]', match.group(1))
+    app_js = _app_js()
+    pairs = re.findall(r'\["([^"]+)", "([^"]+)"\]', _declaration_source(app_js, "GLOSSARY"))
     assert pairs, "GLOSSARY has no entries"
     app_glossary = dict(pairs)
     assert app_glossary == _readme_glossary_terms()
@@ -1048,16 +1188,10 @@ def test_readme_workstyle_row_names_every_archetype() -> None:
     assert named == set(_ARCHETYPE_DESCRIPTIONS)
 
 
-def _function_source(app_js: str, name: str) -> str:
-    start = app_js.index("function " + name + "(")
-    end = app_js.index("\n  function ", start + 1)
-    return app_js[start:end]
-
-
 def test_capture_banner_is_polled_with_health_and_links_to_its_tab() -> None:
     """The capture banner sits under the health banner on every tab and
     is refreshed from /api/health's capture block."""
-    app_js = _static_text("app.js")
+    app_js = _app_js()
     html = _static_text("index.html")
     assert html.index('id="health-banner"') < html.index('id="capture-banner"') < html.index("<nav")
     assert "updateCaptureBanner(health.capture)" in _function_source(app_js, "pollHealth")
@@ -1068,7 +1202,7 @@ def test_capture_banner_is_polled_with_health_and_links_to_its_tab() -> None:
 def test_capture_tab_repeats_the_cost_warning_before_using_more_tokens() -> None:
     """Switching to a level, a metric or a larger sample that asks Claude
     for more goes through confirmCapture, which shows data.warning."""
-    app_js = _static_text("app.js")
+    app_js = _app_js()
     for name in ("renderCaptureLevels", "renderCaptureControls", "renderMetricRow"):
         src = _function_source(app_js, name)
         assert "confirmCapture(" in src and "data.warning" in src, name
@@ -1139,14 +1273,14 @@ def test_timeline_markers_use_a_distinct_shape_per_kind_not_only_color() -> None
     spawn. All 7 marker kinds (4 turn markers + 3 usage-limit markers)
     must now map to 7 distinct shapes, and the legend's own swatch must
     draw the real shape (markerGlyph), not just a color dot."""
-    app_js = _static_text("app.js")
+    app_js = _app_js()
     glyph = _function_source(app_js, "markerGlyph")
     for shape in ("square", "triangle-up", "triangle-down", "diamond", "plus", "x", "circle"):
         assert ('"' + shape + '"') in glyph, shape
 
     timeline = _function_source(app_js, "buildSessionTimeline")
-    shapes_match = re.search(r"var markerShapes = (\{[^}]*\});", timeline)
-    limit_shapes_match = re.search(r"var limitMarkerShapes = (\{[^}]*\});", timeline)
+    shapes_match = re.search(r"(?:var|let|const) markerShapes = (\{[^}]*\});", timeline)
+    limit_shapes_match = re.search(r"(?:var|let|const) limitMarkerShapes = (\{[^}]*\});", timeline)
     assert shapes_match and limit_shapes_match
     shapes = dict(re.findall(r'(\w+):\s*"([\w-]+)"', shapes_match.group(1)))
     limit_shapes = dict(re.findall(r'(\w+):\s*"([\w-]+)"', limit_shapes_match.group(1)))
@@ -1162,7 +1296,7 @@ def test_copy_button_only_claims_success_when_the_clipboard_write_succeeded() ->
     Text and the button always flipped to "Copied" regardless of what
     happened -- a rejected promise (insecure context, denied permission)
     left it falsely claiming success."""
-    app_js = _static_text("app.js")
+    app_js = _app_js()
     copy_fn = _function_source(app_js, "copyToClipboard")
     assert "return navigator.clipboard.writeText(text).then(" in copy_fn
     assert "return Promise.resolve(false)" in copy_fn
@@ -1177,7 +1311,7 @@ def test_health_banner_skips_rebuilding_when_nothing_shown_would_change() -> Non
     3-60s (pollHealth); it used to clear() and rebuild its children on
     every single poll even when the message was identical, which some
     screen readers re-announce as if it were new content."""
-    app_js = _static_text("app.js")
+    app_js = _app_js()
     fn = _function_source(app_js, "renderHealthBanner")
     assert 'banner.getAttribute("data-render-sig") === sig) return' in fn
     assert 'banner.setAttribute("data-render-sig", sig)' in fn
@@ -1186,7 +1320,7 @@ def test_health_banner_skips_rebuilding_when_nothing_shown_would_change() -> Non
 
 
 def test_capture_banner_also_skips_rebuilding_when_unchanged() -> None:
-    app_js = _static_text("app.js")
+    app_js = _app_js()
     fn = _function_source(app_js, "renderCaptureBanner")
     assert 'banner.getAttribute("data-render-sig") === sig) return' in fn
     assert 'banner.setAttribute("data-render-sig", sig)' in fn
@@ -1197,8 +1331,8 @@ def test_capture_banner_dismissal_is_a_seven_day_snooze_not_permanent() -> None:
     store a bare "1" forever (or would have) -- once hidden, hidden for
     good, even after the notes themselves changed. UX-6/9 wants a 7-day
     snooze instead, so a quiet banner returns on its own."""
-    app_js = _static_text("app.js")
-    assert "var BANNER_SNOOZE_MS = 7 * 24 * 60 * 60 * 1000;" in app_js
+    app_js = _app_js()
+    assert re.search(r"(?:export\s+)?(?:var|let|const) BANNER_SNOOZE_MS = 7 \* 24 \* 60 \* 60 \* 1000;", app_js)
     snoozed_fn = _function_source(app_js, "snoozed")
     assert "Date.now() - ts < BANNER_SNOOZE_MS" in snoozed_fn
     notes_fn = _function_source(app_js, "notesSnoozed")
@@ -1216,7 +1350,7 @@ def test_empty_state_helper_exists_and_is_used_for_not_enough_data_states() -> N
     paragraph, and it folds in the structured {reason, have, need}
     ``gate`` object api.py now attaches to /api/impact's per-change
     rows when a helper has one."""
-    app_js = _static_text("app.js")
+    app_js = _app_js()
     helper = _function_source(app_js, "emptyState")
     assert "gate.have" in helper and "gate.need" in helper
 

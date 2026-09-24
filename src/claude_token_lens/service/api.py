@@ -287,6 +287,17 @@ def _health_status(
         )
     return "ok", None
 
+#: Content types pinned for the dashboard's static files, checked before
+#: ``mimetypes`` (which reads the Windows registry, so its answer varies
+#: by machine and has no entry for ``.woff2`` on some). A module script
+#: served with the wrong type fails to load under ``nosniff``.
+_STATIC_CONTENT_TYPES = {
+    ".js": "text/javascript",
+    ".css": "text/css; charset=utf-8",
+    ".woff2": "font/woff2",
+    ".svg": "image/svg+xml",
+}
+
 _PLACEHOLDER_INDEX_HTML = (
     "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>claude-token-lens</title>"
     "</head><body>UI not built yet.</body></html>"
@@ -2429,7 +2440,9 @@ def make_handler(
             if not candidate.is_file():
                 self._write_json(*_not_found(), head_only=head_only)
                 return
-            content_type, _encoding = mimetypes.guess_type(str(candidate))
+            content_type = _STATIC_CONTENT_TYPES.get(candidate.suffix.lower())
+            if content_type is None:
+                content_type, _encoding = mimetypes.guess_type(str(candidate))
             self._write_bytes(
                 200, content_type or "application/octet-stream", candidate.read_bytes(), head_only=head_only
             )
