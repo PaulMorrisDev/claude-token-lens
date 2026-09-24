@@ -322,7 +322,9 @@ transcript. At the Deep level, the PostToolUse hook that notes an
 unusually large result or a web call (matcher
 `Bash|Read|Grep|Glob|WebFetch|WebSearch|mcp__.*`) is foreground too, for
 the same reason, adding on the order of 0.1 seconds to a matching tool
-call; at every other level nothing is registered on PostToolUse at all.
+call (only `WebFetch|WebSearch` when a custom set turns on the web
+metric alone); without either metric nothing is registered on
+PostToolUse at all.
 The two free signal hooks, Notification and PermissionRequest, run
 asynchronously (in the background) since nothing needs to read what
 they print.
