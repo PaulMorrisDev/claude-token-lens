@@ -398,3 +398,163 @@ def test_changes_prints_the_capture_expectation(tmp_path, capsys):
     out = capsys.readouterr().out
     assert rc == 0 and "Metrics capture hooks (5 entries): installed" in out
     assert "It uses a few of your Claude tokens while capture is on" in out
+
+
+# -- what it costs: capture status, and the init question -------------------------
+
+
+def _session(config_dir, *, captured: bool = False, days_ago: float = 1, name: str = "s1"):
+    """One recent session under ``<tmp>/claude/projects`` (the projects
+    root while ``$CLAUDE_CONFIG_DIR`` points there): a message and a
+    tagged reply, with the Essentials note first when ``captured``."""
+    from helpers import attachment_line, turn_line, user_str_line, write_jsonl
+
+    start = datetime.now(timezone.utc) - timedelta(days=days_ago)
+
+    def ts(second):
+        return (start + timedelta(seconds=second)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+    lines = []
+    if captured:
+        text = cat.note_text(cat.level_metrics("essentials"), "main")
+        note = attachment_line(
+            "hook_additional_context",
+            rendered=f"<system-reminder>\nSessionStart hook additional context: {text}\n</system-reminder>",
+            content=[text], hookName="SessionStart", hookEvent="SessionStart", toolUseID="SessionStart",
+        )
+        note["timestamp"] = ts(0)
+        lines.append(note)
+    lines += [
+        user_str_line("fix the failing test", origin={"kind": "human"}, timestamp=ts(1)),
+        turn_line(content=[{"type": "text", "text": "Fixed.\n[tl: task=bugfix brief=clear]"}], timestamp=ts(2),
+                  input_tokens=2000, output_tokens=400),
+    ]
+    project = config_dir.parent / "projects" / "C--work-app"
+    project.mkdir(parents=True, exist_ok=True)
+    write_jsonl(project / f"{name}.jsonl", lines)
+    return start
+
+
+def _api_billing(config_dir):
+    (config_dir / "config.toml").write_text('billing = "api"\n', encoding="utf-8")
+
+
+def test_status_while_off_estimates_each_level_from_your_sessions(tmp_path):
+    config_dir = _claude(tmp_path, {})
+    _api_billing(config_dir)
+    _session(config_dir)
+    rc, out = _capture(config_dir, "status")
+    assert rc == 0
+    assert "What each level would have cost over your last 14 days (1 session, 0 subagents):" in out
+    assert "Free        nothing: it only logs a few events to a local file" in out
+    for title in ("Essentials", "Standard", "Deep"):
+        line = next(line for line in out.splitlines() if line.strip().startswith(title))
+        assert "tokens and" in line and "a week" in line and "of what you spent" in line
+
+
+def test_status_while_on_shows_what_it_measured(tmp_path):
+    config_dir = _claude(tmp_path, {})
+    _api_billing(config_dir)
+    start = _session(config_dir, captured=True)
+    from claude_token_lens.config import set_capture
+
+    set_capture(config_dir, level="essentials", now=start - timedelta(hours=1))
+    rc, out = _capture(config_dir, "status")
+    assert f"Measured since {(start - timedelta(hours=1)).date().isoformat()}: 1 session and 0 subagents captured" in out
+    assert "tokens of note and" in out and "of what those sessions cost" in out
+    assert "Claude tagged 100.0% of your messages" in out
+
+
+def test_status_while_on_before_any_captured_session_says_so(tmp_path):
+    config_dir = _claude(tmp_path, {})
+    _session(config_dir, days_ago=2)
+    _capture(config_dir, "on", "--yes")
+    rc, out = _capture(config_dir, "status")
+    assert "No captured sessions yet" in out
+
+
+def _init_args(config_dir, *argv):
+    return cli._make_parser().parse_args(["init", "--config-dir", str(config_dir), *argv])
+
+
+def _init_capture(config_dir, *argv, stdin=""):
+    out = io.StringIO()
+    cli._cmd_init_capture_step(
+        _init_args(config_dir, *argv), config_dir=config_dir, claude_root=config_dir.parent,
+        stdin=io.StringIO(stdin), stdout=out, now=NOW,
+    )
+    return out.getvalue()
+
+
+def test_init_warns_shows_estimates_and_connects_after_a_yes(tmp_path):
+    config_dir = _claude(tmp_path, {})
+    _api_billing(config_dir)
+    _session(config_dir)
+    out = _init_capture(config_dir, stdin="standard\ny\n")
+    assert "This uses your tokens" in out and "[tl: task=bugfix brief=clear], which you will see" in out
+    assert "What each level would have cost over your last 14 days" in out
+    assert "Metrics capture level: off, free, essentials, standard, deep [off]:" in out
+    assert "Saved to config.toml: metrics capture Standard (since 2026-09-24)." in out
+    assert load_config(config_dir).capture.level == "standard"
+    assert len(_entries(_settings(config_dir))) == len(hook_health.capture_specs(cat.level_metrics("standard")))
+
+
+@pytest.mark.parametrize("typed, level", [("", "off"), ("n", "off"), ("yes", "essentials"), ("Deep", "deep")])
+def test_init_reads_yes_no_and_level_names(tmp_path, typed, level):
+    config_dir = _claude(tmp_path, {})
+    _init_capture(config_dir, stdin=f"{typed}\nn\n")
+    assert load_config(config_dir).capture.level == level
+
+
+def test_init_does_not_turn_it_on_for_a_word_it_does_not_know(tmp_path):
+    config_dir = _claude(tmp_path, {})
+    out = _init_capture(config_dir, stdin="max\n")
+    assert "'max' isn't a level" in out and load_config(config_dir).capture.level == "off"
+
+
+def test_non_interactive_init_leaves_it_off_and_says_so(tmp_path):
+    config_dir = _claude(tmp_path, {})
+    out = _init_capture(config_dir, "--non-interactive")
+    assert "(derived) capture_level: not given in --answers; metrics capture left off" in out
+    assert "This uses your tokens" not in out
+    assert load_config(config_dir).capture.level == "off"
+
+
+def test_init_capture_level_flag_without_connecting_prints_the_command(tmp_path):
+    config_dir = _claude(tmp_path, {})
+    out = _init_capture(config_dir, "--non-interactive", "--no-install", "--capture-level", "essentials")
+    assert "This uses your tokens" in out
+    assert "Add the hook entries it needs with: claude-token-lens capture connect" in out
+    assert load_config(config_dir).capture.level == "essentials"
+    assert _settings(config_dir) == {}
+
+
+def test_init_answers_file_level_with_connect_writes_without_asking(tmp_path):
+    config_dir = _claude(tmp_path, {})
+    answers = tmp_path / "answers.json"
+    answers.write_text(json.dumps({"capture_level": "free"}), encoding="utf-8")
+    out = _init_capture(config_dir, "--non-interactive", "--connect", "--answers", str(answers))
+    assert load_config(config_dir).capture.level == "free"
+    assert len(_entries(_settings(config_dir))) == len(hook_health.capture_specs(cat.level_metrics("free")))
+    assert "Make this change?" not in out
+
+
+def test_init_leaves_capture_that_is_already_on_alone(tmp_path):
+    config_dir = _claude(tmp_path, {})
+    _capture(config_dir, "on", "--level", "standard", "--yes")
+    out = _init_capture(config_dir, stdin="off\n")
+    assert "Metrics capture is Standard (since 2026-09-24)." in out
+    assert load_config(config_dir).capture.level == "standard"
+    out = _init_capture(config_dir, "--capture-level", "off")
+    assert "Metrics capture switched off." in out and load_config(config_dir).capture.level == "off"
+
+
+def test_init_asks_about_capture_last(tmp_path, monkeypatch, capsys):
+    config_dir = _claude(tmp_path, {})
+    monkeypatch.chdir(tmp_path)
+    rc = cli.main(["init", "--non-interactive", "--no-install", "--no-service", "--config-dir", str(config_dir),
+                   "--capture-level", "essentials"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert out.rindex("Metrics capture (optional)") > out.index("Wrote config.toml")
+    assert load_config(config_dir).capture.level == "essentials"

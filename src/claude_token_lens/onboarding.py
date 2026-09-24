@@ -20,6 +20,12 @@ command, after showing it and a yes (or ``--repair-hook``), with a
 backup first (:func:`_offer_hook_repair`). Connecting the hook and
 statusline is ``cli.py``'s ``_cmd_init_connect_step``, which also shows
 the change and asks first; profiles are written only by ``apply``.
+
+The last question, whether to turn on metrics capture, is
+:func:`ask_capture_level`: it warns that capture uses tokens and shows
+what each level would have cost, and ``cli.py``'s
+``_cmd_init_capture_step`` saves the answer and adds the hook entries it
+needs, after showing the change and asking.
 """
 
 from __future__ import annotations
@@ -33,7 +39,7 @@ from pathlib import Path
 from typing import IO
 
 from . import baseline as baseline_mod
-from . import discovery, hook_health, snapshots
+from . import capture_catalogue, discovery, hook_health, snapshots
 from .fixes import RESTART_NOTE
 from .config import (
     Config,
@@ -52,6 +58,8 @@ __all__ = [
     "Answers",
     "load_answers_file",
     "gather_answers",
+    "capture_answer",
+    "ask_capture_level",
     "run_init",
 ]
 
@@ -196,8 +204,9 @@ class Answers:
 
 def load_answers_file(path: str | Path) -> dict:
     """Parse an ``--answers`` file: a flat JSON object whose keys are
-    any of :class:`Answers`' field names (any subset; omitted keys fall
-    back to derivation the same as if no file were given at all).
+    any of :class:`Answers`' field names, plus ``capture_level`` for
+    :func:`ask_capture_level` (any subset; omitted keys fall back to
+    derivation the same as if no file were given at all).
     """
     path = Path(path)
     try:
@@ -415,6 +424,77 @@ def gather_answers(
         extra_projects_roots=extra_projects_roots,
         notes=notes,
     )
+
+
+#: Answers to the capture question that mean a level.
+_CAPTURE_WORDS = {"no": "off", "n": "off", "none": "off", "yes": "essentials", "y": "essentials", "on": "essentials"}
+
+CAPTURE_INTRO = (
+    "Metrics capture (optional)\n"
+    "Token Lens can have Claude note a few words about each piece of work, such as the kind of task, how clear "
+    "the request was and whether an agent finished, so its suggestions fit how you work. This uses your tokens: "
+    "Claude reads a short note when a session or subagent starts, and ends each reply with a one-line tag such as "
+    "[tl: task=bugfix brief=clear], which you will see. The free level only logs a few events to a local file.\n"
+)
+
+
+def capture_answer(answers_path: str | Path | None = None, preset: str | None = None) -> str | None:
+    """The capture level given without asking: ``--capture-level``
+    (``preset``), else the answers file's ``capture_level`` key, else
+    ``None``."""
+    if preset is not None:
+        return preset
+    if answers_path is None:
+        return None
+    raw = load_answers_file(answers_path).get("capture_level")
+    return None if raw is None else str(raw)
+
+
+def ask_capture_level(
+    *,
+    estimates,
+    preset: str | None = None,
+    answers_path: str | Path | None = None,
+    non_interactive: bool = False,
+    stdin: IO[str] = sys.stdin,
+    stdout: IO[str] = sys.stdout,
+) -> tuple[str, list[str]]:
+    """init's last question: turn on metrics capture, and at which level.
+
+    ``preset`` (``--capture-level``) or the answers file's
+    ``capture_level`` key answers it; otherwise it is asked, after the
+    token-use warning and ``estimates()`` (lines saying what each level
+    would have cost you, worked out only when they are shown). Under
+    ``--non-interactive`` with no answer, capture stays off and a note
+    says so. Returns ``(level, notes)``; yes/no answers become
+    ``essentials``/``off``, and anything else comes back as typed for the
+    caller to reject.
+    """
+    notes: list[str] = []
+    given = capture_answer(answers_path, preset)
+    if given is None and non_interactive:
+        notes.append(
+            "capture_level: not given in --answers; metrics capture left off "
+            "(turn it on later with 'claude-token-lens capture on')"
+        )
+        return "off", notes
+    stdout.write("\n" + CAPTURE_INTRO)
+    lines = estimates()
+    if lines:
+        stdout.write("\n".join(lines) + "\n")
+    stdout.write("Change it or turn it off any time: 'claude-token-lens capture', or the Capture tab.\n")
+    raw = _ask(
+        "capture_level",
+        "Metrics capture level: " + ", ".join(capture_catalogue.LEVELS),
+        "off",
+        answers_data={"capture_level": given} if given is not None else None,
+        non_interactive=non_interactive,
+        stdin=stdin,
+        stdout=stdout,
+        notes=notes,
+    )
+    word = raw.strip().lower()
+    return _CAPTURE_WORDS.get(word, word), notes
 
 
 def _gather_extra_roots(

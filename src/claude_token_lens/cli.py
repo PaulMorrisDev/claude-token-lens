@@ -880,6 +880,13 @@ def _add_init_args(sub: argparse.ArgumentParser) -> None:
         help="show the settings.json change and the service-install plan without "
         "making either (config.toml and the initial baseline are still written)",
     )
+    sub.add_argument(
+        "--capture-level",
+        choices=capture_catalogue.LEVELS,
+        default=None,
+        help="answer the metrics capture question without asking: off, or the level to turn on "
+        "(capture uses tokens; 'claude-token-lens capture status' shows how many)",
+    )
 
 
 def _add_baseline_args(sub: argparse.ArgumentParser) -> None:
@@ -2363,7 +2370,87 @@ def _cmd_init(args: argparse.Namespace) -> int:
     # draws for the hook/statusLine fragments above.
     if not args.no_install and (args.connect or not args.non_interactive):
         _cmd_init_connect_step(args, config_dir=config_dir, hook=hook, claude_root=claude_root)
-    return _cmd_init_service_step(args, config_dir=config_dir, projects_root_path=service_roots)
+    rc = _cmd_init_service_step(args, config_dir=config_dir, projects_root_path=service_roots)
+    _cmd_init_capture_step(args, config_dir=config_dir, claude_root=claude_root)
+    return rc
+
+
+def _cmd_init_capture_step(
+    args: argparse.Namespace, *, config_dir: Path, claude_root: Path, stdin=None, stdout=None, now=None
+) -> None:
+    """``init``'s last question: metrics capture
+    (:func:`onboarding.ask_capture_level`, which warns that it uses
+    tokens and shows what each level would have cost over your last
+    :data:`CAPTURE_HISTORY_DAYS` days). A level other than ``off`` is
+    saved to config.toml, then the settings.json entries it needs are
+    shown and added after a yes (or ``--connect``), as in ``capture on``;
+    when init isn't connecting to Claude Code, the command that adds them
+    is printed. Capture already on is left as it is unless
+    ``--capture-level`` or the answers file names a level."""
+    stdin = stdin if stdin is not None else sys.stdin
+    stdout = stdout if stdout is not None else sys.stdout
+    now = now or datetime.now(timezone.utc)
+    try:
+        config = load_config(config_dir)
+        given = onboarding.capture_answer(args.answers, args.capture_level)
+    except (ConfigError, onboarding.OnboardingError) as exc:
+        stdout.write(f"Metrics capture: skipped ({exc}).\n")
+        return
+    if config.capture.is_on and given is None:
+        stdout.write(
+            f"\nMetrics capture is {_capture_describe(config.capture)}. "
+            "'claude-token-lens capture' shows what it costs and changes it.\n"
+        )
+        return
+
+    def estimates() -> list[str]:
+        past, units = _capture_history(args, config, config_dir)
+        return _capture_estimate_lines(past, units) if past is not None else []
+
+    level, notes = onboarding.ask_capture_level(
+        estimates=estimates,
+        preset=given,
+        non_interactive=args.non_interactive,
+        stdin=stdin,
+        stdout=stdout,
+    )
+    for note in notes:
+        stdout.write(f"(derived) {note}\n")
+    if level not in capture_catalogue.LEVELS:
+        stdout.write(
+            f"{level!r} isn't a level, so metrics capture is left as it is. "
+            "'claude-token-lens capture on --level LEVEL' turns it on.\n"
+        )
+        return
+    if level == "off" and not config.capture.is_on:
+        if not notes:
+            stdout.write("Metrics capture left off.\n")
+        return
+    try:
+        capture = set_capture(config_dir, level=level, now=now)
+    except ConfigError as exc:
+        stdout.write(f"{exc}\n")
+        return
+    if level == "off":
+        stdout.write("Metrics capture switched off.\n")
+        return
+    stdout.write(f"Saved to config.toml: metrics capture {_capture_describe(capture)}.\n")
+    wanted = hook_health.capture_specs(capture.active_metrics())
+    if args.no_install or not (args.connect or not args.non_interactive):
+        if hook_health.check_capture(wanted, claude_root=claude_root).missing:
+            stdout.write("Add the hook entries it needs with: claude-token-lens capture connect\n")
+        return
+    done = _capture_settings_step(
+        wanted,
+        config_dir=config_dir,
+        claude_root=claude_root,
+        dry_run=args.dry_run,
+        assume_yes=args.connect,
+        stdin=stdin,
+        stdout=stdout,
+    )
+    if not done and wanted and not args.dry_run:
+        stdout.write("Until then the chosen metrics can't be captured.\n")
 
 
 def _cmd_init_connect_step(
@@ -2784,6 +2871,107 @@ def _capture_cost_lines(ids) -> list[str]:
     return lines
 
 
+#: Days of your own sessions replayed to estimate what capture would cost.
+CAPTURE_HISTORY_DAYS = 14
+
+
+def _capture_corpus(args: argparse.Namespace, config: Config, config_dir: Path, *, days=None, since=None) -> Corpus:
+    """Every project's sessions over ``days`` or from ``since`` on:
+    capture runs in all of them unless ``[capture] projects`` narrows
+    it. ``--until`` is the capture end time here, not a window."""
+    roots = discovery.projects_roots(args.projects_root, config.extra_projects_roots)
+    project_dirs = discovery.resolve_project_dirs(
+        roots, slugs=None, all_projects=True, family_regex=None, exclude_projects=config.exclude_projects
+    )
+    window = argparse.Namespace(**{**vars(args), "days": days, "since": since, "until": None, "limit": None})
+    return _load_corpus_for_args(window, config, config_dir, project_dirs)
+
+
+def _capture_pricing(args: argparse.Namespace, config: Config, config_dir: Path) -> Pricing | None:
+    try:
+        return load_pricing(path=args.pricing or config.pricing_path, config_dir=config_dir)
+    except PricingError:
+        return None
+
+
+def _capture_history(args: argparse.Namespace, config: Config, config_dir: Path):
+    """``(history, units)`` from your last :data:`CAPTURE_HISTORY_DAYS`
+    days, or ``(None, None)`` when the rate card can't be read."""
+    from . import capture
+    from .report import _report_units
+
+    rates = _capture_pricing(args, config, config_dir)
+    if rates is None:
+        return None, None
+    corpus = _capture_corpus(args, config, config_dir, days=CAPTURE_HISTORY_DAYS)
+    return capture.history(corpus, rates, days=CAPTURE_HISTORY_DAYS), _report_units(corpus, rates, config, config_dir)
+
+
+def _capture_amount(units, usd: float, period: str = "") -> str:
+    """``usd`` for the billing mode (a share of the weekly limit on a
+    subscription, when it can be worked out)."""
+    if usd <= 0:
+        return "nothing"
+    if units.billing_mode != "subscription" and usd < 0.005:
+        return f"under {format_cell(0.01, 'money', units.currency)}" + (f" {period}" if period else "")
+    amount = units.money(usd, period=period)
+    return amount.text() if amount is not None else "nothing"
+
+
+def _plural(count: int, word: str) -> str:
+    return f"{count} {word}{'' if count == 1 else 's'}"
+
+
+def _capture_estimate_lines(past, units, sample: int = 100) -> list[str]:
+    """What each level would have cost over ``past``, one line each."""
+    from . import capture
+
+    if not past.sessions:
+        return [
+            f"No sessions in your last {past.days} days to work out what it would cost. Roughly, at Essentials:",
+            *(f"  - {line}" for line in _capture_cost_lines(capture_catalogue.level_metrics("essentials"))),
+        ]
+    sampled = f", {sample}% of sessions captured" if sample < 100 else ""
+    lines = [
+        f"What each level would have cost over your last {past.days} days "
+        f"({_plural(past.sessions, 'session')}, {_plural(past.subagents, 'subagent')}{sampled}):"
+    ]
+    for level, est in capture.level_estimates(past, sample).items():
+        title = capture_catalogue.LEVEL_TITLES.get(level, level)
+        if est.cost <= 0:
+            lines.append(f"  {title:<11} nothing: it only logs a few events to a local file")
+            continue
+        tokens = round((est.note_tokens + est.tag_tokens) * 7 / est.days) if est.days else 0
+        share = f", {format_cell(est.share, 'pct')} of what you spent" if est.share is not None else ""
+        amount = _capture_amount(units, est.per_week, "a week")
+        lines.append(f"  {title:<11} about {format_cell(tokens, 'tokens')} tokens and {amount}{share}")
+    return lines
+
+
+def _capture_usage_lines(use, units) -> list[str]:
+    """What capture measured since it was turned on."""
+    if not use.sessions and not use.subagents:
+        return [
+            "No captured sessions yet: the note is added to sessions and subagents started after capture was "
+            "turned on."
+        ]
+    since = f" since {use.since[:10]}" if use.since else ""
+    share = f", {format_cell(use.share, 'pct')} of what those sessions cost" if use.share is not None else ""
+    lines = [
+        f"Measured{since}: {_plural(use.sessions, 'session')} and {_plural(use.subagents, 'subagent')} captured",
+        f"  about {format_cell(use.note_tokens, 'tokens')} tokens of note and {format_cell(use.tag_tokens, 'tokens')} "
+        f"tokens of tag: {_capture_amount(units, use.cost)}{share}",
+    ]
+    if use.coverage is not None:
+        reports = (
+            f" and {format_cell(use.report_coverage, 'pct')} of agent reports"
+            if use.report_coverage is not None
+            else ""
+        )
+        lines.append(f"  Claude tagged {format_cell(use.coverage, 'pct')} of your messages{reports}")
+    return lines
+
+
 def _capture_metric_changes(action: str, values: list[str], current: CaptureConfig) -> dict:
     """``set_capture`` arguments for ``enable``/``disable``. Raises
     ``ValueError`` naming an id it doesn't know."""
@@ -2867,7 +3055,9 @@ def _capture_settings_step(
     return True
 
 
-def _capture_status(capture: CaptureConfig, *, config_dir: Path, claude_root: Path, stdout) -> int:
+def _capture_status(
+    capture: CaptureConfig, *, config_dir: Path, claude_root: Path, stdout, args=None, config: Config | None = None
+) -> int:
     stdout.write(f"Metrics capture: {_capture_describe(capture)}\n")
     ids = capture.active_metrics()
     if capture.is_on:
@@ -2893,11 +3083,14 @@ def _capture_status(capture: CaptureConfig, *, config_dir: Path, claude_root: Pa
         stdout.write(f"  coaching: {', '.join(capture.coaching)}\n")
     cost = _capture_cost_lines(ids)
     if cost:
-        stdout.write("Rough size (the Capture tab shows what it measured):\n")
+        stdout.write("Rough size:\n")
         for line in cost:
             stdout.write(f"  - {line}\n")
     elif capture.is_on:
         stdout.write("It adds nothing to Claude's context at this level.\n")
+    if args is not None and config is not None:
+        for line in _capture_measured(capture, args=args, config=config, config_dir=config_dir):
+            stdout.write(f"{line}\n")
     wanted = hook_health.capture_specs(ids)
     health = hook_health.check_capture(wanted, claude_root=claude_root)
     if wanted or health.extra:
@@ -2907,6 +3100,25 @@ def _capture_status(capture: CaptureConfig, *, config_dir: Path, claude_root: Pa
         + ", capture enable|disable METRIC..., or the Capture tab on the dashboard.\n"
     )
     return 0
+
+
+def _capture_measured(capture: CaptureConfig, *, args, config: Config, config_dir: Path) -> list[str]:
+    """While capture is on, what it has cost since it was turned on;
+    while it is off, what each level would have cost you."""
+    from . import capture as capture_mod
+    from .report import _report_units
+
+    if capture.is_on and not capture.enabled_at:
+        return []
+    rates = _capture_pricing(args, config, config_dir)
+    if rates is None:
+        return []
+    if capture.is_on:
+        corpus = _capture_corpus(args, config, config_dir, since=capture.enabled_at)
+        units = _report_units(corpus, rates, config, config_dir)
+        return _capture_usage_lines(capture_mod.usage(corpus, rates, since=capture.enabled_at), units)
+    past, units = _capture_history(args, config, config_dir)
+    return _capture_estimate_lines(past, units) if past is not None else []
 
 
 def _cmd_capture(args: argparse.Namespace, *, stdin=None, stdout=None, now: datetime | None = None) -> int:
@@ -2928,13 +3140,16 @@ def _cmd_capture(args: argparse.Namespace, *, stdin=None, stdout=None, now: date
     config_dir = _resolve_config_dir(args.config_dir)
     claude_root = _resolve_claude_root(getattr(args, "claude_root", None))
     try:
-        current = load_config(config_dir=config_dir).capture
+        config = load_config(config_dir=config_dir)
     except ConfigError as exc:
         stdout.write(f"config.toml has a problem, so capture can't be changed: {exc}\n")
         return 2
+    current = config.capture
     action = args.action
     if action == "status":
-        return _capture_status(current, config_dir=config_dir, claude_root=claude_root, stdout=stdout)
+        return _capture_status(
+            current, config_dir=config_dir, claude_root=claude_root, stdout=stdout, args=args, config=config
+        )
 
     changes: dict = {}
     try:

@@ -19,7 +19,7 @@ running, and sandboxed by the host.
 ## The installer: `install-service`/`uninstall-service`
 
 `src/claude_token_lens/installer.py` (v3) drives Path 1 and Path 2
-below from Python, so `claude-token-lens init`'s last step, and the
+below from Python, so `claude-token-lens init`'s service step, and the
 standalone `install-service` subcommand, don't require you to copy a
 script or a unit file by hand. It exists for one reason: Claude Code
 deletes a project's own transcripts after `cleanupPeriodDays`, and this

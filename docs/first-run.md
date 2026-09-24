@@ -219,7 +219,7 @@ tool installed and the command that undoes each.
 
 ## 3. The logon service
 
-`init`'s last step asks whether to register `claude-token-lens serve`
+`init`'s service step asks whether to register `claude-token-lens serve`
 to start automatically at logon (default yes). `--no-service` skips the
 question. `--install-service` answers yes without asking. Under
 `--non-interactive` without `--install-service`, the answer is no.

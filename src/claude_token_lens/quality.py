@@ -92,8 +92,8 @@ from typing import Callable, Iterable
 
 from . import capture_catalogue
 from .fixes import _model_family
-from .model import Column, EventKind, Section, Table, TranscriptResult
-from .pricing import Pricing, price_turn
+from .model import Column, EventKind, Section, Table, TranscriptResult, Turn
+from .pricing import Pricing, effective_rates, price_turn
 from .workstyle import model_tier
 
 #: The group name of main-session runs; subagent runs are grouped by
@@ -460,18 +460,34 @@ def session_runs(bundle, pricing: Pricing | None) -> list[Run]:
     ]
     _mark_retried(runs)
     if pricing is not None:
-        dispatcher = runs[0].model if runs and not runs[0].is_agent else ""
-        for run in runs:
+        spawners = {
+            tool_use_id: turn
+            for result in transcripts
+            for turn in result.turns
+            for tool_use_id in turn.tool_use_ids
+        }
+        main_turns = [t for t in transcripts[0].turns if t.turn_index > 0] if runs and not runs[0].is_agent else []
+        for run, result in zip(runs, transcripts):
+            turns = [turn for turn in result.turns if turn.turn_index > 0]
             if run.result_marker:
-                run.result_marker_cost = _marker_cost(pricing, run.model)
+                writer = next((t for t in reversed(turns) if t.result_marker), turns[-1] if turns else None)
+                run.result_marker_cost = _marker_cost(pricing, writer)
             if run.retry_marker:
-                run.retry_marker_cost = _marker_cost(pricing, dispatcher or run.model)
+                # The retry word opens the brief, so the agent's parent
+                # wrote it: the turn that started the agent, else the
+                # main session's last turn, else the agent's own first.
+                writer = spawners.get(result.meta.tool_use_id or "")
+                writer = writer or (main_turns[-1] if main_turns else turns[0] if turns else None)
+                run.retry_marker_cost = _marker_cost(pricing, writer)
     return runs
 
 
-def _marker_cost(pricing: Pricing, model: str) -> float:
-    resolved = pricing.resolve_model(model) if model else None
-    return MARKER_TOKENS * resolved.rates.output / 1e6 if resolved is not None else 0.0
+def _marker_cost(pricing: Pricing, turn: Turn | None) -> float:
+    """A marker's output at the rate its writing turn was charged,
+    fast mode included."""
+    resolved = pricing.resolve_model(turn.model) if turn is not None and turn.model else None
+    rates = effective_rates(turn, resolved) if resolved is not None else None
+    return MARKER_TOKENS * rates.output / 1e6 if rates is not None else 0.0
 
 
 def corpus_runs(corpus, pricing: Pricing | None) -> list[Run]:

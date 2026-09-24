@@ -73,6 +73,13 @@ def _transcript_cost(result: TranscriptResult, rates_lookup: Pricing) -> float:
     return total
 
 
+def agent_key(agent_id: str | None) -> str:
+    """An agent id as ``parent_agent_id`` spells it. A subagent's
+    ``meta.agent_id`` is its file stem (``agent-a98...``), while the
+    ``parentAgentId`` its children record is the bare id (``a98...``)."""
+    return (agent_id or "").removeprefix("agent-")
+
+
 def _first_priced_turn(result: TranscriptResult) -> Turn | None:
     for turn in result.turns:
         if turn.turn_index == 1:
@@ -103,7 +110,7 @@ def _report_index(top: TranscriptResult, subs: Sequence[TranscriptResult]) -> _R
             if event.kind == EventKind.TASK_NOTIFICATION and event.size_chars:
                 task_id = event.detail.get("task_id")
                 if isinstance(task_id, str) and task_id:
-                    index.by_agent_id[task_id] = event.size_chars
+                    index.by_agent_id[agent_key(task_id)] = event.size_chars
     return index
 
 
@@ -121,7 +128,7 @@ def _report_tokens(result: TranscriptResult, index: _ReportIndex | None = None) 
         if result.meta.tool_use_id:
             chars = index.by_tool_use.get(result.meta.tool_use_id)
         if chars is None and result.meta.agent_id:
-            chars = index.by_agent_id.get(result.meta.agent_id)
+            chars = index.by_agent_id.get(agent_key(result.meta.agent_id))
         if chars is not None:
             return round(chars / _CHARS_PER_TOKEN_APPROX)
     priced = _priced_turns(result)
@@ -216,7 +223,7 @@ def _transitive_closure(
             continue
         seen.add(id(sub))
         result.append(sub)
-        agent_id = sub.meta.agent_id
+        agent_id = agent_key(sub.meta.agent_id)
         if agent_id:
             stack.extend(children_by_parent.get(agent_id, []))
     return result
@@ -412,7 +419,7 @@ class TopologyStats:
 
         children_by_parent: dict[str, list[TranscriptResult]] = {}
         for sub in subs:
-            parent = sub.meta.parent_agent_id
+            parent = agent_key(sub.meta.parent_agent_id)
             if parent:
                 children_by_parent.setdefault(parent, []).append(sub)
 

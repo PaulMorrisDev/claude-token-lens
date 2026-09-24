@@ -677,6 +677,56 @@ def price_turn(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class EffectiveRates:
+    """The per-million-token USD rates one turn was charged at: its
+    model's rates with fast mode, the long-context rule and the
+    data-residency uplift applied (see :func:`effective_rates`)."""
+
+    input: float
+    output: float
+    cache_write_5m: float
+    cache_write_1h: float
+    cache_read: float
+
+
+def effective_rates(
+    turn: Turn,
+    rates: ModelRates | ResolvedRates | None,
+    geo: str | None = _GEO_FROM_TURN,  # type: ignore[assignment]
+) -> EffectiveRates | None:
+    """The rates :func:`price_turn` charges ``turn`` at, for pricing
+    tokens it doesn't itself count, such as a tag Claude wrote inside the
+    turn's output or a note carried in its context. The multipliers apply
+    in :func:`price_turn`'s order: fast mode, then the long-context rule,
+    then the geo uplift. ``None`` for an unresolved model."""
+    model_rates = rates.rates if isinstance(rates, ResolvedRates) else rates
+    if model_rates is None:
+        return None
+    values = [
+        model_rates.input,
+        model_rates.output,
+        model_rates.cache_write_5m,
+        model_rates.cache_write_1h,
+        model_rates.cache_read,
+    ]
+    if turn.speed == "fast" and model_rates.fast is not None:
+        values = [v * model_rates.fast.multiplier for v in values]
+    rule = model_rates.long_context
+    if rule is not None and turn.ctx >= rule.threshold_tokens:
+        if rule.overrides:
+            keys = ("input", "output", "cache_write_5m", "cache_write_1h", "cache_read")
+            values = [rule.overrides.get(key, v) for key, v in zip(keys, values)]
+        elif rule.multiplier is not None:
+            values = [v * rule.multiplier for v in values]
+    effective_geo = turn.inference_geo if geo is _GEO_FROM_TURN else geo
+    if effective_geo not in _NO_GEO_VALUES and model_rates.geo_multipliers:
+        multiplier = model_rates.geo_multipliers.get(effective_geo)
+        if multiplier is not None:
+            values = [v * multiplier for v in values]
+    return EffectiveRates(*values)
+
+
 @dataclass(slots=True)
 class PricingCoverage:
     """Accumulates how much of a corpus was actually priced, for the
@@ -850,9 +900,11 @@ __all__ = [
     "FastRule",
     "ModelRates",
     "ResolvedRates",
+    "EffectiveRates",
     "Pricing",
     "PricingCoverage",
     "load_pricing",
     "price_turn",
+    "effective_rates",
     "TOKEN_LENS_DIRNAME",
 ]

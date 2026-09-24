@@ -120,6 +120,24 @@ claude-token-lens init [--answers FILE] [--non-interactive] [--no-install]
    anything else. `serve` answers within seconds of starting (it binds
    its port before reading your history, and shows that scan's progress),
    so "not responding yet" means it is still starting or has failed.
+9. **Ask about metrics capture** (`onboarding.ask_capture_level`, then
+   `cli.py`'s `_cmd_init_capture_step`), last. It warns that capture
+   uses tokens: Claude reads a short note when a session or subagent
+   starts, and ends each reply with a one-line tag you will see. It then
+   shows what each level would have cost over your last 14 days, from
+   every project's sessions (`capture.history`, amounts in your billing
+   units), and asks for a level (`off`, the default, `free`,
+   `essentials`, `standard` or `deep`; `yes` means `essentials` and
+   `no` means `off`). `--capture-level LEVEL` or the answers file's
+   `capture_level` key answers it without asking; the warning is still
+   printed. Under `--non-interactive` with neither, capture stays off
+   and a `(derived) capture_level: ...` line says so, without reading
+   your sessions. A level is saved to `[capture]` in `config.toml`, then
+   the `settings.json` entries it needs are shown and added after a yes
+   (or at once with `--connect`), as `capture on` does; with
+   `--no-install`, or `--non-interactive` without `--connect`, the
+   `claude-token-lens capture connect` command is printed instead.
+   Capture that is already on is left as it is unless a level is given.
 
 ### The question set
 
@@ -132,6 +150,7 @@ claude-token-lens init [--answers FILE] [--non-interactive] [--no-install]
 | `tz` | Time zone, such as Europe/London (blank for this computer's) | `config.tz` |
 | `apply_scope` | Where should changes you apply go by default (`user`/`project-local`/`repo`) | `config.apply_scope` and this project's `projects/<slug>.toml` |
 | `capture_window` | How many days to collect data before the first baseline | `config.capture_window` (default 7) |
+| `capture_level` | Metrics capture level: off, free, essentials, standard, deep (asked last, after the token-use warning and each level's estimate; see step 9) | `[capture] level` |
 | `extra_projects_roots` | Asked once per WSL folder `init` finds that `config.toml` doesn't list yet: Claude Code also runs in WSL: <distro>; include those sessions? (default yes; `--non-interactive` adds them with a note). An answers-file list replaces the whole setting | `config.extra_projects_roots` |
 
 `config.capture_started` is set to the current UTC timestamp by the
@@ -168,7 +187,8 @@ omits falls back to interactive prompting, or a derived default under
   "shared_project_config": true,
   "tz": "Europe/London",
   "apply_scope": "repo",
-  "capture_window": 14
+  "capture_window": 14,
+  "capture_level": "essentials"
 }
 ```
 

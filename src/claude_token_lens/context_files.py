@@ -26,7 +26,7 @@ from typing import Iterable
 
 from . import recache
 from .model import Event, EventKind, TranscriptResult, Turn
-from .pricing import Pricing
+from .pricing import Pricing, effective_rates
 
 #: Duplicated per this package's small-constant convention (see
 #: ``context_budget._CHARS_PER_TOKEN_APPROX``).
@@ -89,10 +89,11 @@ class _Carry:
         self.stamp = next((turn.ts for turn in self.turns if turn.ts), "")
 
     def _rates(self, turn: Turn):
+        """The rates the turn was charged at, fast mode included."""
         if self.pricing is None:
             return None
         resolved = self.pricing.resolve_model(turn.model)
-        return resolved.rates if resolved is not None else None
+        return effective_rates(turn, resolved) if resolved is not None else None
 
     def index_at(self, ts: str | None) -> int:
         """Index of the first turn at or after ``ts`` (0 when unknown)."""

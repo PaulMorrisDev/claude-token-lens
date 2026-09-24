@@ -705,3 +705,31 @@ def test_run_init_current_project_line_uses_the_redacted_slug(tmp_path, monkeypa
     assert f"- current project: {expected_slug}" in out
     assert "home-<user>" in expected_slug
     assert "reallife-username" not in expected_slug
+
+
+# -- the metrics capture question ---------------------------------------------------
+
+
+def test_capture_question_works_out_estimates_only_when_it_shows_them():
+    calls = []
+
+    def estimates():
+        calls.append(1)
+        return ["  Essentials  about 900 tokens and 0.40 USD a week"]
+
+    out = io.StringIO()
+    level, notes = onboarding.ask_capture_level(estimates=estimates, non_interactive=True, stdout=out)
+    assert (level, calls, out.getvalue()) == ("off", [], "")
+    assert notes and "metrics capture left off" in notes[0]
+
+    level, notes = onboarding.ask_capture_level(estimates=estimates, stdin=io.StringIO("yes\n"), stdout=out)
+    assert (level, notes, calls) == ("essentials", [], [1])
+    assert "This uses your tokens" in out.getvalue() and "0.40 USD a week" in out.getvalue()
+
+
+def test_capture_answer_prefers_the_flag_then_the_answers_file(tmp_path):
+    answers = tmp_path / "answers.json"
+    answers.write_text(json.dumps({"capture_level": "deep"}), encoding="utf-8")
+    assert onboarding.capture_answer(answers, "free") == "free"
+    assert onboarding.capture_answer(answers) == "deep"
+    assert onboarding.capture_answer(None) is None

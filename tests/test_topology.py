@@ -30,13 +30,21 @@ Scenario shared by most tests here (``_build_scenario``):
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace as NS
 
 import pytest
 
 from claude_token_lens.model import TranscriptMeta
 from claude_token_lens.parse import parse_transcript
 from claude_token_lens.pricing import load_pricing, price_turn
-from claude_token_lens.topology import TopologyStats, build_section
+from claude_token_lens.topology import (
+    TopologyStats,
+    _report_index,
+    _report_tokens,
+    _transitive_closure,
+    agent_key,
+    build_section,
+)
 
 from helpers import (
     assert_privacy,
@@ -46,6 +54,7 @@ from helpers import (
     tool_use_block,
     turn_line,
     user_block_line,
+    user_str_line,
     write_jsonl,
 )
 
@@ -665,3 +674,31 @@ def test_a_read_after_an_edit_to_the_same_file_is_not_a_repeat(tmp_path):
     stats = TopologyStats()
     stats.add_session("sess-1", top, [], load_pricing())
     assert stats.redundant_reads_per_session == [1]  # b.py read twice; a.py re-read after its edit
+
+
+# -- agent ids as a child and a task notification spell them ------------------------
+
+
+def test_agent_key_strips_the_file_prefix_only():
+    assert agent_key("agent-a98f") == agent_key("a98f") == "a98f"
+    assert agent_key(None) == agent_key("") == ""
+
+
+def test_nested_agents_join_their_parent_by_its_bare_id():
+    """A child's ``parentAgentId`` is ``a1`` while its parent's file stem
+    (``meta.agent_id``) is ``agent-a1``."""
+    parent = NS(meta=NS(agent_id="agent-a1", parent_agent_id=None))
+    child = NS(meta=NS(agent_id="agent-b2", parent_agent_id="a1"))
+    assert _transitive_closure([parent], {"a1": [child]}) == [parent, child]
+
+
+def test_a_background_agent_report_is_found_by_its_task_id(tmp_path):
+    report = "<task-notification><task-id>a2</task-id><status>completed</status><result>" + "r" * 400 + \
+        "</result></task-notification>"
+    top_path, sub_path = tmp_path / "top.jsonl", tmp_path / "agent-a2.jsonl"
+    write_jsonl(top_path, [user_str_line("go"), turn_line(), user_str_line(report, origin={"kind": "task-notification"}),
+                           turn_line()])
+    write_jsonl(sub_path, [user_str_line("look"), turn_line(output_tokens=7)])
+    top = parse_transcript(top_path, TranscriptMeta(path=str(top_path), kind="top-level"))
+    sub = parse_transcript(sub_path, TranscriptMeta(path=str(sub_path), kind="subagent", agent_id="agent-a2"))
+    assert _report_tokens(sub, _report_index(top, [sub])) == round(len(report) / 4)
