@@ -176,6 +176,44 @@ SETTING_TEXT.update(
     }
 )
 
+# COV-07/COV-11: the settings.json `env` block levers the five COV-09
+# rules in recommend.py cite (``env-disable-prompt-caching``,
+# ``env-tool-search``, ``env-max-output-tokens``) attach a real
+# SettingChange to; keyed by the full "env.NAME" string, matching
+# ``change.key`` for one of these (never the bare env var name alone).
+SETTING_TEXT["env.DISABLE_PROMPT_CACHING"] = (
+    "Whether Claude Code's prompt cache is used at all, for every model. A value of 1 turns caching off.",
+    "Every request re-sends and re-processes the whole prefix instead of reading it from cache -- far more "
+    "expensive on a multi-turn session, not less.",
+    "Only a value of 1 actually disables caching; this report can only see that the name is set, not its value.",
+)
+SETTING_TEXT.update(
+    {
+        f"env.DISABLE_PROMPT_CACHING_{family}": (
+            f"Whether Claude Code's prompt cache is used for {label} specifically. A value of 1 turns it off "
+            "for that model only.",
+            "Every request to that model re-sends and re-processes the whole prefix instead of reading it "
+            "from cache -- far more expensive on a multi-turn session, not less.",
+            "Only a value of 1 actually disables caching; this report can only see that the name is set, not "
+            "its value.",
+        )
+        for family, label in (("SONNET", "Sonnet"), ("OPUS", "Opus"), ("HAIKU", "Haiku"), ("FABLE", "Fable"))
+    }
+)
+SETTING_TEXT["env.ENABLE_TOOL_SEARCH"] = (
+    "Whether Claude Code searches for the right MCP tool instead of sending every tool's full schema on "
+    "every turn -- only matters when ANTHROPIC_BASE_URL points at a non-Anthropic proxy or gateway.",
+    "If your proxy doesn't forward tool_reference blocks, turning this on can break tool calls instead of "
+    "shrinking them -- try it and check that tools still work.",
+    "",
+)
+SETTING_TEXT["env.CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = (
+    "The output-token cap for a single reply, above the model's own default.",
+    "A higher cap reserves more of the context budget for one reply, so auto-compaction triggers sooner on "
+    "everything else in the conversation.",
+    "",
+)
+
 #: Short names for every allowlisted key, for forms and tables.
 LEVER_LABELS = {
     "model": "Model",
@@ -201,6 +239,13 @@ LEVER_LABELS = {
     "skills": "Skills loaded at start",
     "mcpServers": "MCP servers it may use",
     "includeCoAuthoredBy": "Co-authored-by line on commits (deprecated)",
+    "env.DISABLE_PROMPT_CACHING": "Prompt caching (env override, all models)",
+    "env.DISABLE_PROMPT_CACHING_SONNET": "Prompt caching (env override, Sonnet)",
+    "env.DISABLE_PROMPT_CACHING_OPUS": "Prompt caching (env override, Opus)",
+    "env.DISABLE_PROMPT_CACHING_HAIKU": "Prompt caching (env override, Haiku)",
+    "env.DISABLE_PROMPT_CACHING_FABLE": "Prompt caching (env override, Fable)",
+    "env.ENABLE_TOOL_SEARCH": "MCP tool search (env override)",
+    "env.CLAUDE_CODE_MAX_OUTPUT_TOKENS": "Output token cap (env override)",
 }
 
 _SCOPE_WHERE = {
@@ -209,6 +254,9 @@ _SCOPE_WHERE = {
 }
 _SETTINGS_WHERE = {
     "user": ("~/.claude/settings.json", "your user settings, used in every project"),
+    # COV-01: the layer PROFILE_SCOPE_WHERE already distinguishes from
+    # "repo" below -- per-machine, never checked in (docs/config-layers.md).
+    "project-local": (".claude/settings.local.json", "this project, on your machine only"),
     "repo": (".claude/settings.json", "this project's shared settings"),
 }
 
@@ -333,6 +381,17 @@ _WORKFLOW_PROMPTS = {
     "wasted-turns": (
         "A material share of my spend went to turns whose output I never used: {title_lower} From now on, "
         "when the likely cause repeats (see the finding above), flag it before you start rather than after."
+    ),
+    # COV-07/COV-11: env-attribution-deprecated has no SettingChange
+    # (its real target, attribution.commit, isn't on profiles.schema's
+    # SETTINGS_ALLOWLIST -- see recommend.py's COV-09 section comment),
+    # so it keeps a prompt instead, asking Claude to do the migration.
+    "env-attribution-deprecated": (
+        "includeCoAuthoredBy is deprecated in favour of the newer attribution setting: {title_lower} Please "
+        "translate my current includeCoAuthoredBy value in ~/.claude/settings.json (or this project's "
+        ".claude/settings.json, whichever sets it) into an equivalent attribution.commit value -- false "
+        "becomes an empty commit trailer, true becomes the default one. Show me the diff before saving. "
+        "Claude Code will ask my permission before editing files under .claude."
     ),
 }
 
@@ -513,6 +572,27 @@ _WORKFLOW_EXPLAINER: dict[str, tuple[str, str, str]] = {
         "None -- no change is proposed.",
         "Nothing to undo.",
     ),
+    # COV-07/COV-11: informational env-lever rules with no SettingChange
+    # -- env-subagent-model doesn't propose a new value (it's a
+    # precedence caveat about the value already set); env-attribution-
+    # deprecated's real target isn't on the SETTINGS_ALLOWLIST today (see
+    # recommend.py's COV-09 section comment), so it gets a prompt above
+    # instead of a command.
+    "env-subagent-model": (
+        "Nowhere to change -- this card is a caveat about CLAUDE_CODE_SUBAGENT_MODEL's precedence, not a "
+        "proposed value. Check the agent files named in the finding above if a subagent isn't running on "
+        "the model you expect.",
+        "None -- no change is proposed.",
+        "Nothing to undo.",
+    ),
+    "env-attribution-deprecated": (
+        "settings.json's env block doesn't apply here -- includeCoAuthoredBy and its replacement, "
+        "attribution, are both plain settings.json keys, at whichever scope this report's \"Setting to "
+        "change\" line above names.",
+        "attribution can also change or hide the pull-request attribution text and the session link "
+        "separately, not just the commit trailer -- read its docs before copying the old value over as is.",
+        "Remove the attribution key; includeCoAuthoredBy (still valid) takes over again.",
+    ),
 }
 
 
@@ -601,7 +681,13 @@ def _where(change: SettingChange, scope: str) -> tuple[str, str]:
     if change.target == "agent":
         path, who = _SCOPE_WHERE.get(scope, _SCOPE_WHERE["user"])
         return path.format(agent=change.agent), who
-    return _SETTINGS_WHERE.get(scope, _SETTINGS_WHERE["user"])
+    path, who = _SETTINGS_WHERE.get(scope, _SETTINGS_WHERE["user"])
+    if change.key.startswith("env."):
+        # COV-07/COV-11: guidance always goes through the settings.json
+        # env block -- say so, the same way profile_change_where already
+        # does for a profile's own env.<NAME> rows.
+        path = f"{path} (env block)"
+    return path, who
 
 
 def command_for(change: SettingChange, scope: str) -> str | None:
@@ -613,8 +699,8 @@ def command_for(change: SettingChange, scope: str) -> str | None:
     parts = ["claude-token-lens", "apply", "--set", f"{change.key}={_cli_value(change.value)}"]
     if change.target == "agent" and change.agent:
         parts += ["--agent", change.agent]
-    if scope == "repo":
-        parts += ["--scope", "repo", "--project-dir", "."]
+    if scope in ("repo", "project-local"):
+        parts += ["--scope", scope, "--project-dir", "."]
     else:
         parts += ["--scope", "user"]
     parts.append("--dry-run")
@@ -699,6 +785,20 @@ def prompt_for(rec: Recommendation, change: SettingChange) -> str:
         )
         if prepare:
             ask += " " + prepare
+    elif change.key.startswith("env."):
+        # COV-07/COV-11: an env lever is a name in the settings.json env
+        # block, not a bare top-level key -- phrase it as adding/changing
+        # that one entry, matching quick_actions.py's own env-cap prompt.
+        env_name = change.key.split(".", 1)[1]
+        if change.value is not None:
+            ask = (
+                f'In {path}, add "{env_name}": {json.dumps(change.value)} to the "env" object (create it if '
+                "it's missing), keeping every other entry."
+            )
+        else:
+            ask = f'In {path}, change the "{env_name}" entry in the "env" object: {change.suggested}.'
+        if prepare:
+            ask = f"{prepare} Then, {ask[0].lower()}{ask[1:]}"
     elif isinstance(change.value, dict):
         # Objects keyed by name (skillOverrides, enabledPlugins): add or
         # update the named entries, as ``apply`` does, never replace.

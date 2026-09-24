@@ -4114,8 +4114,23 @@ def _parse_set_value(raw: str, spec) -> object:
 def _one_off_profile(set_values: list[str], agent: str | None):
     """An ad-hoc profile holding just the ``--set`` changes, validated
     through the same allowlist and range checks as a real profile.
-    Returns ``(profile, None)`` or ``(None, error text)``."""
+    Returns ``(profile, None)`` or ``(None, error text)``.
+
+    COV-07/COV-11: a ``--set env.NAME=value`` key routes into the
+    profile's ``env`` table instead of ``settings``/``agents`` -- an env
+    value is always the free-form string the user typed (the allowlist
+    only governs which *names* are allowed, per ``schema.LeverSpec``'s
+    own docstring), so it skips ``_parse_set_value``'s bool/int/list
+    coercion. A command mixes ``env.NAME=value`` with a settings/agent
+    ``--set`` no more than a real profile mixes them across tables in one
+    ``--set`` invocation would be ambiguous about scope."""
     from .profiles import schema
+
+    env_items = [item for item in set_values if item.partition("=")[0].strip().startswith("env.")]
+    if env_items and len(env_items) != len(set_values):
+        return None, "--set: env.NAME=value can't be mixed with a settings/agent --set in the same command"
+    if env_items and agent:
+        return None, "--set env.NAME=value: --agent doesn't apply to an environment variable"
 
     allowlist = schema.AGENT_ALLOWLIST if agent else schema.SETTINGS_ALLOWLIST
     values: dict = {}
@@ -4124,9 +4139,14 @@ def _one_off_profile(set_values: list[str], agent: str | None):
         key = key.strip()
         if not sep or not key:
             return None, f"--set {item!r}: expected KEY=VALUE"
-        values[key] = _parse_set_value(raw, allowlist.get(key))
+        if env_items:
+            values[key[len("env.") :]] = raw
+        else:
+            values[key] = _parse_set_value(raw, allowlist.get(key))
     doc: dict = {"id": ONE_OFF_PROFILE_ID, "name": "One-off change"}
-    if agent:
+    if env_items:
+        doc["env"] = values
+    elif agent:
         doc["agents"] = {agent: values}
     else:
         doc["settings"] = values
@@ -4211,13 +4231,35 @@ def _cmd_apply(args: argparse.Namespace) -> int:
         return 2
 
     snaps = snapshots.load_snapshots(config_dir)
-    latest_snapshot = snaps[-1] if snaps else None
+    # COV-04: an apply that targets a project should warn/plan against
+    # *that project's* own snapshot, not whichever project happened to
+    # snapshot most recently (the old `snaps[-1]` picked up any project's
+    # newest snapshot, so a provenance/override warning could compare a
+    # project's settings against a different project's snapshot entirely).
+    # A user-scope apply with no --project-dir keeps the old newest-overall
+    # behaviour, since there is no single project to key on.
+    if project_path is not None:
+        project_key = snapshots.snapshot_project_key(discovery.slug_for(str(project_path)))
+        latest_snapshot = snapshots.latest_snapshot_per_project(snaps).get(project_key) if snaps else None
+    else:
+        latest_snapshot = snaps[-1] if snaps else None
 
     if args.launch:
         managed = set(snapshots.managed_keys(latest_snapshot)) if latest_snapshot else set()
         path = apply_mod.write_launch_overlay(profile, config_dir=config_dir, managed_keys=managed)
         print(f"Wrote {path}")
-        print(f"claude --settings {path}")
+        # PROF-02: a launch overlay is session-only (the file backs a
+        # single `claude` invocation's --settings flag, never written into
+        # any persisted settings file), so an effort level the profile
+        # carries has to ride along on the same command line -- otherwise
+        # the printed command would launch Claude Code without it, silently
+        # dropping the one setting a launch overlay exists to convey.
+        effort = profile.settings.get("effortLevel")
+        launch_command = f"claude --settings {path}"
+        if isinstance(effort, str) and effort:
+            launch_command += f" --effort {effort}"
+        print(launch_command)
+        print("Session-only: applies to this one `claude` invocation, not written to any settings file.")
         return 0
 
     try:
@@ -4251,10 +4293,13 @@ def _cmd_apply(args: argparse.Namespace) -> int:
         if plan.skipped_managed:
             for key in plan.skipped_managed:
                 print(f"# {key}: managed by policy, raise with your administrator")
-        if plan.env_lines:
-            print("Environment variables (set these yourself; never written to any file):")
-            for line in plan.env_lines:
-                print(f"  export {line}")
+        if plan.overridden:
+            # COV-04: writing these keys wouldn't change what Claude Code
+            # actually uses -- a higher-precedence layer already supplies
+            # the value.
+            print("Already overridden by a higher-precedence layer (writing won't change what Claude Code uses):")
+            for note in plan.overridden:
+                print(f"  # {note}")
         if plan.blocked:
             # Fix S1: a real apply of this plan would refuse -- say so
             # here too, rather than printing a clean diff and exiting 0
@@ -4278,14 +4323,14 @@ def _cmd_apply(args: argparse.Namespace) -> int:
 
     for line in explanation:
         print(line)
+    if plan.overridden:
+        print("Already overridden by a higher-precedence layer (writing won't change what Claude Code uses):")
+        for note in plan.overridden:
+            print(f"  # {note}")
     result = apply_mod.execute(plan, config_dir=config_dir)
     print(f"Applied {plan.profile_id} ({scope}).")
     for path in result.written:
         print(f"  wrote {path}")
-    if plan.env_lines:
-        print("Environment variables (set these yourself; never written to any file):")
-        for line in plan.env_lines:
-            print(f"  export {line}")
     print(f"To revert: claude-token-lens apply --revert {result.ts}")
     print(RESTART_NOTE)
     return 0

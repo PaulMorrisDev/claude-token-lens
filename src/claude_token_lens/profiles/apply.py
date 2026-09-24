@@ -80,6 +80,23 @@ Deviations from the plan/brief, reported rather than made silently (see
   of refusing. This is the one behaviour ``--force`` controls in this
   module; it has no effect on the git-tracked-file refusal (that is
   ``--allow-tracked``'s job specifically) or on anything else.
+- **COV-07/COV-11 supersedes the earlier "an env var is never written to
+  any file" reading of plan Appendix A7.** ``profile.env`` used to be
+  print-only guidance (``env_lines_for_profile``: "the caller prints
+  these lines and the user exports them in their own shell"), on the
+  reasoning that ``apply``'s own Milestone v0.3 quote above only names a
+  "settings overlay" and "agent frontmatter" as things it writes.
+  ``docs/config-layers.md``'s "P7b note" resolves this explicitly for
+  the five ``env-*`` recommendation rules -- "it needs ``apply.py``
+  support for ``--set env.NAME=value`` (or an equivalent)" -- and the
+  same env block is what ``hooks/snapshot-config.py``'s
+  ``effective_env_provenance`` already reads its layers from, so
+  settings.json's ``"env"`` object was always the real, persisted
+  mechanism; the print-only path just hadn't caught up. A profile's
+  ``env`` entries are now merged into the target settings file's own
+  ``"env"`` object exactly like any other settings key -- same backup,
+  revert, git-tracked-file refusal and managed-key exclusion as
+  everything else this module writes.
 """
 
 from __future__ import annotations
@@ -96,7 +113,7 @@ from pathlib import Path
 
 from .. import snapshots as snapshots_mod
 from .frontmatter import FrontmatterError, parse_frontmatter, patch_frontmatter
-from .schema import ENV_ALLOWLIST, SETTINGS_ALLOWLIST, Profile
+from .schema import SETTINGS_ALLOWLIST, Profile
 
 __all__ = [
     "ApplyError",
@@ -110,7 +127,6 @@ __all__ = [
     "revert",
     "list_backups",
     "write_launch_overlay",
-    "env_lines_for_profile",
     "render_plan_diff",
     "action_changes",
     "explain_plan",
@@ -126,6 +142,25 @@ _TS_FORMAT = "%Y%m%dT%H%M%SZ"
 _ACTIVE_PROFILE_FILENAME = "active-profile"
 #: Written into a backup folder by :func:`revert`, so the change reads as undone.
 REVERTED_FILENAME = "reverted.json"
+
+#: COV-04: each ``_VALID_SCOPES`` value's ``snapshots.SETTINGS_LAYER_NAMES``
+#: counterpart -- "managed" has no scope here (a managed key is never
+#: written by this module regardless of ``scope``, see ``plan_apply``'s
+#: ``skipped_managed`` exclusion above).
+_SCOPE_LAYER = {"user": "user", "project-local": "project_local", "repo": "project_shared"}
+
+#: Readable label for a ``snapshots.SETTINGS_LAYER_NAMES`` layer, for the
+#: "already overridden" warning below -- same file/who-it-affects text as
+#: ``fixes._SETTINGS_WHERE``/``PROFILE_SCOPE_WHERE``, duplicated rather
+#: than imported (this module is host-side/CLI machinery, ``fixes.py`` is
+#: the plain-language dashboard layer -- see this module's own docstring
+#: on why it doesn't reach into another module's presentation text).
+_LAYER_LABEL = {
+    "managed": "your organisation's managed settings",
+    "project_local": "this project's local settings (.claude/settings.local.json)",
+    "project_shared": "this project's shared settings (.claude/settings.json)",
+    "user": "your user settings (~/.claude/settings.json)",
+}
 
 
 class ApplyError(Exception):
@@ -159,20 +194,34 @@ class FileAction:
 class ApplyPlan:
     """Everything :func:`plan_apply` resolved before touching disk:
     which files would be written and with what content, which rows were
-    dropped because a managed key governs them, the env-var lines to
-    print (never write), the dry-run diff text, and any reason the plan
-    would be refused (:func:`execute` raises :class:`ApplyError` with
-    exactly these reasons rather than writing anything when
-    ``blocked`` is non-empty)."""
+    dropped because a managed key governs them, the dry-run diff text,
+    and any reason the plan would be refused (:func:`execute` raises
+    :class:`ApplyError` with exactly these reasons rather than writing
+    anything when ``blocked`` is non-empty). A profile's ``env`` entries
+    are folded into ``actions`` like any other settings key (COV-07/
+    COV-11, see the module docstring's deviation note) -- there is no
+    separate env-only field here any more.
+
+    COV-04: ``overridden`` names every settings key this plan would
+    write whose *effective* value today is already supplied by a layer
+    with higher precedence than ``scope`` (``snapshots.effective_provenance``,
+    via ``snapshots.SETTINGS_LAYER_NAMES``'s precedence order) -- writing
+    it would change the file on disk but not what Claude Code actually
+    uses, since the higher layer keeps winning. Never blocks the apply
+    (the write still happens; it may be exactly what a user wants ready
+    for when the higher layer's override is later removed) -- just a
+    warning :func:`explain_plan`/``cli._cmd_apply`` surface alongside the
+    diff. Empty when ``snapshot`` was ``None`` (nothing to compare
+    against) or the plan writes no settings keys with known provenance."""
 
     profile_id: str
     scope: str
     config_dir: Path
     actions: tuple[FileAction, ...]
     skipped_managed: tuple[str, ...]
-    env_lines: tuple[str, ...]
     diff_text: str
     blocked: tuple[str, ...] = ()
+    overridden: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -312,20 +361,6 @@ def _resolve_agents_dir(scope: str, project_path: Path | None, claude_root: Path
 
 
 # -- planning ---------------------------------------------------------------
-
-
-def env_lines_for_profile(profile: Profile, managed_keys: set[str]) -> tuple[str, ...]:
-    """One ``NAME=value`` line per non-managed env entry ``profile``
-    names, sorted by :data:`schema.ENV_ALLOWLIST` order -- printed as
-    guidance only. Per the plan's own A7 comment ("names only here;
-    values supplied at apply time") and this module's docstring, an env
-    var is never written to any file -- the caller (``cli._cmd_apply``)
-    prints these lines and the user exports them in their own shell."""
-    return tuple(
-        f"{name}={profile.env[name]}"
-        for name in ENV_ALLOWLIST
-        if name in profile.env and name not in managed_keys
-    )
 
 
 def _detect_json_style(existing_bytes: bytes | None) -> tuple[int, str]:
@@ -509,7 +544,19 @@ def plan_apply(
     # -- settings overlay --
     settings_changes = {k: v for k, v in profile.settings.items() if k not in managed_keys}
     skipped_managed += [f"settings.{k}" for k in profile.settings if k in managed_keys]
-    if settings_changes:
+    # COV-07/COV-11: a profile's env entries are just another settings.json
+    # key ("env" itself) as far as writing goes -- merged by name into
+    # whatever the target file's own "env" object already holds, same as
+    # any other map-kind settings key below. Managed-settings.json mirrors
+    # settings.json's own shape, so "is env managed" is a whole-key
+    # question here (managed_keys is top-level key names only -- there is
+    # no per-env-var-name managed signal at this layer, matching how a
+    # single settings key like "model" is all-or-nothing too).
+    env_managed = "env" in managed_keys
+    env_changes = {} if env_managed else dict(profile.env)
+    if env_managed:
+        skipped_managed += [f"env.{name}" for name in profile.env]
+    if settings_changes or env_changes:
         old_bytes = _read_bytes_or_none(settings_path)
         try:
             existing = json.loads(old_bytes.decode("utf-8")) if old_bytes else {}
@@ -525,6 +572,9 @@ def plan_apply(
                 merged[key] = {**existing[key], **value}
             else:
                 merged[key] = value
+        if env_changes:
+            existing_env = existing.get("env")
+            merged["env"] = {**(existing_env if isinstance(existing_env, dict) else {}), **env_changes}
         new_bytes = _render_settings_json(existing_bytes=old_bytes, merged=merged)
         if new_bytes != (old_bytes or b""):
             # Fix S7: checked regardless of scope -- a user-scope
@@ -605,8 +655,39 @@ def plan_apply(
             FileAction(kind="active_profile", path=active_path, old_bytes=old_active, new_bytes=new_active, tracked=False)
         )
 
-    env_lines = env_lines_for_profile(profile, managed_keys)
-    skipped_managed += [f"env.{name}" for name in profile.env if name in managed_keys]
+    # COV-04: a key this plan would write whose effective value already
+    # comes from a layer with higher precedence than where we're about
+    # to write it -- the write still happens (it isn't wrong, and may be
+    # exactly what someone wants staged for when the higher layer's
+    # override goes away), but it would have no visible effect today,
+    # which is worth saying up front rather than leaving a user to
+    # wonder why nothing changed after a real apply. Covers env entries
+    # too now that they're a real write (COV-07/COV-11) -- their
+    # provenance lives in a different snapshot field
+    # (``effective_env_provenance``, not ``effective_provenance``, see
+    # ``recommend.py``'s ``_env_lever_scope``), so it's checked
+    # separately from ``settings_changes``.
+    overridden: list[str] = []
+    target_layer = _SCOPE_LAYER.get(scope)
+    if target_layer is not None:
+        precedence = {name: i for i, name in enumerate(snapshots_mod.SETTINGS_LAYER_NAMES)}
+        target_rank = precedence[target_layer]
+        for key in sorted(settings_changes):
+            layer = provenance.get(key)
+            if layer is None or layer == target_layer or layer not in precedence:
+                continue
+            if precedence[layer] < target_rank:
+                overridden.append(f"{key}: already set by {_LAYER_LABEL.get(layer, layer)}, which takes precedence")
+        env_provenance = snapshot.data.get("effective_env_provenance") if snapshot is not None else None
+        if env_changes and isinstance(env_provenance, dict):
+            for name in sorted(env_changes):
+                layer = env_provenance.get(name)
+                if layer is None or layer == target_layer or layer not in precedence:
+                    continue
+                if precedence[layer] < target_rank:
+                    overridden.append(
+                        f"env.{name}: already set by {_LAYER_LABEL.get(layer, layer)}, which takes precedence"
+                    )
 
     diff_text = render_plan_diff(tuple(actions), base=claude_root_or_project)
 
@@ -616,9 +697,9 @@ def plan_apply(
         config_dir=config_dir,
         actions=tuple(actions),
         skipped_managed=tuple(sorted(set(skipped_managed))),
-        env_lines=env_lines,
         diff_text=diff_text,
         blocked=tuple(blocked),
+        overridden=tuple(overridden),
     )
 
 
@@ -956,16 +1037,24 @@ def list_backups(config_dir: str | Path) -> list[BackupInfo]:
 def write_launch_overlay(profile: Profile, *, config_dir: str | Path, managed_keys: set[str] | None = None) -> Path:
     """Write ``<config_dir>/profiles/<id>.settings.json``: a plain
     ``settings.json``-shaped JSON object holding exactly ``profile``'s
-    non-managed settings keys (never agent-frontmatter or env keys --
+    non-managed settings keys, plus its non-managed ``env`` entries
+    folded into an ``"env"`` sub-object (never agent-frontmatter --
     ``claude --settings <file>`` only ever accepts top-level settings
-    keys, so there is nothing else this overlay could carry). This is
-    the *only* file this function writes -- no backup, no manifest, no
+    keys, and there is no per-session way to patch an agent's frontmatter
+    file). COV-07/COV-11: env used to be excluded here on the reasoning
+    that env vars are never written anywhere (see ``plan_apply``'s own
+    deviation note in this module's docstring for why that no longer
+    holds) -- ``"env"`` is itself a top-level settings key like any
+    other, so a launch overlay carries it the same way. This is the
+    *only* file this function writes -- no backup, no manifest, no
     active-profile marker, no existing file read or merged -- matching
     the plan's "``--launch`` instead prints a ``claude --settings
     <profile-settings.json>`` command" description of a one-off,
     session-scoped overlay rather than a persisted apply."""
     managed_keys = managed_keys or set()
     settings = {k: v for k, v in profile.settings.items() if k not in managed_keys}
+    if "env" not in managed_keys and profile.env:
+        settings["env"] = dict(profile.env)
     path = Path(config_dir) / "profiles" / f"{profile.id}.settings.json"
     _atomic_write_bytes(path, (json.dumps(settings, indent=2) + "\n").encode("utf-8"))
     return path

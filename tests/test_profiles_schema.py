@@ -425,11 +425,19 @@ def test_recommend_py_lever_literals_are_the_expected_set():
     which is parametrized over this same set and would need a direct
     call to catch that one, exercised instead by
     ``tests/test_recommend.py``'s own env-disable-prompt-caching tests.
+
+    COV-01 removed ``"effortLevel"`` from this set: the two effort-
+    mismatch rules used to construct ``Recommendation(lever="effortLevel",
+    ...)`` directly, a bare literal this scan could see, but now resolve
+    their scope first via ``_lever_scope("effortLevel", snapshot)`` and
+    pass the result along as a variable (``lever=lever``) -- same
+    "evades the static scan" situation as the dynamic env-lever rule
+    above, so it gets the same direct-call treatment in
+    ``test_effort_level_lever_is_representable`` below instead.
     """
     assert _recommend_py_lever_literals() == {
         "mcpServers",
         "omitClaudeMd",
-        "effortLevel",
         "env:ENABLE_TOOL_SEARCH",
         "env:CLAUDE_CODE_MAX_OUTPUT_TOKENS",
         "env:CLAUDE_CODE_SUBAGENT_MODEL",
@@ -468,6 +476,16 @@ def test_env_disable_prompt_caching_dynamic_lever_is_representable():
         resolved = recommend_lever_key(f"env:{name}")
         assert resolved == ("env", name)
         assert resolved[1] in ENV_ALLOWLIST
+
+
+def test_effort_level_lever_is_representable():
+    """COV-01: ``"effortLevel"`` no longer appears as a bare ``lever="..."``
+    literal in recommend.py (see the docstring above), so it evades
+    ``_recommend_py_lever_literals``'s static scan -- checked directly
+    instead, same as the dynamic env-lever rule just above."""
+    resolved = recommend_lever_key("effortLevel")
+    assert resolved == ("settings", "effortLevel")
+    assert resolved[1] in SETTINGS_ALLOWLIST
 
 
 def test_ttl_top_level_lever_is_representable():

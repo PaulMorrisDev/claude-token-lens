@@ -296,6 +296,49 @@ whether it was Token Lens's own (below).
   rest collapse into a "more habits worth trying" section instead of a
   long, uncapped wall of cards.
 
+#### P7b: config coverage (COV-01/04/07/11, PROF-02)
+
+- **Advice could recommend a settings layer that a higher-precedence
+  layer had already overridden**, silently wasting the suggestion (for
+  example, proposing a repo-level change your own project-local
+  settings already re-set). Every settings-scoped recommendation and
+  its `apply` command now resolve their target layer against the
+  current snapshot's own provenance (`effective_provenance`/
+  `effective_env_provenance`) instead of a fixed guess, and
+  project-local is now a first-class scope alongside user/repo/managed.
+- **`apply` compared a proposed change against whichever project's
+  config snapshot happened to be newest, not the project you were
+  actually applying to**, so its override warning could reference the
+  wrong project's settings, or a stale snapshot from a different
+  project's last run. It now looks up the current project's (`--project-dir`)
+  own latest snapshot, and warns — for a settings key and for an `env`
+  entry alike — whenever a higher-precedence layer already sets the
+  value, since writing wouldn't change what Claude Code actually uses.
+- **Five environment-variable and deprecated-setting recommendations
+  that used to be prose-only now offer a real
+  `apply --set env.NAME=value --dry-run` command**: three of the five
+  (`env-tool-search`, `env-disable-prompt-caching`,
+  `env-max-output-tokens`); the other two stay prose, since one
+  proposes no value and the other's target isn't allowlisted. `apply`
+  now writes an environment variable into the target settings file's
+  own `env` object — the same place Claude Code itself reads it from,
+  and the same mechanism `effective_env_provenance` already tracked —
+  instead of only ever printing an `export NAME=value` line for you to
+  run yourself, which never actually changed anything Claude Code
+  would see. An env-lever recommendation's card now also shows the
+  currently effective value, not only the proposed one.
+- **`apply <id> --launch --dry-run` now prints `--effort LEVEL` on the
+  `claude --settings ...` command line when the profile sets an effort
+  level**, so a session-only try-it launch actually carries the effort
+  change instead of silently dropping it. An agent-level model change
+  (frontmatter, not a settings key) has no session-only equivalent —
+  scoping it to one session would need the agent's full prompt body
+  inline on `--agents`, which this dashboard never reads or copies —
+  so those recommendations are now labelled "persistent: affects every
+  task this agent runs" and show the plain saving figure rather than
+  the session "at most" ceiling used for a change you might only try
+  once.
+
 ### Fixed
 
 - **Repeated reads were miscounted.** An edit counted as a read of the
