@@ -34,7 +34,7 @@ export function fetchJson(url, options) {
  * Fetch `url`, replacing `container`'s contents with `loading()` while
  * in flight, then either `render(data, container)` on `ok: true`, or
  * an inline error notice on `ok: false` / a network failure. Never
- * throws -- this is the one place every tab's data flow funnels
+ * throws -- this is the one place every view's data flow funnels
  * through, per docs/ui.md's "or shows the error.message inline...
  * never a raw stack trace" contract.
  */
@@ -112,12 +112,12 @@ export function findSection(report, key) {
   return null;
 }
 
-// The time the oldest figures drawn since the tabs were last dropped
+// The time the oldest figures drawn since the views were last dropped
 // are from: the oldest X-Figures-As-Of a report-backed response has
-// carried. Tabs keep what they drew and don't refetch on their own, so
+// carried. Views keep what they drew and don't refetch on their own, so
 // X-Figures-Refreshing isn't shown: "Redraw figures", a new window or
 // a reload picks up the newer report.
-// notify is set by shell.js, which redraws the footer.
+// notify is set by shell.js, which redraws the sidebar's status line.
 export var figures = { asOf: null, notify: null };
 
 function noteFiguresAsOf(asOf) {

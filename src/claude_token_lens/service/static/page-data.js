@@ -1,23 +1,24 @@
 /* claude-token-lens service UI: page-data.js
  *
- * The Data quality tab: parse diagnostics and what this tool installed.
+ * The Data quality page: parse diagnostics, what this tool installed,
+ * and any report section no other page shows.
  */
 
 import { clear, el, state } from "./core.js";
 import { loadInto, loadReport, withWindow } from "./api.js";
 import { codeBlockWithCopy, errorNotice, loadingNode } from "./ui.js";
 import { renderMappedSections, renderTable } from "./grid.js";
-import { tabHeading } from "./links.js";
+import { viewIntro } from "./links.js";
 
 // ======================================================================
-// Diagnostics tab (phases section + the Diagnostics counters block)
+// Data quality (unmapped sections + the parse-quality counters)
 // ======================================================================
 
-export function renderDiagnosticsTab(panel) {
+export function renderDataQuality(panel) {
   clear(panel);
-  tabHeading(panel, "diagnostics");
+  viewIntro(panel, "data");
   var setupContainer = el("div", { id: "diagnostics-setup" });
-  panel.appendChild(el("h3", { text: "What this tool installed, and what to expect" }));
+  panel.appendChild(el("h2", { text: "What this tool installed, and what to expect" }));
   panel.appendChild(setupContainer);
   loadInto(setupContainer, "/api/setup", renderSetup);
   var sectionContainer = el("div", { id: "diagnostics-sections" });
@@ -29,7 +30,7 @@ export function renderDiagnosticsTab(panel) {
       sectionContainer.appendChild(errorNotice(result.error));
       return;
     }
-    renderMappedSections(result.report, "diagnostics", sectionContainer);
+    renderMappedSections(result.report, "data", sectionContainer);
   });
 
   // The parse-quality counters, labelled (helptext.diagnostics_table).
@@ -46,7 +47,7 @@ export function renderDiagnosticsTab(panel) {
 // ======================================================================
 
 function renderSetup(data, container) {
-  container.appendChild(el("h4", { text: "What to expect" }));
+  container.appendChild(el("h3", { text: "What to expect" }));
   container.appendChild(
     el(
       "ul",
@@ -56,7 +57,7 @@ function renderSetup(data, container) {
       })
     )
   );
-  container.appendChild(el("h4", { text: "What it installed and changed" }));
+  container.appendChild(el("h3", { text: "What it installed and changed" }));
   (data.items || []).forEach(function (item) {
     var box = el("details", { class: "fix" });
     box.appendChild(el("summary", { text: item.title + ": " + item.status }));
@@ -68,7 +69,7 @@ function renderSetup(data, container) {
     box.appendChild(list);
     container.appendChild(box);
   });
-  container.appendChild(el("h4", { text: "Remove everything" }));
+  container.appendChild(el("h3", { text: "Remove everything" }));
   container.appendChild(el("p", { class: "notes", text: "Shows what it would remove, undo and delete. Run it again without --dry-run to do it; it asks before each step and backs up settings.json first." }));
   container.appendChild(codeBlockWithCopy(data.uninstall_command));
 }

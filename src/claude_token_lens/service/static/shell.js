@@ -1,13 +1,14 @@
 /* claude-token-lens service UI: shell.js
  *
- * The parts on every tab: the health banner and footer, and the
+ * The parts on every page: the sidebar's status line (service health,
+ * figures, capture level, version), the health banner and the
  * metrics-capture banner.
  */
 
-import { clear, el, renderedTabs, showTab, state, storageGet, storageSet } from "./core.js";
+import { clear, el, goTo, renderedViews, state, storageGet, storageSet } from "./core.js";
 import { shortTs, thousands } from "./format.js";
 import { fetchJson, figures, resetFiguresAsOf } from "./api.js";
-import { captureTabLink, tabLink } from "./links.js";
+import { captureLink, pageLink } from "./links.js";
 
 export function renderHealth(health, container) {
   var watcher = health.watcher || {};
@@ -54,49 +55,119 @@ export function renderHealth(health, container) {
       )
     );
   }
-  updateFooterHealth(health);
 }
+
+// ======================================================================
+// The sidebar's status line
+// ======================================================================
 
 var HEALTH_LABELS = {
   ok: "Up to date",
   starting: "Scanning your history",
   degraded: "Last scan failed",
   stale: "Not updating",
+  unreachable: "Can't reach the service",
 };
 
-function updateFooterHealth(health) {
-  var footer = document.getElementById("footer-health");
-  if (!footer) return;
-  var watcher = health.watcher || {};
-  var scan = health.scan || {};
-  var lastScan = scan.last_success_at || watcher.finished_at;
-  footer.textContent =
-    (health.version ? "claude-token-lens " + health.version + " — " : "") +
-    (HEALTH_LABELS[health.status] || "Service " + (health.status || "unknown")) +
-    (lastScan ? " — last scan finished " + shortTs(lastScan) : "") +
-    (watcher.errors ? " — " + watcher.errors + (watcher.errors === 1 ? " error" : " errors") : "") +
-    (figures.asOf ? " — figures as of " + shortTs(figures.asOf) : "") +
-    ".";
+// The dot beside the label, by status token. The label always says the
+// same thing in words.
+var HEALTH_TONES = { ok: "good", starting: "accent", degraded: "serious", stale: "warn", unreachable: "critical" };
+
+function captureStatusText(block) {
+  if (!block) return "";
+  if (!block.on) return "Capture: off";
+  var title = block.title || block.level;
+  if (block.expired) return "Capture: " + title + ", ended";
+  if (block.hooks_ok === false) return "Capture: " + title + ", hooks not connected";
+  return "Capture: " + title;
 }
 
-// A newer or reset figures-as-of time (api.js) redraws the footer.
-figures.notify = function () {
-  if (healthPoll.health) updateFooterHealth(healthPoll.health);
-};
+function renderStatusLine() {
+  var line = document.getElementById("status-line");
+  if (!line) return;
+  var health = healthPoll.health;
+  var status = healthPoll.status || "starting";
+  var watcher = (health && health.watcher) || {};
+  var scan = (health && health.scan) || {};
+  var lastScan = scan.last_success_at || watcher.finished_at;
+  var label = HEALTH_LABELS[status] || "Service " + status;
+  var parts = [
+    status,
+    lastScan || "",
+    watcher.errors || 0,
+    figures.asOf || "",
+    healthPoll.redrawDue ? "1" : "0",
+    captureStatusText(health && health.capture),
+    (health && health.version) || "",
+  ];
+  // Rebuilt only when something shown changed: the poll runs every few
+  // seconds during a scan.
+  var sig = parts.join("|");
+  if (line.getAttribute("data-render-sig") === sig) return;
+  line.setAttribute("data-render-sig", sig);
+  clear(line);
 
-// The banner under the header, on every tab: what /api/health's
-// status means when it is not "ok" (first scan in progress, a failed
-// scan, a scanner that has stopped) and, once a scan that was running
-// when the page drew its figures finishes, a way to redraw them.
-var healthPoll = { status: null, timer: null, health: null };
+  line.appendChild(
+    el("div", { class: "status-row status-health", "data-tip": label }, [
+      el("span", { class: "status-dot tone-" + (HEALTH_TONES[status] || "muted"), "aria-hidden": "true" }),
+      el("span", { class: "status-text", text: label }),
+    ])
+  );
+  var detail = [];
+  if (lastScan) detail.push("Last scan " + shortTs(lastScan));
+  if (watcher.errors) detail.push(watcher.errors + (watcher.errors === 1 ? " error" : " errors"));
+  if (detail.length) line.appendChild(el("div", { class: "status-row status-detail", text: detail.join(", ") }));
+  if (figures.asOf || healthPoll.redrawDue) {
+    var row = el("div", { class: "status-row status-detail" });
+    if (figures.asOf) row.appendChild(el("span", { text: "Figures as of " + shortTs(figures.asOf) }));
+    if (healthPoll.redrawDue) row.appendChild(redrawButton());
+    line.appendChild(row);
+  }
+  var capture = captureStatusText(health && health.capture);
+  if (capture) line.appendChild(el("div", { class: "status-row status-detail" }, [captureLink(capture)]));
+  line.appendChild(
+    el("div", {
+      class: "status-row status-detail",
+      text: (health && health.version ? "claude-token-lens " + health.version + ". " : "") + "Your data stays on this machine.",
+    })
+  );
+}
 
-function redrawAllTabs() {
+// A newer or reset figures-as-of time (api.js) redraws the status line.
+figures.notify = renderStatusLine;
+
+// ======================================================================
+// The health banner, under the page header on every page
+// ======================================================================
+
+// What /api/health's status means when it is not "ok" (first scan in
+// progress, a failed scan, a scanner that has stopped) and, once a scan
+// that was running when the page drew its figures finishes, a way to
+// redraw them (also offered in the status line).
+var healthPoll = { status: null, timer: null, health: null, redrawDue: false };
+
+function redrawEverything() {
+  healthPoll.redrawDue = false;
+  var banner = document.getElementById("health-banner");
+  if (banner) {
+    banner.removeAttribute("data-scan-finished");
+    banner.hidden = true;
+  }
   state.reportPromises = {};
   resetFiguresAsOf();
-  Object.keys(renderedTabs).forEach(function (key) {
-    delete renderedTabs[key];
+  Object.keys(renderedViews).forEach(function (key) {
+    delete renderedViews[key];
   });
-  showTab(state.activeTab || "overview", { force: true });
+  // The button pressed is redrawn away, so focus moves to the page
+  // title rather than dropping to the document.
+  goTo(state.view || "overview", { force: true, focus: true });
+  renderStatusLine();
+}
+
+function redrawButton() {
+  var button = el("button", { type: "button", class: "link-button", text: "Redraw figures" });
+  button.addEventListener("click", redrawEverything);
+  return button;
 }
 
 function renderHealthBanner(health, previous) {
@@ -131,13 +202,8 @@ function renderHealthBanner(health, previous) {
   if (health.status === "ok") {
     if (previous === "starting" || banner.getAttribute("data-scan-finished") === "true") {
       banner.setAttribute("data-scan-finished", "true");
-      var refresh = el("button", { type: "button", class: "link-button", text: "Redraw figures" });
-      refresh.addEventListener("click", function () {
-        banner.removeAttribute("data-scan-finished");
-        banner.hidden = true;
-        redrawAllTabs();
-      });
-      banner.appendChild(el("p", {}, [el("span", { text: "The scan has finished. " }), refresh]));
+      healthPoll.redrawDue = true;
+      banner.appendChild(el("p", {}, [el("span", { text: "The scan has finished. " }), redrawButton()]));
       banner.hidden = false;
     } else {
       banner.hidden = true;
@@ -162,7 +228,7 @@ export function pollHealth() {
     healthPoll.status = health ? health.status : "unreachable";
     if (health) healthPoll.health = health;
     renderHealthBanner(health, previous);
-    if (health) updateFooterHealth(health);
+    renderStatusLine();
     if (health) updateCaptureBanner(health.capture);
     // Poll quickly while a scan's progress is worth watching.
     healthPoll.timer = setTimeout(pollHealth, health && health.status === "starting" ? 3000 : 60000);
@@ -170,7 +236,8 @@ export function pollHealth() {
 }
 
 // ======================================================================
-// Metrics capture: the banner on every tab, and the Capture tab
+// Metrics capture: the banner, shown only when there is something to act
+// on (the status line always says the level)
 // ======================================================================
 
 // /api/capture's answer, kept for the banner: fetched again when the
@@ -216,24 +283,10 @@ export function showCaptureData(data) {
   renderCaptureBanner(data);
 }
 
-// UX-6/9: both the capture-invite "Hide" and a notes dismissal used to
-// be (or would otherwise have been) permanent, via a bare "1" in
-// localStorage -- once hidden, hidden forever, even after the notes
-// themselves changed. A snoozed key instead stores the dismissal
-// timestamp; snoozed() below treats it as expired past BANNER_SNOOZE_MS,
-// so a quiet banner returns on its own after a week rather than needing
-// the config wiped to see it again. A legacy bare "1" reads as an
-// ancient timestamp and is therefore already-expired -- it naturally
-// self-heals to "not hidden" the first time this runs, with no
-// migration code needed.
+// UX-6/9: a notes dismissal stores its timestamp, not a bare "1", and
+// lapses after BANNER_SNOOZE_MS, so a quiet banner returns on its own
+// after a week rather than staying hidden for good.
 var BANNER_SNOOZE_MS = 7 * 24 * 60 * 60 * 1000;
-
-function snoozed(key) {
-  var raw = storageGet(key);
-  if (!raw) return false;
-  var ts = Number(raw);
-  return isFinite(ts) && Date.now() - ts < BANNER_SNOOZE_MS;
-}
 
 function notesSignature(notes) {
   return (notes || []).join("\n");
@@ -258,8 +311,7 @@ function renderCaptureBanner(data) {
   var info = data.banner || {};
   var notes = info.notes || [];
   var notesVisible = notes.length > 0 && !notesSnoozed(notes);
-  var inviteHidden = !info.on && snoozed("tls:captureInviteHidden");
-  var hidden = inviteHidden && !info.feedback_note && !notesVisible;
+  var hidden = !info.feedback_note && !notesVisible;
   // Same "skip the rebuild when nothing shown would change" guard as
   // renderHealthBanner -- this is an aria-live="polite" region too,
   // and gets re-rendered on every capture poll (see updateCaptureBanner),
@@ -274,19 +326,10 @@ function renderCaptureBanner(data) {
     return;
   }
   var line = el("p", { class: "capture-headline" }, [el("span", { text: info.headline + " " })]);
-  line.appendChild(captureTabLink(info.on ? "Capture settings" : "See what it captures"));
+  line.appendChild(captureLink(info.on ? "Capture settings" : "See what it captures"));
   if (info.on) {
     line.appendChild(document.createTextNode(" "));
-    line.appendChild(tabLink("habits", "Work habits"));
-  }
-  if (!info.on) {
-    var hide = el("button", { type: "button", class: "link-button capture-hide", text: "Hide for a week" });
-    hide.addEventListener("click", function () {
-      storageSet("tls:captureInviteHidden", String(Date.now()));
-      renderCaptureBanner(data);
-    });
-    line.appendChild(document.createTextNode(" "));
-    line.appendChild(hide);
+    line.appendChild(pageLink("habits", "Work habits"));
   }
   banner.appendChild(line);
   if (notesVisible) {

@@ -96,7 +96,7 @@ export function renderFix(fix, collapsed) {
   var box = el(collapsed ? "details" : "div", { class: "fix" });
   if (collapsed) box.appendChild(el("summary", { text: fixTitle(fix) }));
   if (fix.explainer && fix.explainer.length) {
-    if (!collapsed) box.appendChild(el("h5", { text: fixTitle(fix) }));
+    if (!collapsed) box.appendChild(el("h4", { text: fixTitle(fix) }));
     var list = el("dl", { class: "fix-explainer" });
     fix.explainer.forEach(function (pair) {
       list.appendChild(el("dt", { text: pair[0] }));
@@ -107,11 +107,11 @@ export function renderFix(fix, collapsed) {
   // UX-8: a purely informational workflow card (fixes.build_fixes) has
   // an explainer but no prompt -- nothing to ask Claude to do.
   if (fix.prompt) {
-    box.appendChild(el("h5", { text: "Ask Claude to do it" }));
+    box.appendChild(el("h4", { text: "Ask Claude to do it" }));
     box.appendChild(codeBlockWithCopy(fix.prompt));
   }
   if (fix.command) {
-    box.appendChild(el("h5", { text: "Or run this command" }));
+    box.appendChild(el("h4", { text: "Or run this command" }));
     box.appendChild(
       el("p", { class: "notes", text: "It shows the change without writing anything. Run it again without --dry-run to make the change; the output tells you how to undo it." })
     );
@@ -130,7 +130,7 @@ export function renderFix(fix, collapsed) {
 // ======================================================================
 
 // P4 leftover / UX-6/9: one consistent "not enough data yet" box,
-// instead of each tab building its own ad hoc paragraph (renderImpact,
+// instead of each view building its own ad hoc paragraph (renderImpact,
 // renderBacktest and the quick actions' no_data cards used to each
 // have a slightly different one). `gate` is the structured
 // {reason, have, need} object some routes now carry (see api.py's
@@ -163,7 +163,7 @@ export function statusBadge(status) {
 
 export function renderTips(tips, container) {
   if (!tips || !tips.length) return;
-  container.appendChild(el("h5", { text: "Habits that help" }));
+  container.appendChild(el("h4", { text: "Habits that help" }));
   container.appendChild(
     el(
       "ul",

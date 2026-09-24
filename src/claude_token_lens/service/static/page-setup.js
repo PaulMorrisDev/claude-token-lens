@@ -1,6 +1,6 @@
 /* claude-token-lens service UI: page-setup.js
  *
- * The Config and Profiles tabs, with what each change did.
+ * The Setup page's Settings and Profiles, with what each change did.
  */
 
 import { clear, el, state } from "./core.js";
@@ -8,23 +8,23 @@ import { fetchJson, findSection, loadInto, loadReport, postJson, withWindow } fr
 import { signedPercent } from "./format.js";
 import { codeBlockWithCopy, emptyState, errorNotice, loadingNode, restartNote } from "./ui.js";
 import { renderMappedSections, renderPlacedTables, renderSectionGeneric, simpleTable } from "./grid.js";
-import { tabHeading, tabLink } from "./links.js";
+import { captureLink, viewIntro } from "./links.js";
 
 // ======================================================================
-// Config tab (config/scorecard sections + config-diff + baseline)
+// Setup, Settings (config-diff + baseline + baseline_comparison)
 // ======================================================================
 
 export function renderConfig(panel) {
   clear(panel);
-  tabHeading(panel, "config");
+  viewIntro(panel, "setup/settings");
 
   var driftContainer = el("div", { id: "config-drift" });
-  panel.appendChild(el("h3", { text: "Your settings and how they changed" }));
+  panel.appendChild(el("h2", { text: "Your settings and how they changed" }));
   panel.appendChild(driftContainer);
   loadInto(driftContainer, withWindow("/api/config-diff?auto_keys=1"), renderConfigDiff);
 
   var baselineContainer = el("div", { id: "config-baseline" });
-  panel.appendChild(el("h3", { text: "Latest baseline" }));
+  panel.appendChild(el("h2", { text: "Latest baseline" }));
   panel.appendChild(baselineContainer);
   loadInto(baselineContainer, "/api/baseline", renderBaseline);
 
@@ -38,7 +38,7 @@ export function renderConfig(panel) {
       return;
     }
     // The config section's own tables came from /api/config-diff above.
-    renderMappedSections(result.report, "config", sectionContainer, ["config"]);
+    renderMappedSections(result.report, "setup/settings", sectionContainer, ["config"]);
   });
 }
 
@@ -109,7 +109,7 @@ function renderBaseline(data, container) {
 }
 
 // ======================================================================
-// Profiles tab
+// Setup, Profiles
 // ======================================================================
 //
 // v0.3: GET /api/profiles now returns {"profiles": [...each tagged
@@ -139,7 +139,7 @@ var PROFILE_SCOPE_LABELS = {
 
 export function renderProfiles(panel) {
   clear(panel);
-  tabHeading(panel, "profiles");
+  viewIntro(panel, "setup/profiles");
 
   // -- save what you have now, so you can compare or go back later --
   var saveCurrentRow = el("div", { class: "profile-actions" });
@@ -163,19 +163,19 @@ export function renderProfiles(panel) {
   var impactContainer = el("div", { id: "profiles-impact" });
   var setupsContainer = el("div", { id: "profiles-setups" });
 
-  panel.appendChild(el("h3", { text: "Create a profile" }));
+  panel.appendChild(el("h2", { text: "Create a profile" }));
   panel.appendChild(creatorContainer);
-  panel.appendChild(el("h3", { text: "Best setup for each kind of task" }));
+  panel.appendChild(el("h2", { text: "Best setup for each kind of task" }));
   panel.appendChild(setupsContainer);
   renderTaskSetups(setupsContainer);
-  panel.appendChild(el("h3", { text: "Your profiles and the built-in ones" }));
+  panel.appendChild(el("h2", { text: "Your profiles and the built-in ones" }));
   panel.appendChild(listContainer);
   panel.appendChild(detailContainer);
-  panel.appendChild(el("h3", { text: "Your changes and what they did" }));
+  panel.appendChild(el("h2", { text: "Your changes and what they did" }));
   panel.appendChild(impactContainer);
   loadInto(impactContainer, "/api/impact", renderImpact);
   var backtestContainer = el("div", { id: "profiles-backtest" });
-  panel.appendChild(el("h3", { text: "Did your estimates come true?" }));
+  panel.appendChild(el("h2", { text: "Did your estimates come true?" }));
   panel.appendChild(backtestContainer);
   loadInto(backtestContainer, "/api/backtest", renderBacktest);
   var editorDetails = el("details", { class: "advanced-detail" });
@@ -249,7 +249,7 @@ function renderProfilesList(data, container, detailContainer) {
   profiles.forEach(function (profile) {
     var isSuggested = Boolean(suggestedId) && profile.id === suggestedId;
     var card = el("article", { class: "profile-card" + (isSuggested ? " profile-card-suggested" : "") });
-    var head = el("div", { class: "profile-card-head" }, [el("h4", { text: profile.name || profile.id })]);
+    var head = el("div", { class: "profile-card-head" }, [el("h3", { text: profile.name || profile.id })]);
     if (isSuggested) head.appendChild(el("span", { class: "badge badge-suggested", text: "Suggested for you" }));
     card.appendChild(head);
 
@@ -352,7 +352,7 @@ function renderDiffRowsTable(rows) {
 
 function renderProfileDetail(profile, container) {
   clear(container);
-  container.appendChild(el("h3", { text: "What " + (profile.name || profile.id) + " changes" }));
+  container.appendChild(el("h2", { text: "What " + (profile.name || profile.id) + " changes" }));
   var scopeRow = el("div", { class: "pager" });
   scopeRow.appendChild(el("label", { for: "profile-scope", text: "Target file:" }));
   var scopeSelect = el("select", { id: "profile-scope" });
@@ -390,10 +390,10 @@ function renderProfileDiff(data, container) {
   }
 
   var box = el("div", { class: "fix" });
-  box.appendChild(el("h5", { text: "Ask Claude to do it" }));
+  box.appendChild(el("h4", { text: "Ask Claude to do it" }));
   box.appendChild(el("p", { class: "notes", text: "Paste this into Claude Code. It shows you the diff before saving anything." }));
   box.appendChild(codeBlockWithCopy(data.prompt));
-  box.appendChild(el("h5", { text: "Or run this command" }));
+  box.appendChild(el("h4", { text: "Or run this command" }));
   box.appendChild(
     el("p", {
       class: "notes",
@@ -402,7 +402,7 @@ function renderProfileDiff(data, container) {
   );
   box.appendChild(codeBlockWithCopy(data.dry_run_command));
   box.appendChild(restartNote());
-  box.appendChild(el("h5", { text: "Or try it for one session" }));
+  box.appendChild(el("h4", { text: "Or try it for one session" }));
   box.appendChild(
     el("p", {
       class: "notes",
@@ -512,7 +512,7 @@ function buildProfileEditor(container, schema, profiles, onSaved) {
   );
   form.appendChild(el("div", { class: "lever-field" }, [el("label", { for: "profile-form-name", text: "Display name" }), nameInput]));
 
-  form.appendChild(el("h4", { text: "Settings for every session" }));
+  form.appendChild(el("h3", { text: "Settings for every session" }));
   var settingFields = schema.settings.map(function (lever) {
     return leverInput(lever, "profile-setting-");
   });
@@ -522,8 +522,8 @@ function buildProfileEditor(container, schema, profiles, onSaved) {
   });
   form.appendChild(settingsGrid);
 
-  form.appendChild(el("h4", { text: "Settings for one agent" }));
-  form.appendChild(el("p", { class: "notes", text: "Written to that agent's file. Use the agent's name as it appears on the Agents tab." }));
+  form.appendChild(el("h3", { text: "Settings for one agent" }));
+  form.appendChild(el("p", { class: "notes", text: "Written to that agent's file. Use the agent's name as it appears under Agents & context." }));
   var agentBlocks = [];
   var agentsWrap = el("div", { class: "agent-blocks" });
   form.appendChild(agentsWrap);
@@ -698,7 +698,7 @@ function renderProfileCreator(container, onSaved) {
   loadInto(goalsBox, "/api/profile-goals", function (data, target) {
     (data.goals || []).forEach(function (goal) {
       var card = el("article", { class: "profile-card goal-card" });
-      card.appendChild(el("h4", { text: goal.title }));
+      card.appendChild(el("h3", { text: goal.title }));
       card.appendChild(el("p", { class: "profile-card-summary", text: goal.what }));
       var pick = el("button", { type: "button", text: "Start here" });
       pick.addEventListener("click", function () {
@@ -737,7 +737,7 @@ function renderTaskSetups(container) {
       container.appendChild(
         el("p", { class: "notes" }, [
           el("span", { text: "Nothing yet: this needs the kind of task Claude reports with metrics capture at Essentials or above. " }),
-          tabLink("capture", "Open the Capture tab"),
+          captureLink("Turn on metrics capture"),
         ])
       );
       return;
@@ -748,7 +748,7 @@ function renderTaskSetups(container) {
 }
 
 function renderGoalDraft(draft, container, onSaved) {
-  container.appendChild(el("h4", { text: draft.goal.title }));
+  container.appendChild(el("h3", { text: draft.goal.title }));
   if (draft.tasks && draft.tasks.length > 1) {
     var taskPick = el("select", { id: "goal-task-pick" });
     draft.tasks.forEach(function (task) {
@@ -895,7 +895,7 @@ function renderProfileEstimate(profile, container) {
       var data = res.body && res.body.ok === true ? res.body.data : null;
       if (!data || !data.rows.length) return;
       clear(container);
-      container.appendChild(el("h4", { text: "Estimated effect" }));
+      container.appendChild(el("h3", { text: "Estimated effect" }));
       renderWhatIf(data, container);
       container.appendChild(
         simpleTable(
@@ -925,7 +925,7 @@ function renderImpact(data, container) {
   changes.forEach(function (item) {
     var change = item.change || {};
     var card = el("article", { class: "rec impact-card" });
-    card.appendChild(el("h4", { text: change.label + (change.reverted ? " (since undone)" : "") }));
+    card.appendChild(el("h3", { text: change.label + (change.reverted ? " (since undone)" : "") }));
     card.appendChild(el("p", { class: "profile-card-meta", text: String(change.ts || "").replace("T", " ").replace("Z", " UTC") + (change.keys && change.keys.length ? " · " + change.keys.join(", ") : "") }));
     if (item.gate) {
       card.appendChild(emptyState(item.verdict, item.gate));
@@ -985,7 +985,7 @@ function renderImpact(data, container) {
       return c.key === "capture.level" && c.old;
     })[0];
     if (levelChange) {
-      card.appendChild(el("p", { class: "notes", text: "To change it back, use the Capture tab or:" }));
+      card.appendChild(el("p", { class: "notes" }, [el("span", { text: "To change it back, use " }), captureLink(), el("span", { text: " or:" })]));
       card.appendChild(codeBlockWithCopy(levelChange.old === "off" ? "claude-token-lens capture off" : "claude-token-lens capture level " + levelChange.old));
     }
     container.appendChild(card);

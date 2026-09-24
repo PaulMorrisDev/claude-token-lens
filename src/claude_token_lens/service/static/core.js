@@ -1,7 +1,7 @@
 /* claude-token-lens service UI: core.js
  *
  * Shared DOM helpers, browser storage, the dashboard's state and the
- * tab-navigation hook (showTab) that lets a module link to another tab
+ * navigation hook (goTo) that lets a module link to another view
  * without importing app.js.
  */
 
@@ -70,22 +70,21 @@ export function storageSet(key, value) {
   }
 }
 
-// -- report.json cache (shared across Overview/Cache/TTL/Agents/
-//    Config/Usage/Diagnostics/Recommendations) ------------------------
+export function storageRemove(key) {
+  try {
+    window.localStorage.removeItem(key);
+  } catch (err) {
+    /* private window or blocked site data -- ignore */
+  }
+}
+
+// -- report.json cache (shared by every view that reads the report) ---
 
 export var state = {
-  // Review finding 21: this used to be a single `reportPromise` shared
-  // by every caller (Overview's Scorecard/Totals, and the Cache/TTL/
-  // Agents/Config/Usage/Diagnostics/Recommendations tabs), memoized
-  // forever after the first fetch. /api/report.json accepts a
-  // `window_days` query parameter and the server memoizes its own
-  // response per `(window_days, change_token)` (docs/api.md), but the
-  // client-side cache didn't vary by window at all -- once Overview's
-  // window selector fetched a report for one window, every tab kept
-  // reading that same cached promise even after the selector changed,
-  // silently showing stale data for every other window choice. Keyed
-  // by the header picker's window now (WINDOW_OPTIONS), so each window
-  // gets its own cache entry.
+  // One report promise per window (review finding 21): /api/report.json
+  // takes the window and the server memoizes its answer per window and
+  // change (docs/api.md). A single shared promise kept every view on the
+  // first window's report after the picker changed.
   reportPromises: {},
   currency: "USD",
   // UX-1: report.meta.units {mode, share_per_usd, period_label,
@@ -94,10 +93,12 @@ export var state = {
   // null until the first report loads, same as currency defaulting
   // to "USD" until then.
   units: null,
-  // The one window every tab reads (the picker in the header): a
+  // The one window every view reads (the picker in the page header): a
   // number of days, or a named window the server resolves ("1h",
   // "today", "24h", "change", "all").
   window: "30",
+  // The view on screen, as links.js's view key ("spend/usage").
+  view: null,
 };
 
 // Short windows show a change's effect within the hour; "Since my
@@ -114,19 +115,23 @@ export var WINDOW_OPTIONS = [
   { label: "Since my last change", value: "change" },
 ];
 
-export var renderedTabs = {};
+// View keys already drawn for the current window; a view not listed
+// draws when next shown.
+export var renderedViews = {};
 
-// -- tab navigation hook -----------------------------------------------
-// app.js owns the tab controller. Every other module that links to a
-// tab calls showTab, which app.js wires up at start, so no module has
-// to import app.js and the module graph has no cycles.
+// -- navigation hook -----------------------------------------------------
+// app.js owns the router. Every other module that links to a view calls
+// goTo, which app.js wires up at start, so no module has to import
+// app.js and the module graph has no cycles.
 
-var tabHandler = null;
+var routeHandler = null;
 
-export function setTabHandler(handler) {
-  tabHandler = handler;
+export function setRouteHandler(handler) {
+  routeHandler = handler;
 }
 
-export function showTab(tabKey, options) {
-  if (tabHandler) tabHandler(tabKey, options);
+// Show a view ("spend/usage", or a page id for its last-used segment).
+// options: focus (move focus to the page title), force (draw again).
+export function goTo(viewKey, options) {
+  if (routeHandler) routeHandler(viewKey, options);
 }

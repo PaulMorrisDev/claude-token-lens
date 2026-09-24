@@ -1,6 +1,6 @@
 /* claude-token-lens service UI: page-cache.js
  *
- * The Cache and Cache lifetime (TTL) tabs.
+ * The Cache page: Rebuilds and Lifetime.
  */
 
 import { clear, el } from "./core.js";
@@ -8,15 +8,16 @@ import { formatCell, thousands } from "./format.js";
 import { loadInto, loadReport, withWindow } from "./api.js";
 import { errorNotice, loadingNode } from "./ui.js";
 import { renderMappedSections, renderReportBackedSection } from "./grid.js";
-import { tabHeading } from "./links.js";
+import { viewIntro } from "./links.js";
 
 // ======================================================================
-// Cache tab (recache section + a quick /api/recache stat strip)
+// Cache, Rebuilds (recache and limits sections + a quick /api/recache
+// stat strip)
 // ======================================================================
 
 export function renderCache(panel) {
   clear(panel);
-  tabHeading(panel, "cache");
+  viewIntro(panel, "cache/rebuilds");
 
   var quickContainer = el("div", { id: "cache-quick" });
   panel.appendChild(quickContainer);
@@ -31,7 +32,7 @@ export function renderCache(panel) {
       sectionContainer.appendChild(errorNotice(result.error));
       return;
     }
-    renderMappedSections(result.report, "cache", sectionContainer);
+    renderMappedSections(result.report, "cache/rebuilds", sectionContainer);
   });
 }
 
@@ -56,19 +57,19 @@ function renderRecacheQuickStats(data, container) {
       ])
     );
   });
-  container.appendChild(el("h3", { text: "Cache rebuilds by cause (all history)" }));
+  container.appendChild(el("h2", { text: "Cache rebuilds by cause (all history)" }));
   container.appendChild(cards);
 }
 
 // ======================================================================
-// TTL tab -- /api/ttl is itself Section/Table-shaped (docs/api.md), so
+// Cache, Lifetime -- /api/ttl is itself Section/Table-shaped (docs/api.md), so
 // it is rendered directly with the same generic table renderer used
 // for report.json sections, rather than waiting on the full report.
 // ======================================================================
 
 export function renderTtl(panel) {
   clear(panel);
-  tabHeading(panel, "ttl");
+  viewIntro(panel, "cache/lifetime");
   var container = el("div", { id: "ttl-section" });
   panel.appendChild(container);
   loadInto(container, withWindow("/api/ttl"), function (data, target) {

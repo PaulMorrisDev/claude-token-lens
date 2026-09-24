@@ -1,13 +1,13 @@
 /* claude-token-lens service UI: grid.js
  *
  * Report tables: sortable data tables, their help, and the sections
- * each tab draws from report.json.
+ * each view draws from report.json.
  */
 
 import { clear, el, state, storageSet } from "./core.js";
 import { cellSortValue, formatCell, NUMERIC_KINDS } from "./format.js";
 import { findSection } from "./api.js";
-import { SECTION_TAB_MAP } from "./links.js";
+import { viewForSection, viewForTable } from "./links.js";
 
 // Mirrors render/tables.py::resolve_evidence_column_kind /
 // format_evidence_value: a Recommendation.evidence tuple carries no
@@ -53,8 +53,8 @@ export function formatEvidenceValue(report, value, sourceTable, rowKey, currency
   return formatCell(value, kind, currency);
 }
 
-// -- generic Section/Table renderer (Cache/TTL/Agents/Config/Usage/
-//    Diagnostics tabs, per docs/ui.md and this work package's brief) -
+// -- generic Section/Table renderer (every view that shows report
+//    sections, per docs/ui.md) ---------------------------------------
 
 var sortState = {}; // table id -> {index, ascending}
 
@@ -93,10 +93,12 @@ export function helpBlock(help) {
   return details;
 }
 
-export function renderTable(table, tableId, currency) {
+// options.heading false: the caller has already titled the table (a
+// table shown away from its section, under its own section heading).
+export function renderTable(table, tableId, currency, options) {
   var maxima = tableMaxima(table);
   var wrap = el("div", { class: "table-wrap" });
-  wrap.appendChild(el("h4", { text: table.title || table.name }));
+  if (!options || options.heading !== false) wrap.appendChild(el("h3", { text: table.title || table.name }));
   var tableHelp = helpBlock(table.help);
   if (tableHelp) wrap.appendChild(tableHelp);
 
@@ -308,8 +310,8 @@ export function renderPlacedTables(container, tables, currency, idPrefix) {
 
 export function renderSectionGeneric(container, section, currency, idPrefix) {
   if (!section) return;
-  // Sections are h3: each tab has exactly one h2, its own title.
-  container.appendChild(el("h3", { class: "section-title", text: section.title || section.key }));
+  // Sections are h2 and their tables h3: the page title is the one h1.
+  container.appendChild(el("h2", { class: "section-title", text: section.title || section.key }));
   if (section.intro) container.appendChild(el("p", { class: "section-intro", text: section.intro }));
   var sectionHelp = helpBlock(section.help);
   if (sectionHelp) container.appendChild(sectionHelp);
@@ -327,15 +329,27 @@ export function renderSectionGeneric(container, section, currency, idPrefix) {
   }
 }
 
-// skip: section keys the tab renders some other way.
-export function renderMappedSections(report, tabKey, container, skip) {
+// Every report section and table that belongs on a view (links.js's
+// SECTION_PAGE_MAP and TABLE_PAGE_MAP). A section drops the tables placed
+// elsewhere; a table placed here from another section's gets its own
+// heading. skip: section keys the view draws some other way.
+export function renderMappedSections(report, viewKey, container, skip) {
   if (!report || !Array.isArray(report.sections)) return;
   report.sections.forEach(function (section) {
-    if (section.key === "overview") return; // handled by the Overview tab directly
     if (skip && skip.indexOf(section.key) !== -1) return;
-    var target = SECTION_TAB_MAP[section.key] || "diagnostics";
-    if (target !== tabKey) return;
-    renderSectionGeneric(container, section, state.currency, "report");
+    var here = (section.tables || []).filter(function (table) {
+      return viewForTable(section.key, table.name) === viewKey;
+    });
+    if (viewForSection(section.key) === viewKey) {
+      // The Overview draws its own section.
+      if (section.key === "overview") return;
+      renderSectionGeneric(container, Object.assign({}, section, { tables: here }), state.currency, "report");
+      return;
+    }
+    here.forEach(function (table, i) {
+      container.appendChild(el("h2", { class: "section-title", text: table.title || table.name }));
+      container.appendChild(renderTable(table, "report-" + section.key + "-" + table.name + "-" + i, state.currency, { heading: false }));
+    });
   });
 }
 
@@ -362,7 +376,7 @@ export function renderReportBackedSection(data, container, idPrefix, emptyNotice
 
 export function simpleTable(columns, rows, caption) {
   var wrap = el("div", { class: "table-wrap" });
-  if (caption) wrap.appendChild(el("h4", { text: caption }));
+  if (caption) wrap.appendChild(el("h3", { text: caption }));
   var table = el("table", { class: "data-table" });
   var headRow = el("tr");
   columns.forEach(function (col) {

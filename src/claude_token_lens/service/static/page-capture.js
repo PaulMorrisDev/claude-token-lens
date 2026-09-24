@@ -1,6 +1,6 @@
 /* claude-token-lens service UI: page-capture.js
  *
- * The Capture tab: metrics-capture level, sample and metrics. Its saves
+ * Setup, Capture: metrics-capture level, sample and metrics. Its saves
  * are the one config write the dashboard makes, to Token Lens's own
  * config.toml.
  */
@@ -10,14 +10,14 @@ import { formatCell, thousands } from "./format.js";
 import { loadInto, postJson } from "./api.js";
 import { codeBlockWithCopy, errorNotice } from "./ui.js";
 import { simpleTable } from "./grid.js";
-import { tabHeading } from "./links.js";
+import { viewIntro } from "./links.js";
 import { capturePoll, showCaptureData } from "./shell.js";
 
-// -- the Capture tab ---------------------------------------------------
+// -- Setup, Capture ---------------------------------------------------
 
 export function renderCapture(panel) {
   clear(panel);
-  tabHeading(panel, "capture");
+  viewIntro(panel, "setup/capture");
   var container = el("div", { id: "capture-content" });
   panel.appendChild(container);
   loadInto(container, "/api/capture", function (data, target) {
@@ -79,7 +79,7 @@ function confirmCapture(title, lines, onYes) {
     return;
   }
   var dialog = el("dialog", { class: "capture-dialog", "aria-labelledby": "capture-dialog-title" });
-  dialog.appendChild(el("h4", { id: "capture-dialog-title", text: title }));
+  dialog.appendChild(el("h3", { id: "capture-dialog-title", text: title }));
   text.forEach(function (line) {
     dialog.appendChild(el("p", { text: line }));
   });
@@ -107,7 +107,7 @@ function captureStatus(container) {
   return container.querySelector(".capture-status");
 }
 
-// Send a change; redraw the tab and the banner from the answer.
+// Send a change; redraw the view and the banner from the answer.
 function postCapture(change, container, doneText) {
   var status = captureStatus(container);
   if (status) {
@@ -168,7 +168,7 @@ function renderCaptureData(data, container) {
   container.appendChild(el("div", { class: "capture-status", role: "status", "aria-live": "polite" }));
 
   // Where it stands now.
-  container.appendChild(el("h3", { text: "Now" }));
+  container.appendChild(el("h2", { text: "Now" }));
   var now = [el("strong", { text: "Metrics capture: " + config.describe + ". " })];
   if (config.expired) now.push(el("span", { text: "Its end time has passed, so nothing is captured now. " }));
   if (config.projects_limited) now.push(el("span", { text: "Only some projects are captured ([capture] projects in config.toml). " }));
@@ -251,7 +251,7 @@ function renderCaptureData(data, container) {
 
 function renderCaptureLevels(data, container) {
   var config = data.config || {};
-  container.appendChild(el("h3", { text: "Level" }));
+  container.appendChild(el("h2", { text: "Level" }));
   container.appendChild(el("p", { class: "notes", text: "Each level adds to the one before. Estimates are per week, from your own sessions" + (config.sample < 100 ? ", with " + config.sample + "% of sessions captured" : "") + "." }));
   var grid = el("div", { class: "capture-levels", role: "list" });
   (data.levels || []).forEach(function (level) {
@@ -302,7 +302,7 @@ var CAPTURE_ENDS = [
 
 function renderCaptureControls(data, container) {
   var config = data.config || {};
-  container.appendChild(el("h3", { text: "How much and for how long" }));
+  container.appendChild(el("h2", { text: "How much and for how long" }));
   if (!config.on) {
     container.appendChild(el("p", { class: "notes", text: "Sampling and an end time apply once capture is on." }));
     return;
@@ -352,10 +352,10 @@ function renderCaptureControls(data, container) {
 
 function renderCaptureMetrics(data, container) {
   var config = data.config || {};
-  container.appendChild(el("h3", { text: "Metrics" }));
+  container.appendChild(el("h2", { text: "Metrics" }));
   container.appendChild(el("p", { class: "notes", text: "What each one captures, what Claude writes for it, why it helps, and what it costs. Ticking one here picks your own set (Custom)." }));
   (data.sections || []).forEach(function (section) {
-    container.appendChild(el("h4", { text: section.title }));
+    container.appendChild(el("h3", { text: section.title }));
     var list = el("div", { class: "metric-list" });
     section.metrics.forEach(function (row) {
       list.appendChild(renderMetricRow(row, data, container));

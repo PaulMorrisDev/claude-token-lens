@@ -1,6 +1,6 @@
 /* claude-token-lens service UI: page-agents.js
  *
- * The Agents and Context files tabs.
+ * The Agents & context page: Agents, Quality and Context.
  */
 
 import { clear, el } from "./core.js";
@@ -8,17 +8,14 @@ import { formatCell, thousands } from "./format.js";
 import { loadInto, loadReport, withWindow } from "./api.js";
 import { errorNotice, loadingNode, renderFixList } from "./ui.js";
 import { renderMappedSections, simpleTable } from "./grid.js";
-import { tabHeading } from "./links.js";
+import { viewIntro } from "./links.js";
 
 // ======================================================================
-// Agents tab (agents/workflows/workstyle sections)
+// Agents & context, Agents (agent_startup, agents) and Quality (quality,
+// workflows, workstyle): report sections only
 // ======================================================================
 
-export function renderAgents(panel) {
-  clear(panel);
-  tabHeading(panel, "agents");
-  var container = el("div", { id: "agents-sections" });
-  panel.appendChild(container);
+function renderReportSections(container, viewKey) {
   container.appendChild(loadingNode());
   loadReport().then(function (result) {
     clear(container);
@@ -26,23 +23,40 @@ export function renderAgents(panel) {
       container.appendChild(errorNotice(result.error));
       return;
     }
-    renderMappedSections(result.report, "agents", container);
+    renderMappedSections(result.report, viewKey, container);
   });
 }
 
+export function renderAgents(panel) {
+  clear(panel);
+  viewIntro(panel, "agents/subagents");
+  var container = el("div", { id: "agents-sections" });
+  panel.appendChild(container);
+  renderReportSections(container, "agents/subagents");
+}
+
+export function renderAgentQuality(panel) {
+  clear(panel);
+  viewIntro(panel, "agents/quality");
+  var container = el("div", { id: "agent-quality-sections" });
+  panel.appendChild(container);
+  renderReportSections(container, "agents/quality");
+}
+
 // ======================================================================
-// Context files tab: every CLAUDE.md file and every skill Claude Code
-// lists, with how often each is sent and what it costs
+// Agents & context, Context: every CLAUDE.md file and every skill Claude
+// Code lists, with how often each is sent and what it costs, then the
+// context budget section
 // ======================================================================
 
 export function renderContextFiles(panel) {
   clear(panel);
-  tabHeading(panel, "context");
-  panel.appendChild(el("h3", { text: "CLAUDE.md files" }));
+  viewIntro(panel, "agents/context");
+  panel.appendChild(el("h2", { text: "CLAUDE.md files" }));
   panel.appendChild(
     el("p", {
       class: "notes",
-      text: "Read from disk when you open this tab and never stored. Sent to your main session at its start and to most subagents each time one starts.",
+      text: "Read from disk when you open this page and never stored. Sent to your main session at its start and to most subagents each time one starts.",
     })
   );
   var files = el("div", { id: "context-claude-md" });
@@ -53,7 +67,7 @@ export function renderContextFiles(panel) {
     renderClaudeMdList(data, container, fileDetail);
   });
 
-  panel.appendChild(el("h3", { text: "Skills" }));
+  panel.appendChild(el("h2", { text: "Skills" }));
   panel.appendChild(
     el("p", {
       class: "notes",
@@ -63,6 +77,10 @@ export function renderContextFiles(panel) {
   var skills = el("div", { id: "context-skills" });
   panel.appendChild(skills);
   loadInto(skills, withWindow("/api/skills"), renderSkills);
+
+  var budget = el("div", { id: "context-budget" });
+  panel.appendChild(budget);
+  renderReportSections(budget, "agents/context");
 }
 
 function renderClaudeMdList(data, container, detailContainer) {
@@ -74,7 +92,7 @@ function renderClaudeMdList(data, container, detailContainer) {
   var cards = el("div", { class: "profile-cards" });
   rows.forEach(function (file) {
     var card = el("article", { class: "profile-card" });
-    card.appendChild(el("h4", { text: file.path }));
+    card.appendChild(el("h3", { text: file.path }));
     card.appendChild(el("p", { class: "profile-card-meta", text: file.who }));
     var facts = [thousands(file.tokens) + " tokens"];
     facts.push(file.seen ? "sent to " + file.reach_text : "not seen in this window's sessions");
@@ -97,7 +115,7 @@ function renderClaudeMdList(data, container, detailContainer) {
 }
 
 function renderClaudeMdDetail(data, container) {
-  container.appendChild(el("h3", { text: data.path }));
+  container.appendChild(el("h2", { text: data.path }));
   container.appendChild(
     el("p", { class: "notes", text: thousands(data.tokens) + " tokens" + (data.reach_text ? ", sent to " + data.reach_text : "") + (data.cost_text ? ", " + data.cost_text : "") + "." })
   );
@@ -121,7 +139,7 @@ function renderClaudeMdDetail(data, container) {
     );
   }
   if (data.duplicates && data.duplicates.length) {
-    container.appendChild(el("h5", { text: "Repeated text" }));
+    container.appendChild(el("h4", { text: "Repeated text" }));
     container.appendChild(el("ul", { class: "notes" }, data.duplicates.map(function (d) {
       var where = (d.also_in || []).map(function (o) {
         return o.file + " line " + o.line;
@@ -130,13 +148,13 @@ function renderClaudeMdDetail(data, container) {
     })));
   }
   if (data.stale && data.stale.length) {
-    container.appendChild(el("h5", { text: "References to things that no longer exist" }));
+    container.appendChild(el("h4", { text: "References to things that no longer exist" }));
     container.appendChild(el("ul", { class: "notes" }, data.stale.map(function (d) {
       return el("li", { text: "Line " + d.line + ": " + d.reference + " (" + d.kind + ")" });
     })));
   }
   if (data.fixes && data.fixes.length) {
-    container.appendChild(el("h4", { text: "What you could change" }));
+    container.appendChild(el("h3", { text: "What you could change" }));
     renderFixList(data.fixes, container);
   } else {
     container.appendChild(el("p", { class: "notes", text: "Nothing to change in this file." }));

@@ -1,6 +1,6 @@
 /* claude-token-lens service UI: page-actions.js
  *
- * The Quick actions and Recommendations tabs.
+ * The Actions page: Recommendations and Checks.
  */
 
 import { clear, el, state } from "./core.js";
@@ -18,10 +18,10 @@ import {
   statusBadge,
 } from "./ui.js";
 import { formatEvidenceValue, simpleTable } from "./grid.js";
-import { tabHeading } from "./links.js";
+import { viewIntro } from "./links.js";
 
 // ======================================================================
-// Recommendations tab
+// Actions, Recommendations
 // ======================================================================
 
 export var SEVERITY_ORDER = ["action", "advice", "info"];
@@ -40,15 +40,15 @@ export function severityChip(severity) {
 
 export function renderRecommendations(panel) {
   clear(panel);
-  tabHeading(panel, "recommendations");
+  viewIntro(panel, "actions/recommendations");
   var noticeContainer = el("div", { id: "recommendations-notice" });
   var container = el("div", { id: "recommendations-list" });
   panel.appendChild(noticeContainer);
   panel.appendChild(container);
   container.appendChild(loadingNode());
 
-  // v0.3: same "capture window open: provisional" notice the Config
-  // tab's baseline panel shows (docs/api.md's /api/baseline
+  // v0.3: same "capture window open: provisional" notice the Settings
+  // baseline panel shows (docs/api.md's /api/baseline
   // capture_status) -- a recommendation built while onboarding's
   // capture window is still running may change once it completes.
   fetchJson("/api/baseline").then(function (result) {
@@ -92,7 +92,7 @@ function renderRecommendationCards(recommendations, container, report) {
     var group = bySeverity[severity];
     if (!group || !group.length) return;
     var groupEl = el("div", { class: "rec-group" });
-    groupEl.appendChild(el("h3", { text: (SEVERITY_LABELS[severity] || severity) + " (" + group.length + ")" }));
+    groupEl.appendChild(el("h2", { text: (SEVERITY_LABELS[severity] || severity) + " (" + group.length + ")" }));
     group.forEach(function (rec) {
       groupEl.appendChild(renderRecommendationCard(rec, report));
     });
@@ -122,7 +122,7 @@ function renderRecommendationCard(rec, report) {
   // The chip sits inside the heading, so a screen reader moving by
   // headings hears the severity ("Do this") before the title.
   card.appendChild(
-    el("h4", { class: "rec-head" }, [
+    el("h3", { class: "rec-head" }, [
       severityChip(rec.severity),
       el("span", { class: "visually-hidden", text: ": " }),
       el("span", { text: rec.title }),
@@ -166,12 +166,12 @@ function renderRecommendationCard(rec, report) {
 }
 
 // ======================================================================
-// Quick actions tab: one question per lever, answered for the window
+// Actions, Checks: one question per lever, answered for the window
 // ======================================================================
 
 export function renderQuickActions(panel) {
   clear(panel);
-  tabHeading(panel, "quick");
+  viewIntro(panel, "actions/checks");
   var list = el("div", { class: "quick-list" });
   panel.appendChild(list);
   loadInto(list, withWindow("/api/quick-actions"), function (data, container) {
@@ -183,7 +183,7 @@ export function renderQuickActions(panel) {
 
 function renderQuickCard(check) {
   var card = el("article", { class: "rec quick-card" });
-  card.appendChild(el("div", { class: "quick-head" }, [statusBadge(check.status), el("h4", { text: check.question })]));
+  card.appendChild(el("div", { class: "quick-head" }, [statusBadge(check.status), el("h3", { text: check.question })]));
   card.appendChild(el("p", { class: "notes", text: check.why }));
   if (check.status === "no_data") {
     card.appendChild(emptyState(check.summary));
@@ -225,7 +225,7 @@ function renderQuickDetail(data, container) {
     container.appendChild(
       el("p", {
         class: "notes",
-        text: "Each fix below is a prompt for Claude, which shows you the diff before saving, and where it applies a command that previews the change with --dry-run. Nothing here changes Claude Code by itself.",
+        text: "Each fix below is a prompt for Claude, which shows you the diff before saving. Where it applies, there is also a command that previews the change with --dry-run. Nothing here changes Claude Code by itself.",
       })
     );
     renderFixList(data.fixes, container);

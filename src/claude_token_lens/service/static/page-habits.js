@@ -1,6 +1,6 @@
 /* claude-token-lens service UI: page-habits.js
  *
- * The Work habits tab.
+ * The Work habits page.
  */
 
 import { clear, el, escapeHtml, state } from "./core.js";
@@ -8,17 +8,17 @@ import { formatCell, money, moneyText } from "./format.js";
 import { findSection, loadReport } from "./api.js";
 import { codeBlockWithCopy, errorNotice, loadingNode } from "./ui.js";
 import { helpBlock, renderPlacedTables } from "./grid.js";
-import { tabHeading } from "./links.js";
+import { viewIntro } from "./links.js";
 
 // ======================================================================
-// Work habits tab: the habits section's "This week" digest as cards,
+// Work habits: the habits section's "This week" digest as cards,
 // the playbook as cards with a by-week sparkline and the example to
 // copy, brief templates with Copy buttons, then its other tables.
 // ======================================================================
 
 export function renderHabits(panel) {
   clear(panel);
-  tabHeading(panel, "habits");
+  viewIntro(panel, "habits");
   var container = el("div", { id: "habits-sections" });
   panel.appendChild(container);
   container.appendChild(loadingNode());
@@ -81,7 +81,7 @@ function renderHabitsSection(section, container) {
 }
 
 function renderHabitsDigest(table, container) {
-  container.appendChild(el("h3", { text: table.title }));
+  container.appendChild(el("h2", { text: table.title }));
   var help = helpBlock(table.help);
   if (help) container.appendChild(help);
   var rows = tableRowsAsObjects(table);
@@ -144,7 +144,7 @@ function habitSparkline(weeks, label) {
 var PLAYBOOK_CARD_LIMIT = 5;
 
 function renderHabitsPlaybook(table, container) {
-  container.appendChild(el("h3", { text: table.title }));
+  container.appendChild(el("h2", { text: table.title }));
   var help = helpBlock(table.help);
   if (help) container.appendChild(help);
   var rows = tableRowsAsObjects(table);
@@ -171,7 +171,7 @@ function appendHabitCards(table, rows, cards) {
   rows.forEach(function (row) {
     var card = el("article", { class: "habit-card" });
     var head = el("div", { class: "profile-card-head" });
-    head.appendChild(el("h4", { text: labelFor(table, row.habit) }));
+    head.appendChild(el("h3", { text: labelFor(table, row.habit) }));
     head.appendChild(el("span", { class: "badge", text: labelFor(table, row.theme) }));
     card.appendChild(head);
     // UX-1/UX-2: routed through moneyText so a subscription reads "about
@@ -231,13 +231,13 @@ function appendHabitCards(table, rows, cards) {
 }
 
 function renderBriefTemplates(table, container) {
-  container.appendChild(el("h3", { text: table.title }));
+  container.appendChild(el("h2", { text: table.title }));
   var help = helpBlock(table.help);
   if (help) container.appendChild(help);
   var cards = el("div", { class: "habit-cards" });
   tableRowsAsObjects(table).forEach(function (row) {
     var card = el("article", { class: "habit-card" });
-    card.appendChild(el("h4", { text: labelFor(table, row.task) }));
+    card.appendChild(el("h3", { text: labelFor(table, row.task) }));
     if (row.why) card.appendChild(el("p", { class: "profile-card-meta", text: row.why }));
     card.appendChild(codeBlockWithCopy(row.template || ""));
     cards.appendChild(card);

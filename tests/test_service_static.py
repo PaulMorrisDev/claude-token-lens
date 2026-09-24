@@ -192,6 +192,53 @@ def _declaration_source(app_js: str, name: str) -> str:
 # -- deliverable 1: file existence / index.html reference restriction ----
 
 
+def _js_literal_to_json(src: str) -> object:
+    """A JS object or array literal (double-quoted strings, bare keys,
+    trailing commas) as Python data."""
+
+    def quote_key(match: re.Match) -> str:
+        return match.group(0) if match.group(1) is None else '"' + match.group(1) + '":'
+
+    text = re.sub(r'"(?:[^"\\]|\\.)*"|([A-Za-z_]\w*)\s*:', quote_key, src)
+    text = re.sub(r",(\s*[}\]])", r"\1", text)
+    return json.loads(text)
+
+
+def _pages() -> list[dict]:
+    """links.js's PAGES: the sidebar's pages and their segments."""
+    source = _declaration_source(_app_js(), "PAGES")
+    return _js_literal_to_json(source[source.index("[") :].rstrip().rstrip(";"))
+
+
+def _view_keys() -> list[str]:
+    """Every view key ("spend/usage", or a page id alone), in sidebar order."""
+    keys = []
+    for page in _pages():
+        if page.get("segments"):
+            keys.extend(page["id"] + "/" + segment["id"] for segment in page["segments"])
+        else:
+            keys.append(page["id"])
+    return keys
+
+
+def _view_labels() -> list[str]:
+    """Each view as the reader sees it: "Spend \u203a Usage" (viewLabel)."""
+    labels = []
+    for page in _pages():
+        if page.get("segments"):
+            labels.extend(page["label"] + " \u203a " + segment["label"] for segment in page["segments"])
+        else:
+            labels.append(page["label"])
+    return labels
+
+
+def _js_string_map(app_js: str, var_name: str) -> dict[str, str]:
+    """A declaration's "key": "value" pairs, keys bare or quoted, dotted
+    or slashed."""
+    source = _declaration_source(app_js, var_name)
+    return dict(re.findall(r'^\s*"?([a-z_./]+)"?\s*:\s*"([^"]*)"', source, re.MULTILINE))
+
+
 def test_all_three_static_files_exist() -> None:
     for name in STATIC_FILES:
         path = STATIC_DIR / name
@@ -205,13 +252,17 @@ def test_first_party_glob_finds_every_module() -> None:
 
 def test_index_html_references_only_its_own_static_assets() -> None:
     """Every ``href``/``src`` in index.html is a same-origin ``/static/``
-    file that exists on disk, and a preloaded font carries
-    ``crossorigin`` (fonts are fetched in CORS mode, so a preload without
-    it is fetched twice)."""
+    file that exists on disk or an in-page ``#/`` route to a page that
+    exists, and a preloaded font carries ``crossorigin`` (fonts are
+    fetched in CORS mode, so a preload without it is fetched twice)."""
     html = _static_text("index.html")
     referenced = set(re.findall(r'(?:href|src)="([^"]+)"', html))
     assert {"/static/app.css", "/static/app.js"} <= referenced, referenced
+    page_ids = {page["id"] for page in _pages()}
     for ref in referenced:
+        if ref.startswith("#/"):
+            assert ref[2:].split("/")[0].split("?")[0] in page_ids, f"index.html links to unknown page {ref!r}"
+            continue
         assert ref.startswith("/static/"), f"index.html references {ref!r}, outside /static/"
         assert (STATIC_DIR / ref[len("/static/") :]).is_file(), f"index.html references missing file {ref!r}"
     for tag in re.findall(r"<link\b[^>]*>", html):
@@ -864,58 +915,46 @@ def test_load_report_cache_is_keyed_by_the_selected_window() -> None:
         "loadReport() must forward the window to /api/report.json"
     )
 
-    # The window now lives in the header picker and applies to every tab:
-    # a change must drop every rendered tab and redraw the one on screen,
-    # so no tab keeps showing the previous window's numbers.
-    picker_src = _function_source(app_js, "initWindowPicker")
-    change_listener_src = picker_src[picker_src.index('addEventListener("change"') :]
-    assert "state.window = select.value" in change_listener_src
-    assert "delete renderedTabs[key]" in change_listener_src
-    assert "force: true" in change_listener_src
+    # The window lives in the page header's picker and applies to every
+    # view that follows it: a change must drop every drawn view and redraw
+    # the one on screen, so no view keeps showing the previous window's
+    # numbers.
+    assert "setWindow(" in _function_source(app_js, "initWindowPicker")
+    set_window_src = _function_source(app_js, "setWindow")
+    assert "applyWindow(value)" in set_window_src
+    assert "force: true" in set_window_src
+    apply_src = _function_source(app_js, "applyWindow")
+    assert "state.window = value" in apply_src
+    assert "delete renderedViews[key]" in apply_src
+    assert "delete state.reportPromises[value]" in apply_src
 
 
-def test_section_tab_map_includes_recache_by_group() -> None:
+def test_section_page_map_includes_recache_by_group() -> None:
     """Regression test for review finding 20 (should-fix): docs/ui.md
-    documents ``recache_by_group`` as mapping to the Cache tab alongside
-    ``recache`` itself, but ``app.js``'s ``SECTION_TAB_MAP`` only listed
-    ``recache`` -- a docs/code mismatch. Fails against the pre-fix
-    source (no ``recache_by_group`` key in the map) and passes once it
-    is added, mapped to the same ``"cache"`` tab.
-    """
-    section_tab_map_src = _declaration_source(_app_js(), "SECTION_TAB_MAP")
-    assert "recache_by_group" in section_tab_map_src
-    assert re.search(r'recache_by_group\s*:\s*"cache"', section_tab_map_src), (
-        "recache_by_group should map to the same Cache tab as recache"
+    documents ``recache_by_group`` as shown beside ``recache`` itself,
+    but the section map once listed only ``recache`` -- a docs/code
+    mismatch. Both map to Cache \u203a Rebuilds."""
+    mapping = _js_string_map(_app_js(), "SECTION_PAGE_MAP")
+    assert mapping["recache"] == "cache/rebuilds"
+    assert mapping["recache_by_group"] == mapping["recache"], (
+        "recache_by_group should map to the same view as recache"
     )
 
 
-def test_savings_tab_wires_up_ids_routes_and_section_map() -> None:
-    """v4 wiring round: the new "Savings" tab (carry/compaction_sim/
-    model_swap/waste) must be consistent across all three places a tab
-    is registered -- index.html's button + panel ids, app.js's
-    TAB_ORDER/TAB_RENDERERS, and SECTION_TAB_MAP (so the four sections
-    don't also fall through to the Diagnostics tab's default, the same
-    trap ``recache_by_group`` hit above)."""
-    html = _static_text("index.html")
-    assert 'id="tab-savings"' in html
-    assert 'data-tab="savings"' in html
-    assert 'aria-controls="panel-savings"' in html
-    assert 'id="panel-savings"' in html
-    assert 'aria-labelledby="tab-savings"' in html
-
+def test_savings_segment_wires_up_pages_renderers_and_section_map() -> None:
+    """v4 wiring round: Spend \u203a Savings (carry/compaction_sim/
+    model_swap/waste) must be consistent across the places a view is
+    registered -- links.js's PAGES, app.js's VIEW_RENDERERS, and
+    SECTION_PAGE_MAP (so the four sections don't also fall through to
+    Data quality, the same trap ``recache_by_group`` hit above)."""
     app_js = _app_js()
-    assert '"savings"' in app_js
-    assert "renderSavings" in app_js
-
-    assert '"savings"' in _declaration_source(app_js, "TAB_ORDER")
-
-    tab_renderers_src = _declaration_source(app_js, "TAB_RENDERERS")
-    assert re.search(r"savings\s*:\s*renderSavings", tab_renderers_src)
-
-    section_tab_map_src = _declaration_source(app_js, "SECTION_TAB_MAP")
+    assert "spend/savings" in _view_keys()
+    renderers_src = _declaration_source(app_js, "VIEW_RENDERERS")
+    assert re.search(r'"spend/savings"\s*:\s*renderSavings', renderers_src)
+    mapping = _js_string_map(app_js, "SECTION_PAGE_MAP")
     for section_key in ("carry", "compaction_sim", "model_swap", "waste"):
-        assert re.search(section_key + r'\s*:\s*"savings"', section_tab_map_src), (
-            f"{section_key} should map to the Savings tab, not fall through to Diagnostics"
+        assert mapping.get(section_key) == "spend/savings", (
+            f"{section_key} should map to Spend \u203a Savings, not fall through to Data quality"
         )
 
 
@@ -1096,50 +1135,76 @@ def _js_object_keys(app_js: str, var_name: str) -> dict[str, str]:
     return dict(re.findall(r'^\s*"?([a-z_]+)"?\s*:\s*"([^"]*)"', source, re.MULTILINE))
 
 
-def test_every_report_section_is_mapped_to_a_tab() -> None:
-    """A section missing from SECTION_TAB_MAP silently lands on the Data
-    quality tab; every section report.py can emit must be placed on
-    purpose, and on a tab that exists."""
+def test_every_report_section_is_mapped_to_a_view() -> None:
+    """A section missing from SECTION_PAGE_MAP silently lands on Data
+    quality; every section report.py can emit must be placed on purpose,
+    and on a view that exists. A table placed away from its section
+    (TABLE_PAGE_MAP) names a real section and a real view too."""
     from claude_token_lens.report import _SECTION_ORDER
 
     app_js = _app_js()
-    mapping = _js_object_keys(app_js, "SECTION_TAB_MAP")
-    tab_order = re.findall(r'"([a-z]+)"', _declaration_source(app_js, "TAB_ORDER"))
-    unmapped = [key for key in _SECTION_ORDER if key != "overview" and key not in mapping]
+    views = set(_view_keys())
+    mapping = _js_string_map(app_js, "SECTION_PAGE_MAP")
+    unmapped = [key for key in _SECTION_ORDER if key not in mapping]
     assert unmapped == []
-    assert all(tab in tab_order for tab in mapping.values())
+    assert set(mapping.values()) <= views, set(mapping.values()) - views
+    tables = _js_string_map(app_js, "TABLE_PAGE_MAP")
+    assert tables, "TABLE_PAGE_MAP has no entries"
+    for key, view in tables.items():
+        section, _, table = key.partition(".")
+        assert section in _SECTION_ORDER and table, key
+        assert view in views, (key, view)
 
 
-def test_tab_titles_match_the_tab_buttons() -> None:
-    """Each tab's one h2 (TAB_TITLES) reads the same as its button, and
-    every tab has an intro line."""
+def test_pages_registry_matches_the_view_renderers() -> None:
+    """Every page and segment in links.js's PAGES has a renderer in
+    app.js's VIEW_RENDERERS (in sidebar order), an address-safe id and
+    an intro line, and every name is used once."""
+    app_js = _app_js()
+    pages = _pages()
+    renderers = re.findall(r'^\s*"?([a-z/]+)"?\s*:\s*render[A-Za-z]+,', _declaration_source(app_js, "VIEW_RENDERERS"), re.M)
+    assert renderers == _view_keys()
+    id_shape = re.compile(r"^[a-z]+(-[a-z]+)*$")
+    for page in pages:
+        assert id_shape.match(page["id"]), page["id"]
+        assert page["label"] and page["icon"], page["id"]
+        for segment in page.get("segments") or []:
+            assert id_shape.match(segment["id"]), segment["id"]
+            assert segment["intro"], segment["id"]
+        if not page.get("segments"):
+            assert page["intro"], page["id"]
+    labels = _view_labels()
+    assert len(labels) == len(set(labels)), labels
+    assert len({page["label"] for page in pages}) == len(pages)
+
+
+def test_heading_policy_one_h1_per_page() -> None:
+    """The page title in the header is the one h1; views add h2 per
+    section, h3 per table and h4 at most below that."""
     app_js = _app_js()
     html = _static_text("index.html")
-    titles = _js_object_keys(app_js, "TAB_TITLES")
-    intros = _js_object_keys(app_js, "TAB_INTROS")
-    buttons = dict(re.findall(r'data-tab="([a-z]+)">([^<]+)</button>', html))
-    assert titles == buttons
-    assert set(intros) == set(buttons)
-    # One h2 per tab: tabHeading is the only place a tab panel gets one.
-    assert app_js.count('el("h2"') == 1
+    assert re.findall(r"<h1\b[^>]*>", html) == ['<h1 id="page-title" tabindex="-1">']
+    assert 'el("h1"' not in app_js
+    for deeper in ("h5", "h6"):
+        assert f'el("{deeper}"' not in app_js
+    assert 'el("h2", { class: "section-title"' in _function_source(app_js, "renderSectionGeneric")
+    assert 'el("h3", { text: table.title || table.name })' in _function_source(app_js, "renderTable")
 
 
-def _readme_tab_table_names() -> list[str]:
+def _readme_page_table_names() -> list[str]:
     text = README_MD.read_text(encoding="utf-8")
-    section = re.search(r"## What each tab answers\n\n(.+?)\n\n", text, re.S)
-    assert section, "README.md's tab table section has changed shape"
+    section = re.search(r"## What each page answers\n\n.*?(\| Page \|.+?)\n\n", text, re.S)
+    assert section, "README.md's page table section has changed shape"
     rows = section.group(1).splitlines()[2:]  # drop the header row and its --- separator
     return [row.split("|")[1].strip() for row in rows]
 
 
-def test_readme_tab_table_matches_the_tab_buttons() -> None:
-    """D8: the README's "What each tab answers" table once listed 14
-    tabs while the dashboard shipped 16 -- Work habits and Capture were
-    never added. Regression test: the table's rows, in order, must name
-    exactly the tabs `index.html` renders, in the same order."""
-    html = _static_text("index.html")
-    buttons = re.findall(r'data-tab="[a-z]+">([^<]+)</button>', html)
-    assert _readme_tab_table_names() == buttons
+def test_readme_page_table_matches_the_pages() -> None:
+    """D8: the README's table of what each part of the dashboard answers
+    once listed 14 tabs while the dashboard shipped 16. Regression test:
+    its rows, in order, name exactly the pages and segments PAGES
+    defines, as the dashboard names them ("Spend \u203a Usage")."""
+    assert _readme_page_table_names() == _view_labels()
 
 
 def _readme_glossary_terms() -> dict[str, str]:
@@ -1151,7 +1216,7 @@ def _readme_glossary_terms() -> dict[str, str]:
     return {name: re.sub(r"`([^`]*)`", r"\1", body) for name, body in entries}
 
 
-def test_glossary_tab_matches_the_readme_glossary() -> None:
+def test_glossary_page_matches_the_readme_glossary() -> None:
     """D9: the README's glossary once listed 40 terms while app.js's
     GLOSSARY (the dashboard's Glossary tab) had 31 -- the metrics-capture
     terms (Metrics capture, Capture level, Tag, Prompt cycle, Work
@@ -1209,18 +1274,21 @@ def test_readme_workstyle_row_names_every_archetype() -> None:
     assert named == set(_ARCHETYPE_DESCRIPTIONS)
 
 
-def test_capture_banner_is_polled_with_health_and_links_to_its_tab() -> None:
-    """The capture banner sits under the health banner on every tab and
-    is refreshed from /api/health's capture block."""
+def test_capture_banner_is_polled_with_health_and_links_to_its_segment() -> None:
+    """The capture banner sits under the health banner on every page and
+    is refreshed from /api/health's capture block; the sidebar's status
+    line always says the capture level and links to Setup \u203a Capture."""
     app_js = _app_js()
     html = _static_text("index.html")
-    assert html.index('id="health-banner"') < html.index('id="capture-banner"') < html.index("<nav")
+    assert html.index('id="health-banner"') < html.index('id="capture-banner"') < html.index('id="views"')
     assert "updateCaptureBanner(health.capture)" in _function_source(app_js, "pollHealth")
     banner = _function_source(app_js, "renderCaptureBanner")
-    assert "feedback_note" in banner and "captureTabLink" in banner
+    assert "feedback_note" in banner and "captureLink(" in banner
+    status = _function_source(app_js, "renderStatusLine")
+    assert "captureLink(" in status and "captureStatusText(" in status
 
 
-def test_capture_tab_repeats_the_cost_warning_before_using_more_tokens() -> None:
+def test_capture_segment_repeats_the_cost_warning_before_using_more_tokens() -> None:
     """Switching to a level, a metric or a larger sample that asks Claude
     for more goes through confirmCapture, which shows data.warning."""
     app_js = _app_js()
@@ -1235,19 +1303,21 @@ def test_capture_tab_repeats_the_cost_warning_before_using_more_tokens() -> None
 # -- leftovers (emptyState()/API gate) --------------------------------------
 
 
-def test_panel_focus_ring_is_restored() -> None:
-    """.panel:focus-visible used to suppress the outline outright
-    (``outline: none``) even though each tab panel is a tabindex="0"
-    ARIA tabpanel a keyboard user lands on right after switching tabs --
-    a WCAG 2.4.7 gap. A panel now gets the same visible ring as every
-    other focusable control: the global :focus-visible rule
-    (tests/test_ui_tokens.py checks that rule itself), with nothing on
-    .panel that takes it away."""
+def test_page_title_focus_ring_is_not_suppressed() -> None:
+    """A tab panel's focus rule once suppressed the outline outright
+    (``outline: none``) though a keyboard user landed there right after
+    switching tabs -- a WCAG 2.4.7 gap. Moving between pages now puts
+    focus on the page title (#page-title), which gets the same visible
+    ring as every other focusable control: the global :focus-visible
+    rule (tests/test_ui_tokens.py checks that rule itself), with nothing
+    on the title, h1 or the view that takes it away."""
     app_css = _static_text("app.css")
     assert re.search(r"(?m)^:focus-visible\s*\{[^}]*outline: 2px solid var\(--focus\)", app_css)
-    for match in re.finditer(r"\.panel:focus-visible\s*\{([^}]*)\}", app_css):
-        assert "outline: none" not in match.group(1)
-        assert "outline: 0" not in match.group(1)
+    for match in re.finditer(r"([^{}]*)\{([^}]*)\}", app_css):
+        selector, body = match.group(1), match.group(2)
+        if re.search(r"#page-title|\bh1\b|\.page-heading|\.view\b", selector) and ":focus" in selector:
+            assert "outline: none" not in body and "outline: 0" not in body, selector.strip()
+    assert "focusTitle" in _function_source(_app_js(), "showView")
 
 
 def test_lever_grid_column_minimum_shrinks_on_narrow_viewports() -> None:
@@ -1374,21 +1444,20 @@ def test_capture_banner_also_skips_rebuilding_when_unchanged() -> None:
 
 
 def test_capture_banner_dismissal_is_a_seven_day_snooze_not_permanent() -> None:
-    """Both the capture-invite "Hide" and a dismissed notes list used to
-    store a bare "1" forever (or would have) -- once hidden, hidden for
-    good, even after the notes themselves changed. UX-6/9 wants a 7-day
-    snooze instead, so a quiet banner returns on its own."""
+    """A dismissed notes list used to store a bare "1" forever (or would
+    have) -- once hidden, hidden for good, even after the notes
+    themselves changed. UX-6/9 wants a 7-day snooze instead, so a quiet
+    banner returns on its own. (The capture invite and its own snooze
+    are gone: the sidebar's status line says the level instead.)"""
     app_js = _app_js()
     assert re.search(r"(?:export\s+)?(?:var|let|const) BANNER_SNOOZE_MS = 7 \* 24 \* 60 \* 60 \* 1000;", app_js)
-    snoozed_fn = _function_source(app_js, "snoozed")
-    assert "Date.now() - ts < BANNER_SNOOZE_MS" in snoozed_fn
     notes_fn = _function_source(app_js, "notesSnoozed")
     assert "Date.now() - ts < BANNER_SNOOZE_MS" in notes_fn
     banner_fn = _function_source(app_js, "renderCaptureBanner")
-    assert 'storageSet("tls:captureInviteHidden", String(Date.now()))' in banner_fn
     assert 'storageSet("tls:captureNotesHidden", Date.now() + "|" + notesSignature(notes))' in banner_fn
-    # No more permanent "1" writes for either dismissal.
-    assert '"tls:captureInviteHidden", "1"' not in app_js
+    # No permanent "1" write for the dismissal, and no invite left to hide.
+    assert '"tls:captureNotesHidden", "1"' not in app_js
+    assert "tls:captureInviteHidden" not in app_js
 
 
 def test_empty_state_helper_exists_and_is_used_for_not_enough_data_states() -> None:

@@ -4,7 +4,8 @@ Every table on the dashboard carries a short explanation, and every
 recommendation explains the change it suggests. This page is the house
 style for both. The copy lives in
 [`src/claude_token_lens/helptext.py`](../src/claude_token_lens/helptext.py)
-and is checked by `tests/test_help_coverage.py`.
+and is checked by `tests/test_help_coverage.py`. The dashboard's own
+words follow the same rules (see "Dashboard copy" below).
 
 ## Rules
 
@@ -84,3 +85,28 @@ A prompt must stand on its own:
 - Ask Claude to restate the change and show the diff before saving.
 - End with `fixes.PROMPT_RESTART`, so Claude reminds you to restart
   Claude Code once the change is saved.
+
+## Dashboard copy
+
+The dashboard's own words live in its JS modules
+(`src/claude_token_lens/service/static/`): page and segment names,
+intros, labels, buttons, empty states, errors and notes. They follow
+the rules above, plus these:
+
+- **One name for one thing.** A page is called the same in the sidebar,
+  the page title, links and the docs. Write a place as "Page ›
+  Segment" ("Spend › Sessions"), never "the Sessions tab".
+- **Buttons say what happens.** A verb and its object: "Copy prompt",
+  "Redraw figures", "Dismiss for a week". Never "Apply": the dashboard
+  never changes Claude Code's settings.
+- **Say what happened, why, and what to do next**, in that order, for
+  every empty state and error. "No sessions in the last 24 hours. Pick
+  a longer window to see older ones.", not "No data".
+- **Sentence case.** No all-caps labels, no exclamation marks, and no
+  "simply" or "just".
+- **25 words at most per sentence.** Aim for under 20, as above.
+
+`tests/test_ui_copy.py` reads every string literal in the modules that
+reads as copy. It fails on a word from the "Not" column of the table
+above, an internal field name, anything in snake_case, or a sentence
+over 25 words.

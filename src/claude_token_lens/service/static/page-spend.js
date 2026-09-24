@@ -1,6 +1,6 @@
 /* claude-token-lens service UI: page-spend.js
  *
- * The Sessions, Savings and Usage tabs.
+ * The Spend page: Usage, Savings and Sessions.
  */
 
 import { clear, el, escapeHtml, state } from "./core.js";
@@ -8,17 +8,17 @@ import { formatCell, NUMERIC_KINDS, shortTs, thousands } from "./format.js";
 import { fetchJson, loadInto, loadReport, postJson, withWindow } from "./api.js";
 import { errorNotice, loadingNode } from "./ui.js";
 import { renderMappedSections, renderReportBackedSection } from "./grid.js";
-import { tabHeading } from "./links.js";
+import { viewIntro } from "./links.js";
 
 // ======================================================================
-// Sessions tab
+// Spend, Sessions
 // ======================================================================
 
 export var sessionsState = { limit: 50, offset: 0 };
 
 export function renderSessions(panel) {
   clear(panel);
-  tabHeading(panel, "sessions");
+  viewIntro(panel, "spend/sessions");
 
   var tableContainer = el("div", { id: "sessions-table" });
   var pager = el("div", { class: "pager" });
@@ -42,7 +42,7 @@ export function renderSessions(panel) {
       sectionContainer.appendChild(errorNotice(result.error));
       return;
     }
-    renderMappedSections(result.report, "sessions", sectionContainer);
+    renderMappedSections(result.report, "spend/sessions", sectionContainer);
   });
 
   function load() {
@@ -151,7 +151,7 @@ function renderSessionDetail(container, sessionId) {
   });
 }
 
-// -- your rating (Capture tab: dashboard rating) -> POST /api/sessions/<id>/feedback --
+// -- your rating (Setup, Capture: dashboard rating) -> POST /api/sessions/<id>/feedback --
 function buildSessionRating(container, session) {
   var saved = session.feedback || {};
   var form = el("fieldset", { class: "session-rating" });
@@ -210,7 +210,7 @@ function buildSessionRating(container, session) {
 
 function buildSessionDetail(container, session) {
   var wrap = el("div", { class: "session-detail" });
-  wrap.appendChild(el("h3", { text: "Session " + session.id }));
+  wrap.appendChild(el("h2", { text: "Session " + session.id }));
 
   var summaryList = el("ul", { class: "notes" }, [
     el("li", { text: "Project: " + (session.slug || "-") }),
@@ -226,7 +226,7 @@ function buildSessionDetail(container, session) {
 
   // -- "why was this session expensive?" (template sentences, no model) --
   var explainBox = el("div", { class: "session-explain" });
-  wrap.appendChild(el("h3", { text: "Why was this session expensive?" }));
+  wrap.appendChild(el("h2", { text: "Why was this session expensive?" }));
   wrap.appendChild(explainBox);
   loadInto(explainBox, "/api/session/" + encodeURIComponent(session.id) + "/explain", renderSessionExplain);
 
@@ -288,7 +288,7 @@ function buildSessionDetail(container, session) {
   if (session.feedback_questions) wrap.appendChild(buildSessionRating(container, session));
 
   // -- transcripts table (no path -- see docs/api.md's privacy rule) --
-  wrap.appendChild(el("h3", { text: "Transcripts" }));
+  wrap.appendChild(el("h2", { text: "Transcripts" }));
   if (session.transcripts && session.transcripts.length) {
     var tTable = el("table");
     var tHead = el("thead", null, [
@@ -316,7 +316,7 @@ function buildSessionDetail(container, session) {
   }
 
   // -- timeline: context size over turns with event markers ----------
-  wrap.appendChild(el("h3", { text: "Timeline" }));
+  wrap.appendChild(el("h2", { text: "Timeline" }));
   wrap.appendChild(buildSessionTimeline(session));
 
   container.appendChild(wrap);
@@ -618,12 +618,12 @@ function buildSessionTimeline(session) {
 }
 
 // ======================================================================
-// Savings tab (v4 wiring round) -- carry, compaction_sim, model_swap
+// Spend, Savings (v4 wiring round) -- carry, compaction_sim, model_swap
 // and waste each have their own dedicated report-backed route, same
 // as ttl in page-cache.js, fetched directly rather than waiting on the full
 // report.json. The recommendation cards these sections' rules feed
-// stay on the Recommendations tab, same as every other section --
-// this tab is the tables only.
+// stay on Actions, Recommendations, same as every other section --
+// this view is the tables only.
 // ======================================================================
 
 var SAVINGS_SECTIONS = [
@@ -635,7 +635,7 @@ var SAVINGS_SECTIONS = [
 
 export function renderSavings(panel) {
   clear(panel);
-  tabHeading(panel, "savings");
+  viewIntro(panel, "spend/savings");
   SAVINGS_SECTIONS.forEach(function (spec) {
     var container = el("div", { id: spec.id });
     panel.appendChild(container);
@@ -646,12 +646,13 @@ export function renderSavings(panel) {
 }
 
 // ======================================================================
-// Usage tab (usage/compactions sections + a raw /api/compactions list)
+// Spend, Usage (usage/elasticity/compactions/phases sections, cost by
+// model + a raw /api/compactions list)
 // ======================================================================
 
 export function renderUsage(panel) {
   clear(panel);
-  tabHeading(panel, "usage");
+  viewIntro(panel, "spend/usage");
 
   var sectionContainer = el("div", { id: "usage-sections" });
   panel.appendChild(sectionContainer);
@@ -662,11 +663,11 @@ export function renderUsage(panel) {
       sectionContainer.appendChild(errorNotice(result.error));
       return;
     }
-    renderMappedSections(result.report, "usage", sectionContainer);
+    renderMappedSections(result.report, "spend/usage", sectionContainer);
   });
 
   var compactionsContainer = el("div", { id: "usage-compactions" });
-  panel.appendChild(el("h3", { text: "Conversation summaries (compactions) in this window" }));
+  panel.appendChild(el("h2", { text: "Conversation summaries (compactions) in this window" }));
   panel.appendChild(compactionsContainer);
   loadInto(compactionsContainer, withWindow("/api/compactions"), renderCompactionsRaw);
 }

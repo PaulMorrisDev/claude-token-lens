@@ -1,14 +1,14 @@
 /* claude-token-lens service UI: page-overview.js
  *
- * The Overview tab: summary, scorecard and where to start.
+ * The Overview page: summary, scorecard and where to start.
  */
 
-import { clear, el, showTab, state } from "./core.js";
+import { clear, el, state } from "./core.js";
 import { formatCell, thousands } from "./format.js";
 import { fetchJson, findSection, loadInto, loadReport, withWindow } from "./api.js";
 import { errorNotice, loadingNode } from "./ui.js";
 import { renderTable } from "./grid.js";
-import { tabHeading } from "./links.js";
+import { pageLink, viewIntro } from "./links.js";
 import { renderHealth } from "./shell.js";
 import { SEVERITY_ORDER, severityChip } from "./page-actions.js";
 
@@ -184,24 +184,10 @@ function renderStartHereRecommendations(container) {
       list.appendChild(li);
     });
     container.appendChild(list);
-    var more = el("button", {
-      type: "button",
-      class: "link-button",
-      text: "See every recommendation, with what to change and how",
-    });
-    more.addEventListener("click", function () {
-      showTab("recommendations", { focus: true });
-    });
-    container.appendChild(el("p", null, [more]));
-    var quick = el("button", {
-      type: "button",
-      class: "link-button",
-      text: "Or check one thing at a time in Quick actions",
-    });
-    quick.addEventListener("click", function () {
-      showTab("quick", { focus: true });
-    });
-    container.appendChild(el("p", null, [quick]));
+    container.appendChild(el("p", null, [pageLink("actions/recommendations", "See every recommendation, with what to change and how")]));
+    container.appendChild(
+      el("p", null, [el("span", { text: "Or check one area at a time: " }), pageLink("actions/checks")])
+    );
   });
 }
 
@@ -261,7 +247,7 @@ function renderOverviewSummary(container) {
 
 export function renderOverview(panel) {
   clear(panel);
-  tabHeading(panel, "overview");
+  viewIntro(panel, "overview");
 
   // Which billing mode the amounts follow, and why (config.toml's
   // billing, or the automatic choice from usage-limit readings).
@@ -271,7 +257,7 @@ export function renderOverview(panel) {
   // "Start here": the three most important recommendations, then any
   // scorecard area rated poor or worse (filled in with the report).
   var startHere = el("section", { class: "start-here", id: "overview-start-here" });
-  startHere.appendChild(el("h3", { text: "Start here" }));
+  startHere.appendChild(el("h2", { text: "Start here" }));
   var startRecs = el("div", null, [loadingNode()]);
   var startWeak = el("div");
   startHere.appendChild(startRecs);
@@ -283,7 +269,7 @@ export function renderOverview(panel) {
   renderOverviewSummary(summaryContainer);
 
   var scorecardContainer = el("div", { id: "overview-scorecard" });
-  panel.appendChild(el("h3", { text: "Scorecard" }));
+  panel.appendChild(el("h2", { text: "Scorecard" }));
   panel.appendChild(scorecardContainer);
   scorecardContainer.appendChild(loadingNode());
 
@@ -325,11 +311,8 @@ export function renderOverview(panel) {
         var totalsTable = (overviewSection.tables || []).filter(function (t) {
           return t.name === "totals";
         })[0];
+        // Cost by model is on Spend, Usage (links.js's TABLE_PAGE_MAP).
         if (totalsTable) totalsContainer.appendChild(renderTable(totalsTable, "overview-totals-table", state.currency));
-        var byModel = (overviewSection.tables || []).filter(function (t) {
-          return t.name === "by_model";
-        })[0];
-        if (byModel) totalsContainer.appendChild(renderTable(byModel, "overview-by-model-table", state.currency));
       } else {
         totalsContainer.appendChild(el("p", { class: "notice", text: "No overview section in this report." }));
       }
@@ -339,7 +322,7 @@ export function renderOverview(panel) {
   renderOverviewReportSections();
 
   var healthContainer = el("div", { id: "overview-health" });
-  panel.appendChild(el("h3", { text: "Service health" }));
+  panel.appendChild(el("h2", { text: "Service health" }));
   panel.appendChild(healthContainer);
   loadInto(healthContainer, "/api/health", renderHealth);
 }

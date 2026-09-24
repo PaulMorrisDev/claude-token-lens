@@ -1,13 +1,13 @@
 /* claude-token-lens service UI: page-glossary.js
  *
- * The Glossary tab (same wording as the README's glossary).
+ * The Glossary page (same wording as the README's glossary).
  */
 
 import { clear, el } from "./core.js";
-import { tabHeading } from "./links.js";
+import { viewIntro } from "./links.js";
 
 // ======================================================================
-// Glossary tab (same wording as the README's glossary)
+// Glossary (same wording as the README's glossary)
 // ======================================================================
 
 var GLOSSARY = [
@@ -27,7 +27,7 @@ var GLOSSARY = [
   ["Conversation summary", "When the context gets too large, Claude Code replaces the conversation so far with a summary. Also called compaction."],
   ["List price", "Anthropic's published price per token. On a Pro or Max plan you don't pay this; it is shown to compare costs."],
   ["Usage limits", "On a Pro or Max plan, the share of your five-hour and weekly allowance you have used."],
-  ["Billing mode", "Whether amounts are shown for a Pro or Max plan (a share of your usage limits when there are enough readings, otherwise a list-price equivalent) or as money for pay-per-token billing."],
+  ["Billing mode", "How amounts are shown. On a Pro or Max plan, as a share of your usage limits when there are enough readings, otherwise as a list-price equivalent. On pay-per-token billing, as money."],
   ["Effort level", "How hard Claude thinks before replying. Thinking is billed as output, the most expensive token type."],
   ["Scorecard", "Five areas rated 1 (very poor) to 5 (excellent), each from one number in your data."],
   ["Recommendation", "A change worth making, with what it changes, the trade-off, a prompt you can give Claude and a command you can run."],
@@ -35,27 +35,27 @@ var GLOSSARY = [
   ["Scope", "Where a change is written: your user settings (every project), this project on your machine only, or this project for everyone."],
   ["Managed setting", "A setting your organisation's policy controls. Only your administrator can change it."],
   ["Snapshot", "A record of your Claude Code settings at one moment, taken so changes can be compared over time."],
-  ["Window", "The stretch of time the numbers cover, picked at the top of the dashboard: the last hour, today, the last 24 hours, 7, 30 or 90 days, all time, or since your last change. A session counts, in full, when it was last active in the window."],
+  ["Window", "The stretch of time the numbers cover, picked at the top of the dashboard. It can be the last hour, today, the last 24 hours, 7, 30 or 90 days, all time, or since your last change. A session counts, in full, when it was last active in the window."],
   ["Change point", "A moment your settings changed: an apply, its undo, or a change the settings snapshot saw. The dashboard compares the sessions before it with those after it."],
-  ["Quick action", "One question about a way to spend less, such as whether a cheaper model would do for an agent, answered from your own sessions with the evidence and a fix you can copy."],
+  ["Quick action", "One question about a way to spend less, answered from your own sessions with the evidence and a fix you can copy. The dashboard lists them on the Actions page, under Checks."],
   ["What-if estimate", "What a change would have saved over the window, worked out from your own sessions. It is an estimate: cheaper settings can change how Claude works, which the estimate can't see."],
   ["CLAUDE.md", "Instruction files Claude reads at the start of every session, and of most subagents: yours, each project's, and rule files. Every line is paid for on every reply that re-reads it."],
   ["Skill", "A packaged set of instructions Claude can load when a task needs it. Its name and description are listed to Claude at the start of every session, used or not."],
   ["Quality signal", "A sign of whether the work went well, not just what it cost: tool calls that failed, agent runs that didn't finish, your corrections. Compared across models and efforts, and before and after each change you make."],
-  ["Metrics capture", "An opt-in feature, off by default, that has Claude tell you in a one-line tag what a piece of work was about and how it went. It costs tokens while it's on; init's last questions and claude-token-lens capture turn it on, change what it asks for, or turn it off."],
+  ["Metrics capture", "An opt-in feature, off by default: Claude adds a one-line tag saying what a piece of work was and how it went. It costs tokens while it's on. init's last questions and claude-token-lens capture turn it on, change what it asks for, or turn it off."],
   ["Capture level", "How much metrics capture asks for: off, free, essentials, standard or deep, each adding more of it. Set at init or with claude-token-lens capture level."],
   ["Tag", "The one-line, closed-vocabulary note metrics capture has Claude add to a reply, such as [tl: task=bugfix brief=clear] or [result: done fit=right]. Only words from a fixed list are kept; nothing Claude writes in its own words is."],
-  ["Prompt cycle", "One message of yours and everything Claude did to answer it, subagents at any depth included. The unit metrics capture and the Work habits tab measure by."],
-  ["Work habits", "The tab (and report section) that turns prompt cycles into habits worth trying, each showing where its evidence came from — reported by Claude, inferred from the transcript, or your own feedback — and a rough saving."],
-  ["Feedback skill", "/tl-feedback, a skill you can add that you run after a piece of work to rate whether it delivered, what slowed it, whether it was worth the tokens, and what would have helped. Works at any capture level, even off; picking deep turns it on, with its reminders."],
-  ["Brief templates", "Checklists per kind of task on the Work habits tab, built from what your own requests tend to lack. Turned on, it also adds a /tl-brief skill that checks a request against its checklist and asks once for anything missing before Claude starts."],
+  ["Prompt cycle", "One message of yours and everything Claude did to answer it, subagents at any depth included. The unit metrics capture and the Work habits page measure by."],
+  ["Work habits", "The page (and report section) that turns prompt cycles into habits worth trying, with a rough saving for each. Each shows where its evidence came from: reported by Claude, inferred from the transcript, or your own feedback."],
+  ["Feedback skill", "/tl-feedback, a skill you can add and run after a piece of work. It asks whether the work delivered, what slowed it, whether it was worth the tokens, and what would have helped. Works at any capture level, even off; picking deep turns it on, with its reminders."],
+  ["Brief templates", "Checklists per kind of task on the Work habits page, built from what your own requests tend to lack. Turned on, it also adds a /tl-brief skill that checks a request against its checklist and asks once for anything missing before Claude starts."],
   ["Sampling", "Running metrics capture in only a share of sessions (100, 50, 25 or 10 percent, [capture] sample) to spend fewer tokens on it. Picked at random, per session."],
-  ["Time-box", "The date metrics capture switches itself back off. 14 days by default from when you turn a level on — at init, capture on/level, or the Capture page — so turning it on doesn't mean it runs unattended forever; --for/--capture-for sets another length, --no-limit/--capture-no-limit turns the limit off entirely, or you can say so when asked."],
+  ["Time-box", "The date metrics capture switches itself back off. By default it's 14 days after you turn a level on, whether at init, with capture on or level, or on the Capture page. So turning it on never means it runs unattended forever. --for or --capture-for sets another length, and --no-limit or --capture-no-limit turns the limit off. You can also say so when asked."],
 ];
 
 export function renderGlossary(panel) {
   clear(panel);
-  tabHeading(panel, "glossary");
+  viewIntro(panel, "glossary");
   var list = el("dl", { class: "glossary" });
   GLOSSARY.forEach(function (pair) {
     list.appendChild(el("dt", { text: pair[0] }));
