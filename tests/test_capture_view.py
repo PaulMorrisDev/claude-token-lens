@@ -6,7 +6,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 
-from claude_token_lens import capture, capture_catalogue as catalogue, capture_view
+from claude_token_lens import capture, capture_catalogue as catalogue, capture_view, habits
 from claude_token_lens.config import CaptureConfig
 from claude_token_lens.hook_health import CaptureHookHealth, HookSpec
 from claude_token_lens.units import Units
@@ -57,8 +57,8 @@ def _on(**kw) -> CaptureConfig:
     return CaptureConfig(level="essentials", enabled_at="2026-09-20T10:00:00+00:00", **kw)
 
 
-def _use(**kw) -> capture.CaptureUsage:
-    use = capture.CaptureUsage(since="2026-09-20T10:00:00+00:00", sessions=4, subagents=6, spend=10.0, **kw)
+def _use(*, sessions: int = 4, **kw) -> capture.CaptureUsage:
+    use = capture.CaptureUsage(since="2026-09-20T10:00:00+00:00", sessions=sessions, subagents=6, spend=10.0, **kw)
     use._add("main", note_chars=4000, note_cost=0.02, tag_chars=400, tag_cost=0.01)
     use.by_metric = {"task": 0.012, "result": 0.004}
     return use
@@ -85,6 +85,39 @@ def test_on_notes_low_coverage_enough_data_and_expiry():
     assert any(note.startswith("Its end time (2026-09-21 00:00) has passed") for note in notes)
     assert any("tagged only 20.0% of your messages" in note for note in notes)
     assert any(note.startswith("Enough collected for every metric on") for note in notes)
+
+
+# -- CAP-5 (gap 4): what each metric is worth ------------------------------
+
+
+def test_worth_table_prices_each_asked_metric_a_week_against_what_it_feeds():
+    now = datetime(2026, 10, 4, 10, tzinfo=timezone.utc)  # 2 weeks after enabled_at
+    data = capture_view.view(_on(), units=API, use=_use(sessions=habits.MIN_GROUP), now=now)
+    worth = {row["id"]: row for row in data["worth"]}
+    assert worth["task"]["usd"] == 0.012 / 2
+    assert worth["task"]["feeds"] == [catalogue.THEMES.get(p, p) for p in catalogue.METRICS_BY_ID["task"].powers]
+    assert worth["result"]["usd"] == 0.004 / 2
+    # Sorted priciest first.
+    assert [row["id"] for row in data["worth"]] == ["task", "result"]
+    # A metric that's on but never measured a dollar (or off, or derived,
+    # like "found") doesn't show up.
+    assert "session_end" not in worth
+
+
+def test_worth_table_is_empty_without_a_start_time_or_before_capture_is_on():
+    assert capture_view.view(CaptureConfig(), units=API)["worth"] == []
+    assert capture_view.view(_on(), units=API)["worth"] == []  # no `use` passed
+
+
+def test_worth_table_is_empty_below_min_group_sessions_with_notes():
+    """SURV-8: a metric-worth table built from a handful of sessions is
+    noise, not a trend -- the same ``habits.MIN_GROUP`` gate other
+    small-sample tables use. ``_use()``'s default ``sessions=4`` is one
+    short of ``habits.MIN_GROUP`` (5)."""
+    now = datetime(2026, 10, 4, 10, tzinfo=timezone.utc)
+    data = capture_view.view(_on(), units=API, use=_use(), now=now)
+    assert data["worth"] == []
+    assert data["worth_min_sessions"] == habits.MIN_GROUP
 
 
 # -- capture ROI: what it costs against what depends on it -----------------

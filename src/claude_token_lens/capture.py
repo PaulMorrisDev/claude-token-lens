@@ -273,6 +273,13 @@ class CaptureUsage:
     feedback_runs: int = 0
     feedback_cost: float = 0.0
     feedback_answered: int = 0
+    #: SURV-3: notes that land after a compact boundary -- the carried
+    #: prefix a compaction would otherwise have discounted is gone, so
+    #: these notes carry at the fuller, post-compaction rate. Counted
+    #: separately (not folded into ``scopes``) so their cost shows as its
+    #: own line rather than changing what "main"/"subagent"/"tool" mean.
+    after_compact_notes: int = 0
+    after_compact_cost: float = 0.0
 
     @property
     def note_tokens(self) -> int:
@@ -387,9 +394,15 @@ def _add_notes(use: CaptureUsage, result: TranscriptResult, carry: _Carry, subag
         use.notes += 1
         use._add(scope, note_chars=event.size_chars, note_cost=cost, day=_day(event.ts))
         use._split(_note_weights(event.detail.get("codes", ()), scope), cost)
+        # SURV-3: a boundary at or before this note's own turn means at
+        # least one compaction already ran by the time it landed.
+        if ends and ends[0] <= start:
+            use.after_compact_notes += 1
+            use.after_compact_cost += cost
 
 
-def _add_tags(use: CaptureUsage, result: TranscriptResult, pricing, subagent: bool, since) -> None:
+def _add_tags(use: CaptureUsage, result: TranscriptResult, carry: _Carry, pricing, subagent: bool, since) -> None:
+    ends = _segment_ends(result, carry)
     for turn in _priced(result):
         moment = _parse_ts(turn.ts)
         if since is not None and (moment is None or moment < since):
@@ -399,8 +412,16 @@ def _add_tags(use: CaptureUsage, result: TranscriptResult, pricing, subagent: bo
             chars = len(f"[result: {turn.result_marker}]")
         if not chars:
             continue
-        cost = (chars + 1) * _output_usd_per_char(turn, pricing)
-        use._add("subagent" if subagent else "main", tag_chars=chars + 1, tag_cost=cost, day=_day(turn.ts))
+        write_chars = chars + 1
+        cost = write_chars * _output_usd_per_char(turn, pricing)
+        # CAP-2: the tag was Claude's own output on this turn (priced
+        # above), but the words stay in the transcript and get carried
+        # -- cache-written into the next turn's prompt, then cache-read
+        # on every turn after that until the next compaction.
+        start = carry.index_at(turn.ts) + 1
+        end = next((e for e in ends if e > start), len(carry.turns))
+        cost += carry.cost(write_chars, start, end)
+        use._add("subagent" if subagent else "main", tag_chars=write_chars, tag_cost=cost, day=_day(turn.ts))
         weights = _tag_weights(turn, subagent)
         use._split(weights, cost)
         for metric_id in weights:
@@ -512,7 +533,7 @@ def usage(corpus, pricing: Pricing | None, since: str = "") -> CaptureUsage:
             use.sessions += 1
             carry = _Carry(top, pricing)
             _add_notes(use, top, carry, False, start)
-            _add_tags(use, top, pricing, False, start)
+            _add_tags(use, top, carry, pricing, False, start)
             use.spend += _spend(top, pricing, start)
             top_turns = _priced(top)
             for cycle in prompt_cycles(top):
@@ -529,7 +550,7 @@ def usage(corpus, pricing: Pricing | None, since: str = "") -> CaptureUsage:
             use.subagents += 1
             carry = _Carry(sub, pricing)
             _add_notes(use, sub, carry, True, start)
-            _add_tags(use, sub, pricing, True, start)
+            _add_tags(use, sub, carry, pricing, True, start)
             _add_brief_markers(use, sub, spawners.get(sub.meta.tool_use_id or ""), pricing, start)
             use.spend += _spend(sub, pricing, start)
             turns = _priced(sub)
@@ -587,6 +608,18 @@ def _carry_per_char(carry: _Carry, start: int, end: int) -> float:
     return carry.cost(1_000_000, start, end) / 1_000_000
 
 
+def _tag_carry_per_char(carry: _Carry, ends: list[int], ts: str | None) -> float:
+    """CAP-2: USD per character of a reply/report/big-output/web tag,
+    carried from the turn after it was written until the next
+    compaction. The pre-enable estimate path (:func:`history`,
+    :func:`_replay_notes`)'s counterpart to :func:`_add_tags`'s own
+    ``carry.cost(write_chars, start, end)``, which prices this same
+    carry in the real, post-hoc :func:`usage`."""
+    start = carry.index_at(ts) + 1
+    end = next((e for e in ends if e > start), len(carry.turns))
+    return _carry_per_char(carry, start, end)
+
+
 def _segments(result: TranscriptResult, carry: _Carry) -> list[tuple[int, int]]:
     """``(start, end)`` turn ranges between compactions: a note is
     injected at each start."""
@@ -628,12 +661,16 @@ def history(corpus, pricing: Pricing | None, days: int = 14) -> History:
             out.sessions += 1
             carry = _Carry(top, pricing)
             _replay_notes(out, top, carry, "main")
+            top_ends = _segment_ends(top, carry)
             for turn in _priced(top):
                 for tool_use_id in turn.tool_use_ids:
                     spawners[tool_use_id] = turn
             for cycle in prompt_cycles(top):
                 out.cycles += 1
-                out.reply_tag += _output_usd_per_char(cycle.turns[-1], pricing)
+                tag_turn = cycle.turns[-1]
+                out.reply_tag += _output_usd_per_char(tag_turn, pricing) + _tag_carry_per_char(
+                    carry, top_ends, tag_turn.ts
+                )
             out.spend += _spend(top, pricing, None)
         for sub in bundle.subs:
             turns = _priced(sub)
@@ -642,15 +679,24 @@ def history(corpus, pricing: Pricing | None, days: int = 14) -> History:
                 continue
             out.subagents += 1
             carry = _Carry(sub, pricing)
+            sub_ends = _segment_ends(sub, carry)
             scope = "no_rules" if sub.meta.agent_type in catalogue.NO_RULES_AGENT_TYPES else "sub"
             _replay_notes(out, sub, carry, scope)
-            out.report_tag += _output_usd_per_char(turns[-1], pricing)
+            out.report_tag += _output_usd_per_char(turns[-1], pricing) + _tag_carry_per_char(
+                carry, sub_ends, turns[-1].ts
+            )
+            # The brief marker ([spawn: ...]/[retry: ...]) isn't a
+            # [tl:]/[result:] tag -- it's words inside the spawning tool
+            # call's own prompt, not carried through capture.usage()'s
+            # own accounting either (_add_brief_markers), so it stays at
+            # its own output cost here too.
             out.brief_tag += _output_usd_per_char(spawners.get(sub.meta.tool_use_id or "", turns[0]), pricing)
     return out
 
 
 def _replay_notes(out: History, result: TranscriptResult, carry: _Carry, scope: str) -> None:
     segments = _segments(result, carry)
+    ends = _segment_ends(result, carry)
     for start, end in segments:
         per_char = _carry_per_char(carry, start, end)
         if scope == "main":
@@ -673,12 +719,18 @@ def _replay_notes(out: History, result: TranscriptResult, carry: _Carry, scope: 
             if big:
                 out.big_outputs += big
                 out.big_output_note += big * _carry_per_char(carry, follow, end)
-                out.big_output_tag += big * _output_usd_per_char(carry.turns[follow], carry.pricing)
+                out.big_output_tag += big * (
+                    _output_usd_per_char(carry.turns[follow], carry.pricing)
+                    + _tag_carry_per_char(carry, ends, carry.turns[follow].ts)
+                )
             web = _web_calls(turn)
             if web:
                 out.web_results += web
                 out.web_note += web * _carry_per_char(carry, follow, end)
-                out.web_tag += web * _output_usd_per_char(carry.turns[follow], carry.pricing)
+                out.web_tag += web * (
+                    _output_usd_per_char(carry.turns[follow], carry.pricing)
+                    + _tag_carry_per_char(carry, ends, carry.turns[follow].ts)
+                )
 
 
 @dataclass(frozen=True, slots=True)
@@ -788,15 +840,24 @@ def enough_data(use: CaptureUsage, metric_id: str, signal_sessions: int = 0) -> 
     return use.answers.get(metric_id, 0), target
 
 
+def weeks_since(since: str, now: datetime | None = None) -> float | None:
+    """Weeks between ``since`` (an ISO time, typically ``capture.
+    enabled_at``) and ``now``. ``None`` without a parseable ``since``, or
+    less than a day since it -- too little to spread a week's figure
+    over."""
+    start = _start(since)
+    if start is None:
+        return None
+    days = ((now or datetime.now(timezone.utc)) - start).total_seconds() / 86400
+    return days / 7 if days >= 1 else None
+
+
 def weekly_cost(use: CaptureUsage, now: datetime | None = None) -> float | None:
     """What capture has cost a week, from ``use.cost`` spread over the
     time since ``use.since``. ``None`` without a start time to divide by,
     or less than a day since it (too little to price a week from)."""
-    start = _start(use.since)
-    if start is None:
-        return None
-    days = ((now or datetime.now(timezone.utc)) - start).total_seconds() / 86400
-    return use.cost / (days / 7) if days >= 1 else None
+    weeks = weeks_since(use.since, now)
+    return use.cost / weeks if weeks else None
 
 
 __all__ = [
@@ -821,4 +882,5 @@ __all__ = [
     "prompt_cycles",
     "usage",
     "weekly_cost",
+    "weeks_since",
 ]

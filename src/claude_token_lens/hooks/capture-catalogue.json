@@ -30,7 +30,6 @@
    "plan",
    "skill",
    "found",
-   "spawn",
    "fit",
    "rules",
    "agent_brief",
@@ -50,15 +49,12 @@
    "plan",
    "skill",
    "found",
-   "spawn",
    "fit",
    "rules",
    "agent_brief",
    "prior",
-   "detour",
    "check",
    "big_output",
-   "web",
    "session_end",
    "waits",
    "permissions"
@@ -193,17 +189,6 @@
    "tool_note": ""
   },
   {
-   "id": "spawn",
-   "group": "standard",
-   "requires": [],
-   "main_line": "",
-   "main_extra": "When you hand work to an agent, begin the brief with [spawn: parallel|isolate|cheaper|specialist|review]: why an agent.",
-   "extra_before_tag": false,
-   "sub_line": "",
-   "sub_extra": "Starting an agent? Begin its brief with [spawn: parallel|isolate|cheaper|specialist|review].",
-   "tool_note": ""
-  },
-  {
    "id": "fit",
    "group": "standard",
    "requires": [
@@ -254,17 +239,6 @@
    "tool_note": ""
   },
   {
-   "id": "detour",
-   "group": "deep",
-   "requires": [],
-   "main_line": "detour: none|dead-end|reread|overbuilt|env|flaky (the main time sink, if any)",
-   "main_extra": "",
-   "extra_before_tag": false,
-   "sub_line": "",
-   "sub_extra": "",
-   "tool_note": ""
-  },
-  {
    "id": "check",
    "group": "deep",
    "requires": [],
@@ -285,17 +259,6 @@
    "sub_line": "",
    "sub_extra": "",
    "tool_note": "That tool result was large. Add out=needed|part|unneeded (how much of it you needed) to the tag that ends your final reply."
-  },
-  {
-   "id": "web",
-   "group": "deep",
-   "requires": [],
-   "main_line": "",
-   "main_extra": "",
-   "extra_before_tag": false,
-   "sub_line": "",
-   "sub_extra": "",
-   "tool_note": "Add useful=yes|part|no (whether that web result helped) to the tag that ends your final reply."
   },
   {
    "id": "session_end",
@@ -380,9 +343,5 @@
   "quota",
   "other"
  ],
- "signals_dir": "signals",
- "web_tools": [
-  "WebFetch",
-  "WebSearch"
- ]
+ "signals_dir": "signals"
 }

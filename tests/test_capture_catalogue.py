@@ -74,9 +74,7 @@ def test_each_note_line_lists_only_words_the_parser_keeps_and_main_lines_list_th
     result = cat.METRICS_BY_ID["result"]
     assert set(cat.RESULT_WORDS) <= _words_in(result.sub_line)
     assert "[retry: " + "|".join(cat.RETRY_REASONS) + "]" in cat.METRICS_BY_ID["retry"].main_extra
-    assert "[spawn: " + "|".join(cat.SPAWN_REASONS) + "]" in cat.METRICS_BY_ID["spawn"].main_extra
     assert "out=" + "|".join(cat.TAG_VOCAB["out"]) in cat.METRICS_BY_ID["big_output"].tool_note
-    assert "useful=" + "|".join(cat.TAG_VOCAB["useful"]) in cat.METRICS_BY_ID["web"].tool_note
 
 
 def test_levels_nest_and_deep_is_every_level_metric():
@@ -110,7 +108,7 @@ def test_notes_stay_within_their_token_budget(level):
 
 def test_notes_are_worded_as_facts_and_requests_not_orders():
     texts = [cat.note_text(cat.level_metrics("deep") + cat.FEEDBACK_IDS, s) for s in ("main", "subagent")]
-    texts += [cat.tool_note_text(i) for i in ("big_output", "web")]
+    texts += [cat.tool_note_text(i) for i in ("big_output",)]
     for text in texts:
         assert not re.search(r"\b(must|IMPORTANT|ALWAYS|NEVER|CRITICAL)\b", text), text
         assert "the user turned on" in text.lower() or text.startswith(cat.NOTE_MARKER)
@@ -124,7 +122,7 @@ def test_the_note_marker_names_exactly_the_metrics_it_asks_for():
     assert version == cat.NOTE_VERSION
     assert set(codes) == {m.id for m in cat.METRICS if m.id in ids and (m.main_line or m.main_extra)}
     _, sub_codes = capture_tags.parse_note_codes(cat.note_text(ids, "subagent"))
-    assert set(sub_codes) == {"result", "retry", "spawn", "fit", "rules", "agent_brief"}
+    assert set(sub_codes) == {"result", "retry", "fit", "rules", "agent_brief"}
 
 
 def test_free_signals_and_feedback_toggles_alone_add_no_subagent_note():
@@ -163,7 +161,7 @@ def test_hook_entries_follow_the_metrics():
     assert cat.hook_specs(cat.level_metrics("deep"))[2] == (
         "capture-hook.py", "PostToolUse", "Bash|Read|Grep|Glob|WebFetch|WebSearch|mcp__.*", False,
     )
-    assert cat.hook_specs(["web"]) == (("capture-hook.py", "PostToolUse", "WebFetch|WebSearch", False),)
+    assert cat.hook_specs(["web"]) == ()
     assert cat.hook_specs(["result"]) == (("capture-hook.py", "SubagentStart", "", False),)
 
 

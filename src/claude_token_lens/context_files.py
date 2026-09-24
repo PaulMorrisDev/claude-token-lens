@@ -116,7 +116,11 @@ class _Carry:
             if rates is None:
                 continue
             if offset == 0 or turn.message_id in self.rebuilt_ids:
-                total += tokens_m * rates.cache_write_5m
+                # CAP-2: a turn billed under the 1-hour TTL (subscription
+                # billing, mainly) writes at the 1h rate, not 5m -- mirrors
+                # ``habits._Rates.write``.
+                write_rate = rates.cache_write_1h if turn.cc_1h > turn.cc_5m else rates.cache_write_5m
+                total += tokens_m * write_rate
             else:
                 total += tokens_m * rates.cache_read
         return total

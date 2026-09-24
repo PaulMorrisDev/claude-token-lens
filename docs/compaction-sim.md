@@ -71,12 +71,26 @@ under this row — see the "no candidate window" identity below).
 |---|---|---|
 | `compaction_sim_by_window` | Top-level sessions only | One row per candidate window: simulated compactions per session, mean ctx, total cost, and delta vs. the observed (`none`) cost, in USD and percent. |
 | `compaction_sim_by_agent_type` | `"top-level"` and every subagent type | Each key's own cheapest candidate window, its cost, the saving vs. observed (0 floor), and a recommendation string naming the window. |
+| `compaction_sim_by_task` | Main sessions only, grouped by the kind of task metrics capture reported (`task=`) | Same shape as `compaction_sim_by_agent_type`, keyed by task instead of agent type. A task appears only once at least `MIN_TASK_SESSIONS` (5) main sessions reported it. |
 | `compaction_sim_fidelity` | Top-level sessions with a known configured window | Simulating at the session's own snapshot-configured `autoCompactWindow` against its true observed cost — a trust check on the simulation itself. |
 
-The `compaction_sim_by_agent_type` recommendation string names the
-cheapest window only when it is both below
+The `compaction_sim_by_agent_type`/`compaction_sim_by_task` recommendation
+strings name the cheapest window only when it is both below
 `CompactionSimThresholds.switch_pct` (default 0.95) × observed cost and
 more than `switch_usd` (default $1.00) cheaper.
+
+`compaction_sim_by_task` (EST-P8) is accumulated the same way as
+`compaction_sim_by_agent_type` -- one `_WindowAccumulator` per
+`(task, candidate window)` -- but only for top-level transcripts, and only
+once `CompactionSimStats.add_transcript` can read a reported task off the
+transcript at all: at least two of its turns carry a metrics-capture
+`task=` tag and one task holds at least half of them (mirrors
+`classify.reported_task`'s own majority gate; re-implemented locally in
+`compaction_sim.py` rather than imported, since `classify.py` imports
+`limits.py`, which imports this module, and importing `classify.py` here
+would cycle back). A kind of task is a candidate profiles can draft
+`autoCompactWindow` from, the same way `goals._compaction` already drafts
+it for the whole session from `compaction_sim_by_window`.
 
 Recommendation rule `compaction-window` (category `settings`, lever
 `autoCompactWindow`) is more conservative. It reads

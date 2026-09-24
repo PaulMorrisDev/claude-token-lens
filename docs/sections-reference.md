@@ -362,6 +362,11 @@ The `autoCompactWindow` sweep: full write-up and worked example in
   each subagent type) sessions, observed cost, best candidate window,
   its cost, the saving vs. observed (0 floor), the delta in percent, and
   a recommendation string naming the window.
+- `compaction_sim_by_task` — the same best-window roll-up as
+  `compaction_sim_by_agent_type`, keyed by the kind of task metrics
+  capture reported (`task=`) instead of agent type, main sessions only.
+  A task appears only once at least `MIN_TASK_SESSIONS` (5, mirroring
+  `habits.MIN_GROUP`) main sessions reported it (EST-P8).
 - `compaction_sim_fidelity` — for each top-level session whose project
   snapshot carries a known configured `autoCompactWindow`: that
   configured window, the simulated cost at it, the observed cost, and
@@ -706,12 +711,18 @@ capture is off or no feedback has been given.
   from the transcripts (`capture.usage`): the level, since when, note
   and tag tokens, cost and share of spend, how often Claude tagged its
   replies and its agent reports, and the `/tl-feedback` runs and their
-  cost, then what it has cost a week since it began (`capture.weekly_cost`)
-  next to what the habits worth trying that need its reports or your
-  feedback are worth a week (`habits.capture_dependent_value`) — a note
-  says so instead of a value when nothing measured yet depends on
-  either. The dashboard's Capture tab and banner show the same figures
-  from `/api/capture`'s `roi` field.
+  cost; `sessions_with_notes` (main sessions that carried a capture
+  note) and `after_compact_notes`/`after_compact_cost` (SURV-3: notes
+  landing at or after a real compact boundary, priced at the fuller
+  post-compaction rate and broken out as their own line rather than
+  folded into a scope's cost); then what it has cost a week since it
+  began (`capture.weekly_cost`) next to what the habits worth trying
+  that need its reports or your feedback are worth a week
+  (`habits.capture_dependent_value`) — a note says so instead of a
+  value when nothing measured yet depends on either. The dashboard's
+  Capture tab and banner show the same figures from `/api/capture`'s
+  `roi` field; its per-metric "worth" table (SURV-8) is hidden until at
+  least `habits.MIN_GROUP` sessions have a note to measure from.
 
 ## `workstyle` (`workstyle.py`)
 

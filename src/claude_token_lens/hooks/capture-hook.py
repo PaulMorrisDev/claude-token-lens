@@ -321,9 +321,6 @@ def note_for(payload: dict, config: dict, catalogue: dict, now: datetime | None 
             return ""
         return build_note(catalogue, ids, "subagent" if _in_subagent(payload) else "main", agent_type)
     if event == "PostToolUse":
-        tool = payload.get("tool_name")
-        if "web" in ids and tool in catalogue["web_tools"]:
-            return build_tool_note(catalogue, "web")
         threshold = catalogue["big_output_tokens"] * _CHARS_PER_TOKEN
         if "big_output" in ids and raw_len >= threshold:
             return build_tool_note(catalogue, "big_output")

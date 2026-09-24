@@ -524,7 +524,13 @@ def _build_capture_config(table: dict, path: Path) -> CaptureConfig:
     if not isinstance(level, str) or level not in levels:
         raise ConfigError(f"config file {path}: 'capture.level' must be one of {list(levels)}, got {level!r}")
     capture.level = level
-    capture.metrics = _capture_list(table, "metrics", path, capture_catalogue.LEVEL_METRIC_IDS)
+    # CAP-5: a config.toml written before a metric's retirement may still
+    # list it (``capture_catalogue.RETIRED_METRIC_IDS``) -- accepted here
+    # so the file keeps loading; ``with_requirements``/``active_metrics``
+    # drop it from what's actually asked or shown.
+    capture.metrics = _capture_list(
+        table, "metrics", path, capture_catalogue.LEVEL_METRIC_IDS + capture_catalogue.RETIRED_METRIC_IDS
+    )
     sample = table.get("sample", capture.sample)
     if isinstance(sample, bool) or sample not in CAPTURE_SAMPLES:
         raise ConfigError(

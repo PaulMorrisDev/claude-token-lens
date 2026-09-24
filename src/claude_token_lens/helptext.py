@@ -94,6 +94,7 @@ PLACEMENT: dict[str, str] = {
     "carry_output_cap_savings": "advanced",
     "compaction_sim_by_window": "keep",
     "compaction_sim_by_agent_type": "keep",
+    "compaction_sim_by_task": "advanced",
     "compaction_sim_fidelity": "advanced",
     "model_swap_by_agent_type": "keep",
     "model_swap_summary": "keep",
@@ -3364,6 +3365,37 @@ TABLE_COPY: dict[str, TableCopy] = {
         value_labels={
             "top-level": "Main session",
             "unknown": "Unnamed subagent",
+            "none": "As now (no extra summaries)",
+            "no material difference": "No clear saving",
+        },
+    ),
+    "compaction_sim_by_task": TableCopy(
+        title="Best auto-compact window for each kind of task",
+        help=Help(
+            shows="For each kind of task metrics capture has seen enough of in your main sessions: the window "
+            "with the lowest simulated cost, and the saving against your real cost.",
+            read="Savings are simulated and never below zero. \"No clear saving\" means the best window saves "
+            "under 5% of the cost, or under $1.00 at list price. A kind of task only appears once you have "
+            "enough sessions reporting it.",
+            act="Save a window per kind of task as a profile, the same way as a model or effort choice.",
+        ),
+        columns={
+            "task": ("Kind of task", "The kind of task, as reported by metrics capture."),
+            "sessions": ("Sessions", "How many main sessions reported this kind of task."),
+            "observed_cost": ("Real cost", "Measured cost of those sessions, at list price."),
+            "best_window": ("Best window (tokens)", "The window with the lowest simulated cost."),
+            "best_cost": ("Cost at best window", "Simulated cost at that window, at list price."),
+            "saving_usd": (
+                "Simulated saving",
+                "Real cost minus cost at the best window, at list price. Never below 0.",
+            ),
+            "delta_pct": (
+                "Change (%)",
+                "Simulated change at the best window, against real cost. Negative means cheaper.",
+            ),
+            "recommendation": ("Suggestion", "Whether the simulated saving is big enough to act on."),
+        },
+        value_labels={
             "none": "As now (no extra summaries)",
             "no material difference": "No clear saving",
         },
