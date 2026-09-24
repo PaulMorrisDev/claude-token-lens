@@ -46,6 +46,7 @@ PLACEMENT: dict[str, str] = {
     "pricing_unknown_models": "advanced",
     "pricing_closest_match": "advanced",
     "pricing_fast_priced_as_standard": "advanced",
+    "pricing_fast_applied": "advanced",
     # usage limits (subscription with usage-log readings)
     "elasticity_budget": "keep",
     "elasticity_recent_burn": "keep",
@@ -748,6 +749,8 @@ TABLE_COPY: dict[str, TableCopy] = {
             "share": ("Share", "Out of all your messages."),
             "cost": ("Cost", "What the work cost, subagents included."),
             "avg_cost": ("Per message", "The average cost of one."),
+            "main_cost": ("Cost (main session only)", "What the work cost the main session alone, leaving out "
+                          "any subagents it spawned."),
             "clear_pct": ("Clear asks", "Messages Claude called clear, out of those it rated."),
             "large_pct": ("Large asks", "Messages Claude sized large or extra large."),
             "redo_pct": ("Redone", "Messages whose work was redone or corrected by your next message."),
@@ -855,21 +858,26 @@ TABLE_COPY: dict[str, TableCopy] = {
         title="Best setup for each kind of task",
         help=Help(
             shows="Each kind of task Claude reported, all together and by how hard it said the work was, with "
-            "the model and effort that answered it: what a message cost and how often the work went well.",
+            "the exact model, effort and speed that answered it: what a message cost and how often the work "
+            "went well.",
             read="Went well is your feedback where you gave it, otherwise whether your next message redid the "
-            "work. The cheaper setup cost less per message and went well about as often as your usual one, over "
-            "at least 5 messages each, compared level for level on the work both ran, so easy work alone doesn't "
-            "make a setup look cheap. It's still a lead, not proof.",
+            "work; the last message of each session is left out, since nothing after it confirms how that one "
+            "went. Shown from 5 messages each side; a cheaper setup that's mostly hard work at the all-levels row "
+            "is held back even if nothing else looks wrong, since that's what made it look cheap, not the setup "
+            "itself. A cheaper setup is only ticked to apply once it has at least 20 messages behind it.",
             act="On the Profiles tab, start from the goal A profile for one kind of task, save it, and launch "
             "Claude with it for that kind of work.",
         ),
         columns={
             "task": ("Task", "The kind of task Claude reported."),
             "level": ("How hard", "How hard Claude said the work was. All is every level together."),
-            "model": ("Model", "The model most of the work ran on."),
+            "model": ("Model", "The exact model version most of the work ran on."),
             "effort": ("Effort", "The effort it ran at."),
+            "speed": ("Speed", "Standard or fast mode."),
             "cycles": ("Messages", "Messages with this setup."),
-            "avg_cost": ("Per message", "The average cost of the work."),
+            "avg_cost": ("Per message", "The average cost of the work, subagents included."),
+            "main_avg_cost": ("Per message (main session only)", "The average cost of the main session's own "
+                               "share of the work, leaving out any subagents it spawned."),
             "ok_pct": ("Went well", "Met its goal by your feedback, or not redone by your next message."),
             "rated": ("With your feedback", "Messages your feedback covers."),
             "verdict": ("Setup", "Your usual setup, and the cheaper one that did as well."),
@@ -1859,6 +1867,26 @@ TABLE_COPY: dict[str, TableCopy] = {
             "model_id": ("Model", "The model name exactly as Claude Code recorded it."),
             "turns": ("Replies", "Fast-mode replies from this model."),
             "tokens": ("", "All tokens in those replies, including cache reads."),
+        },
+    ),
+    "pricing_fast_applied": TableCopy(
+        title="Fast-priced replies",
+        help=Help(
+            shows="One row per model with at least one reply actually billed at its fast-mode rate. Shown only "
+            "when there is at least one. PROF-08: fuels the Profiles \"fastMode\" lever's estimate.",
+            read="\"Cost at fast rate\" is what these replies were actually billed; \"Cost at standard rate\" is "
+            "what the same replies would have cost with fast mode off -- the price premium fast mode charges "
+            "for a faster reply.",
+            act="Draft a profile that turns fastMode off to see the saving, if the extra speed isn't worth its "
+            "price.",
+        ),
+        columns={
+            "model_id": ("Model", "The model name exactly as Claude Code recorded it."),
+            "turns": ("Replies", "Fast-mode replies from this model."),
+            "tokens": ("", "All tokens in those replies, including cache reads."),
+            "cost": ("Cost at fast rate", "What these replies were actually billed, at the fast-mode rate."),
+            "standard_cost": ("Cost at standard rate", "What the same replies would have cost at the model's "
+                               "standard rate, with fast mode off."),
         },
     ),
     # -- usage limits -------------------------------------------------------------

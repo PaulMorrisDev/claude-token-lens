@@ -93,6 +93,17 @@ respects.
   `pricing.PricingCoverage.as_fast_priced_as_standard_table`, appended
   onto this section only when at least one such reply exists. Shown
   under the Usage tab's advanced detail.
+- `pricing_fast_applied` (PROF-08) — the mirror image of the table
+  above: one row per model id seen with at least one reply *actually*
+  billed at its `[models."<id>".fast]` rate: `model_id`, `turns`,
+  `tokens`, `cost` (what was actually billed), `standard_cost` (what the
+  same replies would have cost at that model's standard rate instead,
+  with the flat per-request server-tool fee — never scaled by the fast
+  multiplier — added back unscaled on both sides). Built by
+  `pricing.PricingCoverage.as_fast_applied_table`, appended onto this
+  section only when at least one such reply exists. Shown under the
+  Usage tab's advanced detail; read by `whatif._fast_mode` to price a
+  profile's `fastMode = false` candidate.
 - `cache_ground_truth` (S1-exports) — one row per session: `session_id`,
   `rows_logged`, `warm_share` (percentage of *logged rows* — statusline
   refreshes, not wall-clock time — where `statusline.py`'s real,
@@ -954,9 +965,14 @@ average. No tables and one note when nothing was measured.
   `task_prompt`, `claude_md`, `skills_listing`, `tool_lists`,
   `hook_context`, `other_attachments`, `system_prompt` and
   `tool_definitions` (the last two only when a system-prompt snapshot
-  was recorded), `not_recorded` (the rest), `measured_pct`, and
+  was recorded), `not_recorded` (the rest), `measured_pct`,
   `write_price` (the first turn's model's 5-minute cache-write list
-  price per million tokens, used to price each part).
+  price per million tokens, used to price each part), and
+  `claude_md_managed` (PROF-11/F13 — the share of `claude_md` that is
+  Managed policy CLAUDE.md, which still loads regardless of
+  `omitClaudeMd`; `goals._omit_claude_md`, `whatif._omit_claude_md` and
+  recommend.py's `spawn-claude-md` rule all subtract it out before
+  pricing what `omitClaudeMd` would save).
 - `agent_startup_unused` — per agent type: spawns measured, the skills
   list size, spawns given it and spawns that called the Skill tool,
   spawns offered MCP tools and spawns that called one, the CLAUDE.md

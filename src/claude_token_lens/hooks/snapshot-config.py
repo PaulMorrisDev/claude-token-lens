@@ -69,9 +69,16 @@ schema-1 files unchanged) adds, on top of every schema-1 field above:
   ``env_names`` (the settings ``env`` block, names only), ``permissions``
   (allow/deny/ask *counts* plus ``default_mode``), ``hooks`` (event name ->
   entry count), ``enabled_plugins``, and the named safe scalars
-  (``model``, ``effort_level``, ``always_thinking_enabled``,
-  ``auto_compact_window``, ``prompt_cache_ttl``, ``subagent_prompt_cache_ttl``,
+  (``model``, ``effort_level``, ``max_effort_level``, ``model_settings``,
+  ``always_thinking_enabled``, ``auto_compact_window``,
+  ``prompt_cache_ttl``, ``subagent_prompt_cache_ttl``,
   ``cleanup_period_days``, ``output_style``, ``statusline_present``).
+  PROF-03: ``max_effort_level`` (a hard cap) and ``model_settings`` (each
+  named model id's own ``effortLevel``, when set) both rank above the
+  plain ``effortLevel`` scalar for the model they apply to -- a
+  recommendation that ticks ``effortLevel`` for a model either of these
+  names should say so, since applying the change to settings.json alone
+  won't take effect there (see ``profiles.goals``).
 - ``effective`` / ``effective_provenance`` — every :data:`SETTINGS_SUMMARY_KEYS`
   key's value (the same allowlist/redaction :func:`redact_settings_value`
   already applies — ``statusLine``, ``modelPricing`` and, since COV-09,
@@ -121,7 +128,11 @@ schema-1 files unchanged) adds, on top of every schema-1 field above:
   installed plugins' own skill names/agent counts (``plugin_content`` —
   COV-10, best-effort default-layout scan), output style names, this
   project's auto-memory byte/file count, installed plugin names and
-  marketplace count, and whether ``CLAUDE_CONFIG_DIR`` is set.
+  marketplace count, whether ``CLAUDE_CONFIG_DIR`` is set, and (PROF-03)
+  whether ``CLAUDE_CODE_EFFORT_LEVEL`` is set -- never its value, since
+  the env var beats every settings.json effort lever including
+  ``--effort``'s own saved form, so a recommendation only needs to know
+  it's pinned at all, not to what.
 """
 
 from __future__ import annotations
@@ -162,6 +173,16 @@ SAFE_SETTINGS_KEYS = frozenset(
         # SETTINGS_SUMMARY_KEYS so effective/effective_provenance (and the
         # "effective-config" report table) carry it too.
         "includeCoAuthoredBy",
+        # PROF-03: a hard cap on effort level, same short enum-like string
+        # posture as effortLevel itself -- see the module docstring's
+        # "Configuration layers" note on why a ticked effortLevel can be
+        # overridden.
+        "maxEffortLevel",
+        # PROF-08: a plain Boolean (docs/en/settings-reference.md), same
+        # posture as includeCoAuthoredBy/autoCompactEnabled above -- lets
+        # a profile's "turn fastMode off" candidate (schema.py's
+        # SETTINGS_ALLOWLIST) skip itself when it's already off.
+        "fastMode",
     }
 )
 
@@ -184,12 +205,23 @@ _MODEL_PRICING_KEY = "modelPricing"
 #: (the strings could be anything) or the generic ``dict(n)`` marker
 #: (which would hide even the safe-to-keep ``sessionUrl`` Boolean).
 _ATTRIBUTION_KEY = "attribution"
+#: PROF-03: ``modelSettings`` gives per-model overrides (an effort level
+#: that beats the top-level ``effortLevel`` scalar for that model alone --
+#: see ``docs/en/settings-reference.md``), so like ``statusLine``/
+#: ``modelPricing``/``attribution`` it needs its own summary shape rather
+#: than either the verbatim allowlist (arbitrary model ids as keys) or the
+#: generic ``dict(n)`` marker (which would hide the one sub-value a
+#: recommendation actually needs to check: whether this model's effort is
+#: pinned).
+_MODEL_SETTINGS_KEY = "modelSettings"
 
 #: Every settings key with special handling, allowlisted or summarised
 #: (never the generic ``dict(n)``/``str(len)`` shape marker) -- used to
 #: build ``effective``/``effective_provenance`` (schema 2), which merges
 #: exactly these keys across the settings layers.
-SETTINGS_SUMMARY_KEYS = SAFE_SETTINGS_KEYS | {_STATUS_LINE_KEY, _MODEL_PRICING_KEY, _ATTRIBUTION_KEY}
+SETTINGS_SUMMARY_KEYS = SAFE_SETTINGS_KEYS | {
+    _STATUS_LINE_KEY, _MODEL_PRICING_KEY, _ATTRIBUTION_KEY, _MODEL_SETTINGS_KEY,
+}
 
 #: Agent frontmatter keys kept verbatim (everything under "experimental."
 #: is also kept — see ``redact_agent_frontmatter``). ``description`` is
@@ -461,6 +493,25 @@ def _redact_attribution(value) -> dict:
     }
 
 
+def _redact_model_settings(value) -> dict:
+    """``modelSettings``: for each model id it names, only its
+    ``effortLevel`` override (a short safe enum-like string, same posture
+    as the top-level ``effortLevel`` scalar) -- never any other sub-key a
+    future Claude Code version might add per model, which is left out
+    entirely rather than guessed at (same minimal posture as
+    ``_redact_attribution``). Model ids are clipped like any other
+    user-supplied name (``_clip_name``), not treated as free text."""
+    if not isinstance(value, dict):
+        return {}
+    out: dict = {}
+    for model_id, entry in value.items():
+        if not isinstance(entry, dict):
+            continue
+        effort = entry.get("effortLevel")
+        out[_clip_name(model_id)] = {"effortLevel": effort if isinstance(effort, str) else None}
+    return out
+
+
 def redact_settings_value(key: str, value):
     if key == _STATUS_LINE_KEY:
         return bool(value)
@@ -468,6 +519,8 @@ def redact_settings_value(key: str, value):
         return _redact_model_pricing(value)
     if key == _ATTRIBUTION_KEY:
         return _redact_attribution(value)
+    if key == _MODEL_SETTINGS_KEY:
+        return _redact_model_settings(value)
     if key in SAFE_SETTINGS_KEYS:
         return value
     return _redact_generic(value)
@@ -828,6 +881,8 @@ def summarize_settings_layer(raw_settings: dict | None, path: Path, present: boo
         "enabled_plugins": _extract_enabled_plugins(raw_settings),
         "model": raw_settings.get("model"),
         "effort_level": raw_settings.get("effortLevel"),
+        "max_effort_level": raw_settings.get("maxEffortLevel"),
+        "model_settings": _redact_model_settings(raw_settings.get("modelSettings")),
         "always_thinking_enabled": raw_settings.get("alwaysThinkingEnabled"),
         "auto_compact_window": raw_settings.get("autoCompactWindow"),
         "prompt_cache_ttl": raw_settings.get("promptCacheTtl"),
@@ -1438,8 +1493,9 @@ def build_content_layers(
     system managed-settings directory as ``managed-settings.json``, not
     ``claude_root``), plugin skills/agents (COV-10), output style names,
     this project's auto-memory footprint, installed plugin
-    names/marketplace count, and whether ``CLAUDE_CONFIG_DIR`` is set at
-    all (never its value, which is a path).
+    names/marketplace count, whether ``CLAUDE_CONFIG_DIR`` is set at
+    all (never its value, which is a path), and (PROF-03) whether
+    ``CLAUDE_CODE_EFFORT_LEVEL`` is set (never its value).
 
     ``managed_dir`` is the system managed-settings directory (see
     :func:`default_managed_settings_dir`); defaults to the platform
@@ -1512,6 +1568,7 @@ def build_content_layers(
         "memory": _memory_summary(claude_root, project_slug),
         "plugins": _plugins_summary(claude_root),
         "claude_config_dir_set": bool(os.environ.get("CLAUDE_CONFIG_DIR")),
+        "effort_level_env_set": bool(os.environ.get("CLAUDE_CODE_EFFORT_LEVEL")),
     }
 
 

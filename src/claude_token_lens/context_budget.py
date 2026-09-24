@@ -983,6 +983,16 @@ def _build_startup_table(stats: ContextBudgetStats) -> Table:
         Column(key="not_recorded", label="Not recorded", kind="tokens"),
         Column(key="measured_pct", label="Share explained", kind="pct"),
         Column(key="write_price", label="Cache-write price per million tokens", kind="money"),
+        # PROF-11/F13: the share of the "claude_md" column above that is
+        # Managed policy CLAUDE.md -- it loads regardless of
+        # omitClaudeMd, so a caller pricing what omitClaudeMd would save
+        # subtracts this out first (goals._omit_claude_md,
+        # whatif._omit_claude_md, recommend.py's spawn-claude-md rule).
+        Column(
+            key="claude_md_managed",
+            label="...of which, Managed policy CLAUDE.md (still loads either way)",
+            kind="tokens",
+        ),
     ]
     rows: list[list] = []
     for agent_type in sorted(stats.agents, key=lambda key: -stats.agents[key].spawns):
@@ -994,10 +1004,11 @@ def _build_startup_table(stats: ContextBudgetStats) -> Table:
         known = sum(parts.values())
         not_recorded = max(0.0, startup - known)
         measured_pct = min(100.0, known / startup * 100) if startup else None
+        managed_claude_md = _mean_or_zero(acc.claude_md_by_source.get("Managed"))
         rows.append(
             [agent_type, acc.spawns, acc.fork_spawns, startup]
             + [parts[part] for part in STARTUP_PARTS]
-            + [not_recorded, measured_pct, fmean(acc.write_prices) if acc.write_prices else None]
+            + [not_recorded, measured_pct, fmean(acc.write_prices) if acc.write_prices else None, managed_claude_md]
         )
     return Table(
         name="agent_startup_breakdown",
@@ -1012,6 +1023,9 @@ def _build_startup_table(stats: ContextBudgetStats) -> Table:
             "system-prompt snapshot for the spawn; otherwise they sit in \"Not recorded\".",
             "Forks inherit the parent's conversation and prompt cache, so they are counted but kept "
             "out of the averages.",
+            "\"CLAUDE.md and memory\" includes Managed policy CLAUDE.md (broken out in the last "
+            "column): omitClaudeMd skips only the project's own CLAUDE.md files, never a policy one, "
+            "which still loads regardless.",
         ],
     )
 

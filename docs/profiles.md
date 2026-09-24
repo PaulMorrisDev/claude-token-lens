@@ -45,7 +45,10 @@ draft offers its effort ticked and its model unticked, since the main
 session's model is yours to decide, with a picker for the kind of task
 (the first with a cheaper setup is shown first). A kind of task with no
 cheaper setup says what your usual one is. Either way the note names the
-catalogue profile whose `for` list covers that kind of task. The
+catalogue profile whose `for` list covers that kind of task -- unless
+that profile's own settings disagree with what the draft just proposed
+for the main session (PROF-11/F12: naming it then would contradict the
+draft above it), in which case the note leaves it out. The
 setups still ran on different work within a level, so treat the match
 as a lead. The draft also offers a cheaper model, ticked, for each
 subagent type that most often answered that kind of task, when its
@@ -80,11 +83,21 @@ The estimate reads the report's own tables and runs no new simulation:
 | Change | Read from | How it is worked out |
 |---|---|---|
 | `model` (main session or an agent) | model-swap table | Ceiling: the same tokens repriced at the new model's rate -- the real change could be smaller if that model needs more replies |
-| `autoCompactWindow` | summary-point sweep | Simulated: your sessions replayed |
+| `autoCompactWindow` | summary-point sweep | Simulated: your sessions replayed; not estimated past `CompactionSimThresholds().max_compactions_per_session` summaries a session (EST-P2, the same floor the compaction-window rule and this goal's own candidates are held to) |
 | `promptCacheTtl`, `subagentPromptCacheTtl`, an agent's `experimental.cacheTtl` | cache-lifetime simulation | Simulated: every cache write replayed at 5 minutes or 1 hour |
-| an agent's `omitClaudeMd = true` | CLAUDE.md tokens per spawn | Measured per spawn, times the spawns in the window |
+| an agent's `omitClaudeMd = true` | CLAUDE.md tokens per spawn, minus Managed policy CLAUDE.md (still loads either way -- F13); `context_files`' own carry cost for the agent, minus Managed there too | Measured per spawn, times the spawns in the window -- or the carry cost (EST-P10: cache reads until it's re-sent), whichever is greater |
 | `skillOverrides`, `enabledPlugins` (turning one off) | each skill's listing cost (Context files) | Estimated from what stops being sent |
 | `effortLevel`, an agent's `effort` | thinking share of output | Not estimated: shows the thinking share only |
+| `fastMode = false` | fast-priced replies this window | Simulated: every reply this window actually billed at a fast-mode rate, repriced at its model's standard rate |
+
+Turning `fastMode` *on* is never estimated: there's no measured "would
+this reply have been sped up" figure for replies that weren't already
+fast.
+
+`effortLevel`/`effort` is never drafted for an agent type whose
+observed model (the model-swap table's own per-agent-type column) is
+Opus 5.5 or a Fable model: thinking can't be turned down on those
+models, so the lever has nothing to show for itself there (V26).
 
 Any other key says "not estimated" rather than guessing. Changes
 overlap, so a total of several rows is rough. Each profile's detail
@@ -233,6 +246,8 @@ description), `name-only` (listed by name, which costs fewer tokens),
 | `alwaysThinkingEnabled` | bool | — | `docs/config-layers.md#redaction-rule-settings-and-agent-frontmatter-alike` |
 | `autoCompactEnabled` | bool | — | `docs/config-layers.md#redaction-rule-settings-and-agent-frontmatter-alike` |
 | `cleanupPeriodDays` | int | 0–3,650 | `docs/config-layers.md#redaction-rule-settings-and-agent-frontmatter-alike` |
+| `includeCoAuthoredBy` | bool | — | `docs/config-layers.md#redaction-rule-settings-and-agent-frontmatter-alike` |
+| `fastMode` | bool | — | `docs/config-layers.md#redaction-rule-settings-and-agent-frontmatter-alike` |
 
 ### `agents.<name>` (per-agent frontmatter overrides)
 
@@ -291,7 +306,7 @@ real report table/column rather than an invented number.
 | `implementation-heavy` | implementation, refactor, test-triage, review | `plan-high-implement-low` | `effortLevel=medium`, `subagentPromptCacheTtl=5m`; `agents.claude-implementer.model=sonnet`, `.effort=medium`, `.maxTurns=60`, `.omitClaudeMd=false`, `."experimental.cacheTtl"=5m` | `agents.topology_spawn_write`'s `mean_write` column (recommend.py's spawn-cost rule threshold — `omitClaudeMd` is left `false` deliberately, since the rule only recommends flipping it once a specific corpus clears the threshold); `ttl.ttl_by_agent_type`'s per-agent-type lever text. |
 | `overseer-fanout` | fanout, multi-agent-coordination | `overseer-fanout` | `effortLevel=high`, `subagentPromptCacheTtl=5m`; `agents.claude-implementer.effort=medium`, `.maxTurns=60` | `agents.topology_report_proxy`'s `mean_proxy` column (agent-report-size rule); `agents.topology_spawn_write`'s `mean_write` column (spawn-cost rule) for the top/implementer effort split. |
 | `overnight-batch` | overnight-run, unattended-batch | `overseer-fanout` | `subagentPromptCacheTtl=1h`, `autoCompactWindow=300000`, `cleanupPeriodDays=30`; `agents.verification-runner."experimental.cacheTtl"=1h` | `classify.classify_mode`'s "overnight" mode (span > 4h, max human gap > 60min); `ttl.ttl_by_agent_type`'s `gaps_over_1h`/`gap_p90_s` columns; `compactions.compactions_summary`'s "Compactions per session (mean)" / dropped-token-share rows for the raised `autoCompactWindow`. |
-| `workflow-ultracode` | workflow-run, scripted-multi-phase | `workflow-heavy` | `subagentPromptCacheTtl=5m`; `agents.claude-implementer.maxTurns=40`, `."experimental.cacheTtl"=5m` | `workflows.workflows_summary`'s "Total workflow runs" row and `workflows.workflows_detail`'s per-run `agent_count`/`phases` columns; `ttl.ttl_by_agent_type`'s per-agent-type lever (short-gap scripted phases). |
+| `workflow-ultracode` | workflow-run, scripted-multi-phase, ops | `workflow-heavy` | `subagentPromptCacheTtl=5m`; `agents.claude-implementer.maxTurns=40`, `."experimental.cacheTtl"=5m` | `workflows.workflows_summary`'s "Total workflow runs" row and `workflows.workflows_detail`'s per-run `agent_count`/`phases` columns; `ttl.ttl_by_agent_type`'s per-agent-type lever (short-gap scripted phases). |
 
 `list_profiles() -> list[Profile]` returns all seven, in the order
 above; `get(profile_id) -> Profile | None` returns one by id or `None`
@@ -326,13 +341,16 @@ words (`catalogue.FOR_TASKS`, `catalogue.task_profile`):
 | `data-exploration`, `web-research`, `database-exploration` | `research` |
 | `chat`, `quick-question`, `pairing` | `chat` |
 | `docs` | `docs` |
+| `ops` | `ops` |
 
 So `feature`, `bugfix`, `debug`, `refactor`, `test` and `review` lead to
 `implementation-heavy`, `plan` to `planning-requirements`, `research` to
-`discovery-scrape`, and `chat` and `docs` to `interactive-chat`. `ops`
-has no profile and falls through. The other `for` words (`fanout`,
-`overnight-run`, `workflow-run`, ...) name a way of running rather than
-a kind of task.
+`discovery-scrape`, `chat` and `docs` to `interactive-chat`, and `ops`
+(PROF-11/F11) to `workflow-ultracode` -- scripted, multi-step automation
+is the closest of the seven catalogue shapes to what `ops` names, though
+it spans several purposes (`classify.py`), so no profile is a clean fit.
+The other `for` words (`fanout`, `overnight-run`, `workflow-run`, ...)
+name a way of running rather than a kind of task.
 
 **Purpose overrides (checked first, in list order):**
 

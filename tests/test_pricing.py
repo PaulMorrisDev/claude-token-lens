@@ -929,6 +929,81 @@ def test_coverage_does_not_record_fast_priced_as_standard_for_standard_speed(min
     assert coverage.fast_priced_as_standard == {}
 
 
+# -- fast-applied tracking (PROF-08): the mirror image of the block above --
+
+
+def test_coverage_tracks_fast_applied(min_pricing):
+    coverage = PricingCoverage()
+    turn = _turn(model="claude-widget-9", input_tokens=1_000_000, speed="fast")
+    resolved = min_pricing.resolve_model(turn.model)
+    breakdown = price_turn(turn, resolved)
+    assert breakdown.fast_applied is True
+    coverage.add(turn, breakdown, resolved)
+
+    standard = price_turn(_turn(model="claude-widget-9", input_tokens=1_000_000), resolved)
+    assert coverage.fast_applied_turns == 1
+    entry = coverage.fast_applied["claude-widget-9"]
+    assert entry["turns"] == 1 and entry["tokens"] == 1_000_000
+    assert entry["cost"] == pytest.approx(breakdown.total)
+    # The fast rate is exactly 2x standard on every rate component here,
+    # so the standard-rate equivalent recovers the un-fast-priced total.
+    assert entry["standard_cost"] == pytest.approx(standard.total)
+    assert entry["cost"] == pytest.approx(entry["standard_cost"] * 2.0)
+
+    table = coverage.as_fast_applied_table()
+    assert table.rows == [["claude-widget-9", 1, 1_000_000, pytest.approx(breakdown.total), pytest.approx(standard.total)]]
+    assert table.notes
+
+
+def test_fast_applied_standard_cost_leaves_the_server_tool_fee_unscaled(min_pricing):
+    import dataclasses
+
+    priced = dataclasses.replace(min_pricing, server_tools={"web_search_per_1000": 8.0})
+    resolved = priced.resolve_model("claude-widget-9")
+    turn = _turn(model="claude-widget-9", input_tokens=1_000_000, speed="fast", web_search_requests=500)
+    breakdown = price_turn(turn, resolved)
+    assert breakdown.server_tool_cost == pytest.approx(4.0)  # 500 / 1,000 * $8, never doubled by fast
+
+    coverage = PricingCoverage()
+    coverage.add(turn, breakdown, resolved)
+    entry = coverage.fast_applied["claude-widget-9"]
+    # Only the token-rate portion is halved back to standard; the flat
+    # per-request server-tool fee is added back unscaled on both sides.
+    standard_token_cost = (breakdown.total - breakdown.server_tool_cost) / 2.0
+    assert entry["standard_cost"] == pytest.approx(standard_token_cost + breakdown.server_tool_cost)
+
+
+def test_coverage_does_not_record_fast_applied_when_no_fast_table(min_pricing):
+    coverage = PricingCoverage()
+    turn = _turn(model="claude-gadget-2", input_tokens=1_000_000, speed="fast")
+    resolved = min_pricing.resolve_model(turn.model)
+    breakdown = price_turn(turn, resolved)
+    assert breakdown.fast_applied is False
+    coverage.add(turn, breakdown, resolved)
+    assert coverage.fast_applied == {}
+    assert coverage.fast_applied_turns == 0
+    assert coverage.as_fast_applied_table().rows == []
+
+
+def test_coverage_does_not_record_fast_applied_for_standard_speed(min_pricing):
+    coverage = PricingCoverage()
+    turn = _turn(model="claude-widget-9", input_tokens=1_000_000)  # speed is None
+    resolved = min_pricing.resolve_model(turn.model)
+    coverage.add(turn, price_turn(turn, resolved), resolved)
+    assert coverage.fast_applied == {}
+
+
+def test_coverage_accumulates_fast_applied_across_turns(min_pricing):
+    coverage = PricingCoverage()
+    resolved = min_pricing.resolve_model("claude-widget-9")
+    for _ in range(3):
+        turn = _turn(model="claude-widget-9", input_tokens=1_000_000, speed="fast")
+        coverage.add(turn, price_turn(turn, resolved), resolved)
+    assert coverage.fast_applied_turns == 3
+    assert coverage.fast_applied["claude-widget-9"]["turns"] == 3
+    assert coverage.fast_applied["claude-widget-9"]["tokens"] == 3_000_000
+
+
 # --------------------------------------------------------------------
 # Pricing.describe()
 # --------------------------------------------------------------------

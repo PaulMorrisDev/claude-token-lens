@@ -1394,7 +1394,15 @@ def _rule_spawn_parts(
         read_only = used(agent_type, "read_only_spawns")
         all_read_only = isinstance(read_only, int) and read_only == spawns
 
-        claude_md = part(agent_type, "claude_md")
+        claude_md_total = part(agent_type, "claude_md")
+        # PROF-11/F13: Managed policy CLAUDE.md still loads regardless of
+        # omitClaudeMd, so it never counts towards what this would save.
+        claude_md_managed = part(agent_type, "claude_md_managed") or 0.0
+        claude_md = (
+            max(0.0, claude_md_total - claude_md_managed)
+            if isinstance(claude_md_total, (int, float))
+            else claude_md_total
+        )
         # Metrics capture: whether its runs said they used CLAUDE.md. Held
         # back when most that said, said they did.
         rules_used = _cell(report, "habits", "habits_agents", agent_type, "rules_used") or 0
@@ -1410,14 +1418,19 @@ def _rule_spawn_parts(
             why = f"Each {agent_type} spawn starts with about {claude_md:,.0f} tokens of CLAUDE.md files and memory."
             if all_read_only:
                 why += " Every measured spawn only searched or read files, so it rarely needs your working rules."
+            if claude_md_managed:
+                why += f" Managed policy CLAUDE.md ({claude_md_managed:,.0f} tokens) still loads either way."
+                rules_evidence = [
+                    _evidence("Managed policy CLAUDE.md per spawn (still loads)", claude_md_managed, "agent_startup", "agent_startup_breakdown", agent_type)
+                ]
             if rules_unused:
                 why += (
                     f" {rules_unused} of the {rules_used + rules_unused} runs that said, said they didn't use "
                     "your CLAUDE.md."
                 )
-                rules_evidence = [
+                rules_evidence.append(
                     _evidence("Runs that said they didn't use CLAUDE.md", rules_unused, "habits", "habits_agents", agent_type)
-                ]
+                )
             out.append(
                 Recommendation(
                     id="spawn-claude-md",

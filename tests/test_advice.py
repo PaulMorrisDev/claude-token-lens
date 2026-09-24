@@ -348,13 +348,13 @@ def test_model_tier_leaves_out_an_agent_whose_runs_said_they_needed_a_larger_mod
         ]
     )
     runs = [habits.AgentFact(session_id="s", agent_type="reviewer", week="", cost=1.0, fit=fit)
-            for fit in ("larger", "larger", "smaller")]
+            for fit in ("larger", "larger", "larger", "smaller", "smaller")]
     report.sections.append(habits.section_from(habits.Habits(agents=runs)))
     snap = Snapshot(path=None, ts="2026-09-20T00:00:00Z", data={"agents": {}})
     (tier,) = [r for r in advice.finish([_tier("reviewer"), _tier("implementer")], report, snap, Units())
                if r.id == "model-tier"]
     assert [c.agent for c in tier.changes] == ["implementer"]
-    assert "Left out: reviewer (Claude said 2 of its runs needed a larger model)." in tier.why
+    assert "Left out: reviewer (Claude said 3 of its runs needed a larger model)." in tier.why
 
 
 def test_effort_mismatch_from_reported_work_is_explained_as_measured():

@@ -43,6 +43,8 @@ from typing import TYPE_CHECKING
 
 from . import capture as capture_mod
 from . import capture_catalogue as catalogue
+from . import model_gate
+from . import quality
 from .context_files import _parse_ts
 from .model import PROMPT_FLAGS, Column, EventKind, Feedback, Section, Table, Turn
 from .pricing import Pricing, effective_rates, price_turn
@@ -94,11 +96,13 @@ LONG_BREAK_S = 3_600
 LARGE_TURNS = 60
 #: A skill Claude reached for after this many replies came late.
 LATE_SKILL_TURNS = 3
-#: How many messages a comparison group needs before it counts.
+#: How many messages a comparison group needs before it's shown at all
+#: (PROF-04: a setup only gets ticked as "cheaper" in the tasks goal
+#: once it also clears TICK_MIN_GROUP -- see profiles.goals._tasks).
 MIN_GROUP = 5
-#: Points of "went well" a cheaper setup may give up against your usual
-#: one and still count as doing as well.
-SETUP_OK_TOLERANCE = 5.0
+#: How many messages a "cheaper" setup needs before the tasks goal
+#: ticks it for you rather than just surfacing it (PROF-04).
+TICK_MIN_GROUP = 20
 #: An agent type's model-swap saving needs at least this share before
 #: ``habits_agents_by_task`` names a cheaper model for it (mirrors
 #: ``profiles.goals._models``' own floor).
@@ -467,6 +471,15 @@ class CycleFact:
     gap_s: float | None = None
     effort: str | None = None
     model: str = ""
+    #: The dominant ``Turn.speed`` across the cycle's own turns
+    #: ("standard"/"fast"/``None`` when no turn carried one) -- PROF-04's
+    #: setup comparison splits by this alongside model and effort.
+    speed: str | None = None
+    #: This message's own cost with subagent spend left out -- the
+    #: main-only figure ``habits_by_task``/``habits_setups`` show
+    #: alongside ``cost`` (which, like ``capture._cycle_cost``, always
+    #: includes subagents at any depth). PROF-06/PROF-04.
+    main_cost: float = 0.0
     #: Re-reading the context this message itself built up.
     growth_cost: float = 0.0
     reads: int = 0
@@ -728,8 +741,14 @@ def _cycle_fact(session_id, cycle, carry: _CarryCost, index_of, rates: _Rates, b
         stale_cost=stale * sum(carry.reads[i] for i in idx),
         stale_rewrite=stale * carry.writes[idx[0]],
         gap_s=first.gap_s,
-        effort=first.effort,
+        # The dominant effort across the cycle's own turns, not just the
+        # first reply's (F6): a message answered over several turns can
+        # change effort mid-way, and the first turn alone isn't
+        # representative of what the message as a whole ran at.
+        effort=_dominant(t.effort for t in cycle.turns) or first.effort,
         model=_dominant(t.model for t in cycle.turns) or "",
+        speed=_dominant(t.speed for t in cycle.turns),
+        main_cost=sum(rates.cost(t) for t in cycle.turns),
         growth_cost=sum(max(0, t.ctx - first.ctx) * carry.reads[i] for t, i in zip(cycle.turns, idx)),
         explore_agents=sum(1 for sub in cycle.subs if sub.meta.agent_type == _EXPLORE_AGENT),
     )
@@ -1643,6 +1662,7 @@ def _by_task_table(h: Habits) -> Table:
             Column(key="share", label="Share", kind="pct"),
             Column(key="cost", label="Cost", kind="money"),
             Column(key="avg_cost", label="Per message", kind="money"),
+            Column(key="main_cost", label="Cost (main session only)", kind="money"),
             Column(key="clear_pct", label="Clear asks", kind="pct"),
             Column(key="large_pct", label="Large asks", kind="pct"),
             Column(key="redo_pct", label="Redone", kind="pct"),
@@ -1663,6 +1683,13 @@ def _task_row(task: str, cycles: list[CycleFact], total: int) -> list:
         _pct(len(cycles), total),
         cost,
         cost / len(cycles),
+        # PROF-06/F7: "cost" above is the whole piece of work, subagents
+        # included; this is the main session's own share of it alone --
+        # what a main-session-only reprice (a model or effort change to
+        # the top-level settings) actually covers, so scaling that
+        # reprice down to a task's share (profiles.goals._task_share)
+        # can use a share computed the same way instead of the total.
+        sum(c.main_cost for c in cycles),
         _pct(sum(c.tag.brief == "clear" for c in briefs), len(briefs)),
         _pct(sum(c.tag.size in ("l", "xl") for c in sizes), len(sizes)),
         _pct(sum(c.redone for c in cycles), len(cycles)),
@@ -1863,9 +1890,12 @@ def _agents_by_task_table(h: Habits, model_swap=None) -> Table:
     """Per kind of task, how each agent type that answered it did: the
     same signals as ``habits_agents``, split by the task of the message
     that spawned each run, plus the cheaper model the model-swap
-    evidence supports for that agent type, when nothing vetoes it
-    (``unfit_agents``, from the same corpus-wide ``habits_agents`` this
-    table splits)."""
+    evidence supports for that agent type, when nothing vetoes it --
+    the agent's corpus-wide ``unfit_agents`` reason, or this task's own
+    slice of its runs saying a larger model was needed at least as
+    often as a smaller one would do (``model_gate.row_unfit_reason``,
+    the "larger model per task" veto F9/PROF-05 added: a task can need
+    a larger model even when the agent isn't unfit overall)."""
     unfit = unfit_agents(_rows_as_dicts(_agents_table(h)))
     groups: dict[str, dict[str, list[AgentFact]]] = {}
     for a in h.agents:
@@ -1880,7 +1910,8 @@ def _agents_by_task_table(h: Habits, model_swap=None) -> Table:
             results = [a for a in runs if a.result]
             fits = Counter(a.fit for a in runs if a.fit)
             alt = None
-            if agent_type not in unfit and len(runs) >= MIN_GROUP:
+            task_row = {"fit_larger": fits.get("larger", 0), "fit_smaller": fits.get("smaller", 0), "runs": len(runs)}
+            if agent_type not in unfit and len(runs) >= MIN_GROUP and model_gate.row_unfit_reason(task_row) is None:
                 alt = _model_swap_alt(model_swap, agent_type)
             rows.append([
                 task,
@@ -1964,15 +1995,69 @@ def went_well(c: CycleFact) -> bool:
     return not c.redone
 
 
+#: A model's effort when no turn recorded one at all -- "default" isn't
+#: the same effort on every model (F6/V25: "Opus 5.5 defaults to
+#: medium"), so grouping every unset-effort cycle under a literal
+#: "default" bucket compared setups that weren't actually alike. Only
+#: the models this project has a verified default for are resolved;
+#: everything else keeps the "default" placeholder.
+_DEFAULT_EFFORT_BY_FAMILY = {"opus": "medium"}
+
+
+def _resolved_effort(model: str, effort: str | None) -> str:
+    return effort or _DEFAULT_EFFORT_BY_FAMILY.get(family(model), "default")
+
+
+def _last_cycle_ids(cycles: list[CycleFact]) -> set[int]:
+    """``id(cycle)`` for the chronologically last cycle of each session:
+    it has no next message that could have redone or corrected it, so
+    counting it in a went-well/redo rate would credit an outcome
+    nothing afterwards confirms (PROF-04). ``h.cycles`` holds one
+    session's cycles contiguously and in order (``_session`` appends
+    them per session as it processes it), so the last one seen per
+    ``session_id`` while walking the full list once is correct."""
+    last: dict[str, int] = {}
+    for c in cycles:
+        last[c.session_id] = id(c)
+    return set(last.values())
+
+
+#: The setup comparison's cost signal, reused as-is from quality.py's
+#: Signal/compare_runs machinery (PROF-04): ``Signal`` only calls
+#: ``num``/``den`` on whatever it's handed, so a ``CycleFact`` works
+#: exactly like the ``Run`` quality.py itself compares setups over.
+_SETUP_COST_SIGNAL = quality.Signal(
+    "cost", "Cost per message", lambda c: c.cost, lambda c: 1.0, "per_run", None, "all", "messages", "money",
+)
+
+
+def _not_ok_signal(last_ids: set[int]) -> quality.Signal:
+    """"Didn't go well" (a rise is worse, matching quality.py's own
+    failure-rate convention), with each session's last message left out
+    of both sides of the ratio (see :func:`_last_cycle_ids`)."""
+    return quality.Signal(
+        "not_ok", "Messages that didn't go well",
+        lambda c: 0.0 if id(c) in last_ids else float(not went_well(c)),
+        lambda c: 0.0 if id(c) in last_ids else 1.0,
+        "pct", "higher", "all", "messages",
+    )
+
+
 def _setups_table(h: Habits) -> Table:
     """Per kind of task Claude reported, all levels together and then by
-    how hard it said the work was: each model and effort that answered
-    it, and the cheapest that went well about as often as your usual one."""
-    groups: dict[str, dict[str, dict[tuple[str, str], list[CycleFact]]]] = {}
+    how hard it said the work was: each model, effort and speed setup
+    that answered it (split, not collapsed to a model family or a bare
+    "default" effort -- F6), and the cheapest that a ratio test with
+    Holm correction (``quality.compare_runs``, PROF-04) found no worse
+    than your usual one. Shown from :data:`MIN_GROUP` messages; the
+    tasks goal only ticks a "cheaper" setup once it also clears
+    :data:`TICK_MIN_GROUP` (``profiles.goals._tasks``)."""
+    last_ids = _last_cycle_ids(h.cycles)
+    groups: dict[str, dict[str, dict[tuple[str, str, str], list[CycleFact]]]] = {}
     for c in h.cycles:
         if c.tag is None or not c.tag.task:
             continue
-        setup = (family(c.model), c.effort or "default")
+        setup = (c.model, _resolved_effort(c.model, c.effort), c.speed or "standard")
         by_level = groups.setdefault(c.tag.task, {})
         by_level.setdefault("all", {}).setdefault(setup, []).append(c)
         if c.tag.level:
@@ -1981,7 +2066,7 @@ def _setups_table(h: Habits) -> Table:
     rows = []
     for task, by_level in sorted(groups.items(), key=lambda kv: (-sum(map(len, kv[1]["all"].values())), kv[0])):
         for level in sorted(by_level, key=lambda word: order.get(word, 9)):
-            rows.extend(_setup_rows(task, level, by_level[level]))
+            rows.extend(_setup_rows(task, level, by_level[level], last_ids))
     return Table(
         name="habits_setups",
         title="Best setup for each kind of task",
@@ -1990,8 +2075,10 @@ def _setups_table(h: Habits) -> Table:
             Column(key="level", label="How hard", kind="str"),
             Column(key="model", label="Model", kind="str"),
             Column(key="effort", label="Effort", kind="str"),
+            Column(key="speed", label="Speed", kind="str"),
             Column(key="cycles", label="Messages", kind="int"),
             Column(key="avg_cost", label="Per message", kind="money"),
+            Column(key="main_avg_cost", label="Per message (main session only)", kind="money"),
             Column(key="ok_pct", label="Went well", kind="pct"),
             Column(key="rated", label="With your feedback", kind="int"),
             Column(key="verdict", label="Setup", kind="str"),
@@ -2001,66 +2088,49 @@ def _setups_table(h: Habits) -> Table:
     )
 
 
-def _like_for_like(other: list[CycleFact], usual: list[CycleFact]) -> tuple[float, float, float, float] | None:
-    """Cost per message and went-well share of ``other`` and ``usual``,
-    level for level on the levels both ran, weighted by how often the
-    usual setup ran each: a cheap setup that only saw easy work isn't
-    credited with the hard work's cost. ``None`` when the shared levels
-    hold under half the usual setup's messages."""
-
-    def by_level(cycles: list[CycleFact]) -> dict[str, list[CycleFact]]:
-        out: dict[str, list[CycleFact]] = {}
-        for c in cycles:
-            out.setdefault((c.tag.level if c.tag is not None else None) or "", []).append(c)
-        return out
-
-    mine, theirs = by_level(other), by_level(usual)
-    shared = [level for level in theirs if level in mine]
-    covered = sum(len(theirs[level]) for level in shared)
-    if not covered or 2 * covered < len(usual):
-        return None
-
-    def weighted(groups: dict[str, list[CycleFact]], value) -> float:
-        return sum(len(theirs[level]) * value(groups[level]) for level in shared) / covered
-
-    def cost(cycles: list[CycleFact]) -> float:
-        return _mean(c.cost for c in cycles) or 0.0
-
-    def ok(cycles: list[CycleFact]) -> float:
-        return _pct(sum(went_well(c) for c in cycles), len(cycles)) or 0.0
-
-    return weighted(mine, cost), weighted(theirs, cost), weighted(mine, ok), weighted(theirs, ok)
-
-
-def _setup_rows(task: str, level: str, setups: dict[tuple[str, str], list[CycleFact]]) -> list[list]:
-    stats = [
-        {
+def _setup_rows(
+    task: str, level: str, setups: dict[tuple[str, str, str], list[CycleFact]], last_ids: set[int]
+) -> list[list]:
+    not_ok = _not_ok_signal(last_ids)
+    stats = []
+    for (model, effort, speed), cycles in setups.items():
+        rated = [c for c in cycles if id(c) not in last_ids]
+        stats.append({
             "model": model,
             "effort": effort,
+            "speed": speed,
             "cycles": cycles,
             "n": len(cycles),
             "avg": _mean(c.cost for c in cycles) or 0.0,
-            "ok": _pct(sum(went_well(c) for c in cycles), len(cycles)) or 0.0,
+            "main_avg": _mean(c.main_cost for c in cycles) or 0.0,
+            "ok": _pct(sum(went_well(c) for c in rated), len(rated)) or 0.0,
             "rated": sum(1 for c in cycles if c.outcome),
-        }
-        for (model, effort), cycles in setups.items()
-    ]
-    stats.sort(key=lambda s: (-s["n"], s["avg"], s["model"], s["effort"]))
+            "hard_pct": _pct(sum(1 for c in cycles if c.tag is not None and c.tag.level == "hard"), len(cycles)),
+        })
+    stats.sort(key=lambda s: (-s["n"], s["avg"], s["model"], s["effort"], s["speed"]))
     usual = stats[0]
     best, best_ratio = None, 1.0
-    if usual["n"] >= MIN_GROUP:
+    if usual["n"] >= MIN_GROUP and usual["avg"] > 0:
         for s in stats[1:]:
-            matched = _like_for_like(s["cycles"], usual["cycles"]) if s["n"] >= MIN_GROUP else None
-            if matched is None:
+            ratio = s["avg"] / usual["avg"]
+            if s["n"] < MIN_GROUP or ratio >= best_ratio:
                 continue
-            cost, usual_cost, ok, usual_ok = matched
-            if ok >= usual_ok - SETUP_OK_TOLERANCE and usual_cost > 0 and cost / usual_cost < best_ratio:
-                best, best_ratio = s, cost / usual_cost
+            if level == "all" and model_gate.row_unfit_reason({"runs": s["n"], "hard_pct": s["hard_pct"]}):
+                # The hard-work veto: mostly hard work under this setup,
+                # at the mixed "all" level -- it looks cheap because of
+                # what it was used for, not because it's a cheaper
+                # setup. The per-level rows below still show it plainly.
+                continue
+            comparison = quality.compare_runs(usual["cycles"], s["cycles"], [_SETUP_COST_SIGNAL, not_ok])
+            if quality.setup_verdict(comparison) in ("worse", "possibly_worse", "mixed"):
+                continue
+            best, best_ratio = s, ratio
     rows = []
     for s in stats:
         verdict = "usual" if s is usual else "cheaper" if s is best else ""
         saving = 100.0 * (1.0 - best_ratio) if s is best else None
-        rows.append([task, level, s["model"], s["effort"], s["n"], s["avg"], s["ok"], s["rated"], verdict, saving])
+        rows.append([task, level, s["model"], s["effort"], s["speed"], s["n"], s["avg"], s["main_avg"], s["ok"],
+                     s["rated"], verdict, saving])
     return rows
 
 
@@ -2278,26 +2348,23 @@ def section_from(h: Habits, *, model_swap=None) -> Section:
     )
 
 
-def unfit_agents(rows: list[dict]) -> dict[str, str]:
+def unfit_agents(rows: list[dict], *, min_sessions: int | None = None) -> dict[str, str]:
     """Agents a cheaper model shouldn't be suggested for, from the
     ``habits_agents`` rows, with why: Claude said a larger model would
     suit the work, most of it was hard, or a run was retried for the
     model. The main session (``top-level``) counts by how hard its work
-    was only."""
+    was only. The per-row reason logic is shared with the model-swap
+    veto/gate helper (``model_gate.row_unfit_reason``), which every
+    other "don't suggest this model" check now goes through too (F9);
+    ``min_sessions``, when given, is an extra floor on ``runs``."""
     out: dict[str, str] = {}
     for row in rows:
         agent = row.get("agent_type")
         if not agent:
             continue
-        larger = row.get("fit_larger") or 0
-        smaller = row.get("fit_smaller") or 0
-        hard = row.get("hard_pct")
-        if larger and larger >= smaller:
-            out[agent] = f"Claude said {larger} of its runs needed a larger model"
-        elif isinstance(hard, (int, float)) and hard >= 50:
-            out[agent] = f"{hard:.0f}% of its work was reported hard"
-        elif (row.get("retried_model") or 0) >= 1:
-            out[agent] = "a run was retried because the model wasn't enough"
+        reason = model_gate.row_unfit_reason(row, min_sessions=min_sessions)
+        if reason:
+            out[agent] = reason
     return out
 
 

@@ -173,6 +173,14 @@ SETTING_TEXT.update(
             "used, which offers more control (a custom commit trailer, PR text, and a session-link toggle).",
             "",
         ),
+        # PROF-08/D5: fast mode is a documented per-model price premium (a
+        # flat multiplier over standard rates), traded for a faster reply.
+        "fastMode": (
+            "Whether replies are billed at a model's fast-mode rate, a documented premium over its standard "
+            "rate, for a faster reply.",
+            "Turning it off saves money on every reply that would have run fast, but replies come back slower.",
+            "Only a few models document a fast rate; on every other model this setting has no effect.",
+        ),
     }
 )
 
@@ -201,6 +209,7 @@ LEVER_LABELS = {
     "skills": "Skills loaded at start",
     "mcpServers": "MCP servers it may use",
     "includeCoAuthoredBy": "Co-authored-by line on commits (deprecated)",
+    "fastMode": "Fast mode (price premium for a faster reply)",
 }
 
 _SCOPE_WHERE = {

@@ -4208,7 +4208,8 @@
     function refreshTotal() {
       var ticket = ++pending;
       total.textContent = "Working out the estimate…";
-      postJson(withWindow("/api/whatif"), chosen()).then(function (result) {
+      var url = withWindow("/api/whatif") + (draft.task ? "&task=" + encodeURIComponent(draft.task) : "");
+      postJson(url, chosen()).then(function (result) {
         if (ticket !== pending) return;
         var body = result.body;
         if (!body || body.ok !== true) {
@@ -4245,6 +4246,7 @@
       postJson("/api/profiles", {
         id: id,
         name: name.value || draft.goal.title,
+        for: draft.task ? [draft.task] : [],
         settings: picked.settings,
         agents: picked.agents,
         notes: "Made from the goal \"" + draft.goal.title + "\" " + (draft.period || "") + ".",
@@ -4270,7 +4272,9 @@
       ((results[1] && results[1].settings) || []).concat((results[1] && results[1].agents) || []).forEach(function (lever) {
         labels[lever.key] = lever.label;
       });
-      postJson(withWindow("/api/whatif"), { settings: p.settings || {}, agents: p.agents || {} }).then(function (res) {
+      var task = p.for && p.for.length ? p.for[0] : undefined;
+      var url = withWindow("/api/whatif") + (task ? "&task=" + encodeURIComponent(task) : "");
+      postJson(url, { settings: p.settings || {}, agents: p.agents || {} }).then(function (res) {
         var data = res.body && res.body.ok === true ? res.body.data : null;
         if (!data || !data.rows.length) return;
         clear(container);

@@ -979,16 +979,21 @@ def retried_rows(runs: list[Run]) -> list[dict]:
     return rows
 
 
-def retried_models(rows: Iterable[dict]) -> dict[tuple[str, str], dict]:
+def retried_models(rows: Iterable[dict], *, min_sessions: int | None = None) -> dict[tuple[str, str], dict]:
     """``{(agent, model family): row}`` for each ``quality_retried`` row
     where at least :data:`RETRIED_SHARE` of the agent's runs on that model
     were retried on a larger one, so the models check doesn't suggest that
     model to that agent. Each row gains ``reason``, a clause for "it
-    wasn't suggested because ...". The main session is never a row."""
+    wasn't suggested because ...". The main session is never a row.
+    ``min_sessions``, when given, is an extra floor on ``runs`` -- without
+    it, one retried run out of one is enough to blacklist a model
+    forever (``model_gate`` passes ``ModelSwapThresholds.min_sessions``)."""
     out: dict[tuple[str, str], dict] = {}
     for row in rows:
         runs, retried = row.get("runs") or 0, row.get("retried") or 0
         if not retried or retried < RETRIED_SHARE * runs:
+            continue
+        if min_sessions is not None and runs < min_sessions:
             continue
         family = _model_family(str(row.get("model") or ""))
         on = _model_family(str(row.get("retried_on") or "")) or "a larger model"

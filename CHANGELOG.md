@@ -591,6 +591,105 @@ once to pick up the new detection rules and fields below.
   `parser_notes` side channel next to `Diagnostics` (present only when
   non-empty) and are rendered alongside it by every renderer.
 
+### P6 — Profile tuning: task-scaled whatif, a shared model/quality
+    veto, fastMode pricing, and catalogue/thinking-lever/Managed
+    CLAUDE.md fixes (PROF-01/03/04/05/06/08/11, EST-P2/P10)
+
+- **`/api/whatif` and saved profiles now scale to a single kind of
+  task, not just the whole window.** A `?task=` query param (validated
+  against metrics capture's own closed task vocabulary) scales every
+  row down to that task's own share of the window, the same way the
+  tasks goal's own draft already did; a saved profile whose `for` names
+  a task scales the same way. `refreshTotal` passes it through so a
+  saved profile's live total stays scoped to the task it was drafted
+  for instead of pricing against the whole corpus.
+- **One veto-and-gate helper replaces four independent copies of the
+  same model-swap check** (audit finding F9: "model-switch gates differ
+  across goals, habits, model_swap and quality"). `model_gate.py` is
+  now the one place that checks whether the quality section found a
+  model swap did clearly worse (`quality.worse_models`), whether its
+  runs on that model were often retried on a larger one
+  (`quality.retried_models`, `quality.RETRIED_SHARE`), and whether
+  metrics capture said the agent's work needed a larger model or was
+  mostly hard (`habits.unfit_agents`) — used by the models goal, a
+  single task's candidate, the `model-tier` recommendation and the
+  quick-actions tip that explains why a cheaper model wasn't offered.
+  It also closes a gap the corpus-wide `unfit_agents` check never
+  covered: a *task's own* runs saying a larger model was needed even
+  when the agent isn't flagged unfit overall (the "larger model per
+  task" veto), and every check now shares one sample-size floor
+  (`ModelSwapThresholds.min_sessions`) instead of some running with no
+  floor at all.
+- **`habits_by_task` now reports main-session cost per task**, with
+  inheriting subagents' cost folded in rather than left out, and the
+  evidence wording corrected to match.
+- **Quality's redo-rate comparison between setups is now a proper ratio
+  test with a Holm correction across the setups compared**, instead of
+  a raw percentage-point difference. A setup only gets ticked as
+  "cheaper" in the tasks goal once it has at least 20 sessions of its
+  own (shown from 5, so there's something to look at sooner, but not
+  auto-ticked on a small sample); the comparison now also splits by
+  parser/schema version and by resolved effort and speed rather than
+  pooling runs that may not be comparable, adds a main-only cost
+  column, leaves each session's own last message out of the redo-rate
+  count (it can't have been redone yet), and adds a hard-work veto so a
+  setup that only looked cheaper because it skipped the hard tasks
+  doesn't get credit for it.
+- **The config snapshot hook now records the per-model `modelSettings`
+  effort, `maxEffortLevel` (a hard cap), and whether
+  `CLAUDE_CODE_EFFORT_LEVEL` is set** in the environment (a Boolean
+  only — never its value). An `effortLevel` override a profile goal
+  would otherwise suggest is now marked "won't apply to `<model>`; use
+  `--effort`" when the snapshot shows that model has no per-model
+  effort setting to override.
+- **`fastMode` is now priced instead of ignored.** It's in the
+  settings allowlist; `pricing.py` tracks how many turns were actually
+  priced at a fast-mode rate versus standard, and the whatif engine
+  reprices fast-mode turns at standard rates when asked what turning it
+  off would cost (fidelity `simulated`) — fast mode is a documented
+  per-model price premium (2x list price), not free.
+- **The profile catalogue's `for` lists mixed purposes and tasks, and
+  the `ops` task (metrics capture's own closed vocabulary) had no
+  catalogue profile at all** (F11). `workflow-ultracode` — scripted,
+  multi-step automation and maintenance — is now also `ops`'s starting
+  point; `classify.py`'s own comment notes `ops` spans several
+  purposes, so this is the closest fit of the seven catalogue shapes
+  rather than a clean 1:1 match. *Scoped down from the plan's fuller
+  ask (splitting the catalogue's `for` field itself into separate
+  `tasks`/`runs` lists): that's a schema-level change touching
+  `schema.py` validation, `api.py` routes and `app.js` rendering well
+  beyond this fix, so only the concrete `ops` mapping shipped here.*
+- **A goal's own "this catalogue profile is a starting point" note
+  could recommend a profile whose settings actually contradict the
+  draft sitting right above it** (F12). The note is now dropped
+  whenever the named catalogue profile's own settings disagree with a
+  main-session candidate the draft already proposed for the same key.
+- **`omitClaudeMd`'s estimated saving counted Managed policy CLAUDE.md
+  tokens, which still load regardless of the setting** (F13,
+  `fixes.py:46`). `agent_startup_breakdown` now breaks out a
+  `claude_md_managed` column, and the profile goal, the `spawn-
+  claude-md` recommendation and the whatif estimate all subtract it out
+  before pricing or deciding whether there's enough CLAUDE.md to offer
+  the lever at all.
+- **Thinking-effort levers (`effortLevel`/`effort`) were offered on
+  models where they do nothing** (F14, V26): you can't turn thinking
+  off on Opus 5.5 or the Fable models, so a lower-effort candidate has
+  nothing to show for itself there. The tasks/subagents goals now skip
+  the lever for an agent type whose observed model (the model-swap
+  table's own per-agent-type column) is one of those.
+- **`autoCompactWindow`'s whatif estimate is now held to the same
+  compactions-per-session floor the compaction-window rule and the
+  profile goals already use** (EST-P2): a window that would summarise
+  more than `CompactionSimThresholds().max_compactions_per_session`
+  times a session is no longer estimated, however cheap it simulates.
+- **`omitClaudeMd`'s whatif estimate only priced the one cache write
+  each spawn, not what carrying CLAUDE.md across the rest of that
+  spawn's turns costs afterwards** (EST-P10). It's now priced as the
+  greater of the write-only figure (kept as a floor) and the same
+  per-file carry cost (cache reads until the file is re-sent) that
+  `/api/context-files` already reports, with Managed policy CLAUDE.md
+  excluded from both.
+
 ## [0.5.2] - 2026-09-23
 
 ### Fixed

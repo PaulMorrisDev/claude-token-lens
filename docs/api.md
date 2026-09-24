@@ -1139,8 +1139,10 @@ tokens repriced at the new model's rate, same "ceiling" sense as
 `/api/model-swap`'s own saving column, not a real simulation since a
 different model may need more or fewer replies for the same work),
 `"simulated"` (`autoCompactWindow`, a cache-TTL change -- real sessions
-replayed with the new value), `"measured"` (`omitClaudeMd` -- per spawn,
-times the spawns in the window), `"estimated"` (`skillOverrides`,
+replayed with the new value), `"measured"` (`omitClaudeMd` -- the
+greater of per spawn times the spawns in the window, and the carry cost
+of the turns it's read back from cache until re-sent, EST-P10),
+`"estimated"` (`skillOverrides`,
 `enabledPlugins` -- from the size of what stops being sent), `"none"`
 (not estimated) or `"calibrated"` (EST-P6: scaled by how this same kind
 of change actually turned out for you before, see below).

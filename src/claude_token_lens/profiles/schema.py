@@ -189,6 +189,15 @@ SETTINGS_ALLOWLIST: dict[str, LeverSpec] = {
         "bool", "settings",
         doc_ref="docs/config-layers.md#redaction-rule-settings-and-agent-frontmatter-alike",
     ),
+    # PROF-08/D5: fast mode is a documented per-model price premium (a
+    # flat multiplier over standard rates -- pricing.toml's [.fast]
+    # tables), traded for a faster reply. whatif.py's "fastMode": False
+    # branch reprices the window's fast-billed replies at standard to
+    # show what turning it off would save (see whatif._fast_mode).
+    "fastMode": LeverSpec(
+        "bool", "settings",
+        doc_ref="docs/config-layers.md#redaction-rule-settings-and-agent-frontmatter-alike",
+    ),
 }
 
 #: ``agents.<name>`` frontmatter patch keys a profile may set. The dotted
