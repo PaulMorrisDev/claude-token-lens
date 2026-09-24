@@ -10,11 +10,12 @@ metrics, and a worked example against a real, scrubbed transcript.
 in this order: `overview`, `usage`, `elasticity` (only under
 subscription billing with usage-log readings), `sessions`, `recache`, `ttl`,
 `limits`, `carry`, `compaction_sim`, `model_swap`, `waste`,
-`compactions`, `agent_startup`, `agents`, `quality`, `workstyle`, `workflows`,
-`phases` (only with `--phases`), `config` (only when config snapshots
-exist), `context_budget`, `scorecard`, and `baseline_comparison` (only
-with `--baseline`). `claude-token-lens report` prints it. This file
-groups sections by topic, so its order differs.
+`compactions`, `agent_startup`, `agents`, `quality`, `workstyle`, `habits`,
+`workflows`, `phases` (only with `--phases`), `config` (only when config
+snapshots exist), `context_budget`, `capture`, `scorecard`, and
+`baseline_comparison` (only with `--baseline`). `claude-token-lens
+report` prints it. This file groups sections by topic, so its order
+differs.
 
 These sections are not part of the assembled report: `config_diff`,
 `compare`, `reconcile` and `team_report` (each printed by its own

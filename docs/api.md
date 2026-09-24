@@ -458,13 +458,13 @@ footer.
 - **`window`** (optional) — a named window, used by the dashboard's
   header picker: `1h` (the last hour), `today` (since midnight in
   `config.toml`'s `tz`, else the machine's zone), `24h`, `change` (since
-  your latest `apply`, its undo, or a settings change the config hook
-  saw; `400` when none is recorded yet) or `all` (no limit). Anything
-  else is `400`. A named window takes precedence over the other three
-  params. It is turned into a `since` rounded down to the minute, so
-  repeat requests share one cached report. A session counts when its
-  last reply falls inside the window (so it was active then), and it
-  then counts in full.
+  your latest `apply`, its undo, a settings change the config hook saw,
+  or a change to metrics capture; `400` when none is recorded yet) or
+  `all` (no limit). Anything else is `400`. A named window takes
+  precedence over the other three params. It is turned into a `since`
+  rounded down to the minute, so repeat requests share one cached report.
+  A session counts when its last reply falls inside the window (so it
+  was active then), and it then counts in full.
 - **`window_days`** (int, at least 1, optional) — the last N days;
   defaults to 30 when neither `since` nor `until` is given.
 - **`since`** / **`until`** (ISO 8601, optional) — when either is
@@ -826,9 +826,10 @@ settings with `POST /api/profiles/from-current` instead.
 
 ### `GET /api/impact`
 
-Each change you made (an `apply`, its undo, or a settings change the
-config hook saw), with the sessions before it against those after it,
-on the measures that change should move.
+Each change you made (an `apply`, its undo, a settings change the
+config hook saw, or a change to metrics capture), with the sessions
+before it against those after it, on the measures that change should
+move.
 
 Takes no window: each change is compared over its own before and after
 periods, looking back at most `lookback_days`.
@@ -899,7 +900,7 @@ and the notes and tags measured in transcripts since `enabled_at`
 part until the store changes; an older copy is served while a fresh
 one is built in the background.
 
-`data`: `{"config", "warning", "samples", "levels", "sections", "measured", "history", "hooks", "billing", "roi", "banner", "commands"}`:
+`data`: `{"config", "warning", "samples", "levels", "sections", "measured", "history", "hooks", "billing", "roi", "banner", "feedback", "commands"}`:
 
 - `config`: the same block as `/api/health`'s `capture`, without `hooks_ok`.
 - `warning`: the cost warning the dashboard repeats before any change

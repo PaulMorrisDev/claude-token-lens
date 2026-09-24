@@ -981,6 +981,49 @@ def test_glossary_tab_matches_the_readme_glossary() -> None:
     assert app_glossary == _readme_glossary_terms()
 
 
+def _readme_section_table_keys() -> list[str]:
+    text = README_MD.read_text(encoding="utf-8")
+    section = re.search(
+        r"\| Section key \| Title \| Module \| What it answers \|\n\|---\|---\|---\|---\|\n(.+?)\n\n", text, re.S
+    )
+    assert section, "README.md's report-sections table has changed shape"
+    return [row.split("|")[1].strip().strip("`") for row in section.group(1).splitlines()]
+
+
+def _sections_reference_order() -> list[str]:
+    text = (REPO_ROOT / "docs" / "sections-reference.md").read_text(encoding="utf-8")
+    match = re.search(r"in this order:(.+?only with `--baseline`\))", text, re.S)
+    assert match, "docs/sections-reference.md's section-order sentence has changed shape"
+    return re.findall(r"`([a-z_]+)`", match.group(1))
+
+
+def test_readme_and_sections_reference_list_every_report_section_in_order() -> None:
+    """D13: report.build_report's actual _SECTION_ORDER (plus
+    baseline_comparison, appended unconditionally after it) once ran
+    ahead of both docs -- habits and capture were missing from each
+    list, and the README table also lacked elasticity, agent_startup,
+    context_budget and baseline_comparison. Regression test: both docs
+    must name every section build_report can emit, in its exact order."""
+    from claude_token_lens.report import _SECTION_ORDER
+
+    expected = [*_SECTION_ORDER, "baseline_comparison"]
+    assert _readme_section_table_keys() == expected
+    assert _sections_reference_order() == expected
+
+
+def test_readme_workstyle_row_names_every_archetype() -> None:
+    """D15: the README's workstyle row once named six archetypes while
+    workstyle.py detects seven -- `mixed`, the fallback when none of the
+    other six match, was missing. Regression test: the row's backtick
+    archetype names must match workstyle.py's real set."""
+    from claude_token_lens.workstyle import _ARCHETYPE_DESCRIPTIONS
+
+    text = README_MD.read_text(encoding="utf-8")
+    row = next(line for line in text.splitlines() if line.startswith("| `workstyle` |"))
+    named = set(re.findall(r"`([a-z-]+)`", row)) - {"workstyle", "workstyle.py"}
+    assert named == set(_ARCHETYPE_DESCRIPTIONS)
+
+
 def _function_source(app_js: str, name: str) -> str:
     start = app_js.index("function " + name + "(")
     end = app_js.index("\n  function ", start + 1)
