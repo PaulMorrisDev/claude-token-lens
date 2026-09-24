@@ -891,6 +891,11 @@ def test_env_disable_prompt_caching_fires_on_any_variant():
     assert rec.evidence == [
         ("DISABLE_PROMPT_CACHING_SONNET", True, "config.env-levers", "DISABLE_PROMPT_CACHING_SONNET"),
     ]
+    # COV-07/COV-11: a real (unset-suggesting) SettingChange, not just prose.
+    assert len(rec.changes) == 1
+    change = rec.changes[0]
+    assert change.target == "settings" and change.key == "env.DISABLE_PROMPT_CACHING_SONNET"
+    assert change.value is None and change.suggested and change.scope == "user"
 
 
 def test_env_disable_prompt_caching_managed_scope_and_action_note():
@@ -907,6 +912,10 @@ def test_env_disable_prompt_caching_managed_scope_and_action_note():
     rec = next(rec for rec in recs if rec.id == "env-disable-prompt-caching")
     assert rec.scope == "managed"
     assert "administrator" in rec.action
+    # fixes.command_for suppresses a command for scope="managed" regardless,
+    # so the change can carry the managed scope through without a
+    # separate branch here.
+    assert rec.changes[0].scope == "managed"
 
 
 def test_env_disable_prompt_caching_does_not_fire_when_unset():
@@ -932,6 +941,12 @@ def test_env_tool_search_fires_on_base_url_without_tool_search():
     rec = next(rec for rec in recs if rec.id == "env-tool-search")
     assert rec.lever == "env:ENABLE_TOOL_SEARCH"
     assert rec.evidence == [("ENABLE_TOOL_SEARCH", False, "config.env-levers", "ENABLE_TOOL_SEARCH")]
+    # COV-07/COV-11: the one COV-09 env rule with a concrete proposed
+    # value, so it's the one that gets a real apply --dry-run command.
+    assert len(rec.changes) == 1
+    change = rec.changes[0]
+    assert change.target == "settings" and change.key == "env.ENABLE_TOOL_SEARCH"
+    assert change.value == "true" and change.scope == "user"
 
 
 def test_env_tool_search_does_not_fire_when_already_set():
@@ -997,6 +1012,14 @@ def test_env_max_output_tokens_fires_with_value_and_optional_compaction_evidence
         "compactions.compactions_summary",
         "Compactions per session (mean)",
     ) in rec.evidence
+    # COV-07/COV-11: no concrete proposed value (apply has no "unset"
+    # primitive), so this is a SettingChange with value=None/suggested,
+    # not a real apply command -- but it does carry a change (unlike
+    # env-subagent-model/env-attribution-deprecated below).
+    assert len(rec.changes) == 1
+    change = rec.changes[0]
+    assert change.target == "settings" and change.key == "env.CLAUDE_CODE_MAX_OUTPUT_TOKENS"
+    assert change.value is None and change.suggested
 
 
 def test_env_max_output_tokens_does_not_fire_when_unset():
@@ -1015,6 +1038,9 @@ def test_env_subagent_model_fires_and_names_the_order():
     rec = next(rec for rec in recs if rec.id == "env-subagent-model")
     assert "Explore" in rec.action and "Plan" in rec.action
     assert rec.severity == "info"
+    # COV-07/COV-11: purely informational -- no proposed value at all --
+    # so it stays prose-only via fixes._WORKFLOW_EXPLAINER, no SettingChange.
+    assert rec.changes == []
 
 
 def test_env_subagent_model_suppressed_for_chat_only():
@@ -1037,6 +1063,10 @@ def test_attribution_deprecated_fires_when_only_include_co_authored_by_set():
     assert rec.evidence == [
         ("includeCoAuthoredBy", "False", "config.env-levers", "includeCoAuthoredBy"),
     ]
+    # COV-07/COV-11: the real target, attribution.commit, isn't on
+    # SETTINGS_ALLOWLIST, so this stays prose-only via
+    # fixes._WORKFLOW_PROMPTS/_WORKFLOW_EXPLAINER, no SettingChange.
+    assert rec.changes == []
 
 
 def test_attribution_deprecated_does_not_fire_once_attribution_is_set():
@@ -1359,6 +1389,62 @@ def test_effort_mismatch_fires_with_evidence_per_purpose_row():
     # the approximation is disclosed in the action text rather than
     # presented as a genuine per-session join.
     assert "not only the light ones" in rec.changes[0].note
+    # No snapshot given -- _lever_scope has nothing to consult, so this
+    # defaults to "user" rather than raising.
+    assert rec.scope == "user"
+
+
+def test_effort_mismatch_scope_follows_effort_levels_own_provenance():
+    # COV-01: effort-mismatch used to hardcode "user"/"managed" (a bare
+    # string prefix on the title); it now asks _lever_scope, which reads
+    # effortLevel's actual provenance off the snapshot -- including the
+    # project-local layer _lever_scope didn't used to know existed.
+    r = _base_report()
+    r = _add_section(
+        r,
+        Section(
+            key="sessions",
+            title="Sessions",
+            tables=[
+                Table(
+                    name="sessions_by_purpose",
+                    title="Sessions by purpose",
+                    columns=[Column(key="purpose", label="Purpose"), Column(key="sessions", label="Sessions")],
+                    rows=[["docs-or-light-edit", 4], ["general-dev", 3]],
+                )
+            ],
+        ),
+    )
+    r = _add_section(
+        r,
+        Section(
+            key="agents",
+            title="Agents",
+            tables=[
+                Table(
+                    name="topology_effort_tokens",
+                    title="Effort tokens",
+                    columns=[
+                        Column(key="effort", label="Effort"),
+                        Column(key="turns", label="Turns"),
+                        Column(key="output_tokens", label="Output tokens"),
+                        Column(key="thinking_tokens", label="Thinking tokens"),
+                        Column(key="thinking_share", label="Thinking share", kind="pct"),
+                    ],
+                    rows=[["high", 100, 10_000, 4_000, 40.0]],
+                )
+            ],
+        ),
+    )
+    snapshot = Snapshot(
+        path=Path("s.json"),
+        ts="20260918T000000Z",
+        data={"effective_provenance": {"effortLevel": "project_local"}},
+    )
+    recs = recommend_fn(r, config=_config(), archetype=None, snapshot=snapshot)
+    rec = next(rec for rec in recs if rec.id == "effort-mismatch")
+    assert rec.scope == "project-local"
+    assert rec.changes[0].scope == "project-local"
 
 
 def test_effort_mismatch_does_not_fire_without_docs_purposes():

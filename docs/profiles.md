@@ -188,7 +188,7 @@ see "What a profile cannot do" below).
 | `archetype` | one of the seven workstyle archetypes, or absent | The `workstyle.detect_archetype` corpus shape this profile targets. |
 | `settings` | table | `settings.json`-layer overrides — see the settings table below. |
 | `agents` | table of `agents.<name>` sub-tables | Per-agent frontmatter overrides — see the agent table below. |
-| `env` | table | Environment variable *names* this profile mentions (values are always supplied by the user at apply time, never stored in the profile — see "What a profile cannot do"). |
+| `env` | table | Environment variable name/value pairs (allowlisted names only — see "What a profile cannot do"), written into the target settings file's own `"env"` object by `apply` (see "Environment variables" below). |
 | `notes` | string | Free text citing the real report table/column that justifies this profile's settings. Never fabricated numbers. |
 
 `schema.validate(d) -> list[str]` returns every problem with a
@@ -510,10 +510,16 @@ environment-variable surface expose. It is not, and cannot become:
   (`recommend.py`'s own category split between a settings-level lever
   and workflow advice) is not representable — a profile can only ever
   nudge a *setting*, never a prompting style or a run's shape.
-- **An environment variable *value*.** `env` in a profile is a
-  *name allowlist* — the schema never stores or transmits an actual
-  secret or value; the user supplies that at apply time, in their own
-  shell.
+- **An arbitrary environment variable, or a secret.** `env` in a
+  profile is a *name allowlist* (`ENV_ALLOWLIST` in `schema.py`) — a
+  profile can only ever set one of a fixed list of behavioural knobs
+  (cache TTLs, output-token caps, model overrides and the like), never
+  an unlisted name. None of the allowlisted names are credential-shaped
+  (no API key, token, or password lever exists), so `apply` writing a
+  profile's `env` values into the target settings file's `"env"` object
+  (see "Environment variables" below) never risks persisting a secret —
+  the allowlist, not a blanket "never written" rule, is what keeps this
+  safe.
 - **A path to a real file.** A profile names keys, never files. Where
   a change lands is decided by `apply`'s `--scope` and `--project-dir`
   (see "Applying a profile"). `diff.py` is pure, and `schema.py`'s
@@ -705,18 +711,32 @@ letting the second apply silently overwrite the first's backup.
 
 `--launch` writes only `<config-dir>/profiles/<id>.settings.json` — a
 plain `settings.json`-shaped JSON object holding the profile's
-non-managed settings keys — and prints the matching `claude --settings
-<path>` command. No backup, no manifest, no `active-profile` update, no
-existing file read or merged: this is a one-off overlay for a single
-session, not a change to any of the layered settings files.
+non-managed settings keys, plus its non-managed `env` entries folded
+into their own `"env"` sub-object (see "Environment variables" below)
+— and prints the matching `claude --settings <path> [--effort <level>]`
+command (`--effort` appears when the profile sets `effortLevel`, since
+a launch overlay is session-only and the flag is the only way to carry
+that setting along on the same command line). No backup, no manifest,
+no `active-profile` update, no existing file read or merged: this is a
+one-off overlay for a single session, not a change to any of the
+layered settings files.
 
-### Environment variables: printed, never written
+### Environment variables: written into the settings file's `env` block
 
-A profile's `env` names are printed as `export NAME=value` lines (both
-in `--dry-run` and after a real apply) — never written to any file.
-This matches `env` being a name allowlist in the first place (see "What
-a profile cannot do" above): the value the profile carries is applied
-by the user exporting it in their own shell.
+**COV-07/COV-11 (P7b) superseded this section's earlier "printed,
+never written" description.** A profile's `env` entries are merged into
+the target settings file's own `"env"` object exactly like any other
+settings key — same backup, revert, git-tracked-file refusal and
+managed-key exclusion as everything else `apply` writes (managed-key
+exclusion is whole-`"env"`-block, not per-name, matching every other
+settings key's own all-or-nothing granularity). `apply --set
+env.NAME=value --dry-run` previews the change the same way any other
+`--set` does. This was `env` being a name-only allowlist in an earlier
+reading of the plan (see the `env` field's row above): the schema has
+always stored real string values (`schema.validate`'s `env.{name}: value
+must be a string` check), and the same settings.json `"env"` object is
+what `hooks/snapshot-config.py`'s `effective_env_provenance` already
+reads its layers from — so it was always the real, persisted mechanism.
 
 ### Managed keys
 

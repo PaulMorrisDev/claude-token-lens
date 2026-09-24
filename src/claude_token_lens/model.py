@@ -1069,10 +1069,13 @@ class Recommendation:
     evidence: list = field(default_factory=list)
     #: WP10-merge addition (additive, defaulted): where ``lever`` applies —
     #: "user" (``~/.claude/settings.json``), "repo" (project
-    #: ``.claude/settings.json`` / frontmatter), or "managed" (an
-    #: org-pushed managed-settings key, which the user cannot change
-    #: locally). Replaces the earlier ``"[managed] "`` string prefix on
-    #: ``title`` that ``recommend.py`` used to encode the same fact.
+    #: ``.claude/settings.json`` / frontmatter, checked in), "project-local"
+    #: (COV-01 addition: project ``.claude/settings.local.json``, per-
+    #: machine, never checked in — no per-agent-file equivalent), or
+    #: "managed" (an org-pushed managed-settings key, which the user
+    #: cannot change locally). Replaces the earlier ``"[managed] "``
+    #: string prefix on ``title`` that ``recommend.py`` used to encode
+    #: the same fact.
     scope: str = "user"
     #: Fix R13 (additive): the agent type this recommendation is about,
     #: e.g. "claude-implementer", or "top-level" for the main session

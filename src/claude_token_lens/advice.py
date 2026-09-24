@@ -206,7 +206,7 @@ def _merge_model_tier(recs: list[Recommendation], ctx: _Context) -> list[Recomme
                     value=_family_alias(alt),
                     current=current if current not in (None, _UNKNOWN) else f"not set (used {now})",
                     note="This changes the model for your main session in every project.",
-                    scope="managed" if rec.scope == "managed" else "user",
+                    scope=_advice_scope(rec.scope),
                     saving=ctx.money(saving, prefix="At most "),
                 )
             )
@@ -222,7 +222,19 @@ def _merge_model_tier(recs: list[Recommendation], ctx: _Context) -> list[Recomme
                 current=current if current not in (None, _UNKNOWN) else f"not set (used {now})",
                 new_agent_file=not has_file,
                 scope="managed" if rec.scope == "managed" else scope,
-                saving=ctx.money(saving, prefix="At most "),
+                # PROF-02: unlike a settings change (which `apply --launch`
+                # can scope to one session via a --settings overlay), an
+                # agent frontmatter edit has no session-only path -- Claude
+                # Code's --agents flag would need the agent's full prompt
+                # body inline, which this dashboard never reads or copies
+                # (Assumption: nobody wants their agent prompts round-
+                # tripped through a savings estimate). So it's written
+                # once and then applies to every run of that agent from
+                # then on: labelled as such, and given the plain saving
+                # figure rather than the "At most" session ceiling used
+                # for a change that might only be tried for a session.
+                note="Persistent: affects every task this agent runs, not just one session.",
+                saving=ctx.money(saving),
             )
         )
     total = sum(r[3] for r in rows)
@@ -303,6 +315,32 @@ def _drop_applied(recs: list[Recommendation]) -> list[Recommendation]:
 
 # -- per-rule wording ------------------------------------------------------------
 
+#: ``compaction_sim._scope_and_lever_note`` (compaction_sim.py is outside
+#: this work package's file list -- P5 owns it) still returns ``"project"``
+#: for a value set at either the project_shared or the project_local
+#: layer, one token short of this module's/``fixes.py``'s ``"repo"``/
+#: ``"project-local"`` split. Folded to ``"repo"`` here so every
+#: ``SettingChange`` this module builds carries a scope ``fixes.py``'s
+#: ``_SETTINGS_WHERE``/``command_for`` actually recognise -- COV-01's
+#: project-local precision is still lost for ``compaction-window``
+#: specifically (it can name the wrong of the two project-scoped files
+#: when the value is actually project-local); every other rule's scope
+#: (``recommend.py``'s own ``_lever_scope``, fixed for COV-01) already
+#: distinguishes the two correctly.
+_SCOPE_ALIASES = {"project": "repo"}
+
+
+def _advice_scope(rec_scope: str) -> str:
+    """COV-01: the scope a ``SettingChange`` this module builds should
+    carry, translated from whichever vocabulary the rule that produced
+    ``rec`` uses into ``fixes.py``'s own user/project-local/repo/managed
+    four-way split. Every call site below used to hardcode
+    ``"managed" if rec.scope == "managed" else "user"``, silently
+    discarding a rule's own already-correct "a higher layer overrides
+    this" finding (recommend.py's ``_lever_scope``) whenever it wasn't
+    exactly "managed" -- the flattening finding D3/D5 describe."""
+    return _SCOPE_ALIASES.get(rec_scope, rec_scope)
+
 
 def _explain_compaction_window(rec: Recommendation, ctx: _Context) -> None:
     label = rec.title.rsplit(" ", 1)[-1]
@@ -324,7 +362,7 @@ def _explain_compaction_window(rec: Recommendation, ctx: _Context) -> None:
             value=value,
             current=ctx.setting_now("autoCompactWindow"),
             suggested=f"{label} tokens",
-            scope="managed" if rec.scope == "managed" else "user",
+            scope=_advice_scope(rec.scope),
         )
     ]
     rec.estimated_saving = ctx.money(saving, prefix="About ")
@@ -348,7 +386,7 @@ def _explain_compaction_churn(rec: Recommendation, ctx: _Context) -> None:
             key="autoCompactWindow",
             current=ctx.setting_now("autoCompactWindow"),
             suggested="a larger window than now, so summaries happen less often",
-            scope="managed" if rec.scope == "managed" else "user",
+            scope=_advice_scope(rec.scope),
         )
     ]
 
@@ -380,7 +418,7 @@ def _explain_long_context_share(rec: Recommendation, ctx: _Context) -> None:
             key="autoCompactWindow",
             current=ctx.setting_now("autoCompactWindow"),
             suggested="a smaller window than now, so the main session is summarised sooner",
-            scope="managed" if rec.scope == "managed" else "user",
+            scope=_advice_scope(rec.scope),
         )
     ]
 
@@ -440,7 +478,7 @@ def _explain_effort_mismatch(rec: Recommendation, ctx: _Context) -> None:
             value="medium",
             current=ctx.setting_now("effortLevel"),
             note="The high-effort thinking share is measured across all sessions, not only the light ones.",
-            scope="managed" if rec.scope == "managed" else "user",
+            scope=_advice_scope(rec.scope),
         )
     ]
 
@@ -463,7 +501,7 @@ def _explain_effort_mismatch_reported(rec: Recommendation, ctx: _Context) -> Non
             value="medium",
             current=ctx.setting_now("effortLevel"),
             note="Measured on the messages Claude reported as easy (metrics capture).",
-            scope="managed" if rec.scope == "managed" else "user",
+            scope=_advice_scope(rec.scope),
         )
     ]
     rec.estimated_saving = ctx.money(rec.saving_usd, prefix="About ")

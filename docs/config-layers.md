@@ -401,15 +401,23 @@ before `simulate_compaction_windows` runs, so the simulation reflects
 the window a session actually ran under rather than the nominal
 unscaled setting.
 
-**P7b note**: these five recommendation ids currently render through
-`advice.py`'s generic fallback (no `_EXPLAIN` entry), and `fixes.py`
-has no `command_for` case for an `env:NAME`-shaped `lever` — if P7b
-wants these to offer a real `--dry-run` command instead of prose-only
-instructions, it needs `apply.py` support for `--set env.NAME=value`
-(or an equivalent), `fixes.py` support for a `SettingChange(target=
-"settings", key="env.NAME", ...)` shape, and each rule updated to
-populate `changes` accordingly. None of that is required today — the
-prose action text already satisfies the hard constraint on its own.
+**P7b note (implemented)**: these five recommendation ids now offer a
+real `--dry-run` command instead of prose-only instructions, for the
+three whose proposed value is concrete enough to state (`env-tool-
+search`, `env-disable-prompt-caching`, `env-max-output-tokens`); the
+other two stay prose-only on purpose (`env-subagent-model` proposes no
+value at all, and `env-attribution-deprecated`'s real target,
+`attribution.commit`, isn't on `SETTINGS_ALLOWLIST`). The wiring: each
+rule populates `changes` with a `SettingChange(target="settings",
+key="env.NAME", ...)`; `fixes.py`'s `command_for`/`prompt_for`/`_where`
+render that as an `apply --set env.NAME=value --dry-run` command and
+matching settings.json-`env`-block prompt text; `apply.py`'s
+`plan_apply` merges a profile's (or a `--set env.NAME=value` one-off's)
+`env` entries into the target settings file's own `"env"` object,
+exactly like any other settings key — no more separate print-only
+path (see `apply.py`'s module docstring for the full deviation note,
+which also corrects `docs/profiles.md`'s now-stale "printed, never
+written" section).
 
 ## CLI
 
