@@ -810,8 +810,9 @@ def estimate(past: History, ids, sample: int = 100) -> Estimate:
 
 
 def level_estimates(past: History, sample: int = 100) -> dict[str, Estimate]:
-    """:func:`estimate` for each level from Free to Deep."""
-    return {level: estimate(past, catalogue.level_metrics(level), sample) for level in catalogue.LEVELS[1:]}
+    """:func:`estimate` for each level from Free to Deep, with everything
+    picking it turns on (:func:`~claude_token_lens.capture_catalogue.level_includes`)."""
+    return {level: estimate(past, catalogue.level_includes(level), sample) for level in catalogue.LEVELS[1:]}
 
 
 def metric_estimates(past: History, ids, sample: int = 100) -> dict[str, float]:

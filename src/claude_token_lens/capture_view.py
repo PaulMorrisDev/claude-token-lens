@@ -215,8 +215,8 @@ def _levels(capture: CaptureConfig, past, units) -> list[dict]:
     estimates = capture_mod.level_estimates(past, capture.sample) if past is not None and past.sessions else {}
     out = []
     for level in catalogue.LEVELS:
-        adds = [m.title for m in catalogue.METRICS if m.group == level]
-        ids = catalogue.level_metrics(level)
+        ids = catalogue.level_includes(level)
+        adds = [m.title for m in catalogue.METRICS if m.group == level or (m.group == "feedback" and m.id in ids)]
         est = estimates.get(level)
         out.append(
             {

@@ -447,6 +447,8 @@ of the 5-minute one (below).
 
 ### Changed
 
+- **Deep includes the feedback survey.** Switching capture into Deep (`capture on`/`level`, `init`, or the Capture page) also turns on the `/tl-feedback` survey, its reminder note, and Claude's one-line reminder to run it when a piece of work is done. The CLI and `init` write the skill after the usual diff and yes; the Capture page offers the command. The Deep card, its estimate and `docs/capture.md` count the reminder (about 43 more note tokens at each session start). Leaving Deep keeps them, `capture feedback off` removes them, and picking Deep again while already on it doesn't bring them back.
+
 The report's performance work (building the work-habits facts once per
 report, and the cache-carry and compaction-replay costing off their
 linear paths) changes no figure: each is proven equal to the old
