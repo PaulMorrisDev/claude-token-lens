@@ -148,6 +148,31 @@ sizing corrections).
   `C:\`, so the same file changed both ways counts once. Only a salted
   hash of each path is kept, as before. An edit whose tool call failed
   (the text to replace wasn't found, you declined it) no longer counts.
+- **Did your estimate come true? (P8: evidence, back-test, prediction
+  log.)** "Your changes and what they did" now backs its before/after
+  verdict with a real statistical test — a ratio-of-sums estimate with
+  delta-method variance, Holm-corrected across the measures compared in
+  one change, giving each a `lower`/`possibly_lower`/`higher`/
+  `possibly_higher`/`no_clear_change`/`too_little_data` verdict instead
+  of only "about the same" or a raw percentage — and the "after" side is
+  now reweighted to match "before"'s mix of task/purpose first, so a
+  change in the kind of work people did after a settings change doesn't
+  read as the change's own effect. A session's own transcript can now
+  surface a change point nothing else caught: a CLAUDE.md or memory size
+  change of 10% or more, or the dominant model or effort level shifting,
+  from one session to the next in the same project. New: whenever you
+  tick a change to track (not while just exploring "what if?"), the
+  dashboard logs its estimate and later checks it against what actually
+  happened once a matching real change and enough sessions have come in
+  — a new "Did your estimates come true?" table on the Profiles tab
+  (`GET /api/backtest`) and a read-only `claude-token-lens backtest` CLI
+  command show a verdict (`as_estimated`, `smaller`, `larger`,
+  `opposite`, or `too_little_data` while the window is still open) for
+  each one, and once at least 3 of your own past estimates for the same
+  kind of change have been judged, later "what if?" estimates of that
+  kind are calibrated by how it actually turned out for you before
+  (shown as fidelity `calibrated`) instead of guessed cold every time.
+  See [`docs/backtest.md`](docs/backtest.md).
 
 ### Fixed
 

@@ -20,6 +20,14 @@ computes -- no new simulation:
 Each row says how it was worked out (``fidelity``): "ceiling",
 "simulated", "measured per spawn", "estimated" or "not estimated". A
 negative ``saving_usd`` means the change costs more.
+
+EST-P6: given a ``calibration`` lookup (``backtest.calibration_multipliers``,
+built from judged predictions -- ``estimate``'s own caller passes it in,
+since this module stays "look it up in tables already computed", never
+touching the store itself), a row whose ``(agent, key)`` has learned a
+multiplier is scaled by it and its fidelity becomes "calibrated": this
+kind of change's estimate, adjusted by how it actually turned out for
+you before, not just repriced or replayed.
 """
 
 from __future__ import annotations
@@ -44,6 +52,13 @@ FIDELITY_TEXT = {
     "measured": "Measured per spawn, then multiplied by the spawns in this window.",
     "estimated": "Estimated from the size of what stops being sent.",
     "none": "Not estimated.",
+    # EST-P6: applied only once at least 3 of your own past predictions
+    # for this exact kind of change have been judged against what
+    # actually happened (backtest.calibration_multipliers) -- before
+    # that, an estimate keeps its own ceiling/simulated/measured/
+    # estimated fidelity above unchanged.
+    "calibrated": "Adjusted by how this kind of change has actually turned out for you before (at least 3 "
+    "judged predictions), not just its own ceiling, simulation or estimate.",
 }
 
 
@@ -230,10 +245,20 @@ def estimate(
     *,
     period: str = "",
     current: dict | None = None,
+    calibration: dict[tuple[str | None, str], float] | None = None,
 ) -> dict:
     """One row per change in ``settings`` and ``agents`` (``{agent:
     {key: value}}``), plus a total of the rows that could be estimated.
-    ``current`` is the settings in effect now, where known."""
+    ``current`` is the settings in effect now, where known. ``calibration``
+    (EST-P6, see the module docstring) is a ``(agent, key) -> multiplier``
+    lookup; a row whose pair is in it has its ``saving_usd`` scaled by
+    that multiplier and its fidelity set to "calibrated" -- the value
+    and fidelity it would otherwise have had move to
+    ``uncalibrated_usd``/``uncalibrated_fidelity`` (``None`` on every
+    other row), so a caller logging a prediction to check later
+    (``route_whatif``'s ``"log": true``) can still log the raw estimate
+    rather than one already adjusted by a past prediction's own outcome
+    -- calibrating a calibrated number would compound, not correct."""
     tables = _Tables(model)
     current = current or {}
     context_files = getattr(model, "context_files", None) or {}
@@ -268,6 +293,19 @@ def estimate(
                 rows.append(_effort(tables, agent, value, key))
             else:
                 rows.append(_row(key, agent, value, None, "none", "This change isn't simulated."))
+    for row in rows:
+        row["uncalibrated_usd"] = None
+        row["uncalibrated_fidelity"] = None
+    if calibration:
+        for row in rows:
+            if row["saving_usd"] is None:
+                continue
+            multiplier = calibration.get((row["agent"], row["key"]))
+            if multiplier is not None:
+                row["uncalibrated_usd"] = row["saving_usd"]
+                row["uncalibrated_fidelity"] = row["fidelity"]
+                row["saving_usd"] = round(row["saving_usd"] * multiplier, 6)
+                row["fidelity"] = "calibrated"
     total = sum(row["saving_usd"] for row in rows if row["saving_usd"] is not None)
     for row in rows:
         row["effect_text"] = _effect_text(row["saving_usd"], units, period)

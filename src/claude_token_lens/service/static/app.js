@@ -2792,6 +2792,10 @@
     panel.appendChild(el("h3", { text: "Your changes and what they did" }));
     panel.appendChild(impactContainer);
     loadInto(impactContainer, "/api/impact", renderImpact);
+    var backtestContainer = el("div", { id: "profiles-backtest" });
+    panel.appendChild(el("h3", { text: "Did your estimates come true?" }));
+    panel.appendChild(backtestContainer);
+    loadInto(backtestContainer, "/api/backtest", renderBacktest);
     var editorDetails = el("details", { class: "advanced-detail" });
     editorDetails.appendChild(el("summary", { text: "Edit settings directly" }));
     editorDetails.appendChild(formContainer);
@@ -4232,6 +4236,45 @@
       }
       container.appendChild(card);
     });
+  }
+
+  // EST-P4/P8: did a saving estimate come true? Rows are
+  // backtest.present()'s own display-ready shape (predicted_text,
+  // measured_text and verdict_text are already server-formatted
+  // sentences) -- this just lays them out in a table, no client-side
+  // money or verdict logic, per docs/ui.md's "server formats, dashboard
+  // shows" rule.
+  function renderBacktest(data, container) {
+    var predictions = (data && data.predictions) || [];
+    if (!predictions.length) {
+      container.appendChild(
+        el("p", {
+          class: "notes",
+          text: "No estimates logged yet. Estimates shown in “What if?” are logged automatically, then checked here once the sessions to judge them arrive.",
+        })
+      );
+      return;
+    }
+    container.appendChild(
+      el("p", {
+        class: "notes",
+        text: "Estimates from “What if?”, checked against what actually happened after a matching change.",
+      })
+    );
+    container.appendChild(
+      simpleTable(
+        [{ label: "Change" }, { label: "When" }, { label: "Estimated" }, { label: "Measured" }, { label: "Verdict" }],
+        predictions.map(function (row) {
+          return [
+            row.agent ? row.agent + ": " + row.measure_key : row.measure_key,
+            String(row.ts || "").replace("T", " ").replace("Z", " UTC"),
+            row.predicted_text,
+            row.measured_text || "—",
+            row.verdict_text,
+          ];
+        })
+      )
+    );
   }
 
   // ======================================================================

@@ -113,3 +113,38 @@ def test_unknown_keys_and_empty_reports_are_not_estimated():
     out = whatif.estimate({"model": "sonnet", "cleanupPeriodDays": 7}, {}, NS(sections=[]), UNITS)
     assert [r["fidelity"] for r in out["rows"]] == ["none", "none"]
     assert out["total_text"] == ""
+
+
+# -- EST-P6: calibration -----------------------------------------------------
+
+
+def test_a_row_with_no_calibration_entry_is_untouched():
+    [row] = _estimate({"model": "sonnet"}, calibration={(None, "promptCacheTtl"): 2.0})["rows"]
+    assert row["saving_usd"] == 40.0
+    assert row["fidelity"] == "ceiling"
+    assert row["uncalibrated_usd"] is None and row["uncalibrated_fidelity"] is None
+
+
+def test_a_matching_calibration_scales_the_row_and_changes_its_fidelity():
+    [row] = _estimate({"model": "sonnet"}, calibration={(None, "model"): 0.5})["rows"]
+    assert row["saving_usd"] == 20.0
+    assert row["fidelity"] == "calibrated"
+    assert row["fidelity_text"] == whatif.FIDELITY_TEXT["calibrated"]
+    # The pre-calibration value survives, for a caller (route_whatif's
+    # "log": true) that must log the raw estimate, not a calibrated one.
+    assert row["uncalibrated_usd"] == 40.0
+    assert row["uncalibrated_fidelity"] == "ceiling"
+
+
+def test_calibration_keys_on_agent_and_the_raw_settings_key():
+    [row] = _estimate(agents={"Explore": {"model": "haiku"}}, calibration={("Explore", "model"): 1.5})["rows"]
+    assert row["agent"] == "Explore" and row["key"] == "model"
+    assert row["saving_usd"] == row["uncalibrated_usd"] * 1.5
+    assert row["fidelity"] == "calibrated"
+
+
+def test_calibration_never_invents_a_saving_for_a_row_that_had_none():
+    [row] = _estimate({"effortLevel": "medium"}, calibration={(None, "effortLevel"): 3.0})["rows"]
+    assert row["saving_usd"] is None
+    assert row["fidelity"] == "none"
+    assert row["uncalibrated_usd"] is None

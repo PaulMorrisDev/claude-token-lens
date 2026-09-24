@@ -66,6 +66,7 @@ from pathlib import Path
 
 from .. import PARSER_VERSION, classify, discovery, recache, workflows as workflows_mod, workstyle
 from .. import baseline as baseline_mod
+from .. import config as config_mod
 from ..cache import DigestCache, encode_result, result_from_jsonable
 from ..compaction import compaction_records_for_transcript
 from ..corpus import _parse_worker
@@ -478,6 +479,7 @@ class FileWatcher:
         self._scan_snapshots(stats)
         self._scan_baselines(stats)
         self._scan_profiles(stats)
+        self._scan_predictions(stats)
 
         known = self._time_store(stats, self.store.known_files)
         seen_paths: set[str] = set()
@@ -550,6 +552,11 @@ class FileWatcher:
         if self.options.retention_days is not None:
             self._time_store(stats, self.store.retention_prune, self.options.retention_days)
             signals_mod.prune(self.options.config_dir, self.options.retention_days)
+
+        # EST-P5: predictions.jsonl's own 90/400-day expiry (unseen vs.
+        # judged) is fixed, unlike the rest of this module's retention --
+        # it runs every tick regardless of --retention-days.
+        self._time_store(stats, self.store.prune_predictions)
 
     # -- S1-perf item 2: bulk parallel prewarm -------------------------------
 
@@ -1213,6 +1220,48 @@ class FileWatcher:
             except Exception as exc:
                 stats.errors += 1
                 stats.error_messages = stats.error_messages + (f"profile ingest error: {_error_summary(exc)}",)
+
+    def _scan_predictions(self, stats: WatcherStats) -> None:
+        """Ingest every record in ``<config_dir>/prediction-log.jsonl``
+        (``config.append_prediction_log`` -- written by ``route_whatif``
+        when asked to log an estimate, EST-P5) into the ``predictions``
+        table (``Store.upsert_prediction``), id-deduped so a repeat tick
+        over an already-ingested line is a no-op -- the same posture
+        :meth:`_scan_profiles` gives its own content-hash dedup, just
+        keyed on the record's own id instead of a hash of its file,
+        since a prediction log line is itself immutable once written.
+        """
+        try:
+            records = config_mod.load_prediction_log(self.options.config_dir)
+        except OSError as exc:
+            stats.errors += 1
+            stats.error_messages = stats.error_messages + (f"prediction scan error: {_error_summary(exc)}",)
+            return
+
+        for record in records:
+            try:
+                prediction_id = record.get("id")
+                ts = record.get("ts")
+                source = record.get("source")
+                measure_key = record.get("measure_key")
+                fidelity = record.get("fidelity")
+                if not all(isinstance(value, str) and value for value in (prediction_id, ts, source, measure_key, fidelity)):
+                    continue
+                self._time_store(
+                    stats,
+                    self.store.upsert_prediction,
+                    prediction_id=prediction_id,
+                    ts=ts,
+                    source=source,
+                    measure_key=measure_key,
+                    agent=record.get("agent"),
+                    predicted_usd=record.get("predicted_usd"),
+                    predicted_pct=record.get("predicted_pct"),
+                    fidelity=fidelity,
+                )
+            except Exception as exc:
+                stats.errors += 1
+                stats.error_messages = stats.error_messages + (f"prediction ingest error: {_error_summary(exc)}",)
 
 
 __all__ = ["FileWatcher", "LIVE_FILE_WINDOW_S"]

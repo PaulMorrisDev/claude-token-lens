@@ -118,12 +118,33 @@ holds the ratings you give a session on the dashboard's Sessions tab
 ``/tl-feedback`` skill, as words from ``capture_catalogue.FEEDBACK_VOCAB``
 (``slow`` and ``helped`` comma-joined), never free text. A v5 store gains
 the table in place (``store.MIGRATIONS[5]``).
+
+Version 7 (EST-P5: predictions and back-testing): a new ``predictions``
+table holds a whatif estimate worth checking against what actually
+happened -- ``id``/``source``/``measure_key``/``agent``/``fidelity``/
+``verdict`` are short enum-like strings (never free text), the rest
+numbers or timestamps, ingested from ``<config_dir>/prediction-log.jsonl``
+(``watcher._scan_predictions``, mirroring how ``baselines``/``profiles``
+ingest their own on-disk files) the same way ``change_points.py`` reads
+``capture-log.jsonl``. ``seen_at`` is set by ``POST
+/api/predictions/seen`` (the dashboard has shown it to you once);
+``judged_at``/``verdict``/``measured_usd``/``measured_pct``/``change_ts``
+are filled in once ``backtest.py`` (via ``GET /api/backtest``) matches
+the prediction to a real change point with enough sessions on both
+sides to compare, and persisted so the match/verdict isn't reworked out
+from scratch on every call -- the same before-computed-then-cached
+posture ``Store.judge_prediction`` shares with ``impact_cache`` in
+``service/api.py``. A v6 store gains the table in place
+(``store.MIGRATIONS[6]``); ``Store.prune_predictions`` (EST-P5's 90/400
+day windows) deletes a still-unmatched prediction after 90 days (it was
+never applied, or nothing traced it) and a judged one after 400 days
+(kept longer so EST-P6's calibration has a real history to learn from).
 """
 
 from __future__ import annotations
 
 #: Bump when a table or index below changes shape. See module docstring.
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 CREATE_META = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -409,6 +430,38 @@ CREATE TABLE IF NOT EXISTS usage_log (
 );
 """
 
+#: A whatif estimate worth checking against what actually happened
+#: (v7, EST-P5). ``id`` is the prediction-log record's own id (stable,
+#: from ``config.append_prediction_log``) -- re-ingesting the same log
+#: line on a later watcher tick is a no-op via ``INSERT OR IGNORE``,
+#: since a prediction is immutable once logged. ``measure_key`` is the
+#: raw settings/agent-lever key the whatif estimate was for (``"model"``,
+#: ``"promptCacheTtl"``, ...), not yet translated to an ``impact.py``
+#: measure -- ``backtest.py`` does that translation once, against a real
+#: change point's own keys, the same way ``impact.measures_for`` already
+#: does for a ``ChangePoint``. See the module docstring's "Version 7"
+#: paragraph for the read-then-judge lifecycle the other columns carry.
+CREATE_PREDICTIONS = """
+CREATE TABLE IF NOT EXISTS predictions (
+    id             TEXT PRIMARY KEY,
+    ts             TEXT NOT NULL,
+    source         TEXT NOT NULL,
+    measure_key    TEXT NOT NULL,
+    agent          TEXT,
+    predicted_usd  REAL,
+    predicted_pct  REAL,
+    fidelity       TEXT NOT NULL DEFAULT 'estimated',
+    seen_at        TEXT,
+    change_ts      TEXT,
+    judged_at      TEXT,
+    verdict        TEXT,
+    measured_usd   REAL,
+    measured_pct   REAL,
+    created_at     TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_predictions_judged_at ON predictions(judged_at);
+"""
+
 #: Every ``CREATE TABLE``/``CREATE INDEX`` statement, in dependency
 #: order (a table referencing another via ``REFERENCES`` is listed
 #: after it) — ``Store.migrate`` executes these in this order.
@@ -428,6 +481,7 @@ ALL_STATEMENTS: tuple[str, ...] = (
     CREATE_BASELINES,
     CREATE_WORKFLOW_RUNS,
     CREATE_USAGE_LOG,
+    CREATE_PREDICTIONS,
 )
 
 __all__ = [
@@ -447,5 +501,6 @@ __all__ = [
     "CREATE_BASELINES",
     "CREATE_WORKFLOW_RUNS",
     "CREATE_USAGE_LOG",
+    "CREATE_PREDICTIONS",
     "ALL_STATEMENTS",
 ]

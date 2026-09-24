@@ -7,8 +7,12 @@ from datetime import datetime, timedelta, timezone
 
 from claude_token_lens import impact
 from claude_token_lens.change_points import ChangePoint
-from claude_token_lens.impact import SessionFacts, _Transcript
+from claude_token_lens.corpus import load_corpus
+from claude_token_lens.impact import Measure, SessionFacts, _Transcript
+from claude_token_lens.pricing import load_pricing
 from claude_token_lens.units import Units
+
+from helpers import turn_line, write_jsonl
 
 UNITS = Units(billing_mode="api", currency="USD")
 CHANGE = datetime(2026, 9, 20, 12, tzinfo=timezone.utc)
@@ -21,6 +25,12 @@ def _session(days: float, cost: float, *, startup: int = 20_000, agent_cost: flo
         main=_Transcript(cost=cost, turns=10, startup_tokens=startup, write_tokens=1000, rebuild_tokens=200),
         spawns=spawns,
     )
+
+
+def _tasked(days: float, cost: float, task: str) -> SessionFacts:
+    facts = _session(days, cost)
+    facts.task = task
+    return facts
 
 
 def test_measures_follow_the_changed_keys():
@@ -144,3 +154,78 @@ def test_a_capture_change_is_measured_by_what_capture_adds_and_how_much_was_tagg
         "Metrics capture notes and tags per session",
         "Messages Claude tagged",
     ]
+
+
+# -- EST-P3: task/purpose/mode, the ratio test, and stratification -------------
+
+
+def test_session_facts_populates_session_id_purpose_and_mode(tmp_path):
+    """session_facts() classifies each session standalone (SessionBundle
+    has no pre-built classification) -- session_id from the transcript,
+    purpose/mode from classify.classify_session, task left None without
+    at least two agreeing capture tags."""
+    project_dir = tmp_path / "proj"
+    project_dir.mkdir()
+    write_jsonl(
+        project_dir / "session-abc.jsonl",
+        [turn_line(timestamp=ts) for ts in ("2026-09-18T12:00:00.000Z", "2026-09-18T12:05:00.000Z")],
+    )
+    corpus = load_corpus([project_dir])
+    facts = impact.session_facts(corpus, load_pricing())
+    assert len(facts) == 1
+    assert facts[0].session_id == "session-abc"
+    assert facts[0].purpose and facts[0].mode
+    assert facts[0].task is None
+
+
+def test_stratum_prefers_task_then_purpose_then_a_catch_all():
+    facts = _session(0, 1.0)
+    assert impact.stratum(facts) == "(unspecified)"
+    facts.purpose = "refactor"
+    assert impact.stratum(facts) == "refactor"
+    facts.task = "test"
+    assert impact.stratum(facts) == "test"
+
+
+def test_stratified_after_estimate_matches_before_task_mix():
+    """"Before" is all "code" work. "After" mixes a little more "code"
+    work with several much pricier "review" sessions -- a shift in the
+    kind of work, not a real cost change. The pooled after-average reads
+    that mix shift as a huge rise; reweighted to before's all-"code" mix
+    (EST-P3), the "review" sessions (0% of before) drop out and the
+    estimate reflects "code" alone, unchanged."""
+    before = [_tasked(-d, 2.0, "code") for d in (1, 2, 3)]
+    after = [_tasked(d, 1.0, "code") for d in (0.1, 0.2)] + [
+        _tasked(d, 100.0, "review") for d in (0.3, 0.4, 0.5, 0.6, 0.7)
+    ]
+    pooled = impact._ratio_estimate(impact._pairs(impact._COST, after))
+    stratified = impact._stratified_estimate(impact._COST, before, after)
+    assert pooled.value > 50.0
+    assert stratified.value == 1.0
+
+
+def test_ratio_test_flags_a_clear_drop_and_leaves_noise_unlabelled():
+    before_clear = [_session(-d, 2.0) for d in (1, 2, 3)]
+    after_clear = [_session(d, 1.0) for d in (0.1, 0.2, 0.3, 0.4)]
+    clear_row = impact._measure_row(impact._COST, before_clear, after_clear, UNITS)
+    assert clear_row["p"] == 0.0
+    impact._label_rows([clear_row])
+    assert clear_row["label_key"] == "lower"
+    assert clear_row["label_text"] == "Lower"
+
+    before_noisy = [_session(-1, 1.0), _session(-2, 5.0), _session(-3, 3.0)]
+    after_noisy = [_session(1, 2.0), _session(2, 6.0), _session(3, 4.0)]
+    noisy_row = impact._measure_row(impact._COST, before_noisy, after_noisy, UNITS)
+    impact._label_rows([noisy_row])
+    assert noisy_row["label_key"] == "no_clear_change"
+
+
+def test_ratio_test_needs_enough_sessions_per_row_not_just_overall():
+    """An agent-specific measure can have too few of its own data points
+    to test even when the overall session counts clear MIN_SESSIONS."""
+    before = [_session(-d, 2.0, agent_cost=1.0 if d == 1 else 0.0) for d in (1, 2, 3)]
+    after = [_session(d, 1.0, agent_cost=1.0 if d == 0.1 else 0.0) for d in (0.1, 0.2, 0.3)]
+    row = impact._measure_row(Measure("agent_cost", "Explore: cost per spawn", "money", "Explore"), before, after, UNITS)
+    assert row["before_n"] == 1 and row["after_n"] == 1
+    assert row["label_key"] == "too_little_data"
+    assert row["p"] is None

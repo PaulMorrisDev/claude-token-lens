@@ -336,6 +336,94 @@ def test_scan_profiles_never_ingests_a_catalogue_id(tmp_path: Path, store: Store
     assert store.profiles() == []
 
 
+# -- EST-P5: prediction-log.jsonl ingestion ---------------------------------
+
+
+def test_scan_predictions_ingests_every_record_under_config_dir(tmp_path: Path, store: Store):
+    from claude_token_lens import config as config_mod
+
+    options = _options(tmp_path)
+    config_mod.append_prediction_log(
+        options.config_dir,
+        source="whatif",
+        measure_key="model",
+        agent=None,
+        predicted_usd=1.5,
+        predicted_pct=None,
+        fidelity="ceiling",
+    )
+
+    watcher = FileWatcher(store, options)
+    stats = watcher.run_once()
+
+    assert_privacy(stats)
+    assert stats.errors == 0
+    predictions = store.predictions()
+    assert_privacy(predictions)
+    assert len(predictions) == 1
+    assert predictions[0]["source"] == "whatif"
+    assert predictions[0]["measure_key"] == "model"
+    assert predictions[0]["predicted_usd"] == 1.5
+
+
+def test_scan_predictions_is_a_no_op_on_an_unchanged_repeat_tick(tmp_path: Path, store: Store):
+    from claude_token_lens import config as config_mod
+
+    options = _options(tmp_path)
+    config_mod.append_prediction_log(
+        options.config_dir,
+        source="whatif",
+        measure_key="model",
+        agent=None,
+        predicted_usd=1.5,
+        predicted_pct=None,
+        fidelity="ceiling",
+    )
+
+    watcher = FileWatcher(store, options)
+    watcher.run_once()
+    first = store.predictions()
+
+    watcher.run_once()
+    second = store.predictions()
+
+    assert len(second) == len(first) == 1
+    assert second[0]["id"] == first[0]["id"]
+
+
+def test_scan_predictions_ingests_each_new_line_appended_later(tmp_path: Path, store: Store):
+    from claude_token_lens import config as config_mod
+
+    options = _options(tmp_path)
+    config_mod.append_prediction_log(
+        options.config_dir,
+        source="whatif",
+        measure_key="model",
+        agent=None,
+        predicted_usd=1.0,
+        predicted_pct=None,
+        fidelity="ceiling",
+    )
+
+    watcher = FileWatcher(store, options)
+    watcher.run_once()
+    assert len(store.predictions()) == 1
+
+    config_mod.append_prediction_log(
+        options.config_dir,
+        source="whatif",
+        measure_key="rebuild_share",
+        agent="reviewer",
+        predicted_usd=None,
+        predicted_pct=-10.0,
+        fidelity="simulated",
+    )
+    watcher.run_once()
+    predictions = store.predictions()
+    assert len(predictions) == 2
+    assert {p["measure_key"] for p in predictions} == {"model", "rebuild_share"}
+
+
 # -- incremental re-parse ---------------------------------------------------
 
 

@@ -86,7 +86,7 @@ import threading
 import time
 import zlib
 from collections.abc import Callable
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from . import schema
@@ -106,6 +106,16 @@ GLOBAL_PROJECT_SLUG = "__global__"
 #: How long a connection waits for another's write lock before SQLite
 #: gives up with "database is locked" (its own default is 5 s).
 _BUSY_TIMEOUT_S = 30.0
+
+#: EST-P5: a still-unjudged prediction (never matched to a real change
+#: point, or matched but not yet judged) is dropped by
+#: ``Store.prune_predictions`` after this many days -- it was likely
+#: never applied, or nothing traced it back to a change.
+PREDICTIONS_UNSEEN_EXPIRY_DAYS = 90
+#: A *judged* prediction is kept this much longer, so EST-P6's
+#: calibration has a real history of predicted-vs-measured pairs to
+#: learn from before ``Store.prune_predictions`` starts dropping them.
+PREDICTIONS_JUDGED_EXPIRY_DAYS = 400
 
 #: Matches every ``CREATE TABLE IF NOT EXISTS <name>`` statement in
 #: ``schema.ALL_STATEMENTS``, so :meth:`Store.migrate` can derive the
@@ -211,6 +221,25 @@ def _migrate_5_to_6(conn: sqlite3.Connection) -> None:
     conn.execute(schema.CREATE_SESSION_FEEDBACK)
 
 
+def _migrate_6_to_7(conn: sqlite3.Connection) -> None:
+    """v6 -> v7 (``schema.py``'s "Version 7" paragraph, EST-P5): the
+    ``predictions`` table. Not one of ``_export_marks``/``_reimport_marks``'s
+    two protected tables -- unlike a tag or a rating, a prediction is
+    always re-ingestible from ``prediction-log.jsonl`` on the next
+    watcher tick, so a downgrade-then-drop-and-rebuild losing it and
+    getting it back that way is fine (see ``Store.migrate``'s own
+    docstring for why only ``session_tags``/``session_feedback`` get
+    that extra protection). ``CREATE_PREDICTIONS`` is two statements (the
+    table and its index), so unlike ``_migrate_5_to_6``'s single-table
+    one-liner this runs each separately -- ``conn.execute`` (unlike
+    ``executescript``, not usable here: see ``_transaction``'s own
+    docstring) only ever takes one statement at a time."""
+    for statement in schema.CREATE_PREDICTIONS.strip().split(";"):
+        statement = statement.strip()
+        if statement:
+            conn.execute(statement)
+
+
 #: Additive migration ladder for :meth:`Store.migrate`, keyed by the
 #: *recorded* version being migrated away from -- ``MIGRATIONS[4]`` takes
 #: a v4 store to v5. Each step may only add columns/indexes/tables, never
@@ -222,6 +251,7 @@ def _migrate_5_to_6(conn: sqlite3.Connection) -> None:
 MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     4: _migrate_4_to_5,
     5: _migrate_5_to_6,
+    6: _migrate_6_to_7,
 }
 
 
@@ -1566,6 +1596,104 @@ class Store:
             (session_id, outcome, ",".join(slow), worth, ",".join(helped), _now()),
         )
 
+    # -- EST-P5: predictions and back-testing ---------------------------
+
+    def upsert_prediction(
+        self, *, prediction_id: str, ts: str, source: str, measure_key: str, agent: str | None,
+        predicted_usd: float | None, predicted_pct: float | None, fidelity: str,
+    ) -> bool:
+        """Ingest one ``prediction-log.jsonl`` record
+        (``watcher._scan_predictions``). A prediction is immutable once
+        logged, so this is ``INSERT OR IGNORE`` keyed on ``prediction_id``
+        -- a repeat tick over an already-ingested line is a no-op.
+        Returns whether a new row was actually inserted."""
+        conn = self._connection()
+        cursor = conn.execute(
+            "INSERT OR IGNORE INTO predictions "
+            "(id, ts, source, measure_key, agent, predicted_usd, predicted_pct, fidelity, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (prediction_id, ts, source, measure_key, agent, predicted_usd, predicted_pct, fidelity, _now()),
+        )
+        return cursor.rowcount > 0
+
+    def mark_prediction_seen(self, prediction_id: str) -> bool:
+        """``POST /api/predictions/seen``: record that the dashboard has
+        shown you this prediction. Returns whether a row matched (and
+        hadn't already been marked seen)."""
+        conn = self._connection()
+        cursor = conn.execute(
+            "UPDATE predictions SET seen_at = ? WHERE id = ? AND seen_at IS NULL", (_now(), prediction_id)
+        )
+        return cursor.rowcount > 0
+
+    def judge_prediction(
+        self, prediction_id: str, *, change_ts: str, verdict: str,
+        measured_usd: float | None, measured_pct: float | None,
+    ) -> None:
+        """Persist ``backtest.py``'s verdict for one prediction, so a
+        later call (or EST-P6's calibration) doesn't rework out the same
+        match from scratch -- the same before-computed-then-reused
+        posture ``impact_cache``/``route_impact`` already give the
+        impact comparison (``service/api.py``)."""
+        conn = self._connection()
+        conn.execute(
+            "UPDATE predictions SET change_ts = ?, judged_at = ?, verdict = ?, measured_usd = ?, "
+            "measured_pct = ? WHERE id = ?",
+            (change_ts, _now(), verdict, measured_usd, measured_pct, prediction_id),
+        )
+
+    @staticmethod
+    def _prediction_row(row) -> dict:
+        return {
+            "id": row["id"],
+            "ts": row["ts"],
+            "source": row["source"],
+            "measure_key": row["measure_key"],
+            "agent": row["agent"],
+            "predicted_usd": row["predicted_usd"],
+            "predicted_pct": row["predicted_pct"],
+            "fidelity": row["fidelity"],
+            "seen_at": row["seen_at"],
+            "change_ts": row["change_ts"],
+            "judged_at": row["judged_at"],
+            "verdict": row["verdict"],
+            "measured_usd": row["measured_usd"],
+            "measured_pct": row["measured_pct"],
+        }
+
+    def predictions(self, *, judged: bool | None = None) -> list[dict]:
+        """Every prediction, newest first. ``judged=True``/``False``
+        filters to only-judged/only-unjudged predictions; ``None`` (the
+        default) returns all of them."""
+        query = "SELECT * FROM predictions"
+        if judged is True:
+            query += " WHERE judged_at IS NOT NULL"
+        elif judged is False:
+            query += " WHERE judged_at IS NULL"
+        query += " ORDER BY ts DESC"
+        rows = self._connection().execute(query).fetchall()
+        return [self._prediction_row(row) for row in rows]
+
+    def prune_predictions(self, *, now: str | None = None) -> int:
+        """Delete a still-unjudged prediction older than
+        :data:`PREDICTIONS_UNSEEN_EXPIRY_DAYS` and a judged one older
+        than :data:`PREDICTIONS_JUDGED_EXPIRY_DAYS` (EST-P5's 90/400 day
+        windows). Returns the number of rows removed."""
+        try:
+            now_dt = datetime.strptime(now or _now(), "%Y-%m-%dT%H:%M:%SZ")
+        except ValueError:
+            return 0
+        unseen_cutoff = (now_dt - timedelta(days=PREDICTIONS_UNSEEN_EXPIRY_DAYS)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        judged_cutoff = (now_dt - timedelta(days=PREDICTIONS_JUDGED_EXPIRY_DAYS)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        conn = self._connection()
+        with _transaction(conn):
+            cursor = conn.execute(
+                "DELETE FROM predictions WHERE (judged_at IS NULL AND ts < ?) OR "
+                "(judged_at IS NOT NULL AND judged_at < ?)",
+                (unseen_cutoff, judged_cutoff),
+            )
+            return cursor.rowcount
+
 
 def read_session_marks(path: str | Path) -> tuple[dict[str, dict[str, str]], dict[str, dict]]:
     """``(tags, ratings)`` set on the dashboard's Sessions tab, read from
@@ -1597,4 +1725,32 @@ def read_session_marks(path: str | Path) -> tuple[dict[str, dict[str, str]], dic
     return tags, ratings
 
 
-__all__ = ["Store", "encode_digest_blob", "decode_digest_blob", "read_session_marks"]
+def read_predictions(path: str | Path) -> list[dict]:
+    """Every row in the ``predictions`` table, newest first, read from
+    the store at ``path`` without writing to it (EST-P5/P4) -- the
+    ``backtest`` CLI command's own read-only counterpart to
+    :func:`read_session_marks`, since the CLI never opens a writable
+    connection to the dashboard's own store. Empty when there is no
+    store, it predates the table, or it can't be read (a lock held too
+    long)."""
+    path = Path(path)
+    if not path.is_file():
+        return []
+    try:
+        conn = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True, timeout=2)
+    except sqlite3.Error:
+        return []
+    conn.row_factory = sqlite3.Row
+    rows: list[dict] = []
+    try:
+        with contextlib.closing(conn):
+            tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+            if "predictions" in tables:
+                for row in conn.execute("SELECT * FROM predictions ORDER BY ts DESC"):
+                    rows.append(Store._prediction_row(row))
+    except sqlite3.Error:
+        return []
+    return rows
+
+
+__all__ = ["Store", "encode_digest_blob", "decode_digest_blob", "read_session_marks", "read_predictions"]

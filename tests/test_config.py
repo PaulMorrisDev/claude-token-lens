@@ -4,6 +4,7 @@ per-session override round-tripping (``src/claude_token_lens/config.py``).
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -11,7 +12,9 @@ import pytest
 from claude_token_lens.config import (
     Config,
     ConfigError,
+    append_prediction_log,
     load_config,
+    load_prediction_log,
     load_session_overrides,
     save_session_override,
 )
@@ -485,3 +488,76 @@ def test_explicit_billing_wins_over_usage_log(tmp_path):
     assert config.billing_source == "set in config.toml"
     (tmp_path / "config.toml").write_text('billing = "auto"\n', encoding="utf-8")
     assert load_config(config_dir=tmp_path).billing == "subscription"
+
+
+# --------------------------------------------------------------------
+# EST-P5: prediction-log.jsonl
+# --------------------------------------------------------------------
+
+
+def test_append_prediction_log_writes_a_record_and_returns_its_id(tmp_path):
+    prediction_id = append_prediction_log(
+        tmp_path,
+        source="whatif",
+        measure_key="model",
+        agent=None,
+        predicted_usd=1.23,
+        predicted_pct=None,
+        fidelity="ceiling",
+        now=datetime(2026, 9, 20, 9, tzinfo=timezone.utc),
+    )
+    assert len(prediction_id) == 16
+    [record] = load_prediction_log(tmp_path)
+    assert record == {
+        "id": prediction_id,
+        "ts": "2026-09-20T09:00:00+00:00",
+        "source": "whatif",
+        "measure_key": "model",
+        "agent": None,
+        "predicted_usd": 1.23,
+        "predicted_pct": None,
+        "fidelity": "ceiling",
+    }
+
+
+def test_append_prediction_log_generates_a_fresh_id_each_call(tmp_path):
+    first = append_prediction_log(
+        tmp_path, source="whatif", measure_key="model", agent=None,
+        predicted_usd=1.0, predicted_pct=None, fidelity="estimated",
+    )
+    second = append_prediction_log(
+        tmp_path, source="whatif", measure_key="model", agent=None,
+        predicted_usd=2.0, predicted_pct=None, fidelity="estimated",
+    )
+    assert first != second
+    assert [record["id"] for record in load_prediction_log(tmp_path)] == [first, second]
+
+
+def test_append_prediction_log_records_an_agent_scoped_prediction(tmp_path):
+    append_prediction_log(
+        tmp_path, source="whatif", measure_key="rebuild_share", agent="reviewer",
+        predicted_usd=None, predicted_pct=-15.0, fidelity="simulated",
+    )
+    [record] = load_prediction_log(tmp_path)
+    assert record["agent"] == "reviewer"
+    assert record["predicted_pct"] == -15.0
+    assert record["predicted_usd"] is None
+
+
+def test_load_prediction_log_on_a_missing_file_is_empty(tmp_path):
+    assert load_prediction_log(tmp_path / "does-not-exist") == []
+
+
+def test_load_prediction_log_skips_unparseable_or_incomplete_lines(tmp_path):
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    (tmp_path / "prediction-log.jsonl").write_text(
+        "not json\n"
+        '{"id": "abc", "source": "whatif"}\n'  # missing ts
+        '{"ts": "2026-09-20T09:00:00+00:00", "source": "whatif"}\n'  # missing id
+        '{"id": "def", "ts": "2026-09-20T09:00:00+00:00", "source": "whatif", '
+        '"measure_key": "model", "agent": null, "predicted_usd": 1.0, '
+        '"predicted_pct": null, "fidelity": "ceiling"}\n',
+        encoding="utf-8",
+    )
+    [record] = load_prediction_log(tmp_path)
+    assert record["id"] == "def"
