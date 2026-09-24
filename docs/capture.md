@@ -239,7 +239,7 @@ These are rough sizes — characters in the note divided by four — and don't i
 ### Large tool outputs (`big_output`)
 
 - **Level:** Deep
-- **Captures:** After a tool result of about 8,000 tokens or more, how much of it Claude needed: all, part or none.
+- **Captures:** After a tool result of about 8,000 tokens or more, how much of it Claude needed: all, part or none. Claude Code waits for the hook after each shell, read, search, web or MCP result, which adds a fraction of a second to each.
 - **Why:** Quieter commands, offset reads and output caps where big outputs weren't needed.
 - **Tag:** `out=needed|part|unneeded`
 - **Costs:** about 2 output tokens each time
@@ -249,7 +249,7 @@ These are rough sizes — characters in the note divided by four — and don't i
 ### Web results (`web`)
 
 - **Level:** Deep
-- **Captures:** After a web search or fetch, whether the result was useful.
+- **Captures:** After a web search or fetch, whether the result was useful. Claude Code waits for the hook after each one, which adds a fraction of a second.
 - **Why:** Web research against handing Claude the page or document yourself.
 - **Tag:** `useful=yes|part|no`
 - **Costs:** about 2 output tokens each time
