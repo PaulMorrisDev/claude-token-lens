@@ -309,7 +309,7 @@ def _capture_note(d: dict, attachment: dict) -> tuple[int, dict] | None:
     hook_event = attachment.get("hookEvent")
     detail = {
         "v": version,
-        "codes": codes,
+        "codes": list(codes),  # a list, as it reads back from the cache
         "hook": hook_event if hook_event in _CAPTURE_NOTE_HOOKS else "other",
     }
     return chars, detail

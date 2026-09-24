@@ -1,0 +1,234 @@
+"""``hooks/capture-note.py``, the metrics-capture hook, run the way Claude
+Code runs it: a subprocess fed the hook payload on stdin. It must add
+exactly the note ``capture_catalogue.note_text`` builds, add nothing
+when capture is off, sampled out, past its end, in a skipped project or
+on a resume, and never fail or print on bad input.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import importlib.util
+import json
+import subprocess
+import sys
+from importlib import resources
+from pathlib import Path
+
+import pytest
+
+from claude_token_lens import capture_catalogue as cat
+from claude_token_lens import hook_health
+from claude_token_lens.config import CaptureConfig
+
+SCRIPT = Path(str(resources.files("claude_token_lens") / "hooks" / cat.NOTE_SCRIPT))
+
+
+def _load_hook_module():
+    spec = importlib.util.spec_from_file_location("_capture_note_under_test", SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+HOOK = _load_hook_module()
+CATALOGUE = HOOK.load_catalogue()
+
+
+def _config(config_dir: Path, body: str) -> Path:
+    config_dir.mkdir(parents=True, exist_ok=True)
+    (config_dir / "config.toml").write_text(body, encoding="utf-8")
+    return config_dir
+
+
+def _run(config_dir: Path, payload, *, script: Path = SCRIPT) -> tuple[int, str, str]:
+    data = payload if isinstance(payload, bytes) else json.dumps(payload).encode("utf-8")
+    done = subprocess.run(
+        [sys.executable, str(script), "--config-dir", str(config_dir)],
+        input=data,
+        capture_output=True,
+        timeout=30,
+    )
+    return done.returncode, done.stdout.decode("utf-8"), done.stderr.decode("utf-8")
+
+
+def _note(config_dir: Path, payload) -> str:
+    rc, out, err = _run(config_dir, payload)
+    assert rc == 0 and err == "", err
+    if not out:
+        return ""
+    output = json.loads(out)["hookSpecificOutput"]
+    assert output["hookEventName"] == payload["hook_event_name"]
+    return output["additionalContext"]
+
+
+def _start(session_id="s1", **extra) -> dict:
+    return {"session_id": session_id, "hook_event_name": "SessionStart", "source": "startup", "cwd": "/work/app", **extra}
+
+
+def _subagent(session_id="s1", agent_type="general-purpose") -> dict:
+    return {"session_id": session_id, "hook_event_name": "SubagentStart", "agent_id": "a1", "agent_type": agent_type}
+
+
+def _session_id(sample: int, *, inside: bool) -> str:
+    for n in range(1000):
+        sid = f"session-{n}"
+        bucket = int(hashlib.sha256(sid.encode("utf-8")).hexdigest()[:8], 16) % 100
+        if (bucket < sample) == inside:
+            return sid
+    raise AssertionError("no session id found")
+
+
+# -- the note text matches the catalogue -----------------------------------
+
+
+@pytest.mark.parametrize("level", cat.LEVELS)
+@pytest.mark.parametrize("scope, agent_type", [
+    ("main", ""), ("subagent", ""), ("subagent", "Explore"), ("subagent", "Plan"), ("subagent", "statusline-setup"),
+])
+def test_the_hook_builds_the_same_note_as_the_catalogue(level, scope, agent_type):
+    ids = cat.level_metrics(level) + cat.FEEDBACK_IDS
+    assert HOOK.build_note(CATALOGUE, ids, scope, agent_type) == cat.note_text(ids, scope, agent_type)
+
+
+@pytest.mark.parametrize("metric_id", ["big_output", "web"])
+def test_the_hook_builds_the_same_tool_note_as_the_catalogue(metric_id):
+    assert HOOK.build_tool_note(CATALOGUE, metric_id) == cat.tool_note_text(metric_id)
+
+
+@pytest.mark.parametrize("capture", [
+    CaptureConfig(level="essentials"),
+    CaptureConfig(level="deep", feedback=["feedback_note", "feedback_reminder"]),
+    CaptureConfig(level="custom", metrics=["task", "result", "fit"]),
+    CaptureConfig(level="free", feedback=["feedback_reminder"]),
+])
+def test_the_hook_switches_on_the_same_metrics_as_the_config(capture):
+    table = {"level": capture.level, "metrics": capture.metrics, "feedback": capture.feedback}
+    assert HOOK.active_ids(CATALOGUE, table) == capture.active_metrics()
+
+
+def test_the_slug_matches_discovery():
+    from claude_token_lens import discovery
+
+    for cwd in ("/work/app", r"C:\Dev\claude-token-lens", "/x/" + "deep/" * 60):
+        assert HOOK.slug_for(cwd) == discovery.slug_for(cwd)
+
+
+# -- when it adds a note ---------------------------------------------------
+
+
+def test_nothing_is_added_while_capture_is_off(tmp_path):
+    assert _note(tmp_path / "none", _start()) == ""
+    assert _note(_config(tmp_path / "off", '[capture]\nlevel = "off"\n'), _start()) == ""
+
+
+def test_a_session_start_gets_the_main_note_and_a_resume_gets_none(tmp_path):
+    config_dir = _config(tmp_path, '[capture]\nlevel = "essentials"\n')
+    for source in ("startup", "clear", "compact"):
+        assert _note(config_dir, _start(source=source)) == cat.note_text(cat.level_metrics("essentials"), "main")
+    assert _note(config_dir, _start(source="resume")) == ""
+
+
+def test_subagents_get_their_own_note_at_any_depth(tmp_path):
+    config_dir = _config(tmp_path, '[capture]\nlevel = "standard"\n')
+    ids = cat.level_metrics("standard")
+    assert _note(config_dir, _subagent()) == cat.note_text(ids, "subagent")
+    assert _note(config_dir, _subagent(agent_type="Explore")) == cat.note_text(ids, "subagent", "Explore")
+    assert _note(config_dir, _subagent(agent_type="statusline-setup")) == ""
+
+
+def test_a_subagent_that_compacts_gets_the_subagent_note_again(tmp_path):
+    config_dir = _config(tmp_path, '[capture]\nlevel = "essentials"\n')
+    compacted = _start(source="compact", agent_id="a1", agent_type="general-purpose")
+    assert _note(config_dir, compacted) == cat.note_text(cat.level_metrics("essentials"), "subagent")
+    # Claude Code sends no agent fields for a subagent's compaction; its
+    # transcript path gives it away.
+    for path in ("/home/u/.claude/projects/p/s1/subagents/agent-a1.jsonl", r"C:\Users\u\.claude\projects\p\s1\subagents\agent-a1.jsonl"):
+        assert _note(config_dir, _start(source="compact", transcript_path=path)) == cat.note_text(
+            cat.level_metrics("essentials"), "subagent"
+        )
+    main = _start(source="compact", transcript_path="/home/u/.claude/projects/p/s1.jsonl")
+    assert _note(config_dir, main) == cat.note_text(cat.level_metrics("essentials"), "main")
+
+
+def test_sampling_keeps_a_session_in_or_out_for_its_whole_length(tmp_path):
+    config_dir = _config(tmp_path, '[capture]\nlevel = "essentials"\nsample = 10\n')
+    inside, outside = _session_id(10, inside=True), _session_id(10, inside=False)
+    assert _note(config_dir, _start(inside)) and _note(config_dir, _subagent(inside))
+    assert _note(config_dir, _start(outside)) == "" and _note(config_dir, _subagent(outside)) == ""
+
+
+def test_a_skipped_project_gets_nothing(tmp_path):
+    only = _config(tmp_path / "only", '[capture]\nlevel = "essentials"\nprojects = ["client-a"]\n')
+    assert _note(only, _start(cwd="/work/client-a/api"))
+    assert _note(only, _start(cwd="/work/personal")) == ""
+    skip = _config(tmp_path / "skip", '[capture]\nlevel = "essentials"\nprojects = ["!secret"]\n')
+    assert _note(skip, _start(cwd="/work/Secret-Thing")) == ""
+    assert _note(skip, _start(cwd="/work/app"))
+    left_out = _config(tmp_path / "left", 'exclude_projects = ["scratch"]\n\n[capture]\nlevel = "essentials"\n')
+    assert _note(left_out, _start(cwd="/tmp/scratch")) == ""
+
+
+def test_capture_past_its_end_adds_nothing(tmp_path):
+    past = _config(tmp_path / "past", '[capture]\nlevel = "essentials"\nuntil = "2020-01-01T00:00:00+00:00"\n')
+    assert _note(past, _start()) == ""
+    future = _config(tmp_path / "future", '[capture]\nlevel = "essentials"\nuntil = "2999-01-01"\n')
+    assert _note(future, _start())
+
+
+def test_a_large_tool_result_gets_a_one_line_note_at_deep(tmp_path):
+    deep = _config(tmp_path / "deep", '[capture]\nlevel = "deep"\n')
+    threshold = cat.BIG_OUTPUT_TOKENS * 4
+    small = {"session_id": "s1", "hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_response": {"stdout": "ok"}}
+    big = {**small, "tool_response": {"stdout": "x" * threshold}}
+    assert _note(deep, small) == ""
+    assert _note(deep, big) == cat.tool_note_text("big_output")
+    web = {**small, "tool_name": "WebFetch"}
+    assert _note(deep, web) == cat.tool_note_text("web")
+    standard = _config(tmp_path / "standard", '[capture]\nlevel = "standard"\n')
+    assert _note(standard, big) == ""
+
+
+def test_the_feedback_reminder_needs_capture_on(tmp_path):
+    free = _config(tmp_path / "free", '[capture]\nlevel = "free"\nfeedback = ["feedback_reminder"]\n')
+    assert "/tl-feedback" in _note(free, _start())
+    off = _config(tmp_path / "off", '[capture]\nlevel = "off"\nfeedback = ["feedback_reminder"]\n')
+    assert _note(off, _start()) == ""
+
+
+@pytest.mark.parametrize("payload", [b"", b"not json", b"[1, 2]", b"\xff\xfe"])
+def test_bad_input_prints_nothing_and_exits_zero(tmp_path, payload):
+    config_dir = _config(tmp_path, '[capture]\nlevel = "essentials"\n')
+    assert _run(config_dir, payload) == (0, "", "")
+
+
+def test_a_half_written_config_reads_as_off(tmp_path):
+    config_dir = _config(tmp_path, '[capture]\nlevel = "essen')
+    assert _run(config_dir, json.dumps(_start()).encode("utf-8")) == (0, "", "")
+
+
+def test_an_installed_copy_runs_from_the_data_folder(tmp_path):
+    config_dir = _config(tmp_path / "token-lens", '[capture]\nlevel = "essentials"\n')
+    written = hook_health.install_hook_files(config_dir, hook_health.CAPTURE_FILES[cat.NOTE_SCRIPT])
+    assert [p.name for p in written] == [cat.NOTE_SCRIPT, cat.CATALOGUE_FILE]
+    rc, out, _ = _run(config_dir, _start(), script=written[0])
+    assert rc == 0 and json.loads(out)["hookSpecificOutput"]["additionalContext"].startswith(cat.NOTE_MARKER)
+
+
+def test_a_real_session_start_note_is_read_back():
+    """Lines as Claude Code 2.1.280 wrote them in a headless run with the
+    Essentials hook (paths and ids replaced; the reply stands in for the
+    real one): ``rendered`` is a top-level list, and the hook_success
+    line's copy of the note in ``stdout`` is not counted again."""
+    from claude_token_lens.model import TranscriptMeta
+    from claude_token_lens.parse import parse_transcript
+
+    path = Path(__file__).parent / "fixtures" / "capture" / "session-start-note.jsonl"
+    lines = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    rendered = next(line["rendered"][0]["content"] for line in lines if "rendered" in line)
+    result = parse_transcript(path, TranscriptMeta(path=str(path)))
+    assert (result.meta.cap_version, result.meta.cap_injections) == (cat.NOTE_VERSION, 1)
+    assert result.meta.cap_metrics == ("task", "brief", "level", "shift", "retry")
+    assert [turn.cap_note_chars for turn in result.turns] == [len(rendered)]
+    assert (result.turns[0].cap.task, result.turns[0].cap.level) == ("research", "easy")
+    assert rendered == f"<system-reminder>\nSessionStart hook additional context: {cat.note_text(cat.level_metrics('essentials'), 'main')}\n</system-reminder>"

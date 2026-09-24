@@ -896,6 +896,7 @@ def set_capture(
     feedback: list[str] | None = None,
     coaching: list[str] | None = None,
     now: datetime | None = None,
+    dry_run: bool = False,
 ) -> CaptureConfig:
     """Change ``config.toml``'s ``[capture]`` table and return the result.
 
@@ -907,6 +908,7 @@ def set_capture(
     atomic, and every change is appended to ``capture-log.jsonl``. Raises
     :class:`ConfigError` for a bad value, or when ``config.toml`` can't be
     rewritten in place (the change then sits in ``config.toml.new``).
+    With ``dry_run`` it validates and returns the result without writing.
     """
     resolved_dir = _resolve_config_dir(config_dir)
     path = resolved_dir / "config.toml"
@@ -944,6 +946,8 @@ def set_capture(
 
     if table == _capture_table(current):
         return current
+    if dry_run:
+        return _build_capture_config(table, path)
     written = write_config_values(resolved_dir, {"capture": table})
     if written.name != "config.toml":
         raise ConfigError(

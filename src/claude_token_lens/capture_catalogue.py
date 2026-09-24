@@ -100,6 +100,16 @@ LEVELS = ("off", "free", "essentials", "standard", "deep")
 CUSTOM_LEVEL = "custom"
 
 #: What each level adds, for the init question and the Capture page.
+#: Display names for the levels, as the dashboard and CLI show them.
+LEVEL_TITLES = {
+    "off": "Off",
+    "free": "Free",
+    "essentials": "Essentials",
+    "standard": "Standard",
+    "deep": "Deep",
+    "custom": "Custom",
+}
+
 LEVEL_SUMMARIES = {
     "off": "Nothing is captured and no tokens are used.",
     "free": "Local signals from hooks that log to a file. Uses no Claude tokens.",
@@ -877,6 +887,43 @@ def export_json() -> dict:
         "no_rules_agent_types": list(NO_RULES_AGENT_TYPES),
         "big_output_tokens": BIG_OUTPUT_TOKENS,
         "web_tools": list(WEB_TOOLS),
+    }
+
+
+#: Characters Claude Code wraps a hook note in: the system-reminder tags
+#: and "<event> hook additional context: ", less the event name itself.
+NOTE_WRAP_CHARS = 63
+
+#: Characters the "[tl: " and "]" around a reply tag add.
+_TAG_FRAME_CHARS = 6
+
+
+def asks_claude(metric_id: str) -> bool:
+    """Whether a metric has Claude read or write something, and so uses
+    tokens."""
+    m = METRICS_BY_ID.get(metric_id)
+    return bool(m and (m.main_line or m.sub_line or m.main_extra or m.sub_extra or m.tool_note))
+
+
+def rough_tokens(ids) -> dict[str, int]:
+    """Rough sizes in tokens (characters / 4) for the metrics in ``ids``:
+    the note at each session start, clear or compaction
+    (``session_note``) and at each subagent start (``subagent_note``);
+    the tag Claude writes per reply (``reply_tag``) and per subagent
+    report (``report_tag``); the note after a large or web tool result
+    (``tool_note``). Amounts measured from transcripts replace these once
+    capture has run."""
+    enabled = [METRICS_BY_ID[i] for i in ids if i in METRICS_BY_ID]
+    main, sub = note_text(ids, "main"), note_text(ids, "subagent")
+    reply = sum(m.out_chars for m in enabled if m.main_line or m.main_extra)
+    report = sum(m.out_chars for m in enabled if m.sub_line or m.sub_extra)
+    tool = max((len(tool_note_text(m.id)) for m in enabled if m.tool_note), default=0)
+    return {
+        "session_note": round((len(main) + NOTE_WRAP_CHARS + len("SessionStart")) / 4) if main else 0,
+        "subagent_note": round((len(sub) + NOTE_WRAP_CHARS + len("SubagentStart")) / 4) if sub else 0,
+        "reply_tag": round((reply + _TAG_FRAME_CHARS) / 4) if reply else 0,
+        "report_tag": round(report / 4),
+        "tool_note": round((tool + NOTE_WRAP_CHARS + len("PostToolUse")) / 4) if tool else 0,
     }
 
 

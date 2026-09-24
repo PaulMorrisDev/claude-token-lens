@@ -7,6 +7,7 @@ uninstall`` and the Data quality tab (``GET /api/setup``):
 - the SessionStart snapshot hook and the statusline in Claude Code's
   ``settings.json`` (``hook_health.settings_path``: ``--claude-root``,
   else ``$CLAUDE_CONFIG_DIR``, else ``~/.claude``);
+- the metrics-capture hook entries, when capture was connected;
 - the logon service (``install-service`` or ``init``);
 - each change ``apply`` made to your Claude Code settings or agent files
   that has not been reverted;
@@ -29,7 +30,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import hook_health
+from . import capture_catalogue, hook_health
+from .config import CaptureConfig, ConfigError, load_config
 from .profiles import apply as apply_mod
 
 #: What a statusLine command of this tool's looks like.
@@ -106,13 +108,14 @@ def _size_label(size: int) -> str:
 
 
 #: What to expect from installing and using this tool, in plain words:
-#: (title, text). Shown by ``changes``, the Data quality tab (``GET
-#: /api/setup``) and docs/first-run.md.
+#: (title, text), while metrics capture is off. Shown by ``changes``, the
+#: Data quality tab (``GET /api/setup``) and docs/first-run.md;
+#: :func:`expectations` swaps the first item while capture is on.
 EXPECTATIONS: tuple[tuple[str, str], ...] = (
     (
         "It never uses your Claude tokens",
         "This tool reads files Claude Code already writes. It never calls Claude, so it adds nothing to your "
-        "usage, on the first run or after.",
+        "usage, on the first run or after, unless you turn on metrics capture.",
     ),
     (
         "The hook and statusline add nothing to Claude's context",
@@ -155,6 +158,34 @@ EXPECTATIONS: tuple[tuple[str, str], ...] = (
 
 #: The one command that takes everything back out, shown dry-run first.
 UNINSTALL_COMMAND = "claude-token-lens uninstall --revert-changes --delete-data --dry-run"
+
+
+def expectations(capture: CaptureConfig | None = None) -> tuple[tuple[str, str], ...]:
+    """:data:`EXPECTATIONS`, with the first item saying what metrics
+    capture costs while ``capture`` is on."""
+    if capture is None or not capture.is_on:
+        return EXPECTATIONS
+    level = capture_catalogue.LEVEL_TITLES.get(capture.level, capture.level)
+    if capture_catalogue.hook_specs(capture.active_metrics()):
+        text = (
+            f"Metrics capture is on ({level}). Claude reads a short note when a session or subagent starts and "
+            "writes a one-line tag at the end of its replies, so it uses some of your tokens. The Capture tab "
+            "shows how many. Turn it off with 'claude-token-lens capture off'."
+        )
+    else:
+        text = (
+            f"Metrics capture is on ({level}), but at this level it records only what your sessions already do, "
+            "so it adds no tokens. This tool never calls Claude itself."
+        )
+    return ((("It uses a few of your Claude tokens while capture is on"), text),) + EXPECTATIONS[1:]
+
+
+def capture_setting(config_dir: str | Path) -> CaptureConfig:
+    """``[capture]`` from ``config.toml``; off when it can't be read."""
+    try:
+        return load_config(config_dir=config_dir).capture
+    except (ConfigError, OSError, ValueError):
+        return CaptureConfig()
 
 
 def inventory(
@@ -200,6 +231,34 @@ def inventory(
             undo="claude-token-lens uninstall",
         )
     )
+    capture = capture_setting(config_dir)
+    capture_health = hook_health.check_capture(
+        hook_health.capture_specs(capture.active_metrics()), claude_root=claude_root
+    )
+    installed = capture_health.needed + capture_health.extra
+    installed = tuple(spec for spec in installed if spec not in capture_health.missing)
+    if installed or capture.is_on:
+        level = capture_catalogue.LEVEL_TITLES.get(capture.level, capture.level)
+        items.append(
+            FootprintItem(
+                key="capture_hooks",
+                title=f"Metrics capture hooks ({len(installed)} entr{'y' if len(installed) == 1 else 'ies'})",
+                status="installed" if installed else "not installed",
+                where=home_label(settings_path),
+                what_it_does=(
+                    "While metrics capture is on, adds a short note when a session or subagent starts asking Claude "
+                    "to end its replies with a one-line tag (task kind, how clear the request was, and so on), so "
+                    "this tool can tell where your tokens go. With capture off the hooks add nothing."
+                ),
+                token_cost=(
+                    f"Some while capture is on (now: {level}): the note and the tags. The Capture tab shows the "
+                    "measured amount."
+                    if capture.is_on
+                    else "None while capture is off."
+                ),
+                undo="claude-token-lens capture off, then claude-token-lens capture remove",
+            )
+        )
     items.append(
         FootprintItem(
             key="service",
@@ -325,6 +384,7 @@ def plan_uninstall(config_dir: str | Path, *, claude_root: str | Path | None = N
             hooks.pop("SessionStart", None)
             if not hooks:
                 after_settings.pop("hooks", None)
+    plan.settings_changes += hook_health.remove_capture_entries(after_settings)
     if is_own_statusline(after_settings):
         after_settings.pop("statusLine", None)
         plan.settings_changes.append("Remove the claude-token-lens statusline.")
@@ -349,7 +409,7 @@ def remove_settings_entries(plan: UninstallPlan, *, now: datetime | None = None)
     if plan.new_settings_text is None:
         raise ValueError("nothing to remove")
     now = now or datetime.now(timezone.utc)
-    backup = plan.settings_path.with_name(f"settings.json.bak-{now.strftime('%Y%m%dT%H%M%SZ')}")
+    backup = hook_health.backup_path(plan.settings_path, now)
     shutil.copy2(plan.settings_path, backup)
     plan.settings_path.write_text(plan.new_settings_text, encoding="utf-8")
     return backup
@@ -372,7 +432,9 @@ __all__ = [
     "FootprintItem",
     "UNINSTALL_COMMAND",
     "UninstallPlan",
+    "capture_setting",
     "delete_data",
+    "expectations",
     "home_label",
     "inventory",
     "is_own_statusline",

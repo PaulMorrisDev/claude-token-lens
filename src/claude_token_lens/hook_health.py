@@ -15,23 +15,70 @@ a ``%VAR%`` that Claude Code's shell on Windows (Git Bash) never expands.
 :func:`check` reports what it finds in plain words for the Data quality
 tab (``GET /api/diagnostics``) and ``init``; :func:`repair` rewrites
 only that one command string, after a backup, when ``init`` is told to.
+
+Metrics capture adds its own entries (``hooks/capture-note.py`` on
+SessionStart, SubagentStart and, for Deep, PostToolUse), described by
+:class:`HookSpec`. :func:`check_capture` checks them the same way;
+:func:`plan_capture` works out the change that makes settings.json run
+exactly the entries the chosen metrics need, and :func:`connect` writes
+it. :func:`install_hook_files` copies the hook scripts out of the
+package, which works inside the ``.pyz`` build too.
 """
 
 from __future__ import annotations
 
 import csv
+import difflib
+import importlib.resources
 import json
 import os
 import re
 import shutil
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import discovery, snapshots
+from . import capture_catalogue, discovery, snapshots
 
 HOOK_SCRIPT_NAME = "snapshot-config.py"
+
+#: Hook scripts metrics capture installs; an entry whose command runs one
+#: of them belongs to capture.
+CAPTURE_SCRIPTS = (capture_catalogue.NOTE_SCRIPT,)
+
+#: Files each capture script needs next to it under ``<config-dir>/hooks``.
+CAPTURE_FILES = {capture_catalogue.NOTE_SCRIPT: (capture_catalogue.NOTE_SCRIPT, capture_catalogue.CATALOGUE_FILE)}
+
+#: Seconds Claude Code waits for a capture hook before giving up on it.
+CAPTURE_TIMEOUT_S = 5
+
+
+@dataclass(frozen=True, slots=True)
+class HookSpec:
+    """One settings.json hook entry this tool wants: the script it runs,
+    the event, the matcher (``""`` matches everything) and whether Claude
+    Code runs it in the background."""
+
+    script: str
+    event: str
+    matcher: str = ""
+    async_: bool = False
+
+    def describe(self) -> str:
+        when = {
+            "SessionStart": "when a session starts, is cleared or compacts",
+            "SubagentStart": "when a subagent starts",
+            "PostToolUse": "after " + ("web results" if self.matcher else "each tool result") + ", in the background",
+        }.get(self.event, f"on {self.event}")
+        return f"{self.script} {when}"
+
+
+def capture_specs(ids) -> tuple[HookSpec, ...]:
+    """The hook entries the metrics in ``ids`` need
+    (``capture_catalogue.hook_specs``)."""
+    return tuple(HookSpec(*spec) for spec in capture_catalogue.hook_specs(ids))
+
 
 #: A JSON string escape that silently turned part of a Windows path into
 #: a control character, and the two characters it came from.
@@ -116,16 +163,22 @@ def settings_path(claude_root: str | Path | None = None) -> Path:
     return discovery.claude_root(claude_root) / "settings.json"
 
 
-def _session_start_commands(settings: dict) -> list[str]:
-    commands = []
+def _event_entries(settings: dict, event: str) -> list[tuple[str, dict]]:
+    """``(matcher, entry)`` for every command entry under ``event``."""
+    found = []
     hooks = settings.get("hooks")
-    groups = hooks.get("SessionStart") if isinstance(hooks, dict) else None
+    groups = hooks.get(event) if isinstance(hooks, dict) else None
     for group in groups if isinstance(groups, list) else []:
         entries = group.get("hooks") if isinstance(group, dict) else None
+        matcher = group.get("matcher") if isinstance(group, dict) else None
         for entry in entries if isinstance(entries, list) else []:
             if isinstance(entry, dict) and isinstance(entry.get("command"), str):
-                commands.append(entry["command"])
-    return commands
+                found.append((matcher if isinstance(matcher, str) else "", entry))
+    return found
+
+
+def _event_commands(settings: dict, event: str) -> list[str]:
+    return [entry["command"] for _matcher, entry in _event_entries(settings, event)]
 
 
 def _expand(text: str) -> str:
@@ -233,7 +286,7 @@ def check(
     if not isinstance(settings, dict):
         return health
 
-    command = next((c for c in _session_start_commands(settings) if HOOK_SCRIPT_NAME in c), None)
+    command = next((c for c in _event_commands(settings, "SessionStart") if HOOK_SCRIPT_NAME in c), None)
     if command is None:
         return health
     health.command = command
@@ -279,17 +332,30 @@ def repair(health: HookHealth, *, now: datetime | None = None) -> Path:
     now = now or datetime.now(timezone.utc)
     settings = json.loads(health.settings_path.read_text(encoding="utf-8"))
     replaced = 0
-    for group in settings["hooks"]["SessionStart"]:
-        for entry in group.get("hooks", []):
-            if isinstance(entry, dict) and entry.get("command") == health.command:
+    for event in list(settings.get("hooks", {})):
+        for _matcher, entry in _event_entries(settings, event):
+            if entry.get("command") == health.command:
                 entry["command"] = health.fixed_command
                 replaced += 1
     if replaced == 0:
         raise ValueError("the hook command changed since it was checked")
-    backup = health.settings_path.with_name(f"settings.json.bak-{now.strftime('%Y%m%dT%H%M%SZ')}")
+    backup = backup_path(health.settings_path, now)
     shutil.copy2(health.settings_path, backup)
     health.settings_path.write_text(json.dumps(settings, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     return backup
+
+
+def backup_path(settings_path: Path, now: datetime) -> Path:
+    """``settings.json.bak-<UTC timestamp>`` next to ``settings_path``,
+    with ``-2``, ``-3``... added when two changes land in one second, so
+    one backup never overwrites another."""
+    base = f"{settings_path.name}.bak-{now.strftime('%Y%m%dT%H%M%SZ')}"
+    candidate = settings_path.with_name(base)
+    n = 2
+    while candidate.exists():
+        candidate = settings_path.with_name(f"{base}-{n}")
+        n += 1
+    return candidate
 
 
 #: Session entrypoints that run in a terminal, where Claude Code runs a
@@ -371,27 +437,22 @@ def plan_connect(
     hook_command: str,
     statusline_command: str | None,
     claude_root: str | Path | None = None,
+    capture_specs_wanted: tuple[HookSpec, ...] = (),
+    capture_commands: dict[str, str] | None = None,
 ) -> ConnectPlan:
     """Work out the ``settings.json`` change that connects this tool,
     without writing anything. The snapshot hook is added only when no
     SessionStart hook runs it yet (a broken one is :func:`repair`'s job);
     the statusline only when ``statusLine`` is unset, so a statusline of
-    your own is never replaced."""
-    import difflib
-
-    path = settings_path(claude_root)
-    try:
-        before = path.read_text(encoding="utf-8")
-        settings = json.loads(before)
-    except FileNotFoundError:
-        before, settings = "", {}
-    except (OSError, ValueError):
-        return ConnectPlan(path, ["settings.json could not be read, so nothing will be changed."], "", None)
-    if not isinstance(settings, dict):
-        return ConnectPlan(path, ["settings.json is not a JSON object, so nothing will be changed."], "", None)
+    your own is never replaced. With ``capture_commands``, the capture
+    entries are made to match ``capture_specs_wanted`` as well
+    (:func:`plan_capture`)."""
+    path, before, settings, refusal = _read_settings(claude_root)
+    if refusal is not None:
+        return refusal
 
     changes = []
-    if not any(HOOK_SCRIPT_NAME in c for c in _session_start_commands(settings)):
+    if not any(HOOK_SCRIPT_NAME in c for c in _event_commands(settings, "SessionStart")):
         hooks = settings.setdefault("hooks", {})
         if isinstance(hooks, dict) and isinstance(hooks.setdefault("SessionStart", []), list):
             # async: Claude Code starts the hook and carries on without
@@ -408,6 +469,28 @@ def plan_connect(
             "Add a statusline that logs your usage limits and cache health. It runs in the terminal only, "
             "not in the desktop app."
         )
+    if capture_commands is not None:
+        changes += _sync_capture_entries(settings, capture_specs_wanted, capture_commands)
+    return _finish_plan(path, before, settings, changes)
+
+
+def _read_settings(claude_root: str | Path | None) -> tuple[Path, str, dict, ConnectPlan | None]:
+    """settings.json's path, text and parsed object, or a plan that
+    refuses to change a file it can't read."""
+    path = settings_path(claude_root)
+    try:
+        before = path.read_text(encoding="utf-8")
+        settings = json.loads(before)
+    except FileNotFoundError:
+        return path, "", {}, None
+    except (OSError, ValueError):
+        return path, "", {}, ConnectPlan(path, ["settings.json could not be read, so nothing will be changed."], "", None)
+    if not isinstance(settings, dict):
+        return path, "", {}, ConnectPlan(path, ["settings.json is not a JSON object, so nothing will be changed."], "", None)
+    return path, before, settings, None
+
+
+def _finish_plan(path: Path, before: str, settings: dict, changes: list[str]) -> ConnectPlan:
     if not changes:
         return ConnectPlan(path, [], "", None)
     after = json.dumps(settings, indent=2, ensure_ascii=False) + "\n"
@@ -422,6 +505,199 @@ def plan_connect(
     return ConnectPlan(path, changes, diff, after)
 
 
+def _entry_spec(event: str, matcher: str, entry: dict) -> HookSpec | None:
+    command = entry.get("command", "")
+    script = next((name for name in CAPTURE_SCRIPTS if name in command), None)
+    if script is None:
+        return None
+    return HookSpec(script, event, matcher or "", bool(entry.get("async")))
+
+
+def _capture_entries(settings: dict) -> list[tuple[HookSpec, dict]]:
+    hooks = settings.get("hooks")
+    found = []
+    for event in list(hooks) if isinstance(hooks, dict) else []:
+        for matcher, entry in _event_entries(settings, event):
+            spec = _entry_spec(event, matcher, entry)
+            if spec is not None:
+                found.append((spec, entry))
+    return found
+
+
+def _sync_capture_entries(settings: dict, wanted: tuple[HookSpec, ...], commands: dict[str, str]) -> list[str]:
+    """Make ``settings`` run exactly the capture entries in ``wanted``,
+    each with the command ``commands`` gives its script: entries no
+    longer wanted, or with the wrong command, matcher or background
+    setting, are replaced. Other hooks are never touched. Returns one
+    plain sentence per change."""
+    present = _capture_entries(settings)
+    keep = {
+        spec
+        for spec, entry in present
+        if spec in wanted and entry.get("command") == commands.get(spec.script) and entry.get("timeout") == CAPTURE_TIMEOUT_S
+    }
+    changes = []
+    hooks = settings.get("hooks")
+    if isinstance(hooks, dict):
+        for event in list(hooks):
+            groups = hooks[event]
+            if not isinstance(groups, list):
+                continue
+            kept_groups = []
+            for group in groups:
+                entries = group.get("hooks") if isinstance(group, dict) else None
+                if isinstance(entries, list):
+                    matcher = group.get("matcher") if isinstance(group.get("matcher"), str) else ""
+                    kept = []
+                    for entry in entries:
+                        spec = _entry_spec(event, matcher, entry) if isinstance(entry, dict) and isinstance(entry.get("command"), str) else None
+                        if spec is None or spec in keep:
+                            kept.append(entry)
+                        elif spec not in wanted:
+                            changes.append(f"Remove the capture hook that runs {spec.describe()}.")
+                    if not kept:
+                        continue
+                    if len(kept) != len(entries):
+                        group = {**group, "hooks": kept}
+                kept_groups.append(group)
+            if kept_groups:
+                hooks[event] = kept_groups
+            else:
+                del hooks[event]
+        if not hooks:
+            settings.pop("hooks", None)
+    for spec in wanted:
+        if spec in keep:
+            continue
+        hooks = settings.setdefault("hooks", {})
+        if not isinstance(hooks, dict) or not isinstance(hooks.setdefault(spec.event, []), list):
+            continue  # a hooks section of an unexpected shape is left alone; check_capture reports the gap
+        entry = {"type": "command", "command": commands[spec.script], "timeout": CAPTURE_TIMEOUT_S}
+        if spec.async_:
+            entry["async"] = True
+        group = {"matcher": spec.matcher, "hooks": [entry]} if spec.matcher else {"hooks": [entry]}
+        hooks[spec.event].append(group)
+        replacing = any(s.event == spec.event and s.script == spec.script for s, _entry in present)
+        changes.append(("Update" if replacing else "Add") + f" the capture hook that runs {spec.describe()}.")
+    return changes
+
+
+def remove_capture_entries(settings: dict) -> list[str]:
+    """Take every capture entry out of ``settings``; one plain sentence
+    per entry removed."""
+    return _sync_capture_entries(settings, (), {})
+
+
+def plan_capture(
+    wanted: tuple[HookSpec, ...],
+    commands: dict[str, str],
+    *,
+    claude_root: str | Path | None = None,
+) -> ConnectPlan:
+    """The settings.json change that makes it run exactly the capture
+    entries in ``wanted`` (none, to take capture back out), without
+    writing anything. ``commands`` maps each script to its command."""
+    path, before, settings, refusal = _read_settings(claude_root)
+    if refusal is not None:
+        return refusal
+    return _finish_plan(path, before, settings, _sync_capture_entries(settings, tuple(wanted), commands))
+
+
+@dataclass(slots=True)
+class CaptureHookHealth:
+    """Whether settings.json runs the capture entries the chosen metrics
+    need."""
+
+    settings_path: Path
+    needed: tuple[HookSpec, ...] = ()
+    #: Needed entries settings.json lacks.
+    missing: tuple[HookSpec, ...] = ()
+    #: Capture entries no chosen metric needs. Harmless: the hook adds
+    #: nothing for a metric that is off.
+    extra: tuple[HookSpec, ...] = ()
+    #: Plain sentences, one per problem with an entry that is there.
+    problems: list[str] = field(default_factory=list)
+
+    @property
+    def ok(self) -> bool:
+        return not self.missing and not self.problems
+
+    def summary(self) -> str:
+        if not self.needed and not self.extra:
+            return "No capture hooks are needed or installed."
+        if self.ok:
+            return "The capture hooks are set up." + (
+                " settings.json also runs capture hooks no chosen metric needs; they add nothing."
+                if self.extra
+                else ""
+            )
+        parts = [f"settings.json does not run {spec.describe()}." for spec in self.missing] + self.problems
+        return " ".join(parts) + " Run 'claude-token-lens capture connect' to fix it."
+
+
+def check_capture(
+    wanted: tuple[HookSpec, ...], *, claude_root: str | Path | None = None
+) -> CaptureHookHealth:
+    """Compare settings.json's capture entries with ``wanted``. Never
+    raises: an unreadable settings file reads as no entries."""
+    health = CaptureHookHealth(settings_path=settings_path(claude_root), needed=tuple(wanted))
+    try:
+        settings = json.loads(health.settings_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        settings = {}
+    present = _capture_entries(settings if isinstance(settings, dict) else {})
+    specs = [spec for spec, _entry in present]
+    health.missing = tuple(spec for spec in wanted if spec not in specs)
+    health.extra = tuple(spec for spec in specs if spec not in wanted)
+    for spec, entry in present:
+        if spec not in wanted:
+            continue
+        command = entry["command"]
+        if any(ch in command for ch in _DECODED_ESCAPES):
+            health.problems.append(f"The command for {spec.describe()} has a broken path (a single backslash in JSON).")
+            continue
+        script = _script_path_for(command, spec.script)
+        if script is None or not script.is_file():
+            health.problems.append(f"The command for {spec.describe()} runs {script or spec.script}, which does not exist.")
+        program = _interpreter(command)
+        if program is None or not _interpreter_found(program):
+            health.problems.append(f"The command for {spec.describe()} starts '{program}', which is not installed or not on your PATH.")
+        if _PERCENT_VAR_RE.search(command):
+            health.problems.append(f"The command for {spec.describe()} uses a %VARIABLE%, which Git Bash does not expand.")
+    return health
+
+
+def _script_path_for(command: str, script_name: str) -> Path | None:
+    match = re.search(r'"([^"]*' + re.escape(script_name) + r')"', command) or re.search(
+        r"(\S*" + re.escape(script_name) + r")", command
+    )
+    return Path(_expand(match.group(1))) if match else None
+
+
+def hook_command(script: Path, extra_args: str = "", python: str | None = None) -> str:
+    """The command a hook entry runs: a Python and ``script`` by their
+    full paths, then ``extra_args`` as written."""
+    return _python_command(script, python) + extra_args
+
+
+def install_hook_files(config_dir: str | Path, names) -> list[Path]:
+    """Copy the packaged ``hooks/<name>`` files into
+    ``<config_dir>/hooks/``, replacing older copies. Reads them through
+    ``importlib.resources``, so it works from a ``.pyz`` too. Returns the
+    paths written."""
+    dest_dir = Path(config_dir) / "hooks"
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    written = []
+    for name in names:
+        data = (importlib.resources.files("claude_token_lens") / "hooks" / name).read_bytes()
+        dest = dest_dir / name
+        tmp = dest.with_name(f"{name}.{os.getpid()}.tmp")
+        tmp.write_bytes(data)
+        os.replace(tmp, dest)
+        written.append(dest)
+    return written
+
+
 def connect(plan: ConnectPlan, *, now: datetime | None = None) -> Path | None:
     """Write ``plan`` after backing up the current file to
     ``settings.json.bak-<UTC timestamp>``. Returns the backup path, or
@@ -431,11 +707,30 @@ def connect(plan: ConnectPlan, *, now: datetime | None = None) -> Path | None:
     now = now or datetime.now(timezone.utc)
     backup = None
     if plan.settings_path.exists():
-        backup = plan.settings_path.with_name(f"settings.json.bak-{now.strftime('%Y%m%dT%H%M%SZ')}")
+        backup = backup_path(plan.settings_path, now)
         shutil.copy2(plan.settings_path, backup)
     plan.settings_path.parent.mkdir(parents=True, exist_ok=True)
     plan.settings_path.write_text(plan.new_text, encoding="utf-8")
     return backup
 
 
-__all__ = ["HOOK_SCRIPT_NAME", "HookHealth", "settings_path", "check", "repair", "ConnectPlan", "plan_connect", "connect"]
+__all__ = [
+    "CAPTURE_SCRIPTS",
+    "CaptureHookHealth",
+    "ConnectPlan",
+    "HOOK_SCRIPT_NAME",
+    "HookHealth",
+    "HookSpec",
+    "backup_path",
+    "capture_specs",
+    "check",
+    "check_capture",
+    "connect",
+    "hook_command",
+    "install_hook_files",
+    "plan_capture",
+    "plan_connect",
+    "remove_capture_entries",
+    "repair",
+    "settings_path",
+]

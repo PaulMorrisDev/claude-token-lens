@@ -160,7 +160,7 @@ def test_a_capture_note_is_its_own_hook_output_sized_from_rendered(tmp_path):
     event = events.classify_line(line)
     assert (event.kind, event.subkind) == (EventKind.HOOK_OUTPUT, "capture_note")
     assert event.size_chars == len(line["rendered"][0]["content"])
-    assert event.detail == {"v": 1, "codes": ("task", "brief", "level"), "hook": "SessionStart"}
+    assert event.detail == {"v": 1, "codes": ["task", "brief", "level"], "hook": "SessionStart"}
 
 
 def test_a_capture_note_without_rendered_adds_the_wrapper_it_is_shown_in():

@@ -1565,7 +1565,10 @@ def make_handler(
         return _ok(
             {
                 "items": [item.as_dict() for item in items],
-                "expectations": [{"title": title, "text": text} for title, text in footprint.EXPECTATIONS],
+                "expectations": [
+                    {"title": title, "text": text}
+                    for title, text in footprint.expectations(footprint.capture_setting(options.config_dir))
+                ],
                 "uninstall_command": footprint.UNINSTALL_COMMAND,
             }
         )
