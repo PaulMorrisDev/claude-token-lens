@@ -736,6 +736,23 @@ capture is off or no feedback has been given.
   Capture tab and banner show the same figures from `/api/capture`'s
   `roi` field; its per-metric "worth" table (SURV-8) is hidden until at
   least `habits.MIN_GROUP` sessions have a note to measure from.
+  `step_down_target`/`step_down_tokens_saved`/`step_down_weekly_saving`
+  (CAP-7, `habits.capture_step_down_suggestion`) carry a suggestion to
+  step the `[capture] level` down one step (`essentials`/`standard`/
+  `deep` only -- `free` asks Claude nothing, so there's no smaller step
+  to suggest), blank/zero when there isn't one: every metric the step
+  would drop needs enough of its own answers (the per-metric bar
+  `capture_view`'s "Enough collected" note also uses) *and*
+  `habits.d_level_stability` needs to say the self-report calibration
+  signal that evidence backs has settled, not just have enough of it. A
+  note spells it out with a runnable `claude-token-lens capture level
+  <lower> --dry-run` command and the command that undoes it -- this
+  never changes `config.toml` itself ("no apply button": Token Lens
+  never lowers the level on its own). The Capture tab's banner shows a
+  cheaper, unstable-signal-agnostic version of the same command
+  (`capture_view._step_down_note`) once the dropped metrics alone have
+  enough answers, since checking `d_level_stability` there would need a
+  full habits pass the dashboard's poll doesn't already pay for.
 
 ## `workstyle` (`workstyle.py`)
 

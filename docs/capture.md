@@ -14,12 +14,12 @@ Costs rise with depth, so capture comes in levels, each including every metric o
 |---|---|---|---|
 | Off | Nothing is captured and no tokens are used. | – | – |
 | Free | Local signals from hooks that log to a file. Uses no Claude tokens. | – | – |
-| Essentials | Claude tags each piece of work: what kind it was, how clear the request was, how hard, and when the task changed. Subagents say whether they finished. | ~182 tokens | ~88 tokens |
-| Standard | Adds size, what the request lacked, planning, skills, research, and each subagent's view of its model, rules and brief. | ~311 tokens | ~172 tokens |
-| Deep | Adds how much earlier context was needed, how the change was checked, and a short rating after large tool outputs. | ~352 tokens | ~172 tokens |
+| Essentials | Claude tags each piece of work: what kind it was, how clear the request was, how hard, and when the task changed. Subagents say whether they finished. | ~201 tokens | ~107 tokens |
+| Standard | Adds size, what the request lacked, planning, skills, research, and each subagent's view of its model, rules and brief. | ~330 tokens | ~190 tokens |
+| Deep | Adds how much earlier context was needed, how the change was checked, and a short rating after large tool outputs. | ~371 tokens | ~190 tokens |
 | Custom | Any other set of metrics, turned on one by one (`capture enable`/`capture disable`). | depends what's on | depends what's on |
 
-These are rough sizes — characters in the note divided by four — and don't include the tag Claude writes back (each metric below says roughly how many output tokens its own words cost) or Claude Code's own hook-wrapper overhead. The Capture tab replays your last 14 days of transcripts against each level before you turn it on, and once it's on, measures the real note and tag cost from what Claude Code actually recorded — read that number, not this one, when it matters.
+These are rough sizes — the note's characters divided by four, plus Claude Code's own hook-wrapper overhead (the system-reminder tags around it) — and don't include the tag Claude writes back (each metric below says roughly how many output tokens its own words cost). The Capture tab replays your last 14 days of transcripts against each level before you turn it on, and once it's on, measures the real note and tag cost from what Claude Code actually recorded — read that number, not this one, when it matters.
 
 ## What each metric is worth
 

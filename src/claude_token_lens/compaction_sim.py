@@ -612,7 +612,23 @@ def _replay_transcript(
     """Walk ``priced_turns`` in order under candidate ``window``. See the
     module docstring's algorithm description and its "no candidate
     window" identity (``window=None`` reproduces the true observed cost
-    exactly, since ``dropped`` then never leaves 0)."""
+    exactly, since ``dropped`` then never leaves 0).
+
+    SURV-9: ``lookup(turn.model)`` used to run uncached on every turn of
+    every window this is replayed for, even though almost every turn of
+    a session shares the same handful of model strings. ``resolved``
+    caches just that resolve step, by model string, the same pattern as
+    ``habits._Rates._resolve`` -- one dict local to this call, so it
+    naturally resets per window (a candidate ``window`` never changes
+    which model a turn used, so the cache is safe to share across the
+    whole replay, but never needs to outlive it). This is *not* ttl.py's
+    identity shortcut (skipping a ``dataclasses.replace`` when nothing
+    would change): ``_shrunk_cost``/``_summary_request_cost``/
+    ``_recached_reply_cost`` below build a genuinely different turn on
+    almost every call (``ctx`` shrunk by ``dropped``, or reset to
+    ``new_ctx`` after a simulated compaction), and ``ctx`` alone can
+    cross a model's long-context pricing threshold -- so only the
+    turn-independent resolve step is cached, never a priced result."""
     if not priced_turns:
         return _ReplayResult()
     starting_ctx = float(priced_turns[0].ctx)
@@ -623,8 +639,11 @@ def _replay_transcript(
     cost = 0.0
     compactions = 0
     ctx_sum = 0.0
+    resolved: dict[str, RatesArg] = {}
     for i, turn in enumerate(priced_turns):
-        rates = lookup(turn.model)
+        if turn.model not in resolved:
+            resolved[turn.model] = lookup(turn.model)
+        rates = resolved[turn.model]
         real_count = real_after.get(i, 0)
         if real_count:
             # A real compact_boundary event already reset context here --

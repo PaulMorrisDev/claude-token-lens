@@ -432,6 +432,34 @@ def _roi(weekly_cost: float | None, dependent_value: float | None, units) -> dic
     }
 
 
+def _step_down_note(capture: CaptureConfig, rows: list[dict]) -> str | None:
+    """CAP-7: a specific one-level step-down command, once every metric
+    a step down would actually drop has enough of its own evidence
+    (the same per-metric readiness the "Enough collected" note below
+    already uses, scoped to just those metrics rather than every active
+    one). Cheap -- only looks at ``rows``, already built from
+    ``capture.usage``, no new replay -- so it runs on every ``/api/
+    capture`` poll. Unlike ``habits.capture_step_down_suggestion`` (the
+    report's own CAP-7 note), this never checks whether ``d_level`` has
+    settled: that needs a full habits pass over the corpus, which this
+    endpoint doesn't already pay for and polling shouldn't add. The
+    report's capture section carries the fuller, calibration-gated
+    suggestion; this is the lighter dashboard hint the "if cheap"
+    allowance covers."""
+    target = habits.CAPTURE_STEP_DOWN.get(capture.level)
+    if target is None:
+        return None
+    dropped_ids = set(catalogue.level_metrics(capture.level)) - set(catalogue.level_metrics(target))
+    dropped_rows = [r for r in rows if r["id"] in dropped_ids and r["asks_claude"]]
+    if not dropped_rows or any(r["enough"] is not True for r in dropped_rows):
+        return None
+    return (
+        f"Every metric {catalogue.LEVEL_TITLES[capture.level]} adds over {catalogue.LEVEL_TITLES[target]} has "
+        f"enough collected: 'claude-token-lens capture level {target} --dry-run' shows what stepping down would "
+        f"change; 'claude-token-lens capture level {capture.level}' undoes it."
+    )
+
+
 def _banner(
     capture, config, levels, measured, use, rows, hooks, started_since, skill=None, brief_skill=None, roi=None
 ) -> dict:
@@ -509,7 +537,10 @@ def _banner(
             notes.append(f"Capture cost {roi['cost']['text']}; nothing measured yet relies on it.")
     counted = [r for r in rows if r["enough"] is not None and r["asks_claude"]]
     ready = [r for r in counted if r["enough"]]
-    if counted and len(ready) == len(counted):
+    step_note = _step_down_note(capture, rows)
+    if step_note is not None:
+        notes.append(step_note)
+    elif counted and len(ready) == len(counted):
         notes.append("Enough collected for every metric on: you could lower the level to save its cost.")
     elif ready:
         notes.append(

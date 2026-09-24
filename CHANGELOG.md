@@ -783,6 +783,79 @@ rate instead of the 5-minute one.
   `after_compact_notes`/`after_compact_cost` as their own line rather
   than silently folding a higher rate into a scope's ordinary cost.
 
+### P9c — Suggest-only level step-down, `_Carry`/`compaction_sim` off the linear path, `capture.md` sizes
+
+No output change beyond CAP-7's own new rows/note: `_Carry.index_at`/
+`.cost()` and `compaction_sim._replay_transcript`'s cached model
+resolution are proven equivalent to the pre-change algorithm on
+fixtures and randomised sessions (1e-12, reference copies of the old
+algorithm kept alongside the new tests). A live before/after smoke
+report run on the same real corpus from the same worktree, moments
+apart, shows every remaining diff under 0.05% relative and explainable
+by ordinary corpus growth from other agents running concurrently during
+this phase (matching totals, diagnostics and every other section, never
+a discontinuity) — no frozen corpus snapshot survived from P10a's own
+run to repeat its literal zero-diff check.
+
+- **CAP-7: a suggest-only hint to step `[capture] level` down one
+  step**, never applied automatically ("no apply button" holds here
+  too — Token Lens never lowers the level itself). `habits.
+  capture_step_down_suggestion` fires only once every metric the step
+  would drop has its own `capture.enough_target` answers *and*
+  `habits.d_level_stability` says the self-report calibration signal
+  that evidence backs has settled: its own two independent,
+  chronological halves' `d_level` land within `D_LEVEL_STABILITY_
+  TOLERANCE` (0.1) of each other — an Assumption, labelled in the
+  docstring. Only essentials/standard/deep are ever a target: stepping
+  essentials down would land on free, which asks Claude nothing at all,
+  a bigger decision already covered by `capture off`/switching a metric
+  off one at a time. The report's `capture` section carries the full,
+  calibration-gated suggestion (new `step_down_target`/
+  `step_down_tokens_saved`/`step_down_weekly_saving` rows and a note
+  with a runnable `claude-token-lens capture level <lower> --dry-run`
+  command and its undo, in numbers and level names only); the Capture
+  tab's banner (`capture_view._step_down_note`) shows a cheaper,
+  readiness-only version of the same command, since checking
+  `d_level_stability` there would need a full habits pass the
+  dashboard's poll doesn't already pay for. `capture level <level>
+  --dry-run` already existed and works (verified live, in a scratch
+  config/claude-root) — no CLI change was needed for that part.
+- **`context_files._Carry`'s `index_at`/`cost` off the linear path**
+  (ROB-P2): `index_at`'s per-call scan over every turn is now a
+  `bisect` over a precomputed sorted-timestamp index, and `cost`'s
+  per-call resummation of every turn's cache rate is now two prefix
+  sums (one for plain reads, one correcting for a rebuilt turn's write
+  rate) plus a direct O(1) correction for "the first turn of the
+  queried range always writes" (P10a's warning: that can't be folded
+  into the rebuilt-only prefix array, since it applies whether or not
+  that first turn is itself in `rebuilt_ids`). `resolve_model` is now
+  cached by model string (never the full `effective_rates` result,
+  which also depends on the turn's own `ctx`/`speed`/`inference_geo`).
+  Reference copies of the pre-change algorithm live in
+  `tests/test_context_files.py`, checked for exact agreement (1e-12) on
+  fixtures and 8 seeds of 120-turn randomised sessions, plus a
+  3,000-turn timing test.
+- **`compaction_sim._replay_transcript`'s uncached `lookup(turn.model)`
+  now caches by model string per window**, the same pattern
+  `habits._Rates._resolve` already used — never applied as an identity
+  shortcut to the window's own `dataclasses.replace`-heavy cost
+  functions, which mutate `turn.ctx` and can cross the long-context
+  threshold.
+- **Post-parse stage measurably faster**: profiled the same way as
+  P10a (`cProfile` around everything after parsing, on the real
+  corpus), post-parse time drops from ~41.8s to ~29.9s (about 29%) with
+  these two fixes on top of P10a's.
+- **D17: `docs/capture.md`'s per-level note sizes now come from
+  `capture_catalogue.rough_tokens`**, the same function the Levels
+  table's rendering already had available, instead of a separate
+  `len(note_text(...)) / 4` calculation that had drifted from it
+  (Essentials showed 182/88 tokens; `rough_tokens` says 201/107, the
+  figure an earlier audit had already measured by hand; Standard and
+  Deep similarly corrected). Regenerated via `capture_catalogue.
+  render_markdown()` — never hand-edit this file — with a new sync test
+  (`test_the_levels_table_note_sizes_match_rough_tokens`). No other doc
+  quoted the stale sizes.
+
 ## [0.5.2] - 2026-09-23
 
 ### Fixed

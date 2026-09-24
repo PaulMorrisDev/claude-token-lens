@@ -695,6 +695,38 @@ def test_the_capture_section_prices_nothing_when_capture_never_started(pricing):
     assert rows["held_back"] == 0
 
 
+def test_the_capture_section_defaults_the_step_down_row_when_theres_no_suggestion(tmp_path, pricing):
+    config = NS(level="standard", enabled_at="2026-09-01T08:00:00+00:00")
+    rows = dict(_table(habits.capture_section(_tagged_session(tmp_path), pricing, config), "capture_usage").rows)
+    assert rows["step_down_target"] == ""
+    assert rows["step_down_tokens_saved"] == 0
+    assert rows["step_down_weekly_saving"] == 0
+
+
+def test_the_capture_section_surfaces_a_step_down_suggestion_when_ready_and_stable(monkeypatch, pricing):
+    """CAP-7: ``capture_section`` reuses ``capture_step_down_suggestion``
+    rather than recomputing it -- fed here by monkeypatching
+    ``capture.usage`` (a full transcript replay isn't needed to prove
+    the wiring) and passing an already-built, stable ``h``."""
+    h = Habits(cycles=[*_level_tracking_half(WEEKS[0]), *_level_tracking_half(WEEKS[4])])
+    dropped = _step_down_dropped("deep", "standard")
+    use = capture_mod.CaptureUsage(
+        since="2026-08-01T00:00:00+00:00",
+        answers={i: capture_mod.enough_target(i) for i in dropped},
+        by_metric={i: 2.0 for i in dropped},
+    )
+    monkeypatch.setattr(capture_mod, "usage", lambda *a, **kw: use)
+    config = NS(level="deep", enabled_at="2026-08-01T00:00:00+00:00")
+    section = habits.capture_section(NS(sessions=[]), pricing, config, h=h)
+    assert_privacy(section)
+    table = _table(section, "capture_usage")
+    rows = dict(table.rows)
+    assert rows["step_down_target"] == "standard"
+    assert rows["step_down_tokens_saved"] > 0
+    assert any("claude-token-lens capture level standard --dry-run" in n for n in table.notes)
+    assert any("claude-token-lens capture level deep" in n for n in table.notes)
+
+
 # -- CAP-5: a derived fallback for check -------------------------------------
 
 
@@ -965,6 +997,120 @@ def test_d_level_is_negative_when_self_reports_run_backwards():
 def test_d_level_none_under_min_group():
     h = Habits(cycles=[_cycle(tag=CaptureTag(level="easy"), outcome="missed") for _ in range(4)])
     assert habits.d_level(h) is None
+
+
+# -- CAP-7: whether d_level has settled, and a level step-down suggestion ---
+
+
+def _level_tracking_half(week: str) -> list[CycleFact]:
+    """CAP-7 test fixture: one ``MIN_GROUP``-clearing half where harder
+    self-reports genuinely track more misses (the same shape as
+    ``test_d_level_is_positive_when_harder_self_reports_track_more_misses``),
+    all dated ``week`` so :func:`habits.d_level_stability` can be handed
+    two of these (different weeks) as a stable pair."""
+    return [
+        *(_cycle(week=week, tag=CaptureTag(level="easy"), outcome="met") for _ in range(4)),
+        _cycle(week=week, tag=CaptureTag(level="easy"), outcome="missed"),
+        *(_cycle(week=week, tag=CaptureTag(level="hard"), outcome="missed") for _ in range(4)),
+        _cycle(week=week, tag=CaptureTag(level="hard"), outcome="met"),
+    ]
+
+
+def _level_backwards_half(week: str) -> list[CycleFact]:
+    """The reverse of :func:`_level_tracking_half` (self-reports run
+    backwards), same shape as
+    ``test_d_level_is_negative_when_self_reports_run_backwards``."""
+    return [
+        *(_cycle(week=week, tag=CaptureTag(level="easy"), outcome="missed") for _ in range(4)),
+        _cycle(week=week, tag=CaptureTag(level="easy"), outcome="met"),
+        *(_cycle(week=week, tag=CaptureTag(level="hard"), outcome="met") for _ in range(4)),
+        _cycle(week=week, tag=CaptureTag(level="hard"), outcome="missed"),
+    ]
+
+
+def test_d_level_stability_is_stable_when_both_halves_agree():
+    h = Habits(cycles=[*_level_tracking_half(WEEKS[0]), *_level_tracking_half(WEEKS[4])])
+    stability = habits.d_level_stability(h)
+    assert stability is not None
+    assert stability["first"] == pytest.approx(stability["second"])
+    assert stability["stable"] is True
+
+
+def test_d_level_stability_is_false_when_the_signal_reverses_over_time():
+    h = Habits(cycles=[*_level_tracking_half(WEEKS[0]), *_level_backwards_half(WEEKS[4])])
+    stability = habits.d_level_stability(h)
+    assert stability is not None
+    assert stability["first"] > 0 > stability["second"]
+    assert stability["stable"] is False
+
+
+def test_d_level_stability_none_under_twice_min_group():
+    # 9 rated cycles: enough for habits.d_level (>= MIN_GROUP) but one
+    # short of 2 * MIN_GROUP, so neither half can be judged on its own.
+    h = Habits(cycles=[
+        *(_cycle(tag=CaptureTag(level="easy"), outcome="met") for _ in range(4)),
+        _cycle(tag=CaptureTag(level="easy"), outcome="missed"),
+        *(_cycle(tag=CaptureTag(level="hard"), outcome="missed") for _ in range(4)),
+    ])
+    assert habits.d_level(h) is not None
+    assert habits.d_level_stability(h) is None
+
+
+def _step_down_dropped(level: str, target: str) -> list[str]:
+    return [
+        i for i in catalogue.level_metrics(level)
+        if i not in catalogue.level_metrics(target) and catalogue.asks_claude(i)
+    ]
+
+
+def test_capture_step_down_suggestion_when_ready_and_stable():
+    h = Habits(cycles=[*_level_tracking_half(WEEKS[0]), *_level_tracking_half(WEEKS[4])])
+    dropped = _step_down_dropped("deep", "standard")
+    assert dropped  # sanity: deep really does drop something Claude is asked for
+    use = capture_mod.CaptureUsage(
+        answers={i: capture_mod.enough_target(i) for i in dropped},
+        by_metric={i: 2.0 for i in dropped},
+    )
+    config = NS(level="deep", enabled_at="2026-08-01T00:00:00+00:00")
+    suggestion = habits.capture_step_down_suggestion(h, config, use)
+    assert suggestion is not None
+    assert suggestion["current"] == "deep" and suggestion["target"] == "standard"
+    assert suggestion["dropped_metrics"] == len(dropped)
+    assert suggestion["session_note_tokens_saved"] >= 0 and suggestion["subagent_note_tokens_saved"] >= 0
+    weeks = capture_mod.weeks_since(config.enabled_at)
+    assert suggestion["weekly_usd_saved"] == pytest.approx(2.0 * len(dropped) / weeks)
+    assert suggestion["command"] == "claude-token-lens capture level standard --dry-run"
+    assert suggestion["undo_command"] == "claude-token-lens capture level deep"
+
+
+def test_capture_step_down_suggestion_none_when_a_dropped_metric_lacks_answers():
+    h = Habits(cycles=[*_level_tracking_half(WEEKS[0]), *_level_tracking_half(WEEKS[4])])
+    dropped = _step_down_dropped("deep", "standard")
+    use = capture_mod.CaptureUsage(
+        answers={i: capture_mod.enough_target(i) for i in dropped[:-1]},  # the last one is short
+        by_metric={i: 2.0 for i in dropped},
+    )
+    config = NS(level="deep", enabled_at="2026-08-01T00:00:00+00:00")
+    assert habits.capture_step_down_suggestion(h, config, use) is None
+
+
+def test_capture_step_down_suggestion_none_when_d_level_is_not_stable():
+    h = Habits(cycles=[*_level_tracking_half(WEEKS[0]), *_level_backwards_half(WEEKS[4])])
+    dropped = _step_down_dropped("deep", "standard")
+    use = capture_mod.CaptureUsage(
+        answers={i: capture_mod.enough_target(i) for i in dropped},
+        by_metric={i: 2.0 for i in dropped},
+    )
+    config = NS(level="deep", enabled_at="2026-08-01T00:00:00+00:00")
+    assert habits.capture_step_down_suggestion(h, config, use) is None
+
+
+def test_capture_step_down_suggestion_none_off_the_step_ladder_or_without_usage():
+    h = Habits(cycles=[*_level_tracking_half(WEEKS[0]), *_level_tracking_half(WEEKS[4])])
+    use = capture_mod.CaptureUsage()
+    for level in ("off", "free", "essentials", "custom"):
+        assert habits.capture_step_down_suggestion(h, NS(level=level, enabled_at=""), use) is None
+    assert habits.capture_step_down_suggestion(h, NS(level="deep", enabled_at=""), None) is None
 
 
 def test_brief_clarity_index_is_positive_when_vaguer_briefs_track_more_misses():

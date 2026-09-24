@@ -87,6 +87,50 @@ def test_on_notes_low_coverage_enough_data_and_expiry():
     assert any(note.startswith("Enough collected for every metric on") for note in notes)
 
 
+# -- CAP-7: a specific step-down command once its evidence is ready ---------
+
+
+def test_step_down_note_names_the_specific_command_once_its_dropped_metrics_are_ready():
+    dropped = [
+        i for i in catalogue.level_metrics("standard")
+        if i not in catalogue.level_metrics("essentials")
+    ]
+    assert dropped  # sanity: standard really does add something over essentials
+    use = _use(cycles=30, tagged_cycles=30)
+    use.answers = {i: capture.enough_target(i) for i in dropped}
+    capture_config = CaptureConfig(level="standard", enabled_at="2026-09-20T10:00:00+00:00")
+    data = capture_view.view(capture_config, units=API, use=use)
+    notes = data["banner"]["notes"]
+    assert (
+        "Every metric Standard adds over Essentials has enough collected: "
+        "'claude-token-lens capture level essentials --dry-run' shows what stepping down would change; "
+        "'claude-token-lens capture level standard' undoes it."
+    ) in notes
+    # The specific command replaces the generic "lower the level" note, not both at once.
+    assert not any(note.startswith("Enough collected for every metric on") for note in notes)
+
+
+def test_step_down_note_is_none_below_essentials_or_when_not_every_dropped_metric_is_ready():
+    dropped = [
+        i for i in catalogue.level_metrics("standard")
+        if i not in catalogue.level_metrics("essentials")
+    ]
+    use = _use(cycles=30, tagged_cycles=30)
+    use.answers = {i: capture.enough_target(i) for i in dropped[:-1]}  # the last one is short
+    data = capture_view.view(
+        CaptureConfig(level="standard", enabled_at="2026-09-20T10:00:00+00:00"), units=API, use=use
+    )
+    assert not any("shows what stepping down would change" in n for n in data["banner"]["notes"])
+    # essentials has no lower step in the ladder at all (free asks Claude nothing).
+    essentials_use = _use(cycles=30, tagged_cycles=30)
+    essentials_use.answers = {m: 1000 for m in catalogue.level_metrics("essentials")}
+    essentials_data = capture_view.view(_on(), units=API, use=essentials_use)
+    assert not any("shows what stepping down would change" in n for n in essentials_data["banner"]["notes"])
+    assert any(
+        note.startswith("Enough collected for every metric on") for note in essentials_data["banner"]["notes"]
+    )
+
+
 # -- CAP-5 (gap 4): what each metric is worth ------------------------------
 
 

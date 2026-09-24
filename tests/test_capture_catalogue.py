@@ -219,6 +219,26 @@ def test_the_capture_doc_is_the_catalogue_markdown():
         assert f"(`{m.id}`)" in text, m.id
 
 
+@pytest.mark.parametrize("level", ["essentials", "standard", "deep"])
+def test_the_levels_table_note_sizes_match_rough_tokens(level):
+    """D17: the checked-in doc's "Note at session start"/"Note per
+    subagent start" columns come from :func:`capture_catalogue.rough_tokens`
+    -- the same function the Capture page and CAP-7's step-down saving
+    estimate read -- not a separate chars/4 calculation that silently
+    drops the hook-wrapper overhead ``rough_tokens`` includes (an earlier
+    audit caught the two having drifted apart, 201/107 measured against
+    182/88 then checked in for Essentials). This pins the doc's own
+    numbers to ``rough_tokens`` directly, so a future edit to either one
+    without regenerating the other fails here, not just in the
+    whole-document sync test above."""
+    doc = Path(__file__).resolve().parent.parent / "docs" / "capture.md"
+    text = doc.read_text(encoding="utf-8")
+    sizes = cat.rough_tokens(cat.level_metrics(level))
+    row = next(line for line in text.splitlines() if line.startswith(f"| {cat.LEVEL_TITLES[level]} |"))
+    assert f"~{sizes['session_note']} tokens" in row, row
+    assert f"~{sizes['subagent_note']} tokens" in row, row
+
+
 # -- round trip: what the note asks for is what the parser reads ----------
 
 
