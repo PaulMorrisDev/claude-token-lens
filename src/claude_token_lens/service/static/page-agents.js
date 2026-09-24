@@ -4,9 +4,9 @@
  */
 
 import { clear, el } from "./core.js";
-import { formatCell, thousands } from "./format.js";
+import { compactNumber, formatCell, thousands } from "./format.js";
 import { loadInto, loadReport, withWindow } from "./api.js";
-import { errorNotice, loadingNode, renderFixList } from "./ui.js";
+import { button, drawer, emptyState, errorNotice, loadingNode, renderFixList } from "./ui.js";
 import { renderMappedSections, simpleTable } from "./grid.js";
 import { viewIntro } from "./links.js";
 
@@ -16,7 +16,7 @@ import { viewIntro } from "./links.js";
 // ======================================================================
 
 function renderReportSections(container, viewKey) {
-  container.appendChild(loadingNode());
+  container.appendChild(loadingNode("Loading the report", "rows"));
   loadReport().then(function (result) {
     clear(container);
     if (result.error) {
@@ -60,12 +60,8 @@ export function renderContextFiles(panel) {
     })
   );
   var files = el("div", { id: "context-claude-md" });
-  var fileDetail = el("div", { id: "context-claude-md-detail" });
   panel.appendChild(files);
-  panel.appendChild(fileDetail);
-  loadInto(files, withWindow("/api/claude-md"), function (data, container) {
-    renderClaudeMdList(data, container, fileDetail);
-  });
+  loadInto(files, withWindow("/api/claude-md"), renderClaudeMdList, { skeleton: "tiles" });
 
   panel.appendChild(el("h2", { text: "Skills" }));
   panel.appendChild(
@@ -76,17 +72,23 @@ export function renderContextFiles(panel) {
   );
   var skills = el("div", { id: "context-skills" });
   panel.appendChild(skills);
-  loadInto(skills, withWindow("/api/skills"), renderSkills);
+  loadInto(skills, withWindow("/api/skills"), renderSkills, { skeleton: "rows" });
 
   var budget = el("div", { id: "context-budget" });
   panel.appendChild(budget);
   renderReportSections(budget, "agents/context");
 }
 
-function renderClaudeMdList(data, container, detailContainer) {
+function renderClaudeMdList(data, container) {
   var rows = data.files || [];
   if (!rows.length) {
-    container.appendChild(el("p", { class: "notice", text: "No CLAUDE.md files found." }));
+    container.appendChild(
+      emptyState(
+        "No CLAUDE.md files found in your projects or your home folder.",
+        null,
+        "Claude Code reads one at the start of every session once you add it."
+      )
+    );
     return;
   }
   var cards = el("div", { class: "profile-cards" });
@@ -94,7 +96,7 @@ function renderClaudeMdList(data, container, detailContainer) {
     var card = el("article", { class: "profile-card" });
     card.appendChild(el("h3", { text: file.path }));
     card.appendChild(el("p", { class: "profile-card-meta", text: file.who }));
-    var facts = [thousands(file.tokens) + " tokens"];
+    var facts = [compactNumber(file.tokens) + " tokens"];
     facts.push(file.seen ? "sent to " + file.reach_text : "not seen in this window's sessions");
     if (file.cost_text) facts.push(file.cost_text);
     card.appendChild(el("p", { class: "profile-card-summary", text: facts.join(" · ") }));
@@ -103,19 +105,25 @@ function renderClaudeMdList(data, container, detailContainer) {
         return el("li", { text: f });
       })));
     }
-    var button = el("button", { type: "button", text: "Review" + (file.fix_count ? " (" + file.fix_count + (file.fix_count === 1 ? " fix" : " fixes") + ")" : "") });
-    button.addEventListener("click", function () {
-      loadInto(detailContainer, withWindow("/api/claude-md/" + encodeURIComponent(file.id)), renderClaudeMdDetail);
-      detailContainer.scrollIntoView({ behavior: "smooth", block: "start" });
-    });
-    card.appendChild(button);
+    card.appendChild(
+      button("Review" + (file.fix_count ? " (" + file.fix_count + (file.fix_count === 1 ? " fix" : " fixes") + ")" : ""), {
+        action: function () {
+          drawer({
+            title: file.path,
+            wide: true,
+            fill: function (body) {
+              loadInto(body, withWindow("/api/claude-md/" + encodeURIComponent(file.id)), renderClaudeMdDetail);
+            },
+          });
+        },
+      })
+    );
     cards.appendChild(card);
   });
   container.appendChild(cards);
 }
 
 function renderClaudeMdDetail(data, container) {
-  container.appendChild(el("h2", { text: data.path }));
   container.appendChild(
     el("p", { class: "notes", text: thousands(data.tokens) + " tokens" + (data.reach_text ? ", sent to " + data.reach_text : "") + (data.cost_text ? ", " + data.cost_text : "") + "." })
   );
@@ -157,7 +165,7 @@ function renderClaudeMdDetail(data, container) {
     container.appendChild(el("h3", { text: "What you could change" }));
     renderFixList(data.fixes, container);
   } else {
-    container.appendChild(el("p", { class: "notes", text: "Nothing to change in this file." }));
+    container.appendChild(emptyState("Nothing to change in this file: it has no repeated text, and nothing in it points at something that's gone."));
   }
 }
 
@@ -174,7 +182,13 @@ var SKILL_STATUS = {
 function renderSkills(data, container) {
   var rows = data.skills || [];
   if (!rows.length) {
-    container.appendChild(el("p", { class: "notice", text: "No skill listing recorded in this window." }));
+    container.appendChild(
+      emptyState(
+        "No skill listing in this window: none of its sessions listed any skills.",
+        null,
+        "Pick a longer window to include more sessions."
+      )
+    );
     return;
   }
   container.appendChild(
@@ -187,7 +201,7 @@ function renderSkills(data, container) {
     })
   );
   renderFixList(data.fixes, container);
-  var filterRow = el("div", { class: "pager" });
+  var filterRow = el("div", { class: "filter-row" });
   var unusedOnly = el("input", { type: "checkbox", id: "skills-unused-only", checked: Boolean(data.unused) });
   filterRow.appendChild(unusedOnly);
   filterRow.appendChild(el("label", { for: "skills-unused-only", text: "Show only skills Claude never used" }));

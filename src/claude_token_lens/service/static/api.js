@@ -5,6 +5,7 @@
  */
 
 import { clear, state } from "./core.js";
+import { readableAmounts, setKnownProjects } from "./format.js";
 import { errorNotice, loadingNode } from "./ui.js";
 
 // -- fetch / envelope handling ----------------------------------------
@@ -22,32 +23,87 @@ export function fetchJson(url, options) {
           // (docs/api.md, "Caching").
           var asOf = res.headers.get("X-Figures-As-Of");
           if (asOf) noteFiguresAsOf(asOf);
-          return { httpStatus: res.status, body: body, asOf: asOf };
+          noteConnection(true);
+          return { httpStatus: res.status, body: readableAmounts(body), asOf: asOf };
         });
     })
     .catch(function (err) {
+      noteConnection(false);
       return { httpStatus: 0, body: { ok: false, error: { code: "network_error", message: String(err && err.message ? err.message : err) } } };
     });
 }
 
+// Whether the local service answers (docs/ui.md, "Service unreachable").
+// shell.js sets notify: it says so under the page header, retries, and
+// on reconnecting runs the loads that failed meanwhile (retryOnReconnect).
+// reportFailed: a report load failed while it was gone, so the views
+// drawn from it need drawing again, not just their own loads.
+export var connection = { up: true, notify: null, retries: [], reportFailed: false };
+
+function noteConnection(up) {
+  if (connection.up === up) return;
+  connection.up = up;
+  if (connection.notify) connection.notify(up);
+}
+
+// A load that failed because the service was gone runs again once it's
+// back, if what it draws into is still on the page.
+export function retryOnReconnect(retry) {
+  connection.retries.push(retry);
+}
+
+export function runReconnectRetries() {
+  var retries = connection.retries;
+  connection.retries = [];
+  connection.reportFailed = false;
+  retries.forEach(function (retry) {
+    retry();
+  });
+}
+
 /**
- * Fetch `url`, replacing `container`'s contents with `loading()` while
- * in flight, then either `render(data, container)` on `ok: true`, or
- * an inline error notice on `ok: false` / a network failure. Never
- * throws -- this is the one place every view's data flow funnels
- * through, per docs/ui.md's "or shows the error.message inline...
- * never a raw stack trace" contract.
+ * Fetch `url` and draw it into `container`: `render(data, container)` on
+ * `ok: true`, or an error callout with a Try again button on `ok: false`
+ * or a network failure. Never throws -- this is the one place most
+ * views' data flow funnels through, per docs/ui.md's "or shows the
+ * error.message inline... never a raw stack trace" contract.
+ *
+ * Empty, the container shows a skeleton while the answer is on its way
+ * (options.skeleton picks its shape: "lines", "rows", "tiles"). Already
+ * drawn, it keeps what it shows, dimmed, until the answer lands; and if
+ * the service has gone, it keeps it, marked stale, and tries again once
+ * the service is back. options also passes through to fetch.
  */
 export function loadInto(container, url, render, options) {
-  clear(container);
-  container.appendChild(loadingNode());
-  return fetchJson(url, options).then(function (result) {
+  var drawn = container.firstChild !== null && !container.querySelector(".loading, .callout-critical");
+  if (drawn) {
+    container.classList.add("is-refreshing");
+    container.setAttribute("aria-busy", "true");
+  } else {
     clear(container);
+    container.appendChild(loadingNode(null, options && options.skeleton));
+  }
+  function retry() {
+    if (container.isConnected) loadInto(container, url, render, options);
+  }
+  return fetchJson(url, options).then(function (result) {
+    container.classList.remove("is-refreshing");
+    container.removeAttribute("aria-busy");
     var body = result.body;
     if (!body || body.ok !== true) {
-      container.appendChild(errorNotice(body && body.error));
+      var error = body && body.error;
+      var offline = result.httpStatus === 0;
+      if (offline) retryOnReconnect(retry);
+      if (offline && drawn) {
+        container.classList.add("is-stale");
+        return null;
+      }
+      clear(container);
+      container.appendChild(errorNotice(error, retry));
       return null;
     }
+    clear(container);
+    container.classList.remove("is-stale");
     try {
       render(body.data, container);
     } catch (err) {
@@ -79,6 +135,10 @@ export function loadReport() {
     state.reportPromises[key] = fetchJson(url).then(function (result) {
       var body = result.body;
       if (!body || body.ok === false) {
+        // Not kept: the next view that asks fetches it again (the
+        // service may be back, or the failure passing).
+        delete state.reportPromises[key];
+        if (result.httpStatus === 0) connection.reportFailed = true;
         return { error: (body && body.error) || { code: "error", message: "failed to load report" } };
       }
       var asOf = result.asOf;
@@ -98,6 +158,7 @@ export function loadReport() {
       if (report && report.meta && report.meta.units) {
         state.units = report.meta.units;
       }
+      if (report && report.meta && report.meta.projects) setKnownProjects(report.meta.projects);
       return { report: report, asOf: asOf };
     });
   }

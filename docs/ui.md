@@ -76,21 +76,135 @@ inline SVG charts, `prefers-color-scheme` dark."
   (`info`) is for your information. A recommendation's severity chip
   sits inside its heading, so a screen reader moving by headings hears
   the severity before the title.
-- **One way to write a change.** A signed percentage goes through
-  `format.js`'s `signedPercent`: "+12%", or a true minus sign
-  (U+2212), which is as wide as the plus, so signed columns line up.
+- **One number format.** `format.js` owns every rule, so the same
+  value reads the same on every page:
+  - money: 2 decimals under 10, 1 under 100, none above ("$12.34",
+    "$56.7", "$1,962"), and "<$0.01" for a positive amount that rounds
+    to nothing;
+  - shares: 1 decimal ("12.4%");
+  - tokens: 3 significant figures, compacted ("1.24M"), with the full
+    count in the cell's tooltip;
+  - durations: "2h 14m";
+  - times: one absolute form ("2026-09-23 10:44 UTC", `shortTs`), and
+    "5 min ago" (`relativeTime`) where freshness is the point, with the
+    absolute time on hover;
+  - a signed percentage goes through `signedPercent`: "+12%", or a true
+    minus sign (U+2212), which is as wide as the plus, so signed
+    columns line up.
+- **Amounts follow the billing mode.** Every amount outside a grid goes
+  through `money`, `moneyText`, `moneyNode` or `moneyParts` (the
+  `units.Units.money` mirror): dollars on the API, a share of the
+  weekly limit on Pro or Max when the service can work one out, and the
+  list-price equivalent otherwise. A grid's money column stays a plain
+  number, sortable, with its unit once in the header (`moneyUnit`: "$",
+  or "list-price $" on a plan). The service writes an amount the CLI's
+  way ("1,962.05 USD"); `fetchJson` runs every response through
+  `readableAmounts`, so its text reads "$1,962.05" like the
+  dashboard's own, and a unit in a label reads "($)". Another pricing
+  currency reads the same both ways ("12.34 EUR"). No page writes
+  "USD" itself (`tests/test_ui_copy.py`).
+- **Readable names.** A project slug (`C--Dev-claude-token-lens`) reads
+  as its folder (`projectName`: "claude-token-lens"). It drops the
+  drive, a Windows home folder and the one parent folder your projects
+  share, and names a worktree after its project ("claude-token-lens /
+  ui-redesign"). The full slug stays in the tooltip. A slug can't tell
+  a folder's hyphen from a path separator, so the name is a best guess.
+  A long name ends in an ellipsis rather than wrapping inside a grid
+  cell.
 - **No inline secrets, no auth token in the DOM or a cookie.** The
   service has no login — it binds to localhost and relies on that for
   access control (plan: "port bound to localhost only"), so there is
   nothing to store client-side beyond per-viewer UI state, never data
   the server should be the source of truth for. The `localStorage`
   keys are `tls:view` (the last view shown), `tls:window` (chosen
-  window), `tls:sort:<table>` (a table's sort), `tls:theme` (`light` or
+  window), `tls:sort:<table>` (a table's sort), `tls:cols:<table>` (the
+  columns chosen for a wide table), `tls:theme` (`light` or
   `dark`; anything else follows the system), `tls:sidebar` (`rail` or
   `full`) and the capture banner's `tls:captureNotesHidden`. Two older
   keys are read once: `tls:activeTab` (the old tab bar's last tab,
   opened as its view and then removed) and `tls:overviewWindow`, when
   `tls:window` is unset.
+
+## Components
+
+`ui.js` holds the pieces every page is built from, and `grid.js` the
+data grid. Each has a loading, an empty, an error and a stale state.
+
+- **Button** (`button`): a label that says what happens ("Copy prompt",
+  "Save tags"). Variants: primary (the one main action in a group),
+  quiet, icon-only (with an accessible name) and link. The helper
+  refuses a label starting with "Apply": the dashboard offers prompts
+  and dry-run commands and never changes Claude Code's settings itself.
+- **Chips:** `severityChip` (Do this, Worth considering, For your
+  information: an icon and a label, never colour alone), `statusBadge`,
+  `basisChip` (Estimate, At most, Simulated, Calibrated; a measured
+  figure carries none) and `deltaChip` (a change on the previous period,
+  coloured by whether up is good, neutral within 1%).
+- **Metric tile** (`tile`, `tileRow`): a sentence-case label, the value
+  at 28px with its unit in the quieter ink, then an optional basis
+  chip, delta chip and hint. Tiles sit in a row that fits as many as
+  the width allows.
+- **Panel** (`panel`): a surface with a hairline border, a header slot
+  and a body. Panels are never nested. Sections themselves sit on the
+  page, 40px apart with a hairline between them.
+- **Callout** (`callout`, `errorNotice`): info, success, warning or
+  critical, as a tinted background with an icon and a label, with
+  optional actions. An error says what happened and offers "Try
+  again" when a retry can help.
+- **Empty state** (`emptyState`): what happened, why, and what would
+  fill it, as a link where one helps: "No sessions in the last 24
+  hours. Pick a longer window to see older ones." Never "No data".
+- **Skeleton** (`skeleton`, `loadingNode`): grey bars in the shape of
+  what is loading, with a shimmer that stops under reduced motion.
+- **Command block** (`commandBlock`, `renderFix`): the ways to make a
+  change as tabs (a prompt for Claude, a dry-run command, and a trial
+  for one session where there is one), each with a Copy button. Below
+  them, the explainer `fixes.build_fix` writes, as a definition list:
+  what the setting controls, where and who it affects, the trade-off
+  and how to undo it, then the restart note.
+- **Popover and tooltip** (`popoverButton`, `helpButton`,
+  `attachTooltip`): the (i) "How to read" help and a column's (?) open
+  a popover; a tooltip shows on hover and focus, value first. Both use
+  `textContent` only.
+- **Drawer** (`drawer`): a panel that slides in from the right, 560px or
+  720px, with a title, a close button and Esc. It keeps focus inside
+  while open and gives it back to the control that opened it.
+- **Toast** (`toast`): one at a time, bottom right, `role="status"`, for
+  a copy or a save. It goes after 3.5 seconds, and waits while the
+  pointer or focus is on it.
+- **Confirm dialog** (`confirmDialog`): a native `<dialog>`, used before
+  a change with a warning, such as a Capture level that costs more.
+
+### Data grid
+
+Every table on every page is `dataGrid`:
+
+- a header that stays in view once a table passes 20 rows, and numbers
+  right-aligned in even-width digits;
+- short text (a name, a model, a key) on one line, so
+  "claude-haiku-4-5" never breaks; a column holding sentences wraps as
+  prose;
+- a table that shares its section's title doesn't repeat it;
+- a sort per table that is kept (`tls:sort:<table>`) and read back, so
+  it survives a window change or a reload;
+- the first 7 columns (or a table's lead columns) for a wide table, with
+  a chooser for the rest (`tls:cols:<table>`) and a sticky first column
+  while it scrolls sideways;
+- a thin bar in the lead measure's cells, the default ranking picture,
+  so a ranking needs no separate chart; an optional tint by value (the
+  Quality grid);
+- only the visible rows drawn once a table passes 200 rows;
+- an evidence link's row scrolled into view and briefly highlighted
+  (`pulseRow`): a glow under the row's text fades over 1.2 seconds.
+  With reduced motion the glow holds still until the next click or key.
+
+### Service unreachable
+
+When the local service stops answering, a callout under the page
+header says so and retries after 2, 4, 8, 16 and then every 30
+seconds. The last figures stay on the page, dimmed and marked stale,
+so the page is never blank. Once the service answers again, the loads
+that failed run again (`retryOnReconnect`), and the callout goes.
 
 ## Pages
 
@@ -503,10 +617,10 @@ stdlib-only test suite.
 |---|---|
 | `app.js` | the entry point: the router (`resolveRoute`, `showView`, `VIEW_RENDERERS`), the sidebar, the page header, the window picker and the theme toggle |
 | `core.js` | `el`/`clear`, `localStorage` helpers, the shared `state`, `WINDOW_OPTIONS`, `renderedViews` and the `goTo` hook |
-| `format.js` | `formatCell`, `money`/`moneyText` (the `Units.money` mirror), `thousands`, `shortTs` |
-| `api.js` | `fetchJson`, `loadInto`, `postJson`, `withWindow`, `loadReport` (cached per window), the figures-as-of stamp |
-| `ui.js` | notices, `emptyState`, badges, `codeBlockWithCopy`, fix blocks and `RESTART_NOTE` |
-| `grid.js` | report tables (`renderTable`, sorting, help), `renderMappedSections`, `simpleTable` |
+| `format.js` | the one number format: `formatCell`, `money`/`moneyText`/`moneyNode`/`moneyParts` (the `Units.money` mirror), `currencyAmount`, `moneyUnit`, `readableAmounts`, `compactNumber`, `signedPercent`, `shortTs`/`relativeTime`, `projectName` |
+| `api.js` | `fetchJson`, `loadInto`, `postJson`, `withWindow`, `loadReport` (cached per window), the figures-as-of stamp, and the connection state behind "Service unreachable" |
+| `ui.js` | the components (see "Components"): buttons, chips, tiles, panels, callouts, empty states, skeletons, command blocks and `RESTART_NOTE`, popovers, tooltips, drawers, toasts and the confirm dialog |
+| `grid.js` | the data grid (`dataGrid`), report tables (`renderTable`, `renderPlacedTables`), `renderMappedSections`, `simpleTable`, `pulseRow` |
 | `links.js` | `PAGES` (pages, segments, intros), `SECTION_PAGE_MAP`/`TABLE_PAGE_MAP`, `parseHash`/`formatHash`, `viewIntro`, `pageLink`/`captureLink` |
 | `shell.js` | what is on every view: the health banner, the sidebar's status line, the capture banner |
 | `icons.js` | the icon set: `icon(name, opts)` returns an inline 16px SVG |

@@ -7,7 +7,7 @@
 import { clear, el, state } from "./core.js";
 import { loadInto, loadReport, withWindow } from "./api.js";
 import { codeBlockWithCopy, errorNotice, loadingNode } from "./ui.js";
-import { renderMappedSections, renderTable } from "./grid.js";
+import { headRow, renderMappedSections, renderTable } from "./grid.js";
 import { viewIntro } from "./links.js";
 
 // ======================================================================
@@ -17,13 +17,15 @@ import { viewIntro } from "./links.js";
 export function renderDataQuality(panel) {
   clear(panel);
   viewIntro(panel, "data");
+  var setupBlock = el("section", { class: "report-section" });
+  setupBlock.appendChild(el("h2", { class: "section-title", text: "What this tool installed, and what to expect" }));
   var setupContainer = el("div", { id: "diagnostics-setup" });
-  panel.appendChild(el("h2", { text: "What this tool installed, and what to expect" }));
-  panel.appendChild(setupContainer);
-  loadInto(setupContainer, "/api/setup", renderSetup);
+  setupBlock.appendChild(setupContainer);
+  panel.appendChild(setupBlock);
+  loadInto(setupContainer, "/api/setup", renderSetup, { skeleton: "lines" });
   var sectionContainer = el("div", { id: "diagnostics-sections" });
   panel.appendChild(sectionContainer);
-  sectionContainer.appendChild(loadingNode());
+  sectionContainer.appendChild(loadingNode("Loading the report", "rows"));
   loadReport().then(function (result) {
     clear(sectionContainer);
     if (result.error) {
@@ -34,11 +36,18 @@ export function renderDataQuality(panel) {
   });
 
   // The parse-quality counters, labelled (helptext.diagnostics_table).
-  var countersContainer = el("div", { id: "diagnostics-counters" });
+  var countersContainer = el("section", { class: "report-section", id: "diagnostics-counters" });
   panel.appendChild(countersContainer);
-  loadInto(countersContainer, withWindow("/api/diagnostics"), function (table, target) {
-    target.appendChild(renderTable(table, "diagnostics-counters-table", state.currency));
-  });
+  loadInto(
+    countersContainer,
+    withWindow("/api/diagnostics"),
+    function (table, target) {
+      var title = table.title || "How well your transcripts were read";
+      target.appendChild(headRow(el("h2", { class: "section-title", text: title }), table.help, title));
+      target.appendChild(renderTable(table, "diagnostics-counters-table", state.currency, { heading: false }));
+    },
+    { skeleton: "rows" }
+  );
 }
 
 // ======================================================================
@@ -59,7 +68,7 @@ function renderSetup(data, container) {
   );
   container.appendChild(el("h3", { text: "What it installed and changed" }));
   (data.items || []).forEach(function (item) {
-    var box = el("details", { class: "fix" });
+    var box = el("details", { class: "disclosure" });
     box.appendChild(el("summary", { text: item.title + ": " + item.status }));
     var list = el("dl", { class: "fix-explainer" });
     [["Where", item.where], ["What it does", item.what_it_does], ["Tokens", item.token_cost], ["To undo it", item.undo]].forEach(function (pair) {
@@ -70,6 +79,6 @@ function renderSetup(data, container) {
     container.appendChild(box);
   });
   container.appendChild(el("h3", { text: "Remove everything" }));
-  container.appendChild(el("p", { class: "notes", text: "Shows what it would remove, undo and delete. Run it again without --dry-run to do it; it asks before each step and backs up settings.json first." }));
-  container.appendChild(codeBlockWithCopy(data.uninstall_command));
+  container.appendChild(el("p", { class: "notes", text: "This command shows what it would remove, undo and delete. Run it again without --dry-run to do it: it asks before each step and backs up settings.json first." }));
+  container.appendChild(codeBlockWithCopy(data.uninstall_command, "Command"));
 }

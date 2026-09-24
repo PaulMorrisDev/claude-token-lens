@@ -5,9 +5,9 @@
 
 import { clear, el, state } from "./core.js";
 import { fetchJson, findSection, loadInto, loadReport, postJson, withWindow } from "./api.js";
-import { signedPercent } from "./format.js";
-import { codeBlockWithCopy, emptyState, errorNotice, loadingNode, restartNote } from "./ui.js";
-import { renderMappedSections, renderPlacedTables, renderSectionGeneric, simpleTable } from "./grid.js";
+import { shortTs, signedPercent } from "./format.js";
+import { button, callout, chip, codeBlockWithCopy, commandBlock, emptyState, errorNotice, loadingNode, toast } from "./ui.js";
+import { dataGrid, renderMappedSections, renderPlacedTables, renderSectionGeneric, simpleTable } from "./grid.js";
 import { captureLink, viewIntro } from "./links.js";
 
 // ======================================================================
@@ -21,16 +21,16 @@ export function renderConfig(panel) {
   var driftContainer = el("div", { id: "config-drift" });
   panel.appendChild(el("h2", { text: "Your settings and how they changed" }));
   panel.appendChild(driftContainer);
-  loadInto(driftContainer, withWindow("/api/config-diff?auto_keys=1"), renderConfigDiff);
+  loadInto(driftContainer, withWindow("/api/config-diff?auto_keys=1"), renderConfigDiff, { skeleton: "rows" });
 
   var baselineContainer = el("div", { id: "config-baseline" });
   panel.appendChild(el("h2", { text: "Latest baseline" }));
   panel.appendChild(baselineContainer);
-  loadInto(baselineContainer, "/api/baseline", renderBaseline);
+  loadInto(baselineContainer, "/api/baseline", renderBaseline, { skeleton: "rows" });
 
   var sectionContainer = el("div", { id: "config-sections" });
   panel.appendChild(sectionContainer);
-  sectionContainer.appendChild(loadingNode());
+  sectionContainer.appendChild(loadingNode("Loading the comparison", "rows"));
   loadReport().then(function (result) {
     clear(sectionContainer);
     if (result.error) {
@@ -52,7 +52,13 @@ function renderConfigDiff(data, container) {
   } else if (Array.isArray(data) && data.length) {
     renderPlacedTables(container, data, state.currency, "config-diff");
   } else {
-    container.appendChild(el("p", { class: "notice", text: "No config drift observed across the current snapshot window." }));
+    container.appendChild(
+      emptyState(
+        "Your settings didn't change in this window.",
+        null,
+        "Token Lens notes each change to your Claude Code settings as it happens, and lists it here."
+      )
+    );
   }
 }
 
@@ -63,49 +69,61 @@ function renderConfigDiff(data, container) {
 // this reads that shape directly.
 function renderBaseline(data, container) {
   var status = data && data.capture_status;
-  if (status) {
-    container.appendChild(el("p", { class: "notice", text: status.summary || "" }));
+  if (status && status.summary) {
+    container.appendChild(callout({ tone: "info", text: status.summary }));
   }
 
   var latest = data && data.baseline;
   if (!latest) {
-    container.appendChild(el("p", { class: "notice", text: "No baseline captured yet (see `claude-token-lens baseline`)." }));
+    container.appendChild(
+      emptyState(
+        "No baseline yet: Token Lens hasn't taken a snapshot of your usage to compare later changes against.",
+        null,
+        "Run claude-token-lens baseline to take one."
+      )
+    );
     return;
   }
   if (status && status.started && !status.complete) {
     container.appendChild(
-      el("p", { class: "notice", text: "Capture window open: provisional -- this baseline may change once capture completes." })
+      callout({
+        tone: "info",
+        title: "This may change.",
+        text: "Token Lens is still recording your first sessions, so this baseline may change once that finishes.",
+      })
     );
   }
 
+  function timeCell(row, value) {
+    return el("span", { class: "nowrap", text: value ? shortTs(value) : "-" });
+  }
   var rows = data.history && data.history.length ? data.history : [latest];
-  var table = el("table");
-  var head = el("thead", null, [
-    el("tr", null, ["Project", "Window start", "Window end", "Archetype", "Captured"].map(function (h) {
-      return el("th", { text: h });
-    })),
-  ]);
-  var body = el(
-    "tbody",
-    null,
-    rows.map(function (row) {
-      return el("tr", null, [
+  container.appendChild(
+    dataGrid({
+      id: "config-baseline-grid",
+      caption: "Baselines",
+      columns: [
         // Nit 27: Store.baselines() joins in the owning project's
         // (redacted) slug specifically so this table doesn't have to
         // show the meaningless projects.id primary key -- render that
         // instead of the raw project_id the route used to be the only
         // thing available here.
-        el("td", { text: row.project_slug || "-" }),
-        el("td", { text: row.window_start || "-" }),
-        el("td", { text: row.window_end || "-" }),
-        el("td", { text: row.archetype || "-" }),
-        el("td", { text: row.created_at || "-" }),
-      ]);
+        {
+          key: "project_slug",
+          label: "Project",
+          kind: "str",
+          value: function (row) {
+            return row.project_slug || "-";
+          },
+        },
+        { key: "window_start", label: "From", kind: "str", render: timeCell },
+        { key: "window_end", label: "To", kind: "str", render: timeCell },
+        { key: "archetype", label: "Kind of work", kind: "str", value: function (row) { return row.archetype || "-"; } },
+        { key: "created_at", label: "Taken", kind: "str", render: timeCell },
+      ],
+      rows: rows,
     })
   );
-  table.appendChild(head);
-  table.appendChild(body);
-  container.appendChild(table);
 }
 
 // ======================================================================
@@ -143,7 +161,8 @@ export function renderProfiles(panel) {
 
   // -- save what you have now, so you can compare or go back later --
   var saveCurrentRow = el("div", { class: "profile-actions" });
-  var saveCurrentBtn = el("button", { type: "button", id: "profiles-save-current", text: "Save my current settings as a profile" });
+  var saveCurrentBtn = button("Save my current settings as a profile", { variant: "primary" });
+  saveCurrentBtn.id = "profiles-save-current";
   var saveCurrentStatus = el("span", { class: "notes", role: "status" });
   saveCurrentRow.appendChild(saveCurrentBtn);
   saveCurrentRow.appendChild(saveCurrentStatus);
@@ -173,11 +192,11 @@ export function renderProfiles(panel) {
   panel.appendChild(detailContainer);
   panel.appendChild(el("h2", { text: "Your changes and what they did" }));
   panel.appendChild(impactContainer);
-  loadInto(impactContainer, "/api/impact", renderImpact);
+  loadInto(impactContainer, "/api/impact", renderImpact, { skeleton: "rows" });
   var backtestContainer = el("div", { id: "profiles-backtest" });
   panel.appendChild(el("h2", { text: "Did your estimates come true?" }));
   panel.appendChild(backtestContainer);
-  loadInto(backtestContainer, "/api/backtest", renderBacktest);
+  loadInto(backtestContainer, "/api/backtest", renderBacktest, { skeleton: "rows" });
   var editorDetails = el("details", { class: "advanced-detail" });
   editorDetails.appendChild(el("summary", { text: "Edit settings directly" }));
   editorDetails.appendChild(formContainer);
@@ -196,7 +215,8 @@ export function renderProfiles(panel) {
     });
   }
 
-  var replaceBtn = el("button", { type: "button", text: "Replace the saved copy", hidden: true });
+  var replaceBtn = button("Replace the saved copy");
+  replaceBtn.hidden = true;
   saveCurrentRow.appendChild(replaceBtn);
 
   function saveCurrent(replace) {
@@ -224,6 +244,7 @@ export function renderProfiles(panel) {
       saveCurrentStatus.textContent =
         'Saved as "' + (body.data.name || body.data.id) + '".' +
         (skipped.length ? " Left out, because your organisation's policy sets them: " + skipped.join(", ") + "." : "");
+      toast("Your current settings are saved as a profile.");
       refreshList();
     });
   }
@@ -242,7 +263,7 @@ function renderProfilesList(data, container, detailContainer) {
   var profiles = (data && data.profiles) || [];
   var suggestedId = data && data.suggested_profile_id;
   if (!profiles.length) {
-    container.appendChild(el("p", { class: "notice", text: "No profiles available." }));
+    container.appendChild(emptyState("No profiles yet.", null, "Save your current settings above, or create one from a goal."));
     return;
   }
   var cards = el("div", { class: "profile-cards" });
@@ -250,7 +271,7 @@ function renderProfilesList(data, container, detailContainer) {
     var isSuggested = Boolean(suggestedId) && profile.id === suggestedId;
     var card = el("article", { class: "profile-card" + (isSuggested ? " profile-card-suggested" : "") });
     var head = el("div", { class: "profile-card-head" }, [el("h3", { text: profile.name || profile.id })]);
-    if (isSuggested) head.appendChild(el("span", { class: "badge badge-suggested", text: "Suggested for you" }));
+    if (isSuggested) head.appendChild(chip("Suggested for you", { tone: "accent", icon: "check" }));
     card.appendChild(head);
 
     var meta = [profile.source === "catalogue" ? "Built in" : "Yours"];
@@ -284,12 +305,14 @@ function renderProfilesList(data, container, detailContainer) {
         "Changes " + count + (count === 1 ? " setting" : " settings") + (names.length ? ": " + names.join(", ") + "." : ".");
     });
 
-    var button = el("button", { type: "button", text: "Show what it changes" });
-    button.addEventListener("click", function () {
-      renderProfileDetail(profile, detailContainer);
-      detailContainer.scrollIntoView({ behavior: "smooth", block: "start" });
-    });
-    card.appendChild(button);
+    card.appendChild(
+      button("Show what it changes", {
+        action: function () {
+          renderProfileDetail(profile, detailContainer);
+          detailContainer.scrollIntoView({ behavior: "smooth", block: "start" });
+        },
+      })
+    );
     cards.appendChild(card);
   });
   container.appendChild(cards);
@@ -305,49 +328,60 @@ function _diffRowValue(value) {
   return String(value);
 }
 
+function diffRowSame(row) {
+  return JSON.stringify(row.current_value) === JSON.stringify(row.proposed_value);
+}
+
 // One table for every key the profile sets: plain label, now, after,
 // and the file it would be written to under the chosen scope.
 function renderDiffRowsTable(rows) {
-  var table = el("table", { class: "profile-diff-table" });
-  table.appendChild(
-    el("thead", null, [
-      el(
-        "tr",
-        null,
-        ["Setting", "Now", "After", "Set in"].map(function (h) {
-          return el("th", { text: h });
-        })
-      ),
-    ])
-  );
-  table.appendChild(
-    el(
-      "tbody",
-      null,
-      rows.map(function (row) {
-        var same = JSON.stringify(row.current_value) === JSON.stringify(row.proposed_value);
-        var label = row.label || row.setting || row.key;
-        if (row.agent) label += " (" + row.agent + " agent)";
-        var setting = el("td", null, [el("span", { text: label })]);
-        if (row.description) setting.appendChild(el("div", { class: "cell-hint", text: row.description }));
-        var after = el("td", { text: _diffRowValue(row.proposed_value) });
-        var where = el("td", { text: row.where || row.target_file || "-" });
-        if (row.managed) {
-          after.textContent = _diffRowValue(row.current_value);
-          where.textContent = "Locked by your organisation's policy; not changed";
-        } else if (same) {
-          where.textContent = "Already set; no change";
-        }
-        return el("tr", { class: same || row.managed ? "row-unchanged" : "" }, [
-          setting,
-          el("td", { text: _diffRowValue(row.current_value) }),
-          after,
-          where,
-        ]);
-      })
-    )
-  );
-  return table;
+  return dataGrid({
+    id: "profile-diff-grid",
+    class: "profile-diff-table",
+    caption: "What the profile changes",
+    sortable: false,
+    bar: -1,
+    rowClass: function (row) {
+      return diffRowSame(row) || row.managed ? "row-unchanged" : null;
+    },
+    columns: [
+      {
+        key: "setting",
+        label: "Setting",
+        render: function (row) {
+          var label = row.label || row.setting || row.key;
+          if (row.agent) label += " (" + row.agent + " agent)";
+          var cell = el("span", null, [el("span", { text: label })]);
+          if (row.description) cell.appendChild(el("span", { class: "cell-hint", text: row.description }));
+          return cell;
+        },
+      },
+      {
+        key: "current_value",
+        label: "Now",
+        render: function (row) {
+          return _diffRowValue(row.current_value);
+        },
+      },
+      {
+        key: "proposed_value",
+        label: "After",
+        render: function (row) {
+          return _diffRowValue(row.managed ? row.current_value : row.proposed_value);
+        },
+      },
+      {
+        key: "where",
+        label: "Set in",
+        render: function (row) {
+          if (row.managed) return "Locked by your organisation's policy; not changed";
+          if (diffRowSame(row)) return "Already set; no change";
+          return row.where || row.target_file || "-";
+        },
+      },
+    ],
+    rows: rows,
+  });
 }
 
 function renderProfileDetail(profile, container) {
@@ -379,34 +413,23 @@ function renderProfileDetail(profile, container) {
 
 function renderProfileDiff(data, container) {
   (data.notes || []).forEach(function (note) {
-    container.appendChild(el("p", { class: "notice", text: note }));
+    container.appendChild(callout({ tone: "info", text: note }));
   });
 
   var rows = (data.settings || []).concat(data.agents || [], data.env || []);
   if (rows.length) {
     container.appendChild(renderDiffRowsTable(rows));
   } else {
-    container.appendChild(el("p", { class: "notice", text: "This profile sets nothing." }));
+    container.appendChild(emptyState("This profile doesn't change any setting.", null, "Edit it below to add some."));
   }
 
-  var box = el("div", { class: "fix" });
-  box.appendChild(el("h4", { text: "Ask Claude to do it" }));
-  box.appendChild(el("p", { class: "notes", text: "Paste this into Claude Code. It shows you the diff before saving anything." }));
-  box.appendChild(codeBlockWithCopy(data.prompt));
-  box.appendChild(el("h4", { text: "Or run this command" }));
-  box.appendChild(
-    el("p", {
-      class: "notes",
-      text: "It shows the change without writing anything. Run it again without --dry-run to make the change; the output tells you how to undo it.",
-    })
-  );
-  box.appendChild(codeBlockWithCopy(data.dry_run_command));
-  box.appendChild(restartNote());
-  box.appendChild(el("h4", { text: "Or try it for one session" }));
-  box.appendChild(
-    el("p", {
-      class: "notes",
-      text:
+  container.appendChild(el("h3", { text: "How to use it" }));
+  container.appendChild(
+    commandBlock({
+      prompt: data.prompt,
+      command: data.dry_run_command,
+      trial_command: data.launch_command,
+      trial_note:
         "It saves these settings to a file in this tool's own folder and prints the command that starts " +
         "Claude Code with them on top of yours. Your settings files aren't changed." +
         ((data.agents || []).length || (data.env || []).length
@@ -414,8 +437,6 @@ function renderProfileDiff(data, container) {
           : ""),
     })
   );
-  box.appendChild(codeBlockWithCopy(data.launch_command));
-  container.appendChild(box);
 
   var raw = el("details", { class: "advanced-detail" });
   raw.appendChild(el("summary", { text: "Show the file changes" }));
@@ -527,7 +548,7 @@ function buildProfileEditor(container, schema, profiles, onSaved) {
   var agentBlocks = [];
   var agentsWrap = el("div", { class: "agent-blocks" });
   form.appendChild(agentsWrap);
-  var addAgentBtn = el("button", { type: "button", class: "link-button", text: "Add an agent" });
+  var addAgentBtn = button("Add an agent", { variant: "quiet", icon: "plus" });
   form.appendChild(addAgentBtn);
 
   function addAgentBlock(name, values) {
@@ -545,7 +566,7 @@ function buildProfileEditor(container, schema, profiles, onSaved) {
       return f;
     });
     block.appendChild(grid);
-    var removeBtn = el("button", { type: "button", class: "link-button", text: "Remove this agent" });
+    var removeBtn = button("Remove this agent", { variant: "quiet", icon: "close" });
     var entry = { name: nameField, fields: fields, node: block };
     removeBtn.addEventListener("click", function () {
       agentBlocks.splice(agentBlocks.indexOf(entry), 1);
@@ -571,9 +592,11 @@ function buildProfileEditor(container, schema, profiles, onSaved) {
   });
   form.appendChild(jsonBox);
 
-  var errorNode = el("div", { class: "notice error", role: "alert", hidden: true });
+  var errorNode = el("div", { class: "form-error", hidden: true });
   var statusNode = el("p", { class: "notes", role: "status" });
-  form.appendChild(el("button", { type: "submit", text: "Save profile" }));
+  var submit = button("Save profile", { variant: "primary" });
+  submit.type = "submit";
+  form.appendChild(submit);
   form.appendChild(errorNode);
   form.appendChild(statusNode);
   container.appendChild(form);
@@ -623,14 +646,15 @@ function buildProfileEditor(container, schema, profiles, onSaved) {
   });
 
   function showError(message) {
+    clear(errorNode);
+    errorNode.appendChild(callout({ tone: "critical", title: "The profile wasn't saved.", text: message }));
     errorNode.hidden = false;
-    errorNode.textContent = message;
   }
 
   form.addEventListener("submit", function (event) {
     event.preventDefault();
     errorNode.hidden = true;
-    errorNode.textContent = "";
+    clear(errorNode);
     statusNode.textContent = "";
 
     var doc;
@@ -664,6 +688,7 @@ function buildProfileEditor(container, schema, profiles, onSaved) {
         return;
       }
       statusNode.textContent = 'Saved "' + (respBody.data.name || respBody.data.id) + '". It is in the list above.';
+      toast("Profile saved.");
       if (onSaved) onSaved();
     });
   });
@@ -700,7 +725,7 @@ function renderProfileCreator(container, onSaved) {
       var card = el("article", { class: "profile-card goal-card" });
       card.appendChild(el("h3", { text: goal.title }));
       card.appendChild(el("p", { class: "profile-card-summary", text: goal.what }));
-      var pick = el("button", { type: "button", text: "Start here" });
+      var pick = button("Start here");
       pick.addEventListener("click", function () {
         if (goal.id === "current") {
           var saveBtn = document.getElementById("profiles-save-current");
@@ -722,7 +747,7 @@ function renderProfileCreator(container, onSaved) {
 }
 
 function renderTaskSetups(container) {
-  container.appendChild(loadingNode());
+  container.appendChild(loadingNode("Loading setups", "rows"));
   loadReport().then(function (result) {
     clear(container);
     if (result.error) {
@@ -735,15 +760,16 @@ function renderTaskSetups(container) {
     })[0];
     if (!table || !(table.rows || []).length) {
       container.appendChild(
-        el("p", { class: "notes" }, [
-          el("span", { text: "Nothing yet: this needs the kind of task Claude reports with metrics capture at Essentials or above. " }),
-          captureLink("Turn on metrics capture"),
-        ])
+        emptyState(
+          "Nothing yet: this needs the kind of task Claude reports, which metrics capture records at Essentials or above.",
+          null,
+          captureLink("Turn on metrics capture")
+        )
       );
       return;
     }
     container.appendChild(el("p", { class: "notes", text: "To make a profile from a cheaper setup, pick \"A profile for one kind of task\" above." }));
-    renderPlacedTables(container, [table], state.currency, "profiles");
+    renderPlacedTables(container, [table], state.currency, "profiles", "Best setup for each kind of task");
   });
 }
 
@@ -766,42 +792,84 @@ function renderGoalDraft(draft, container, onSaved) {
   var candidates = draft.candidates || [];
   if (!candidates.length) {
     if (!draft.note) {
-      container.appendChild(el("p", { class: "notice", text: "Nothing to change for this goal " + (draft.period || "in this window") + ": your settings already match what the data supports, or there isn't enough data yet." }));
+      container.appendChild(
+        emptyState(
+          "Nothing to change for this goal " + (draft.period || "in this window") + ": your settings already match what the data supports, or there isn't enough data yet.",
+          null,
+          "Pick a longer window to include more sessions."
+        )
+      );
     }
     return;
   }
   container.appendChild(el("p", { class: "notes", text: "Ticked changes are the ones your data supports. Unticked ones are a trade-off for you to decide." }));
   var total = el("div", { class: "whatif-total", role: "status" });
-  var table = el("table", { class: "data-table goal-table" });
-  var head = el("tr");
-  ["", "Setting", "Now", "After", "Estimated effect", "Why, and the trade-off"].forEach(function (label) {
-    head.appendChild(el("th", { scope: "col", text: label }));
+  var boxes = candidates.map(function (c, i) {
+    return el("input", { type: "checkbox", id: "goal-candidate-" + i, checked: Boolean(c.ticked) });
   });
-  table.appendChild(el("thead", null, [head]));
-  var tbody = el("tbody");
-  var boxes = [];
-  candidates.forEach(function (c, i) {
-    var box = el("input", { type: "checkbox", id: "goal-candidate-" + i, checked: Boolean(c.ticked) });
-    boxes.push(box);
-    var estimate = c.estimate || {};
-    var why = el("td", null, [
-      el("p", { text: c.evidence }),
-      c.tradeoff ? el("p", { class: "notes", text: "Trade-off: " + c.tradeoff }) : null,
-      estimate.basis ? el("p", { class: "notes", text: estimate.fidelity_text + " " + estimate.basis }) : null,
-    ]);
-    tbody.appendChild(
-      el("tr", null, [
-        el("td", null, [box]),
-        el("td", null, [el("label", { for: box.id, text: c.label + (c.agent ? " (" + c.agent + ")" : "") })]),
-        el("td", { text: candidateValueText(c.now) }),
-        el("td", { text: candidateValueText(c.value) }),
-        el("td", { text: estimate.effect_text || "" }),
-        why,
-      ])
-    );
-  });
-  table.appendChild(tbody);
-  container.appendChild(el("div", { class: "table-wrap" }, [table]));
+  container.appendChild(
+    dataGrid({
+      id: "goal-candidates",
+      class: "goal-table",
+      caption: "Changes for this goal",
+      sortable: false,
+      bar: -1,
+      columns: [
+        {
+          key: "__select",
+          label: "Use",
+          render: function (row) {
+            return boxes[row.index];
+          },
+        },
+        {
+          key: "label",
+          label: "Setting",
+          render: function (row) {
+            var c = row.candidate;
+            return el("label", { for: boxes[row.index].id, text: c.label + (c.agent ? " (" + c.agent + ")" : "") });
+          },
+        },
+        {
+          key: "now",
+          label: "Now",
+          render: function (row) {
+            return candidateValueText(row.candidate.now);
+          },
+        },
+        {
+          key: "value",
+          label: "After",
+          render: function (row) {
+            return candidateValueText(row.candidate.value);
+          },
+        },
+        {
+          key: "effect",
+          label: "Estimated effect",
+          render: function (row) {
+            return (row.candidate.estimate || {}).effect_text || "";
+          },
+        },
+        {
+          key: "why",
+          label: "Why, and the trade-off",
+          render: function (row) {
+            var c = row.candidate;
+            var estimate = c.estimate || {};
+            return el("div", { class: "cell-prose" }, [
+              el("p", { text: c.evidence }),
+              c.tradeoff ? el("p", { class: "notes", text: "Trade-off: " + c.tradeoff }) : null,
+              estimate.basis ? el("p", { class: "notes", text: estimate.fidelity_text + " " + estimate.basis }) : null,
+            ]);
+          },
+        },
+      ],
+      rows: candidates.map(function (c, i) {
+        return { index: i, candidate: c };
+      }),
+    })
+  );
   container.appendChild(total);
 
   function chosen() {
@@ -843,7 +911,7 @@ function renderGoalDraft(draft, container, onSaved) {
   var name = el("input", { type: "text", id: "goal-profile-name", value: draft.task ? draft.task + " tasks" : draft.goal.title });
   form.appendChild(el("label", { for: "goal-profile-name", text: "Name" }));
   form.appendChild(name);
-  var save = el("button", { type: "button", text: "Save as a profile" });
+  var save = button("Save as a profile", { variant: "primary" });
   var status = el("span", { class: "notes", role: "status" });
   form.appendChild(save);
   form.appendChild(status);
@@ -871,7 +939,8 @@ function renderGoalDraft(draft, container, onSaved) {
         status.textContent = (body && body.error && body.error.message) || "Could not save the profile.";
         return;
       }
-      status.textContent = "Saved. It's in the list above: pick \"Show what it changes\" for the prompt and the command that apply it.";
+      status.textContent = "Saved. It's in the list above: pick \"Show what it changes\" for the prompt and the command that make the change.";
+      toast("Profile saved.");
       if (onSaved) onSaved(body.data.id);
     });
   });
@@ -926,7 +995,7 @@ function renderImpact(data, container) {
     var change = item.change || {};
     var card = el("article", { class: "rec impact-card" });
     card.appendChild(el("h3", { text: change.label + (change.reverted ? " (since undone)" : "") }));
-    card.appendChild(el("p", { class: "profile-card-meta", text: String(change.ts || "").replace("T", " ").replace("Z", " UTC") + (change.keys && change.keys.length ? " · " + change.keys.join(", ") : "") }));
+    card.appendChild(el("p", { class: "profile-card-meta", text: shortTs(change.ts) + (change.keys && change.keys.length ? " · " + change.keys.join(", ") : "") }));
     if (item.gate) {
       card.appendChild(emptyState(item.verdict, item.gate));
     } else {
@@ -1018,7 +1087,7 @@ function renderBacktest(data, container) {
       predictions.map(function (row) {
         return [
           row.agent ? row.agent + ": " + row.measure_key : row.measure_key,
-          String(row.ts || "").replace("T", " ").replace("Z", " UTC"),
+          shortTs(row.ts),
           row.predicted_text,
           row.measured_text || "—",
           row.verdict_text,

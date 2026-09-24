@@ -4,13 +4,12 @@
  */
 
 import { clear, el, state } from "./core.js";
-import { formatCell, thousands } from "./format.js";
+import { compactNumber, formatCell, fullValue, moneyParts, thousands } from "./format.js";
 import { fetchJson, findSection, loadInto, loadReport, withWindow } from "./api.js";
-import { errorNotice, loadingNode } from "./ui.js";
+import { emptyState, errorNotice, loadingNode, SEVERITY_ORDER, severityChip, tile, tileRow } from "./ui.js";
 import { renderTable } from "./grid.js";
 import { pageLink, viewIntro } from "./links.js";
 import { renderHealth } from "./shell.js";
-import { SEVERITY_ORDER, severityChip } from "./page-actions.js";
 
 var LEVEL_LABELS = { 5: "excellent", 4: "good", 3: "fair", 2: "poor", 1: "very poor" };
 
@@ -62,7 +61,7 @@ function boundInWords(bound) {
 function renderScorecardTiles(container, scorecardSection) {
   var tiles = el("div", { class: "tiles" });
   if (!scorecardSection) {
-    container.appendChild(el("p", { class: "notice", text: "No scorecard data for this window." }));
+    container.appendChild(emptyState("No scorecard for this window: it had no sessions to rate.", null, "Pick a longer window."));
     return;
   }
   var dimTable = (scorecardSection.tables || []).filter(function (t) {
@@ -150,7 +149,7 @@ function severityRank(severity) {
 
 function renderStartHereRecommendations(container) {
   clear(container);
-  container.appendChild(loadingNode());
+  container.appendChild(loadingNode("Loading recommendations"));
   fetchJson(withWindow("/api/recommendations")).then(function (result) {
     clear(container);
     var body = result.body;
@@ -221,28 +220,25 @@ function renderStartHereWeakAreas(container, scorecardSection) {
 }
 
 function renderSummaryCards(summary, container) {
-  var cards = el("div", { class: "stat-cards" });
-  // [label, value, what it counts]
-  var items = [
-    ["Sessions", thousands(summary.sessions || 0), "Conversations you started."],
-    ["Transcripts", thousands(summary.transcripts || 0), "One per session and one per subagent run."],
-    ["Cost", formatCell(summary.total_cost, "money", state.currency), "At list price for the tokens used."],
-    ["Tokens", formatCell(summary.total_tokens, "tokens"), "Every token, including cheap cache reads."],
-  ];
-  items.forEach(function (item) {
-    cards.appendChild(
-      el("div", { class: "stat-card" }, [
-        el("div", { class: "stat-label", text: item[0] }),
-        el("div", { class: "stat-value", text: item[1] }),
-        el("div", { class: "stat-hint", text: item[2] }),
-      ])
-    );
-  });
-  container.appendChild(cards);
+  var cost = moneyParts(summary.total_cost);
+  var tokens = el("span", { text: compactNumber(summary.total_tokens || 0), title: fullValue(summary.total_tokens, "tokens") || null });
+  container.appendChild(
+    tileRow([
+      tile({ label: "Sessions", value: thousands(summary.sessions || 0), hint: "Conversations you started." }),
+      tile({ label: "Transcripts", value: thousands(summary.transcripts || 0), hint: "One per session and one per subagent run." }),
+      tile({
+        label: "Cost",
+        value: cost.value,
+        unit: cost.unit,
+        hint: cost.secondary || "At list price for the tokens used.",
+      }),
+      tile({ label: "Tokens", value: tokens, hint: "Every token, including cheap cache reads." }),
+    ])
+  );
 }
 
 function renderOverviewSummary(container) {
-  return loadInto(container, withWindow("/api/summary"), renderSummaryCards);
+  return loadInto(container, withWindow("/api/summary"), renderSummaryCards, { skeleton: "tiles" });
 }
 
 export function renderOverview(panel) {
@@ -258,7 +254,7 @@ export function renderOverview(panel) {
   // scorecard area rated poor or worse (filled in with the report).
   var startHere = el("section", { class: "start-here", id: "overview-start-here" });
   startHere.appendChild(el("h2", { text: "Start here" }));
-  var startRecs = el("div", null, [loadingNode()]);
+  var startRecs = el("div", null, [loadingNode("Loading recommendations")]);
   var startWeak = el("div");
   startHere.appendChild(startRecs);
   startHere.appendChild(startWeak);
@@ -314,7 +310,7 @@ export function renderOverview(panel) {
         // Cost by model is on Spend, Usage (links.js's TABLE_PAGE_MAP).
         if (totalsTable) totalsContainer.appendChild(renderTable(totalsTable, "overview-totals-table", state.currency));
       } else {
-        totalsContainer.appendChild(el("p", { class: "notice", text: "No overview section in this report." }));
+        totalsContainer.appendChild(emptyState("No totals for this window: it had no sessions.", null, "Pick a longer window."));
       }
     });
   }

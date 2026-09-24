@@ -133,3 +133,20 @@ def test_ui_sentences_are_short() -> None:
         if len(sentence.split()) > MAX_SENTENCE_WORDS
     ]
     assert bad == [], "\n".join(bad)
+
+
+def test_no_amount_is_written_in_raw_usd() -> None:
+    """Phase 4: amounts follow the billing mode through format.js
+    (money, moneyText, currencyAmount), so no page writes "12.34 USD"
+    itself. "USD" appears only as the currency code format.js and
+    core.js compare against; a grid's money column carries its unit in
+    the header (moneyUnit)."""
+    found = [
+        (path.name, line, text)
+        for path in _modules()
+        for line, text in _string_literals(path.read_text(encoding="utf-8"))
+        if "USD" in text
+    ]
+    assert found, "the scan should see the currency code"
+    bad = [f"{name}:{line}: {text!r}" for name, line, text in found if text != "USD" or name not in {"format.js", "core.js"}]
+    assert bad == [], "\n".join(bad)

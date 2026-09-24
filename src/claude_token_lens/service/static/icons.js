@@ -57,6 +57,7 @@ var PATHS = {
   close: '<path d="m4 4 8 8M12 4l-8 8"/>',
   check: '<path d="m3.5 8.5 3 3 6-7"/>',
   minus: '<path d="M3.5 8h9"/>',
+  plus: '<path d="M8 3.5v9M3.5 8h9"/>',
   copy:
     '<rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/>' +
     '<path d="M10.5 5.5V4A1.5 1.5 0 0 0 9 2.5H4A1.5 1.5 0 0 0 2.5 4v5A1.5 1.5 0 0 0 4 10.5h1.5"/>',

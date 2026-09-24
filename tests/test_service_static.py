@@ -331,7 +331,9 @@ def test_no_button_label_or_handler_says_apply() -> None:
     index_html = _static_text("index.html")
 
     button_labels = re.findall(r'el\("button",\s*\{[\s\S]*?text:\s*"([^"]*)"', app_js)
+    button_labels += re.findall(r'\bbutton\(\s*"([^"]*)"', app_js)
     button_labels += re.findall(r"<button\b[^>]*>([^<]*)</button>", index_html)
+    assert len(button_labels) >= 20, button_labels  # the scan sees the button() helper's calls
     offenders = [label for label in button_labels if re.match(r"(?i)^apply\b", label)]
     assert not offenders, f"a button label starts with \"Apply\": {offenders!r}"
 
@@ -344,6 +346,38 @@ def test_no_button_label_or_handler_says_apply() -> None:
     assert not apply_handlers, f"the dashboard has an apply-named button/handler identifier: {apply_handlers!r}"
 
     assert "apply_command" not in app_js, "the dashboard must not read the removed data.apply_command fallback"
+
+    # The ui.js helper every new button goes through refuses the label
+    # outright, so a label built at run time can't slip past the scan.
+    helper = _function_source(app_js, "button")
+    assert "/^\\s*apply\\b/i.test(label" in helper, helper
+    assert "throw new Error" in helper
+
+
+def test_data_grid_keeps_each_tables_sort() -> None:
+    """Phase 4: a sort the reader picks is stored per table
+    (tls:sort:<table>) and read back when the grid draws again, so it
+    survives a window change or a reload. Before, it was written but
+    never read."""
+    grid = _function_source(_app_js(), "dataGrid")
+    read = 'readJson("tls:sort:" + gridId)'
+    write = 'storageSet("tls:sort:" + gridId, JSON.stringify(sort))'
+    assert read in grid, "dataGrid never reads the stored sort"
+    assert write in grid, "dataGrid never stores the sort"
+    assert grid.index(read) < grid.index(write)
+
+
+def test_command_block_shows_every_explainer_line() -> None:
+    """Phase 4: a command block carries what changes, where, the
+    trade-off and how to undo it -- the explainer fixes.build_fix
+    writes (test_spawn_parts and test_fixes pin its headings). The block
+    renders every pair as a definition list, whatever the headings, so
+    none is dropped on the way to the page."""
+    block = _function_source(_app_js(), "commandBlock")
+    assert "fix.explainer.forEach(function (pair)" in block, block
+    assert 'el("dt", { text: pair[0] })' in block
+    assert 'el("dd", { text: pair[1] })' in block
+    assert 'class: "fix-explainer"' in block
 
 
 def test_habits_playbook_caps_featured_cards_and_collapses_the_rest() -> None:
@@ -1035,10 +1069,17 @@ def _loadinto_named_render_callbacks(app_js: str) -> list[str]:
     inline `function (data, container) {...}` literals `loadInto` is also
     called with."""
     names = []
+    # loadInto's own body calls itself again to retry, passing its own
+    # `render` parameter on: that is not a render callback's name.
+    own_body = _function_source(app_js, "loadInto")
+    own_start = app_js.index(own_body)
+    own_end = own_start + len(own_body)
     for match in re.finditer(r"loadInto\(", app_js):
         # Skip `function loadInto(container, url, render, options) {...}`
         # itself -- its own parameter list isn't a call site.
         if app_js[: match.start()].rstrip().endswith("function"):
+            continue
+        if own_start <= match.start() < own_end:
             continue
         open_paren = match.end() - 1
         depth = 0
@@ -1480,3 +1521,58 @@ def test_empty_state_helper_exists_and_is_used_for_not_enough_data_states() -> N
     backtest_fn = _function_source(app_js, "renderBacktest")
     assert "emptyState(\"No estimates logged yet" in backtest_fn
 
+
+
+def test_service_text_amounts_are_brought_in_line_as_they_arrive() -> None:
+    """Phase 4: the service writes an amount the CLI's way ("1,962.05
+    USD"); the dashboard writes "$1,962.05" everywhere. fetchJson runs
+    every response through format.js's readableAmounts, so text from any
+    route reads like the dashboard's own amounts, and a unit in a label
+    reads "($)". Other currencies already read the same both ways."""
+    app_js = _app_js()
+    fetch_source = _function_source(app_js, "fetchJson")
+    assert "readableAmounts(body)" in fetch_source
+    format_js = _static_text("format.js")
+    service_usd = re.search(r"var SERVICE_USD = /(.+)/g;", format_js)
+    assert service_usd, "format.js should define SERVICE_USD"
+    assert service_usd.group(1).endswith(r") USD\b"), service_usd.group(1)  # "1,962.05 USD", not "USD prices"
+    assert "\u2212" in service_usd.group(1), "a true minus sign before the number is carried over"
+    assert r"var SERVICE_USD_UNIT = /\(USD\)/g;" in format_js
+    helper = _function_source(app_js, "readableAmounts")
+    assert 'if (value.indexOf("USD") === -1) return value;' in helper
+    assert "Object.keys(value).forEach" in helper  # values only: keys stay as the service sent them
+
+
+def test_overlays_give_focus_back_to_what_opened_them() -> None:
+    """Phase 4: the drawer, the confirm dialog and every popover return
+    focus to the control that opened them, and a popover moves focus to
+    its first control that can take it (a disabled box can't: the
+    chooser's first column always shows, so its box is disabled)."""
+    app_js = _app_js()
+    for name in ("drawer", "confirmDialog"):
+        source = _function_source(app_js, name)
+        assert "var opener = document.activeElement;" in source, name
+        assert "opener.isConnected && opener.focus" in source, name
+    popover = _function_source(app_js, "popoverButton")
+    assert "anchorButton.focus()" in popover
+    assert "input:not([disabled])" in popover and "button:not([disabled])" in popover
+
+
+def test_evidence_row_pulse_moves_only_opacity_and_holds_under_reduced_motion() -> None:
+    """An evidence link's target row glows and fades. UI motion is
+    transform and opacity only, so the glow is a layer whose opacity
+    moves, never the cell background. Under reduced motion the glow holds
+    still until the next click or key, instead of vanishing on a timer
+    before a slow reader finds the row."""
+    app_css = _static_text("app.css")
+    keyframes = re.search(r"@keyframes row-pulse \{(.*?)\n\}", app_css, re.S)
+    assert keyframes, "row-pulse keyframes missing"
+    properties = set(re.findall(r"([a-z-]+)\s*:", keyframes.group(1)))
+    assert properties == {"opacity"}, properties
+    assert re.search(r"tr\.row-target > td::before \{[^}]*animation: row-pulse", app_css)
+    reduced = app_css[app_css.index("@media (prefers-reduced-motion: reduce)") :]
+    assert re.search(r"tr\.row-target > td::before \{\s*opacity: 1;\s*animation: none;", reduced)
+    pulse = _function_source(_app_js(), "pulseRow")
+    assert "if (motionOK())" in pulse
+    assert 'addEventListener("pointerdown", clearTarget, true)' in pulse
+    assert 'addEventListener("keydown", clearTarget, true)' in pulse

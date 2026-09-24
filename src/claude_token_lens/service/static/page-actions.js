@@ -4,10 +4,11 @@
  */
 
 import { clear, el, state } from "./core.js";
-import { icon } from "./icons.js";
 import { fetchJson, findSection, loadInto, loadReport, withWindow } from "./api.js";
 import {
   AGENT_LABELS,
+  button,
+  callout,
   emptyState,
   errorNotice,
   loadingNode,
@@ -15,6 +16,9 @@ import {
   renderFixList,
   renderTips,
   SCOPE_LABELS,
+  SEVERITY_LABELS,
+  SEVERITY_ORDER,
+  severityChip,
   statusBadge,
 } from "./ui.js";
 import { formatEvidenceValue, simpleTable } from "./grid.js";
@@ -24,20 +28,6 @@ import { viewIntro } from "./links.js";
 // Actions, Recommendations
 // ======================================================================
 
-export var SEVERITY_ORDER = ["action", "advice", "info"];
-
-export var SEVERITY_LABELS = { action: "Do this", advice: "Worth considering", info: "For your information" };
-var SEVERITY_ICONS = { action: "critical", advice: "warning", info: "info" };
-
-// A recommendation's severity as a chip: the icon and the label carry
-// it, the tint only repeats them (WCAG 1.4.1).
-export function severityChip(severity) {
-  var chip = el("span", { class: "severity-badge severity-" + severity });
-  chip.appendChild(icon(SEVERITY_ICONS[severity] || "info", { size: 14 }));
-  chip.appendChild(el("span", { text: SEVERITY_LABELS[severity] || severity }));
-  return chip;
-}
-
 export function renderRecommendations(panel) {
   clear(panel);
   viewIntro(panel, "actions/recommendations");
@@ -45,7 +35,7 @@ export function renderRecommendations(panel) {
   var container = el("div", { id: "recommendations-list" });
   panel.appendChild(noticeContainer);
   panel.appendChild(container);
-  container.appendChild(loadingNode());
+  container.appendChild(loadingNode("Loading recommendations", "rows"));
 
   // v0.3: same "capture window open: provisional" notice the Settings
   // baseline panel shows (docs/api.md's /api/baseline
@@ -56,7 +46,11 @@ export function renderRecommendations(panel) {
     if (status && status.started && !status.complete) {
       clear(noticeContainer);
       noticeContainer.appendChild(
-        el("p", { class: "notice", text: "Capture window open: provisional -- recommendations below may change once capture completes." })
+        callout({
+          tone: "info",
+          title: "These may change.",
+          text: "Token Lens is still recording your first sessions, so the recommendations below may change once that finishes.",
+        })
       );
     }
   });
@@ -76,7 +70,13 @@ export function renderRecommendations(panel) {
 
 function renderRecommendationCards(recommendations, container, report) {
   if (!recommendations.length) {
-    container.appendChild(el("p", { class: "notice", text: "No recommendations for this window — nothing stood out." }));
+    container.appendChild(
+      emptyState(
+        "Nothing to change in this window: no setting or habit stood out.",
+        null,
+        "Pick a longer window to check more sessions."
+      )
+    );
     return;
   }
   var bySeverity = {};
@@ -139,7 +139,12 @@ function renderRecommendationCard(rec, report) {
 
   var fixes = rec.fixes || [];
   if (rec.scope === "managed") {
-    card.appendChild(el("p", { class: "notice", text: "Managed by policy — raise with your administrator." }));
+    card.appendChild(
+      callout({
+        tone: "info",
+        text: "Your organisation's policy sets this, so you can't change it yourself. Raise it with your administrator.",
+      })
+    );
   } else if (rec.lever && !fixes.length) {
     card.appendChild(el("p", { text: "Setting to change: " + rec.lever + " (" + (SCOPE_LABELS[rec.scope] || rec.scope) + ")" }));
   }
@@ -174,11 +179,16 @@ export function renderQuickActions(panel) {
   viewIntro(panel, "actions/checks");
   var list = el("div", { class: "quick-list" });
   panel.appendChild(list);
-  loadInto(list, withWindow("/api/quick-actions"), function (data, container) {
-    (data.checks || []).forEach(function (check) {
-      container.appendChild(renderQuickCard(check));
-    });
-  });
+  loadInto(
+    list,
+    withWindow("/api/quick-actions"),
+    function (data, container) {
+      (data.checks || []).forEach(function (check) {
+        container.appendChild(renderQuickCard(check));
+      });
+    },
+    { skeleton: "rows" }
+  );
 }
 
 function renderQuickCard(check) {
@@ -196,23 +206,20 @@ function renderQuickCard(check) {
     if (check.fix_count) extras.push(check.fix_count + (check.fix_count === 1 ? " fix" : " fixes"));
     if (check.tip_count) extras.push(check.tip_count + (check.tip_count === 1 ? " tip" : " tips"));
     var what = "the evidence" + (extras.length === 2 ? ", " + extras.join(" and ") : extras.length ? " and " + extras[0] : "");
-    var button = el("button", {
-      type: "button",
-      text: "Show " + what,
-      "aria-expanded": "false",
-    });
+    var toggle = button("Show " + what, { icon: "chevron-down", class: "disclosure-button" });
+    toggle.setAttribute("aria-expanded", "false");
     var loaded = false;
-    button.addEventListener("click", function () {
-      var open = button.getAttribute("aria-expanded") === "true";
-      button.setAttribute("aria-expanded", open ? "false" : "true");
-      button.textContent = (open ? "Show " : "Hide ") + what;
+    toggle.addEventListener("click", function () {
+      var open = toggle.getAttribute("aria-expanded") === "true";
+      toggle.setAttribute("aria-expanded", open ? "false" : "true");
+      toggle.querySelector(".button-label").textContent = (open ? "Show " : "Hide ") + what;
       detail.hidden = open;
       if (!loaded) {
         loaded = true;
         loadInto(detail, withWindow("/api/quick-actions/" + encodeURIComponent(check.id)), renderQuickDetail);
       }
     });
-    card.appendChild(button);
+    card.appendChild(toggle);
   }
   card.appendChild(detail);
   return card;

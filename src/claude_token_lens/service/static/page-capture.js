@@ -6,24 +6,54 @@
  */
 
 import { clear, el } from "./core.js";
-import { formatCell, thousands } from "./format.js";
+import { currencyAmount, formatCell, thousands } from "./format.js";
 import { loadInto, postJson } from "./api.js";
-import { codeBlockWithCopy, errorNotice } from "./ui.js";
+import { button, callout, chip, codeBlockWithCopy, confirmDialog, emptyState, errorNotice, toast } from "./ui.js";
 import { simpleTable } from "./grid.js";
 import { viewIntro } from "./links.js";
 import { capturePoll, showCaptureData } from "./shell.js";
 
 // -- Setup, Capture ---------------------------------------------------
 
+// The billing mode capture's amounts were phrased for (/api/capture's
+// billing.mode), set each time the page draws.
+var captureBilling = "";
+
+// An amount /api/capture phrased for the billing mode ({usd, text}). On
+// pay-per-token billing it reads the way every other page writes money
+// ("$1.29 a week"); on a plan the service's phrase stands, because only
+// the service knows the share of the weekly limit it comes to.
+function billed(amount, period, prefix) {
+  if (!amount) return "";
+  if (captureBilling === "api" && typeof amount.usd === "number") {
+    if (amount.usd <= 0) return "nothing";
+    return (prefix || "") + currencyAmount(amount.usd) + (period ? " " + period : "");
+  }
+  return amount.text || "";
+}
+
 export function renderCapture(panel) {
   clear(panel);
   viewIntro(panel, "setup/capture");
   var container = el("div", { id: "capture-content" });
   panel.appendChild(container);
-  loadInto(container, "/api/capture", function (data, target) {
-    showCaptureData(data);
-    renderCaptureData(data, target);
-  });
+  loadInto(
+    container,
+    "/api/capture",
+    function (data, target) {
+      showCaptureData(data);
+      renderCaptureData(data, target);
+    },
+    { skeleton: "lines" }
+  );
+}
+
+// One part of the page: an h2, then its body.
+function captureBlock(container, title) {
+  var block = el("section", { class: "report-section" });
+  block.appendChild(el("h2", { class: "section-title", text: title }));
+  container.appendChild(block);
+  return block;
 }
 
 function levelMetricIds(data) {
@@ -70,37 +100,12 @@ function titlesOf(data, ids) {
     .join(", ");
 }
 
-// The cost warning again, before anything that uses more tokens. A
-// native <dialog> when the browser has one, else confirm().
+// The cost warning again, before anything that uses more tokens: a
+// modal dialog (ui.js's confirmDialog) with Cancel focused.
 function confirmCapture(title, lines, onYes) {
-  var text = lines.filter(Boolean);
-  if (typeof HTMLDialogElement === "undefined") {
-    if (window.confirm(title + "\n\n" + text.join("\n\n"))) onYes();
-    return;
-  }
-  var dialog = el("dialog", { class: "capture-dialog", "aria-labelledby": "capture-dialog-title" });
-  dialog.appendChild(el("h3", { id: "capture-dialog-title", text: title }));
-  text.forEach(function (line) {
-    dialog.appendChild(el("p", { text: line }));
+  confirmDialog({ title: title, lines: lines.filter(Boolean), yes: "Go ahead", no: "Cancel" }).then(function (ok) {
+    if (ok) onYes();
   });
-  var yes = el("button", { type: "button", class: "capture-button primary", text: "Go ahead" });
-  var no = el("button", { type: "button", class: "capture-button", text: "Cancel" });
-  dialog.appendChild(el("div", { class: "dialog-actions" }, [no, yes]));
-  function close() {
-    dialog.close();
-    dialog.remove();
-  }
-  yes.addEventListener("click", function () {
-    close();
-    onYes();
-  });
-  no.addEventListener("click", close);
-  dialog.addEventListener("cancel", function () {
-    dialog.remove();
-  });
-  document.body.appendChild(dialog);
-  dialog.showModal();
-  no.focus();
 }
 
 function captureStatus(container) {
@@ -112,7 +117,7 @@ function postCapture(change, container, doneText) {
   var status = captureStatus(container);
   if (status) {
     clear(status);
-    status.appendChild(el("p", { class: "loading", text: "Saving…" }));
+    status.appendChild(el("p", { class: "status-text", text: "Saving…" }));
   }
   postJson("/api/capture", change).then(function (result) {
     var body = result.body;
@@ -131,25 +136,19 @@ function postCapture(change, container, doneText) {
     showCaptureData(body.data);
     clear(container);
     renderCaptureData(body.data, container);
+    var message = body.data.changed
+      ? doneText + " It takes effect in sessions and subagents started from now on."
+      : "Nothing changed: it was already set that way.";
     var fresh = captureStatus(container);
-    if (fresh) {
-      fresh.appendChild(
-        el("div", { class: "notice" }, [
-          el("p", {
-            text: body.data.changed
-              ? doneText + " It takes effect in sessions and subagents started from now on."
-              : "Nothing changed: it was already set that way.",
-          }),
-        ])
-      );
-    }
+    if (fresh) fresh.appendChild(callout({ tone: body.data.changed ? "success" : "info", text: message }));
+    if (body.data.changed) toast(doneText, { tone: "success" });
   });
 }
 
 function estimateLine(estimate) {
   if (!estimate) return "";
   var share = estimate.share_text ? ", " + estimate.share_text + " of what you spent" : "";
-  return "About " + estimate.tokens_text + " tokens and " + (estimate.text || "") + share + ".";
+  return "About " + estimate.tokens_text + " tokens and " + billed(estimate, "a week") + share + ".";
 }
 
 function roughLine(rough) {
@@ -164,35 +163,36 @@ function roughLine(rough) {
 
 function renderCaptureData(data, container) {
   var config = data.config || {};
-  container.appendChild(el("div", { class: "notice capture-warning" }, [el("p", { text: data.warning })]));
+  captureBilling = (data.billing && data.billing.mode) || "";
+  container.appendChild(callout({ tone: "warning", text: data.warning, class: "capture-warning" }));
   container.appendChild(el("div", { class: "capture-status", role: "status", "aria-live": "polite" }));
 
   // Where it stands now.
-  container.appendChild(el("h2", { text: "Now" }));
+  var nowBlock = captureBlock(container, "Now");
   var now = [el("strong", { text: "Metrics capture: " + config.describe + ". " })];
   if (config.expired) now.push(el("span", { text: "Its end time has passed, so nothing is captured now. " }));
   if (config.projects_limited) now.push(el("span", { text: "Only some projects are captured ([capture] projects in config.toml). " }));
-  container.appendChild(el("p", {}, now));
+  nowBlock.appendChild(el("p", {}, now));
   var measured = data.measured;
   if (measured) {
     if (measured.sessions || measured.subagents) {
       var lines = [
         "Measured since " + (measured.since || "").slice(0, 10) + ": " + measured.sessions + " sessions and " + measured.subagents + " subagents captured.",
-        "About " + thousands(measured.note_tokens) + " tokens of note and " + thousands(measured.tag_tokens) + " tokens of tag: " + (measured.text || "") + (measured.share_text ? ", " + measured.share_text + " of what those sessions cost." : "."),
+        "About " + thousands(measured.note_tokens) + " tokens of note and " + thousands(measured.tag_tokens) + " tokens of tag: " + billed(measured) + (measured.share_text ? ", " + measured.share_text + " of what those sessions cost." : "."),
       ];
       if (measured.coverage_text) {
         lines.push("Claude tagged " + measured.coverage_text + " of your messages" + (measured.report_coverage_pct !== null ? " and " + formatCell(measured.report_coverage_pct, "pct") + " of agent reports." : "."));
       }
-      container.appendChild(el("ul", { class: "notes" }, lines.map(function (line) {
+      nowBlock.appendChild(el("ul", { class: "notes" }, lines.map(function (line) {
         return el("li", { text: line });
       })));
       var scopeNames = { main: "Main session", subagent: "Subagents", tool: "After tool results", brief: "Agent briefs" };
       var scopeRows = Object.keys(measured.scopes || {}).map(function (key) {
         var scope = measured.scopes[key];
-        return [scopeNames[key] || key, thousands(scope.note_tokens), thousands(scope.tag_tokens), scope.text];
+        return [scopeNames[key] || key, thousands(scope.note_tokens), thousands(scope.tag_tokens), billed(scope)];
       });
       if (scopeRows.length) {
-        container.appendChild(
+        nowBlock.appendChild(
           simpleTable(
             [{ label: "Where" }, { label: "Note tokens" }, { label: "Tag tokens" }, { label: "Cost" }],
             scopeRows,
@@ -201,46 +201,56 @@ function renderCaptureData(data, container) {
         );
       }
     } else {
-      container.appendChild(el("p", { text: "No captured sessions yet: the note is added to sessions and subagents started after capture was turned on." }));
+      nowBlock.appendChild(
+        emptyState(
+          "No captured sessions yet: the note is added to sessions and subagents started after capture was turned on.",
+          null,
+          "Start a new Claude Code session to see the first figures here."
+        )
+      );
     }
   }
   if (data.roi && data.roi.cost && data.roi.cost.usd > 0) {
     // UX-2: roi.cost.text/roi.value.text already carry their own
     // "about" (capture_view.py's _roi) -- not repeated here, or a
-    // subscription's would double into "about about X%...".
+    // subscription's would double into "about about X%...". billed()
+    // adds it back only when it writes the amount itself.
     var roiText = data.roi.measured
-      ? "Capture cost " + data.roi.cost.text + "; suggestions that rely on it are worth " + data.roi.value.text + "."
-      : "Capture cost " + data.roi.cost.text + "; nothing measured yet relies on it.";
-    container.appendChild(el("p", { class: "notes", text: roiText }));
+      ? "Capture cost " + billed(data.roi.cost, "a week", "about ") + "; suggestions that rely on it are worth " + billed(data.roi.value, "a week", "about ") + "."
+      : "Capture cost " + billed(data.roi.cost, "a week", "about ") + "; nothing measured yet relies on it.";
+    nowBlock.appendChild(el("p", { class: "notes", text: roiText }));
   }
   if (data.history && data.history.sessions) {
-    container.appendChild(
+    nowBlock.appendChild(
       el("p", {
         class: "notes",
         text: "Estimates replay your last " + data.history.days + " days: " + data.history.sessions + " sessions and " + data.history.subagents + " subagents, as if capture had been on.",
       })
     );
   }
-  if (data.billing && data.billing.basis) container.appendChild(el("p", { class: "notes", text: data.billing.basis }));
+  if (data.billing && data.billing.basis) nowBlock.appendChild(el("p", { class: "notes", text: data.billing.basis }));
 
   // Hook entries Claude Code needs to run for the chosen metrics.
   var hooks = data.hooks || {};
   if (hooks.ok === false && hooks.blocked_by) {
     // A settings policy stops Claude Code running these hooks at all;
     // 'capture connect' can't change that, so it isn't offered.
-    container.appendChild(el("div", { class: "notice error" }, [el("p", { text: hooks.summary })]));
+    nowBlock.appendChild(callout({ tone: "critical", text: hooks.summary }));
   } else if (hooks.ok === false) {
-    container.appendChild(
-      el("div", { class: "notice error" }, [
-        el("p", { text: hooks.summary }),
-        (hooks.missing || []).length > 1
-          ? el("ul", {}, hooks.missing.map(function (entry) {
-              return el("li", { text: "Missing: " + entry });
-            }))
-          : null,
-        el("p", { text: "This page never changes Claude Code's settings.json. This command shows the change and asks before making it; it backs the file up first, and 'claude-token-lens capture remove' takes the entries out again." }),
-        codeBlockWithCopy(hooks.connect_command),
-      ])
+    nowBlock.appendChild(
+      callout({
+        tone: "critical",
+        text: hooks.summary,
+        children: [
+          (hooks.missing || []).length > 1
+            ? el("ul", {}, hooks.missing.map(function (entry) {
+                return el("li", { text: "Missing: " + entry });
+              }))
+            : null,
+          el("p", { text: "This page never changes Claude Code's settings.json. This command shows the change and asks before making it; it backs the file up first, and 'claude-token-lens capture remove' takes the entries out again." }),
+          codeBlockWithCopy(hooks.connect_command, "Command"),
+        ],
+      })
     );
   }
 
@@ -251,13 +261,13 @@ function renderCaptureData(data, container) {
 
 function renderCaptureLevels(data, container) {
   var config = data.config || {};
-  container.appendChild(el("h2", { text: "Level" }));
-  container.appendChild(el("p", { class: "notes", text: "Each level adds to the one before. Estimates are per week, from your own sessions" + (config.sample < 100 ? ", with " + config.sample + "% of sessions captured" : "") + "." }));
+  var block = captureBlock(container, "Level");
+  block.appendChild(el("p", { class: "notes", text: "Each level adds to the one before. Estimates are per week, from your own sessions" + (config.sample < 100 ? ", with " + config.sample + "% of sessions captured" : "") + "." }));
   var grid = el("div", { class: "capture-levels", role: "list" });
   (data.levels || []).forEach(function (level) {
     var card = el("div", { class: "capture-level" + (level.current ? " current" : ""), role: "listitem" });
     var head = el("div", { class: "capture-level-head" }, [el("strong", { text: level.title })]);
-    if (level.current) head.appendChild(el("span", { class: "badge badge-suggested", text: "Current" }));
+    if (level.current) head.appendChild(chip("Current", { tone: "accent", icon: "check" }));
     card.appendChild(head);
     card.appendChild(el("p", { text: level.summary }));
     var cost;
@@ -267,8 +277,8 @@ function renderCaptureLevels(data, container) {
     if (cost) card.appendChild(el("p", { class: "capture-cost", text: cost }));
     if (level.adds && level.adds.length) card.appendChild(el("p", { class: "notes", text: "Adds: " + level.adds.join(", ") + "." }));
     if (level.id !== "custom" && !level.current) {
-      var button = el("button", { type: "button", class: "capture-button", text: level.id === "off" ? "Switch off" : "Switch to " + level.title });
-      button.addEventListener("click", function () {
+      var switchButton = button(level.id === "off" ? "Switch off" : "Switch to " + level.title, { class: "capture-button" });
+      switchButton.addEventListener("click", function () {
         var before = config.metrics || [];
         var added = costlyAdditions(data, before, level.metrics);
         var send = function () {
@@ -284,11 +294,11 @@ function renderCaptureLevels(data, container) {
           level.estimate ? "At the pace of your last two weeks: " + estimateLine(level.estimate) : roughLine(level.rough),
         ], send);
       });
-      card.appendChild(button);
+      card.appendChild(switchButton);
     }
     grid.appendChild(card);
   });
-  container.appendChild(grid);
+  block.appendChild(grid);
 }
 
 var CAPTURE_ENDS = [
@@ -302,9 +312,9 @@ var CAPTURE_ENDS = [
 
 function renderCaptureControls(data, container) {
   var config = data.config || {};
-  container.appendChild(el("h2", { text: "How much and for how long" }));
+  var block = captureBlock(container, "How much and for how long");
   if (!config.on) {
-    container.appendChild(el("p", { class: "notes", text: "Sampling and an end time apply once capture is on." }));
+    block.appendChild(el("p", { class: "notes", text: "Sampling and an end time apply once capture is on." }));
     return;
   }
   var form = el("div", { class: "capture-controls" });
@@ -347,50 +357,49 @@ function renderCaptureControls(data, container) {
   form.appendChild(el("label", { for: endId, text: "Switch itself off" }));
   form.appendChild(end);
   form.appendChild(el("p", { class: "notes", text: "A time-box keeps the cost bounded: capture switches itself off and the banner says so." }));
-  container.appendChild(form);
+  block.appendChild(form);
 }
 
 function renderCaptureMetrics(data, container) {
-  var config = data.config || {};
-  container.appendChild(el("h2", { text: "Metrics" }));
-  container.appendChild(el("p", { class: "notes", text: "What each one captures, what Claude writes for it, why it helps, and what it costs. Ticking one here picks your own set (Custom)." }));
+  var block = captureBlock(container, "Metrics");
+  block.appendChild(el("p", { class: "notes", text: "What each one captures, what Claude writes for it, why it helps, and what it costs. Ticking one here picks your own set (Custom)." }));
   (data.sections || []).forEach(function (section) {
-    container.appendChild(el("h3", { text: section.title }));
-    var list = el("div", { class: "metric-list" });
+    block.appendChild(el("h3", { text: section.title }));
+    var list = el("div", { class: "capture-metric-list" });
     section.metrics.forEach(function (row) {
       list.appendChild(renderMetricRow(row, data, container));
     });
-    container.appendChild(list);
+    block.appendChild(list);
   });
 }
 
 function renderMetricRow(row, data, container) {
   var config = data.config || {};
-  var box = el("div", { class: "metric-row" + (row.on ? " on" : "") });
+  var box = el("div", { class: "capture-metric" + (row.on ? " on" : "") });
   var id = "metric-" + row.id;
-  var head = el("div", { class: "metric-head" });
+  var head = el("div", { class: "capture-metric-head" });
   var toggle = el("input", { type: "checkbox", id: id, checked: row.on, disabled: !row.toggle });
   head.appendChild(toggle);
-  head.appendChild(el("label", { for: id, class: "metric-title", text: row.title }));
-  if (!row.toggle) head.appendChild(el("span", { class: "badge", text: "Always measured" }));
-  if (row.needs_hook) head.appendChild(el("span", { class: "badge severity-action", text: "Needs a hook entry" }));
-  if (row.needs_install) head.appendChild(el("span", { class: "badge severity-action", text: "Needs installing" }));
-  if (row.enough) head.appendChild(el("span", { class: "badge badge-suggested", text: "Enough collected" }));
+  head.appendChild(el("label", { for: id, class: "capture-metric-title", text: row.title }));
+  if (!row.toggle) head.appendChild(chip("Always measured"));
+  if (row.needs_hook) head.appendChild(chip("Needs a hook entry", { tone: "warn", icon: "warning" }));
+  if (row.needs_install) head.appendChild(chip("Needs installing", { tone: "warn", icon: "warning" }));
+  if (row.enough) head.appendChild(chip("Enough collected", { tone: "good", icon: "check" }));
   box.appendChild(head);
-  box.appendChild(el("p", { class: "metric-what", text: row.what }));
-  var facts = el("dl", { class: "metric-facts" });
+  box.appendChild(el("p", { class: "capture-metric-what", text: row.what }));
+  var facts = el("dl", { class: "capture-metric-facts" });
   function fact(label, value, cls) {
     if (!value) return;
     facts.appendChild(el("dt", { text: label }));
     facts.appendChild(el("dd", { class: cls || null, text: value }));
   }
   fact("Why", row.why);
-  if (row.tag) fact("Claude writes", row.tag, "metric-tag");
+  if (row.tag) fact("Claude writes", row.tag, "capture-metric-tag");
   if (row.powers && row.powers.length) fact("Helps with", row.powers.join(", "));
   var cost;
   if (!row.asks_claude) cost = row.kind === "free" ? "No Claude tokens: a hook logs it to a local file." : "No tokens.";
-  else if (row.estimate) cost = (row.on ? "Saves about " : "Adds about ") + row.estimate.text + (row.on ? " if switched off." : ".");
-  if (row.actual) cost = (cost ? cost + " " : "") + (row.actual_label || "Since it was turned on") + ": " + row.actual.text + ".";
+  else if (row.estimate) cost = (row.on ? "Saves about " : "Adds about ") + billed(row.estimate, "a week") + (row.on ? " if switched off." : ".");
+  if (row.actual) cost = (cost ? cost + " " : "") + (row.actual_label || "Since it was turned on") + ": " + billed(row.actual) + ".";
   fact("Cost", cost);
   if (row.target) fact("Collected", row.answers + " of " + row.target + " answers" + (row.enough ? (row.asks_claude ? ": enough for firm suggestions, so switching it off would save its cost." : ": enough for firm suggestions.") : "."));
   box.appendChild(facts);
@@ -398,7 +407,7 @@ function renderMetricRow(row, data, container) {
     // The dashboard never writes Claude Code's folder: the CLI adds the
     // skill after showing it and asking.
     box.appendChild(el("p", { class: "notes", text: row.install_note + ". The dashboard doesn't write Claude Code's folder, so add it from a terminal:" }));
-    box.appendChild(codeBlockWithCopy(row.install_command));
+    box.appendChild(codeBlockWithCopy(row.install_command, "Command"));
   }
   if (row.statusline_note) box.appendChild(el("p", { class: "notes", text: row.statusline_note }));
 
@@ -443,7 +452,7 @@ function renderMetricRow(row, data, container) {
       });
       confirmCapture("Use more tokens for metrics capture?", [
         data.warning,
-        "Switching on " + row.title.toLowerCase() + (needs.length ? " (with " + titlesOf(data, needs) + ", which it needs)" : "") + (row.estimate ? " adds about " + row.estimate.text + "." : "."),
+        "Switching on " + row.title.toLowerCase() + (needs.length ? " (with " + titlesOf(data, needs) + ", which it needs)" : "") + (row.estimate ? " adds about " + billed(row.estimate, "a week") + "." : "."),
       ], send);
     } else {
       send();

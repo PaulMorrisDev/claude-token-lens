@@ -1,24 +1,48 @@
 /* claude-token-lens service UI: ui.js
  *
- * Small shared pieces: notices, empty states, badges, copyable commands
- * and fix blocks.
+ * The component library (docs/ui.md, "Components"): buttons, chips,
+ * metric tiles, panels, callouts, empty states, skeletons, command
+ * blocks, drawers, toasts, tooltips and popovers. Every page builds
+ * from these, so a thing looks and behaves the same wherever it shows.
  */
 
-import { el } from "./core.js";
+import { clear, el } from "./core.js";
 import { icon } from "./icons.js";
 
-export function errorNotice(error) {
-  var code = (error && error.code) || "error";
-  var message = (error && error.message) || "Something went wrong.";
-  return el("div", { class: "notice error", role: "alert" }, [
-    el("strong", { text: "[" + code + "] " }),
-    el("span", { text: message }),
-  ]);
+// Reduced motion asked for (docs/ui.md, "Motion"): components that
+// animate in JS check this; CSS has its own media query.
+export function motionOK() {
+  try {
+    return !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  } catch (err) {
+    return true;
+  }
 }
 
-export function loadingNode(label) {
-  return el("p", { class: "loading", text: label || "Loading…" });
+// -- buttons -------------------------------------------------------------
+
+// A button whose label says what happens ("Copy prompt", "Open session").
+// Never "Apply": the dashboard offers prompts and dry-run commands, and
+// never changes Claude Code's settings itself (docs/writing-help.md).
+// opts: variant ("primary", "quiet", "link"), icon, title, action (the
+// click handler), label (the accessible name, for an icon-only button).
+export function button(label, opts) {
+  opts = opts || {};
+  if (/^\s*apply\b/i.test(label || "")) throw new Error("A button never says Apply: " + label);
+  var variant = opts.variant ? " button-" + opts.variant : "";
+  var node = el("button", {
+    type: "button",
+    class: "button" + variant + (opts.class ? " " + opts.class : ""),
+    title: opts.title || null,
+    "aria-label": opts.label || null,
+  });
+  if (opts.icon) node.appendChild(icon(opts.icon, { size: 14 }));
+  if (label) node.appendChild(el("span", { class: "button-label", text: label }));
+  if (opts.action) node.addEventListener("click", opts.action);
+  return node;
 }
+
+// -- copying -------------------------------------------------------------
 
 // UX-6/9: used to fire-and-forget navigator.clipboard.writeText and
 // always flip the button to "Copied" regardless of what happened --
@@ -26,7 +50,7 @@ export function loadingNode(label) {
 // the Promise it returns (not just a missing API, which the old
 // try/catch did cover) left the button falsely claiming success.
 // Returns a Promise<boolean> so the caller can tell the two apart.
-function copyToClipboard(text) {
+export function copyToClipboard(text) {
   try {
     if (navigator.clipboard && navigator.clipboard.writeText) {
       return navigator.clipboard.writeText(text).then(
@@ -40,13 +64,19 @@ function copyToClipboard(text) {
   return Promise.resolve(false);
 }
 
-export function codeBlockWithCopy(text) {
+var COPY_FAILED = "Couldn't copy. Select the text and copy it yourself.";
+
+// A block of text to paste somewhere, in the mono face, with a Copy
+// button that says "Copied" only when the copy worked (and a toast says
+// what went where).
+export function codeBlockWithCopy(text, what) {
   var wrap = el("div", { class: "code-block" });
   var pre = el("pre", { text: text || "" });
   var button = el("button", { type: "button", class: "copy-button", text: "Copy" });
   button.addEventListener("click", function () {
     copyToClipboard(text || "").then(function (ok) {
-      button.textContent = ok ? "Copied" : "Couldn't copy - select the text above";
+      button.textContent = ok ? "Copied" : "Couldn't copy";
+      toast(ok ? (what || "Text") + " copied to the clipboard." : COPY_FAILED, { tone: ok ? "success" : "warning" });
       setTimeout(function () {
         button.textContent = "Copy";
       }, 1500);
@@ -56,6 +86,8 @@ export function codeBlockWithCopy(text) {
   wrap.appendChild(button);
   return wrap;
 }
+
+// -- labels shared by several pages --------------------------------------
 
 // Recommendation.agent_type values that are not agent names.
 export var AGENT_LABELS = {
@@ -71,80 +103,32 @@ export var SCOPE_LABELS = {
   managed: "set by your organisation's policy",
 };
 
-// Shown after every way of making a change (fixes.RESTART_NOTE; a test
-// keeps the two the same).
-var RESTART_NOTE =
-  "Restart Claude Code to pick up the change. It reads settings and agent files when it starts, so a " +
-  "session that is already open keeps the old ones (claude --continue picks your last conversation back up).";
+// -- chips ---------------------------------------------------------------
 
-export function restartNote() {
-  return el("p", { class: "notice restart-note", text: RESTART_NOTE });
+// A small label: tone is neutral, accent, good, warn, serious or
+// critical. Status tones always come with an icon and words, never the
+// colour alone (WCAG 1.4.1).
+export function chip(text, opts) {
+  opts = opts || {};
+  var node = el("span", { class: "chip chip-" + (opts.tone || "neutral") + (opts.class ? " " + opts.class : "") });
+  if (opts.icon) node.appendChild(icon(opts.icon, { size: 12 }));
+  node.appendChild(el("span", { text: text }));
+  if (opts.tip) attachTooltip(node, opts.tip);
+  return node;
 }
 
-// One fixes.build_fix entry: the plain explainer, then the prompt
-// for Claude, (for a plain setting) the dry-run command and the
-// reminder to restart Claude Code.
-function fixTitle(fix) {
-  if (fix.title) return fix.title;
-  // Same rule as render/tables.py's fix_subject.
-  if (!fix.key) return "What you're changing";
-  var who = fix.agent ? " for " + fix.agent : fix.key === "model" ? " for your main session" : "";
-  return "What you're changing: " + fix.key + who;
-}
+export var SEVERITY_ORDER = ["action", "advice", "info"];
 
-export function renderFix(fix, collapsed) {
-  var box = el(collapsed ? "details" : "div", { class: "fix" });
-  if (collapsed) box.appendChild(el("summary", { text: fixTitle(fix) }));
-  if (fix.explainer && fix.explainer.length) {
-    if (!collapsed) box.appendChild(el("h4", { text: fixTitle(fix) }));
-    var list = el("dl", { class: "fix-explainer" });
-    fix.explainer.forEach(function (pair) {
-      list.appendChild(el("dt", { text: pair[0] }));
-      list.appendChild(el("dd", { text: pair[1] }));
-    });
-    box.appendChild(list);
-  }
-  // UX-8: a purely informational workflow card (fixes.build_fixes) has
-  // an explainer but no prompt -- nothing to ask Claude to do.
-  if (fix.prompt) {
-    box.appendChild(el("h4", { text: "Ask Claude to do it" }));
-    box.appendChild(codeBlockWithCopy(fix.prompt));
-  }
-  if (fix.command) {
-    box.appendChild(el("h4", { text: "Or run this command" }));
-    box.appendChild(
-      el("p", { class: "notes", text: "It shows the change without writing anything. Run it again without --dry-run to make the change; the output tells you how to undo it." })
-    );
-    if (fix.command_warning) {
-      box.appendChild(el("p", { class: "fix-warning", text: fix.command_warning }));
-    }
-    box.appendChild(codeBlockWithCopy(fix.command));
-  }
-  box.appendChild(restartNote());
-  return box;
-}
+export var SEVERITY_LABELS = { action: "Do this", advice: "Worth considering", info: "For your information" };
+var SEVERITY_ICONS = { action: "critical", advice: "warning", info: "info" };
 
-// ======================================================================
-// Shared pieces for the Quick actions, Context files and Profiles
-// additions: a plain table of display strings, and a status badge.
-// ======================================================================
-
-// P4 leftover / UX-6/9: one consistent "not enough data yet" box,
-// instead of each view building its own ad hoc paragraph (renderImpact,
-// renderBacktest and the quick actions' no_data cards used to each
-// have a slightly different one). `gate` is the structured
-// {reason, have, need} object some routes now carry (see api.py's
-// _min_sessions_gate, currently /api/impact) -- when given, its
-// numbers are appended so the box reads "2 of 3 sessions so far"
-// rather than only the prose message repeating what "not enough" means.
-export function emptyState(message, gate) {
-  var box = el("div", { class: "placeholder-box empty-state" });
-  var text = message || "Not enough data yet.";
-  if (gate && typeof gate.have === "number" && typeof gate.need === "number") {
-    text += " (" + gate.have + " of " + gate.need + " so far.)";
-  }
-  box.appendChild(el("p", { text: text }));
-  return box;
+// A recommendation's severity as a chip: the icon and the label carry
+// it, the tint only repeats them (WCAG 1.4.1).
+export function severityChip(severity) {
+  var chipNode = el("span", { class: "severity-badge severity-" + severity });
+  chipNode.appendChild(icon(SEVERITY_ICONS[severity] || "info", { size: 14 }));
+  chipNode.appendChild(el("span", { text: SEVERITY_LABELS[severity] || severity }));
+  return chipNode;
 }
 
 var CHECK_STATUS = {
@@ -161,6 +145,377 @@ export function statusBadge(status) {
   return badge;
 }
 
+// How sure a number is (docs/ui.md, "Basis"): the same words on tiles,
+// charts, grids and prose. A measured number carries no chip.
+export var BASIS = {
+  measured: null,
+  estimate: { label: "Estimate", tip: "Worked out from your sessions, not measured directly." },
+  ceiling: { label: "At most", tip: "The most it could be. The real figure is likely lower." },
+  simulated: { label: "Simulated", tip: "What replaying your sessions with the change gives." },
+  calibrated: { label: "Calibrated", tip: "An estimate checked against what happened after earlier changes." },
+};
+
+export function basisChip(basis) {
+  var info = BASIS[basis];
+  if (!info) return null;
+  return chip(info.label, { class: "basis-chip basis-" + basis, tip: info.tip });
+}
+
+// A change against the previous period of the same length: "+12%" with
+// an arrow, coloured by whether that direction is good (opts.upIsGood),
+// and neutral within 1%. opts.period names the comparison ("the 30 days
+// before"). No chip without an earlier figure to compare with.
+export function deltaChip(current, previous, opts) {
+  opts = opts || {};
+  var period = opts.period || "the period before";
+  if (typeof current !== "number" || typeof previous !== "number" || !isFinite(current) || !isFinite(previous) || previous <= 0) {
+    return chip("No earlier period", { class: "delta-chip delta-none" });
+  }
+  var change = ((current - previous) / previous) * 100;
+  if (Math.abs(change) < 1) {
+    return chip("About the same", { icon: "minus", class: "delta-chip delta-flat", tip: "Within 1% of " + period + "." });
+  }
+  var up = change > 0;
+  var good = opts.upIsGood ? up : !up;
+  var rounded = Math.abs(change) >= 10 ? Math.round(Math.abs(change)) : Math.round(Math.abs(change) * 10) / 10;
+  var node = el("span", { class: "chip delta-chip " + (good ? "delta-good" : "delta-bad") });
+  node.appendChild(icon(up ? "arrow-up" : "arrow-down", { size: 12 }));
+  node.appendChild(el("span", { text: (up ? "+" : "−") + rounded + "%" }));
+  attachTooltip(node, (up ? "Up " : "Down ") + rounded + "% on " + period + ".");
+  return node;
+}
+
+// -- metric tile -----------------------------------------------------------
+
+// One headline number: its label, the value (already formatted, in the
+// billing mode for money), how sure it is, the change on the period
+// before, a line of context and, optionally, a sparkline and a link to
+// the page it comes from. A tile is never a hero: 28px, not 40.
+// opts: label, value (text or node), unit, basis, delta (node), hint,
+// caption (a line saying what the value is of), note (a longer line of
+// detail), spark (node), link (node), class.
+export function tile(opts) {
+  var node = el("div", { class: "metric-tile" + (opts.class ? " " + opts.class : "") });
+  var head = el("div", { class: "metric-head" }, [el("span", { class: "metric-label", text: opts.label })]);
+  var basis = opts.basis ? basisChip(opts.basis) : null;
+  if (basis) head.appendChild(basis);
+  node.appendChild(head);
+  var value = el("div", { class: "metric-value" });
+  if (typeof opts.value === "string" || typeof opts.value === "number") value.appendChild(el("span", { text: String(opts.value) }));
+  else if (opts.value) value.appendChild(opts.value);
+  if (opts.unit) value.appendChild(el("span", { class: "unit", text: " " + opts.unit }));
+  node.appendChild(value);
+  if (opts.delta || opts.hint) {
+    var foot = el("div", { class: "metric-foot" });
+    if (opts.delta) foot.appendChild(opts.delta);
+    if (opts.hint) foot.appendChild(el("span", { class: "metric-hint", text: opts.hint }));
+    node.appendChild(foot);
+  }
+  if (opts.caption) node.appendChild(el("p", { class: "metric-caption", text: opts.caption }));
+  if (opts.note) node.appendChild(el("p", { class: "metric-note", text: opts.note }));
+  if (opts.spark) node.appendChild(opts.spark);
+  if (opts.link) node.appendChild(el("div", { class: "metric-link" }, [opts.link]));
+  return node;
+}
+
+// A row of tiles.
+export function tileRow(tiles, opts) {
+  return el("div", { class: "metric-tiles" + (opts && opts.class ? " " + opts.class : "") }, tiles);
+}
+
+// -- panel -------------------------------------------------------------------
+
+// A surface for a chart, a grid or a detail: a header (title, one-line
+// intro, a "How to read this" popover, chips) and a body. Panels never
+// nest: a panel inside a panel draws no second border (app.css).
+// opts: title, level (2 or 3), intro, help (model.Help), chips, body
+// (nodes), class, id.
+export function panel(opts) {
+  var node = el("section", { class: "panel" + (opts.class ? " " + opts.class : ""), id: opts.id || null });
+  if (opts.title || opts.intro || opts.help || (opts.chips && opts.chips.length)) {
+    var head = el("header", { class: "panel-head" });
+    var titleRow = el("div", { class: "panel-title-row" });
+    if (opts.title) titleRow.appendChild(el(opts.level === 2 ? "h2" : "h3", { class: "panel-title", text: opts.title }));
+    var help = opts.help ? helpButton(opts.help, opts.title) : null;
+    if (help) titleRow.appendChild(help);
+    (opts.chips || []).forEach(function (c) {
+      if (c) titleRow.appendChild(c);
+    });
+    head.appendChild(titleRow);
+    if (opts.intro) head.appendChild(el("p", { class: "panel-intro", text: opts.intro }));
+    node.appendChild(head);
+  }
+  var body = el("div", { class: "panel-body" }, opts.body || []);
+  node.appendChild(body);
+  node.body = body;
+  return node;
+}
+
+// -- callouts ------------------------------------------------------------------
+
+var TONES = {
+  info: { icon: "info", label: "Note" },
+  success: { icon: "success", label: "Done" },
+  warning: { icon: "warning", label: "Warning" },
+  critical: { icon: "critical", label: "Problem" },
+};
+
+// A message that sits in the page's flow: an icon and its tone's name
+// (read aloud), a tinted surface, the text, then any actions. No side
+// stripe. opts: tone, title, text, children (nodes), actions (nodes),
+// dismiss (a function; adds a Dismiss button), role, class.
+export function callout(opts) {
+  var tone = TONES[opts.tone] ? opts.tone : "info";
+  var node = el("div", {
+    class: "callout callout-" + tone + (opts.class ? " " + opts.class : ""),
+    role: opts.role || (tone === "critical" ? "alert" : null),
+  });
+  node.appendChild(el("span", { class: "callout-icon" }, [icon(TONES[tone].icon, { size: 16 })]));
+  var body = el("div", { class: "callout-body" });
+  if (opts.title) {
+    body.appendChild(
+      el("p", { class: "callout-title" }, [
+        el("span", { class: "visually-hidden", text: TONES[tone].label + ": " }),
+        el("span", { text: opts.title }),
+      ])
+    );
+  } else {
+    body.appendChild(el("span", { class: "visually-hidden", text: TONES[tone].label + ": " }));
+  }
+  if (opts.text) body.appendChild(el("p", { text: opts.text }));
+  (opts.children || []).forEach(function (child) {
+    if (child) body.appendChild(child);
+  });
+  var actions = (opts.actions || []).slice();
+  if (opts.dismiss) {
+    actions.push(
+      button("Dismiss", {
+        variant: "quiet",
+        action: function () {
+          opts.dismiss(node);
+        },
+      })
+    );
+  }
+  if (actions.length) body.appendChild(el("div", { class: "callout-actions" }, actions));
+  node.appendChild(body);
+  return node;
+}
+
+// A failed load, said plainly: what went wrong, the service's own
+// message and code, and (given retry) a way to try again.
+export function errorNotice(error, retry) {
+  var code = (error && error.code) || "error";
+  var message = (error && error.message) || "Something went wrong.";
+  var offline = code === "network_error";
+  return callout({
+    tone: "critical",
+    title: offline ? "Couldn't reach Token Lens's local service." : "Couldn't load this.",
+    children: [
+      el("p", { class: "callout-detail" }, [
+        el("span", { text: offline ? "Check that it's still running. " : message + " " }),
+        el("span", { class: "error-code", text: "(" + code + ")" }),
+      ]),
+    ],
+    actions: retry ? [button("Try again", { icon: "refresh", action: retry })] : [],
+  });
+}
+
+// Shown after every way of making a change (fixes.RESTART_NOTE; a test
+// keeps the two the same).
+var RESTART_NOTE =
+  "Restart Claude Code to pick up the change. It reads settings and agent files when it starts, so a " +
+  "session that is already open keeps the old ones (claude --continue picks your last conversation back up).";
+
+export function restartNote() {
+  return el("p", { class: "restart-note" }, [icon("refresh", { size: 14 }), el("span", { text: RESTART_NOTE })]);
+}
+
+// -- empty states and skeletons ---------------------------------------------------
+
+// P4 leftover / UX-6/9: one consistent "nothing to show" box, instead
+// of each view building its own ad hoc paragraph. message says what
+// happened and why ("No sessions in the last 24 hours."); next says
+// what would fill it, as text or a node (a link). `gate` is the
+// structured {reason, have, need} object some routes carry (see
+// api.py's _min_sessions_gate, currently /api/impact) -- when given,
+// its numbers are appended so the box reads "2 of 3 sessions so far"
+// rather than only the prose message repeating what "not enough" means.
+export function emptyState(message, gate, next) {
+  var box = el("div", { class: "empty-state" });
+  var text = message || "Not enough data yet.";
+  if (gate && typeof gate.have === "number" && typeof gate.need === "number") {
+    text += " (" + gate.have + " of " + gate.need + " so far.)";
+  }
+  box.appendChild(el("p", { class: "empty-message", text: text }));
+  if (next) box.appendChild(typeof next === "string" ? el("p", { class: "empty-next", text: next }) : el("p", { class: "empty-next" }, [next]));
+  return box;
+}
+
+// Grey shapes where content is on its way, so the page doesn't jump
+// when it lands. kind: "lines" (default), "tiles", "rows" (a grid) or
+// "chart". Shimmers unless reduced motion is asked for (app.css).
+export function skeleton(kind, count) {
+  kind = kind || "lines";
+  var node = el("div", { class: "skeleton skeleton-" + kind, "aria-hidden": "true" });
+  var n = count || (kind === "tiles" ? 4 : kind === "rows" ? 6 : 3);
+  if (kind === "chart") {
+    node.appendChild(el("div", { class: "skeleton-block" }));
+    return node;
+  }
+  for (var i = 0; i < n; i++) node.appendChild(el("div", { class: "skeleton-block" }));
+  return node;
+}
+
+// While a view's data is on its way: a skeleton, with the words a
+// screen reader hears.
+export function loadingNode(label, kind) {
+  var node = el("div", { class: "loading", role: "status", "aria-busy": "true" });
+  node.appendChild(el("span", { class: "visually-hidden", text: label || "Loading" }));
+  node.appendChild(skeleton(kind || "lines"));
+  return node;
+}
+
+// -- command block: how to make a change ---------------------------------------------
+
+function fixTitle(fix) {
+  if (fix.title) return fix.title;
+  // Same rule as render/tables.py's fix_subject.
+  if (!fix.key) return "What you're changing";
+  var who = fix.agent ? " for " + fix.agent : fix.key === "model" ? " for your main session" : "";
+  return "What you're changing: " + fix.key + who;
+}
+
+// Arrow keys move between tabs (the WAI-ARIA tabs pattern).
+function tabList(tabs, idBase) {
+  var list = el("div", { class: "command-tabs", role: "tablist", "aria-label": "Ways to make the change" });
+  var panels = [];
+  var buttons = tabs.map(function (tab, i) {
+    var tabButton = el("button", {
+      type: "button",
+      class: "command-tab",
+      role: "tab",
+      id: idBase + "-tab-" + i,
+      "aria-selected": i === 0 ? "true" : "false",
+      "aria-controls": idBase + "-panel-" + i,
+      tabIndex: i === 0 ? 0 : -1,
+    });
+    tabButton.appendChild(icon(tab.icon, { size: 14 }));
+    tabButton.appendChild(el("span", { text: tab.label }));
+    var tabPanel = el("div", { class: "command-panel", role: "tabpanel", id: idBase + "-panel-" + i, "aria-labelledby": tabButton.id, hidden: i !== 0 }, tab.body);
+    panels.push(tabPanel);
+    return tabButton;
+  });
+  function select(index, focus) {
+    buttons.forEach(function (b, i) {
+      b.setAttribute("aria-selected", i === index ? "true" : "false");
+      b.tabIndex = i === index ? 0 : -1;
+      panels[i].hidden = i !== index;
+    });
+    if (focus) buttons[index].focus();
+  }
+  buttons.forEach(function (b, i) {
+    b.addEventListener("click", function () {
+      select(i, false);
+    });
+    b.addEventListener("keydown", function (event) {
+      var next = null;
+      if (event.key === "ArrowRight") next = (i + 1) % buttons.length;
+      else if (event.key === "ArrowLeft") next = (i - 1 + buttons.length) % buttons.length;
+      else if (event.key === "Home") next = 0;
+      else if (event.key === "End") next = buttons.length - 1;
+      if (next === null) return;
+      event.preventDefault();
+      select(next, true);
+    });
+    list.appendChild(b);
+  });
+  return { list: list, panels: panels };
+}
+
+var commandBlockCount = 0;
+
+// One way to make a change, as fixes.build_fix describes it: the prompt
+// for Claude and (for a plain setting) the dry-run command, as tabs;
+// what changes, where, the trade-off and how to undo it; and the
+// reminder to restart Claude Code. Nothing here changes anything: every
+// path ends in text for you to paste.
+// fix: {explainer: [[heading, text], ...], prompt, command,
+// command_warning, trial_command, trial_note (a profile's one-session
+// trial)}; opts.heading adds the fix's title as an h4.
+export function commandBlock(fix, opts) {
+  opts = opts || {};
+  var box = el("div", { class: "command-block" });
+  if (opts.heading) box.appendChild(el("h4", { text: fixTitle(fix) }));
+  var tabs = [];
+  if (fix.prompt) {
+    tabs.push({
+      label: "Prompt for Claude",
+      icon: "prompt",
+      body: [el("p", { class: "command-hint", text: "Paste this into Claude Code. It shows you the change before saving it." }), codeBlockWithCopy(fix.prompt, "Prompt")],
+    });
+  }
+  if (fix.command) {
+    tabs.push({
+      label: "Dry-run command",
+      icon: "terminal",
+      body: [
+        el("p", { class: "command-hint", text: "It shows the change without writing anything. Run it again without --dry-run to make the change; the output tells you how to undo it." }),
+        fix.command_warning ? callout({ tone: "warning", text: fix.command_warning, class: "fix-warning" }) : null,
+        codeBlockWithCopy(fix.command, "Command"),
+      ],
+    });
+  }
+  if (fix.trial_command) {
+    tabs.push({
+      label: "Try it for one session",
+      icon: "clock",
+      body: [el("p", { class: "command-hint", text: fix.trial_note || "" }), codeBlockWithCopy(fix.trial_command, "Command")],
+    });
+  }
+  if (tabs.length > 1) {
+    commandBlockCount += 1;
+    var built = tabList(tabs, "command-" + commandBlockCount);
+    box.appendChild(built.list);
+    built.panels.forEach(function (p) {
+      box.appendChild(p);
+    });
+  } else if (tabs.length === 1) {
+    box.appendChild(el("p", { class: "command-label" }, [icon(tabs[0].icon, { size: 14 }), el("span", { text: tabs[0].label })]));
+    tabs[0].body.forEach(function (node) {
+      if (node) box.appendChild(node);
+    });
+  } else if (opts.expectCommand) {
+    box.appendChild(el("p", { class: "command-hint", text: "No command for this change: it needs your judgement." }));
+  }
+  if (fix.explainer && fix.explainer.length) {
+    var list = el("dl", { class: "fix-explainer" });
+    fix.explainer.forEach(function (pair) {
+      list.appendChild(el("dt", { text: pair[0] }));
+      list.appendChild(el("dd", { text: pair[1] }));
+    });
+    box.appendChild(list);
+  }
+  if (fix.prompt || fix.command || opts.restart) box.appendChild(restartNote());
+  return box;
+}
+
+// One fixes.build_fix entry. collapsed: a <details> with the fix's
+// title, for a recommendation with several changes.
+export function renderFix(fix, collapsed) {
+  if (!collapsed) return commandBlock(fix, { heading: true });
+  var box = el("details", { class: "fix" });
+  box.appendChild(el("summary", { text: fixTitle(fix) }));
+  box.appendChild(commandBlock(fix));
+  return box;
+}
+
+export function renderFixList(fixes, container) {
+  (fixes || []).forEach(function (fix, i) {
+    container.appendChild(renderFix(fix, i > 0));
+  });
+}
+
 export function renderTips(tips, container) {
   if (!tips || !tips.length) return;
   container.appendChild(el("h4", { text: "Habits that help" }));
@@ -175,8 +530,343 @@ export function renderTips(tips, container) {
   );
 }
 
-export function renderFixList(fixes, container) {
-  (fixes || []).forEach(function (fix, i) {
-    container.appendChild(renderFix(fix, i > 0));
+// -- toast ---------------------------------------------------------------------------
+
+var toastState = { node: null, timer: null, paused: false };
+
+function toastRegion() {
+  var region = document.getElementById("toast-region");
+  if (!region) {
+    region = el("div", { id: "toast-region", class: "toast-region", role: "status", "aria-live": "polite" });
+    document.body.appendChild(region);
+  }
+  return region;
+}
+
+function scheduleToastClose() {
+  clearTimeout(toastState.timer);
+  toastState.timer = setTimeout(function () {
+    if (!toastState.paused) closeToast();
+  }, 3500);
+}
+
+function closeToast() {
+  var node = toastState.node;
+  if (!node) return;
+  toastState.node = null;
+  node.classList.remove("is-open");
+  setTimeout(function () {
+    node.remove();
+  }, motionOK() ? 200 : 0);
+}
+
+// A short confirmation at the bottom right, one at a time: it goes
+// after 3.5 seconds, and waits while the pointer or focus is on it.
+// opts.tone: success (default), info or warning.
+export function toast(message, opts) {
+  opts = opts || {};
+  var region = toastRegion();
+  if (toastState.node) toastState.node.remove();
+  var tone = opts.tone || "success";
+  var node = el("div", { class: "toast toast-" + tone }, [icon(tone === "warning" ? "warning" : tone === "info" ? "info" : "success", { size: 16 }), el("span", { text: message })]);
+  node.addEventListener("mouseenter", function () {
+    toastState.paused = true;
+  });
+  node.addEventListener("mouseleave", function () {
+    toastState.paused = false;
+    scheduleToastClose();
+  });
+  region.appendChild(node);
+  toastState.node = node;
+  requestAnimationFrame(function () {
+    node.classList.add("is-open");
+  });
+  scheduleToastClose();
+  return node;
+}
+
+// -- tooltip -------------------------------------------------------------------------
+
+// One tooltip element for the whole page: shown on hover and keyboard
+// focus, text only (textContent, never markup), kept inside the window.
+// content: a string, or a function returning one or {value, label} (a
+// chart's reading: the value first, strong, then what it is).
+var tip = { node: null, timer: null, owner: null };
+
+function tipNode() {
+  if (!tip.node) {
+    tip.node = el("div", { id: "tooltip", class: "tooltip", role: "tooltip", hidden: true });
+    document.body.appendChild(tip.node);
+  }
+  return tip.node;
+}
+
+function fillTip(content) {
+  var node = tipNode();
+  clear(node);
+  var value = typeof content === "function" ? content() : content;
+  if (value && typeof value === "object") {
+    if (value.value) node.appendChild(el("strong", { class: "tooltip-value", text: value.value }));
+    if (value.label) node.appendChild(el("span", { class: "tooltip-label", text: value.label }));
+    (value.lines || []).forEach(function (line) {
+      node.appendChild(el("span", { class: "tooltip-line", text: line }));
+    });
+  } else {
+    node.appendChild(el("span", { text: String(value || "") }));
+  }
+  return node;
+}
+
+function placeTip(node, rect) {
+  var gap = 8;
+  node.style.left = "0px";
+  node.style.top = "0px";
+  var w = node.offsetWidth;
+  var h = node.offsetHeight;
+  var left = rect.left + rect.width / 2 - w / 2;
+  left = Math.max(8, Math.min(left, window.innerWidth - w - 8));
+  var top = rect.top - h - gap;
+  if (top < 8) top = rect.bottom + gap;
+  node.style.left = Math.round(left) + "px";
+  node.style.top = Math.round(top) + "px";
+}
+
+// Show the tooltip beside a rect (a chart mark, or a pointer position as
+// a zero-size rect); hideTooltip() takes it away.
+export function showTooltipAt(rect, content) {
+  var node = fillTip(content);
+  node.hidden = false;
+  placeTip(node, rect);
+  node.classList.add("is-open");
+}
+
+export function hideTooltip() {
+  clearTimeout(tip.timer);
+  tip.owner = null;
+  if (!tip.node) return;
+  tip.node.classList.remove("is-open");
+  tip.node.hidden = true;
+}
+
+// A string tip is also there for a screen reader: as the description
+// of a control (a hidden child it points at), or read in line after a
+// plain chip. A chip is never made a Tab stop just for its tip.
+export function attachTooltip(target, content) {
+  var interactive = /^(BUTTON|A|INPUT|SELECT|TEXTAREA|SUMMARY)$/.test(target.tagName) || target.hasAttribute("tabindex");
+  if (typeof content === "string") {
+    if (interactive) {
+      tipCount += 1;
+      var description = el("span", { id: "tip-" + tipCount, hidden: true, text: content });
+      target.appendChild(description);
+      target.setAttribute("aria-describedby", description.id);
+    } else {
+      target.appendChild(el("span", { class: "visually-hidden", text: " (" + content + ")" }));
+    }
+  }
+  function show() {
+    clearTimeout(tip.timer);
+    tip.timer = setTimeout(function () {
+      tip.owner = target;
+      showTooltipAt(target.getBoundingClientRect(), content);
+    }, 40);
+  }
+  function hide() {
+    if (tip.owner === target || !tip.owner) hideTooltip();
+  }
+  target.addEventListener("mouseenter", show);
+  target.addEventListener("mouseleave", hide);
+  if (interactive) {
+    target.addEventListener("focus", show);
+    target.addEventListener("blur", hide);
+    target.addEventListener("keydown", function (event) {
+      if (event.key === "Escape") hide();
+    });
+  }
+  return target;
+}
+
+var tipCount = 0;
+
+// -- popover -------------------------------------------------------------------------
+
+var popoverCount = 0;
+
+// A panel that opens from a button: the browser's popover (top layer,
+// Esc and a click outside close it), placed under the button and kept
+// inside the window. Focus goes back to the button when it closes.
+// build(body) fills it when first opened. Returns the button.
+export function popoverButton(anchorButton, build, opts) {
+  opts = opts || {};
+  popoverCount += 1;
+  var id = "popover-" + popoverCount;
+  var pop = el("div", { class: "popover" + (opts.class ? " " + opts.class : ""), id: id, role: opts.role || "dialog", "aria-label": opts.label || null });
+  pop.popover = "auto";
+  var built = false;
+  anchorButton.setAttribute("aria-expanded", "false");
+  anchorButton.setAttribute("aria-controls", id);
+  function place() {
+    var rect = anchorButton.getBoundingClientRect();
+    pop.style.left = "0px";
+    pop.style.top = "0px";
+    var w = pop.offsetWidth;
+    var h = pop.offsetHeight;
+    var left = opts.align === "end" ? rect.right - w : rect.left;
+    left = Math.max(8, Math.min(left, window.innerWidth - w - 8));
+    var top = rect.bottom + 6;
+    if (top + h > window.innerHeight - 8 && rect.top - h - 6 > 8) top = rect.top - h - 6;
+    pop.style.left = Math.round(left) + "px";
+    pop.style.top = Math.round(top) + "px";
+  }
+  pop.addEventListener("toggle", function (event) {
+    var open = event.newState === "open";
+    anchorButton.setAttribute("aria-expanded", open ? "true" : "false");
+    if (!open && pop.contains(document.activeElement)) anchorButton.focus();
+  });
+  anchorButton.addEventListener("click", function () {
+    if (!pop.isConnected) document.body.appendChild(pop);
+    if (!built) {
+      build(pop);
+      built = true;
+    }
+    if (pop.matches(":popover-open")) {
+      pop.hidePopover();
+      return;
+    }
+    pop.showPopover();
+    place();
+    // The first control that can take focus (the chooser's first box is
+    // disabled: that column always shows).
+    var first = pop.querySelector("button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex='-1'])");
+    if (first && opts.focusInside !== false) first.focus();
+  });
+  return anchorButton;
+}
+
+// The (i) that opens a table's or section's "How to read this": what
+// it shows, how to read it, when to act (model.Help).
+export function helpButton(help, subject) {
+  if (!help || !(help.shows || help.read || help.act)) return null;
+  var trigger = button("", { variant: "icon", icon: "info", label: "How to read " + (subject || "this"), class: "help-button" });
+  return popoverButton(
+    trigger,
+    function (body) {
+      body.appendChild(el("p", { class: "popover-title", text: "How to read this" }));
+      var list = el("dl", { class: "help-list" });
+      [
+        ["What it shows", help.shows],
+        ["How to read it", help.read],
+        ["When to act", help.act],
+      ].forEach(function (pair) {
+        if (!pair[1]) return;
+        list.appendChild(el("dt", { text: pair[0] }));
+        list.appendChild(el("dd", { text: pair[1] }));
+      });
+      body.appendChild(list);
+    },
+    { class: "help-popover", label: "How to read " + (subject || "this"), focusInside: false }
+  );
+}
+
+// -- drawer --------------------------------------------------------------------------
+
+// Detail that slides in from the right over the page (a session, a
+// table, a CLAUDE.md file): a modal <dialog>, so focus stays inside and
+// Esc closes it; focus returns to whatever opened it. opts: title,
+// wide (720px rather than 560), link (a #/ address to copy), fill
+// (body) -> fills the body, closed () -> called after it closes.
+export function drawer(opts) {
+  var opener = document.activeElement;
+  var dialog = el("dialog", { class: "drawer" + (opts.wide ? " drawer-wide" : ""), "aria-labelledby": "drawer-title" });
+  var head = el("header", { class: "drawer-head" }, [el("h2", { id: "drawer-title", class: "drawer-title", text: opts.title })]);
+  var tools = el("div", { class: "drawer-tools" });
+  if (opts.link) {
+    tools.appendChild(
+      button("", {
+        variant: "icon",
+        icon: "link",
+        label: "Copy a link to this",
+        title: "Copy a link to this",
+        action: function () {
+          var address = window.location.origin + window.location.pathname + opts.link;
+          copyToClipboard(address).then(function (ok) {
+            toast(ok ? "Link copied to the clipboard." : COPY_FAILED, { tone: ok ? "success" : "warning" });
+          });
+        },
+      })
+    );
+  }
+  var closeButton = button("", { variant: "icon", icon: "close", label: "Close", title: "Close (Esc)", action: close });
+  tools.appendChild(closeButton);
+  head.appendChild(tools);
+  var body = el("div", { class: "drawer-body" });
+  dialog.appendChild(head);
+  dialog.appendChild(body);
+  document.body.appendChild(dialog);
+
+  var closing = false;
+  function close() {
+    if (closing) return;
+    closing = true;
+    dialog.classList.remove("is-open");
+    setTimeout(
+      function () {
+        dialog.close();
+        dialog.remove();
+        if (opener && opener.isConnected && opener.focus) opener.focus();
+        if (opts.closed) opts.closed();
+      },
+      motionOK() ? 240 : 0
+    );
+  }
+  dialog.addEventListener("cancel", function (event) {
+    event.preventDefault();
+    close();
+  });
+  // A click on the backdrop (outside the panel) closes it too.
+  dialog.addEventListener("click", function (event) {
+    if (event.target === dialog) {
+      var rect = dialog.getBoundingClientRect();
+      var inside = event.clientX >= rect.left && event.clientX <= rect.right && event.clientY >= rect.top && event.clientY <= rect.bottom;
+      if (!inside) close();
+    }
+  });
+  dialog.showModal();
+  closeButton.focus();
+  requestAnimationFrame(function () {
+    dialog.classList.add("is-open");
+  });
+  if (opts.fill) opts.fill(body);
+  return { dialog: dialog, body: body, close: close };
+}
+
+// A yes/no question before something that can't be taken back: a
+// modal <dialog> with the question, what happens, and two buttons.
+// Resolves true for yes. Focus goes back to the control that asked.
+export function confirmDialog(opts) {
+  var opener = document.activeElement;
+  return new Promise(function (resolve) {
+    var dialog = el("dialog", { class: "confirm-dialog", "aria-labelledby": "confirm-title" });
+    dialog.appendChild(el("h2", { id: "confirm-title", text: opts.title }));
+    (opts.lines || []).forEach(function (line) {
+      dialog.appendChild(el("p", { text: line }));
+    });
+    var answered = false;
+    function answer(value) {
+      if (answered) return;
+      answered = true;
+      dialog.close();
+      dialog.remove();
+      if (opener && opener.isConnected && opener.focus) opener.focus();
+      resolve(value);
+    }
+    var no = button(opts.no || "Cancel", { variant: "quiet", action: function () { answer(false); } });
+    var yes = button(opts.yes, { variant: "primary", action: function () { answer(true); } });
+    dialog.appendChild(el("div", { class: "dialog-actions" }, [no, yes]));
+    dialog.addEventListener("cancel", function () {
+      answer(false);
+    });
+    document.body.appendChild(dialog);
+    dialog.showModal();
+    no.focus();
   });
 }

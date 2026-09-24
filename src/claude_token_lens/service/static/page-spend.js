@@ -3,11 +3,11 @@
  * The Spend page: Usage, Savings and Sessions.
  */
 
-import { clear, el, escapeHtml, state } from "./core.js";
-import { formatCell, NUMERIC_KINDS, shortTs, thousands } from "./format.js";
+import { clear, el, escapeHtml } from "./core.js";
+import { compactNumber, formatDuration, fullValue, moneyParts, projectName, shortTs, thousands } from "./format.js";
 import { fetchJson, loadInto, loadReport, postJson, withWindow } from "./api.js";
-import { errorNotice, loadingNode } from "./ui.js";
-import { renderMappedSections, renderReportBackedSection } from "./grid.js";
+import { button, drawer, emptyState, errorNotice, loadingNode, tile, tileRow, toast } from "./ui.js";
+import { dataGrid, renderMappedSections, renderReportBackedSection } from "./grid.js";
 import { viewIntro } from "./links.js";
 
 // ======================================================================
@@ -22,18 +22,15 @@ export function renderSessions(panel) {
 
   var tableContainer = el("div", { id: "sessions-table" });
   var pager = el("div", { class: "pager" });
-  var prevBtn = el("button", { type: "button", text: "Previous" });
-  var nextBtn = el("button", { type: "button", text: "Next" });
-  var rangeLabel = el("span", { text: "" });
+  var prevBtn = button("Previous", { icon: "chevron-left", variant: "quiet" });
+  var nextBtn = button("Next", { icon: "chevron-right", variant: "quiet", class: "button-trailing-icon" });
+  var rangeLabel = el("span", { class: "pager-range", text: "" });
   pager.appendChild(prevBtn);
   pager.appendChild(rangeLabel);
   pager.appendChild(nextBtn);
 
   panel.appendChild(pager);
   panel.appendChild(tableContainer);
-
-  var detailContainer = el("div", { id: "session-detail" });
-  panel.appendChild(detailContainer);
 
   var sectionContainer = el("div", { id: "sessions-sections" });
   panel.appendChild(sectionContainer);
@@ -46,13 +43,23 @@ export function renderSessions(panel) {
   });
 
   function load() {
-    rangeLabel.textContent = "Rows " + (sessionsState.offset + 1) + "–" + (sessionsState.offset + sessionsState.limit);
+    rangeLabel.textContent = "Sessions " + (sessionsState.offset + 1) + " to " + (sessionsState.offset + sessionsState.limit);
     prevBtn.disabled = sessionsState.offset === 0;
     var url = withWindow("/api/sessions?limit=" + sessionsState.limit + "&offset=" + sessionsState.offset);
-    loadInto(tableContainer, url, function (rows, container) {
-      renderSessionsTable(rows, container, detailContainer);
-      nextBtn.disabled = rows.length < sessionsState.limit;
-    });
+    loadInto(
+      tableContainer,
+      url,
+      function (rows, container) {
+        renderSessionsTable(rows, container);
+        nextBtn.disabled = rows.length < sessionsState.limit;
+        if (rows.length < sessionsState.limit) {
+          rangeLabel.textContent = rows.length
+            ? "Sessions " + (sessionsState.offset + 1) + " to " + (sessionsState.offset + rows.length)
+            : "No more sessions";
+        }
+      },
+      { skeleton: "rows" }
+    );
   }
 
   prevBtn.addEventListener("click", function () {
@@ -67,15 +74,27 @@ export function renderSessions(panel) {
   load();
 }
 
+function timeCell(row, value) {
+  return el("span", { class: "nowrap", text: shortTs(value) });
+}
+
 var SESSION_COLUMNS = [
-  { key: "id", label: "Session", kind: "str" },
+  {
+    key: "id",
+    label: "Session",
+    kind: "str",
+    // The short id; the whole one on hover.
+    render: function (row) {
+      return el("span", { class: "mono-id", title: String(row.id || ""), text: String(row.id || "").slice(0, 8) });
+    },
+  },
   { key: "slug", label: "Project", kind: "str" },
-  { key: "first_ts", label: "First seen", kind: "str" },
-  { key: "last_ts", label: "Last seen", kind: "str" },
+  { key: "first_ts", label: "Started", kind: "str", render: timeCell },
+  { key: "last_ts", label: "Last reply", kind: "str", render: timeCell },
   { key: "span_s", label: "Span", kind: "secs" },
   { key: "mode", label: "Mode", kind: "str" },
   { key: "purpose", label: "Purpose", kind: "str" },
-  { key: "entrypoint", label: "Entrypoint", kind: "str" },
+  { key: "entrypoint", label: "Started from", kind: "str" },
   { key: "total_cost", label: "Cost", kind: "money" },
   { key: "total_tokens", label: "Tokens", kind: "tokens" },
 ];
@@ -83,63 +102,50 @@ var SESSION_COLUMNS = [
 // Shown only when some sessions ran somewhere else, such as WSL.
 var SOURCE_COLUMN = { key: "source", label: "Where", kind: "str" };
 
-function sessionCellText(value, col) {
-  if (col.key === "id") return String(value || "").slice(0, 8);
-  if (col.key === "first_ts" || col.key === "last_ts") return shortTs(value);
-  return formatCell(value, col.kind, state.currency);
+function renderSessionsTable(rows, container) {
+  var columns = SESSION_COLUMNS.slice();
+  var elsewhere = rows.some(function (row) {
+    return row.source && row.source !== "This computer";
+  });
+  if (elsewhere) columns.splice(2, 0, SOURCE_COLUMN);
+  container.appendChild(
+    dataGrid({
+      id: "sessions-list-table",
+      caption: "Sessions",
+      columns: columns,
+      rows: rows,
+      lead: ["slug", "source", "last_ts", "span_s", "mode", "total_cost", "total_tokens"],
+      rowKey: function (row) {
+        return row.id;
+      },
+      rowAction: {
+        label: function (row) {
+          return "Open session " + String(row.id || "").slice(0, 8);
+        },
+        run: function (row) {
+          openSessionDrawer(row.id);
+        },
+      },
+      empty: "No sessions in this window.",
+      emptyNext: "Pick a longer window to see older ones.",
+    })
+  );
 }
 
-function renderSessionsTable(rows, container, detailContainer) {
-  if (!rows.length) {
-    container.appendChild(el("p", { class: "notice", text: "No sessions in this window." }));
-    return;
-  }
-  var columns = SESSION_COLUMNS.slice();
-  if (rows.some(function (row) { return row.source && row.source !== "This computer"; })) {
-    columns.splice(2, 0, SOURCE_COLUMN);
-  }
-  var table = el("table", { id: "sessions-list-table" });
-  var thead = el("thead");
-  var headRow = el("tr");
-  columns.forEach(function (col) {
-    headRow.appendChild(el("th", { class: NUMERIC_KINDS[col.kind] ? "num" : null, text: col.label }));
+// A session's detail slides in from the right, over the list.
+function openSessionDrawer(sessionId) {
+  drawer({
+    title: "Session " + String(sessionId).slice(0, 8),
+    wide: true,
+    fill: function (body) {
+      renderSessionDetail(body, sessionId);
+    },
   });
-  thead.appendChild(headRow);
-  table.appendChild(thead);
-
-  var tbody = el("tbody");
-  rows.forEach(function (row) {
-    var tr = el("tr", { class: "clickable", tabIndex: 0, "data-session-id": row.id });
-    columns.forEach(function (col) {
-      var value = row[col.key];
-      tr.appendChild(
-        el("td", {
-          class: (NUMERIC_KINDS[col.kind] ? "num " : "") + "col-" + col.key,
-          text: sessionCellText(value, col),
-          // The short session id shows in full on hover.
-          title: col.key === "id" ? String(value || "") : null,
-        })
-      );
-    });
-    function open() {
-      renderSessionDetail(detailContainer, row.id);
-    }
-    tr.addEventListener("click", open);
-    tr.addEventListener("keydown", function (event) {
-      if (event.key === "Enter" || event.key === " ") {
-        event.preventDefault();
-        open();
-      }
-    });
-    tbody.appendChild(tr);
-  });
-  table.appendChild(tbody);
-  container.appendChild(el("div", { class: "table-wrap" }, [table]));
 }
 
 function renderSessionDetail(container, sessionId) {
   clear(container);
-  container.appendChild(loadingNode("Loading session " + sessionId + "…"));
+  container.appendChild(loadingNode("Loading the session", "lines"));
   fetchJson("/api/session/" + encodeURIComponent(sessionId)).then(function (result) {
     clear(container);
     var body = result.body;
@@ -171,8 +177,8 @@ function buildSessionRating(container, session) {
     });
     form.appendChild(group);
   });
-  var save = el("button", { type: "button", text: "Save rating" });
-  var reset = el("button", { type: "button", text: "Clear" });
+  var save = button("Save rating", { variant: "primary" });
+  var reset = button("Clear", { variant: "quiet" });
   var status = el("span", { class: "notes", role: "status" });
   if (saved.set_at) status.textContent = "Rated " + saved.set_at.slice(0, 10) + ".";
   form.appendChild(el("div", { class: "rating-actions" }, [save, reset, status]));
@@ -193,9 +199,10 @@ function buildSessionRating(container, session) {
       save.disabled = reset.disabled = false;
       if (!res.body || res.body.ok !== true) {
         status.textContent = "";
-        status.appendChild(errorNotice(res.body && res.body.error));
+        form.appendChild(errorNotice(res.body && res.body.error));
         return;
       }
+      toast(clearAll ? "Rating cleared." : "Rating saved.");
       renderSessionDetail(container, session.id);
     });
   }
@@ -210,23 +217,38 @@ function buildSessionRating(container, session) {
 
 function buildSessionDetail(container, session) {
   var wrap = el("div", { class: "session-detail" });
-  wrap.appendChild(el("h2", { text: "Session " + session.id }));
+  wrap.appendChild(el("p", { class: "mono-id session-full-id", text: session.id }));
 
-  var summaryList = el("ul", { class: "notes" }, [
-    el("li", { text: "Project: " + (session.slug || "-") }),
-    el("li", { text: "Where it ran: " + (session.source || "This computer") }),
-    el("li", { text: "Archetype: " + (session.archetype || "-") }),
-    el("li", { text: "Span: " + formatCell(session.span_s, "secs") }),
-    el("li", { text: "Cost: " + formatCell(session.total_cost, "money", state.currency) }),
-    el("li", { text: "Tokens: " + formatCell(session.total_tokens, "tokens") }),
-    el("li", { text: "Billing mode: " + (session.billing_mode || "-") }),
-    el("li", { text: "Profile: " + (session.profile_id || "none") }),
-  ]);
-  wrap.appendChild(summaryList);
+  var cost = moneyParts(session.total_cost);
+  wrap.appendChild(
+    tileRow(
+      [
+        tile({ label: "Cost", value: cost.value, unit: cost.unit, hint: cost.secondary || null }),
+        tile({
+          label: "Tokens",
+          value: el("span", { text: compactNumber(session.total_tokens || 0), title: fullValue(session.total_tokens, "tokens") || null }),
+        }),
+        tile({ label: "Span", value: formatDuration(session.span_s) }),
+      ],
+      { class: "metric-tiles-compact" }
+    )
+  );
+  var facts = el("dl", { class: "fact-list" });
+  [
+    ["Project", el("span", { title: session.slug || "", text: projectName(session.slug) })],
+    ["Where it ran", session.source || "This computer"],
+    ["Kind of session", session.archetype || "-"],
+    ["Billing", session.billing_mode === "subscription" ? "Pro or Max plan" : session.billing_mode === "api" ? "Pay per token (API)" : session.billing_mode || "-"],
+    ["Profile", session.profile_id || "None"],
+  ].forEach(function (pair) {
+    facts.appendChild(el("dt", { text: pair[0] }));
+    facts.appendChild(typeof pair[1] === "string" ? el("dd", { text: pair[1] }) : el("dd", null, [pair[1]]));
+  });
+  wrap.appendChild(facts);
 
   // -- "why was this session expensive?" (template sentences, no model) --
   var explainBox = el("div", { class: "session-explain" });
-  wrap.appendChild(el("h2", { text: "Why was this session expensive?" }));
+  wrap.appendChild(el("h3", { text: "Why did this session cost what it did?" }));
   wrap.appendChild(explainBox);
   loadInto(explainBox, "/api/session/" + encodeURIComponent(session.id) + "/explain", renderSessionExplain);
 
@@ -243,8 +265,8 @@ function buildSessionDetail(container, session) {
   );
   purposeLabel.appendChild(purposeSelect);
 
-  var saveTagsBtn = el("button", { type: "button", text: "Save tags" });
-  var tagStatus = el("span", { class: "notes" });
+  var saveTagsBtn = button("Save tags");
+  var tagStatus = el("span", { class: "notes", role: "status" });
   tagControls.appendChild(modeLabel);
   tagControls.appendChild(purposeLabel);
   tagControls.appendChild(saveTagsBtn);
@@ -277,9 +299,9 @@ function buildSessionDetail(container, session) {
       });
       if (failed.length) {
         tagStatus.textContent = "";
-        tagStatus.appendChild(errorNotice(failed[0].body && failed[0].body.error));
+        tagControls.appendChild(errorNotice(failed[0].body && failed[0].body.error));
       } else {
-        tagStatus.textContent = "Saved.";
+        toast("Tags saved.");
         renderSessionDetail(container, session.id);
       }
     });
@@ -287,37 +309,47 @@ function buildSessionDetail(container, session) {
 
   if (session.feedback_questions) wrap.appendChild(buildSessionRating(container, session));
 
-  // -- transcripts table (no path -- see docs/api.md's privacy rule) --
-  wrap.appendChild(el("h2", { text: "Transcripts" }));
-  if (session.transcripts && session.transcripts.length) {
-    var tTable = el("table");
-    var tHead = el("thead", null, [
-      el("tr", null, ["Kind", "Agent type", "Spawn depth", "Parent agent"].map(function (h) {
-        return el("th", { text: h });
-      })),
-    ]);
-    var tBody = el(
-      "tbody",
-      null,
-      session.transcripts.map(function (t) {
-        return el("tr", null, [
-          el("td", { text: t.kind || "-" }),
-          el("td", { text: t.agent_type || "top-level" }),
-          el("td", { class: "num", text: String(t.spawn_depth === undefined ? "-" : t.spawn_depth) }),
-          el("td", { text: t.parent_agent_id || "-" }),
-        ]);
-      })
-    );
-    tTable.appendChild(tHead);
-    tTable.appendChild(tBody);
-    wrap.appendChild(tTable);
-  } else {
-    wrap.appendChild(el("p", { class: "notice", text: "No transcripts recorded." }));
-  }
-
   // -- timeline: context size over turns with event markers ----------
-  wrap.appendChild(el("h2", { text: "Timeline" }));
+  wrap.appendChild(el("h3", { text: "Where did the context grow or reset?" }));
   wrap.appendChild(buildSessionTimeline(session));
+
+  // -- transcripts table (no path -- see docs/api.md's privacy rule) --
+  wrap.appendChild(el("h3", { text: "Transcripts" }));
+  wrap.appendChild(
+    dataGrid({
+      id: "session-transcripts",
+      caption: "Transcripts in this session",
+      columns: [
+        { key: "kind", label: "Kind", kind: "str" },
+        {
+          key: "agent_type",
+          label: "Agent type",
+          kind: "str",
+          value: function (t) {
+            return t.agent_type || "Main session";
+          },
+        },
+        {
+          key: "spawn_depth",
+          label: "Spawn depth",
+          kind: "int",
+          value: function (t) {
+            return t.spawn_depth === undefined ? null : t.spawn_depth;
+          },
+        },
+        {
+          key: "parent_agent_id",
+          label: "Started by",
+          kind: "str",
+          value: function (t) {
+            return t.parent_agent_id || "-";
+          },
+        },
+      ],
+      rows: session.transcripts || [],
+      empty: "No transcripts recorded for this session.",
+    })
+  );
 
   container.appendChild(wrap);
 }
@@ -339,28 +371,20 @@ function renderSessionExplain(data, container) {
     return part.share_pct >= 0.05;
   });
   if (!split.length) return;
-  var table = el("table", { class: "explain-split" });
-  table.appendChild(
-    el("thead", null, [
-      el("tr", null, [el("th", { text: "What the cost went on" }), el("th", { text: "Share" }), el("th", { text: "" })]),
-    ])
+  container.appendChild(
+    dataGrid({
+      id: "session-cost-split",
+      class: "explain-split",
+      caption: "What the cost went on",
+      sortable: false,
+      bar: 1,
+      columns: [
+        { key: "label", label: "What the cost went on", kind: "str" },
+        { key: "share_pct", label: "Share", kind: "pct" },
+      ],
+      rows: split,
+    })
   );
-  table.appendChild(
-    el(
-      "tbody",
-      null,
-      split.map(function (part) {
-        var bar = el("span", { class: "share-bar" });
-        bar.style.width = Math.max(1, Math.round(part.share_pct)) + "%";
-        return el("tr", null, [
-          el("td", { text: part.label }),
-          el("td", { class: "num", text: formatCell(part.share_pct, "pct") }),
-          el("td", { class: "share-cell" }, [bar]),
-        ]);
-      })
-    )
-  );
-  container.appendChild(table);
   container.appendChild(el("p", { class: "notes", text: "Shares are worked out at list price for each model's token counts." }));
 }
 
@@ -464,10 +488,11 @@ function markerGlyph(shape, cx, cy, r, fill, titleText) {
 function buildSessionTimeline(session) {
   var series = findPerTurnSeries(session);
   if (!series) {
-    return el("div", { class: "placeholder-box" }, [
-      el("p", { text: "no per-turn data for this session" }),
-      el("p", { class: "notes", text: "/api/session/<id> only returns turn_series once the watcher has stored this session's top-level transcript digest." }),
-    ]);
+    return emptyState(
+      "No turn-by-turn record for this session: Token Lens hasn't stored its main transcript yet.",
+      null,
+      "It appears once the service has read the session. Open it again in a minute."
+    );
   }
 
   var markers = session.markers || {};
@@ -627,10 +652,10 @@ function buildSessionTimeline(session) {
 // ======================================================================
 
 var SAVINGS_SECTIONS = [
-  { url: "/api/carry", id: "savings-carry", empty: "No context-carry data for this window." },
-  { url: "/api/compaction-sim", id: "savings-compaction-sim", empty: "No compaction-window sweep data for this window." },
-  { url: "/api/model-swap", id: "savings-model-swap", empty: "No model-swap data for this window." },
-  { url: "/api/waste", id: "savings-waste", empty: "No wasted-turn data for this window." },
+  { url: "/api/carry", id: "savings-carry", empty: "No tool output to weigh in this window: its sessions kept none worth trimming." },
+  { url: "/api/compaction-sim", id: "savings-compaction-sim", empty: "No conversation summaries to replay in this window." },
+  { url: "/api/model-swap", id: "savings-model-swap", empty: "No agent in this window could move to a cheaper model." },
+  { url: "/api/waste", id: "savings-waste", empty: "No wasted replies in this window." },
 ];
 
 export function renderSavings(panel) {
@@ -639,9 +664,14 @@ export function renderSavings(panel) {
   SAVINGS_SECTIONS.forEach(function (spec) {
     var container = el("div", { id: spec.id });
     panel.appendChild(container);
-    loadInto(container, withWindow(spec.url), function (data, target) {
-      renderReportBackedSection(data, target, spec.id, spec.empty);
-    });
+    loadInto(
+      container,
+      withWindow(spec.url),
+      function (data, target) {
+        renderReportBackedSection(data, target, spec.id, spec.empty, "Pick a longer window to include more sessions.");
+      },
+      { skeleton: "rows" }
+    );
   });
 }
 
@@ -656,7 +686,7 @@ export function renderUsage(panel) {
 
   var sectionContainer = el("div", { id: "usage-sections" });
   panel.appendChild(sectionContainer);
-  sectionContainer.appendChild(loadingNode());
+  sectionContainer.appendChild(loadingNode("Loading usage", "rows"));
   loadReport().then(function (result) {
     clear(sectionContainer);
     if (result.error) {
@@ -666,15 +696,38 @@ export function renderUsage(panel) {
     renderMappedSections(result.report, "spend/usage", sectionContainer);
   });
 
+  var compactions = el("section", { class: "report-section", id: "usage-compactions-section" });
+  compactions.appendChild(el("h2", { class: "section-title", text: "Every conversation summary in this window" }));
+  compactions.appendChild(
+    el("p", {
+      class: "section-intro",
+      text: "Each time Claude Code summarised a conversation to make room (a compaction), newest first.",
+    })
+  );
   var compactionsContainer = el("div", { id: "usage-compactions" });
-  panel.appendChild(el("h2", { text: "Conversation summaries (compactions) in this window" }));
-  panel.appendChild(compactionsContainer);
-  loadInto(compactionsContainer, withWindow("/api/compactions"), renderCompactionsRaw);
+  compactions.appendChild(compactionsContainer);
+  panel.appendChild(compactions);
+  loadInto(compactionsContainer, withWindow("/api/compactions"), renderCompactionsRaw, { skeleton: "rows" });
 }
 
 var COMPACTION_COLUMNS = [
-  { key: "transcript_id", label: "Transcript", kind: "str" },
-  { key: "ts", label: "Time", kind: "str" },
+  {
+    key: "ts",
+    label: "Time",
+    kind: "str",
+    render: function (row) {
+      return el("span", { class: "nowrap", text: shortTs(row.ts) });
+    },
+  },
+  {
+    key: "transcript_id",
+    label: "Transcript",
+    kind: "str",
+    // The store's own opaque number, not a quantity.
+    render: function (row) {
+      return row.transcript_id === null || row.transcript_id === undefined ? "-" : "#" + row.transcript_id;
+    },
+  },
   { key: "pre_tokens", label: "Tokens before", kind: "tokens" },
   { key: "post_tokens", label: "Tokens after", kind: "tokens" },
   { key: "dropped_tokens", label: "Tokens dropped", kind: "tokens" },
@@ -682,51 +735,23 @@ var COMPACTION_COLUMNS = [
   { key: "join_delta_s", label: "Next reply after", kind: "secs" },
 ];
 
-function compactionCellText(row, col) {
-  // transcript_id is the store's own opaque number, not a quantity.
-  if (col.key === "transcript_id") return row.transcript_id === null || row.transcript_id === undefined ? "-" : "#" + row.transcript_id;
-  if (col.key === "ts") return shortTs(row.ts);
-  return formatCell(row[col.key], col.kind, state.currency);
-}
-
 function renderCompactionsRaw(rows, container) {
-  if (!rows.length) {
-    container.appendChild(el("p", { class: "notice", text: "No conversation summaries in this window." }));
-    return;
-  }
-  // The API lists them oldest first; this table shows the newest.
+  // The API lists them oldest first; the grid starts with the newest.
   rows = rows.slice().sort(function (a, b) {
     return String(b.ts || "").localeCompare(String(a.ts || ""));
   });
-  var table = el("table");
-  var head = el(
-    "thead",
-    null,
-    [
-      el(
-        "tr",
-        null,
-        COMPACTION_COLUMNS.map(function (col) {
-          return el("th", { class: NUMERIC_KINDS[col.kind] ? "num" : null, text: col.label });
-        })
-      ),
-    ]
-  );
-  var body = el(
-    "tbody",
-    null,
-    rows.slice(0, 50).map(function (row) {
-      return el(
-        "tr",
-        null,
-        COMPACTION_COLUMNS.map(function (col) {
-          return el("td", { class: NUMERIC_KINDS[col.kind] ? "num" : null, text: compactionCellText(row, col) });
-        })
-      );
+  if (rows.length) {
+    container.appendChild(el("p", { class: "notes", text: thousands(rows.length) + (rows.length === 1 ? " summary." : " summaries.") }));
+  }
+  container.appendChild(
+    dataGrid({
+      id: "usage-compactions-grid",
+      caption: "Conversation summaries",
+      columns: COMPACTION_COLUMNS,
+      rows: rows,
+      bar: 4,
+      empty: "No conversation summaries in this window: no session grew big enough to need one.",
+      emptyNext: "Pick a longer window to see older ones.",
     })
   );
-  table.appendChild(head);
-  table.appendChild(body);
-  container.appendChild(el("div", { class: "table-wrap" }, [table]));
-  if (rows.length > 50) container.appendChild(el("p", { class: "notes", text: "Showing the newest 50 of " + thousands(rows.length) + "." }));
 }

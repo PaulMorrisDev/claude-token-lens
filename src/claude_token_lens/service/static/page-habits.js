@@ -6,12 +6,12 @@
 import { clear, el, escapeHtml, state } from "./core.js";
 import { formatCell, money, moneyText } from "./format.js";
 import { findSection, loadReport } from "./api.js";
-import { codeBlockWithCopy, errorNotice, loadingNode } from "./ui.js";
-import { helpBlock, renderPlacedTables } from "./grid.js";
+import { chip, codeBlockWithCopy, emptyState, errorNotice, helpButton, loadingNode, tile, tileRow } from "./ui.js";
+import { headRow, renderPlacedTables } from "./grid.js";
 import { viewIntro } from "./links.js";
 
 // ======================================================================
-// Work habits: the habits section's "This week" digest as cards,
+// Work habits: the habits section's "This week" digest as tiles,
 // the playbook as cards with a by-week sparkline and the example to
 // copy, brief templates with Copy buttons, then its other tables.
 // ======================================================================
@@ -21,7 +21,7 @@ export function renderHabits(panel) {
   viewIntro(panel, "habits");
   var container = el("div", { id: "habits-sections" });
   panel.appendChild(container);
-  container.appendChild(loadingNode());
+  container.appendChild(loadingNode("Loading your work habits", "tiles"));
   loadReport().then(function (result) {
     clear(container);
     if (result.error) {
@@ -30,9 +30,19 @@ export function renderHabits(panel) {
     }
     var section = findSection(result.report, "habits");
     if (!section) {
-      container.appendChild(el("p", { class: "notice", text: "No work-habit figures for this window." }));
+      container.appendChild(
+        emptyState(
+          "No work-habit figures for this window: none of its sessions had enough messages to compare.",
+          null,
+          "Pick a longer window, or turn on metrics capture on the Capture page for richer figures."
+        )
+      );
       return;
     }
+    // The section's "How to read this" sits at the end of the page's intro.
+    var intro = panel.querySelector(".view-intro");
+    var sectionHelp = helpButton(section.help, section.title || "Work habits");
+    if (intro && sectionHelp) intro.appendChild(sectionHelp);
     renderHabitsSection(section, container);
   });
 }
@@ -53,8 +63,6 @@ function labelFor(table, value) {
 }
 
 function renderHabitsSection(section, container) {
-  var sectionHelp = helpBlock(section.help);
-  if (sectionHelp) container.appendChild(sectionHelp);
   var tables = section.tables || [];
   var byName = {};
   tables.forEach(function (table) {
@@ -80,20 +88,26 @@ function renderHabitsSection(section, container) {
   }
 }
 
+// A block of the page: an h2 with its "How to read this", then the body.
+function habitsBlock(table, container) {
+  var block = el("section", { class: "report-section", "data-table": table.name });
+  block.appendChild(headRow(el("h2", { class: "section-title", text: table.title }), table.help, table.title));
+  container.appendChild(block);
+  return block;
+}
+
 function renderHabitsDigest(table, container) {
-  container.appendChild(el("h2", { text: table.title }));
-  var help = helpBlock(table.help);
-  if (help) container.appendChild(help);
+  var block = habitsBlock(table, container);
   var rows = tableRowsAsObjects(table);
   if (!rows.length) {
-    container.appendChild(el("p", { class: "notice", text: "Nothing to show for this window yet." }));
+    block.appendChild(
+      emptyState("Nothing to show for this window yet: it needs a few prompt cycles to compare.", null, "Pick a longer window to include more sessions.")
+    );
     return;
   }
-  var cards = el("div", { class: "stat-cards habits-digest" });
+  var tiles = [];
   rows.forEach(function (row) {
     var kind = (table.row_kinds || {})[row.item] || "str";
-    var card = el("div", { class: "stat-card" });
-    card.appendChild(el("div", { class: "stat-label", text: labelFor(table, row.item) }));
     // UX-1: a money card follows the billing mode (money() mirrors
     // Units.money); the list-price figure goes underneath when the
     // headline is a share of the weekly limit, and "list-price
@@ -105,13 +119,17 @@ function renderHabitsDigest(table, container) {
       headline = headline.replace(/ list-price equivalent$/, "");
       underneath = "list-price equivalent";
     }
-    card.appendChild(el("div", { class: "stat-value", text: headline }));
-    if (underneath) card.appendChild(el("div", { class: "stat-hint", text: underneath }));
-    card.appendChild(el("div", { text: row.what || "" }));
-    if (row.detail) card.appendChild(el("div", { class: "stat-hint", text: row.detail }));
-    cards.appendChild(card);
+    tiles.push(
+      tile({
+        label: labelFor(table, row.item),
+        value: headline,
+        hint: underneath || null,
+        caption: row.what || null,
+        note: row.detail || null,
+      })
+    );
   });
-  container.appendChild(cards);
+  block.appendChild(tileRow(tiles, { class: "metric-tiles-fit habits-digest" }));
 }
 
 // The playbook's `weeks` column: 0-100 per week, "-" for a week with
@@ -144,35 +162,35 @@ function habitSparkline(weeks, label) {
 var PLAYBOOK_CARD_LIMIT = 5;
 
 function renderHabitsPlaybook(table, container) {
-  container.appendChild(el("h2", { text: table.title }));
-  var help = helpBlock(table.help);
-  if (help) container.appendChild(help);
+  var block = habitsBlock(table, container);
   var rows = tableRowsAsObjects(table);
   if (!rows.length) {
-    container.appendChild(el("p", { class: "notice", text: "No habit stood out in this window." }));
+    block.appendChild(
+      emptyState("No habit stood out in this window: your sessions didn't repeat a pattern worth changing.", null, "Check again after a busier week.")
+    );
     return;
   }
   var featured = rows.slice(0, PLAYBOOK_CARD_LIMIT);
   var rest = rows.slice(PLAYBOOK_CARD_LIMIT);
   var cards = el("div", { class: "habit-cards" });
   appendHabitCards(table, featured, cards);
-  container.appendChild(cards);
+  block.appendChild(cards);
   if (rest.length) {
-    var more = el("details", { class: "help" });
+    var more = el("details", { class: "disclosure" });
     more.appendChild(el("summary", { text: rest.length + " more habit" + (rest.length === 1 ? "" : "s") + " worth trying" }));
     var restCards = el("div", { class: "habit-cards" });
     appendHabitCards(table, rest, restCards);
     more.appendChild(restCards);
-    container.appendChild(more);
+    block.appendChild(more);
   }
 }
 
 function appendHabitCards(table, rows, cards) {
   rows.forEach(function (row) {
     var card = el("article", { class: "habit-card" });
-    var head = el("div", { class: "profile-card-head" });
+    var head = el("div", { class: "card-head" });
     head.appendChild(el("h3", { text: labelFor(table, row.habit) }));
-    head.appendChild(el("span", { class: "badge", text: labelFor(table, row.theme) }));
+    if (row.theme) head.appendChild(chip(String(labelFor(table, row.theme)), { class: "habit-theme" }));
     card.appendChild(head);
     // UX-1/UX-2: routed through moneyText so a subscription reads "about
     // X% of your weekly usage limit" instead of a bare "$" figure; "a
@@ -184,7 +202,7 @@ function appendHabitCards(table, rows, cards) {
     // fired shows no saving of its own -- it would double-count the
     // rule's -- and names the rule instead.
     if (row.covered_by) {
-      card.appendChild(el("p", { class: "habit-saving", text: "Already covered by “" + row.covered_by + "” in Recommendations." }));
+      card.appendChild(el("p", { class: "habit-saving", text: "Already covered by the “" + row.covered_by + "” recommendation on the Actions page." }));
     } else {
       var savingPeriod = (state.units || {}).mode === "subscription" ? "" : "a week";
       var saving = row.saving === null || row.saving === undefined
@@ -215,7 +233,7 @@ function appendHabitCards(table, rows, cards) {
     // explainer (page-actions.js's renderFix), collapsed by default so it doesn't
     // crowd out the habit itself.
     if (row.where || row.trade_off || row.how_to_undo) {
-      var explainer = el("details", { class: "help" });
+      var explainer = el("details", { class: "disclosure" });
       explainer.appendChild(el("summary", { text: "Where, trade-off and how to undo it" }));
       var list = el("dl", { class: "fix-explainer" });
       [["Where", row.where], ["Trade-off", row.trade_off], ["How to undo it", row.how_to_undo]].forEach(function (pair) {
@@ -231,9 +249,7 @@ function appendHabitCards(table, rows, cards) {
 }
 
 function renderBriefTemplates(table, container) {
-  container.appendChild(el("h2", { text: table.title }));
-  var help = helpBlock(table.help);
-  if (help) container.appendChild(help);
+  var block = habitsBlock(table, container);
   var cards = el("div", { class: "habit-cards" });
   tableRowsAsObjects(table).forEach(function (row) {
     var card = el("article", { class: "habit-card" });
@@ -242,5 +258,5 @@ function renderBriefTemplates(table, container) {
     card.appendChild(codeBlockWithCopy(row.template || ""));
     cards.appendChild(card);
   });
-  container.appendChild(cards);
+  block.appendChild(cards);
 }

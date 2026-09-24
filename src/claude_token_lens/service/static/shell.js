@@ -7,24 +7,24 @@
 
 import { clear, el, goTo, renderedViews, state, storageGet, storageSet } from "./core.js";
 import { shortTs, thousands } from "./format.js";
-import { fetchJson, figures, resetFiguresAsOf } from "./api.js";
+import { connection, fetchJson, figures, resetFiguresAsOf, runReconnectRetries } from "./api.js";
 import { captureLink, pageLink } from "./links.js";
+import { button, callout, toast } from "./ui.js";
 
 export function renderHealth(health, container) {
   var watcher = health.watcher || {};
   if (health.service_registered === false) {
     container.appendChild(
-      el("div", { class: "notice error", role: "alert" }, [
-        el("p", {
-          text:
-            "The service is not registered to start at logon; history older than cleanupPeriodDays will be lost after a reboot. Run: claude-token-lens install-service",
-        }),
-      ])
+      callout({
+        tone: "critical",
+        title: "The service doesn't start when you log on.",
+        text: "After a restart, history older than Claude Code's cleanup period (cleanupPeriodDays) is lost. To fix it, run: claude-token-lens install-service",
+      })
     );
   }
   var scan = health.scan || {};
   if (health.message) {
-    container.appendChild(el("div", { class: "notice" + (health.status === "starting" ? "" : " error") }, [el("p", { text: health.message })]));
+    container.appendChild(callout({ tone: health.status === "starting" ? "info" : "critical", text: health.message }));
   }
   var lines = [
     "status: " + (health.status || "unknown"),
@@ -144,9 +144,11 @@ figures.notify = renderStatusLine;
 // progress, a failed scan, a scanner that has stopped) and, once a scan
 // that was running when the page drew its figures finishes, a way to
 // redraw them (also offered in the status line).
-var healthPoll = { status: null, timer: null, health: null, redrawDue: false };
+var healthPoll = { status: null, timer: null, health: null, redrawDue: false, inflight: false, misses: 0 };
 
-function redrawEverything() {
+// options.focus moves focus to the page title: the button pressed is
+// redrawn away. A redraw after reconnecting leaves focus where it is.
+function redrawEverything(options) {
   healthPoll.redrawDue = false;
   var banner = document.getElementById("health-banner");
   if (banner) {
@@ -160,14 +162,16 @@ function redrawEverything() {
   });
   // The button pressed is redrawn away, so focus moves to the page
   // title rather than dropping to the document.
-  goTo(state.view || "overview", { force: true, focus: true });
+  goTo(state.view || "overview", { force: true, focus: !!(options && options.focus) });
   renderStatusLine();
 }
 
 function redrawButton() {
-  var button = el("button", { type: "button", class: "link-button", text: "Redraw figures" });
-  button.addEventListener("click", redrawEverything);
-  return button;
+  var redraw = el("button", { type: "button", class: "link-button", text: "Redraw figures" });
+  redraw.addEventListener("click", function () {
+    redrawEverything({ focus: true });
+  });
+  return redraw;
 }
 
 function renderHealthBanner(health, previous) {
@@ -194,8 +198,15 @@ function renderHealthBanner(health, previous) {
   clear(banner);
   banner.className = "health-banner";
   if (!health) {
+    // No countdown: this region is read aloud when it changes, so it
+    // says once that it retries by itself, with a way to try now.
     banner.classList.add("error");
-    banner.appendChild(el("p", { text: "Can't reach the dashboard service, so these figures may be out of date. Is serve still running?" }));
+    banner.appendChild(
+      el("p", {}, [
+        el("span", { text: "Can't reach Token Lens's local service, so the figures on screen may be out of date. It keeps trying by itself. " }),
+        button("Try now", { variant: "link", action: pollHealth }),
+      ])
+    );
     banner.hidden = false;
     return;
   }
@@ -220,20 +231,56 @@ function renderHealthBanner(health, previous) {
   banner.hidden = false;
 }
 
+// While the service can't be reached: try again after 2, 4, 8, 16, then
+// every 30 seconds.
+var RETRY_SECONDS = [2, 4, 8, 16, 30];
+
 export function pollHealth() {
+  if (healthPoll.inflight) return;
+  healthPoll.inflight = true;
+  clearTimeout(healthPoll.timer);
   fetchJson("/api/health").then(function (result) {
+    healthPoll.inflight = false;
     var body = result.body;
     var health = body && body.ok === true ? body.data : null;
     var previous = healthPoll.status;
-    healthPoll.status = health ? health.status : "unreachable";
+    healthPoll.status = health ? health.status : result.httpStatus === 0 ? "unreachable" : previous || "starting";
     if (health) healthPoll.health = health;
-    renderHealthBanner(health, previous);
+    renderHealthBanner(result.httpStatus === 0 ? null : health, previous);
     renderStatusLine();
     if (health) updateCaptureBanner(health.capture);
-    // Poll quickly while a scan's progress is worth watching.
-    healthPoll.timer = setTimeout(pollHealth, health && health.status === "starting" ? 3000 : 60000);
+    var delay;
+    if (result.httpStatus === 0) {
+      delay = RETRY_SECONDS[Math.min(healthPoll.misses, RETRY_SECONDS.length - 1)] * 1000;
+      healthPoll.misses += 1;
+    } else {
+      healthPoll.misses = 0;
+      // Poll quickly while a scan's progress is worth watching.
+      delay = health && health.status === "starting" ? 3000 : 60000;
+    }
+    healthPoll.timer = setTimeout(pollHealth, delay);
   });
 }
+
+// Any request that finds the service gone (or back) says so here: the
+// views are marked stale and the health poll starts retrying at once;
+// back again, what failed meanwhile loads again.
+connection.notify = function (up) {
+  var views = document.getElementById("views");
+  if (views) views.toggleAttribute("data-stale", !up);
+  if (!up) {
+    if (healthPoll.status !== "unreachable") pollHealth();
+    return;
+  }
+  toast("Connected to the service again.", { tone: "info" });
+  if (connection.reportFailed) {
+    connection.retries = [];
+    connection.reportFailed = false;
+    redrawEverything();
+  } else {
+    runReconnectRetries();
+  }
+};
 
 // ======================================================================
 // Metrics capture: the banner, shown only when there is something to act
