@@ -776,6 +776,19 @@ def _merge_diagnostics(acc: Diagnostics, d: Diagnostics) -> None:
         acc.attachment_catch_all[key] = acc.attachment_catch_all.get(key, 0) + value
 
 
+def _merge_parser_notes(acc: dict[str, dict[str, int]], notes: dict[str, dict[str, int]]) -> None:
+    """Fold one transcript's ``TranscriptResult.parser_notes`` into the
+    running corpus-wide total, the same two-level dict-of-counters merge
+    ``_merge_diagnostics`` above does for its own dict fields -- kept as
+    a sibling function (not a ``Diagnostics`` field) per this phase's own
+    brief: don't edit ``_merge_diagnostics``/``DIAGNOSTIC_LABELS``.
+    """
+    for note_key, counts in notes.items():
+        bucket = acc.setdefault(note_key, {})
+        for key, value in counts.items():
+            bucket[key] = bucket.get(key, 0) + value
+
+
 # -- workstyle feature extraction (no existing helper does this: see
 # workstyle.py's own module docstring, "this module never reads a
 # TranscriptResult ... directly") -------------------------------------
@@ -1231,6 +1244,9 @@ def build_report(
     overview = _OverviewAcc()
     pricing_coverage = PricingCoverage()
     diagnostics = Diagnostics()
+    #: Parser-signals addition (SURV-6/7, see model.py's module
+    #: docstring): merged alongside, not inside, ``_merge_diagnostics``.
+    parser_notes: dict[str, dict[str, int]] = {}
 
     rs = recache.RecacheStats(recache_th)
     ls = limits.LimitStats()
@@ -1296,6 +1312,7 @@ def build_report(
 
         for tr in transcripts:
             _merge_diagnostics(diagnostics, tr.diagnostics)
+            _merge_parser_notes(parser_notes, tr.parser_notes)
 
             rs.add(tr, pricing.resolve_model)
             ls.add(tr, pricing.resolve_model)
@@ -1717,7 +1734,12 @@ def build_report(
     diagnostics.pricing_fast_priced_as_standard_turns = pricing_coverage.fast_priced_as_standard_turns
 
     report_model = ReportModel(
-        meta=meta, sections=sections, recommendations=[], diagnostics=diagnostics, context_files=cf.to_dict()
+        meta=meta,
+        sections=sections,
+        recommendations=[],
+        diagnostics=diagnostics,
+        context_files=cf.to_dict(),
+        parser_notes=parser_notes,
     )
 
     # WP10b: recommendations are computed from the already-assembled

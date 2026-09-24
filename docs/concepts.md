@@ -63,10 +63,12 @@ the entry hasn't expired. What invalidates it, as observed and encoded
 in [`events.py`](../src/claude_token_lens/events.py)'s `EventKind` table:
 a compaction (`COMPACT_BOUNDARY`/`COMPACT_SUMMARY`), a model switch
 (`MODEL_FALLBACK`), the `CACHE_SIGNAL` family (a model change, thinking
-being stripped, entering/exiting ultra-effort, a change to the set of
-deferred or prefix-loaded tool schemas, an MCP-instructions delta, an
-agent-listing delta, entering/exiting plan mode or auto mode, an output
-style change) — and, simply, the TTL running out between two turns.
+being stripped, a model dropping its own prior extended-thinking blocks
+because of a prefix mismatch (`thinking_drop`), entering/exiting
+ultra-effort, a change to the set of deferred or prefix-loaded tool
+schemas, an MCP-instructions delta, an agent-listing delta,
+entering/exiting plan mode or auto mode, an output style change) — and,
+simply, the TTL running out between two turns.
 `recache.py` (see [section 3](#3-cache-rebuild-definitions-and-signatures))
 is the module that detects when one of these actually cost you money.
 

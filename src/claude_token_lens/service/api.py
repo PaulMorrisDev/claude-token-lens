@@ -1814,7 +1814,13 @@ def make_handler(
         model = _get_report_model(*window)
         hook = hook_health.check(options.config_dir)
         statusline = hook_health.statusline_check(options.config_dir, store.entrypoint_counts())
-        return _ok(to_jsonable(helptext.diagnostics_table(model.diagnostics, hook=hook, statusline=statusline)))
+        return _ok(
+            to_jsonable(
+                helptext.diagnostics_table(
+                    model.diagnostics, hook=hook, statusline=statusline, parser_notes=model.parser_notes
+                )
+            )
+        )
 
     def _report_units(model):
         from ..units import Units

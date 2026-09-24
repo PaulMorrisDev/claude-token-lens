@@ -44,6 +44,16 @@ than imported from ``report.py`` -- see that module's own docstring, and
 ``report.py``/``usage.py``/``workflows.py``/``phases.py``/``cli.py``'s,
 for the convention this follows. Every cost figure comes from
 ``pricing.price_turn`` -- never recomputed independently.
+
+Parser-signals addition (SURV-5, ``PARSER_VERSION`` 18): :func:`claude_code_reported_costs`
+reads a session's own ``cost-state`` line (``TranscriptMeta.cc_cost_usd``,
+parsed by ``parse.py``) next to this tool's own per-turn pricing for the
+same session, per plan P9's later "Q1 gap metric" wording -- "reconcile
+shows Claude Code's own cost vs Token Lens's cost for each session ...
+from SIG-4 and cost-state". SIG-4 (a statusline ground-truth signal) is
+separate, not-yet-built work; this function supplies only the
+``cost-state`` half, numbers only, no network call and no OTel, same as
+every other function in this module.
 """
 
 from __future__ import annotations
@@ -305,6 +315,64 @@ def _utc_day(ts: str | None) -> str | None:
     return dt.astimezone(timezone.utc).date().isoformat()
 
 
+@dataclass(slots=True)
+class ClaudeCodeCost:
+    """One session's self-reported cost next to this tool's own pricing
+    for the same session (SURV-5, plan P9's later "Q1 gap metric":
+    reconcile showing "Claude Code's own cost vs Token Lens's cost" for
+    each session and over the window, from SIG-4 and ``cost-state`` --
+    SIG-4 is a separate, not-yet-built statusline ground-truth signal;
+    this dataclass supplies the ``cost-state`` half only, and the actual
+    gap-metric table/note/threshold logic is left for that later work).
+    """
+
+    session_id: str = ""
+    #: Claude Code's own reported total (``TranscriptMeta.cc_cost_usd``,
+    #: from a ``cost-state`` line's own ``totalCostUSD`` -- the last one
+    #: seen in the session's top-level transcript, since it's a running
+    #: total).
+    cc_cost_usd: float = 0.0
+    #: Whether Claude Code itself flagged an unpriced/unknown model
+    #: anywhere in this session's own usage
+    #: (``TranscriptMeta.cc_cost_has_unknown_model``).
+    cc_has_unknown_model: bool = False
+    #: This tool's own per-turn pricing (``pricing.price_turn``) summed
+    #: across the session's top-level transcript and every subagent
+    #: transcript under it -- the same total the rest of this module
+    #: calls "local" cost.
+    local_cost_usd: float = 0.0
+
+
+def claude_code_reported_costs(corpus: Corpus, pricing: Pricing) -> list[ClaudeCodeCost]:
+    """One :class:`ClaudeCodeCost` per session whose top-level transcript
+    carried at least one ``cost-state`` line -- most sessions carry none
+    (an infrequent, apparently version-gated line: 25 occurrences across
+    a 2,617-file real-corpus survey), so this list is typically much
+    shorter than ``corpus.sessions``. Read-only, numbers only, no OTel --
+    see this module's own docstring's rule that it never makes a network
+    call, which extends to never building any telemetry pipeline either.
+    """
+    out: list[ClaudeCodeCost] = []
+    for bundle in corpus.sessions:
+        top = bundle.top
+        if top is None or top.meta.cc_cost_usd is None:
+            continue
+        local_total = 0.0
+        for tr in _transcripts_of(bundle):
+            for turn in _priced_turns(tr):
+                resolved = pricing.resolve_model(turn.model)
+                local_total += price_turn(turn, resolved).total
+        out.append(
+            ClaudeCodeCost(
+                session_id=top.meta.session_id,
+                cc_cost_usd=top.meta.cc_cost_usd,
+                cc_has_unknown_model=top.meta.cc_cost_has_unknown_model,
+                local_cost_usd=local_total,
+            )
+        )
+    return out
+
+
 def _collect_local_rows(corpus: Corpus, pricing: Pricing) -> list[dict]:
     """One row per priced turn in ``corpus``, same canonical shape
     :func:`parse_admin_csv` produces, so both sides can be grouped and
@@ -505,4 +573,6 @@ __all__ = [
     "reconcile",
     "BY_CHOICES",
     "KNOWN_DIFFERENCE_REASONS",
+    "ClaudeCodeCost",
+    "claude_code_reported_costs",
 ]

@@ -891,6 +891,19 @@ figure and a correct Admin figure can still legitimately differ
 other tools, workspace filters on the Admin export, UTC-day-boundary
 disagreement, and an unknown model priced at zero locally).
 
+`reconcile.claude_code_reported_costs(corpus, pricing)` (SURV-5,
+`PARSER_VERSION` 18) is a second, separate comparison the same module
+now offers: one `ClaudeCodeCost` per session whose top-level transcript
+carried at least one `cost-state` line (most don't — an infrequent,
+apparently version-gated line), pairing Claude Code's own self-reported
+running total (`TranscriptMeta.cc_cost_usd`/`cc_cost_has_unknown_model`)
+against this tool's own locally-priced total for that same session.
+Unlike `reconcile_by_period` above, this needs no Admin CSV and makes no
+network call — it is the `cost-state` half of plan P9's later "Q1 gap
+metric" (the other half, a statusline ground-truth signal, is separate,
+later work); this phase stops at supplying the paired numbers, not the
+gap-metric table/note/threshold display itself.
+
 ## `usage_windows` (`tools/log_usage.py`)
 
 Not to be confused with the report's own [`usage`](#usage-usagepy)
@@ -1236,6 +1249,22 @@ against the rate card, not at parse time). `recommend.py`'s
 `data-quality` rule reads this field directly to decide whether its
 unparsable-lines/ttl-mismatch clauses additionally fire, alongside the
 `scorecard.dimensions` `data_quality` row it cites as evidence.
+
+Parser-signals addition (`PARSER_VERSION` 18): `ReportModel.parser_notes`
+is a sibling side channel next to `Diagnostics`, not one of its fields —
+kept separate because it holds counters that don't fit the closed
+per-field merge `report._merge_diagnostics` already does. Two keys,
+each a `dict[str, int]`, rendered the same way as a `Diagnostics` field
+directly below it: `unknown_line_types` (a count per sanitised, closed-
+shape line-`type` token that no detection rule in `events.classify_line`
+recognised at all — distinct from `ignored_line_types` above, which
+also covers types the parser *does* recognise and deliberately drops)
+and `unsized_blocks` (a count per content-block type — `image`/
+`document` — this parser could not size by Anthropic's documented
+image-token rule, from either a tool_result's or a human prompt's own
+content blocks; see `events.content_block_size`). Both are present only
+when non-empty, so a corpus that never saw either carries no side
+channel at all.
 
 ## Worked example
 

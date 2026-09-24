@@ -3791,13 +3791,34 @@ DIAGNOSTIC_LABELS: dict[str, tuple[str, str]] = {
 }
 
 
-def diagnostics_table(diagnostics: Diagnostics, hook=None, statusline=None) -> Table:
+#: Parser-signals addition (SURV-6/7, see model.py's module docstring):
+#: ``ReportModel.parser_notes`` key -> (label, meaning), the same shape
+#: as ``DIAGNOSTIC_LABELS`` but deliberately a separate dict -- this
+#: phase was told not to edit ``DIAGNOSTIC_LABELS`` (and ``parser_notes``
+#: isn't a ``Diagnostics`` field to begin with).
+_PARSER_NOTE_LABELS: dict[str, tuple[str, str]] = {
+    "unknown_line_types": (
+        "Unrecognised line types",
+        "Kinds of log line no rule in this tool recognises at all, with counts -- unlike \"Line types skipped\" above, which also includes kinds this tool knows about and intentionally ignores.",
+    ),
+    "unsized_blocks": (
+        "Unsized image/document content",
+        "Image or document content this tool could not estimate a token count for (an oversized image, or a PDF page, whose cost isn't a fixed formula), by kind, with counts. Left out of context-size figures.",
+    ),
+}
+
+
+def diagnostics_table(diagnostics: Diagnostics, hook=None, statusline=None, parser_notes: dict | None = None) -> Table:
     """The parse-quality counters as a plain-English table (the Data
     quality tab, ``GET /api/diagnostics``). Rows keep the raw field name
     as their key, shown through ``value_labels``. ``hook``, a
     ``hook_health.HookHealth``, adds a first row saying whether the
     config snapshot hook is running; ``statusline``, a
-    ``hook_health.statusline_check`` result, adds one for the statusline."""
+    ``hook_health.statusline_check`` result, adds one for the statusline.
+    ``parser_notes`` (``ReportModel.parser_notes``) adds one row per key
+    it carries, labelled via ``_PARSER_NOTE_LABELS`` -- a side channel
+    for counters that don't fit the ``Diagnostics`` dataclass, see that
+    module's docstring."""
     rows = []
     if hook is not None:
         rows.append(["snapshot_hook", "working" if hook.ok else "needs attention", hook.summary()])
@@ -3812,6 +3833,10 @@ def diagnostics_table(diagnostics: Diagnostics, hook=None, statusline=None) -> T
             value = "yes" if value else "no"
         _, meaning = DIAGNOSTIC_LABELS.get(field_def.name, ("", ""))
         rows.append([field_def.name, value, meaning])
+    for note_key, label_pair in _PARSER_NOTE_LABELS.items():
+        counts = (parser_notes or {}).get(note_key) or {}
+        value = ", ".join(f"{k}: {v:,}" for k, v in sorted(counts.items())) if counts else "none"
+        rows.append([note_key, value, label_pair[1]])
     return Table(
         name="data_quality",
         title="What could be read",
@@ -3827,7 +3852,8 @@ def diagnostics_table(diagnostics: Diagnostics, hook=None, statusline=None) -> T
             act="If unrecognised note types or unreadable lines are large, your Claude Code version may be newer than this tool.",
         ),
         value_labels={"snapshot_hook": "Config snapshot hook", "statusline": "Statusline (usage limits)"}
-        | {key: label for key, (label, _) in DIAGNOSTIC_LABELS.items()},
+        | {key: label for key, (label, _) in DIAGNOSTIC_LABELS.items()}
+        | {key: label for key, (label, _) in _PARSER_NOTE_LABELS.items()},
     )
 
 

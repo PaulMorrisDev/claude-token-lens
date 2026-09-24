@@ -400,6 +400,50 @@ sizing corrections).
   after a compaction. Subagent detection now also matches on the
   transcript's own filename shape, not only its parent directory name.
 
+### P9a — Parser signals: task/structured-output events, a new cache
+    signal, cost-state reconciliation, image/document sizing
+
+`PARSER_VERSION` bumped to 18 (from 17): every transcript is re-parsed
+once to pick up the new detection rules and fields below.
+
+- **`task_status` and `structured_output` attachment lines now get their
+  own event kinds** instead of falling into the generic attachment
+  catch-all: `task_status` keeps only a closed status word
+  (`running`/`completed`/`failed`/`stopped`/`cancelled`, else `other`)
+  and task type (`local_bash`/`local_agent`, else `other`) — never the
+  description, delta summary, output file path or shell command these
+  lines also carry in the real corpus; `structured_output` keeps only
+  the size of its payload, never the payload itself.
+- **A model dropping its own prior extended-thinking blocks
+  (`thinking_drop`, a prefix mismatch) now joins the `CACHE_SIGNAL`
+  family** as a likely cache-bust, alongside thinking being stripped —
+  only the closed drop reason and block/turn counts are kept.
+- **`cost-state` lines (Claude Code's own running cost total for the
+  session) are now read**, numbers only: `totalCostUSD`/
+  `hasUnknownModelCost` land on the session's own metadata as a check on
+  this tool's own pricing. `reconcile.claude_code_reported_costs(corpus,
+  pricing)` pairs each session's self-reported total against this
+  tool's own locally-priced total for the same session — the
+  `cost-state` half of a later cost-gap metric; no Admin CSV, no network
+  call, same as the rest of `reconcile.py`.
+- **A tool_result's or a human prompt's own image/document content
+  blocks are now sized** by Anthropic's documented Standard-tier
+  image-token rule (`tokens = ceil(width/28) * ceil(height/28)`, itself
+  capped at 1568 tokens) instead of silently counting as zero characters
+  — PNG, GIF, JPEG and WebP headers are read just far enough to get
+  their pixel dimensions, never decoded further. A block this parser
+  can't size confidently (a document, an oversized or high-resolution-
+  tier image, a malformed payload) is now counted as **unsized** rather
+  than guessed at (`unsized_blocks`, by block type).
+- **A line type no detection rule recognises at all is now counted
+  separately** from one this parser knows about and deliberately ignores
+  (`unknown_line_types`, apart from the existing `ignored_line_types`) —
+  the type name itself is sanitised to a closed, safe token shape (or
+  counted as `other`) before it ever reaches a diagnostic counter's key,
+  since it comes straight off the wire. Both new counters live on a new
+  `parser_notes` side channel next to `Diagnostics` (present only when
+  non-empty) and are rendered alongside it by every renderer.
+
 ## [0.5.2] - 2026-09-23
 
 ### Fixed

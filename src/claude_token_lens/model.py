@@ -359,6 +359,65 @@ Feedback addition (``PARSER_VERSION`` 16):
 - ``TranscriptMeta.cap_version`` / ``cap_metrics`` / ``cap_injections``
   -- the capture note format version seen, the metric codes the notes
   asked for, and how many notes were injected.
+
+Parser-signals addition (``PARSER_VERSION`` 18 -- plan SURV-4/5/6/7, see
+``events.py``/``parse.py``'s own module docstrings). Every new value is a
+count, a closed word (with an "other" fallback) or a raw number off a
+``cost-state`` line -- never message text, a path or a command:
+
+- ``EventKind.TASK_STATUS`` / ``EventKind.STRUCTURED_OUTPUT`` -- a
+  ``task_status``/``structured_output`` attachment gets its own kind
+  instead of falling into the generic ``ATTACHMENT`` catch-all.
+  ``Event.detail`` carries ``status``/``task_type`` (closed words, never
+  ``description``/``deltaSummary``/``outputFilePath``/``shell``) for the
+  former, and ``size_chars`` only (the JSON-encoded length of ``data``,
+  never ``data`` itself) for the latter.
+- ``thinking_drop`` joins ``events._CACHE_SIGNAL_TYPES`` (a likely
+  cache-bust): a model dropped its own prior extended-thinking blocks.
+  ``Event.detail`` carries ``reason`` (closed word, else "other"),
+  ``blockCount`` and ``turnCount`` -- never the dropped blocks'
+  ``first``/``last`` text, ``blockHashes``, ``requestId``,
+  ``querySource`` or ``model``.
+- ``TranscriptResult.parser_notes: dict[str, dict[str, int]] = {}`` /
+  ``ReportModel.parser_notes: dict = {}`` -- a side channel for counters
+  that don't fit ``Diagnostics`` (whose field list is pinned 1:1 to
+  ``helptext.DIAGNOSTIC_LABELS`` by ``tests/test_help_coverage.py``, and
+  which this phase was told not to touch). Two keys so far:
+  ``unknown_line_types`` -- top-level line types ``events.classify_line``
+  had no rule for at all (kept apart from the long-standing
+  ``Diagnostics.ignored_line_types``, which also holds types the parser
+  recognises and deliberately drops), by sanitised type name (see
+  ``events.sanitize_line_type``: a closed token pattern, capped length,
+  else "other" -- a raw ``type`` field is attacker-controlled input, not
+  a trusted enum). ``unsized_blocks`` -- ``image``/``document`` content
+  blocks (in a tool_result or a human prompt) whose token count this
+  parser did not attempt to estimate, by block type, because no
+  documented deterministic rule covers them (a PDF page's cost is only
+  documented as an approximate per-page range) or the image needs the
+  high-resolution tier's downscaling this parser doesn't implement.
+  Merged manually alongside (not inside) ``report._merge_diagnostics``,
+  and rendered by ``helptext.diagnostics_table``'s own
+  ``_PARSER_NOTE_LABELS`` (not ``DIAGNOSTIC_LABELS``).
+- ``Event.size_chars`` on an ``image``/``document`` content block this
+  parser CAN size (standard-tier image: ``events.image_token_estimate``)
+  is the block's token estimate converted back to chars at the project's
+  usual ``_CHARS_PER_TOKEN_APPROX`` (4), so it composes with the existing
+  char-based totals (``tool_result_chars``, ``human_prompt_chars``)
+  without a second unit system. ``parse._tool_result_length`` and
+  ``events._human_text_metrics`` both now add this for ``image``/
+  ``document`` blocks instead of silently treating them as 0 chars.
+- ``TranscriptMeta.cc_cost_usd: float | None = None`` /
+  ``cc_cost_has_unknown_model: bool = False`` -- a ``cost-state`` line's
+  own ``totalCostUSD`` (numbers only; the last such line seen in the
+  transcript, since the field is a running total) and its
+  ``hasUnknownModelCost`` flag, so ``reconcile.claude_code_reported_costs``
+  can hand P9's later Q1 gap metric "what Claude Code itself thinks this
+  session cost" next to this tool's own per-turn pricing for the same
+  session. ``cost-state`` joins ``events._IGNORABLE_TYPES`` (it is a
+  known, deliberately-ignored-as-an-event type, like ``mode``/
+  ``agent-setting`` before it) since its value is read directly in
+  ``parse.parse_transcript`` rather than carried as an ``Event``. No
+  OTel, no per-model breakdown -- just the one total and its flag.
 """
 
 from __future__ import annotations
@@ -385,6 +444,11 @@ class EventKind(StrEnum):
     REMINDER = "reminder"
     CONTEXT_INJECT = "context_inject"
     QUEUE_OPERATION = "queue_operation"
+    #: Parser-signals addition (see module docstring): a ``task_status`` or
+    #: ``structured_output`` attachment gets its own kind instead of the
+    #: generic ATTACHMENT catch-all below.
+    TASK_STATUS = "task_status"
+    STRUCTURED_OUTPUT = "structured_output"
     ATTACHMENT = "attachment"
     META = "meta"
     TOOL_DENIAL = "tool_denial"
@@ -689,6 +753,10 @@ class TranscriptMeta:
     cap_version: int | None = None
     cap_metrics: tuple[str, ...] = ()
     cap_injections: int = 0
+    #: Parser-signals addition (see module docstring): the last
+    #: ``cost-state`` line's own ``totalCostUSD``/``hasUnknownModelCost``.
+    cc_cost_usd: float | None = None
+    cc_cost_has_unknown_model: bool = False
 
 
 @dataclass(slots=True)
@@ -777,6 +845,9 @@ class TranscriptResult:
     diagnostics: Diagnostics = field(default_factory=Diagnostics)
     tool_result_chars: dict = field(default_factory=dict)
     tool_result_calls: dict = field(default_factory=dict)
+    #: Parser-signals addition (see module docstring): counters that don't
+    #: fit ``Diagnostics`` -- ``unknown_line_types``, ``unsized_blocks``.
+    parser_notes: dict = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -1083,6 +1154,10 @@ class ReportModel:
     #: (``context_files.ContextFileStats.to_dict``): hashes, names, sizes,
     #: counts and estimated costs only.
     context_files: dict = field(default_factory=dict)
+    #: Parser-signals addition (see module docstring): corpus-wide totals
+    #: of ``TranscriptResult.parser_notes``, merged the same way as
+    #: ``context_files`` -- alongside, not inside, ``_merge_diagnostics``.
+    parser_notes: dict = field(default_factory=dict)
     #: How amounts are phrased for this report's billing mode
     #: (``units.Units``), for routes that phrase amounts after the fact.
     #: Typed loosely because this module imports nothing from the

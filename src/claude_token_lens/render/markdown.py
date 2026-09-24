@@ -203,6 +203,12 @@ def _render_diagnostics(model: ReportModel) -> list[str]:
             else:
                 value = "-"
         lines.append(f"- {field_def.name}: {value}")
+    # Parser-signals addition (SURV-6/7, see model.py's module docstring):
+    # ReportModel.parser_notes is a sibling side channel to Diagnostics,
+    # not one of its fields, so it's printed the same way just below.
+    for note_key, counts in model.parser_notes.items():
+        value = ", ".join(f"{k}={v}" for k, v in counts.items()) if counts else "-"
+        lines.append(f"- {note_key}: {value}")
     return lines
 
 

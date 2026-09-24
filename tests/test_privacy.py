@@ -33,14 +33,16 @@ import dataclasses
 import re
 from pathlib import Path
 
-from claude_token_lens.model import Column, Recommendation, Section, Table, TranscriptMeta
+from claude_token_lens.model import Column, EventKind, Recommendation, Section, Table, TranscriptMeta
 from claude_token_lens.parse import parse_transcript
 
 from helpers import (
     assert_privacy,
     attachment_line,
+    ignorable_line,
     system_line,
     tool_use_block,
+    tool_result_block,
     turn_line,
     user_block_line,
     user_str_line,
@@ -280,12 +282,233 @@ def test_privacy_every_event_kind_fixture(tmp_path: Path):
         attachment_line("environment", rendered="y" * 500),
         attachment_line("queued_command"),
         attachment_line("an_unclassified_future_type"),
+        # Parser-signals batch (SURV-4/5/6, PARSER_VERSION 18): the three
+        # new line shapes this phase adds, in the same broad sweep.
+        attachment_line("thinking_drop", newlyDropped={"reason": "prefix_mismatch", "blockCount": 2, "turnCount": 1}),
+        attachment_line("task_status", status="completed", taskType="local_bash"),
+        attachment_line("structured_output", data={"ok": True}),
+        ignorable_line("cost-state", totalCostUSD=1.23, hasUnknownModelCost=False),
         turn_line(message_id="msg_2", input_tokens=50, output_tokens=5),
     ]
     path = tmp_path / "session.jsonl"
     write_jsonl(path, lines)
     result = parse_transcript(path, TranscriptMeta(path=str(path)))
     assert len(result.events) >= 20
+    _assert_no_violations(result)
+
+
+# -- Parser-signals batch (SURV-4/5/6/7, PARSER_VERSION 18): dedicated ---
+# -- fixtures for each new field/kind, per the phase brief's own          -
+# -- "add privacy fixtures for each new field or kind" requirement.       -
+
+
+def test_privacy_thinking_drop_never_carries_identifying_fields(tmp_path: Path):
+    # newlyDropped can carry far more than reason/blockCount/turnCount in
+    # the real corpus (request ids, model names, the actual dropped block
+    # hashes/content) -- _thinking_drop_detail must only ever pick out the
+    # three closed fields, never pass the rest through.
+    lines = [
+        attachment_line(
+            "thinking_drop",
+            newlyDropped={
+                "reason": "prefix_mismatch",
+                "blockCount": 3,
+                "turnCount": 1,
+                "first": "here is the actual thinking text that was dropped",
+                "last": "and the final dropped block's text too",
+                "clientChange": True,
+                "blockHashes": ["deadbeef" * 8, "cafebabe" * 8],
+                "requestId": "req_secret_12345",
+                "querySource": "user-secret-source",
+                "model": "claude-opus-5-secret-snapshot",
+            },
+        ),
+    ]
+    path = tmp_path / "session.jsonl"
+    write_jsonl(path, lines)
+    result = parse_transcript(path, TranscriptMeta(path=str(path)))
+    events = [e for e in result.events if e.subkind == "thinking_drop"]
+    assert len(events) == 1
+    detail = events[0].detail
+    assert set(detail) <= {"reason", "blockCount", "turnCount"}
+    assert detail["reason"] == "prefix_mismatch"
+    forbidden = ("first", "last", "clientChange", "blockHashes", "requestId", "querySource", "model", "dropped text")
+    for token in forbidden:
+        assert token not in repr(detail)
+    _assert_no_violations(result)
+
+
+def test_privacy_thinking_drop_unknown_reason_becomes_other(tmp_path: Path):
+    lines = [
+        attachment_line("thinking_drop", newlyDropped={"reason": "some-new-internal-reason-code", "blockCount": 1}),
+    ]
+    path = tmp_path / "session.jsonl"
+    write_jsonl(path, lines)
+    result = parse_transcript(path, TranscriptMeta(path=str(path)))
+    events = [e for e in result.events if e.subkind == "thinking_drop"]
+    assert events[0].detail["reason"] == "other"
+    assert "some-new-internal-reason-code" not in repr(events[0].detail)
+    _assert_no_violations(result)
+
+
+def test_privacy_task_status_never_reaches_description_or_paths(tmp_path: Path):
+    # Mirrors test_privacy_a_malformed_skill_name_never_reaches_skills_invoked:
+    # a task_status line carries plenty of identifying/free-text fields in
+    # the real corpus (description, deltaSummary, outputFilePath, shell) --
+    # _task_status_detail must only ever surface the two closed-vocabulary
+    # words, never these.
+    long_path = "C:\\Users\\paulm\\secret-project\\output\\result.json"
+    lines = [
+        attachment_line(
+            "task_status",
+            status="completed",
+            taskType="local_bash",
+            description="refactor the auth module to fix the login bug for jane.doe@acme.com",
+            deltaSummary="changed 14 files, added retry logic",
+            outputFilePath=long_path,
+            shell="/bin/bash -c 'cat ~/.ssh/id_rsa'",
+        ),
+    ]
+    path = tmp_path / "session.jsonl"
+    write_jsonl(path, lines)
+    result = parse_transcript(path, TranscriptMeta(path=str(path)))
+    events = [e for e in result.events if e.kind == EventKind.TASK_STATUS]
+    assert len(events) == 1
+    detail = events[0].detail
+    assert set(detail) <= {"status", "task_type"}
+    assert detail == {"status": "completed", "task_type": "local_bash"}
+    forbidden = ("refactor", "jane.doe", "acme.com", "changed 14 files", "Users", "paulm", "ssh", "id_rsa")
+    for token in forbidden:
+        assert token not in repr(detail)
+    _assert_no_violations(result)
+
+
+def test_privacy_task_status_unknown_words_become_other(tmp_path: Path):
+    lines = [
+        attachment_line("task_status", status="some-future-status", taskType="some-future-type"),
+    ]
+    path = tmp_path / "session.jsonl"
+    write_jsonl(path, lines)
+    result = parse_transcript(path, TranscriptMeta(path=str(path)))
+    events = [e for e in result.events if e.kind == EventKind.TASK_STATUS]
+    assert events[0].detail == {"status": "other", "task_type": "other"}
+    _assert_no_violations(result)
+
+
+def test_privacy_structured_output_data_is_never_stored_only_its_size(tmp_path: Path):
+    long_free_text = "this is the actual structured payload content " * 20
+    lines = [
+        attachment_line(
+            "structured_output",
+            data={"summary": long_free_text, "path": "C:\\Users\\paulm\\secret\\out.json"},
+        ),
+    ]
+    path = tmp_path / "session.jsonl"
+    write_jsonl(path, lines)
+    result = parse_transcript(path, TranscriptMeta(path=str(path)))
+    events = [e for e in result.events if e.kind == EventKind.STRUCTURED_OUTPUT]
+    assert len(events) == 1
+    event = events[0]
+    assert not event.detail
+    assert event.size_chars is not None and event.size_chars > 0
+    assert "structured payload content" not in repr(event)
+    assert "Users" not in repr(event)
+    _assert_no_violations(result)
+
+
+def test_privacy_cost_state_total_is_always_a_plain_float(tmp_path: Path):
+    # totalCostUSD is a line straight from Claude Code's own on-disk
+    # transcript, not validated input -- a malicious/malformed value must
+    # never end up stored verbatim (e.g. as a string) on TranscriptMeta.
+    lines = [
+        ignorable_line("cost-state", totalCostUSD="1.23; DROP TABLE users", hasUnknownModelCost=False),
+        ignorable_line("cost-state", totalCostUSD=4.56, hasUnknownModelCost=True),
+    ]
+    path = tmp_path / "session.jsonl"
+    write_jsonl(path, lines)
+    result = parse_transcript(path, TranscriptMeta(path=str(path)))
+    meta = result.meta
+    # The malformed first line is ignored (not int/float); the second,
+    # well-formed line is the last one seen and wins.
+    assert meta.cc_cost_usd == 4.56
+    assert isinstance(meta.cc_cost_usd, float)
+    assert meta.cc_cost_has_unknown_model is True
+    assert "DROP TABLE" not in repr(meta)
+    _assert_no_violations(result)
+
+
+def test_privacy_unknown_line_type_is_sanitised_not_stored_verbatim(tmp_path: Path):
+    malicious_type = "evil<script>alert(1)</script>" + ("x" * 100)
+    lines = [
+        ignorable_line(malicious_type),
+        ignorable_line("also-not-a-real-type"),
+    ]
+    path = tmp_path / "session.jsonl"
+    write_jsonl(path, lines)
+    result = parse_transcript(path, TranscriptMeta(path=str(path)))
+    unknown = result.parser_notes.get("unknown_line_types", {})
+    assert malicious_type not in unknown
+    assert "<script>" not in repr(result.parser_notes)
+    # Bucketed to "other" (fails the closed token-pattern) rather than
+    # dropped, so the count is still visible.
+    assert unknown.get("other", 0) >= 1
+    for key in unknown:
+        assert len(key) <= 40
+        assert "<" not in key and ">" not in key
+    _assert_no_violations(result)
+
+
+def test_privacy_image_and_document_blocks_never_leak_bytes_or_paths(tmp_path: Path):
+    # A 1x1 PNG (valid header, tiny) plus a bogus/oversized "image" and a
+    # document block -- content_block_size must only ever produce counts
+    # (sized into size_chars, or bucketed into unsized_blocks), never the
+    # base64 payload, decoded bytes, or any path-shaped string.
+    tiny_png_b64 = (
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+    )
+    lines = [
+        turn_line(
+            message_id="msg_1",
+            input_tokens=100,
+            output_tokens=10,
+            content=[tool_use_block("Read", "tu1", {"file_path": "x"})],
+        ),
+        user_block_line(
+            [
+                tool_result_block(
+                    "tu1",
+                    [
+                        {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": tiny_png_b64}},
+                        {"type": "document", "source": {"type": "base64", "media_type": "application/pdf", "data": "not-real-pdf-bytes"}},
+                        {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "not-a-real-image"}},
+                    ],
+                )
+            ]
+        ),
+        user_str_line(
+            "look at this",
+            message={
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "look at this"},
+                    {
+                        "type": "image",
+                        "source": {"type": "base64", "media_type": "image/png", "data": tiny_png_b64},
+                    },
+                ],
+            },
+        ),
+    ]
+    path = tmp_path / "session.jsonl"
+    write_jsonl(path, lines)
+    result = parse_transcript(path, TranscriptMeta(path=str(path)))
+    blob = repr(result.parser_notes) + repr(result.events) + repr(result.tool_result_chars)
+    assert tiny_png_b64 not in blob
+    assert "not-real-pdf-bytes" not in blob
+    assert "not-a-real-image" not in blob
+    # Only counts, keyed by closed block-type labels.
+    for counts in result.parser_notes.get("unsized_blocks", {}).values():
+        assert isinstance(counts, int)
     _assert_no_violations(result)
 
 

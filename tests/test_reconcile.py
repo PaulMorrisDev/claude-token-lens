@@ -22,7 +22,7 @@ from claude_token_lens.config import Config
 from claude_token_lens.corpus import load_corpus
 from claude_token_lens.pricing import load_pricing, price_turn
 
-from helpers import assert_privacy, turn_line, write_jsonl
+from helpers import assert_privacy, ignorable_line, turn_line, write_jsonl
 
 PRICING = load_pricing()
 CONFIG = Config()
@@ -416,6 +416,89 @@ def test_reconcile_section_passes_privacy_scan(tmp_path):
 
     section = reconcile_mod.reconcile(corpus, PRICING, CONFIG, admin_rows=[], by=("day", "model"))
     assert_privacy(section)
+
+
+# -- claude_code_reported_costs (SURV-5, PARSER_VERSION 18) ------------------
+#
+# The ``cost-state`` half of plan P9's later "Q1 gap metric": pairs a
+# session's self-reported ``TranscriptMeta.cc_cost_usd`` against this
+# tool's own locally-priced total for that same session. No admin CSV, no
+# network call -- see reconcile.py's own module docstring.
+
+
+def test_claude_code_reported_costs_pairs_self_report_with_local_total(tmp_path):
+    root = tmp_path / "projects"
+    project_dir = root / "proj"
+    project_dir.mkdir(parents=True)
+    write_jsonl(
+        project_dir / "s1.jsonl",
+        [
+            turn_line(
+                timestamp="2026-08-05T09:00:00.000Z",
+                input_tokens=500,
+                output_tokens=80,
+            ),
+            ignorable_line("cost-state", totalCostUSD=1.23, hasUnknownModelCost=False),
+        ],
+    )
+    corpus = load_corpus([project_dir])
+
+    costs = reconcile_mod.claude_code_reported_costs(corpus, PRICING)
+    assert len(costs) == 1
+    entry = costs[0]
+    assert entry.session_id == "s1"
+    assert entry.cc_cost_usd == 1.23
+    assert entry.cc_has_unknown_model is False
+    turn = corpus.sessions[0].top.turns[0]
+    expected_local = price_turn(turn, PRICING.resolve_model(turn.model)).total
+    assert entry.local_cost_usd == pytest.approx(expected_local)
+
+
+def test_claude_code_reported_costs_uses_last_cost_state_line(tmp_path):
+    # A running total: the last line in file order is the most complete.
+    root = tmp_path / "projects"
+    project_dir = root / "proj"
+    project_dir.mkdir(parents=True)
+    write_jsonl(
+        project_dir / "s1.jsonl",
+        [
+            turn_line(timestamp="2026-08-05T09:00:00.000Z"),
+            ignorable_line("cost-state", totalCostUSD=0.10, hasUnknownModelCost=False),
+            ignorable_line("cost-state", totalCostUSD=0.55, hasUnknownModelCost=True),
+        ],
+    )
+    corpus = load_corpus([project_dir])
+
+    costs = reconcile_mod.claude_code_reported_costs(corpus, PRICING)
+    assert len(costs) == 1
+    assert costs[0].cc_cost_usd == 0.55
+    assert costs[0].cc_has_unknown_model is True
+
+
+def test_claude_code_reported_costs_skips_sessions_without_cost_state(tmp_path):
+    root = tmp_path / "projects"
+    project_dir = root / "proj"
+    project_dir.mkdir(parents=True)
+    _write_session(project_dir, "s1", "2026-08-05T09:00:00.000Z")
+    corpus = load_corpus([project_dir])
+
+    assert reconcile_mod.claude_code_reported_costs(corpus, PRICING) == []
+
+
+def test_claude_code_reported_costs_passes_privacy_scan(tmp_path):
+    root = tmp_path / "projects"
+    project_dir = root / "proj"
+    project_dir.mkdir(parents=True)
+    write_jsonl(
+        project_dir / "s1.jsonl",
+        [
+            turn_line(timestamp="2026-08-05T09:00:00.000Z"),
+            ignorable_line("cost-state", totalCostUSD=2.5, hasUnknownModelCost=False),
+        ],
+    )
+    corpus = load_corpus([project_dir])
+    costs = reconcile_mod.claude_code_reported_costs(corpus, PRICING)
+    assert_privacy(costs)
 
 
 # -- CLI wiring --------------------------------------------------------------
