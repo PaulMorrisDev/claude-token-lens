@@ -38,7 +38,7 @@ inline SVG charts, `prefers-color-scheme` dark."
 One page (`index.html`), one `<nav>` of tabs (`TAB_ORDER`), each
 rendering from its own `/api/*` route(s). A tab is rendered the first
 time it is opened and kept until the window changes; tabs have no
-background poll. Fifteen tabs ship, in the order below.
+background poll. Sixteen tabs ship, in the order below.
 
 **The health banner and footer** are on every tab, from `/api/health`
 (`pollHealth()`: every 3 seconds while its `status` is `"starting"`,
@@ -398,7 +398,7 @@ stdlib-only test suite.
 
 The UI shipped in `static/index.html` + `app.js` + `app.css` follows
 this document's Constraints, Data flow and Testing sections, and the
-Tabs section above describes the shipped fourteen-tab structure
+Tabs section above describes the shipped sixteen-tab structure
 directly.
 
 **Generic Section/Table rendering** for Sessions/Cache/TTL/Agents/Config/Usage/

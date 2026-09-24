@@ -260,6 +260,8 @@ completely, see [Uninstalling](#uninstalling).
 | Profiles | Make a profile from a goal with an estimate of what it saves, compare it with my settings, and see what each change I made did. |
 | Recommendations | What exactly should I change, where, and what is the trade-off? |
 | Usage | How is my usage spread over days, projects and five-hour blocks? |
+| Work habits | What habits are costing tokens, where did the evidence come from, and what would `/tl-feedback` and brief templates add? |
+| Capture | What does metrics capture cost so far, what would each level or metric add, and is it set up? |
 | Data quality | What did this tool install, what should I expect, and could every transcript be read and priced? |
 | Glossary | What does a term on the dashboard mean? |
 
@@ -602,7 +604,7 @@ The digest cache that makes the warm numbers possible lives under
 `<config-dir>/cache/` (`<config-dir>` defaults to `~/.claude/token-lens`,
 or `$CLAUDE_CONFIG_DIR/token-lens`) — one JSON file per transcript, keyed
 by that transcript's path plus `model.py`'s `SCHEMA_VERSION` and
-`parse.py`'s own `PARSER_VERSION`, so a future release that changes
+`__init__.py`'s own `PARSER_VERSION`, so a future release that changes
 either the dataclass contract or the parsing logic invalidates exactly
 the entries it needs to and nothing else (see
 [`cache.py`](src/claude_token_lens/cache.py)). Delete the directory, or

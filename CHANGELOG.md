@@ -591,6 +591,51 @@ once to pick up the new detection rules and fields below.
   `parser_notes` side channel next to `Diagnostics` (present only when
   non-empty) and are rendered alongside it by every renderer.
 
+### P10b — Docs sweep, SECURITY.md corrections, Diagnostics privacy fix
+
+- **`SECURITY.md` corrected against the current code.** It claimed
+  `/tl-feedback`'s answer was checked for a question mark or negation
+  before being kept — there is no free-text answer at all; all four
+  questions are checkbox-only, and the section now says so and points at
+  `POST /api/sessions/<id>/feedback`. It also claimed a wait signal
+  records how long you waited before answering a prompt — only the
+  categorical kind (permission/idle/question/agent/quota/other) is ever
+  logged, never a duration, and the text is corrected to say so. The
+  "what the dashboard can change" section now documents the feedback
+  POST and P8's `POST /api/predictions/seen` alongside the existing
+  tags/profiles/capture routes. The network section now documents that
+  `update` is the one command that reaches the real internet — a pip
+  install from the unpinned GitHub source, plus two loopback
+  `GET /api/health` probes — instead of undercounting it as one function.
+- **The README's tab table and glossary now match the dashboard**, with
+  a regression test for each (`test_service_static.py`): the "What each
+  tab answers" table was missing its Work habits and Capture rows (14 of
+  16), and the glossary was missing the nine metrics-capture terms
+  app.js's own `GLOSSARY` never got (Metrics capture, Capture level,
+  Tag, Prompt cycle, Work habits, Feedback skill, Brief templates,
+  Sampling, Time-box) — added to both README.md and `app.js` so they
+  read the same. `docs/ui.md`'s "fifteen tabs" and "fourteen-tab"
+  summaries are corrected to sixteen. `docs/api.md`'s quick-actions
+  summary now lists all ten `quick_actions.CHECK_IDS` (it was missing
+  "quality"), with its own sync test in `test_quick_actions.py`.
+- **`Diagnostics.ignored_line_types` now sanitises its key the same way
+  its sibling `unknown_line_types` already did.** Both are populated
+  from a line's own top-level `type` — wire input, not a trusted enum —
+  but only `unknown_line_types` ran it through `sanitize_line_type`
+  first; `ignored_line_types` (a type the parser recognises and
+  deliberately drops, including any `file-history-`/`artifact-`-prefixed
+  or unclassified type) stored it verbatim. Neither the privacy suite's
+  generic field walk nor `assert_privacy` opens a `dict`-typed field
+  key-by-key, so this had no fixture catching it; both now do the same
+  sanitize-or-`"other"` before the key is ever used.
+- **New privacy fixtures** (`tests/test_privacy.py`) put a `[tl: ...]`
+  tag, a `[tl-fb: ...]` tag, `/tl-feedback`'s AskUserQuestion answers,
+  and a capture note through `parse_transcript` for the first time in
+  this file, proving unknown keys, free-text "Other" answers, and a
+  note's own surrounding text never reach a `Turn`/`Event` field; plus a
+  fixture locking in the `ignored_line_types` fix above. Skill names
+  already had a dedicated fixture (SEC-P3); not duplicated.
+
 ## [0.5.2] - 2026-09-23
 
 ### Fixed
