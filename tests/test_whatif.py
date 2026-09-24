@@ -52,8 +52,18 @@ def _estimate(settings=None, agents=None, **kw):
 def test_a_cheaper_main_model_is_repriced_from_the_model_swap_table():
     [row] = _estimate({"model": "sonnet"})["rows"]
     assert row["saving_usd"] == 40.0
-    assert row["fidelity"] == "simulated"
+    # E3/EST-P1: a model reprice is a ceiling (same tokens, new rate), not
+    # a genuine simulation like autoCompactWindow/cache TTL below -- it
+    # can't capture a different model needing more or fewer replies.
+    assert row["fidelity"] == "ceiling"
     assert row["effect_text"] == f"Saves 40.00 USD {PERIOD}"
+
+
+def test_model_ceiling_fidelity_text_is_distinct_from_simulated():
+    [row] = _estimate({"model": "sonnet"})["rows"]
+    row["fidelity_text"] = whatif.FIDELITY_TEXT.get(row["fidelity"], "")
+    assert row["fidelity_text"].startswith("Ceiling:")
+    assert row["fidelity_text"] != whatif.FIDELITY_TEXT["simulated"]
 
 
 def test_an_agent_model_uses_that_agent_row():

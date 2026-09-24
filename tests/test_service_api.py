@@ -840,6 +840,31 @@ def test_profile_diff_unknown_id_is_not_found(server):
     assert resp.status == 404
 
 
+# -- SEC-P4/F4: path traversal via the <id> path segment -----------------
+#
+# The route regex (``[^/]+``) only ever sees one raw path segment, so a
+# literal ".." with a real "/" would already be blocked by matching a
+# *different* route (or none). Percent-encoding the separator
+# (``%2F``/``%5C``) hides it from the regex; the dispatcher's own
+# ``urllib.parse.unquote`` then decodes it back into a real ``/``/``\``
+# before ``_load_profile_by_id`` ever sees it -- ``_ID_RE`` is the guard
+# that must catch the decoded id.
+
+
+@pytest.mark.parametrize("suffix", ["", "/diff"])
+@pytest.mark.parametrize(
+    "encoded_id",
+    [
+        "..%2F..%2F..%2Fetc%2Fpasswd",
+        "C:%5CWindows%5Csystem32%5Cdrivers%5Cetc%5Chosts",
+    ],
+)
+def test_profile_route_rejects_percent_encoded_path_traversal(server, encoded_id, suffix):
+    resp, body = server.get_json(f"/api/profiles/{encoded_id}{suffix}")
+    assert resp.status == 404
+    assert body["ok"] is False
+
+
 def test_profile_diff_rejects_a_user_profile_row_with_no_backing_file(server):
     # "p1" is a store-only fixture row (test_service_store.py's own
     # convention) with no real <config_dir>/profiles/p1.toml on disk --
@@ -1001,6 +1026,49 @@ def test_post_with_no_content_type_and_no_body_is_bad_request(server):
     body = json.loads(raw)
     assert resp.status == 400
     assert body["error"]["code"] == "bad_request"
+
+
+def test_post_body_over_64kb_is_payload_too_large(server):
+    """G5: a POST body over the 64 KB cap is rejected with 413, on any
+    route -- checked here against ``/api/sessions/<id>/tags``, but the
+    cap lives in ``do_POST`` itself, ahead of routing."""
+    oversized = json.dumps({"key": "mode", "value": "x" * (65536)}).encode("utf-8")
+    assert len(oversized) > 65536
+    resp, raw = server.request(
+        "POST",
+        f"/api/sessions/{server.session_id}/tags",
+        raw_body=oversized,
+        headers={"Content-Type": "application/json"},
+    )
+    body = json.loads(raw)
+    assert resp.status == 413
+    assert body["ok"] is False
+    assert body["error"]["code"] == "payload_too_large"
+    # Nothing was written.
+    resp2, session_body = server.get_json(f"/api/session/{server.session_id}")
+    assert session_body["data"]["tags"].get("mode") != "x" * 65536
+
+
+def test_post_body_at_64kb_limit_is_not_rejected_for_size(server):
+    """The cap is inclusive of exactly 64 KB -- a body at that size must
+    still reach routing/validation, not be turned away as too large."""
+    # Pad the value so the whole JSON body lands at exactly 65536 bytes.
+    padding_len = 65536 - len(json.dumps({"key": "mode", "value": ""}).encode("utf-8"))
+    body_obj = {"key": "mode", "value": "x" * padding_len}
+    raw_body = json.dumps(body_obj).encode("utf-8")
+    assert len(raw_body) == 65536
+    resp, raw = server.request(
+        "POST",
+        f"/api/sessions/{server.session_id}/tags",
+        raw_body=raw_body,
+        headers={"Content-Type": "application/json"},
+    )
+    body = json.loads(raw)
+    # Not size-rejected -- it fails (or succeeds) on ordinary validation
+    # instead, never on the 413 path.
+    assert resp.status != 413
+    assert resp.status == 200
+    assert body["data"]["tags"]["mode"] == "x" * padding_len
 
 
 # -- report-backed routes -----------------------------------------------------
@@ -1605,7 +1673,7 @@ def test_profile_schema_lists_every_allowlisted_key_in_plain_words(server):
     assert {lever["key"] for lever in data["agents"]} == set(profile_schema.AGENT_ALLOWLIST)
     effort = next(lever for lever in data["settings"] if lever["key"] == "effortLevel")
     assert effort["label"] == "Effort level"
-    assert effort["values"] == ["low", "medium", "high", "max"]
+    assert effort["values"] == ["low", "medium", "high", "xhigh", "max"]
     assert effort["description"]
     assert all(lever["description"] for lever in data["settings"] + data["agents"])
     assert [scope["key"] for scope in data["scopes"]] == ["user", "project-local", "repo"]

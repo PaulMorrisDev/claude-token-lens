@@ -82,7 +82,8 @@ def test_plan_capture_adds_the_entries_a_level_needs_and_writes_nothing(tmp_path
         ("PermissionRequest", ""),
     ]
     assert all(entry["timeout"] == 5 for _, _, entry in entries)
-    # Claude Code ignores what a background hook prints, so every entry that adds a note waits.
+    # An async hook's additionalContext reaches Claude only on the next
+    # turn (V6b), so every entry that adds a note stays foreground.
     assert [entry.get("async", False) for _, _, entry in entries] == [False, False, False, False, True, True]
     assert after["model"] == "opus"
     assert len(plan.changes) == 6 and all(line.startswith("Add the capture hook") for line in plan.changes)

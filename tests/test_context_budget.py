@@ -16,7 +16,10 @@ import pytest
 from claude_token_lens import context_budget, statusline
 from claude_token_lens.model import TranscriptMeta
 from claude_token_lens.parse import parse_transcript
+from claude_token_lens.pricing import load_pricing
 from claude_token_lens.snapshots import Snapshot
+
+PRICING = load_pricing()
 
 from helpers import (
     assert_privacy,
@@ -301,7 +304,7 @@ def test_autocompact_table_1m_alias_assumes_million_window(tmp_path):
     stats = context_budget.ContextBudgetStats()
     stats.add_session("proj-a", top)
     snapshot = _snapshot("proj-a", effective={"model": "sonnet[1m]"})
-    section = context_budget.build_section(stats, snapshots=[snapshot])
+    section = context_budget.build_section(stats, snapshots=[snapshot], pricing=PRICING)
     table = next(t for t in section.tables if t.name == "context_budget_autocompact")
     col = {c.key: i for i, c in enumerate(table.columns)}
     row = table.rows[0]
@@ -318,11 +321,42 @@ def test_autocompact_table_1m_alias_falls_back_to_schema1_user_settings(tmp_path
     stats = context_budget.ContextBudgetStats()
     stats.add_session("proj-a", top)
     snapshot = _snapshot("proj-a", user_settings={"model": "sonnet[1m]"})
-    section = context_budget.build_section(stats, snapshots=[snapshot])
+    section = context_budget.build_section(stats, snapshots=[snapshot], pricing=PRICING)
     table = next(t for t in section.tables if t.name == "context_budget_autocompact")
     col = {c.key: i for i, c in enumerate(table.columns)}
     row = table.rows[0]
     assert row[col["context_window_size"]] == 1_000_000
+
+
+def test_autocompact_table_bare_alias_on_1m_model_assumes_million_window(tmp_path):
+    """D2/D4/COV-12: a bare, un-suffixed alias ("sonnet") on a natively
+    1M-context Claude 5 model (V24) must resolve to 1M too -- the old
+    code assumed 200k unless the alias literally ended in "[1m]"."""
+    top = _build_session(tmp_path, "s1", session_id="sess_1", model="claude-sonnet-5")
+    stats = context_budget.ContextBudgetStats()
+    stats.add_session("proj-a", top)
+    snapshot = _snapshot("proj-a", effective={"model": "sonnet"})
+    section = context_budget.build_section(stats, snapshots=[snapshot], pricing=PRICING)
+    table = next(t for t in section.tables if t.name == "context_budget_autocompact")
+    col = {c.key: i for i, c in enumerate(table.columns)}
+    row = table.rows[0]
+    assert row[col["context_window_size"]] == 1_000_000
+
+
+def test_autocompact_table_1m_alias_without_pricing_falls_back_to_default_window(tmp_path):
+    """Without a rate card to resolve against, the table degrades to the
+    200k fallback rather than guessing -- same optional/degrade-
+    gracefully convention as ``limits.build_section``'s own ``pricing``
+    parameter."""
+    top = _build_session(tmp_path, "s1", session_id="sess_1", model="claude-sonnet-5")
+    stats = context_budget.ContextBudgetStats()
+    stats.add_session("proj-a", top)
+    snapshot = _snapshot("proj-a", effective={"model": "sonnet[1m]"})
+    section = context_budget.build_section(stats, snapshots=[snapshot])
+    table = next(t for t in section.tables if t.name == "context_budget_autocompact")
+    col = {c.key: i for i, c in enumerate(table.columns)}
+    row = table.rows[0]
+    assert row[col["context_window_size"]] == 200_000
 
 
 def test_autocompact_table_no_alias_uses_default_window_even_with_1m_transcript_model(tmp_path):

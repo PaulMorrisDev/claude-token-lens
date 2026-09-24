@@ -20,9 +20,12 @@ connect``):
   counts as one too.
 - ``SubagentStart``: the subagent note, at every depth.
 - ``PostToolUse``: a one-line note after a large tool result or a web
-  result, for the Deep level. Claude Code ignores what a background
-  hook prints, so this entry runs in the foreground, matched only to
-  tools whose results can be large, and returns at once for the rest.
+  result, for the Deep level. An async hook's ``additionalContext``
+  does reach Claude (docs/en/hooks.md), but only on the next
+  conversation turn -- a full reply late for a note about the result
+  Claude just saw -- so this entry runs in the foreground instead,
+  matched only to tools whose results can be large, and returns at once
+  for the rest.
 - ``SessionEnd``, ``Notification`` and ``PermissionRequest`` (the last
   two async): one line each in ``<config-dir>/signals/YYYY-MM.jsonl``
   saying why a session ended, what Claude waited for, or which tool

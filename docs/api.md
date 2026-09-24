@@ -27,8 +27,9 @@ header and one of two top-level shapes:
 
 `error.code` is a short, stable, machine-matchable string:
 `bad_request` (`400`), `forbidden` (`403`), `not_found` (`404`),
-`method_not_allowed` (`405`), `conflict` (`409`) or `internal_error`
-(`500`). `error.message` is a one-line human-readable explanation. The
+`method_not_allowed` (`405`), `conflict` (`409`), `payload_too_large`
+(`413`) or `internal_error` (`500`). `error.message` is a one-line
+human-readable explanation. The
 HTTP status code carries the same information for clients that don't
 want to parse the body: `200` for `ok: true` on every route except
 `POST /api/profiles` and `POST /api/profiles/from-current`, which are
@@ -180,6 +181,19 @@ a victim's behalf, not a deliberate local caller. `service/static/app.js`
 sends `Content-Type: application/json` on every one of its own `POST`
 calls, so the UI itself is unaffected. A `POST` whose `Host` is not on
 the allowlist above is also `403 forbidden`.
+
+## Body size limit (G5)
+
+Every `POST` route caps its request body at 64 KB, checked against
+`Content-Length` before the body is parsed — `413 payload_too_large`
+otherwise. An oversized body is still read off the socket and discarded
+(in bounded chunks, never as one allocation sized to the declared
+length), so the connection stays open for a next request exactly like
+every other rejection above. This service has no authentication (see
+"Local only" above), so the cap bounds the memory and JSON-parse cost
+any local process can force per request, regardless of the cross-site
+checks above. Every route's actual body (a profile, a tag, a feedback
+payload) is small hand-typed or hand-picked JSON, well under the cap.
 
 ## Routes
 
@@ -1087,8 +1101,16 @@ Query: the windowing params above.
 `data`: `{"period", "rows": [{"key", "agent", "value", "saving_usd", "fidelity", "fidelity_text", "basis", "effect_text"}, ...], "total_usd", "total_text", "estimated", "not_estimated", "total_note"}`.
 `saving_usd` is `null` when a change is not estimated. `fidelity` says
 how it was worked out (`fidelity_text` in plain words) and `basis`
-explains it in a sentence. `effect_text` and `total_text` are in the
-billing mode's units; `estimated`/`not_estimated` are counts of rows.
+explains it in a sentence: `"ceiling"` (a `model` change -- the same
+tokens repriced at the new model's rate, same "ceiling" sense as
+`/api/model-swap`'s own saving column, not a real simulation since a
+different model may need more or fewer replies for the same work),
+`"simulated"` (`autoCompactWindow`, a cache-TTL change -- real sessions
+replayed with the new value), `"measured"` (`omitClaudeMd` -- per spawn,
+times the spawns in the window), `"estimated"` (`skillOverrides`,
+`enabledPlugins` -- from the size of what stops being sent) or `"none"`
+(not estimated). `effect_text` and `total_text` are in the billing
+mode's units; `estimated`/`not_estimated` are counts of rows.
 
 ## Managed-settings routes
 

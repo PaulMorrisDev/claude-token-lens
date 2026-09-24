@@ -121,7 +121,7 @@ class LeverSpec:
 
 # -- the allowlist: single source of truth for what a profile may contain --
 
-_EFFORT_LEVELS = ("low", "medium", "high", "max")
+_EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
 _TTL_VALUES = ("5m", "1h")
 #: ``skillOverrides`` values: listed with its description, by name only,
 #: only for you to invoke with /name, or not at all.

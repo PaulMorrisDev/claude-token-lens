@@ -2002,23 +2002,23 @@
     );
     purposeLabel.appendChild(purposeSelect);
 
-    var applyBtn = el("button", { type: "button", text: "Apply tags" });
+    var saveTagsBtn = el("button", { type: "button", text: "Save tags" });
     var tagStatus = el("span", { class: "notes" });
     tagControls.appendChild(modeLabel);
     tagControls.appendChild(purposeLabel);
-    tagControls.appendChild(applyBtn);
+    tagControls.appendChild(saveTagsBtn);
     tagControls.appendChild(tagStatus);
     wrap.appendChild(tagControls);
 
-    applyBtn.addEventListener("click", function () {
-      applyBtn.disabled = true;
+    saveTagsBtn.addEventListener("click", function () {
+      saveTagsBtn.disabled = true;
       tagStatus.textContent = "Saving…";
       var updates = [];
       if (modeSelect.value) updates.push(["mode", modeSelect.value]);
       if (purposeSelect.value) updates.push(["purpose", purposeSelect.value]);
       if (!updates.length) {
         tagStatus.textContent = "Choose a mode or purpose first.";
-        applyBtn.disabled = false;
+        saveTagsBtn.disabled = false;
         return;
       }
       Promise.all(
@@ -2030,7 +2030,7 @@
           });
         })
       ).then(function (results) {
-        applyBtn.disabled = false;
+        saveTagsBtn.disabled = false;
         var failed = results.filter(function (r) {
           return !r.body || r.body.ok !== true;
         });
@@ -2994,7 +2994,7 @@
     clear(container);
     container.appendChild(el("h3", { text: "What " + (profile.name || profile.id) + " changes" }));
     var scopeRow = el("div", { class: "pager" });
-    scopeRow.appendChild(el("label", { for: "profile-scope", text: "Apply it to:" }));
+    scopeRow.appendChild(el("label", { for: "profile-scope", text: "Target file:" }));
     var scopeSelect = el("select", { id: "profile-scope" });
     Object.keys(PROFILE_SCOPE_LABELS).forEach(function (scope) {
       scopeSelect.appendChild(el("option", { value: scope, text: PROFILE_SCOPE_LABELS[scope] }));
@@ -3040,7 +3040,7 @@
         text: "It shows the change without writing anything. Run it again without --dry-run to make the change; the output tells you how to undo it.",
       })
     );
-    box.appendChild(codeBlockWithCopy(data.dry_run_command || data.apply_command));
+    box.appendChild(codeBlockWithCopy(data.dry_run_command));
     box.appendChild(restartNote());
     box.appendChild(el("h5", { text: "Or try it for one session" }));
     box.appendChild(

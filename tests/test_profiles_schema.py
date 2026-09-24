@@ -129,6 +129,17 @@ def test_validate_rejects_unknown_settings_key():
     assert any(p == "settings.notARealKey: unknown key" for p in problems)
 
 
+def test_validate_accepts_xhigh_effort_level():
+    # C3/COV-08: recommend.py, habits.py and helptext.py already use
+    # "xhigh" as an effort level (Opus 5.5 supports low/medium/high/
+    # xhigh/max, V25); the schema used to reject it.
+    assert validate(_valid_doc(settings={"effortLevel": "xhigh"})) == []
+
+
+def test_validate_accepts_xhigh_agent_effort():
+    assert validate(_valid_doc(agents={"claude-implementer": {"effort": "xhigh"}})) == []
+
+
 def test_validate_rejects_unknown_agent_key():
     problems = validate(_valid_doc(agents={"claude-implementer": {"notARealKey": 1}}))
     assert any(p == "agents.claude-implementer.notARealKey: unknown key" for p in problems)

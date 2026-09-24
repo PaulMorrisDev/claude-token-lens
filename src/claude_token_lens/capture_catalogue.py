@@ -1080,10 +1080,14 @@ def hook_specs(ids) -> tuple[tuple[str, str, str, bool], ...]:
     ``(script, event, matcher, async)``: the note at session and agent
     start, after tool results for Deep's tool notes, and the free
     signals' events. Every entry that adds a note runs in the
-    foreground, since Claude Code ignores what a background hook
-    prints; the tool note's matcher keeps that wait to the tools whose
-    results can be large. SessionEnd runs as the session closes, when
-    nothing waits on it; the other signals run in the background."""
+    foreground: an async hook's ``additionalContext``/``systemMessage``
+    does reach Claude (docs/en/hooks.md), but only on the next
+    conversation turn, which would put a session/agent-start note one
+    turn late and a Deep tool note a full reply behind the result it's
+    about, so these stay synchronous; the tool note's matcher keeps
+    that wait to the tools whose results can be large. SessionEnd runs
+    as the session closes, when nothing waits on it; the other signals
+    run in the background."""
     wanted = set(ids)
     main = any(m.id in wanted and (m.main_line or m.main_extra) for m in METRICS)
     sub = any(m.id in wanted and (m.sub_line or m.sub_extra) for m in METRICS)

@@ -428,6 +428,12 @@ it through your browser:
   send. See [docs/api.md](docs/api.md#cross-site-protection-review-s3).
 - **No CORS.** The service never sends `Access-Control-Allow-*`
   headers, so another site's script can't read a response.
+- **Body size.** Every `POST` body is capped at 64 KB — checked
+  against `Content-Length` before anything is read off the socket —
+  `413` otherwise. Since there's no login, this also bounds how much
+  memory and JSON-parse work any local process (not just a web page)
+  can force per request. See
+  [docs/api.md](docs/api.md#body-size-limit-g5).
 - **Response headers.** Every response carries
   `Content-Security-Policy: default-src 'self'` (scripts only from the
   service itself), `X-Content-Type-Options: nosniff` and

@@ -348,7 +348,8 @@ def test_build_section_tables_and_notes():
 
     by_window = next(t for t in section.tables if t.name == "compaction_sim_by_window")
     assert [row[0] for row in by_window.rows] == [
-        "100,000", "150,000", "200,000", "250,000", "300,000", "400,000", "500,000", "none",
+        "100,000", "150,000", "200,000", "250,000", "300,000", "400,000", "500,000",
+        "600,000", "700,000", "800,000", "900,000", "967,000", "none",
     ]
 
     by_type = next(t for t in section.tables if t.name == "compaction_sim_by_agent_type")

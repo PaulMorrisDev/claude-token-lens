@@ -181,6 +181,14 @@ _CAPTURE_HISTORY_MAX_AGE_S = 6 * 3600.0
 #: (``signals.Signal.event``).
 _SIGNAL_METRICS = {"end": "session_end", "wait": "waits", "perm": "permissions"}
 
+#: G5: the largest POST body this server will read off the socket, on
+#: any route. Every current POST body (a profile, a tag list, a feedback
+#: payload) is small hand-typed or hand-picked JSON -- 64 KB is generous
+#: headroom over that, while still bounding the memory and json.loads
+#: cost of a body from an untrusted local process (F5/SEC-P6: no auth
+#: token gates these routes, only Origin/Sec-Fetch-Site and Host).
+_MAX_POST_BODY_BYTES = 64 * 1024
+
 
 def _now_utc_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -329,6 +337,10 @@ def _internal_error(message: str) -> tuple[int, dict]:
 
 def _not_implemented(message: str) -> tuple[int, dict]:
     return _error(501, "not_implemented", message)
+
+
+def _payload_too_large(message: str) -> tuple[int, dict]:
+    return _error(413, "payload_too_large", message)
 
 
 def _int_query(
@@ -1463,7 +1475,20 @@ def make_handler(
         profile to -- see that route's own docstring). ``None`` if
         neither exists, or the on-disk file no longer parses (never lets
         a malformed file 500 the route -- this project's usual "skip,
-        don't crash" posture for a foreign/edited-by-hand file)."""
+        don't crash" posture for a foreign/edited-by-hand file).
+
+        SEC-P4/F4: ``profile_id`` reaches here straight from the URL
+        path, percent-decoded (see the route dispatcher's ``unquote``),
+        so ``..%2F..%2Fetc%2Fpasswd`` or ``C:%5CWindows%5C...`` would
+        otherwise interpolate real ``/``/``\\`` separators into the path
+        built below and read a file outside ``<config_dir>/profiles/``.
+        Checked against the same closed id shape a profile must already
+        satisfy to be saved (``profile_schema._ID_RE``,
+        ``^[a-z0-9-]{1,40}$``) before it ever touches the filesystem;
+        every catalogue id already matches it too.
+        """
+        if not profile_schema._ID_RE.match(profile_id):
+            return None
         if profile_id in profile_catalogue.CATALOGUE_IDS:
             return profile_catalogue.get(profile_id)
         path = Path(options.config_dir) / "profiles" / f"{profile_id}.toml"
@@ -2350,11 +2375,34 @@ def make_handler(
                 return "cross-site requests are not allowed on this route"
             return None
 
+        def _drain_body(self, length: int) -> None:
+            """Read and discard exactly ``length`` bytes from the socket,
+            in bounded chunks (G5). Used for a body over
+            ``_MAX_POST_BODY_BYTES``: it still must be consumed off the
+            wire -- an HTTP/1.1 keep-alive connection with it left unread
+            would corrupt the next request on the same connection, same
+            as the plain read below -- but ``length`` itself is
+            attacker-controlled (``Content-Length``) and exactly what the
+            cap exists to bound, so this never allocates a buffer sized
+            to it the way a single ``self.rfile.read(length)`` would."""
+            remaining = length
+            while remaining > 0:
+                chunk = self.rfile.read(min(65536, remaining))
+                if not chunk:
+                    return  # client closed early; nothing left to drain
+                remaining -= len(chunk)
+
         def do_POST(self) -> None:  # noqa: N802 - stdlib method name
             try:
                 length = int(self.headers.get("Content-Length") or 0)
             except ValueError:
                 length = 0
+            if length > _MAX_POST_BODY_BYTES:
+                self._drain_body(length)
+                self._write_json(
+                    *_payload_too_large(f"request body must be <= {_MAX_POST_BODY_BYTES} bytes")
+                )
+                return
             # Read (and discard, on rejection) the body unconditionally,
             # before any check that might return early -- this is an
             # HTTP/1.1 keep-alive connection, and leaving unread bytes in

@@ -197,6 +197,29 @@ def test_packaged_fable_1m_alias():
     assert resolved.matched_via == "alias"
 
 
+@pytest.mark.parametrize("alias", ["opus", "opus[1m]"])
+def test_packaged_opus_alias_resolves_to_opus_5_5(alias):
+    # D1: "opus"/"opus[1m]" used to resolve to the older claude-opus-5;
+    # the docs (V23) put them on the current claude-opus-5-5.
+    pricing = load_pricing()
+    resolved = pricing.resolve_model(alias)
+    assert resolved is not None
+    assert resolved.canonical_id == "claude-opus-5-5"
+    assert resolved.matched_via == "alias"
+
+
+def test_packaged_claude_opus_5_has_no_alias_of_its_own():
+    # The older model is still resolvable by its own id; it just no
+    # longer carries the "opus"/"opus[1m]" aliases, which now point at
+    # claude-opus-5-5 (checked above).
+    pricing = load_pricing()
+    assert "claude-opus-5" not in pricing.aliases.values()
+    resolved = pricing.resolve_model("claude-opus-5")
+    assert resolved is not None
+    assert resolved.canonical_id == "claude-opus-5"
+    assert resolved.matched_via == "exact"
+
+
 def test_strip_1m_suffix_for_an_unregistered_alias(min_pricing):
     # "claude-gadget-2" has no "[1m]" alias registered, so resolution
     # must fall through to the strip-1m step against its exact id.
@@ -408,9 +431,76 @@ def test_packaged_legacy_ids_have_no_geo_multiplier():
         assert pricing.models[model_id].geo_multipliers == {}
 
 
-def test_packaged_web_search_counts_only_by_default():
+@pytest.mark.parametrize(
+    "model_id",
+    [
+        "claude-fable-5-1",
+        "claude-fable-5",
+        "claude-opus-5-5",
+        "claude-opus-5",
+        "claude-opus-4-8",
+        "claude-opus-4-7",
+        "claude-sonnet-5",
+    ],
+)
+def test_packaged_1m_context_models(model_id):
+    # D2/D4/COV-12/V24: "Fable 5.1, Fable 5, Sonnet 5, Opus 4.7+: native
+    # 1M token context window".
     pricing = load_pricing()
-    assert pricing.server_tools["web_search_per_1000"] == 0.0
+    assert pricing.models[model_id].context_window_tokens == 1_000_000
+
+
+@pytest.mark.parametrize(
+    "model_id",
+    [
+        "claude-opus-4-6",
+        "claude-opus-4-5",
+        "claude-opus-4-1",
+        "claude-opus-4",
+        "claude-sonnet-4-6",
+        "claude-sonnet-4-5",
+        "claude-sonnet-4",
+        "claude-haiku-4-5-20251001",
+        "claude-3-5-haiku-20241022",
+        "claude-3-opus-20240229",
+    ],
+)
+def test_packaged_200k_context_models_default(model_id):
+    pricing = load_pricing()
+    assert pricing.models[model_id].context_window_tokens == 200_000
+
+
+def test_context_window_tokens_defaults_when_toml_omits_it(min_pricing):
+    # pricing_min.toml sets no context_window_tokens on any model.
+    assert min_pricing.models["claude-widget-9"].context_window_tokens == 200_000
+
+
+def test_context_window_tokens_parsed_from_toml(tmp_path):
+    # Insert the key into claude-widget-9's own table (not the file's
+    # end), so it lands in the right TOML table.
+    text = (FIXTURES / "pricing_min.toml").read_text(encoding="utf-8").replace(
+        '[models."claude-widget-9"]\naliases = ["widget", "widget[1m]"]',
+        '[models."claude-widget-9"]\naliases = ["widget", "widget[1m]"]\ncontext_window_tokens = 1000000',
+    )
+    custom = tmp_path / "custom.toml"
+    custom.write_text(text, encoding="utf-8")
+    pricing = load_pricing(path=custom)
+    assert pricing.models["claude-widget-9"].context_window_tokens == 1_000_000
+    assert pricing.models["claude-gadget-2"].context_window_tokens == 200_000
+
+
+def test_packaged_web_search_priced_at_documented_rate():
+    # D1/V27: the pricing page documents web search at $10 per 1,000
+    # searches; it used to sit at 0.0 (counted but not priced).
+    pricing = load_pricing()
+    assert pricing.server_tools["web_search_per_1000"] == 10.0
+
+
+def test_server_tools_absent_prices_web_search_at_zero(min_pricing):
+    # pricing_min.toml has no [server_tools] table at all.
+    assert min_pricing.server_tools == {}
+    resolved = min_pricing.resolve_model("claude-widget-9")
+    assert resolved.web_search_per_1000 == 0.0
 
 
 @pytest.mark.parametrize("model_id", [None, "", "<synthetic>"])
@@ -434,6 +524,45 @@ def test_hand_computed_money_sonnet_5():
     assert breakdown.output_cost == pytest.approx(0.0)
     assert breakdown.cache_write_cost == pytest.approx(0.0)
     assert breakdown.total == pytest.approx(2.40)
+
+
+def test_web_search_cost_appears_in_the_total():
+    # D1: web search used to price at $0 regardless of usage. It is now
+    # folded into CostBreakdown.total via ResolvedRates.web_search_per_1000
+    # (see resolve_model / price_turn).
+    pricing = load_pricing()
+    resolved = pricing.resolve_model("claude-sonnet-5")
+    turn = _turn(model="claude-sonnet-5", web_search_requests=2_500)
+    breakdown = price_turn(turn, resolved)
+    assert breakdown.server_tool_cost == pytest.approx(25.0)  # 2,500 / 1,000 * $10
+    assert breakdown.total == pytest.approx(25.0)
+
+
+def test_web_search_cost_zero_by_default_and_stacks_with_token_costs(min_pricing):
+    import dataclasses
+
+    priced = dataclasses.replace(min_pricing, server_tools={"web_search_per_1000": 8.0})
+    resolved = priced.resolve_model("claude-widget-9")
+    turn = _turn(model="claude-widget-9", input_tokens=1_000_000, web_search_requests=500)
+    breakdown = price_turn(turn, resolved)
+    assert breakdown.input_cost == pytest.approx(1.0)  # 1,000,000 / 1e6 * 1.0
+    assert breakdown.server_tool_cost == pytest.approx(4.0)  # 500 / 1,000 * $8
+    assert breakdown.total == pytest.approx(5.0)
+
+    # No web search on this turn: no server-tool cost, even at a nonzero rate.
+    quiet_turn = _turn(model="claude-widget-9", input_tokens=1_000_000)
+    assert price_turn(quiet_turn, resolved).server_tool_cost == 0.0
+
+
+def test_web_fetch_requests_never_priced():
+    # There is no documented per-request rate for web_fetch, unlike
+    # web_search; pricing.toml's [server_tools] comment says so.
+    pricing = load_pricing()
+    resolved = pricing.resolve_model("claude-sonnet-5")
+    turn = _turn(model="claude-sonnet-5", web_fetch_requests=1_000)
+    breakdown = price_turn(turn, resolved)
+    assert breakdown.server_tool_cost == 0.0
+    assert breakdown.total == 0.0
 
 
 def test_price_turn_accepts_bare_model_rates_too():

@@ -317,9 +317,15 @@ def test_preceding_tool_control_column_sums_to_all_priced_turns():
 
 
 def test_huge_context_table_population_is_all_priced_turns():
+    # claude-haiku-4-5-20251001 resolves to the 200k-window default (it
+    # is not in V24's natively-1M list), so this exercises the plain
+    # population arithmetic without the per-model scaling below.
     turns = [
-        _turn(message_id="m1", turn_index=1, ctx=250_000, cache_read_tokens=200_000),
-        _turn(message_id="m2", turn_index=2, ctx=100, cache_read_tokens=50),
+        _turn(
+            message_id="m1", turn_index=1, model="claude-haiku-4-5-20251001",
+            ctx=250_000, cache_read_tokens=200_000,
+        ),
+        _turn(message_id="m2", turn_index=2, model="claude-haiku-4-5-20251001", ctx=100, cache_read_tokens=50),
     ]
     stats = _stats_for(turns)
     section = recache.build_section(stats, PRICING, recache.RecacheThresholds())
@@ -331,6 +337,33 @@ def test_huge_context_table_population_is_all_priced_turns():
     assert row[3] == 200_000  # huge_ctx_cache_read_tokens
     assert row[4] == 200_050  # total_cache_read_tokens
     assert row[5] == pytest.approx(100.0 * 200_000 / 200_050)
+
+
+def test_huge_context_threshold_scales_with_resolved_model_window():
+    # D2/D4/COV-12: claude-sonnet-5 is natively 1M (V24), so 250k tokens
+    # of context is no longer "huge" for it, unlike the 200k-window
+    # model above -- fewer near-the-limit warnings, correctly.
+    turns = [
+        _turn(message_id="m1", turn_index=1, model="claude-sonnet-5", ctx=250_000, cache_read_tokens=200_000),
+        _turn(message_id="m2", turn_index=2, model="claude-sonnet-5", ctx=1_200_000, cache_read_tokens=900_000),
+    ]
+    stats = _stats_for(turns)
+    section = recache.build_section(stats, PRICING, recache.RecacheThresholds())
+    huge_table = _table(section, "recache_huge_context")
+    row = huge_table.rows[0]
+    assert row[1] == 1  # only the 1.2M-ctx turn clears sonnet-5's 1M window
+    assert row[3] == 900_000  # huge_ctx_cache_read_tokens
+
+
+def test_huge_context_threshold_falls_back_to_th_huge_ctx_for_unresolved_model():
+    turns = [
+        _turn(message_id="m1", turn_index=1, model="claude-totally-unheard-of", ctx=250_000, cache_read_tokens=200_000),
+    ]
+    stats = _stats_for(turns)
+    section = recache.build_section(stats, PRICING, recache.RecacheThresholds(huge_ctx=100_000))
+    huge_table = _table(section, "recache_huge_context")
+    row = huge_table.rows[0]
+    assert row[1] == 1  # 250k clears the configured 100k fallback
 
 
 def test_by_group_filtering():

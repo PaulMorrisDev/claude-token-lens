@@ -188,6 +188,15 @@ _MSYS_DRIVE_RE = re.compile(r"^/([A-Za-z])(?=/|$)")
 
 _CMD_PREFIX_MAX_CHARS = 40
 
+#: H1/ROB-P1: only the first ``_CMD_PREFIX_MAX_CHARS`` of a redacted
+#: command are ever kept, but ``_redact_paths``'s regexes previously ran
+#: on the whole, unbounded ``input.command`` string first -- a command
+#: embedding a huge unbroken blob (a base64 heredoc, say) paid to
+#: redact content nobody stores. ``_cap_command_for_redaction`` below
+#: caps the input to this many characters first, well above
+#: ``_CMD_PREFIX_MAX_CHARS`` so the kept prefix is unaffected.
+_CMD_REDACT_INPUT_MAX_CHARS = 512
+
 #: Usage-limits addition (see module docstring): event kinds whose
 #: presence among a turn's preceding events marks its gap as a usage-cap
 #: pause rather than idle/behavioural time (``Turn.gap_cause``).
@@ -244,6 +253,30 @@ _URL_TOKEN_RE = re.compile(r"""https?://[^\s"']+|www\.[^\s"']+""")
 _AT_TOKEN_RE = re.compile(r"""[^\s"']*@[^\s"']*""")
 
 
+def _cap_command_for_redaction(command: str) -> str:
+    """``command`` capped to ``_CMD_REDACT_INPUT_MAX_CHARS`` (H1/ROB-P1),
+    at a whitespace boundary rather than a hard character cut: a token
+    straddling the cutoff -- e.g. an ``ssh user@host`` target whose
+    ``@`` lands just past it -- is dropped whole rather than left as an
+    identity-bearing fragment whose own redaction trigger got cut off.
+    A command with no whitespace at all in its first
+    ``_CMD_REDACT_INPUT_MAX_CHARS`` characters (one huge unbroken token
+    -- a base64 heredoc, say) falls back to a hard cut: every
+    ``_redact_paths`` pattern is a run of non-whitespace/quote
+    characters with no required closing delimiter, so a hard cut mid
+    such a token still matches (and still collapses to the same fixed
+    placeholder) all the way to the truncated end, same as the
+    uncapped input would past that point.
+    """
+    if len(command) <= _CMD_REDACT_INPUT_MAX_CHARS:
+        return command
+    head = command[:_CMD_REDACT_INPUT_MAX_CHARS]
+    for i in range(len(head) - 1, -1, -1):
+        if head[i].isspace():
+            return head[:i]
+    return head
+
+
 def _redact_paths(text: str) -> str:
     """Replace every absolute- or relative-path-shaped token in ``text``
     with ``<path>``, every URL with ``<url>``, and every ``@``-bearing
@@ -251,7 +284,10 @@ def _redact_paths(text: str) -> str:
     ``<user@host>`` — keeping the surrounding verb/flags intact. Called
     before truncation so a path, URL, or user@host/email near the
     40-char cutoff can't leak a partial drive letter, username fragment,
-    query string, or domain.
+    query string, or domain. The caller already caps ``text`` to
+    ``_CMD_REDACT_INPUT_MAX_CHARS`` (H1/ROB-P1) before it reaches here,
+    at a whitespace boundary, so this never walks more of a huge
+    command than the kept prefix could ever need.
 
     URLs are redacted first: ``_ABS_PATH_TOKEN_RE``'s drive-letter
     alternative (``[A-Za-z]:[\\/]``) is happy to match the single
@@ -672,7 +708,8 @@ def _merge_content_blocks(
         if pending.cmd_prefix is None and name in _SHELL_TOOL_NAMES:
             command = tool_input.get("command")
             if isinstance(command, str) and command:
-                redacted = _redact_paths(_escape_newlines(command))
+                capped = _cap_command_for_redaction(command)
+                redacted = _redact_paths(_escape_newlines(capped))
                 pending.cmd_prefix = redacted[:_CMD_PREFIX_MAX_CHARS]
         path_key = _EDIT_TOOL_PATH_KEYS.get(name)
         if path_key is not None:

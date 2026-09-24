@@ -846,6 +846,13 @@ class CostBreakdown:
     output_cost: float = 0.0
     cache_write_cost: float = 0.0
     cache_read_cost: float = 0.0
+    #: ``turn.web_search_requests`` priced at the rate card's
+    #: ``[server_tools].web_search_per_1000`` (0.0 when the rate card
+    #: sets no rate, or the model didn't resolve). Included in ``total``.
+    #: ``web_fetch_requests`` has no documented per-request rate, so it
+    #: is counted but never priced (see pricing.toml's ``[server_tools]``
+    #: comment).
+    server_tool_cost: float = 0.0
     total: float = 0.0
     long_context_applied: bool = False
     model_known: bool = False

@@ -20,6 +20,16 @@ them for anything other than relative comparisons.
 # [models.<id>.geo_multipliers] table — that's the asymmetry documented
 # here, not an omission to fix.
 
+# Context-window rule (D2/D4/COV-12): "Fable 5.1, Fable 5, Sonnet 5,
+# Opus 4.7+: native 1M token context window" (docs/en/model-config).
+# Those models set context_window_tokens = 1000000 below; every other
+# model omits the key and gets pricing.py's 200,000-token default, the
+# window every earlier generation shipped with. Claude Code itself
+# compacts a 1M-window session before the window fills, at about 967K
+# tokens by default — callers that need that trigger point derive it
+# from this field (see ModelRates.context_window_tokens's docstring)
+# rather than a second hard-coded constant.
+
 # --- Fable ------------------------------------------------------------
 
 [models."claude-fable-5-1"]
@@ -29,6 +39,7 @@ output = 50.0
 cache_write_5m = 12.5
 cache_write_1h = 20.0
 cache_read = 0.25
+context_window_tokens = 1000000
 
 [models."claude-fable-5-1".geo_multipliers]
 us = 1.1 # documented data-residency uplift when usage.inference_geo == "us"
@@ -54,6 +65,7 @@ output = 50.0
 cache_write_5m = 12.5
 cache_write_1h = 20.0
 cache_read = 1.0
+context_window_tokens = 1000000
 
 # --- Opus ---------------------------------------------------------------
 
@@ -69,12 +81,13 @@ cache_read = 1.0
 # (documented on the pricing page), not the other way around.
 
 [models."claude-opus-5-5"]
-aliases = []
+aliases = ["opus", "opus[1m]"]
 input = 4.0
 output = 20.0
 cache_write_5m = 5.0
 cache_write_1h = 8.0
 cache_read = 0.2 # cache hits are 0.05x input on this model (4.0 * 0.05)
+context_window_tokens = 1000000
 
 [models."claude-opus-5-5".geo_multipliers]
 us = 1.1 # documented data-residency uplift when usage.inference_geo == "us"
@@ -83,12 +96,13 @@ us = 1.1 # documented data-residency uplift when usage.inference_geo == "us"
 multiplier = 2.0 # fast-mode rate is $8/$40 in/out, 2x standard
 
 [models."claude-opus-5"]
-aliases = ["opus", "opus[1m]"]
+aliases = []
 input = 5.0
 output = 25.0
 cache_write_5m = 6.25
 cache_write_1h = 10.0
 cache_read = 0.5
+context_window_tokens = 1000000
 
 [models."claude-opus-5".geo_multipliers]
 us = 1.1 # documented data-residency uplift when usage.inference_geo == "us"
@@ -103,6 +117,7 @@ output = 25.0
 cache_write_5m = 6.25
 cache_write_1h = 10.0
 cache_read = 0.5
+context_window_tokens = 1000000
 
 [models."claude-opus-4-8".geo_multipliers]
 us = 1.1 # documented data-residency uplift when usage.inference_geo == "us"
@@ -117,6 +132,7 @@ output = 25.0
 cache_write_5m = 6.25
 cache_write_1h = 10.0
 cache_read = 0.5
+context_window_tokens = 1000000
 
 [models."claude-opus-4-7".geo_multipliers]
 us = 1.1 # documented data-residency uplift when usage.inference_geo == "us"
@@ -168,6 +184,7 @@ output = 10.0
 cache_write_5m = 2.5
 cache_write_1h = 4.0
 cache_read = 0.2
+context_window_tokens = 1000000
 
 [models."claude-sonnet-5".geo_multipliers]
 us = 1.1 # documented data-residency uplift when usage.inference_geo == "us"
@@ -264,4 +281,4 @@ cache_read = 1.5
 # web_fetch_requests on a Turn) are counted but not priced. Set to the
 # documented rate to price web search; 0 counts requests only.
 [server_tools]
-web_search_per_1000 = 0.0
+web_search_per_1000 = 10.0

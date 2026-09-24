@@ -71,6 +71,10 @@ _VERTEX_DATE_SUFFIX_RE = re.compile(r"@\d{8}$")
 #: The ``[1m]`` extended-context-window alias suffix, e.g. ``fable[1m]``.
 _CONTEXT_WINDOW_SUFFIX = "[1m]"
 
+#: A model's context window when its TOML entry sets no
+#: ``context_window_tokens`` -- the pre-Claude-5 standard (D2/COV-12).
+_DEFAULT_CONTEXT_WINDOW_TOKENS = 200_000
+
 
 class PricingError(Exception):
     """A pricing file could not be read or its structure is invalid.
@@ -126,6 +130,19 @@ class ModelRates:
     geo_multipliers: dict[str, float] = field(default_factory=dict)
     long_context: LongContextRule | None = None
     fast: FastRule | None = None
+    #: This model's native context-window size (D2/D4/COV-12): the
+    #: single source of truth every "is this turn near the window"
+    #: check should resolve against, instead of assuming the pre-Claude-5
+    #: 200,000-token window applies everywhere. Defaults to
+    #: ``_DEFAULT_CONTEXT_WINDOW_TOKENS`` (200,000) when the TOML entry
+    #: doesn't set ``context_window_tokens``; the packaged file sets
+    #: 1,000,000 explicitly for the models the docs list as natively 1M
+    #: (Fable 5.1, Fable 5, Sonnet 5, Opus 4.7 and later -- V24). Claude
+    #: Code itself compacts a 1M-window session before the window fills,
+    #: at about 967K tokens by default (V24) -- this field is the raw
+    #: window, not that trigger point; a caller wanting the trigger
+    #: should treat it as roughly 0.967x this value when it matters.
+    context_window_tokens: int = _DEFAULT_CONTEXT_WINDOW_TOKENS
 
 
 @dataclass(slots=True)
@@ -148,6 +165,13 @@ class ResolvedRates:
     #: cases apart, which is why this is a separate field rather than a
     #: new ``matched_via`` value (see ``resolve_model``).
     approximate: bool = False
+    #: The rate card's ``[server_tools].web_search_per_1000`` at
+    #: resolution time (0.0 if absent). Carried here — rather than
+    #: threaded as a separate argument through every ``price_turn``
+    #: call site — because it isn't model-specific: every resolution
+    #: from the same :class:`Pricing` gets the same value, and
+    #: ``price_turn`` already receives this object.
+    web_search_per_1000: float = 0.0
 
 
 @dataclass(slots=True)
@@ -202,10 +226,15 @@ class Pricing:
         if not model_id or model_id in _NO_WARNING_MODEL_IDS:
             return None
 
+        web_search_per_1000 = self.server_tools.get("web_search_per_1000", 0.0)
+
         exact = self._lookup_exact_or_alias(model_id)
         if exact is not None:
             canonical, matched_via = exact
-            return ResolvedRates(canonical, self.models[canonical], matched_via)
+            return ResolvedRates(
+                canonical, self.models[canonical], matched_via,
+                web_search_per_1000=web_search_per_1000,
+            )
 
         candidate = model_id
         if candidate.endswith(_CONTEXT_WINDOW_SUFFIX):
@@ -213,7 +242,10 @@ class Pricing:
             hit = self._lookup_exact_or_alias(stripped)
             if hit is not None:
                 canonical, _ = hit
-                return ResolvedRates(canonical, self.models[canonical], "strip_1m")
+                return ResolvedRates(
+                    canonical, self.models[canonical], "strip_1m",
+                    web_search_per_1000=web_search_per_1000,
+                )
             candidate = stripped
 
         cleaned = _strip_cloud_provider(candidate)
@@ -222,7 +254,10 @@ class Pricing:
             hit = self._lookup_exact_or_alias(cleaned)
             if hit is not None:
                 canonical, _ = hit
-                return ResolvedRates(canonical, self.models[canonical], "cloud_strip")
+                return ResolvedRates(
+                    canonical, self.models[canonical], "cloud_strip",
+                    web_search_per_1000=web_search_per_1000,
+                )
 
         best_id: str | None = None
         for canonical_id in self.models:
@@ -231,7 +266,10 @@ class Pricing:
                     best_id = canonical_id
         if best_id is not None:
             matched_via = "cloud_strip" if cloud_stripped else "prefix"
-            return ResolvedRates(best_id, self.models[best_id], matched_via, approximate=True)
+            return ResolvedRates(
+                best_id, self.models[best_id], matched_via, approximate=True,
+                web_search_per_1000=web_search_per_1000,
+            )
 
         return None
 
@@ -419,6 +457,17 @@ def _parse_model_entry(model_id: str, entry: object) -> tuple[ModelRates, list[s
     if not isinstance(aliases_raw, list) or not all(isinstance(a, str) for a in aliases_raw):
         raise PricingError(f"models.\"{model_id}\".aliases must be a list of strings")
 
+    raw_context_window = entry.get("context_window_tokens")
+    if raw_context_window is None:
+        context_window_tokens = _DEFAULT_CONTEXT_WINDOW_TOKENS
+    else:
+        try:
+            context_window_tokens = int(raw_context_window)
+        except (TypeError, ValueError) as exc:
+            raise PricingError(
+                f"models.\"{model_id}\".context_window_tokens must be an integer"
+            ) from exc
+
     rates = ModelRates(
         canonical_id=model_id,
         input=rate_values["input"],
@@ -429,6 +478,7 @@ def _parse_model_entry(model_id: str, entry: object) -> tuple[ModelRates, list[s
         geo_multipliers=geo_multipliers,
         long_context=long_context,
         fast=fast,
+        context_window_tokens=context_window_tokens,
     )
     return rates, list(aliases_raw)
 
@@ -595,11 +645,23 @@ def price_turn(
     An unresolved model (``rates`` is ``None``) prices every component
     at zero with ``model_known=False``, so it is inert to sum but
     visible in coverage accounting.
+
+    ``turn.web_search_requests`` is priced at ``rates``'s
+    ``web_search_per_1000`` (the rate card's ``[server_tools]`` table,
+    carried on :class:`ResolvedRates` by ``resolve_model`` — 0.0 when
+    the rate card sets no rate, ``rates`` is a bare :class:`ModelRates`,
+    or the model didn't resolve) and added into ``total`` as
+    ``server_tool_cost``. It is a flat per-request fee, so it doesn't
+    stack with the fast/long-context/geo multipliers above.
+    ``web_fetch_requests`` has no documented per-request rate and is
+    never priced.
     """
     if isinstance(rates, ResolvedRates):
         model_rates: ModelRates | None = rates.rates
+        web_search_per_1000 = rates.web_search_per_1000
     else:
         model_rates = rates
+        web_search_per_1000 = 0.0
 
     if model_rates is None:
         return CostBreakdown(model_known=False)
@@ -664,12 +726,18 @@ def price_turn(
             cache_write_cost *= multiplier
             cache_read_cost *= multiplier
 
-    total = input_cost + output_cost + cache_write_cost + cache_read_cost
+    # A flat per-request server-tool fee (documented separately from the
+    # per-token rates on the pricing page), so it doesn't stack with the
+    # fast/long-context/geo multipliers above.
+    server_tool_cost = turn.web_search_requests / 1_000 * web_search_per_1000
+
+    total = input_cost + output_cost + cache_write_cost + cache_read_cost + server_tool_cost
     return CostBreakdown(
         input_cost=input_cost,
         output_cost=output_cost,
         cache_write_cost=cache_write_cost,
         cache_read_cost=cache_read_cost,
+        server_tool_cost=server_tool_cost,
         total=total,
         long_context_applied=long_context_applied,
         model_known=True,

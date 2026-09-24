@@ -136,6 +136,41 @@ def test_no_inline_script_bodies(name: str) -> None:
         assert "src=" in tag.lower(), f"{name} has a <script> tag without src=: {tag!r}"
 
 
+def test_no_button_label_or_handler_says_apply() -> None:
+    """UX-8/F2: the "No Apply button" hard constraint -- the dashboard
+    only ever offers a prompt or a ``claude-token-lens ... --dry-run``
+    command; it never claims to apply a Claude Code config change
+    itself (the one documented exception, the Capture page writing
+    ``[capture]`` into this tool's own config.toml, is a settings
+    toggle, not a button labelled "Apply"). Regression test for "Apply
+    it to:"/"Apply tags" (now "Target file:"/"Save tags") and the latent
+    ``data.apply_command`` fallback (both since removed from
+    ``app.js``): no button's visible text may start with the word
+    "Apply", and no JS identifier naming a button or its click handler
+    may combine "apply" with "btn"/"button"/"handler". Prose that
+    explains the CLI's own ``apply`` subcommand (e.g. "you then apply it
+    with the ... command it shows") is unaffected -- only labels and
+    handler/variable names are checked.
+    """
+    app_js = _static_text("app.js")
+    index_html = _static_text("index.html")
+
+    button_labels = re.findall(r'el\("button",\s*\{[\s\S]*?text:\s*"([^"]*)"', app_js)
+    button_labels += re.findall(r"<button\b[^>]*>([^<]*)</button>", index_html)
+    offenders = [label for label in button_labels if re.match(r"(?i)^apply\b", label)]
+    assert not offenders, f"a button label starts with \"Apply\": {offenders!r}"
+
+    handler_names = re.findall(r"\b([A-Za-z_$][\w$]*)\b", app_js)
+    apply_handlers = [
+        name
+        for name in set(handler_names)
+        if re.search(r"(?i)apply", name) and re.search(r"(?i)btn|button|handler", name)
+    ]
+    assert not apply_handlers, f"app.js has an apply-named button/handler identifier: {apply_handlers!r}"
+
+    assert "apply_command" not in app_js, "app.js must not read the removed data.apply_command fallback"
+
+
 @pytest.mark.parametrize("name", STATIC_FILES)
 def test_no_emoji_code_points(name: str) -> None:
     text = _static_text(name)

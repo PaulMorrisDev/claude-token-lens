@@ -125,9 +125,10 @@ def _tokens(value) -> str:
 
 
 def _family_alias(model_id: str) -> str:
-    """``sonnet``/``haiku``/``opus`` for a model id of that family, so an
-    agent follows the family's current model; any other id as is."""
-    for family in ("haiku", "sonnet", "opus"):
+    """``sonnet``/``haiku``/``opus``/``fable`` for a model id of that
+    family, so an agent follows the family's current model; any other id
+    as is."""
+    for family in ("haiku", "sonnet", "opus", "fable"):
         if family in model_id:
             return family
     return model_id

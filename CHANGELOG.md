@@ -235,6 +235,92 @@ the metrics-capture tags and notes below, and the feedback tag.
   table on the Usage tab, and matching Data quality tab counters, name
   which models and how many replies. Recording each reply's own speed
   needed a new `Turn.speed` field, hence the `PARSER_VERSION` bump above.
+- **The `opus`/`opus[1m]` aliases resolved to Claude Opus 5 instead of
+  Opus 5.5**, so a session or agent config that named the family alias
+  priced (and reported) as the older model. `pricing.toml` now carries
+  those aliases on `claude-opus-5-5`; `claude-opus-5` resolves only by
+  its own id.
+- **Web search requests were tracked but never priced.** `[server_tools]
+  .web_search_per_1000` was `0.0` and nothing read it. It's now $10 per
+  1,000 requests (the documented rate), included in every turn's total
+  as its own `server_tool_cost` line; `web_fetch` requests are still
+  counted but have no documented per-request rate, so they remain
+  unpriced.
+- `xhigh` was a real effort level Claude Code accepts for
+  `effortLevel`/an agent's `effort`, but the profile schema's closed
+  vocabulary didn't include it, so a profile or observed session using
+  it failed validation. `_EFFORT_LEVELS` now lists it between `high`
+  and `max`.
+- **Every "near the context limit" table (autocompaction, huge-context
+  cache reads, the optimisation scorecard, the compaction-window sweep)
+  assumed a flat 200,000-token window regardless of which model was
+  actually running**, so a session on a natively 1M-token model (Fable
+  5.1, Fable 5, Sonnet 5, Opus 4.7 and later) was flagged as constantly
+  near its limit when it had 5x the room. `pricing.toml` now carries
+  each model's real `context_window_tokens` (1,000,000 for the models
+  above, 200,000 elsewhere by default), and `context_budget.py`,
+  `recache.py`'s huge-context table, the scorecard's context-hygiene
+  threshold and `compaction_sim.py`'s candidate-window sweep (widened
+  past 500,000, up to the ~967,000-token point Claude Code itself
+  compacts a 1M window at) all resolve it per model instead of assuming
+  200,000. Expect fewer "near the limit" warnings on 1M-context models —
+  that's the correct behavior, not a regression.
+- **A what-if model change was labelled "Simulated" like a real replay,
+  when it's actually a ceiling** on the saving: the same tokens
+  repriced at the new model's rate, which can't capture that model
+  needing more or fewer replies for the same work. It now gets its own
+  `fidelity: "ceiling"` (`fidelity_text` explains the difference),
+  matching the wording `/api/model-swap` already used for the same
+  number.
+- **The dashboard still said "Apply" in two places, and kept a latent
+  fallback that would have shown an apply-directly command if the
+  dry-run one were ever missing** — this tool never changes your Claude
+  Code config itself (see "What the dashboard can change" in
+  `SECURITY.md`). "Apply it to:" is now "Target file:" (it picks which
+  settings file a profile's diff targets), "Apply tags" is now "Save
+  tags" (it writes to this tool's own tag overrides, not Claude Code),
+  and the dry-run command box no longer falls back to
+  `data.apply_command`. A new static test fails if any button label or
+  click-handler name says "Apply" again.
+- **A shell command with one huge, unbroken run of characters (a base64
+  heredoc body, say) could take minutes to parse.** Redacting a
+  command's paths/URLs/user@host targets ran its regexes over the
+  *whole* command before only ever keeping the first 40 characters of
+  the result; one of those regexes backtracks quadratically over a long
+  run with no `@` and no whitespace, so a 1 MB such command could take
+  tens of minutes. The command is now capped to 512 characters (at a
+  whitespace boundary, so a token straddling the cut is dropped whole
+  rather than left as a raw, un-redacted fragment) before redaction
+  runs at all — 1,000x the kept length, so this changes nothing for any
+  realistic command, only the pathological ones.
+- **The comment explaining why the metrics-capture hook that adds a
+  large-tool-result note runs in the foreground was wrong.** It said
+  Claude Code ignores what a background hook prints; the docs actually
+  say an async hook's `additionalContext` does reach Claude, just on
+  the next conversation turn — a full reply late for a note about the
+  result Claude just saw, which is the real reason this stays
+  synchronous. No behavior changed, only the comment (`capture-hook.py`,
+  `capture_catalogue.py`), re-verified against the current hooks
+  reference.
+- **`GET /api/profiles/<id>` and `.../diff` could be made to read a file
+  outside your profiles folder.** The route only ever sees one raw path
+  segment (`..`/`/` would already fail to match), but a percent-encoded
+  separator (`..%2F..%2Fetc%2Fpasswd`, `C:%5CWindows%5C...`) hid it from
+  that check and was then decoded back into a real separator before the
+  id reached the filesystem. `_load_profile_by_id` now checks the
+  decoded id against the same shape a profile's own id must already
+  satisfy to be saved (`^[a-z0-9-]{1,40}$`) before touching disk;
+  neither route ever served anything outside `<config-dir>/profiles/`
+  under a valid id, but this closes the traversal for good.
+- **No `POST` route capped how large a request body could be.** This
+  API has no authentication (local-only, by design), so any local
+  process could force an arbitrarily large body to be read into memory
+  and JSON-parsed on every `POST` route. Every route now caps the body
+  at 64 KB — checked against `Content-Length` before a byte is read off
+  the socket, `413 payload_too_large` otherwise. Every route's actual
+  body (a profile, a tag, a feedback payload) is small hand-typed or
+  hand-picked JSON, well under the cap. See "Body size limit (G5)" in
+  `docs/api.md`.
 
 ## [0.5.2] - 2026-09-23
 

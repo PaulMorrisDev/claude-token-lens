@@ -79,7 +79,7 @@ The estimate reads the report's own tables and runs no new simulation:
 
 | Change | Read from | How it is worked out |
 |---|---|---|
-| `model` (main session or an agent) | model-swap table | Simulated: the same tokens repriced |
+| `model` (main session or an agent) | model-swap table | Ceiling: the same tokens repriced at the new model's rate -- the real change could be smaller if that model needs more replies |
 | `autoCompactWindow` | summary-point sweep | Simulated: your sessions replayed |
 | `promptCacheTtl`, `subagentPromptCacheTtl`, an agent's `experimental.cacheTtl` | cache-lifetime simulation | Simulated: every cache write replayed at 5 minutes or 1 hour |
 | an agent's `omitClaudeMd = true` | CLAUDE.md tokens per spawn | Measured per spawn, times the spawns in the window |
@@ -205,7 +205,7 @@ description), `name-only` (listed by name, which costs fewer tokens),
 | Key | Type | Allowed values | Doc reference |
 |---|---|---|---|
 | `model` | string | any | `docs/config-layers.md#the-layer-model` |
-| `effortLevel` | enum | `low`, `medium`, `high`, `max` | `docs/config-layers.md#what-each-layer-records-settings_layerslayer` |
+| `effortLevel` | enum | `low`, `medium`, `high`, `xhigh`, `max` | `docs/config-layers.md#what-each-layer-records-settings_layerslayer` |
 | `autoCompactWindow` | int | 0–1,000,000 | `docs/config-layers.md#what-each-layer-records-settings_layerslayer` |
 | `outputStyle` | string | any | `docs/config-layers.md#what-each-layer-records-settings_layerslayer` |
 | `promptCacheTtl` | enum | `5m`, `1h` | `docs/api.md#get-apittl` |
@@ -223,7 +223,7 @@ description), `name-only` (listed by name, which costs fewer tokens),
 | Key | Type | Allowed values | Doc reference |
 |---|---|---|---|
 | `model` | string | any | `docs/config-layers.md#effective_agents` |
-| `effort` | enum | `low`, `medium`, `high`, `max` | `docs/config-layers.md#effective_agents` |
+| `effort` | enum | `low`, `medium`, `high`, `xhigh`, `max` | `docs/config-layers.md#effective_agents` |
 | `maxTurns` | int | 1–1,000,000 | `docs/config-layers.md#effective_agents` |
 | `omitClaudeMd` | bool | — | `docs/sections-reference.md` |
 | `memory` | string | any | `docs/config-layers.md#content_layers` |

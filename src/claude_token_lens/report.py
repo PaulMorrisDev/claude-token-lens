@@ -1629,13 +1629,15 @@ def build_report(
         )
 
     if _want("context_budget"):
-        sections.append(context_budget.build_section(cb, snapshots=snapshots, usage_log_rows=usage_log_rows))
+        sections.append(
+            context_budget.build_section(cb, snapshots=snapshots, usage_log_rows=usage_log_rows, pricing=pricing)
+        )
 
     if _want("capture"):
         sections.append(habits.capture_section(corpus, pricing, config.capture, ratings=ratings))
 
     if _want("scorecard"):
-        sections.append(_build_scorecard_section(rs, ls, ts, tp, cs, pricing_coverage, diagnostics, session_records, snapshots, config, scorecard_th))
+        sections.append(_build_scorecard_section(rs, ls, ts, tp, cs, pricing_coverage, diagnostics, session_records, snapshots, config, scorecard_th, pricing))
 
     if baseline_record is not None:
         # Deliberately not gated by _want()/include -- see build_report's
@@ -1795,6 +1797,32 @@ def _recache_shares(all_turns: list[Turn]) -> tuple[float | None, float | None]:
     return 100.0 * total_cc_recache / total_cc_all, 100.0 * total_cc_limit / total_cc_all
 
 
+#: The context window ``ScorecardThresholds.context_p90_ctx``'s literal
+#: defaults were tuned for (D2/COV-12): scaled against whatever a
+#: corpus's own model actually resolves to, below.
+_SCORECARD_DEFAULT_CONTEXT_WINDOW = 200_000
+
+
+def _representative_context_window(all_turns: list[Turn], pricing: Pricing) -> int:
+    """The context-window size (COV-12) of the most-used resolvable model
+    among ``all_turns`` -- used to scale ``scorecard.py``'s
+    ``context_p90_ctx`` thresholds (D2), which were sized for a
+    200k-window model and otherwise unfairly score a corpus run on a
+    natively 1M-window model (V24) as having "poor" context hygiene just
+    for using the window it actually has. Falls back to
+    :data:`_SCORECARD_DEFAULT_CONTEXT_WINDOW` when nothing resolves.
+    """
+    counts: dict[str, int] = {}
+    for t in all_turns:
+        if t.model:
+            counts[t.model] = counts.get(t.model, 0) + 1
+    for model in sorted(counts, key=lambda m: counts[m], reverse=True):
+        resolved = pricing.resolve_model(model)
+        if resolved is not None:
+            return resolved.rates.context_window_tokens
+    return _SCORECARD_DEFAULT_CONTEXT_WINDOW
+
+
 def _build_scorecard_section(
     rs: recache.RecacheStats,
     ls: limits.LimitStats,
@@ -1807,8 +1835,18 @@ def _build_scorecard_section(
     snaps: list[Snapshot] | None,
     config: Config,
     th: scorecard.ScorecardThresholds,
+    pricing: Pricing,
 ) -> Section:
     all_turns = [r.turn for r in rs.records]
+    # D2/COV-12: only scale when the caller hasn't already customised
+    # context_p90_ctx via [thresholds.scorecard] -- an explicit override
+    # is respected as-is, same convention as every other *_th.from_config
+    # value in this module.
+    if th.context_p90_ctx == scorecard.ScorecardThresholds().context_p90_ctx:
+        window = _representative_context_window(all_turns, pricing)
+        if window and window != _SCORECARD_DEFAULT_CONTEXT_WINDOW:
+            scale = window / _SCORECARD_DEFAULT_CONTEXT_WINDOW
+            th = dataclasses.replace(th, context_p90_ctx=tuple(v * scale for v in th.context_p90_ctx))
     total_cc_all = sum(t.cache_creation_tokens for t in all_turns)
     recache_share_pct, limit_recache_share_pct = _recache_shares(all_turns)
 

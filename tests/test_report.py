@@ -211,6 +211,34 @@ def test_scorecard_ctx_stats_use_top_level_transcripts_only(tmp_path, monkeypatc
     assert inputs.p90_top_level_ctx == pytest.approx(200.0)
 
 
+def test_scorecard_context_hygiene_threshold_scales_for_1m_window_model(tmp_path):
+    """D2/COV-12: ``ScorecardThresholds.context_p90_ctx``'s defaults
+    (50k/100k/150k/200k) were sized for the 200k-window assumption. A
+    corpus run entirely on ``claude-sonnet-5`` (natively 1M, V24) with a
+    p90 top-level ctx of 300_000 scored "very poor" (level 1) against
+    the flat default even though 300k tokens is a small fraction of that
+    model's actual window; report assembly now scales the thresholds by
+    the corpus's own resolved model window (5x here), landing 300_000 at
+    level 4 instead.
+    """
+    project_dir = tmp_path / "proj-1m"
+    project_dir.mkdir()
+    # turn_line's default model is claude-sonnet-5 (1M context in the
+    # packaged pricing.toml), so no override is needed here.
+    _write_session_with_ctx_values(
+        project_dir, "session-1m", top_ctx_values=[50_000, 100_000, 250_000, 300_000], sub_ctx_values=[]
+    )
+
+    corpus = load_corpus([project_dir])
+    report = build_report(corpus, PRICING, Config(), projects=("proj-1m",), window="w")
+    scorecard_section = next(s for s in report.sections if s.key == "scorecard")
+    dim_table = next(t for t in scorecard_section.tables if t.name == "dimensions")
+    row = next(r for r in dim_table.rows if r[0] == "context_hygiene")
+
+    assert row[4] == pytest.approx(300_000.0)  # value: p90_top_level_ctx
+    assert row[1] == 4  # level: level 1 under the unscaled 200k-tuned default
+
+
 def test_overview_long_context_share_is_top_level_turn_count_basis(tmp_path):
     """Coordinator follow-up to R7: the overview's "long-context share of
     recent top-level turns" verification anchor needs a turn-count-basis,

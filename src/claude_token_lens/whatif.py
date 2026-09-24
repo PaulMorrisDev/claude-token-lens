@@ -17,9 +17,9 @@ computes -- no new simulation:
   thinking (``topology_effort_by_agent_type``), since how much less a
   lower effort thinks isn't measured.
 
-Each row says how it was worked out (``fidelity``): "simulated",
-"measured per spawn", "estimated" or "not estimated". A negative
-``saving_usd`` means the change costs more.
+Each row says how it was worked out (``fidelity``): "ceiling",
+"simulated", "measured per spawn", "estimated" or "not estimated". A
+negative ``saving_usd`` means the change costs more.
 """
 
 from __future__ import annotations
@@ -31,6 +31,15 @@ from .units import Units
 TOP = "top-level"
 
 FIDELITY_TEXT = {
+    # E3/EST-P1: a model reprice is a *ceiling* on the saving, not a
+    # simulation -- it assumes the same tokens at the new model's rate,
+    # but a different model may need more (or fewer) replies for the
+    # same work, which this doesn't capture. Kept distinct from
+    # "simulated" (autoCompactWindow, cache TTL) below, which replays
+    # real sessions rather than just repricing their tokens.
+    "ceiling": "Ceiling: the same tokens repriced at the new model's rate. The real "
+    "saving could be smaller (or the change could cost more) if that model needs "
+    "more replies for the same work.",
     "simulated": "Simulated: your own sessions replayed with the new value.",
     "measured": "Measured per spawn, then multiplied by the spawns in this window.",
     "estimated": "Estimated from the size of what stops being sent.",
@@ -102,7 +111,7 @@ def _model(tables: _Tables, agent: str, value, key: str, label: str | None) -> d
         label,
         value,
         observed - new,
-        "simulated",
+        "ceiling",
         f"Worked out by repricing {who}'s replies in this window at {column[len('cost_'):]}. "
         "A different model may need more or fewer replies for the same work, which this doesn't capture.",
     )
