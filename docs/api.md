@@ -795,11 +795,19 @@ section's `habits_setups` table, `task` is the one drafted (the one
 asked for when it's there, else the first with a cheaper setup) and
 `note` says what was found; other goals return `[]`, `null` and `null`.
 A candidate is ticked only when the data supports it; the main model is
-never pre-ticked. `estimate` is that one change's `POST /api/whatif`
-row; `profile` holds the ticked changes and `whatif` their combined
-estimate. `current` returns no candidates (`from_current: true`): the
-dashboard saves your current settings with
-`POST /api/profiles/from-current` instead.
+never pre-ticked. `tasks` also drafts a cheaper-model candidate (`key`
+`"model"`, `agent` the subagent type) for each agent type that most
+answered that kind of task, from the Work habits section's
+`habits_agents_by_task` table, vetoed the same way as the `models`
+goal's own draft. `estimate` is that one change's `POST /api/whatif`
+row; for `tasks`, its `saving_usd` and `effect_text` are then scaled to
+that task's own share of the window (`habits_by_task`, or the agent's
+task share of its own cost for an agent candidate) — `saving_usd` is
+`null` and `basis` says why when there's no clean share to scale by.
+`profile` holds the ticked changes and `whatif` their combined
+estimate, scaled the same way for `tasks`. `current` returns no
+candidates (`from_current: true`): the dashboard saves your current
+settings with `POST /api/profiles/from-current` instead.
 
 ### `GET /api/impact`
 

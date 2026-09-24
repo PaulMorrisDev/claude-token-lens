@@ -85,6 +85,10 @@ MIN_GROUP = 5
 #: Points of "went well" a cheaper setup may give up against your usual
 #: one and still count as doing as well.
 SETUP_OK_TOLERANCE = 5.0
+#: An agent type's model-swap saving needs at least this share before
+#: ``habits_agents_by_task`` names a cheaper model for it (mirrors
+#: ``profiles.goals._models``' own floor).
+CHEAPER_MODEL_MIN_PCT = 5.0
 #: Model families, cheapest first, for naming a setup.
 _FAMILIES = ("haiku", "sonnet", "opus", "fable")
 #: How many weeks the trend covers, and the fewest messages a week
@@ -333,8 +337,10 @@ class AgentFact:
     spawn: str | None = None
     overlap_reads: int = 0
     overlap_cost: float = 0.0
-    #: The ``level`` Claude gave the message the agent worked on.
+    #: The ``level`` and ``task`` Claude gave the message the agent
+    #: worked on.
     level: str | None = None
+    task: str | None = None
 
 
 @dataclass(slots=True)
@@ -605,6 +611,7 @@ def _agents(bundle, cycles, turns, carry: _CarryCost, first_read, rates: _Rates,
             retry=first.retry_marker,
             spawn=first.spawn_marker,
             level=cycle.tag.level if cycle is not None and cycle.tag is not None else None,
+            task=cycle.tag.task if cycle is not None and cycle.tag is not None else None,
         )
         for turn in reversed(priced):
             if fact.result is None and turn.result_marker:
@@ -1496,6 +1503,80 @@ def _agents_table(h: Habits) -> Table:
     )
 
 
+def _rows_as_dicts(table: Table) -> list[dict]:
+    keys = [c.key for c in table.columns]
+    return [dict(zip(keys, row)) for row in table.rows]
+
+
+def _model_swap_alt(model_swap, agent_type: str) -> tuple[str, float] | None:
+    """``(family, saving_pct)`` for ``agent_type`` from ``model_swap`` (a
+    ``model_swap.ModelSwapStats``, or anything shaped like one), when a
+    cheaper model clears :data:`CHEAPER_MODEL_MIN_PCT`. ``None`` without
+    ``model_swap``, with no row for the agent, or when it's already the
+    cheapest tier."""
+    stats = (getattr(model_swap, "by_key", None) or {}).get(agent_type)
+    verdict = getattr(stats, "tier_verdict", None)
+    if verdict is None or verdict.state != "cheaper_available" or not verdict.alt_model:
+        return None
+    if verdict.saving_pct < CHEAPER_MODEL_MIN_PCT:
+        return None
+    return family(verdict.alt_model), verdict.saving_pct
+
+
+def _agents_by_task_table(h: Habits, model_swap=None) -> Table:
+    """Per kind of task, how each agent type that answered it did: the
+    same signals as ``habits_agents``, split by the task of the message
+    that spawned each run, plus the cheaper model the model-swap
+    evidence supports for that agent type, when nothing vetoes it
+    (``unfit_agents``, from the same corpus-wide ``habits_agents`` this
+    table splits)."""
+    unfit = unfit_agents(_rows_as_dicts(_agents_table(h)))
+    groups: dict[str, dict[str, list[AgentFact]]] = {}
+    for a in h.agents:
+        if not a.task:
+            continue
+        groups.setdefault(a.task, {}).setdefault(a.agent_type, []).append(a)
+    rows = []
+    for task in sorted(groups, key=lambda t: -sum(a.cost for runs in groups[t].values() for a in runs)):
+        by_agent = groups[task]
+        for agent_type in sorted(by_agent, key=lambda a: -sum(x.cost for x in by_agent[a])):
+            runs = by_agent[agent_type]
+            results = [a for a in runs if a.result]
+            fits = Counter(a.fit for a in runs if a.fit)
+            alt = None
+            if agent_type not in unfit and len(runs) >= MIN_GROUP:
+                alt = _model_swap_alt(model_swap, agent_type)
+            rows.append([
+                task,
+                agent_type,
+                len(runs),
+                _mean(a.cost for a in runs),
+                _pct(sum(a.result == "done" for a in results), len(results)),
+                fits.get("smaller", 0),
+                fits.get("right", 0),
+                fits.get("larger", 0),
+                alt[0] if alt else None,
+                alt[1] if alt else None,
+            ])
+    return Table(
+        name="habits_agents_by_task",
+        title="Agents by kind of task",
+        columns=[
+            Column(key="task", label="Task", kind="str"),
+            Column(key="agent_type", label="Agent", kind="str"),
+            Column(key="runs", label="Runs", kind="int"),
+            Column(key="avg_cost", label="Per run", kind="money"),
+            Column(key="done_pct", label="Finished", kind="pct"),
+            Column(key="fit_smaller", label="Smaller would do", kind="int"),
+            Column(key="fit_right", label="Model was right", kind="int"),
+            Column(key="fit_larger", label="Needed larger", kind="int"),
+            Column(key="cheaper_model", label="Cheaper model", kind="str"),
+            Column(key="cheaper_saving_pct", label="Cheaper by", kind="pct"),
+        ],
+        rows=rows,
+    )
+
+
 def _effort_table(h: Habits) -> Table:
     groups: dict[str, list[CycleFact]] = {}
     for c in h.cycles:
@@ -1757,14 +1838,19 @@ def _tool_output_table(h: Habits) -> Table:
     )
 
 
-def build_section(corpus, pricing: Pricing | None, *, ratings: dict | None = None, signals: dict | None = None) -> Section:
+def build_section(
+    corpus, pricing: Pricing | None, *, ratings: dict | None = None, signals: dict | None = None, model_swap=None
+) -> Section:
     """The "habits" report section. Every table is always there, empty
-    when there's nothing to show, so the report keeps its shape."""
+    when there's nothing to show, so the report keeps its shape.
+    ``model_swap`` (``model_swap.ModelSwapStats``, already computed for
+    the report's own ``model_swap`` section) feeds ``habits_agents_by_task``'s
+    cheaper-model column."""
     h = collect(corpus, pricing, ratings=ratings, signals=signals)
-    return section_from(h)
+    return section_from(h, model_swap=model_swap)
 
 
-def section_from(h: Habits) -> Section:
+def section_from(h: Habits, *, model_swap=None) -> Section:
     items = playbook(h)
     notes = []
     if h.cycles and not any(c.tag is not None for c in h.cycles):
@@ -1789,6 +1875,7 @@ def section_from(h: Habits) -> Section:
             _agents_table(h),
             _effort_table(h),
             _setups_table(h),
+            _agents_by_task_table(h, model_swap),
             _outcomes_table(h),
             _prompt_flags_table(h),
             _skills_table(h),
