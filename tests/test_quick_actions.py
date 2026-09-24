@@ -3,6 +3,8 @@ contract (``quick_actions``)."""
 
 from __future__ import annotations
 
+import re
+from pathlib import Path
 from types import SimpleNamespace as NS
 
 import pytest
@@ -14,6 +16,8 @@ from claude_token_lens.model import Recommendation
 from claude_token_lens.units import Units
 
 from test_whatif import _model, _table
+
+API_MD = Path(__file__).resolve().parent.parent / "docs" / "api.md"
 
 UNITS = Units(billing_mode="api", currency="USD")
 FIX_KEYS = {"key", "agent", "explainer", "command", "command_warning", "prompt", "title"}
@@ -64,6 +68,23 @@ def test_every_check_answers_with_a_valid_status_and_fix_contract(tmp_path):
         for fix in result["fixes"]:
             assert FIX_KEYS <= set(fix), (check_id, fix)
             assert fix["prompt"] and fix["title"], check_id
+
+
+def test_check_ids_documented_in_api_md_match_the_code():
+    """docs/api.md's ``GET /api/quick-actions`` summary once dropped
+    "quality" (added after "habits") from its prose id list. Regression
+    test: the sentence must name exactly ``quick_actions.CHECK_IDS``, in
+    order."""
+    text = API_MD.read_text(encoding="utf-8")
+    match = re.search(
+        r"One answer per way of saving tokens \(`quick_actions\.CHECKS`\):(.+?)\.\s*Each check always answers",
+        text,
+        re.S,
+    )
+    assert match, "docs/api.md's quick-actions summary sentence has changed shape"
+    ids_text = " ".join(match.group(1).split())
+    ids = [part.strip() for part in re.split(r",| and ", ids_text) if part.strip()]
+    assert ids == list(qa.CHECK_IDS)
 
 
 def test_an_empty_report_is_no_data_everywhere_but_never_fails(tmp_path):

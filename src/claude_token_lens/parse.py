@@ -1493,8 +1493,16 @@ def parse_transcript(path: str | Path, meta: TranscriptMeta) -> TranscriptResult
 
         event = events_mod.classify_line(d)
         if event is None:
-            diagnostics.ignored_line_types[line_type] = (
-                diagnostics.ignored_line_types.get(line_type, 0) + 1
+            # P10b privacy fix: ignored_line_types is a Diagnostics dict
+            # field, so its key -- like unknown_line_types's below -- must
+            # be the sanitised type, never the raw (attacker-controlled)
+            # ``type`` verbatim. This dict isn't walked by
+            # tests/test_privacy.py's generic length check (see that
+            # module's docstring), so an unsanitised key here would never
+            # have been caught by it.
+            safe_line_type = events_mod.sanitize_line_type(line_type)
+            diagnostics.ignored_line_types[safe_line_type] = (
+                diagnostics.ignored_line_types.get(safe_line_type, 0) + 1
             )
             continue
         events.append(event)
@@ -1502,15 +1510,15 @@ def parse_transcript(path: str | Path, meta: TranscriptMeta) -> TranscriptResult
         if line_type == "attachment":
             attachments_since_current.append(event.subkind or "")
         if event.kind == EventKind.UNKNOWN:
-            diagnostics.ignored_line_types[line_type] = (
-                diagnostics.ignored_line_types.get(line_type, 0) + 1
-            )
             # Parser-signals addition (SURV-6, see model.py's module
             # docstring): apart from ignored_line_types above, which also
             # holds types the parser recognises and deliberately drops --
             # this is specifically a type classify_line had no rule for
             # at all. Sanitised: ``type`` is attacker-controlled input.
             sanitized_type = events_mod.sanitize_line_type(line_type)
+            diagnostics.ignored_line_types[sanitized_type] = (
+                diagnostics.ignored_line_types.get(sanitized_type, 0) + 1
+            )
             unknown_line_types[sanitized_type] = unknown_line_types.get(sanitized_type, 0) + 1
         if event.kind == EventKind.HUMAN_TEXT:
             # Parser-signals addition (SURV-7): fold a human prompt's own

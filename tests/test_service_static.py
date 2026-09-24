@@ -53,6 +53,7 @@ from helpers import turn_line, write_jsonl
 REPO_ROOT = Path(__file__).resolve().parent.parent
 STATIC_DIR = REPO_ROOT / "src" / "claude_token_lens" / "service" / "static"
 API_MD = REPO_ROOT / "docs" / "api.md"
+README_MD = REPO_ROOT / "README.md"
 PYPROJECT_TOML = REPO_ROOT / "pyproject.toml"
 
 STATIC_FILES = ("index.html", "app.js", "app.css")
@@ -934,6 +935,50 @@ def test_tab_titles_match_the_tab_buttons() -> None:
     assert set(intros) == set(buttons)
     # One h2 per tab: tabHeading is the only place a tab panel gets one.
     assert app_js.count('el("h2"') == 1
+
+
+def _readme_tab_table_names() -> list[str]:
+    text = README_MD.read_text(encoding="utf-8")
+    section = re.search(r"## What each tab answers\n\n(.+?)\n\n", text, re.S)
+    assert section, "README.md's tab table section has changed shape"
+    rows = section.group(1).splitlines()[2:]  # drop the header row and its --- separator
+    return [row.split("|")[1].strip() for row in rows]
+
+
+def test_readme_tab_table_matches_the_tab_buttons() -> None:
+    """D8: the README's "What each tab answers" table once listed 14
+    tabs while the dashboard shipped 16 -- Work habits and Capture were
+    never added. Regression test: the table's rows, in order, must name
+    exactly the tabs `index.html` renders, in the same order."""
+    html = _static_text("index.html")
+    buttons = re.findall(r'data-tab="[a-z]+">([^<]+)</button>', html)
+    assert _readme_tab_table_names() == buttons
+
+
+def _readme_glossary_terms() -> dict[str, str]:
+    text = README_MD.read_text(encoding="utf-8")
+    section = re.search(r"## Glossary\n\n(.+?)\n\n## Reference", text, re.S)
+    assert section, "README.md's Glossary section has changed shape"
+    entries = re.findall(r"^- \*\*([^*]+)\*\*: (.+)$", section.group(1), re.M)
+    assert entries, "no glossary entries found in README.md"
+    return {name: re.sub(r"`([^`]*)`", r"\1", body) for name, body in entries}
+
+
+def test_glossary_tab_matches_the_readme_glossary() -> None:
+    """D9: the README's glossary once listed 40 terms while app.js's
+    GLOSSARY (the dashboard's Glossary tab) had 31 -- the metrics-capture
+    terms (Metrics capture, Capture level, Tag, Prompt cycle, Work
+    habits, Feedback skill, Brief templates, Sampling, Time-box) were
+    never carried over. Regression test: both must name the same terms
+    with the same wording (README's backtick code-spans read as plain
+    text on the dashboard, since GLOSSARY renders via `.textContent`)."""
+    app_js = _static_text("app.js")
+    match = re.search(r"var GLOSSARY = \[([\s\S]*?)\n  \];", app_js)
+    assert match, "app.js no longer defines GLOSSARY"
+    pairs = re.findall(r'\["([^"]+)", "([^"]+)"\]', match.group(1))
+    assert pairs, "GLOSSARY has no entries"
+    app_glossary = dict(pairs)
+    assert app_glossary == _readme_glossary_terms()
 
 
 def _function_source(app_js: str, name: str) -> str:

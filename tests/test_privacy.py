@@ -706,3 +706,224 @@ def test_redacted_commands_never_leak_through_any_renderer(tmp_path: Path):
     write_csv_dir(report, csv_dir)
     csv_text = "\n".join(p.read_text(encoding="utf-8") for p in csv_dir.rglob("*.csv"))
     _assert_clean("csv", csv_text)
+
+
+# -- P10b: capture tags/notes, feedback and Diagnostics dict keys --------
+#
+# Skill names already have their own fixture above
+# (test_privacy_a_malformed_skill_name_never_reaches_skills_invoked,
+# SEC-P3) -- not duplicated here. These fill the remaining gaps: no
+# fixture in this file had ever put a `[tl: ...]`/`[tl-fb: ...]` tag or a
+# capture note on a real parsed Turn/Event before (test_capture_parse.py
+# covers the string-level parsing with the looser assert_privacy scan;
+# this is the integration proof under the stricter 64-char _walk), and
+# none had exercised Diagnostics's own dict-typed fields, which (per the
+# module docstring above) the generic walk deliberately does not open.
+
+
+def test_privacy_capture_tag_never_carries_unknown_keys_or_paths(tmp_path: Path):
+    # capture_tags.parse_reply_tags already drops unknown keys/words at
+    # the string level (test_capture_parse.py's
+    # test_unknown_keys_words_and_paths_are_dropped) -- this is the
+    # integration proof that once a [tl: ...] tag lands on Turn.cap, the
+    # walk (which recurses into CaptureTag like any other dataclass
+    # field) never finds a leftover long or free-text value either.
+    # SEC-P2 (capture_tags.filter_tag): a tag is trusted only for what
+    # this transcript's own capture note asked for, so the note has to
+    # precede the reply or the whole tag is dropped as unearned.
+    lines = [
+        attachment_line(
+            "hook_additional_context",
+            rendered="tl-cap v1 task,brief,level,shift,missing",
+            content=["tl-cap v1 task,brief,level,shift,missing"],
+            hookName="SessionStart",
+            hookEvent="SessionStart",
+            toolUseID="SessionStart",
+        ),
+        turn_line(
+            message_id="msg_1",
+            input_tokens=100,
+            output_tokens=10,
+            content=[
+                {
+                    "type": "text",
+                    "text": (
+                        "Fixed the bug.\n\n"
+                        "[tl: task=bugfix brief=clear level=normal shift=build "
+                        "secret=C:\\Users\\paulm\\secret.py "
+                        "notes=jane.doe@acme.com missing=files,done]"
+                    ),
+                }
+            ],
+        ),
+    ]
+    path = tmp_path / "session.jsonl"
+    write_jsonl(path, lines)
+    result = parse_transcript(path, TranscriptMeta(path=str(path)))
+    turn = result.turns[0]
+    assert turn.cap is not None
+    assert (turn.cap.task, turn.cap.brief, turn.cap.level, turn.cap.shift) == ("bugfix", "clear", "normal", "build")
+    assert turn.cap.missing == ("files", "done")
+    forbidden = ("secret", "Users", "paulm", "jane.doe", "acme.com")
+    for token in forbidden:
+        assert token not in repr(turn.cap)
+    _assert_no_violations(result)
+
+
+def test_privacy_feedback_tag_never_carries_unknown_keys_or_free_text(tmp_path: Path):
+    lines = [
+        turn_line(
+            message_id="msg_1",
+            input_tokens=100,
+            output_tokens=10,
+            content=[
+                {
+                    "type": "text",
+                    "text": (
+                        "Rated the last piece of work.\n\n"
+                        "[tl-fb: outcome=met slow=unclear,tools worth=yes helped=context "
+                        "note=contact+jane.doe@acme.com path=C:\\Users\\paulm\\secret]"
+                    ),
+                }
+            ],
+        ),
+    ]
+    path = tmp_path / "session.jsonl"
+    write_jsonl(path, lines)
+    result = parse_transcript(path, TranscriptMeta(path=str(path)))
+    turn = result.turns[0]
+    assert turn.feedback is not None
+    assert turn.feedback.source == "tag"
+    assert turn.feedback.outcome == "met"
+    assert set(turn.feedback.slow) == {"unclear", "tools"}
+    assert turn.feedback.worth == "yes"
+    assert set(turn.feedback.helped) == {"context"}
+    forbidden = ("acme.com", "jane.doe", "Users", "paulm", "note=", "path=")
+    for token in forbidden:
+        assert token not in repr(turn.feedback)
+    _assert_no_violations(result)
+
+
+def test_privacy_feedback_answers_drop_free_text_other(tmp_path: Path):
+    # SEC-P1/SECURITY.md: /tl-feedback's four questions are checkbox-only
+    # on the dashboard, but AskUserQuestion always offers a free-text
+    # "Other" option -- feedback_from_answers must drop anything that
+    # isn't one of the question's own closed labels, never store what
+    # someone typed into "Other".
+    question_text = "Did this piece of work deliver what you expected?"
+    lines = [
+        turn_line(
+            message_id="msg_ask",
+            input_tokens=50,
+            output_tokens=10,
+            content=[
+                tool_use_block(
+                    "AskUserQuestion",
+                    "tu_ask",
+                    {
+                        "questions": [
+                            {
+                                "header": "TL outcome",
+                                "question": question_text,
+                                "options": ["Yes", "Partly", "No", "Stopped early"],
+                            }
+                        ]
+                    },
+                )
+            ],
+        ),
+        user_block_line(
+            [tool_result_block("tu_ask", "Recorded.")],
+            toolUseResult={
+                "questions": [{"header": "TL outcome", "question": question_text}],
+                "answers": {
+                    question_text: "Other: it leaked my ssh key at ~/.ssh/id_rsa and emailed paulm@example.com"
+                },
+            },
+        ),
+        turn_line(message_id="msg_2", input_tokens=20, output_tokens=5),
+    ]
+    path = tmp_path / "session.jsonl"
+    write_jsonl(path, lines)
+    result = parse_transcript(path, TranscriptMeta(path=str(path)))
+    # The answer lands on the turn that asked the question (msg_ask), the
+    # same way tool_result_chars_by_tool/agent_result_chars do -- not on
+    # the turn that follows it (msg_2).
+    turn = next(t for t in result.turns if t.message_id == "msg_ask")
+    assert turn.feedback is not None
+    assert turn.feedback.source == "skipped"  # the free-text answer matched no known label
+    assert turn.feedback.outcome is None
+    forbidden = ("ssh", "id_rsa", "example.com", "leaked")
+    for token in forbidden:
+        assert token not in repr(turn.feedback)
+    _assert_no_violations(result)
+
+
+def test_privacy_capture_note_size_is_kept_never_its_text(tmp_path: Path):
+    # A capture note's own content is a closed-vocabulary question list
+    # today, but it's still hook-script output, not a trusted enum -- only
+    # its length (Turn.cap_note_chars) and the closed detail (version,
+    # codes, hook event) may ever reach a Turn/Event; the note text itself
+    # must never.
+    secret = "session token abc123 for jane.doe@acme.com at C:\\Users\\paulm\\project"
+    note_text = f"tl-cap v1 task,brief,level -- {secret}"
+    wrapped = f"<system-reminder>\nSessionStart hook additional context: {note_text}\n</system-reminder>"
+    lines = [
+        attachment_line(
+            "hook_additional_context",
+            rendered=wrapped,
+            content=[note_text],
+            hookName="SessionStart",
+            hookEvent="SessionStart",
+            toolUseID="SessionStart",
+        ),
+        turn_line(message_id="msg_1", input_tokens=100, output_tokens=10),
+    ]
+    path = tmp_path / "session.jsonl"
+    write_jsonl(path, lines)
+    result = parse_transcript(path, TranscriptMeta(path=str(path)))
+    turn = result.turns[0]
+    assert turn.cap_note_chars == len(wrapped)
+    note_events = [e for e in result.events if e.subkind == "capture_note"]
+    assert len(note_events) == 1
+    detail = note_events[0].detail
+    assert set(detail) == {"v", "codes", "hook"}
+    assert detail["v"] == 1
+    assert detail["codes"] == ["task", "brief", "level"]
+    blob = repr(result.events) + repr(result.turns)
+    forbidden = ("acme.com", "jane.doe", "Users", "paulm", "abc123", "session token")
+    for token in forbidden:
+        assert token not in blob
+    _assert_no_violations(result)
+
+
+def test_privacy_diagnostics_ignored_line_type_is_sanitised_not_stored_verbatim(tmp_path: Path):
+    # P10b fix: ignored_line_types (a Diagnostics dict field, populated
+    # from the raw, attacker-controlled top-level `type` of a line the
+    # parser deliberately drops -- an exact _IGNORABLE_TYPES member, an
+    # ignorable file-history-*/artifact-* prefix match, or an UNKNOWN
+    # event) used to store that `type` verbatim as a dict key. Its sibling
+    # counter, parser_notes["unknown_line_types"], already sanitised the
+    # same class of value (see
+    # test_privacy_unknown_line_type_is_sanitised_not_stored_verbatim
+    # above) -- ignored_line_types was the one place this had been missed.
+    # Neither the generic _walk (dict fields aren't walked key-by-key,
+    # see this module's docstring) nor assert_privacy would have caught
+    # this, so it's asserted directly.
+    malicious_prefix_type = "file-history-" + "<script>alert(1)</script>" + ("y" * 100)
+    malicious_unknown_type = "evil<script>alert(2)</script>" + ("z" * 100)
+    lines = [
+        ignorable_line(malicious_prefix_type),
+        ignorable_line(malicious_unknown_type),
+    ]
+    path = tmp_path / "session.jsonl"
+    write_jsonl(path, lines)
+    result = parse_transcript(path, TranscriptMeta(path=str(path)))
+    ignored = result.diagnostics.ignored_line_types
+    assert malicious_prefix_type not in ignored
+    assert malicious_unknown_type not in ignored
+    assert "<script>" not in repr(ignored)
+    for key in ignored:
+        assert len(key) <= 40
+        assert "<" not in key and ">" not in key
+    _assert_no_violations(result)

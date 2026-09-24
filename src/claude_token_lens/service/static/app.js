@@ -4480,6 +4480,15 @@
     ["CLAUDE.md", "Instruction files Claude reads at the start of every session, and of most subagents: yours, each project's, and rule files. Every line is paid for on every reply that re-reads it."],
     ["Skill", "A packaged set of instructions Claude can load when a task needs it. Its name and description are listed to Claude at the start of every session, used or not."],
     ["Quality signal", "A sign of whether the work went well, not just what it cost: tool calls that failed, agent runs that didn't finish, your corrections. Compared across models and efforts, and before and after each change you make."],
+    ["Metrics capture", "An opt-in feature, off by default, that has Claude tell you in a one-line tag what a piece of work was about and how it went. It costs tokens while it's on; init's last questions and claude-token-lens capture turn it on, change what it asks for, or turn it off."],
+    ["Capture level", "How much metrics capture asks for: off, free, essentials, standard or deep, each adding more of it. Set at init or with claude-token-lens capture level."],
+    ["Tag", "The one-line, closed-vocabulary note metrics capture has Claude add to a reply, such as [tl: task=bugfix brief=clear] or [result: done fit=right]. Only words from a fixed list are kept; nothing Claude writes in its own words is."],
+    ["Prompt cycle", "One message of yours and everything Claude did to answer it, subagents at any depth included. The unit metrics capture and the Work habits tab measure by."],
+    ["Work habits", "The tab (and report section) that turns prompt cycles into habits worth trying, each showing where its evidence came from — reported by Claude, inferred from the transcript, or your own feedback — and a rough saving."],
+    ["Feedback skill", "/tl-feedback, a skill you can add that you run after a piece of work to rate whether it delivered, what slowed it, whether it was worth the tokens, and what would have helped. Works at any capture level, even off."],
+    ["Brief templates", "Checklists per kind of task on the Work habits tab, built from what your own requests tend to lack. Turned on, it also adds a /tl-brief skill that checks a request against its checklist and asks once for anything missing before Claude starts."],
+    ["Sampling", "Running metrics capture in only a share of sessions (100, 50, 25 or 10 percent, [capture] sample) to spend fewer tokens on it. Picked at random, per session."],
+    ["Time-box", "The date metrics capture switches itself back off. 14 days by default from when you turn a level on — at init, capture on/level, or the Capture page — so turning it on doesn't mean it runs unattended forever; --for/--capture-for sets another length, --no-limit/--capture-no-limit turns the limit off entirely, or you can say so when asked."],
   ];
 
   function renderGlossary(panel) {
