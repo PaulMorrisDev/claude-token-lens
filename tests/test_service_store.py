@@ -155,6 +155,52 @@ def _seed(store: Store) -> None:
     store.set_tag("session-a", "purpose", "refactor-override")
 
 
+def _seed_second_project(store: Store) -> None:
+    """A second project's session (``proj-b``), alongside ``_seed``'s own
+    ``proj-a`` -- two distinct ``sessions.slug`` values for the
+    project-filter tests below to filter between."""
+    store.upsert_session(
+        session_id="session-b",
+        project_slug="proj-b",
+        slug="proj-b",
+        first_ts="2026-09-19T12:00:00Z",
+        last_ts="2026-09-19T13:00:00Z",
+        total_cost=5.0,
+        total_tokens=9000,
+    )
+    store.upsert_transcript(
+        session_id="session-b",
+        path=r"C:\Users\definitely-not-a-real-person\.claude\projects\proj-b\session-b.jsonl",
+        kind="top-level",
+        digest_json=json.dumps({"turns": 4}),
+        turns_agg=[
+            {
+                "day": "2026-09-19",
+                "model": "claude-sonnet-5",
+                "turns": 4,
+                "input_tokens": 400,
+                "cache_creation_tokens": 0,
+                "cache_read_tokens": 100,
+                "output_tokens": 80,
+                "thinking_tokens": 0,
+                "cc_5m": 0,
+                "cc_1h": 0,
+                "cost": 5.0,
+            }
+        ],
+        compactions=[
+            {
+                "ts": "2026-09-19T12:30:00Z",
+                "pre_tokens": 2000,
+                "post_tokens": 500,
+                "dropped_tokens": 1500,
+                "trigger": "auto",
+                "join_delta_s": 3.0,
+            }
+        ],
+    )
+
+
 # -- migrate / schema --------------------------------------------------
 
 #: The exact v0.2.0 (schema version 4) DDL, taken verbatim from
@@ -917,6 +963,79 @@ def test_summary_accepts_an_until_bound(store: Store) -> None:
     # An until bound alone (no since, no window_days) also windows it.
     assert store.summary(until="2026-09-18T11:00:00Z")["sessions"] == 0
     assert store.summary(until="2026-09-18T13:30:00Z")["sessions"] == 1
+
+
+def test_resolve_project_slug_finds_the_raw_slug_or_none(store: Store) -> None:
+    _seed(store)
+    _seed_second_project(store)
+    assert store.resolve_project_slug("proj-a") == ["proj-a"]
+    assert store.resolve_project_slug("proj-b") == ["proj-b"]
+    assert store.resolve_project_slug("no-such-project") is None
+
+
+def test_summary_filters_by_project_slugs(store: Store) -> None:
+    _seed(store)
+    _seed_second_project(store)
+    # The fully-unfiltered fast path still counts every project.
+    assert store.summary()["sessions"] == 2
+    only_a = store.summary(project_slugs=["proj-a"])
+    assert only_a["sessions"] == 1
+    assert only_a["transcripts"] == 2  # session-a's top-level + subagent
+    assert only_a["total_cost"] == pytest.approx(1.23)
+    only_b = store.summary(project_slugs=["proj-b"])
+    assert only_b["sessions"] == 1
+    assert only_b["transcripts"] == 1
+    assert only_b["total_cost"] == pytest.approx(5.0)
+
+
+def test_sessions_filters_by_project_slugs(store: Store) -> None:
+    _seed(store)
+    _seed_second_project(store)
+    assert [s["id"] for s in store.sessions(project_slugs=["proj-b"])] == ["session-b"]
+    assert {s["id"] for s in store.sessions(project_slugs=["proj-a"])} == {"session-a"}
+    assert {s["id"] for s in store.sessions()} == {"session-a", "session-b"}
+
+
+def test_daily_usage_filters_by_project_slugs(store: Store) -> None:
+    _seed(store)
+    _seed_second_project(store)
+    rows = store.daily_usage(days=None, project_slugs=["proj-b"])
+    assert len(rows) == 1
+    assert rows[0]["day"] == "2026-09-19"
+    assert rows[0]["turns"] == 4
+    rows_a = store.daily_usage(days=None, project_slugs=["proj-a"])
+    assert sum(r["turns"] for r in rows_a) == 15  # session-a's 10 + 5
+
+
+def test_daily_usage_split_agent_filters_by_project_slugs(store: Store) -> None:
+    _seed(store)
+    _seed_second_project(store)
+    rows = store.daily_usage(days=None, split="agent", project_slugs=["proj-a"])
+    assert {r["agent"] for r in rows} == {"main", "subagent"}
+    assert sum(r["turns"] for r in rows) == 15
+    rows_b = store.daily_usage(days=None, split="agent", project_slugs=["proj-b"])
+    assert {r["agent"] for r in rows_b} == {"main"}
+    assert sum(r["turns"] for r in rows_b) == 4
+
+
+def test_cache_read_tokens_by_model_filters_by_project_slugs(store: Store) -> None:
+    _seed(store)
+    _seed_second_project(store)
+    assert store.cache_read_tokens_by_model(days=None, project_slugs=["proj-a"]) == {"claude-sonnet-5": 2400}
+    assert store.cache_read_tokens_by_model(days=None, project_slugs=["proj-b"]) == {"claude-sonnet-5": 100}
+    assert store.cache_read_tokens_by_model(days=None) == {"claude-sonnet-5": 2500}
+
+
+def test_compactions_filters_by_project_slugs(store: Store) -> None:
+    _seed(store)
+    _seed_second_project(store)
+    assert len(store.compactions()) == 2
+    only_a = store.compactions(project_slugs=["proj-a"])
+    assert len(only_a) == 1
+    assert only_a[0]["dropped_tokens"] == 140000
+    only_b = store.compactions(project_slugs=["proj-b"])
+    assert len(only_b) == 1
+    assert only_b[0]["dropped_tokens"] == 1500
 
 
 def test_snapshots_listing(store: Store) -> None:

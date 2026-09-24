@@ -1066,6 +1066,37 @@ Only models `pricing.toml` prices are keys here. Each entry carries
 ratio}` map of that model's `input` rate as a multiple of every other
 priced model's `input` rate.
 
+`meta.projects`: every project slug with a session in this window
+(already redacted -- see "Privacy" above), sorted by this window's cost
+descending, ties broken alphabetically (the same `(-cost, slug)` order
+`usage.by_project`'s rows already sort by). This is the list a `project`
+filter (below) accepts and the dashboard's project picker can render
+without a second request.
+
+### Filtering by project
+
+Every report-backed route (`/api/report.json`/`.md`/`.html` and every
+per-section route: `/api/ttl`, `/api/carry`, `/api/recommendations`,
+`/api/quick-actions[/<id>]`, `/api/compaction-sim`, `/api/model-swap`,
+`/api/waste`, `/api/config-diff`, `/api/diagnostics`,
+`/api/claude-md[/<id>]`, `/api/skills`, `/api/profile-goals`, `/api/whatif`),
+plus `/api/summary`, `/api/sessions`, `/api/daily-usage` and
+`/api/compactions`, additionally accept a `project=<slug>` query param
+(additive). `<slug>` is one of `meta.projects`'/`/api/sessions`'
+already-redacted slugs -- never the raw, unredacted slug a filesystem
+path could embed a username in, since the API never hands one out
+(see "Privacy" above). The route narrows to that project's sessions
+only: fewer sessions, fewer transcripts, and (for report-backed routes)
+a report built from just that subset -- the same shape as an unfiltered
+response, just scoped.
+
+An unrecognized or malformed `project` (a slug redacting to no known
+project in the current store) is a `400 bad_request`, same envelope as
+every other malformed query param above -- the message never echoes the
+given value back, only that `project` was the problem. The report cache
+(below) keys on `project` alongside the window, so two different
+`project` values for the same window never share a cache entry.
+
 ## Mutating routes
 
 The `POST` routes. All but `POST /api/whatif` write something, each

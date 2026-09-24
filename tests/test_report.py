@@ -658,6 +658,46 @@ def test_report_meta_is_fully_populated(tmp_path):
     assert meta.units["basis"] == meta.amounts_basis
 
 
+def test_report_meta_projects_sorts_by_cost_descending_ties_alphabetical(tmp_path):
+    """Project-filter work: ``meta.projects`` sorts by this window's cost,
+    highest first (the same ``(-cost, slug)`` order ``usage.by_project``
+    already sorts its own rows by), not alphabetically -- so a dashboard
+    project picker built from it lists the highest-spend project first
+    without a second request. ``proj-zzz-cheap`` sorts alphabetically
+    last but costs least, and still ends up last here too; ``proj-aaa``
+    is expensive and alphabetically first, and still sorts first --
+    confirming the order really is cost-driven, not a coincidence of
+    name order."""
+    root = tmp_path / "projects"
+    root.mkdir()
+    expensive_dir = root / "proj-aaa-expensive"
+    cheap_dir = root / "proj-zzz-cheap"
+    expensive_dir.mkdir()
+    cheap_dir.mkdir()
+    _write_top(expensive_dir, "session-expensive", n_turns=20)
+    _write_top(cheap_dir, "session-cheap", n_turns=1)
+    corpus = load_corpus([expensive_dir, cheap_dir])
+    report = build_report(
+        corpus, PRICING, Config(), projects=("proj-aaa-expensive", "proj-zzz-cheap"), window="w"
+    )
+    assert report.meta.projects == ("proj-aaa-expensive", "proj-zzz-cheap")
+
+
+def test_report_meta_projects_ties_break_alphabetically(tmp_path):
+    """Two projects costing exactly the same (both empty -- no session in
+    the window) fall back to alphabetical order, the same tie-break
+    ``usage.by_project`` uses."""
+    root = tmp_path / "projects"
+    root.mkdir()
+    dir_b = root / "proj-b-empty"
+    dir_a = root / "proj-a-empty"
+    dir_b.mkdir()
+    dir_a.mkdir()
+    corpus = load_corpus([dir_b, dir_a])
+    report = build_report(corpus, PRICING, Config(), projects=("proj-b-empty", "proj-a-empty"), window="w")
+    assert report.meta.projects == ("proj-a-empty", "proj-b-empty")
+
+
 def test_report_meta_units_reflects_subscription_billing_with_no_elasticity_fit(tmp_path):
     """UX-1: under a subscription with no elasticity fit yet (this
     corpus logs no statusline usage-limit samples), ``meta.units``

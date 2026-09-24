@@ -67,7 +67,7 @@ def _install_fake_rebuild(monkeypatch, corpus: corpus_mod.Corpus) -> None:
 
     fake = types.ModuleType("claude_token_lens.service.rebuild")
 
-    def corpus_from_store(store, *, days=None, since=None, until=None, window_by="mtime"):
+    def corpus_from_store(store, *, days=None, since=None, until=None, window_by="mtime", project_slugs=None):
         return corpus
 
     fake.corpus_from_store = corpus_from_store

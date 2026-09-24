@@ -668,6 +668,27 @@ def make_handler(
                 named_window_starts[name] = window[1]
         return window, err
 
+    def _project_query(query):
+        """Parse the additive ``project`` query param (see docs/api.md's
+        "Filtering by project"): the redacted slug a caller names,
+        resolved to the raw ``sessions.slug`` value(s) it stands for.
+
+        Returns ``(project_slugs, None)`` -- a sorted tuple, for use as
+        part of a report cache key -- or ``(None, None)`` when the
+        request names no ``project`` at all (no filter); or ``(None,
+        error)``, an already-built ``400 bad_request``, when the given
+        slug matches no project this store has ever recorded a session
+        for. The message never echoes the value back, matching every
+        other malformed query param's convention above.
+        """
+        redacted = _str_query(query, "project")
+        if redacted is None:
+            return None, None
+        raw_slugs = store.resolve_project_slug(redacted)
+        if not raw_slugs:
+            return None, _bad_request("'project' does not match a known project")
+        return tuple(raw_slugs), None
+
     service_registered_lock = threading.Lock()
     service_registered_cache: dict = {"checked_at": None, "value": None}
 
@@ -746,7 +767,12 @@ def make_handler(
         an agent recorded in another project."""
         return snapshots_mod.with_every_project_agents(_snapshots_from_store())
 
-    def _build_report_model(window_days: int | None, since: str | None = None, until: str | None = None):
+    def _build_report_model(
+        window_days: int | None,
+        since: str | None = None,
+        until: str | None = None,
+        project: tuple[str, ...] | None = None,
+    ):
         # Local import: service.rebuild is a sibling work package's
         # module (S1-watcher), not yet present in every checkout this
         # module is imported from -- see this module's docstring.
@@ -754,7 +780,9 @@ def make_handler(
 
         config = load_config(options.config_dir)
         rates = load_pricing(path=config.pricing_path, config_dir=options.config_dir)
-        corpus = rebuild.corpus_from_store(store, days=window_days, since=since, until=until)
+        corpus = rebuild.corpus_from_store(
+            store, days=window_days, since=since, until=until, project_slugs=list(project) if project else None
+        )
         snaps = _snapshots_from_store()
         projects = tuple(sorted({bundle.slug for bundle in corpus.sessions if bundle.slug}))
         window = _window_label(window_days, since, until)
@@ -811,11 +839,16 @@ def make_handler(
     def _slot_for(cache_key):
         """The report cache slot for a key (see ``report_cache``). Call
         with ``report_lock`` held."""
-        window_days, since, until = cache_key
+        window_days, since, until, project = cache_key
         if window_days is None and until is None and since is not None:
             for name, start in named_window_starts.items():
                 if start == since:
-                    return ("named", name)
+                    # `project` rides along in the named slot too (rather
+                    # than being dropped), so "today" unfiltered and
+                    # "today" for one project never collide into the same
+                    # cache entry even though they'd resolve to the same
+                    # `since` a minute apart.
+                    return ("named", name, project)
         return cache_key
 
     def _keep_report(cache_key, token, model, started: float, as_of: str) -> None:
@@ -868,7 +901,12 @@ def make_handler(
 
         threading.Thread(target=run, name="claude-token-lens-report", daemon=True).start()
 
-    def _get_report_model(window_days: int | None, since: str | None = None, until: str | None = None):
+    def _get_report_model(
+        window_days: int | None,
+        since: str | None = None,
+        until: str | None = None,
+        project: tuple[str, ...] | None = None,
+    ):
         """The report for a window, built at most once per store change.
 
         Stale-while-revalidate: when the store has changed since the
@@ -879,12 +917,17 @@ def make_handler(
         (or a report older than ``_STALE_REPORT_MAX_AGE_S``) is built
         while the request waits, and requests for a window already being
         built wait on that one build rather than starting their own.
+
+        ``project`` (additive, project-filter work): the resolved raw
+        project slug(s) a ``project`` query param named, or ``None`` for
+        no filter -- part of the cache key (below) so two different
+        ``project`` values for the same window never share a report.
         """
         # Cache key widened from a bare window_days to the full
-        # (window_days, since, until) triple so a since/until request
-        # never collides with (or is served from) a plain window_days
-        # entry for the same store change_token.
-        cache_key = (window_days, since, until)
+        # (window_days, since, until, project) tuple so a since/until or
+        # project-filtered request never collides with (or is served
+        # from) an unfiltered entry for the same store change_token.
+        cache_key = (window_days, since, until, project)
         token = _cache_token()
         now = time.monotonic()
         with report_lock:
@@ -1288,6 +1331,9 @@ def make_handler(
         if err is not None:
             return err
         window_days, since, until = window
+        project, err = _project_query(query)
+        if err is not None:
+            return err
         # Round explicit bounds to the minute the same way a named
         # window's own `since` already is (_named_window_since) -- so two
         # requests for "the same" period (e.g. the dashboard's current
@@ -1296,12 +1342,12 @@ def make_handler(
             since = _round_iso_to_minute(since)
         if until is not None:
             until = _round_iso_to_minute(until)
-        result = store.summary(window_days=window_days, since=since, until=until)
+        result = store.summary(window_days=window_days, since=since, until=until, project_slugs=project)
         # Additive: what cache reads saved against sending the same
         # tokens fresh as input, from turns_agg in the same window.
         config = load_config(options.config_dir)
         rates = _capture_rates(config)
-        by_model = store.cache_read_tokens_by_model(days=window_days, since=since, until=until)
+        by_model = store.cache_read_tokens_by_model(days=window_days, since=since, until=until, project_slugs=project)
         result["cache_read_tokens"] = sum(by_model.values())
         result["cache_saved"] = (
             cache_read_savings_usd(
@@ -1332,7 +1378,14 @@ def make_handler(
         if err is not None:
             return err
         window_days, since, until = window
-        return _ok(store.sessions(limit=limit, offset=offset, window_days=window_days, since=since, until=until))
+        project, err = _project_query(query)
+        if err is not None:
+            return err
+        return _ok(
+            store.sessions(
+                limit=limit, offset=offset, window_days=window_days, since=since, until=until, project_slugs=project
+            )
+        )
 
     def route_session(store, query, body):
         session_id = query.get("id", "")
@@ -1396,14 +1449,20 @@ def make_handler(
         split = _str_query(query, "split")
         if split not in (None, "agent", "model"):
             return _bad_request("'split' must be 'agent' or 'model'")
-        return _ok(store.daily_usage(days=window_days, since=since, until=until, split=split))
+        project, err = _project_query(query)
+        if err is not None:
+            return err
+        return _ok(store.daily_usage(days=window_days, since=since, until=until, split=split, project_slugs=project))
 
     def route_compactions(store, query, body):
         window, err = _listing_window(query)
         if err is not None:
             return err
         window_days, since, until = window
-        return _ok(store.compactions(window_days=window_days, since=since, until=until))
+        project, err = _project_query(query)
+        if err is not None:
+            return err
+        return _ok(store.compactions(window_days=window_days, since=since, until=until, project_slugs=project))
 
     def _latest_baseline_row(store) -> dict | None:
         rows = store.baselines()
@@ -1853,7 +1912,10 @@ def make_handler(
         window, err = _window_query(query)
         if err is not None:
             return err
-        model = _get_report_model(*window)
+        project, err = _project_query(query)
+        if err is not None:
+            return err
+        model = _get_report_model(*window, project)
         section = _find_section(model, "ttl")
         return _ok(to_jsonable(section) if section is not None else None)
 
@@ -1861,7 +1923,10 @@ def make_handler(
         window, err = _window_query(query)
         if err is not None:
             return err
-        model = _get_report_model(*window)
+        project, err = _project_query(query)
+        if err is not None:
+            return err
+        model = _get_report_model(*window, project)
         section = _find_section(model, "carry")
         return _ok(to_jsonable(section) if section is not None else None)
 
@@ -1869,7 +1934,10 @@ def make_handler(
         window, err = _window_query(query)
         if err is not None:
             return err
-        model = _get_report_model(*window)
+        project, err = _project_query(query)
+        if err is not None:
+            return err
+        model = _get_report_model(*window, project)
         section = _find_section(model, "compaction_sim")
         return _ok(to_jsonable(section) if section is not None else None)
 
@@ -1877,7 +1945,10 @@ def make_handler(
         window, err = _window_query(query)
         if err is not None:
             return err
-        model = _get_report_model(*window)
+        project, err = _project_query(query)
+        if err is not None:
+            return err
+        model = _get_report_model(*window, project)
         section = _find_section(model, "model_swap")
         return _ok(to_jsonable(section) if section is not None else None)
 
@@ -1885,7 +1956,10 @@ def make_handler(
         window, err = _window_query(query)
         if err is not None:
             return err
-        model = _get_report_model(*window)
+        project, err = _project_query(query)
+        if err is not None:
+            return err
+        model = _get_report_model(*window, project)
         section = _find_section(model, "waste")
         return _ok(to_jsonable(section) if section is not None else None)
 
@@ -1893,11 +1967,14 @@ def make_handler(
         window, err = _window_query(query)
         if err is not None:
             return err
+        project, err = _project_query(query)
+        if err is not None:
+            return err
         key = query.get("key")
         auto_keys = query.get("auto_keys") == "1"
         if not key and not auto_keys:
             return _bad_request("provide 'key' or 'auto_keys=1'")
-        model = _get_report_model(*window)
+        model = _get_report_model(*window, project)
         section = _find_section(model, "config")
         tables = section.tables if section is not None else []
         if auto_keys:
@@ -1909,7 +1986,10 @@ def make_handler(
         window, err = _window_query(query)
         if err is not None:
             return err
-        model = _get_report_model(*window)
+        project, err = _project_query(query)
+        if err is not None:
+            return err
+        model = _get_report_model(*window, project)
         hook = hook_health.check(options.config_dir)
         statusline = hook_health.statusline_check(options.config_dir, store.entrypoint_counts())
         return _ok(
@@ -1928,10 +2008,10 @@ def make_handler(
         config = load_config(options.config_dir)
         return Units(billing_mode=config.billing, currency=model.meta.pricing.currency)
 
-    def _claude_md_review(window, query):
+    def _claude_md_review(window, query, project=None):
         from .. import claude_md_review
 
-        model = _get_report_model(*window)
+        model = _get_report_model(*window, project)
         review = claude_md_review.build_review(options.config_dir, model.context_files or {})
         return claude_md_review, review, _report_units(model), _period_text(*window, name=query.get("window"))
 
@@ -1942,7 +2022,10 @@ def make_handler(
         window, err = _window_query(query)
         if err is not None:
             return err
-        module, review, units, period = _claude_md_review(window, query)
+        project, err = _project_query(query)
+        if err is not None:
+            return err
+        module, review, units, period = _claude_md_review(window, query, project)
         return _ok(
             {
                 "period": period,
@@ -1955,7 +2038,10 @@ def make_handler(
         window, err = _window_query(query)
         if err is not None:
             return err
-        module, review, units, period = _claude_md_review(window, query)
+        project, err = _project_query(query)
+        if err is not None:
+            return err
+        module, review, units, period = _claude_md_review(window, query, project)
         file_id = query.get("id", "")
         item = next((entry for entry in review.files if entry.id == file_id), None)
         if item is None:
@@ -1972,7 +2058,10 @@ def make_handler(
         window, err = _window_query(query)
         if err is not None:
             return err
-        model = _get_report_model(*window)
+        project, err = _project_query(query)
+        if err is not None:
+            return err
+        model = _get_report_model(*window, project)
         return _ok(
             skills_review.review(
                 options.config_dir,
@@ -2015,7 +2104,10 @@ def make_handler(
             return _bad_request(
                 f"unknown task {task!r}; expected one of: {', '.join(capture_catalogue.TAG_VOCAB['task'])}"
             )
-        model = _get_report_model(*window)
+        project, err = _project_query(query)
+        if err is not None:
+            return err
+        model = _get_report_model(*window, project)
         effective, effective_agents, effort_level_env_set = _current_settings()
         return _ok(
             goals.draft(
@@ -2079,7 +2171,10 @@ def make_handler(
         window, err = _window_query(query)
         if err is not None:
             return err
-        model = _get_report_model(*window)
+        project, err = _project_query(query)
+        if err is not None:
+            return err
+        model = _get_report_model(*window, project)
         effective, _agents, _env_set = _current_settings()
         units = _report_units(model)
         period = _period_text(*window, name=query.get("window"))
@@ -2123,10 +2218,10 @@ def make_handler(
         seen = store.mark_prediction_seen(prediction_id)
         return _ok({"id": prediction_id, "seen": seen})
 
-    def _quick_context(window, query):
+    def _quick_context(window, query, project=None):
         from .. import quick_actions
 
-        model = _get_report_model(*window)
+        model = _get_report_model(*window, project)
         effective, effective_agents, _env_set = _current_settings()
         return quick_actions, quick_actions.Context(
             model=model,
@@ -2143,7 +2238,10 @@ def make_handler(
         window, err = _window_query(query)
         if err is not None:
             return err
-        module, ctx = _quick_context(window, query)
+        project, err = _project_query(query)
+        if err is not None:
+            return err
+        module, ctx = _quick_context(window, query, project)
         return _ok({"period": ctx.period, "checks": module.run_all(ctx)})
 
     def route_quick_action(store, query, body):
@@ -2151,7 +2249,10 @@ def make_handler(
         window, err = _window_query(query)
         if err is not None:
             return err
-        module, ctx = _quick_context(window, query)
+        project, err = _project_query(query)
+        if err is not None:
+            return err
+        module, ctx = _quick_context(window, query, project)
         if query.get("id") not in module.CHECK_IDS:
             return _not_found("unknown quick action")
         return _ok(module.run(query["id"], ctx))
@@ -2351,7 +2452,10 @@ def make_handler(
         window, err = _window_query(query)
         if err is not None:
             return err
-        model = _get_report_model(*window)
+        project, err = _project_query(query)
+        if err is not None:
+            return err
+        model = _get_report_model(*window, project)
         return _ok([to_jsonable(rec) for rec in model.recommendations])
 
     def _render_report(content_type: str, render: Callable[[object], str]):
@@ -2359,7 +2463,10 @@ def make_handler(
             window, err = _window_query(query)
             if err is not None:
                 return err
-            model = _get_report_model(*window)
+            project, err = _project_query(query)
+            if err is not None:
+                return err
+            model = _get_report_model(*window, project)
             return ("raw", content_type, render(model))
 
         return _route
