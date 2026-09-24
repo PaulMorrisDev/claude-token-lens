@@ -550,7 +550,7 @@ def _task_agent_share(tables, task: str, agent: str) -> float | None:
     return 100.0 * task_cost / total
 
 
-def _scale_estimate(row: dict, pct: float | None, units: Units, period: str) -> dict:
+def _scale_estimate(row: dict, pct: float | None, units: Units, period: str, whose: str = "this task's") -> dict:
     """A ``whatif`` row reprices *all* of a setup's observed work in the
     window, but a task's draft is for that task's share of it alone.
     Scale the saving down to ``pct``; without a clean share to scale by,
@@ -572,7 +572,7 @@ def _scale_estimate(row: dict, pct: float | None, units: Units, period: str) -> 
     if row.get("uncalibrated_usd") is not None:
         row["uncalibrated_usd"] = round(row["uncalibrated_usd"] * pct / 100.0, 6)
     row["effect_text"] = whatif._effect_text(row["saving_usd"], units, period)
-    row["basis"] = row.get("basis", "") + f" Scaled to this task's {pct:.0f}% share of what was repriced above."
+    row["basis"] = row.get("basis", "") + f" Scaled to {whose} {pct:.0f}% share of what was repriced above."
     return row
 
 
@@ -580,10 +580,25 @@ def _task_share_for(tables, task: str, agent: str | None) -> float | None:
     return _task_share(tables, task) if agent is None else _task_agent_share(tables, task, agent)
 
 
-def _scale_whatif(result: dict, tables, task: str, units: Units, period: str) -> dict:
+def _tasks_share_for(tables, tasks: tuple[str, ...], agent: str | None) -> float | None:
+    """The combined share of several tasks (a catalogue profile's ``for``
+    covers more than one): each is a share of the same total, so they
+    add. A task with no row of its own adds nothing; ``None`` only when
+    none of them has a share to give."""
+    shares = [share for share in (_task_share_for(tables, task, agent) for task in tasks) if share is not None]
+    return sum(shares) if shares else None
+
+
+def _scale_whatif(result: dict, tables, task: str | tuple[str, ...], units: Units, period: str) -> dict:
     """Scale every row of a combined ``whatif.estimate`` result to
-    ``task``'s share, and recompute the total from the scaled rows."""
-    rows = [_scale_estimate(row, _task_share_for(tables, task, row.get("agent")), units, period) for row in result["rows"]]
+    ``task``'s share (or the combined share of several tasks), and
+    recompute the total from the scaled rows."""
+    tasks = (task,) if isinstance(task, str) else tuple(task)
+    whose = "this task's" if len(tasks) == 1 else "these tasks'"
+    rows = [
+        _scale_estimate(row, _tasks_share_for(tables, tasks, row.get("agent")), units, period, whose)
+        for row in result["rows"]
+    ]
     estimated = [row for row in rows if row["saving_usd"] is not None]
     total = sum(row["saving_usd"] for row in estimated)
     out = dict(result)

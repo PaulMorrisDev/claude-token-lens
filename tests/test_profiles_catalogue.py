@@ -149,6 +149,21 @@ def test_for_words_normalise_to_the_task_vocabulary():
         assert set(tasks) <= vocab
 
 
+def test_tasks_for_normalises_catalogue_words_and_keeps_task_words():
+    # F11: a catalogue word maps to its tasks, a saved task profile's
+    # `for=[task]` stands for itself, and a way of running covers none.
+    by_id = {p.id: p for p in catalogue_mod.list_profiles()}
+    assert catalogue_mod.tasks_for(by_id["implementation-heavy"]) == (
+        "feature", "bugfix", "debug", "refactor", "test", "review",
+    )
+    assert catalogue_mod.tasks_for(by_id["overnight-batch"]) == ()
+    saved = loads_profile('id = "mine"\nfor = ["bugfix"]\n')
+    assert catalogue_mod.tasks_for(saved) == ("bugfix",)
+    vocab = set(capture_catalogue.TAG_VOCAB["task"])
+    for profile in by_id.values():
+        assert set(catalogue_mod.tasks_for(profile)) <= vocab
+
+
 def test_every_task_has_a_catalogue_profile():
     # PROF-11/F11: "ops" used to be the one task word no catalogue
     # profile covered; workflow-ultracode's own "ops" for-word closes

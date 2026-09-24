@@ -703,6 +703,15 @@ algorithm to 1e-12 on fixtures and randomised sessions.
 
 ### Fixed
 
+- **A catalogue profile's "Estimated effect" on the Profiles tab never
+  appeared.** The tab sent the profile's first `for` word
+  (`implementation`, `data-exploration`, ...) to `/api/whatif` as its
+  task, which only takes the capture task words, so the request failed
+  quietly. Profiles now carry `tasks`, their `for` words normalised to
+  those task words, and `/api/whatif`'s `task` takes several,
+  comma-separated, scaling by their combined share. The Work habits
+  digest's money cards also follow the billing mode now instead of
+  printing a bare amount in USD.
 - **Repeated reads were miscounted.** An edit counted as a read of the
   same file, and a read straight after an edit to it counted again too
   (870 -> 138 repeated reads on a real corpus once fixed). Agent report

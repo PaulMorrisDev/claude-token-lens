@@ -397,6 +397,29 @@ def test_without_a_by_task_cost_the_estimate_is_left_unscaled_and_explained():
     assert "no per-task cost" in estimate["basis"]
 
 
+def test_a_profile_covering_several_tasks_scales_by_their_combined_share():
+    # F11: a catalogue profile's `for` covers several tasks (implementation-
+    # heavy: feature, bugfix, debug, ...); /api/whatif scales by their
+    # shares added up. debug has no row of its own, so it adds nothing.
+    from claude_token_lens import whatif
+
+    model = _with_task_data(by_task=[
+        {"task": "all", "cost": 200.0, "main_cost": 100.0},
+        {"task": "bugfix", "cost": 150.0, "main_cost": 60.0},
+        {"task": "feature", "cost": 30.0, "main_cost": 20.0},
+    ])
+    result = {"rows": [{"key": "model", "agent": None, "saving_usd": 40.0, "uncalibrated_usd": None,
+                        "fidelity": "ceiling", "effect_text": "", "basis": "Repriced."}]}
+    out = goals._scale_whatif(result, whatif._Tables(model), ("feature", "bugfix", "debug"), UNITS, "")
+    [row] = out["rows"]
+    assert row["saving_usd"] == pytest.approx(32.0)
+    assert "these tasks' 80% share" in row["basis"]
+    assert out["total_usd"] == pytest.approx(32.0)
+    # One task keeps its own wording.
+    [one] = goals._scale_whatif(result, whatif._Tables(model), "bugfix", UNITS, "")["rows"]
+    assert one["saving_usd"] == pytest.approx(24.0) and "this task's 60% share" in one["basis"]
+
+
 def test_the_tasks_goal_drafts_a_cheaper_model_for_the_agent_that_ran_the_task_most():
     model = _with_task_data(
         _SETUPS,

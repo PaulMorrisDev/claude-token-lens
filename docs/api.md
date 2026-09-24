@@ -611,10 +611,14 @@ the store) plus every user profile written under
 watcher's `_scan_profiles`), each tagged with which of the two it came
 from.
 
-`data`: `{"profiles": [{"id", "name", "source": "catalogue"|"user", "archetype": str|null, "for": [str, ...], "updated_at": str|null}, ...], "suggested_profile_id": str|null}`.
+`data`: `{"profiles": [{"id", "name", "source": "catalogue"|"user", "archetype": str|null, "for": [str, ...], "tasks": [str, ...], "updated_at": str|null}, ...], "suggested_profile_id": str|null}`.
 
 A catalogue entry's `archetype`/`for` come straight from its shipped
-TOML document; a user entry never carries them (the `profiles` table
+TOML document; `tasks` is `for` normalised to the capture task
+vocabulary (`profiles.catalogue.tasks_for`: `implementation` becomes
+`feature`, `bugfix`, `debug`; a way of running such as `fanout` covers
+none), the form `POST /api/whatif`'s `task` takes. A user entry never
+carries them (the `profiles` table
 only indexes `id`/`name`/`updated_at` — no `toml_path`, never
 API-returned). `updated_at` is `null` for a catalogue entry (nothing to
 timestamp). `suggested_profile_id` is the latest recorded baseline's own
@@ -639,7 +643,7 @@ names a profile may set (`profiles.schema.ENV_ALLOWLIST`).
 One profile's contents. `404` if `<id>` names neither a catalogue id
 nor an existing `<config_dir>/profiles/<id>.toml`.
 
-`data`: `{"id", "name", "source": "catalogue"|"user", "archetype", "for": [str, ...], "notes", "settings": {key: value}, "agents": {name: {key: value}}, "env": {NAME: value}, "setting_count": int}`.
+`data`: `{"id", "name", "source": "catalogue"|"user", "archetype", "for": [str, ...], "tasks": [str, ...], "notes", "settings": {key: value}, "agents": {name: {key: value}}, "env": {NAME: value}, "setting_count": int}`.
 `setting_count` counts settings, agent keys and environment variables
 together.
 
@@ -1133,7 +1137,11 @@ Body: `{"settings": {...}, "agents": {"<agent>": {...}}}`, checked with
 `profiles.schema.validate` (`400` on a bad key or value, or when the
 body, `settings` or `agents` is not a JSON object).
 
-Query: the windowing params above.
+Query: the windowing params above, and `task`: one kind of task from
+the capture vocabulary, or several comma-separated. Every row is then
+scaled to that task's share of the window (several tasks' shares add up),
+and a row with no per-task cost to scale by is not estimated. An unknown
+task is a `400`.
 
 `data`: `{"period", "rows": [{"key", "agent", "value", "saving_usd", "fidelity", "fidelity_text", "basis", "effect_text", "uncalibrated_usd", "uncalibrated_fidelity"}, ...], "total_usd", "total_text", "estimated", "not_estimated", "total_note"}`.
 `saving_usd` is `null` when a change is not estimated. `fidelity` says

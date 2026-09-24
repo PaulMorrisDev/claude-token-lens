@@ -204,6 +204,17 @@ def test_habits_digest_money_cards_follow_the_billing_mode() -> None:
     assert "amount.secondary" in body and "list-price equivalent" in body
 
 
+def test_a_profile_estimate_scales_by_its_normalised_tasks() -> None:
+    """F11: renderProfileEstimate sends the profile's ``tasks`` (its
+    ``for`` words normalised to the task vocabulary), never a raw ``for``
+    word such as "implementation", which /api/whatif rejects."""
+    app_js = _static_text("app.js")
+    fn_match = re.search(r"function renderProfileEstimate\([\s\S]*?\n  \}\n", app_js)
+    assert fn_match, "app.js no longer defines renderProfileEstimate"
+    body = fn_match.group(0)
+    assert "p.tasks" in body and "p.for" not in body
+
+
 @pytest.mark.parametrize("name", STATIC_FILES)
 def test_no_emoji_code_points(name: str) -> None:
     text = _static_text(name)

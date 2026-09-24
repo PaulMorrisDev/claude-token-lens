@@ -1356,6 +1356,7 @@ def make_handler(
                 "source": "catalogue",
                 "archetype": p.archetype,
                 "for": list(p.for_),
+                "tasks": list(profile_catalogue.tasks_for(p)),
                 "updated_at": None,
             }
             for p in profile_catalogue.list_profiles()
@@ -1367,6 +1368,7 @@ def make_handler(
                 "source": "user",
                 "archetype": None,
                 "for": [],
+                "tasks": [],
                 "updated_at": row["updated_at"],
             }
             for row in store.profiles()
@@ -1644,6 +1646,7 @@ def make_handler(
                 "source": "catalogue" if profile_id in profile_catalogue.CATALOGUE_IDS else "user",
                 "archetype": profile.archetype,
                 "for": list(profile.for_),
+                "tasks": list(profile_catalogue.tasks_for(profile)),
                 "notes": profile.notes,
                 "settings": dict(profile.settings),
                 "agents": {name: dict(keys) for name, keys in profile.agents.items()},
@@ -1993,11 +1996,15 @@ def make_handler(
         problems = profile_schema.validate({"id": "whatif", "settings": settings, "agents": agents})
         if problems:
             return _bad_request("; ".join(problems))
-        task = query.get("task") or None
-        if task is not None and task not in capture_catalogue.TAG_VOCAB["task"]:
+        # One task, or several comma-separated (a catalogue profile's
+        # ``for`` covers more than one; their shares add).
+        tasks = tuple(dict.fromkeys(t for t in (query.get("task") or "").split(",") if t))
+        unknown = [t for t in tasks if t not in capture_catalogue.TAG_VOCAB["task"]]
+        if unknown:
             return _bad_request(
-                f"unknown task {task!r}; expected one of: {', '.join(capture_catalogue.TAG_VOCAB['task'])}"
+                f"unknown task {unknown[0]!r}; expected one of: {', '.join(capture_catalogue.TAG_VOCAB['task'])}"
             )
+        task = tasks or None
         window, err = _window_query(query)
         if err is not None:
             return err

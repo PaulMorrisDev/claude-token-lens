@@ -4444,8 +4444,11 @@
       ((results[1] && results[1].settings) || []).concat((results[1] && results[1].agents) || []).forEach(function (lever) {
         labels[lever.key] = lever.label;
       });
-      var task = p.for && p.for.length ? p.for[0] : undefined;
-      var url = withWindow("/api/whatif") + (task ? "&task=" + encodeURIComponent(task) : "");
+      // F11: `tasks` is the profile's `for` words normalised to the task
+      // vocabulary (a catalogue word like "implementation" isn't one, and
+      // /api/whatif rejects it); several scale by their combined share.
+      var tasks = p.tasks && p.tasks.length ? p.tasks.join(",") : "";
+      var url = withWindow("/api/whatif") + (tasks ? "&task=" + encodeURIComponent(tasks) : "");
       postJson(url, { settings: p.settings || {}, agents: p.agents || {} }).then(function (res) {
         var data = res.body && res.body.ok === true ? res.body.data : null;
         if (!data || !data.rows.length) return;

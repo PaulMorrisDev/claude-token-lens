@@ -687,6 +687,7 @@ def test_profiles_listing_has_no_toml_path(server):
             "source": "user",
             "archetype": None,
             "for": [],
+            "tasks": [],
             "updated_at": user_entries[0]["updated_at"],
         }
     ]
@@ -1959,6 +1960,26 @@ def test_whatif_task_param_validates_and_scales_the_total(server):
     assert row["saving_usd"] is None and "no per-task cost" in row["basis"]
     # Whatever the rows say, the total is exactly their own sum (PROF-01).
     assert data["total_usd"] == sum(r["saving_usd"] for r in data["rows"] if r["saving_usd"] is not None)
+
+
+def test_whatif_task_param_takes_several_tasks(server):
+    # F11: a catalogue profile's normalised tasks arrive comma-separated.
+    resp, payload = server.post_json("/api/whatif?task=feature,bugfix", {"settings": {"model": "sonnet"}, "agents": {}})
+    assert resp.status == 200
+    resp, payload = server.post_json("/api/whatif?task=bugfix,implementation", {"settings": {"model": "sonnet"}})
+    assert resp.status == 400 and "'implementation'" in payload["error"]["message"]
+
+
+def test_a_catalogue_profile_carries_its_for_words_as_tasks(server):
+    # F11: the Profiles tab scales a profile's estimate by these; the raw
+    # `for` words ("implementation", ...) aren't tasks /api/whatif accepts.
+    expected = ["feature", "bugfix", "debug", "refactor", "test", "review"]
+    resp, body = server.get_json("/api/profiles/implementation-heavy")
+    assert resp.status == 200
+    assert body["data"]["tasks"] == expected
+    resp, body = server.get_json("/api/profiles")
+    entry = next(p for p in body["data"]["profiles"] if p["id"] == "implementation-heavy")
+    assert entry["tasks"] == expected
 
 
 def test_whatif_rejects_cross_site_posts(server):

@@ -34,6 +34,7 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
+from .. import capture_catalogue
 from .schema import Profile, load_profile
 
 __all__ = ["CATALOGUE_IDS", "FOR_TASKS", "list_profiles", "get", "suggest", "task_profile", "tasks_for"]
@@ -138,8 +139,15 @@ _STRUCTURAL_PURPOSES = ("local-llm-pipeline", "workflow-run", "agent-fanout")
 
 
 def tasks_for(profile: Profile) -> tuple[str, ...]:
-    """The kinds of task ``profile``'s ``for`` words cover, in order."""
-    return tuple(dict.fromkeys(task for word in profile.for_ for task in FOR_TASKS.get(word, ())))
+    """The kinds of task ``profile``'s ``for`` words cover, in order. A
+    word that already is a task (a saved task profile's ``for=[task]``)
+    stands for itself; a way of running (``fanout``, ...) covers none."""
+    vocab = capture_catalogue.TAG_VOCAB["task"]
+    return tuple(
+        dict.fromkeys(
+            task for word in profile.for_ for task in ((word,) if word in vocab else FOR_TASKS.get(word, ()))
+        )
+    )
 
 
 @lru_cache(maxsize=1)
