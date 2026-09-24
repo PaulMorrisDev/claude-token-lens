@@ -9,6 +9,7 @@ each saving can be worked out by hand.
 
 from __future__ import annotations
 
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace as NS
@@ -207,6 +208,27 @@ def test_a_new_task_on_old_context_is_worth_a_clear_unless_the_work_built_on_it(
     assert item.sources == ("reported", "inferred")
 
 
+def test_clear_between_names_how_often_you_cleared_explicitly():
+    """SIG-2: end_reasons' "clear" count is session-level evidence, added
+    to the evidence text alongside the message-level stale-context count
+    -- it never changes the saving figure or n."""
+    stale = habits.STALE_TOKENS
+    h = Habits(
+        cycles=[_cycle(tag=CaptureTag(shift="new"), stale_tokens=stale, stale_cost=0.4)],
+        end_reasons=Counter({"clear": 2, "quit": 1}),
+    )
+    item = _by_key(habits.playbook(h))["clear_between"]
+    assert item.saving == pytest.approx(0.4) and item.n == 1
+    assert "you cleared explicitly 2 times" in item.evidence
+
+
+def test_clear_between_says_nothing_about_clears_when_none_were_logged():
+    stale = habits.STALE_TOKENS
+    h = Habits(cycles=[_cycle(tag=CaptureTag(shift="new"), stale_tokens=stale, stale_cost=0.4)])
+    item = _by_key(habits.playbook(h))["clear_between"]
+    assert "cleared explicitly" not in item.evidence
+
+
 def test_vague_asks_are_compared_with_clear_ones_of_the_same_kind():
     clear = CaptureTag(task="bugfix", brief="clear")
     vague = CaptureTag(task="bugfix", brief="vague", missing=("repro", "files"))
@@ -243,7 +265,11 @@ def test_misses_you_reported_name_the_kind_of_work_and_what_slowed_it():
         Piece("met", 1.0, 1, "bugfix", (), (), "your feedback"),
     ])
     item = _by_key(habits.playbook(h))["outcome_misses"]
-    assert item.sources == ("your feedback",) and item.saving is None and item.n == 2
+    # P4 leftover: a missed/stopped piece has a real cost (Piece.cost), so
+    # this gets a conservative floor -- half the cost of the misses,
+    # not "not priced" -- unlike skill_unneeded, which has no per-call
+    # cost figure to floor at all.
+    assert item.sources == ("your feedback",) and item.saving == pytest.approx(3.0) and item.n == 2
     assert item.evidence == (
         "2 pieces of work missed their goal or were stopped, costing 3.0x one that met it; mostly refactor work; "
         "slowed most by: wrong approach or rework."
@@ -322,12 +348,17 @@ def test_the_digest_leads_with_the_habits_worth_most_then_what_met_goals_cost():
         pieces=[Piece("met", 3.0, 1, None, (), (), "your feedback"), Piece("missed", 1.0, 1, None, (), (), "x")],
     )
     rows = _rows(habits.digest_table(h))
-    assert [r["item"] for r in rows] == ["top_1", "top_2", "cost_per_met"]
+    # P4 leftover: outcome_misses is now priced (a floor on the misses'
+    # real Piece.cost), so it joins the top-3 ranking alongside tool_loops
+    # and short_reports instead of sitting out as unpriced.
+    assert [r["item"] for r in rows] == ["top_1", "top_2", "top_3", "cost_per_met"]
     assert rows[0]["what"] == habits.ITEMS["tool_loops"][1]
     # Savings are spread over the weeks the messages cover.
     assert rows[0]["value"] == pytest.approx(2.0 / h.span_weeks)
     assert rows[1]["what"] == habits.ITEMS["short_reports"][1]
-    assert rows[2]["value"] == 3.0 and rows[2]["detail"] == "1 of 2 pieces you gave feedback on"
+    assert rows[2]["what"] == habits.ITEMS["outcome_misses"][1]
+    assert rows[2]["value"] == pytest.approx(0.5 / h.span_weeks)
+    assert rows[3]["value"] == 3.0 and rows[3]["detail"] == "1 of 2 pieces you gave feedback on"
 
 
 def test_the_playbook_table_carries_the_example_the_basis_and_the_trend():
@@ -423,6 +454,23 @@ def test_allow_routine_states_its_security_trade_off_and_a_permissions_undo():
     convenience one, and that /permissions is how to undo it."""
     assert "security" in habits.TRADE_OFFS["allow_routine"].lower()
     assert "/permissions" in habits.UNDO["allow_routine"]
+
+
+def test_allow_routine_names_idle_waits_as_evidence_without_pricing_them():
+    """SIG-2: waits["idle"] rides along as evidence text -- it's lost
+    time, not spend, so it never enters the saving figure (which stays
+    keyed only to blocked_cost, same as before this signal existed)."""
+    h = Habits(permission_prompts=Counter({"Bash": 5, "Edit": 1}), waits=Counter({"idle": 4, "quota": 2}))
+    item = _by_key(habits.playbook(h))["allow_routine"]
+    assert item.saving is None  # no blocked cycles -> nothing priced
+    assert "Claude sat waiting for you 4 times" in item.evidence
+    assert "Claude asked for permission 6 times" in item.evidence
+
+
+def test_allow_routine_says_nothing_about_idle_waits_when_none_were_logged():
+    h = Habits(permission_prompts=Counter({"Bash": 5}))
+    item = _by_key(habits.playbook(h))["allow_routine"]
+    assert "waiting for you" not in item.evidence
 
 
 def test_brief_templates_start_from_the_checklist_and_put_what_you_leave_out_first():
@@ -537,6 +585,26 @@ def test_collect_turns_tags_ratings_and_agent_reports_into_facts(tmp_path, prici
     assert (agent.agent_type, agent.result, agent.fit, agent.rules, agent.level, agent.task) == (
         "Explore", "done", "larger", None, "hard", "bugfix"
     )
+
+
+def test_collect_folds_in_the_free_signals_by_session():
+    """SIG-2: end_reasons/waits/permission_prompts are summed across every
+    session's ``SessionSignals`` -- one end_reason count per session that
+    logged one, waits and permission prompts added up across all of
+    them."""
+    from claude_token_lens import signals
+
+    session_signals = {
+        "s1": signals.SessionSignals(
+            end_reason="clear", waits={"idle": 2, "quota": 1}, permission_prompts={"Bash": 3},
+        ),
+        "s2": signals.SessionSignals(end_reason="clear", waits={"idle": 1}),
+        "s3": signals.SessionSignals(),  # no SessionEnd logged -> not counted
+    }
+    h = habits.collect(NS(sessions=[]), None, signals=session_signals)
+    assert h.end_reasons == {"clear": 2}
+    assert h.waits == {"idle": 3, "quota": 1}
+    assert h.permission_prompts == {"Bash": 3}
 
 
 def test_the_agents_table_feeds_the_model_veto(tmp_path, pricing):

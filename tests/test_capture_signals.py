@@ -1,9 +1,12 @@
 """The free signals metrics capture logs: ``hooks/capture-hook.py`` on
-SessionEnd, Notification and PermissionRequest, run as Claude Code runs
-it, and ``signals.py`` reading them back. A line holds the time, a
-salted hash of the session id and one word or tool name; never a
-message, a tool's input or a path. Nothing is logged while the metric is
-off, without Token Lens's salt, or for a session capture skips.
+SessionEnd, Notification, PermissionRequest, Stop and StopFailure, run
+as Claude Code runs it, and ``signals.py`` reading them back. A line
+holds the time, a salted hash of the session id and one word, tool name
+or (SIG-4, written by ``statusline.py`` instead) a plain number; never a
+message, a tool's input, a path, ``last_assistant_message``,
+``error_details`` or a cron's ``prompt``. Nothing is logged while the
+metric is off, without Token Lens's salt, or for a session capture
+skips.
 """
 
 from __future__ import annotations
@@ -20,7 +23,7 @@ from claude_token_lens.service.contracts import ServeOptions
 from claude_token_lens.service.store import Store
 from claude_token_lens.service.watcher import FileWatcher
 
-from test_capture_hook import HOOK, _config, _run, _session_id
+from test_capture_hook import CATALOGUE, HOOK, _config, _run, _session_id
 
 NOW = datetime(2026, 9, 24, 6, 0, tzinfo=timezone.utc)
 SECRET = "C:/Users/someone/secret-project/.env"
@@ -72,6 +75,44 @@ def _perm(session_id="s1", **extra) -> dict:
     }
 
 
+def _turn(session_id="s1", **extra) -> dict:
+    return {
+        "session_id": session_id,
+        "hook_event_name": "Stop",
+        "stop_hook_active": False,
+        "cwd": "/work/app",
+        "transcript_path": SECRET,
+        "last_assistant_message": "the secret final answer",
+        "background_tasks": [{"id": "t1", "command": f"cat {SECRET}"}],
+        "session_crons": [{"id": "c1", "prompt": "a private scheduled prompt"}],
+        **extra,
+    }
+
+
+def _fail(session_id="s1", **extra) -> dict:
+    return {
+        "session_id": session_id,
+        "hook_event_name": "StopFailure",
+        "error": "rate_limit",
+        "error_details": "retry after 30s, account acct_secret_123",
+        "last_assistant_message": "API Error: Rate limit reached",
+        "cwd": "/work/app",
+        **extra,
+    }
+
+
+def _turn_id(pct: int, now: datetime, *, inside: bool, prefix: str = "turn") -> str:
+    import hashlib
+
+    for n in range(2000):
+        sid = f"{prefix}-{n}"
+        key = f"{sid}:{now.isoformat()}"
+        bucket = int(hashlib.sha256(key.encode("utf-8")).hexdigest()[:8], 16) % 100
+        if (bucket < pct) == inside:
+            return sid
+    raise AssertionError("no session id found")
+
+
 def _log(config_dir: Path, payload: dict) -> None:
     assert _run(config_dir, payload) == (0, "", "")  # never prints, so never steers Claude Code
 
@@ -117,6 +158,60 @@ def test_anything_outside_the_word_lists_is_logged_as_other(tmp_path, payload, f
     config_dir = _setup(tmp_path)
     _log(config_dir, payload)
     assert _lines(config_dir)[0][field] == value
+
+
+def test_stop_and_stop_failure_lines_are_closed_words(tmp_path):
+    config_dir = _setup(tmp_path)
+    config = {"capture": {"level": "free"}}
+    salt = (config_dir / "salt").read_bytes()
+    turn_id = _turn_id(HOOK._TURN_SAMPLE_PCT, NOW, inside=True)  # SIG-3: force the sample in
+    turn_record = HOOK.signal_for(_turn(turn_id), config, CATALOGUE, salt, NOW)
+    assert turn_record == {
+        "ts": "2026-09-24T06:00:00Z", "sid": signals.session_hash(salt, turn_id), "e": "turn", "state": "normal",
+    }
+    fail_record = HOOK.signal_for(_fail(), config, CATALOGUE, salt, NOW)
+    assert fail_record == {
+        "ts": "2026-09-24T06:00:00Z", "sid": signals.session_hash(salt, "s1"), "e": "fail", "error": "rate_limit",
+    }
+    reentrant_record = HOOK.signal_for(_turn(turn_id, stop_hook_active=True), config, CATALOGUE, salt, NOW)
+    assert reentrant_record["state"] == "reentrant"
+
+
+def test_stop_never_leaks_the_final_reply_error_details_or_a_cron_prompt(tmp_path):
+    config_dir = _setup(tmp_path)
+    config = {"capture": {"level": "free"}}
+    salt = (config_dir / "salt").read_bytes()
+    turn_id = _turn_id(HOOK._TURN_SAMPLE_PCT, NOW, inside=True)
+    for payload in (_turn(turn_id), _fail()):
+        record = HOOK.signal_for(payload, config, CATALOGUE, salt, NOW)
+        assert record is not None
+        text = json.dumps(record)
+        assert "secret" not in text and "private" not in text and "acct_secret" not in text
+        assert "last_assistant_message" not in record and "error_details" not in record and "prompt" not in record
+
+
+@pytest.mark.parametrize("payload, field, value", [
+    (_fail(error="overloaded"), "error", "overloaded"),
+    (_fail(error="cloud_credential_error"), "error", "cloud_credential_error"),
+    (_fail(error="not_a_real_kind"), "error", "unknown"),
+    (_fail(error=None), "error", "unknown"),
+])
+def test_stop_failure_error_kind_is_a_closed_word(tmp_path, payload, field, value):
+    config_dir = _setup(tmp_path)
+    _log(config_dir, payload)
+    assert _lines(config_dir)[0][field] == value
+
+
+def test_stop_is_sampled_independently_of_the_session(tmp_path):
+    config_dir = _setup(tmp_path)
+    config = {"capture": {"level": "free"}}
+    salt = (config_dir / "salt").read_bytes()
+    inside = _turn_id(10, NOW, inside=True)
+    outside = _turn_id(10, NOW, inside=False)
+    assert HOOK.signal_for(_turn(inside), config, CATALOGUE, salt, NOW) is not None
+    assert HOOK.signal_for(_turn(outside), config, CATALOGUE, salt, NOW) is None
+    # StopFailure is never sampled: every one of these logs regardless.
+    assert HOOK.signal_for(_fail(outside), config, CATALOGUE, salt, NOW) is not None
 
 
 def test_a_subagent_call_is_marked(tmp_path):
@@ -226,6 +321,47 @@ def test_by_session_joins_on_the_salted_hash(tmp_path):
             end_reason="prompt_input_exit", waits={"permission": 2}, permission_prompts={"Bash": 1}, subagent_events=1
         )
     }
+
+
+def test_by_session_counts_turn_states_and_failures(tmp_path):
+    salt = bytes(range(32))
+    sid = signals.session_hash(salt, "sess-1")
+    _write(tmp_path, "2026-09.jsonl", [
+        {"ts": "2026-09-01T10:00:00Z", "sid": sid, "e": "turn", "state": "normal"},
+        {"ts": "2026-09-01T10:01:00Z", "sid": sid, "e": "turn", "state": "reentrant"},
+        {"ts": "2026-09-01T10:02:00Z", "sid": sid, "e": "turn", "state": "normal"},
+        {"ts": "2026-09-01T10:03:00Z", "sid": sid, "e": "fail", "error": "rate_limit"},
+    ])
+    joined = signals.by_session(signals.load(tmp_path), ["sess-1"], salt)
+    assert joined["sess-1"].turn_states == {"normal": 2, "reentrant": 1}
+    assert joined["sess-1"].failures == {"rate_limit": 1}
+
+
+def test_by_session_keeps_the_latest_cost_and_recache_sample(tmp_path):
+    salt = bytes(range(32))
+    sid = signals.session_hash(salt, "sess-1")
+    _write(tmp_path, "2026-09.jsonl", [
+        {"ts": "2026-09-01T10:00:00Z", "sid": sid, "e": "cost", "usd": 1.2},
+        {"ts": "2026-09-01T10:01:00Z", "sid": sid, "e": "recache", "tokens": 500},
+        {"ts": "2026-09-01T10:02:00Z", "sid": sid, "e": "cost", "usd": 1.5},
+    ])
+    joined = signals.by_session(signals.load(tmp_path), ["sess-1"], salt)
+    assert joined["sess-1"].statusline_cost_usd == 1.5
+    assert joined["sess-1"].recache_tokens == 500
+
+
+def test_cost_and_recache_values_must_be_plain_non_negative_numbers(tmp_path):
+    good = {"ts": "2026-09-01T10:00:00Z", "sid": "0123456789abcdef", "e": "cost", "usd": 2.5}
+    _write(tmp_path, "2026-09.jsonl", [
+        good,
+        {**good, "usd": -1},
+        {**good, "usd": "2.5"},
+        {**good, "usd": True},
+        {**good, "usd": 10_000_000},
+        {**good, "e": "recache", "tokens": 12345},
+    ])
+    loaded = signals.load(tmp_path)
+    assert [(s.event, s.value) for s in loaded] == [("cost", 2.5), ("recache", 12345)]
 
 
 def test_prune_deletes_months_wholly_past_retention(tmp_path):

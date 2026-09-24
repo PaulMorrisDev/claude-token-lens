@@ -23,8 +23,9 @@ Each :meth:`FileWatcher.run_once` tick:
    session's classification/cost totals via ``Store.upsert_session``.
 4. Removes rows for files no longer on disk (``Store.remove_missing``),
    prunes old sessions when ``options.retention_days`` is set, and always
-   prunes old capture signal files (``signals.prune``) and old
-   ``capture-log.jsonl`` records (``config.prune_capture_log``) -- at
+   prunes old capture signal files (``signals.prune``), old
+   ``capture-log.jsonl`` records (``config.prune_capture_log``) and old
+   ``usage-log.csv`` rows (SIG-5: ``log_usage.prune_usage_log``) -- at
    ``options.retention_days`` when set, else
    ``config.SIGNAL_RETENTION_DEFAULT_DAYS`` (SEC-P8/G7: this telemetry
    must never grow forever just because nobody set a retention window,
@@ -84,6 +85,7 @@ from ..profiles import catalogue as profile_catalogue, schema as profile_schema
 from ..report import _dominant_transcript_model, _extract_workstyle_features
 from .. import signals as signals_mod
 from .. import snapshots as snapshots_mod
+from ..tools import log_usage as log_usage_mod
 from .contracts import ServeOptions, WatcherState, WatcherStats
 from .store import GLOBAL_PROJECT_SLUG, Store, decode_digest_blob
 
@@ -571,6 +573,13 @@ class FileWatcher:
         signal_retention = self.options.retention_days or config_mod.SIGNAL_RETENTION_DEFAULT_DAYS
         signals_mod.prune(self.options.config_dir, signal_retention)
         config_mod.prune_capture_log(self.options.config_dir, signal_retention)
+
+        # SIG-5: usage-log.csv is written unconditionally on every
+        # statusline refresh, capture on or off -- same "never left to
+        # grow forever" reasoning as the two lines above, so it's pruned
+        # on the same schedule rather than needing its own opt-in.
+        usage_log_path = log_usage_mod.default_usage_log_path(self.options.config_dir)
+        log_usage_mod.prune_usage_log(usage_log_path, signal_retention)
 
         # EST-P5: predictions.jsonl's own 90/400-day expiry (unseen vs.
         # judged) is fixed, unlike the rest of this module's retention --

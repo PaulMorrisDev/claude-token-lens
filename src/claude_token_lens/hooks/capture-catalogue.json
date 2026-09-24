@@ -5,7 +5,8 @@
   "free": [
    "session_end",
    "waits",
-   "permissions"
+   "permissions",
+   "turn_signals"
   ],
   "essentials": [
    "task",
@@ -16,7 +17,8 @@
    "retry",
    "session_end",
    "waits",
-   "permissions"
+   "permissions",
+   "turn_signals"
   ],
   "standard": [
    "task",
@@ -36,7 +38,8 @@
    "agent_brief",
    "session_end",
    "waits",
-   "permissions"
+   "permissions",
+   "turn_signals"
   ],
   "deep": [
    "task",
@@ -61,7 +64,8 @@
    "web",
    "session_end",
    "waits",
-   "permissions"
+   "permissions",
+   "turn_signals"
   ]
  },
  "feedback_ids": [
@@ -331,6 +335,17 @@
    "tool_note": ""
   },
   {
+   "id": "turn_signals",
+   "group": "free",
+   "requires": [],
+   "main_line": "",
+   "main_extra": "",
+   "extra_before_tag": false,
+   "sub_line": "",
+   "sub_extra": "",
+   "tool_note": ""
+  },
+  {
    "id": "feedback_reminder",
    "group": "feedback",
    "requires": [],
@@ -362,7 +377,9 @@
  "signal_events": {
   "SessionEnd": "session_end",
   "Notification": "waits",
-  "PermissionRequest": "permissions"
+  "PermissionRequest": "permissions",
+  "Stop": "turn_signals",
+  "StopFailure": "turn_signals"
  },
  "session_end_reasons": [
   "clear",
@@ -379,6 +396,24 @@
   "agent",
   "quota",
   "other"
+ ],
+ "turn_states": [
+  "normal",
+  "reentrant"
+ ],
+ "stop_failure_errors": [
+  "rate_limit",
+  "overloaded",
+  "authentication_failed",
+  "oauth_org_not_allowed",
+  "account_on_hold",
+  "billing_error",
+  "invalid_request",
+  "model_not_found",
+  "server_error",
+  "max_output_tokens",
+  "cloud_credential_error",
+  "unknown"
  ],
  "signals_dir": "signals",
  "web_tools": [

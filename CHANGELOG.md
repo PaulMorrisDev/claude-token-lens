@@ -295,6 +295,50 @@ whether it was Token Lens's own (below).
   The playbook shows the 5 habits worth the most as cards up front; the
   rest collapse into a "more habits worth trying" section instead of a
   long, uncapped wall of cards.
+- **`Stop` and `StopFailure` hook calls now add a `turn_signals` line**
+  (how the turn ended, its API-error kind, closed words only, `Stop`
+  sampled and `StopFailure` never) to the same signals log the
+  session-end and wait metrics already use, cross-checked in `limits.py`
+  against what the transcript itself shows for the same session; habit
+  calibration and limit detection read them the same way they already
+  read the other free signals.
+- **The statusline now writes its own local ground-truth line**
+  (salted session id, running cost total or cache-recache figure,
+  numbers only) at most once every 60 seconds per session, whenever
+  metrics capture is on. `reconcile()` uses it — or, when a session
+  already has Claude Code's own `cost-state` line, that instead — to add
+  a `cost_ground_truth_gap` table: this tool's local cost against
+  Claude Code's own figure, in billing-mode units, for each session and
+  over the window. Once at least 10 sessions have a computable gap and
+  the median is over 5%, a note says some spend isn't showing up in the
+  transcripts (an auxiliary call this tool can't see). Reading this
+  ground truth back never creates the salt file if one doesn't already
+  exist.
+- **The usage-log CSV's dead 9th column** (written as
+  `context_window_autocompact_threshold`, never actually populated with
+  autocompact data) **now carries the cache-recache figure** the
+  statusline already had, under its real name,
+  `context_window_cache_read_tokens`; every reader was updated together.
+  The log is also now pruned on the configured retention schedule
+  (`serve`'s watcher tick and `capture prune`, next to the signals and
+  capture-log prunes it was missing from), and re-reading it for
+  dedupe on each statusline refresh now scans only the final 64KB
+  instead of the whole, ever-growing file.
+- **The statusline's own coaching hint** (near a context-window cap, a
+  stuck wait, an active rate limit) **now has a per-kind cooldown with
+  hysteresis** so it doesn't flicker between messages turn to turn, is
+  capped at 60 characters, respects an `until` already in force, and
+  shows the `/tl-feedback` nudge at most once per session; the
+  transcript reads behind it are all bounded tail reads, not
+  whole-file.
+- **The dashboard's Quick actions, Impact and Backtest tabs now show a
+  plain "not enough data yet" placeholder — with the actual count
+  ("N of need so far") once one is available — instead of an empty
+  panel or a bare prose sentence**, and `/api/impact`'s per-change rows
+  carry a structured `gate` (`{"reason": "min_sessions", "have",
+  "need"}`, or `null` once there's enough) alongside the existing prose
+  verdict, so the UI doesn't have to parse a sentence to decide whether
+  to show a count.
 
 ### Fixed
 
@@ -546,6 +590,36 @@ whether it was Token Lens's own (below).
   by the capture hook**, so it never got the subagent capture note
   after a compaction. Subagent detection now also matches on the
   transcript's own filename shape, not only its parent directory name.
+- **A keyboard user tabbing onto a dashboard panel lost the focus
+  ring** (`.panel:focus-visible` had turned outlines off entirely); it's
+  back, offset so it doesn't crowd the panel's own border.
+- **The lever grid could overflow a narrow phone screen** — its columns
+  had a hard 320px minimum wider than some phones' own viewport. The
+  minimum is now `min(320px, 100%)`, so a column shrinks to fit instead
+  of forcing horizontal scroll; the advanced-detail panel's raw diff
+  text now wraps for the same reason instead of running off the edge.
+- **`.rec-severity-action`/`.rec-severity-advice`'s left-border colour
+  had no dark-mode override**, unlike every other severity colour on
+  the same list, so both looked identical (and hard to read) in dark
+  mode; they now have one.
+- **Timeline markers were told apart only by colour** — recache,
+  compaction, spawn, human-turn, limit-hit, limit-resume and
+  agent-terminated each now draw a distinct shape (circle, square,
+  triangle up/down, diamond, plus, x) as well, and the legend's swatches
+  match.
+- **The "Copied" label on a code block's copy button showed even when
+  the clipboard write actually failed** (no `navigator.clipboard`, or a
+  denied permission); it now only claims success once the copy really
+  went through, and says so when it didn't.
+- **The health and capture banners, and their live regions, rebuilt
+  themselves — and could re-announce identical text to a screen
+  reader — on every refresh even when nothing in them had changed.**
+  Both now skip the rebuild when their content signature hasn't moved.
+  The capture banner's "Hide" was a permanent, one-way dismissal; it's
+  now a 7-day snooze (reappears after a week, same as the notes list's
+  new "Dismiss for a week"), and a session with an old permanent
+  dismissal already on disk is treated as merely expired rather than
+  needing a migration.
 
 ### P9a — Parser signals: task/structured-output events, a new cache
     signal, cost-state reconciliation, image/document sizing

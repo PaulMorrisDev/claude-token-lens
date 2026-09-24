@@ -436,7 +436,7 @@ def test_statusline_appends_context_window_trailing_columns(tmp_path):
             "used_tokens": 143_000,
             "context_window_size": 200_000,
             "used_percentage": 71.5,
-            "autoCompactThreshold": 155_000,
+            "current_usage": {"cache_read_input_tokens": 120_000},
         },
     }
     statusline._append_context_window_row(csv_path, payload, __import__("datetime").datetime(2026, 9, 18, tzinfo=__import__("datetime").timezone.utc))
@@ -448,7 +448,7 @@ def test_statusline_appends_context_window_trailing_columns(tmp_path):
     assert row["context_window_used_tokens"] == 143_000
     assert row["context_window_size"] == 200_000
     assert row["context_window_used_percentage"] == 71.5
-    assert row["context_window_autocompact_threshold"] == 155_000
+    assert row["context_window_cache_read_tokens"] == 120_000
 
 
 def test_statusline_context_window_row_dedupes_identical_repeat(tmp_path):

@@ -25,6 +25,15 @@ tolerates a couple of likely field-name variants (``utilization``/
 un-published shape, not a restatement of a documented contract, and
 should be corrected against a real pasted sample the first time one is
 available.
+
+SIG-5: the log is written unconditionally on every statusline refresh
+(capture opt-in or not), so left alone it grows forever. Two fixes for
+that: :func:`_read_existing_keys` -- called on every :func:`append_rows`
+-- now scans only a bounded tail of the file rather than loading it
+whole (see its own docstring), and :func:`prune_usage_log` drops rows
+older than a retention window, wired into ``serve``'s watcher tick and
+the ``capture prune`` command next to ``signals.prune`` and
+``config.prune_capture_log``.
 """
 
 from __future__ import annotations
@@ -34,7 +43,7 @@ import csv
 import json
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from .. import model as model_mod
@@ -45,6 +54,12 @@ WINDOW_NAMES = ("five_hour", "seven_day", "spend_limit")
 
 #: CSV columns, in file order, per the WP6 brief.
 CSV_FIELDS = ("logged_at", "session_id", "window", "used_percentage", "resets_at", "source")
+
+#: SIG-5: how far back :func:`_read_existing_keys` scans for its dedupe
+#: set, instead of loading the whole (unboundedly growing) log on every
+#: single ``append_rows`` call -- the same tail-bytes figure and
+#: reasoning as ``statusline._last_context_window_key``.
+_TAIL_BYTES = 64 * 1024
 
 _USED_PERCENTAGE_KEYS = ("used_percentage", "usedPercentage", "utilization", "percent_used")
 _RESETS_AT_KEYS = ("resets_at", "resetsAt", "reset_at")
@@ -235,13 +250,38 @@ def _dedupe_key(row: dict) -> tuple:
 
 
 def _read_existing_keys(csv_path: Path) -> set[tuple]:
+    """The dedupe keys already on file, scanned from only the final
+    :data:`_TAIL_BYTES` of ``csv_path`` rather than the whole thing.
+
+    SIG-5: this used to load the entire log into memory on every single
+    :func:`append_rows` call -- i.e. every statusline refresh, against a
+    file that only ever grows -- the same unbounded-read problem
+    ``statusline._last_context_window_key`` had (see its docstring for
+    the identical fix and reasoning). A window's dedupe key
+    (``session_id``, ``window``, ``resets_at``, ``used_percentage``)
+    only changes when that window's ``resets_at`` rolls over, so the
+    same key repeats on nearly every refresh in between -- a bounded
+    tail almost always still contains it; the rare miss just means one
+    row that could have been deduped gets written again, a bounded cost
+    for a diagnostic log, not a correctness bug.
+    """
     if not csv_path.exists():
         return set()
+    try:
+        size = csv_path.stat().st_size
+        with open(csv_path, "rb") as fh:
+            fh.seek(max(0, size - _TAIL_BYTES))
+            tail = fh.read()
+    except OSError:
+        return set()
+
+    text = tail.decode("utf-8", errors="replace")
+    reader = csv.DictReader(text.split("\n"), fieldnames=CSV_FIELDS, restkey="_extra")
     keys: set[tuple] = set()
-    with open(csv_path, "r", encoding="utf-8", newline="") as fh:
-        reader = csv.DictReader(fh)
-        for row in reader:
-            keys.add(_dedupe_key(row))
+    for row in reader:
+        if row.get("logged_at") == "logged_at":
+            continue  # the header row, if it landed inside the tail window
+        keys.add(_dedupe_key(row))
     return keys
 
 
@@ -325,6 +365,68 @@ def load_usage_log(csv_path: str | Path) -> list[dict]:
                     pass
             rows.append(row)
     return rows
+
+
+def prune_usage_log(csv_path: str | Path, retention_days: int, now: datetime | None = None) -> int:
+    """Drop every ``usage-log.csv`` row older than ``retention_days`` by
+    its own ``logged_at`` column. Returns how many rows were removed; a
+    missing file, or one with nothing to remove, is a no-op returning 0.
+
+    SIG-5: unlike the capture signal files and ``capture-log.jsonl``
+    (``signals.prune`` / ``config.prune_capture_log``, both run on every
+    ``serve`` tick regardless of capture opt-in), this file was never
+    pruned at all -- despite being written unconditionally on every
+    statusline refresh, capture on or off (``statusline.main`` appends to
+    it via both :func:`append_rows` and its own
+    ``_append_context_window_row``). Mirrors
+    :func:`~claude_token_lens.config.prune_capture_log`'s shape: keep the
+    header line as-is (whatever width it happens to be -- this function
+    doesn't care how many trailing ground-truth columns a row carries,
+    only its first column), keep any row whose ``logged_at`` parses and
+    falls within the window, drop the rest, rewrite atomically via a
+    temp file plus ``os.replace`` (the same pattern
+    ``statusline._ensure_ground_truth_header`` already uses for this same
+    file). A row whose ``logged_at`` is missing or doesn't parse is
+    dropped along with the rest -- never written by this module or
+    ``statusline.py``, but a prune pass is also a chance to repair the
+    file, not just trim it.
+    """
+    csv_path = Path(csv_path)
+    try:
+        with open(csv_path, "r", encoding="utf-8", newline="") as fh:
+            lines = fh.read().splitlines()
+    except OSError:
+        return 0
+    if len(lines) < 2:
+        return 0
+
+    header, body = lines[0], lines[1:]
+    cutoff = (now or datetime.now(timezone.utc)) - timedelta(days=retention_days)
+    kept = []
+    for line in body:
+        row = next(csv.reader([line]), None)
+        if not row:
+            continue
+        try:
+            ts = datetime.fromisoformat(row[0].replace("Z", "+00:00"))
+        except (ValueError, IndexError):
+            continue
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        if ts >= cutoff:
+            kept.append(line)
+
+    removed = len(body) - len(kept)
+    if removed == 0:
+        return 0
+
+    tmp_path = csv_path.with_name(f"{csv_path.name}.tmp-{os.getpid()}")
+    with open(tmp_path, "w", encoding="utf-8", newline="") as fh:
+        fh.write(header + "\n")
+        for line in kept:
+            fh.write(line + "\n")
+    os.replace(tmp_path, csv_path)
+    return removed
 
 
 # -- report section: latest-per-window + optional regression --------------
@@ -555,6 +657,7 @@ __all__ = [
     "parse_usage_json",
     "append_rows",
     "load_usage_log",
+    "prune_usage_log",
     "build_section",
     "main",
 ]

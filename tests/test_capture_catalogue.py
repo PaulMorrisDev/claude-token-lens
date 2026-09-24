@@ -153,9 +153,12 @@ def test_hook_entries_follow_the_metrics():
         ("capture-hook.py", "SessionEnd", "", False),
         ("capture-hook.py", "Notification", "", True),
         ("capture-hook.py", "PermissionRequest", "", True),
+        ("capture-hook.py", "Stop", "", True),
+        ("capture-hook.py", "StopFailure", "", True),
     )
     assert cat.hook_specs(cat.level_metrics("free")) == signals
     assert cat.hook_specs(["waits"]) == (signals[1],)
+    assert cat.hook_specs(["turn_signals"]) == signals[3:]
     assert cat.hook_specs(cat.level_metrics("essentials")) == (
         ("capture-hook.py", "SessionStart", "startup|clear|compact", False),
         ("capture-hook.py", "SubagentStart", "", False),
@@ -169,12 +172,16 @@ def test_hook_entries_follow_the_metrics():
 
 def test_only_signals_the_transcripts_lack_get_a_hook():
     """The transcripts already record instruction files, commands and
-    skills, task lists and API errors, so those are always measured;
-    only why sessions end, waits and permission prompts need a hook."""
+    skills, task lists and API errors, so those are always measured; only
+    why sessions end, waits, permission prompts and how a turn ends need
+    a hook (the last one -- ``turn_signals`` -- an independent, hook-level
+    cross-check next to the transcript's own API-error record, not a
+    replacement for it: ``stop_failure`` stays hookless, derived)."""
     free = {m.id: m for m in cat.METRICS if m.group == "free"}
     assert set(free) == set(cat.SIGNAL_EVENTS.values())
     for event, metric_id in cat.SIGNAL_EVENTS.items():
-        assert free[metric_id].hooks == (event,) and not cat.asks_claude(metric_id)
+        assert event in free[metric_id].hooks and not cat.asks_claude(metric_id)
+    assert cat.METRICS_BY_ID["turn_signals"].hooks == ("Stop", "StopFailure")
     for metric_id in ("instructions_loaded", "prompt_expansion", "tasks", "stop_failure"):
         assert cat.METRICS_BY_ID[metric_id].group == "derived" and not cat.METRICS_BY_ID[metric_id].hooks
 

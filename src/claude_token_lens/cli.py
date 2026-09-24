@@ -667,8 +667,8 @@ def _add_capture_args(sub: argparse.ArgumentParser) -> None:
         "the chosen metrics need to settings.json); remove (switch off and take the entries out); "
         "feedback on|off (the /tl-feedback skill and its status-line reminder); "
         "brief on|off (the /tl-brief skill, which checks a request against its checklist); "
-        "prune (delete signal files and capture-log.jsonl records older than retention_days, "
-        f"or {SIGNAL_RETENTION_DEFAULT_DAYS} days by default)",
+        "prune (delete signal files, capture-log.jsonl records and usage-log.csv rows older than "
+        f"retention_days, or {SIGNAL_RETENTION_DEFAULT_DAYS} days by default)",
     )
     sub.add_argument(
         "values",
@@ -1895,6 +1895,7 @@ def _cmd_compare(args: argparse.Namespace) -> int:
 def _cmd_reconcile(args: argparse.Namespace) -> int:
     from . import reconcile as reconcile_mod
     from .discovery import _resolve_window
+    from .report import _report_units
 
     config, rates, config_dir, err = _load_config_and_pricing(args)
     if err is not None:
@@ -1932,6 +1933,8 @@ def _cmd_reconcile(args: argparse.Namespace) -> int:
         by=by,
         since=since,
         until=until,
+        config_dir=config_dir,
+        units=_report_units(corpus, rates, config, config_dir),
     )
 
     coverage = PricingCoverage()
@@ -3387,23 +3390,30 @@ def _capture_prune(
     config_dir: Path, *, retention_days: int | None, dry_run: bool, stdout, now: datetime
 ) -> int:
     """``capture prune``: delete capture signal files
-    (:func:`~claude_token_lens.signals.prune`) and old
+    (:func:`~claude_token_lens.signals.prune`), old
     ``capture-log.jsonl`` records (:func:`~claude_token_lens.config.
-    prune_capture_log`) older than ``retention_days`` (or
-    :data:`SIGNAL_RETENTION_DEFAULT_DAYS` when unset) -- the same
-    telemetry housekeeping ``serve``'s watcher already does on every tick
-    (SEC-P8/G7), offered here for someone who isn't running the service,
-    or wants to run it once by hand or on their own schedule."""
+    prune_capture_log`) and old ``usage-log.csv`` rows (SIG-5:
+    :func:`~claude_token_lens.tools.log_usage.prune_usage_log`) older
+    than ``retention_days`` (or :data:`SIGNAL_RETENTION_DEFAULT_DAYS`
+    when unset) -- the same telemetry housekeeping ``serve``'s watcher
+    already does on every tick (SEC-P8/G7), offered here for someone who
+    isn't running the service, or wants to run it once by hand or on
+    their own schedule."""
     days = retention_days or SIGNAL_RETENTION_DEFAULT_DAYS
     if dry_run:
         stdout.write(
-            f"Dry run: nothing pruned. Run 'claude-token-lens capture prune' to delete signal files and "
-            f"capture-log.jsonl records older than {days} days.\n"
+            f"Dry run: nothing pruned. Run 'claude-token-lens capture prune' to delete signal files, "
+            f"capture-log.jsonl records and usage-log.csv rows older than {days} days.\n"
         )
         return 0
     signals_removed = signals_mod.prune(config_dir, days, now=now)
     log_removed = prune_capture_log(config_dir, days, now=now)
-    stdout.write(f"Pruned {signals_removed} signal file(s) and {log_removed} capture-log record(s) older than {days} days.\n")
+    usage_log_path = log_usage_mod.default_usage_log_path(config_dir)
+    usage_rows_removed = log_usage_mod.prune_usage_log(usage_log_path, days, now=now)
+    stdout.write(
+        f"Pruned {signals_removed} signal file(s), {log_removed} capture-log record(s) and "
+        f"{usage_rows_removed} usage-log row(s) older than {days} days.\n"
+    )
     return 0
 
 
@@ -3523,8 +3533,9 @@ def _cmd_capture(args: argparse.Namespace, *, stdin=None, stdout=None, now: date
     and its reminders on or off and adds or removes the skill file, after
     showing it and asking; enabling or disabling ``feedback_skill`` does
     the same. ``brief on|off`` does that for the ``/tl-brief`` skill (the
-    ``brief_templates`` toggle). ``prune`` deletes signal files and
-    ``capture-log.jsonl`` records older than ``retention_days`` (or
+    ``brief_templates`` toggle). ``prune`` deletes signal files,
+    ``capture-log.jsonl`` records and ``usage-log.csv`` rows older than
+    ``retention_days`` (or
     :data:`~claude_token_lens.config.SIGNAL_RETENTION_DEFAULT_DAYS` when
     unset) -- the same housekeeping ``serve``'s watcher already does on
     every tick (SEC-P8/G7), offered here for someone not running the

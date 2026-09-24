@@ -498,6 +498,19 @@ def _find_section(model, key: str):
     return None
 
 
+def _min_sessions_gate(before: int, after: int, need: int) -> dict | None:
+    """P4 leftover: a structured ``{reason, have, need}`` object for a
+    minimum-sample-size gate, ``None`` once ``need`` is met on both
+    sides -- the emptyState() counterpart to a route's own prose verdict
+    (e.g. ``impact.compare``'s ``verdict``/``enough``), which stays as
+    is; this is additive, read only from data the caller already built,
+    never a substitute for it."""
+    have = min(before, after)
+    if have >= need:
+        return None
+    return {"reason": "min_sessions", "have": have, "need": need}
+
+
 # -- make_handler ---------------------------------------------------------
 
 
@@ -1025,6 +1038,7 @@ def make_handler(
         from .. import signals as signals_mod
         from ..corpus import _session_first_ts
         from ..discovery import _parse_bound
+        from ..report import _capture_signals
         from . import rebuild
 
         rates = _capture_rates(config)
@@ -1032,7 +1046,9 @@ def make_handler(
         use = capture_mod.usage(corpus, rates, since=enabled_at)
         weekly_cost = capture_mod.weekly_cost(use)
         dependent_value = habits_mod.capture_dependent_value(
-            habits_mod.collect(corpus, rates, ratings=store.all_feedback())
+            habits_mod.collect(
+                corpus, rates, ratings=store.all_feedback(), signals=_capture_signals(corpus, options.config_dir),
+            )
         )
         start = _parse_bound(enabled_at)
         started = 0
@@ -2126,6 +2142,14 @@ def make_handler(
             sessions = impact_mod.session_facts(corpus, rates)
             units = _report_units(_get_report_model(_DEFAULT_WINDOW_DAYS))
             changes = impact_mod.impact(points, sessions, units)
+            for change in changes:
+                # P4 leftover: a structured gate the dashboard's
+                # emptyState() can key off, alongside the existing prose
+                # verdict -- same "enough" predicate impact.compare
+                # already computed (min_sessions on both sides).
+                change["gate"] = _min_sessions_gate(
+                    change["before_sessions"], change["after_sessions"], impact_mod.MIN_SESSIONS
+                )
         data = {
             "changes": changes,
             "caveat": impact_mod.CAVEAT,
