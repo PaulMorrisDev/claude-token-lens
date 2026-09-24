@@ -206,6 +206,21 @@ def test_pyproject_ships_the_json():
     assert f"hooks/{cat.CATALOGUE_FILE}" in pyproject.read_text(encoding="utf-8")
 
 
+def test_the_capture_doc_is_the_catalogue_markdown():
+    """``docs/capture.md`` is checked in, not built at doc time, the same
+    way ``hooks/capture-catalogue.json`` is (see
+    :func:`test_the_packaged_json_is_the_catalogue_export` above): kept
+    in step with :func:`capture_catalogue.render_markdown` by this test
+    rather than a build step."""
+    doc = Path(__file__).resolve().parent.parent / "docs" / "capture.md"
+    assert doc.read_text(encoding="utf-8") == cat.render_markdown(), (
+        "regenerate docs/capture.md from capture_catalogue.render_markdown()"
+    )
+    text = doc.read_text(encoding="utf-8")
+    for m in cat.METRICS:
+        assert f"(`{m.id}`)" in text, m.id
+
+
 # -- round trip: what the note asks for is what the parser reads ----------
 
 

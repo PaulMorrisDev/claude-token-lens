@@ -1184,3 +1184,245 @@ def rough_tokens(ids) -> dict[str, int]:
 def catalogue_json_text() -> str:
     """:func:`export_json` as the exact text of the packaged file."""
     return json.dumps(export_json(), indent=1, ensure_ascii=False) + "\n"
+
+
+# -- docs/capture.md ---------------------------------------------------------
+
+#: :data:`Metric.group` -> how :func:`render_markdown` names it in a
+#: metric's "Level" line. The four preset levels already have a display
+#: name in :data:`LEVEL_TITLES`; only the three groups that aren't a
+#: level need one here.
+_GROUP_LABELS = {
+    "derived": "Always measured, no hook",
+    "feedback": "Feedback, any level",
+    "coaching": "Live coaching, any level",
+}
+
+
+def _metric_group_label(metric: Metric) -> str:
+    return LEVEL_TITLES.get(metric.group) or _GROUP_LABELS[metric.group]
+
+
+def _feedback_tag_words() -> str:
+    """The full ``[tl-fb: ...]`` tag with every question's whole
+    vocabulary spelled out. ``Metric.tag`` shortens this with an
+    ellipsis for the Capture page's table; the doc's "exact words"
+    promise needs the real thing, so :func:`render_markdown` builds it
+    here instead of using ``METRICS_BY_ID["feedback_skill"].tag``."""
+    parts = [
+        f"{q.key}=" + (",".join(o[0] for o in q.options) if q.multi else "|".join(o[0] for o in q.options))
+        for q in FEEDBACK_QUESTIONS
+    ]
+    return f"[{FEEDBACK_TAG}: " + " ".join(parts) + "]"
+
+
+def _metric_tag_line(metric: Metric) -> str:
+    """What :func:`render_markdown` prints for a metric's "Tag" line:
+    the exact key and words Claude writes, or why there is none."""
+    if metric.id == "feedback_skill":
+        return f"`{_feedback_tag_words()}`"
+    if metric.tag:
+        return f"`{metric.tag}`"
+    if metric.main_extra:
+        return f'No fixed key. The note asks for a line: "{metric.main_extra}"'
+    if metric.sub_extra:
+        return f'No fixed key. The note asks for a line: "{metric.sub_extra}"'
+    if metric.hooks:
+        return "No tag. A hook records it directly; Claude is never asked."
+    if metric.group == "coaching":
+        return "No tag. Shown only in the status line; Claude is never asked, and it costs no tokens."
+    if metric.group == "feedback":
+        return 'No tag. Nothing is asked of Claude; see "Captures" above for how it is kept.'
+    return "No tag. Read from the transcript Claude Code already writes; Claude is never asked, and it costs no tokens."
+
+
+def render_markdown() -> str:
+    """The full metric catalogue as Markdown (``docs/capture.md``), built
+    only from this module's own data: what metrics capture is and that
+    it is opt-in, what each level adds and roughly costs
+    (:func:`note_text` lengths, characters / 4), every metric grouped by
+    :data:`SECTIONS`, the tag format, the privacy stance, and the
+    ``claude-token-lens capture ...`` commands that turn it on, off or
+    remove it. A test holds the checked-in ``docs/capture.md`` to this
+    function's output, the same way ``hooks/capture-catalogue.json`` is
+    held to :func:`catalogue_json_text`.
+    """
+    out: list[str] = []
+    p = out.append
+
+    p("# Metrics capture")
+    p("")
+    p(
+        "Metrics capture is **opt-in**. Off by default, and off costs nothing: no hook runs, no tag is asked "
+        "for, no token is spent on it."
+    )
+    p("")
+    p(
+        f"Turned on, a hook (`{HOOK_SCRIPT}`) adds a short note to each session and subagent start, and asks "
+        "Claude to end its replies with one line such as `[tl: task=bugfix brief=partial level=normal]`. A "
+        "subagent ends its own report the same way, starting `[result: done|partial|blocked]`. The tag always "
+        "sits at the end of the reply you already read — nothing is hidden — and nothing free-text is ever "
+        "asked for: every word comes from a closed vocabulary (see [Privacy](#privacy) below)."
+    )
+    p("")
+    p(
+        "It costs tokens. The note is written to the prompt cache once, then read from it on every later "
+        "reply of that session; the tag itself is a handful of output tokens on every reply and every "
+        "subagent report. [Levels](#levels) below gives rough sizes; once capture is on, the dashboard's "
+        "Capture tab measures the real cost from your own transcripts, and a banner on every tab shows the "
+        "running total."
+    )
+    p("")
+
+    # -- Levels -----------------------------------------------------------
+    p("## Levels")
+    p("")
+    p(
+        "Costs rise with depth, so capture comes in levels, each including every metric of the levels "
+        "before it. The note is added once at each session's start, `/clear` or compaction (a resumed "
+        "session already carries the note from its start, so it is not asked again), and once at each "
+        "subagent's start, however deep the agent is nested."
+    )
+    p("")
+    p("| Level | What it adds | Note at session start | Note per subagent start |")
+    p("|---|---|---|---|")
+    for level in LEVELS:
+        ids = level_metrics(level)
+        main_tokens = round(len(note_text(ids, "main")) / 4)
+        sub_tokens = round(len(note_text(ids, "subagent")) / 4)
+        main_cell = f"~{main_tokens} tokens" if main_tokens else "–"
+        sub_cell = f"~{sub_tokens} tokens" if sub_tokens else "–"
+        p(f"| {LEVEL_TITLES[level]} | {LEVEL_SUMMARIES[level]} | {main_cell} | {sub_cell} |")
+    p(
+        f"| {LEVEL_TITLES[CUSTOM_LEVEL]} | Any other set of metrics, turned on one by one (`capture enable`/"
+        "`capture disable`). | depends what's on | depends what's on |"
+    )
+    p("")
+    p(
+        "These are rough sizes — characters in the note divided by four — and don't include the tag Claude "
+        "writes back (each metric below says roughly how many output tokens its own words cost) or Claude "
+        "Code's own hook-wrapper overhead. The Capture tab replays your last 14 days of transcripts against "
+        "each level before you turn it on, and once it's on, measures the real note and tag cost from what "
+        "Claude Code actually recorded — read that number, not this one, when it matters."
+    )
+    p("")
+
+    # -- Metrics grouped by scope ------------------------------------------
+    for section_key, section_title in SECTIONS.items():
+        metrics = [m for m in METRICS if m.section == section_key]
+        if not metrics:
+            continue
+        p(f"## {section_title}")
+        p("")
+        for m in metrics:
+            p(f"### {m.title} (`{m.id}`)")
+            p("")
+            p(f"- **Level:** {_metric_group_label(m)}")
+            p(f"- **Captures:** {m.what}")
+            p(f"- **Why:** {m.why}")
+            p(f"- **Tag:** {_metric_tag_line(m)}")
+            if m.out_chars:
+                out_tokens = max(1, round(m.out_chars / 4))
+                unit = "token" if out_tokens == 1 else "tokens"
+                p(f"- **Costs:** about {out_tokens} output {unit} each time")
+            if m.hooks:
+                p(f"- **Hook:** {', '.join(m.hooks)}")
+            powers = ", ".join(THEMES[t] for t in m.powers) if m.powers else "—"
+            p(f"- **Powers:** {powers}")
+            if m.requires:
+                needed = ", ".join(f"`{r}`" for r in m.requires)
+                p(f"- **Needs:** {needed} switched on too")
+            p("")
+
+    # -- Tag format ---------------------------------------------------------
+    p("## The tag format")
+    p("")
+    p(
+        f"Every note (`{HOOK_SCRIPT}` builds the same text from `{CATALOGUE_FILE}`) opens with the same two "
+        "lines, then the keys for whichever metrics are on:"
+    )
+    p("")
+    p(f"> {NOTE_INTRO}")
+    p(">")
+    p(f"> {MAIN_TAG_INTRO}")
+    p("")
+    p(f'...and, in the main session, closes with: "{SKIP_KEY_LINE}"')
+    p("")
+    p(
+        f"A subagent's note asks for `{SUB_TAG}` when nothing else needs a key of its own, or "
+        f"`{SUB_TAG_WITH_KEYS}` once Standard's extra keys are on: \"{SUB_TAG_INTRO.format(tag=SUB_TAG_WITH_KEYS)}\""
+    )
+    p("")
+    p(
+        "Starting an agent again after its last run fell short, or handing work to one at all, is marked at "
+        f"the start of its brief instead of the end of a report: `{METRICS_BY_ID['retry'].tag}` and "
+        f"`{METRICS_BY_ID['spawn'].tag}`."
+    )
+    p("")
+    p(f"The `/tl-feedback` skill ends with its own line: `{_feedback_tag_words()}`.")
+    p("")
+    p("If Claude writes more than one tag, the last one wins, key by key.")
+    p("")
+
+    # -- Privacy ------------------------------------------------------------
+    p("## Privacy")
+    p("")
+    p(
+        "Claude writes closed vocabularies only. Every `[tl: ...]`, `[result: ...]`, `[retry: ...]`, "
+        "`[spawn: ...]` and `[tl-fb: ...]` word is checked against the lists on this page; anything else — "
+        "an unknown word, a key outside those lists, free text, a path — is dropped by the parser and never "
+        "stored. The one exception that can carry a name is `skill=would-help:<name>`, and only when "
+        "`<name>` matches a skill this transcript actually listed or invoked in the window; any other name "
+        "is cut down to a bare `would-help`."
+    )
+    p("")
+    p(
+        "Free local signals never involve Claude at all: a hook logs the session id (hashed with this "
+        "tool's own salt), the event word, and — for a permission prompt — the tool name, never its "
+        "arguments, to a local file under `<config-dir>/signals/`."
+    )
+    p("")
+    p(
+        "\"Always measured\" metrics read only what Claude Code's own transcript already contains — "
+        "instruction files loaded, commands and skills run, task counts, API errors, and simple yes/no "
+        "facts about a message's shape (does it name a file path, does it contain a code block) — and keep "
+        "only those flags and counts, never the text itself."
+    )
+    p("")
+
+    # -- Turning it on, off or removing it -----------------------------------
+    p("## Turning it on, off or removing it")
+    p("")
+    p(
+        f"The hook script and its catalogue (`{HOOK_SCRIPT}`, `{CATALOGUE_FILE}`) live side by side under "
+        "`<config-dir>/hooks/`. Only `capture on` and `capture connect` ever change "
+        "`~/.claude/settings.json` — and only after showing the diff and asking first, unless you pass "
+        "`--yes`. Every other change writes only this tool's own `config.toml`."
+    )
+    p("")
+    p("- `claude-token-lens capture status` — the level, what's on, since when, and the cost measured so far.")
+    p(
+        "- `claude-token-lens capture on [--level LEVEL] [--for DURATION | --until DATE] [--sample N] "
+        "[--yes] [--dry-run]` — turn it on (default level: Essentials)."
+    )
+    p("- `claude-token-lens capture level LEVEL` — change the level.")
+    p(
+        "- `claude-token-lens capture enable METRIC...` / `capture disable METRIC...` — turn individual "
+        "metrics on or off; the level becomes Custom once the set no longer matches a preset."
+    )
+    p("- `claude-token-lens capture off` — stop the notes and tags at once, without touching settings.json.")
+    p(
+        "- `claude-token-lens capture connect` — add the settings.json hook entries the metrics you've "
+        "chosen need."
+    )
+    p("- `claude-token-lens capture remove` — switch off and take those hook entries back out.")
+    p("- `claude-token-lens capture feedback on|off` — the `/tl-feedback` skill and its status-line reminder.")
+    p("- `claude-token-lens capture brief on|off` — the `/tl-brief` skill.")
+    p(
+        "- `claude-token-lens changes` and `claude-token-lens uninstall` also cover metrics capture: they "
+        "list everything it installed and can remove all of it — hooks, skills and signal files included."
+    )
+    p("")
+
+    text = "\n".join(out)
+    return text.rstrip("\n") + "\n"
