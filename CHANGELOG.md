@@ -148,6 +148,41 @@ sizing corrections).
   `C:\`, so the same file changed both ways counts once. Only a salted
   hash of each path is kept, as before. An edit whose tool call failed
   (the text to replace wasn't found, you declined it) no longer counts.
+- **Money and advice presentation now follow your billing mode
+  everywhere, and every card says where, what it costs, and how to undo
+  it.** Under a subscription, the dashboard, the report and every
+  recommendation phrase an amount as a share of your weekly usage limit
+  (falling back to a labelled list-price equivalent without an accepted
+  elasticity fit), instead of a bare dollar figure that means little
+  when you're not billed per token; "about" no longer doubles into
+  "about about" when a share and a caveat combine. `meta.units`
+  (`{mode, share_per_usd, period_label, basis}`) carries the same facts
+  to a JSON API consumer. Every recommendation and every Work habits
+  playbook item now has a "where and who it affects", a trade-off and
+  how to undo it — including the 23 workflow-only recommendation rules
+  that propose no setting change (a purely informational one, like
+  cache-read-dominance, keeps its explainer but drops the "ask Claude to
+  do it" prompt it never had), and every one of the 21 playbook habits,
+  with `allow_routine` stating its security trade-off and the
+  `/permissions` command that undoes it. A habit already covered by a
+  recommendation that fired this report (`effort_fit` by
+  `effort-mismatch`, `short_reports` by `agent-report-size`,
+  `quiet_output` by `tool-output-carry`) shows no saving of its own and
+  links to the recommendation instead of reporting the same figure
+  twice; `effort_fit` and `effort-mismatch` now also agree on the exact
+  message-count and thinking-share gate that decides whether there's
+  enough evidence to say something, instead of two independent numbers
+  that could disagree; the dashboard's Quick actions tips pick at most
+  one habit per theme and skip one already covered by a recommendation,
+  instead of listing near-duplicates. A saving spread over "a week" no
+  longer divides by a fraction of a week for a corpus under 7 days old
+  (which used to multiply a single day's total by about 7x to fake a
+  weekly rate) — under 7 days it's the raw total so far, and the Work
+  habits digest is titled "Weekly pace (last N days)" rather than a
+  fixed "This week" that implied a calendar week regardless of span.
+  The playbook shows the 5 habits worth the most as cards up front; the
+  rest collapse into a "more habits worth trying" section instead of a
+  long, uncapped wall of cards.
 
 ### Fixed
 

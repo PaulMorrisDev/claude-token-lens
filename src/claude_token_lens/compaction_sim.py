@@ -131,7 +131,7 @@ import statistics
 from collections import Counter
 from dataclasses import dataclass, replace
 from datetime import datetime
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 from .compaction import CompactionRecord, compaction_records_for_transcript
 from .model import (
@@ -147,6 +147,9 @@ from .model import (
 from .pricing import ModelRates, ResolvedRates, price_turn
 from .recache import RecacheThresholds
 from .snapshots import Snapshot, effective_provenance, managed_keys
+
+if TYPE_CHECKING:
+    from .units import Units
 
 #: Assumptions this module's simulation makes, printed verbatim in the
 #: report section's notes (same convention as ``ttl.ASSUMPTIONS``).
@@ -309,12 +312,12 @@ class CompactionSimThresholds:
             f"default_cached_prefix_share = {self.default_cached_prefix_share:.2f}: used when "
             "this corpus has no real compaction to measure how much of the starting context "
             "stays cached after one.",
-            f"default_rediscovery_allowance_usd = ${self.default_rediscovery_allowance_usd:.2f}: "
+            f"default_rediscovery_allowance_usd = {self.default_rediscovery_allowance_usd:.2f} USD: "
             "used when this corpus has no real post-compaction re-cache turn to measure "
             "a rediscovery allowance from.",
             f"max_compactions_per_session = {self.max_compactions_per_session:g}: no window "
             "that summarises more often than this per session is suggested.",
-            f"switch_pct = {self.switch_pct:.2f} and switch_usd = ${self.switch_usd:.2f}: a "
+            f"switch_pct = {self.switch_pct:.2f} and switch_usd = {self.switch_usd:.2f} USD: a "
             "window switch is recommended only when the best candidate window's cost is "
             "below switch_pct of the observed cost AND saves more than switch_usd -- both "
             "conditions, independently blocking.",
@@ -693,10 +696,12 @@ class CompactionSimTypeStats:
     def saving_usd(self) -> float:
         return max(0.0, -self.delta_usd)
 
-    def recommendation(self, th: CompactionSimThresholds) -> str:
+    def recommendation(self, th: CompactionSimThresholds, units: "Units | None" = None) -> str:
         """Mirrors ``TtlTypeStats.recommendation``'s switch-gating
         shape: a switch is only worth stating when it clears both
-        ``switch_pct`` and ``switch_usd``."""
+        ``switch_pct`` and ``switch_usd``. ``units`` (UX-2) phrases the
+        saving for the report's billing mode; a bare "$" number without
+        it, for a caller that hasn't been given one."""
         if self.observed_cost <= 0:
             return "no material difference"
         pct_ok = self.best_cost < th.switch_pct * self.observed_cost
@@ -704,7 +709,8 @@ class CompactionSimTypeStats:
         if self.best_window is None:
             return "no material difference"
         if pct_ok and usd_ok:
-            return f"switch to autoCompactWindow={self.best_window:,} (saves ${self.saving_usd:.2f})"
+            saving_text = units.money_text(self.saving_usd) if units is not None else f"${self.saving_usd:.2f}"
+            return f"switch to autoCompactWindow={self.best_window:,} (saves {saving_text})"
         return "no material difference"
 
 
@@ -893,7 +899,11 @@ def simulate_compaction_windows(
 # -- report section -----------------------------------------------------
 
 
-def build_section(stats: CompactionSimStats, thresholds: CompactionSimThresholds | None = None) -> Section:
+def build_section(
+    stats: CompactionSimStats,
+    thresholds: CompactionSimThresholds | None = None,
+    units: "Units | None" = None,
+) -> Section:
     """Render a :class:`CompactionSimStats` roll-up as the report's
     "Compaction-window sweep" section: ``compaction_sim_by_window``
     (top-level sessions only), ``compaction_sim_by_agent_type`` (every
@@ -903,7 +913,9 @@ def build_section(stats: CompactionSimStats, thresholds: CompactionSimThresholds
     summary size, trigger reserve, cached share and rediscovery allowance
     actually used (flagging a default), ``thresholds.describe()``, and a
     fidelity warning
-    for any session above ``thresholds.fidelity_warn_pct``.
+    for any session above ``thresholds.fidelity_warn_pct``. ``units``
+    (UX-2) phrases the per-agent-type recommendation string's saving and
+    the rediscovery-allowance note for the report's billing mode.
     """
     th = thresholds or _DEFAULT_THRESHOLDS
 
@@ -962,7 +974,7 @@ def build_section(stats: CompactionSimStats, thresholds: CompactionSimThresholds
                 row.best_cost,
                 row.saving_usd,
                 row.delta_pct,
-                row.recommendation(th),
+                row.recommendation(th, units),
             ]
             for key, row in sorted(by_key.items())
         ],
@@ -1018,7 +1030,19 @@ def build_section(stats: CompactionSimStats, thresholds: CompactionSimThresholds
             else " (this corpus's own median across real compactions)."
         )
     )
-    allowance_note = f"Rediscovery allowance used: ${stats.rediscovery_allowance_usd:.4f}"
+    # UX-2 note: this is a per-read calibration constant (this corpus's
+    # own median re-cache cost), not a "you could save/spend" amount --
+    # like thresholds.describe() below, it stays at its native 4-decimal
+    # precision rather than going through units.money_text, which rounds
+    # to 2 decimals (losing this sub-cent figure entirely) and, for a
+    # subscription, would phrase a per-unit constant as a usage-limit
+    # share, which reads as a saving rather than an input. It still
+    # never prints a bare "$" (hard constraint UX-2): a trailing currency
+    # code stands in for the symbol.
+    _allowance_currency = units.currency if units is not None else "USD"
+    allowance_note = (
+        f"Rediscovery allowance used: {stats.rediscovery_allowance_usd:.4f} {_allowance_currency}"
+    )
     if stats.rediscovery_allowance_is_default:
         allowance_note += " (default -- no real post-compaction re-cache turn found)."
     else:
@@ -1122,13 +1146,13 @@ def _table(report: ReportModel, section_key: str, table_name: str):
 def _rediscovery_allowance_usd_used(report: ReportModel, thresholds: CompactionSimThresholds) -> float:
     """The rediscovery allowance :func:`simulate_compaction_windows`
     actually charged per simulated compaction in this report, read back
-    out of ``build_section``'s own ``"Rediscovery allowance used: $X"``
-    note (the only place that number is rendered -- see
+    out of ``build_section``'s own ``"Rediscovery allowance used: X.XXXX
+    <currency>"`` note (the only place that number is rendered -- see
     ``build_section``'s notes list above). Falls back to
     ``thresholds.default_rediscovery_allowance_usd`` when the
     ``compaction_sim`` section or that note isn't present (e.g. a
     report filtered down to a single other section)."""
-    prefix = "Rediscovery allowance used: $"
+    prefix = "Rediscovery allowance used: "
     for section in report.sections:
         if section.key != "compaction_sim":
             continue
@@ -1208,20 +1232,26 @@ def _rule_compaction_window(
     if not observed_cost:
         return []
 
+    # UX-2 note: allowance_usd is the same per-read calibration constant
+    # build_section's own note explains (see there for why it stays at
+    # 4-decimal precision instead of units.money_text -- a per-unit
+    # input, not a saving) and, likewise, never prints a bare "$".
     allowance_usd = _rediscovery_allowance_usd_used(report, thresholds)
+    allowance_currency = report.units.currency if report.units is not None else "USD"
     redundant_reads_mean = _post_compaction_redundant_reads_mean(report)
     if redundant_reads_mean is not None:
         extra_per_compaction_usd = allowance_usd * redundant_reads_mean
         allowance_source = (
             f"this corpus's own post-compaction redundant-read rate "
             f"({redundant_reads_mean:.2f} redundant reads/session, from topology_redundant_reads), "
-            f"each priced at ${allowance_usd:.4f}, the median re-cache after a real summary"
+            f"each priced at {allowance_usd:.4f} {allowance_currency}, the median re-cache after a real summary"
         )
     else:
         extra_per_compaction_usd = allowance_usd
         allowance_source = (
-            f"topology_redundant_reads unavailable in this report, so one ${allowance_usd:.4f} "
-            "re-cache (the median after a real summary) per simulated summary as a fallback"
+            f"topology_redundant_reads unavailable in this report, so one "
+            f"{allowance_usd:.4f} {allowance_currency} re-cache (the median after a real "
+            "summary) per simulated summary as a fallback"
         )
 
     chosen: tuple[str, float, float, float] | None = None  # (label, compactions_per_session, raw_saving, adjusted_saving)
@@ -1254,14 +1284,23 @@ def _rule_compaction_window(
     has_fidelity_rows = bool(fidelity_table and fidelity_table.rows)
 
     scope, file_note = _scope_and_lever_note(snapshot)
+    # UX-2: units may be unset (a caller without a billing config) --
+    # money_text still gives a plain currency-suffixed number rather than
+    # a bare "$" in that case.
+    units = report.units
+    adjusted_saving_text = (
+        units.money_text(adjusted_saving_usd) if units is not None else f"${adjusted_saving_usd:.2f}"
+    )
+    observed_cost_text = units.money_text(observed_cost) if units is not None else f"${observed_cost:.2f}"
+    raw_saving_text = units.money_text(raw_saving_usd) if units is not None else f"${raw_saving_usd:.2f}"
     action = (
         f"Set autoCompactWindow to at least {label} in {file_note}. This is a modelled, not "
         f"observed, range floor: smaller windows compact more often, and the replay can't see "
         f"the files a session re-reads after a summary, so only the smallest window clearing the "
         f"threshold after a rediscovery correction ({allowance_source}) is named, rather than a "
         f"single 'best' point. Projected saving at {label}: "
-        f"${adjusted_saving_usd:.2f} vs the observed cost of ${observed_cost:.2f} "
-        f"(raw modelled saving before this correction: ${raw_saving_usd:.2f})."
+        f"{adjusted_saving_text} vs the observed cost of {observed_cost_text} "
+        f"(raw modelled saving before this correction: {raw_saving_text})."
     )
     if has_fidelity_rows:
         action += (

@@ -242,7 +242,7 @@ def _help_html(pairs: list[tuple[str, str]], summary: str = "How to read this") 
     return f'<details class="help"><summary>{_esc(summary)}</summary><dl>{items}</dl></details>'
 
 
-def _table_html(table: Table, currency: str, table_id: str) -> str:
+def _table_html(table: Table, currency: str, table_id: str, units=None) -> str:
     head_cells = []
     for column in table.columns:
         cls_attr = ' class="num"' if column.kind in _NUMERIC_KINDS else ""
@@ -255,7 +255,7 @@ def _table_html(table: Table, currency: str, table_id: str) -> str:
     for row in table.rows:
         cells = []
         for value, column in zip(row, table.columns):
-            display = _esc(display_cell(value, column, table, currency))
+            display = _esc(display_cell(value, column, table, currency, units))
             cls_attr = ' class="num"' if column.kind in _NUMERIC_KINDS else ""
             sort_value = "" if value is None else str(value)
             cell_html = display
@@ -296,6 +296,7 @@ def _table_html(table: Table, currency: str, table_id: str) -> str:
 
 def _sections_html(model: ReportModel) -> str:
     currency = model.meta.pricing.currency
+    units = model.units
     parts = []
     for section_index, section in enumerate(model.sections):
         parts.append(f"<section><h2>{_esc(section.title)}</h2>")
@@ -304,7 +305,7 @@ def _sections_html(model: ReportModel) -> str:
         parts.append(_help_html(help_parts(section.help)))
         for table_index, table in enumerate(section.tables):
             table_id = f"table-{section_index}-{table_index}"
-            parts.append(_table_html(table, currency, table_id))
+            parts.append(_table_html(table, currency, table_id, units))
         if section.notes:
             parts.append(
                 '<ul class="notes">'
@@ -326,7 +327,10 @@ def _fix_html(fix: dict) -> str:
         for heading, text in fix["explainer"]:
             parts.append(f"<dt>{_esc(heading)}</dt><dd>{_esc(text)}</dd>")
         parts.append("</dl>")
-    parts.append(f"<p>Ask Claude to do it:</p><pre>{_esc(fix['prompt'])}</pre>")
+    # UX-8: a purely informational workflow card (fixes.build_fixes) has
+    # an explainer but no prompt -- nothing to ask Claude to do.
+    if fix.get("prompt"):
+        parts.append(f"<p>Ask Claude to do it:</p><pre>{_esc(fix['prompt'])}</pre>")
     if fix.get("command"):
         parts.append(
             "<p>Or run this command (it only shows the change; run it again without --dry-run to make it):</p>"
@@ -342,6 +346,7 @@ def _recommendations_html(model: ReportModel) -> str:
     if not model.recommendations:
         return "<p>None.</p>"
     currency = model.meta.pricing.currency
+    units = model.units
     parts = []
     for rec in model.recommendations:
         parts.append('<article class="rec">')
@@ -362,7 +367,7 @@ def _recommendations_html(model: ReportModel) -> str:
                 # Fix A3: format the cited value using its home table
                 # column's kind, same as the Markdown renderer -- see
                 # render/tables.py's module docstring.
-                formatted = format_evidence_value(model, value, source_table, row_key, currency)
+                formatted = format_evidence_value(model, value, source_table, row_key, currency, units)
                 text = f"{label}: {formatted} ({evidence_source(model, source_table, row_key)})"
                 parts.append(f"<li>{_esc(text)}</li>")
             parts.append("</ul></details>")

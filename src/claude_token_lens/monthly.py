@@ -60,7 +60,7 @@ import re
 from calendar import monthrange
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .config import Config
@@ -68,7 +68,10 @@ from .corpus import Corpus, SessionBundle
 from .model import ReportModel, Table
 from .pricing import Pricing
 from .render.tables import escape_md, format_cell
-from .report import build_report
+from .report import _effort_mismatch_share_threshold, build_report
+
+if TYPE_CHECKING:
+    from .units import Units
 
 _MONTH_RE = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
 
@@ -196,7 +199,13 @@ def _regroup_by_model(by_month_table: Table | None) -> Table:
 
 
 def _finance_summary_table(
-    *, total_cost: float, total_tokens: int, sessions: int, five_hour_blocks_used: int | None, currency: str
+    *,
+    total_cost: float,
+    total_tokens: int,
+    sessions: int,
+    five_hour_blocks_used: int | None,
+    currency: str,
+    units: "Units | None" = None,
 ) -> Table:
     from .model import Column
 
@@ -208,8 +217,13 @@ def _finance_summary_table(
     if five_hour_blocks_used is not None:
         rows.append(["Five-hour blocks used", five_hour_blocks_used])
     kinds = ["money", "tokens", "int", "int"]
+    # UX-1: units (model.units, already set by build_report) makes "Total
+    # cost" a subscription's own weekly-usage-limit share alongside the
+    # list-price figure, not a bare dollar amount that means little to a
+    # flat-fee plan -- format_cell's own units branch, ignored for the
+    # non-money kinds above.
     formatted_rows = [
-        [label, format_cell(value, kinds[i], currency)] for i, (label, value) in enumerate(rows)
+        [label, format_cell(value, kinds[i], currency, units)] for i, (label, value) in enumerate(rows)
     ]
     return Table(
         name="finance_summary",
@@ -219,21 +233,40 @@ def _finance_summary_table(
     )
 
 
-def _habits_digest_table(corpus: Corpus, pricing: Pricing, currency: str, ratings: dict | None) -> Table | None:
+def _habits_digest_table(
+    corpus: Corpus,
+    pricing: Pricing,
+    currency: str,
+    ratings: dict | None,
+    units: "Units | None" = None,
+    config: Config | None = None,
+) -> Table | None:
     """The Work habits digest (``habits.digest_table``) for the month,
     pre-formatted like :func:`_finance_summary_table`: the habits worth
     the most, what habits already picked up save, and what a piece of
-    work that met its goal cost. ``None`` when there's nothing to say."""
+    work that met its goal cost. ``None`` when there's nothing to say.
+    ``config``, when given, resolves ``effort_fit``'s share gate to the
+    same configured number the main report's ``effort-mismatch`` rule
+    uses (UX-3, "one shared effort threshold"); without it, the class
+    default."""
     from . import habits
     from .helptext import TABLE_COPY
     from .model import Column
 
-    digest = habits.digest_table(habits.collect(corpus, pricing, ratings=ratings))
+    threshold_kwargs = (
+        {"effort_share_threshold_pct": _effort_mismatch_share_threshold(config)} if config is not None else {}
+    )
+    digest = habits.digest_table(habits.collect(corpus, pricing, ratings=ratings, **threshold_kwargs))
     if not digest.rows:
         return None
     copy = TABLE_COPY["habits_digest"]
     rows = [
-        [copy.value_labels.get(item, item), what, format_cell(value, copy.row_kinds.get(item, "str"), currency), detail]
+        [
+            copy.value_labels.get(item, item),
+            what,
+            format_cell(value, copy.row_kinds.get(item, "str"), currency, units),
+            detail,
+        ]
         for item, what, value, detail in digest.rows
     ]
     return Table(
@@ -253,7 +286,7 @@ def _habits_digest_table(corpus: Corpus, pricing: Pricing, currency: str, rating
 # -- local, deterministic renderers (see module docstring) -------------------
 
 
-def _md_table(table: Table, currency: str) -> list[str]:
+def _md_table(table: Table, currency: str, units: "Units | None" = None) -> list[str]:
     lines = [f"### {table.title}", ""]
     aligns = ["right" if c.kind in _NUMERIC_KINDS else "left" for c in table.columns]
     header = "| " + " | ".join(escape_md(c.label) for c in table.columns) + " |"
@@ -265,7 +298,7 @@ def _md_table(table: Table, currency: str) -> list[str]:
         for value, column in zip(row, table.columns):
             # finance_summary's own "value" column is pre-formatted text
             # (mixed units row to row), everything else formats by kind.
-            cell_text = value if (table.name == "finance_summary" and column.key == "value") else format_cell(value, column.kind, currency)
+            cell_text = value if (table.name == "finance_summary" and column.key == "value") else format_cell(value, column.kind, currency, units)
             cells.append(escape_md(cell_text))
         lines.append("| " + " | ".join(cells) + " |")
     if table.notes:
@@ -274,10 +307,10 @@ def _md_table(table: Table, currency: str) -> list[str]:
     return lines
 
 
-def _render_month_markdown(month: str, tables: list[Table], currency: str, generated_at: str) -> str:
+def _render_month_markdown(month: str, tables: list[Table], currency: str, generated_at: str, units: "Units | None" = None) -> str:
     lines = [f"# Claude token lens — Monthly report — {month}", ""]
     for table in tables:
-        lines.extend(_md_table(table, currency))
+        lines.extend(_md_table(table, currency, units))
         lines.append("")
     lines.append(f"Generated at: {generated_at}")
     return "\n".join(lines).rstrip("\n") + "\n"
@@ -287,13 +320,13 @@ def _esc(value) -> str:
     return _html_mod.escape(str(value), quote=True)
 
 
-def _html_table(table: Table, currency: str) -> str:
+def _html_table(table: Table, currency: str, units: "Units | None" = None) -> str:
     thead = "<tr>" + "".join(f"<th>{_esc(c.label)}</th>" for c in table.columns) + "</tr>"
     body_rows = []
     for row in table.rows:
         cells = []
         for value, column in zip(row, table.columns):
-            cell_text = value if (table.name == "finance_summary" and column.key == "value") else format_cell(value, column.kind, currency)
+            cell_text = value if (table.name == "finance_summary" and column.key == "value") else format_cell(value, column.kind, currency, units)
             cells.append(f"<td>{_esc(cell_text)}</td>")
         body_rows.append("<tr>" + "".join(cells) + "</tr>")
     notes_html = ""
@@ -302,8 +335,8 @@ def _html_table(table: Table, currency: str) -> str:
     return f"<h2>{_esc(table.title)}</h2><table><thead>{thead}</thead><tbody>{''.join(body_rows)}</tbody></table>{notes_html}"
 
 
-def _render_month_html(month: str, tables: list[Table], currency: str, generated_at: str) -> str:
-    tables_html = "".join(_html_table(t, currency) for t in tables)
+def _render_month_html(month: str, tables: list[Table], currency: str, generated_at: str, units: "Units | None" = None) -> str:
+    tables_html = "".join(_html_table(t, currency, units) for t in tables)
     return (
         "<!doctype html>\n"
         '<html lang="en">\n'
@@ -403,12 +436,19 @@ def write_monthly_report(
     )
 
     currency = model.meta.pricing.currency
+    # UX-1: model.units is already set by build_report -- threaded through
+    # every table below so the digest's money cells follow the billing
+    # mode (a subscription's own weekly-usage-limit share alongside the
+    # list-price figure) rather than a bare dollar amount, matching the
+    # module docstring's "uses Units" wiring item.
+    units = model.units
     finance_summary = _finance_summary_table(
         total_cost=total_cost,
         total_tokens=total_tokens,
         sessions=len(filtered.sessions),
         five_hour_blocks_used=five_hour_blocks_used,
         currency=currency,
+        units=units,
     )
     cost_by_model = _regroup_by_model(by_month_table)
     cost_by_project = dataclasses.replace(by_project_table, title="Cost by project") if by_project_table else None
@@ -419,7 +459,7 @@ def write_monthly_report(
         header_tables.append(cost_by_project)
     if cost_by_entrypoint is not None:
         header_tables.append(cost_by_entrypoint)
-    digest = _habits_digest_table(filtered, pricing, currency, ratings)
+    digest = _habits_digest_table(filtered, pricing, currency, ratings, units, config)
     if digest is not None:
         header_tables.append(digest)
 
@@ -434,8 +474,8 @@ def write_monthly_report(
         generated_at = datetime.now().astimezone().isoformat()
 
     md_path, html_path = report_paths(out_path, month)
-    md_path.write_text(_render_month_markdown(month, all_tables, currency, generated_at), encoding="utf-8")
-    html_path.write_text(_render_month_html(month, all_tables, currency, generated_at), encoding="utf-8")
+    md_path.write_text(_render_month_markdown(month, all_tables, currency, generated_at, units), encoding="utf-8")
+    html_path.write_text(_render_month_html(month, all_tables, currency, generated_at, units), encoding="utf-8")
     return [md_path, html_path]
 
 

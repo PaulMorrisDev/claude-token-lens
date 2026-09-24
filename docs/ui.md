@@ -290,7 +290,7 @@ what they did", the setup panel and service health.
    in progress (`/api/baseline`'s `capture_status`).
 12. **Usage** — the `usage`/`compactions`/`phases` report sections plus a raw
     `/api/compactions` list (all history, the first 50 shown).
-13. **Work habits** — the report's `habits` section: the "This week"
+13. **Work habits** — the report's `habits` section: the "Weekly pace"
     digest as cards (the three habits worth the most a week, what the
     habits you already picked up save, what a piece of work that met
     its goal cost, and how many messages Claude tagged), then "Habits

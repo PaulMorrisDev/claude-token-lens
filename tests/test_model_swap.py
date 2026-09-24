@@ -30,8 +30,9 @@ from claude_token_lens.model import (
 from claude_token_lens.parse import parse_transcript
 from claude_token_lens.pricing import load_pricing
 from claude_token_lens.render.tables import format_cell
+from claude_token_lens.units import Units
 
-from helpers import assert_privacy, turn_line, write_jsonl
+from helpers import assert_privacy, elasticity_with_slope, turn_line, write_jsonl
 
 PRICING = load_pricing()
 
@@ -291,13 +292,15 @@ def test_corpus_summary_only_counts_qualifying_fable_or_opus_subagent_rows():
 # -- RULES / recommendation ------------------------------------------------------
 
 
-def _report_with_section(section: Section) -> ReportModel:
-    return ReportModel(
+def _report_with_section(section: Section, units: Units | None = None) -> ReportModel:
+    report = ReportModel(
         meta=ReportMeta(pricing=PricingMeta(coverage_pct=100.0)),
         sections=[section],
         recommendations=[],
         diagnostics=Diagnostics(),
     )
+    report.units = units
+    return report
 
 
 def _assert_evidence_resolves(report: ReportModel, rec) -> None:
@@ -329,6 +332,30 @@ def test_rule_fires_when_saving_exceeds_thresholds_and_evidence_resolves():
     assert ".claude/agents/claude-implementer.md" in rec.action
     assert OPUS in rec.action
     _assert_evidence_resolves(report, rec)
+
+
+def test_rule_action_and_table_label_have_no_bare_dollar_under_a_subscription():
+    """UX-2 / finding F1-F2: a subscription's ``model-tier`` action and
+    the section table's "cheaper_available" label must route through
+    Units, never a raw f"${...:.2f}"."""
+    units = Units(billing_mode="subscription", currency="USD", elasticity=elasticity_with_slope())
+    tr = _agent(FABLE, "claude-implementer")
+    stats = model_swap.compute_model_swap([tr], PRICING)
+    th = model_swap.ModelSwapThresholds(saving_pct_min=10.0, saving_usd_min=1.0, min_sessions=1, min_turns=1)
+    section = model_swap.build_section(stats, th, units=units)
+    report = _report_with_section(section, units=units)
+
+    recs = model_swap.RULES["model-tier"](report, th, archetype=None, snapshot=None)
+    assert len(recs) == 1
+    rec = recs[0]
+    assert "$" not in rec.action
+    assert "about about" not in rec.action.lower()
+
+    table = next(t for t in section.tables if t.name == "model_swap_by_agent_type")
+    label_idx = [c.key for c in table.columns].index("best_cheaper_alternative")
+    labels = " ".join(str(row[label_idx]) for row in table.rows if row[label_idx])
+    assert "$" not in labels
+    assert "about about" not in labels.lower()
 
 
 def test_rule_uses_settings_json_and_user_scope_for_top_level():

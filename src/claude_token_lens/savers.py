@@ -802,7 +802,7 @@ class SaverThresholds:
             "sessions has every effect/verdict figure suppressed (sample_ok=no).",
             f"overhead_share_pct = {self.overhead_share_pct:.1f}%: a keep verdict additionally suggests "
             "limiting result size when the saver's own overhead exceeds this share of its gross saving.",
-            f"net_saving_usd_min = ${self.net_saving_usd_min:.2f}: the net-saving-per-session magnitude "
+            f"net_saving_usd_min = {self.net_saving_usd_min:.2f} USD: the net-saving-per-session magnitude "
             "(either direction) a keep/disable recommendation requires.",
         ]
 
@@ -1175,6 +1175,11 @@ def _rule_saver_tool_roi(
     if net_idx is None or sample_idx is None:
         return []
 
+    # UX-2: units may be unset (a caller without a billing config) --
+    # money_text still gives a plain currency-suffixed number rather than
+    # a bare "$" in that case.
+    units = report.units
+
     out: list[Recommendation] = []
     for row in verdict_table.rows:
         name = row[0]
@@ -1185,12 +1190,13 @@ def _rule_saver_tool_roi(
             continue
 
         lever, scope = _lever_and_scope(name, snapshot)
+        net_saving_text = units.money_text(net_saving) if units is not None else f"${net_saving:.4f}"
 
         if net_saving > th.net_saving_usd_min:
             evidence = [_evidence("Net saving per session", net_saving, "savers", "savers_verdict", name)]
             gross = row[gross_idx] if gross_idx is not None else None
             overhead = row[overhead_idx] if overhead_idx is not None else None
-            action = f"{name} correlates with a net saving of ${net_saving:.4f} per session -- keep it enabled."
+            action = f"{name} correlates with a net saving of {net_saving_text} per session -- keep it enabled."
             if isinstance(gross, (int, float)) and isinstance(overhead, (int, float)) and gross > 0:
                 evidence.append(_evidence("Gross saving per session", gross, "savers", "savers_verdict", name))
                 evidence.append(_evidence("Overhead per session", overhead, "savers", "savers_verdict", name))
@@ -1257,9 +1263,19 @@ def _rule_saver_tool_roi(
             )
         elif net_saving < -th.net_saving_usd_min:
             evidence = [_evidence("Net saving per session", net_saving, "savers", "savers_verdict", name)]
+            cost_text = units.money_text(-net_saving) if units is not None else f"${-net_saving:.4f}"
+            # UX-2: the second mention hedges with "approximately" -- but
+            # cost_text already opens with "about" under a subscription
+            # (units.Units.money's own weekly-limit-share phrasing), so
+            # "approximately" is skipped there rather than reading
+            # "approximately about X% of your weekly usage limit..." (the
+            # same doubling finding F3 covers for a literal "about about").
+            approx_cost_text = (
+                cost_text if cost_text.lower().startswith("about ") else f"approximately {cost_text}"
+            )
             action = (
-                f"{name} correlates with a net cost of ${-net_saving:.4f} per session once its own overhead is "
-                f"counted -- disabling it projects a saving of approximately ${-net_saving:.4f} per session at "
+                f"{name} correlates with a net cost of {cost_text} per session once its own overhead is "
+                f"counted -- disabling it projects a saving of {approx_cost_text} per session at "
                 "today's volumes."
             )
             out.append(

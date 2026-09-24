@@ -23,8 +23,9 @@ from claude_token_lens.carry import (
 )
 from claude_token_lens.model import EventKind, ReportModel, Section, TranscriptMeta, TranscriptResult
 from claude_token_lens.pricing import load_pricing
+from claude_token_lens.units import Units
 
-from helpers import assert_privacy
+from helpers import assert_privacy, elasticity_with_slope
 
 PRICING = load_pricing()
 SONNET_RATES = PRICING.resolve_model("claude-sonnet-5")
@@ -352,9 +353,11 @@ def test_build_section_has_expected_tables():
 # -- RULES: tool-output-carry recommendation -------------------------------
 
 
-def _report_with_carry_section(stats, thresholds: CarryThresholds | None = None) -> ReportModel:
+def _report_with_carry_section(stats, thresholds: CarryThresholds | None = None, units=None) -> ReportModel:
     section = build_section(stats, thresholds)
-    return ReportModel(sections=[section])
+    report = ReportModel(sections=[section])
+    report.units = units
+    return report
 
 
 def _heavy_read_corpus(n_transcripts: int = 6) -> list[TranscriptResult]:
@@ -402,6 +405,21 @@ def test_tool_output_carry_rule_cites_that_tools_own_saving():
         sum(r.carry_cost_usd * (1 - 8_000 / r.tokens) for r in stats.top_results if r.tool == "Read")
     )
     assert f"would have saved about ${read.saving_if_capped_usd:.2f}" in rec.action
+
+
+def test_tool_output_carry_rule_action_has_no_bare_dollar_under_a_subscription():
+    """UX-2 / finding F1-F2: a subscription's Recommendation.action must
+    route through Units, never a raw f"${...:.2f}"."""
+    corpus = _heavy_read_corpus()
+    corpus[0].turns[0].tool_result_chars_by_tool["Bash"] = 400_000
+    stats = compute_carry(corpus, SONNET_RATES)
+    th = CarryThresholds(carry_share_pct=10.0, min_sample_results=3)
+    units = Units(billing_mode="subscription", currency="USD", elasticity=elasticity_with_slope())
+    report = _report_with_carry_section(stats, th, units=units)
+    [rec] = [r for r in RULES[0](report, th) if "Read" in r.title]
+    assert "$" not in rec.action
+    assert "about about" not in rec.action.lower()
+    assert "of your weekly usage limit" in rec.action
 
 
 def test_tool_output_carry_rule_does_not_fire_below_share_threshold():

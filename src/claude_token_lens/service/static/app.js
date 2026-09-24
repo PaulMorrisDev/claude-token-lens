@@ -118,7 +118,14 @@
   // ``toLocaleString("en-US", ...)`` is used (fixed locale, not the
   // browser's own) for thousands separators so output stays
   // deterministic regardless of the viewer's system locale.
-  function formatCell(value, kind, currency) {
+  // UX-1: unitsAware requests units.Units.money's billing-mode phrasing
+  // (moneyText() below) for a "money" cell instead of the plain
+  // currency-suffixed number -- opt-in per call site (every existing
+  // sortable data-grid column keeps the plain, always-parseable number;
+  // this mirrors render/tables.py::format_cell, whose own `units`
+  // parameter the report's own table renderers likewise never pass --
+  // only prose call sites, like the habits playbook card below, do).
+  function formatCell(value, kind, currency, unitsAware) {
     currency = currency || "USD";
     if (value === null || value === undefined) return "-";
     if (typeof value === "boolean") return value ? "Yes" : "No";
@@ -138,12 +145,67 @@
       case "pct":
         return Number(value).toFixed(1) + "%";
       case "money":
+        if (unitsAware) return moneyText(Number(value));
         return Number(value).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + " " + currency;
       case "secs":
         return formatSecs(Number(value));
       default:
         return String(value);
     }
+  }
+
+  // Mirrors units.Units.money (src/claude_token_lens/units.py): usd (a
+  // list-price amount over opts.period, e.g. "a week") phrased for the
+  // billing mode from state.units (UX-1's report.meta.units -- {mode,
+  // share_per_usd, period_label, basis}, set when a report loads).
+  // Returns null for a non-positive or non-finite amount, same contract
+  // as the Python original. share_per_usd is already the window-%-per-
+  // USD slope (elasticity.express_in_window(1.0, ...)), so a share for
+  // an arbitrary usd is just usd * share_per_usd -- linear, no curve
+  // fit needed client-side.
+  function money(usd, opts) {
+    opts = opts || {};
+    var period = opts.period || "";
+    if (typeof usd !== "number" || !isFinite(usd) || usd <= 0) return null;
+    var suffix = period ? " " + period : "";
+    var dollars = formatCell(usd, "money", state.currency);
+    var unitsInfo = state.units || {};
+    if (unitsInfo.mode !== "subscription") {
+      return { primary: dollars + suffix, secondary: "", basis: "at list price" };
+    }
+    var sharePerUsd = unitsInfo.share_per_usd;
+    if (sharePerUsd === null || sharePerUsd === undefined) {
+      return { primary: dollars + " list-price equivalent" + suffix, secondary: "", basis: unitsInfo.basis || "" };
+    }
+    var share = usd * sharePerUsd;
+    var shareText = share < 1 ? share.toFixed(2) + "%" : formatCell(share, "pct");
+    return {
+      primary: "about " + shareText + " of your " + (unitsInfo.period_label || "weekly usage limit") + suffix,
+      secondary: dollars + " list-price equivalent",
+      basis: unitsInfo.basis || "",
+    };
+  }
+
+  // Mirrors units.Units.money_text/Amount.phrase: a one-line amount
+  // that is never empty, for a spot that used to interpolate a raw
+  // "$" + value.toFixed(2). opts.prefix (e.g. "about ") is joined
+  // without doubling "about" when money()'s own primary text already
+  // opens with it (a subscription's "about X% of your weekly usage
+  // limit" -- finding F3's "about about" bug, mirrored client-side).
+  function moneyText(usd, opts) {
+    opts = opts || {};
+    var prefix = opts.prefix || "";
+    var amount = money(usd, opts);
+    var text = amount ? (amount.secondary ? amount.primary + " (" + amount.secondary + ")" : amount.primary) : null;
+    if (text === null) {
+      var value = typeof usd === "number" && isFinite(usd) ? usd : 0;
+      return formatCell(value, "money", state.currency);
+    }
+    if (!prefix) return text;
+    var strippedPrefix = prefix.replace(/\.$/, "").trim().toLowerCase();
+    if (strippedPrefix === "about" && text.toLowerCase().indexOf("about ") === 0) return text;
+    var joiner = /[ \-‑]$/.test(prefix) ? "" : " ";
+    return prefix + joiner + text;
   }
 
   function cellSortValue(value) {
@@ -232,6 +294,12 @@
     // gets its own cache entry.
     reportPromises: {},
     currency: "USD",
+    // UX-1: report.meta.units {mode, share_per_usd, period_label,
+    // basis} (model.py's ReportMeta.units) -- the billing-mode facts
+    // money()/moneyText() below need to phrase an amount client-side.
+    // null until the first report loads, same as currency defaulting
+    // to "USD" until then.
+    units: null,
     // The one window every tab reads (the picker in the header): a
     // number of days, or a named window the server resolves ("1h",
     // "today", "24h", "change", "all").
@@ -275,6 +343,9 @@
         var report = body.ok === true ? body.data && body.data.report : body.report;
         if (report && report.meta && report.meta.pricing && report.meta.pricing.currency) {
           state.currency = report.meta.pricing.currency;
+        }
+        if (report && report.meta && report.meta.units) {
+          state.units = report.meta.units;
         }
         return { report: report, asOf: asOf };
       });
@@ -1522,9 +1593,12 @@
       }
     }
     if (data.roi && data.roi.cost && data.roi.cost.usd > 0) {
+      // UX-2: roi.cost.text/roi.value.text already carry their own
+      // "about" (capture_view.py's _roi) -- not repeated here, or a
+      // subscription's would double into "about about X%...".
       var roiText = data.roi.measured
-        ? "Capture cost about " + data.roi.cost.text + "; suggestions that rely on it are worth about " + data.roi.value.text + "."
-        : "Capture cost about " + data.roi.cost.text + "; nothing measured yet relies on it.";
+        ? "Capture cost " + data.roi.cost.text + "; suggestions that rely on it are worth " + data.roi.value.text + "."
+        : "Capture cost " + data.roi.cost.text + "; nothing measured yet relies on it.";
       container.appendChild(el("p", { class: "notes", text: roiText }));
     }
     if (data.history && data.history.sessions) {
@@ -2572,6 +2646,11 @@
     return wrap;
   }
 
+  //: UX-4/7: habits shown as cards before the rest collapse into <details>
+  //: (F3: "uncapped playbook" -- every habit got a card, largest and
+  //: smallest saving alike, crowding out the ones worth trying first).
+  var PLAYBOOK_CARD_LIMIT = 5;
+
   function renderHabitsPlaybook(table, container) {
     container.appendChild(el("h3", { text: table.title }));
     var help = helpBlock(table.help);
@@ -2581,15 +2660,46 @@
       container.appendChild(el("p", { class: "notice", text: "No habit stood out in this window." }));
       return;
     }
+    var featured = rows.slice(0, PLAYBOOK_CARD_LIMIT);
+    var rest = rows.slice(PLAYBOOK_CARD_LIMIT);
     var cards = el("div", { class: "habit-cards" });
+    appendHabitCards(table, featured, cards);
+    container.appendChild(cards);
+    if (rest.length) {
+      var more = el("details", { class: "help" });
+      more.appendChild(el("summary", { text: rest.length + " more habit" + (rest.length === 1 ? "" : "s") + " worth trying" }));
+      var restCards = el("div", { class: "habit-cards" });
+      appendHabitCards(table, rest, restCards);
+      more.appendChild(restCards);
+      container.appendChild(more);
+    }
+  }
+
+  function appendHabitCards(table, rows, cards) {
     rows.forEach(function (row) {
       var card = el("article", { class: "habit-card" });
       var head = el("div", { class: "profile-card-head" });
       head.appendChild(el("h4", { text: labelFor(table, row.habit) }));
       head.appendChild(el("span", { class: "badge", text: labelFor(table, row.theme) }));
       card.appendChild(head);
-      var saving = row.saving === null || row.saving === undefined ? "Saving not priced" : "About " + formatCell(row.saving, "money", state.currency) + " a week";
-      card.appendChild(el("p", { class: "habit-saving", text: saving }));
+      // UX-1/UX-2: routed through moneyText so a subscription reads "about
+      // X% of your weekly usage limit" instead of a bare "$" figure; "a
+      // week" is dropped under a subscription since the primary text
+      // already says "...weekly usage limit" (finding F3's "weekly ...
+      // a week" doubling, mirrored client-side -- see capture_view.py's
+      // _roi for the same call).
+      // UX-3: a habit apply_covered_by (habits.py) matched to a rule that
+      // fired shows no saving of its own -- it would double-count the
+      // rule's -- and names the rule instead.
+      if (row.covered_by) {
+        card.appendChild(el("p", { class: "habit-saving", text: "Already covered by “" + row.covered_by + "” in Recommendations." }));
+      } else {
+        var savingPeriod = (state.units || {}).mode === "subscription" ? "" : "a week";
+        var saving = row.saving === null || row.saving === undefined
+          ? "Saving not priced"
+          : moneyText(row.saving, { period: savingPeriod, prefix: "About " });
+        card.appendChild(el("p", { class: "habit-saving", text: saving }));
+      }
       if (row.evidence) card.appendChild(el("p", { text: row.evidence }));
       if (row.example) {
         card.appendChild(el("p", { class: "habit-try", text: "Try:" }));
@@ -2607,10 +2717,25 @@
       var spark = habitSparkline(row.weeks, "By week, " + labelFor(table, row.trend) + ": " + row.weeks);
       if (spark) metaLine.appendChild(spark);
       card.appendChild(metaLine);
-      if (row.basis) card.appendChild(el("p", { class: "cell-hint", text: "How the saving is worked out: " + row.basis + "." }));
+      // UX-3: basis explains a saving figure that isn't shown once covered.
+      if (row.basis && !row.covered_by) card.appendChild(el("p", { class: "cell-hint", text: "How the saving is worked out: " + row.basis + "." }));
+      // UX-8: same where/trade-off/undo shape as a recommendation's fix
+      // explainer (renderFix below), collapsed by default so it doesn't
+      // crowd out the habit itself.
+      if (row.where || row.trade_off || row.how_to_undo) {
+        var explainer = el("details", { class: "help" });
+        explainer.appendChild(el("summary", { text: "Where, trade-off and how to undo it" }));
+        var list = el("dl", { class: "fix-explainer" });
+        [["Where", row.where], ["Trade-off", row.trade_off], ["How to undo it", row.how_to_undo]].forEach(function (pair) {
+          if (!pair[1]) return;
+          list.appendChild(el("dt", { text: pair[0] }));
+          list.appendChild(el("dd", { text: pair[1] }));
+        });
+        explainer.appendChild(list);
+        card.appendChild(explainer);
+      }
       cards.appendChild(card);
     });
-    container.appendChild(cards);
   }
 
   function renderBriefTemplates(table, container) {
@@ -3442,8 +3567,12 @@
       });
       box.appendChild(list);
     }
-    box.appendChild(el("h5", { text: "Ask Claude to do it" }));
-    box.appendChild(codeBlockWithCopy(fix.prompt));
+    // UX-8: a purely informational workflow card (fixes.build_fixes) has
+    // an explainer but no prompt -- nothing to ask Claude to do.
+    if (fix.prompt) {
+      box.appendChild(el("h5", { text: "Ask Claude to do it" }));
+      box.appendChild(codeBlockWithCopy(fix.prompt));
+    }
     if (fix.command) {
       box.appendChild(el("h5", { text: "Or run this command" }));
       box.appendChild(

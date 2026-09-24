@@ -157,7 +157,13 @@ def test_below_min_spawns_nothing_fires():
 def test_long_task_prompt_is_workflow_advice():
     recs = _recs(_report(_acc("reviewer", claude_md=0.0, task=6000.0)))
     rec = next(r for r in recs if r.id == "spawn-task-prompt")
-    assert rec.category == "workflow" and not rec.changes and rec.fixes == []
+    # UX-8: a workflow rule with no SettingChange still gets one fix, built
+    # from _WORKFLOW_EXPLAINER/_WORKFLOW_PROMPTS -- a where/trade-off/undo
+    # explainer and a self-contained prompt, not a real config change.
+    assert rec.category == "workflow" and not rec.changes
+    [fix] = rec.fixes
+    assert fix["key"] is None and fix["command"] is None and fix["explainer"]
+    assert fix["prompt"]
 
 
 def test_shared_claude_md_comes_with_a_prompt():
@@ -220,7 +226,10 @@ def test_every_command_parses_with_the_real_parser():
 def test_prompts_are_self_contained_and_carry_no_absolute_paths():
     for rec, fix in _all_fixes():
         prompt = fix["prompt"]
-        assert "permission" in prompt
+        if not prompt:
+            # UX-8: a purely informational workflow card (no SettingChange,
+            # no "ask Claude to do it" prompt) -- nothing to check here.
+            continue
         assert ":\\" not in prompt and "/Users/" not in prompt and "/home/" not in prompt, rec.id
         if fix["key"]:
             assert fix["key"] in prompt
@@ -267,8 +276,16 @@ def test_units_refuses_non_positive_amounts(value):
     assert Units().money(value) is None
 
 
-def test_fixes_for_workflow_advice_without_a_prompt_are_empty():
-    assert fixes.build_fixes(Recommendation(id="cache-read-dominance")) == []
+def test_fixes_for_purely_informational_workflow_advice_have_an_explainer_but_no_prompt():
+    """UX-8: cache-read-dominance has nothing to change (see
+    fixes._WORKFLOW_EXPLAINER) -- one fix with a where/trade-off/undo
+    explainer, but an empty prompt: there's nothing to ask Claude to do."""
+    [fix] = fixes.build_fixes(Recommendation(id="cache-read-dominance"))
+    assert fix["explainer"] and fix["prompt"] == ""
+
+
+def test_fixes_for_a_rule_id_with_no_workflow_entry_at_all_are_empty():
+    assert fixes.build_fixes(Recommendation(id="not-a-real-rule-id")) == []
 
 
 def test_command_for_repo_scope_names_the_project_dir():

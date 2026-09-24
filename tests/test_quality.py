@@ -13,9 +13,11 @@ from claude_token_lens import capture_catalogue as catalogue, events, parse, qua
 from claude_token_lens.model import EventKind, TranscriptMeta
 from claude_token_lens.parse import parse_transcript
 from claude_token_lens.pricing import load_pricing
+from claude_token_lens.units import Units
 
 from helpers import (
     attachment_line,
+    elasticity_with_slope,
     queue_operation_line,
     tool_result_block,
     tool_use_block,
@@ -319,6 +321,22 @@ def test_neutral_measures_are_higher_or_lower_not_better_or_worse():
 @pytest.mark.parametrize("value, text", [(0.0, "0%"), (0.0004, "under 0.1%"), (0.012, "1.2%"), (0.25, "25%")])
 def test_share_text(value, text):
     assert quality.value_text(quality.SIGNAL_BY_KEY["tool_errors"], value) == text
+
+
+def test_value_text_money_unit_has_no_bare_dollar_under_a_subscription():
+    """UX-2: no packaged ``Signal`` currently has ``unit="money"``, but
+    ``value_text``'s money branch is still wired through ``build_section``/
+    ``setup_rows``'s ``money`` callable for defense-in-depth -- this
+    exercises that branch directly against a synthetic money-unit signal,
+    since no real one reaches it today."""
+    money_signal = quality.Signal(
+        key="synthetic_cost", label="Synthetic cost", num=lambda r: 0.0, den=lambda r: 1.0,
+        kind="per_run", worse="higher", scope="all", of="cost", unit="money",
+    )
+    units = Units(billing_mode="subscription", currency="USD", elasticity=elasticity_with_slope())
+    text = quality.value_text(money_signal, 1.23, money=units.money_text)
+    assert "$" not in text
+    assert "about about" not in text.lower()
 
 
 def test_main_only_signals_are_not_compared_for_agents():

@@ -17,6 +17,31 @@ from typing import Any
 _counter = itertools.count(1)
 
 
+def elasticity_with_slope(slope: float = 0.5):
+    """A minimal, *accepted* :class:`elasticity.ElasticityStats` whose
+    weekly "usd" fit has the given percent-per-dollar ``slope`` -- enough
+    for :func:`elasticity.express_in_window` to return a share, and so
+    for :meth:`units.Units.money` to phrase a subscription amount as a
+    weekly-usage-limit share rather than falling back to a plain
+    list-price equivalent. Shared by every test module that needs a
+    subscription :class:`units.Units` with a real fit (UX-2 / finding
+    F3's "no bare '$' and no doubled 'about' under a subscription" test)."""
+    from claude_token_lens import elasticity as elasticity_mod
+
+    thresholds = elasticity_mod.ElasticityThresholds()
+    fit = elasticity_mod.FitResult(
+        window=thresholds.weekly_window,
+        metric="usd",
+        slope=slope,
+        r2=0.9,
+        n_pairs=10,
+        residual_std=1.0,
+        accepted=True,
+        reason=None,
+    )
+    return elasticity_mod.ElasticityStats(fits={thresholds.weekly_window: {"usd": fit}}, thresholds=thresholds)
+
+
 def turn_line(**overrides: Any) -> dict:
     """Build one assistant JSONL line with a realistic shape:
     ``type``, ``message.{id, model, usage{input_tokens,

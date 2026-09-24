@@ -18,7 +18,10 @@ The dashboard never edits your Claude Code config itself. For each
   asks Claude to show the change before saving it.
 
 A recommendation with no setting change (workflow advice) gets a single
-fix with a prompt only when one is useful (see :data:`_WORKFLOW_PROMPTS`).
+fix instead: a where/trade-off/undo explainer (three pairs, not six --
+see :data:`_WORKFLOW_EXPLAINER`) when this module has one for its id,
+plus a prompt when one is useful (see :data:`_WORKFLOW_PROMPTS`). An id
+in neither dict gets no fix at all.
 """
 
 from __future__ import annotations
@@ -227,6 +230,281 @@ _WORKFLOW_PROMPTS = {
         "not the working. If {agent} has no agent file (it is built into Claude Code), propose a sentence I "
         "can add to the task prompts I send it instead. Show me the diff before saving. Claude Code will ask "
         "my permission before editing files under .claude."
+    ),
+    # UX-8: the rest of the workflow-rule ids below (every one that used
+    # to fall through build_fixes with no template at all, per this
+    # module's own docstring) so every card gets a prompt, not just the
+    # three above.
+    "ttl-switch": (
+        "My prompt-cache TTL doesn't fit how {agent} actually runs: {title_lower}. Please check the "
+        "current TTL setting for {agent} (promptCacheTtl for the main session, subagentPromptCacheTtl or "
+        "experimental.cacheTtl for a named agent) in ~/.claude/settings.json or its agent file, and switch "
+        "it to what this finding recommends. Show me the diff before saving. Claude Code will ask my "
+        "permission before editing files under .claude."
+    ),
+    "long-tool-waits": (
+        "Long Bash/PowerShell waits are expiring my prompt cache: {title_lower}. From now on, when you're "
+        "about to run something long-running, batch any instructions I've queued first so they land before "
+        "the wait starts, rather than after."
+    ),
+    "notification-invalidation": (
+        "Task notifications from subagents are invalidating my cache prefix: {title_lower}. From now on, "
+        "when several subagents might report back close together, hold their notifications and summarise "
+        "them together instead of one at a time, where that doesn't cost me visibility I need."
+    ),
+    "batch-instructions": (
+        "I've been sending queued instructions one at a time, and each one re-writes the cache prefix: "
+        "{title_lower}. From now on, if I send you a few small separate asks in a row, ask whether I'd "
+        "like them batched into one message before you start on the first."
+    ),
+    "subagent-volume": (
+        "{agent} accounts for a large share of this corpus's subagent spend: {title_lower}. Please look at "
+        "why {agent} is spawned so often, or so expensively, in my recent sessions, and propose whether "
+        "fewer spawns, a cheaper model, or a tighter brief fits best. Show me the change before making it."
+    ),
+    "compaction-churn": (
+        "Compaction is running often enough to matter: {title_lower}. Please check the current "
+        "autoCompactWindow in ~/.claude/settings.json or this project's .claude/settings.json, and raise "
+        "it to a value that fits this finding. Show me the diff before saving. Claude Code will ask my "
+        "permission before editing files under .claude."
+    ),
+    "long-context-share": (
+        "My top-level context is running large: {title_lower}. Please check the current autoCompactWindow "
+        "and propose either lowering it so we compact sooner, or moving exploration-heavy work into a "
+        "subagent whose context is discarded when it finishes. Show me the change before making it."
+    ),
+    "spawn-task-prompt": (
+        "The instructions I write when spawning {agent} are long: {title_lower}. From now on, when I'm "
+        "about to give {agent} a long brief, point it at the files it needs instead of pasting their "
+        "contents, and leave out background it can look up itself."
+    ),
+    "spawn-cost": (
+        "Spawning {agent} is expensive before it does any work: {title_lower}. Please check whether "
+        "{agent} has its own agent file; if it does, propose an omitClaudeMd or narrower-skills change to "
+        "trim what it's sent at startup, and if it's a built-in agent type with no file, suggest how to "
+        "shorten the Agent prompt I write when I spawn it. Show me the change before making it."
+    ),
+    "effort-mismatch": (
+        "High effort is being spent on work that didn't need it: {title_lower}. Please check the current "
+        "effortLevel in ~/.claude/settings.json (or the relevant agent's frontmatter) and propose lowering "
+        "it, keeping /effort in mind for the odd hard task. Show me the diff before saving. Claude Code "
+        "will ask my permission before editing files under .claude."
+    ),
+    "discovery-share": (
+        "Discovery is a large share of my work: {title_lower}. Please draft a short reference doc or "
+        "briefing from what you've already found in this project, so a future session can start from it "
+        "instead of re-discovering the same ground. Show me the draft before saving it anywhere."
+    ),
+    "pricing-coverage": (
+        "Some of my usage isn't priced, or is priced only by closest match: {title_lower}. Please look up "
+        "the missing model id(s) this finding names and add a row for each to pricing.toml with their real "
+        "per-token rates, citing the source. Show me the diff before saving."
+    ),
+    "limit-pressure": (
+        "Usage-cap pauses keep interrupting my work: {title_lower}. Please look at when these pauses "
+        "happened in my recent sessions and suggest how to pace concurrent agents to my usage window, or "
+        "whether my weekly cap is worth reviewing against actual usage."
+    ),
+    "tool-output-carry": (
+        "{title_lower} From now on, when you'd read a large file or run a command with long output, prefer "
+        "Grep over Read for a large file, pipe long shell output through head/tail or a digest script, and "
+        "keep agent reports short before they enter context."
+    ),
+    "compaction-window": (
+        "My session simulation suggests a larger autoCompactWindow would cost less overall: {title_lower}. "
+        "Please check the current autoCompactWindow in ~/.claude/settings.json or this project's "
+        ".claude/settings.json, and raise it to at least the value this finding names. Show me the diff "
+        "before saving. Claude Code will ask my permission before editing files under .claude."
+    ),
+    "model-tier": (
+        "{agent} could run on a cheaper model tier at today's volumes: {title_lower}. Please check the "
+        "current model setting for {agent} (settings.json for the main session, or its agent file's "
+        "frontmatter) and propose switching to the cheaper tier this finding names. Show me the diff "
+        "before saving, and let's compare quality on a few tasks before keeping it. Claude Code will ask "
+        "my permission before editing files under .claude."
+    ),
+    "wasted-turns": (
+        "A material share of my spend went to turns whose output I never used: {title_lower} From now on, "
+        "when the likely cause repeats (see the finding above), flag it before you start rather than after."
+    ),
+}
+
+#: rec.id -> (where and who it affects, trade-off, how to undo it) for
+#: every workflow-only recommendation (``rec.changes`` empty) that isn't
+#: already covered by :func:`explainer_for`. UX-8: every card gets a
+#: where/trade-off/undo entry, not just ones with a real
+#: :class:`SettingChange`. An id left out of both this dict and
+#: :data:`_WORKFLOW_PROMPTS` still gets no fix at all (see
+#: ``build_fixes``); an id here with no counterpart in
+#: ``_WORKFLOW_PROMPTS`` gets an explainer with no prompt (a purely
+#: informational card with nothing to ask Claude to do).
+_WORKFLOW_EXPLAINER: dict[str, tuple[str, str, str]] = {
+    "ttl-switch": (
+        "settings.json's promptCacheTtl (the main session) or an agent file's subagentPromptCacheTtl / "
+        "experimental.cacheTtl frontmatter (a named agent type) -- whichever key this finding names, at "
+        "user or project scope depending on where it is already set.",
+        "A 1-hour cache costs more to write than the 5-minute default, so it only pays off when replies "
+        "are often more than 5 minutes apart; the 1-hour lifetime is also ignored while a Pro or Max plan "
+        "is drawing on extra usage credits.",
+        "Set the TTL key back to its previous value (Claude Code shows the change before saving it, and "
+        "apply --revert undoes a change made with apply).",
+    ),
+    "long-tool-waits": (
+        "Nowhere in Claude Code's config -- this is about how you sequence messages around a "
+        "long-running Bash or PowerShell command, not a setting.",
+        "Batching instructions before a long command commits you to them before seeing its output, so "
+        "you may still need a follow-up message if the result changes what you'd ask for.",
+        "Nothing to undo -- go back to sending instructions as they occur to you.",
+    ),
+    "notification-invalidation": (
+        "Nowhere in Claude Code's config -- this is about how often a subagent's task notification lands "
+        "mid-conversation, which you influence by how you time or batch spawns, not a setting.",
+        "Batching notifications means you see a subagent's progress less often while it runs.",
+        "Nothing to undo -- go back to letting notifications arrive as they happen.",
+    ),
+    "batch-instructions": (
+        "Nowhere in Claude Code's config -- this is about sending queued instructions in one message "
+        "instead of several, not a setting.",
+        "One larger message is harder to skim than several short ones, and you lose the chance to react "
+        "to Claude's answer to the first before sending the rest.",
+        "Nothing to undo -- go back to sending instructions as they occur to you.",
+    ),
+    "subagent-volume": (
+        "Nowhere in Claude Code's config directly -- the fix is fewer spawns, a cheaper model for this "
+        "agent type, or a tighter brief; a model change is set in settings.json or the agent's frontmatter.",
+        "Spawning this agent type less often, or briefing it more tightly, means less parallel work per "
+        "message; a cheaper model may need more turns or miss things a stronger one wouldn't.",
+        "Go back to spawning it as before, or set the model back to what it was.",
+    ),
+    "compaction-churn": (
+        "settings.json's autoCompactWindow, at whichever scope this report's \"Setting to change\" line "
+        "above names.",
+        "A summary drops detail; after one, Claude may re-read files or lose track of earlier decisions -- "
+        "raising the window trades that against compacting, and re-reading the growing conversation, more "
+        "often.",
+        "Set autoCompactWindow back to its previous value (Claude Code shows the change before saving it).",
+    ),
+    "long-context-share": (
+        "settings.json's autoCompactWindow (compacting sooner), or nowhere in the config at all if you "
+        "instead move exploration into a subagent whose context is discarded when it finishes.",
+        "Compacting sooner drops detail the same way raising the window avoids; moving exploration into a "
+        "subagent means its findings only reach the main session through its final report, which can lose "
+        "nuance.",
+        "Set autoCompactWindow back to its previous value, or go back to exploring directly in the main "
+        "session.",
+    ),
+    "cache-read-dominance": (
+        "Nothing to change here -- this card is informational.",
+        "None -- no change is proposed.",
+        "Nothing to undo.",
+    ),
+    "baseline-bloat": (
+        "settings.json's mcpServers list (or a project's .mcp.json), and each agent's own mcpServers "
+        "frontmatter if only some agents need a given server.",
+        "Turning a server off for this project means no agent in it can use that server's tools, even for "
+        "a task that would have needed one.",
+        "Turn the server back on in the same file (Claude Code shows the change before saving it).",
+    ),
+    "agent-report-size": (
+        "The agent's own file (~/.claude/agents/<type>.md or .claude/agents/<type>.md) if it has one, or "
+        "the Agent prompt you write when you spawn a built-in agent type.",
+        "A shorter report can leave out detail you'd have wanted, especially for a task whose outcome is "
+        "hard to summarise briefly.",
+        "Remove the added report-length instruction (Claude Code shows the change before saving it if "
+        "it's in an agent file).",
+    ),
+    "spawn-task-prompt": (
+        "Nowhere in Claude Code's config -- this is about what you write in the Agent prompt when you "
+        "spawn this agent type.",
+        "Pointing an agent at files instead of pasting their contents means it spends a turn reading them "
+        "itself, which costs a little and assumes it can find the right ones.",
+        "Nothing to undo -- go back to writing the prompt as before.",
+    ),
+    "spawn-shared-claude-md": (
+        "The CLAUDE.md file(s) named in this finding, and the agent files that would gain the moved "
+        "sections.",
+        "A rule moved out of the shared file only reaches the agents it's moved into; any other agent "
+        "that relied on it implicitly no longer sees it.",
+        "Move the section back into the shared file (Claude Code shows the diff before saving it).",
+    ),
+    "spawn-cost": (
+        "The agent's own frontmatter file, if it has one (omitClaudeMd there trims what it's sent at "
+        "spawn); for a built-in agent type with no file, nowhere in the config -- the fix is a shorter "
+        "Agent prompt when you spawn it.",
+        "Trimming what an agent receives at spawn can remove context it actually needed, costing you a "
+        "follow-up message instead.",
+        "Undo the frontmatter change, or go back to briefing it as before.",
+    ),
+    "effort-mismatch": (
+        "settings.json's effortLevel (or an agent's own effort frontmatter field), at whichever scope "
+        "this report's \"Setting to change\" line above names; /effort raises it back for a single task "
+        "without changing the setting.",
+        "Lower effort can miss things on genuinely hard problems -- you're trading that risk against the "
+        "thinking tokens spent on work that, per this finding, didn't need them.",
+        "Set effortLevel back to its previous value, or raise it for one task with /effort without "
+        "touching the setting.",
+    ),
+    "discovery-share": (
+        "Nowhere in Claude Code's config -- this is about writing a briefing or reference doc once "
+        "instead of re-discovering the same ground each session.",
+        "A briefing or reference doc can go stale as the codebase changes, so it needs occasional upkeep "
+        "or it starts giving wrong context.",
+        "Stop referring to the doc, or delete it -- no setting was changed.",
+    ),
+    "pricing-coverage": (
+        "pricing.toml, in this project or wherever your pricing file lives.",
+        "None -- adding a pricing row only makes this report's cost figures more exact; it doesn't change "
+        "how Claude Code runs.",
+        "Remove the row you added from pricing.toml.",
+    ),
+    "data-quality": (
+        "Nothing to change in Claude Code's config -- this card is a caveat about how much to trust this "
+        "report's own figures.",
+        "None -- no change is proposed.",
+        "Nothing to undo.",
+    ),
+    "limit-pressure": (
+        "Nowhere in Claude Code's config directly -- this is about pacing concurrent agents to your usage "
+        "window, or reviewing your weekly cap in the Claude Code / Anthropic Console against actual usage.",
+        "Pacing agents to stay under the cap means less work happens in parallel; raising the cap, where "
+        "your plan allows it, costs more.",
+        "Go back to running agents concurrently as before.",
+    ),
+    "tool-output-carry": (
+        "Nowhere in Claude Code's config directly -- this is about how you invoke tools (Grep over Read, "
+        "head/tail on long shell output), and separately, the env caps in settings.json "
+        "(BASH_MAX_OUTPUT_LENGTH, MAX_MCP_OUTPUT_TOKENS) that the env-caps card covers on their own.",
+        "Piping output through head/tail or capping a report's length can cut detail you needed, forcing "
+        "a follow-up command to see the rest.",
+        "Nothing to undo -- go back to reading full output as before.",
+    ),
+    "compaction-window": (
+        "settings.json's autoCompactWindow, at whichever scope this report's \"Setting to change\" line "
+        "above names.",
+        "A larger window means fewer summaries, but each one that does happen drops more; a smaller "
+        "window compacts more often and can't see files a session re-reads after a summary the way this "
+        "simulation's rediscovery correction accounts for.",
+        "Set autoCompactWindow back to its previous value (Claude Code shows the change before saving it).",
+    ),
+    "model-tier": (
+        "settings.json's model key (the main session) or the agent's own model frontmatter field, at "
+        "whichever scope this report's \"Setting to change\" line above names.",
+        "A smaller model may need more replies for the same task or get some tasks wrong outright -- this "
+        "report holds token volumes and turn counts constant, so the real saving depends on trying it and "
+        "comparing quality first.",
+        "Set the model back to what it was (Claude Code shows the change before saving it).",
+    ),
+    "wasted-turns": (
+        "Nowhere in Claude Code's config directly -- the fix depends on the dominant cause named above (a "
+        "retry, a redo, or a targeted-checks-style habit change).",
+        "Slowing down to avoid a wasted turn (double-checking before running a command, say) costs a "
+        "little time up front on every turn, not just the ones that would have been wasted.",
+        "Nothing to undo -- go back to working as before.",
+    ),
+    "window-budget": (
+        "Nothing to change here -- this card states a fact about your plan's weekly limit, not a setting.",
+        "None -- no change is proposed.",
+        "Nothing to undo.",
     ),
 }
 
@@ -514,22 +792,43 @@ def build_fix(rec: Recommendation, change: SettingChange) -> dict:
 
 def build_fixes(rec: Recommendation) -> list[dict]:
     """One fix per :class:`SettingChange` on ``rec``; for workflow
-    advice with a known prompt, one prompt-only fix."""
+    advice with no ``SettingChange`` (a bare ``lever`` string or none at
+    all), one fix carrying whichever of a where/trade-off/undo explainer
+    (:data:`_WORKFLOW_EXPLAINER`, UX-8) and a prompt
+    (:data:`_WORKFLOW_PROMPTS`) this id has -- an id with neither gets no
+    fix at all, same as before UX-8. A purely informational id (no
+    change proposed) has an explainer but no prompt: ``prompt`` is then
+    ``""``, and the render layer (``render/markdown.py``,
+    ``render/html.py``, ``app.js``) skips the "Ask Claude to do it"
+    block rather than printing an empty one."""
     if rec.changes:
         return [build_fix(rec, change) for change in rec.changes]
+    workflow_entry = _WORKFLOW_EXPLAINER.get(rec.id)
+    explainer = (
+        [
+            ["Where and who it affects", workflow_entry[0]],
+            ["Trade-off", workflow_entry[1]],
+            ["How to undo it", workflow_entry[2]],
+        ]
+        if workflow_entry is not None
+        else []
+    )
     template = _WORKFLOW_PROMPTS.get(rec.id)
-    if template is None:
+    if template is None and not explainer:
         return []
+    prompt = (
+        template.format(title_lower=rec.title[:1].lower() + rec.title[1:], agent=rec.agent_type or "this agent")
+        if template is not None
+        else ""
+    )
     return [
         {
             "key": None,
             "agent": None,
-            "explainer": [],
+            "explainer": explainer,
             "command": None,
             "command_warning": "",
-            "prompt": template.format(
-                title_lower=rec.title[:1].lower() + rec.title[1:], agent=rec.agent_type or "this agent"
-            ),
+            "prompt": prompt,
         }
     ]
 

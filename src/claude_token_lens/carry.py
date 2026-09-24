@@ -841,6 +841,7 @@ def _rule_tool_output_carry(report: ReportModel, th: CarryThresholds) -> list[Re
     if count_idx is None or cost_idx is None or share_idx is None:
         return []
     capped_at = int(th.big_result_tokens)
+    units = report.units
 
     out: list[Recommendation] = []
     for row in table.rows:
@@ -864,11 +865,18 @@ def _rule_tool_output_carry(report: ReportModel, th: CarryThresholds) -> list[Re
             evidence.append(
                 _evidence(f"Saving if capped at {capped_at} tokens", saving, "carry", "carry_by_tool", tool)
             )
+            saving_text = (
+                units.money_text(saving, prefix="about ") if units is not None else f"about ${saving:.2f}"
+            )
             saving_clause = (
-                f" Capping {tool}'s output at {capped_at:,} tokens would have saved about ${saving:.2f} "
+                f" Capping {tool}'s output at {capped_at:,} tokens would have saved {saving_text} "
                 "in carry cost alone."
             )
 
+        # UX-2: units may be unset (a caller that built this ReportModel
+        # without a billing config) -- money_text still gives a plain
+        # currency-suffixed number rather than a bare "$" in that case.
+        cost_text = units.money_text(cost) if units is not None else f"${cost:.2f}"
         out.append(
             Recommendation(
                 id="tool-output-carry",
@@ -878,7 +886,7 @@ def _rule_tool_output_carry(report: ReportModel, th: CarryThresholds) -> list[Re
                 title=f"{tool}'s output dominates context carried across turns",
                 action=(
                     f"{tool} results made up {share:.1f}% of this corpus's cache volume once carry "
-                    f"cost is counted (${cost:.2f} paid to keep them cached turn after turn). Pipe "
+                    f"cost is counted ({cost_text} paid to keep them cached turn after turn). Pipe "
                     "long Bash/PowerShell output through head/tail or a digest script, prefer Grep "
                     "over Read for large files, and cap agent report length before it enters "
                     f"context.{saving_clause}"

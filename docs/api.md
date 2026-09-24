@@ -958,6 +958,18 @@ windowing query params" above) — this is what makes `/api/report.json?
 since=...&until=...` byte-equivalent to `report --since ... --until
 ...`, not just to `report --days N`.
 
+`report.json`'s `meta` carries `billing_mode`/`amounts_basis` (the
+report's own headline billing-mode facts) and, alongside them,
+`meta.units`: `{mode, share_per_usd, period_label, basis}` (UX-1) --
+the same facts in the shape `Units.money`'s JS mirror (`app.js`'s
+`money()`) needs to phrase an arbitrary amount client-side without a
+round trip through a table cell. `mode` is `billing_mode`;
+`share_per_usd` is the percentage points of the weekly usage limit one
+list-price dollar is worth, or `null` without an accepted elasticity
+fit yet; `period_label` is what that share is "of" (`"weekly usage
+limit"`); `basis` repeats `amounts_basis` so a consumer of `meta.units`
+alone still has the caveat text.
+
 ## Mutating routes
 
 The `POST` routes. All but `POST /api/whatif` write something, each

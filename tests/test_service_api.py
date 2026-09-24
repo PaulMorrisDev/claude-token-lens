@@ -1708,6 +1708,22 @@ def test_session_explain_gives_template_sentences(server):
     assert resp.status == 404
 
 
+def test_session_explain_headline_has_no_bare_dollar_under_a_subscription(server):
+    """UX-1: route_session_explain now builds its ``Units`` the same way
+    every other report-backed route does (``_report_units(_get_report_model
+    (...))``, same idiom ``_compute_impact`` uses) instead of a bare
+    ``Units(billing_mode, currency)`` with no elasticity fit -- this
+    corpus logs no usage-limit readings, so the fit still falls back to
+    "list-price equivalent", but the billing mode itself must still be
+    honoured end to end."""
+    (server.options.config_dir / "config.toml").write_text('billing = "subscription"\n', encoding="utf-8")
+    resp, raw = server.request("GET", f"/api/session/{server.session_id}/explain")
+    assert resp.status == 200
+    data = json.loads(raw)["data"]
+    assert "$" not in data["headline"]
+    assert "list-price equivalent" in data["headline"]
+
+
 def test_profiles_from_current_saves_allowlisted_non_managed_keys(server):
     server.store.upsert_snapshot(
         project_slug="proj-a",

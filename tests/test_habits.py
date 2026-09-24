@@ -137,7 +137,9 @@ def test_confidence_rises_with_evidence_and_inference_alone_never_reaches_high(n
 def test_the_playbook_puts_the_largest_saving_first_and_unpriced_habits_last():
     easy = CaptureTag(level="easy")
     h = Habits(cycles=[
-        *(_cycle(tag=easy, effort="high", thinking_cost=0.2) for _ in range(3)),
+        # 5 messages (the shared effort threshold, UX-3) with thinking well
+        # over the shared 30% share gate (0.2 of 0.3 output = 66.7%).
+        *(_cycle(tag=easy, effort="high", thinking_cost=0.2, output_cost=0.3) for _ in range(5)),
         _cycle(loops=1, loop_cost=1.0),
         *(_cycle(tag=CaptureTag(skill="unneeded"), skill_calls=[("lint", False, 0, 0.0)]) for _ in range(2)),
     ])
@@ -146,8 +148,38 @@ def test_the_playbook_puts_the_largest_saving_first_and_unpriced_habits_last():
     loops, effort, skill = items
     assert loops.saving == pytest.approx(1.0) and loops.sources == ("inferred",)
     # Half the thinking on each easy ask at high effort.
-    assert effort.saving == pytest.approx(3 * 0.1) and effort.sources == ("reported",)
+    assert effort.saving == pytest.approx(5 * 0.1) and effort.sources == ("reported",)
     assert skill.saving is None and "(lint)" in skill.evidence
+
+
+def test_effort_fit_uses_the_same_message_count_and_share_gate_as_effort_mismatch():
+    """UX-3: ``effort_fit`` is gated the same way as the ``effort-mismatch``
+    rule it's ``COVERED_BY`` -- ``_EFFORT_MIN_MESSAGES`` messages and more
+    than the configured thinking-share percent, not the old bare
+    ``len(easy) < 3`` count with no share check at all."""
+    easy = CaptureTag(level="easy")
+
+    def _easy_cycles(n, thinking_cost=0.2, output_cost=0.3):
+        return [_cycle(tag=easy, effort="high", thinking_cost=thinking_cost, output_cost=output_cost) for _ in range(n)]
+
+    # Below the shared message-count floor, even with a high share.
+    below_count = Habits(cycles=_easy_cycles(habits._EFFORT_MIN_MESSAGES - 1))
+    assert "effort_fit" not in _by_key(habits.playbook(below_count))
+
+    # At the message-count floor but the thinking share doesn't clear the
+    # gate (0.1 of 1.0 output = 10%, under the default 30%).
+    below_share = Habits(cycles=_easy_cycles(habits._EFFORT_MIN_MESSAGES, thinking_cost=0.1, output_cost=1.0))
+    assert "effort_fit" not in _by_key(habits.playbook(below_share))
+
+    # Both gates cleared: fires, at the class default 30% threshold.
+    fires = Habits(cycles=_easy_cycles(habits._EFFORT_MIN_MESSAGES))
+    assert "effort_fit" in _by_key(habits.playbook(fires))
+
+    # A configured (non-default) threshold, resolved via
+    # ``Habits.effort_share_threshold_pct``, is honoured too: a share that
+    # clears 30% but not a stricter 70% configured gate doesn't fire.
+    stricter = Habits(cycles=_easy_cycles(habits._EFFORT_MIN_MESSAGES), effort_share_threshold_pct=70.0)
+    assert "effort_fit" not in _by_key(habits.playbook(stricter))
 
 
 def test_large_asks_count_whether_reported_or_seen_and_say_which():
@@ -249,6 +281,40 @@ def test_untagged_unrated_work_says_how_to_get_more():
     assert any("run /tl-feedback" in n for n in notes)
 
 
+def test_span_weeks_does_not_stretch_a_single_day_into_a_fake_weekly_rate():
+    """F3/UX-4/7: a corpus that spans under 7 days no longer divides by a
+    fraction of a week (the old ``max(1, days) / 7`` multiplied a single
+    day's total by about 7x); ``span_weeks`` is 1.0 until there's a full
+    week, so a total divided by it is the raw total, not an extrapolation."""
+    h = Habits(cycles=[_cycle()])  # one cycle, no ``ts`` spread at all
+    assert h.span_days == 1.0
+    assert h.span_weeks == 1.0
+
+    two_days = Habits(cycles=[_cycle(WEEKS[0]), _cycle("2026-08-04")])
+    assert two_days.span_days == pytest.approx(1.0)  # a day apart, under the 7-day floor
+    assert two_days.span_weeks == 1.0
+
+    full_week = Habits(cycles=[_cycle(WEEKS[0]), _cycle(WEEKS[1])])
+    assert full_week.span_days == pytest.approx(7.0)
+    assert full_week.span_weeks == pytest.approx(1.0)
+
+    two_weeks = Habits(cycles=[_cycle(WEEKS[0]), _cycle(WEEKS[2])])
+    assert two_weeks.span_days == pytest.approx(14.0)
+    assert two_weeks.span_weeks == pytest.approx(2.0)
+
+
+def test_the_digest_is_titled_with_the_actual_day_span():
+    """UX-4/7: "Weekly pace (last N days)", not a bare "This week" that
+    implies a calendar week regardless of how much history there is."""
+    one_day = habits.digest_table(Habits(cycles=[_cycle(loops=1, loop_cost=1.0)]))
+    assert one_day.title == "Weekly pace (last 1 day)"
+
+    a_week = habits.digest_table(Habits(cycles=[
+        _cycle(WEEKS[0], loops=1, loop_cost=1.0), _cycle(WEEKS[1], loops=1, loop_cost=1.0),
+    ]))
+    assert a_week.title == "Weekly pace (last 7 days)"
+
+
 def test_the_digest_leads_with_the_habits_worth_most_then_what_met_goals_cost():
     h = Habits(
         cycles=[_cycle(loops=1, loop_cost=2.0), _cycle(WEEKS[1], loops=1, loop_cost=0.0)],
@@ -270,6 +336,93 @@ def test_the_playbook_table_carries_the_example_the_basis_and_the_trend():
     assert row["habit"] == "tool_loops" and row["theme"] == "verification"
     assert row["example"] == habits.EXAMPLES["tool_loops"] and row["basis"] == habits.BASES["tool_loops"]
     assert (row["source"], row["confidence"], row["trend"]) == ("inferred", "low", "new")
+    # UX-8: a where/trade-off/undo entry, same three-part shape as
+    # fixes.py's explainer for a Recommendation.
+    assert row["where"] == habits.WHERE["tool_loops"]
+    assert row["trade_off"] == habits.TRADE_OFFS["tool_loops"]
+    assert row["how_to_undo"] == habits.UNDO["tool_loops"]
+
+
+def test_every_playbook_item_has_a_where_trade_off_and_undo_entry():
+    """UX-8 (rest): a where/trade-off/undo entry for every habit item --
+    ``WHERE``, ``TRADE_OFFS`` and ``UNDO`` must cover exactly the keys
+    ``ITEMS`` does, or ``playbook_table`` raises a ``KeyError`` for
+    whichever item is missing."""
+    assert set(habits.WHERE) == set(habits.ITEMS)
+    assert set(habits.TRADE_OFFS) == set(habits.ITEMS)
+    assert set(habits.UNDO) == set(habits.ITEMS)
+    for key in habits.ITEMS:
+        assert habits.WHERE[key].strip()
+        assert habits.TRADE_OFFS[key].strip()
+        assert habits.UNDO[key].strip()
+
+
+def test_apply_covered_by_drops_the_saving_and_names_the_rule_when_it_fired():
+    """UX-3: effort_fit is covered by the effort-mismatch rule
+    (``habits.COVERED_BY``). When that rule actually fired in this
+    report, the playbook's own effort_fit saving is dropped -- shown
+    once, by the rule, not twice."""
+    from claude_token_lens.model import ReportModel, Recommendation, Section
+
+    h = Habits(cycles=[_cycle(loops=1, loop_cost=1.0)])
+    table = habits.playbook_table(h, habits.playbook(h))
+    # Graft an effort_fit row on, with a saving, so this test doesn't
+    # depend on the specific facts _item_effort_fit needs to fire.
+    key_idx = [c.key for c in table.columns].index("habit")
+    saving_idx = [c.key for c in table.columns].index("saving")
+    covered_idx = [c.key for c in table.columns].index("covered_by")
+    row = list(table.rows[0])
+    row[key_idx] = "effort_fit"
+    row[saving_idx] = 3.5
+    table.rows.append(row)
+
+    section = Section(key="habits", tables=[table])
+    rec = Recommendation(id="effort-mismatch", title="High effort is being spent on easy work")
+    report = ReportModel(sections=[section], recommendations=[rec])
+
+    habits.apply_covered_by(report)
+
+    covered_row = next(r for r in table.rows if r[key_idx] == "effort_fit")
+    assert covered_row[saving_idx] is None
+    assert covered_row[covered_idx] == "High effort is being spent on easy work"
+    # A row for an item not in COVERED_BY, or whose rule didn't fire, is
+    # untouched.
+    uncovered_row = next(r for r in table.rows if r[key_idx] == "tool_loops")
+    assert uncovered_row[covered_idx] == ""
+
+
+def test_apply_covered_by_leaves_the_saving_alone_when_the_rule_did_not_fire():
+    """The same habit, but its covering rule never fired in this report
+    (e.g. below threshold) -- its own saving is the only estimate there
+    is, so it must not be dropped."""
+    from claude_token_lens.model import ReportModel, Section
+
+    h = Habits(cycles=[_cycle(loops=1, loop_cost=1.0)])
+    table = habits.playbook_table(h, habits.playbook(h))
+    key_idx = [c.key for c in table.columns].index("habit")
+    saving_idx = [c.key for c in table.columns].index("saving")
+    covered_idx = [c.key for c in table.columns].index("covered_by")
+    row = list(table.rows[0])
+    row[key_idx] = "effort_fit"
+    row[saving_idx] = 3.5
+    table.rows.append(row)
+
+    section = Section(key="habits", tables=[table])
+    report = ReportModel(sections=[section], recommendations=[])
+
+    habits.apply_covered_by(report)
+
+    covered_row = next(r for r in table.rows if r[key_idx] == "effort_fit")
+    assert covered_row[saving_idx] == 3.5
+    assert covered_row[covered_idx] == ""
+
+
+def test_allow_routine_states_its_security_trade_off_and_a_permissions_undo():
+    """UX-8's own callout: allow_routine (a permission allow-rule) needs
+    to say plainly that it's a security trade-off, not just a
+    convenience one, and that /permissions is how to undo it."""
+    assert "security" in habits.TRADE_OFFS["allow_routine"].lower()
+    assert "/permissions" in habits.UNDO["allow_routine"]
 
 
 def test_brief_templates_start_from_the_checklist_and_put_what_you_leave_out_first():
@@ -589,8 +742,10 @@ def test_the_self_report_table_only_lists_words_that_were_tagged():
 def test_feedback_that_contradicts_easy_reports_lowers_effort_fits_confidence():
     easy, normal = CaptureTag(level="easy"), CaptureTag(level="normal")
     h = Habits(cycles=[
-        *(_cycle(tag=easy, effort="high", thinking_cost=0.2, outcome="missed") for _ in range(5)),
-        *(_cycle(tag=easy, effort="high", thinking_cost=0.2, outcome="met") for _ in range(3)),
+        # thinking_cost/output_cost keep the combined thinking share well
+        # over the shared 30% gate (0.2 of 0.3 output = 66.7%, UX-3).
+        *(_cycle(tag=easy, effort="high", thinking_cost=0.2, output_cost=0.3, outcome="missed") for _ in range(5)),
+        *(_cycle(tag=easy, effort="high", thinking_cost=0.2, output_cost=0.3, outcome="met") for _ in range(3)),
         *(_cycle(tag=normal, outcome="missed") for _ in range(1)),
         *(_cycle(tag=normal, outcome="met") for _ in range(4)),
     ])

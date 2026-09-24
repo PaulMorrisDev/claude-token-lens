@@ -34,8 +34,17 @@ from claude_token_lens.parse import parse_transcript
 from claude_token_lens.pricing import load_pricing
 from claude_token_lens.render.tables import format_cell
 from claude_token_lens.snapshots import Snapshot
+from claude_token_lens.units import Units
 
-from helpers import assert_privacy, tool_result_block, tool_use_block, turn_line, user_block_line, write_jsonl
+from helpers import (
+    assert_privacy,
+    elasticity_with_slope,
+    tool_result_block,
+    tool_use_block,
+    turn_line,
+    user_block_line,
+    write_jsonl,
+)
 
 PRICING = load_pricing()
 SONNET = "claude-sonnet-5"
@@ -425,13 +434,15 @@ def test_every_cell_renders_without_error():
 # -- RULES / recommendation ------------------------------------------------------
 
 
-def _report_with_section(section: Section) -> ReportModel:
-    return ReportModel(
+def _report_with_section(section: Section, units=None) -> ReportModel:
+    report = ReportModel(
         meta=ReportMeta(pricing=PricingMeta(coverage_pct=100.0)),
         sections=[section],
         recommendations=[],
         diagnostics=Diagnostics(),
     )
+    report.units = units
+    return report
 
 
 def _assert_evidence_resolves(report: ReportModel, rec) -> None:
@@ -474,6 +485,27 @@ def test_rule_fires_disable_when_net_saving_negative():
     rec = recs[0]
     assert "not paying for itself" in rec.title.lower()
     _assert_evidence_resolves(report, rec)
+
+
+def test_rule_actions_have_no_bare_dollar_under_a_subscription():
+    """UX-2 / finding F1-F3: a subscription's Recommendation.action must
+    route through Units (never a raw f"${...:.4f}") and never double
+    "about"/"approximately about"."""
+    units = Units(billing_mode="subscription", currency="USD", elasticity=elasticity_with_slope())
+    th = savers.SaverThresholds()
+
+    keep_stats = _present_absent_stats(dict(input_tokens=1_000_000), dict(input_tokens=3_000_000))
+    keep_report = _report_with_section(savers.build_section(keep_stats, th), units=units)
+    [keep_rec] = savers.RULES["saver-tool-roi"](keep_report, th, snapshot=None)
+    assert "$" not in keep_rec.action
+    assert "about about" not in keep_rec.action.lower()
+
+    disable_stats = _present_absent_stats(dict(input_tokens=3_000_000), dict(input_tokens=1_000_000))
+    disable_report = _report_with_section(savers.build_section(disable_stats, th), units=units)
+    [disable_rec] = savers.RULES["saver-tool-roi"](disable_report, th, snapshot=None)
+    assert "$" not in disable_rec.action
+    assert "about about" not in disable_rec.action.lower()
+    assert "approximately about" not in disable_rec.action.lower()
 
 
 def test_rule_suppressed_below_min_sample():

@@ -101,7 +101,11 @@ class _Context:
         amount = self.units.money(float(usd), period=_PERIOD)
         if amount is None:
             return ""
-        text = f"{prefix}{amount.text()}."
+        # UX-2: Amount.phrase avoids "About about X% of your weekly
+        # usage limit" -- a subscription's own share text already opens
+        # with "about" (units.Units.money), so a plain f"{prefix}{...}"
+        # concatenation here used to double it (finding F3).
+        text = f"{amount.phrase(prefix)}."
         return text[:1].upper() + text[1:]
 
     def basis(self, text: str) -> str:

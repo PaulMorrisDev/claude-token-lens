@@ -78,6 +78,7 @@ from .model import Column, Section, Table
 from .parse import load_or_create_salt
 from .pricing import price_turn
 from .recommend import _BUILTIN_AGENT_TYPES
+from .render.tables import format_cell
 from .report import (
     _dominant_transcript_model,
     _extract_workstyle_features,
@@ -576,7 +577,13 @@ def _format_team_cell(row: dict | None, min_sessions: int) -> str:
     cost_per_session = (cost_usd / sessions) if isinstance(cost_usd, (int, float)) and sessions else None
     if cost_per_session is None:
         return f"{sessions} session(s)"
-    return f"${cost_per_session:.4f}/session ({sessions} sessions)"
+    # UX-2: pooled across machines that may each be on a different
+    # billing mode, so this can't be phrased as any one machine's share
+    # of its own weekly usage limit -- forced to a plain currency-
+    # suffixed number (never a bare "$") via format_cell with no `units`,
+    # same fallback every other billing-mode-aware amount in this
+    # codebase uses when it can't be phrased for a specific mode.
+    return f"{format_cell(cost_per_session, 'money')}/session ({sessions} sessions)"
 
 
 def _build_team_axis_table(documents: list[dict], axis: str, row_label: str, min_sessions: int) -> Table:

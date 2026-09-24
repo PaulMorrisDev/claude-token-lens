@@ -24,13 +24,15 @@ from claude_token_lens.compaction_sim import (
     CANDIDATE_WINDOWS,
     RULES,
     CompactionSimThresholds,
+    _rediscovery_allowance_usd_used,
     build_section,
     simulate_compaction_windows,
 )
 from claude_token_lens.model import Event, EventKind, ReportModel, ReportMeta, TranscriptMeta, TranscriptResult
 from claude_token_lens.pricing import load_pricing
+from claude_token_lens.units import Units
 
-from helpers import assert_privacy
+from helpers import assert_privacy, elasticity_with_slope
 
 PRICING = load_pricing()
 SONNET_RATES = PRICING.resolve_model("claude-sonnet-5")
@@ -407,8 +409,10 @@ def test_thresholds_describe_nonempty():
 # -- rule: compaction-window -----------------------------------------------
 
 
-def _base_report(sections: list[model.Section]) -> ReportModel:
-    return ReportModel(meta=ReportMeta(), sections=sections, recommendations=[])
+def _base_report(sections: list[model.Section], units=None) -> ReportModel:
+    report = ReportModel(meta=ReportMeta(), sections=sections, recommendations=[])
+    report.units = units
+    return report
 
 
 #: The plateau transcript saves 0.99 USD at best, so the rule tests
@@ -416,10 +420,10 @@ def _base_report(sections: list[model.Section]) -> ReportModel:
 _SMALL_FIXTURE_TH = CompactionSimThresholds(switch_usd=0.1)
 
 
-def _plateau_report(th: CompactionSimThresholds | None = None) -> ReportModel:
+def _plateau_report(th: CompactionSimThresholds | None = None, units=None) -> ReportModel:
     tr = _top_level_transcript("sess-plateau", _plateau_transcript())
     stats = simulate_compaction_windows([tr], SONNET_RATES, {}, th)
-    return _base_report([build_section(stats, th)])
+    return _base_report([build_section(stats, th, units=units)], units=units)
 
 
 def test_rule_fires_when_saving_clears_both_thresholds():
@@ -436,6 +440,17 @@ def test_rule_fires_when_saving_clears_both_thresholds():
     # smallest is the floor.
     assert "at least 100,000" in rec.action
     assert_privacy(rec)
+
+
+def test_rule_action_has_no_bare_dollar_under_a_subscription():
+    """UX-2 / finding F1-F2: a subscription's Recommendation.action must
+    route through Units, never a raw f"${...:.2f}"."""
+    units = Units(billing_mode="subscription", currency="USD", elasticity=elasticity_with_slope())
+    report = _plateau_report(units=units)
+
+    [rec] = RULES[0](report, _SMALL_FIXTURE_TH, None)
+    assert "$" not in rec.action
+    assert "about about" not in rec.action.lower()
 
 
 def test_rule_does_not_fire_when_no_transcripts():
@@ -542,3 +557,20 @@ def test_rule_rediscovery_correction_suppresses_a_saving_that_only_clears_the_ba
     by_window = {r[0]: r for r in report.sections[0].tables[0].rows}
     assert by_window["100,000"][3] == pytest.approx(1.966)  # the sweep's cost is unchanged
     assert RULES[0](report, th, None) == []
+
+
+def test_rediscovery_allowance_used_note_round_trips_through_its_new_no_dollar_format():
+    """UX-2 regression: ``build_section``'s "Rediscovery allowance used:
+    ..." note dropped its bare "$" (it now reads "X.XXXX <currency>"
+    instead of "$X.XXXX", see the module's own UX-2 comment there) --
+    ``_rediscovery_allowance_usd_used`` must still read the number back
+    out of that note rather than silently falling through to the
+    *reading* call's own ``default_rediscovery_allowance_usd`` (which
+    would happen if its prefix match still expected a "$")."""
+    build_th = CompactionSimThresholds(switch_usd=0.9, default_rediscovery_allowance_usd=0.1234)
+    report = _plateau_report(build_th)  # note baked in at 0.1234 (this fixture's own default branch)
+
+    # A different thresholds object, with a distinct default, at read time:
+    # correct parsing returns the note's 0.1234, not this object's 0.9999.
+    read_th = CompactionSimThresholds(default_rediscovery_allowance_usd=0.9999)
+    assert _rediscovery_allowance_usd_used(report, read_th) == pytest.approx(0.1234)

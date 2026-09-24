@@ -86,7 +86,7 @@ def _help_lines(help_) -> list[str]:
     return [line for pair in zip(lines, [""] * len(lines)) for line in pair]
 
 
-def _render_table(table: Table, currency: str, explain: bool = False) -> list[str]:
+def _render_table(table: Table, currency: str, explain: bool = False, units=None) -> list[str]:
     lines = [f"### {table.title}", ""]
     if explain:
         lines.extend(_help_lines(table.help))
@@ -101,7 +101,7 @@ def _render_table(table: Table, currency: str, explain: bool = False) -> list[st
         if row_group and row_group != group:
             group = row_group
             lines.append("| " + " | ".join([f"**{escape_md(group)}**"] + [""] * (len(table.columns) - 1)) + " |")
-        cells = [escape_md(text) for text in display_row(row, table, currency)]
+        cells = [escape_md(text) for text in display_row(row, table, currency, units)]
         lines.append("| " + " | ".join(cells) + " |")
     if table.notes:
         lines.append("")
@@ -115,6 +115,7 @@ def _render_table(table: Table, currency: str, explain: bool = False) -> list[st
 
 def _render_sections(model: ReportModel, explain: bool = False) -> list[str]:
     currency = model.meta.pricing.currency
+    units = model.units
     lines: list[str] = []
     for section in model.sections:
         lines.append(f"## {section.title}")
@@ -124,7 +125,7 @@ def _render_sections(model: ReportModel, explain: bool = False) -> list[str]:
                 lines.extend([section.intro, ""])
             lines.extend(_help_lines(section.help))
         for table in section.tables:
-            lines.extend(_render_table(table, currency, explain))
+            lines.extend(_render_table(table, currency, explain, units))
             lines.append("")
         if section.notes:
             lines.extend(f"- {note}" for note in section.notes)
@@ -141,7 +142,10 @@ def _render_fix(fix: dict) -> list[str]:
         subject = fix_subject(fix)
         lines += ["", f"What you're changing{subject}:", ""]
         lines += [f"- **{heading}.** {text}" for heading, text in fix["explainer"]]
-    lines += ["", "Ask Claude to do it:", "", "```text", fix["prompt"], "```"]
+    # UX-8: a purely informational workflow card (fixes.build_fixes) has
+    # an explainer but no prompt -- nothing to ask Claude to do.
+    if fix.get("prompt"):
+        lines += ["", "Ask Claude to do it:", "", "```text", fix["prompt"], "```"]
     if fix.get("command"):
         lines += [
             "",
@@ -158,6 +162,7 @@ def _render_fix(fix: dict) -> list[str]:
 
 def _render_recommendations(model: ReportModel) -> list[str]:
     currency = model.meta.pricing.currency
+    units = model.units
     lines = ["## Recommendations", ""]
     if not model.recommendations:
         lines.append("None.")
@@ -186,7 +191,7 @@ def _render_recommendations(model: ReportModel) -> list[str]:
                 # column's kind (e.g. "63.7%", "47,345 tokens") instead
                 # of printing the raw float -- see render/tables.py's
                 # module docstring.
-                formatted = format_evidence_value(model, value, source_table, row_key, currency)
+                formatted = format_evidence_value(model, value, source_table, row_key, currency, units)
                 lines.append(f"- {label}: {formatted} ({evidence_source(model, source_table, row_key)})")
         lines.append("")
     return lines
