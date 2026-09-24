@@ -1002,9 +1002,11 @@ def make_handler(
         return past, _report_units(corpus, rates, config, options.config_dir)
 
     def _capture_usage(config, enabled_at: str):
-        """``(usage, sessions started since, signal sessions by metric)``
+        """``(usage, sessions started since, signal sessions by metric,
+        cost a week, what depends on capture or your feedback a week)``
         from ``enabled_at`` on."""
         from .. import capture as capture_mod
+        from .. import habits as habits_mod
         from .. import signals as signals_mod
         from ..corpus import _session_first_ts
         from ..discovery import _parse_bound
@@ -1013,6 +1015,10 @@ def make_handler(
         rates = _capture_rates(config)
         corpus = rebuild.corpus_from_store(store, since=enabled_at)
         use = capture_mod.usage(corpus, rates, since=enabled_at)
+        weekly_cost = capture_mod.weekly_cost(use)
+        dependent_value = habits_mod.capture_dependent_value(
+            habits_mod.collect(corpus, rates, ratings=store.all_feedback())
+        )
         start = _parse_bound(enabled_at)
         started = 0
         for bundle in corpus.sessions:
@@ -1027,7 +1033,10 @@ def make_handler(
             metric_id = _SIGNAL_METRICS.get(signal.event)
             if metric_id is not None:
                 seen.setdefault(metric_id, set()).add(signal.session_hash)
-        return use, started, {metric_id: len(hashes) for metric_id, hashes in seen.items()}
+        return (
+            use, started, {metric_id: len(hashes) for metric_id, hashes in seen.items()}, weekly_cost,
+            dependent_value,
+        )
 
     def _capture_feedback(config):
         """``capture.feedback_usage`` over the replayed days: your
@@ -1055,9 +1064,9 @@ def make_handler(
             lambda: _capture_history(config),
             _CAPTURE_HISTORY_MAX_AGE_S,
         )
-        use, started, signal_sessions = None, 0, {}
+        use, started, signal_sessions, weekly_cost, dependent_value = None, 0, {}, None, None
         if capture.is_on and capture.enabled_at:
-            use, started, signal_sessions = _capture_part(
+            use, started, signal_sessions, weekly_cost, dependent_value = _capture_part(
                 "usage",
                 (store.change_token(), capture.enabled_at, *soft),
                 (capture.enabled_at, *soft),
@@ -1093,7 +1102,7 @@ def make_handler(
         return capture_view.view(
             capture, past=past, units=units, use=use, hooks=hooks, signal_sessions=signal_sessions,
             started_since=started, feedback_use=feedback_use, skill=skill, brief_skill=brief_skill, ratings=ratings,
-            statusline=statusline,
+            statusline=statusline, weekly_cost=weekly_cost, dependent_value=dependent_value,
         )
 
     def _capture_conflict(message: str, commands: list[str]) -> tuple[int, dict]:

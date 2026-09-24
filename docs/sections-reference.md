@@ -676,6 +676,17 @@ capture is off or no feedback has been given.
   ...): pieces of work, messages, cost, per piece, the most common kind
   of task, what slowed it most, what would have helped most, and where
   the answers came from (`/tl-feedback` or a dashboard rating).
+- `habits_self_report` — Claude's own reports against your feedback: per
+  `level` word (`easy`, `normal`, `hard`) and `brief` word (`clear`,
+  `partial`, `vague`) it tagged a message with, the messages that carries,
+  how many your feedback covers, the shares that met or missed their
+  goal, and the share your next message redid or corrected. A note says
+  whether work Claude called easy missed its goal more often than normal
+  work, once there is enough rated feedback on both sides to tell
+  (`habits.MIN_GROUP`); when it does, the habits built from the `level`
+  word (`effort_fit` and others in `habits._LEVEL_ITEMS`) are capped at
+  low confidence in `habits_playbook`, with a note in their evidence
+  explaining why.
 - `habits_prompt_flags` — per thing a message contained (a file path, a
   code block, an error, a link, what done means, numbered steps, a
   paste): messages and share, then cost per message and reads and
@@ -695,8 +706,12 @@ capture is off or no feedback has been given.
   from the transcripts (`capture.usage`): the level, since when, note
   and tag tokens, cost and share of spend, how often Claude tagged its
   replies and its agent reports, and the `/tl-feedback` runs and their
-  cost. The dashboard's Capture tab shows the same figures from
-  `/api/capture`.
+  cost, then what it has cost a week since it began (`capture.weekly_cost`)
+  next to what the habits worth trying that need its reports or your
+  feedback are worth a week (`habits.capture_dependent_value`) — a note
+  says so instead of a value when nothing measured yet depends on
+  either. The dashboard's Capture tab and banner show the same figures
+  from `/api/capture`'s `roi` field.
 
 ## `workstyle` (`workstyle.py`)
 

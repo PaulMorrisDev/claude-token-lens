@@ -65,7 +65,10 @@ N tokens · <amount> (x% of spend) · tagged on P% of messages", in
 billing units, with links to the Capture and Work habits tabs and notes when the end
 time has passed, a hook entry is missing, no notes have been seen,
 Claude tags too few messages, or enough has been collected to lower
-the level. While it is off, the banner is a one-line invitation with
+the level, plus, once capture has run long enough to price a weekly
+cost, a note weighing that cost against what the habits worth trying
+that depend on its reports or your feedback are worth a week (or that
+nothing measured yet relies on it). While it is off, the banner is a one-line invitation with
 the Essentials estimate from your own last two weeks; **Hide** keeps
 it hidden (`localStorage` `tls:captureInviteHidden`). The feedback
 note ("Finished a piece of work? Run /tl-feedback ...") shows while
@@ -304,7 +307,11 @@ what they did", the setup panel and service health.
 14. **Capture** — `/api/capture`: the cost warning, then where
     capture stands (its setting, what it has cost since it was turned
     on by scope, how often Claude tagged, and what the estimates
-    replay), a red-edged notice with the `capture connect` command
+    replay), a line weighing what capture costs a week against what the
+    habits worth trying that depend on it or your feedback are worth a
+    week once there's enough time since it began to price it (`roi`;
+    the same wording as the banner's note, and left out while that's
+    `null`), a red-edged notice with the `capture connect` command
     (Copy button) when `settings.json` lacks a hook entry a chosen
     metric needs, the level cards (Off, Free, Essentials, Standard,
     Deep, Custom) each with what it adds and its weekly estimate, the

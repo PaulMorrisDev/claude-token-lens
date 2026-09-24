@@ -87,6 +87,38 @@ def test_on_notes_low_coverage_enough_data_and_expiry():
     assert any(note.startswith("Enough collected for every metric on") for note in notes)
 
 
+# -- capture ROI: what it costs against what depends on it -----------------
+
+
+def test_roi_is_none_without_a_weekly_cost_to_price():
+    data = capture_view.view(_on(), units=API, use=_use())
+    assert data["roi"] is None
+    assert not any("Capture cost about" in note for note in data["banner"]["notes"])
+
+
+def test_roi_prices_capture_against_what_depends_on_it():
+    data = capture_view.view(_on(), units=API, use=_use(), weekly_cost=2.0, dependent_value=5.0)
+    roi = data["roi"]
+    assert roi["cost"]["usd"] == 2.0 and roi["value"]["usd"] == 5.0 and roi["measured"] is True
+    assert (
+        "Capture cost about 2.00 USD a week; suggestions that rely on it are worth about 5.00 USD a week."
+        in data["banner"]["notes"]
+    )
+
+
+def test_roi_says_so_instead_of_a_zero_when_nothing_measured_depends_on_capture():
+    data = capture_view.view(_on(), units=API, use=_use(), weekly_cost=2.0, dependent_value=None)
+    roi = data["roi"]
+    assert roi["cost"]["usd"] == 2.0 and roi["value"] is None and roi["measured"] is False
+    assert "Capture cost about 2.00 USD a week; nothing measured yet relies on it." in data["banner"]["notes"]
+
+
+def test_roi_adds_no_banner_note_when_nothing_was_spent():
+    data = capture_view.view(_on(), units=API, use=_use(), weekly_cost=0.0, dependent_value=None)
+    assert data["roi"]["cost"]["usd"] == 0.0
+    assert not any("Capture cost about" in note for note in data["banner"]["notes"])
+
+
 def test_on_with_no_notes_seen_says_the_hook_may_be_blocked():
     use = capture.CaptureUsage(since="2026-09-20T10:00:00+00:00")
     data = capture_view.view(_on(), units=API, use=use, started_since=5)

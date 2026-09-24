@@ -11,6 +11,7 @@ be worked out by hand.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace as NS
 
@@ -333,3 +334,28 @@ def test_estimate_prices_the_feedback_reminder_once_per_message():
     out = catalogue.METRICS_BY_ID["feedback_reminder"].out_chars
     assert est.cost == pytest.approx(note * 1e-6 + out * 2e-6)
     assert est.tag_tokens == round(out * 10 / 4)
+
+
+# -- weekly_cost --------------------------------------------------------------------
+
+
+def _priced_use(since: str, note_cost: float = 0.0, tag_cost: float = 0.0) -> capture.CaptureUsage:
+    use = capture.CaptureUsage(since=since)
+    use.scopes["main"] = capture.ScopeUse(note_cost=note_cost, tag_cost=tag_cost)
+    return use
+
+
+def test_weekly_cost_spreads_what_was_measured_over_the_weeks_since_it_began():
+    use = _priced_use("2026-09-01T00:00:00+00:00", note_cost=1.0, tag_cost=0.4)
+    now = datetime(2026, 9, 15, tzinfo=timezone.utc)
+    assert capture.weekly_cost(use, now=now) == pytest.approx(1.4 / 2)
+
+
+def test_weekly_cost_is_none_without_a_start_time():
+    assert capture.weekly_cost(capture.CaptureUsage(since="")) is None
+
+
+def test_weekly_cost_is_none_less_than_a_day_after_it_began():
+    use = _priced_use("2026-09-24T00:00:00+00:00", note_cost=1.0)
+    now = datetime(2026, 9, 24, 12, tzinfo=timezone.utc)
+    assert capture.weekly_cost(use, now=now) is None

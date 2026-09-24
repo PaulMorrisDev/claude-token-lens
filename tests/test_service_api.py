@@ -1852,6 +1852,7 @@ def test_capture_lists_every_metric_with_what_why_and_cost(server):
     assert data["config"]["on"] is False
     assert data["history"]["sessions"] == 1
     assert data["measured"] is None
+    assert data["roi"] is None
     assert data["banner"]["on"] is False
     assert data["banner"]["headline"].startswith("Metrics capture is off.")
     assert "uses your tokens" in data["warning"]
@@ -1873,6 +1874,9 @@ def test_post_capture_saves_the_level_and_names_the_hooks_it_needs(server):
     assert task["on"] is True and task["needs_hook"] is True
     assert data["measured"]["sessions"] == 0
     assert "no captured sessions yet" in data["banner"]["headline"]
+    # Turned on moments ago: too little time has passed to price a
+    # weekly cost from, so there's nothing to weigh against either.
+    assert data["roi"] is None
     _resp, health = server.get_json("/api/health")
     assert health["data"]["capture"]["level"] == "essentials"
     assert health["data"]["capture"]["hooks_ok"] is False
