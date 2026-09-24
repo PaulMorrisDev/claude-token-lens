@@ -641,7 +641,11 @@ class _PendingTurn:
     tool_error_count: int = 0
     tool_error_chars: int = 0
     #: Context-files addition (see model.py's ``Turn.skills_invoked``).
-    skills_invoked: list[str] = field(default_factory=list)
+    #: SEC-P3: keyed by the ``Skill`` tool_use's own id rather than
+    #: appended eagerly, so a call whose result later errors can be taken
+    #: back (mirrors ``edit_hashes_by_tool_use`` below) instead of
+    #: self-authorising its own name for this same turn's tag claim.
+    skill_calls_by_tool_use: dict[str, str] = field(default_factory=dict)
     #: Quality-signals addition (see model.py's ``Turn.stop_reason``/
     #: ``tool_errors_by_tool``/``edit_target_hashes``).
     stop_reason: str | None = None
@@ -762,9 +766,17 @@ def _merge_content_blocks(
                 pending.edit_hashes_by_tool_use.setdefault(tool_use_id, []).extend(edited)
 
         if name == "Skill":
+            # SEC-P3: only a name shaped like a real skill is even a
+            # candidate, and it's provisional until the call comes back
+            # without an error -- see _accumulate_tool_results.
             skill_name = tool_input.get("skill")
-            if isinstance(skill_name, str) and skill_name:
-                pending.skills_invoked.append(skill_name)
+            if (
+                isinstance(skill_name, str)
+                and capture_tags.SKILL_NAME_RE.match(skill_name)
+                and isinstance(tool_use_id, str)
+                and tool_use_id
+            ):
+                pending.skill_calls_by_tool_use[tool_use_id] = skill_name
         elif name == "ExitPlanMode":
             plan = tool_input.get("plan")
             if isinstance(plan, str) and plan:
@@ -1021,6 +1033,11 @@ def _accumulate_tool_results(
                 if edited and (name not in _SHELL_TOOL_NAMES or kind in _SHELL_NOT_RUN_KINDS):
                     for hashed in edited:
                         current.edit_target_hashes.remove(hashed)
+                # SEC-P3: a Skill call that errored never happened as far
+                # as "known skills" is concerned -- take back its
+                # provisional name so it can't self-authorise this same
+                # turn's own tag claim.
+                current.skill_calls_by_tool_use.pop(tool_use_id, None)
             # Metrics-capture addition: the report a synchronous agent
             # handed back (a background agent's launch message is not its
             # report; that arrives later as a task notification), and
@@ -1167,9 +1184,14 @@ def _finalize_turn(
     result_marker: str | None = None
     feedback = pending.feedback
     if pending.last_text_tail:
-        known_skills = set(skill_names or ()) | set(pending.skills_invoked)
+        known_skills = set(skill_names or ()) | set(pending.skill_calls_by_tool_use.values())
         cap, result_marker = capture_tags.parse_reply_tags(pending.last_text_tail, known_skills)
-        feedback = capture_tags.parse_feedback_tag(pending.last_text_tail) or feedback
+        # SEC-P1: the answers to /tl-feedback's own question (or a
+        # declined question) beat a `[tl-fb: ...]` tag -- Claude could
+        # forge that tag in any reply, but not the AskUserQuestion call
+        # its answers are read from.
+        if feedback is None:
+            feedback = capture_tags.parse_feedback_tag(pending.last_text_tail)
 
     # Usage-limits addition (see module docstring): a limit-hit/resume
     # among the events preceding this turn means the gap to the previous
@@ -1227,7 +1249,7 @@ def _finalize_turn(
         gap_cause=gap_cause,
         tool_error_count=pending.tool_error_count,
         tool_error_chars=pending.tool_error_chars,
-        skills_invoked=tuple(pending.skills_invoked),
+        skills_invoked=tuple(pending.skill_calls_by_tool_use.values()),
         stop_reason=pending.stop_reason,
         tool_calls_by_tool=dict(pending.tool_calls_by_tool),
         tool_errors_by_tool=dict(pending.tool_errors_by_tool),
@@ -1477,6 +1499,18 @@ def parse_transcript(path: str | Path, meta: TranscriptMeta) -> TranscriptResult
             if isinstance(version, int) and (cap_version is None or version > cap_version):
                 cap_version = version
             cap_codes.update(dict.fromkeys(event.detail.get("codes") or ()))
+
+    # SEC-P2: a turn's tag is trusted only for what a note this
+    # transcript actually saw asked for -- empty when it never saw one
+    # at all (capture_tags.filter_tag).
+    requested = frozenset(cap_codes) if cap_injections else frozenset()
+    subagent = meta.kind != "top-level"
+    for i, turn in enumerate(turns):
+        if turn.cap is None and turn.result_marker is None:
+            continue
+        cap, result_marker = capture_tags.filter_tag(turn.cap, turn.result_marker, requested=requested, subagent=subagent)
+        if cap is not turn.cap or result_marker != turn.result_marker:
+            turns[i] = replace(turn, cap=cap, result_marker=result_marker)
 
     final_meta = replace(
         meta,

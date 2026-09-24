@@ -213,6 +213,28 @@ def test_privacy_tool_result_text_is_never_stored(tmp_path: Path):
     _assert_no_violations(result)
 
 
+def test_privacy_a_malformed_skill_name_never_reaches_skills_invoked(tmp_path: Path):
+    # SEC-P3: a Skill tool_use's own "skill" input is free text Claude
+    # controls. This value is short and has no drive-letter/URL/@ shape,
+    # so neither the length cap above nor assert_privacy's shape scan
+    # would catch it on their own -- SKILL_NAME_PATTERN is the actual
+    # gate (a space isn't in its allowed character set), and it must
+    # keep a string like this out of Turn.skills_invoked altogether.
+    lines = [
+        turn_line(
+            message_id="msg_1",
+            input_tokens=100,
+            output_tokens=10,
+            content=[tool_use_block("Skill", "tu1", {"skill": "leak project codename"})],
+        ),
+    ]
+    path = tmp_path / "session.jsonl"
+    write_jsonl(path, lines)
+    result = parse_transcript(path, TranscriptMeta(path=str(path)))
+    assert result.turns[0].skills_invoked == ()
+    _assert_no_violations(result)
+
+
 def test_privacy_mcp_instructions_delta_text_is_never_stored(tmp_path: Path):
     huge_instructions = "## some-mcp-server\nlots of instruction text here " * 200
     lines = [

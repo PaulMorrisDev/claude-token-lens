@@ -40,11 +40,17 @@ install pointed at a store a later version already migrated), or a
 recorded version with no registered ladder step (a version this codebase
 never actually shipped, or one from further back than the ladder
 reaches) -- and in either case the on-disk file is first copied aside to
-``<path>.bak-<version>`` and a warning printed, so a drop-and-rebuild
-still never *silently* discards data. The store is always a derived
+a timestamped ``<path>.bak-<version>-<timestamp>``, never overwriting an
+earlier backup (ROB-P6), and a warning printed, so a drop-and-rebuild
+still never *silently* discards data. The store is otherwise a derived
 cache over transcripts still on disk, never the source of truth, and
 the next watcher tick repopulates a rebuilt store because
-``known_files()`` is empty again.
+``known_files()`` is empty again -- except ``session_tags`` and
+``session_feedback`` (your own tags and ratings from the Sessions tab),
+which nothing else can re-derive: a drop-and-rebuild reads them before
+dropping and writes them straight back once the tables are recreated
+(``_export_marks``/``_reimport_marks``), so they survive even the two
+cases above that the additive ladder can't serve.
 
 A transcript whose file disappears from disk (review finding 3: "the
 store must outlive Claude Code's own ``cleanupPeriodDays``") is never
@@ -303,12 +309,13 @@ class Store:
             conn.execute("PRAGMA foreign_keys = ON")
 
     def _backup_before_rebuild(self, version: int) -> None:
-        """Copy the on-disk store file aside as ``<path>.bak-<version>``
-        before a drop-and-rebuild that the ``MIGRATIONS`` ladder can't
-        serve (review B2), and print a warning naming where it went --
-        so a version this build can't migrate additively is never
-        *silently* discarded. A no-op for an in-memory store (nothing on
-        disk to copy)."""
+        """Copy the on-disk store file aside as ``<path>.bak-<version>-
+        <timestamp>`` (ROB-P6: timestamped, and never overwritten -- see
+        below) before a drop-and-rebuild that the ``MIGRATIONS`` ladder
+        can't serve (review B2), and print a warning naming where it
+        went -- so a version this build can't migrate additively is
+        never *silently* discarded. A no-op for an in-memory store
+        (nothing on disk to copy)."""
         if self.path == ":memory:":
             return
         source = Path(self.path)
@@ -318,7 +325,18 @@ class Store:
         if conn is not None:
             with contextlib.suppress(sqlite3.Error):
                 conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-        backup = source.with_name(source.name + f".bak-{version}")
+        # ROB-P6: a timestamp (colon-free -- Windows paths can't hold one)
+        # so a second rebuild of the same recorded version, later, gets
+        # its own backup rather than silently overwriting the first --
+        # and a numeric suffix on top of that, in the unlikely case two
+        # rebuilds land in the same second, so this copy is genuinely
+        # never overwritten.
+        stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+        backup = source.with_name(source.name + f".bak-{version}-{stamp}")
+        suffix = 2
+        while backup.exists():
+            backup = source.with_name(source.name + f".bak-{version}-{stamp}-{suffix}")
+            suffix += 1
         shutil.copy2(source, backup)
         print(
             f"claude-token-lens: store at {source} is schema version {version}, which "
@@ -326,6 +344,55 @@ class Store:
             "rebuilding it from scratch",
             file=sys.stderr,
         )
+
+    def _export_marks(self, conn: sqlite3.Connection) -> tuple[list[tuple], list[tuple]]:
+        """``(tag_rows, feedback_rows)`` currently in ``session_tags``/
+        ``session_feedback``, or ``([], [])`` for a table that doesn't
+        exist yet (an older store, or a fresh one). ROB-P6: read before
+        :meth:`_drop_all_tables` runs, so :meth:`_reimport_marks` can put
+        them back once the tables are recreated -- unlike the rest of the
+        store, a rating or a tag is never re-derivable from the
+        transcripts on disk, so a drop-and-rebuild must not silently
+        erase it the way it safely can everything else."""
+        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+        tags = (
+            conn.execute("SELECT session_id, key, value, set_at FROM session_tags").fetchall()
+            if "session_tags" in tables
+            else []
+        )
+        feedback = (
+            conn.execute(
+                "SELECT session_id, outcome, slow, worth, helped, set_at FROM session_feedback"
+            ).fetchall()
+            if "session_feedback" in tables
+            else []
+        )
+        return [tuple(row) for row in tags], [tuple(row) for row in feedback]
+
+    def _reimport_marks(self, conn: sqlite3.Connection, tags: list[tuple], feedback: list[tuple]) -> None:
+        """Put rows :meth:`_export_marks` read back into the just-recreated
+        ``session_tags``/``session_feedback`` tables. The ``sessions`` row
+        each one's ``session_id`` foreign key names doesn't exist again
+        yet -- the next watcher tick repopulates it (same as every other
+        table here) -- so this runs with foreign keys off, the same way
+        :meth:`_drop_all_tables` already does for the drop itself."""
+        if not tags and not feedback:
+            return
+        conn.execute("PRAGMA foreign_keys = OFF")
+        try:
+            conn.executemany(
+                "INSERT INTO session_tags (session_id, key, value, set_at) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(session_id, key) DO UPDATE SET value = excluded.value, set_at = excluded.set_at",
+                tags,
+            )
+            conn.executemany(
+                "INSERT INTO session_feedback (session_id, outcome, slow, worth, helped, set_at) "
+                "VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(session_id) DO UPDATE SET outcome = excluded.outcome, "
+                "slow = excluded.slow, worth = excluded.worth, helped = excluded.helped, set_at = excluded.set_at",
+                feedback,
+            )
+        finally:
+            conn.execute("PRAGMA foreign_keys = ON")
 
     def migrate(self) -> None:
         """Create every table/index in ``schema.ALL_STATEMENTS`` if
@@ -345,11 +412,17 @@ class Store:
         registered ladder step (nit 24: the original ``<``-only check
         left a newer-than-code store's stale shape in place instead of
         rebuilding it -- still handled here, just via backup-then-drop
-        rather than a silent drop)."""
+        rather than a silent drop). Either way, ``session_tags`` and
+        ``session_feedback`` -- genuine user data, not a re-derivable
+        cache over transcripts like the rest of the store -- are read
+        before the drop and put back once the tables are recreated
+        (ROB-P6, :meth:`_export_marks`/:meth:`_reimport_marks`)."""
         conn = self._connection()
         current = self.schema_version()
+        marks: tuple[list[tuple], list[tuple]] | None = None
 
         if current is not None and current > schema.SCHEMA_VERSION:
+            marks = self._export_marks(conn)
             self._backup_before_rebuild(current)
             self._drop_all_tables(conn)
         elif current is not None and current < schema.SCHEMA_VERSION:
@@ -358,6 +431,7 @@ class Store:
             while version < schema.SCHEMA_VERSION:
                 step = MIGRATIONS.get(version)
                 if step is None:
+                    marks = self._export_marks(conn)
                     self._backup_before_rebuild(current)
                     self._drop_all_tables(conn)
                     steps = []
@@ -385,6 +459,8 @@ class Store:
         with conn:
             for statement in schema.ALL_STATEMENTS:
                 conn.executescript(statement)
+            if marks is not None:
+                self._reimport_marks(conn, *marks)
             conn.execute(
                 "INSERT INTO meta (key, value) VALUES (?, ?) "
                 "ON CONFLICT(key) DO UPDATE SET value = excluded.value",

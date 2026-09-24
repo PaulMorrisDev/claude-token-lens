@@ -30,7 +30,7 @@ so `onboarding.py` stays free of installer side effects.
 claude-token-lens init [--answers FILE] [--non-interactive] [--no-install]
                         [--repair-hook] [--connect]
                         [--install-service | --no-service] [--dry-run]
-                        [--capture-level LEVEL] [--capture-no-limit]
+                        [--capture-level LEVEL] [--capture-for DURATION | --capture-no-limit]
                         [--feedback {on,off}]
 ```
 
@@ -142,12 +142,20 @@ claude-token-lens init [--answers FILE] [--non-interactive] [--no-install]
    prompt says the exact date and how to change it — keep it on longer
    with `claude-token-lens capture on --for 30d` once it's running, or
    answer this question **yes** to turn the time limit off entirely so
-   capture runs until you switch it off yourself. `--capture-no-limit`
-   or the answers file's `capture_no_limit` key (`true`/`false`) answers
-   it without asking. Under `--non-interactive` with neither, today's
-   behaviour is kept exactly: no time-box is set (this only matters the
-   first time a level is turned on — a later `init` never shortens or
-   removes a limit you already set with `capture on --for`).
+   capture runs until you switch it off yourself. `--capture-for
+   DURATION` (a number and `h`, `d` or `w`, e.g. `30d`) picks a
+   different length up front instead of asking; `--capture-no-limit` or
+   the answers file's `capture_no_limit` key (`true`/`false`) answers
+   "turn it off entirely" without asking (not together with
+   `--capture-for`). Under `--non-interactive` with none of these, the
+   14-day default is used and a `(derived) capture_no_limit: ...` line
+   says so (CAP-8: this reaches a scripted/unattended `init` too, on the
+   same "no answer, use the derived default" rule every other
+   onboarding question already follows — capture left running forever
+   with nobody watching is exactly the failure mode this default
+   exists to prevent). This only matters the first time a level is
+   turned on — a later `init` never shortens, extends or removes a
+   limit (or the lack of one) that capture, already on, already has.
 
    A level (and, when set, an `until`) is saved to `[capture]` in
    `config.toml`, then the `settings.json` entries the level needs are

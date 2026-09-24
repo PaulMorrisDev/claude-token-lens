@@ -104,7 +104,23 @@ __version__ = "0.5.2"
 #: failing that, from the AskUserQuestion result itself. ``commands_run``
 #: now names skills you ran with a slash too: they are written
 #: ``<command-message>`` first, as your message, and were missed.
-PARSER_VERSION = 16
+#:
+#: Bumped to 17 by the P2 capture-integrity batch: capture_tags.py now
+#: strips the exact reminder sentence before the tail match (a tag glued
+#: to a reminder no longer swallows it); a ``[tl-fb: ...]`` line only
+#: counts when the cycle's first turn actually ran ``/tl-feedback``, a
+#: forged one is ignored; a captured tag key is kept only when the
+#: session's note said to ask for it (``cap_injections > 0`` and the key
+#: is a requested metric); ``reported_task`` counts once per cycle, not
+#: once per line; ``Turn.skills_invoked`` now runs skill names through
+#: ``SKILL_NAME_PATTERN`` and drops one whose ``Skill`` call errored, so a
+#: skill can no longer self-authorise a capture note by name alone; and
+#: capture.py's coverage denominator drops feedback/interrupted/max_tokens
+#: cycles, merges a cycle's tags key by key instead of replacing the
+#: whole set, sizes ``_big_output`` per call instead of per turn, and
+#: ``_WRAP`` carries a ``:Tool`` suffix. None of this is recoverable from
+#: an older digest, so every transcript is re-parsed once to pick it up.
+PARSER_VERSION = 17
 
 #: Bump when the model.py contract changes in a way that invalidates the
 #: on-disk digest cache (see model.py's module docstring for the contract

@@ -111,6 +111,47 @@ def test_billing_mode_rejects_unknown_choice(tmp_path: Path, monkeypatch, capsys
     assert exc_info.value.code == 2
 
 
+# -- --retention-days (SEC-P5) -----------------------------------------------
+
+
+@pytest.mark.parametrize("bad", ["0", "-5", "36501"])
+def test_retention_days_out_of_bounds_is_rejected(tmp_path: Path, monkeypatch, capsys, bad):
+    _capture_options(monkeypatch)
+    rc = cli.main(
+        [
+            "serve",
+            "--once",
+            "--projects-root",
+            str(tmp_path / "projects"),
+            "--config-dir",
+            str(tmp_path / "config"),
+            "--retention-days",
+            bad,
+        ]
+    )
+    assert rc == 2
+    assert "between 1 and 36500" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("edge", ["1", "36500"])
+def test_retention_days_at_the_boundary_is_accepted(tmp_path: Path, monkeypatch, edge):
+    captured = _capture_options(monkeypatch)
+    rc = cli.main(
+        [
+            "serve",
+            "--once",
+            "--projects-root",
+            str(tmp_path / "projects"),
+            "--config-dir",
+            str(tmp_path / "config"),
+            "--retention-days",
+            edge,
+        ]
+    )
+    assert rc == 0
+    assert captured["options"].retention_days == int(edge)
+
+
 def test_monthly_report_dir_is_passed_through(tmp_path: Path, monkeypatch):
     captured = _capture_options(monkeypatch)
     report_dir = tmp_path / "reports"

@@ -40,7 +40,17 @@ from . import statusline as statusline_mod
 from .fixes import RESTART_NOTE
 from .cache import DigestCache
 from .capture import HISTORY_DAYS as CAPTURE_HISTORY_DAYS
-from .config import CAPTURE_SAMPLES, CaptureConfig, Config, ConfigError, load_config, load_session_overrides, set_capture
+from .config import (
+    CAPTURE_SAMPLES,
+    RETENTION_DAYS_MAX,
+    RETENTION_DAYS_MIN,
+    CaptureConfig,
+    Config,
+    ConfigError,
+    load_config,
+    load_session_overrides,
+    set_capture,
+)
 from .corpus import Corpus, load_corpus
 from .parse import load_or_create_salt
 from .model import Diagnostics, EventKind, PricingMeta, ReportMeta, ReportModel, Section, TranscriptResult
@@ -678,6 +688,14 @@ def _add_capture_args(sub: argparse.ArgumentParser) -> None:
         "--until DATE sets an ISO 8601 end date or time instead",
     )
     sub.add_argument(
+        "--no-limit",
+        action="store_true",
+        dest="no_limit",
+        help="turning capture on (with neither --for nor --until) runs it until you switch it off, instead of "
+        f"the default {onboarding.DEFAULT_CAPTURE_TIMEBOX_DAYS}-day time-box (CAP-8: turning it on with none of "
+        "these three switches itself off after that many days, so it can't run forever unnoticed)",
+    )
+    sub.add_argument(
         "--sample",
         type=int,
         choices=CAPTURE_SAMPLES,
@@ -917,8 +935,17 @@ def _add_init_args(sub: argparse.ArgumentParser) -> None:
         dest="capture_no_limit",
         help="answer the metrics capture time-box question without asking: no time limit, so capture runs "
         f"until you switch it off (default: it switches itself off after "
-        f"{onboarding.DEFAULT_CAPTURE_TIMEBOX_DAYS} days; 'claude-token-lens capture on --for 30d' picks "
-        "another length once it's on)",
+        f"{onboarding.DEFAULT_CAPTURE_TIMEBOX_DAYS} days; --capture-for picks another length up front, or "
+        "'claude-token-lens capture on --for 30d' changes it once it's on)",
+    )
+    sub.add_argument(
+        "--capture-for",
+        dest="capture_for",
+        metavar="DURATION",
+        default=None,
+        help="answer the metrics capture time-box question without asking: switch capture off by itself after "
+        "this long, a number and h, d or w (e.g. 30d), instead of the "
+        f"{onboarding.DEFAULT_CAPTURE_TIMEBOX_DAYS}-day default; not with --capture-no-limit",
     )
 
 
@@ -1287,6 +1314,16 @@ def _load_corpus_for_args(
         cache = DigestCache(config_dir)
         if args.rebuild_cache:
             cache.purge(all=True)
+        else:
+            # ROB-P4/P5: a stale PARSER_VERSION folder is never read
+            # again once this version's own folder exists, so sweeping
+            # it here (once per real corpus load, cheap -- a handful of
+            # directory stats) keeps <config-dir>/cache/ from growing a
+            # new dead folder forever every time PARSER_VERSION bumps.
+            # Skipped on --rebuild-cache: that already wiped this
+            # version's own folder, and a prune right after would just
+            # be extra directory churn for no benefit.
+            cache.prune_stale_versions()
     # Fix #8: wire the A3 read-target-hash salt up to the actual corpus
     # load -- previously nothing in src/ ever called set_salt/
     # load_or_create_salt, so Turn.read_target_hashes was always empty in
@@ -2490,16 +2527,27 @@ def _cmd_init_capture_step(
         return
     until = None
     if level != "off":
-        until, timebox_notes = onboarding.ask_capture_until(
-            now=now,
-            preset=True if args.capture_no_limit else None,
-            answers_path=args.answers,
-            non_interactive=args.non_interactive,
-            stdin=stdin,
-            stdout=stdout,
-        )
-        for note in timebox_notes:
-            stdout.write(f"(derived) {note}\n")
+        if args.capture_for and args.capture_no_limit:
+            stdout.write("--capture-for and --capture-no-limit can't both be given.\n")
+            return
+        if args.capture_for:
+            match = _DURATION_RE.fullmatch(args.capture_for)
+            if not match or int(match.group(1)) == 0:
+                stdout.write(f"--capture-for {args.capture_for!r}: use a number and h, d or w, such as 12h, 7d or 2w.\n")
+                return
+            hours = int(match.group(1)) * _DURATION_UNIT_HOURS[match.group(2).lower()]
+            until = (now + timedelta(hours=hours)).isoformat(timespec="seconds")
+        else:
+            until, timebox_notes = onboarding.ask_capture_until(
+                now=now,
+                preset=True if args.capture_no_limit else None,
+                answers_path=args.answers,
+                non_interactive=args.non_interactive,
+                stdin=stdin,
+                stdout=stdout,
+            )
+            for note in timebox_notes:
+                stdout.write(f"(derived) {note}\n")
     try:
         capture = set_capture(config_dir, level=level, until=until, now=now)
     except ConfigError as exc:
@@ -2951,11 +2999,17 @@ _DURATION_UNIT_HOURS = {"h": 1, "d": 24, "w": 24 * 7}
 
 
 def _capture_until(args: argparse.Namespace, now: datetime) -> str | None:
-    """``--until`` as given, or ``--for`` turned into an ISO time;
-    ``None`` when neither was given. Raises ``ValueError`` for a
-    duration it can't read."""
-    if args.until and args.for_duration:
-        raise ValueError("give --for or --until, not both")
+    """``--until`` as given, ``--for`` turned into an ISO time, or ``""``
+    for ``--no-limit`` (CAP-8: an explicit "no limit", as opposed to
+    ``None``, which leaves ``set_capture``'s own default time-box in
+    play -- see its docstring). ``None`` when none of the three was
+    given. Raises ``ValueError`` for a duration it can't read, or more
+    than one of ``--for``/``--until``/``--no-limit`` at once."""
+    no_limit = getattr(args, "no_limit", False)
+    if sum(bool(x) for x in (args.until, args.for_duration, no_limit)) > 1:
+        raise ValueError("give --for, --until or --no-limit, not more than one")
+    if no_limit:
+        return ""
     if args.until:
         return args.until
     if not args.for_duration:
@@ -4130,6 +4184,18 @@ def _cmd_serve(args: argparse.Namespace) -> int:
         return 2
     projects_root, *extra_projects_roots = discovery.projects_roots(args.projects_root, config.extra_projects_roots)
     billing_mode = args.billing_mode if args.billing_mode is not None else config.billing
+    # SEC-P5: config.toml's own retention_days was already bounds-checked
+    # by load_config/_build_config; --retention-days is a raw CLI int
+    # that bypasses that, and a bad value here is destructive (it feeds
+    # Store.retention_prune/signals.prune, which delete data) rather than
+    # just cosmetic, so it gets the same 1-36500 bound here.
+    if args.retention_days is not None and not (RETENTION_DAYS_MIN <= args.retention_days <= RETENTION_DAYS_MAX):
+        print(
+            f"claude-token-lens serve: --retention-days must be between {RETENTION_DAYS_MIN} and "
+            f"{RETENTION_DAYS_MAX}, got {args.retention_days}",
+            file=sys.stderr,
+        )
+        return 2
     retention_days = args.retention_days if args.retention_days is not None else config.retention_days
     monthly_report_dir = Path(args.monthly_report_dir) if args.monthly_report_dir else None
     options = ServeOptions(

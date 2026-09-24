@@ -131,6 +131,18 @@ def test_exclude_projects_non_string_item_raises_config_error(tmp_path):
         load_config(config_dir=token_lens_dir)
 
 
+def test_exclude_projects_bad_regex_raises_config_error_at_load(tmp_path):
+    """SEC-P5: compiled at load, same as ``capture.projects`` -- a typo'd
+    regex is a ConfigError the user sees right away, not something that
+    silently degrades later, once per call, deep inside discovery/corpus.
+    """
+    token_lens_dir = tmp_path / "token-lens"
+    token_lens_dir.mkdir()
+    (token_lens_dir / "config.toml").write_text('exclude_projects = ["ok", "(unbalanced"]\n', encoding="utf-8")
+    with pytest.raises(ConfigError, match="exclude_projects"):
+        load_config(config_dir=token_lens_dir)
+
+
 # --------------------------------------------------------------------
 # load_config: [savers] table (v4-saver-roi)
 # --------------------------------------------------------------------
@@ -207,6 +219,28 @@ def test_retention_days_bool_rejected_as_not_an_integer(tmp_path):
     (token_lens_dir / "config.toml").write_text("retention_days = true\n", encoding="utf-8")
     with pytest.raises(ConfigError, match="retention_days"):
         load_config(config_dir=token_lens_dir)
+
+
+@pytest.mark.parametrize("bad", [0, -1, 36501, -36500])
+def test_retention_days_out_of_bounds_raises_config_error(tmp_path, bad):
+    """SEC-P5: 1-36500. 0 or negative would prune everything (including
+    the session in progress) on the very next poll tick; an absurdly
+    large value is almost certainly a typo (days entered as hours, an
+    extra digit) rather than a real "keep forever" choice."""
+    token_lens_dir = tmp_path / "token-lens"
+    token_lens_dir.mkdir()
+    (token_lens_dir / "config.toml").write_text(f"retention_days = {bad}\n", encoding="utf-8")
+    with pytest.raises(ConfigError, match="retention_days"):
+        load_config(config_dir=token_lens_dir)
+
+
+@pytest.mark.parametrize("edge", [1, 36500])
+def test_retention_days_at_the_boundary_is_accepted(tmp_path, edge):
+    token_lens_dir = tmp_path / "token-lens"
+    token_lens_dir.mkdir()
+    (token_lens_dir / "config.toml").write_text(f"retention_days = {edge}\n", encoding="utf-8")
+    config = load_config(config_dir=token_lens_dir)
+    assert config.retention_days == edge
 
 
 def test_provider_defaults_to_none():

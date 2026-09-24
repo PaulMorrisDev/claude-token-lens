@@ -23,7 +23,7 @@ from claude_token_lens.config import Config
 from claude_token_lens.corpus import load_corpus
 from claude_token_lens.pricing import load_pricing
 
-from helpers import assert_privacy, turn_line, write_jsonl
+from helpers import assert_privacy, attachment_line, turn_line, write_jsonl
 
 PRICING = load_pricing()
 CONFIG = Config()
@@ -715,7 +715,16 @@ def test_cli_compare_sample_below_min_sessions_still_exits_0(tmp_path, capsys):
 def _write_tagged(project_dir: Path, session_id: str, day: str, task: str | None) -> None:
     from helpers import user_str_line
 
-    lines = []
+    # SEC-P2: a `[tl: ...]` tag only counts once a capture note has been
+    # seen and the metric it answers was requested -- "task" here.
+    note_text = "Token Lens metrics capture (tl-cap v1 task): ..."
+    note = attachment_line(
+        "hook_additional_context",
+        rendered=f"<system-reminder>\nSessionStart hook additional context: {note_text}\n</system-reminder>",
+        content=[note_text], hookName="SessionStart", hookEvent="SessionStart", toolUseID="SessionStart",
+    )
+    note["timestamp"] = f"{day}T09:59:59.000Z"
+    lines = [note]
     for n in range(2):
         lines.append(user_str_line("go on", origin={"kind": "human"}, timestamp=f"{day}T10:00:{2 * n:02d}.000Z"))
         text = f"Done.\n[tl: task={task}]" if task else "Done."

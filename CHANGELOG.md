@@ -8,9 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 After updating, the first dashboard start re-reads every transcript (a
-few minutes): `PARSER_VERSION` bumped to 16 (from 14) to pick up each
+few minutes): `PARSER_VERSION` bumped to 17 (from 14) to pick up each
 reply's fast-mode flag, the fuller edit records, the quality markers,
-the metrics-capture tags and notes below, and the feedback tag.
+the metrics-capture tags and notes below, the feedback tag, and the
+capture-integrity fixes below (tag/reminder splitting, forged-tag and
+self-authorisation rejection, the coverage-denominator and per-call
+sizing corrections).
 
 ### Added
 
@@ -321,6 +324,81 @@ the metrics-capture tags and notes below, and the feedback tag.
   body (a profile, a tag, a feedback payload) is small hand-typed or
   hand-picked JSON, well under the cap. See "Body size limit (G5)" in
   `docs/api.md`.
+- **A capture tag glued straight onto the reminder sentence could eat
+  part of it, or leave part of the tag behind as if it were prose.**
+  `capture_tags.py` now strips the exact reminder sentence out of a
+  reply before it looks for the tag at the tail, whichever order Claude
+  wrote them in; the catalogue's own reminder text is placed before the
+  tag it explains, not after, so the two are never adjacent to begin
+  with either.
+- **A forged `[tl-fb: ...]` line — typed into a reply by hand, or
+  copied from an earlier one — could count as real `/tl-feedback`
+  answers.** It now counts only when the cycle's first turn actually
+  ran `/tl-feedback`; work-habit calibration already only reads real
+  answers and dashboard ratings, never the tag itself.
+- **A captured tag key could be kept even when nothing asked Claude for
+  it** — a model volunteering a field the current level never
+  requested, or a stale key surviving a level change mid-session. A
+  tag key is now kept only when the session's own note asked for it
+  (there was at least one capture note) and the key names a metric that
+  note actually requested. `reported_task` is now counted once per
+  cycle instead of once per line that mentions it, so a reply that
+  repeats its own tag doesn't inflate the count.
+- **A skill could claim a capture note was meant for it by naming
+  itself in a reply, and a name that didn't match Claude Code's own
+  skill-id shape was recorded as if it were real.** `Turn.skills_invoked`
+  now validates every name against the same pattern Claude Code itself
+  uses for a skill id, and drops a skill whose `Skill` tool call
+  actually errored — a skill can no longer self-authorise its own
+  capture note by name alone.
+- **Coverage undercounted or overcounted depending on what a cycle
+  actually was.** Feedback cycles (`/tl-feedback` itself), interrupted
+  cycles and cycles that hit `max_tokens` are no longer counted in the
+  coverage denominator — none of them could ever carry a normal tag, so
+  they only ever diluted the percentage. A cycle's tags are now merged
+  key by key as later lines arrive instead of one line's tags replacing
+  the whole set, `_big_output` is sized per tool call instead of once
+  per turn, and `_WRAP`'s per-hook accounting carries the `:Tool` suffix
+  it was missing.
+- **The 14-day capture time-box (`capture on`'s default `--for`) only
+  applied from the interactive `init` flow.** Non-interactive `init`,
+  `capture on`/`capture level`, `config.set_capture` and
+  `POST /api/capture` now all default a fresh switch-on to the same 14
+  days unless `--capture-no-limit`/`--for`/`--until` says otherwise or
+  an `until` is already set. `init --capture-for DAYS` sets a different
+  default non-interactively; the help text for the existing flags now
+  says what happens when none of them are given.
+- **A downgrade to an older schema version, followed by an upgrade back,
+  silently dropped your `/tl-feedback` answers and any capture tags the
+  older schema doesn't know about.** `session_feedback` and every
+  captured tag are now exported before a downgrade drops them and
+  re-imported after an upgrade brings the columns back, verified with a
+  v6-to-v5-to-v6 round trip. Each schema step's backup file is now
+  timestamped (`.bak-<version>-<timestamp>`) so a second downgrade in
+  the same run never overwrites the first one's backup.
+- **`retention_days` and `exclude_projects` in `config.toml` were
+  trusted without checking.** `retention_days` is now rejected outside
+  1–36500; each `exclude_projects` pattern is compiled once at load
+  (a bad regex fails fast, naming the pattern, instead of failing later
+  inside the hook), and the hook itself now skips one bad pattern at a
+  time instead of a bad pattern anywhere in the list silently
+  disabling every exclusion. The `config.toml` writer now escapes
+  control characters instead of writing them raw, and re-parses the
+  file it's about to write before replacing the real one, so a bug in
+  the writer can never leave `config.toml` unreadable.
+- **The on-disk digest cache had no way to notice a vocabulary or
+  scoring change that didn't come with a `PARSER_VERSION` bump.** Cache
+  entries now live under a `cache/p<version>/` folder per
+  `PARSER_VERSION`, and each entry also carries a fingerprint hash of
+  the closed vocabularies, labels and prompt flags it was written
+  against — a mismatch on either is a cache miss, same as before. Old
+  version folders past 14 days old are pruned automatically.
+- **A subagent running inside a workflow (`subagents/workflows/<run
+  id>/agent-*.jsonl`, one directory deeper than an ordinary
+  `subagents/agent-*.jsonl`) wasn't recognised as a subagent transcript
+  by the capture hook**, so it never got the subagent capture note
+  after a compaction. Subagent detection now also matches on the
+  transcript's own filename shape, not only its parent directory name.
 
 ## [0.5.2] - 2026-09-23
 

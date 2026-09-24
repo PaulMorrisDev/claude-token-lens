@@ -353,7 +353,7 @@ and [`docs/profiles.md`](docs/profiles.md).
 - **Feedback skill**: `/tl-feedback`, a skill you can add that you run after a piece of work to rate whether it delivered, what slowed it, whether it was worth the tokens, and what would have helped. Works at any capture level, even off.
 - **Brief templates**: Checklists per kind of task on the Work habits tab, built from what your own requests tend to lack. Turned on, it also adds a `/tl-brief` skill that checks a request against its checklist and asks once for anything missing before Claude starts.
 - **Sampling**: Running metrics capture in only a share of sessions (100, 50, 25 or 10 percent, `[capture] sample`) to spend fewer tokens on it. Picked at random, per session.
-- **Time-box**: The date metrics capture switches itself back off. 14 days by default from when you turn a level on, so turning it on doesn't mean it runs unattended forever; `capture on --for` sets another length, and you can turn the limit off entirely when asked.
+- **Time-box**: The date metrics capture switches itself back off. 14 days by default from when you turn a level on — at `init`, `capture on`/`level`, or the Capture page — so turning it on doesn't mean it runs unattended forever; `--for`/`--capture-for` sets another length, `--no-limit`/`--capture-no-limit` turns the limit off entirely, or you can say so when asked.
 
 ## Reference
 

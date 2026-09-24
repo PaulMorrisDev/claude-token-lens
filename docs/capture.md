@@ -392,7 +392,7 @@ These are rough sizes — characters in the note divided by four — and don't i
 - **Level:** Feedback, any level
 - **Captures:** Claude adds one line suggesting /tl-feedback when it finishes a piece of work.
 - **Why:** For people without the status line. Costs a few output tokens each time.
-- **Tag:** No fixed key. The note asks for a line: "When you finish a piece of work the user asked for, end your reply with: Finished? Run /tl-feedback: a few ticks make your savings tips fit how you work."
+- **Tag:** No fixed key. The note asks for a line: "When you finish a piece of work the user asked for, add before your tag: Finished? Run /tl-feedback: a few ticks make your savings tips fit how you work."
 - **Costs:** about 20 output tokens each time
 - **Hook:** SessionStart
 - **Powers:** Cost per finished piece of work
@@ -436,8 +436,10 @@ Free local signals never involve Claude at all: a hook logs the session id (hash
 The hook script and its catalogue (`capture-hook.py`, `capture-catalogue.json`) live side by side under `<config-dir>/hooks/`. Only `capture on` and `capture connect` ever change `~/.claude/settings.json` — and only after showing the diff and asking first, unless you pass `--yes`. Every other change writes only this tool's own `config.toml`.
 
 - `claude-token-lens capture status` — the level, what's on, since when, and the cost measured so far.
-- `claude-token-lens capture on [--level LEVEL] [--for DURATION | --until DATE] [--sample N] [--yes] [--dry-run]` — turn it on (default level: Essentials).
+- `claude-token-lens capture on [--level LEVEL] [--for DURATION | --until DATE | --no-limit] [--sample N] [--yes] [--dry-run]` — turn it on (default level: Essentials).
 - `claude-token-lens capture level LEVEL` — change the level.
+
+A fresh switch from off to on — at `init`, `capture on`/`level`, or the Capture page — gets a 14-day time-box by default, so turning it on doesn't mean it runs unattended forever: it switches itself back off on its own unless you say otherwise. `--for DURATION` (a number and `h`, `d` or `w`, e.g. `30d`) or `--until DATE` picks another length or end date; `--no-limit` turns the time-box off entirely, so capture runs until you switch it off yourself. `init` has the same three choices as `--capture-for DURATION`, `--capture-level LEVEL --capture-no-limit`, or (interactively, or under `--non-interactive` with neither given) the default. Changing the level of capture that's already on leaves an existing time-box (or the lack of one) exactly as it is — the default only ever applies to a fresh switch-on.
 - `claude-token-lens capture enable METRIC...` / `capture disable METRIC...` — turn individual metrics on or off; the level becomes Custom once the set no longer matches a preset.
 - `claude-token-lens capture off` — stop the notes and tags at once, without touching settings.json.
 - `claude-token-lens capture connect` — add the settings.json hook entries the metrics you've chosen need.

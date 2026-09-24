@@ -1953,6 +1953,34 @@ def test_post_capture_saves_the_level_and_names_the_hooks_it_needs(server):
     assert payload["data"]["changed"] is False
 
 
+def test_post_capture_turning_on_with_no_until_gets_the_default_time_box(server):
+    # CAP-8: the dashboard's level picker posts only {"level": ...} when
+    # turning capture on (its own "until" control only renders once
+    # capture is already on) -- this is exactly the path the default
+    # must reach, via config.set_capture's own centralized logic.
+    from datetime import datetime, timedelta, timezone
+
+    from claude_token_lens import capture_catalogue
+
+    resp, payload = server.post_json("/api/capture", {"level": "essentials"})
+    assert resp.status == 200
+    until = payload["data"]["config"]["until"]
+    assert until
+    days = (datetime.fromisoformat(until) - datetime.now(timezone.utc)).total_seconds() / 86400
+    assert capture_catalogue.DEFAULT_CAPTURE_TIMEBOX_DAYS - 1 < days <= capture_catalogue.DEFAULT_CAPTURE_TIMEBOX_DAYS
+
+
+def test_post_capture_explicit_empty_until_means_no_limit(server):
+    # The API's own way to opt out (until: "") must not be overridden by
+    # the default -- only an omitted "until" key gets one.
+    resp, payload = server.post_json("/api/capture", {"level": "essentials", "until": ""})
+    assert resp.status == 200
+    assert payload["data"]["config"]["until"] == ""
+    # Bumping the level with "until" left out again keeps that choice.
+    resp, payload = server.post_json("/api/capture", {"level": "deep"})
+    assert payload["data"]["config"]["until"] == ""
+
+
 def test_post_capture_picks_metrics_sampling_end_and_feedback(server):
     resp, payload = server.post_json("/api/capture", {"metrics": ["task", "fit"]})
     assert resp.status == 200

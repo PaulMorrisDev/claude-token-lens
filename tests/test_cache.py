@@ -8,13 +8,21 @@ encode/decode round trip against every real fixture under
 from __future__ import annotations
 
 import json
+import os
 import time
 from pathlib import Path
 
 import pytest
 
 from claude_token_lens import PARSER_VERSION, SCHEMA_VERSION
-from claude_token_lens.cache import CacheStats, DigestCache, encode_result, result_from_jsonable
+from claude_token_lens.cache import (
+    FINGERPRINT,
+    STALE_CACHE_VERSION_DAYS,
+    CacheStats,
+    DigestCache,
+    encode_result,
+    result_from_jsonable,
+)
 from claude_token_lens.model import TranscriptMeta
 from claude_token_lens.parse import parse_transcript
 
@@ -140,6 +148,39 @@ def test_miss_when_parser_version_does_not_match(tmp_path):
 
     assert cache.get(transcript_path, meta) is None
     assert cache_file.exists()
+
+
+def test_miss_when_fingerprint_does_not_match(tmp_path):
+    """ROB-P4/P5: a header whose vocabulary fingerprint doesn't match the
+    running code's own is a stale miss, the same as a parser-version
+    mismatch -- catches a vocabulary edit even when PARSER_VERSION itself
+    wasn't bumped for it.
+    """
+    cache = DigestCache(tmp_path / "config")
+    transcript_path = _write_transcript(tmp_path)
+    meta = _meta_for(transcript_path)
+    result = parse_transcript(transcript_path, meta)
+    cache.put(transcript_path, meta, result)
+
+    cache_file = next(cache.cache_dir.glob("*.json"))
+    raw = json.loads(cache_file.read_text(encoding="utf-8"))
+    assert raw["header"]["fingerprint"] == FINGERPRINT
+    raw["header"]["fingerprint"] = "not-the-real-fingerprint"
+    cache_file.write_text(json.dumps(raw), encoding="utf-8")
+
+    assert cache.get(transcript_path, meta) is None
+    assert cache_file.exists()
+
+
+def test_fingerprint_is_pinned():
+    """ROB-P4/P5: any change to a closed vocabulary, tag key/label or
+    ``PROMPT_FLAGS`` word changes :data:`FINGERPRINT` -- this pin fails
+    the moment that happens, as a deliberate speed bump: it forces
+    whoever made the change to notice it invalidates every existing
+    cache entry (nothing else does -- unlike PARSER_VERSION, nobody has
+    to remember to bump this by hand), not to silently ship it.
+    """
+    assert FINGERPRINT == "2809b4c179c98b50cab78e91e9deb31a8db4a44a6e09c38d39a9d74bed0ba725"
 
 
 # -- live-file bypass ------------------------------------------------------
@@ -277,6 +318,79 @@ def test_stats_counts_files_and_bytes(tmp_path):
     assert stats.files == 3
     on_disk_bytes = sum(p.stat().st_size for p in cache.cache_dir.glob("*.json"))
     assert stats.bytes == on_disk_bytes
+
+
+# -- per-version cache path / stale-folder pruning (ROB-P4/P5) --------------
+
+
+def test_cache_dir_is_nested_under_a_parser_version_folder(tmp_path):
+    cache = DigestCache(tmp_path / "config")
+    assert cache.cache_dir == tmp_path / "config" / "cache" / f"p{PARSER_VERSION}"
+    assert cache.versions_dir == tmp_path / "config" / "cache"
+
+    transcript_path = _write_transcript(tmp_path)
+    meta = _meta_for(transcript_path)
+    cache.put(transcript_path, meta, parse_transcript(transcript_path, meta))
+    assert any((tmp_path / "config" / "cache" / f"p{PARSER_VERSION}").glob("*.json"))
+
+
+def _age_dir(path: Path, days_old: float) -> None:
+    """Back-date every file directly inside ``path`` (and the folder
+    itself) by ``days_old`` days, for :meth:`DigestCache.prune_stale_versions`
+    tests."""
+    stamp = time.time() - days_old * 86400
+    for child in path.iterdir():
+        os.utime(child, (stamp, stamp))
+    os.utime(path, (stamp, stamp))
+
+
+def test_prune_stale_versions_removes_an_old_version_folder(tmp_path):
+    config_dir = tmp_path / "config"
+    cache = DigestCache(config_dir)
+    transcript_path = _write_transcript(tmp_path)
+    meta = _meta_for(transcript_path)
+    cache.put(transcript_path, meta, parse_transcript(transcript_path, meta))
+
+    old_version_dir = config_dir / "cache" / f"p{PARSER_VERSION - 1}"
+    old_version_dir.mkdir(parents=True)
+    (old_version_dir / "abc123.json").write_text("{}", encoding="utf-8")
+    _age_dir(old_version_dir, STALE_CACHE_VERSION_DAYS + 1)
+
+    removed = cache.prune_stale_versions()
+    assert removed == 1
+    assert not old_version_dir.exists()
+    # This version's own folder is never touched by pruning.
+    assert cache.cache_dir.exists()
+    assert any(cache.cache_dir.glob("*.json"))
+
+
+def test_prune_stale_versions_keeps_a_recent_old_version_folder(tmp_path):
+    config_dir = tmp_path / "config"
+    cache = DigestCache(config_dir)
+    old_version_dir = config_dir / "cache" / f"p{PARSER_VERSION - 1}"
+    old_version_dir.mkdir(parents=True)
+    (old_version_dir / "abc123.json").write_text("{}", encoding="utf-8")
+    # Freshly written -- well inside the retention window.
+
+    assert cache.prune_stale_versions() == 0
+    assert old_version_dir.exists()
+
+
+def test_prune_stale_versions_ignores_folders_that_are_not_version_folders(tmp_path):
+    config_dir = tmp_path / "config"
+    cache = DigestCache(config_dir)
+    stray = config_dir / "cache" / "not-a-version"
+    stray.mkdir(parents=True)
+    (stray / "leftover.json").write_text("{}", encoding="utf-8")
+    _age_dir(stray, STALE_CACHE_VERSION_DAYS + 1)
+
+    assert cache.prune_stale_versions() == 0
+    assert stray.exists()
+
+
+def test_prune_stale_versions_on_a_missing_cache_dir_is_a_noop(tmp_path):
+    cache = DigestCache(tmp_path / "config")
+    assert cache.prune_stale_versions() == 0
 
 
 # -- key identity ------------------------------------------------------------

@@ -96,8 +96,14 @@ def test_each_capture_change_is_a_change_point(tmp_path):
         "Changed metrics capture",
         "Turned metrics capture off",
     ]
-    assert points[0].keys == ["capture.level"]
-    assert points[0].changes == [{"key": "capture.level", "agent": None, "old": "off", "new": "essentials"}]
+    # CAP-8: the first, off -> on call also gets the default time-box, so
+    # its own log entry (and this change point) carries a "until" change
+    # too, alongside "level".
+    assert points[0].keys == ["capture.level", "capture.until"]
+    assert points[0].changes == [
+        {"key": "capture.level", "agent": None, "old": "off", "new": "essentials"},
+        {"key": "capture.until", "agent": None, "old": "", "new": "2026-09-15T09:00:00+00:00"},
+    ]
     assert points[2].keys == ["capture.sample"]
     assert change_points.latest(tmp_path).label == "Turned metrics capture off"
 

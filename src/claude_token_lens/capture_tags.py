@@ -27,10 +27,12 @@ from __future__ import annotations
 
 import re
 from collections.abc import Collection
+from dataclasses import replace
 
 from .capture_catalogue import (
     FEEDBACK_LIST_KEYS,
     FEEDBACK_QUESTIONS,
+    FEEDBACK_REMINDER_LINE,
     FEEDBACK_TAG,
     FEEDBACK_VOCAB,
     LIST_KEYS,
@@ -54,7 +56,20 @@ _TRAILING_TAGS_RE = re.compile(
     re.IGNORECASE,
 )
 _ONE_TAG_RE = re.compile(r"\[(tl|result):([^\[\]\n]{0,300})\]", re.IGNORECASE)
-_SKILL_NAME_RE = re.compile(rf"^{SKILL_NAME_PATTERN}$")
+
+#: A skill name shaped the way Claude Code names skills (SEC-P3): used
+#: both to validate a tag's own ``skill=would-help:<name>`` claim here
+#: and, in ``parse.py``, to validate a ``Skill`` tool_use's own input
+#: before it is ever trusted as a real invocation.
+SKILL_NAME_RE = re.compile(rf"^{SKILL_NAME_PATTERN}$")
+
+#: CAP-1: the feedback reminder line (``capture_catalogue.
+#: FEEDBACK_REMINDER_LINE``), stripped from a reply's tail before the
+#: trailing-tag match, so a tag still counts whether Claude wrote the
+#: reminder before or after it.
+_FEEDBACK_REMINDER_TAIL_RE = re.compile(
+    r"\n?[ \t]*[`*_]*" + re.escape(FEEDBACK_REMINDER_LINE) + r"[`*_]*[ \t]*$"
+)
 
 #: Brief-start markers: up to two ``[retry: x]``/``[spawn: x]`` tags before
 #: anything else, optionally in backticks.
@@ -100,7 +115,7 @@ def _apply_word(values: dict, key: str, value: str, skill_names: Collection[str]
         if word != "would-help":
             return
         values["skill"] = word
-        values["skill_name"] = name if _SKILL_NAME_RE.match(name) and name in skill_names else None
+        values["skill_name"] = name if SKILL_NAME_RE.match(name) and name in skill_names else None
         return
     word = value.lower()
     if word in vocab:
@@ -121,6 +136,11 @@ def parse_reply_tags(text: str, skill_names: Collection[str] = ()) -> tuple[Capt
     if not text or "[" not in text:
         return None, None
     tail = text[-TAIL_SCAN_CHARS:]
+    # CAP-1: the feedback reminder line asked for around the tag (see
+    # capture_catalogue.FEEDBACK_REMINDER_LINE) doesn't count as trailing
+    # text of its own -- strip one occurrence before the tail match so the
+    # tag is still found whichever side of it Claude wrote the line on.
+    tail = _FEEDBACK_REMINDER_TAIL_RE.sub("", tail, count=1)
     match = _TRAILING_TAGS_RE.search(tail)
     if match is None:
         return None, None
@@ -245,3 +265,53 @@ def parse_note_codes(text: str) -> tuple[int | None, tuple[str, ...]]:
         return None, ()
     codes = tuple(c for c in (match.group(2) or "").split(",") if _CODE_RE.match(c))
     return int(match.group(1)), codes
+
+
+#: ``CaptureTag`` field -> the metric it answers, in a main-session tag
+#: and in a subagent's ``[result: ...]`` tag. :func:`filter_tag` (SEC-P2)
+#: uses these to keep only what a session's own notes asked for; the
+#: cost accounting in ``capture.py`` uses them to weigh what a tag
+#: answered.
+MAIN_TAG_FIELDS = {
+    "task": "task", "brief": "brief", "level": "level", "shift": "shift", "size": "size", "missing": "missing",
+    "plan": "plan", "skill": "skill", "found": "found", "prior": "prior", "detour": "detour", "check": "check",
+    "out": "big_output", "useful": "web",
+}
+SUB_TAG_FIELDS = {"fit": "fit", "rules": "rules", "brief": "agent_brief", "missing": "agent_brief"}
+
+
+def filter_tag(
+    cap: CaptureTag | None, result_marker: str | None, *, requested: Collection[str], subagent: bool
+) -> tuple[CaptureTag | None, str | None]:
+    """Keep only what this transcript's own capture notes actually asked
+    for (SEC-P2): ``requested`` is the metric ids named in a note this
+    transcript saw (from ``TranscriptMeta.cap_metrics``), empty when it
+    never got one. A tag key, the ``[result: ...]`` marker, or the tag
+    as a whole is dropped unless its metric is in ``requested`` --
+    closing the gap where a tag Claude wrote unprompted (habit, an
+    example it saw, a copied transcript) would otherwise be trusted
+    just because it parses.
+    """
+    if not requested:
+        return None, None
+    if result_marker is not None and "result" not in requested:
+        result_marker = None
+    if cap is not None:
+        fields = SUB_TAG_FIELDS if subagent else MAIN_TAG_FIELDS
+        if not any(metric_id in requested for metric_id in fields.values()):
+            # No metric this tag could answer was ever requested: even a
+            # well-formed [tl:]/[result:] here is unearned.
+            cap = None if result_marker is None else replace(
+                cap, has_tl=False, chars=0, **{name: (() if name == "missing" else None) for name in fields}
+            )
+        else:
+            drop = [
+                name for name in fields
+                if fields[name] not in requested and getattr(cap, name) not in (None, ())
+            ]
+            if drop:
+                changes = {name: (() if name == "missing" else None) for name in drop}
+                if "skill" in drop:
+                    changes.setdefault("skill_name", None)
+                cap = replace(cap, **changes)
+    return cap, result_marker

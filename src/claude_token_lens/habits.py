@@ -314,7 +314,11 @@ class CycleFact:
     output_cost: float = 0.0
     thinking_cost: float = 0.0
     #: Your feedback on the work this message belongs to, and where it
-    #: came from ("feedback" for /tl-feedback, "rating" for the dashboard).
+    #: came from: "answers" for /tl-feedback's question answers, "tag"
+    #: for its `[tl-fb: ...]` line (a genuine run only -- SEC-P1), or
+    #: "rating" for the dashboard. Self-report calibration trusts only
+    #: "answers" and "rating": a "tag" is Claude's own report of the
+    #: outcome, not yours.
     outcome: str | None = None
     outcome_source: str | None = None
 
@@ -535,7 +539,7 @@ def _cycle_fact(session_id, cycle, carry: _CarryCost, index_of, rates: _Rates, b
     fb = rated.get(id(cycle)) or session_rating
     if fb is not None:
         fact.outcome = fb.outcome
-        fact.outcome_source = "rating" if fb.source == "rating" else "feedback"
+        fact.outcome_source = fb.source
     failing: dict[str, list[int]] = {}
     for n, (turn, i) in enumerate(zip(cycle.turns, idx)):
         fact.reads += sum(turn.tool_calls_by_tool.get(tool, 0) for tool in _READ_TOOLS)
@@ -1222,9 +1226,14 @@ def _self_report_calibration(h: Habits) -> dict | None:
     called "easy" missing its goal (your feedback, never its own report)
     more often than "normal" work, with at least ``MIN_GROUP`` rated
     messages on each side to compare. ``None`` while there isn't enough
-    feedback yet to tell either way."""
+    feedback yet to tell either way. SEC-P1: a cycle rated only by
+    Claude's own ``[tl-fb: ...]`` tag doesn't count -- calibration needs
+    your answers or your dashboard rating, not Claude grading itself."""
     def _rated(word: str) -> list[CycleFact]:
-        return [c for c in h.cycles if c.tag is not None and c.tag.level == word and c.outcome]
+        return [
+            c for c in h.cycles
+            if c.tag is not None and c.tag.level == word and c.outcome and c.outcome_source != "tag"
+        ]
 
     easy, normal = _rated("easy"), _rated("normal")
     if len(easy) < MIN_GROUP or len(normal) < MIN_GROUP:

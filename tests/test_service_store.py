@@ -534,13 +534,17 @@ def test_migrate_backs_up_and_rebuilds_a_newer_than_code_store(tmp_path) -> None
     """Review B2: a recorded schema_version newer than the running
     code's own is the one case (besides "no ladder step") a migration
     genuinely can't serve -- but the old file must be copied aside
-    first, never just silently dropped."""
+    first, never just silently dropped. ROB-P6: a rating and a tag
+    aren't re-derivable from transcripts the way the rest of the store
+    is, so they must survive the rebuild itself, not just the backup."""
     from claude_token_lens.service import schema
 
     db_path = tmp_path / "newer.db"
     store = Store(str(db_path))
     store.open()
     _seed(store)
+    store.set_feedback("session-a", outcome="delivered", slow=(), worth="yes", helped=())
+    store.set_tag("session-a", "purpose", "refactor")
     assert store.summary()["sessions"] == 1
     store.close()
 
@@ -560,10 +564,95 @@ def test_migrate_backs_up_and_rebuilds_a_newer_than_code_store(tmp_path) -> None
         assert reopened.schema_version() == schema.SCHEMA_VERSION
         assert reopened.summary()["sessions"] == 0
 
-        backup_path = db_path.with_name(db_path.name + f".bak-{newer_version}")
-        assert backup_path.exists(), "no backup was made before the newer-than-code store was rebuilt"
+        # ROB-P6: a timestamped, never-overwritten backup, not the bare
+        # "<path>.bak-<version>" of before.
+        backups = list(tmp_path.glob(f"newer.db.bak-{newer_version}-*"))
+        assert len(backups) == 1, "no (or more than one) backup was made before the newer-than-code store was rebuilt"
+
+        # The rating and the tag survive the drop-and-rebuild, even though
+        # "session-a" doesn't exist in the freshly recreated sessions table
+        # yet (the next watcher tick repopulates it).
+        assert reopened.feedback("session-a") == {
+            "outcome": "delivered", "slow": [], "worth": "yes", "helped": [], "set_at": reopened.feedback("session-a")["set_at"],
+        }
+        assert reopened.all_tags().get("session-a") == {"purpose": "refactor"}
     finally:
         reopened.close()
+
+
+def test_a_second_rebuild_of_the_same_version_gets_its_own_backup(tmp_path) -> None:
+    """ROB-P6: the backup must never be overwritten -- two drop-and-
+    rebuilds of a store recorded at the same unmigratable version (e.g.
+    two 'serve' starts against a downgraded install) each get their own
+    file, not one silently clobbering the other's data."""
+    from claude_token_lens.service import schema
+
+    db_path = tmp_path / "store.db"
+    Store(str(db_path)).open()
+    newer_version = schema.SCHEMA_VERSION + 1
+
+    def _mark_newer() -> None:
+        conn = sqlite3.connect(str(db_path))
+        conn.execute(
+            "INSERT INTO meta (key, value) VALUES ('schema_version', ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (str(newer_version),),
+        )
+        conn.commit()
+        conn.close()
+
+    _mark_newer()
+    Store(str(db_path)).open()
+    _mark_newer()
+    Store(str(db_path)).open()
+
+    backups = list(tmp_path.glob(f"store.db.bak-{newer_version}-*"))
+    assert len(backups) == 2, f"expected two distinct backups, found {[p.name for p in backups]}"
+
+
+def test_a_v6_to_v5_to_v6_round_trip_keeps_the_ratings(tmp_path, monkeypatch) -> None:
+    """ROB-P6: session_feedback and session_tags are exported before a
+    drop-and-rebuild and re-imported after, so a store that briefly looks
+    older or newer than this build's own SCHEMA_VERSION -- e.g. an
+    install downgraded and then upgraded again -- doesn't lose your
+    ratings and tags along the way, even though the rest of the store
+    (freely re-derivable from transcripts) is dropped and starts empty."""
+    from claude_token_lens.service import schema
+
+    db_path = tmp_path / "roundtrip.db"
+    store = Store(str(db_path))
+    store.open()  # built fresh at the real, current SCHEMA_VERSION (6)
+    _seed(store)
+    store.set_feedback("session-a", outcome="delivered", slow=("scope",), worth="yes", helped=("clearer-brief",))
+    store.set_tag("session-a", "purpose", "refactor")
+    store.close()
+
+    # "Downgrade": a build that only knows up to v5 opens this v6 store.
+    # v6 is newer than that build's own SCHEMA_VERSION, so migrate() takes
+    # the backup-then-drop-and-rebuild path (same branch as the test
+    # above), stamping the store back down to "5".
+    monkeypatch.setattr(schema, "SCHEMA_VERSION", schema.SCHEMA_VERSION - 1)
+    downgraded = Store(str(db_path))
+    downgraded.open()
+    assert downgraded.schema_version() == 5
+    downgraded.close()
+
+    # Upgrade back to the real, current build: v5 -> v6 walks the
+    # additive MIGRATIONS ladder (it never drops a table), so this step
+    # alone was never the risk -- the ratings must already have survived
+    # the downgrade step above to still be here now.
+    monkeypatch.undo()
+    upgraded = Store(str(db_path))
+    upgraded.open()
+    try:
+        assert upgraded.schema_version() == schema.SCHEMA_VERSION == 6
+        assert upgraded.feedback("session-a") == {
+            "outcome": "delivered", "slow": ["scope"], "worth": "yes", "helped": ["clearer-brief"],
+            "set_at": upgraded.feedback("session-a")["set_at"],
+        }
+        assert upgraded.all_tags().get("session-a") == {"purpose": "refactor"}
+    finally:
+        upgraded.close()
 
 
 def test_migrate_is_idempotent(store: Store) -> None:

@@ -91,6 +91,13 @@ SPAWN_REASONS = ("parallel", "isolate", "cheaper", "specialist", "review")
 #: dropped too (see ``capture_tags.parse_reply_tags``).
 SKILL_NAME_PATTERN = r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}"
 
+#: The line Claude writes when ``feedback_reminder`` is on (below), word
+#: for word. The note asks for it *before* the ``[tl: ...]`` tag (CAP-1),
+#: and ``capture_tags`` strips it from a reply's tail before matching the
+#: trailing tag, so it doesn't matter if Claude writes them the other
+#: way round.
+FEEDBACK_REMINDER_LINE = "Finished? Run /tl-feedback: a few ticks make your savings tips fit how you work."
+
 
 # -- the metrics -----------------------------------------------------------
 
@@ -98,6 +105,17 @@ SKILL_NAME_PATTERN = r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}"
 #: levels before it; ``custom`` is any other set (see :func:`level_of`).
 LEVELS = ("off", "free", "essentials", "standard", "deep")
 CUSTOM_LEVEL = "custom"
+
+#: CAP-8: how long a fresh "off" -> "on" switch runs before switching
+#: itself off again, when nothing says otherwise -- so capture never runs
+#: forever unnoticed just because nobody thought to time-box it. Shared by
+#: ``onboarding.ask_capture_until`` (the interactive/answers-file question)
+#: and ``config.set_capture`` (the actual default, applied at every path
+#: that can turn capture on: non-interactive ``init``, ``capture on``/
+#: ``level``, and ``POST /api/capture``) -- defined here, rather than in
+#: either of those, since ``onboarding`` imports from ``config`` and both
+#: already depend on this module.
+DEFAULT_CAPTURE_TIMEBOX_DAYS = 14
 
 #: Display names for the levels, as the dashboard and CLI show them.
 LEVEL_TITLES = {
@@ -236,6 +254,11 @@ class Metric:
     #: A line of its own in the main or subagent note.
     main_extra: str = ""
     sub_extra: str = ""
+    #: Put ``main_extra`` before the ``[tl: ...]`` tag block instead of
+    #: after it (CAP-1): for an extra that itself tells Claude to end its
+    #: reply with something, which would otherwise compete with the tag
+    #: instruction for "the last thing in the reply".
+    extra_before_tag: bool = False
     #: The note a PostToolUse hook adds after a matching tool result.
     tool_note: str = ""
     #: Other metrics it can't work without (a subagent's extras ride on
@@ -739,8 +762,9 @@ METRICS: tuple[Metric, ...] = (
         why="For people without the status line. Costs a few output tokens each time.",
         powers=("outcome",),
         hooks=("SessionStart",),
-        main_extra="When you finish a piece of work the user asked for, end your reply with: "
-        "Finished? Run /tl-feedback: a few ticks make your savings tips fit how you work.",
+        main_extra="When you finish a piece of work the user asked for, add before your tag: "
+        f"{FEEDBACK_REMINDER_LINE}",
+        extra_before_tag=True,
         out_chars=80,
     ),
     Metric(
@@ -1053,6 +1077,13 @@ def note_text(ids, scope: str, agent_type: str = "") -> str:
     if not codes:
         return ""
     out = [f"{NOTE_MARKER}{NOTE_VERSION} {','.join(codes)}", NOTE_INTRO]
+    # CAP-1: an extra marked extra_before_tag (feedback_reminder) tells
+    # Claude to end its reply with something too, so it goes before the
+    # tag block, not after -- the tag instruction stays the last thing
+    # the note asks for.
+    before_tag = [x for m, x in zip(enabled, extras) if x and main and m.extra_before_tag]
+    after_tag = [x for m, x in zip(enabled, extras) if x and not (main and m.extra_before_tag)]
+    out += before_tag
     if any(lines):
         if main:
             out.append(MAIN_TAG_INTRO)
@@ -1062,17 +1093,34 @@ def note_text(ids, scope: str, agent_type: str = "") -> str:
         out += [line for line in lines if line]
         if main:
             out.append(SKIP_KEY_LINE)
-    out += [x for x in extras if x]
+    out += after_tag
     return "\n".join(out)
 
 
-def tool_note_text(metric_id: str, tool_name: str = "") -> str:
+def tool_note_text(metric_id: str) -> str:
     """The note a PostToolUse hook adds after a large result
     (``big_output``) or a web result (``web``)."""
     metric = METRICS_BY_ID.get(metric_id)
     if metric is None or not metric.tool_note:
         return ""
     return f"{NOTE_MARKER}{NOTE_VERSION} {metric.id}\n{metric.tool_note}"
+
+
+#: The literal tool names each PostToolUse-triggered metric matches
+#: (see ``hook_specs``'s own matchers): an MCP wildcard entry
+#: ("mcp__.*") isn't a real tool name, so it's left out.
+_POST_TOOL_USE_TOOLS = {"big_output": BIG_OUTPUT_TOOLS, "web": WEB_TOOLS}
+
+
+def tool_suffix_chars(metric_id: str) -> int:
+    """CAP-10: Claude Code's own PostToolUse wrap names the specific
+    tool that matched, not the whole matcher pattern (its own debug log
+    shows ``"PostToolUse:Write"``, not ``"PostToolUse:Bash|Read|..."``)
+    -- estimated here, before any real note has been measured, as the
+    average length of ``metric_id``'s own matcher's literal tool names,
+    plus the ``:`` that joins it to the event name."""
+    names = [t for t in _POST_TOOL_USE_TOOLS.get(metric_id, ()) if "*" not in t]
+    return round(sum(len(t) for t in names) / len(names)) + 1 if names else 0
 
 
 def hook_specs(ids) -> tuple[tuple[str, str, str, bool], ...]:
@@ -1122,6 +1170,7 @@ def export_json() -> dict:
                 "requires": list(m.requires),
                 "main_line": m.main_line,
                 "main_extra": m.main_extra,
+                "extra_before_tag": m.extra_before_tag,
                 "sub_line": m.sub_line,
                 "sub_extra": m.sub_extra,
                 "tool_note": m.tool_note,
@@ -1175,7 +1224,10 @@ def rough_tokens(ids) -> dict[str, int]:
     main, sub = note_text(ids, "main"), note_text(ids, "subagent")
     reply = sum(m.out_chars for m in enabled if m.main_line or m.main_extra)
     report = sum(m.out_chars for m in enabled if m.sub_line or m.sub_extra)
-    tool = max((len(tool_note_text(m.id)) for m in enabled if m.tool_note), default=0)
+    tool = max(
+        (len(tool_note_text(m.id)) + tool_suffix_chars(m.id) for m in enabled if m.tool_note),
+        default=0,
+    )
     return {
         "session_note": round((len(main) + NOTE_WRAP_CHARS + len("SessionStart")) / 4) if main else 0,
         "subagent_note": round((len(sub) + NOTE_WRAP_CHARS + len("SubagentStart")) / 4) if sub else 0,
@@ -1406,10 +1458,22 @@ def render_markdown() -> str:
     p("")
     p("- `claude-token-lens capture status` — the level, what's on, since when, and the cost measured so far.")
     p(
-        "- `claude-token-lens capture on [--level LEVEL] [--for DURATION | --until DATE] [--sample N] "
-        "[--yes] [--dry-run]` — turn it on (default level: Essentials)."
+        "- `claude-token-lens capture on [--level LEVEL] [--for DURATION | --until DATE | --no-limit] "
+        "[--sample N] [--yes] [--dry-run]` — turn it on (default level: Essentials)."
     )
     p("- `claude-token-lens capture level LEVEL` — change the level.")
+    p("")
+    p(
+        f"A fresh switch from off to on — at `init`, `capture on`/`level`, or the Capture page — gets a "
+        f"{DEFAULT_CAPTURE_TIMEBOX_DAYS}-day time-box by default, so turning it on doesn't mean it runs "
+        "unattended forever: it switches itself back off on its own unless you say otherwise. `--for "
+        "DURATION` (a number and `h`, `d` or `w`, e.g. `30d`) or `--until DATE` picks another length or "
+        "end date; `--no-limit` turns the time-box off entirely, so capture runs until you switch it off "
+        "yourself. `init` has the same three choices as `--capture-for DURATION`, `--capture-level LEVEL "
+        "--capture-no-limit`, or (interactively, or under `--non-interactive` with neither given) the "
+        "default. Changing the level of capture that's already on leaves an existing time-box (or the "
+        "lack of one) exactly as it is — the default only ever applies to a fresh switch-on."
+    )
     p(
         "- `claude-token-lens capture enable METRIC...` / `capture disable METRIC...` — turn individual "
         "metrics on or off; the level becomes Custom once the set no longer matches a preset."

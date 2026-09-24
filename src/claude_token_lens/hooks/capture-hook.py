@@ -129,18 +129,33 @@ def sampled_in(session_id: str, sample: int) -> bool:
     return bucket < sample
 
 
+def _pattern_matches(pattern: str, slug: str) -> bool:
+    """``re.search(pattern, slug, re.IGNORECASE)``, treating a malformed
+    ``pattern`` as simply not matching (SEC-P5) rather than raising --
+    ``main`` swallows every error and exits 0 regardless, so an
+    unguarded ``re.error`` here didn't crash anything, but it took the
+    *whole* hook call down with it (no note for the whole session, not
+    just this one bad pattern), the same "one bad pattern shouldn't cost
+    you the rest of the list" posture ``discovery.resolve_project_dirs``
+    and ``corpus._filter_excluded_dirs`` already take."""
+    try:
+        return bool(re.search(pattern, slug, re.IGNORECASE))
+    except re.error:
+        return False
+
+
 def project_allowed(slug: str, projects: list, exclude_projects: list) -> bool:
     """``projects`` holds slug patterns capture runs in, and ``!pattern``
     ones it skips; an empty list means every project. A project Token
     Lens leaves out altogether (``exclude_projects``) is skipped too."""
     for pattern in exclude_projects:
-        if isinstance(pattern, str) and re.search(pattern, slug, re.IGNORECASE):
+        if isinstance(pattern, str) and _pattern_matches(pattern, slug):
             return False
     includes = [p for p in projects if isinstance(p, str) and not p.startswith("!")]
     for pattern in projects:
-        if isinstance(pattern, str) and pattern.startswith("!") and re.search(pattern[1:], slug, re.IGNORECASE):
+        if isinstance(pattern, str) and pattern.startswith("!") and _pattern_matches(pattern[1:], slug):
             return False
-    return not includes or any(re.search(p, slug, re.IGNORECASE) for p in includes)
+    return not includes or any(_pattern_matches(p, slug) for p in includes)
 
 
 def _parse_time(value: str) -> datetime | None:
@@ -187,6 +202,13 @@ def build_note(catalogue: dict, ids, scope: str, agent_type: str = "") -> str:
         return ""
     text = catalogue["text"]
     out = [f"{catalogue['marker']}{catalogue['version']} {','.join(codes)}", text["intro"]]
+    # CAP-1: an extra marked extra_before_tag (feedback_reminder) tells
+    # Claude to end its reply with something too, so it goes before the
+    # tag block, not after -- the tag instruction stays the last thing
+    # the note asks for. Same split as capture_catalogue.note_text.
+    before_tag = [x for m, x in zip(enabled, extras) if x and main and m.get("extra_before_tag")]
+    after_tag = [x for m, x in zip(enabled, extras) if x and not (main and m.get("extra_before_tag"))]
+    out += before_tag
     if any(lines):
         if main:
             out.append(text["main_tag_intro"])
@@ -196,7 +218,7 @@ def build_note(catalogue: dict, ids, scope: str, agent_type: str = "") -> str:
         out += [line for line in lines if line]
         if main:
             out.append(text["skip_key_line"])
-    out += [x for x in extras if x]
+    out += after_tag
     return "\n".join(out)
 
 
@@ -218,12 +240,29 @@ def _result_chars(response) -> int:
 
 def _in_subagent(payload: dict) -> bool:
     """Whether a SessionStart comes from a subagent's compaction. It
-    carries no agent fields today, only the transcript it belongs to,
-    which sits in the session's ``subagents`` folder."""
+    carries no agent fields today, only the transcript it belongs to.
+
+    A subagent transcript always sits somewhere under the session's
+    ``subagents`` folder -- directly, for an ordinary subagent
+    (``subagents/agent-<hex>.jsonl``), or one level deeper for a
+    workflow-nested one (``subagents/workflows/<run_id>/agent-<hex>.jsonl``
+    -- see ``discovery.py``'s module docstring for why that shape
+    exists), so this checks every ancestor directory (SURV-2), not just
+    the immediate parent as before -- the workflow-nested shape's
+    immediate parent is the run id, never literally ``subagents``. The
+    filename itself (``agent-*.jsonl``, the same glob
+    ``discovery.find_subagents`` globs by) is a second, independent
+    signal, for a transcript path shape this doesn't otherwise recognise.
+    """
     if payload.get("agent_id"):
         return True
     transcript = payload.get("transcript_path")
-    return isinstance(transcript, str) and Path(transcript.replace("\\", "/")).parent.name == "subagents"
+    if not isinstance(transcript, str):
+        return False
+    path = Path(transcript.replace("\\", "/"))
+    if path.name.startswith("agent-") and path.name.endswith(".jsonl"):
+        return True
+    return "subagents" in path.parent.parts
 
 
 def _capture_for(payload: dict, config: dict, now: datetime) -> dict | None:

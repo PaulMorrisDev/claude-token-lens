@@ -21,7 +21,16 @@ from claude_token_lens.model import CaptureTag, TranscriptMeta
 from claude_token_lens.parse import parse_transcript
 from claude_token_lens.pricing import load_pricing
 
-from helpers import assert_privacy, tool_result_block, tool_use_block, turn_line, user_block_line, user_str_line, write_jsonl
+from helpers import (
+    assert_privacy,
+    attachment_line,
+    tool_result_block,
+    tool_use_block,
+    turn_line,
+    user_block_line,
+    user_str_line,
+    write_jsonl,
+)
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 MODEL = "claude-widget-9"
@@ -315,8 +324,21 @@ def _reply(second: int, *blocks, text: str = "ok") -> dict:
     return turn_line(content=content, model=MODEL, timestamp=_ts(second))
 
 
-def _tagged_session(tmp_path):
-    top = _parse(tmp_path, "top.jsonl", [
+def _note(second: int, ids, *, hook: str = "SessionStart", agent_type: str = "") -> dict:
+    text = catalogue.note_text(ids, "main" if hook == "SessionStart" else "subagent", agent_type)
+    wrapped = f"<system-reminder>\n{hook} hook additional context: {text}\n</system-reminder>"
+    line = attachment_line("hook_additional_context", rendered=wrapped, content=[text], hookName=hook,
+                           hookEvent=hook, toolUseID=hook)
+    line["timestamp"] = _ts(second)
+    return line
+
+
+def _tagged_session(tmp_path, *, captured: bool = True):
+    """``captured=False`` leaves out the capture notes, for the tests
+    that want a session capture never started in (SEC-P2 drops an
+    uninvited tag's content either way, so the tag lines below are
+    identical -- only whether they're trusted differs)."""
+    top_lines = [
         user_str_line("fix the login bug", origin={"kind": "human"}, timestamp=_ts(0)),
         _reply(1, tool_use_block("Agent", "toolu_A", {"prompt": "find where the cookie is set"}),
                {"type": "text", "text": "Looking.\n[tl: task=bugfix brief=vague level=hard]"}),
@@ -324,11 +346,23 @@ def _tagged_session(tmp_path):
         _reply(6, text="Fixed.\n[tl: task=bugfix brief=vague level=hard]"),
         user_str_line("do it again properly", origin={"kind": "human"}, timestamp=_ts(10)),
         _reply(11, text="Redone.\n[tl: task=bugfix shift=redo]"),
-    ], kind="top-level")
-    sub = _parse(tmp_path, "agent-a1.jsonl", [
+    ]
+    if captured:
+        top_lines.insert(0, _note(0, ["task", "brief", "level", "shift"]))
+    top = _parse(tmp_path, "top.jsonl", top_lines, kind="top-level")
+    sub_lines = [
         user_str_line("find where the cookie is set", timestamp=_ts(2)),
         _reply(3, text="src/auth.py\n[result: done fit=larger rules=unused]"),
-    ], kind="subagent", agent_id="agent-a1", agent_type="Explore", tool_use_id="toolu_A")
+    ]
+    if captured:
+        # Explore is never asked about rules (see test_capture_catalogue's
+        # test_setup_agents_get_no_note_and_explore_is_not_asked_about_rules),
+        # so "rules" is left off the note codes here too: SEC-P2 must drop
+        # the reply's own "rules=unused" the same as the real hook would
+        # never have asked for it.
+        sub_lines.insert(0, _note(2, ["result", "fit"], hook="SubagentStart", agent_type="Explore"))
+    sub = _parse(tmp_path, "agent-a1.jsonl", sub_lines, kind="subagent", agent_id="agent-a1",
+                agent_type="Explore", tool_use_id="toolu_A")
     return NS(sessions=[NS(top=top, subs=[sub], session_id="s1", project_dir="p")])
 
 
@@ -345,15 +379,17 @@ def test_collect_turns_tags_ratings_and_agent_reports_into_facts(tmp_path, prici
         "partly", "dashboard rating", "bugfix", ("rework",), ()
     )
     (agent,) = h.agents
+    # rules stays None: Explore is never asked about it, so its own
+    # "rules=unused" isn't trusted (SEC-P2).
     assert (agent.agent_type, agent.result, agent.fit, agent.rules, agent.level, agent.task) == (
-        "Explore", "done", "larger", "unused", "hard", "bugfix"
+        "Explore", "done", "larger", None, "hard", "bugfix"
     )
 
 
 def test_the_agents_table_feeds_the_model_veto(tmp_path, pricing):
     section = habits.build_section(_tagged_session(tmp_path), pricing)
     rows = {r["agent_type"]: r for r in _rows(_table(section, "habits_agents"))}
-    assert rows["Explore"]["fit_larger"] == 1 and rows["Explore"]["rules_unused"] == 1
+    assert rows["Explore"]["fit_larger"] == 1 and rows["Explore"]["rules_unused"] == 0
     assert habits.unfit_agents(list(rows.values()))["Explore"] == "Claude said 1 of its runs needed a larger model"
     by_task = {r["task"]: r for r in _rows(_table(section, "habits_by_task"))}
     assert by_task["all"]["cycles"] == 2 and by_task["bugfix"]["redo_pct"] == pytest.approx(50.0)
@@ -474,7 +510,7 @@ def test_habits_and_capture_sections_pass_the_privacy_scan(tmp_path, pricing):
 
 def test_the_capture_section_prices_its_weekly_cost_against_what_depends_on_it(tmp_path, pricing):
     config = NS(level="standard", enabled_at="2026-09-01T08:00:00+00:00")
-    table = _table(habits.capture_section(_tagged_session(tmp_path), pricing, config), "capture_usage")
+    table = _table(habits.capture_section(_tagged_session(tmp_path, captured=False), pricing, config), "capture_usage")
     rows = dict(table.rows)
     # "since" is far enough in the past for a weekly rate to be worked
     # out (0, since this fixture has no injected capture note to price);
@@ -507,6 +543,27 @@ def test_self_report_calibration_flags_easy_work_that_misses_more_than_normal():
     assert calibration["contradicts"] is True
     assert calibration["easy_missed_pct"] == pytest.approx(60.0)
     assert calibration["normal_missed_pct"] == pytest.approx(20.0)
+
+
+def test_self_report_calibration_ignores_outcomes_sourced_from_claudes_own_tag():
+    # SEC-P1: a `[tl-fb: ...]` tag is Claude's own report of the
+    # outcome, not yours, so it must not feed the calibration that
+    # checks Claude's reports against your feedback -- only "answers"
+    # (/tl-feedback's question) and "rating" (the dashboard) count.
+    easy, normal = CaptureTag(level="easy"), CaptureTag(level="normal")
+
+    def _cycles(source: str) -> list:
+        return [
+            *(_cycle(tag=easy, outcome="missed", outcome_source=source) for _ in range(3)),
+            *(_cycle(tag=easy, outcome="met", outcome_source=source) for _ in range(2)),
+            *(_cycle(tag=normal, outcome="missed", outcome_source=source) for _ in range(1)),
+            *(_cycle(tag=normal, outcome="met", outcome_source=source) for _ in range(4)),
+        ]
+
+    assert habits._self_report_calibration(Habits(cycles=_cycles("tag"))) is None
+    calibration = habits._self_report_calibration(Habits(cycles=_cycles("answers")))
+    assert calibration["contradicts"] is True
+    assert calibration["easy_missed_pct"] == pytest.approx(60.0)
 
 
 def test_too_little_feedback_leaves_self_report_calibration_unknown():

@@ -13,11 +13,21 @@ contract that gates the on-disk digest *cache*) and of ``PARSER_VERSION``
 (``parse.py``'s parsing-logic version). This one versions the SQLite
 *store*'s own table shapes. A mismatch between the version recorded in
 the ``meta`` table and this module's :data:`SCHEMA_VERSION` means the
-store's tables are stale relative to the code that opened them; v0.2's
-first cut treats that as "drop and rebuild" (the store is a derived
-cache over transcripts on disk, never the source of truth), so there is
-no ``ALTER TABLE`` migration path yet — a later version may add one if
-rebuilding becomes too slow for a large corpus.
+store's tables are stale relative to the code that opened them;
+``Store.migrate`` (``service/store.py``) walks an additive
+``MIGRATIONS`` ladder -- ``ALTER TABLE``/``CREATE INDEX`` only, existing
+rows kept -- for a recorded version it has a registered step for, and
+falls back to "drop and rebuild" (backed up first, see
+``Store._backup_before_rebuild``) only for the two cases a ladder step
+can't serve: a recorded version newer than the running code's own, or
+an older one with no registered step. Most of the store is a derived
+cache over transcripts on disk, never the source of truth, so losing it
+to a rebuild is safe -- the next watcher tick repopulates it. The two
+tables that aren't re-derivable this way, ``session_tags`` and
+``session_feedback`` (your own tags and ratings from the Sessions tab),
+are read before a drop-and-rebuild and written straight back once the
+tables are recreated (ROB-P6, ``Store._export_marks``/
+``_reimport_marks``), so a rebuild never silently erases them either.
 
 Privacy rule (binding on every table below, restated from ``model.py``'s
 own module docstring and enforced here for the store specifically): no

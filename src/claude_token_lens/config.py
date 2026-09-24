@@ -44,7 +44,7 @@ import os
 import re
 import tomllib
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from . import capture_catalogue
@@ -71,6 +71,14 @@ _ALLOWED_PROJECT_KIND = frozenset({"work", "personal"})
 #: Share of sessions capture may run in (``[capture] sample``): a session
 #: is in or out by a hash of its id, and its subagents follow it.
 CAPTURE_SAMPLES = (100, 50, 25, 10)
+
+#: SEC-P5: bounds on ``retention_days``. 1 (never 0 or negative, which
+#: would prune everything, including the session in progress) through
+#: 36500 (100 years -- large enough that no real "keep forever" user
+#: needs more, small enough to catch a typo like an extra zero or a
+#: value pasted in milliseconds/hours by mistake).
+RETENTION_DAYS_MIN = 1
+RETENTION_DAYS_MAX = 36500
 
 #: Every change to ``[capture]`` is appended here, one JSON object per
 #: line, so a change can be lined up against the costs around it.
@@ -390,6 +398,18 @@ def _build_config(data: dict, path: Path) -> Config:
         isinstance(item, str) for item in exclude_projects
     ):
         raise ConfigError(f"config file {path}: 'exclude_projects' must be a list of strings")
+    # SEC-P5: compiled here, at load, the same as 'capture.projects' just
+    # above -- so a typo'd regex is a load-time ConfigError the user sees
+    # right away, not a pattern that silently stops excluding anything
+    # once it reaches discovery.resolve_project_dirs/corpus's own
+    # skip-and-carry-on compilation (still needed there as defense in
+    # depth for a caller that builds the list itself, e.g. ``serve
+    # --exclude-project``, without going through this loader).
+    for pattern in exclude_projects:
+        try:
+            re.compile(pattern, re.IGNORECASE)
+        except re.error as exc:
+            raise ConfigError(f"config file {path}: 'exclude_projects' has a bad pattern {pattern!r} ({exc})") from exc
     config.exclude_projects = list(exclude_projects)
 
     extra_projects_roots = data.get("extra_projects_roots", [])
@@ -404,6 +424,11 @@ def _build_config(data: dict, path: Path) -> Config:
         not isinstance(retention_days, int) or isinstance(retention_days, bool)
     ):
         raise ConfigError(f"config file {path}: 'retention_days' must be an integer")
+    if retention_days is not None and not (RETENTION_DAYS_MIN <= retention_days <= RETENTION_DAYS_MAX):
+        raise ConfigError(
+            f"config file {path}: 'retention_days' must be between {RETENTION_DAYS_MIN} and "
+            f"{RETENTION_DAYS_MAX}, got {retention_days}"
+        )
     config.retention_days = retention_days
 
     provider = data.get("provider")
@@ -688,8 +713,35 @@ def load_session_overrides(config_dir: str | Path | None = None) -> dict[str, di
     return result
 
 
+#: TOML basic-string escapes with their own short form (SEC-P5); every
+#: other C0 control character or DEL falls back to \\uXXXX below, so a
+#: stray control byte in a value (a pasted purpose, a slug, an exclude
+#: pattern) can never produce a literal control character inside the
+#: written ``"..."`` string -- which would be invalid TOML and, read
+#: back by the capture hook's own ``tomllib.loads``, would silently
+#: blank the whole config rather than just that one field.
+_TOML_SHORT_ESCAPES = {
+    "\\": "\\\\",
+    '"': '\\"',
+    "\b": "\\b",
+    "\t": "\\t",
+    "\n": "\\n",
+    "\f": "\\f",
+    "\r": "\\r",
+}
+
+
 def _toml_escape_string(value: str) -> str:
-    return value.replace("\\", "\\\\").replace('"', '\\"')
+    out = []
+    for ch in value:
+        short = _TOML_SHORT_ESCAPES.get(ch)
+        if short is not None:
+            out.append(short)
+        elif ch == "\x7f" or ord(ch) < 0x20:
+            out.append(f"\\u{ord(ch):04x}")
+        else:
+            out.append(ch)
+    return "".join(out)
 
 
 def _toml_string(value: str) -> str:
@@ -721,7 +773,11 @@ def _write_sessions_toml(path: Path, sessions_table: dict[str, dict]) -> None:
         lines.append("")
     path.parent.mkdir(parents=True, exist_ok=True)
     text = "\n".join(lines).rstrip("\n") + "\n" if lines else ""
-    path.write_text(text, encoding="utf-8")
+    # SEC-P5: same atomic-write-plus-reparse posture as the config.toml
+    # writer below, for the same reason -- a bad escape here would
+    # otherwise corrupt sessions.toml, which (unlike config.toml) has no
+    # ".new fallback" to catch it.
+    _write_atomic(path, text, verify_toml=True)
 
 
 def save_session_override(
@@ -834,9 +890,9 @@ def write_config_values(config_dir: str | Path | None, updates: dict) -> Path:
         text = _dump_toml_table(merged)
     except ConfigError:
         new_path = resolved_dir / "config.toml.new"
-        _write_atomic(new_path, _dump_toml_table(_flat_part(merged)))
+        _write_atomic(new_path, _dump_toml_table(_flat_part(merged)), verify_toml=True)
         return new_path
-    _write_atomic(path, text)
+    _write_atomic(path, text, verify_toml=True)
     return path
 
 
@@ -850,9 +906,22 @@ def _flat_part(data: dict) -> dict:
     }
 
 
-def _write_atomic(path: Path, text: str) -> None:
+def _write_atomic(path: Path, text: str, *, verify_toml: bool = False) -> None:
     """Write ``text`` to ``path`` through a temporary file and a rename,
-    so a reader (the capture hook, say) never sees half a file."""
+    so a reader (the capture hook, say) never sees half a file.
+
+    ``verify_toml`` (SEC-P5) re-parses ``text`` with ``tomllib`` first and
+    raises :class:`ConfigError` without touching ``path`` at all if it
+    doesn't come back as valid TOML -- a belt-and-braces check that a
+    writer bug (a value ``_toml_format_value`` didn't escape correctly,
+    say) can never replace a good ``config.toml`` with one that Token
+    Lens, or the capture hook's own ``tomllib.loads``, can't read back.
+    """
+    if verify_toml:
+        try:
+            tomllib.loads(text)
+        except tomllib.TOMLDecodeError as exc:
+            raise ConfigError(f"internal error: generated TOML for {path} does not parse back: {exc}") from exc
     tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
     try:
         tmp.write_text(text, encoding="utf-8")
@@ -904,7 +973,11 @@ def set_capture(
     ``metrics``); ``metrics`` picks metrics one by one, and the level
     becomes the preset they match, else ``"custom"``. Switching from off
     to on stamps ``enabled_at``; switching off clears it and ``until``.
-    The new table is validated before anything is written, the write is
+    A switch from off to on that leaves ``until`` unsaid (``None``) gets
+    :data:`~claude_token_lens.capture_catalogue.DEFAULT_CAPTURE_TIMEBOX_DAYS`
+    days by default (CAP-8), so capture can't run forever unnoticed --
+    pass ``until=""`` for a deliberate "no limit" instead. The new table
+    is validated before anything is written, the write is
     atomic, and every change is appended to ``capture-log.jsonl``. Raises
     :class:`ConfigError` for a bad value, or when ``config.toml`` can't be
     rewritten in place (the change then sits in ``config.toml.new``).
@@ -937,12 +1010,28 @@ def set_capture(
         table["feedback"] = _in_catalogue_order(feedback, capture_catalogue.FEEDBACK_IDS)
     if coaching is not None:
         table["coaching"] = _in_catalogue_order(coaching, capture_catalogue.COACHING_IDS)
-    stamp = (now or datetime.now(timezone.utc)).astimezone(timezone.utc).isoformat(timespec="seconds")
+    moment = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    stamp = moment.isoformat(timespec="seconds")
     if table["level"] == "off":
         table["enabled_at"] = ""
         table["until"] = ""
     elif not current.is_on:
         table["enabled_at"] = stamp
+        # CAP-8: a fresh "off" -> "on" switch gets a default time-box when
+        # nothing says otherwise, so capture can't run forever unnoticed
+        # just because nobody set one. An explicit --until/--for/"" (a
+        # deliberate "no limit") already set table["until"] above, and an
+        # *existing* until can't reach this branch at all -- it's cleared
+        # to "" whenever level is "off", which is the only way to get here
+        # -- so this is exactly the "skipped when --capture-no-limit/--for/
+        # --until is given or an until exists" case the audit calls for.
+        # Every path that can turn capture on (non-interactive init,
+        # 'capture on'/'level', POST /api/capture) funnels through this one
+        # place, so none of them need to duplicate the default themselves.
+        if until is None:
+            table["until"] = (
+                moment + timedelta(days=capture_catalogue.DEFAULT_CAPTURE_TIMEBOX_DAYS)
+            ).isoformat(timespec="seconds")
 
     if table == _capture_table(current):
         return current

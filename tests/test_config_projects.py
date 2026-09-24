@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import pytest
 
+from claude_token_lens import config as config_module
 from claude_token_lens.config import (
     Config,
     ConfigError,
@@ -207,3 +208,44 @@ def test_write_config_values_round_trips_through_load_config(tmp_path):
     assert config.shared_project_config is True
     assert config.apply_scope == "repo"
     assert config.exclude_projects == ["work-thing"]
+
+
+def test_write_config_values_escapes_control_characters_and_round_trips(tmp_path):
+    """SEC-P5: a value with control characters (an embedded newline, a
+    tab, a carriage return, a quote, a backslash, and a C0 byte with no
+    short escape of its own) must not corrupt config.toml -- each one
+    becomes an escape sequence on the same physical line as the rest of
+    the value, and load_config reads the exact original string back.
+    """
+    token_lens_dir = tmp_path / "token-lens"
+    tricky = 'line one\nline two\ttabbed\r"quoted"\\backslash\x01\x7fend'
+    write_config_values(token_lens_dir, {"pricing_path": tricky})
+
+    lines = (token_lens_dir / "config.toml").read_text(encoding="utf-8").splitlines()
+    pricing_lines = [line for line in lines if line.startswith("pricing_path")]
+    # A raw control character in the value would have split it across
+    # physical lines (or worse); escaped, it's exactly one.
+    assert len(pricing_lines) == 1
+    line = pricing_lines[0]
+    assert "\\n" in line and "\\t" in line and "\\r" in line
+    assert '\\"quoted\\"' in line
+    assert "\\\\backslash" in line
+    assert "\\u0001" in line and "\\u007f" in line
+
+    config = load_config(config_dir=token_lens_dir)
+    assert config.pricing_path == tricky
+
+
+def test_write_atomic_verify_toml_refuses_to_replace_the_file_with_bad_toml(tmp_path):
+    """SEC-P5: re-parses before replacing. A would-be writer bug that
+    produced text that isn't valid TOML must never reach the real file
+    -- _write_atomic(verify_toml=True) catches it first and leaves the
+    existing file (and no stray temp file) behind."""
+    path = tmp_path / "config.toml"
+    path.write_text('billing = "api"\n', encoding="utf-8")
+
+    with pytest.raises(ConfigError, match="does not parse back"):
+        config_module._write_atomic(path, 'billing = "unterminated\n', verify_toml=True)
+
+    assert path.read_text(encoding="utf-8") == 'billing = "api"\n'
+    assert list(path.parent.iterdir()) == [path]

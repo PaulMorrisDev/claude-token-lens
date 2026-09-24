@@ -126,15 +126,33 @@ def test_cycles_run_from_each_message_to_the_next_and_collect_nested_agents(tmp_
 
 def test_the_last_tag_in_a_cycle_is_the_one_that_counts(tmp_path):
     top = _top(tmp_path, [
-        _ask(0),
-        _reply(1, text="Looking.\n[tl: task=debug]"),
-        _reply(2, text="Found it.\n[tl: task=bugfix]"),
-        _ask(3),
-        _reply(4, text="untagged"),
+        _note(0, ["task"]),
+        _ask(1),
+        _reply(2, text="Looking.\n[tl: task=debug]"),
+        _reply(3, text="Found it.\n[tl: task=bugfix]"),
+        _ask(4),
+        _reply(5, text="untagged"),
     ])
     first, second = capture.prompt_cycles(top)
     assert first.tag.task == "bugfix"
     assert second.tag is None
+
+
+def test_a_cycles_tags_merge_key_by_key(tmp_path):
+    # CAP-10: a retry's tag winning "task" doesn't erase a key only the
+    # earlier tag answered -- they merge key by key, not tag-for-tag.
+    top = _top(tmp_path, [
+        _note(0, ["task", "level", "shift"]),
+        _ask(1),
+        _reply(2, text="Looking.\n[tl: task=debug level=hard]"),
+        _reply(3, text="Found it.\n[tl: task=bugfix shift=redo]"),
+    ])
+    [cycle] = capture.prompt_cycles(top)
+    turn2, turn3 = top.turns[0], top.turns[1]
+    tag = cycle.tag
+    assert (tag.task, tag.level, tag.shift) == ("bugfix", "hard", "redo")
+    assert tag.has_tl is True
+    assert tag.chars == turn2.cap.chars + turn3.cap.chars
 
 
 # -- measured use ------------------------------------------------------------------
@@ -222,6 +240,56 @@ def test_sessions_without_a_capture_note_are_not_counted(tmp_path, pricing):
     assert (use.sessions, use.cycles, use.cost, use.coverage, use.share) == (0, 0, 0.0, None, None)
 
 
+def test_a_feedback_run_cycle_is_left_out_of_the_coverage_denominator(tmp_path, pricing):
+    # CAP-10: a /tl-feedback run answers /tl-feedback's own question, not
+    # the one an ordinary reply reports on -- it shouldn't count against
+    # coverage just because it never wrote a [tl: ...] task tag either.
+    top = _top(tmp_path, [
+        _note(0, ["task"]),
+        user_str_line(
+            "<command-message>tl-feedback</command-message>\n<command-name>/tl-feedback</command-name>",
+            timestamp=_ts(1),
+        ),
+        _reply(2, text="Thanks: Token Lens will use this for your savings tips."),
+        _ask(3),
+        _reply(4, text="Done.\n[tl: task=bugfix]"),
+    ])
+    use = capture.usage(_corpus(top), pricing)
+    assert (use.cycles, use.tagged_cycles) == (1, 1)
+    assert use.coverage == 100.0
+
+
+def test_a_max_tokens_cycle_is_left_out_of_the_coverage_denominator(tmp_path, pricing):
+    # CAP-10: a reply cut off by max_tokens never got to write its tag.
+    cut_off = _reply(2, text="Still working")
+    cut_off["message"]["stop_reason"] = "max_tokens"
+    top = _top(tmp_path, [
+        _note(0, ["task"]),
+        _ask(1),
+        cut_off,
+        _ask(3),
+        _reply(4, text="Done.\n[tl: task=bugfix]"),
+    ])
+    use = capture.usage(_corpus(top), pricing)
+    assert (use.cycles, use.tagged_cycles) == (1, 1)
+    assert use.coverage == 100.0
+
+
+def test_an_interrupted_cycle_is_left_out_of_the_coverage_denominator(tmp_path, pricing):
+    # CAP-10: the user cut Claude off before it could write its tag.
+    top = _top(tmp_path, [
+        _note(0, ["task"]),
+        _ask(1),
+        _reply(2, text="cut off mid-thought"),
+        user_str_line("[Request interrupted by user]", timestamp=_ts(3)),
+        _ask(4, "try again"),
+        _reply(5, text="Done.\n[tl: task=bugfix]"),
+    ])
+    use = capture.usage(_corpus(top), pricing)
+    assert (use.cycles, use.tagged_cycles) == (1, 1)
+    assert use.coverage == 100.0
+
+
 def test_a_tool_note_counts_in_the_tool_scope(tmp_path, pricing):
     ids = catalogue.level_metrics("deep")
     text = catalogue.tool_note_text("big_output")
@@ -281,6 +349,22 @@ def test_history_prices_one_character_in_each_place(tmp_path, pricing):
     assert past.big_output_note == pytest.approx(WRITE + READ)
     assert past.big_output_tag == pytest.approx(OUT)
     assert past.spend > 0
+
+
+def test_big_output_notes_are_estimated_per_call_not_per_turn(tmp_path, pricing):
+    # CAP-10: two big results from the same tool in one turn cost two
+    # notes, not one -- Claude Code fires PostToolUse per call, not once
+    # per turn regardless of how many of its calls crossed the threshold.
+    big = "x" * 35_000
+    top = _top(tmp_path, [
+        _ask(0),
+        _reply(1, tool_use_block("Bash", "toolu_B", {"command": "make"}),
+               tool_use_block("Bash", "toolu_C", {"command": "test"})),
+        user_block_line([tool_result_block("toolu_B", big), tool_result_block("toolu_C", big)], timestamp=_ts(2)),
+        _reply(3),
+    ])
+    past = capture.history(_corpus(top), pricing, days=7)
+    assert past.big_outputs == 2
 
 
 def test_estimates_rise_with_the_level_and_scale_with_sampling(tmp_path, pricing):

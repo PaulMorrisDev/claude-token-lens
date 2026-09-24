@@ -76,13 +76,36 @@ def test_a_bad_capture_table_is_named(tmp_path, body, message):
 def test_turning_capture_on_stamps_it_and_logs_the_change(tmp_path):
     capture = set_capture(tmp_path, level="essentials", now=NOW)
     assert capture.level == "essentials" and capture.enabled_at == "2026-09-24T06:00:00+00:00"
+    # CAP-8: a fresh off -> on switch with no `until` given gets the
+    # default time-box, so capture can't run forever unnoticed.
+    assert capture.until == "2026-10-08T06:00:00+00:00"
     assert load_config(config_dir=tmp_path).capture == capture
     log = load_capture_log(tmp_path)
     assert log == [{
         "ts": "2026-09-24T06:00:00+00:00",
         "level": "essentials",
-        "changed": {"level": {"from": "off", "to": "essentials"}},
+        "changed": {
+            "level": {"from": "off", "to": "essentials"},
+            "until": {"from": "", "to": "2026-10-08T06:00:00+00:00"},
+        },
     }]
+
+
+def test_set_capture_respects_an_explicit_no_limit_on_switch_on(tmp_path):
+    # CAP-8: until="" is a deliberate "no limit", not "unset" -- it must
+    # not be overridden by the default the way until=None would be.
+    capture = set_capture(tmp_path, level="essentials", until="", now=NOW)
+    assert capture.until == ""
+
+
+def test_set_capture_does_not_reset_an_already_on_capture_s_until(tmp_path):
+    # CAP-8: the default only applies to a fresh off -> on switch -- once
+    # capture is already on, changing the level alone (no until given)
+    # must not silently impose a new time-box over an existing choice
+    # (here, an explicit "no limit" from the first call).
+    set_capture(tmp_path, level="essentials", until="", now=NOW)
+    later = set_capture(tmp_path, level="deep", now=NOW)
+    assert later.until == ""
 
 
 def test_a_change_that_changes_nothing_is_not_logged(tmp_path):

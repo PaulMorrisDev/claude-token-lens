@@ -289,8 +289,10 @@ def test_feedback_toggles_are_switched_on_their_own_list(tmp_path):
     (["level", "max"], "'capture level' needs one of"),
     (["on", "--for", "soon"], "--for 'soon'"),
     (["on", "--for", "0d"], "--for '0d'"),
-    (["on", "--for", "7d", "--until", "2026-10-01"], "not both"),
+    (["on", "--for", "7d", "--until", "2026-10-01"], "not more than one"),
     (["on", "--until", "next week", "--yes"], "'capture.until'"),
+    (["on", "--for", "7d", "--no-limit"], "not more than one"),
+    (["on", "--until", "2026-10-01", "--no-limit"], "not more than one"),
 ])
 def test_bad_arguments_are_named_and_change_nothing(tmp_path, argv, message):
     config_dir = _claude(tmp_path, {})
@@ -306,6 +308,31 @@ def test_for_sets_the_end_time(tmp_path):
     assert capture.until == (NOW + timedelta(weeks=2)).isoformat(timespec="seconds")
     rc, out = _capture(config_dir)
     assert "until 2026-10-08 06:00" in out
+
+
+def test_a_fresh_on_with_neither_flag_gets_the_default_time_box(tmp_path):
+    # CAP-8: 'capture on' with none of --for/--until/--no-limit gets the
+    # same default time-box as init, so it can't run forever unnoticed.
+    config_dir = _claude(tmp_path, {})
+    _capture(config_dir, "on", "--yes")
+    capture = load_config(config_dir=config_dir).capture
+    assert capture.until == "2026-10-08T06:00:00+00:00"
+
+
+def test_no_limit_switches_on_with_no_time_box(tmp_path):
+    config_dir = _claude(tmp_path, {})
+    _capture(config_dir, "on", "--no-limit", "--yes")
+    assert load_config(config_dir=config_dir).capture.until == ""
+
+
+def test_changing_level_while_already_on_does_not_impose_a_surprise_time_box(tmp_path):
+    # CAP-8: the default only applies to a fresh off -> on switch --
+    # bumping the level of capture that's already on and unlimited must
+    # not silently grow a new end date it never had.
+    config_dir = _claude(tmp_path, {})
+    _capture(config_dir, "on", "--no-limit", "--yes")
+    _capture(config_dir, "level", "deep", "--yes")
+    assert load_config(config_dir=config_dir).capture.until == ""
 
 
 def test_off_keeps_the_entries_and_remove_takes_them_out(tmp_path):
@@ -332,7 +359,9 @@ def test_status_reports_hooks_that_are_missing(tmp_path):
     config_dir = _claude(tmp_path, {})
     _capture(config_dir, "on", stdin="y\nn\n")
     rc, out = _capture(config_dir, "status")
-    assert "Metrics capture: Essentials (since 2026-09-24)" in out
+    # CAP-8: a fresh switch-on with no --for/--until/--no-limit gets the
+    # default time-box.
+    assert "Metrics capture: Essentials (since 2026-09-24, until 2026-10-08 06:00)" in out
     assert "Hooks: settings.json does not run capture-hook.py" in out
 
 
@@ -531,17 +560,45 @@ def test_init_capture_no_limit_answers_file(tmp_path):
     assert load_config(config_dir).capture.until == ""
 
 
-def test_non_interactive_init_with_explicit_level_keeps_no_time_box_by_default(tmp_path):
-    # Assumption: a --non-interactive run naming a level explicitly (flag
-    # or --answers) keeps today's behaviour -- no time-box -- unless the
-    # new --capture-no-limit flag or the capture_no_limit answers key is
-    # also given; the safer "leave existing until untouched" choice, so a
-    # scripted init never silently grows a surprise end date.
+def test_non_interactive_init_with_explicit_level_gets_the_default_time_box(tmp_path):
+    # CAP-8: reverses the tool's earlier assumption here (a --non-
+    # interactive run naming a level explicitly kept no time-box unless
+    # asked) -- a scripted/unattended init is exactly the case the
+    # default most needs to reach, so it now follows the same "no answer
+    # -> the derived default" rule as every other onboarding question.
+    # --capture-no-limit (or the answers file's capture_no_limit key)
+    # still opts out explicitly.
     config_dir = _claude(tmp_path, {})
     out = _init_capture(config_dir, "--non-interactive", "--no-install", "--capture-level", "essentials")
-    assert "(derived) capture_no_limit: not given in --answers; today's time limit" in out
+    assert "(derived) capture_no_limit: not given in --answers; used default 'n'" in out
     assert load_config(config_dir).capture.level == "essentials"
-    assert load_config(config_dir).capture.until == ""
+    assert load_config(config_dir).capture.until == "2026-10-08T06:00:00+00:00"
+
+
+def test_non_interactive_init_capture_for_sets_a_specific_time_box(tmp_path):
+    # CAP-8: --capture-for answers the time-box question without asking,
+    # parallel to 'capture on --for'.
+    config_dir = _claude(tmp_path, {})
+    out = _init_capture(config_dir, "--non-interactive", "--no-install", "--capture-level", "essentials", "--capture-for", "30d")
+    assert "capture_no_limit" not in out
+    assert load_config(config_dir).capture.until == (NOW + timedelta(days=30)).isoformat(timespec="seconds")
+
+
+def test_capture_for_and_capture_no_limit_together_is_rejected(tmp_path):
+    config_dir = _claude(tmp_path, {})
+    out = _init_capture(
+        config_dir, "--non-interactive", "--no-install", "--capture-level", "essentials",
+        "--capture-for", "30d", "--capture-no-limit",
+    )
+    assert "--capture-for and --capture-no-limit can't both be given." in out
+    assert not (config_dir / "config.toml").exists()
+
+
+def test_capture_for_rejects_a_bad_duration(tmp_path):
+    config_dir = _claude(tmp_path, {})
+    out = _init_capture(config_dir, "--non-interactive", "--no-install", "--capture-level", "essentials", "--capture-for", "soon")
+    assert "--capture-for 'soon': use a number and h, d or w" in out
+    assert not (config_dir / "config.toml").exists()
 
 
 @pytest.mark.parametrize("typed, level", [("", "off"), ("n", "off"), ("yes", "essentials"), ("Deep", "deep")])
@@ -588,7 +645,8 @@ def test_init_leaves_capture_that_is_already_on_alone(tmp_path):
     config_dir = _claude(tmp_path, {})
     _capture(config_dir, "on", "--level", "standard", "--yes")
     out = _init_capture(config_dir, stdin="off\n")
-    assert "Metrics capture is Standard (since 2026-09-24)." in out
+    # CAP-8: the earlier "on" call got the default time-box too.
+    assert "Metrics capture is Standard (since 2026-09-24, until 2026-10-08 06:00)." in out
     assert load_config(config_dir).capture.level == "standard"
     out = _init_capture(config_dir, "--capture-level", "off")
     assert "Metrics capture switched off." in out and load_config(config_dir).capture.level == "off"

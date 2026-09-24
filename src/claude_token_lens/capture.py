@@ -30,10 +30,11 @@ or since the session started.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields, replace
 from datetime import datetime, timezone
 
 from . import capture_catalogue as catalogue
+from .capture_tags import MAIN_TAG_FIELDS, SUB_TAG_FIELDS
 from .context_files import _Carry, _parse_ts
 from .model import EventKind, Feedback, TranscriptResult, Turn
 from .pricing import Pricing, effective_rates, price_turn
@@ -51,15 +52,6 @@ _WRAP = {event: catalogue.NOTE_WRAP_CHARS + len(event) for event in ("SessionSta
 #: Characters of "[tl: " and "]" around a reply tag, and the line break
 #: before it.
 _TAG_FRAME_CHARS = 7
-
-#: ``CaptureTag`` field -> the metric it answers, in a main-session tag
-#: and in a subagent's ``[result: ...]`` tag.
-_MAIN_FIELDS = {
-    "task": "task", "brief": "brief", "level": "level", "shift": "shift", "size": "size", "missing": "missing",
-    "plan": "plan", "skill": "skill", "found": "found", "prior": "prior", "detour": "detour", "check": "check",
-    "out": "big_output", "useful": "web",
-}
-_SUB_FIELDS = {"fit": "fit", "rules": "rules", "brief": "agent_brief", "missing": "agent_brief"}
 
 #: How many answers a metric needs before its suggestions are firm; the
 #: Capture page says when a metric has enough and could be turned off.
@@ -100,8 +92,27 @@ class Cycle:
 
     @property
     def tag(self):
-        """The last ``[tl: ...]`` tag in the cycle (the last one wins)."""
-        return next((t.cap for t in reversed(self.turns) if t.cap is not None and t.cap.has_tl), None)
+        """Every ``[tl: ...]`` tag in the cycle, merged key by key: for
+        each field, the last turn to answer it wins that field, even
+        when an earlier or a later tag in the same cycle (a retry, a
+        correction) left it unset (CAP-10 -- this used to keep only the
+        last tag whole, silently losing a key an earlier tag answered
+        and the last one didn't). ``None`` when no turn wrote one."""
+        tags = [t.cap for t in self.turns if t.cap is not None and t.cap.has_tl]
+        if not tags:
+            return None
+        merged = tags[0]
+        for tag in tags[1:]:
+            changes = {
+                f.name: getattr(tag, f.name)
+                for f in fields(tag)
+                if f.name not in ("has_tl", "chars") and getattr(tag, f.name) not in (None, ())
+            }
+            if changes:
+                merged = replace(merged, **changes)
+        # has_tl is true if any of them wrote a [tl: ...]; chars sums
+        # what every tag actually cost to write.
+        return replace(merged, has_tl=True, chars=sum(t.chars for t in tags))
 
 
 def _priced(result: TranscriptResult) -> list[Turn]:
@@ -132,9 +143,12 @@ def prompt_cycles(top: TranscriptResult, subs=()) -> list[Cycle]:
     return cycles
 
 
-#: Which of a cycle's feedback wins: the skill's own tag, then the
-#: answers read from its question, then a declined question.
-_FEEDBACK_RANK = {"tag": 3, "answers": 2, "skipped": 1}
+#: Which of a cycle's feedback wins: the answers read from the skill's
+#: question, then its own tag, then a declined question. Answers outrank
+#: the tag (SEC-P1): a `[tl-fb: ...]` line is free text Claude could
+#: write in any reply, but the AskUserQuestion call its answers come from
+#: is not.
+_FEEDBACK_RANK = {"answers": 3, "tag": 2, "skipped": 1}
 
 
 @dataclass(slots=True)
@@ -150,21 +164,39 @@ class FeedbackSpan:
 
 
 def cycle_feedback(cycle: Cycle) -> Feedback | None:
-    """The feedback given in ``cycle``, or ``None``."""
+    """The feedback given in ``cycle``, or ``None``. A ``[tl-fb: ...]``
+    tag counts only in a genuine /tl-feedback run (SEC-P1): elsewhere it
+    could be forged or quoted reply text, so it's dropped."""
+    genuine = is_feedback_run(cycle)
     best = None
     for turn in cycle.turns:
         fb = turn.feedback
-        if fb is not None and (best is None or _FEEDBACK_RANK.get(fb.source, 0) >= _FEEDBACK_RANK.get(best.source, 0)):
+        if fb is None or (fb.source == "tag" and not genuine):
+            continue
+        if best is None or _FEEDBACK_RANK.get(fb.source, 0) >= _FEEDBACK_RANK.get(best.source, 0):
             best = fb
     return best
 
 
 def is_feedback_run(cycle: Cycle) -> bool:
-    """Whether ``cycle`` is a /tl-feedback run: you ran the skill, or its
-    questions were answered in it."""
-    return any(catalogue.FEEDBACK_SKILL in turn.commands_run for turn in cycle.turns[:1]) or (
-        cycle_feedback(cycle) is not None
-    )
+    """Whether ``cycle`` is a /tl-feedback run: you ran the skill in its
+    first turn. SEC-P1: this alone decides it -- it no longer also asks
+    whether feedback was found, which let a forged ``[tl-fb: ...]`` tag
+    manufacture a "feedback run" to hide behind."""
+    return any(catalogue.FEEDBACK_SKILL in turn.commands_run for turn in cycle.turns[:1])
+
+
+def _excluded_from_coverage(cycle: Cycle, all_turns: list[Turn]) -> bool:
+    """CAP-10: a cycle coverage can't fairly judge by whether it ended
+    with a ``[tl: ...]`` tag -- a /tl-feedback run (it answers /tl-
+    feedback's own question, not the one an ordinary reply reports on),
+    one whose last turn hit ``max_tokens`` before it could write its
+    tag, or one cut off by an interruption before Claude could finish."""
+    if is_feedback_run(cycle):
+        return True
+    if any(turn.stop_reason == "max_tokens" for turn in cycle.turns):
+        return True
+    return cycle.end < len(all_turns) and all_turns[cycle.end].preceding_primary == EventKind.INTERRUPT
 
 
 def feedback_spans(cycles: list[Cycle]) -> list[FeedbackSpan]:
@@ -321,7 +353,7 @@ def _tag_weights(turn: Turn, subagent: bool) -> dict[str, float]:
     """The metrics a tag answered, weighted by what each usually costs."""
     weights: dict[str, float] = {}
     tag = turn.cap
-    fields = _SUB_FIELDS if subagent else _MAIN_FIELDS
+    fields = SUB_TAG_FIELDS if subagent else MAIN_TAG_FIELDS
     if tag is not None:
         for name, metric_id in fields.items():
             value = getattr(tag, name, None)
@@ -482,9 +514,12 @@ def usage(corpus, pricing: Pricing | None, since: str = "") -> CaptureUsage:
             _add_notes(use, top, carry, False, start)
             _add_tags(use, top, pricing, False, start)
             use.spend += _spend(top, pricing, start)
+            top_turns = _priced(top)
             for cycle in prompt_cycles(top):
                 moment = _parse_ts(cycle.turns[0].ts) if cycle.turns else None
                 if start is not None and (moment is None or moment < start):
+                    continue
+                if _excluded_from_coverage(cycle, top_turns):
                     continue
                 use.cycles += 1
                 tag = cycle.tag
@@ -560,9 +595,22 @@ def _segments(result: TranscriptResult, carry: _Carry) -> list[tuple[int, int]]:
     return [(s, e) for s, e in zip(cuts, cuts[1:] + [len(carry.turns)]) if e > s]
 
 
-def _big_output(turn: Turn) -> bool:
+def _big_output_calls(turn: Turn) -> int:
+    """How many of this turn's tool calls are estimated to have crossed
+    Deep's big-output threshold (CAP-10): Claude Code fires the note
+    once per matching *call*, but ``tool_result_chars_by_tool`` only
+    totals a tool's calls for the turn, so a turn with several big
+    calls of the same tool is estimated as that total split evenly
+    across its calls, rather than counted as one note regardless of how
+    many actually crossed it."""
     threshold = catalogue.BIG_OUTPUT_TOKENS * CHARS_PER_TOKEN
-    return any(chars >= threshold for chars in turn.tool_result_chars_by_tool.values())
+    total = 0
+    for name, chars in turn.tool_result_chars_by_tool.items():
+        if chars < threshold:
+            continue
+        calls = turn.tool_calls_by_tool.get(name, 1)
+        total += min(calls, chars // threshold)
+    return total
 
 
 def _web_calls(turn: Turn) -> int:
@@ -621,10 +669,11 @@ def _replay_notes(out: History, result: TranscriptResult, carry: _Carry, scope: 
             follow = min(index + 1, end - 1)
             if index + 1 >= end:
                 continue
-            if _big_output(turn):
-                out.big_outputs += 1
-                out.big_output_note += _carry_per_char(carry, follow, end)
-                out.big_output_tag += _output_usd_per_char(carry.turns[follow], carry.pricing)
+            big = _big_output_calls(turn)
+            if big:
+                out.big_outputs += big
+                out.big_output_note += big * _carry_per_char(carry, follow, end)
+                out.big_output_tag += big * _output_usd_per_char(carry.turns[follow], carry.pricing)
             web = _web_calls(turn)
             if web:
                 out.web_results += web
@@ -689,7 +738,11 @@ def estimate(past: History, ids, sample: int = 100) -> Estimate:
         ("web", past.web_results, past.web_note, past.web_tag),
     ):
         if metric_id in wanted:
-            chars = len(catalogue.tool_note_text(metric_id)) + _WRAP["PostToolUse"]
+            chars = (
+                len(catalogue.tool_note_text(metric_id))
+                + _WRAP["PostToolUse"]
+                + catalogue.tool_suffix_chars(metric_id)
+            )
             out_chars = catalogue.METRICS_BY_ID[metric_id].out_chars
             cost += chars * note + out_chars * tag
             note_tokens += chars * count

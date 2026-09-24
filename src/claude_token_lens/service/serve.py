@@ -178,6 +178,11 @@ def _run_locked(options: ServeOptions, store_path: Path, lock: StoreLock, *, onc
     # (``FileWatcher._prewarm_cache``) has somewhere to persist parsed
     # results across ticks.
     cache = DigestCache(options.config_dir)
+    # ROB-P4/P5: once per serve process (not once per poll tick -- a
+    # stale PARSER_VERSION folder only ever appears after a code deploy,
+    # never mid-run), the same "sweep it where the cache is first opened
+    # for real work" placement _load_corpus_for_args uses for the CLI.
+    cache.prune_stale_versions()
     # Salt the path and skill-name hashes the same way the CLI does, so a
     # digest cached by either carries the same hashes (CLAUDE.md and
     # skills review join on them).
