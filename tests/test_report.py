@@ -651,7 +651,7 @@ def test_report_meta_is_fully_populated(tmp_path):
     assert meta.tool_version
     assert meta.generated_at.endswith("Z")
     # UX-1: meta.units {mode, share_per_usd, period_label, basis} -- the
-    # JS mirror's (app.js money()) only source of billing-mode facts.
+    # JS mirror's (format.js money()) only source of billing-mode facts.
     assert meta.units["mode"] == "api"
     assert meta.units["share_per_usd"] is None  # API billing has no window share
     assert meta.units["period_label"] == "weekly usage limit"

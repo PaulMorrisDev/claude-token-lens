@@ -64,7 +64,7 @@ STATIC_FILES = ("index.html", "app.js", "app.css")
 #: A floor on how many first-party ES modules the glob below must find, so
 #: a glob that silently matches nothing (or only app.js) fails loudly
 #: instead of turning every scan in this file into a no-op.
-_MIN_JS_MODULES = 1
+_MIN_JS_MODULES = 18
 
 
 def _first_party_files() -> list[Path]:
@@ -77,7 +77,7 @@ def _first_party_files() -> list[Path]:
 
 FIRST_PARTY_FILES = tuple(p.name for p in _first_party_files())
 
-#: Documented GET routes this test does not require app.js to fetch:
+#: Documented GET routes this test does not require the dashboard's modules to fetch:
 #: the profile-diff route is only ever reached from a click handler
 #: (its id is dynamic, so there is no static literal to grep for), and
 #: report.md/report.html are alternative renderings of report.json the
@@ -278,9 +278,9 @@ def test_no_button_label_or_handler_says_apply() -> None:
         for name in set(handler_names)
         if re.search(r"(?i)apply", name) and re.search(r"(?i)btn|button|handler", name)
     ]
-    assert not apply_handlers, f"app.js has an apply-named button/handler identifier: {apply_handlers!r}"
+    assert not apply_handlers, f"the dashboard has an apply-named button/handler identifier: {apply_handlers!r}"
 
-    assert "apply_command" not in app_js, "app.js must not read the removed data.apply_command fallback"
+    assert "apply_command" not in app_js, "the dashboard must not read the removed data.apply_command fallback"
 
 
 def test_habits_playbook_caps_featured_cards_and_collapses_the_rest() -> None:
@@ -288,7 +288,7 @@ def test_habits_playbook_caps_featured_cards_and_collapses_the_rest() -> None:
     ``PLAYBOOK_CARD_LIMIT`` habits get a card outright; the rest render
     into a collapsed ``<details>`` so the tab isn't a wall of cards down
     to the least useful habit. Regression test for
-    ``renderHabitsPlaybook``/``appendHabitCards`` in app.js."""
+    ``renderHabitsPlaybook``/``appendHabitCards`` in page-habits.js."""
     app_js = _app_js()
     limit_match = re.search(r"(?:export\s+)?(?:var|let|const) PLAYBOOK_CARD_LIMIT = (\d+);", app_js)
     assert limit_match, "the dashboard no longer defines PLAYBOOK_CARD_LIMIT"
@@ -439,7 +439,7 @@ def test_every_documented_get_route_is_fetched_by_the_dashboard() -> None:
     assert routes  # sanity: the exclusion list didn't eat everything
     for route in routes:
         # Routes with a path parameter (e.g. "/api/session/<id>") are
-        # built up via string concatenation in app.js, not present
+        # built up via string concatenation in the dashboard's modules, not present
         # verbatim -- match on the literal prefix before "<" instead.
         prefix = route.split("<")[0]
         assert prefix in app_js, f"the dashboard never fetches documented route {route!r} (looked for prefix {prefix!r})"

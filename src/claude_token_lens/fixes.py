@@ -916,7 +916,7 @@ def build_fixes(rec: Recommendation) -> list[dict]:
     fix at all, same as before UX-8. A purely informational id (no
     change proposed) has an explainer but no prompt: ``prompt`` is then
     ``""``, and the render layer (``render/markdown.py``,
-    ``render/html.py``, ``app.js``) skips the "Ask Claude to do it"
+    ``render/html.py``, the dashboard's ``ui.js`` and ``page-setup.js``) skips the "Ask Claude to do it"
     block rather than printing an empty one."""
     if rec.changes:
         return [build_fix(rec, change) for change in rec.changes]

@@ -447,6 +447,7 @@ of the 5-minute one (below).
 
 ### Changed
 
+- **The dashboard is native ES modules.** `service/static/app.js` is now the entry point that loads 17 small modules (`core.js`, `format.js`, `api.js`, `ui.js`, `grid.js`, `links.js`, `shell.js` and one `page-*.js` per group of tabs), loaded with `<script type="module">` and no build step. Nothing on screen changes. The service now serves `.js` as `text/javascript` and pins the types for `.css`, `.woff2` and `.svg`: browsers refuse a module script with the wrong type under `nosniff`, and the pins keep Python's `mimetypes` from reading a type out of the Windows registry.
 - **Deep includes the feedback survey.** Switching capture into Deep (`capture on`/`level`, `init`, or the Capture page) also turns on the `/tl-feedback` survey, its reminder note, and Claude's one-line reminder to run it when a piece of work is done. The CLI and `init` write the skill after the usual diff and yes; the Capture page offers the command. The Deep card, its estimate and `docs/capture.md` count the reminder (about 43 more note tokens at each session start). Leaving Deep keeps them, `capture feedback off` removes them, and picking Deep again while already on it doesn't bring them back.
 
 The report's performance work (building the work-habits facts once per

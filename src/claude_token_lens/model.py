@@ -1140,7 +1140,7 @@ class ReportMeta:
     amounts_basis: str = ""
     #: UX-1: ``{mode, share_per_usd, period_label, basis}`` -- the same
     #: billing-mode facts as ``billing_mode``/``amounts_basis`` above, in
-    #: the shape ``units.Units.money``'s JS mirror (app.js's own
+    #: the shape ``units.Units.money``'s JS mirror (format.js's
     #: ``money()``) needs to phrase an arbitrary amount client-side
     #: without a round trip through a table cell: ``mode`` is
     #: ``billing_mode``; ``share_per_usd`` is the percentage points of

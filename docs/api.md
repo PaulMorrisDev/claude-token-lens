@@ -177,9 +177,10 @@ A request carrying neither `Origin` nor `Sec-Fetch-Site` (e.g. a
 same-machine CLI tool such as `curl`) is allowed — this API has no
 authentication of its own (see "Local only" above), so that posture is
 unchanged; the guard targets a *browser* silently issuing the request on
-a victim's behalf, not a deliberate local caller. `service/static/app.js`
-sends `Content-Type: application/json` on every one of its own `POST`
-calls, so the UI itself is unaffected. A `POST` whose `Host` is not on
+a victim's behalf, not a deliberate local caller. The dashboard sends
+`Content-Type: application/json` on every one of its own `POST` calls
+(through `fetchJson` in `service/static/api.js`, directly or via
+`postJson`), so the UI itself is unaffected. A `POST` whose `Host` is not on
 the allowlist above is also `403 forbidden`.
 
 ## Body size limit (G5)
@@ -411,7 +412,7 @@ this route takes no window.
 Per-day, per-model token and cost totals — `Store.daily_usage`. The
 dashboard does not call this route (so its heading is not in the
 `GET /api/...` form `tests/test_service_static.py` checks against
-`app.js`); it is here for other clients.
+the dashboard's modules); it is here for other clients.
 
 Query: `days` (int, default 30, at least 1). Days are UTC calendar days.
 
@@ -995,7 +996,7 @@ since=...&until=...` byte-equivalent to `report --since ... --until
 `report.json`'s `meta` carries `billing_mode`/`amounts_basis` (the
 report's own headline billing-mode facts) and, alongside them,
 `meta.units`: `{mode, share_per_usd, period_label, basis}` (UX-1) --
-the same facts in the shape `Units.money`'s JS mirror (`app.js`'s
+the same facts in the shape `Units.money`'s JS mirror (`format.js`'s
 `money()`) needs to phrase an arbitrary amount client-side without a
 round trip through a table cell. `mode` is `billing_mode`;
 `share_per_usd` is the percentage points of the weekly usage limit one

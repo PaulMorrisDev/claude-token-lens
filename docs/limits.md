@@ -132,7 +132,7 @@ function against the session's stored top-level transcript digest and
 reshapes each triple into a `{"ts", "kind", "detail"}` object;
 `service/api.py`'s `route_session` forwards the result as
 `GET /api/session/<id>`'s `limit_markers` field (see
-[`docs/api.md`](api.md)). `service/static/app.js`'s session timeline
+[`docs/api.md`](api.md)). The dashboard's session timeline (`service/static/page-spend.js`)
 renders them as their own marker kind (distinct colour, legend entry,
 tooltip naming `kind`/`detail.subkind`), positioned along the chart's
 time axis by `ts` rather than by turn index — unlike the

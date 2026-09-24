@@ -426,7 +426,7 @@ def _roi(weekly_cost: float | None, dependent_value: float | None, units) -> dic
     # "weekly usage limit a week" -- only stated for API billing, where
     # the phrased amount is just a dollar figure. Both amounts also carry
     # "about " via Amount.phrase, which dedupes against a subscription's
-    # own "about" rather than doubling it (_banner/app.js's ROI note
+    # own "about" rather than doubling it (_banner/page-capture.js's ROI note
     # doesn't repeat "about" itself, relying on this).
     period = "a week" if units is None or units.billing_mode != "subscription" else ""
     return {

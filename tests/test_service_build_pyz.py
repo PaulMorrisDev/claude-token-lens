@@ -54,6 +54,10 @@ def test_built_pyz_includes_the_static_ui_directory(built_pyz: Path) -> None:
         "claude_token_lens/service/static/index.html",
         "claude_token_lens/service/static/app.js",
         "claude_token_lens/service/static/app.css",
+        "claude_token_lens/service/static/core.js",
+        "claude_token_lens/service/static/grid.js",
+        "claude_token_lens/service/static/page-overview.js",
+        "claude_token_lens/service/static/page-setup.js",
     ):
         assert expected in names, f"{expected!r} missing from pyz contents: {sorted(names)[:20]}..."
 

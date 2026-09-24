@@ -1,0 +1,205 @@
+/* claude-token-lens service UI: page-agents.js
+ *
+ * The Agents and Context files tabs.
+ */
+
+import { clear, el } from "./core.js";
+import { formatCell, thousands } from "./format.js";
+import { loadInto, loadReport, withWindow } from "./api.js";
+import { errorNotice, loadingNode, renderFixList } from "./ui.js";
+import { renderMappedSections, simpleTable } from "./grid.js";
+import { tabHeading } from "./links.js";
+
+// ======================================================================
+// Agents tab (agents/workflows/workstyle sections)
+// ======================================================================
+
+export function renderAgents(panel) {
+  clear(panel);
+  tabHeading(panel, "agents");
+  var container = el("div", { id: "agents-sections" });
+  panel.appendChild(container);
+  container.appendChild(loadingNode());
+  loadReport().then(function (result) {
+    clear(container);
+    if (result.error) {
+      container.appendChild(errorNotice(result.error));
+      return;
+    }
+    renderMappedSections(result.report, "agents", container);
+  });
+}
+
+// ======================================================================
+// Context files tab: every CLAUDE.md file and every skill Claude Code
+// lists, with how often each is sent and what it costs
+// ======================================================================
+
+export function renderContextFiles(panel) {
+  clear(panel);
+  tabHeading(panel, "context");
+  panel.appendChild(el("h3", { text: "CLAUDE.md files" }));
+  panel.appendChild(
+    el("p", {
+      class: "notes",
+      text: "Read from disk when you open this tab and never stored. Sent to your main session at its start and to most subagents each time one starts.",
+    })
+  );
+  var files = el("div", { id: "context-claude-md" });
+  var fileDetail = el("div", { id: "context-claude-md-detail" });
+  panel.appendChild(files);
+  panel.appendChild(fileDetail);
+  loadInto(files, withWindow("/api/claude-md"), function (data, container) {
+    renderClaudeMdList(data, container, fileDetail);
+  });
+
+  panel.appendChild(el("h3", { text: "Skills" }));
+  panel.appendChild(
+    el("p", {
+      class: "notes",
+      text: "Claude Code lists every skill's name and description at the start of each session and subagent, used or not. Descriptions are read from your newest transcript and never stored.",
+    })
+  );
+  var skills = el("div", { id: "context-skills" });
+  panel.appendChild(skills);
+  loadInto(skills, withWindow("/api/skills"), renderSkills);
+}
+
+function renderClaudeMdList(data, container, detailContainer) {
+  var rows = data.files || [];
+  if (!rows.length) {
+    container.appendChild(el("p", { class: "notice", text: "No CLAUDE.md files found." }));
+    return;
+  }
+  var cards = el("div", { class: "profile-cards" });
+  rows.forEach(function (file) {
+    var card = el("article", { class: "profile-card" });
+    card.appendChild(el("h4", { text: file.path }));
+    card.appendChild(el("p", { class: "profile-card-meta", text: file.who }));
+    var facts = [thousands(file.tokens) + " tokens"];
+    facts.push(file.seen ? "sent to " + file.reach_text : "not seen in this window's sessions");
+    if (file.cost_text) facts.push(file.cost_text);
+    card.appendChild(el("p", { class: "profile-card-summary", text: facts.join(" · ") }));
+    if (file.findings && file.findings.length) {
+      card.appendChild(el("ul", { class: "notes" }, file.findings.map(function (f) {
+        return el("li", { text: f });
+      })));
+    }
+    var button = el("button", { type: "button", text: "Review" + (file.fix_count ? " (" + file.fix_count + (file.fix_count === 1 ? " fix" : " fixes") + ")" : "") });
+    button.addEventListener("click", function () {
+      loadInto(detailContainer, withWindow("/api/claude-md/" + encodeURIComponent(file.id)), renderClaudeMdDetail);
+      detailContainer.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+    card.appendChild(button);
+    cards.appendChild(card);
+  });
+  container.appendChild(cards);
+}
+
+function renderClaudeMdDetail(data, container) {
+  container.appendChild(el("h3", { text: data.path }));
+  container.appendChild(
+    el("p", { class: "notes", text: thousands(data.tokens) + " tokens" + (data.reach_text ? ", sent to " + data.reach_text : "") + (data.cost_text ? ", " + data.cost_text : "") + "." })
+  );
+  var sections = data.section_rows || [];
+  if (sections.length) {
+    container.appendChild(
+      simpleTable(
+        [{ label: "Section" }, { label: "Line" }, { label: "Tokens" }, { label: "Share" }, { label: "Cost" }, { label: "Only about" }],
+        sections.map(function (s) {
+          return [
+            (s.level > 1 ? "  ".repeat(s.level - 1) : "") + (s.heading || "(before the first heading)"),
+            s.line,
+            thousands(s.tokens),
+            formatCell(s.share * 100, "pct"),
+            s.cost_text || "",
+            (s.agents || []).join(", "),
+          ];
+        }),
+        "Sections, largest share of the file first in the prompt"
+      )
+    );
+  }
+  if (data.duplicates && data.duplicates.length) {
+    container.appendChild(el("h5", { text: "Repeated text" }));
+    container.appendChild(el("ul", { class: "notes" }, data.duplicates.map(function (d) {
+      var where = (d.also_in || []).map(function (o) {
+        return o.file + " line " + o.line;
+      });
+      return el("li", { text: "Line " + d.line + ", about " + d.tokens + " tokens: “" + d.excerpt + "”" + (where.length ? ", also in " + where.join(", ") : "") });
+    })));
+  }
+  if (data.stale && data.stale.length) {
+    container.appendChild(el("h5", { text: "References to things that no longer exist" }));
+    container.appendChild(el("ul", { class: "notes" }, data.stale.map(function (d) {
+      return el("li", { text: "Line " + d.line + ": " + d.reference + " (" + d.kind + ")" });
+    })));
+  }
+  if (data.fixes && data.fixes.length) {
+    container.appendChild(el("h4", { text: "What you could change" }));
+    renderFixList(data.fixes, container);
+  } else {
+    container.appendChild(el("p", { class: "notes", text: "Nothing to change in this file." }));
+  }
+}
+
+var SKILL_STATUS = {
+  unused: "Never used",
+  used: "Used",
+  listed: "Listed",
+  "not listed": "Not listed",
+  hidden: "Already hidden",
+  "needed by a tool": "Needed by a Claude Code tool",
+  "no longer listed": "No longer listed",
+};
+
+function renderSkills(data, container) {
+  var rows = data.skills || [];
+  if (!rows.length) {
+    container.appendChild(el("p", { class: "notice", text: "No skill listing recorded in this window." }));
+    return;
+  }
+  container.appendChild(
+    el("p", {
+      class: "quick-summary",
+      text:
+        rows.length + " skills listed, " + thousands(data.listing_tokens) + " tokens at each start" +
+        (data.listing_cost_text ? ", " + data.listing_cost_text : "") + ". " +
+        (data.unused ? data.unused + " were never used." : "Every listed skill was used."),
+    })
+  );
+  renderFixList(data.fixes, container);
+  var filterRow = el("div", { class: "pager" });
+  var unusedOnly = el("input", { type: "checkbox", id: "skills-unused-only", checked: Boolean(data.unused) });
+  filterRow.appendChild(unusedOnly);
+  filterRow.appendChild(el("label", { for: "skills-unused-only", text: "Show only skills Claude never used" }));
+  container.appendChild(filterRow);
+  var list = el("div", { class: "skill-list" });
+  container.appendChild(list);
+  function draw() {
+    clear(list);
+    rows
+      .filter(function (row) {
+        return !unusedOnly.checked || row.status === "unused";
+      })
+      .forEach(function (row) {
+        var item = el("details", { class: "skill-row" });
+        item.appendChild(
+          el("summary", null, [
+            el("strong", { text: row.name }),
+            el("span", { class: "notes", text: " · " + row.source_label + " · " + (SKILL_STATUS[row.status] || row.status) + " · " + row.listing_cost_text }),
+          ])
+        );
+        item.appendChild(el("p", { text: row.description || "(no description in the listing)" }));
+        var facts = [thousands(row.listing_tokens) + " tokens in the listing"];
+        if (row.listed_text) facts.push("listed to " + row.listed_text);
+        if (row.use_text) facts.push(row.use_text);
+        if (row.path) facts.push(row.path);
+        item.appendChild(el("p", { class: "notes", text: facts.join(" · ") }));
+        renderFixList(row.fixes, item);
+        list.appendChild(item);
+      });
+  }
+  unusedOnly.addEventListener("change", draw);
+  draw();
+}
