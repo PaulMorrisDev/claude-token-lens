@@ -36,7 +36,7 @@ from pathlib import Path
 
 import pytest
 
-from claude_token_lens import capture_view, footprint, helptext, quick_actions, skills_review
+from claude_token_lens import backtest, capture_view, footprint, helptext, quick_actions, skills_review
 from claude_token_lens.config import CaptureConfig, Config
 from claude_token_lens.corpus import load_corpus
 from claude_token_lens.pricing import load_pricing
@@ -492,6 +492,7 @@ def _build_fixture_data(tmp_path: Path) -> tuple[dict, dict]:
     canned["/api/skills"] = skills_review.review(config_dir, report.context_files or {}, units, period, projects=[])
     canned["/api/claude-md"] = {"period": period, "transcripts": 0, "files": []}
     canned["/api/impact"] = {"changes": [], "caveat": "", "min_sessions": 3, "lookback_days": 30}
+    canned["/api/backtest"] = {"predictions": [], "judged_just_now": 0, "verdicts": list(backtest.VERDICTS)}
     canned["/api/setup"] = {
         "items": [item.as_dict() for item in footprint.inventory(config_dir, service_registered=False)],
         "expectations": [{"title": title, "text": text} for title, text in footprint.EXPECTATIONS],

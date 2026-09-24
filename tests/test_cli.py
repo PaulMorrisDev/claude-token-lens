@@ -334,6 +334,54 @@ def test_baseline_list_and_show_round_trip(tmp_path, monkeypatch, capsys):
     assert_privacy({"out": show_out})
 
 
+def test_backtest_reports_no_predictions_without_a_store(tmp_path, capsys):
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    exit_code = cli.main(["backtest", "--config-dir", str(config_dir)])
+    err = capsys.readouterr().err
+    assert exit_code == 1
+    assert "no predictions logged yet" in err
+
+
+def test_backtest_lists_judged_and_pending_predictions(tmp_path, capsys):
+    from claude_token_lens.service.serve import STORE_FILENAME
+    from claude_token_lens.service.store import Store
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    store = Store(config_dir / STORE_FILENAME)
+    store.open()
+    store.upsert_prediction(
+        prediction_id="pred-judged",
+        ts="2026-09-20T09:00:00Z",
+        source="whatif",
+        measure_key="model",
+        agent=None,
+        predicted_usd=1.0,
+        predicted_pct=None,
+        fidelity="ceiling",
+    )
+    store.judge_prediction("pred-judged", change_ts="2026-09-21T09:00:00Z", verdict="as_estimated", measured_usd=1.1, measured_pct=-10.0)
+    store.upsert_prediction(
+        prediction_id="pred-pending",
+        ts="2026-09-22T09:00:00Z",
+        source="whatif",
+        measure_key="promptCacheTtl",
+        agent=None,
+        predicted_usd=0.5,
+        predicted_pct=None,
+        fidelity="simulated",
+    )
+    store.close()
+
+    exit_code = cli.main(["backtest", "--config-dir", str(config_dir)])
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert "model" in out and "as_estimated" in out
+    assert "1 prediction still waiting on a match or more data." in out
+    assert_privacy({"out": out})
+
+
 def test_no_argv_with_no_data_exits_1(capsys):
     # The autouse fixture points HOME/CLAUDE_CONFIG_DIR at an empty tmp
     # dir, so the default "report" subcommand's default project (this

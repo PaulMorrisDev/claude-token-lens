@@ -856,6 +856,27 @@ such as replies per run), `no_clear_change` or `too_little_data`; `p` is
 the two-sided p-value before the Holm correction, `null` with too little
 data. `worse_when` is `"higher"`, or `null` for a neutral measure.
 
+### `GET /api/backtest`
+
+Did your estimates come true? Every prediction `POST /api/whatif` has
+logged (with `"log": true`), matched to the change point it turned
+into and judged against the sessions before and after that change —
+the same before/after windowing and ratio test `/api/impact` uses
+(`backtest.py`). Takes no window: each prediction is judged over its
+own before and after periods.
+
+`data`: `{"predictions": [{"id", "ts", "source", "measure_key", "agent", "predicted_usd", "predicted_pct", "fidelity", "seen_at", "change_ts", "judged_at", "verdict", "measured_usd", "measured_pct", "predicted_text", "measured_text", "verdict_text"}, ...], "judged_just_now", "verdicts"}`.
+Newest prediction first. `verdict` is `null` until a matching change
+point closes the window enough to judge it, then one of the closed set
+`as_estimated`, `smaller`, `larger`, `opposite` or `too_little_data`
+(`verdicts` lists them). `predicted_text`, `measured_text` and
+`verdict_text` are server-formatted, billing-mode-aware sentences
+(`backtest.present`) — the dashboard never formats a dollar amount or a
+verdict itself. `measured_usd`/`measured_text` stay `null` until
+judged. `judged_just_now` is how many predictions this call judged for
+the first time (a stale answer can be served while a change is worked
+out in the background, as with `/api/impact`).
+
 ### `GET /api/setup`
 
 What this tool installed and changed on this machine, what each piece
@@ -1098,7 +1119,7 @@ body, `settings` or `agents` is not a JSON object).
 
 Query: the windowing params above.
 
-`data`: `{"period", "rows": [{"key", "agent", "value", "saving_usd", "fidelity", "fidelity_text", "basis", "effect_text"}, ...], "total_usd", "total_text", "estimated", "not_estimated", "total_note"}`.
+`data`: `{"period", "rows": [{"key", "agent", "value", "saving_usd", "fidelity", "fidelity_text", "basis", "effect_text", "uncalibrated_usd", "uncalibrated_fidelity"}, ...], "total_usd", "total_text", "estimated", "not_estimated", "total_note"}`.
 `saving_usd` is `null` when a change is not estimated. `fidelity` says
 how it was worked out (`fidelity_text` in plain words) and `basis`
 explains it in a sentence: `"ceiling"` (a `model` change -- the same
@@ -1108,9 +1129,43 @@ different model may need more or fewer replies for the same work),
 `"simulated"` (`autoCompactWindow`, a cache-TTL change -- real sessions
 replayed with the new value), `"measured"` (`omitClaudeMd` -- per spawn,
 times the spawns in the window), `"estimated"` (`skillOverrides`,
-`enabledPlugins` -- from the size of what stops being sent) or `"none"`
-(not estimated). `effect_text` and `total_text` are in the billing
-mode's units; `estimated`/`not_estimated` are counts of rows.
+`enabledPlugins` -- from the size of what stops being sent), `"none"`
+(not estimated) or `"calibrated"` (EST-P6: scaled by how this same kind
+of change actually turned out for you before, see below).
+`effect_text` and `total_text` are in the billing mode's units;
+`estimated`/`not_estimated` are counts of rows.
+
+**EST-P6 calibration.** Once at least
+`backtest.MIN_JUDGED_FOR_CALIBRATION` (3) of your own past predictions
+for the same `(agent, key)` have been judged (`GET /api/backtest`), a
+row's `saving_usd` here is scaled by the mean of those predictions'
+`measured_usd / predicted_usd` ratios (`backtest.calibration_multipliers`)
+and its `fidelity` becomes `"calibrated"`. `uncalibrated_usd` and
+`uncalibrated_fidelity` hold the value and fidelity calibration
+replaced — `null` on every row where calibration wasn't applicable or
+didn't apply.
+
+**EST-P5 logging.** Body may also carry `"log": true`. Every row whose
+saving could be estimated is then appended to this tool's own
+`prediction-log.jsonl` (`config.append_prediction_log`) — always the
+*uncalibrated* estimate (`uncalibrated_usd`/`uncalibrated_fidelity`
+when present, `saving_usd`/`fidelity` otherwise), so calibrating an
+already-calibrated number never compounds. The dashboard sets this
+only for a change you mean to track, not for interactive "what if"
+exploration. A logged row reaches `GET /api/backtest` once the file
+watcher's next tick ingests it (`service.watcher._scan_predictions`)
+and `POST /api/predictions/seen` marks it shown.
+
+### `POST /api/predictions/seen`
+
+Records that the dashboard has actually shown you one logged
+prediction (`Store.mark_prediction_seen`).
+
+Body: `{"id": str}` — the `predictions` row id from `GET /api/backtest`.
+`400` when `id` is missing or not a non-empty string.
+
+`data`: `{"id", "seen"}`. `seen` is `false` when the id doesn't match
+any prediction, or it was already marked seen.
 
 ## Managed-settings routes
 

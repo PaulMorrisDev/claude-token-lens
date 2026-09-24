@@ -1830,6 +1830,54 @@ def test_impact_is_empty_without_changes_and_lists_an_apply(server):
     assert resp.status == 200
 
 
+def test_backtest_is_empty_without_predictions(server):
+    resp, payload = server.get_json("/api/backtest")
+    assert resp.status == 200
+    assert payload["data"]["predictions"] == []
+    assert set(payload["data"]) >= {"predictions", "judged_just_now", "verdicts"}
+    assert "too_little_data" in payload["data"]["verdicts"]
+
+
+def test_backtest_lists_a_logged_prediction_after_a_matching_apply(server):
+    from claude_token_lens.profiles import apply as apply_mod
+    from claude_token_lens.profiles.schema import load_dict
+    from claude_token_lens.service.watcher import FileWatcher
+
+    resp, payload = server.post_json("/api/whatif", {"settings": {"model": "sonnet"}, "agents": {}, "log": True})
+    assert resp.status == 200
+
+    config_dir = server.options.config_dir
+    claude_root = config_dir.parent / "fake-claude"
+    claude_root.mkdir()
+    plan = apply_mod.plan_apply(
+        load_dict({"id": "one-off", "settings": {"model": "sonnet"}}),
+        scope="user", project_path=None, config_dir=config_dir, claude_root=claude_root,
+    )
+    apply_mod.execute(plan, config_dir=config_dir)
+
+    # In production a running FileWatcher's own tick ingests
+    # prediction-log.jsonl into the store (_scan_predictions); this test
+    # server runs no watcher of its own, so run one tick by hand.
+    FileWatcher(server.store, server.options).run_once()
+
+    resp, payload = server.get_json("/api/backtest")
+    assert resp.status == 200
+    [prediction] = payload["data"]["predictions"]
+    assert prediction["measure_key"] == "model"
+    assert prediction["source"] == "whatif"
+    assert prediction["predicted_text"]
+    # Judged or not (the seeded corpus may not clear MIN_SESSIONS on
+    # both sides), the verdict is always one of the closed set or None.
+    assert prediction["verdict"] in (None, *payload["data"]["verdicts"])
+
+
+def test_backtest_is_cached_between_calls_with_no_new_data(server):
+    resp1, payload1 = server.get_json("/api/backtest")
+    resp2, payload2 = server.get_json("/api/backtest")
+    assert resp1.status == resp2.status == 200
+    assert payload1["data"] == payload2["data"]
+
+
 def test_profile_goals_lists_goals_and_drafts_one(server):
     resp, payload = server.get_json("/api/profile-goals")
     assert resp.status == 200
@@ -1862,6 +1910,106 @@ def test_whatif_rejects_cross_site_posts(server):
         "POST", "/api/whatif", body={"settings": {"model": "sonnet"}}, headers={"Sec-Fetch-Site": "cross-site"}
     )
     assert resp.status == 403
+
+
+def test_whatif_without_log_flag_writes_no_prediction(server):
+    from claude_token_lens import config as config_mod
+
+    resp, payload = server.post_json("/api/whatif", {"settings": {"model": "sonnet"}, "agents": {}})
+    assert resp.status == 200
+    assert config_mod.load_prediction_log(server.options.config_dir) == []
+
+
+def test_whatif_log_flag_appends_a_prediction_per_estimated_row(server):
+    from claude_token_lens import config as config_mod
+
+    resp, payload = server.post_json(
+        "/api/whatif", {"settings": {"model": "sonnet"}, "agents": {}, "log": True}
+    )
+    assert resp.status == 200
+    [row] = payload["data"]["rows"]
+    assert row["saving_usd"] is not None
+    records = config_mod.load_prediction_log(server.options.config_dir)
+    assert len(records) == 1
+    assert records[0]["source"] == "whatif"
+    assert records[0]["measure_key"] == "model"
+    assert records[0]["predicted_usd"] == row["saving_usd"]
+    assert records[0]["fidelity"] == row["fidelity"]
+
+
+def test_whatif_log_flag_skips_rows_that_could_not_be_estimated(server):
+    from claude_token_lens import config as config_mod
+
+    resp, payload = server.post_json(
+        "/api/whatif", {"settings": {"effortLevel": "medium"}, "agents": {}, "log": True}
+    )
+    assert resp.status == 200
+    assert payload["data"]["rows"][0]["saving_usd"] is None
+    assert config_mod.load_prediction_log(server.options.config_dir) == []
+
+
+def test_whatif_calibrates_once_three_predictions_for_the_key_are_judged(server):
+    from claude_token_lens import config as config_mod
+
+    for i in range(3):
+        pid = f"pred-{i}"
+        server.store.upsert_prediction(
+            prediction_id=pid, ts="2026-09-20T09:00:00Z", source="whatif", measure_key="model",
+            agent=None, predicted_usd=1.0, predicted_pct=None, fidelity="ceiling",
+        )
+        server.store.judge_prediction(pid, change_ts="2026-09-21T09:00:00Z", verdict="larger", measured_usd=2.0, measured_pct=None)
+
+    resp, payload = server.post_json("/api/whatif", {"settings": {"model": "sonnet"}, "agents": {}, "log": True})
+    assert resp.status == 200
+    [row] = payload["data"]["rows"]
+    assert row["fidelity"] == "calibrated"
+    raw = row["uncalibrated_usd"]
+    assert raw is not None
+    assert row["saving_usd"] == raw * 2.0
+
+    # Logging records the raw, uncalibrated estimate -- not the
+    # calibrated one -- so future judging never compounds a correction.
+    records = config_mod.load_prediction_log(server.options.config_dir)
+    logged = [r for r in records if r["measure_key"] == "model" and r["fidelity"] == "ceiling"]
+    assert len(logged) == 1
+    assert logged[0]["predicted_usd"] == raw
+
+
+def test_predictions_seen_marks_a_logged_prediction(server):
+    from claude_token_lens import config as config_mod
+
+    prediction_id = config_mod.append_prediction_log(
+        server.options.config_dir,
+        source="whatif",
+        measure_key="model",
+        agent=None,
+        predicted_usd=1.0,
+        predicted_pct=None,
+        fidelity="ceiling",
+    )
+    server.store.upsert_prediction(
+        prediction_id=prediction_id,
+        ts="2026-09-20T09:00:00Z",
+        source="whatif",
+        measure_key="model",
+        agent=None,
+        predicted_usd=1.0,
+        predicted_pct=None,
+        fidelity="ceiling",
+    )
+    resp, payload = server.post_json("/api/predictions/seen", {"id": prediction_id})
+    assert resp.status == 200
+    assert payload["data"] == {"id": prediction_id, "seen": True}
+    [row] = server.store.predictions()
+    assert row["seen_at"] is not None
+
+
+def test_predictions_seen_rejects_a_missing_id(server):
+    resp, payload = server.post_json("/api/predictions/seen", {})
+    assert resp.status == 400
+    resp, payload = server.post_json("/api/predictions/seen", {"id": "does-not-exist"})
+    assert resp.status == 200
+    assert payload["data"]["seen"] is False
 
 
 def test_quick_actions_list_and_detail(server):

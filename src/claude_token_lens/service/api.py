@@ -1928,7 +1928,23 @@ def make_handler(
     def route_whatif(store, query, body):
         """The estimated effect of ``{settings, agents}`` on the window,
         looked up in the report's own tables. Reads only; nothing is
-        saved or applied."""
+        saved or applied -- unless the body also carries ``"log": true``
+        (EST-P5), in which case every row whose ``saving_usd`` could be
+        estimated is appended to ``prediction-log.jsonl``
+        (``config.append_prediction_log``) so ``backtest.py`` can later
+        check it against what actually happened. The log is opt-in
+        because most ``/api/whatif`` calls are the dashboard exploring
+        "what if" interactively as you drag a slider -- only a change
+        you actually mean to track is worth a prediction row. EST-P6:
+        once at least 3 of your own past predictions for a given kind of
+        change have been judged, its estimate here is calibrated by how
+        that change actually turned out for you before
+        (``backtest.calibration_multipliers``) -- logging always records
+        the *uncalibrated* estimate (``row["uncalibrated_usd"]`` when
+        present), so calibrating an already-calibrated number never
+        compounds."""
+        from .. import backtest as backtest_mod
+        from .. import config as config_mod
         from .. import whatif
 
         if not isinstance(body, dict):
@@ -1945,16 +1961,43 @@ def make_handler(
             return err
         model = _get_report_model(*window)
         effective, _agents = _current_settings()
-        return _ok(
-            whatif.estimate(
-                settings,
-                agents,
-                model,
-                _report_units(model),
-                period=_period_text(*window, name=query.get("window")),
-                current=effective,
-            )
+        result = whatif.estimate(
+            settings,
+            agents,
+            model,
+            _report_units(model),
+            period=_period_text(*window, name=query.get("window")),
+            current=effective,
+            calibration=backtest_mod.calibration_multipliers(store),
         )
+        if body.get("log") is True:
+            for row in result["rows"]:
+                predicted_usd = row["uncalibrated_usd"] if row["uncalibrated_usd"] is not None else row["saving_usd"]
+                fidelity = row["uncalibrated_fidelity"] or row["fidelity"]
+                if predicted_usd is None:
+                    continue
+                config_mod.append_prediction_log(
+                    options.config_dir,
+                    source="whatif",
+                    measure_key=row["key"],
+                    agent=row["agent"],
+                    predicted_usd=predicted_usd,
+                    predicted_pct=None,
+                    fidelity=fidelity,
+                )
+        return _ok(result)
+
+    def route_predictions_seen(store, query, body):
+        """EST-P5: record that the dashboard has actually shown you a
+        prediction (``Store.mark_prediction_seen``), by its
+        ``prediction-log.jsonl``/``predictions`` row id."""
+        if not isinstance(body, dict):
+            return _bad_request("request body must be a JSON object")
+        prediction_id = body.get("id")
+        if not isinstance(prediction_id, str) or not prediction_id:
+            return _bad_request("'id' must be a non-empty string")
+        seen = store.mark_prediction_seen(prediction_id)
+        return _ok({"id": prediction_id, "seen": seen})
 
     def _quick_context(window, query):
         from .. import quick_actions
@@ -2085,6 +2128,93 @@ def make_handler(
                 impact_cache.update(key=key, data=data, started=started, as_of=as_of)
         return data
 
+    backtest_cache: dict = {"key": None, "data": None, "started": 0.0, "as_of": None, "building": False}
+
+    def _backtest_key(store):
+        from .. import change_points
+
+        points = change_points.change_points(options.config_dir)
+        point_key = tuple((p.iso(), p.source, p.backup_ts) for p in points)
+        predictions_key = tuple(sorted((p["id"], p["judged_at"]) for p in store.predictions()))
+        return (store.change_token(), point_key, predictions_key)
+
+    def route_backtest(store, query, body):
+        """EST-P4: every logged prediction (``POST /api/whatif`` with
+        ``"log": true``) matched to the change point it turned into and
+        judged against the sessions before and after (``backtest.py``),
+        plus whatever is still waiting on more data or a match. Cached
+        like ``/api/impact`` -- a store or prediction-log change serves
+        the kept answer and judges any newly-eligible predictions in the
+        background, while a genuinely new set of change points is worked
+        out at once."""
+        key = _backtest_key(store)
+        now = time.monotonic()
+        refresh = False
+        with report_lock:
+            kept = backtest_cache["data"]
+            kept_key = backtest_cache["key"]
+            if kept is not None and kept_key == key:
+                _note_as_of(backtest_cache["as_of"], False)
+                return _ok(kept)
+            if (
+                kept is not None
+                and kept_key[1] == key[1]
+                and now - backtest_cache["started"] <= _STALE_REPORT_MAX_AGE_S
+            ):
+                refresh = not backtest_cache["building"]
+                if refresh:
+                    backtest_cache["building"] = True
+                _note_as_of(backtest_cache["as_of"], True)
+            else:
+                kept = None
+        if kept is not None:
+            if refresh:
+
+                def run():
+                    try:
+                        with background_builds:
+                            _compute_backtest(key)
+                    except BaseException:  # noqa: BLE001 -- the next request retries
+                        pass
+                    finally:
+                        with report_lock:
+                            backtest_cache["building"] = False
+                        store.close()
+
+                threading.Thread(target=run, name="claude-token-lens-backtest", daemon=True).start()
+            return _ok(kept)
+        data = _compute_backtest(key)
+        _note_as_of(backtest_cache["as_of"] or _now_utc_iso(), False)
+        return _ok(data)
+
+    def _compute_backtest(key):
+        from .. import backtest as backtest_mod
+        from .. import change_points
+        from . import rebuild
+
+        started = time.monotonic()
+        as_of = _now_utc_iso()
+        config = load_config(options.config_dir)
+        rates = load_pricing(path=config.pricing_path, config_dir=options.config_dir)
+        # Unlike _compute_impact, this can't narrow the corpus to "since
+        # the earliest change point" first -- EST-P9's transcript-derived
+        # points need a corpus before they can even be listed (the same
+        # chicken-and-egg change_points.py's own docstring notes), so the
+        # corpus comes first here and the points are worked out from it.
+        corpus = rebuild.corpus_from_store(store)
+        units = _report_units(_get_report_model(_DEFAULT_WINDOW_DAYS))
+        judged = backtest_mod.judge_predictions(store, corpus, rates, units, options.config_dir)
+        predictions = store.predictions()
+        data = {
+            "predictions": backtest_mod.present(predictions, units),
+            "judged_just_now": judged,
+            "verdicts": list(backtest_mod.VERDICTS),
+        }
+        with report_lock:
+            if started >= backtest_cache["started"]:
+                backtest_cache.update(key=key, data=data, started=started, as_of=as_of)
+        return data
+
     def route_recommendations(store, query, body):
         window, err = _window_query(query)
         if err is not None:
@@ -2127,6 +2257,7 @@ def make_handler(
         "/api/claude-md": route_claude_md,
         "/api/skills": route_skills,
         "/api/impact": route_impact,
+        "/api/backtest": route_backtest,
         "/api/profile-goals": route_profile_goals,
         "/api/quick-actions": route_quick_actions,
         "/api/setup": route_setup,
@@ -2152,6 +2283,7 @@ def make_handler(
         "/api/profiles": route_profiles_post,
         "/api/profiles/from-current": route_profiles_from_current,
         "/api/whatif": route_whatif,
+        "/api/predictions/seen": route_predictions_seen,
     }
     post_patterns: tuple[tuple[re.Pattern, Callable], ...] = (
         (_SESSION_TAGS_RE, route_set_tag),

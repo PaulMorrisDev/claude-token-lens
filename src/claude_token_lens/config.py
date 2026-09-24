@@ -43,6 +43,7 @@ import json
 import os
 import re
 import tomllib
+import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -95,6 +96,13 @@ SIGNAL_RETENTION_DEFAULT_DAYS = 180
 #: Every change to ``[capture]`` is appended here, one JSON object per
 #: line, so a change can be lined up against the costs around it.
 CAPTURE_LOG_NAME = "capture-log.jsonl"
+
+#: EST-P5: every whatif estimate worth checking against what actually
+#: happened is appended here, one JSON object per line -- see
+#: :func:`append_prediction_log`. Ingested into the store's
+#: ``predictions`` table by ``service.watcher._scan_predictions``, the
+#: same way ``CAPTURE_LOG_NAME`` feeds ``change_points._capture_points``.
+PREDICTION_LOG_NAME = "prediction-log.jsonl"
 
 
 class ConfigError(Exception):
@@ -1138,9 +1146,67 @@ def prune_capture_log(
     return removed
 
 
+def append_prediction_log(
+    config_dir: str | Path,
+    *,
+    source: str,
+    measure_key: str,
+    agent: str | None,
+    predicted_usd: float | None,
+    predicted_pct: float | None,
+    fidelity: str,
+    now: datetime | None = None,
+) -> str:
+    """Log one whatif estimate worth checking against what actually
+    happened (EST-P5), so it can later be matched to a real change point
+    and judged (``backtest.py``). ``source``/``measure_key``/``fidelity``
+    are short enum-like strings (never free text -- see
+    ``service/schema.py``'s "Version 7" paragraph); ``agent`` is an agent
+    type or ``None`` for a main-session/global change. Returns the
+    prediction's own generated id (a stable key so re-ingesting the same
+    log line twice, e.g. on a later watcher tick, is a no-op)."""
+    resolved_dir = _resolve_config_dir(config_dir)
+    resolved_dir.mkdir(parents=True, exist_ok=True)
+    prediction_id = uuid.uuid4().hex[:16]
+    stamp = (now or datetime.now(timezone.utc)).astimezone(timezone.utc).isoformat(timespec="seconds")
+    record = {
+        "id": prediction_id,
+        "ts": stamp,
+        "source": source,
+        "measure_key": measure_key,
+        "agent": agent,
+        "predicted_usd": predicted_usd,
+        "predicted_pct": predicted_pct,
+        "fidelity": fidelity,
+    }
+    with open(resolved_dir / PREDICTION_LOG_NAME, "a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record, sort_keys=True) + "\n")
+    return prediction_id
+
+
+def load_prediction_log(config_dir: str | Path | None = None) -> list[dict]:
+    """Every prediction recorded in ``prediction-log.jsonl``, oldest
+    first; lines that aren't a prediction record are skipped."""
+    path = _resolve_config_dir(config_dir) / PREDICTION_LOG_NAME
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    records = []
+    for line in lines:
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(record, dict) and isinstance(record.get("id"), str) and isinstance(record.get("ts"), str):
+            records.append(record)
+    return records
+
+
 __all__ = [
     "TOKEN_LENS_DIRNAME",
     "CAPTURE_LOG_NAME",
+    "PREDICTION_LOG_NAME",
     "CAPTURE_SAMPLES",
     "SIGNAL_RETENTION_DEFAULT_DAYS",
     "CaptureConfig",
@@ -1154,6 +1220,8 @@ __all__ = [
     "set_capture",
     "load_capture_log",
     "prune_capture_log",
+    "append_prediction_log",
+    "load_prediction_log",
     "load_session_overrides",
     "save_session_override",
 ]

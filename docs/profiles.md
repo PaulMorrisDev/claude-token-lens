@@ -130,6 +130,22 @@ side.
 Sessions differ in size and kind of work, so a difference is a signal,
 not proof.
 
+**Did your estimates come true?** Below "Your changes and what they
+did" is a table of every what-if estimate the dashboard logged for you
+(`GET /api/backtest`, `backtest.py`; see `docs/backtest.md` for the
+method) — a change, when it was estimated, what it predicted, what
+actually happened once a matching real change and enough sessions came
+in, and a verdict: about as estimated, smaller, larger, the opposite
+direction, or not enough sessions yet to judge. Only a change the
+dashboard tracked on your behalf is logged; exploring the "what if"
+sliders interactively never is. Once at least 3 of your own past
+estimates for the same kind of change have been judged, later what-if
+estimates of that kind are calibrated by how it actually turned out for
+you before — their fidelity shows as "calibrated" instead of "ceiling",
+"simulated", "measured" or "estimated" (see the fidelity table above),
+and the estimate itself is scaled by the mean ratio of what was
+measured to what was predicted across those judged points.
+
 The Profiles tab also shows one card per profile with the settings it
 changes by their plain labels. Opening one shows a table of Setting /
 Now / After / Set in for the scope you pick, then three ways to use it:

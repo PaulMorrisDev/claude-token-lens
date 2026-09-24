@@ -107,6 +107,7 @@ SUBCOMMANDS: tuple[str, ...] = (
     "import",
     "team-report",
     "capture",
+    "backtest",
 )
 
 DEFAULT_SUBCOMMAND = "report"
@@ -1067,6 +1068,8 @@ def _make_parser() -> argparse.ArgumentParser:
             "import": "validate and copy team-aggregate document(s) into <config_dir>/team/",
             "team-report": "cross-machine comparison built from every imported team document",
             "capture": "metrics capture: have Claude tag its replies so suggestions fit how you work (uses tokens)",
+            "backtest": "read-only: predictions logged by the dashboard's whatif, matched to what actually "
+            "happened and judged (EST-P4) -- see the dashboard for the judging itself",
         }.get(name, f"{name} (not implemented yet)")
         sub = subparsers.add_parser(name, parents=[common], help=help_text)
         if name == "pricing-check":
@@ -3916,6 +3919,52 @@ def _cmd_baseline(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_backtest(args: argparse.Namespace) -> int:
+    """``backtest``: read-only. Prints every prediction the dashboard's
+    ``POST /api/whatif`` has logged (``"log": true``), and its verdict
+    once judged (EST-P4, :mod:`backtest`) -- from the store at
+    ``<config-dir>/service.db`` without writing to it, the same
+    read-only posture ``_merge_dashboard_marks`` already gives the
+    report's own session tags/ratings. Judging itself (matching a
+    prediction to the change point it turned into, and comparing the
+    sessions before and after) happens where the data already lives: a
+    running ``serve``'s watcher tick, or its own ``GET /api/backtest``
+    call. A prediction still waiting on a match or more data is listed
+    separately, not silently dropped.
+    """
+    from .service.serve import STORE_FILENAME
+    from .service.store import read_predictions
+
+    config_dir = _resolve_config_dir(args.config_dir)
+    predictions = read_predictions(config_dir / STORE_FILENAME)
+    if not predictions:
+        print(
+            f"claude-token-lens backtest: no predictions logged yet under {config_dir}. Log one from the "
+            "dashboard's What if? with 'log' on, then let 'serve' run (or open the dashboard) to judge it.",
+            file=sys.stderr,
+        )
+        return 1
+
+    judged = [p for p in predictions if p["judged_at"]]
+    pending = [p for p in predictions if not p["judged_at"]]
+
+    def _usd(value: float | None) -> str:
+        return f"{value:.2f}" if value is not None else "-"
+
+    if judged:
+        print(f"{'ts':20}  {'measure':22}  {'agent':12}  {'predicted $':>11}  {'measured $':>11}  verdict")
+        for row in judged:
+            print(
+                f"{row['ts']:20}  {row['measure_key']:22}  {row['agent'] or '-':12}  "
+                f"{_usd(row['predicted_usd']):>11}  {_usd(row['measured_usd']):>11}  {row['verdict']}"
+            )
+    if pending:
+        if judged:
+            print()
+        print(f"{len(pending)} prediction{'s' if len(pending) != 1 else ''} still waiting on a match or more data.")
+    return 0
+
+
 # -- team aggregate import / team-report (v0.3 Task 1) -----------------------
 
 
@@ -4430,6 +4479,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_init(args)
     if command == "baseline":
         return _cmd_baseline(args)
+    if command == "backtest":
+        return _cmd_backtest(args)
     if command == "serve":
         return _cmd_serve(args)
     if command == "install-service":
