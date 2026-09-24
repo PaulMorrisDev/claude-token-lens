@@ -861,6 +861,33 @@ def test_daily_usage_aggregates_across_transcripts(store: Store) -> None:
     assert row["input_tokens"] == 1200
 
 
+def test_daily_usage_accepts_since_until_like_summary(store: Store) -> None:
+    _seed(store)  # session-a's only turns_agg day is 2026-09-18
+    assert store.daily_usage(since="2026-09-19T00:00:00Z") == []
+    assert store.daily_usage(until="2026-09-17T00:00:00Z") == []
+    assert len(store.daily_usage(since="2026-09-18T00:00:00Z", until="2026-09-18T23:59:00Z")) == 1
+    # since=None/until=None/days=None means no bound at all -- as
+    # ``route_daily_usage`` passes for ``?window=all``.
+    assert len(store.daily_usage(days=None)) == 1
+
+
+def test_daily_usage_split_agent_separates_main_from_subagents(store: Store) -> None:
+    _seed(store)  # one top-level transcript (10 turns), one subagent (5 turns)
+    rows = {(r["agent"], r["model"]): r for r in store.daily_usage(split="agent")}
+    assert set(rows) == {("main", "claude-sonnet-5"), ("subagent", "claude-sonnet-5")}
+    assert rows[("main", "claude-sonnet-5")]["turns"] == 10
+    assert rows[("subagent", "claude-sonnet-5")]["turns"] == 5
+    # split="model" (and the default) keep the original, unsplit shape.
+    assert store.daily_usage(split="model") == store.daily_usage()
+    assert "agent" not in store.daily_usage()[0]
+
+
+def test_cache_read_tokens_by_model(store: Store) -> None:
+    _seed(store)  # top-level cache_read_tokens=2000, subagent=400, same model
+    assert store.cache_read_tokens_by_model() == {"claude-sonnet-5": 2400}
+    assert store.cache_read_tokens_by_model(since="2026-09-19T00:00:00Z") == {}
+
+
 def test_compactions_listing(store: Store) -> None:
     _seed(store)
     rows = store.compactions()
@@ -881,6 +908,15 @@ def test_sessions_listing_keeps_only_sessions_with_a_reply_in_the_window(store: 
     assert store.sessions(since="2026-09-18T13:30:00Z") == []
     assert store.sessions(since="2026-09-17T00:00:00Z", until="2026-09-18T12:30:00Z") == []
     assert store.summary(since="2026-09-18T13:30:00Z")["sessions"] == 0
+
+
+def test_summary_accepts_an_until_bound(store: Store) -> None:
+    _seed(store)  # session-a's last reply is 2026-09-18T13:00:00Z
+    assert store.summary(since="2026-09-17T00:00:00Z", until="2026-09-18T12:30:00Z")["sessions"] == 0
+    assert store.summary(since="2026-09-17T00:00:00Z", until="2026-09-18T13:30:00Z")["sessions"] == 1
+    # An until bound alone (no since, no window_days) also windows it.
+    assert store.summary(until="2026-09-18T11:00:00Z")["sessions"] == 0
+    assert store.summary(until="2026-09-18T13:30:00Z")["sessions"] == 1
 
 
 def test_snapshots_listing(store: Store) -> None:
@@ -1133,6 +1169,8 @@ def test_no_local_path_leaks_from_any_read_query(store: Store) -> None:
         "sessions": store.sessions(),
         "session": store.session("session-a"),
         "daily_usage": store.daily_usage(),
+        "daily_usage_split_agent": store.daily_usage(split="agent"),
+        "cache_read_tokens_by_model": store.cache_read_tokens_by_model(),
         "recache": store.recache(),
         "compactions": store.compactions(),
         "snapshots": store.snapshots(),

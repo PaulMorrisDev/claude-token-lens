@@ -56,6 +56,7 @@ from helpers import assert_privacy, turn_line, write_jsonl
 #: or ``profiles.toml_path``) in violation of ``docs/api.md``'s privacy
 #: section.
 _FAKE_PATH = r"C:\Users\definitely-not-a-real-person\.claude\projects\proj-a\session-a.jsonl"
+_FAKE_SUB_PATH = r"C:\Users\definitely-not-a-real-person\.claude\projects\proj-a\session-a-agent-1.jsonl"
 _FAKE_ROOT = r"C:\Users\definitely-not-a-real-person\.claude\projects\proj-a"
 _FAKE_PROFILE_PATH = r"C:\Users\definitely-not-a-real-person\.claude\token-lens\profiles\p1.toml"
 _LEAK_NEEDLES = (_FAKE_PATH, _FAKE_ROOT, _FAKE_PROFILE_PATH, "definitely-not-a-real-person")
@@ -493,6 +494,33 @@ def test_summary_rejects_bad_window_days(server):
     assert body["error"]["code"] == "bad_request"
 
 
+def test_summary_reports_cache_saved_and_cache_read_tokens(server):
+    """Additive fields: cache_read_tokens (the fixture's one turns_agg
+    row, 90) and cache_saved (that many tokens re-priced as input minus
+    what they actually cost at claude-sonnet-5's cache-read rate --
+    pricing.toml's 2.0/0.2 USD per million)."""
+    resp, body = server.get_json("/api/summary")
+    assert resp.status == 200
+    assert body["data"]["cache_read_tokens"] == 90
+    assert body["data"]["cache_saved"] == pytest.approx(90 * (2.0 - 0.2) / 1_000_000)
+    assert_privacy(body)
+
+
+def test_summary_accepts_since_and_until(server):
+    """/api/summary now takes the same window params the report-backed
+    routes do (docs/api.md), plus since/until -- but with no params at
+    all the behaviour is unchanged (all-time)."""
+    resp, body = server.get_json("/api/summary?since=2026-09-17T00:00:00Z&until=2026-09-18T13:30:00Z")
+    assert resp.status == 200
+    assert body["data"]["sessions"] == 1
+    resp, body = server.get_json("/api/summary?until=2026-09-18T11:00:00Z")
+    assert resp.status == 200
+    assert body["data"]["sessions"] == 0
+    resp, body = server.get_json("/api/summary?since=not-a-timestamp")
+    assert resp.status == 400
+    assert body["error"]["code"] == "bad_request"
+
+
 def test_sessions_listing_has_no_transcripts_key(server):
     resp, body = server.get_json("/api/sessions")
     assert resp.status == 200
@@ -673,6 +701,87 @@ def test_compactions(server):
     assert resp.status == 200
     assert body["data"][0]["dropped_tokens"] == 800
     assert_privacy(body)
+
+
+def test_daily_usage_default_is_unchanged(server):
+    resp, body = server.get_json("/api/daily-usage")
+    assert resp.status == 200
+    assert len(body["data"]) == 1
+    row = body["data"][0]
+    assert row["day"] == "2026-09-18" and row["model"] == "claude-sonnet-5"
+    assert row["cache_read_tokens"] == 90
+    assert "agent" not in row
+    assert_privacy(body)
+
+
+def test_daily_usage_accepts_the_shared_window_params(server):
+    resp, body = server.get_json("/api/daily-usage?since=2099-01-01T00:00:00Z")
+    assert resp.status == 200
+    assert body["data"] == []
+    resp, body = server.get_json("/api/daily-usage?window=all")
+    assert resp.status == 200
+    assert len(body["data"]) == 1
+    resp, body = server.get_json("/api/daily-usage?days=7")
+    assert resp.status == 200
+    assert len(body["data"]) == 1  # the legacy param still works unchanged
+    resp, body = server.get_json("/api/daily-usage?since=not-a-timestamp")
+    assert resp.status == 400
+    assert body["error"]["code"] == "bad_request"
+
+
+def test_daily_usage_rejects_bad_split(server):
+    resp, body = server.get_json("/api/daily-usage?split=nonsense")
+    assert resp.status == 400
+    assert body["error"]["code"] == "bad_request"
+
+
+def test_daily_usage_split_agent_separates_main_from_subagents(server):
+    # The fixture seeds one top-level transcript; add a subagent one so
+    # split=agent has something to actually split.
+    server.store.upsert_session(
+        session_id="sess-sub",
+        project_slug="proj-a",
+        project_root_path=_FAKE_ROOT,
+        slug="proj-a",
+        first_ts="2026-09-18T12:00:00Z",
+        last_ts="2026-09-18T13:00:00Z",
+    )
+    server.store.upsert_transcript(
+        session_id="sess-sub",
+        path=_FAKE_SUB_PATH,
+        kind="subagent",
+        agent_id="agent-1",
+        agent_type="claude-implementer",
+        mtime_ns=1,
+        size_bytes=1,
+        parser_version=3,
+        digest_json=json.dumps({"turns": 1}),
+        turns_agg=[
+            {
+                "day": "2026-09-18",
+                "model": "claude-sonnet-5",
+                "turns": 1,
+                "input_tokens": 10,
+                "cache_creation_tokens": 0,
+                "cache_read_tokens": 5,
+                "output_tokens": 2,
+                "thinking_tokens": 0,
+                "cc_5m": 0,
+                "cc_1h": 0,
+                "cost": 0.01,
+            }
+        ],
+    )
+    resp, body = server.get_json("/api/daily-usage?split=agent")
+    assert resp.status == 200
+    by_agent = {row["agent"]: row for row in body["data"]}
+    assert set(by_agent) == {"main", "subagent"}
+    assert by_agent["main"]["turns"] == 3
+    assert by_agent["subagent"]["turns"] == 1
+    assert_privacy(body)
+    resp, body = server.get_json("/api/daily-usage?split=model")
+    assert resp.status == 200
+    assert "agent" not in body["data"][0]
 
 
 def test_profiles_listing_has_no_toml_path(server):

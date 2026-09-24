@@ -20,6 +20,7 @@ from claude_token_lens.pricing import (
     PricingCoverage,
     PricingError,
     ResolvedRates,
+    cache_read_savings_usd,
     effective_rates,
     load_pricing,
     price_turn,
@@ -100,6 +101,82 @@ def test_packaged_default_currency_and_version_surfaced():
     assert pricing.currency == "USD"
     assert pricing.version == "2026-09-23"
     assert pricing.source_url
+
+
+def test_rates_meta_matches_pricing_toml():
+    """``Pricing.rates_meta()`` (``report.json``'s additive ``meta.rates``)
+    reports every priced model's own rates and ratios straight from the
+    loaded rate card -- no independent re-derivation that could drift
+    from ``pricing.toml`` itself."""
+    pricing = load_pricing()
+    meta = pricing.rates_meta()
+    assert set(meta) == set(pricing.models)
+    for model_id, rates in pricing.models.items():
+        entry = meta[model_id]
+        assert entry["input"] == rates.input
+        assert entry["output"] == rates.output
+        assert entry["cache_write_5m"] == rates.cache_write_5m
+        assert entry["cache_write_1h"] == rates.cache_write_1h
+        assert entry["cache_read"] == rates.cache_read
+        assert entry["cache_read_ratio"] == pytest.approx(rates.cache_read / rates.input)
+        assert entry["cache_write_5m_ratio"] == pytest.approx(rates.cache_write_5m / rates.input)
+        assert entry["cache_write_1h_ratio"] == pytest.approx(rates.cache_write_1h / rates.input)
+        assert model_id not in entry["input_ratio_to"]
+        for other_id, other_rates in pricing.models.items():
+            if other_id != model_id:
+                assert entry["input_ratio_to"][other_id] == pytest.approx(rates.input / other_rates.input)
+
+
+# --------------------------------------------------------------------
+# cache_read_savings_usd (/api/summary's additive "cache_saved")
+# --------------------------------------------------------------------
+
+_TWO_MODEL_TOML = """
+version = "test"
+currency = "USD"
+
+[models."model-a"]
+aliases = []
+input = 3.0
+output = 15.0
+cache_write_5m = 3.75
+cache_write_1h = 6.0
+cache_read = 0.3
+
+[models."model-b"]
+aliases = []
+input = 1.0
+output = 5.0
+cache_write_5m = 1.25
+cache_write_1h = 2.0
+cache_read = 0.1
+"""
+
+
+def test_cache_read_savings_usd_hand_computed(tmp_path):
+    path = tmp_path / "two_models.toml"
+    path.write_text(_TWO_MODEL_TOML, encoding="utf-8")
+    pricing = load_pricing(path=path)
+    rows = [
+        {"model": "model-a", "cache_read_tokens": 2_000_000},
+        {"model": "model-b", "cache_read_tokens": 500_000},
+    ]
+    # model-a: 2,000,000 * (3.0 - 0.3) / 1e6 = 5.4
+    # model-b:   500,000 * (1.0 - 0.1) / 1e6 = 0.45
+    assert cache_read_savings_usd(rows, pricing) == pytest.approx(5.85)
+
+
+def test_cache_read_savings_usd_skips_unresolved_models(tmp_path):
+    path = tmp_path / "two_models.toml"
+    path.write_text(_TWO_MODEL_TOML, encoding="utf-8")
+    pricing = load_pricing(path=path)
+    rows = [
+        {"model": "not-a-real-model", "cache_read_tokens": 999_999},
+        {"model": "model-a", "cache_read_tokens": 1_000_000},
+    ]
+    # The unresolved row is left out entirely, not priced at zero.
+    assert cache_read_savings_usd(rows, pricing) == pytest.approx(2.7)
+    assert cache_read_savings_usd([], pricing) == 0.0
 
 
 # --------------------------------------------------------------------

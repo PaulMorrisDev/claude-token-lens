@@ -444,6 +444,22 @@ of the 5-minute one (below).
   since it comes straight off the wire. Both new counters live on a new
   `parser_notes` side channel next to `Diagnostics` (present only when
   non-empty) and are rendered alongside it by every renderer.
+- **`/api/summary` and `/api/daily-usage` take the same window as the
+  rest of the API, and both carry more pricing detail.** `/api/summary`
+  now accepts `since`/`until` (rounded down to the minute, like a named
+  window's own start) alongside the existing `window`/`window_days`;
+  with no params it still covers all time, unchanged. It gains
+  `cache_read_tokens` and `cache_saved` -- what cache reads in that
+  window saved in USD against paying the input rate for the same
+  tokens, at list price, skipping any model this rate card doesn't
+  price. `/api/daily-usage` keeps its `days` param and its output
+  exactly as before by default, now also accepts `window`/`window_days`/
+  `since`/`until` (taking precedence when given), and a new `split=agent`
+  or `split=model` param that breaks each day's totals into main-session
+  versus subagent activity or leaves them by model. `report.json`'s
+  `meta` gains `rates`: every priced model's own per-million-token rates
+  and a few derived ratios, keyed by model id, straight from
+  `pricing.toml`.
 
 ### Changed
 

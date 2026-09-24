@@ -1259,9 +1259,13 @@ class Store:
             ],
         }
 
-    def summary(self, *, window_days: int | None = None, since: str | None = None) -> dict:
+    def summary(
+        self, *, window_days: int | None = None, since: str | None = None, until: str | None = None
+    ) -> dict:
         """Corpus-wide totals: session/transcript counts and cost/token
-        sums, optionally restricted to a trailing ``window_days`` window.
+        sums, optionally restricted to a ``window_days``/``since``/
+        ``until`` window (the same three params ``sessions``/
+        ``compactions`` accept).
 
         The windowed branch counts exactly the sessions/transcripts a
         report over the same window would (``report.py``'s "overview"
@@ -1273,7 +1277,7 @@ class Store:
         ``corpus_from_store``'s own ``total_files``.
         """
         conn = self._connection()
-        if window_days is None and since is None:
+        if window_days is None and since is None and until is None:
             row = conn.execute(
                 "SELECT COUNT(*) AS sessions, COALESCE(SUM(total_cost), 0) AS total_cost, "
                 "COALESCE(SUM(total_tokens), 0) AS total_tokens FROM sessions"
@@ -1287,7 +1291,7 @@ class Store:
                 "total_tokens": row["total_tokens"],
             }
 
-        since_dt, until_dt = _resolve_window(window_days, since, None)
+        since_dt, until_dt = _resolve_window(window_days, since, until)
         session_ids = self._session_ids_in_window(since_dt, until_dt)
         if not session_ids:
             return {
@@ -1402,31 +1406,110 @@ class Store:
         result["feedback"] = self.feedback(session_id)
         return result
 
-    def daily_usage(self, *, days: int = 30) -> list[dict]:
-        """Per-day, per-model token/cost rollups for the trailing
-        ``days`` days, joined from ``turns_agg`` (no per-transcript or
-        path detail)."""
-        cutoff = time.strftime("%Y-%m-%d", time.gmtime(time.time() - days * 86400))
+    def daily_usage(
+        self,
+        *,
+        days: int | None = 30,
+        since: str | None = None,
+        until: str | None = None,
+        split: str | None = None,
+    ) -> list[dict]:
+        """Per-day, per-model token/cost rollups, joined from
+        ``turns_agg`` (no per-transcript or path detail).
+
+        ``days`` keeps its original meaning for existing callers -- a
+        trailing window from now -- but ``since``/``until`` (ISO 8601)
+        take precedence when given, the same ``_resolve_window``
+        precedence ``summary``/``sessions``/``compactions`` already use;
+        pass ``days=None`` for no lower bound at all (paired with
+        ``since``/``until`` already resolving to "no window", as
+        ``route_daily_usage`` does for ``?window=all``).
+
+        ``split="agent"`` additionally breaks each day/model row into the
+        main session and every subagent (``transcripts.kind`` joined in
+        from ``turns_agg.transcript_id`` -- ``"top-level"`` is
+        ``"main"``, ``"subagent"``/``"workflow-agent"`` are
+        ``"subagent"``), adding an ``"agent"`` key. ``split="model"`` or
+        omitted keeps the original, unsplit shape -- the default, so
+        existing callers see no change.
+        """
+        since_dt, until_dt = _resolve_window(days, since, until)
+        conditions = []
+        params: list = []
+        if since_dt is not None:
+            conditions.append("a.day >= ?")
+            params.append(since_dt.strftime("%Y-%m-%d"))
+        if until_dt is not None:
+            conditions.append("a.day <= ?")
+            params.append(until_dt.strftime("%Y-%m-%d"))
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        if split == "agent":
+            rows = self._connection().execute(
+                f"""
+                SELECT a.day AS day,
+                       CASE WHEN t.kind = 'top-level' THEN 'main' ELSE 'subagent' END AS agent,
+                       a.model AS model,
+                       SUM(a.turns) AS turns,
+                       SUM(a.input_tokens) AS input_tokens,
+                       SUM(a.cache_creation_tokens) AS cache_creation_tokens,
+                       SUM(a.cache_read_tokens) AS cache_read_tokens,
+                       SUM(a.output_tokens) AS output_tokens,
+                       SUM(a.thinking_tokens) AS thinking_tokens,
+                       SUM(a.cc_5m) AS cc_5m,
+                       SUM(a.cc_1h) AS cc_1h,
+                       SUM(a.cost) AS cost
+                FROM turns_agg a JOIN transcripts t ON t.id = a.transcript_id
+                {where}
+                GROUP BY a.day, agent, a.model
+                ORDER BY a.day, agent, a.model
+                """,
+                params,
+            ).fetchall()
+            return [dict(row) for row in rows]
         rows = self._connection().execute(
-            """
-            SELECT day, model,
-                   SUM(turns) AS turns,
-                   SUM(input_tokens) AS input_tokens,
-                   SUM(cache_creation_tokens) AS cache_creation_tokens,
-                   SUM(cache_read_tokens) AS cache_read_tokens,
-                   SUM(output_tokens) AS output_tokens,
-                   SUM(thinking_tokens) AS thinking_tokens,
-                   SUM(cc_5m) AS cc_5m,
-                   SUM(cc_1h) AS cc_1h,
-                   SUM(cost) AS cost
-            FROM turns_agg
-            WHERE day >= ?
-            GROUP BY day, model
-            ORDER BY day, model
+            f"""
+            SELECT a.day AS day, a.model AS model,
+                   SUM(a.turns) AS turns,
+                   SUM(a.input_tokens) AS input_tokens,
+                   SUM(a.cache_creation_tokens) AS cache_creation_tokens,
+                   SUM(a.cache_read_tokens) AS cache_read_tokens,
+                   SUM(a.output_tokens) AS output_tokens,
+                   SUM(a.thinking_tokens) AS thinking_tokens,
+                   SUM(a.cc_5m) AS cc_5m,
+                   SUM(a.cc_1h) AS cc_1h,
+                   SUM(a.cost) AS cost
+            FROM turns_agg a
+            {where}
+            GROUP BY a.day, a.model
+            ORDER BY a.day, a.model
             """,
-            (cutoff,),
+            params,
         ).fetchall()
         return [dict(row) for row in rows]
+
+    def cache_read_tokens_by_model(
+        self, *, days: int | None = 30, since: str | None = None, until: str | None = None
+    ) -> dict[str, int]:
+        """``cache_read_tokens`` summed per model within a window (the
+        same ``since``/``until``/``days`` precedence as ``daily_usage``,
+        which this mirrors at day granularity), for ``/api/summary``'s
+        additive ``cache_saved`` figure."""
+        since_dt, until_dt = _resolve_window(days, since, until)
+        conditions = []
+        params: list = []
+        if since_dt is not None:
+            conditions.append("day >= ?")
+            params.append(since_dt.strftime("%Y-%m-%d"))
+        if until_dt is not None:
+            conditions.append("day <= ?")
+            params.append(until_dt.strftime("%Y-%m-%d"))
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        rows = self._connection().execute(
+            f"SELECT model, COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens "
+            f"FROM turns_agg {where} GROUP BY model",
+            params,
+        ).fetchall()
+        return {row["model"]: row["cache_read_tokens"] for row in rows}
 
     def recache(self) -> dict:
         """Aggregate RE-CACHE turn counts by signature, corpus-wide."""

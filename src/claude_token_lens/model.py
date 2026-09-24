@@ -1154,6 +1154,10 @@ class ReportMeta:
     #: TTL/RE-CACHE/etc. assumption text, rendered as the report's
     #: "## Assumptions" block. See the module docstring's deviation note.
     assumptions: list[str] = field(default_factory=list)
+    #: Additive: every priced model's own rates and derived ratios
+    #: (``pricing.Pricing.rates_meta``) -- the dashboard's own rate card,
+    #: keyed by canonical model id, only models ``pricing.toml`` prices.
+    rates: dict = field(default_factory=dict)
 
 
 @dataclass(slots=True)
