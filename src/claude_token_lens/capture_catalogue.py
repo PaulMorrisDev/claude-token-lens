@@ -99,7 +99,6 @@ SKILL_NAME_PATTERN = r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}"
 LEVELS = ("off", "free", "essentials", "standard", "deep")
 CUSTOM_LEVEL = "custom"
 
-#: What each level adds, for the init question and the Capture page.
 #: Display names for the levels, as the dashboard and CLI show them.
 LEVEL_TITLES = {
     "off": "Off",
@@ -110,6 +109,7 @@ LEVEL_TITLES = {
     "custom": "Custom",
 }
 
+#: What each level adds, for the init question and the Capture page.
 LEVEL_SUMMARIES = {
     "off": "Nothing is captured and no tokens are used.",
     "free": "Local signals from hooks that log to a file. Uses no Claude tokens.",
@@ -755,6 +755,142 @@ COACHING_IDS = tuple(m.id for m in METRICS if m.group == "coaching")
 #: second line and the dashboard banner show it word for word.
 FEEDBACK_NOTE = "Finished a piece of work? Run /tl-feedback: a few ticks make your savings tips fit how you work."
 
+
+# -- the /tl-feedback questions --------------------------------------------
+
+#: The feedback skill: the user runs it as ``/tl-feedback``, from
+#: ``~/.claude/skills/tl-feedback/SKILL.md``.
+FEEDBACK_SKILL = "tl-feedback"
+
+#: ``[tl-fb: ...]``: the tag the skill ends with, carrying the answers.
+FEEDBACK_TAG = "tl-fb"
+
+
+@dataclass(frozen=True, slots=True)
+class FeedbackQuestion:
+    """One /tl-feedback question, asked with AskUserQuestion and offered
+    as checkboxes on the dashboard's Sessions tab."""
+
+    #: The ``[tl-fb: ...]`` key its answer is written under.
+    key: str
+    #: AskUserQuestion's chip label: at most 12 characters, starting "TL"
+    #: so the answers can be told apart from any other question.
+    header: str
+    question: str
+    #: Several answers may be ticked.
+    multi: bool
+    #: ``(word, label, description)`` per option: the word goes in the
+    #: tag, the label is what the user ticks. Labels hold no commas,
+    #: because several ticked answers can come back as one comma-joined
+    #: string.
+    options: tuple[tuple[str, str, str], ...]
+
+
+FEEDBACK_QUESTIONS: tuple[FeedbackQuestion, ...] = (
+    FeedbackQuestion(
+        key="outcome",
+        header="TL outcome",
+        question="Did this piece of work deliver what you expected?",
+        multi=False,
+        options=(
+            ("met", "Yes", "It did what I asked"),
+            ("partly", "Partly", "Some of it, or with gaps I had to fill"),
+            ("missed", "No", "It missed what I wanted"),
+            ("stopped", "Stopped early", "I stopped it or changed course"),
+        ),
+    ),
+    FeedbackQuestion(
+        key="slow",
+        header="TL slowdown",
+        question="What slowed it down?",
+        multi=True,
+        options=(
+            ("unclear", "My request was unclear", "Claude had to ask, guess or search"),
+            ("rework", "Wrong approach or rework", "A dead end, or work that had to be redone"),
+            ("tools", "Tool or setup trouble", "Failing commands, tests or permissions"),
+            ("none", "Nothing", "It went smoothly"),
+        ),
+    ),
+    FeedbackQuestion(
+        key="worth",
+        header="TL worth",
+        question="Was the result worth the tokens it used?",
+        multi=False,
+        options=(
+            ("yes", "Worth it", "Good value for what it cost"),
+            ("fair", "About right", "Roughly what I'd expect"),
+            ("no", "Too costly", "Too many tokens for the result"),
+        ),
+    ),
+    FeedbackQuestion(
+        key="helped",
+        header="TL helped",
+        question="What would have helped?",
+        multi=True,
+        options=(
+            ("context", "More context up front", "Files, errors or examples in the first message"),
+            ("plan", "A plan first", "Agreeing the approach before any edits"),
+            ("smaller", "Smaller steps", "One part at a time, or a fresh session per part"),
+            ("none", "Nothing", "It was fine as it was"),
+        ),
+    ),
+)
+
+#: ``[tl-fb: ...]`` key -> the words its answer may take.
+FEEDBACK_VOCAB: dict[str, tuple[str, ...]] = {q.key: tuple(o[0] for o in q.options) for q in FEEDBACK_QUESTIONS}
+
+#: ``[tl-fb: ...]`` keys whose value is a comma list of words.
+FEEDBACK_LIST_KEYS = frozenset(q.key for q in FEEDBACK_QUESTIONS if q.multi)
+
+
+def feedback_skill_text() -> str:
+    """``SKILL.md`` for ``/tl-feedback``. ``disable-model-invocation``
+    keeps its description out of Claude's context until the user runs
+    it, and it names no model: switching model mid-session would rebuild
+    the whole prompt cache, which costs more than the skill saves."""
+    lines = [
+        "---",
+        f"name: {FEEDBACK_SKILL}",
+        "description: Rate the piece of work you just finished for Claude Token Lens, with four quick "
+        "checkbox questions.",
+        "disable-model-invocation: true",
+        "allowed-tools: AskUserQuestion",
+        "---",
+        "",
+        "The user wants to rate the piece of work just finished, for Claude Token Lens, which turns the "
+        "answers into token-saving tips. Do only what follows: no summary of the work, no other tools.",
+        "",
+        "1. Call AskUserQuestion once, with these four questions word for word, in this order:",
+        "",
+    ]
+    for q in FEEDBACK_QUESTIONS:
+        choice = "several answers allowed (multiSelect true)" if q.multi else "one answer (multiSelect false)"
+        lines.append(f'   - header "{q.header}", question "{q.question}", {choice}. Options:')
+        for _word, label, description in q.options:
+            lines.append(f'     - "{label}": {description}')
+    lines += [
+        "",
+        f"2. End your reply with this one line, putting in the word for each answer ticked, joined with "
+        f"commas where several were ticked. Leave out a key whose question was skipped or answered only "
+        f"with free text:",
+        "",
+        f"   [{FEEDBACK_TAG}: " + " ".join(f"{q.key}=<{'words' if q.multi else 'word'}>" for q in FEEDBACK_QUESTIONS) + "]",
+        "",
+        "   The word for each answer:",
+        "",
+    ]
+    for q in FEEDBACK_QUESTIONS:
+        words = ", ".join(f'"{label}" = {word}' for word, label, _description in q.options)
+        lines.append(f"   - {q.key}: {words}")
+    lines += [
+        "",
+        '3. After the tag, write one line: "Thanks: Token Lens will use this for your savings tips."',
+        "",
+        'If the user declines the questions, reply only "No problem." and write no tag.',
+        "",
+    ]
+    return "\n".join(lines)
+
 #: The note's fixed lines. ``{tag}`` in :data:`SUB_TAG_INTRO` is the
 #: ``[result: ...]`` shape (:data:`SUB_TAG` or :data:`SUB_TAG_WITH_KEYS`).
 NOTE_INTRO = "The user turned on Token Lens metrics capture, to see where their tokens go."
@@ -873,7 +1009,6 @@ def hook_specs(ids) -> tuple[tuple[str, str, str, bool], ...]:
         if SIGNAL_EVENTS[event] in wanted:
             specs.append((HOOK_SCRIPT, event, "", event != "SessionEnd"))
     return tuple(specs)
-
 
 
 def export_json() -> dict:

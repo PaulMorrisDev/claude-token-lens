@@ -132,6 +132,7 @@ from .model import (
     Diagnostics,
     Event,
     EventKind,
+    Feedback,
     PlanStats,
     Turn,
     TranscriptMeta,
@@ -625,6 +626,11 @@ class _PendingTurn:
     #: ``Turn.plan_stats``).
     agent_result_chars: dict[str, int] = field(default_factory=dict)
     plan_stats: PlanStats | None = None
+    #: Feedback addition (see model.py's ``Turn.feedback``): this turn's
+    #: AskUserQuestion calls that ask /tl-feedback's questions, and what
+    #: their answers said.
+    feedback_asks: list[str] = field(default_factory=list)
+    feedback: Feedback | None = None
 
 
 def _plan_stats(plan: str) -> PlanStats:
@@ -726,6 +732,9 @@ def _merge_content_blocks(
             plan = tool_input.get("plan")
             if isinstance(plan, str) and plan:
                 pending.plan_stats = _plan_stats(plan)
+        elif name == "AskUserQuestion" and isinstance(tool_use_id, str) and tool_use_id:
+            if capture_tags.asks_for_feedback(tool_input):
+                pending.feedback_asks.append(tool_use_id)
 
 
 def _new_pending(d: dict, tool_use_names: dict[str, str]) -> _PendingTurn:
@@ -983,6 +992,13 @@ def _accumulate_tool_results(
                 current.agent_result_chars[tool_use_id] = current.agent_result_chars.get(tool_use_id, 0) + length
             elif name == "ExitPlanMode" and current.plan_stats is not None:
                 current.plan_stats.outcome = "rejected" if block.get("is_error") is True else "approved"
+            elif name == "AskUserQuestion" and tool_use_id in current.feedback_asks:
+                # Feedback addition: the answers, matched to known labels;
+                # a declined call answers nothing.
+                if block.get("is_error") is True:
+                    current.feedback = Feedback(source="skipped")
+                else:
+                    current.feedback = capture_tags.feedback_from_answers(d.get("toolUseResult")) or current.feedback
 
 
 def _is_async_launch(d: dict) -> bool:
@@ -1098,6 +1114,10 @@ def _finalize_turn(
             continue
         chars = pending_event.size_chars or 0
         human_prompt_chars = chars if human_prompt_chars is None else human_prompt_chars + chars
+        # A skill you ran with a slash is your message too (see events.py).
+        command = pending_event.detail.get("command")
+        if isinstance(command, str) and command:
+            commands_run.append(command)
         if pending_event.detail.get("has_paste"):
             human_prompt_has_paste = True
         if pending_event.detail.get("correction"):
@@ -1108,9 +1128,11 @@ def _finalize_turn(
 
     cap: CaptureTag | None = None
     result_marker: str | None = None
+    feedback = pending.feedback
     if pending.last_text_tail:
         known_skills = set(skill_names or ()) | set(pending.skills_invoked)
         cap, result_marker = capture_tags.parse_reply_tags(pending.last_text_tail, known_skills)
+        feedback = capture_tags.parse_feedback_tag(pending.last_text_tail) or feedback
 
     # Usage-limits addition (see module docstring): a limit-hit/resume
     # among the events preceding this turn means the gap to the previous
@@ -1185,6 +1207,7 @@ def _finalize_turn(
         prompt_flags=tuple(flag for flag in PROMPT_FLAGS if flag in flags),
         plan_stats=pending.plan_stats,
         commands_run=tuple(commands_run),
+        feedback=feedback,
     )
     return turn, new_prev_ts, new_priced_count
 

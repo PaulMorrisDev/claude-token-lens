@@ -69,13 +69,15 @@ the level. While it is off, the banner is a one-line invitation with
 the Essentials estimate from your own last two weeks; **Hide** keeps
 it hidden (`localStorage` `tls:captureInviteHidden`). The feedback
 note ("Finished a piece of work? Run /tl-feedback ...") shows while
-that item is on.
+that item is on, and a note with the `capture feedback on` command
+while the `/tl-feedback` skill is on but its file needs installing
+(the banner shows then even if the invitation was hidden).
 
 **The dashboard never changes Claude Code's settings.** There is no
 Apply button. Every fix is a prompt to paste into Claude Code or an
 `apply ... --dry-run` command to run yourself, each with a Copy button.
 The only things the dashboard writes are profile files in this tool's
-own folder, session tags in its own store and the `[capture]` table
+own folder, session tags and ratings in its own store and the `[capture]` table
 in its own `config.toml` (the Capture tab). Amounts follow the
 billing mode (`docs/writing-help.md`, "Amounts").
 
@@ -137,7 +139,11 @@ what they did", the setup panel and service health.
    sentences, and the cost split as a small table with share bars),
    "Mode override" and "Purpose override" selects with an "Apply tags"
    button (`POST /api/sessions/<id>/tags`, stored in this tool's own
-   store), a **Transcripts** table, then the timeline.
+   store), **Rate this session** while the dashboard rating is on (the
+   `/tl-feedback` questions as checkboxes and radio buttons, from
+   `feedback_questions`; **Save rating** and **Clear** send
+   `POST /api/sessions/<id>/feedback` and redraw the detail), a
+   **Transcripts** table, then the timeline.
 4. **Cache** — `/api/recache`: stat cards for cache rebuilds by cause
    (expired while idle, invalidated by a change, expired during a
    usage-limit pause — `recache.SIGNATURES`), headed "all history"
@@ -281,7 +287,12 @@ what they did", the setup panel and service health.
     sampling and end-time selects, and every metric grouped by where
     it is captured: a checkbox, what it captures, what Claude writes
     for it, why, what it helps with, its estimate against its actual
-    cost, and how much has been collected. Metrics that are always
+    cost, and how much has been collected. The feedback skill's row
+    shows its runs over the last 14 days and, while its file is
+    missing or out of date, a **Needs installing** badge with the
+    `capture feedback on` command (Copy button): the dashboard never
+    writes Claude Code's folder. The status-line rows say so when
+    Claude Code's status line isn't this tool's. Metrics that are always
     measured can't be switched off. Switching off a metric switches
     off the ones that need it. Every change that asks Claude for more
     (a level, a metric or a larger sample) first shows the cost

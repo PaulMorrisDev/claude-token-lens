@@ -11,7 +11,9 @@ for the billing mode):
   is output its writer paid for at that turn's own rate, fast mode and
   data residency included (``pricing.effective_rates``). It also says
   how often Claude tagged what it was asked to (coverage), and how much
-  of each metric has been collected.
+  of each metric has been collected. A /tl-feedback run is priced whole
+  (every turn of the cycle it ran in), in any session, captured or not:
+  the skill works at every level.
 - :func:`history` replays your own recent sessions to price one
   character of note or tag in each place capture puts them, so
   :func:`estimate` can price any level or set of metrics before you turn
@@ -20,6 +22,10 @@ for the billing mode):
 A *prompt cycle* (:func:`prompt_cycles`) is one message of yours and
 everything Claude did about it: the turn after a human message up to
 the next one, with the subagents those turns started, at any depth.
+
+:func:`feedback_spans` ties each /tl-feedback answer to the work it
+rates: the cycles since the previous feedback (answered or declined),
+or since the session started.
 """
 
 from __future__ import annotations
@@ -29,7 +35,7 @@ from datetime import timezone
 
 from . import capture_catalogue as catalogue
 from .context_files import _Carry, _parse_ts
-from .model import EventKind, TranscriptResult, Turn
+from .model import EventKind, Feedback, TranscriptResult, Turn
 from .pricing import Pricing, effective_rates, price_turn
 from .topology import agent_key
 
@@ -57,13 +63,15 @@ _SUB_FIELDS = {"fit": "fit", "rules": "rules", "brief": "agent_brief", "missing"
 
 #: How many answers a metric needs before its suggestions are firm; the
 #: Capture page says when a metric has enough and could be turned off.
-ENOUGH = {"main": 40, "subagent": 25, "brief": 20, "tool": 15, "signal": 20}
+ENOUGH = {"main": 40, "subagent": 25, "brief": 20, "tool": 15, "signal": 20, "feedback": 10}
 
 
 def _scope_of(metric_id: str) -> str:
     m = catalogue.METRICS_BY_ID[metric_id]
     if m.group == "free":
         return "signal"
+    if m.group == "feedback":
+        return "feedback"
     if m.tool_note:
         return "tool"
     if m.main_extra or m.sub_extra:
@@ -124,6 +132,57 @@ def prompt_cycles(top: TranscriptResult, subs=()) -> list[Cycle]:
     return cycles
 
 
+#: Which of a cycle's feedback wins: the skill's own tag, then the
+#: answers read from its question, then a declined question.
+_FEEDBACK_RANK = {"tag": 3, "answers": 2, "skipped": 1}
+
+
+@dataclass(slots=True)
+class FeedbackSpan:
+    """One /tl-feedback answer and the work it rates."""
+
+    feedback: Feedback
+    #: The cycle /tl-feedback ran in.
+    run: Cycle
+    #: The cycles it rates: those since the previous feedback, or since
+    #: the session started. Empty when you ran it first thing.
+    cycles: list[Cycle] = field(default_factory=list)
+
+
+def cycle_feedback(cycle: Cycle) -> Feedback | None:
+    """The feedback given in ``cycle``, or ``None``."""
+    best = None
+    for turn in cycle.turns:
+        fb = turn.feedback
+        if fb is not None and (best is None or _FEEDBACK_RANK.get(fb.source, 0) >= _FEEDBACK_RANK.get(best.source, 0)):
+            best = fb
+    return best
+
+
+def is_feedback_run(cycle: Cycle) -> bool:
+    """Whether ``cycle`` is a /tl-feedback run: you ran the skill, or its
+    questions were answered in it."""
+    return any(catalogue.FEEDBACK_SKILL in turn.commands_run for turn in cycle.turns[:1]) or (
+        cycle_feedback(cycle) is not None
+    )
+
+
+def feedback_spans(cycles: list[Cycle]) -> list[FeedbackSpan]:
+    """Each feedback in ``cycles`` (one session's, from
+    :func:`prompt_cycles`) with the cycles it rates. A declined question
+    ends a span too, so the next answer rates only what came after it."""
+    spans = []
+    begin = 0
+    for n, cycle in enumerate(cycles):
+        fb = cycle_feedback(cycle)
+        if fb is None:
+            continue
+        rated = [c for c in cycles[begin:n] if not is_feedback_run(c)]
+        spans.append(FeedbackSpan(feedback=fb, run=cycle, cycles=rated))
+        begin = n + 1
+    return spans
+
+
 def _cycle_for(sub, cycle_of_use, by_agent) -> int | None:
     """The cycle a subagent belongs to: the one whose turn started it,
     or its parent agent's, for a nested spawn."""
@@ -177,6 +236,11 @@ class CaptureUsage:
     tagged_cycles: int = 0
     reports: int = 0
     tagged_reports: int = 0
+    #: /tl-feedback runs, what they cost (every turn of each), and how
+    #: many ended with answers rather than a declined question.
+    feedback_runs: int = 0
+    feedback_cost: float = 0.0
+    feedback_answered: int = 0
 
     @property
     def note_tokens(self) -> int:
@@ -188,7 +252,7 @@ class CaptureUsage:
 
     @property
     def cost(self) -> float:
-        return sum(s.cost for s in self.scopes.values())
+        return sum(s.cost for s in self.scopes.values()) + self.feedback_cost
 
     @property
     def share(self) -> float | None:
@@ -340,18 +404,71 @@ def _spend(result: TranscriptResult, pricing, since) -> float:
     return total
 
 
-def usage(corpus, pricing: Pricing | None, since: str = "") -> CaptureUsage:
-    """What capture cost across ``corpus`` from ``since`` (an ISO time)
-    on. A session counts once its main transcript carries a capture note;
-    its subagents count with it."""
-    use = CaptureUsage(since=since)
+def _cycle_cost(cycle: Cycle, pricing) -> float:
+    if pricing is None:
+        return 0.0
+    turns = list(cycle.turns) + [turn for sub in cycle.subs for turn in _priced(sub)]
+    return sum(price_turn(turn, pricing.resolve_model(turn.model)).total for turn in turns)
+
+
+def _add_feedback_runs(use: CaptureUsage, top: TranscriptResult, subs, pricing, since) -> bool:
+    """Price this session's /tl-feedback runs; ``True`` when it had any."""
+    found = False
+    for cycle in prompt_cycles(top, subs):
+        if not is_feedback_run(cycle):
+            continue
+        moment = _parse_ts(cycle.turns[0].ts) if cycle.turns else None
+        if since is not None and (moment is None or moment < since):
+            continue
+        found = True
+        cost = _cycle_cost(cycle, pricing)
+        use.feedback_runs += 1
+        use.feedback_cost += cost
+        use.by_metric["feedback_skill"] = use.by_metric.get("feedback_skill", 0.0) + cost
+        day = _day(cycle.turns[0].ts)
+        if day:
+            use.daily[day] = use.daily.get(day, 0.0) + cost
+        fb = cycle_feedback(cycle)
+        if fb is not None and fb.source != "skipped":
+            use.feedback_answered += 1
+            use._count("feedback_skill")
+    return found
+
+
+def _start(since: str):
     start = _parse_ts(since) if since else None
     if start is not None and start.tzinfo is None:
         start = start.replace(tzinfo=timezone.utc)
+    return start
+
+
+def feedback_usage(corpus, pricing: Pricing | None, since: str = "") -> CaptureUsage:
+    """Only the /tl-feedback runs in ``corpus`` from ``since`` on: what
+    they cost and how many were answered. For the Capture tab, which
+    shows them whatever the capture level."""
+    use = CaptureUsage(since=since)
+    start = _start(since)
+    for bundle in corpus.sessions:
+        if bundle.top is not None and _add_feedback_runs(use, bundle.top, bundle.subs, pricing, start):
+            use.spend += _spend(bundle.top, pricing, start)
+    return use
+
+
+def usage(corpus, pricing: Pricing | None, since: str = "") -> CaptureUsage:
+    """What capture cost across ``corpus`` from ``since`` (an ISO time)
+    on. A session counts once its main transcript carries a capture note;
+    its subagents count with it. /tl-feedback runs count in any session."""
+    use = CaptureUsage(since=since)
+    start = _start(since)
     for bundle in corpus.sessions:
         top = bundle.top
         captured_top = top is not None and top.meta.cap_injections > 0
         subs = [sub for sub in bundle.subs if captured_top or sub.meta.cap_injections > 0]
+        rated = top is not None and _add_feedback_runs(use, top, bundle.subs, pricing, start)
+        if rated and not captured_top:
+            # Its spend, so capture's share stays a share of what the
+            # sessions it cost anything in spent.
+            use.spend += _spend(top, pricing, start)
         if not captured_top and not subs:
             continue
         spawners: dict[str, Turn] = {}
@@ -623,13 +740,18 @@ __all__ = [
     "Cycle",
     "ENOUGH",
     "Estimate",
+    "FeedbackSpan",
     "HISTORY_DAYS",
     "History",
     "ScopeUse",
+    "cycle_feedback",
     "enough_data",
     "enough_target",
     "estimate",
+    "feedback_spans",
+    "feedback_usage",
     "history",
+    "is_feedback_run",
     "level_estimates",
     "metric_estimates",
     "prompt_cycles",

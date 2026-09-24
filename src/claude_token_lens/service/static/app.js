@@ -1284,7 +1284,7 @@
     clear(banner);
     var info = data.banner || {};
     banner.className = "capture-banner " + (info.on ? "capture-on" : "capture-off");
-    if (!info.on && storageGet("tls:captureInviteHidden") === "1" && !info.feedback_note) {
+    if (!info.on && storageGet("tls:captureInviteHidden") === "1" && !info.feedback_note && !(info.notes || []).length) {
       banner.hidden = true;
       return;
     }
@@ -1663,6 +1663,7 @@
     head.appendChild(el("label", { for: id, class: "metric-title", text: row.title }));
     if (!row.toggle) head.appendChild(el("span", { class: "badge", text: "Always measured" }));
     if (row.needs_hook) head.appendChild(el("span", { class: "badge severity-action", text: "Needs a hook entry" }));
+    if (row.needs_install) head.appendChild(el("span", { class: "badge severity-action", text: "Needs installing" }));
     if (row.enough) head.appendChild(el("span", { class: "badge badge-suggested", text: "Enough collected" }));
     box.appendChild(head);
     box.appendChild(el("p", { class: "metric-what", text: row.what }));
@@ -1678,10 +1679,17 @@
     var cost;
     if (!row.asks_claude) cost = row.kind === "free" ? "No Claude tokens: a hook logs it to a local file." : "No tokens.";
     else if (row.estimate) cost = (row.on ? "Saves about " : "Adds about ") + row.estimate.text + (row.on ? " if switched off." : ".");
-    if (row.actual) cost = (cost ? cost + " " : "") + "Since it was turned on: " + row.actual.text + ".";
+    if (row.actual) cost = (cost ? cost + " " : "") + (row.actual_label || "Since it was turned on") + ": " + row.actual.text + ".";
     fact("Cost", cost);
-    if (row.target) fact("Collected", row.answers + " of " + row.target + " answers" + (row.enough ? ": enough for firm suggestions, so switching it off would save its cost." : "."));
+    if (row.target) fact("Collected", row.answers + " of " + row.target + " answers" + (row.enough ? (row.asks_claude ? ": enough for firm suggestions, so switching it off would save its cost." : ": enough for firm suggestions.") : "."));
     box.appendChild(facts);
+    if (row.needs_install) {
+      // The dashboard never writes Claude Code's folder: the CLI adds the
+      // skill after showing it and asking.
+      box.appendChild(el("p", { class: "notes", text: row.install_note + ". The dashboard doesn't write Claude Code's folder, so add it from a terminal:" }));
+      box.appendChild(codeBlockWithCopy(row.install_command));
+    }
+    if (row.statusline_note) box.appendChild(el("p", { class: "notes", text: row.statusline_note }));
 
     toggle.addEventListener("change", function () {
       var turningOn = toggle.checked;
@@ -1881,6 +1889,63 @@
     });
   }
 
+  // -- your rating (Capture tab: dashboard rating) -> POST /api/sessions/<id>/feedback --
+  function buildSessionRating(container, session) {
+    var saved = session.feedback || {};
+    var form = el("fieldset", { class: "session-rating" });
+    form.appendChild(el("legend", { text: "Rate this session" }));
+    form.appendChild(el("p", { class: "notes", text: "The /tl-feedback questions as checkboxes. Kept in Token Lens's own store, so it costs no tokens." }));
+    var inputs = {};
+    session.feedback_questions.forEach(function (q) {
+      var group = el("div", { class: "rating-question", role: "group", "aria-label": q.question });
+      group.appendChild(el("p", { class: "rating-label", text: q.question + (q.multi ? " (tick any)" : "") }));
+      var chosen = q.multi ? saved[q.key] || [] : saved[q.key] ? [saved[q.key]] : [];
+      inputs[q.key] = [];
+      q.options.forEach(function (opt) {
+        var id = "rate-" + q.key + "-" + opt.word;
+        var box = el("input", { type: q.multi ? "checkbox" : "radio", id: id, name: "rate-" + q.key, value: opt.word, checked: chosen.indexOf(opt.word) !== -1 });
+        inputs[q.key].push(box);
+        group.appendChild(el("span", { class: "rating-option" }, [box, el("label", { for: id, text: opt.label })]));
+      });
+      form.appendChild(group);
+    });
+    var save = el("button", { type: "button", text: "Save rating" });
+    var reset = el("button", { type: "button", text: "Clear" });
+    var status = el("span", { class: "notes", role: "status" });
+    if (saved.set_at) status.textContent = "Rated " + saved.set_at.slice(0, 10) + ".";
+    form.appendChild(el("div", { class: "rating-actions" }, [save, reset, status]));
+
+    function send(clearAll) {
+      var payload = {};
+      session.feedback_questions.forEach(function (q) {
+        var ticked = clearAll ? [] : inputs[q.key].filter(function (box) {
+          return box.checked;
+        }).map(function (box) {
+          return box.value;
+        });
+        payload[q.key] = q.multi ? ticked : ticked[0] || null;
+      });
+      save.disabled = reset.disabled = true;
+      status.textContent = "Saving…";
+      postJson("/api/sessions/" + encodeURIComponent(session.id) + "/feedback", payload).then(function (res) {
+        save.disabled = reset.disabled = false;
+        if (!res.body || res.body.ok !== true) {
+          status.textContent = "";
+          status.appendChild(errorNotice(res.body && res.body.error));
+          return;
+        }
+        renderSessionDetail(container, session.id);
+      });
+    }
+    save.addEventListener("click", function () {
+      send(false);
+    });
+    reset.addEventListener("click", function () {
+      send(true);
+    });
+    return form;
+  }
+
   function buildSessionDetail(container, session) {
     var wrap = el("div", { class: "session-detail" });
     wrap.appendChild(el("h3", { text: "Session " + session.id }));
@@ -1957,6 +2022,8 @@
         }
       });
     });
+
+    if (session.feedback_questions) wrap.appendChild(buildSessionRating(container, session));
 
     // -- transcripts table (no path -- see docs/api.md's privacy rule) --
     wrap.appendChild(el("h3", { text: "Transcripts" }));

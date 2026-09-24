@@ -337,12 +337,25 @@ a flag, never text:
   commands you ran just before this turn (``compact``, ``grill-me``), so
   a skill you invoked can be told from one Claude invoked
   (``skills_invoked``). Also ``Event.detail["command"]`` on the
-  ``SLASH_COMMAND`` event. Names only, never arguments.
+  ``SLASH_COMMAND`` event, and on the ``HUMAN_TEXT`` event of a skill run
+  with a slash (written ``<command-message>`` first, since
+  ``PARSER_VERSION`` 16). Names only, never arguments.
 - ``Turn.read_target_hashes`` now covers ``Read`` only: an edit is not a
   read, and counting edits made every edited file look re-read. Edits
   stay in ``edit_target_hashes``.
 - ``TASK_NOTIFICATION`` events are sized (``size_chars``): a background
   agent's notification carries the report it hands back.
+
+Feedback addition (``PARSER_VERSION`` 16):
+
+- ``Feedback`` / ``Turn.feedback: Feedback | None = None`` -- your
+  /tl-feedback answers: outcome, what slowed the work, whether it was
+  worth the tokens and what would have helped, as words from
+  ``capture_catalogue.FEEDBACK_VOCAB``. Read from the skill's
+  ``[tl-fb: ...]`` line ending this turn's reply (``source`` "tag"), or
+  from the answers to its AskUserQuestion call made in this turn
+  ("answers"); "skipped" when you declined the questions. Labels
+  are matched to words, so free-text "Other" answers are never kept.
 - ``TranscriptMeta.cap_version`` / ``cap_metrics`` / ``cap_injections``
   -- the capture note format version seen, the metric codes the notes
   asked for, and how many notes were injected.
@@ -446,6 +459,19 @@ class CaptureTag:
     has_tl: bool = False
     #: Length of the tag text, for pricing the output it cost.
     chars: int = 0
+
+
+@dataclass(slots=True)
+class Feedback:
+    """Your /tl-feedback answers (see the module docstring). Every value is
+    a word from ``capture_catalogue.FEEDBACK_VOCAB``."""
+
+    outcome: str | None = None
+    slow: tuple[str, ...] = ()
+    worth: str | None = None
+    helped: tuple[str, ...] = ()
+    #: "tag" | "answers" | "skipped".
+    source: str = "tag"
 
 
 @dataclass(slots=True)
@@ -617,6 +643,8 @@ class Turn:
     #: Metrics-capture addition (see module docstring): slash commands
     #: (and skills) you ran just before this turn, by name.
     commands_run: tuple[str, ...] = ()
+    #: Feedback addition (see module docstring): your /tl-feedback answers.
+    feedback: Feedback | None = None
 
 
 @dataclass(slots=True)

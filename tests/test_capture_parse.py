@@ -251,6 +251,21 @@ def test_slash_commands_you_ran_are_named_on_the_next_turn(tmp_path):
     assert "secret" not in repr(result.events)
 
 
+def test_a_skill_you_ran_is_named_and_is_your_message(tmp_path):
+    # Claude Code writes a skill run with a slash <command-message> first,
+    # then the skill's body as a meta line; a local command like /compact
+    # is written <command-name> first.
+    result = _parse(tmp_path, [
+        user_str_line("<command-message>grill-me</command-message>\n<command-name>/grill-me</command-name>\n"
+                      "<command-args>C:/secret/plan.md</command-args>"),
+        user_block_line([{"type": "text", "text": "Base directory for this skill: C:/secret"}], isMeta=True),
+        _reply("ok"),
+    ])
+    assert result.turns[0].commands_run == ("grill-me",)
+    assert result.turns[0].human_prompt_chars is not None
+    assert "secret" not in repr(result.events)
+
+
 def test_a_synchronous_agent_report_is_sized_but_a_background_launch_is_not(tmp_path):
     result = _parse(tmp_path, [
         turn_line(content=[

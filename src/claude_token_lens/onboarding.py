@@ -25,7 +25,8 @@ The last question, whether to turn on metrics capture, is
 :func:`ask_capture_level`: it warns that capture uses tokens and shows
 what each level would have cost, and ``cli.py``'s
 ``_cmd_init_capture_step`` saves the answer and adds the hook entries it
-needs, after showing the change and asking.
+needs, after showing the change and asking. Then :func:`ask_feedback`
+offers the ``/tl-feedback`` skill and its status-line reminder.
 """
 
 from __future__ import annotations
@@ -60,6 +61,8 @@ __all__ = [
     "gather_answers",
     "capture_answer",
     "ask_capture_level",
+    "ask_feedback",
+    "feedback_answer",
     "run_init",
 ]
 
@@ -205,7 +208,7 @@ class Answers:
 def load_answers_file(path: str | Path) -> dict:
     """Parse an ``--answers`` file: a flat JSON object whose keys are
     any of :class:`Answers`' field names, plus ``capture_level`` for
-    :func:`ask_capture_level` (any subset; omitted keys fall back to
+    :func:`ask_capture_level` and ``feedback`` for :func:`ask_feedback` (any subset; omitted keys fall back to
     derivation the same as if no file were given at all).
     """
     path = Path(path)
@@ -495,6 +498,61 @@ def ask_capture_level(
     )
     word = raw.strip().lower()
     return _CAPTURE_WORDS.get(word, word), notes
+
+
+FEEDBACK_INTRO = (
+    "Feedback after a piece of work (optional)\n"
+    "Token Lens can add a /tl-feedback skill to Claude Code. Run it when you finish a piece of work and tick four "
+    "quick questions: did it deliver, what slowed it, was it worth the tokens, and what would have helped. Your "
+    "answers show which work paid off, so the tips fit how you work. It costs nothing until you run it, then about "
+    "two short turns, and a second status line reminds you it's there. It works at any capture level, even off.\n"
+)
+
+
+def feedback_answer(answers_path: str | Path | None = None, preset: str | None = None) -> str | None:
+    """The feedback answer given without asking: ``--feedback``
+    (``preset``), else the answers file's ``feedback`` key, else
+    ``None``."""
+    if preset is not None:
+        return preset
+    if answers_path is None:
+        return None
+    raw = load_answers_file(answers_path).get("feedback")
+    if raw is None:
+        return None
+    return ("on" if raw else "off") if isinstance(raw, bool) else str(raw)
+
+
+def ask_feedback(
+    *,
+    preset: str | None = None,
+    answers_path: str | Path | None = None,
+    non_interactive: bool = False,
+    stdin: IO[str] = sys.stdin,
+    stdout: IO[str] = sys.stdout,
+) -> tuple[bool, list[str]]:
+    """init's question after capture: add the ``/tl-feedback`` skill and
+    its status-line reminder. ``preset`` (``--feedback``) or the answers
+    file's ``feedback`` key answers it; under ``--non-interactive`` with
+    neither it stays off and a note says so. Returns ``(on, notes)``."""
+    notes: list[str] = []
+    given = feedback_answer(answers_path, preset)
+    if given is None and non_interactive:
+        notes.append("feedback: not given in --answers; left off (add it later with 'claude-token-lens capture feedback on')")
+        return False, notes
+    if given is None:
+        stdout.write("\n" + FEEDBACK_INTRO)
+    on = _ask_bool(
+        "feedback",
+        "Add the /tl-feedback skill?",
+        False,
+        answers_data={"feedback": given} if given is not None else None,
+        non_interactive=non_interactive,
+        stdin=stdin,
+        stdout=stdout,
+        notes=notes,
+    )
+    return on, notes
 
 
 def _gather_extra_roots(

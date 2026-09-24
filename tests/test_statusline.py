@@ -1269,3 +1269,131 @@ def test_scoped_usage_log_rows_filters_sessions_and_window(tmp_path):
     since = datetime(2026, 9, 10, tzinfo=timezone.utc)
     kept = [r for r in rows if r["session_id"] in {"s1"} and statusline.usage_log_row_in_window(r, since, None)]
     assert kept == [rows[0]]
+
+
+# -- second line: feedback note and coaching hints --------------------------
+
+from claude_token_lens.capture_catalogue import FEEDBACK_NOTE
+
+NOW = datetime(2026, 9, 24, 12, 0, 0, tzinfo=timezone.utc)
+
+
+def _capture_config(tmp_path, body):
+    config_dir = tmp_path / "token-lens"
+    config_dir.mkdir(exist_ok=True)
+    (config_dir / "config.toml").write_text(body, encoding="utf-8")
+    return config_dir
+
+
+def _lines(tmp_path, monkeypatch, capsys, payload):
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
+    assert statusline.main([]) == 0
+    return capsys.readouterr().out.splitlines()
+
+
+def _jsonl(path, records):
+    path.write_text("".join(json.dumps(r) + "\n" for r in records), encoding="utf-8")
+    return str(path)
+
+
+def _prompt(text="do it"):
+    return {"type": "user", "message": {"role": "user", "content": text}}
+
+
+def _reply(blocks, stop="tool_use", ts="2026-09-24T11:59:00Z"):
+    return {"type": "assistant", "timestamp": ts, "message": {"role": "assistant", "stop_reason": stop, "content": blocks}}
+
+
+def _use(tool_id, name="Bash"):
+    return {"type": "tool_use", "id": tool_id, "name": name, "input": {}}
+
+
+def _result(tool_id, chars):
+    return {"type": "user", "toolUseResult": {}, "message": {"role": "user", "content": [
+        {"type": "tool_result", "tool_use_id": tool_id, "content": "x" * chars}]}}
+
+
+def test_no_capture_config_prints_one_line(tmp_path, monkeypatch, capsys):
+    assert _lines(tmp_path, monkeypatch, capsys, {"context_window": {"used_tokens": 10000}}) == ["ctx 10k"]
+
+
+def test_the_feedback_note_is_a_second_line_and_line_one_is_unchanged(tmp_path, monkeypatch, capsys):
+    _capture_config(tmp_path, '[capture]\nfeedback = ["feedback_skill", "feedback_note"]\n')
+    lines = _lines(tmp_path, monkeypatch, capsys, {"context_window": {"used_tokens": 10000}})
+    assert lines == ["ctx 10k", FEEDBACK_NOTE]
+    assert "\x1b" not in lines[1] and len(lines[1]) <= 120
+
+
+def test_feedback_without_the_note_or_a_malformed_config_adds_nothing(tmp_path, monkeypatch, capsys):
+    _capture_config(tmp_path, '[capture]\nfeedback = ["feedback_skill"]\n')
+    assert _lines(tmp_path, monkeypatch, capsys, {"context_window": {"used_tokens": 10000}}) == ["ctx 10k"]
+    _capture_config(tmp_path, "[capture\nfeedback = ")
+    assert _lines(tmp_path, monkeypatch, capsys, {"context_window": {"used_tokens": 10000}}) == ["ctx 10k"]
+
+
+def test_a_large_last_output_beats_the_note(tmp_path, monkeypatch, capsys):
+    _capture_config(tmp_path, '[capture]\nfeedback = ["feedback_note"]\ncoaching = ["coaching_line"]\n')
+    transcript = _jsonl(tmp_path / "t.jsonl", [_prompt(), _reply([_use("a")]), _result("a", 40_000)])
+    lines = _lines(tmp_path, monkeypatch, capsys, {"context_window": {"used_tokens": 30000}, "transcript_path": transcript})
+    assert lines[0].startswith("ctx 30k") and lines[1].startswith("last tool output ~10k tokens stays in context")
+
+
+def test_the_note_shows_when_no_hint_fires(tmp_path, monkeypatch, capsys):
+    _capture_config(tmp_path, '[capture]\nfeedback = ["feedback_note"]\ncoaching = ["coaching_line"]\n')
+    transcript = _jsonl(tmp_path / "t.jsonl", [_prompt(), _reply([_use("a")]), _result("a", 400)])
+    lines = _lines(tmp_path, monkeypatch, capsys, {"context_window": {"used_tokens": 30000}, "transcript_path": transcript})
+    assert lines[1] == FEEDBACK_NOTE
+
+
+def test_coaching_alone_prints_nothing_extra_when_no_hint_fires(tmp_path, monkeypatch, capsys):
+    _capture_config(tmp_path, '[capture]\ncoaching = ["coaching_line"]\n')
+    assert _lines(tmp_path, monkeypatch, capsys, {"context_window": {"used_tokens": 10000}}) == ["ctx 10k"]
+
+
+def test_hint_large_context_at_the_end_of_a_turn(tmp_path):
+    tail = [_prompt(), _reply([{"type": "text", "text": "done"}], stop="end_turn")]
+    hint = statusline.coaching_hint({"context_window": {"used_tokens": 150_000}}, tail, NOW)
+    assert hint is not None and hint[1] == "ctx 150k: starting something new? /clear first, or every message re-reads it"
+    # Mid-turn (Claude still working) it waits.
+    assert statusline.coaching_hint({"context_window": {"used_tokens": 150_000}}, tail[:1] + [_reply([_use("a")])], NOW) is None
+
+
+def test_hint_many_reads_counts_only_the_current_message(tmp_path):
+    old = [_reply([_use(f"o{i}", "Read") for i in range(6)])]
+    current = [_reply([_use(f"r{i}", "Read" if i % 2 else "Grep") for i in range(5)])] + [_result(f"r{i}", 800) for i in range(5)]
+    hint = statusline.coaching_hint({}, [_prompt(), *old, _prompt("next"), *current], NOW)
+    assert hint is not None and hint[1].startswith("5 reads and searches this message: an Explore agent")
+    fewer = [_reply([_use(f"r{i}", "Read") for i in range(4)])] + [_result(f"r{i}", 800) for i in range(4)]
+    assert statusline.coaching_hint({}, [_prompt(), *old, _prompt("next"), *fewer], NOW) is None
+
+
+def test_hint_cache_about_to_go_cold(tmp_path):
+    expires = NOW.timestamp() + 40
+    payload = {"context_window": {"used_tokens": 80_000}, "prompt_cache": {"warm": True, "ttl": "5m", "expires_at": expires}}
+    hint = statusline.coaching_hint(payload, [], NOW)
+    assert hint is not None and hint[1] == "cache goes cold in 40s: reply now, or the next message writes all 80k again"
+    payload["prompt_cache"]["expires_at"] = NOW.timestamp() + 200
+    assert statusline.coaching_hint(payload, [], NOW) is None
+    # Estimated from the last reply's time when the payload has no cache block.
+    tail = [_prompt(), _reply([_use("a")], ts="2026-09-24T11:55:30Z")]
+    hint = statusline.coaching_hint({"context_window": {"used_tokens": 80_000}}, tail, NOW)
+    assert hint is not None and hint[1].startswith("cache goes cold in 30s")
+
+
+def test_the_biggest_hint_wins(tmp_path):
+    tail = [_prompt(), _reply([_use("a")]), _result("a", 140_000), _reply([{"type": "text", "text": "ok"}], stop="end_turn")]
+    hint = statusline.coaching_hint({"context_window": {"used_tokens": 120_000}}, tail, NOW)
+    # The 35k-token output outweighs a quarter of the 120k context...
+    assert hint is not None and hint[1].startswith("last tool output ~35k tokens")
+    # ...and a quarter of a 200k context outweighs a 10k output.
+    tail[2] = _result("a", 40_000)
+    hint = statusline.coaching_hint({"context_window": {"used_tokens": 200_000}}, tail, NOW)
+    assert hint is not None and hint[1].startswith("ctx 200k: starting something new?")
+
+
+def test_a_reply_stamped_ahead_of_the_clock_never_shows_more_than_the_ttl(tmp_path):
+    transcript = tmp_path / "t.jsonl"
+    _write_transcript(transcript, "2026-09-24T12:10:00Z")
+    line = statusline.render_status({"transcript_path": str(transcript)}, NOW, 300)
+    assert line == "cache est 5m 05:00"

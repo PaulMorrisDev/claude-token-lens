@@ -558,3 +558,170 @@ def test_init_asks_about_capture_last(tmp_path, monkeypatch, capsys):
     assert rc == 0
     assert out.rindex("Metrics capture (optional)") > out.index("Wrote config.toml")
     assert load_config(config_dir).capture.level == "essentials"
+
+
+# -- feedback: the /tl-feedback skill --------------------------------------------
+
+
+def _skill(config_dir):
+    return config_dir.parent / "skills" / "tl-feedback" / "SKILL.md"
+
+
+def test_feedback_on_shows_the_skill_and_writes_it_after_a_yes(tmp_path):
+    config_dir = _claude(tmp_path, {})
+    rc, out = _capture(config_dir, "feedback", "on", stdin="y\n")
+    assert rc == 0 and "Nothing is added to Claude's context until you run the skill." in out
+    assert f"This adds the /tl-feedback skill, {_skill(config_dir)}:" in out
+    assert "    name: tl-feedback" in out and "Add it? (y/n) [n]:" in out
+    assert _skill(config_dir).read_text(encoding="utf-8") == cat.feedback_skill_text()
+    capture = load_config(config_dir=config_dir).capture
+    assert capture.feedback == ["feedback_skill", "feedback_note"] and capture.level == "off"
+    # settings.json is never touched: the skill needs no hook.
+    assert _settings(config_dir) == {}
+    rc, out = _capture(config_dir, "feedback", "on")
+    assert "Feedback is already on." in out and "The /tl-feedback skill is in place" in out
+
+
+def test_feedback_on_dry_run_and_a_no_write_no_skill(tmp_path):
+    config_dir = _claude(tmp_path, {})
+    rc, out = _capture(config_dir, "feedback", "on", "--dry-run")
+    assert "Dry run: config.toml left unchanged." in out and "Dry run: the skill is left as it is." in out
+    assert not _skill(config_dir).exists() and not (config_dir / "config.toml").exists()
+    rc, out = _capture(config_dir, "feedback", "on", stdin="n\n")
+    assert "Left as it is. Run 'claude-token-lens capture feedback on'" in out
+    assert not _skill(config_dir).exists()
+    rc, out = _capture(config_dir, "status")
+    assert "The /tl-feedback skill isn't installed: claude-token-lens capture feedback on" in out
+
+
+def test_an_old_skill_is_shown_as_a_diff_and_someone_elses_is_left_alone(tmp_path):
+    config_dir = _claude(tmp_path, {})
+    _capture(config_dir, "feedback", "on", "--yes")
+    skill = _skill(config_dir)
+    skill.write_text(cat.feedback_skill_text().replace("four quick", "three quick"), encoding="utf-8")
+    assert "out of date" in _capture(config_dir, "status")[1]
+    rc, out = _capture(config_dir, "feedback", "on", "--yes")
+    assert "This updates the /tl-feedback skill" in out and "-description:" in out
+    assert skill.read_text(encoding="utf-8") == cat.feedback_skill_text()
+    skill.write_text("---\nname: tl-feedback\n---\nmine\n", encoding="utf-8")
+    rc, out = _capture(config_dir, "feedback", "on", "--yes")
+    assert "holds a skill this tool didn't write, so it is left alone" in out
+    rc, out = _capture(config_dir, "feedback", "off", "--yes")
+    assert skill.read_text(encoding="utf-8") == "---\nname: tl-feedback\n---\nmine\n"
+
+
+def test_feedback_off_removes_the_skill_and_its_reminders_but_not_the_rating(tmp_path):
+    config_dir = _claude(tmp_path, {})
+    _capture(config_dir, "enable", "dashboard_rating", "feedback_reminder", "--yes")
+    _capture(config_dir, "feedback", "on", "--yes")
+    rc, out = _capture(config_dir, "feedback", "off", stdin="y\n")
+    assert "This removes the /tl-feedback skill" in out and "Removed." in out
+    assert not _skill(config_dir).exists() and not _skill(config_dir).parent.exists()
+    assert load_config(config_dir=config_dir).capture.feedback == ["dashboard_rating"]
+
+
+def test_enabling_or_disabling_the_skill_metric_installs_or_removes_it(tmp_path):
+    config_dir = _claude(tmp_path, {})
+    _capture(config_dir, "enable", "feedback_skill", "--yes")
+    assert _skill(config_dir).is_file()
+    _capture(config_dir, "disable", "feedback_skill", "--yes")
+    assert not _skill(config_dir).exists()
+
+
+def test_remove_keeps_the_skill_and_says_how_to_take_it_out(tmp_path):
+    config_dir = _claude(tmp_path, {})
+    _capture(config_dir, "on", "--yes")
+    _capture(config_dir, "feedback", "on", "--yes")
+    rc, out = _capture(config_dir, "remove", "--yes")
+    assert "The /tl-feedback skill stays: it works with capture off." in out
+    assert _skill(config_dir).is_file()
+
+
+@pytest.mark.parametrize("argv", [["feedback"], ["feedback", "maybe"], ["feedback", "on", "off"]])
+def test_feedback_needs_on_or_off(tmp_path, argv):
+    config_dir = _claude(tmp_path, {})
+    rc, out = _capture(config_dir, *argv)
+    assert rc == 2 and "'capture feedback' needs on or off" in out
+
+
+def test_the_skill_is_listed_and_taken_out_by_uninstall(tmp_path, monkeypatch, capsys):
+    config_dir = _claude(tmp_path, {})
+    assert "feedback_skill" not in {i.key for i in footprint.inventory(config_dir, service_registered=False)}
+    _capture(config_dir, "feedback", "on", "--yes")
+    item = {i.key: i for i in footprint.inventory(config_dir, service_registered=False)}["feedback_skill"]
+    assert item.status == "installed" and item.undo == "claude-token-lens capture feedback off"
+    assert "None until you run it" in item.token_cost
+    plan = footprint.plan_uninstall(config_dir)
+    assert plan.feedback_skill == _skill(config_dir)
+    rc = cli.main(["uninstall", "--yes", "--config-dir", str(config_dir)])
+    out = capsys.readouterr().out
+    assert "The /tl-feedback skill:" in out and "Removed." in out
+    assert not _skill(config_dir).exists()
+
+
+def _init_feedback(config_dir, *argv, stdin=""):
+    out = io.StringIO()
+    cli._cmd_init_feedback_step(
+        _init_args(config_dir, *argv), config_dir=config_dir, claude_root=config_dir.parent,
+        stdin=io.StringIO(stdin), stdout=out, now=NOW,
+    )
+    return out.getvalue()
+
+
+def test_init_offers_the_skill_and_writes_it_after_two_yeses(tmp_path):
+    config_dir = _claude(tmp_path, {})
+    out = _init_feedback(config_dir, stdin="y\ny\n")
+    assert "Feedback after a piece of work (optional)" in out and "It works at any capture level" in out
+    assert "Add the /tl-feedback skill? (y/n) [n]:" in out and "Add it? (y/n) [n]:" in out
+    assert _skill(config_dir).is_file()
+    assert load_config(config_dir).capture.feedback == ["feedback_skill", "feedback_note"]
+    out = _init_feedback(config_dir, stdin="n\n")
+    assert "The /tl-feedback skill is on." in out and _skill(config_dir).is_file()
+
+
+def test_init_feedback_no_and_non_interactive_leave_it_off(tmp_path):
+    config_dir = _claude(tmp_path, {})
+    assert "Feedback left off." in _init_feedback(config_dir, stdin="\n")
+    out = _init_feedback(config_dir, "--non-interactive")
+    assert "(derived) feedback: not given in --answers; left off" in out
+    assert "Feedback after a piece of work" not in out
+    assert not _skill(config_dir).exists() and load_config(config_dir).capture.feedback == []
+
+
+def test_init_feedback_flag_without_connecting_prints_the_command(tmp_path):
+    config_dir = _claude(tmp_path, {})
+    out = _init_feedback(config_dir, "--non-interactive", "--no-install", "--feedback", "on")
+    assert "Add the skill with: claude-token-lens capture feedback on" in out
+    assert not _skill(config_dir).exists()
+    assert load_config(config_dir).capture.feedback == ["feedback_skill", "feedback_note"]
+
+
+def test_init_feedback_answers_file_with_connect_writes_without_asking(tmp_path):
+    config_dir = _claude(tmp_path, {})
+    answers = tmp_path / "answers.json"
+    answers.write_text(json.dumps({"feedback": True}), encoding="utf-8")
+    out = _init_feedback(config_dir, "--non-interactive", "--connect", "--answers", str(answers))
+    assert _skill(config_dir).is_file() and "Add it?" not in out
+    out = _init_feedback(config_dir, "--non-interactive", "--connect", "--feedback", "off")
+    assert "Saved to config.toml: feedback off." in out and not _skill(config_dir).exists()
+
+
+def test_init_asks_about_feedback_after_capture(tmp_path, monkeypatch, capsys):
+    config_dir = _claude(tmp_path, {})
+    monkeypatch.chdir(tmp_path)
+    rc = cli.main(["init", "--non-interactive", "--no-install", "--no-service", "--config-dir", str(config_dir),
+                   "--capture-level", "off", "--feedback", "on"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert out.index("Add the skill with: claude-token-lens capture feedback on") > out.index("Metrics capture (optional)")
+
+
+def test_status_says_when_the_status_line_is_someone_elses(tmp_path):
+    config_dir = _claude(tmp_path, {"statusLine": {"type": "command", "command": "my-own-line"}})
+    _capture(config_dir, "feedback", "on", "--yes")
+    rc, out = _capture(config_dir, "status")
+    assert "Your status line isn't Token Lens's, so this second line won't show there" in out
+    (config_dir.parent / "settings.json").write_text(
+        json.dumps({"statusLine": {"type": "command", "command": "claude-token-lens statusline"}}), encoding="utf-8"
+    )
+    assert "Your status line isn't" not in _capture(config_dir, "status")[1]

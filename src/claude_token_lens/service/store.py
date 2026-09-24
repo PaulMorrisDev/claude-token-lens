@@ -197,6 +197,14 @@ def _migrate_4_to_5(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_baselines_record_id ON baselines(record_id)")
 
 
+def _migrate_5_to_6(conn: sqlite3.Connection) -> None:
+    """v5 -> v6 (``schema.py``'s "Version 6" paragraph): the
+    ``session_feedback`` table. :meth:`Store.migrate` has already run
+    every ``CREATE ... IF NOT EXISTS`` before this step; creating it here
+    too keeps the step whole on its own."""
+    conn.execute(schema.CREATE_SESSION_FEEDBACK)
+
+
 #: Additive migration ladder for :meth:`Store.migrate`, keyed by the
 #: *recorded* version being migrated away from -- ``MIGRATIONS[4]`` takes
 #: a v4 store to v5. Each step may only add columns/indexes/tables, never
@@ -207,6 +215,7 @@ def _migrate_4_to_5(conn: sqlite3.Connection) -> None:
 #: a recorded version newer than the running code's own.
 MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     4: _migrate_4_to_5,
+    5: _migrate_5_to_6,
 }
 
 
@@ -896,6 +905,7 @@ class Store:
                 conn.execute("DELETE FROM transcripts WHERE session_id = ?", (session_id,))
                 conn.execute("DELETE FROM workflow_runs WHERE session_id = ?", (session_id,))
                 conn.execute("DELETE FROM session_tags WHERE session_id = ?", (session_id,))
+                conn.execute("DELETE FROM session_feedback WHERE session_id = ?", (session_id,))
                 conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
         return len(session_ids)
 
@@ -926,9 +936,10 @@ class Store:
         them, a tag write or a freshly-linked workflow run left the
         report-model cache (``api.py``'s ``_get_report_model``) serving a
         stale report until some unrelated transcript/snapshot change
-        happened to also invalidate it. Used by ``api.py``'s report-model
-        cache to know when a cached report needs rebuilding, without
-        exposing anything about *what* changed."""
+        happened to also invalidate it; ``session_feedback`` (v6) for the
+        same reason. Used by ``api.py``'s report-model cache to know when
+        a cached report needs rebuilding, without exposing anything about
+        *what* changed."""
         conn = self._connection()
         transcripts_row = conn.execute(
             "SELECT COUNT(*), COALESCE(MAX(updated_at), '') FROM transcripts"
@@ -942,11 +953,15 @@ class Store:
         session_tags_row = conn.execute(
             "SELECT COUNT(*), COALESCE(MAX(set_at), '') FROM session_tags"
         ).fetchone()
+        feedback_row = conn.execute(
+            "SELECT COUNT(*), COALESCE(MAX(set_at), '') FROM session_feedback"
+        ).fetchone()
         return (
             f"{transcripts_row[0]}:{transcripts_row[1]}:"
             f"{snapshots_row[0]}:{snapshots_row[1]}:"
             f"{workflow_runs_row[0]}:{workflow_runs_row[1]}:"
-            f"{session_tags_row[0]}:{session_tags_row[1]}"
+            f"{session_tags_row[0]}:{session_tags_row[1]}:"
+            f"{feedback_row[0]}:{feedback_row[1]}"
         )
 
     #: Review finding 11: an extreme-length session's turn_series could
@@ -1278,6 +1293,7 @@ class Store:
         ).fetchall()
         result["transcripts"] = [dict(trow) for trow in transcript_rows]
         result["tags"] = self.tags(session_id)
+        result["feedback"] = self.feedback(session_id)
         return result
 
     def daily_usage(self, *, days: int = 30) -> list[dict]:
@@ -1426,6 +1442,52 @@ class Store:
             "INSERT INTO session_tags (session_id, key, value, set_at) VALUES (?, ?, ?, ?) "
             "ON CONFLICT(session_id, key) DO UPDATE SET value = excluded.value, set_at = excluded.set_at",
             (session_id, key, value, _now()),
+        )
+
+    @staticmethod
+    def _feedback_row(row) -> dict:
+        return {
+            "outcome": row["outcome"],
+            "slow": [w for w in row["slow"].split(",") if w],
+            "worth": row["worth"],
+            "helped": [w for w in row["helped"].split(",") if w],
+            "set_at": row["set_at"],
+        }
+
+    def feedback(self, session_id: str) -> dict | None:
+        """Your rating of ``session_id`` from the Sessions tab
+        (``{outcome, slow, worth, helped, set_at}``), or ``None``."""
+        row = self._connection().execute(
+            "SELECT outcome, slow, worth, helped, set_at FROM session_feedback WHERE session_id = ?", (session_id,)
+        ).fetchone()
+        return self._feedback_row(row) if row is not None else None
+
+    def all_feedback(self) -> dict[str, dict]:
+        """Every rating, by ``session_id``."""
+        rows = self._connection().execute(
+            "SELECT session_id, outcome, slow, worth, helped, set_at FROM session_feedback"
+        ).fetchall()
+        return {row["session_id"]: self._feedback_row(row) for row in rows}
+
+    def feedback_count(self) -> int:
+        return self._connection().execute("SELECT COUNT(*) FROM session_feedback").fetchone()[0]
+
+    def set_feedback(
+        self, session_id: str, *, outcome: str | None, slow=(), worth: str | None, helped=()
+    ) -> None:
+        """Set (or replace) your rating of ``session_id``; a rating with
+        nothing ticked clears it. The caller checks the words
+        (``api.py``'s ``route_set_feedback``)."""
+        conn = self._connection()
+        if not (outcome or slow or worth or helped):
+            conn.execute("DELETE FROM session_feedback WHERE session_id = ?", (session_id,))
+            return
+        # Single statement -- see upsert_profile's comment above.
+        conn.execute(
+            "INSERT INTO session_feedback (session_id, outcome, slow, worth, helped, set_at) "
+            "VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(session_id) DO UPDATE SET outcome = excluded.outcome, "
+            "slow = excluded.slow, worth = excluded.worth, helped = excluded.helped, set_at = excluded.set_at",
+            (session_id, outcome, ",".join(slow), worth, ",".join(helped), _now()),
         )
 
 

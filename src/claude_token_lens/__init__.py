@@ -98,7 +98,13 @@ __version__ = "0.5.2"
 #: file looked re-read; ``hook_system_message`` lines (shown to you, never
 #: to the model) were counted as hook context; and task notifications
 #: weren't sized, so a background agent's report had no size.
-PARSER_VERSION = 15
+#:
+#: Bumped to 16 by the feedback batch: parse.py reads your /tl-feedback
+#: answers (``Turn.feedback``) from the skill's ``[tl-fb: ...]`` line or,
+#: failing that, from the AskUserQuestion result itself. ``commands_run``
+#: now names skills you ran with a slash too: they are written
+#: ``<command-message>`` first, as your message, and were missed.
+PARSER_VERSION = 16
 
 #: Bump when the model.py contract changes in a way that invalidates the
 #: on-disk digest cache (see model.py's module docstring for the contract

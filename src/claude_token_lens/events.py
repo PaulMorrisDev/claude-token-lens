@@ -167,6 +167,10 @@ _SLASH_COMMAND_PREFIXES = ("<command-name", "<local-command-stdout", "<local-com
 #: kept on ``Event.detail["command"]`` only when it has the shape of a
 #: command or skill name -- never its arguments.
 _COMMAND_NAME_RE = re.compile(r"<command-name>/?([A-Za-z0-9][A-Za-z0-9_.:-]{0,63})</command-name>")
+#: A skill you ran with a slash (``/grill-me``) is written the other way
+#: round, ``<command-message>`` first, and is your message for that
+#: cycle: a HUMAN_TEXT line whose ``detail["command"]`` names the skill.
+_SKILL_COMMAND_PREFIX = "<command-message>"
 _SCHEDULED_TASK_PREFIXES = ("<scheduled-task", "[SYSTEM NOTIFICATION", "<<autonomous-loop")
 _SCHEDULED_TASK_ORIGIN_KINDS = frozenset({"cron", "loop"})
 
@@ -637,6 +641,10 @@ def _human_text_detail(d: dict, str_content: str | None) -> tuple[int, dict]:
     flags = prompt_flags(texts)
     if flags:
         detail["flags"] = flags
+    if str_content is not None and str_content.startswith(_SKILL_COMMAND_PREFIX):
+        command = _COMMAND_NAME_RE.search(str_content)
+        if command:
+            detail["command"] = command.group(1)
     return human_chars, detail
 
 

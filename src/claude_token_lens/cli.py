@@ -624,7 +624,12 @@ def _add_uninstall_args(sub: argparse.ArgumentParser) -> None:
 
 
 #: ``capture``'s actions; "status" is the default.
-CAPTURE_ACTIONS = ("status", "on", "off", "level", "enable", "disable", "connect", "remove")
+CAPTURE_ACTIONS = ("status", "on", "off", "level", "enable", "disable", "connect", "remove", "feedback")
+
+#: What ``capture feedback on`` turns on, and what ``off`` turns off: the
+#: skill and the reminders to run it. The dashboard rating stays as set.
+_FEEDBACK_ON = ("feedback_skill", "feedback_note")
+_FEEDBACK_OFF = ("feedback_skill", "feedback_note", "feedback_reminder")
 
 
 def _add_capture_args(sub: argparse.ArgumentParser) -> None:
@@ -638,13 +643,15 @@ def _add_capture_args(sub: argparse.ArgumentParser) -> None:
         default="status",
         choices=CAPTURE_ACTIONS,
         help="status (default); on; off; level LEVEL; enable/disable METRIC...; connect (add the hook entries "
-        "the chosen metrics need to settings.json); remove (switch off and take the entries out)",
+        "the chosen metrics need to settings.json); remove (switch off and take the entries out); "
+        "feedback on|off (the /tl-feedback skill and its status-line reminder)",
     )
     sub.add_argument(
         "values",
         nargs="*",
         metavar="VALUE",
-        help="the level for 'level'; metric ids for 'enable' and 'disable' (see 'capture status')",
+        help="the level for 'level'; metric ids for 'enable' and 'disable' (see 'capture status'); "
+        "on or off for 'feedback'",
     )
     sub.add_argument(
         "--level",
@@ -887,6 +894,13 @@ def _add_init_args(sub: argparse.ArgumentParser) -> None:
         default=None,
         help="answer the metrics capture question without asking: off, or the level to turn on "
         "(capture uses tokens; 'claude-token-lens capture status' shows how many)",
+    )
+    sub.add_argument(
+        "--feedback",
+        choices=("on", "off"),
+        default=None,
+        help="answer the feedback question without asking: add the /tl-feedback skill and its status-line "
+        "reminder (on), or not (off)",
     )
 
 
@@ -2373,6 +2387,7 @@ def _cmd_init(args: argparse.Namespace) -> int:
         _cmd_init_connect_step(args, config_dir=config_dir, hook=hook, claude_root=claude_root)
     rc = _cmd_init_service_step(args, config_dir=config_dir, projects_root_path=service_roots)
     _cmd_init_capture_step(args, config_dir=config_dir, claude_root=claude_root)
+    _cmd_init_feedback_step(args, config_dir=config_dir, claude_root=claude_root)
     return rc
 
 
@@ -2452,6 +2467,63 @@ def _cmd_init_capture_step(
     )
     if not done and wanted and not args.dry_run:
         stdout.write("Until then the chosen metrics can't be captured.\n")
+
+
+def _cmd_init_feedback_step(
+    args: argparse.Namespace, *, config_dir: Path, claude_root: Path, stdin=None, stdout=None, now=None
+) -> None:
+    """``init``'s feedback question (:func:`onboarding.ask_feedback`),
+    after capture's: the ``/tl-feedback`` skill and its status-line
+    reminder, which work at any capture level. A yes is saved to
+    config.toml, then the skill is shown and written after a yes (or
+    ``--connect``), as in ``capture feedback on``; when init isn't
+    connecting to Claude Code, that command is printed. Feedback already
+    on is left as it is unless ``--feedback`` or the answers file says."""
+    stdin = stdin if stdin is not None else sys.stdin
+    stdout = stdout if stdout is not None else sys.stdout
+    now = now or datetime.now(timezone.utc)
+    try:
+        config = load_config(config_dir)
+        given = onboarding.feedback_answer(args.answers, getattr(args, "feedback", None))
+    except (ConfigError, onboarding.OnboardingError) as exc:
+        stdout.write(f"Feedback: skipped ({exc}).\n")
+        return
+    current = config.capture
+    was_on = "feedback_skill" in current.feedback
+    if was_on and given is None:
+        stdout.write("\nThe /tl-feedback skill is on. 'claude-token-lens capture feedback off' turns it off.\n")
+        return
+    on, notes = onboarding.ask_feedback(
+        preset=given, non_interactive=args.non_interactive, stdin=stdin, stdout=stdout
+    )
+    for note in notes:
+        stdout.write(f"(derived) {note}\n")
+    if on != was_on:
+        feedback = [i for i in current.feedback if i not in _FEEDBACK_OFF]
+        if on:
+            feedback = list(current.feedback) + [i for i in _FEEDBACK_ON if i not in current.feedback]
+        try:
+            set_capture(config_dir, feedback=feedback, now=now)
+        except ConfigError as exc:
+            stdout.write(f"{exc}\n")
+            return
+        stdout.write("Saved to config.toml: feedback " + ("on" if on else "off") + ".\n")
+    elif not on:
+        if not notes:
+            stdout.write("Feedback left off.\n")
+        return
+    if args.no_install or not (args.connect or not args.non_interactive):
+        from . import footprint
+
+        text = footprint.read_feedback_skill(claude_root)
+        if on and text != capture_catalogue.feedback_skill_text():
+            stdout.write("Add the skill with: claude-token-lens capture feedback on\n")
+        elif not on and text is not None and footprint.is_own_feedback_skill(text):
+            stdout.write("Remove the skill with: claude-token-lens capture feedback off\n")
+        return
+    _capture_skill_step(
+        on, claude_root=claude_root, dry_run=args.dry_run, assume_yes=args.connect, stdin=stdin, stdout=stdout
+    )
 
 
 def _cmd_init_connect_step(
@@ -3023,6 +3095,78 @@ def _capture_settings_step(
     return True
 
 
+def _capture_skill_step(want: bool, *, claude_root: Path, dry_run: bool, assume_yes: bool, stdin, stdout) -> bool:
+    """Make the ``/tl-feedback`` skill (``<claude-root>/skills/tl-feedback/
+    SKILL.md``) there or not, as ``want`` says: show the file to add, the
+    diff, or the file to remove, and make the change after a yes. A
+    ``SKILL.md`` there that this tool didn't write is left alone. Returns
+    False when a change was needed but not made."""
+    from . import footprint
+
+    path = footprint.feedback_skill_path(claude_root)
+    now_text = footprint.read_feedback_skill(claude_root)
+    ours = now_text is not None and footprint.is_own_feedback_skill(now_text)
+    text = capture_catalogue.feedback_skill_text()
+    if want:
+        later = "claude-token-lens capture feedback on"
+        if now_text == text:
+            stdout.write(f"The /tl-feedback skill is in place: {path}\n")
+            return True
+        if now_text is not None and not ours:
+            stdout.write(
+                f"{path} holds a skill this tool didn't write, so it is left alone. Move it elsewhere, then run "
+                f"'{later}'.\n"
+            )
+            return False
+        if now_text is None:
+            stdout.write(f"\nThis adds the /tl-feedback skill, {path}:\n\n")
+            stdout.write("".join(f"    {line}\n" if line else "\n" for line in text.splitlines()) + "\n")
+            question = "Add it?"
+        else:
+            import difflib
+
+            diff = "".join(
+                difflib.unified_diff(
+                    now_text.splitlines(keepends=True),
+                    text.splitlines(keepends=True),
+                    fromfile="SKILL.md (now)",
+                    tofile="SKILL.md (after)",
+                )
+            )
+            stdout.write(f"\nThis updates the /tl-feedback skill, {path}:\n\n{diff}\n")
+            question = "Update it?"
+    else:
+        later = "claude-token-lens capture feedback off"
+        if not ours:
+            return True
+        stdout.write(f"\nThis removes the /tl-feedback skill, {path}.\n")
+        question = "Remove it?"
+    if dry_run:
+        stdout.write(f"Dry run: the skill is left as it is. Run '{later}' to make the change.\n")
+        return False
+    if not assume_yes:
+        stdout.write(f"{question} (y/n) [n]: ")
+        stdout.flush()
+        if (stdin.readline() or "").strip().lower() not in ("y", "yes"):
+            stdout.write(f"Left as it is. Run '{later}' to make the change later.\n")
+            return False
+    try:
+        if want:
+            footprint.write_feedback_skill(claude_root)
+        else:
+            footprint.remove_feedback_skill(claude_root)
+    except OSError as exc:
+        stdout.write(f"Could not change {path}: {exc}\n")
+        return False
+    stdout.write(
+        "Done. Run /tl-feedback in Claude Code when you finish a piece of work (start a new session if it isn't "
+        "listed yet).\n"
+        if want
+        else "Removed.\n"
+    )
+    return True
+
+
 def _capture_status(
     capture: CaptureConfig, *, config_dir: Path, claude_root: Path, stdout, args=None, config: Config | None = None
 ) -> int:
@@ -3063,6 +3207,22 @@ def _capture_status(
     health = hook_health.check_capture(wanted, claude_root=claude_root)
     if wanted or health.extra:
         stdout.write(f"Hooks: {health.summary()}\n")
+    if "feedback_skill" in capture.feedback:
+        from . import footprint
+
+        note = capture_view.SKILL_NOTES.get(footprint.feedback_skill_state(claude_root))
+        if note:
+            stdout.write(f"{note}\n")
+    lines_on = [m for m in ("feedback_note", "coaching_line") if m in capture.feedback or m in capture.coaching]
+    if lines_on:
+        from . import footprint
+
+        try:
+            settings = json.loads(hook_health.settings_path(claude_root).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            settings = None
+        if not footprint.is_own_statusline(settings if isinstance(settings, dict) else None):
+            stdout.write(f"{capture_view.STATUSLINE_NOTES[lines_on[-1]]}\n")
     stdout.write(
         "\nChange it: claude-token-lens capture level " + "|".join(capture_catalogue.LEVELS)
         + ", capture enable|disable METRIC..., or the Capture tab on the dashboard.\n"
@@ -3101,7 +3261,10 @@ def _cmd_capture(args: argparse.Namespace, *, stdin=None, stdout=None, now: date
     need, the diff is shown and made after a yes (``connect`` does only
     this step). ``off`` switches capture off and leaves the entries,
     which add nothing while it is off; ``remove`` switches it off and
-    takes them out. ``--dry-run`` changes nothing."""
+    takes them out. ``feedback on|off`` turns the ``/tl-feedback`` skill
+    and its reminders on or off and adds or removes the skill file, after
+    showing it and asking; enabling or disabling ``feedback_skill`` does
+    the same. ``--dry-run`` changes nothing."""
     stdin = stdin if stdin is not None else sys.stdin
     stdout = stdout if stdout is not None else sys.stdout
     now = now or datetime.now(timezone.utc)
@@ -3133,10 +3296,17 @@ def _cmd_capture(args: argparse.Namespace, *, stdin=None, stdout=None, now: date
             changes = _capture_metric_changes(action, args.values, current)
         elif action in ("off", "remove"):
             changes["level"] = "off"
+        elif action == "feedback":
+            if len(args.values) != 1 or args.values[0] not in ("on", "off"):
+                raise ValueError("'capture feedback' needs on or off")
+            if args.values[0] == "on":
+                changes["feedback"] = list(current.feedback) + [i for i in _FEEDBACK_ON if i not in current.feedback]
+            else:
+                changes["feedback"] = [i for i in current.feedback if i not in _FEEDBACK_OFF]
         until = _capture_until(args, now)
-        if until is not None and action not in ("off", "remove"):
+        if until is not None and action not in ("off", "remove", "feedback"):
             changes["until"] = until
-        if args.sample is not None and action not in ("off", "remove"):
+        if args.sample is not None and action not in ("off", "remove", "feedback"):
             changes["sample"] = args.sample
     except ValueError as exc:
         stdout.write(f"{exc}\n")
@@ -3147,6 +3317,29 @@ def _cmd_capture(args: argparse.Namespace, *, stdin=None, stdout=None, now: date
     except ConfigError as exc:
         stdout.write(f"{exc}\n")
         return 2
+    original = current
+    if action == "feedback":
+        on = args.values[0] == "on"
+        if preview != current:
+            stdout.write(
+                "Feedback: " + ("the /tl-feedback skill and its status-line reminder on" if on else "off")
+                + (". Nothing is added to Claude's context until you run the skill.\n" if on else ".\n")
+            )
+            if args.dry_run:
+                stdout.write("Dry run: config.toml left unchanged.\n")
+            else:
+                try:
+                    set_capture(config_dir, now=now, **changes)
+                except ConfigError as exc:
+                    stdout.write(f"{exc}\n")
+                    return 2
+                stdout.write("Saved to config.toml.\n")
+        else:
+            stdout.write(f"Feedback is already {'on' if on else 'off'}.\n")
+        _capture_skill_step(
+            on, claude_root=claude_root, dry_run=args.dry_run, assume_yes=args.yes, stdin=stdin, stdout=stdout
+        )
+        return 0
     if preview != current:
         stdout.write(f"Metrics capture: {capture_view.describe(current)} -> {capture_view.describe(preview)}\n")
         if action == "disable":
@@ -3184,6 +3377,15 @@ def _cmd_capture(args: argparse.Namespace, *, stdin=None, stdout=None, now: date
     elif action != "connect":
         stdout.write(f"Metrics capture is already {capture_view.describe(current)}.\n")
 
+    skill_on = "feedback_skill" in preview.feedback
+    if action in ("enable", "disable") and skill_on != ("feedback_skill" in original.feedback):
+        _capture_skill_step(
+            skill_on, claude_root=claude_root, dry_run=args.dry_run, assume_yes=args.yes, stdin=stdin, stdout=stdout
+        )
+    elif action == "connect" and skill_on:
+        _capture_skill_step(
+            True, claude_root=claude_root, dry_run=args.dry_run, assume_yes=args.yes, stdin=stdin, stdout=stdout
+        )
     if action == "off":
         if hook_health.check_capture((), claude_root=claude_root).extra:
             stdout.write(
@@ -3191,6 +3393,11 @@ def _cmd_capture(args: argparse.Namespace, *, stdin=None, stdout=None, now: date
                 "'claude-token-lens capture remove' takes them out.\n"
             )
         return 0
+    if action == "remove" and skill_on:
+        stdout.write(
+            "The /tl-feedback skill stays: it works with capture off. "
+            "'claude-token-lens capture feedback off' removes it.\n"
+        )
     wanted = () if action == "remove" else hook_health.capture_specs(preview.active_metrics())
     if action == "connect" and not preview.is_on:
         stdout.write("Capture is off, so no hook entries are needed. 'claude-token-lens capture on' turns it on.\n")
@@ -3256,6 +3463,19 @@ def _cmd_uninstall(args: argparse.Namespace) -> int:
             print(f"   {RESTART_NOTE}\n")
         else:
             print("   Left unchanged.\n")
+    if plan.feedback_skill is not None:
+        print(f"   The /tl-feedback skill: {footprint.home_label(plan.feedback_skill)}")
+        if dry:
+            print("   Dry run: the skill is left in place.\n")
+        elif _ask("   Remove the skill?", assume_yes=args.yes):
+            try:
+                footprint.remove_feedback_skill(claude_root)
+                print("   Removed.\n")
+            except OSError as exc:
+                problems += 1
+                print(f"   Could not remove it: {exc}\n")
+        else:
+            print("   Left in place.\n")
 
     print("2. Dashboard at logon")
     registered = installer_mod.is_registered()

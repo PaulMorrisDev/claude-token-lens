@@ -101,12 +101,19 @@ drop-and-rebuild-on-version-mismatch policy above makes moot in
 practice: a store opened under an older recorded ``schema_version`` is
 dropped and recreated from scratch before any row like that could
 exist.
+
+Version 6 (metrics capture feedback): a new ``session_feedback`` table
+holds the ratings you give a session on the dashboard's Sessions tab
+(``POST /api/sessions/<id>/feedback``): the same four questions as the
+``/tl-feedback`` skill, as words from ``capture_catalogue.FEEDBACK_VOCAB``
+(``slow`` and ``helped`` comma-joined), never free text. A v5 store gains
+the table in place (``store.MIGRATIONS[5]``).
 """
 
 from __future__ import annotations
 
 #: Bump when a table or index below changes shape. See module docstring.
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 CREATE_META = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -288,6 +295,19 @@ CREATE TABLE IF NOT EXISTS session_tags (
 );
 """
 
+#: Your rating of a session from the Sessions tab (v6): one row per
+#: session, words only (see module docstring).
+CREATE_SESSION_FEEDBACK = """
+CREATE TABLE IF NOT EXISTS session_feedback (
+    session_id TEXT PRIMARY KEY REFERENCES sessions(id),
+    outcome    TEXT,
+    slow       TEXT NOT NULL DEFAULT '',
+    worth      TEXT,
+    helped     TEXT NOT NULL DEFAULT '',
+    set_at     TEXT NOT NULL
+);
+"""
+
 #: Index of *user* profile files on disk (v0.3's ``<config_dir>/
 #: profiles/<id>.toml``, tracked here from v0.2 so the service can
 #: list/diff them). ``toml_path`` is local-store-only (see module
@@ -393,6 +413,7 @@ ALL_STATEMENTS: tuple[str, ...] = (
     CREATE_EVENTS,
     CREATE_COMPACTIONS,
     CREATE_SESSION_TAGS,
+    CREATE_SESSION_FEEDBACK,
     CREATE_PROFILES,
     CREATE_BASELINES,
     CREATE_WORKFLOW_RUNS,
@@ -411,6 +432,7 @@ __all__ = [
     "CREATE_COMPACTIONS",
     "CREATE_SNAPSHOTS",
     "CREATE_SESSION_TAGS",
+    "CREATE_SESSION_FEEDBACK",
     "CREATE_PROFILES",
     "CREATE_BASELINES",
     "CREATE_WORKFLOW_RUNS",

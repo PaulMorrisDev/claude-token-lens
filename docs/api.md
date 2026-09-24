@@ -323,7 +323,13 @@ if `<id>` is unknown.
 
 `data`: the session-summary fields above, plus `transcripts` (list of
 `{"id", "kind", "agent_id", "agent_type", "spawn_depth", "parent_agent_id"}`
-— no `path`) and `tags` (`{key: value}`).
+— no `path`), `tags` (`{key: value}`) and `feedback`: your rating
+from the Sessions tab (`{"outcome", "slow", "worth", "helped",
+"set_at"}`, words only; `null` when unrated). While the dashboard
+rating is switched on (`[capture] feedback` holds `dashboard_rating`),
+`data` also carries `feedback_questions`: the `/tl-feedback` questions
+to rate it with, each `{"key", "question", "multi", "options": [{"word",
+"label"}]}`.
 
 If the session has a stored top-level transcript digest, `data` also
 carries `turn_series` and `markers` (S1-integration fix 1.g), sourced
@@ -857,9 +863,16 @@ one is built in the background.
   `title`, `what`, `why`, `powers`, `tag` (what Claude writes),
   `hooks`, `requires`, `on`, `toggle` (`false` for metrics that are
   always measured), `asks_claude`, `needs_hook` (on, but its hook
-  entry is missing), `estimate` and `actual` (`{usd, text}` a week and
-  since it was turned on), and `answers`/`target`/`enough` (whether
-  enough has been collected for firm suggestions).
+  entry is missing), `needs_install` with `install_note` and
+  `install_command` (the `/tl-feedback` skill is on but its file is
+  missing, out of date or someone else's: the dashboard never writes
+  Claude Code's folder, so it names the CLI command), `statusline_note`
+  (a status-line toggle is on but Claude Code's status line isn't this
+  tool's), `estimate` and `actual` (`{usd, text}` a week, and over
+  `actual_label`: since it was turned on, or the last 14 days for the
+  skill), and `answers`/`target`/`enough` (whether enough has been
+  collected for firm suggestions; for the skill and the dashboard
+  rating, the runs answered and the sessions rated).
 - `measured`: `null` while off; otherwise `since`, `sessions`,
   `subagents`, `notes`, `note_tokens`, `tag_tokens`, the amount and
   share of spend, coverage (`coverage_pct`: the share of messages
@@ -872,9 +885,14 @@ one is built in the background.
   path) and `connect_command`.
 - `billing`: `mode` and `basis` (what the amounts are).
 - `banner`: `on`, `headline`, `notes` (end time passed, hook entries
-  missing, no notes seen, low coverage, enough collected) and
-  `feedback_note`.
-- `commands`: the `status` and `connect` CLI commands.
+  missing, no notes seen, low coverage, enough collected, the skill
+  needs installing) and `feedback_note`.
+- `feedback`: `skill` (`installed`, `outdated`, `foreign`, `missing`,
+  or `null` while the skill is off), `runs` and `answered` (its runs
+  over the last `days` days), `ratings` (sessions rated on the
+  dashboard, `null` while that is off) and `questions` (as in
+  `GET /api/session/<id>`'s `feedback_questions`).
+- `commands`: the `status`, `connect` and `feedback` CLI commands.
 
 `409` with the `claude-token-lens capture status` command in
 `error.commands` when `config.toml` can't be read.
@@ -917,6 +935,26 @@ taking precedence over `sessions.toml`.
 
 `data`: `{"session_id": str, "tags": {key: value}}` (the session's full
 tag set after the write).
+
+### `POST /api/sessions/<id>/feedback`
+
+Your rating of a session: the `/tl-feedback` questions as checkboxes,
+kept in this tool's own store (the `session_feedback` table), so it
+costs no tokens. The Sessions tab shows the form while the dashboard
+rating is switched on; the route itself works either way.
+
+Body: `{"outcome": word|null, "slow": [word], "worth": word|null,
+"helped": [word]}`, any key left out counting as nothing ticked. The
+words are `capture_catalogue.FEEDBACK_VOCAB`'s, never free text:
+`outcome` is `met`, `partly`, `missed` or `stopped`; `slow` any of
+`unclear`, `rework`, `tools`, `none`; `worth` is `yes`, `fair` or
+`no`; `helped` any of `context`, `plan`, `smaller`, `none`. A body
+with nothing ticked clears the rating. `404` if `<id>` is unknown;
+`400` if the body is not a JSON object, has another key, or a word
+isn't one of these (the cross-site checks above run first).
+
+`data`: `{"session_id": str, "feedback": {...} | null}` (as in
+`GET /api/session/<id>`).
 
 ### `POST /api/capture`
 

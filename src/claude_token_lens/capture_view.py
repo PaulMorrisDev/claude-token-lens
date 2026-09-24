@@ -33,6 +33,32 @@ WARNING = (
 
 CONNECT_COMMAND = "claude-token-lens capture connect"
 STATUS_COMMAND = "claude-token-lens capture status"
+FEEDBACK_COMMAND = "claude-token-lens capture feedback on"
+
+#: What to say when the /tl-feedback skill is on but its file isn't right
+#: (``footprint.feedback_skill_state``). The dashboard never writes it:
+#: it lives in Claude Code's own folder.
+SKILL_STATES = {
+    "missing": "The /tl-feedback skill isn't installed",
+    "outdated": "The /tl-feedback skill is out of date",
+    "foreign": "Another skill named tl-feedback is in the way: move it elsewhere first",
+}
+#: The same with the command, for the banner and ``capture status``.
+SKILL_NOTES = {
+    "missing": f"The /tl-feedback skill isn't installed: {FEEDBACK_COMMAND}",
+    "outdated": f"The /tl-feedback skill is out of date: {FEEDBACK_COMMAND}",
+    "foreign": "Another skill named tl-feedback is in the way: move it elsewhere, then run " + FEEDBACK_COMMAND,
+}
+
+#: What to say when a status-line toggle is on but Claude Code's status
+#: line isn't this tool's (``footprint.is_own_statusline``), so the
+#: second line never shows.
+STATUSLINE_NOTES = {
+    "feedback_note": "Your status line isn't Token Lens's, so this second line won't show there; the banner "
+    "here still does. 'claude-token-lens init --connect' offers to set the status line up.",
+    "coaching_line": "Your status line isn't Token Lens's, so this line won't show. "
+    "'claude-token-lens init --connect' offers to set the status line up.",
+}
 
 #: Below this percentage of your messages tagged, once there are
 #: :data:`LOW_COVERAGE_MIN_CYCLES` of them, the banner says Claude is
@@ -216,7 +242,21 @@ def _kind(metric) -> str:
     return metric.group
 
 
-def _metric_row(metric, capture: CaptureConfig, active, past, units, use, signal_sessions, missing_events) -> dict:
+def _feedback_facts(metric_id: str, feedback: dict) -> tuple[dict | None, int | None, int | None]:
+    """``(actual, answers, target)`` for the skill and the dashboard
+    rating, over the last :data:`capture.HISTORY_DAYS` days."""
+    target = capture_mod.ENOUGH["feedback"]
+    if metric_id == "feedback_skill" and feedback.get("use") is not None:
+        use = feedback["use"]
+        return _money(feedback.get("units"), use.feedback_cost), use.feedback_answered, target
+    if metric_id == "dashboard_rating" and feedback.get("ratings") is not None:
+        return None, feedback["ratings"], target
+    return None, None, None
+
+
+def _metric_row(
+    metric, capture: CaptureConfig, active, past, units, use, signal_sessions, missing_events, feedback=None
+) -> dict:
     kind = _kind(metric)
     if kind == "derived":
         on = True
@@ -232,12 +272,20 @@ def _metric_row(metric, capture: CaptureConfig, active, past, units, use, signal
         usd = max(0.0, _marginal(past, active, metric.id, capture.sample)) * 7 / past.days if past.days else 0.0
         estimate = _money(units, usd, "a week")
     actual = None
+    actual_label = "Since it was turned on"
     have = want = None
     if use is not None and on and kind in ("level", "feedback"):
         if asks:
             actual = _money(units, use.by_metric.get(metric.id, 0.0))
         if kind == "level":
             have, want = capture_mod.enough_data(use, metric.id, signal_sessions.get(metric.id, 0))
+    skill = (feedback or {}).get("skill")
+    if on and kind == "feedback" and metric.id in ("feedback_skill", "dashboard_rating"):
+        fb_actual, have, want = _feedback_facts(metric.id, {**(feedback or {}), "units": units})
+        if fb_actual is not None:
+            actual, actual_label = fb_actual, f"Over the last {capture_mod.HISTORY_DAYS} days"
+    needs_install = bool(on and metric.id == "feedback_skill" and skill not in (None, "installed"))
+    no_statusline = bool(on and metric.id in STATUSLINE_NOTES and (feedback or {}).get("statusline") is False)
     return {
         "id": metric.id,
         "kind": kind,
@@ -254,8 +302,13 @@ def _metric_row(metric, capture: CaptureConfig, active, past, units, use, signal
         "toggle": kind != "derived",
         "asks_claude": asks,
         "needs_hook": bool(on and kind != "derived" and set(metric.hooks) & missing_events),
+        "needs_install": needs_install,
+        "install_note": SKILL_STATES.get(skill) if needs_install else None,
+        "install_command": FEEDBACK_COMMAND if needs_install else None,
+        "statusline_note": STATUSLINE_NOTES[metric.id] if no_statusline else None,
         "estimate": estimate,
         "actual": actual,
+        "actual_label": actual_label,
         "answers": have,
         "target": want,
         "enough": (have >= want) if have is not None and want else None,
@@ -295,10 +348,13 @@ def _plural(count: int, word: str) -> str:
     return f"{count} {word}{'' if count == 1 else 's'}"
 
 
-def _banner(capture, config, levels, measured, use, rows, hooks, started_since) -> dict:
+def _banner(capture, config, levels, measured, use, rows, hooks, started_since, skill=None) -> dict:
     """The banner's lines: a headline, then any notes worth acting on."""
     notes: list[str] = []
     feedback_note = catalogue.FEEDBACK_NOTE if "feedback_note" in capture.feedback else None
+    skill_row = next((r for r in rows if r["id"] == "feedback_skill"), None)
+    if skill_row is not None and skill_row["needs_install"] and skill in SKILL_NOTES:
+        notes.append(SKILL_NOTES[skill])
     if not capture.is_on:
         essentials = next((lv for lv in levels if lv["id"] == "essentials"), None)
         est = essentials["estimate"] if essentials else None
@@ -309,7 +365,7 @@ def _banner(capture, config, levels, measured, use, rows, hooks, started_since) 
                 "Metrics capture is off. At Essentials it would have cost about "
                 f"{est['tokens_text']} tokens and {est['text']}{share}, for suggestions that fit how you work."
             )
-        return {"on": False, "headline": invite, "notes": [], "feedback_note": feedback_note}
+        return {"on": False, "headline": invite, "notes": notes, "feedback_note": feedback_note}
 
     parts = [f"Metrics capture: {config['title']}"]
     if capture.enabled_at:
@@ -371,6 +427,10 @@ def view(
     hooks=None,
     signal_sessions: dict[str, int] | None = None,
     started_since: int = 0,
+    feedback_use=None,
+    skill: str | None = None,
+    ratings: int | None = None,
+    statusline: bool | None = None,
     now: datetime | None = None,
 ) -> dict:
     """Everything the Capture tab and the banner show.
@@ -382,6 +442,12 @@ def view(
     metrics on; ``signal_sessions`` maps each free signal's metric id to
     the sessions that logged it since capture was turned on;
     ``started_since`` is how many sessions started since then.
+    ``feedback_use`` is ``capture.feedback_usage`` over the last
+    :data:`capture.HISTORY_DAYS` days, ``skill`` the
+    ``footprint.feedback_skill_state`` of the /tl-feedback skill and
+    ``ratings`` how many sessions you rated on the dashboard (each only
+    while its toggle is on). ``statusline`` is whether Claude Code's
+    status line is this tool's (``None`` when not checked).
     """
     signal_sessions = signal_sessions or {}
     config = config_block(capture, now)
@@ -389,8 +455,10 @@ def view(
     missing_events = set(hooks_data["missing_events"])
     active = capture.active_metrics()
     levels = _levels(capture, past, units)
+    feedback = {"use": feedback_use, "skill": skill, "ratings": ratings, "statusline": statusline}
     rows = [
-        _metric_row(m, capture, active, past, units, use, signal_sessions, missing_events) for m in catalogue.METRICS
+        _metric_row(m, capture, active, past, units, use, signal_sessions, missing_events, feedback)
+        for m in catalogue.METRICS
     ]
     sections = [
         {"id": section, "title": title, "metrics": [r for r in rows if r["section"] == section]}
@@ -415,8 +483,24 @@ def view(
             "mode": units.billing_mode if units is not None else "",
             "basis": units.basis() if units is not None else "",
         },
-        "banner": _banner(capture, config, levels, measured, use, rows, hooks_data, started_since),
-        "commands": {"status": STATUS_COMMAND, "connect": CONNECT_COMMAND},
+        "banner": _banner(capture, config, levels, measured, use, rows, hooks_data, started_since, skill),
+        "feedback": {
+            "skill": skill,
+            "runs": feedback_use.feedback_runs if feedback_use is not None else None,
+            "answered": feedback_use.feedback_answered if feedback_use is not None else None,
+            "ratings": ratings,
+            "days": capture_mod.HISTORY_DAYS,
+            "questions": [
+                {
+                    "key": q.key,
+                    "question": q.question,
+                    "multi": q.multi,
+                    "options": [{"word": word, "label": label} for word, label, _text in q.options],
+                }
+                for q in catalogue.FEEDBACK_QUESTIONS
+            ],
+        },
+        "commands": {"status": STATUS_COMMAND, "connect": CONNECT_COMMAND, "feedback": FEEDBACK_COMMAND},
     }
 
 
@@ -460,6 +544,10 @@ def change_commands(before: CaptureConfig, changes: dict) -> list[str]:
 
 __all__ = [
     "CONNECT_COMMAND",
+    "FEEDBACK_COMMAND",
+    "SKILL_NOTES",
+    "SKILL_STATES",
+    "STATUSLINE_NOTES",
     "STATUS_COMMAND",
     "WARNING",
     "amount_text",

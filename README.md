@@ -847,6 +847,14 @@ desktop app or an IDE never run it, so usage-limit readings come only
 from terminal sessions (the Data quality tab says when none are
 arriving). Like the hook, it adds no tokens to the conversation.
 
+With metrics capture's status-line items switched on (`[capture]`
+`feedback = ["feedback_note"]` or `coaching = ["coaching_line"]`, from
+the Capture tab or `claude-token-lens capture enable`), it prints a
+second line: a live hint when one applies (a large context at the end
+of a turn, a large last tool output, many reads in one message, or a
+warm cache about to go cold), else the reminder to run `/tl-feedback`.
+The first line doesn't change.
+
 On every status-line refresh, Claude Code writes a JSON payload to this
 script's stdin; the statusline reads `context_window.used_tokens` (a
 compact `ctx NNk` figure), `prompt_cache` (real cache ground truth — see

@@ -11,6 +11,10 @@ Two places carry them:
   -- is never counted.
 - **The start of a brief.** ``[retry: brief]`` and ``[spawn: isolate]``
   open the brief handed to an agent, in either order.
+- **Your feedback.** ``/tl-feedback`` ends with ``[tl-fb: outcome=met
+  slow=none ...]`` on a line of its own, followed by a thank-you line.
+  The answers to its AskUserQuestion call are read too, by matching the
+  labels you ticked, for when the line is missing.
 
 Every value is checked against the closed vocabularies in
 ``capture_catalogue``; unknown keys and words are dropped, so nothing
@@ -25,6 +29,10 @@ import re
 from collections.abc import Collection
 
 from .capture_catalogue import (
+    FEEDBACK_LIST_KEYS,
+    FEEDBACK_QUESTIONS,
+    FEEDBACK_TAG,
+    FEEDBACK_VOCAB,
     LIST_KEYS,
     RESULT_WORDS,
     RETRY_REASONS,
@@ -32,7 +40,7 @@ from .capture_catalogue import (
     SPAWN_REASONS,
     TAG_VOCAB,
 )
-from .model import CaptureTag
+from .model import CaptureTag, Feedback
 
 #: How much of a reply's end is searched for tags. A full Deep ``[tl:]`` tag
 #: is about 220 characters; a ``[result:]`` tag can sit next to it.
@@ -59,6 +67,21 @@ _NOTE_RE = re.compile(r"tl-cap v(\d{1,3})(?: ([a-z_,]{0,400}))?")
 _CODE_RE = re.compile(r"^[a-z_]{1,24}$")
 
 _VOCAB_SETS = {key: frozenset(words) for key, words in TAG_VOCAB.items()}
+
+#: ``[tl-fb: ...]`` on a line of its own, optionally in backticks or
+#: emphasis. Unlike the reply tags it needn't end the reply: the skill
+#: writes a thank-you line after it.
+_FEEDBACK_TAG_RE = re.compile(
+    r"^[ \t`*_]*\[" + re.escape(FEEDBACK_TAG) + r":([^\[\]\n]{0,200})\][`*_.]*[ \t]*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+_FEEDBACK_SETS = {key: frozenset(words) for key, words in FEEDBACK_VOCAB.items()}
+#: AskUserQuestion header -> the question, and its labels -> words.
+_FEEDBACK_BY_HEADER = {q.header: q for q in FEEDBACK_QUESTIONS}
+_FEEDBACK_LABELS = {q.key: {label: word for word, label, _ in q.options} for q in FEEDBACK_QUESTIONS}
+
+#: The AskUserQuestion headers /tl-feedback asks with.
+FEEDBACK_HEADERS = frozenset(_FEEDBACK_BY_HEADER)
 
 
 def _apply_word(values: dict, key: str, value: str, skill_names: Collection[str]) -> None:
@@ -121,6 +144,78 @@ def parse_reply_tags(text: str, skill_names: Collection[str] = ()) -> tuple[Capt
         return None, None
     tag = CaptureTag(has_tl=has_tl, chars=len(match.group(0).rstrip()), **values)
     return tag, result_word
+
+
+def _feedback(values: dict, source: str) -> Feedback:
+    """A :class:`Feedback` from ``values``; "skipped" when nothing usable
+    was answered."""
+    return Feedback(source=source, **values) if values else Feedback(source="skipped")
+
+
+def parse_feedback_tag(text: str) -> Feedback | None:
+    """The ``[tl-fb: ...]`` line in the end of ``text`` (the last one when
+    there are several), or ``None`` without one. Unknown keys and words
+    are dropped."""
+    if not text or FEEDBACK_TAG not in text.lower():
+        return None
+    matches = _FEEDBACK_TAG_RE.findall(text[-TAIL_SCAN_CHARS:])
+    if not matches:
+        return None
+    values: dict = {}
+    for word in matches[-1].split():
+        key, sep, value = word.partition("=")
+        key = key.lower()
+        vocab = _FEEDBACK_SETS.get(key)
+        if not sep or vocab is None:
+            continue
+        words = tuple(dict.fromkeys(w for w in value.strip("`*_.;").lower().split(",") if w in vocab))
+        if words:
+            values[key] = words if key in FEEDBACK_LIST_KEYS else words[0]
+    return _feedback(values, "tag")
+
+
+def feedback_from_answers(result) -> Feedback | None:
+    """/tl-feedback's answers from an AskUserQuestion ``toolUseResult``
+    (``{"questions": [...], "answers": {question text: answer}}``), or
+    ``None`` when it asked none of the feedback questions. An answer is
+    a label, a list of labels, or labels joined with commas; anything that
+    isn't one of the question's labels (a free-text "Other") is dropped."""
+    if not isinstance(result, dict):
+        return None
+    questions, answers = result.get("questions"), result.get("answers")
+    if not isinstance(questions, list) or not isinstance(answers, dict):
+        return None
+    asked = False
+    values: dict = {}
+    for question in questions:
+        if not isinstance(question, dict):
+            continue
+        spec = _FEEDBACK_BY_HEADER.get(question.get("header"))
+        text = question.get("question")
+        if spec is None or not isinstance(text, str):
+            continue
+        asked = True
+        answer = answers.get(text)
+        labels = _FEEDBACK_LABELS[spec.key]
+        if isinstance(answer, str):
+            picked = [answer] if answer in labels else [part.strip() for part in answer.split(",")]
+        elif isinstance(answer, list):
+            picked = [part for part in answer if isinstance(part, str)]
+        else:
+            continue
+        words = tuple(dict.fromkeys(labels[label] for label in picked if label in labels))
+        if words:
+            values[spec.key] = words if spec.multi else words[0]
+    return _feedback(values, "answers") if asked else None
+
+
+def asks_for_feedback(tool_input) -> bool:
+    """Whether an AskUserQuestion call's input asks /tl-feedback's
+    questions."""
+    questions = tool_input.get("questions") if isinstance(tool_input, dict) else None
+    return isinstance(questions, list) and any(
+        isinstance(q, dict) and q.get("header") in FEEDBACK_HEADERS for q in questions
+    )
 
 
 def parse_brief_markers(text: str) -> tuple[str | None, str | None]:

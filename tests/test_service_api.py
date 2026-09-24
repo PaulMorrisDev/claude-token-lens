@@ -2014,3 +2014,93 @@ def test_capture_replays_history_again_once_the_first_scan_finishes(tmp_path, mo
     finally:
         handle.close()
         handle.store.close()
+
+
+# -- metrics capture feedback: the Sessions tab rating ------------------------
+
+
+def _feedback_on(server, *ids):
+    resp, _payload = server.post_json("/api/capture", {"feedback": list(ids)})
+    assert resp.status == 200
+
+
+def test_session_detail_offers_the_rating_questions_only_while_it_is_on(server):
+    resp, payload = server.get_json(f"/api/session/{server.session_id}")
+    assert "feedback_questions" not in payload["data"] and payload["data"]["feedback"] is None
+    _feedback_on(server, "dashboard_rating")
+    resp, payload = server.get_json(f"/api/session/{server.session_id}")
+    questions = payload["data"]["feedback_questions"]
+    assert [q["key"] for q in questions] == ["outcome", "slow", "worth", "helped"]
+    assert questions[1]["multi"] is True and {"word": "none", "label": "Nothing"} in questions[1]["options"]
+
+
+def test_rating_a_session_saves_words_and_an_empty_rating_clears_it(server):
+    url = f"/api/sessions/{server.session_id}/feedback"
+    resp, payload = server.post_json(url, {"outcome": "met", "slow": ["tools", "tools"], "worth": "fair", "helped": []})
+    assert resp.status == 200
+    saved = payload["data"]["feedback"]
+    assert saved["outcome"] == "met" and saved["slow"] == ["tools"] and saved["worth"] == "fair"
+    resp, payload = server.get_json(f"/api/session/{server.session_id}")
+    assert payload["data"]["feedback"]["slow"] == ["tools"]
+    resp, payload = server.post_json(url, {"outcome": None, "slow": [], "worth": None, "helped": []})
+    assert resp.status == 200 and payload["data"]["feedback"] is None
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        [],
+        {"mood": "great"},
+        {"outcome": "brilliant"},
+        {"outcome": ["met"]},
+        {"slow": "tools"},
+        {"slow": ["tools", "my boss"]},
+        {"worth": 5},
+    ],
+)
+def test_rating_refuses_anything_but_known_words(server, body):
+    resp, payload = server.post_json(f"/api/sessions/{server.session_id}/feedback", body)
+    assert resp.status == 400 and payload["error"]["code"] == "bad_request"
+    assert server.store.feedback(server.session_id) is None
+
+
+def test_rating_an_unknown_session_is_not_found(server):
+    resp, payload = server.post_json("/api/sessions/does-not-exist/feedback", {"outcome": "met"})
+    assert resp.status == 404
+
+
+def test_rating_refuses_cross_site_posts(server):
+    resp, _raw = server.request(
+        "POST", f"/api/sessions/{server.session_id}/feedback", body={"outcome": "met"},
+        headers={"Origin": "https://evil.example"},
+    )
+    assert resp.status == 403
+    assert server.store.feedback(server.session_id) is None
+
+
+def test_capture_shows_feedback_counts_and_the_skill_install_note(server):
+    import os
+
+    _feedback_on(server, "feedback_skill", "feedback_note", "dashboard_rating")
+    server.post_json(f"/api/sessions/{server.session_id}/feedback", {"outcome": "met"})
+    resp, payload = server.get_json("/api/capture")
+    data = payload["data"]
+    rows = {row["id"]: row for section in data["sections"] for row in section["metrics"]}
+    assert data["feedback"]["skill"] == "missing" and data["feedback"]["ratings"] == 1
+    assert [q["key"] for q in data["feedback"]["questions"]] == ["outcome", "slow", "worth", "helped"]
+    skill = rows["feedback_skill"]
+    assert skill["needs_install"] is True and skill["install_command"] == "claude-token-lens capture feedback on"
+    assert skill["actual_label"] == "Over the last 14 days"
+    assert rows["dashboard_rating"]["answers"] == 1 and rows["dashboard_rating"]["target"] == 10
+    assert skill["install_note"] == "The /tl-feedback skill isn't installed"
+    assert "The /tl-feedback skill isn't installed: claude-token-lens capture feedback on" in data["banner"]["notes"]
+    # No status line of this tool's in the (fake) settings.json.
+    assert rows["feedback_note"]["statusline_note"].startswith("Your status line isn't Token Lens's")
+
+    from claude_token_lens import footprint
+
+    root = os.environ["CLAUDE_CONFIG_DIR"]
+    footprint.write_feedback_skill(root)
+    resp, payload = server.get_json("/api/capture")
+    rows = {row["id"]: row for section in payload["data"]["sections"] for row in section["metrics"]}
+    assert payload["data"]["feedback"]["skill"] == "installed" and rows["feedback_skill"]["needs_install"] is False

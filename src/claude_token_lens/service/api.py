@@ -286,6 +286,7 @@ _PLACEHOLDER_INDEX_HTML = (
 
 _SESSION_ID_RE = re.compile(r"^/api/session/([^/]+)$")
 _SESSION_TAGS_RE = re.compile(r"^/api/sessions/([^/]+)/tags$")
+_SESSION_FEEDBACK_RE = re.compile(r"^/api/sessions/([^/]+)/feedback$")
 _PROFILE_DIFF_RE = re.compile(r"^/api/profiles/([^/]+)/diff$")
 _PROFILE_RE = re.compile(r"^/api/profiles/([^/]+)$")
 _SESSION_EXPLAIN_RE = re.compile(r"^/api/session/([^/]+)/explain$")
@@ -1025,6 +1026,15 @@ def make_handler(
                 seen.setdefault(metric_id, set()).add(signal.session_hash)
         return use, started, {metric_id: len(hashes) for metric_id, hashes in seen.items()}
 
+    def _capture_feedback(config):
+        """``capture.feedback_usage`` over the replayed days: your
+        /tl-feedback runs, whatever the capture level."""
+        from .. import capture as capture_mod
+        from . import rebuild
+
+        corpus = rebuild.corpus_from_store(store, days=capture_mod.HISTORY_DAYS)
+        return capture_mod.feedback_usage(corpus, _capture_rates(config))
+
     def _capture_view(config) -> dict:
         from .. import capture_view
 
@@ -1051,10 +1061,30 @@ def make_handler(
                 lambda: _capture_usage(config, capture.enabled_at),
                 _STALE_REPORT_MAX_AGE_S,
             )
+        feedback_use = skill = ratings = None
+        if "feedback_skill" in capture.feedback:
+            from .. import footprint
+
+            token = store.change_token()
+            feedback_use = _capture_part(
+                "feedback", (token, *soft), soft, lambda: _capture_feedback(config), _STALE_REPORT_MAX_AGE_S
+            )
+            skill = footprint.feedback_skill_state()
+        if "dashboard_rating" in capture.feedback:
+            ratings = store.feedback_count()
+        statusline = None
+        if "feedback_note" in capture.feedback or "coaching_line" in capture.coaching:
+            from .. import footprint
+
+            try:
+                settings = json.loads(hook_health.settings_path().read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                settings = None
+            statusline = footprint.is_own_statusline(settings if isinstance(settings, dict) else None)
         hooks = hook_health.check_capture(hook_health.capture_specs(capture.active_metrics()))
         return capture_view.view(
             capture, past=past, units=units, use=use, hooks=hooks, signal_sessions=signal_sessions,
-            started_since=started,
+            started_since=started, feedback_use=feedback_use, skill=skill, ratings=ratings, statusline=statusline,
         )
 
     def _capture_conflict(message: str, commands: list[str]) -> tuple[int, dict]:
@@ -1219,6 +1249,22 @@ def make_handler(
             # markers for the session-timeline chart, alongside the
             # existing compactions/spawns/human markers above.
             result["limit_markers"] = turns["limit_markers"]
+        # Metrics-capture feedback: the questions to rate it with, while
+        # the dashboard rating is switched on (the Capture tab).
+        try:
+            rating_on = "dashboard_rating" in load_config(options.config_dir).capture.feedback
+        except ConfigError:
+            rating_on = False
+        if rating_on:
+            result["feedback_questions"] = [
+                {
+                    "key": q.key,
+                    "question": q.question,
+                    "multi": q.multi,
+                    "options": [{"word": word, "label": label} for word, label, _text in q.options],
+                }
+                for q in capture_catalogue.FEEDBACK_QUESTIONS
+            ]
         return _ok(result)
 
     def route_recache(store, query, body):
@@ -1361,6 +1407,33 @@ def make_handler(
             return _bad_request("'value' must be a string")
         store.set_tag(session_id, key, value)
         return _ok({"session_id": session_id, "tags": store.tags(session_id)})
+
+    def route_set_feedback(store, query, body):
+        """Your rating of a session (the /tl-feedback questions as
+        checkboxes): words from ``capture_catalogue.FEEDBACK_VOCAB`` only.
+        Nothing ticked clears it."""
+        session_id = query.get("id", "")
+        if store.session(session_id) is None:
+            return _not_found("session not found")
+        if not isinstance(body, dict):
+            return _bad_request("request body must be a JSON object")
+        unknown = sorted(set(body) - set(capture_catalogue.FEEDBACK_VOCAB))
+        if unknown:
+            return _bad_request(f"unknown field {', '.join(unknown)}; known: {', '.join(capture_catalogue.FEEDBACK_VOCAB)}")
+        values: dict = {}
+        for key, words in capture_catalogue.FEEDBACK_VOCAB.items():
+            value = body.get(key)
+            if key in capture_catalogue.FEEDBACK_LIST_KEYS:
+                value = [] if value is None else value
+                if not isinstance(value, list) or any(w not in words for w in value):
+                    return _bad_request(f"'{key}' must be a list of: {', '.join(words)}")
+                values[key] = list(dict.fromkeys(value))
+            else:
+                if value is not None and value not in words:
+                    return _bad_request(f"'{key}' must be one of: {', '.join(words)}, or null")
+                values[key] = value
+        store.set_feedback(session_id, **values)
+        return _ok({"session_id": session_id, "feedback": store.feedback(session_id)})
 
     # -- v0.3 profile routes -----------------------------------------------
 
@@ -2028,6 +2101,7 @@ def make_handler(
     }
     post_patterns: tuple[tuple[re.Pattern, Callable], ...] = (
         (_SESSION_TAGS_RE, route_set_tag),
+        (_SESSION_FEEDBACK_RE, route_set_feedback),
     )
 
     class Handler(BaseHTTPRequestHandler):
