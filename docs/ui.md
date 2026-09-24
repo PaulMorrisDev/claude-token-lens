@@ -217,8 +217,13 @@ what they did", the setup panel and service health.
    draft is a table of candidate changes (setting, now, after,
    estimated effect, why and the trade-off) with the ones your data
    supports already ticked; each tick re-posts the chosen changes to
-   `POST /api/whatif` and updates the running total. Name it and save
-   (`POST /api/profiles`). Then **Your profiles and the built-in
+   `POST /api/whatif` and updates the running total. The goal "A
+   profile for one kind of task" adds a "Kind of task" picker (it
+   reloads the draft with `task=`) and a note on what was found, and
+   names the profile after the task. Name it and save
+   (`POST /api/profiles`). **Best setup for each kind of task** follows:
+   the report's `habits_setups` table (a note and a link to the Capture
+   tab while nothing is tagged). Then **Your profiles and the built-in
    ones**: one card per profile from `/api/profiles` (the
    catalogue's seven shipped profiles plus every user profile): name,
    "Built in" or "Yours", who it is for, and "Changes N settings: ..."
@@ -247,7 +252,10 @@ what they did", the setup panel and service health.
    touched (or the main session) with a collapsed Signal / Before /
    After / Verdict table (agents with too few runs yet share one line),
    and, for an apply, "To undo it:
-   `claude-token-lens apply --revert <backup_ts>`".
+   `claude-token-lens apply --revert <backup_ts>`". A metrics capture
+   change is measured by capture's tokens per session and the share of
+   messages tagged, and its card gives the `capture level <old>` (or
+   `capture off`) command that changes it back.
    "Make your own profile" is a form built from
    `/api/profile-schema`: "Start from" any profile, one field per
    setting (a select for fixed values and on/off, a number box with

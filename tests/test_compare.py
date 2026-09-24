@@ -707,3 +707,65 @@ def test_cli_compare_sample_below_min_sessions_still_exits_0(tmp_path, capsys):
     assert exit_code == 0
     out = capsys.readouterr().out
     assert "no" in out
+
+
+# -- stratifying by the kind of task Claude reported (metrics capture) --------------
+
+
+def _write_tagged(project_dir: Path, session_id: str, day: str, task: str | None) -> None:
+    from helpers import user_str_line
+
+    lines = []
+    for n in range(2):
+        lines.append(user_str_line("go on", origin={"kind": "human"}, timestamp=f"{day}T10:00:{2 * n:02d}.000Z"))
+        text = f"Done.\n[tl: task={task}]" if task else "Done."
+        lines.append(turn_line(content=[{"type": "text", "text": text}], timestamp=f"{day}T10:00:{2 * n + 1:02d}.000Z"))
+    write_jsonl(project_dir / f"{session_id}.jsonl", lines)
+
+
+def _tagged_corpus(tmp_path, tasks):
+    project_dir = tmp_path / "projects" / "proj"
+    project_dir.mkdir(parents=True)
+    for n, task in enumerate(tasks):
+        _write_tagged(project_dir, f"aug-{n}", f"2026-08-{10 + n:02d}", task)
+        _write_tagged(project_dir, f"sep-{n}", f"2026-09-{10 + n:02d}", task)
+    return load_corpus([project_dir])
+
+
+def _compare_tagged(corpus, **kw):
+    return compare_mod.compare(
+        corpus, PRICING, CONFIG,
+        arm_a=compare_mod.parse_arm_spec("window:2026-08-01..2026-08-31"),
+        arm_b=compare_mod.parse_arm_spec("window:2026-09-01..2026-09-30"),
+        min_sessions=1, **kw,
+    )
+
+
+def test_the_reported_task_joins_the_strata_once_half_the_sessions_have_one(tmp_path):
+    stratum = _table(_compare_tagged(_tagged_corpus(tmp_path, ["bugfix", "bugfix", None])), "compare_by_stratum")
+    assert stratum.title == "By stratum (purpose, mode, task)"
+    assert any("task=bugfix" in row[0] for row in stratum.rows)
+    assert any("task=untagged" in row[0] for row in stratum.rows)
+
+
+def test_mostly_untagged_sessions_keep_the_default_strata(tmp_path):
+    stratum = _table(_compare_tagged(_tagged_corpus(tmp_path, ["bugfix", None, None])), "compare_by_stratum")
+    assert stratum.title == "By stratum (purpose, mode)"
+
+
+def test_task_can_be_asked_for_by_name(tmp_path):
+    section = _compare_tagged(_tagged_corpus(tmp_path, ["review", None, None]), stratify_by=("task",))
+    rows = _table(section, "compare_by_stratum").rows
+    assert {row[0] for row in rows} == {"task=review", "task=untagged"}
+
+
+def test_cli_compare_accepts_task_as_a_stratify_key(tmp_path, capsys):
+    root = tmp_path / "projects"
+    _write_cli_project(root, "proj", "s1", "2026-09-01T10:00:00.000Z")
+    exit_code = cli.main([
+        "compare", "--projects-root", str(root), "--project", "proj",
+        "--a", "window:2026-08-01..2026-08-31", "--b", "window:2026-09-01..2026-09-30",
+        "--stratify", "task", "--json",
+    ])
+    assert exit_code == 0
+    assert "(task)" in capsys.readouterr().out

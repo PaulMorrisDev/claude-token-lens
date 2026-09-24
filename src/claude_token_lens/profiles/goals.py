@@ -6,6 +6,11 @@ evidence, the trade-off and a what-if estimate (:mod:`whatif`).
 A change is ticked only when the data supports it; the rest are offered
 unticked, so a goal never quietly makes a quality trade for you (the
 main session's model, for one, is never pre-ticked).
+
+The ``tasks`` goal needs metrics capture: it reads the Work habits
+section's ``habits_setups`` table (the model and effort each kind of
+task Claude reported ran on, and how often it went well) and drafts the
+cheapest setup that went about as well as your usual one.
 """
 
 from __future__ import annotations
@@ -17,7 +22,9 @@ from ..compaction_sim import CompactionSimThresholds
 from ..fixes import LEVER_LABELS, SETTING_TEXT, already_set
 from ..recommend import _NOT_OVERRIDABLE, _SKIPS_CLAUDE_MD
 from ..units import Units
+from . import catalogue
 from .diff import _EFFECTIVE_AGENT_FIELD
+from .schema import _EFFORT_LEVELS
 
 TOP = whatif.TOP
 
@@ -65,6 +72,12 @@ GOALS: tuple[Goal, ...] = (
         "thinking",
         "Less thinking where it isn't needed",
         "A lower effort for the main session or agents that spend a large share of their output thinking.",
+    ),
+    Goal(
+        "tasks",
+        "A profile for one kind of task",
+        "The cheapest model and effort that went about as well as your usual setup, for one kind of task "
+        "Claude reported. Needs metrics capture.",
     ),
     Goal(
         "current",
@@ -260,20 +273,81 @@ def _thinking(draft: _Draft, tables, *, subagents_only: bool) -> None:
 
 
 def _omit_claude_md(draft: _Draft, tables) -> None:
+    # Metrics capture: what each agent type's runs said about CLAUDE.md.
+    said = {row.get("agent_type"): row for row in tables.rows("habits", "habits_agents")}
     for row in tables.rows("agent_startup", "agent_startup_breakdown"):
         tokens = whatif._num(row.get("claude_md")) or 0.0
-        if tokens < 1000 or row.get("agent_type") == TOP:
+        agent = row.get("agent_type")
+        if tokens < 1000 or agent == TOP:
             continue
-        draft.add(
-            "omitClaudeMd",
-            row.get("agent_type"),
-            True,
-            ticked=False,
-            evidence=(
-                f"About {round(tokens):,} CLAUDE.md tokens at each of {int(whatif._num(row.get('spawns')) or 0)} "
-                "spawns. Not ticked: move the rules it needs into its agent file first."
-            ),
+        told = said.get(agent) or {}
+        used = int(whatif._num(told.get("rules_used")) or 0)
+        unused = int(whatif._num(told.get("rules_unused")) or 0)
+        if used > unused:
+            # Most of its runs that said, said they used it.
+            continue
+        evidence = f"About {round(tokens):,} CLAUDE.md tokens at each of {int(whatif._num(row.get('spawns')) or 0)} spawns."
+        if unused:
+            evidence += f" {unused} of the {used + unused} runs that said, said they didn't use it."
+        else:
+            evidence += " Not ticked: move the rules it needs into its agent file first."
+        draft.add("omitClaudeMd", agent, True, ticked=unused > used, evidence=evidence)
+
+
+def _setups_by_task(tables) -> dict[str, list[dict]]:
+    """``habits_setups``' all-levels rows per kind of task, the most-used
+    task first (the table's own order)."""
+    by_task: dict[str, list[dict]] = {}
+    for row in tables.rows("habits", "habits_setups"):
+        if row.get("level") == "all" and row.get("task"):
+            by_task.setdefault(str(row["task"]), []).append(row)
+    return by_task
+
+
+def _setup_text(row: dict) -> str:
+    effort = row.get("effort")
+    return f"{row.get('model')}" + (f" at {effort} effort" if effort and effort != "default" else "")
+
+
+def _tasks(draft: _Draft, tables, task: str | None) -> tuple[list[str], str | None, str]:
+    """The main session's model and effort for ``task`` (or, without
+    one, the first kind of task that has a cheaper setup): the kinds of
+    task there are, the one drafted, and a note."""
+    by_task = _setups_by_task(tables)
+    tasks = list(by_task)
+    if not tasks:
+        return [], None, (
+            "No kind of task has been reported yet. Turn on metrics capture at Essentials or above on the "
+            "Capture tab, then come back after a week or so of work."
         )
+    if task not in by_task:
+        task = next((t for t in tasks if any(r.get("verdict") == "cheaper" for r in by_task[t])), tasks[0])
+    rows = by_task[task]
+    usual = next((r for r in rows if r.get("verdict") == "usual"), rows[0])
+    cheaper = next((r for r in rows if r.get("verdict") == "cheaper"), None)
+    if cheaper is None:
+        note = (
+            f"Your usual setup for {task} work is {_setup_text(usual)}. No cheaper setup went as well over at "
+            f"least {habits.MIN_GROUP} messages yet."
+        )
+    else:
+        evidence = (
+            f"For {task} work, {_setup_text(cheaper)} cost {whatif._num(cheaper.get('saving_pct')) or 0:.0f}% less "
+            f"a message than your usual {_setup_text(usual)}, and went well "
+            f"{whatif._num(cheaper.get('ok_pct')) or 0:.0f}% of the time against "
+            f"{whatif._num(usual.get('ok_pct')) or 0:.0f}% ({int(whatif._num(cheaper.get('cycles')) or 0)} and "
+            f"{int(whatif._num(usual.get('cycles')) or 0)} messages), compared level for level. They still ran on "
+            "different work, so it's a lead, not proof."
+        )
+        if cheaper.get("model") != usual.get("model") and cheaper.get("model") in habits._FAMILIES:
+            draft.add("model", None, cheaper["model"], ticked=False, evidence=evidence)
+        if cheaper.get("effort") != usual.get("effort") and cheaper.get("effort") in _EFFORT_LEVELS:
+            draft.add("effortLevel", None, cheaper["effort"], ticked=True, evidence=evidence)
+        note = f"Save it, then launch Claude with it when you start {task} work."
+    profile_id = catalogue.task_profile(task)
+    if profile_id is not None:
+        note += f" The catalogue profile {profile_id} is also a starting point for this kind of task."
+    return tasks, task, note
 
 
 def draft(
@@ -284,15 +358,24 @@ def draft(
     effective: dict | None = None,
     effective_agents: dict | None = None,
     period: str = "",
+    task: str | None = None,
 ) -> dict:
     """The candidate changes for ``goal_id``, each with its what-if row.
-    Raises ``KeyError`` for an unknown goal."""
+    Raises ``KeyError`` for an unknown goal. ``task``: for the ``tasks``
+    goal, the kind of task to draft for (the first with a cheaper setup
+    when it's missing or not in the data)."""
     goal = next(g for g in GOALS if g.id == goal_id) if goal_id in GOAL_IDS else None
     if goal is None:
         raise KeyError(goal_id)
     tables = whatif._Tables(model)
     d = _Draft(goal, dict(effective or {}), dict(effective_agents or {}), [])
     recommendations = getattr(model, "recommendations", ()) or ()
+    tasks: list[str] = []
+    note = None
+    if goal.id == "tasks":
+        tasks, task, note = _tasks(d, tables, task)
+    else:
+        task = None
     if goal.id == "recommendations":
         _from_recommendations(d, recommendations)
     elif goal.id == "subagents":
@@ -321,6 +404,9 @@ def draft(
         "goal": {"id": goal.id, "title": goal.title, "what": goal.what},
         "period": period,
         "from_current": goal.id == "current",
+        "tasks": tasks,
+        "task": task,
+        "note": note,
         "candidates": d.candidates,
         "profile": {"settings": settings, "agents": agents},
         "whatif": whatif.estimate(settings, agents, model, units, period=period, current=d.effective),

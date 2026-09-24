@@ -2504,7 +2504,7 @@
     if (byName.habits_playbook) renderHabitsPlaybook(byName.habits_playbook, container);
     if (byName.habits_brief_templates) renderBriefTemplates(byName.habits_brief_templates, container);
     var rest = tables.filter(function (table) {
-      return ["habits_digest", "habits_playbook", "habits_brief_templates"].indexOf(table.name) === -1;
+      return ["habits_digest", "habits_playbook", "habits_brief_templates", "habits_setups"].indexOf(table.name) === -1;
     });
     renderPlacedTables(container, rest, state.currency, "habits");
     if (section.notes && section.notes.length) {
@@ -2773,9 +2773,13 @@
 
     var creatorContainer = el("div", { id: "profiles-create" });
     var impactContainer = el("div", { id: "profiles-impact" });
+    var setupsContainer = el("div", { id: "profiles-setups" });
 
     panel.appendChild(el("h3", { text: "Create a profile" }));
     panel.appendChild(creatorContainer);
+    panel.appendChild(el("h3", { text: "Best setup for each kind of task" }));
+    panel.appendChild(setupsContainer);
+    renderTaskSetups(setupsContainer);
     panel.appendChild(el("h3", { text: "Your profiles and the built-in ones" }));
     panel.appendChild(listContainer);
     panel.appendChild(detailContainer);
@@ -3964,11 +3968,53 @@
     });
   }
 
+  function renderTaskSetups(container) {
+    container.appendChild(loadingNode());
+    loadReport().then(function (result) {
+      clear(container);
+      if (result.error) {
+        container.appendChild(errorNotice(result.error));
+        return;
+      }
+      var section = findSection(result.report, "habits");
+      var table = section && (section.tables || []).filter(function (t) {
+        return t.name === "habits_setups";
+      })[0];
+      if (!table || !(table.rows || []).length) {
+        container.appendChild(
+          el("p", { class: "notes" }, [
+            el("span", { text: "Nothing yet: this needs the kind of task Claude reports with metrics capture at Essentials or above. " }),
+            tabLink("capture", "Open the Capture tab"),
+          ])
+        );
+        return;
+      }
+      container.appendChild(el("p", { class: "notes", text: "To make a profile from a cheaper setup, pick \"A profile for one kind of task\" above." }));
+      renderPlacedTables(container, [table], state.currency, "profiles");
+    });
+  }
+
   function renderGoalDraft(draft, container, onSaved) {
     container.appendChild(el("h4", { text: draft.goal.title }));
+    if (draft.tasks && draft.tasks.length > 1) {
+      var taskPick = el("select", { id: "goal-task-pick" });
+      draft.tasks.forEach(function (task) {
+        taskPick.appendChild(el("option", { value: task, text: task, selected: task === draft.task }));
+      });
+      taskPick.addEventListener("change", function () {
+        var url = "/api/profile-goals?goal=" + encodeURIComponent(draft.goal.id) + "&task=" + encodeURIComponent(taskPick.value);
+        loadInto(container, withWindow(url), function (next, box) {
+          renderGoalDraft(next, box, onSaved);
+        });
+      });
+      container.appendChild(el("div", { class: "profile-actions" }, [el("label", { for: "goal-task-pick", text: "Kind of task" }), taskPick]));
+    }
+    if (draft.note) container.appendChild(el("p", { class: "notes", text: draft.note }));
     var candidates = draft.candidates || [];
     if (!candidates.length) {
-      container.appendChild(el("p", { class: "notice", text: "Nothing to change for this goal " + (draft.period || "in this window") + ": your settings already match what the data supports, or there isn't enough data yet." }));
+      if (!draft.note) {
+        container.appendChild(el("p", { class: "notice", text: "Nothing to change for this goal " + (draft.period || "in this window") + ": your settings already match what the data supports, or there isn't enough data yet." }));
+      }
       return;
     }
     container.appendChild(el("p", { class: "notes", text: "Ticked changes are the ones your data supports. Unticked ones are a trade-off for you to decide." }));
@@ -4040,7 +4086,7 @@
     refreshTotal();
 
     var form = el("div", { class: "profile-actions" });
-    var name = el("input", { type: "text", id: "goal-profile-name", value: draft.goal.title });
+    var name = el("input", { type: "text", id: "goal-profile-name", value: draft.task ? draft.task + " tasks" : draft.goal.title });
     form.appendChild(el("label", { for: "goal-profile-name", text: "Name" }));
     form.appendChild(name);
     var save = el("button", { type: "button", text: "Save as a profile" });
@@ -4170,6 +4216,13 @@
       if (change.source === "apply" && change.backup_ts && !change.reverted) {
         card.appendChild(el("p", { class: "notes", text: "To undo it:" }));
         card.appendChild(codeBlockWithCopy("claude-token-lens apply --revert " + change.backup_ts));
+      }
+      var levelChange = change.source === "capture" && (change.changes || []).filter(function (c) {
+        return c.key === "capture.level" && c.old;
+      })[0];
+      if (levelChange) {
+        card.appendChild(el("p", { class: "notes", text: "To change it back, use the Capture tab or:" }));
+        card.appendChild(codeBlockWithCopy(levelChange.old === "off" ? "claude-token-lens capture off" : "claude-token-lens capture level " + levelChange.old));
       }
       container.appendChild(card);
     });

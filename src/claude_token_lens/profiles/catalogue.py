@@ -31,11 +31,12 @@ mapping that would never actually fire for a genuinely overnight corpus.
 
 from __future__ import annotations
 
+from functools import lru_cache
 from pathlib import Path
 
 from .schema import Profile, load_profile
 
-__all__ = ["CATALOGUE_IDS", "list_profiles", "get", "suggest"]
+__all__ = ["CATALOGUE_IDS", "FOR_TASKS", "list_profiles", "get", "suggest", "task_profile", "tasks_for"]
 
 #: Exactly the seven ids the plan names (Milestone v0.3's catalogue
 #: bullet), in the order the plan lists them.
@@ -106,15 +107,75 @@ _ARCHETYPE_DEFAULT: dict[str, str] = {
 #: docstring's deviation note) -- ``suggest`` never returns this.
 UNREACHABLE_BY_SUGGEST: str = "overnight-batch"
 
+#: Each catalogue profile's ``for`` words, normalised to the kinds of
+#: task metrics capture reports (``capture_catalogue.TAG_VOCAB["task"]``).
+#: A word missing here (``fanout``, ``overnight-run``, ...) names a way of
+#: running, not a kind of task.
+FOR_TASKS: dict[str, tuple[str, ...]] = {
+    "implementation": ("feature", "bugfix", "debug"),
+    "refactor": ("refactor",),
+    "test-triage": ("test",),
+    "review": ("review",),
+    "planning": ("plan",),
+    "requirements": ("plan",),
+    "architecture": ("plan",),
+    "data-exploration": ("research",),
+    "web-research": ("research",),
+    "database-exploration": ("research",),
+    "chat": ("chat",),
+    "quick-question": ("chat",),
+    "pairing": ("chat",),
+    "docs": ("docs",),
+}
 
-def suggest(archetype: str | None, purposes: list[str]) -> str:
+#: Purposes the transcript's own structure decides (a local-LLM pipeline,
+#: a workflow run, a fan-out of agents): they win over a reported task,
+#: as they do in ``classify.classify_session``.
+_STRUCTURAL_PURPOSES = ("local-llm-pipeline", "workflow-run", "agent-fanout")
+
+
+def tasks_for(profile: Profile) -> tuple[str, ...]:
+    """The kinds of task ``profile``'s ``for`` words cover, in order."""
+    return tuple(dict.fromkeys(task for word in profile.for_ for task in FOR_TASKS.get(word, ())))
+
+
+@lru_cache(maxsize=1)
+def _task_index() -> dict[str, str]:
+    index: dict[str, str] = {}
+    for profile in list_profiles():
+        for task in tasks_for(profile):
+            index.setdefault(task, profile.id)
+    return index
+
+
+def task_profile(task: str) -> str | None:
+    """The catalogue id whose ``for`` list covers ``task``, or ``None``."""
+    return _task_index().get(task)
+
+
+def suggest(archetype: str | None, purposes: list[str], tasks: list[str] | tuple[str, ...] = ()) -> str:
     """The catalogue id ``id`` (see :data:`CATALOGUE_IDS`) that best
     starts a corpus with workstyle ``archetype`` (one of
     ``schema.ARCHETYPES``, or ``None``/unclassified) whose dominant
     purposes are ``purposes`` (``classify.classify_purpose``'s values,
     most-dominant first). Deterministic: the same ``(archetype,
     purposes)`` pair always returns the same id. Never returns
-    :data:`UNREACHABLE_BY_SUGGEST` -- see the module docstring."""
+    :data:`UNREACHABLE_BY_SUGGEST` -- see the module docstring.
+
+    ``tasks``: the kinds of task metrics capture reported, most-dominant
+    first. A structural purpose anywhere in ``purposes`` still wins;
+    otherwise the first task a catalogue profile's ``for`` list covers
+    (:data:`FOR_TASKS`) comes before the purposes, since Claude reported
+    it rather than it being guessed. Without ``tasks`` the purposes are
+    read in the caller's order, as before."""
+    if tasks:
+        for purpose in purposes:
+            if purpose in _STRUCTURAL_PURPOSES:
+                return _PURPOSE_OVERRIDE[purpose]
+        for task in tasks:
+            profile_id = task_profile(task)
+            if profile_id is not None:
+                return profile_id
     for purpose in purposes:
         if purpose in _PURPOSE_OVERRIDE:
             return _PURPOSE_OVERRIDE[purpose]

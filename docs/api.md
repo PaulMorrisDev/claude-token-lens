@@ -782,12 +782,18 @@ hides every unused skill at once, when there are two or more.
 
 Without `goal`: `{"goals": [{"id", "title", "what"}, ...]}`, the goals a
 profile can start from (`profiles/goals.py`): `recommendations`,
-`subagents`, `models`, `cache`, `compaction`, `thinking` and `current`.
-With `goal=<id>`: that goal's draft. An unknown goal is `400`.
+`subagents`, `models`, `cache`, `compaction`, `thinking`, `tasks` and
+`current`. With `goal=<id>`: that goal's draft. An unknown goal is `400`.
 
-Query: `goal`, plus the windowing params above (used only with `goal`).
+Query: `goal`, `task` (for `tasks`: a kind of task from the capture
+vocabulary, `feature` ... `chat`; any other value is `400`), plus the
+windowing params above (used only with `goal`).
 
-`data` (with `goal`): `{"goal": {"id", "title", "what"}, "period", "from_current", "candidates": [{"key", "agent", "label", "now", "value", "ticked", "evidence", "what", "tradeoff", "note", "estimate"}, ...], "profile": {"settings", "agents"}, "whatif"}`.
+`data` (with `goal`): `{"goal": {"id", "title", "what"}, "period", "from_current", "tasks", "task", "note", "candidates": [{"key", "agent", "label", "now", "value", "ticked", "evidence", "what", "tradeoff", "note", "estimate"}, ...], "profile": {"settings", "agents"}, "whatif"}`.
+For `tasks`: `tasks` lists the kinds of task in the Work habits
+section's `habits_setups` table, `task` is the one drafted (the one
+asked for when it's there, else the first with a cheaper setup) and
+`note` says what was found; other goals return `[]`, `null` and `null`.
 A candidate is ticked only when the data supports it; the main model is
 never pre-ticked. `estimate` is that one change's `POST /api/whatif`
 row; `profile` holds the ticked changes and `whatif` their combined
@@ -805,8 +811,11 @@ Takes no window: each change is compared over its own before and after
 periods, looking back at most `lookback_days`.
 
 `data`: `{"changes": [{"change": {"ts", "source", "label", "keys", "changes", "backup_ts", "reverted"}, "before_sessions", "after_sessions", "enough", "verdict", "measures": [{"label", "before", "after", "before_n", "after_n", "change_pct", "direction"}, ...], "quality": [{"group", "label", "before_runs", "after_runs", "verdict", "judged", "min_runs", "signals": [{"key", "label", "kind", "worse_when", "unit", "before", "after", "before_text", "after_text", "before_counts", "after_counts", "before_runs", "after_runs", "p", "label_key", "verdict"}, ...]}, ...]}, ...], "caveat", "min_sessions", "lookback_days"}`.
-Newest change first, at most ten. `change.source` is `apply`, `revert`
-or `config` (a settings change the hook saw). `enough` is false until each side has
+Newest change first, at most ten. `change.source` is `apply`, `revert`,
+`config` (a settings change the hook saw) or `capture` (a metrics
+capture change from `capture-log.jsonl`, whose keys are `capture.<field>`
+and are measured by capture's own tokens per session and the share of
+messages Claude tagged). `enough` is false until each side has
 `min_sessions` sessions. `before`/`after` are display text in the
 billing mode's units; `direction` is `lower`, `higher`, `same` or
 `null`. For an `apply` that is not yet undone, `backup_ts` is what

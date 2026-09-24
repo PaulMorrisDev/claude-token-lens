@@ -17,8 +17,8 @@ subcommands and the `/api/profiles*`, `/api/profile-schema` and
 
 1. Pick a goal: start from my recommendations, spend less on subagents,
    cheaper models where it's safe, cheaper cache, shorter conversations,
-   less thinking where it isn't needed, or start from my current
-   settings (`profiles/goals.py`).
+   less thinking where it isn't needed, a profile for one kind of task,
+   or start from my current settings (`profiles/goals.py`).
 2. Tick the changes you want. Each row shows the setting, its value now
    and after, the estimated effect over the window, the evidence and the
    trade-off. A change is ticked for you only when your own sessions
@@ -30,6 +30,38 @@ subcommands and the `/api/profiles*`, `/api/profile-schema` and
    change from a recommendation is ticked. The total at the top is a what-if estimate (`whatif.py`),
    updated as you tick.
 3. Name it and save it. It then works like any other profile below.
+
+**A profile for one kind of task** needs metrics capture at Essentials
+or above. It reads the Work habits section's `habits_setups` table: for
+each kind of task Claude reported, the model and effort the main
+session ran on, the cost per message, and how often the work went well
+(your feedback where you gave it, otherwise whether your next message
+redid it). Your usual setup is the one used most. The cheaper setup is
+the cheapest with at least 5 messages that cost less and went well
+within 5 points of your usual one (`habits.SETUP_OK_TOLERANCE`),
+compared level for level on the levels both ran, so a setup that only
+saw easy work isn't credited with being cheap. The
+draft offers its effort ticked and its model unticked, since the main
+session's model is yours to decide, with a picker for the kind of task
+(the first with a cheaper setup is shown first). A kind of task with no
+cheaper setup says what your usual one is. Either way the note names the
+catalogue profile whose `for` list covers that kind of task. The
+setups still ran on different work within a level, so treat the match
+as a lead. Save the
+profile, then launch Claude with it for that kind of work (its detail's
+"Or try it for one session" command).
+
+The same table is on the Profiles tab as **Best setup for each kind of
+task**, all levels together and then by how hard Claude said the work
+was.
+
+**Subagents and CLAUDE.md.** With metrics capture at Standard, each
+subagent run says whether it used your CLAUDE.md. "Spend less on
+subagents" ticks `omitClaudeMd` for an agent type when more of its runs
+said they didn't use it than said they did, cites the count, and leaves
+it out when more said they did. Without those reports it is offered
+unticked, as before. What the runs said about the model only ever holds
+a cheaper model back.
 
 The estimate reads the report's own tables and runs no new simulation:
 
@@ -46,9 +78,10 @@ Any other key says "not estimated" rather than guessing. Changes
 overlap, so a total of several rows is rough. Each profile's detail
 shows the same estimate.
 
-**Your changes and what they did** lists every `apply`, its undo, and
+**Your changes and what they did** lists every `apply`, its undo,
 any settings change the snapshot hook saw between one session start
-and the next (`change_points.py`). A snapshot change that spans an
+and the next, and every change to metrics capture (from
+`capture-log.jsonl`) (`change_points.py`). A snapshot change that spans an
 apply or undo is that same change, not a second one. For each, newest
 first (at most 10), it compares the sessions started before it with
 those started after it (`impact.py`):
@@ -63,8 +96,12 @@ those started after it (`impact.py`):
   model or effort change, summaries per session and largest context
   for `autoCompactWindow`, the share of cache writes that rebuilt
   expired context for a cache lifetime, context at session start for
-  skills, plugins and MCP servers, and cost and start-up context per
-  spawn for a change to one agent. Cost per session always comes last.
+  skills, plugins and MCP servers, cost and start-up context per
+  spawn for a change to one agent, and for a metrics capture change,
+  what capture's notes and tags add per session (in tokens) and the
+  share of your messages Claude tagged. Cost per session always comes
+  last. A capture change's card shows the command that changes its
+  level back.
   A change under 5% reads as "about the same".
 - An apply names its keys from its backup manifest. An apply made
   before manifests recorded keys names them from the difference
@@ -220,7 +257,7 @@ real report table/column rather than an invented number.
 
 | id | `for` | archetype | key settings | justification (report table/column) |
 |---|---|---|---|---|
-| `interactive-chat` | chat, quick-question, pairing | `chat-only` | `effortLevel=medium`, `promptCacheTtl=5m` | `ttl.ttl_by_agent_type`'s top-level `gap_p50_s`/`gap_p90_s`/`recommendation`/`lever` row (chat-only turn gaps rarely clear the 1h TTL break-even); `scorecard.dimensions` (no `cache_efficiency`/`context_hygiene`/`agent_efficiency` evidence to justify a higher tier). |
+| `interactive-chat` | chat, quick-question, pairing, docs | `chat-only` | `effortLevel=medium`, `promptCacheTtl=5m` | `ttl.ttl_by_agent_type`'s top-level `gap_p50_s`/`gap_p90_s`/`recommendation`/`lever` row (chat-only turn gaps rarely clear the 1h TTL break-even); `scorecard.dimensions` (no `cache_efficiency`/`context_hygiene`/`agent_efficiency` evidence to justify a higher tier). |
 | `discovery-scrape` | data-exploration, web-research, database-exploration | `single-model` | `effortLevel=low`, `subagentPromptCacheTtl=5m`, `autoCompactWindow=100000`; `agents.Explore.effort=low`, `agents.Explore."experimental.cacheTtl"=5m` | `classify.classify_purpose`'s `local-llm-pipeline` signature and `phases.phases_summary`'s "discovery" row `cost_share_pct`; `recache.recache_huge_context.share_pct` / `scorecard.dimensions`' context-hygiene p90 proxy for the tightened `autoCompactWindow`. |
 | `planning-requirements` | planning, requirements, architecture | `single-model` | `effortLevel=high`, `promptCacheTtl=1h` | `agents.topology_effort_tokens`'s `thinking_share` column (the deliberate opposite case to the effort-mismatch rule: a planning session's high thinking-token share is doing real work); `sessions.sessions_by_purpose`'s "planning" row for the longer per-turn gap justifying 1h. |
 | `implementation-heavy` | implementation, refactor, test-triage, review | `plan-high-implement-low` | `effortLevel=medium`, `subagentPromptCacheTtl=5m`; `agents.claude-implementer.model=sonnet`, `.effort=medium`, `.maxTurns=60`, `.omitClaudeMd=false`, `."experimental.cacheTtl"=5m` | `agents.topology_spawn_write`'s `mean_write` column (recommend.py's spawn-cost rule threshold — `omitClaudeMd` is left `false` deliberately, since the rule only recommends flipping it once a specific corpus clears the threshold); `ttl.ttl_by_agent_type`'s per-agent-type lever text. |
@@ -234,13 +271,40 @@ for an unrecognised id.
 
 ## `suggest()`: archetype/purpose → catalogue id
 
-`suggest(archetype, purposes) -> str` is the deterministic mapping
-`baseline.py` (behind `init` and `baseline`) calls once it has detected
-a corpus's archetype and dominant purposes
+`suggest(archetype, purposes, tasks=()) -> str` is the deterministic
+mapping `baseline.py` (behind `init` and `baseline`) calls once it has
+detected a corpus's archetype and dominant purposes
 (`classify.classify_purpose`'s values, most-dominant first). A purpose
 is checked first, in the caller's own list order, since it is a more
 specific signal than the bare archetype; the archetype is only a
 fallback.
+
+With metrics capture on, `baseline` also passes the kinds of task
+Claude reported, costliest first (the Work habits section's
+`habits_by_task`). Then a structural purpose (`local-llm-pipeline`,
+`workflow-run`, `agent-fanout`) anywhere in the list still wins, since
+the transcript's own shape decides those; next comes the first task a
+catalogue profile's `for` list covers, and only then the purposes and
+the archetype as below. A task maps to a profile through its `for`
+words (`catalogue.FOR_TASKS`, `catalogue.task_profile`):
+
+| Catalogue `for` word | Reported task |
+|---|---|
+| `implementation` | `feature`, `bugfix`, `debug` |
+| `refactor` | `refactor` |
+| `test-triage` | `test` |
+| `review` | `review` |
+| `planning`, `requirements`, `architecture` | `plan` |
+| `data-exploration`, `web-research`, `database-exploration` | `research` |
+| `chat`, `quick-question`, `pairing` | `chat` |
+| `docs` | `docs` |
+
+So `feature`, `bugfix`, `debug`, `refactor`, `test` and `review` lead to
+`implementation-heavy`, `plan` to `planning-requirements`, `research` to
+`discovery-scrape`, and `chat` and `docs` to `interactive-chat`. `ops`
+has no profile and falls through. The other `for` words (`fanout`,
+`overnight-run`, `workflow-run`, ...) name a way of running rather than
+a kind of task.
 
 **Purpose overrides (checked first, in list order):**
 

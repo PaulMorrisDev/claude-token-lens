@@ -290,9 +290,10 @@ def _add_compare_args(sub: argparse.ArgumentParser) -> None:
     )
     sub.add_argument(
         "--stratify",
-        default="purpose,mode",
+        default=None,
         metavar="KEY,KEY",
-        help="comma-separated stratification keys (purpose, mode; default: purpose,mode)",
+        help="comma-separated stratification keys (purpose, mode, task); default: purpose,mode, plus task "
+        "(the kind of task metrics capture reported) once half of both arms' sessions have one",
     )
     sub.add_argument(
         "--min-sessions",
@@ -1771,11 +1772,14 @@ def _cmd_compare(args: argparse.Namespace) -> int:
         print(f"claude-token-lens compare: {exc}", file=sys.stderr)
         return 2
 
-    stratify_by = tuple(s.strip() for s in args.stratify.split(",") if s.strip())
-    bad_keys = [k for k in stratify_by if k not in ("purpose", "mode")]
+    stratify_by = (
+        None if args.stratify is None else tuple(s.strip() for s in args.stratify.split(",") if s.strip())
+    )
+    bad_keys = [k for k in stratify_by or () if k not in compare_mod.STRATIFY_CHOICES]
     if bad_keys:
         print(
-            f"claude-token-lens compare: bad --stratify key(s) {bad_keys}: expected purpose and/or mode",
+            f"claude-token-lens compare: bad --stratify key(s) {bad_keys}: expected any of "
+            f"{', '.join(compare_mod.STRATIFY_CHOICES)}",
             file=sys.stderr,
         )
         return 2

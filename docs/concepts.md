@@ -204,8 +204,8 @@ size. No text is kept (`context_files.py`).
   change straight away; they hold few sessions, so read them as a quick
   signal, not a verdict.
 - **Since my last change**: starts at the latest change point: an
-  `apply`, its undo, or a settings change the snapshot hook saw
-  (`change_points.py`).
+  `apply`, its undo, a settings change the snapshot hook saw, or a
+  change to metrics capture (`change_points.py`).
 - **What-if estimate** (`whatif.py`): what a change would have saved
   over the window, looked up in the report's own simulations rather
   than computed afresh: the model-swap repricing for a model change, the

@@ -1,6 +1,6 @@
 id = "interactive-chat"
 name = "Interactive chat"
-for = ["chat", "quick-question", "pairing"]
+for = ["chat", "quick-question", "pairing", "docs"]
 archetype = "chat-only"
 notes = """
 For the chat-only archetype (workstyle.detect_archetype: no subagent is \

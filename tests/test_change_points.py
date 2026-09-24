@@ -74,3 +74,39 @@ def test_an_older_apply_without_recorded_changes_names_keys_from_its_backup(tmp_
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     [point] = change_points.change_points(config_dir)
     assert point.keys == ["effortLevel"]
+
+
+# -- metrics capture changes ---------------------------------------------------
+
+
+def test_each_capture_change_is_a_change_point(tmp_path):
+    from datetime import datetime, timezone
+
+    from claude_token_lens import config as config_mod
+
+    config_mod.set_capture(tmp_path, level="essentials", now=datetime(2026, 9, 1, 9, tzinfo=timezone.utc))
+    config_mod.set_capture(tmp_path, level="standard", now=datetime(2026, 9, 8, 9, tzinfo=timezone.utc))
+    config_mod.set_capture(tmp_path, sample=50, now=datetime(2026, 9, 9, 9, tzinfo=timezone.utc))
+    config_mod.set_capture(tmp_path, level="off", now=datetime(2026, 9, 15, 9, tzinfo=timezone.utc))
+    points = change_points.change_points(tmp_path)
+    assert [p.source for p in points] == ["capture"] * 4
+    assert [p.label for p in points] == [
+        "Turned metrics capture on: Essentials",
+        "Metrics capture level: Standard",
+        "Changed metrics capture",
+        "Turned metrics capture off",
+    ]
+    assert points[0].keys == ["capture.level"]
+    assert points[0].changes == [{"key": "capture.level", "agent": None, "old": "off", "new": "essentials"}]
+    assert points[2].keys == ["capture.sample"]
+    assert change_points.latest(tmp_path).label == "Turned metrics capture off"
+
+
+def test_a_broken_capture_log_line_is_skipped(tmp_path):
+    (tmp_path / "capture-log.jsonl").write_text(
+        'not json\n{"ts": "2026-09-01T09:00:00+00:00", "level": "free", "changed": {}}\n'
+        '{"ts": "2026-09-02T09:00:00+00:00", "level": "free", "changed": {"level": {"from": "off", "to": "free"}}}\n',
+        encoding="utf-8",
+    )
+    [point] = change_points.change_points(tmp_path)
+    assert point.label == "Turned metrics capture on: Free"

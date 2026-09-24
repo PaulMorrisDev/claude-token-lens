@@ -245,6 +245,15 @@ def _dominant_purposes(model: ReportModel, limit: int = _DOMINANT_PURPOSES_LIMIT
     return [str(row[0]) for row in table.rows[:limit]]
 
 
+def _dominant_tasks(model: ReportModel, limit: int = _DOMINANT_PURPOSES_LIMIT) -> list[str]:
+    """The kinds of task metrics capture reported, costliest first (the
+    Work habits section's ``habits_by_task``, without its ``all`` row)."""
+    table = _table(model, "habits", "habits_by_task")
+    if table is None:
+        return []
+    return [str(row[0]) for row in table.rows if row and row[0] != "all"][:limit]
+
+
 def _corpus_archetype(model: ReportModel) -> str | None:
     """The corpus's majority workstyle archetype -- "workstyle" section's
     "workstyle_archetypes" table is sorted count-descending, so row 0 is
@@ -290,7 +299,7 @@ def _projected_saving_usd(model: ReportModel) -> float:
 
 
 def _suggested_profile(
-    mode_mix: dict[str, int], archetype: str | None, purposes: list[str]
+    mode_mix: dict[str, int], archetype: str | None, purposes: list[str], tasks: list[str] | None = None
 ) -> tuple[str, str]:
     """The catalogue profile id to suggest, and a one-line reason citing
     the evidence -- see module docstring's first deviation note for why
@@ -307,10 +316,11 @@ def _suggested_profile(
             "UNREACHABLE_BY_SUGGEST), so this override is applied directly from the "
             "corpus's own sessions_by_mode table.",
         )
-    profile_id = catalogue.suggest(archetype, purposes)
+    profile_id = catalogue.suggest(archetype, purposes, tasks or ())
     return (
         profile_id,
-        f"catalogue.suggest(archetype={archetype!r}, purposes={purposes!r})",
+        f"catalogue.suggest(archetype={archetype!r}, purposes={purposes!r}"
+        + (f", tasks={tasks!r})" if tasks else ")"),
     )
 
 
@@ -420,7 +430,7 @@ def build_baseline(
     purposes = _dominant_purposes(model)
     archetype = _corpus_archetype(model)
     scorecard = _scorecard_overall(model)
-    profile_id, profile_reason = _suggested_profile(mode_mix, archetype, purposes)
+    profile_id, profile_reason = _suggested_profile(mode_mix, archetype, purposes, _dominant_tasks(model))
 
     # v0.3 Task 2: metrics report.py's own baseline_comparison section
     # will later diff a fresh window against -- see module docstring's

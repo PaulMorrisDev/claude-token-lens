@@ -404,7 +404,8 @@ def _named_window_since(name: str, config_dir: Path | None, now: datetime | None
         if point is None:
             return None, (
                 "No change recorded yet. This window starts at your latest `apply` (a profile or a "
-                "one-off change), its undo, or a settings change the config hook saw."
+                "one-off change), its undo, a settings change the config hook saw, or a change to metrics "
+                "capture."
             )
         start = point.ts
     else:
@@ -1866,6 +1867,11 @@ def make_handler(
         window, err = _window_query(query)
         if err is not None:
             return err
+        task = query.get("task") or None
+        if task is not None and task not in capture_catalogue.TAG_VOCAB["task"]:
+            return _bad_request(
+                f"unknown task {task!r}; expected one of: {', '.join(capture_catalogue.TAG_VOCAB['task'])}"
+            )
         model = _get_report_model(*window)
         effective, effective_agents = _current_settings()
         return _ok(
@@ -1876,6 +1882,7 @@ def make_handler(
                 effective=effective,
                 effective_agents=effective_agents,
                 period=_period_text(*window, name=query.get("window")),
+                task=task,
             )
         )
 
@@ -1963,8 +1970,8 @@ def make_handler(
     impact_cache: dict = {"key": None, "data": None, "started": 0.0, "as_of": None, "building": False}
 
     def route_impact(store, query, body):
-        """Each change you made (an apply, its undo, or a settings change
-        the config hook saw) with the sessions before it against those
+        """Each change you made (an apply, its undo, a settings change the
+        config hook saw, or a metrics capture change) with the sessions before it against those
         after it, on the measures that change should move. Cached like
         the report (see _get_report_model): a store change serves the
         kept answer and refreshes it in the background, while a new

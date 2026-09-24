@@ -143,6 +143,7 @@ PLACEMENT: dict[str, str] = {
     "habits_brief_templates": "keep",
     "habits_agents": "keep",
     "habits_effort_fit": "keep",
+    "habits_setups": "keep",
     "habits_outcomes": "keep",
     "habits_prompt_flags": "advanced",
     "habits_skills": "advanced",
@@ -837,6 +838,40 @@ TABLE_COPY: dict[str, TableCopy] = {
                 ("max", "max effort"),
                 ("default", "default effort"),
             )
+        },
+    ),
+    "habits_setups": TableCopy(
+        title="Best setup for each kind of task",
+        help=Help(
+            shows="Each kind of task Claude reported, all together and by how hard it said the work was, with "
+            "the model and effort that answered it: what a message cost and how often the work went well.",
+            read="Went well is your feedback where you gave it, otherwise whether your next message redid the "
+            "work. The cheaper setup cost less per message and went well about as often as your usual one, over "
+            "at least 5 messages each, compared level for level on the work both ran, so easy work alone doesn't "
+            "make a setup look cheap. It's still a lead, not proof.",
+            act="On the Profiles tab, start from the goal A profile for one kind of task, save it, and launch "
+            "Claude with it for that kind of work.",
+        ),
+        columns={
+            "task": ("Task", "The kind of task Claude reported."),
+            "level": ("How hard", "How hard Claude said the work was. All is every level together."),
+            "model": ("Model", "The model most of the work ran on."),
+            "effort": ("Effort", "The effort it ran at."),
+            "cycles": ("Messages", "Messages with this setup."),
+            "avg_cost": ("Per message", "The average cost of the work."),
+            "ok_pct": ("Went well", "Met its goal by your feedback, or not redone by your next message."),
+            "rated": ("With your feedback", "Messages your feedback covers."),
+            "verdict": ("Setup", "Your usual setup, and the cheaper one that did as well."),
+            "saving_pct": ("Cheaper by", "Per message, against your usual setup, level for level."),
+        },
+        value_labels={
+            "all": "All",
+            "easy": "Easy",
+            "normal": "Normal",
+            "hard": "Hard",
+            "default": "Default",
+            "usual": "Your usual",
+            "cheaper": "Cheaper, did as well",
         },
     ),
     "habits_outcomes": TableCopy(

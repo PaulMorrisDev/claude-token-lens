@@ -1774,6 +1774,10 @@ def test_profile_goals_lists_goals_and_drafts_one(server):
     assert set(data) >= {"candidates", "profile", "whatif"}
     resp, payload = server.get_json("/api/profile-goals?goal=nope")
     assert resp.status == 400
+    resp, payload = server.get_json("/api/profile-goals?goal=tasks&task=bugfix")
+    assert resp.status == 200 and set(payload["data"]) >= {"tasks", "task", "note"}
+    resp, payload = server.get_json("/api/profile-goals?goal=tasks&task=not-a-task")
+    assert resp.status == 400 and "unknown task" in payload["error"]["message"]
 
 
 def test_whatif_estimates_and_validates(server):

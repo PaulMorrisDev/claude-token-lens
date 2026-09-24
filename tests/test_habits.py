@@ -223,6 +223,7 @@ def test_every_table_is_there_even_with_nothing_to_show():
         "habits_brief_templates",
         "habits_agents",
         "habits_effort_fit",
+        "habits_setups",
         "habits_outcomes",
         "habits_prompt_flags",
         "habits_skills",
@@ -364,3 +365,98 @@ def test_the_capture_section_says_what_capture_cost_and_since_when(tmp_path, pri
     assert section.key == "capture"
     off = dict(habits.capture_section(NS(sessions=[]), pricing, NS(level="off", enabled_at="")).tables[0].rows)
     assert off["level"] == catalogue.LEVEL_TITLES["off"] and off["since"] == ""
+
+
+# -- the best setup per kind of task -----------------------------------------------
+
+
+def _setup_cycles(n, *, model, effort, cost, task="bugfix", level="normal", redone=0, outcome=None):
+    tag = CaptureTag(task=task, level=level)
+    return [
+        _cycle(tag=tag, cost=cost, model=model, effort=effort, redone=i < redone, outcome=outcome)
+        for i in range(n)
+    ]
+
+
+@pytest.mark.parametrize(
+    "model_id, name",
+    [("claude-haiku-4-5-20251001", "haiku"), ("claude-sonnet-5", "sonnet"), ("claude-opus-5-5", "opus"),
+     ("claude-fable-5-1", "fable"), ("claude-widget-9", "claude-widget-9"), (None, "unknown")],
+)
+def test_family_names_the_model_family(model_id, name):
+    assert habits.family(model_id) == name
+
+
+def test_feedback_decides_went_well_before_the_next_message_does():
+    assert habits.went_well(_cycle(outcome="met", redone=True))
+    assert not habits.went_well(_cycle(outcome="missed"))
+    assert habits.went_well(_cycle()) and not habits.went_well(_cycle(redone=True))
+
+
+def test_the_cheapest_setup_that_went_as_well_as_your_usual_one_is_named():
+    h = Habits(cycles=[
+        *_setup_cycles(8, model="claude-opus-5-5", effort="high", cost=2.0, redone=1),
+        *_setup_cycles(6, model="claude-sonnet-5", effort="medium", cost=0.5, redone=1),
+        # Cheaper still, but redone too often.
+        *_setup_cycles(5, model="claude-haiku-4-5-20251001", effort="low", cost=0.1, redone=3),
+    ])
+    rows = [r for r in _rows(_table(habits.section_from(h), "habits_setups")) if r["level"] == "all"]
+    by_setup = {(r["model"], r["effort"]): r for r in rows}
+    usual = by_setup[("opus", "high")]
+    cheaper = by_setup[("sonnet", "medium")]
+    assert usual["verdict"] == "usual" and usual["cycles"] == 8 and usual["ok_pct"] == pytest.approx(87.5)
+    assert cheaper["verdict"] == "cheaper" and cheaper["saving_pct"] == pytest.approx(75.0)
+    assert by_setup[("haiku", "low")]["verdict"] == "" and by_setup[("haiku", "low")]["saving_pct"] is None
+    # The levels Claude reported get rows of their own, after all of them.
+    assert {r["level"] for r in _rows(_table(habits.section_from(h), "habits_setups"))} == {"all", "normal"}
+
+
+def test_a_setup_within_the_tolerance_still_counts_as_doing_as_well():
+    h = Habits(cycles=[
+        *_setup_cycles(22, model="claude-opus-5-5", effort="high", cost=2.0),
+        *_setup_cycles(20, model="claude-sonnet-5", effort="high", cost=1.0, redone=1),
+    ])
+    rows = {r["model"]: r for r in _rows(_table(habits.section_from(h), "habits_setups")) if r["level"] == "all"}
+    assert rows["sonnet"]["ok_pct"] == pytest.approx(95.0)
+    assert rows["sonnet"]["verdict"] == "cheaper"
+
+
+def test_too_few_messages_on_either_side_name_no_cheaper_setup():
+    few_usual = Habits(cycles=[
+        *_setup_cycles(habits.MIN_GROUP - 1, model="claude-opus-5-5", effort="high", cost=2.0),
+        *_setup_cycles(habits.MIN_GROUP - 2, model="claude-sonnet-5", effort="high", cost=1.0),
+    ])
+    few_cheaper = Habits(cycles=[
+        *_setup_cycles(10, model="claude-opus-5-5", effort="high", cost=2.0),
+        *_setup_cycles(habits.MIN_GROUP - 1, model="claude-sonnet-5", effort="high", cost=1.0),
+    ])
+    for h in (few_usual, few_cheaper):
+        verdicts = [r["verdict"] for r in _rows(_table(habits.section_from(h), "habits_setups"))]
+        assert "cheaper" not in verdicts and "usual" in verdicts
+
+
+def test_untagged_messages_have_no_setup_rows():
+    h = Habits(cycles=[_cycle(model="claude-opus-5-5", effort="high") for _ in range(10)])
+    assert _table(habits.section_from(h), "habits_setups").rows == []
+
+
+def test_a_setup_that_only_saw_easy_work_is_compared_on_easy_work():
+    h = Habits(cycles=[
+        *_setup_cycles(6, model="claude-opus-5-5", effort="high", cost=1.0, level="easy"),
+        *_setup_cycles(6, model="claude-opus-5-5", effort="high", cost=3.0, level="hard"),
+        *_setup_cycles(6, model="claude-sonnet-5", effort="high", cost=0.8, level="easy"),
+    ])
+    rows = {r["model"]: r for r in _rows(_table(habits.section_from(h), "habits_setups")) if r["level"] == "all"}
+    # Raw, sonnet looks 60% cheaper; on the easy work both ran it is 20%.
+    assert rows["sonnet"]["avg_cost"] == pytest.approx(0.8) and rows["opus"]["avg_cost"] == pytest.approx(2.0)
+    assert rows["sonnet"]["verdict"] == "cheaper" and rows["sonnet"]["saving_pct"] == pytest.approx(20.0)
+
+
+def test_too_little_shared_work_gives_no_verdict():
+    h = Habits(cycles=[
+        *_setup_cycles(2, model="claude-opus-5-5", effort="high", cost=1.0, level="easy"),
+        *_setup_cycles(10, model="claude-opus-5-5", effort="high", cost=3.0, level="hard"),
+        *_setup_cycles(6, model="claude-sonnet-5", effort="high", cost=0.8, level="easy"),
+    ])
+    rows = {r["model"]: r for r in _rows(_table(habits.section_from(h), "habits_setups")) if r["level"] == "all"}
+    assert rows["sonnet"]["verdict"] == ""

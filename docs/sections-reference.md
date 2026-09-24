@@ -650,6 +650,20 @@ capture is off or no feedback has been given.
   goal, and for easy work at high effort or above, what lower effort
   would save (half the thinking, or a quarter of the output without
   thinking).
+- `habits_setups` — per kind of task Claude reported, all levels
+  together and then by how hard it said the work was (`all`, `easy`,
+  `normal`, `hard`): each model family and effort the main session ran
+  on, messages, per message, the share that went well (your feedback's
+  `met` where you gave it, otherwise not redone by your next message),
+  the messages your feedback covers, and the verdict: `usual` (the most
+  used) and `cheaper` (the cheapest with at least 5 messages that cost
+  less and went well within 5 points of the usual one), with how much
+  cheaper per message. On the `all` rows the two are compared level for
+  level on the levels both ran, weighted by the usual setup's mix
+  (`habits._like_for_like`), and only when those levels hold at least
+  half the usual setup's messages; the per-message and went-well
+  columns stay as measured. Shown on the Profiles tab; the `tasks` profile
+  goal drafts from its `all` rows.
 - `habits_outcomes` — per outcome you gave (`met`, `partly`, `missed`,
   ...): pieces of work, messages, cost, per piece, the most common kind
   of task, what slowed it most, what would have helped most, and where
@@ -804,7 +818,8 @@ partition.
   `sample_ok` column (`yes`/`no`) flags whether *both* arms cleared
   `--min-sessions`.
 - `compare_by_stratum` — the same two arms split by `--stratify`
-  (`purpose`, `mode`, or both — default `purpose,mode`), with a reduced,
+  (`purpose`, `mode`, `task`, or any mix — default `purpose,mode`, plus
+  `task` once half of both arms' sessions have a reported one), with a reduced,
   raw-valued metric set (session counts, a `sample_ok` flag, cost and
   new tokens per session, cache-read share, and a note) so this table's
   own CSV/JSON export stays numeric. A stratum

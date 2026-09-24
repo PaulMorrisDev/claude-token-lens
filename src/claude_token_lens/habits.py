@@ -82,6 +82,11 @@ LARGE_TURNS = 60
 LATE_SKILL_TURNS = 3
 #: How many messages a comparison group needs before it counts.
 MIN_GROUP = 5
+#: Points of "went well" a cheaper setup may give up against your usual
+#: one and still count as doing as well.
+SETUP_OK_TOLERANCE = 5.0
+#: Model families, cheapest first, for naming a setup.
+_FAMILIES = ("haiku", "sonnet", "opus", "fable")
 #: How many weeks the trend covers, and the fewest messages a week
 #: needs to count towards it.
 TREND_WEEKS = 8
@@ -1526,6 +1531,122 @@ def _effort_table(h: Habits) -> Table:
     )
 
 
+def family(model_id: str | None) -> str:
+    """"claude-haiku-4-5-20251001" -> "haiku"; an unknown model keeps its id."""
+    for name in _FAMILIES:
+        if name in (model_id or ""):
+            return name
+    return model_id or "unknown"
+
+
+def went_well(c: CycleFact) -> bool:
+    """Your feedback on the message's work where you gave it, otherwise
+    whether your next message redid or corrected it."""
+    if c.outcome:
+        return c.outcome == "met"
+    return not c.redone
+
+
+def _setups_table(h: Habits) -> Table:
+    """Per kind of task Claude reported, all levels together and then by
+    how hard it said the work was: each model and effort that answered
+    it, and the cheapest that went well about as often as your usual one."""
+    groups: dict[str, dict[str, dict[tuple[str, str], list[CycleFact]]]] = {}
+    for c in h.cycles:
+        if c.tag is None or not c.tag.task:
+            continue
+        setup = (family(c.model), c.effort or "default")
+        by_level = groups.setdefault(c.tag.task, {})
+        by_level.setdefault("all", {}).setdefault(setup, []).append(c)
+        if c.tag.level:
+            by_level.setdefault(c.tag.level, {}).setdefault(setup, []).append(c)
+    order = {w: n for n, w in enumerate(("all", *catalogue.TAG_VOCAB["level"]))}
+    rows = []
+    for task, by_level in sorted(groups.items(), key=lambda kv: (-sum(map(len, kv[1]["all"].values())), kv[0])):
+        for level in sorted(by_level, key=lambda word: order.get(word, 9)):
+            rows.extend(_setup_rows(task, level, by_level[level]))
+    return Table(
+        name="habits_setups",
+        title="Best setup for each kind of task",
+        columns=[
+            Column(key="task", label="Task", kind="str"),
+            Column(key="level", label="How hard", kind="str"),
+            Column(key="model", label="Model", kind="str"),
+            Column(key="effort", label="Effort", kind="str"),
+            Column(key="cycles", label="Messages", kind="int"),
+            Column(key="avg_cost", label="Per message", kind="money"),
+            Column(key="ok_pct", label="Went well", kind="pct"),
+            Column(key="rated", label="With your feedback", kind="int"),
+            Column(key="verdict", label="Setup", kind="str"),
+            Column(key="saving_pct", label="Cheaper by", kind="pct"),
+        ],
+        rows=rows,
+    )
+
+
+def _like_for_like(other: list[CycleFact], usual: list[CycleFact]) -> tuple[float, float, float, float] | None:
+    """Cost per message and went-well share of ``other`` and ``usual``,
+    level for level on the levels both ran, weighted by how often the
+    usual setup ran each: a cheap setup that only saw easy work isn't
+    credited with the hard work's cost. ``None`` when the shared levels
+    hold under half the usual setup's messages."""
+
+    def by_level(cycles: list[CycleFact]) -> dict[str, list[CycleFact]]:
+        out: dict[str, list[CycleFact]] = {}
+        for c in cycles:
+            out.setdefault((c.tag.level if c.tag is not None else None) or "", []).append(c)
+        return out
+
+    mine, theirs = by_level(other), by_level(usual)
+    shared = [level for level in theirs if level in mine]
+    covered = sum(len(theirs[level]) for level in shared)
+    if not covered or 2 * covered < len(usual):
+        return None
+
+    def weighted(groups: dict[str, list[CycleFact]], value) -> float:
+        return sum(len(theirs[level]) * value(groups[level]) for level in shared) / covered
+
+    def cost(cycles: list[CycleFact]) -> float:
+        return _mean(c.cost for c in cycles) or 0.0
+
+    def ok(cycles: list[CycleFact]) -> float:
+        return _pct(sum(went_well(c) for c in cycles), len(cycles)) or 0.0
+
+    return weighted(mine, cost), weighted(theirs, cost), weighted(mine, ok), weighted(theirs, ok)
+
+
+def _setup_rows(task: str, level: str, setups: dict[tuple[str, str], list[CycleFact]]) -> list[list]:
+    stats = [
+        {
+            "model": model,
+            "effort": effort,
+            "cycles": cycles,
+            "n": len(cycles),
+            "avg": _mean(c.cost for c in cycles) or 0.0,
+            "ok": _pct(sum(went_well(c) for c in cycles), len(cycles)) or 0.0,
+            "rated": sum(1 for c in cycles if c.outcome),
+        }
+        for (model, effort), cycles in setups.items()
+    ]
+    stats.sort(key=lambda s: (-s["n"], s["avg"], s["model"], s["effort"]))
+    usual = stats[0]
+    best, best_ratio = None, 1.0
+    if usual["n"] >= MIN_GROUP:
+        for s in stats[1:]:
+            matched = _like_for_like(s["cycles"], usual["cycles"]) if s["n"] >= MIN_GROUP else None
+            if matched is None:
+                continue
+            cost, usual_cost, ok, usual_ok = matched
+            if ok >= usual_ok - SETUP_OK_TOLERANCE and usual_cost > 0 and cost / usual_cost < best_ratio:
+                best, best_ratio = s, cost / usual_cost
+    rows = []
+    for s in stats:
+        verdict = "usual" if s is usual else "cheaper" if s is best else ""
+        saving = 100.0 * (1.0 - best_ratio) if s is best else None
+        rows.append([task, level, s["model"], s["effort"], s["n"], s["avg"], s["ok"], s["rated"], verdict, saving])
+    return rows
+
+
 def _outcomes_table(h: Habits) -> Table:
     rows = []
     for word in catalogue.FEEDBACK_VOCAB["outcome"]:
@@ -1667,6 +1788,7 @@ def section_from(h: Habits) -> Section:
             _templates_table(h),
             _agents_table(h),
             _effort_table(h),
+            _setups_table(h),
             _outcomes_table(h),
             _prompt_flags_table(h),
             _skills_table(h),
@@ -1744,10 +1866,12 @@ __all__ = [
     "collect",
     "confidence",
     "digest_table",
+    "family",
     "playbook",
     "playbook_table",
     "section_from",
     "template_lines",
     "trend",
     "unfit_agents",
+    "went_well",
 ]
