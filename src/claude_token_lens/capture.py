@@ -364,8 +364,11 @@ def _tag_weights(turn: Turn, subagent: bool) -> dict[str, float]:
     if tag is not None:
         for name, metric_id in fields.items():
             value = getattr(tag, name, None)
-            if value not in (None, ()):
-                weights[metric_id] = catalogue.METRICS_BY_ID[metric_id].out_chars
+            # A retired metric (CAP-5: detour, web) still parses from an
+            # older transcript but has no catalogue entry to weigh it by.
+            metric = catalogue.METRICS_BY_ID.get(metric_id)
+            if value not in (None, ()) and metric is not None:
+                weights[metric_id] = metric.out_chars
     if subagent and turn.result_marker:
         weights["result"] = catalogue.METRICS_BY_ID["result"].out_chars
     return weights

@@ -383,3 +383,33 @@ def test_the_new_fields_survive_the_digest_cache(tmp_path):
     assert isinstance(decoded.turns[-1].cap, CaptureTag)
     assert decoded.turns[-1].cap.missing == ("files", "goal")
     assert isinstance(decoded.turns[0].plan_stats, PlanStats)
+
+
+# -- SEC-P2 scope: keys the other scope is asked for ---------------------------------------
+
+
+def test_a_subagent_s_main_session_tag_is_not_trusted():
+    # Seen live: an Explore agent asked for result,retry,fit wrote a full
+    # [tl: ...] tag beside its [result: ...].
+    cap, marker = capture_tags.parse_reply_tags(
+        "Done.\n\n[tl: task=research brief=clear level=normal size=l missing=none plan=none "
+        "skill=unneeded found=yes prior=needed check=none] [result: done fit=right out=part]"
+    )
+    kept, marker = capture_tags.filter_tag(cap, marker, requested={"result", "retry", "fit"}, subagent=True)
+    assert marker == "done" and kept.fit == "right" and kept.has_tl is False
+    for name in ("task", "level", "size", "plan", "skill", "found", "prior", "check", "brief", "out"):
+        assert getattr(kept, name) is None, name
+    assert kept.missing == ()
+
+
+def test_a_subagent_keeps_out_when_a_large_output_note_asked_for_it():
+    cap, marker = capture_tags.parse_reply_tags("Done. [result: done fit=right out=part]")
+    kept, _ = capture_tags.filter_tag(cap, marker, requested={"result", "fit", "big_output"}, subagent=True)
+    assert kept.out == "part" and kept.fit == "right"
+
+
+def test_a_main_session_tag_drops_subagent_only_keys():
+    cap, marker = capture_tags.parse_reply_tags("Fixed. [tl: task=bugfix fit=right rules=used]")
+    kept, _ = capture_tags.filter_tag(cap, marker, requested={"task"}, subagent=False)
+    assert kept.task == "bugfix" and kept.has_tl is True
+    assert kept.fit is None and kept.rules is None
