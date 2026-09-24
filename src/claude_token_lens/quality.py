@@ -90,6 +90,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Callable, Iterable
 
+from . import capture_catalogue
 from .fixes import _model_family
 from .model import Column, EventKind, Section, Table, TranscriptResult
 from .pricing import Pricing, price_turn
@@ -128,15 +129,17 @@ MARKER_HEADING = "## Token Lens markers"
 MARKER_LINES = (
     f"{MARKER_HEADING}\n"
     "- When you start an agent again because its last run's work wasn't good enough, begin the new brief with "
-    "[retry: model], [retry: brief], [retry: tools] or [retry: other]: model if it needed a stronger model, brief "
-    "if your instructions were unclear, tools if it lacked a tool or permission.\n"
+    "[retry: model], [retry: brief], [retry: tools], [retry: scope] or [retry: other]: model if it needed a "
+    "stronger model, brief if your instructions were unclear, tools if it lacked a tool or permission, scope if "
+    "the task itself changed.\n"
     "- As a subagent, end your final reply with [result: done], [result: partial] or [result: blocked]."
 )
 #: About how many output tokens one marker costs ("[result: partial]" and
 #: the line break before it).
 MARKER_TOKENS = 6
-RETRY_REASONS = ("model", "brief", "tools", "other")
-RESULT_WORDS = ("done", "partial", "blocked")
+#: The words the markers take, shared with metrics capture's parser.
+RETRY_REASONS = capture_catalogue.RETRY_REASONS
+RESULT_WORDS = capture_catalogue.RESULT_WORDS
 #: Built-in agent types Claude Code starts without CLAUDE.md, so they never
 #: see :data:`MARKER_LINES` (same list as ``recommend._SKIPS_CLAUDE_MD``).
 _SKIPS_CLAUDE_MD = frozenset({"Explore", "Plan"})
@@ -1021,7 +1024,7 @@ def _retry_reasons_table(rows: list[dict]) -> Table:
     keys = (
         ("agent_type", "Agent", "str"), ("model", "Model", "str"), ("retries", "Retries that said why", "int"),
         ("said_model", "The model", "int"), ("said_brief", "The brief", "int"), ("said_tools", "Tools", "int"),
-        ("said_other", "Other", "int"), ("last_retried", "Last time", "str"),
+        ("said_scope", "The task", "int"), ("said_other", "Other", "int"), ("last_retried", "Last time", "str"),
     )
     return Table(
         name="quality_retry_reasons",

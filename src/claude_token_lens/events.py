@@ -47,6 +47,8 @@ import json
 import re
 from typing import Iterable, Sequence
 
+from .capture_catalogue import NOTE_MARKER
+from .capture_tags import parse_brief_markers, parse_note_codes
 from .model import Event, EventKind
 
 # -- Ignored outright but counted by the caller (returns None) ----------
@@ -161,6 +163,10 @@ _CONTEXT_INJECT_TYPES = frozenset(
 )
 
 _SLASH_COMMAND_PREFIXES = ("<command-name", "<local-command-stdout", "<local-command-caveat")
+#: A slash command's own name (``<command-name>/grill-me</command-name>``),
+#: kept on ``Event.detail["command"]`` only when it has the shape of a
+#: command or skill name -- never its arguments.
+_COMMAND_NAME_RE = re.compile(r"<command-name>/?([A-Za-z0-9][A-Za-z0-9_.:-]{0,63})</command-name>")
 _SCHEDULED_TASK_PREFIXES = ("<scheduled-task", "[SYSTEM NOTIFICATION", "<<autonomous-loop")
 _SCHEDULED_TASK_ORIGIN_KINDS = frozenset({"cron", "loop"})
 
@@ -213,13 +219,16 @@ def _user_has_tool_result(d: dict) -> bool:
 #: attachment.type -> the raw attachment fields holding the text the
 #: model is shown, used when a line carries no ``rendered`` field (e.g.
 #: ~15% of real ``skill_listing`` lines). Lengths only -- never stored.
+#: ``hook_system_message`` is deliberately absent: it is a message shown to
+#: you in the terminal, never to the model (no real line of it carries
+#: ``rendered``, even from versions that render every other hook type), so
+#: it takes no context.
 _CONTENT_SIZE_FIELDS = {
     "skill_listing": ("content",),
     "deferred_tools_delta": ("addedLines",),
     "mcp_instructions_delta": ("addedBlocks",),
     "agent_listing_delta": ("addedLines",),
     "hook_additional_context": ("content",),
-    "hook_system_message": ("content",),
     "hook_success": ("content",),
     "total_tokens_reminder": ("text",),
     "batching_reminder_sent": ("text",),
@@ -261,6 +270,49 @@ def _attachment_content_chars(attachment: dict) -> int | None:
     if not present:
         return None
     return sum(_text_chars(value) for value in present)
+
+
+#: The text Claude Code wraps a hook's additional context in, around the
+#: hook's name (``SessionStart``, ``PostToolUse:Bash``): "<system-reminder>\n"
+#: + name + " hook additional context: " + text + "\n</system-reminder>".
+#: Measured against real ``rendered`` lines; used to size a capture note
+#: when a line has no ``rendered`` field.
+_HOOK_CONTEXT_WRAPPER_CHARS = 63
+
+#: The hook events a capture note is injected by, kept on the note's
+#: ``Event.detail["hook"]``; anything else is recorded as "other".
+_CAPTURE_NOTE_HOOKS = frozenset({"SessionStart", "SubagentStart", "PostToolUse"})
+
+
+def _capture_note(d: dict, attachment: dict) -> tuple[int, dict] | None:
+    """Metrics-capture addition: ``(chars, detail)`` for a
+    ``hook_additional_context`` line carrying Token Lens's capture note
+    (``capture_catalogue.NOTE_MARKER``), else ``None``. ``chars`` is what
+    the model was shown, from ``rendered`` when present; ``detail`` holds
+    the note format version, its metric codes and the hook event -- never
+    the note's text."""
+    content = attachment.get("content")
+    if isinstance(content, str):
+        texts = [content]
+    elif isinstance(content, list):
+        texts = [item for item in content if isinstance(item, str)]
+    else:
+        texts = []
+    text = "\n".join(texts)
+    if NOTE_MARKER not in text:
+        return None
+    version, codes = parse_note_codes(text)
+    chars = _rendered_size_chars(d, attachment) if d.get("rendered") is not None else None
+    if chars is None:
+        hook_name = attachment.get("hookName")
+        chars = len(text) + _HOOK_CONTEXT_WRAPPER_CHARS + (len(hook_name) if isinstance(hook_name, str) else 0)
+    hook_event = attachment.get("hookEvent")
+    detail = {
+        "v": version,
+        "codes": codes,
+        "hook": hook_event if hook_event in _CAPTURE_NOTE_HOOKS else "other",
+    }
+    return chars, detail
 
 
 def _rendered_size_chars(d: dict, attachment: dict) -> int | None:
@@ -455,8 +507,78 @@ _CORRECTION_SCAN_CHARS = 200
 
 #: Quality-markers addition: a brief that starts "[retry: <reason>]" says
 #: the agent is being run again because its last run's work wasn't good
-#: enough, and why (see ``quality.MARKER_LINES``). Only the reason is kept.
-_RETRY_MARKER_RE = re.compile(r"^\s*`?\[retry:\s*(model|brief|tools|other)\s*\]", re.IGNORECASE)
+#: enough, and why; metrics capture adds "[spawn: <reason>]", why the work
+#: was handed to an agent at all (``capture_tags.parse_brief_markers``).
+#: Only the words are kept.
+
+#: Metrics-capture addition (derived, no tokens): what a human message or
+#: brief contains, kept as ``model.PROMPT_FLAGS`` words on ``Event.detail
+#: ["flags"]``, never the text. Only the first :data:`_PROMPT_SCAN_CHARS`
+#: characters are read, so a huge paste costs no more to scan than a
+#: long message.
+_PROMPT_SCAN_CHARS = 20_000
+_URL_RE = re.compile(r"\bhttps?://\S+|\bwww\.\S+", re.IGNORECASE)
+_PATH_RE = re.compile(
+    r"(?:[A-Za-z]:[\\/]|\.{1,2}[\\/]|~[\\/]|\b[\w.-]+[\\/])[\w.\\/-]*[\w-]\.[A-Za-z0-9]{1,8}\b"
+    r"|\b[\w-]+\.(?:py|pyi|ts|tsx|js|jsx|mjs|cjs|go|rs|java|kt|kts|cs|cpp|cc|hpp|rb|php|swift|scala|sql"
+    r"|sh|ps1|psm1|md|json|jsonl|toml|ya?ml|ini|cfg|css|scss|html|vue|svelte|xml|gradle|tf|proto)\b"
+    r"|(?:^|\s)(?:src|lib|app|tests?|docs|packages|scripts|config)/[\w.-]+"
+)
+_ERROR_TEXT_RE = re.compile(
+    r"Traceback \(most recent call last\)"
+    r"|^\s+at [\w.$<>]+ ?\(.*:\d+(?::\d+)?\)"
+    r"|\b[A-Z]\w*(?:Error|Exception)\b(?::|\s+at\b)"
+    r"|^(?:error|fatal)(?:\[E\d+\])?: "
+    r"|\bFAILED\b|\bpanicked at\b|npm ERR!|exit code [1-9]\d*",
+    re.MULTILINE,
+)
+_DONE_RE = re.compile(
+    r"\b(?:done when|definition of done|acceptance criteria|success criteria"
+    r"|expected (?:output|result|behaviou?r)"
+    r"|should (?:now )?(?:pass|return|output|print|show|display)"
+    r"|must (?:pass|return)|until (?:the |all )?tests? pass)\b",
+    re.IGNORECASE,
+)
+_STEP_LINE_RE = re.compile(r"^\s*(?:\d{1,2}[.)]|step \d{1,2}[:.)]?)\s+\S", re.IGNORECASE | re.MULTILINE)
+_SHORT_REPORT_RE = re.compile(
+    r"\b(?:(?:under|fewer than|less than|at most|no more than|max(?:imum)?(?: of)?|within)\s+\d{1,4}\s+"
+    r"(?:words|lines|sentences|bullets|bullet points|tokens|characters|chars)"
+    r"|(?:brief|short|concise|one-line|terse)\s+(?:report|summary|answer|reply|response)"
+    r"|(?:report|reply|respond|answer)\s+(?:back\s+)?(?:briefly|concisely|tersely))\b",
+    re.IGNORECASE,
+)
+
+
+def path_count(text: str) -> int:
+    """How many distinct file paths ``text`` names (URLs aside)."""
+    text = _URL_RE.sub(" ", text[:_PROMPT_SCAN_CHARS])
+    return len({match.group(0).strip() for match in _PATH_RE.finditer(text)})
+
+
+def prompt_flags(texts: Sequence[str]) -> tuple[str, ...]:
+    """``model.PROMPT_FLAGS`` words for what ``texts`` contain, in that
+    order."""
+    text = "\n".join(t for t in texts if t)[:_PROMPT_SCAN_CHARS]
+    if not text:
+        return ()
+    flags: list[str] = []
+    has_url = _URL_RE.search(text) is not None
+    without_urls = _URL_RE.sub(" ", text) if has_url else text
+    if _PATH_RE.search(without_urls):
+        flags.append("path")
+    if "```" in text:
+        flags.append("code")
+    if _ERROR_TEXT_RE.search(text):
+        flags.append("error")
+    if has_url:
+        flags.append("url")
+    if _DONE_RE.search(text):
+        flags.append("done")
+    if len(_STEP_LINE_RE.findall(text, 0, 8_000)) >= 2:
+        flags.append("steps")
+    if _SHORT_REPORT_RE.search(text):
+        flags.append("short")
+    return tuple(flags)
 
 
 def _looks_like_correction(texts: list[str]) -> bool:
@@ -502,10 +624,19 @@ def _human_text_detail(d: dict, str_content: str | None) -> tuple[int, dict]:
             for block in (content if isinstance(content, list) else ())
             if isinstance(block, dict) and block.get("type") == "text" and isinstance(block.get("text"), str)
         ]
-    detail = {"has_paste": has_paste, "correction": _looks_like_correction(texts)}
-    retry = next((m.group(1).lower() for m in (_RETRY_MARKER_RE.match(t) for t in texts if t) if m), None)
+    detail: dict = {"has_paste": has_paste, "correction": _looks_like_correction(texts)}
+    retry = spawn = None
+    for text in texts:
+        if text and (retry is None or spawn is None):
+            found_retry, found_spawn = parse_brief_markers(text)
+            retry, spawn = retry or found_retry, spawn or found_spawn
     if retry is not None:
         detail["retry"] = retry
+    if spawn is not None:
+        detail["spawn"] = spawn
+    flags = prompt_flags(texts)
+    if flags:
+        detail["flags"] = flags
     return human_chars, detail
 
 
@@ -761,6 +892,13 @@ def classify_line(d: dict) -> Event | None:
     if line_type == "system" and d.get("subtype") == "stop_hook_summary":
         return Event(kind=EventKind.HOOK_OUTPUT, subkind="stop_hook_summary", ts=ts)
     if attachment_type in _HOOK_ATTACHMENT_TYPES:
+        if attachment_type == "hook_additional_context":
+            note = _capture_note(d, attachment)
+            if note is not None:
+                note_chars, detail = note
+                return Event(
+                    kind=EventKind.HOOK_OUTPUT, subkind="capture_note", ts=ts, size_chars=note_chars, detail=detail
+                )
         return Event(kind=EventKind.HOOK_OUTPUT, subkind=attachment_type, ts=ts, size_chars=size_chars)
 
     # 7. CACHE_SIGNAL
@@ -853,12 +991,14 @@ def classify_line(d: dict) -> Event | None:
                 detail=_task_notification_detail(text),
             )
 
-    # 14. TASK_NOTIFICATION
+    # 14. TASK_NOTIFICATION (sized: a background agent's notification
+    # carries the report it hands back)
     if is_task_notification_line:
         return Event(
             kind=EventKind.TASK_NOTIFICATION,
             subkind=None,
             ts=ts,
+            size_chars=_human_text_metrics(d, str_content)[0],
             detail=_task_notification_detail(_first_user_text(d, str_content)),
         )
 
@@ -877,9 +1017,12 @@ def classify_line(d: dict) -> Event | None:
             meta_subkind = tag if tag is not None else "plain"
         return Event(kind=EventKind.META, subkind=meta_subkind, ts=ts)
 
-    # 17. SLASH_COMMAND
+    # 17. SLASH_COMMAND (metrics-capture addition: the command's name, so
+    # a skill you ran yourself can be told from one Claude invoked)
     if str_content is not None and str_content.startswith(_SLASH_COMMAND_PREFIXES):
-        return Event(kind=EventKind.SLASH_COMMAND, subkind=None, ts=ts)
+        command = _COMMAND_NAME_RE.match(str_content)
+        detail = {"command": command.group(1)} if command else {}
+        return Event(kind=EventKind.SLASH_COMMAND, subkind=None, ts=ts, detail=detail)
 
     # 18. SCHEDULED_TASK
     if str_content is not None and str_content.startswith(_SCHEDULED_TASK_PREFIXES):

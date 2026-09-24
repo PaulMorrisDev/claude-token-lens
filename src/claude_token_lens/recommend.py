@@ -992,7 +992,7 @@ def _rule_agent_report_size(report: ReportModel, th: RecommendThresholds, archet
                 lever=None,
                 agent_type=agent_type,
                 evidence=[
-                    _evidence("Mean report proxy (output tokens)", mean_proxy, "agents", "topology_report_proxy", agent_type),
+                    _evidence("Mean report size (tokens)", mean_proxy, "agents", "topology_report_proxy", agent_type),
                 ],
             )
         )

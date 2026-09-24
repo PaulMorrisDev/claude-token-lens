@@ -116,7 +116,7 @@ def test_an_edit_that_failed_is_not_an_edit(tmp_path):
         tool_result_block("t4", "Exit code 1", is_error=True),
     ])
     assert len(turn.edit_target_hashes) == 2
-    assert len(turn.read_target_hashes) == 2  # the failed Edit still read its file
+    assert turn.read_target_hashes == ()  # an edit is not a read
 
 
 def test_a_relative_shell_write_with_no_working_directory_is_not_recorded(tmp_path):

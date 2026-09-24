@@ -122,10 +122,21 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from . import capture_tags
 from . import events as events_mod
 from . import jsonl
 from . import shell_writes
-from .model import Diagnostics, Event, EventKind, Turn, TranscriptMeta, TranscriptResult
+from .model import (
+    PROMPT_FLAGS,
+    CaptureTag,
+    Diagnostics,
+    Event,
+    EventKind,
+    PlanStats,
+    Turn,
+    TranscriptMeta,
+    TranscriptResult,
+)
 
 #: Tool names whose first ``input.command`` becomes a turn's ``cmd_prefix``.
 _SHELL_TOOL_NAMES = ("Bash", "PowerShell")
@@ -145,16 +156,13 @@ _EDIT_TOOL_PATH_KEYS = {
 _AGENT_TOOL_NAMES = ("Agent", "Task")
 
 #: Capture-improvements addition (A3): tool name -> the input key holding
-#: the read/write target path to hash (``Turn.read_target_hashes``).
-#: ``_EDIT_TOOL_PATH_KEYS`` plus ``Read``, kept as its own table since the
-#: two answer different questions (edit-location classification vs.
-#: read/write-target hashing).
+#: the read target path to hash (``Turn.read_target_hashes``). Read only
+#: since ``PARSER_VERSION`` 15: an edit is not a read, and counting edits
+#: here made every file edited after reading it look read twice. Edit
+#: targets are hashed into ``edit_target_hashes`` from
+#: ``_EDIT_TOOL_PATH_KEYS`` instead.
 _READ_TARGET_PATH_KEYS = {
     "Read": "file_path",
-    "Edit": "file_path",
-    "Write": "file_path",
-    "MultiEdit": "file_path",
-    "NotebookEdit": "notebook_path",
 }
 
 #: Error kinds (``_tool_error_kind``) meaning a shell command never ran, so
@@ -162,12 +170,17 @@ _READ_TARGET_PATH_KEYS = {
 #: non-zero may still have written them.
 _SHELL_NOT_RUN_KINDS = ("blocked", "denied")
 
-#: Quality-markers addition: a reply ending "[result: <word>]" is a
-#: subagent's own account of whether it finished (see
-#: ``quality.MARKER_LINES``). Matched in the reply's last characters only;
-#: only the word is kept.
-_RESULT_MARKER_RE = re.compile(r"\[result:\s*(done|partial|blocked)\s*\][`*_.\s]*$", re.IGNORECASE)
-_RESULT_MARKER_SCAN_CHARS = 80
+#: Quality-markers and metrics-capture addition: a reply ending
+#: "[result: <word> ...]" is a subagent's own account of whether it
+#: finished, and "[tl: ...]" the capture tag (``capture_tags``). Only the
+#: last text block's last characters are kept while the turn is open, and
+#: only the parsed words once it is finalised.
+_TAG_TAIL_CHARS = capture_tags.TAIL_SCAN_CHARS
+
+#: Metrics-capture addition: an ``ExitPlanMode`` plan's numbered steps
+#: (``1.`` or ``1)``), or its bullets when it numbers none.
+_PLAN_NUMBERED_RE = re.compile(r"^\s*\d{1,3}[.)]\s+\S", re.MULTILINE)
+_PLAN_BULLET_RE = re.compile(r"^\s*[-*]\s+\S", re.MULTILINE)
 
 #: MSYS/Git Bash drive form (``/c/Dev/x``), mapped to ``c:/Dev/x``.
 _MSYS_DRIVE_RE = re.compile(r"^/([A-Za-z])(?=/|$)")
@@ -604,8 +617,20 @@ class _PendingTurn:
     edit_hashes_by_tool_use: dict[str, list[str]] = field(default_factory=dict)
     #: Fast-mode addition (see model.py's ``Turn.speed`` docstring).
     speed: str | None = None
-    #: Quality-markers addition (see model.py's ``Turn.result_marker``).
-    result_marker: str | None = None
+    #: Quality-markers/metrics-capture addition: the end of this reply's
+    #: last text block, parsed for tags when the turn is finalised and
+    #: then dropped (see model.py's ``Turn.result_marker``/``Turn.cap``).
+    last_text_tail: str | None = None
+    #: Metrics-capture addition (see model.py's ``Turn.agent_result_chars``/
+    #: ``Turn.plan_stats``).
+    agent_result_chars: dict[str, int] = field(default_factory=dict)
+    plan_stats: PlanStats | None = None
+
+
+def _plan_stats(plan: str) -> PlanStats:
+    """Counts for one ``ExitPlanMode`` plan: never its text."""
+    steps = len(_PLAN_NUMBERED_RE.findall(plan)) or len(_PLAN_BULLET_RE.findall(plan))
+    return PlanStats(steps=steps, files=events_mod.path_count(plan), chars=len(plan))
 
 
 def _merge_content_blocks(
@@ -621,8 +646,7 @@ def _merge_content_blocks(
         if isinstance(block, dict) and block.get("type") == "text" and isinstance(block.get("text"), str):
             # The reply's last text block decides: a marker further up
             # was quoted, not reported.
-            match = _RESULT_MARKER_RE.search(block["text"][-_RESULT_MARKER_SCAN_CHARS:])
-            pending.result_marker = match.group(1).lower() if match else None
+            pending.last_text_tail = block["text"][-_TAG_TAIL_CHARS:]
             continue
         if not isinstance(block, dict) or block.get("type") != "tool_use":
             continue
@@ -665,8 +689,9 @@ def _merge_content_blocks(
             pending.tool_input_chars_by_tool.get(name, 0) + input_chars
         )
 
-        # A3: hash Read/Edit/Write/MultiEdit/NotebookEdit targets, and the
-        # files a shell command writes, instead of ever storing the path.
+        # A3: hash Read targets, Edit/Write/MultiEdit/NotebookEdit targets
+        # and the files a shell command writes, instead of ever storing
+        # the path.
         edited: list[str] = []
         read_target_key = _READ_TARGET_PATH_KEYS.get(name)
         if read_target_key is not None:
@@ -675,8 +700,12 @@ def _merge_content_blocks(
                 hashed = _read_target_hash(target_value)
                 if hashed is not None:
                     pending.read_target_hashes.append(hashed)
-                    if name in _EDIT_TOOL_PATH_KEYS:
-                        edited.append(hashed)
+        elif path_key is not None:
+            target_value = tool_input.get(path_key)
+            if isinstance(target_value, str) and target_value:
+                hashed = _read_target_hash(target_value)
+                if hashed is not None:
+                    edited.append(hashed)
         elif name in _SHELL_TOOL_NAMES and _SALT is not None:
             command = tool_input.get("command")
             if isinstance(command, str) and command:
@@ -693,6 +722,10 @@ def _merge_content_blocks(
             skill_name = tool_input.get("skill")
             if isinstance(skill_name, str) and skill_name:
                 pending.skills_invoked.append(skill_name)
+        elif name == "ExitPlanMode":
+            plan = tool_input.get("plan")
+            if isinstance(plan, str) and plan:
+                pending.plan_stats = _plan_stats(plan)
 
 
 def _new_pending(d: dict, tool_use_names: dict[str, str]) -> _PendingTurn:
@@ -942,6 +975,21 @@ def _accumulate_tool_results(
                 if edited and (name not in _SHELL_TOOL_NAMES or kind in _SHELL_NOT_RUN_KINDS):
                     for hashed in edited:
                         current.edit_target_hashes.remove(hashed)
+            # Metrics-capture addition: the report a synchronous agent
+            # handed back (a background agent's launch message is not its
+            # report; that arrives later as a task notification), and
+            # whether a plan was approved.
+            if name in _AGENT_TOOL_NAMES and not _is_async_launch(d):
+                current.agent_result_chars[tool_use_id] = current.agent_result_chars.get(tool_use_id, 0) + length
+            elif name == "ExitPlanMode" and current.plan_stats is not None:
+                current.plan_stats.outcome = "rejected" if block.get("is_error") is True else "approved"
+
+
+def _is_async_launch(d: dict) -> bool:
+    """Whether a tool_result line is a background agent's launch message
+    rather than its report."""
+    result = d.get("toolUseResult")
+    return isinstance(result, dict) and (result.get("isAsync") is True or result.get("status") == "async_launched")
 
 
 def _resolve_preceding_tool(previous_turn: Turn | None) -> tuple[str, str | None]:
@@ -965,6 +1013,7 @@ def _finalize_turn(
     priced_turn_count: int,
     diagnostics: Diagnostics,
     next_ts_raw: str | None = None,
+    skill_names: set[str] | None = None,
 ) -> tuple[Turn, datetime | None, int]:
     ts_dt = _parse_ts(pending.ts_raw)
     ctx = pending.input_tokens + pending.cache_creation_tokens + pending.cache_read_tokens
@@ -1031,7 +1080,20 @@ def _finalize_turn(
     human_prompt_has_paste = False
     human_correction = False
     retry_marker: str | None = None
+    # Metrics-capture addition (see model.py's module docstring).
+    spawn_marker: str | None = None
+    flags: set[str] = set()
+    cap_note_chars = 0
+    commands_run: list[str] = []
     for pending_event in pending_events:
+        if pending_event.kind == EventKind.HOOK_OUTPUT and pending_event.subkind == "capture_note":
+            cap_note_chars += pending_event.size_chars or 0
+            continue
+        if pending_event.kind == EventKind.SLASH_COMMAND:
+            command = pending_event.detail.get("command")
+            if isinstance(command, str) and command:
+                commands_run.append(command)
+            continue
         if pending_event.kind != EventKind.HUMAN_TEXT:
             continue
         chars = pending_event.size_chars or 0
@@ -1041,6 +1103,14 @@ def _finalize_turn(
         if pending_event.detail.get("correction"):
             human_correction = True
         retry_marker = pending_event.detail.get("retry") or retry_marker
+        spawn_marker = pending_event.detail.get("spawn") or spawn_marker
+        flags.update(pending_event.detail.get("flags") or ())
+
+    cap: CaptureTag | None = None
+    result_marker: str | None = None
+    if pending.last_text_tail:
+        known_skills = set(skill_names or ()) | set(pending.skills_invoked)
+        cap, result_marker = capture_tags.parse_reply_tags(pending.last_text_tail, known_skills)
 
     # Usage-limits addition (see module docstring): a limit-hit/resume
     # among the events preceding this turn means the gap to the previous
@@ -1107,7 +1177,14 @@ def _finalize_turn(
         human_correction=human_correction,
         speed=pending.speed,
         retry_marker=retry_marker,
-        result_marker=pending.result_marker,
+        result_marker=result_marker,
+        cap=cap,
+        cap_note_chars=cap_note_chars,
+        spawn_marker=spawn_marker,
+        agent_result_chars=dict(pending.agent_result_chars),
+        prompt_flags=tuple(flag for flag in PROMPT_FLAGS if flag in flags),
+        plan_stats=pending.plan_stats,
+        commands_run=tuple(commands_run),
     )
     return turn, new_prev_ts, new_priced_count
 
@@ -1161,6 +1238,11 @@ def parse_transcript(path: str | Path, meta: TranscriptMeta) -> TranscriptResult
     #: fall through this check untouched (guarded by the ``isinstance``/
     #: truthiness check below) rather than being treated as replays.
     seen_uuids: set[str] = set()
+    #: Metrics-capture addition: skill names this transcript listed
+    #: (``skill_listing`` attachments' ``names``) or used, in memory only:
+    #: a capture tag's ``skill=would-help:<name>`` keeps a name only if it
+    #: is one of these.
+    skill_names: set[str] = set()
 
     current: _PendingTurn | None = None
     current_key: str | None = None
@@ -1206,8 +1288,10 @@ def parse_transcript(path: str | Path, meta: TranscriptMeta) -> TranscriptResult
                     priced_turn_count,
                     diagnostics,
                     next_ts_raw=d.get("timestamp"),
+                    skill_names=skill_names,
                 )
                 turns.append(turn)
+                skill_names.update(turn.skills_invoked)
                 finalized_keys.add(current_key)  # type: ignore[arg-type]
                 previous_turn = turn
             # Rotate regardless of whether `current` was None: whatever
@@ -1254,6 +1338,12 @@ def parse_transcript(path: str | Path, meta: TranscriptMeta) -> TranscriptResult
             value = d.get("mode")
             if isinstance(value, str) and value:
                 diagnostics.modes[value] = diagnostics.modes.get(value, 0) + 1
+        elif line_type == "attachment":
+            attachment = d.get("attachment")
+            if isinstance(attachment, dict) and attachment.get("type") == "skill_listing":
+                names = attachment.get("names")
+                if isinstance(names, list):
+                    skill_names.update(name for name in names if isinstance(name, str))
 
         event = events_mod.classify_line(d)
         if event is None:
@@ -1292,6 +1382,7 @@ def parse_transcript(path: str | Path, meta: TranscriptMeta) -> TranscriptResult
             previous_non_synthetic_ts,
             priced_turn_count,
             diagnostics,
+            skill_names=skill_names,
         )
         turns.append(turn)
 
@@ -1315,11 +1406,26 @@ def parse_transcript(path: str | Path, meta: TranscriptMeta) -> TranscriptResult
                 provider = detected
             break
 
+    # Metrics-capture addition: which capture notes this transcript saw.
+    cap_version: int | None = None
+    cap_codes: dict[str, None] = {}
+    cap_injections = 0
+    for event in events:
+        if event.kind == EventKind.HOOK_OUTPUT and event.subkind == "capture_note":
+            cap_injections += 1
+            version = event.detail.get("v")
+            if isinstance(version, int) and (cap_version is None or version > cap_version):
+                cap_version = version
+            cap_codes.update(dict.fromkeys(event.detail.get("codes") or ()))
+
     final_meta = replace(
         meta,
         entrypoint=meta.entrypoint if meta.entrypoint is not None else first_entrypoint,
         claude_version=meta.claude_version if meta.claude_version is not None else first_claude_version,
         provider=provider,
+        cap_version=cap_version,
+        cap_metrics=tuple(cap_codes),
+        cap_injections=cap_injections,
     )
 
     return TranscriptResult(

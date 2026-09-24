@@ -897,7 +897,7 @@ def test_agent_report_size_fires_per_agent_type():
     fired = [rec for rec in recs if rec.id == "agent-report-size"]
     assert len(fired) == 1
     assert fired[0].evidence == [
-        ("Mean report proxy (output tokens)", 12_000, "agents.topology_report_proxy", "claude-implementer"),
+        ("Mean report size (tokens)", 12_000, "agents.topology_report_proxy", "claude-implementer"),
     ]
 
 

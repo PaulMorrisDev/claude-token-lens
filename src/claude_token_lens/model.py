@@ -139,8 +139,9 @@ Capture-improvements batch (all additive, all defaulted -- see
   (size only, via ``json.dumps`` on the already-parsed input -- the
   input itself is never retained).
 - ``Turn.read_target_hashes: tuple[str, ...] = ()`` -- one salted HMAC-
-  SHA256 hash (16 hex chars) per ``Read``/``Edit``/``Write``/
-  ``NotebookEdit`` tool_use's own target path in this turn, via
+  SHA256 hash (16 hex chars) per ``Read`` tool_use's own target path in
+  this turn (``Edit``/``Write``/``NotebookEdit`` too before
+  ``PARSER_VERSION`` 15), via
   ``parse.set_salt``/``parse.load_or_create_salt`` -- never the path
   itself, and empty for every turn until a salt has been set in this
   process (see ``parse.py``'s docstring on why the salt is threaded
@@ -305,6 +306,46 @@ them). Only the word is kept, never the text around it:
 - ``Turn.result_marker: str | None = None`` -- ``done``, ``partial`` or
   ``blocked`` when the turn's last text block ends ``[result: ...]``: a
   subagent's own account of whether it finished.
+
+Metrics-capture addition (``PARSER_VERSION`` 15 -- see
+``capture_catalogue.py`` for the vocabularies and ``capture_tags.py`` for
+how tags are read). Every value is a word from a closed list, a count or
+a flag, never text:
+
+- ``CaptureTag`` / ``Turn.cap: CaptureTag | None = None`` -- the
+  ``[tl: ...]`` tag (and the ``[result: ...]`` extras ``fit``, ``rules``,
+  ``brief``, ``missing``) ending this turn's last text block. Unknown keys
+  and words are dropped; ``skill_name`` survives only when it names a
+  skill the transcript listed or used. ``chars`` is the tag's own length,
+  for pricing the output it cost.
+- ``Turn.cap_note_chars: int = 0`` -- characters of capture notes (a
+  ``hook_additional_context`` attachment carrying ``tl-cap v``) put in
+  front of the model just before this turn, measured from ``rendered``.
+- ``Turn.spawn_marker: str | None = None`` -- on the turn that follows a
+  brief starting ``[spawn: parallel|isolate|cheaper|specialist|review]``:
+  why the work was handed to an agent. ``retry_marker`` also takes
+  ``scope`` now.
+- ``Turn.agent_result_chars: dict = {}`` -- Agent/Task tool_use id ->
+  characters of the report that agent handed back to this turn.
+- ``Turn.prompt_flags: tuple[str, ...] = ()`` -- what the preceding human
+  message (for a subagent, its brief) contained, as words from
+  ``PROMPT_FLAGS``: a file path, a code block, an error or stack trace, a
+  URL, done criteria, numbered steps, a cap on the report's length.
+- ``PlanStats`` / ``Turn.plan_stats`` -- an ``ExitPlanMode`` call's plan:
+  step and file counts, length, and whether it was approved or rejected.
+- ``Turn.commands_run: tuple[str, ...] = ()`` -- the names of the slash
+  commands you ran just before this turn (``compact``, ``grill-me``), so
+  a skill you invoked can be told from one Claude invoked
+  (``skills_invoked``). Also ``Event.detail["command"]`` on the
+  ``SLASH_COMMAND`` event. Names only, never arguments.
+- ``Turn.read_target_hashes`` now covers ``Read`` only: an edit is not a
+  read, and counting edits made every edited file look re-read. Edits
+  stay in ``edit_target_hashes``.
+- ``TASK_NOTIFICATION`` events are sized (``size_chars``): a background
+  agent's notification carries the report it hands back.
+- ``TranscriptMeta.cap_version`` / ``cap_metrics`` / ``cap_injections``
+  -- the capture note format version seen, the metric codes the notes
+  asked for, and how many notes were injected.
 """
 
 from __future__ import annotations
@@ -373,6 +414,49 @@ class Event:
     #: ``originalModel``/``fallbackModel``, or the delta attachment types'
     #: ``added``/``removed`` counts. Never message text or full paths.
     detail: dict = field(default_factory=dict)
+
+
+#: Words ``Turn.prompt_flags`` may hold (see the module docstring).
+PROMPT_FLAGS = ("path", "code", "error", "url", "done", "steps", "short")
+
+
+@dataclass(slots=True)
+class CaptureTag:
+    """What a metrics-capture tag said (see the module docstring). Every
+    field is a word from ``capture_catalogue.TAG_VOCAB`` or ``None``."""
+
+    task: str | None = None
+    brief: str | None = None
+    level: str | None = None
+    shift: str | None = None
+    size: str | None = None
+    missing: tuple[str, ...] = ()
+    plan: str | None = None
+    skill: str | None = None
+    skill_name: str | None = None
+    found: str | None = None
+    fit: str | None = None
+    rules: str | None = None
+    prior: str | None = None
+    detour: str | None = None
+    check: str | None = None
+    out: str | None = None
+    useful: str | None = None
+    #: A ``[tl: ...]`` tag was written, not only a ``[result: ...]``.
+    has_tl: bool = False
+    #: Length of the tag text, for pricing the output it cost.
+    chars: int = 0
+
+
+@dataclass(slots=True)
+class PlanStats:
+    """An ``ExitPlanMode`` call's plan, as counts (see the module docstring)."""
+
+    steps: int = 0
+    files: int = 0
+    chars: int = 0
+    #: "approved" | "rejected" | None (no answer seen).
+    outcome: str | None = None
 
 
 @dataclass(slots=True)
@@ -461,9 +545,9 @@ class Turn:
     #: size only; the input itself is never retained).
     tool_input_chars_by_tool: dict = field(default_factory=dict)
     #: Capture-improvements addition (see module docstring): salted
-    #: HMAC-SHA256 hashes (16 hex chars each) of this turn's own
-    #: Read/Edit/Write/MultiEdit/NotebookEdit target paths - never the paths
-    #: themselves. See ``parse.set_salt``/``parse.load_or_create_salt``.
+    #: HMAC-SHA256 hashes (16 hex chars each) of this turn's own Read
+    #: target paths - never the paths themselves. See
+    #: ``parse.set_salt``/``parse.load_or_create_salt``.
     read_target_hashes: tuple[str, ...] = ()
     #: Capture-improvements addition (see module docstring): set on the
     #: turn that follows a HUMAN_TEXT event.
@@ -512,6 +596,27 @@ class Turn:
     #: Quality-markers addition (see module docstring): what this reply
     #: said at its end about finishing. The word only.
     result_marker: str | None = None
+    #: Metrics-capture addition (see module docstring): the capture tag
+    #: ending this reply.
+    cap: CaptureTag | None = None
+    #: Metrics-capture addition (see module docstring): characters of
+    #: capture notes injected just before this turn.
+    cap_note_chars: int = 0
+    #: Metrics-capture addition (see module docstring): why the preceding
+    #: brief said the work was handed to an agent. The word only.
+    spawn_marker: str | None = None
+    #: Metrics-capture addition (see module docstring): Agent/Task
+    #: tool_use id -> characters of the report it handed back.
+    agent_result_chars: dict = field(default_factory=dict)
+    #: Metrics-capture addition (see module docstring): what the preceding
+    #: human message or brief contained, as ``PROMPT_FLAGS`` words.
+    prompt_flags: tuple[str, ...] = ()
+    #: Metrics-capture addition (see module docstring): this turn's
+    #: ``ExitPlanMode`` plan, as counts.
+    plan_stats: PlanStats | None = None
+    #: Metrics-capture addition (see module docstring): slash commands
+    #: (and skills) you ran just before this turn, by name.
+    commands_run: tuple[str, ...] = ()
 
 
 @dataclass(slots=True)
@@ -550,6 +655,12 @@ class TranscriptMeta:
     #: Quality-signals addition (see module docstring): a workflow
     #: agent's end state in its finished run file.
     workflow_agent_state: str | None = None
+    #: Metrics-capture addition (see module docstring): the capture note
+    #: format version seen, the metric codes the notes asked for, and how
+    #: many notes were injected.
+    cap_version: int | None = None
+    cap_metrics: tuple[str, ...] = ()
+    cap_injections: int = 0
 
 
 @dataclass(slots=True)
@@ -943,6 +1054,9 @@ class ReportModel:
 __all__ = [
     "EventKind",
     "Event",
+    "CaptureTag",
+    "PlanStats",
+    "PROMPT_FLAGS",
     "Turn",
     "TranscriptMeta",
     "Diagnostics",

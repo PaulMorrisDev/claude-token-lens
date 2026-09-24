@@ -793,14 +793,14 @@ TABLE_COPY: dict[str, TableCopy] = {
         title="Why agents were run again",
         help=Help(
             shows="Each agent and model whose runs were started again with a brief that said why: [retry: model], "
-            "[retry: brief], [retry: tools] or [retry: other]. Claude writes these when CLAUDE.md asks it to (Quick "
-            "actions, \"Is any agent struggling?\").",
+            "[retry: brief], [retry: tools], [retry: scope] or [retry: other]. Claude writes these when metrics "
+            "capture or CLAUDE.md asks it to (Quick actions, \"Is any agent struggling?\").",
             read="Only retries that said why are here, on any model. A retry is matched to the agent run that ended "
             "last before it started, within two hours, preferring one whose files it edited and then one of the "
             "same agent type.",
             act="The model: a larger model is worth trying (Agent runs retried on a larger model counts these). The "
             "brief: say what done looks like in the task prompt. Tools: give the agent the tools and permissions it "
-            "needs.",
+            "needs. The task: split the work smaller before handing it over.",
         ),
         columns={
             "agent_type": ("Agent", "The agent type whose run was retried."),
@@ -809,6 +809,7 @@ TABLE_COPY: dict[str, TableCopy] = {
             "said_model": ("The model", "Retries that said it needed a stronger model."),
             "said_brief": ("The brief", "Retries that said the instructions were unclear."),
             "said_tools": ("Tools", "Retries that said it lacked a tool or permission."),
+            "said_scope": ("The task", "Retries that said the task itself changed or was cut too wide."),
             "said_other": ("Other", "Retries that gave another reason."),
             "last_retried": ("Last time", "The day the latest of these retried runs ended."),
         },
@@ -962,15 +963,15 @@ TABLE_COPY: dict[str, TableCopy] = {
         value_labels={"Agent": "Subagents", "Workflow": "Workflows"},
     ),
     "topology_report_proxy": TableCopy(
-        title="Length of each agent type's final reply",
+        title="Size of the report each agent type hands back",
         help=Help(
-            shows="The output tokens of each agent type's last reply, which is roughly the report it hands back.",
+            shows="The size of the report each agent type hands back, measured where it arrives.",
             read="Higher means longer reports carried in the main session afterwards.",
             act="For a type with long reports, add a length limit to its instructions.",
         ),
         columns={
-            "mean_proxy": ("Average final reply (tokens)", "Average output tokens of the last reply."),
-            "median_proxy": ("Typical final reply (tokens)", "The middle value."),
+            "mean_proxy": ("Average report (tokens)", "Average size of the report handed back."),
+            "median_proxy": ("Typical report (tokens)", "The middle value."),
         },
     ),
     "topology_skills_rollup": TableCopy(
@@ -987,7 +988,7 @@ TABLE_COPY: dict[str, TableCopy] = {
             "spawned_cost": ("Subagent cost", "Every subagent the skill started, and the ones they started."),
             "total_cost": ("", "Own cost plus subagent cost."),
             "mean_spawns": ("Subagents per use", "Average subagents started per use."),
-            "mean_report_proxy": ("Average report (tokens)", "Average length of those subagents' final replies."),
+            "mean_report_proxy": ("Average report (tokens)", "Average size of the reports those subagents handed back."),
         },
     ),
     "topology_spawn_depth": TableCopy(
@@ -2043,6 +2044,7 @@ TABLE_COPY: dict[str, TableCopy] = {
             "hook_blocking_error": "Hook blocked an action",
             "hook_system_message": "Hook message",
             "hook_additional_context": "Context added by a hook",
+            "capture_note": "Token Lens metrics capture note",
             "hook_cancelled": "Hook cancelled",
             # settings and lists that change mid-session
             "model": "Model changed",

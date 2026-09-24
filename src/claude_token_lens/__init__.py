@@ -88,7 +88,17 @@ __version__ = "0.5.2"
 #: written by a shell command to the same file edited with Edit. The same
 #: bump adds ``Turn.retry_marker``/``result_marker`` (the quality markers
 #: Claude can be asked to write; see ``quality.MARKER_LINES``).
-PARSER_VERSION = 14
+#:
+#: Bumped to 15 by the metrics-capture batch: parse.py reads capture tags
+#: (``Turn.cap``, ``spawn_marker``, ``retry_marker`` gains ``scope``) and
+#: capture notes (``Turn.cap_note_chars``, ``TranscriptMeta.cap_*``), and
+#: records ``agent_result_chars``, ``prompt_flags``, ``plan_stats`` and
+#: ``commands_run``. Three miscounts are fixed at the same time:
+#: ``read_target_hashes`` covered edits as well as reads, so every edited
+#: file looked re-read; ``hook_system_message`` lines (shown to you, never
+#: to the model) were counted as hook context; and task notifications
+#: weren't sized, so a background agent's report had no size.
+PARSER_VERSION = 15
 
 #: Bump when the model.py contract changes in a way that invalidates the
 #: on-disk digest cache (see model.py's module docstring for the contract
