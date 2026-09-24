@@ -145,6 +145,7 @@ PLACEMENT: dict[str, str] = {
     "habits_effort_fit": "keep",
     "habits_setups": "keep",
     "habits_outcomes": "keep",
+    "habits_self_report": "keep",
     "habits_prompt_flags": "advanced",
     "habits_skills": "advanced",
     "habits_tool_output": "advanced",
@@ -896,6 +897,36 @@ TABLE_COPY: dict[str, TableCopy] = {
         },
         value_labels={"met": "Met", "partly": "Partly", "missed": "Missed", "stopped": "Stopped early"},
     ),
+    "habits_self_report": TableCopy(
+        title="Claude's reports against your feedback",
+        help=Help(
+            shows="Each level and brief quality Claude reported, against your feedback: how many messages it "
+            "covers, the share that met or missed its goal, and the share your next message redid or "
+            "corrected.",
+            read="Met and missed are out of the messages your feedback covers; redone counts every message "
+            "tagged this way, feedback or not. A note below the table says whether work Claude called easy "
+            "missed its goal more often than normal work, once there is enough feedback on both to tell.",
+            act="If the note says easy work misses more than normal work, treat what Claude calls easy with "
+            "caution, including the effort suggestion built from it.",
+        ),
+        columns={
+            "signal": ("What Claude reported", "The level or brief quality it tagged the message with."),
+            "cycles": ("Messages", "Messages tagged this way."),
+            "rated": ("With your feedback", "Of those, the messages your feedback covers."),
+            "met_pct": ("Met the goal", "Of the rated messages, the share that met its goal."),
+            "missed_pct": ("Missed", "Of the rated messages, the share that missed its goal."),
+            "redone_pct": ("Redone by your next message", "Of all messages tagged this way, the share your "
+                           "next message redid or corrected."),
+        },
+        value_labels={
+            "level:easy": "Called easy",
+            "level:normal": "Called normal",
+            "level:hard": "Called hard",
+            "brief:clear": "Called a clear brief",
+            "brief:partial": "Called a partial brief",
+            "brief:vague": "Called a vague brief",
+        },
+    ),
     "habits_prompt_flags": TableCopy(
         title="What your messages contained",
         help=Help(
@@ -970,10 +1001,14 @@ TABLE_COPY: dict[str, TableCopy] = {
         title="What metrics capture cost",
         help=Help(
             shows="What metrics capture cost since it was turned on, measured from the transcripts: the notes "
-            "that ask Claude for tags, the tags Claude wrote, and /tl-feedback runs.",
+            "that ask Claude for tags, the tags Claude wrote, /tl-feedback runs, a weekly rate, and what that "
+            "buys you: the habits worth trying whose evidence needs capture or your feedback.",
             read="Share is out of what the captured sessions cost. Coverage is how many messages and agent "
-            "reports carried the tag they were asked for.",
-            act="The Capture tab turns metrics on and off, one by one or by level.",
+            "reports carried the tag they were asked for. What it's worth only counts habits whose evidence is "
+            "reported by Claude or your feedback, not everything the report finds; it says so instead of a "
+            "zero when nothing measured yet depends on either.",
+            act="The Capture tab turns metrics on and off, one by one or by level. Once what it's worth "
+            "clears what it costs by a comfortable margin, a lower level or fewer metrics may do.",
         ),
         columns={
             "metric": ("", "What is measured."),
@@ -990,6 +1025,8 @@ TABLE_COPY: dict[str, TableCopy] = {
             "report_coverage": "Agent reports tagged",
             "feedback_runs": "Feedback runs",
             "feedback_cost": "Feedback cost",
+            "weekly_cost": "Cost a week",
+            "habit_value": "What it's worth a week",
         },
         row_kinds={
             "note_tokens": "tokens",
@@ -1000,6 +1037,8 @@ TABLE_COPY: dict[str, TableCopy] = {
             "report_coverage": "pct",
             "feedback_runs": "int",
             "feedback_cost": "money",
+            "weekly_cost": "money",
+            "habit_value": "money",
         },
     ),
     "quality_by_agent": TableCopy(

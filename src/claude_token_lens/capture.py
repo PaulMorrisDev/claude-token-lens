@@ -31,7 +31,7 @@ or since the session started.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import timezone
+from datetime import datetime, timezone
 
 from . import capture_catalogue as catalogue
 from .context_files import _Carry, _parse_ts
@@ -735,6 +735,17 @@ def enough_data(use: CaptureUsage, metric_id: str, signal_sessions: int = 0) -> 
     return use.answers.get(metric_id, 0), target
 
 
+def weekly_cost(use: CaptureUsage, now: datetime | None = None) -> float | None:
+    """What capture has cost a week, from ``use.cost`` spread over the
+    time since ``use.since``. ``None`` without a start time to divide by,
+    or less than a day since it (too little to price a week from)."""
+    start = _start(use.since)
+    if start is None:
+        return None
+    days = ((now or datetime.now(timezone.utc)) - start).total_seconds() / 86400
+    return use.cost / (days / 7) if days >= 1 else None
+
+
 __all__ = [
     "CaptureUsage",
     "Cycle",
@@ -756,4 +767,5 @@ __all__ = [
     "metric_estimates",
     "prompt_cycles",
     "usage",
+    "weekly_cost",
 ]

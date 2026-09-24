@@ -225,6 +225,7 @@ def test_every_table_is_there_even_with_nothing_to_show():
         "habits_effort_fit",
         "habits_setups",
         "habits_outcomes",
+        "habits_self_report",
         "habits_prompt_flags",
         "habits_skills",
         "habits_tool_output",
@@ -365,6 +366,85 @@ def test_the_capture_section_says_what_capture_cost_and_since_when(tmp_path, pri
     assert section.key == "capture"
     off = dict(habits.capture_section(NS(sessions=[]), pricing, NS(level="off", enabled_at="")).tables[0].rows)
     assert off["level"] == catalogue.LEVEL_TITLES["off"] and off["since"] == ""
+
+
+def test_the_capture_section_prices_its_weekly_cost_against_what_depends_on_it(tmp_path, pricing):
+    config = NS(level="standard", enabled_at="2026-09-01T08:00:00+00:00")
+    table = _table(habits.capture_section(_tagged_session(tmp_path), pricing, config), "capture_usage")
+    rows = dict(table.rows)
+    # "since" is far enough in the past for a weekly rate to be worked
+    # out (0, since this fixture has no injected capture note to price);
+    # nothing in it is worth enough (or reported/rated) to build a habit
+    # whose evidence needs capture or feedback, so it says so instead of
+    # a zero value.
+    assert rows["weekly_cost"] == pytest.approx(0.0)
+    assert rows["habit_value"] is None
+    assert table.notes and "nothing" in table.notes[0].lower()
+
+
+def test_the_capture_section_prices_nothing_when_capture_never_started(pricing):
+    off = habits.capture_section(NS(sessions=[]), pricing, NS(level="off", enabled_at=""))
+    rows = dict(_table(off, "capture_usage").rows)
+    assert rows["weekly_cost"] is None and rows["habit_value"] is None
+
+
+# -- Claude's reports against your feedback --------------------------------------
+
+
+def test_self_report_calibration_flags_easy_work_that_misses_more_than_normal():
+    easy, normal = CaptureTag(level="easy"), CaptureTag(level="normal")
+    h = Habits(cycles=[
+        *(_cycle(tag=easy, outcome="missed") for _ in range(3)),
+        *(_cycle(tag=easy, outcome="met") for _ in range(2)),
+        *(_cycle(tag=normal, outcome="missed") for _ in range(1)),
+        *(_cycle(tag=normal, outcome="met") for _ in range(4)),
+    ])
+    calibration = habits._self_report_calibration(h)
+    assert calibration["contradicts"] is True
+    assert calibration["easy_missed_pct"] == pytest.approx(60.0)
+    assert calibration["normal_missed_pct"] == pytest.approx(20.0)
+
+
+def test_too_little_feedback_leaves_self_report_calibration_unknown():
+    h = Habits(cycles=[_cycle(tag=CaptureTag(level="easy")) for _ in range(8)])
+    assert habits._self_report_calibration(h) is None
+    assert _table(habits.section_from(h), "habits_self_report").notes == []
+
+
+def test_the_self_report_table_only_lists_words_that_were_tagged():
+    h = Habits(cycles=[
+        _cycle(tag=CaptureTag(level="hard"), redone=True),
+        _cycle(tag=CaptureTag(level="hard")),
+        _cycle(tag=CaptureTag(brief="vague"), outcome="met"),
+    ])
+    rows = _rows(_table(habits.section_from(h), "habits_self_report"))
+    assert {r["signal"] for r in rows} == {"level:hard", "brief:vague"}
+    hard = next(r for r in rows if r["signal"] == "level:hard")
+    assert hard["cycles"] == 2 and hard["rated"] == 0 and hard["redone_pct"] == pytest.approx(50.0)
+    vague = next(r for r in rows if r["signal"] == "brief:vague")
+    assert vague["rated"] == 1 and vague["met_pct"] == pytest.approx(100.0) and vague["missed_pct"] == 0.0
+
+
+def test_feedback_that_contradicts_easy_reports_lowers_effort_fits_confidence():
+    easy, normal = CaptureTag(level="easy"), CaptureTag(level="normal")
+    h = Habits(cycles=[
+        *(_cycle(tag=easy, effort="high", thinking_cost=0.2, outcome="missed") for _ in range(5)),
+        *(_cycle(tag=easy, effort="high", thinking_cost=0.2, outcome="met") for _ in range(3)),
+        *(_cycle(tag=normal, outcome="missed") for _ in range(1)),
+        *(_cycle(tag=normal, outcome="met") for _ in range(4)),
+    ])
+    items = habits.playbook(h)
+    effort = _by_key(items)["effort_fit"]
+    assert effort.n == 8  # medium confidence by count alone (n >= 8)
+    assert "low confidence" in effort.evidence
+    row = next(r for r in _rows(habits.playbook_table(h, items)) if r["habit"] == "effort_fit")
+    assert row["confidence"] == "low"
+    note = _table(habits.section_from(h), "habits_self_report").notes[0]
+    assert "62%" in note or "63%" in note  # 5/8 missed
+
+
+def test_confidence_ignores_self_report_calibration_for_other_habits():
+    assert habits.confidence(Item("tool_loops", None, 20, ("inferred",), ""), self_report_ok=False) == "medium"
 
 
 # -- the best setup per kind of task -----------------------------------------------

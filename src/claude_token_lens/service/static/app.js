@@ -1521,6 +1521,12 @@
         container.appendChild(el("p", { text: "No captured sessions yet: the note is added to sessions and subagents started after capture was turned on." }));
       }
     }
+    if (data.roi && data.roi.cost && data.roi.cost.usd > 0) {
+      var roiText = data.roi.measured
+        ? "Capture cost about " + data.roi.cost.text + "; suggestions that rely on it are worth about " + data.roi.value.text + "."
+        : "Capture cost about " + data.roi.cost.text + "; nothing measured yet relies on it.";
+      container.appendChild(el("p", { class: "notes", text: roiText }));
+    }
     if (data.history && data.history.sessions) {
       container.appendChild(
         el("p", {

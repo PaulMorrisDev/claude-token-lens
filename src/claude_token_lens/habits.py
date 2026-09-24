@@ -57,6 +57,10 @@ _BLOCKED = ("automode-blocked", "automode-unavailable")
 _REFUSED = ("permission-rule", "user-rejected")
 _EXPLORE_AGENT = "Explore"
 _HIGH_EFFORT = ("high", "xhigh", "max")
+#: Playbook items built from the ``level`` Claude reported, whose
+#: confidence is capped when self-reports don't carry signal (see
+#: ``_self_report_calibration``).
+_LEVEL_ITEMS = frozenset({"effort_fit", "skip_plan_easy", "plan_hard"})
 
 #: A message whose main session ran this many reads and searches itself
 #: did research an Explore agent could have done.
@@ -1146,6 +1150,14 @@ def playbook(h: Habits) -> list[Item]:
     """The habits worth trying, the largest weekly saving first; items
     without an estimate come after, most evidence first."""
     items = [item for item in (build(h) for build in _BUILDERS) if item is not None]
+    calibration = _self_report_calibration(h)
+    if calibration is not None and calibration["contradicts"]:
+        for item in items:
+            if item.key in _LEVEL_ITEMS:
+                item.evidence += (
+                    " Your feedback says work Claude called easy missed its goal more often than normal "
+                    "work, so this is low confidence."
+                )
     items.sort(key=lambda i: (i.saving is None, -(i.saving or 0.0), -i.n))
     return items
 
@@ -1184,11 +1196,55 @@ def trend(h: Habits, item: Item) -> tuple[str, str, float]:
     return "steady", weeks, 0.0
 
 
-def confidence(item: Item) -> str:
+def confidence(item: Item, *, self_report_ok: bool | None = None) -> str:
+    """``self_report_ok`` is ``_self_report_calibration``'s verdict on
+    whether the ``level`` Claude reports carries signal (``None`` while
+    there isn't enough feedback to tell): ``False`` caps a
+    ``_LEVEL_ITEMS`` habit at low confidence, whatever ``item.n`` says,
+    because the reports it's built on may not be reliable."""
+    if self_report_ok is False and item.key in _LEVEL_ITEMS:
+        return "low"
     level = "high" if item.n >= 20 else "medium" if item.n >= 8 else "low"
     if item.sources == ("inferred",) and level == "high":
         return "medium"
     return level
+
+
+def _self_report_calibration(h: Habits) -> dict | None:
+    """Whether the ``level`` word Claude reports carries signal: work it
+    called "easy" missing its goal (your feedback, never its own report)
+    more often than "normal" work, with at least ``MIN_GROUP`` rated
+    messages on each side to compare. ``None`` while there isn't enough
+    feedback yet to tell either way."""
+    def _rated(word: str) -> list[CycleFact]:
+        return [c for c in h.cycles if c.tag is not None and c.tag.level == word and c.outcome]
+
+    easy, normal = _rated("easy"), _rated("normal")
+    if len(easy) < MIN_GROUP or len(normal) < MIN_GROUP:
+        return None
+    easy_missed = _pct(sum(c.outcome == "missed" for c in easy), len(easy)) or 0.0
+    normal_missed = _pct(sum(c.outcome == "missed" for c in normal), len(normal)) or 0.0
+    return {
+        "easy_missed_pct": easy_missed,
+        "normal_missed_pct": normal_missed,
+        "contradicts": easy_missed > normal_missed,
+    }
+
+
+def _self_report_note(h: Habits) -> str | None:
+    calibration = _self_report_calibration(h)
+    if calibration is None:
+        return None
+    easy, normal = calibration["easy_missed_pct"], calibration["normal_missed_pct"]
+    if calibration["contradicts"]:
+        return (
+            f"Work Claude called easy missed its goal {easy:.0f}% of the time, more often than normal work at "
+            f"{normal:.0f}%: treat what it calls easy with caution, including the effort suggestion above."
+        )
+    return (
+        f"Work Claude called easy missed its goal {easy:.0f}% of the time, no more often than normal work at "
+        f"{normal:.0f}%: its reports carry signal."
+    )
 
 
 # -- tables --------------------------------------------------------------------
@@ -1200,6 +1256,8 @@ def _money_or_none(usd: float | None) -> float | None:
 
 def playbook_table(h: Habits, items: list[Item]) -> Table:
     weeks = h.span_weeks
+    calibration = _self_report_calibration(h)
+    self_report_ok = None if calibration is None else not calibration["contradicts"]
     rows = []
     for item in items:
         word, spark, _ = trend(h, item)
@@ -1213,7 +1271,7 @@ def playbook_table(h: Habits, items: list[Item]) -> Table:
             BASES[item.key],
             item.n,
             item.source,
-            confidence(item),
+            confidence(item, self_report_ok=self_report_ok),
             word,
             spark,
         ])
@@ -1684,6 +1742,52 @@ def _outcomes_table(h: Habits) -> Table:
     )
 
 
+def _self_report_row(kind: str, word: str, cycles: list[CycleFact]) -> list | None:
+    if not cycles:
+        return None
+    rated = [c for c in cycles if c.outcome]
+    return [
+        f"{kind}:{word}",
+        len(cycles),
+        len(rated),
+        _pct(sum(c.outcome == "met" for c in rated), len(rated)),
+        _pct(sum(c.outcome == "missed" for c in rated), len(rated)),
+        _pct(sum(c.redone for c in cycles), len(cycles)),
+    ]
+
+
+def _self_report_table(h: Habits) -> Table:
+    """Claude's own reports against your feedback: for each ``level`` and
+    ``brief`` word it tagged a message with, how many messages your
+    feedback covers, the share that met or missed its goal, and the
+    share your next message redid -- so a report that doesn't hold up
+    against what you actually said shows up here, not just as a hunch."""
+    rows = []
+    for word in catalogue.TAG_VOCAB["level"]:
+        row = _self_report_row("level", word, [c for c in h.cycles if c.tag is not None and c.tag.level == word])
+        if row:
+            rows.append(row)
+    for word in catalogue.TAG_VOCAB["brief"]:
+        row = _self_report_row("brief", word, [c for c in h.cycles if c.tag is not None and c.tag.brief == word])
+        if row:
+            rows.append(row)
+    note = _self_report_note(h)
+    return Table(
+        name="habits_self_report",
+        title="Claude's reports against your feedback",
+        columns=[
+            Column(key="signal", label="What Claude reported", kind="str"),
+            Column(key="cycles", label="Messages", kind="int"),
+            Column(key="rated", label="With your feedback", kind="int"),
+            Column(key="met_pct", label="Met the goal", kind="pct"),
+            Column(key="missed_pct", label="Missed", kind="pct"),
+            Column(key="redone_pct", label="Redone by your next message", kind="pct"),
+        ],
+        rows=rows,
+        notes=[note] if note else [],
+    )
+
+
 def _skills_table(h: Habits) -> Table:
     stats: dict[str, dict] = {}
 
@@ -1790,6 +1894,7 @@ def section_from(h: Habits) -> Section:
             _effort_table(h),
             _setups_table(h),
             _outcomes_table(h),
+            _self_report_table(h),
             _prompt_flags_table(h),
             _skills_table(h),
             _tool_output_table(h),
@@ -1824,12 +1929,28 @@ def unfit_agents(rows: list[dict]) -> dict[str, str]:
 # -- the capture section -------------------------------------------------------
 
 
-def capture_section(corpus, pricing: Pricing | None, capture_config) -> Section:
+def capture_dependent_value(h: Habits, items: list[Item] | None = None) -> float | None:
+    """What metrics capture is buying you a week: the habits worth trying
+    whose evidence needs it or your feedback (a ``reported`` or ``your
+    feedback`` source), added up and spread over the weeks ``h`` covers.
+    ``None`` when nothing measured yet depends on either."""
+    items = playbook(h) if items is None else items
+    dependent = [i for i in items if i.saving and ("reported" in i.sources or "your feedback" in i.sources)]
+    if not dependent:
+        return None
+    return sum(i.saving for i in dependent) / h.span_weeks
+
+
+def capture_section(corpus, pricing: Pricing | None, capture_config, *, ratings: dict | None = None) -> Section:
     """The "capture" report section: what metrics capture cost while it
-    was on, measured from the transcripts (``capture.usage``)."""
+    was on, measured from the transcripts (``capture.usage``), a week
+    (``capture.weekly_cost``), and what the habits that depend on it or
+    your feedback are worth a week (``capture_dependent_value``)."""
     level = getattr(capture_config, "level", "off") or "off"
     since = getattr(capture_config, "enabled_at", "") or ""
     use = capture_mod.usage(corpus, pricing, since=since)
+    weekly = capture_mod.weekly_cost(use)
+    value = capture_dependent_value(collect(corpus, pricing, ratings=ratings))
     rows = [
         ["level", catalogue.LEVEL_TITLES.get(level, level)],
         ["since", since[:10] if since else ""],
@@ -1841,12 +1962,18 @@ def capture_section(corpus, pricing: Pricing | None, capture_config) -> Section:
         ["report_coverage", use.report_coverage],
         ["feedback_runs", use.feedback_runs],
         ["feedback_cost", use.feedback_cost],
+        ["weekly_cost", weekly],
+        ["habit_value", value],
     ]
     table = Table(
         name="capture_usage",
         title="What metrics capture cost",
         columns=[Column(key="metric", label="Metric", kind="str"), Column(key="value", label="Value", kind="str")],
         rows=rows,
+        notes=[] if value is not None else [
+            "Nothing measured yet relies on metrics capture or your feedback, so there's nothing to weigh its "
+            "cost against."
+        ],
     )
     return Section(key="capture", title="Metrics capture", tables=[table])
 
@@ -1862,6 +1989,7 @@ __all__ = [
     "MISSING_LINES",
     "Piece",
     "build_section",
+    "capture_dependent_value",
     "capture_section",
     "collect",
     "confidence",

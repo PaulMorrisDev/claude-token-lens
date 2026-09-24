@@ -855,7 +855,7 @@ and the notes and tags measured in transcripts since `enabled_at`
 part until the store changes; an older copy is served while a fresh
 one is built in the background.
 
-`data`: `{"config", "warning", "samples", "levels", "sections", "measured", "history", "hooks", "billing", "banner", "commands"}`:
+`data`: `{"config", "warning", "samples", "levels", "sections", "measured", "history", "hooks", "billing", "roi", "banner", "commands"}`:
 
 - `config`: the same block as `/api/health`'s `capture`, without `hooks_ok`.
 - `warning`: the cost warning the dashboard repeats before any change
@@ -893,9 +893,19 @@ one is built in the background.
   `missing_events`, `problems` (a count: problem text can hold a
   path) and `connect_command`.
 - `billing`: `mode` and `basis` (what the amounts are).
+- `roi`: what capture is costing against what depends on it, both
+  spread over a week (`capture.weekly_cost`,
+  `habits.capture_dependent_value`): `{"cost", "value", "measured"}`,
+  `cost` and `value` each `{usd, text}` amounts in billing units
+  (`units.Units.money`). `null` while there's no start time to price a
+  weekly cost from (capture off, or turned on too recently). `value` is
+  `null` and `measured` is `false` while nothing measured yet — no habit
+  worth trying whose evidence needs capture's reports or your feedback —
+  depends on either; the dashboard says so instead of showing a zero.
 - `banner`: `on`, `headline`, `notes` (end time passed, hook entries
   missing, no notes seen, low coverage, enough collected, the skill
-  needs installing) and `feedback_note`.
+  needs installing, what capture costs a week against what depends on
+  it) and `feedback_note`.
 - `feedback`: `skill` (`installed`, `outdated`, `foreign`, `missing`,
   or `null` while the skill is off), `runs` and `answered` (its runs
   over the last `days` days), `ratings` (sessions rated on the

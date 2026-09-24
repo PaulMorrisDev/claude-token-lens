@@ -366,8 +366,23 @@ def _plural(count: int, word: str) -> str:
     return f"{count} {word}{'' if count == 1 else 's'}"
 
 
+def _roi(weekly_cost: float | None, dependent_value: float | None, units) -> dict | None:
+    """What capture costs a week against what suggestions that depend on
+    it or your feedback are worth a week, in billing units. ``None``
+    while there's no start time to price a weekly cost from (capture
+    off, or never turned on with a start time). ``value`` stays ``None``,
+    not a zero, while nothing measured yet depends on either."""
+    if weekly_cost is None:
+        return None
+    return {
+        "cost": _money(units, weekly_cost, "a week"),
+        "value": _money(units, dependent_value, "a week") if dependent_value is not None else None,
+        "measured": dependent_value is not None,
+    }
+
+
 def _banner(
-    capture, config, levels, measured, use, rows, hooks, started_since, skill=None, brief_skill=None
+    capture, config, levels, measured, use, rows, hooks, started_since, skill=None, brief_skill=None, roi=None
 ) -> dict:
     """The banner's lines: a headline, then any notes worth acting on."""
     notes: list[str] = []
@@ -430,6 +445,14 @@ def _banner(
         notes.append(
             f"Claude tagged only {_pct(use.coverage)} of your messages, so some figures rest on few answers."
         )
+    if roi is not None and roi["cost"]["usd"] > 0 and roi["cost"]["text"]:
+        if roi["measured"]:
+            notes.append(
+                f"Capture cost about {roi['cost']['text']}; suggestions that rely on it are worth about "
+                f"{roi['value']['text']}."
+            )
+        else:
+            notes.append(f"Capture cost about {roi['cost']['text']}; nothing measured yet relies on it.")
     counted = [r for r in rows if r["enough"] is not None and r["asks_claude"]]
     ready = [r for r in counted if r["enough"]]
     if counted and len(ready) == len(counted):
@@ -456,6 +479,8 @@ def view(
     brief_skill: str | None = None,
     ratings: int | None = None,
     statusline: bool | None = None,
+    weekly_cost: float | None = None,
+    dependent_value: float | None = None,
     now: datetime | None = None,
 ) -> dict:
     """Everything the Capture tab and the banner show.
@@ -474,6 +499,11 @@ def view(
     ``ratings`` how many sessions you rated on the dashboard (each only
     while its toggle is on). ``statusline`` is whether Claude Code's
     status line is this tool's (``None`` when not checked).
+    ``weekly_cost`` is ``capture.weekly_cost(use)`` and ``dependent_value``
+    ``habits.capture_dependent_value`` over the same window: together
+    they're the capture-pays-for-itself figures in ``roi`` and the
+    banner (``None`` while there's no measured cost to weigh anything
+    against).
     """
     signal_sessions = signal_sessions or {}
     config = config_block(capture, now)
@@ -502,6 +532,7 @@ def view(
         if past is not None
         else None
     )
+    roi = _roi(weekly_cost, dependent_value, units)
     return {
         "config": config,
         "warning": WARNING,
@@ -515,8 +546,9 @@ def view(
             "mode": units.billing_mode if units is not None else "",
             "basis": units.basis() if units is not None else "",
         },
+        "roi": roi,
         "banner": _banner(
-            capture, config, levels, measured, use, rows, hooks_data, started_since, skill, brief_skill
+            capture, config, levels, measured, use, rows, hooks_data, started_since, skill, brief_skill, roi
         ),
         "feedback": {
             "skill": skill,

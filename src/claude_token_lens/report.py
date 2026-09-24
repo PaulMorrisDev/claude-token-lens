@@ -1629,7 +1629,7 @@ def build_report(
         sections.append(context_budget.build_section(cb, snapshots=snapshots, usage_log_rows=usage_log_rows))
 
     if _want("capture"):
-        sections.append(habits.capture_section(corpus, pricing, config.capture))
+        sections.append(habits.capture_section(corpus, pricing, config.capture, ratings=ratings))
 
     if _want("scorecard"):
         sections.append(_build_scorecard_section(rs, ls, ts, tp, cs, pricing_coverage, diagnostics, session_records, snapshots, config, scorecard_th))
