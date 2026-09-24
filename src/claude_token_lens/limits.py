@@ -738,6 +738,51 @@ def csv_cross_check(rows: Sequence[dict], stats: LimitStats, th: LimitThresholds
     )
 
 
+def signals_cross_check(session_signals, stats: LimitStats) -> Table:
+    """Cross-check the free ``waits``/``turn_signals`` capture signals
+    (SIG-2, SIG-3) against the transcript-derived limit-hit count in
+    ``stats``: how many sessions logged a ``quota`` wait (a claude.ai
+    usage-limit auto-resume notification) or a ``rate_limit``/
+    ``overloaded`` ``StopFailure``, against how many transcript-derived
+    ``session_limit``/``weekly_limit`` hits ``stats`` recorded in total.
+
+    ``session_signals`` is ``signals.by_session(...)``'s own return
+    shape: ``{session_id: signals.SessionSignals}``. Unlike
+    :func:`csv_cross_check`, neither signal names its window
+    (``five_hour``/``seven_day``), so this compares one combined figure
+    per side, not a per-window breakdown -- a sanity check, not a second
+    detector, same posture as :func:`csv_cross_check` (see its own
+    docstring for why exact agreement isn't expected between two
+    independently-sampled sources).
+    """
+    type_stats = stats.by_key()
+    transcript_hits = sum(r.session_limit_hits + r.weekly_limit_hits for r in type_stats)
+    quota_waits = sum(seen.waits.get("quota", 0) for seen in session_signals.values())
+    limit_failures = sum(
+        seen.failures.get("rate_limit", 0) + seen.failures.get("overloaded", 0) for seen in session_signals.values()
+    )
+    rows = [
+        ["quota wait signals (Notification)", quota_waits, transcript_hits, transcript_hits - quota_waits],
+        ["rate_limit/overloaded turn failures (StopFailure)", limit_failures, transcript_hits, transcript_hits - limit_failures],
+    ]
+    return Table(
+        name="limits_signals_cross_check",
+        title="Free-signal cross-check",
+        columns=[
+            Column(key="signal", label="Signal", kind="str"),
+            Column(key="signal_count", label="Logged", kind="int"),
+            Column(key="transcript_hits", label="Transcript-derived hits (both windows)", kind="int"),
+            Column(key="delta", label="Transcript minus signal", kind="int"),
+        ],
+        rows=rows,
+        notes=[
+            "Neither free signal names a five_hour/seven_day window, so both rows compare against the combined "
+            "session_limit + weekly_limit transcript count. Independent samples, not the same detector -- see "
+            "the function docstring.",
+        ],
+    )
+
+
 __all__ = [
     "ASSUMPTIONS",
     "HIT_KINDS",
@@ -751,4 +796,5 @@ __all__ = [
     "build_section",
     "read_usage_log_rows",
     "csv_cross_check",
+    "signals_cross_check",
 ]

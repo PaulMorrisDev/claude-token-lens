@@ -1253,6 +1253,24 @@
   function renderHealthBanner(health, previous) {
     var banner = document.getElementById("health-banner");
     if (!banner) return;
+    // UX-6/9: this is an aria-live="polite" region polled every 3-60s
+    // (see pollHealth) -- rebuilding its children on every poll, even
+    // when nothing about to be shown actually changed, used to tear
+    // down and recreate the same <p>/<progress> each time, and a
+    // screen reader has no way to tell that apart from genuinely new
+    // content, so it re-announced an unchanged "Scanning... 4 of 12"
+    // every few seconds. Skip the rebuild entirely when what would be
+    // shown is identical to what is already on screen.
+    var scanNow = (health && health.scan) || {};
+    var sig = !health
+      ? "unreachable"
+      : health.status === "ok"
+        ? previous === "starting" || banner.getAttribute("data-scan-finished") === "true"
+          ? "scan-finished"
+          : "hidden"
+        : ["active", health.status, health.message || "", scanNow.total || 0, scanNow.done || 0].join("|");
+    if (banner.getAttribute("data-render-sig") === sig) return;
+    banner.setAttribute("data-render-sig", sig);
     clear(banner);
     banner.className = "health-banner";
     if (!health) {
@@ -1360,13 +1378,60 @@
     return tabLink("capture", text);
   }
 
+  // UX-6/9: both the capture-invite "Hide" and a notes dismissal used to
+  // be (or would otherwise have been) permanent, via a bare "1" in
+  // localStorage -- once hidden, hidden forever, even after the notes
+  // themselves changed. A snoozed key instead stores the dismissal
+  // timestamp; snoozed() below treats it as expired past BANNER_SNOOZE_MS,
+  // so a quiet banner returns on its own after a week rather than needing
+  // the config wiped to see it again. A legacy bare "1" reads as an
+  // ancient timestamp and is therefore already-expired -- it naturally
+  // self-heals to "not hidden" the first time this runs, with no
+  // migration code needed.
+  var BANNER_SNOOZE_MS = 7 * 24 * 60 * 60 * 1000;
+
+  function snoozed(key) {
+    var raw = storageGet(key);
+    if (!raw) return false;
+    var ts = Number(raw);
+    return isFinite(ts) && Date.now() - ts < BANNER_SNOOZE_MS;
+  }
+
+  function notesSignature(notes) {
+    return (notes || []).join("\n");
+  }
+
+  // The notes list keys its own snooze to its exact current content
+  // (timestamp + signature, "|"-joined) so notes that changed since the
+  // dismissal -- a new warning, say -- show again immediately rather
+  // than staying suppressed for the rest of the week.
+  function notesSnoozed(notes) {
+    var raw = storageGet("tls:captureNotesHidden");
+    if (!raw) return false;
+    var sep = raw.indexOf("|");
+    if (sep === -1) return false;
+    var ts = Number(raw.slice(0, sep));
+    return isFinite(ts) && raw.slice(sep + 1) === notesSignature(notes) && Date.now() - ts < BANNER_SNOOZE_MS;
+  }
+
   function renderCaptureBanner(data) {
     var banner = document.getElementById("capture-banner");
     if (!banner) return;
-    clear(banner);
     var info = data.banner || {};
+    var notes = info.notes || [];
+    var notesVisible = notes.length > 0 && !notesSnoozed(notes);
+    var inviteHidden = !info.on && snoozed("tls:captureInviteHidden");
+    var hidden = inviteHidden && !info.feedback_note && !notesVisible;
+    // Same "skip the rebuild when nothing shown would change" guard as
+    // renderHealthBanner -- this is an aria-live="polite" region too,
+    // and gets re-rendered on every capture poll (see updateCaptureBanner),
+    // not only on an actual content change.
+    var sig = hidden ? "hidden" : ["shown", info.on ? "1" : "0", info.headline || "", info.feedback_note || "", notesVisible ? notesSignature(notes) : ""].join("~");
+    if (banner.getAttribute("data-render-sig") === sig) return;
+    banner.setAttribute("data-render-sig", sig);
+    clear(banner);
     banner.className = "capture-banner " + (info.on ? "capture-on" : "capture-off");
-    if (!info.on && storageGet("tls:captureInviteHidden") === "1" && !info.feedback_note && !(info.notes || []).length) {
+    if (hidden) {
       banner.hidden = true;
       return;
     }
@@ -1377,25 +1442,31 @@
       line.appendChild(tabLink("habits", "Work habits"));
     }
     if (!info.on) {
-      var hide = el("button", { type: "button", class: "link-button capture-hide", text: "Hide" });
+      var hide = el("button", { type: "button", class: "link-button capture-hide", text: "Hide for a week" });
       hide.addEventListener("click", function () {
-        storageSet("tls:captureInviteHidden", "1");
+        storageSet("tls:captureInviteHidden", String(Date.now()));
         renderCaptureBanner(data);
       });
       line.appendChild(document.createTextNode(" "));
       line.appendChild(hide);
     }
     banner.appendChild(line);
-    if ((info.notes || []).length) {
+    if (notesVisible) {
       banner.appendChild(
         el(
           "ul",
           { class: "capture-notes" },
-          info.notes.map(function (note) {
+          notes.map(function (note) {
             return el("li", { text: note });
           })
         )
       );
+      var dismissNotes = el("button", { type: "button", class: "link-button capture-hide", text: "Dismiss for a week" });
+      dismissNotes.addEventListener("click", function () {
+        storageSet("tls:captureNotesHidden", Date.now() + "|" + notesSignature(notes));
+        renderCaptureBanner(data);
+      });
+      banner.appendChild(dismissNotes);
     }
     if (info.feedback_note) banner.appendChild(el("p", { class: "capture-feedback-note", text: info.feedback_note }));
     banner.hidden = false;
@@ -2231,6 +2302,69 @@
     return set;
   }
 
+  // UX-6/9: every timeline marker used to be an identical circle,
+  // distinguished only by fill colour -- color alone (WCAG 1.4.1), so a
+  // colorblind viewer or a low-color display can't tell recache from
+  // compaction from spawn, etc. Each kind now also gets its own shape;
+  // colour stays as a second, redundant cue rather than the only one.
+  // ``titleText`` is optional (the legend's own tiny icons pass none).
+  function markerGlyph(shape, cx, cy, r, fill, titleText) {
+    var title = titleText ? "<title>" + titleText + "</title>" : "";
+    var pts;
+    switch (shape) {
+      case "square":
+        return (
+          '<rect x="' + (cx - r * 0.9).toFixed(1) + '" y="' + (cy - r * 0.9).toFixed(1) +
+          '" width="' + (r * 1.8).toFixed(1) + '" height="' + (r * 1.8).toFixed(1) +
+          '" fill="' + fill + '">' + title + "</rect>"
+        );
+      case "triangle-up":
+      case "triangle-down":
+        var flip = shape === "triangle-down" ? -1 : 1;
+        pts = [
+          [cx, cy - flip * r * 1.3],
+          [cx - r * 1.2, cy + flip * r * 0.9],
+          [cx + r * 1.2, cy + flip * r * 0.9],
+        ];
+        return (
+          '<polygon points="' +
+          pts.map(function (p) { return p[0].toFixed(1) + "," + p[1].toFixed(1); }).join(" ") +
+          '" fill="' + fill + '">' + title + "</polygon>"
+        );
+      case "diamond":
+        pts = [
+          [cx, cy - r * 1.3],
+          [cx + r * 1.3, cy],
+          [cx, cy + r * 1.3],
+          [cx - r * 1.3, cy],
+        ];
+        return (
+          '<polygon points="' +
+          pts.map(function (p) { return p[0].toFixed(1) + "," + p[1].toFixed(1); }).join(" ") +
+          '" fill="' + fill + '">' + title + "</polygon>"
+        );
+      case "plus":
+        return (
+          '<rect x="' + (cx - r * 0.35).toFixed(1) + '" y="' + (cy - r * 1.2).toFixed(1) +
+          '" width="' + (r * 0.7).toFixed(1) + '" height="' + (r * 2.4).toFixed(1) + '" fill="' + fill + '"></rect>' +
+          '<rect x="' + (cx - r * 1.2).toFixed(1) + '" y="' + (cy - r * 0.35).toFixed(1) +
+          '" width="' + (r * 2.4).toFixed(1) + '" height="' + (r * 0.7).toFixed(1) + '" fill="' + fill + '">' + title + "</rect>"
+        );
+      case "x":
+        return (
+          '<line x1="' + (cx - r * 1.1).toFixed(1) + '" y1="' + (cy - r * 1.1).toFixed(1) +
+          '" x2="' + (cx + r * 1.1).toFixed(1) + '" y2="' + (cy + r * 1.1).toFixed(1) +
+          '" stroke="' + fill + '" stroke-width="1.6"></line>' +
+          '<line x1="' + (cx - r * 1.1).toFixed(1) + '" y1="' + (cy + r * 1.1).toFixed(1) +
+          '" x2="' + (cx + r * 1.1).toFixed(1) + '" y2="' + (cy - r * 1.1).toFixed(1) +
+          '" stroke="' + fill + '" stroke-width="1.6">' + title + "</line>"
+        );
+      case "circle":
+      default:
+        return '<circle cx="' + cx.toFixed(1) + '" cy="' + cy.toFixed(1) + '" r="' + r + '" fill="' + fill + '">' + title + "</circle>";
+    }
+  }
+
   function buildSessionTimeline(session) {
     var series = findPerTurnSeries(session);
     if (!series) {
@@ -2277,6 +2411,9 @@
     // dynamic value embedded below is either a fixed-precision number
     // or passed through `escapeHtml`.
     var markerColors = { recache: "#c0392b", compaction: "#a06a00", spawn: "#2563eb", human: "#1a7f37" };
+    // UX-6/9: one shape per kind (see markerGlyph above), never reused
+    // across the two marker sets below -- 7 kinds, 7 distinct shapes.
+    var markerShapes = { recache: "circle", compaction: "square", spawn: "triangle-up", human: "diamond" };
     // v3-limits wiring: distinct colours from markerColors above, drawn
     // in the blank strip above the context-size line (y well below
     // `padding`) rather than pinned to a turn's own point -- a
@@ -2287,6 +2424,7 @@
     // between the session's own `first_ts`/`last_ts` (docs/limits.md's
     // "Session-timeline marker contract" / docs/ui.md).
     var limitMarkerColors = { limit_hit: "#9333ea", limit_resume: "#0891b2", agent_terminated: "#ea580c" };
+    var limitMarkerShapes = { limit_hit: "triangle-down", limit_resume: "plus", agent_terminated: "x" };
     var svgParts = [];
     svgParts.push(
       '<svg viewBox="0 0 ' + width + " " + height + '" class="timeline-svg" role="img" aria-label="' +
@@ -2323,15 +2461,7 @@
       kinds.forEach(function (kind) {
         var label = escapeHtml("Turn " + (turnIndex || i + 1) + ": " + kind);
         svgParts.push(
-          '<circle cx="' +
-            points[i][0].toFixed(1) +
-            '" cy="' +
-            points[i][1].toFixed(1) +
-            '" r="3" fill="' +
-            (markerColors[kind] || "var(--muted)") +
-            '"><title>' +
-            label +
-            "</title></circle>"
+          markerGlyph(markerShapes[kind] || "circle", points[i][0], points[i][1], 3, markerColors[kind] || "var(--muted)", label)
         );
       });
     });
@@ -2352,15 +2482,7 @@
         var label = escapeHtml(marker.kind + (subkind ? " (" + subkind + ")" : "") + " at " + marker.ts);
         limitKindsSeen[marker.kind] = true;
         svgParts.push(
-          '<circle cx="' +
-            mx.toFixed(1) +
-            '" cy="' +
-            my +
-            '" r="3" fill="' +
-            (limitMarkerColors[marker.kind] || "var(--muted)") +
-            '"><title>' +
-            label +
-            "</title></circle>"
+          markerGlyph(limitMarkerShapes[marker.kind] || "circle", mx, my, 3, limitMarkerColors[marker.kind] || "var(--muted)", label)
         );
       });
     }
@@ -2368,16 +2490,21 @@
 
     var wrap = el("div", { html: svgParts.join("") });
     var legend = el("div", { class: "timeline-legend" });
+    // UX-6/9: the legend's own swatch mirrors the marker's real shape
+    // (not just a colour dot), via the same markerGlyph a viewer just
+    // saw drawn on the chart -- so the legend stays a genuine key
+    // rather than a second color-only cue.
+    function swatchIcon(shape, fill) {
+      return el("span", { class: "swatch", html: '<svg viewBox="0 0 14 14" width="14" height="14" aria-hidden="true">' + markerGlyph(shape, 7, 7, 3, fill) + "</svg>" });
+    }
     Object.keys(markerColors).forEach(function (kind) {
-      var swatch = el("span", { class: "swatch" });
-      swatch.style.background = markerColors[kind];
-      legend.appendChild(el("span", null, [swatch, document.createTextNode(kind)]));
+      legend.appendChild(el("span", null, [swatchIcon(markerShapes[kind] || "circle", markerColors[kind]), document.createTextNode(kind)]));
     });
     Object.keys(limitMarkerColors).forEach(function (kind) {
       if (!limitKindsSeen[kind]) return;
-      var swatch = el("span", { class: "swatch" });
-      swatch.style.background = limitMarkerColors[kind];
-      legend.appendChild(el("span", null, [swatch, document.createTextNode(kind.replace(/_/g, " "))]));
+      legend.appendChild(
+        el("span", null, [swatchIcon(limitMarkerShapes[kind] || "circle", limitMarkerColors[kind]), document.createTextNode(kind.replace(/_/g, " "))])
+      );
     });
     wrap.appendChild(legend);
     if (session.truncated) {
@@ -3093,14 +3220,24 @@
     return table;
   }
 
+  // UX-6/9: used to fire-and-forget navigator.clipboard.writeText and
+  // always flip the button to "Copied" regardless of what happened --
+  // an insecure context, a denied permission or any other rejection of
+  // the Promise it returns (not just a missing API, which the old
+  // try/catch did cover) left the button falsely claiming success.
+  // Returns a Promise<boolean> so the caller can tell the two apart.
   function copyToClipboard(text) {
     try {
       if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(text);
+        return navigator.clipboard.writeText(text).then(
+          function () { return true; },
+          function () { return false; }
+        );
       }
     } catch (err) {
-      /* clipboard unavailable (insecure context, permissions) -- silently do nothing */
+      /* clipboard unavailable (insecure context, permissions) -- fall through */
     }
+    return Promise.resolve(false);
   }
 
   function codeBlockWithCopy(text) {
@@ -3108,11 +3245,12 @@
     var pre = el("pre", { text: text || "" });
     var button = el("button", { type: "button", class: "copy-button", text: "Copy" });
     button.addEventListener("click", function () {
-      copyToClipboard(text || "");
-      button.textContent = "Copied";
-      setTimeout(function () {
-        button.textContent = "Copy";
-      }, 1500);
+      copyToClipboard(text || "").then(function (ok) {
+        button.textContent = ok ? "Copied" : "Couldn't copy - select the text above";
+        setTimeout(function () {
+          button.textContent = "Copy";
+        }, 1500);
+      });
     });
     wrap.appendChild(pre);
     wrap.appendChild(button);
@@ -3752,6 +3890,24 @@
   // additions: a plain table of display strings, and a status badge.
   // ======================================================================
 
+  // P4 leftover / UX-6/9: one consistent "not enough data yet" box,
+  // instead of each tab building its own ad hoc paragraph (renderImpact,
+  // renderBacktest and the quick actions' no_data cards used to each
+  // have a slightly different one). `gate` is the structured
+  // {reason, have, need} object some routes now carry (see api.py's
+  // _min_sessions_gate, currently /api/impact) -- when given, its
+  // numbers are appended so the box reads "2 of 3 sessions so far"
+  // rather than only the prose message repeating what "not enough" means.
+  function emptyState(message, gate) {
+    var box = el("div", { class: "placeholder-box empty-state" });
+    var text = message || "Not enough data yet.";
+    if (gate && typeof gate.have === "number" && typeof gate.need === "number") {
+      text += " (" + gate.have + " of " + gate.need + " so far.)";
+    }
+    box.appendChild(el("p", { text: text }));
+    return box;
+  }
+
   function simpleTable(columns, rows, caption) {
     var wrap = el("div", { class: "table-wrap" });
     if (caption) wrap.appendChild(el("h4", { text: caption }));
@@ -3825,7 +3981,11 @@
     var card = el("article", { class: "rec quick-card" });
     card.appendChild(el("div", { class: "quick-head" }, [statusBadge(check.status), el("h4", { text: check.question })]));
     card.appendChild(el("p", { class: "notes", text: check.why }));
-    card.appendChild(el("p", { class: "quick-summary", text: check.summary }));
+    if (check.status === "no_data") {
+      card.appendChild(emptyState(check.summary));
+    } else {
+      card.appendChild(el("p", { class: "quick-summary", text: check.summary }));
+    }
     var detail = el("div", { class: "quick-detail" });
     if (check.status !== "no_data") {
       var extras = [];
@@ -4300,7 +4460,7 @@
     var changes = data.changes || [];
     if (!changes.length) {
       container.appendChild(
-        el("p", { class: "notes", text: "No changes recorded yet. After you apply a profile or a fix, or change a setting, this shows the sessions before it against those after it." })
+        emptyState("No changes recorded yet. After you apply a profile or a fix, or change a setting, this shows the sessions before it against those after it.")
       );
       return;
     }
@@ -4310,7 +4470,11 @@
       var card = el("article", { class: "rec impact-card" });
       card.appendChild(el("h4", { text: change.label + (change.reverted ? " (since undone)" : "") }));
       card.appendChild(el("p", { class: "profile-card-meta", text: String(change.ts || "").replace("T", " ").replace("Z", " UTC") + (change.keys && change.keys.length ? " · " + change.keys.join(", ") : "") }));
-      card.appendChild(el("p", { class: "quick-summary", text: item.verdict }));
+      if (item.gate) {
+        card.appendChild(emptyState(item.verdict, item.gate));
+      } else {
+        card.appendChild(el("p", { class: "quick-summary", text: item.verdict }));
+      }
       if (item.enough) {
         card.appendChild(
           simpleTable(
@@ -4381,10 +4545,7 @@
     var predictions = (data && data.predictions) || [];
     if (!predictions.length) {
       container.appendChild(
-        el("p", {
-          class: "notes",
-          text: "No estimates logged yet. Estimates shown in “What if?” are logged automatically, then checked here once the sessions to judge them arrive.",
-        })
+        emptyState("No estimates logged yet. Estimates shown in “What if?” are logged automatically, then checked here once the sessions to judge them arrive.")
       );
       return;
     }

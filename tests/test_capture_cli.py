@@ -84,13 +84,19 @@ def test_plan_capture_adds_the_entries_a_level_needs_and_writes_nothing(tmp_path
         ("SessionEnd", ""),
         ("Notification", ""),
         ("PermissionRequest", ""),
+        ("Stop", ""),
+        ("StopFailure", ""),
     ]
     assert all(entry["timeout"] == 5 for _, _, entry in entries)
     # An async hook's additionalContext reaches Claude only on the next
-    # turn (V6b), so every entry that adds a note stays foreground.
-    assert [entry.get("async", False) for _, _, entry in entries] == [False, False, False, False, True, True]
+    # turn (V6b), so every entry that adds a note stays foreground. SIG-3's
+    # Stop/StopFailure signal lines add no note, so they run in the
+    # background like the other free signals.
+    assert [entry.get("async", False) for _, _, entry in entries] == [
+        False, False, False, False, True, True, True, True,
+    ]
     assert after["model"] == "opus"
-    assert len(plan.changes) == 6 and all(line.startswith("Add the capture hook") for line in plan.changes)
+    assert len(plan.changes) == 8 and all(line.startswith("Add the capture hook") for line in plan.changes)
     assert "Add the capture hook that runs capture-hook.py when Claude waits for you, in the background." in plan.changes
 
 
@@ -569,11 +575,13 @@ def test_inventory_lists_the_capture_hooks_only_when_there_are_any(tmp_path):
     _capture(config_dir, "on", "--yes")
     items = {item.key: item for item in footprint.inventory(config_dir, service_registered=False)}
     item = items["capture_hooks"]
-    assert item.status == "installed" and item.title == "Metrics capture hooks (5 entries)"
+    assert item.status == "installed" and item.title == "Metrics capture hooks (7 entries)"
     assert "Essentials" in item.token_cost and "capture off" in item.undo
     _capture(config_dir, "level", "free", "--yes")
     item = {item.key: item for item in footprint.inventory(config_dir, service_registered=False)}["capture_hooks"]
-    assert item.title == "Metrics capture hooks (3 entries)" and item.token_cost.startswith("None at Free")
+    # SIG-3: turn_signals is a "free" group metric like the other three
+    # signals, so its Stop/StopFailure entries are included here too.
+    assert item.title == "Metrics capture hooks (5 entries)" and item.token_cost.startswith("None at Free")
 
 
 def test_uninstall_takes_out_the_capture_entries(tmp_path):
@@ -586,6 +594,8 @@ def test_uninstall_takes_out_the_capture_entries(tmp_path):
         "Remove the capture hook that runs capture-hook.py when a session ends.",
         "Remove the capture hook that runs capture-hook.py when Claude waits for you, in the background.",
         "Remove the capture hook that runs capture-hook.py when Claude asks for permission, in the background.",
+        "Remove the capture hook that runs capture-hook.py when a turn ends.",
+        "Remove the capture hook that runs capture-hook.py when a turn ends in an API error.",
     ]
     assert json.loads(plan.new_settings_text) == {}
 
@@ -595,7 +605,7 @@ def test_changes_prints_the_capture_expectation(tmp_path, capsys):
     _capture(config_dir, "on", "--yes")
     rc = cli.main(["changes", "--config-dir", str(config_dir)])
     out = capsys.readouterr().out
-    assert rc == 0 and "Metrics capture hooks (5 entries): installed" in out
+    assert rc == 0 and "Metrics capture hooks (7 entries): installed" in out
     assert "It uses a few of your Claude tokens while capture is on" in out
 
 
@@ -1290,3 +1300,27 @@ def test_prune_uses_retention_days_from_config_when_set(tmp_path):
     log = load_capture_log(config_dir)
     assert len(log) == 1
     assert log[0]["ts"] == (NOW - timedelta(days=1)).isoformat(timespec="seconds")
+
+
+def test_prune_removes_old_usage_log_rows_too(tmp_path):
+    # SIG-5: usage-log.csv is written unconditionally, capture on or off,
+    # so `capture prune` must sweep it alongside signal files and
+    # capture-log.jsonl.
+    from claude_token_lens.tools import log_usage
+
+    config_dir = _claude(tmp_path, {})
+    csv_path = log_usage.default_usage_log_path(config_dir)
+    log_usage.append_rows(
+        csv_path, [{"session_id": "old", "window": "five_hour", "resets_at": "r"}], now=NOW - timedelta(days=200)
+    )
+    log_usage.append_rows(
+        csv_path, [{"session_id": "recent", "window": "five_hour", "resets_at": "r"}], now=NOW - timedelta(days=5)
+    )
+
+    rc, out = _capture(config_dir, "prune")
+
+    assert rc == 0
+    assert "usage-log row(s)" in out
+    rows = log_usage.load_usage_log(csv_path)
+    assert len(rows) == 1
+    assert rows[0]["session_id"] == "recent"

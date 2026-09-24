@@ -542,7 +542,7 @@ def load_context_window_rows(csv_path: str | Path) -> list[dict]:
     ``statusline.main``'s context-window append -- see that module's
     docstring), as ``{"session_id", "context_window_used_tokens",
     "context_window_size", "context_window_used_percentage",
-    "context_window_autocompact_threshold"}`` dicts, in file order.
+    "context_window_cache_read_tokens"}`` dicts, in file order.
 
     Reads the file positionally via ``csv.reader`` rather than
     ``log_usage.load_usage_log``'s ``csv.DictReader`` (a fixed six-column
@@ -580,7 +580,7 @@ def load_context_window_rows(csv_path: str | Path) -> list[dict]:
                     "context_window_used_tokens": used_tokens,
                     "context_window_size": _parse_number(raw_row[7]) if len(raw_row) > 7 else None,
                     "context_window_used_percentage": _parse_number(raw_row[3]) if len(raw_row) > 3 else None,
-                    "context_window_autocompact_threshold": (
+                    "context_window_cache_read_tokens": (
                         _parse_number(raw_row[8]) if len(raw_row) > 8 else None
                     ),
                 }

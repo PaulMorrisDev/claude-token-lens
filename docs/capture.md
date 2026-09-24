@@ -47,6 +47,7 @@ Gap 4: every metric here has to earn its keep — something has to actually read
 | Why sessions end (`session_end`) | Free | – | Breaking down work, Clearing context |
 | Waiting on you (`waits`) | Free | – | Waiting and permissions |
 | Permission decisions (`permissions`) | Free | – | Waiting and permissions |
+| How turns end (`turn_signals`) | Free | – | Waiting and permissions, Cost per finished piece of work |
 | Instruction files loaded (`instructions_loaded`) | Always measured, no hook | – | Giving Claude information |
 | Commands and skills you ran (`prompt_expansion`) | Always measured, no hook | – | Using skills |
 | Task lists (`tasks`) | Always measured, no hook | – | Breaking down work |
@@ -298,6 +299,15 @@ Gap 4: every metric here has to earn its keep — something has to actually read
 - **Tag:** No tag. A hook records it directly; Claude is never asked.
 - **Hook:** PermissionRequest
 - **Powers:** Waiting and permissions
+
+### How turns end (`turn_signals`)
+
+- **Level:** Free
+- **Captures:** Whether each turn ended normally or Claude Code re-asked the Stop hook, and the kind of API error on a failed turn (rate limit, overloaded and so on) -- never the error's own text.
+- **Why:** An independent, hook-level check next to what the transcript already shows about limit hits and API errors.
+- **Tag:** No tag. A hook records it directly; Claude is never asked.
+- **Hook:** Stop, StopFailure
+- **Powers:** Waiting and permissions, Cost per finished piece of work
 
 ## Always measured
 

@@ -1656,15 +1656,28 @@ def build_report(
     if _want("ttl"):
         sections.append(ttl.build_section(ts, billing_mode=config.billing, thresholds=ttl_th))
 
+    # Computed once, reused by both the limits cross-check below and the
+    # habits section further down -- signals.by_session() re-reads and
+    # re-joins the same signal files either way, so this avoids doing it
+    # twice per report.
+    capture_signals = _capture_signals(corpus, config_dir)
+
     if _want("limits"):
         limits_section = limits.build_section(ls, pricing, limits_th)
+        extra_tables = []
         if usage_log_rows:
             # Same dataclasses.replace-a-table-on pattern the "usage"
             # section above uses for cache_ground_truth: csv_cross_check
             # needs the already-loaded usage-log rows, which this
             # module doesn't otherwise keep.
-            cross_check_table = limits.csv_cross_check(usage_log_rows, ls, limits_th)
-            limits_section = dataclasses.replace(limits_section, tables=[*limits_section.tables, cross_check_table])
+            extra_tables.append(limits.csv_cross_check(usage_log_rows, ls, limits_th))
+        if capture_signals:
+            # SIG-2: the free "waits"/"turn_signals" signals cross-check
+            # the same transcript-derived hit count, independent of the
+            # usage-log.csv the block above needs.
+            extra_tables.append(limits.signals_cross_check(capture_signals, ls))
+        if extra_tables:
+            limits_section = dataclasses.replace(limits_section, tables=[*limits_section.tables, *extra_tables])
         sections.append(limits_section)
 
     if _want("carry"):
@@ -1701,7 +1714,7 @@ def build_report(
     _habits_built: habits.Habits | None = None
     if _want("habits"):
         _habits_built = habits.collect(
-            corpus, pricing, ratings=ratings, signals=_capture_signals(corpus, config_dir),
+            corpus, pricing, ratings=ratings, signals=capture_signals,
             effort_share_threshold_pct=_effort_mismatch_share_threshold(config),
         )
         sections.append(habits.section_from(_habits_built, model_swap=model_swap_stats))

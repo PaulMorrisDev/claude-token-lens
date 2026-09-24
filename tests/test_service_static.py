@@ -1051,3 +1051,158 @@ def test_capture_tab_repeats_the_cost_warning_before_using_more_tokens() -> None
     post = _function_source(app_js, "postCapture")
     assert 'postJson("/api/capture"' in post and "error.commands" in post
 
+
+# -- P9b: UX-6/9 (accessibility, mobile, dark-mode fixes) and the P4 --------
+# -- leftovers (emptyState()/API gate) --------------------------------------
+
+
+def test_panel_focus_ring_is_restored() -> None:
+    """.panel:focus-visible used to suppress the outline outright
+    (``outline: none``) even though each tab panel is a tabindex="0"
+    ARIA tabpanel a keyboard user lands on right after switching tabs --
+    a WCAG 2.4.7 gap. It must use the same visible outline every other
+    focusable control in this file uses."""
+    app_css = _static_text("app.css")
+    match = re.search(r"\.panel:focus-visible\s*\{([^}]*)\}", app_css)
+    assert match, "app.css no longer defines .panel:focus-visible"
+    body = match.group(1)
+    assert "outline: none" not in body
+    assert "outline: 2px solid var(--accent)" in body
+
+
+def test_lever_grid_column_minimum_shrinks_on_narrow_viewports() -> None:
+    """A bare ``minmax(320px, 1fr)`` forces horizontal overflow once the
+    viewport (minus app-shell's own side padding) drops under 320px --
+    the fix wraps the minimum in min(320px, 100%) so the track can't
+    exceed the container's own width."""
+    app_css = _static_text("app.css")
+    match = re.search(r"\.lever-grid\s*\{([^}]*)\}", app_css)
+    assert match, "app.css no longer defines .lever-grid"
+    assert "minmax(min(320px, 100%), 1fr)" in match.group(1)
+
+
+def test_advanced_detail_raw_diff_wraps_instead_of_overflowing() -> None:
+    """The raw settings-file diff (profile launch card, "Show the file
+    changes") is a bare <pre> with no wrap rule of its own elsewhere --
+    unlike .code-block pre / .rec pre, a long line forced the whole
+    panel to scroll horizontally."""
+    app_css = _static_text("app.css")
+    match = re.search(r"\.advanced-detail pre\s*\{([^}]*)\}", app_css)
+    assert match, "app.css no longer defines .advanced-detail pre"
+    body = match.group(1)
+    assert "white-space: pre-wrap" in body
+    assert "overflow-wrap: anywhere" in body
+
+
+def test_recommendation_severity_border_has_a_dark_mode_override() -> None:
+    """.severity-action/.severity-advice and .capture-banner.capture-on/
+    .capture-warning both already switch to a lighter red/amber in dark
+    mode; .rec-severity-action/.rec-severity-advice (the recommendation
+    card's own left border) used the same light-mode colors with no
+    dark-mode override at all."""
+    app_css = _static_text("app.css")
+    assert re.search(
+        r"@media \(prefers-color-scheme: dark\)\s*\{\s*\.rec-severity-action\s*\{\s*border-left-color:\s*#ff6b5e;\s*\}\s*"
+        r"\.rec-severity-advice\s*\{\s*border-left-color:\s*#f0b429;\s*\}",
+        app_css,
+    ), "no dark-mode override found for .rec-severity-action/.rec-severity-advice"
+
+
+def test_timeline_markers_use_a_distinct_shape_per_kind_not_only_color() -> None:
+    """Every timeline marker used to be an identical <circle>,
+    distinguished only by fill color (WCAG 1.4.1) -- a colorblind viewer
+    or a low-color display can't tell recache from compaction from
+    spawn. All 7 marker kinds (4 turn markers + 3 usage-limit markers)
+    must now map to 7 distinct shapes, and the legend's own swatch must
+    draw the real shape (markerGlyph), not just a color dot."""
+    app_js = _static_text("app.js")
+    glyph = _function_source(app_js, "markerGlyph")
+    for shape in ("square", "triangle-up", "triangle-down", "diamond", "plus", "x", "circle"):
+        assert ('"' + shape + '"') in glyph, shape
+
+    timeline = _function_source(app_js, "buildSessionTimeline")
+    shapes_match = re.search(r"var markerShapes = (\{[^}]*\});", timeline)
+    limit_shapes_match = re.search(r"var limitMarkerShapes = (\{[^}]*\});", timeline)
+    assert shapes_match and limit_shapes_match
+    shapes = dict(re.findall(r'(\w+):\s*"([\w-]+)"', shapes_match.group(1)))
+    limit_shapes = dict(re.findall(r'(\w+):\s*"([\w-]+)"', limit_shapes_match.group(1)))
+    all_kinds = {**shapes, **limit_shapes}
+    assert len(all_kinds) == 7, all_kinds
+    assert len(set(all_kinds.values())) == 7, "two marker kinds share a shape: " + repr(all_kinds)
+    # The legend draws the same glyph, not a plain color circle.
+    assert "swatchIcon" in timeline and "markerGlyph(shape" in timeline
+
+
+def test_copy_button_only_claims_success_when_the_clipboard_write_succeeded() -> None:
+    """copyToClipboard used to fire-and-forget navigator.clipboard.write-
+    Text and the button always flipped to "Copied" regardless of what
+    happened -- a rejected promise (insecure context, denied permission)
+    left it falsely claiming success."""
+    app_js = _static_text("app.js")
+    copy_fn = _function_source(app_js, "copyToClipboard")
+    assert "return navigator.clipboard.writeText(text).then(" in copy_fn
+    assert "return Promise.resolve(false)" in copy_fn
+
+    code_block = _function_source(app_js, "codeBlockWithCopy")
+    assert "copyToClipboard(text || \"\").then(function (ok) {" in code_block
+    assert 'button.textContent = ok ? "Copied" :' in code_block
+
+
+def test_health_banner_skips_rebuilding_when_nothing_shown_would_change() -> None:
+    """renderHealthBanner is an aria-live="polite" region polled every
+    3-60s (pollHealth); it used to clear() and rebuild its children on
+    every single poll even when the message was identical, which some
+    screen readers re-announce as if it were new content."""
+    app_js = _static_text("app.js")
+    fn = _function_source(app_js, "renderHealthBanner")
+    assert 'banner.getAttribute("data-render-sig") === sig) return' in fn
+    assert 'banner.setAttribute("data-render-sig", sig)' in fn
+    # The guard's early return must come before the rebuild, not after.
+    assert fn.index('=== sig) return') < fn.index("clear(banner)")
+
+
+def test_capture_banner_also_skips_rebuilding_when_unchanged() -> None:
+    app_js = _static_text("app.js")
+    fn = _function_source(app_js, "renderCaptureBanner")
+    assert 'banner.getAttribute("data-render-sig") === sig) return' in fn
+    assert 'banner.setAttribute("data-render-sig", sig)' in fn
+
+
+def test_capture_banner_dismissal_is_a_seven_day_snooze_not_permanent() -> None:
+    """Both the capture-invite "Hide" and a dismissed notes list used to
+    store a bare "1" forever (or would have) -- once hidden, hidden for
+    good, even after the notes themselves changed. UX-6/9 wants a 7-day
+    snooze instead, so a quiet banner returns on its own."""
+    app_js = _static_text("app.js")
+    assert "var BANNER_SNOOZE_MS = 7 * 24 * 60 * 60 * 1000;" in app_js
+    snoozed_fn = _function_source(app_js, "snoozed")
+    assert "Date.now() - ts < BANNER_SNOOZE_MS" in snoozed_fn
+    notes_fn = _function_source(app_js, "notesSnoozed")
+    assert "Date.now() - ts < BANNER_SNOOZE_MS" in notes_fn
+    banner_fn = _function_source(app_js, "renderCaptureBanner")
+    assert 'storageSet("tls:captureInviteHidden", String(Date.now()))' in banner_fn
+    assert 'storageSet("tls:captureNotesHidden", Date.now() + "|" + notesSignature(notes))' in banner_fn
+    # No more permanent "1" writes for either dismissal.
+    assert '"tls:captureInviteHidden", "1"' not in app_js
+
+
+def test_empty_state_helper_exists_and_is_used_for_not_enough_data_states() -> None:
+    """One consistent "not enough data yet" box (P4's leftover
+    emptyState() helper) instead of each tab building its own ad hoc
+    paragraph, and it folds in the structured {reason, have, need}
+    ``gate`` object api.py now attaches to /api/impact's per-change
+    rows when a helper has one."""
+    app_js = _static_text("app.js")
+    helper = _function_source(app_js, "emptyState")
+    assert "gate.have" in helper and "gate.need" in helper
+
+    quick_card = _function_source(app_js, "renderQuickCard")
+    assert "emptyState(check.summary)" in quick_card
+
+    impact = _function_source(app_js, "renderImpact")
+    assert "emptyState(item.verdict, item.gate)" in impact
+    assert "emptyState(\"No changes recorded yet" in impact
+
+    backtest_fn = _function_source(app_js, "renderBacktest")
+    assert "emptyState(\"No estimates logged yet" in backtest_fn
+

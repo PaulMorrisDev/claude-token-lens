@@ -1842,8 +1842,33 @@ def test_impact_is_empty_without_changes_and_lists_an_apply(server):
     [change] = payload["data"]["changes"]
     assert change["change"]["keys"] == ["effortLevel"]
     assert change["enough"] is False and "so far" in change["verdict"]
+    # P4 leftover: a structured gate alongside the prose verdict, for
+    # the dashboard's emptyState() helper.
+    from claude_token_lens import impact as impact_mod
+
+    assert change["gate"] == {"reason": "min_sessions", "have": 0, "need": impact_mod.MIN_SESSIONS}
     resp, payload = server.get_json("/api/summary?window=change")
     assert resp.status == 200
+
+
+def test_impact_gate_is_null_once_both_sides_have_enough_sessions(server):
+    """The other half of the P4-leftover gate: once a change has
+    ``min_sessions`` real sessions on each side, ``enough`` is true and
+    ``gate`` -- unlike ``verdict``, which always has *some* text -- goes
+    back to ``None`` rather than a stale or misleading reason."""
+    from claude_token_lens import impact as impact_mod
+    from claude_token_lens.service import api as service_api
+
+    before = impact_mod.MIN_SESSIONS
+    after = impact_mod.MIN_SESSIONS
+    assert service_api._min_sessions_gate(before, after, impact_mod.MIN_SESSIONS) is None
+    assert service_api._min_sessions_gate(before - 1, after, impact_mod.MIN_SESSIONS) == {
+        "reason": "min_sessions",
+        "have": before - 1,
+        "need": impact_mod.MIN_SESSIONS,
+    }
+    # The gate reports whichever side is thinner.
+    assert service_api._min_sessions_gate(before, 0, impact_mod.MIN_SESSIONS)["have"] == 0
 
 
 def test_backtest_is_empty_without_predictions(server):

@@ -204,8 +204,17 @@ WEB_TOOLS = ("WebFetch", "WebSearch")
 #: from waiting on it.
 BIG_OUTPUT_TOOLS = ("Bash", "Read", "Grep", "Glob", *WEB_TOOLS, "mcp__.*")
 
-#: Hook event -> the free signal it records.
-SIGNAL_EVENTS = {"SessionEnd": "session_end", "Notification": "waits", "PermissionRequest": "permissions"}
+#: Hook event -> the free signal it records. ``Stop`` and ``StopFailure``
+#: both feed ``turn_signals`` (SIG-3): an independent, hook-level check
+#: next to what the parser already derives from the transcript for a
+#: turn's own outcome (``model.py``'s ``EventKind.API_ERROR``/``subkind``).
+SIGNAL_EVENTS = {
+    "SessionEnd": "session_end",
+    "Notification": "waits",
+    "PermissionRequest": "permissions",
+    "Stop": "turn_signals",
+    "StopFailure": "turn_signals",
+}
 
 #: Why a session ended, as SessionEnd reports it; anything else is
 #: "other". ``bypass_permissions_disabled`` was removed in Claude Code
@@ -221,6 +230,32 @@ SESSION_END_REASONS = ("clear", "resume", "logout", "prompt_input_exit", "bypass
 #: something else (SIG-1; the full Notification type list is
 #: curl-verified against docs/en/hooks.md).
 WAIT_KINDS = ("permission", "idle", "question", "agent", "quota", "other")
+
+#: How a turn ended, as the ``Stop`` hook reports it (SIG-3): normally, or
+#: re-entrant (``stop_hook_active`` -- Claude Code already ran a Stop hook
+#: for this turn and is asking again, usually because a hook blocked the
+#: first attempt).
+TURN_STATES = ("normal", "reentrant")
+
+#: The ``StopFailure`` hook's ``error`` field (SIG-3, curl-verified
+#: against docs/en/hooks.md): the closed set of API-error kinds Claude
+#: Code itself distinguishes. Never its optional ``error_details`` or
+#: ``last_assistant_message`` -- for ``StopFailure`` the latter holds the
+#: raw API error string, so it never reaches a signal line.
+STOP_FAILURE_ERRORS = (
+    "rate_limit",
+    "overloaded",
+    "authentication_failed",
+    "oauth_org_not_allowed",
+    "account_on_hold",
+    "billing_error",
+    "invalid_request",
+    "model_not_found",
+    "server_error",
+    "max_output_tokens",
+    "cloud_credential_error",
+    "unknown",
+)
 
 #: Folder under the data folder that holds the signal files, one per
 #: month (``YYYY-MM.jsonl``).
@@ -566,6 +601,18 @@ METRICS: tuple[Metric, ...] = (
         why="Denials that led to rework, and allowlist suggestions.",
         powers=("waiting",),
         hooks=("PermissionRequest",),
+    ),
+    Metric(
+        id="turn_signals",
+        group="free",
+        section="signals",
+        title="How turns end",
+        what="Whether each turn ended normally or Claude Code re-asked the Stop hook, and the kind of API "
+        "error on a failed turn (rate limit, overloaded and so on) -- never the error's own text.",
+        why="An independent, hook-level check next to what the transcript already shows about limit hits "
+        "and API errors.",
+        powers=("waiting", "outcome"),
+        hooks=("Stop", "StopFailure"),
     ),
     # -- Always measured --------------------------------------------------
     # The transcripts already record these, so they need no hook: the
@@ -1164,6 +1211,8 @@ def export_json() -> dict:
         "signal_events": dict(SIGNAL_EVENTS),
         "session_end_reasons": list(SESSION_END_REASONS),
         "wait_kinds": list(WAIT_KINDS),
+        "turn_states": list(TURN_STATES),
+        "stop_failure_errors": list(STOP_FAILURE_ERRORS),
         "signals_dir": SIGNALS_DIR,
     }
 

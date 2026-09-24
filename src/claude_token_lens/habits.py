@@ -596,6 +596,13 @@ class Habits:
     small_sessions: list = field(default_factory=list)
     #: Permission prompts per tool, from the free signals.
     permission_prompts: Counter = field(default_factory=Counter)
+    #: Why a session ended (``session_end``), one count per session that
+    #: logged one -- from the free signals (SIG-2).
+    end_reasons: Counter = field(default_factory=Counter)
+    #: What Claude waited for (``waits``), summed across every session --
+    #: from the free signals (SIG-2). Includes the same ``quota`` count
+    #: ``limits.signals_cross_check`` reads independently.
+    waits: Counter = field(default_factory=Counter)
     #: Skills Claude has loaded, so a slash command can be told from one.
     skill_names: set = field(default_factory=set)
     commands_run: Counter = field(default_factory=Counter)
@@ -924,6 +931,9 @@ def collect(
         _session(bundle, rates, out, (ratings or {}).get(bundle.session_id))
     for seen in (signals or {}).values():
         out.permission_prompts.update(seen.permission_prompts)
+        out.waits.update(seen.waits)
+        if seen.end_reason:
+            out.end_reasons[seen.end_reason] += 1
     return out
 
 
@@ -1057,6 +1067,14 @@ def _item_clear_between(h: Habits) -> Item | None:
             "work, which the first reply wrote to the cache again"
         )
     reported_saving = sum(usd for _, usd in reported)
+    # SIG-2: end_reasons is a session-level signal (once per session that
+    # logged a SessionEnd), while `found` above counts individual
+    # messages, so this is added as context, not folded into the count
+    # or n above -- how often you *did* clear explicitly, next to how
+    # often stale context carried over anyway.
+    explicit_clears = h.end_reasons.get("clear", 0)
+    if explicit_clears:
+        parts.append(f"you cleared explicitly {explicit_clears} times")
     return Item(
         "clear_between", saving, len(found), _sources(bool(reported), bool(inferred)),
         "; ".join(parts) + ".", waste=_by_week((c.week, usd) for c, usd in found),
@@ -1240,6 +1258,12 @@ def _item_skill_early(h: Habits) -> Item | None:
 
 
 def _item_skill_unneeded(h: Habits) -> Item | None:
+    # P4 leftover: no floor here, explicitly (never a guess) -- a skill's
+    # own context footprint (what it added when it loaded) isn't a
+    # figure this fact model keeps per call; c.skill_calls only carries
+    # the cost *before* the skill loaded (skill_early's own evidence),
+    # not the skill's own size, so there is nothing defensible to price
+    # a fraction of.
     unneeded = [c for c in h.cycles if c.tag is not None and c.tag.skill == "unneeded" and c.skill_calls]
     if len(unneeded) < 2:
         return None
@@ -1387,7 +1411,15 @@ def _item_targeted_checks(h: Habits) -> Item | None:
 
 
 def _item_allow_routine(h: Habits) -> Item | None:
+    # SIG-2: h.waits' "permission" count is the same free signal as
+    # h.permission_prompts (one row per PermissionRequest hook call, the
+    # other per prompt-decision Notification for the same event), so it
+    # isn't added to `prompts` again here -- only "idle" (Claude finished
+    # a turn and sat waiting for you) rides along, as evidence text: it
+    # has no cost of its own (lost time, not spend), so it never enters
+    # the saving figure below.
     prompts = sum(h.permission_prompts.values())
+    idle = h.waits.get("idle", 0)
     blocked = [c for c in h.cycles if c.blocked]
     count = sum(c.blocked for c in blocked)
     if prompts < 5 and count < 3:
@@ -1398,6 +1430,8 @@ def _item_allow_routine(h: Habits) -> Item | None:
         parts.append(f"Claude asked for permission {prompts} times, mostly for {tools}")
     if count:
         parts.append(f"auto mode blocked {count} requests and Claude had to find another way")
+    if idle:
+        parts.append(f"Claude sat waiting for you {idle} times")
     body = "; ".join(parts)
     return Item(
         "allow_routine", sum(c.blocked_cost for c in blocked) or None, prompts + count, ("inferred",),
@@ -1443,10 +1477,22 @@ def _item_effort_fit(h: Habits) -> Item | None:
 
 
 def _item_outcome_misses(h: Habits) -> Item | None:
+    # P4 leftover: a piece that missed its goal or was stopped still has
+    # a known full cost (Piece.cost, your own /tl-feedback rating), so
+    # unlike skill_unneeded there is a defensible floor -- half of it,
+    # the same conservative fraction split_large/paste_errors/etc. use
+    # for a redo or a block tied to a real cost figure, not an invented
+    # percentage. The other half is left uncounted: a missed or stopped
+    # piece usually still produced some of what you asked for.
+    #
+    # No ``waste=`` trend: Piece carries no week/timestamp (it's built
+    # from a feedback answer, not a cycle), so there is nothing to key a
+    # by-week breakdown on.
     misses = [p for p in h.pieces if p.outcome in ("missed", "stopped")]
     met = [p for p in h.pieces if p.outcome == "met"]
     if not misses:
         return None
+    saving = 0.5 * sum(p.cost for p in misses)
     parts = [f"{len(misses)} pieces of work missed their goal or were stopped"]
     if met and _mean(p.cost for p in met):
         parts[0] += f", costing {_mean(p.cost for p in misses) / _mean(p.cost for p in met):.1f}x one that met it"
@@ -1456,7 +1502,7 @@ def _item_outcome_misses(h: Habits) -> Item | None:
     slow = Counter(w for p in misses for w in p.slow).most_common(1)
     if slow:
         parts.append(f"slowed most by: {_ANSWER_LABELS['slow'].get(slow[0][0], slow[0][0]).lower()}")
-    return Item("outcome_misses", None, len(misses), ("your feedback",), "; ".join(parts) + ".")
+    return Item("outcome_misses", saving or None, len(misses), ("your feedback",), "; ".join(parts) + ".")
 
 
 _BUILDERS = (

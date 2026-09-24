@@ -87,6 +87,7 @@ PLACEMENT: dict[str, str] = {
     "limits_reset_hour_histogram": "advanced",
     "limits_by_agent_type": "advanced",
     "limits_csv_cross_check": "advanced",
+    "limits_signals_cross_check": "advanced",
     # savings
     "carry_by_tool": "keep",
     "carry_by_agent_type": "advanced",
@@ -189,6 +190,7 @@ PLACEMENT: dict[str, str] = {
     "finance_summary": "report",
     "pricing_rates": "report",
     "reconcile_by_period": "report",
+    "cost_ground_truth_gap": "report",
     "savers_detected": "report",
     "savers_effect_by_stratum": "report",
     "savers_overhead": "report",

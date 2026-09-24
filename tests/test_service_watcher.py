@@ -23,6 +23,7 @@ from claude_token_lens import PARSER_VERSION, config, signals
 from claude_token_lens.service.contracts import ServeOptions
 from claude_token_lens.service.store import Store
 from claude_token_lens.service.watcher import LIVE_FILE_WINDOW_S, FileWatcher
+from claude_token_lens.tools import log_usage
 
 from helpers import assert_privacy, turn_line, write_jsonl
 
@@ -1242,3 +1243,40 @@ def test_run_once_uses_an_explicit_retention_days_for_signals_and_capture_log(tm
     log = config.load_capture_log(options.config_dir)
     assert len(log) == 1
     assert log[0]["ts"] == (now - timedelta(days=1)).isoformat(timespec="seconds")
+
+
+def test_run_once_prunes_old_usage_log_rows_with_no_retention_days_set(tmp_path: Path, store: Store):
+    # SIG-5: usage-log.csv is written unconditionally on every statusline
+    # refresh (capture on or off), so -- like signals/capture-log above --
+    # it must be pruned on every tick even when nobody set retention_days.
+    options = _options(tmp_path)
+    csv_path = log_usage.default_usage_log_path(options.config_dir)
+    now = datetime.now(timezone.utc)
+    old = {"session_id": "old", "window": "five_hour", "used_percentage": 1.0, "resets_at": "r"}
+    recent = {"session_id": "recent", "window": "five_hour", "used_percentage": 2.0, "resets_at": "r"}
+    log_usage.append_rows(csv_path, [old], now=now - timedelta(days=200))
+    log_usage.append_rows(csv_path, [recent], now=now - timedelta(days=5))
+
+    watcher = FileWatcher(store, options)
+    watcher.run_once()
+
+    rows = log_usage.load_usage_log(csv_path)
+    assert len(rows) == 1
+    assert rows[0]["session_id"] == "recent"
+
+
+def test_run_once_uses_an_explicit_retention_days_for_usage_log(tmp_path: Path, store: Store):
+    options = _options(tmp_path, retention_days=30)
+    csv_path = log_usage.default_usage_log_path(options.config_dir)
+    now = datetime.now(timezone.utc)
+    old = {"session_id": "old", "window": "five_hour", "used_percentage": 1.0, "resets_at": "r"}
+    recent = {"session_id": "recent", "window": "five_hour", "used_percentage": 2.0, "resets_at": "r"}
+    log_usage.append_rows(csv_path, [old], now=now - timedelta(days=60))
+    log_usage.append_rows(csv_path, [recent], now=now - timedelta(days=1))
+
+    watcher = FileWatcher(store, options)
+    watcher.run_once()
+
+    rows = log_usage.load_usage_log(csv_path)
+    assert len(rows) == 1
+    assert rows[0]["session_id"] == "recent"

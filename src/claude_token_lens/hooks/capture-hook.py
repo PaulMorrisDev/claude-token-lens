@@ -26,13 +26,18 @@ connect``):
   Claude just saw -- so this entry runs in the foreground instead,
   matched only to tools whose results can be large, and returns at once
   for the rest.
-- ``SessionEnd``, ``Notification`` and ``PermissionRequest`` (the last
-  two async): one line each in ``<config-dir>/signals/YYYY-MM.jsonl``
-  saying why a session ended, what Claude waited for, or which tool
-  asked for permission. A line holds the time, a salted hash of the
+- ``SessionEnd``, ``Notification``, ``PermissionRequest``, ``Stop`` and
+  ``StopFailure`` (all but ``SessionEnd`` async): one line each in
+  ``<config-dir>/signals/YYYY-MM.jsonl`` saying why a session ended, what
+  Claude waited for, which tool asked for permission, whether a turn
+  ended normally or the Stop hook was asked again, or the kind of API
+  error that ended one. A line holds the time, a salted hash of the
   session id, and a word from a fixed list or a tool name; never a
-  message, a tool's input or a path. Nothing is logged until Token Lens
-  has made its salt.
+  message, a tool's input, a path, ``last_assistant_message``,
+  ``error_details`` or a cron's ``prompt``. ``Stop`` fires on every turn,
+  so only a sample of its calls is logged (:data:`_TURN_SAMPLE_PCT`);
+  ``StopFailure`` is rare enough that every one is kept. Nothing is
+  logged until Token Lens has made its salt.
 
 What the note says comes from ``capture-catalogue.json`` next to this
 script, written from ``claude_token_lens.capture_catalogue``;
@@ -74,7 +79,22 @@ SALT_FILE = "salt"
 _SALT_BYTES = 32
 
 #: The short event names in a signal line.
-_SIGNAL_CODES = {"SessionEnd": "end", "Notification": "wait", "PermissionRequest": "perm"}
+_SIGNAL_CODES = {
+    "SessionEnd": "end",
+    "Notification": "wait",
+    "PermissionRequest": "perm",
+    "Stop": "turn",
+    "StopFailure": "fail",
+}
+
+#: Stop fires on every turn (unlike SessionEnd/Notification/
+#: PermissionRequest, which are comparatively rare), and only the
+#: aggregate rate of normal-vs-reentrant turns is of any use, so only
+#: this share of Stop calls is logged -- independent of, and on top of,
+#: the session-level ``capture.sample`` that ``_capture_for`` already
+#: applies. StopFailure is not sampled: a failed turn is rare and worth
+#: keeping every time.
+_TURN_SAMPLE_PCT = 10
 
 #: Notification types (and, for older Claude Code versions without them,
 #: the start of the message) -> what Claude waited for. The full list
@@ -343,6 +363,20 @@ def session_hash(salt: bytes, session_id: str) -> str:
     return hmac.new(salt, session_id.encode("utf-8"), hashlib.sha256).hexdigest()[:16]
 
 
+def _turn_sampled(session_id: str, now: datetime, pct: int) -> bool:
+    """Whether this particular Stop call is in the sampled share -- the
+    same hash-modulo shape as :func:`sampled_in`, but keyed by the call's
+    own timestamp too (not just the session id), so it varies turn to
+    turn within one session instead of being all-or-nothing for it."""
+    if pct >= 100:
+        return True
+    if pct <= 0:
+        return False
+    key = f"{session_id}:{now.isoformat()}"
+    bucket = int(hashlib.sha256(key.encode("utf-8")).hexdigest()[:8], 16) % 100
+    return bucket < pct
+
+
 def _wait_kind(payload: dict) -> str:
     notification_type = payload.get("notification_type")
     if notification_type:
@@ -356,8 +390,15 @@ def _wait_kind(payload: dict) -> str:
 
 
 def signal_for(payload: dict, config: dict, catalogue: dict, salt: bytes | None, now: datetime | None = None) -> dict | None:
-    """The line to log for a SessionEnd, Notification or PermissionRequest
-    call, or ``None`` when its metric is off or there's no salt."""
+    """The line to log for a SessionEnd, Notification, PermissionRequest,
+    Stop or StopFailure call, or ``None`` when its metric is off, there's
+    no salt, or (Stop only) this call fell outside the turn sample.
+
+    Reads only ``payload["reason"]``/``notification_type"]``/
+    ``message"]``/``tool_name"]``/``stop_hook_active"]``/``error"]`` --
+    never ``last_assistant_message``, ``error_details`` or a
+    ``session_crons`` entry's ``prompt``, so none of those free-text
+    fields can ever reach a signal line."""
     event = payload.get("hook_event_name")
     metric = catalogue["signal_events"].get(event) if isinstance(event, str) else None
     session_id = payload.get("session_id")
@@ -367,15 +408,22 @@ def signal_for(payload: dict, config: dict, catalogue: dict, salt: bytes | None,
     capture = _capture_for(payload, config, now)
     if capture is None or metric not in active_ids(catalogue, capture):
         return None
+    if event == "Stop" and not _turn_sampled(session_id, now, _TURN_SAMPLE_PCT):
+        return None
     record = {"ts": now.strftime("%Y-%m-%dT%H:%M:%SZ"), "sid": session_hash(salt, session_id), "e": _SIGNAL_CODES[event]}
     if event == "SessionEnd":
         reason = payload.get("reason")
         record["reason"] = reason if reason in catalogue["session_end_reasons"] else "other"
     elif event == "Notification":
         record["kind"] = _wait_kind(payload)
-    else:
+    elif event == "PermissionRequest":
         tool = payload.get("tool_name")
         record["tool"] = tool if isinstance(tool, str) and _TOOL_NAME_RE.fullmatch(tool) else "other"
+    elif event == "Stop":
+        record["state"] = "reentrant" if payload.get("stop_hook_active") else "normal"
+    else:  # StopFailure
+        error = payload.get("error")
+        record["error"] = error if error in catalogue["stop_failure_errors"] else "unknown"
     if payload.get("agent_id"):
         record["sub"] = 1
     return record

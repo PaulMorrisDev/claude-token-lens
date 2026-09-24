@@ -834,16 +834,18 @@ move.
 Takes no window: each change is compared over its own before and after
 periods, looking back at most `lookback_days`.
 
-`data`: `{"changes": [{"change": {"ts", "source", "label", "keys", "changes", "backup_ts", "reverted"}, "before_sessions", "after_sessions", "enough", "verdict", "measures": [{"label", "before", "after", "before_n", "after_n", "change_pct", "direction"}, ...], "quality": [{"group", "label", "before_runs", "after_runs", "verdict", "judged", "min_runs", "signals": [{"key", "label", "kind", "worse_when", "unit", "before", "after", "before_text", "after_text", "before_counts", "after_counts", "before_runs", "after_runs", "p", "label_key", "verdict"}, ...]}, ...]}, ...], "caveat", "min_sessions", "lookback_days"}`.
+`data`: `{"changes": [{"change": {"ts", "source", "label", "keys", "changes", "backup_ts", "reverted"}, "before_sessions", "after_sessions", "enough", "gate", "verdict", "measures": [{"label", "before", "after", "before_n", "after_n", "change_pct", "direction"}, ...], "quality": [{"group", "label", "before_runs", "after_runs", "verdict", "judged", "min_runs", "signals": [{"key", "label", "kind", "worse_when", "unit", "before", "after", "before_text", "after_text", "before_counts", "after_counts", "before_runs", "after_runs", "p", "label_key", "verdict"}, ...]}, ...]}, ...], "caveat", "min_sessions", "lookback_days"}`.
 Newest change first, at most ten. `change.source` is `apply`, `revert`,
 `config` (a settings change the hook saw) or `capture` (a metrics
 capture change from `capture-log.jsonl`, whose keys are `capture.<field>`
 and are measured by capture's own tokens per session and the share of
 messages Claude tagged). `enough` is false until each side has
-`min_sessions` sessions. `before`/`after` are display text in the
-billing mode's units; `direction` is `lower`, `higher`, `same` or
-`null`. For an `apply` that is not yet undone, `backup_ts` is what
-`claude-token-lens apply --revert <backup_ts>` takes.
+`min_sessions` sessions; `gate` is the same check as a structured
+`{"reason": "min_sessions", "have", "need"}` object for a UI empty
+state, or `null` once `enough` is true. `before`/`after` are display
+text in the billing mode's units; `direction` is `lower`, `higher`,
+`same` or `null`. For an `apply` that is not yet undone, `backup_ts` is
+what `claude-token-lens apply --revert <backup_ts>` takes.
 
 `quality` judges the change on the runs of each agent it changed (or
 the main session, for any other setting): one entry per group, with a

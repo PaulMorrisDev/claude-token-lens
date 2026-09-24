@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import io
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -324,3 +324,108 @@ def test_resolve_config_dir_env_var(monkeypatch, tmp_path):
 def test_default_usage_log_path(tmp_path):
     path = log_usage.default_usage_log_path(tmp_path)
     assert path == tmp_path / "usage-log.csv"
+
+
+# -- SIG-5: tail reads and retention pruning ---------------------------------
+
+
+def _pad_past_tail(csv_path: Path, row: dict) -> None:
+    """Append enough filler rows after ``row`` for the file to exceed
+    :data:`log_usage._TAIL_BYTES`, pushing ``row`` itself out of
+    :func:`log_usage._read_existing_keys`'s bounded tail scan."""
+    log_usage.append_rows(csv_path, [row], source="statusline", now=datetime(2026, 9, 1, tzinfo=timezone.utc))
+    filler = {"session_id": "filler", "window": "seven_day", "resets_at": "2026-10-01T00:00:00Z"}
+    with open(csv_path, "a", encoding="utf-8", newline="") as fh:
+        for i in range(4000):
+            fh.write(f"2026-09-01T00:00:{i % 60:02d}Z,filler,seven_day,{i % 100}.0,2026-10-01T00:00:00Z,statusline\n")
+    assert csv_path.stat().st_size > log_usage._TAIL_BYTES
+
+
+def test_read_existing_keys_finds_a_key_within_the_tail_window(tmp_path):
+    csv_path = tmp_path / "usage-log.csv"
+    row = {"session_id": "s1", "window": "five_hour", "used_percentage": 37.5, "resets_at": "2026-09-18T17:00:00Z"}
+    log_usage.append_rows(csv_path, [row], now=datetime(2026, 9, 1, tzinfo=timezone.utc))
+    assert log_usage._dedupe_key(row) in log_usage._read_existing_keys(csv_path)
+
+
+def test_read_existing_keys_is_bounded_to_the_tail_window(tmp_path):
+    """SIG-5: this now scans only the final _TAIL_BYTES rather than the
+    whole (unboundedly growing) log on every append_rows call. A key that
+    sits further back than that is invisible to a fresh scan -- the
+    documented, bounded trade-off (see the function's own docstring): the
+    same row gets appended again instead of deduped, rather than every
+    single statusline refresh reading an ever-growing file in full."""
+    csv_path = tmp_path / "usage-log.csv"
+    old_row = {"session_id": "s1", "window": "five_hour", "used_percentage": 37.5, "resets_at": "2026-09-18T17:00:00Z"}
+    _pad_past_tail(csv_path, old_row)
+
+    assert log_usage._dedupe_key(old_row) not in log_usage._read_existing_keys(csv_path)
+    # Concretely: appending the same row again is *not* deduped, unlike
+    # the small-file case in the test above.
+    assert log_usage.append_rows(csv_path, [old_row]) == 1
+
+
+def test_prune_usage_log_missing_file_is_a_noop(tmp_path):
+    assert log_usage.prune_usage_log(tmp_path / "does-not-exist.csv", 30) == 0
+
+
+def test_prune_usage_log_header_only_is_a_noop(tmp_path):
+    csv_path = tmp_path / "usage-log.csv"
+    csv_path.write_text("logged_at,session_id,window,used_percentage,resets_at,source\n", encoding="utf-8")
+    assert log_usage.prune_usage_log(csv_path, 30) == 0
+
+
+def test_prune_usage_log_drops_rows_older_than_the_window_keeps_the_rest(tmp_path):
+    csv_path = tmp_path / "usage-log.csv"
+    now = datetime(2026, 9, 24, tzinfo=timezone.utc)
+    old = {"session_id": "old", "window": "five_hour", "used_percentage": 1.0, "resets_at": "r"}
+    recent = {"session_id": "recent", "window": "five_hour", "used_percentage": 2.0, "resets_at": "r"}
+    log_usage.append_rows(csv_path, [old], now=now - timedelta(days=40))
+    log_usage.append_rows(csv_path, [recent], now=now - timedelta(days=1))
+
+    removed = log_usage.prune_usage_log(csv_path, 30, now=now)
+
+    assert removed == 1
+    rows = log_usage.load_usage_log(csv_path)
+    assert len(rows) == 1
+    assert rows[0]["session_id"] == "recent"
+
+
+def test_prune_usage_log_nothing_to_remove_returns_zero_and_leaves_file_untouched(tmp_path):
+    csv_path = tmp_path / "usage-log.csv"
+    now = datetime(2026, 9, 24, tzinfo=timezone.utc)
+    log_usage.append_rows(csv_path, [{"session_id": "s1", "window": "five_hour", "resets_at": "r"}], now=now)
+    text_before = csv_path.read_text(encoding="utf-8")
+
+    assert log_usage.prune_usage_log(csv_path, 30, now=now) == 0
+    assert csv_path.read_text(encoding="utf-8") == text_before
+
+
+def test_prune_usage_log_keeps_a_row_with_more_columns_than_the_header_verbatim(tmp_path):
+    """A statusline ground-truth row (16 trailing columns) must survive a
+    prune pass unchanged, not get truncated to the base 6-column shape --
+    this function only looks at column 0 to decide keep/drop and writes
+    surviving lines back byte-for-byte."""
+    csv_path = tmp_path / "usage-log.csv"
+    now = datetime(2026, 9, 24, tzinfo=timezone.utc)
+    ground_truth_line = "2026-09-23T00:00:00Z,s1,context_window,50.0,,statusline,1000,2000,,1,300,250,0,,,\n"
+    with open(csv_path, "w", encoding="utf-8", newline="") as fh:
+        fh.write("logged_at,session_id,window,used_percentage,resets_at,source\n")
+        fh.write(ground_truth_line)
+
+    removed = log_usage.prune_usage_log(csv_path, 30, now=now)
+
+    assert removed == 0
+    assert csv_path.read_text(encoding="utf-8").splitlines()[1] + "\n" == ground_truth_line
+
+
+def test_prune_usage_log_drops_a_row_with_an_unparseable_logged_at(tmp_path):
+    csv_path = tmp_path / "usage-log.csv"
+    with open(csv_path, "w", encoding="utf-8", newline="") as fh:
+        fh.write("logged_at,session_id,window,used_percentage,resets_at,source\n")
+        fh.write("not-a-timestamp,s1,five_hour,1.0,r,statusline\n")
+
+    removed = log_usage.prune_usage_log(csv_path, 30, now=datetime(2026, 9, 24, tzinfo=timezone.utc))
+
+    assert removed == 1
+    assert log_usage.load_usage_log(csv_path) == []

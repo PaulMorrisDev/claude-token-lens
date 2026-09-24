@@ -100,6 +100,8 @@ class HookSpec:
             "SessionEnd": "when a session ends",
             "Notification": "when Claude waits for you, in the background",
             "PermissionRequest": "when Claude asks for permission, in the background",
+            "Stop": "when a turn ends",
+            "StopFailure": "when a turn ends in an API error",
         }.get(self.event, f"on {self.event}")
         return f"{self.script} {when}"
 

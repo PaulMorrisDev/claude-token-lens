@@ -174,5 +174,24 @@ def test_csv_cross_check_counts_exhaustion_rows_against_transcript_hits(tmp_path
     assert by_window["seven_day"][2] == 0
 
 
+def test_signals_cross_check_counts_quota_waits_and_turn_failures(tmp_path: Path):
+    from claude_token_lens import signals
+
+    path = _session_limit_fixture(tmp_path)
+    result = parse_transcript(path, TranscriptMeta(path=str(path), session_id="sess1"))
+    stats = limits.LimitStats()
+    stats.add(result)  # one session_limit hit
+
+    session_signals = {
+        "sess1": signals.SessionSignals(waits={"quota": 2, "idle": 1}, failures={"rate_limit": 1, "invalid_request": 3}),
+        "sess2": signals.SessionSignals(failures={"overloaded": 1}),
+    }
+    table = limits.signals_cross_check(session_signals, stats)
+    by_signal = {row[0]: row for row in table.rows}
+    assert by_signal["quota wait signals (Notification)"][1:] == [2, 1, -1]
+    assert by_signal["rate_limit/overloaded turn failures (StopFailure)"][1:] == [2, 1, -1]
+    assert limits.signals_cross_check({}, stats).rows[0][1] == 0
+
+
 def test_read_usage_log_rows_missing_file_returns_empty(tmp_path: Path):
     assert limits.read_usage_log_rows(tmp_path / "nope.csv") == []
