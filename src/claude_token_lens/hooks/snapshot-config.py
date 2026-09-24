@@ -40,7 +40,9 @@ the platform-wide ``managed-settings.json`` a system administrator can drop
 outside any user's control (macOS
 ``/Library/Application Support/ClaudeCode/managed-settings.json``, Linux
 ``/etc/claude-code/managed-settings.json``, Windows
-``%ProgramData%\\ClaudeCode\\managed-settings.json``) is read the same way as
+``%ProgramFiles%\\ClaudeCode\\managed-settings.json`` — see
+:func:`default_managed_settings_dir`; the legacy ``%ProgramData%`` path is
+no longer read by Claude Code) is read the same way as
 user/project settings.json and redacted with the exact same
 ``redact_settings`` rule into ``snapshot["managed_settings"]``. Its raw
 top-level key names (never values) are additionally recorded verbatim into
@@ -72,10 +74,25 @@ schema-1 files unchanged) adds, on top of every schema-1 field above:
   ``cleanup_period_days``, ``output_style``, ``statusline_present``).
 - ``effective`` / ``effective_provenance`` — every :data:`SETTINGS_SUMMARY_KEYS`
   key's value (the same allowlist/redaction :func:`redact_settings_value`
-  already applies — ``statusLine`` and ``modelPricing`` included, each
-  reduced to their own safe summary shape rather than a raw value) merged
-  across the four settings layers in precedence order, with
-  ``effective_provenance[key]`` naming which layer supplied it.
+  already applies — ``statusLine``, ``modelPricing`` and, since COV-09,
+  ``attribution`` included, each reduced to their own safe summary shape
+  rather than a raw value; ``includeCoAuthoredBy`` — the Boolean
+  ``attribution`` replaces, docs/en/settings-reference.md — rides the
+  plain scalar allowlist) merged across the four settings layers in
+  precedence order, with ``effective_provenance[key]`` naming which layer
+  supplied it.
+- ``effective_env_names`` / ``effective_env_provenance``,
+  ``effective_permissions``, ``effective_hooks``,
+  ``effective_enabled_plugins``, ``effective_mcpjson_servers`` (COV-03,
+  fixing D6) — the ``env``/``permissions``/``hooks``/``enabledPlugins``/
+  ``enabledMcpjsonServers``/``disabledMcpjsonServers`` settings keys,
+  deep-merged across all four layers with the merge rule each actually
+  has (per-name precedence for ``env`` and ``enabledPlugins``, additive
+  union for ``permissions``/``hooks``/the mcpjson lists) rather than the
+  single-layer read schema 1's ``mcp_servers``/``enabled_plugins`` and
+  each layer's own ``permissions``/``hooks``/``env_names`` give alone --
+  see :func:`build_effective_env_names` and its neighbours for the exact
+  doc citation behind each rule.
 - ``effective_agents`` — every agent name -> ``{source, experimental_cache_ttl,
   model, effort, max_turns}``, derived from ``agents`` (which schema 2 also
   extends with a ``source`` ("user"/"project") and, on a name clash, a
@@ -92,12 +109,19 @@ schema-1 files unchanged) adds, on top of every schema-1 field above:
   session, never message text.
 - ``content_layers`` — sizes, counts and names only (never content) for the
   CLAUDE.md family (user, project root/local, and a bounded walk of nested
-  ``CLAUDE.md`` files), ``.claude/rules/*.md``, ``.claude/commands/**/*.md``,
-  project and user skills (``.claude/skills/*/SKILL.md`` — names + bytes),
-  a rollup of the ``agents`` dict's own source/shadow flags, the project's
-  ``.mcp.json`` server names, whether a ``managed-mcp.json`` exists, output
-  style names, this project's auto-memory byte/file count, installed plugin
-  names and marketplace count, and whether ``CLAUDE_CONFIG_DIR`` is set.
+  ``CLAUDE.md`` files, plus each file's ``@import`` reference *count* —
+  COV-10), ``.claude/rules/*.md``, ``.claude/commands/**/*.md``, project
+  and user skills (``.claude/skills/*/SKILL.md`` — names + bytes, plus
+  each skill's closed-vocabulary frontmatter summary: ``model``,
+  ``effort``, ``context``, ``paths_count`` — COV-10/PROF-09), a rollup of
+  the ``agents`` dict's own source/shadow flags (agent directories are now
+  scanned recursively — COV-10), the project's ``.mcp.json`` server names,
+  ``managed-mcp.json`` presence and server names (now looked up in the
+  system managed-settings directory, not ``claude_root`` — COV-05b),
+  installed plugins' own skill names/agent counts (``plugin_content`` —
+  COV-10, best-effort default-layout scan), output style names, this
+  project's auto-memory byte/file count, installed plugin names and
+  marketplace count, and whether ``CLAUDE_CONFIG_DIR`` is set.
 """
 
 from __future__ import annotations
@@ -132,6 +156,12 @@ SAFE_SETTINGS_KEYS = frozenset(
         "desktopSessionCleanupPeriodDays",
         "autoUpdatesChannel",
         "alwaysThinkingEnabled",
+        # COV-09: a plain Boolean (docs/en/settings-reference.md), so the
+        # generic bool passthrough in _redact_generic already kept it
+        # verbatim even before this -- adding it here only pulls it into
+        # SETTINGS_SUMMARY_KEYS so effective/effective_provenance (and the
+        # "effective-config" report table) carry it too.
+        "includeCoAuthoredBy",
     }
 )
 
@@ -146,12 +176,20 @@ SAFE_SETTINGS_KEYS = frozenset(
 #: :func:`redact_settings_value` ahead of the plain allowlist check.
 _STATUS_LINE_KEY = "statusLine"
 _MODEL_PRICING_KEY = "modelPricing"
+#: COV-09: ``attribution`` (docs/en/settings-reference.md) replaces the
+#: deprecated ``includeCoAuthoredBy`` and lets a layer customise the git
+#: commit trailer / PR text Claude Code adds -- an object with ``commit``/
+#: ``pr`` free-text strings and a ``sessionUrl`` Boolean, so it needs its
+#: own summary shape (below) rather than either the verbatim allowlist
+#: (the strings could be anything) or the generic ``dict(n)`` marker
+#: (which would hide even the safe-to-keep ``sessionUrl`` Boolean).
+_ATTRIBUTION_KEY = "attribution"
 
 #: Every settings key with special handling, allowlisted or summarised
 #: (never the generic ``dict(n)``/``str(len)`` shape marker) -- used to
 #: build ``effective``/``effective_provenance`` (schema 2), which merges
 #: exactly these keys across the settings layers.
-SETTINGS_SUMMARY_KEYS = SAFE_SETTINGS_KEYS | {_STATUS_LINE_KEY, _MODEL_PRICING_KEY}
+SETTINGS_SUMMARY_KEYS = SAFE_SETTINGS_KEYS | {_STATUS_LINE_KEY, _MODEL_PRICING_KEY, _ATTRIBUTION_KEY}
 
 #: Agent frontmatter keys kept verbatim (everything under "experimental."
 #: is also kept — see ``redact_agent_frontmatter``). ``description`` is
@@ -213,26 +251,42 @@ _CLAUDE_MD_WALK_MAX_SECONDS = 1.0
 _ENV_NAME_PREFIXES = ("ANTHROPIC_", "CLAUDE_", "OTEL_")
 
 #: Individual env var names captured that don't share one of the prefixes
-#: above (documented Claude Code levers with irregular names).
+#: above (documented Claude Code levers with irregular names). COV-09 adds
+#: the five ``DISABLE_PROMPT_CACHING*`` levers (docs/en/env-vars.md: one
+#: global switch plus a per-family override for Sonnet/Opus/Haiku/Fable)
+#: and ``ENABLE_TOOL_SEARCH`` (same doc: controls MCP tool search) so a
+#: recommend.py rule can see whether either is set -- both already
+#: names-only, matching every other lever in this set.
 _ENV_EXTRA_NAMES = frozenset(
     {
         "MAX_THINKING_TOKENS",
         "DISABLE_NON_ESSENTIAL_MODEL_CALLS",
         "MAX_MCP_OUTPUT_TOKENS",
         "BASH_MAX_OUTPUT_LENGTH",
+        "DISABLE_PROMPT_CACHING",
+        "DISABLE_PROMPT_CACHING_SONNET",
+        "DISABLE_PROMPT_CACHING_OPUS",
+        "DISABLE_PROMPT_CACHING_HAIKU",
+        "DISABLE_PROMPT_CACHING_FABLE",
+        "ENABLE_TOOL_SEARCH",
     }
 )
 
-#: Of the names above (plus CLAUDE_AUTOCOMPACT_PCT_OVERRIDE, already covered
-#: by the CLAUDE_ prefix), these four are numeric *caps* rather than
-#: secrets or content, so the integer value itself is recorded alongside
-#: the name -- everything else stays names-only.
+#: Of the names above (plus CLAUDE_AUTOCOMPACT_PCT_OVERRIDE and
+#: CLAUDE_CODE_MAX_OUTPUT_TOKENS, both already covered by the CLAUDE_
+#: prefix), these are numeric *caps* rather than secrets or content, so
+#: the integer value itself is recorded alongside the name -- everything
+#: else stays names-only. CLAUDE_CODE_MAX_OUTPUT_TOKENS added for COV-09:
+#: docs/en/env-vars.md notes raising it "reduces the effective context
+#: window available before auto-compaction triggers", which a rule needs
+#: the actual value to reason about, not just presence.
 _ENV_NUMERIC_CAP_NAMES = frozenset(
     {
         "MAX_THINKING_TOKENS",
         "MAX_MCP_OUTPUT_TOKENS",
         "BASH_MAX_OUTPUT_LENGTH",
         "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE",
+        "CLAUDE_CODE_MAX_OUTPUT_TOKENS",
     }
 )
 
@@ -285,18 +339,53 @@ def resolve_claude_root() -> Path:
     return Path(env) if env else (Path.home() / ".claude")
 
 
+def default_managed_settings_dir() -> Path:
+    """The platform's system managed-settings directory (fix 7, COV-05):
+    holds both ``managed-settings.json`` and ``managed-mcp.json`` (docs/en/
+    managed-settings.md: "managed-settings.json, an optional
+    managed-settings.d/ directory, and managed-mcp.json in the system
+    directory: /Library/Application Support/ClaudeCode/ on macOS,
+    /etc/claude-code/ on Linux and WSL, and C:\\Program Files\\ClaudeCode\\
+    on Windows"). Windows previously used %ProgramData%\\ClaudeCode, the
+    legacy path the same doc says Claude Code no longer reads ("Claude
+    Code doesn't read the legacy Windows path
+    C:\\ProgramData\\ClaudeCode\\managed-settings.json") — a doc/code
+    conflict fixed here (COV-05). ``ProgramFiles`` stays env-overridable
+    (mirroring the old ``ProgramData`` pattern) so tests don't need a real
+    Program Files directory.
+    """
+    if sys.platform == "win32":
+        program_files = os.environ.get("ProgramFiles", r"C:\Program Files")
+        return Path(program_files) / "ClaudeCode"
+    if sys.platform == "darwin":
+        return Path("/Library/Application Support/ClaudeCode")
+    return Path("/etc/claude-code")
+
+
 def default_managed_settings_path() -> Path:
     """The platform's system-wide ``managed-settings.json`` path (fix 7).
     This file is written by IT/policy tooling, not by the current user, so
     unlike ``resolve_config_dir`` there is no per-user env var to prefer —
     only ``--managed-path`` (handled by the caller) overrides it.
     """
-    if sys.platform == "win32":
-        program_data = os.environ.get("ProgramData", r"C:\ProgramData")
-        return Path(program_data) / "ClaudeCode" / "managed-settings.json"
-    if sys.platform == "darwin":
-        return Path("/Library/Application Support/ClaudeCode/managed-settings.json")
-    return Path("/etc/claude-code/managed-settings.json")
+    return default_managed_settings_dir() / "managed-settings.json"
+
+
+def resolve_dot_claude_json_path() -> Path:
+    """``~/.claude.json`` (the CLI's own per-machine state file — MCP
+    servers, per-project trust, OAuth account), relocated by
+    ``CLAUDE_CONFIG_DIR`` exactly like ``~/.claude`` itself (COV-05,
+    D8): docs/en/devcontainer.md: "It stores your OAuth account, personal
+    MCP servers, and per-project trust in ~/.claude.json, a separate file
+    outside that directory... Mount a named volume at ~/.claude and set
+    CLAUDE_CONFIG_DIR to the same path so Claude Code writes .claude.json
+    inside the volume." So the file sits *beside* the config dir, not
+    inside it: ``<CLAUDE_CONFIG_DIR>/.claude.json`` when set, else
+    ``~/.claude.json``.
+    """
+    env = os.environ.get("CLAUDE_CONFIG_DIR")
+    base = Path(env) if env else Path.home()
+    return base / ".claude.json"
 
 
 def _read_json_dict(path: Path) -> dict | None:
@@ -354,11 +443,31 @@ def _redact_model_pricing(value) -> dict:
     return {"present": True, "model_ids": sorted(str(k) for k in value)}
 
 
+def _redact_attribution(value) -> dict:
+    """``attribution`` (COV-09) reduces to whether ``commit``/``pr`` are
+    customised at all -- never the free-text trailer/PR body itself --
+    plus ``sessionUrl`` verbatim, since that sub-key is a plain Boolean
+    per docs/en/settings-reference.md, not free text.
+    """
+    if not isinstance(value, dict):
+        return {"commit_set": False, "pr_set": False, "session_url": None}
+    commit = value.get("commit")
+    pr = value.get("pr")
+    session_url = value.get("sessionUrl")
+    return {
+        "commit_set": isinstance(commit, str) and bool(commit),
+        "pr_set": isinstance(pr, str) and bool(pr),
+        "session_url": session_url if isinstance(session_url, bool) else None,
+    }
+
+
 def redact_settings_value(key: str, value):
     if key == _STATUS_LINE_KEY:
         return bool(value)
     if key == _MODEL_PRICING_KEY:
         return _redact_model_pricing(value)
+    if key == _ATTRIBUTION_KEY:
+        return _redact_attribution(value)
     if key in SAFE_SETTINGS_KEYS:
         return value
     return _redact_generic(value)
@@ -441,11 +550,16 @@ def _parse_scalar(raw: str):
 
 def parse_frontmatter(text: str) -> dict:
     """Parse the ``---``-delimited frontmatter block at the top of an agent
-    markdown file into a flat dict. Top-level ``key: value`` scalars are
-    kept as-is; a top-level ``key:`` with no value starts a nested map
-    whose two-space-indented ``child: value`` lines are flattened to
-    ``key.child`` (the shape the plan's ``experimental.cacheTtl`` example
-    needs). Returns ``{}`` if the file has no frontmatter block at all.
+    or skill markdown file into a flat dict. Top-level ``key: value``
+    scalars are kept as-is; a top-level ``key:`` with no value starts
+    either a nested map, whose two-space-indented ``child: value`` lines
+    are flattened to ``key.child`` (the shape the plan's
+    ``experimental.cacheTtl`` example needs), or a block sequence, whose
+    ``- item`` lines collect into an actual list at ``result[key]`` (COV-10:
+    a skill's ``paths:`` frontmatter field is conventionally written this
+    way, not as an inline ``[a, b]`` list -- see :func:`_parse_scalar` for
+    that shorter form). Returns ``{}`` if the file has no frontmatter block
+    at all.
     """
     lines = text.splitlines()
     if not lines or lines[0].strip() != "---":
@@ -465,6 +579,14 @@ def parse_frontmatter(text: str) -> dict:
             continue
         if raw_line[:1] in (" ", "\t") and last_top_key is not None:
             stripped = raw_line.strip()
+            if stripped.startswith("- "):
+                item = _parse_scalar(stripped[2:])
+                existing = result.get(last_top_key)
+                if isinstance(existing, list):
+                    existing.append(item)
+                else:
+                    result[last_top_key] = [item]
+                continue
             if ":" not in stripped:
                 continue
             child_key, _, rest = stripped.partition(":")
@@ -486,15 +608,20 @@ def parse_frontmatter(text: str) -> dict:
 
 
 def _load_agents(agents_dir: Path, source: str) -> dict:
-    """Every ``*.md`` directly under ``agents_dir``, keyed by its frontmatter
-    ``name`` (falling back to the filename stem), redacted per-field, each
-    tagged with ``source`` (schema 2: "user" or "project" -- which of the
-    two agent directories it came from, before any project-wins merge).
+    """Every ``*.md`` under ``agents_dir``, scanned recursively (COV-10,
+    D9: "Claude Code scans .claude/agents/ and ~/.claude/agents/
+    recursively, so you can organize definitions into subfolders" --
+    docs/en/sub-agents.md; a subfolder doesn't change identity for
+    project/user agents, only for plugin agents), keyed by its
+    frontmatter ``name`` (falling back to the filename stem), redacted
+    per-field, each tagged with ``source`` (schema 2: "user" or
+    "project" -- which of the two agent directories it came from, before
+    any project-wins merge).
     """
     result: dict = {}
     if not agents_dir.is_dir():
         return result
-    for md_path in sorted(agents_dir.glob("*.md")):
+    for md_path in sorted(agents_dir.rglob("*.md")):
         try:
             text = md_path.read_text(encoding="utf-8", errors="replace")
         except OSError:
@@ -758,6 +885,140 @@ def build_effective_settings(raw_settings_by_layer: dict[str, dict]) -> tuple[di
     return effective, provenance
 
 
+def build_effective_env_names(raw_settings_by_layer: dict[str, dict]) -> tuple[list[str], dict]:
+    """Every name set in any layer's own ``env`` block, deep-merged the way
+    Claude Code actually resolves it (COV-03, D6): "If more than one
+    settings file sets a variable... the highest-precedence file's value
+    is used" (docs/en/settings.md). A per-layer ``env_names`` list alone
+    (see :func:`summarize_settings_layer`) only shows what one file sets,
+    not what a lower-precedence file contributes that no higher layer
+    overrides -- the two differ whenever the layers set *different* names.
+    Returns ``(names, provenance)``; ``provenance[name]`` is the
+    highest-precedence layer that sets it -- the one actually in effect.
+    Names only, never values, matching the per-layer posture.
+    """
+    names: set[str] = set()
+    provenance: dict[str, str] = {}
+    for layer in SETTINGS_LAYER_ORDER:
+        raw = raw_settings_by_layer.get(layer)
+        env_block = raw.get("env") if isinstance(raw, dict) else None
+        if not isinstance(env_block, dict):
+            continue
+        for name in env_block:
+            name = str(name)
+            names.add(name)
+            provenance.setdefault(name, layer)
+    return sorted(names), provenance
+
+
+def build_effective_permissions(raw_settings_by_layer: dict[str, dict]) -> dict:
+    """``permissions.allow``/``deny``/``ask`` deep-merged across every
+    layer (COV-03, D6): "Lists merge instead of overriding... permission
+    rules from different settings files are combined" (docs/en/
+    settings.md), so a per-layer count alone understates what's actually
+    in effect whenever more than one layer contributes rules. Counts the
+    *unique* rule strings across all layers -- the rule text is used only
+    in-process to dedupe and is never itself recorded, matching
+    :func:`_permissions_summary`'s existing counts-only posture.
+    ``default_mode`` does not merge (docs don't describe a combine rule
+    for it); it's the highest-precedence layer's own value.
+    """
+    allow: set[str] = set()
+    deny: set[str] = set()
+    ask: set[str] = set()
+    default_mode = None
+    for layer in SETTINGS_LAYER_ORDER:
+        raw = raw_settings_by_layer.get(layer)
+        perms = raw.get("permissions") if isinstance(raw, dict) else None
+        if not isinstance(perms, dict):
+            continue
+        for bucket, target in (("allow", allow), ("deny", deny), ("ask", ask)):
+            value = perms.get(bucket)
+            if isinstance(value, list):
+                target.update(str(v) for v in value)
+        if default_mode is None:
+            mode = perms.get("defaultMode")
+            if isinstance(mode, str):
+                default_mode = mode
+    return {
+        "allow_count": len(allow),
+        "deny_count": len(deny),
+        "ask_count": len(ask),
+        "default_mode": default_mode,
+    }
+
+
+def build_effective_hooks(raw_settings_by_layer: dict[str, dict]) -> dict:
+    """Hook entry counts per event, summed across every layer (COV-03,
+    D6): "Hook entries merge across settings levels rather than replacing
+    each other: user, project, and local settings add their own hooks
+    without removing managed ones" (docs/en/hooks.md) -- additive, unlike
+    the scalar settings keys :func:`build_effective_settings` merges.
+    """
+    totals: dict[str, int] = {}
+    for layer in SETTINGS_LAYER_ORDER:
+        raw = raw_settings_by_layer.get(layer)
+        hooks = raw.get("hooks") if isinstance(raw, dict) else None
+        if not isinstance(hooks, dict):
+            continue
+        for event_name, entries in hooks.items():
+            if isinstance(entries, list):
+                key = str(event_name)
+                totals[key] = totals.get(key, 0) + len(entries)
+    return totals
+
+
+def build_effective_enabled_plugins(raw_settings_by_layer: dict[str, dict]) -> list[str]:
+    """``enabledPlugins`` resolved per plugin name across every layer
+    (COV-03, D6): each plugin name is its own key, decided by the
+    highest-precedence layer that names it -- not a union of "enabled
+    anywhere" (docs/en/settings-reference.md's ``enabledPlugins`` entry:
+    "Project settings take precedence over user settings, so setting a
+    plugin to false in ~/.claude/settings.json doesn't disable a plugin
+    that the project's .claude/settings.json enables"). Per-layer
+    ``enabled_plugins`` (see :func:`_extract_enabled_plugins`) only lists
+    one file's own keys, plugin previously read from the user layer only
+    (D6) -- this is what's actually enabled. Names only.
+    """
+    resolved: dict[str, bool] = {}
+    for layer in SETTINGS_LAYER_ORDER:
+        raw = raw_settings_by_layer.get(layer)
+        entry = raw.get("enabledPlugins") if isinstance(raw, dict) else None
+        if not isinstance(entry, dict):
+            continue
+        for name, value in entry.items():
+            name = str(name)
+            if name not in resolved and isinstance(value, bool):
+                resolved[name] = value
+    return sorted(_clip_name(name) for name, enabled in resolved.items() if enabled)
+
+
+def build_effective_mcpjson_servers(raw_settings_by_layer: dict[str, dict]) -> dict:
+    """``enabledMcpjsonServers``/``disabledMcpjsonServers`` deep-merged
+    across every layer (COV-03): both are "Lists merge instead of
+    overriding" arrays (docs/en/settings.md), and a rejection anywhere
+    wins ("Rejection takes precedence over enabledMcpjsonServers and
+    enableAllProjectMcpServers" -- docs/en/settings-reference.md's
+    ``disabledMcpjsonServers`` entry) -- previously read from the user
+    layer only (D6), missing e.g. a project-local rejection.
+    """
+    enabled: set[str] = set()
+    disabled: set[str] = set()
+    for layer in SETTINGS_LAYER_ORDER:
+        raw = raw_settings_by_layer.get(layer)
+        if not isinstance(raw, dict):
+            continue
+        for key, target in (("enabledMcpjsonServers", enabled), ("disabledMcpjsonServers", disabled)):
+            value = raw.get(key)
+            if isinstance(value, list):
+                target.update(str(v) for v in value)
+    enabled -= disabled
+    return {
+        "enabled": sorted(_clip_name(name) for name in enabled),
+        "disabled": sorted(_clip_name(name) for name in disabled),
+    }
+
+
 def build_effective_agents(agents: dict) -> dict:
     """``agents`` (already source/shadow-tagged by :func:`_merge_agents`)
     reduced to the handful of fields a TTL/model/effort recommendation
@@ -975,16 +1236,52 @@ def _walk_nested_claude_md(root: Path) -> tuple[int, int]:
     return count, total_bytes
 
 
+#: Skill frontmatter fields kept as short scalars (COV-10/PROF-09, V18):
+#: ``model``/``effort``/``context`` are closed-vocabulary-ish, enum-like
+#: strings (a model id, an effort level, "fork") -- same posture as
+#: ``SAFE_SETTINGS_KEYS``/``AGENT_KEEP_KEYS``. ``paths`` (the path-scoping
+#: glob list) is deliberately NOT kept verbatim: PROF-09's privacy rule is
+#: "store only closed values and counts... never free-text descriptions",
+#: and a glob pattern can embed a real project-specific path, so only its
+#: length (``paths_count``) is recorded.
+_SKILL_FRONTMATTER_SCALAR_KEYS = ("model", "effort", "context")
+
+
+def _skill_frontmatter_summary(skill_md: Path) -> dict:
+    """``model``/``effort``/``context``/``paths_count`` off one skill's
+    frontmatter (COV-10/PROF-09), so a recommendation can suggest a
+    per-skill ``model:``/``effort:`` (noting V14: a skill ``model`` forces
+    a full cache miss) without ever seeing the skill's body text or its
+    free-text ``description``/``when_to_use`` fields, which this
+    deliberately never reads.
+    """
+    try:
+        text = skill_md.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return {"model": None, "effort": None, "context": None, "paths_count": 0}
+    parsed = parse_frontmatter(text)
+    summary: dict = {
+        key: (_clip_name(parsed[key]) if isinstance(parsed.get(key), str) else None)
+        for key in _SKILL_FRONTMATTER_SCALAR_KEYS
+    }
+    paths = parsed.get("paths")
+    summary["paths_count"] = len(paths) if isinstance(paths, list) else 0
+    return summary
+
+
 def _skills_summary(skills_dir: Path) -> dict:
     """Skill *names* (the directory name under ``skills/``, already an
-    identifier rather than content -- same posture as an agent name) plus
-    the total bytes of their ``SKILL.md`` files. A skill directory without
-    a ``SKILL.md`` is not a skill Claude Code will load, so it's excluded.
+    identifier rather than content -- same posture as an agent name), the
+    total bytes of their ``SKILL.md`` files, and (COV-10/PROF-09) each
+    skill's closed-vocabulary frontmatter summary keyed by that same name.
+    A skill directory without a ``SKILL.md`` is not a skill Claude Code
+    will load, so it's excluded.
     """
     names: list[str] = []
     total_bytes = 0
+    config: dict = {}
     if not skills_dir.is_dir():
-        return {"names": names, "total_bytes": total_bytes}
+        return {"names": names, "total_bytes": total_bytes, "config": config}
     try:
         entries = sorted(skills_dir.iterdir())
     except OSError:
@@ -995,11 +1292,93 @@ def _skills_summary(skills_dir: Path) -> dict:
                 continue
             skill_md = entry / "SKILL.md"
             if skill_md.is_file():
-                names.append(_clip_name(entry.name))
+                name = _clip_name(entry.name)
+                names.append(name)
                 total_bytes += skill_md.stat().st_size
+                config[name] = _skill_frontmatter_summary(skill_md)
         except OSError:
             continue
-    return {"names": names, "total_bytes": total_bytes}
+    return {"names": names, "total_bytes": total_bytes, "config": config}
+
+
+def _plugin_content_summary(plugins_dir: Path, plugin_names: list[str]) -> dict:
+    """Best-effort skill/agent counts for each installed plugin (COV-10:
+    "scan content layers: ... plugin skills and agents"), using each
+    plugin's *default* layout only: skills live in a ``skills/``
+    directory (one subfolder per skill) or a single root ``SKILL.md``;
+    agents live in ``agents/``, scanned recursively (docs/en/
+    plugins-reference.md). A plugin manifest (``plugin.json``) can remap
+    any of these to custom paths ("Component path fields") -- unlike the
+    default layout, that remapping isn't replicated here, so a plugin
+    using it undercounts; this mirrors :func:`_plugins_summary`'s own
+    directory-listing approach, which is equally manifest-unaware.
+    Skill names are recorded (matching project/user skills' posture);
+    agents are a count only, since a plugin agent's *scoped* identifier
+    joins the plugin name, every subfolder and the filename with colons
+    (e.g. ``my-plugin:review:security``), which is more path-shaped
+    detail than this hook's name allowlist is meant to carry.
+    """
+    result: dict = {}
+    for name in plugin_names:
+        plugin_dir = plugins_dir / name
+        skills_names: list[str] = []
+        skills_dir = plugin_dir / "skills"
+        if skills_dir.is_dir():
+            try:
+                sub_entries = sorted(skills_dir.iterdir())
+            except OSError:
+                sub_entries = []
+            for entry in sub_entries:
+                try:
+                    if entry.is_dir() and (entry / "SKILL.md").is_file():
+                        skills_names.append(_clip_name(entry.name))
+                except OSError:
+                    continue
+        else:
+            try:
+                has_root_skill = (plugin_dir / "SKILL.md").is_file()
+            except OSError:
+                has_root_skill = False
+            if has_root_skill:
+                skills_names.append(_clip_name(name))
+
+        agents_count = 0
+        agents_dir = plugin_dir / "agents"
+        if agents_dir.is_dir():
+            try:
+                agents_count = sum(1 for p in agents_dir.rglob("*.md") if p.is_file())
+            except OSError:
+                agents_count = 0
+
+        if skills_names or agents_count:
+            result[_clip_name(name)] = {"skills": sorted(skills_names), "agents_count": agents_count}
+    return result
+
+
+#: Import parsing skips fenced code blocks and inline code spans (COV-10,
+#: D9, docs/en/memory.md: "Import parsing skips Markdown code spans and
+#: fenced code blocks... writing `@README` keeps the text literal") --
+#: approximated (not a full Markdown parser) by stripping both before
+#: counting ``@token`` occurrences.
+_CLAUDE_MD_CODE_FENCE_RE = re.compile(r"```.*?```|~~~.*?~~~", re.DOTALL)
+_CLAUDE_MD_INLINE_CODE_RE = re.compile(r"`[^`\n]*`")
+_CLAUDE_MD_IMPORT_TOKEN_RE = re.compile(r"@[^\s`]+")
+
+
+def _count_claude_md_imports(path: Path) -> int:
+    """Count of ``@path/to/import`` references in one CLAUDE.md-family
+    file (COV-10, D9: "CLAUDE.md files can import additional files using
+    @path/to/import syntax" -- docs/en/memory.md). A count only -- never
+    the import paths themselves, which are exactly the kind of
+    local-filesystem detail this hook must not record.
+    """
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return 0
+    text = _CLAUDE_MD_CODE_FENCE_RE.sub("", text)
+    text = _CLAUDE_MD_INLINE_CODE_RE.sub("", text)
+    return len(_CLAUDE_MD_IMPORT_TOKEN_RE.findall(text))
 
 
 def _plugins_summary(claude_root: Path) -> dict:
@@ -1047,18 +1426,33 @@ def _memory_summary(claude_root: Path, project_slug: str) -> dict:
     return {"present": files > 0, "files": files, "bytes": total_bytes}
 
 
-def build_content_layers(cwd_path: Path, claude_root: Path, project_slug: str, agents: dict) -> dict:
+def build_content_layers(
+    cwd_path: Path, claude_root: Path, project_slug: str, agents: dict, managed_dir: Path | None = None
+) -> dict:
     """Sizes, counts and names only (never content) for every content
     layer the plan's "Configuration layers" section lists: the CLAUDE.md
-    family, rules, commands, skills, an agents source/shadow rollup, the
-    project's own ``.mcp.json``, a ``managed-mcp.json`` presence check,
-    output style names, this project's auto-memory footprint, installed
-    plugin names/marketplace count, and whether ``CLAUDE_CONFIG_DIR`` is
-    set at all (never its value, which is a path).
+    family (plus, COV-10, each file's ``@import`` reference count), rules,
+    commands, skills (plus, COV-10/PROF-09, each skill's closed-vocabulary
+    frontmatter summary), an agents source/shadow rollup, the project's
+    own ``.mcp.json``, ``managed-mcp.json`` (COV-05: looked up in the same
+    system managed-settings directory as ``managed-settings.json``, not
+    ``claude_root``), plugin skills/agents (COV-10), output style names,
+    this project's auto-memory footprint, installed plugin
+    names/marketplace count, and whether ``CLAUDE_CONFIG_DIR`` is set at
+    all (never its value, which is a path).
+
+    ``managed_dir`` is the system managed-settings directory (see
+    :func:`default_managed_settings_dir`); defaults to the platform
+    default when omitted, same posture as ``build_snapshot``'s own
+    ``managed_path`` default.
     """
     nested_count, nested_bytes = _walk_nested_claude_md(cwd_path)
     rules_count, rules_bytes = _count_bytes_for_glob(cwd_path / ".claude" / "rules", "*.md")
     commands_count, commands_bytes = _count_bytes_for_glob(cwd_path / ".claude" / "commands", "**/*.md")
+
+    user_claude_md = claude_root / "CLAUDE.md"
+    project_root_claude_md = cwd_path / "CLAUDE.md"
+    project_local_claude_md = cwd_path / "CLAUDE.local.md"
 
     mcp_json = _read_json_dict(cwd_path / ".mcp.json")
     mcp_json_names: list[str] = []
@@ -1066,6 +1460,15 @@ def build_content_layers(cwd_path: Path, claude_root: Path, project_slug: str, a
         servers = mcp_json.get("mcpServers")
         if isinstance(servers, dict):
             mcp_json_names = sorted(_clip_name(k) for k in servers)
+
+    managed_dir = managed_dir if managed_dir is not None else default_managed_settings_dir()
+    managed_mcp_path = managed_dir / "managed-mcp.json"
+    managed_mcp_json = _read_json_dict(managed_mcp_path)
+    managed_mcp_names: list[str] = []
+    if managed_mcp_json is not None:
+        servers = managed_mcp_json.get("mcpServers")
+        if isinstance(servers, dict):
+            managed_mcp_names = sorted(_clip_name(k) for k in servers)
 
     output_styles_dir = claude_root / "output-styles"
     output_style_names: list[str] = []
@@ -1075,13 +1478,19 @@ def build_content_layers(cwd_path: Path, claude_root: Path, project_slug: str, a
         except OSError:
             output_style_names = []
 
+    plugin_names = _plugins_summary(claude_root)["names"]
+    plugin_content = _plugin_content_summary(claude_root / "plugins", plugin_names)
+
     return {
         "claude_md": {
-            "user_bytes": _file_bytes(claude_root / "CLAUDE.md"),
-            "project_root_bytes": _file_bytes(cwd_path / "CLAUDE.md"),
-            "project_local_bytes": _file_bytes(cwd_path / "CLAUDE.local.md"),
+            "user_bytes": _file_bytes(user_claude_md),
+            "project_root_bytes": _file_bytes(project_root_claude_md),
+            "project_local_bytes": _file_bytes(project_local_claude_md),
             "nested_count": nested_count,
             "nested_bytes": nested_bytes,
+            "user_imports": _count_claude_md_imports(user_claude_md),
+            "project_root_imports": _count_claude_md_imports(project_root_claude_md),
+            "project_local_imports": _count_claude_md_imports(project_local_claude_md),
         },
         "rules": {"count": rules_count, "bytes": rules_bytes},
         "commands": {"count": commands_count, "bytes": commands_bytes},
@@ -1096,7 +1505,9 @@ def build_content_layers(cwd_path: Path, claude_root: Path, project_slug: str, a
             "shadowed_count": sum(1 for a in agents.values() if a.get("shadowed_by_project")),
         },
         "mcp_json": {"present": mcp_json is not None, "names": mcp_json_names},
-        "managed_mcp_present": (claude_root / "managed-mcp.json").is_file(),
+        "managed_mcp_present": managed_mcp_path.is_file(),
+        "managed_mcp": {"present": managed_mcp_json is not None, "names": managed_mcp_names},
+        "plugin_content": plugin_content,
         "output_styles": output_style_names,
         "memory": _memory_summary(claude_root, project_slug),
         "plugins": _plugins_summary(claude_root),
@@ -1180,21 +1591,37 @@ def build_snapshot(
             project_settings[_sha256_hex(str(path))] = redact_settings(data)
 
     mcp_names: set[str] = set()
-    raw_mcp_servers = user_settings_raw.get("mcpServers")
-    if isinstance(raw_mcp_servers, dict):
-        mcp_names.update(str(k) for k in raw_mcp_servers)
+    # COV-03/D6 fix: ``mcpServers`` is not a valid settings.json key at any
+    # scope (docs/en/settings-reference.md's key index has no such entry;
+    # personal servers live in ``~/.claude.json``, project ones in
+    # ``.mcp.json``) -- reading it off ``user_settings_raw`` here could
+    # never fire. The one settings-layer key that legitimately carries MCP
+    # servers is ``managedMcpServers``, "Managed"-scope only
+    # (settings-reference.md: "object keyed by server name... Claude Code
+    # drops the key... in user, project, and local settings").
+    raw_managed_mcp_servers = managed_settings_raw.get("managedMcpServers")
+    if isinstance(raw_managed_mcp_servers, dict):
+        mcp_names.update(str(k) for k in raw_managed_mcp_servers)
     mcp_json = _read_json_dict(cwd_path / ".mcp.json")
     if mcp_json is not None:
         project_mcp_servers = mcp_json.get("mcpServers")
         if isinstance(project_mcp_servers, dict):
             mcp_names.update(str(k) for k in project_mcp_servers)
     # Fix #19: read once, reused below for build_claude_json_section too.
-    dot_claude_json = _read_json_dict(Path.home() / ".claude.json")
+    # COV-05a fix: honours CLAUDE_CONFIG_DIR the same way ~/.claude itself
+    # does (see resolve_dot_claude_json_path's docstring for the doc
+    # citation) instead of always reading Path.home().
+    dot_claude_json = _read_json_dict(resolve_dot_claude_json_path())
     if dot_claude_json is not None:
         global_mcp_servers = dot_claude_json.get("mcpServers")
         if isinstance(global_mcp_servers, dict):
             mcp_names.update(str(k) for k in global_mcp_servers)
 
+    # COV-03/D6 fix: these two were read from the user layer only. They're
+    # now deep-merged across every layer by build_effective_mcpjson_servers
+    # below (schema 2's effective_mcpjson_servers); the schema-1 fields
+    # here keep their original user-layer-only meaning unchanged for
+    # backward compatibility with anything already reading them.
     enabled_mcpjson = user_settings_raw.get("enabledMcpjsonServers")
     disabled_mcpjson = user_settings_raw.get("disabledMcpjsonServers")
 
@@ -1208,6 +1635,10 @@ def build_snapshot(
         else [],
     }
 
+    # COV-03/D6 fix: previously the user layer's own enabledPlugins keys,
+    # regardless of layer precedence or true/false value (schema 1,
+    # unchanged below for backward compatibility). effective_enabled_plugins
+    # (schema 2) is the deep-merged, true-only, per-layer-precedence result.
     enabled_plugins = _extract_enabled_plugins(user_settings_raw)
 
     user_agents = _load_agents(claude_root / "agents", source="user")
@@ -1239,6 +1670,14 @@ def build_snapshot(
     settings_layers = build_settings_layers(cwd_path, claude_root, resolved_managed_path, raw_settings_by_layer)
     effective, effective_provenance = build_effective_settings(raw_settings_by_layer)
     effective_agents = build_effective_agents(agents)
+    # COV-03: env/permissions/hooks/enabledPlugins/enabledMcpjsonServers
+    # deep-merged across every settings layer (D6) -- see each function's
+    # own docstring for the doc citation behind its merge rule.
+    effective_env_names, effective_env_provenance = build_effective_env_names(raw_settings_by_layer)
+    effective_permissions = build_effective_permissions(raw_settings_by_layer)
+    effective_hooks = build_effective_hooks(raw_settings_by_layer)
+    effective_enabled_plugins = build_effective_enabled_plugins(raw_settings_by_layer)
+    effective_mcpjson_servers = build_effective_mcpjson_servers(raw_settings_by_layer)
 
     # Fix #2: the raw slug (still the real on-disk `~/.claude/projects/`
     # directory name) is kept ONLY for internal lookups that need the real
@@ -1248,7 +1687,9 @@ def build_snapshot(
     raw_project_slug = _project_slug(cwd)
     project_slug = _redact_slug(raw_project_slug)
     claude_json_section = build_claude_json_section(cwd_path, dot_claude_json)
-    content_layers = build_content_layers(cwd_path, claude_root, raw_project_slug, agents)
+    content_layers = build_content_layers(
+        cwd_path, claude_root, raw_project_slug, agents, managed_dir=resolved_managed_path.parent
+    )
 
     snapshot = {
         "schema": SCHEMA_VERSION,
@@ -1278,6 +1719,12 @@ def build_snapshot(
         "effective": effective,
         "effective_provenance": effective_provenance,
         "effective_agents": effective_agents,
+        "effective_env_names": effective_env_names,
+        "effective_env_provenance": effective_env_provenance,
+        "effective_permissions": effective_permissions,
+        "effective_hooks": effective_hooks,
+        "effective_enabled_plugins": effective_enabled_plugins,
+        "effective_mcpjson_servers": effective_mcpjson_servers,
         "claude_json": claude_json_section,
         "content_layers": content_layers,
     }

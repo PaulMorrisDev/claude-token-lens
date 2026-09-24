@@ -183,6 +183,12 @@ SETTINGS_ALLOWLIST: dict[str, LeverSpec] = {
         "int", "settings", min=0, max=3650,
         doc_ref="docs/config-layers.md#redaction-rule-settings-and-agent-frontmatter-alike",
     ),
+    # COV-09: the deprecated Boolean recommend.py's env-attribution-deprecated
+    # rule flags in favour of the `attribution` setting.
+    "includeCoAuthoredBy": LeverSpec(
+        "bool", "settings",
+        doc_ref="docs/config-layers.md#redaction-rule-settings-and-agent-frontmatter-alike",
+    ),
 }
 
 #: ``agents.<name>`` frontmatter patch keys a profile may set. The dotted
@@ -228,6 +234,14 @@ ENV_ALLOWLIST: dict[str, LeverSpec] = {
         "ANTHROPIC_DEFAULT_SONNET_MODEL",
         "ANTHROPIC_DEFAULT_HAIKU_MODEL",
         "ANTHROPIC_DEFAULT_FABLE_MODEL",
+        # COV-09: recommend.py's five new env-lever rules.
+        "DISABLE_PROMPT_CACHING",
+        "DISABLE_PROMPT_CACHING_SONNET",
+        "DISABLE_PROMPT_CACHING_OPUS",
+        "DISABLE_PROMPT_CACHING_HAIKU",
+        "DISABLE_PROMPT_CACHING_FABLE",
+        "ENABLE_TOOL_SEARCH",
+        "CLAUDE_CODE_MAX_OUTPUT_TOKENS",
     )
 }
 
@@ -624,7 +638,19 @@ RECOMMEND_LEVER_MAP: dict[str, tuple[str, str]] = {
     "effortLevel": ("settings", "effortLevel"),
     "omitClaudeMd": ("agent frontmatter", "omitClaudeMd"),
     "mcpServers": ("settings", "disabledMcpjsonServers"),
+    # COV-09: the deprecated-setting rule's bare settings-key lever.
+    "includeCoAuthoredBy": ("settings", "includeCoAuthoredBy"),
 }
+
+#: COV-09: recommend.py's five env-var lever rules emit ``f"env:{NAME}"``
+#: (one rule's own name is chosen dynamically -- whichever
+#: ``DISABLE_PROMPT_CACHING*`` variant a snapshot actually has set, or the
+#: bare ``DISABLE_PROMPT_CACHING`` name when more than one is), so this is
+#: a *prefix* convention rather than a fixed set of literals
+#: :data:`RECOMMEND_LEVER_MAP` could enumerate -- unlike the agent-lever
+#: sentence form above, the part after the prefix is already the exact
+#: :data:`ENV_ALLOWLIST` key, no further parsing needed.
+_ENV_LEVER_PREFIX = "env:"
 
 
 def recommend_lever_key(lever: str) -> tuple[str, str] | None:
@@ -632,15 +658,23 @@ def recommend_lever_key(lever: str) -> tuple[str, str] | None:
     a ``Recommendation`` carries represents, or ``None`` if ``lever``
     names nothing a profile can encode (``lever=None`` recommendations --
     out of scope for a profile by design; workflow advice, not a
-    setting). Handles both the bare literals in :data:`RECOMMEND_LEVER_MAP`
-    and ``ttl.TtlTypeStats.lever``'s per-agent-type sentence form via
-    :data:`_AGENT_LEVER_RE`, exactly the same pattern
+    setting). Handles the bare literals in :data:`RECOMMEND_LEVER_MAP`,
+    ``ttl.TtlTypeStats.lever``'s per-agent-type sentence form via
+    :data:`_AGENT_LEVER_RE` (exactly the same pattern
     ``recommend._lever_scope``/``recommend.render_patch_set`` already use
-    to recognise it."""
+    to recognise it), and an ``"env:NAME"``-prefixed lever (COV-09) by
+    stripping the prefix and checking :data:`ENV_ALLOWLIST` directly --
+    ``None`` if ``NAME`` isn't allowlisted, so an unlisted env lever fails
+    the same way an unlisted settings/agent key would."""
     if lever in RECOMMEND_LEVER_MAP:
         return RECOMMEND_LEVER_MAP[lever]
     if _AGENT_LEVER_RE.search(lever):
         return ("agent frontmatter", "experimental.cacheTtl")
+    if lever.startswith(_ENV_LEVER_PREFIX):
+        name = lever[len(_ENV_LEVER_PREFIX):]
+        if name in ENV_ALLOWLIST:
+            return ("env", name)
+        return None
     return None
 
 

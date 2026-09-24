@@ -622,6 +622,93 @@ def build_config_layers_table(snapshots: list[Snapshot]) -> Table:
     )
 
 
+#: COV-09 env-var levers recommend.py's rules key off. Kept to exactly
+#: this small, plan-named set (not every name ``env_names``/
+#: ``env_numeric_caps`` capture -- see snapshot-config.py's
+#: ``_ENV_EXTRA_NAMES``/``_ENV_NUMERIC_CAP_NAMES``) -- this table exists
+#: to give those rules real, citable evidence (recommend.py's module
+#: docstring's evidence contract), not to duplicate the raw snapshot
+#: fields.
+ENV_LEVER_NAMES: tuple[str, ...] = (
+    "DISABLE_PROMPT_CACHING",
+    "DISABLE_PROMPT_CACHING_SONNET",
+    "DISABLE_PROMPT_CACHING_OPUS",
+    "DISABLE_PROMPT_CACHING_HAIKU",
+    "DISABLE_PROMPT_CACHING_FABLE",
+    "ENABLE_TOOL_SEARCH",
+    "CLAUDE_CODE_MAX_OUTPUT_TOKENS",
+    "CLAUDE_CODE_SUBAGENT_MODEL",
+    "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE",
+)
+
+#: COV-09's other lever pair, ``attribution``/``includeCoAuthoredBy`` --
+#: settings.json keys, not env vars, but the same "is it set, and to
+#: what" question a recommend.py rule needs answered. Row-keyed the same
+#: way as ``ENV_LEVER_NAMES`` (see below) rather than folded into
+#: ``build_effective_config_table``, whose rows are keyed by *project*
+#: (one row per (project, key)) -- ``_row``/``_cell`` match on a row's
+#: first column alone, so that table can't be cited for one specific key
+#: without risking the wrong row when a project has several effective
+#: keys set (recommend.py's evidence-citation contract needs an
+#: unambiguous row_key; see this module's own docstring).
+SETTINGS_LEVER_KEYS: tuple[str, ...] = ("attribution", "includeCoAuthoredBy")
+
+
+def build_env_levers_table(snapshots: list[Snapshot]) -> Table:
+    """One row per :data:`ENV_LEVER_NAMES` entry plus one per
+    :data:`SETTINGS_LEVER_KEYS` entry, read from the same "config as of
+    now" snapshot ``build_report`` passes ``recommend()``
+    (:func:`with_every_project_agents` -- the newest snapshot carrying
+    schema 2's ``effective`` field): whether each is set at all, and its
+    value where that's safe to show (``env_numeric_caps`` for the numeric
+    env levers, ``effective`` for the two settings keys -- both already
+    redacted the same way the rest of schema 2 is, so this table adds no
+    new privacy surface, only a citable row shape).
+
+    One row per name (not per project): unlike ``build_effective_config_table``,
+    which is genuinely project-by-project, ``recommend()`` only ever reads
+    a single corpus-wide snapshot for config-driven rules (see
+    ``report.py``'s own comment on the same call), so a project column
+    would be one constant value repeated on every row -- this table names
+    the project once, in a note, instead of a column that always agrees
+    with itself.
+    """
+    snap = with_every_project_agents(snapshots) if snapshots else None
+    names = set((snap.data.get("env_names") if snap else None) or [])
+    caps = (snap.data.get("env_numeric_caps") if snap else None) or {}
+    if not isinstance(caps, dict):
+        caps = {}
+    effective = (snap.data.get("effective") if snap else None) or {}
+    if not isinstance(effective, dict):
+        effective = {}
+
+    rows: list[list] = [
+        [name, name in names, _stringify_config_value(caps.get(name)) if name in caps else ""]
+        for name in ENV_LEVER_NAMES
+    ]
+    rows.extend(
+        [key, key in effective, _stringify_config_value(effective.get(key)) if key in effective else ""]
+        for key in SETTINGS_LEVER_KEYS
+    )
+
+    notes: list[str] = []
+    if snap is not None:
+        notes.append(f"Project: {_project_label(snap)}.")
+    elif snapshots:
+        notes.append("No snapshot available to read env-var levers from.")
+    return Table(
+        name="env-levers",
+        title="Env var levers",
+        columns=[
+            Column(key="name", label="Name", kind="str"),
+            Column(key="present", label="Present", kind="str"),
+            Column(key="value", label="Value", kind="str"),
+        ],
+        rows=rows,
+        notes=notes,
+    )
+
+
 def build_config_groups_table(
     snapshots: list[Snapshot], sessions_with_metrics: list[dict] | None = None
 ) -> Table:

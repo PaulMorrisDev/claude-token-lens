@@ -873,6 +873,229 @@ def test_baseline_bloat_suppressed_for_chat_only():
     assert not any(rec.id == "baseline-bloat" for rec in recs)
 
 
+# -- COV-09: env-var / deprecated-setting lever rules ------------------------
+
+
+def test_env_disable_prompt_caching_fires_on_any_variant():
+    r = _base_report()
+    snapshot = Snapshot(
+        path=Path("s.json"),
+        ts="20260918T000000Z",
+        data={"env_names": ["DISABLE_PROMPT_CACHING_SONNET"], "effective_env_provenance": {}},
+    )
+    recs = recommend_fn(r, config=_config(), archetype=None, snapshot=snapshot)
+    rec = next(rec for rec in recs if rec.id == "env-disable-prompt-caching")
+    assert rec.severity == "action"
+    assert rec.lever == "env:DISABLE_PROMPT_CACHING_SONNET"
+    assert rec.scope == "user"
+    assert rec.evidence == [
+        ("DISABLE_PROMPT_CACHING_SONNET", True, "config.env-levers", "DISABLE_PROMPT_CACHING_SONNET"),
+    ]
+
+
+def test_env_disable_prompt_caching_managed_scope_and_action_note():
+    r = _base_report()
+    snapshot = Snapshot(
+        path=Path("s.json"),
+        ts="20260918T000000Z",
+        data={
+            "env_names": ["DISABLE_PROMPT_CACHING"],
+            "effective_env_provenance": {"DISABLE_PROMPT_CACHING": "managed"},
+        },
+    )
+    recs = recommend_fn(r, config=_config(), archetype=None, snapshot=snapshot)
+    rec = next(rec for rec in recs if rec.id == "env-disable-prompt-caching")
+    assert rec.scope == "managed"
+    assert "administrator" in rec.action
+
+
+def test_env_disable_prompt_caching_does_not_fire_when_unset():
+    r = _base_report()
+    snapshot = Snapshot(path=Path("s.json"), ts="20260918T000000Z", data={"env_names": []})
+    recs = recommend_fn(r, config=_config(), archetype=None, snapshot=snapshot)
+    assert not any(rec.id == "env-disable-prompt-caching" for rec in recs)
+
+
+def test_env_tool_search_fires_on_base_url_without_tool_search():
+    r = _base_report()
+    snapshot = Snapshot(
+        path=Path("s.json"),
+        ts="20260918T000000Z",
+        data={
+            "env_names": ["ANTHROPIC_BASE_URL"],
+            # baseline_bloat_min_mcp_or_plugins defaults to 5 -- this rule
+            # reuses that same threshold (see its own docstring).
+            "mcp_servers": {"names": ["a", "b", "c", "d", "e"]},
+        },
+    )
+    recs = recommend_fn(r, config=_config(), archetype=None, snapshot=snapshot)
+    rec = next(rec for rec in recs if rec.id == "env-tool-search")
+    assert rec.lever == "env:ENABLE_TOOL_SEARCH"
+    assert rec.evidence == [("ENABLE_TOOL_SEARCH", False, "config.env-levers", "ENABLE_TOOL_SEARCH")]
+
+
+def test_env_tool_search_does_not_fire_when_already_set():
+    r = _base_report()
+    snapshot = Snapshot(
+        path=Path("s.json"),
+        ts="20260918T000000Z",
+        data={
+            "env_names": ["ANTHROPIC_BASE_URL", "ENABLE_TOOL_SEARCH"],
+            "mcp_servers": {"names": ["a", "b", "c", "d", "e"]},
+        },
+    )
+    recs = recommend_fn(r, config=_config(), archetype=None, snapshot=snapshot)
+    assert not any(rec.id == "env-tool-search" for rec in recs)
+
+
+def test_env_tool_search_does_not_fire_with_too_few_mcp_servers():
+    r = _base_report()
+    snapshot = Snapshot(
+        path=Path("s.json"),
+        ts="20260918T000000Z",
+        data={"env_names": ["ANTHROPIC_BASE_URL"], "mcp_servers": {"names": ["a"]}},
+    )
+    recs = recommend_fn(r, config=_config(), archetype=None, snapshot=snapshot)
+    assert not any(rec.id == "env-tool-search" for rec in recs)
+
+
+def test_env_max_output_tokens_fires_with_value_and_optional_compaction_evidence():
+    r = _base_report()
+    r = _add_section(
+        r,
+        Section(
+            key="compactions",
+            title="Compactions",
+            tables=[
+                Table(
+                    name="compactions_summary",
+                    title="Compactions summary",
+                    columns=[Column(key="metric", label="Metric"), Column(key="value", label="Value")],
+                    rows=[["Compactions per session (mean)", 2.5]],
+                )
+            ],
+        ),
+    )
+    snapshot = Snapshot(
+        path=Path("s.json"),
+        ts="20260918T000000Z",
+        data={"env_numeric_caps": {"CLAUDE_CODE_MAX_OUTPUT_TOKENS": 64000}},
+    )
+    recs = recommend_fn(r, config=_config(), archetype=None, snapshot=snapshot)
+    rec = next(rec for rec in recs if rec.id == "env-max-output-tokens")
+    assert "64,000" in rec.action
+    assert "2.5" in rec.action
+    assert (
+        "CLAUDE_CODE_MAX_OUTPUT_TOKENS",
+        "64000",
+        "config.env-levers",
+        "CLAUDE_CODE_MAX_OUTPUT_TOKENS",
+    ) in rec.evidence
+    assert (
+        "Compactions per session (mean)",
+        2.5,
+        "compactions.compactions_summary",
+        "Compactions per session (mean)",
+    ) in rec.evidence
+
+
+def test_env_max_output_tokens_does_not_fire_when_unset():
+    r = _base_report()
+    snapshot = Snapshot(path=Path("s.json"), ts="20260918T000000Z", data={"env_numeric_caps": {}})
+    recs = recommend_fn(r, config=_config(), archetype=None, snapshot=snapshot)
+    assert not any(rec.id == "env-max-output-tokens" for rec in recs)
+
+
+def test_env_subagent_model_fires_and_names_the_order():
+    r = _base_report()
+    snapshot = Snapshot(
+        path=Path("s.json"), ts="20260918T000000Z", data={"env_names": ["CLAUDE_CODE_SUBAGENT_MODEL"]}
+    )
+    recs = recommend_fn(r, config=_config(), archetype=None, snapshot=snapshot)
+    rec = next(rec for rec in recs if rec.id == "env-subagent-model")
+    assert "Explore" in rec.action and "Plan" in rec.action
+    assert rec.severity == "info"
+
+
+def test_env_subagent_model_suppressed_for_chat_only():
+    r = _base_report()
+    snapshot = Snapshot(
+        path=Path("s.json"), ts="20260918T000000Z", data={"env_names": ["CLAUDE_CODE_SUBAGENT_MODEL"]}
+    )
+    recs = recommend_fn(r, config=_config(), archetype="chat-only", snapshot=snapshot)
+    assert not any(rec.id == "env-subagent-model" for rec in recs)
+
+
+def test_attribution_deprecated_fires_when_only_include_co_authored_by_set():
+    r = _base_report()
+    snapshot = Snapshot(
+        path=Path("s.json"), ts="20260918T000000Z", data={"effective": {"includeCoAuthoredBy": False}}
+    )
+    recs = recommend_fn(r, config=_config(), archetype=None, snapshot=snapshot)
+    rec = next(rec for rec in recs if rec.id == "env-attribution-deprecated")
+    assert rec.lever == "includeCoAuthoredBy"
+    assert rec.evidence == [
+        ("includeCoAuthoredBy", "False", "config.env-levers", "includeCoAuthoredBy"),
+    ]
+
+
+def test_attribution_deprecated_does_not_fire_once_attribution_is_set():
+    r = _base_report()
+    snapshot = Snapshot(
+        path=Path("s.json"),
+        ts="20260918T000000Z",
+        data={"effective": {"includeCoAuthoredBy": False, "attribution": {"commit_set": True}}},
+    )
+    recs = recommend_fn(r, config=_config(), archetype=None, snapshot=snapshot)
+    assert not any(rec.id == "env-attribution-deprecated" for rec in recs)
+
+
+def test_attribution_deprecated_does_not_fire_when_neither_set():
+    r = _base_report()
+    snapshot = Snapshot(path=Path("s.json"), ts="20260918T000000Z", data={"effective": {}})
+    recs = recommend_fn(r, config=_config(), archetype=None, snapshot=snapshot)
+    assert not any(rec.id == "env-attribution-deprecated" for rec in recs)
+
+
+def test_baseline_bloat_prefers_effective_enabled_plugins_when_present():
+    r = _base_report()
+    r = _add_section(
+        r,
+        Section(
+            key="agents",
+            title="Agents",
+            tables=[
+                Table(
+                    name="topology_session_baseline",
+                    title="Session baseline",
+                    columns=[
+                        Column(key="metric", label="Metric"),
+                        Column(key="sessions", label="Sessions"),
+                        Column(key="mean_baseline", label="Mean baseline"),
+                    ],
+                    rows=[["all", 10, 50_000]],
+                )
+            ],
+        ),
+    )
+    # baseline_bloat_min_mcp_or_plugins defaults to 5. Schema-1
+    # enabled_plugins names only one plugin (1 MCP + 1 plugin = 2, below
+    # the threshold); effective_enabled_plugins (schema 2, deep-merged)
+    # names four (1 MCP + 4 plugins = 5, which clears it) -- confirms the
+    # rule reads the new field when present rather than the old one.
+    snapshot = Snapshot(
+        path=Path("s.json"),
+        ts="20260918T000000Z",
+        data={
+            "mcp_servers": {"names": ["a"]},
+            "enabled_plugins": ["only-one"],
+            "effective_enabled_plugins": ["p1", "p2", "p3", "p4"],
+        },
+    )
+    recs = recommend_fn(r, config=_config(), archetype=None, snapshot=snapshot)
+    assert any(rec.id == "baseline-bloat" for rec in recs)
+
+
 # -- agent-report-size ------------------------------------------------------
 
 

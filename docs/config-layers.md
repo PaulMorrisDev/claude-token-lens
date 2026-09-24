@@ -16,10 +16,22 @@ a lever is set to but *which file* set it:
 
 | Layer            | File                                | Notes |
 |------------------|--------------------------------------|-------|
-| `managed`        | the platform's `managed-settings.json` | enterprise policy, outside any user's control (macOS `/Library/Application Support/ClaudeCode/…`, Linux `/etc/claude-code/…`, Windows `%ProgramData%\ClaudeCode\…`) |
+| `managed`        | the platform's `managed-settings.json` | enterprise policy, outside any user's control (macOS `/Library/Application Support/ClaudeCode/…`, Linux `/etc/claude-code/…`, Windows `%ProgramFiles%\ClaudeCode\…` — COV-05: the legacy `%ProgramData%` path this doc and `default_managed_settings_dir` used to disagree on was a doc/code conflict, fixed in favour of `%ProgramFiles%`, `ProgramFiles` still env-overridable so tests don't need a real one) |
 | `project_local`  | `<project>/.claude/settings.local.json` | per-machine, not checked in |
 | `project_shared` | `<project>/.claude/settings.json`   | checked in, shared with a team |
 | `user`           | `~/.claude/settings.json` (or `$CLAUDE_CONFIG_DIR/settings.json`) | this machine's default |
+
+`managed-mcp.json` lives in the same system managed-settings directory as
+`managed-settings.json` (`default_managed_settings_dir`), **not** under
+the project's own `claude_root` — COV-05 fixed a lookup that previously
+looked in the wrong place and so silently never found a real managed-MCP
+file. `~/.claude.json` (the CLI's own per-machine state file — see
+"`claude_json`" below) honours `CLAUDE_CONFIG_DIR` the same way
+`~/.claude/settings.json` does: when set, it's read from
+`$CLAUDE_CONFIG_DIR/.claude.json`, not unconditionally from the home
+directory (COV-05, fixing a second doc/code conflict where the file was
+always read from `~` even when every other per-machine file honoured the
+override).
 
 `SETTINGS_LAYER_ORDER` in the hook (`SETTINGS_LAYER_NAMES` in
 `snapshots.py`) fixes this precedence; `effective`/`effective_provenance`
@@ -63,9 +75,12 @@ future Claude Code version degrades safely instead of leaking its value.
 `outputStyle`, `autoCompactWindow`, `autoCompactEnabled`,
 `promptCacheTtl`, `subagentPromptCacheTtl`, `cleanupPeriodDays`,
 `desktopSessionCleanupPeriodDays`, `autoUpdatesChannel`,
-`alwaysThinkingEnabled`.
+`alwaysThinkingEnabled`, `includeCoAuthoredBy` (COV-09: a plain Boolean,
+docs/en/settings-reference.md — deprecated since v2.0.62 in favour of
+`attribution`, but still honoured by Claude Code until a layer sets
+`attribution.commit`/`attribution.pr`, so still worth recording).
 
-Two keys get their own summary shape instead of either "kept verbatim"
+Three keys get their own summary shape instead of either "kept verbatim"
 or the generic marker:
 
 - `statusLine` → a bare `true`/`false` (a report only ever needs "is a
@@ -75,6 +90,11 @@ or the generic marker:
   are exactly the kind of "silently adopt whatever the file says" figure
   this project's own `pricing.toml` exists to keep user-editable and out
   of code.
+- `attribution` (COV-09) → `{"commit_set": bool, "pr_set": bool,
+  "session_url": bool|None}` — **never the free-text `commit`/`pr`
+  trailer strings themselves**, since those can hold anything the layer
+  author wrote; only whether each was customised, plus the plain
+  `sessionUrl` Boolean verbatim.
 
 `effective`/`effective_provenance` merge exactly this same key set
 (`SETTINGS_SUMMARY_KEYS`) across the four layers — a value there has
@@ -104,6 +124,51 @@ the integer value itself is recorded alongside the name. A value that
 doesn't parse as an integer is silently skipped from
 `env_numeric_caps` (the name still appears in `env_names`). Every other
 captured environment variable stays names-only.
+
+## Deep-merged `effective_*` collections (COV-03)
+
+`effective`/`effective_provenance` only ever merge the *scalar*
+`SETTINGS_SUMMARY_KEYS` (above) — one value per key, highest-precedence
+layer wins outright. Five settings keys are not scalars: `env`,
+`permissions`, `hooks`, `enabledPlugins`, and the
+`enabledMcpjsonServers`/`disabledMcpjsonServers` pair. Reading only the
+single highest-precedence layer's copy of these (schema 1's behaviour)
+silently hides, e.g., a user-layer env var a project layer doesn't
+mention, or a hook a lower layer adds on top of a higher layer's own
+hooks. COV-03 adds six fields that deep-merge each of these with the
+rule that key actually has, across all four layers in precedence order:
+
+- `effective_env_names` / `effective_env_provenance` — the union of
+  every layer's `env` block **names** (never values, matching
+  `env_names`), each name's provenance the *highest* layer that sets it
+  (per-name precedence, not whole-block precedence — a lower layer's own
+  distinct names still count).
+- `effective_permissions` — `{allow_count, deny_count, ask_count,
+  default_mode}` summed as an **additive union of rule counts** across
+  every layer (a permission rule is cumulative, not overridden), with
+  `default_mode` taken from the highest layer that sets one.
+- `effective_hooks` — `{event_name: entry_count}`, additive union of
+  entry counts across every layer (a project's own hook doesn't replace
+  a user's hook for the same event; both run).
+- `effective_enabled_plugins` — plugin names from every layer's
+  `enabledPlugins`, per-name highest-layer-wins (a lower layer can still
+  enable a plugin a higher layer doesn't mention; a higher layer can
+  disable one a lower layer enables).
+- `effective_mcpjson_servers` — the union of every layer's
+  `enabledMcpjsonServers` minus every layer's `disabledMcpjsonServers`
+  (a rejection at any layer wins over an acceptance at any other layer).
+
+`mcpServers` is **not** a real settings.json key at any scope (only
+`managedMcpServers`, managed-layer-only, is) — an earlier reader that
+merged a settings-file `mcpServers` block was merging a key Claude Code
+itself never writes there; COV-03 fixed this dead-code path rather than
+extending it.
+
+`recommend.py`'s `_rule_baseline_bloat` now prefers
+`effective_enabled_plugins` (deep-merged) over the older single-layer
+`enabled_plugins` field when the snapshot has it, so a plugin-count
+bloat recommendation reflects every layer's plugins, not just the
+user layer's.
 
 ## `effective_agents`
 
@@ -168,17 +233,48 @@ layer the plan's "Configuration layers" section lists:
   at most 5,000 directories, stops after 1 second, and skips `.git`,
   `node_modules`, `.venv`, `bin`, `obj`, `dist`, `build`, `target`,
   `__pycache__`, `.next`, `vendor`, `Pods` and `packages` — so a huge or
-  symlink-cyclic tree can't make a session start hang.
+  symlink-cyclic tree can't make a session start hang. COV-10: each of
+  the three fixed files also gets a `user_imports` /
+  `project_root_imports` / `project_local_imports` **count** of its own
+  `@path/to/file` import references (`_count_claude_md_imports`) —
+  never the imported paths themselves, just how many a file has, so a
+  recommendation can flag an unusually import-heavy CLAUDE.md without
+  ever reading what it imports.
 - `rules` / `commands` — count and total bytes of
   `.claude/rules/*.md` / `.claude/commands/**/*.md`.
-- `skills` — `{project, user}`, each `{names, total_bytes}` from
+- `skills` — `{project, user}`, each `{names, total_bytes, config}` from
   `.claude/skills/*/SKILL.md` (a skill directory without a `SKILL.md`
-  isn't a skill Claude Code will load, so it's excluded).
+  isn't a skill Claude Code will load, so it's excluded). COV-10/PROF-09:
+  `config` is `{skill_name: {model, effort, context, paths_count}}` — a
+  summary of each skill's own frontmatter (`model`/`effort`/`context`
+  string values run through the same `_clip_name` every other *name*
+  in this schema gets: a path/URL-shaped value is redacted to a shape
+  marker, otherwise truncated to a max length — not restricted to a
+  fixed enum, since a skill's `model`/`effort` can validly be an
+  arbitrary short string a settings scalar cannot; `paths_count` a count
+  of its `paths` list, never the paths themselves). **Never the skill
+  body text or any free-text `description`** — a skill's prose is
+  exactly the kind of content this hook must not record, matching the
+  module-wide redaction rule.
 - `agents_summary` — `{count, user_count, project_count,
   shadowed_count}`, rolled up from `agents`'s own source/shadow flags.
+  COV-10: agent directories are now scanned **recursively** (a nested
+  agent directory previously went uncounted).
 - `mcp_json` — `{present, names}` for the project's own `.mcp.json`.
-- `managed_mcp_present` — whether `<claude root>/managed-mcp.json`
-  exists.
+- `managed_mcp_present` / `managed_mcp` — `managed_mcp_present` is the
+  bare boolean an earlier reader used; `managed_mcp` is the richer
+  `{present, names}` shape added alongside it. Both now agree: COV-05b
+  moved the lookup to the system managed-settings directory
+  (`default_managed_settings_dir`) — the same place `managed-settings.json`
+  lives — **not** `<claude root>`, which is where an earlier version of
+  this scan incorrectly looked (a doc/code conflict; a real
+  managed-mcp.json is a system-wide file, not a per-project one, so
+  `claude_root` could never actually hold it).
+- `plugin_content` (COV-10) — `{plugin_name: {skill_names, agent_count}}`
+  for every installed plugin, a best-effort scan of each plugin
+  directory's default `skills/`/`agents/` layout (skipped, not raised,
+  for a plugin using a non-default layout) — names and counts only,
+  never a plugin skill's own body text.
 - `output_styles` — names from `<claude root>/output-styles/*.md`.
 - `memory` — `{present, files, bytes}` for this project's auto-memory
   directory (`~/.claude/projects/<slug>/memory/`) — never its content.
@@ -224,12 +320,96 @@ one `"(unknown project)"` bucket.
   with what their joined snapshot's `effective` config says should be
   in effect. A mismatch implies a shell-profile environment variable or
   a `--settings` one-launch overlay the hook cannot see — evidence, not
-  proof.
+  proof. COV-02: `report.py`'s `build_report` now feeds both halves —
+  each session's top-level transcript's own dominant `model`
+  (`_dominant_transcript_model`) *and* dominant `effortLevel`
+  (`_dominant_transcript_effort`, new this phase) — into the
+  `observed` dict, so the `config-drift` table (`config` section) is
+  this schema's realisation of the plan's "a CLI/overlay layer, inferred
+  when the transcript's model or effort disagrees with the settings":
+  there's no separate named layer in the schema itself (nothing at
+  session-snapshot-capture time can know what a later `--model`/
+  `--effort` flag or shell env var will do), but a `config-drift` row is
+  exactly that inference, reported per session/key. Model comparisons
+  are alias-normalised via `pricing.resolve_model` (fix #15); effort
+  comparisons are plain equality, since `turn.effort` already uses the
+  same enum `effortLevel` does (`low`/`medium`/`high`/`xhigh`/`max`).
+- `build_env_levers_table` (COV-09) — one row per COV-09 env-var lever
+  (`DISABLE_PROMPT_CACHING` and its per-model variants,
+  `ENABLE_TOOL_SEARCH`, `CLAUDE_CODE_MAX_OUTPUT_TOKENS`,
+  `CLAUDE_CODE_SUBAGENT_MODEL`, `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`) plus
+  `attribution`/`includeCoAuthoredBy`, each row `{name, present, value}`
+  off the corpus-wide snapshot (`snapshots_mod.with_every_project_agents`)
+  — a small, lever-name-keyed table built specifically so
+  `recommend.py`'s new COV-09 rules (below) have an unambiguous evidence
+  row to cite, since the project-keyed `build_effective_config_table`
+  can't be cited for one specific key (`_row` matches only on
+  `row[0]` == the row key, and that table's row key is the project, not
+  the settings key).
 
 `build_config_section(..., include_effective=True, sessions_with_observed=...)`
 appends these tables to the existing config-diff section; both keyword
 arguments are optional and off by default, so an existing caller keeps
 getting exactly the one table it always has.
+
+## COV-09 recommendation rules and `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`
+
+Five `recommend.py` rules read the env-var/deprecated-setting levers
+above and cite `config.env-levers` as their evidence. None of them
+populate `Recommendation.changes`/`SettingChange` — an env var has no
+single canonical file to write to (a shell profile vs. a settings.json
+`env` block is a genuinely ambiguous choice `apply.py` doesn't resolve
+today), so each rule's `action` text is fully self-contained prose
+stating what changes, where, the trade-off, and how to undo it, and
+`lever` is a descriptive `"env:NAME"` placeholder string for a future
+apply-side wiring:
+
+- `env-disable-prompt-caching` (severity `action`) — fires when any of
+  `DISABLE_PROMPT_CACHING`/`_SONNET`/`_OPUS`/`_HAIKU`/`_FABLE` is set.
+- `env-tool-search` (severity `advice`) — fires when
+  `ANTHROPIC_BASE_URL` is set (a proxy is plausibly in use) without
+  `ENABLE_TOOL_SEARCH`, and the snapshot's MCP/plugin count clears the
+  existing `baseline_bloat_min_mcp_or_plugins` threshold (default 5) —
+  reused rather than adding a new threshold field, matching
+  presence-based rules elsewhere in the module. The action text caveats
+  that a snapshot can't distinguish a first-party vs. proxy
+  `ANTHROPIC_BASE_URL`.
+- `env-max-output-tokens` (severity `advice`) — fires when
+  `CLAUDE_CODE_MAX_OUTPUT_TOKENS` is set (`env_numeric_caps`), citing
+  the compactions-per-session mean as secondary evidence when present.
+- `env-subagent-model` (severity `info`) — fires when
+  `CLAUDE_CODE_SUBAGENT_MODEL` is set, for an archetype that actually
+  spawns subagents. States the exact resolution order
+  (docs/en/sub-agents.md "Choose a model"): 1) a per-invocation `model`
+  parameter, 2) the subagent's own `model` frontmatter (including
+  `inherit`), 3) `CLAUDE_CODE_SUBAGENT_MODEL`, 4) the main conversation's
+  model — and that setting it alone does **not** change what the
+  built-in Explore/Plan subagents run on.
+- `env-attribution-deprecated` (severity `info`) — fires when
+  `includeCoAuthoredBy` is set in `effective` and `attribution` is not
+  (docs/en/settings-reference.md: `attribution` replaces the deprecated
+  `includeCoAuthoredBy`, which Claude Code still honours only until a
+  layer sets `attribution.commit`/`attribution.pr`).
+
+`CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` additionally feeds the *compaction
+simulation* (`compaction_sim` section), not just a recommendation:
+`report._apply_autocompact_pct_override` scales a session's configured
+`autoCompactWindow` down by the override percentage (docs/en/env-vars.md:
+"1-100"; a value outside that range, or missing, leaves the window
+unscaled — the override only ever narrows the window, never widens it)
+before `simulate_compaction_windows` runs, so the simulation reflects
+the window a session actually ran under rather than the nominal
+unscaled setting.
+
+**P7b note**: these five recommendation ids currently render through
+`advice.py`'s generic fallback (no `_EXPLAIN` entry), and `fixes.py`
+has no `command_for` case for an `env:NAME`-shaped `lever` — if P7b
+wants these to offer a real `--dry-run` command instead of prose-only
+instructions, it needs `apply.py` support for `--set env.NAME=value`
+(or an equivalent), `fixes.py` support for a `SettingChange(target=
+"settings", key="env.NAME", ...)` shape, and each rule updated to
+populate `changes` accordingly. None of that is required today — the
+prose action text already satisfies the hard constraint on its own.
 
 ## CLI
 
