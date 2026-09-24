@@ -730,7 +730,8 @@ def test_status_flags_a_hook_failing_on_most_of_its_calls(tmp_path):
     assert rc == 0
     assert "PreToolUse" in out
     assert "60%" in out
-    assert "20 calls" in out
+    assert "12 times" in out
+    assert "20 runs Claude Code recorded" in out
     assert "settings.json" in out
 
 
