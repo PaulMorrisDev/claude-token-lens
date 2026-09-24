@@ -506,12 +506,15 @@ function buildSessionTimeline(session) {
   // avoids it anyway rather than relying on that distinction. Every
   // dynamic value embedded below is either a fixed-precision number
   // or passed through `escapeHtml`.
-  var markerColors = { recache: "#c0392b", compaction: "#a06a00", spawn: "#2563eb", human: "#1a7f37" };
+  // Markers are drawn in ink, not chart colours: the shape tells kinds
+  // apart, and ink keeps every glyph at 3:1 or better against the panel
+  // in both themes (WCAG 1.4.11), where a light yellow or pink would not.
+  var markerColors = { recache: "var(--ink-2)", compaction: "var(--ink-2)", spawn: "var(--ink-2)", human: "var(--ink-2)" };
   // UX-6/9: one shape per kind (see markerGlyph above), never reused
   // across the two marker sets below -- 7 kinds, 7 distinct shapes.
   var markerShapes = { recache: "circle", compaction: "square", spawn: "triangle-up", human: "diamond" };
-  // v3-limits wiring: distinct colours from markerColors above, drawn
-  // in the blank strip above the context-size line (y well below
+  // v3-limits wiring: drawn in the blank strip above the context-size
+  // line (y well below
   // `padding`) rather than pinned to a turn's own point -- a
   // usage-limit event's `ts` falls *inside* the pause gap between two
   // turns, not at a turn_index of its own, so unlike recache/
@@ -519,7 +522,7 @@ function buildSessionTimeline(session) {
   // those markers use. Positioned instead by interpolating `ts`
   // between the session's own `first_ts`/`last_ts` (docs/limits.md's
   // "Session-timeline marker contract" / docs/ui.md).
-  var limitMarkerColors = { limit_hit: "#9333ea", limit_resume: "#0891b2", agent_terminated: "#ea580c" };
+  var limitMarkerColors = { limit_hit: "var(--ink-2)", limit_resume: "var(--ink-2)", agent_terminated: "var(--ink-2)" };
   var limitMarkerShapes = { limit_hit: "triangle-down", limit_resume: "plus", agent_terminated: "x" };
   var svgParts = [];
   svgParts.push(
@@ -535,7 +538,7 @@ function buildSessionTimeline(session) {
             return p[0].toFixed(1) + "," + p[1].toFixed(1);
           })
           .join(" ") +
-        '" fill="none" stroke="var(--accent)" stroke-width="1.5"></polyline>'
+        '" fill="none" stroke="var(--chart-1)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"></polyline>'
     );
   } else if (points.length === 1) {
     // Finding 11: a single-turn session has exactly one point, and a
@@ -543,7 +546,7 @@ function buildSessionTimeline(session) {
     // rendered nothing at all. Draw the one point as a dot instead.
     svgParts.push(
       '<circle cx="' + points[0][0].toFixed(1) + '" cy="' + points[0][1].toFixed(1) +
-        '" r="3" fill="var(--accent)"></circle>'
+        '" r="4" fill="var(--chart-1)"></circle>'
     );
   }
   series.forEach(function (turn, i) {
@@ -557,7 +560,7 @@ function buildSessionTimeline(session) {
     kinds.forEach(function (kind) {
       var label = escapeHtml("Turn " + (turnIndex || i + 1) + ": " + kind);
       svgParts.push(
-        markerGlyph(markerShapes[kind] || "circle", points[i][0], points[i][1], 3, markerColors[kind] || "var(--muted)", label)
+        markerGlyph(markerShapes[kind] || "circle", points[i][0], points[i][1], 3, markerColors[kind] || "var(--ink-3)", label)
       );
     });
   });
@@ -578,7 +581,7 @@ function buildSessionTimeline(session) {
       var label = escapeHtml(marker.kind + (subkind ? " (" + subkind + ")" : "") + " at " + marker.ts);
       limitKindsSeen[marker.kind] = true;
       svgParts.push(
-        markerGlyph(limitMarkerShapes[marker.kind] || "circle", mx, my, 3, limitMarkerColors[marker.kind] || "var(--muted)", label)
+        markerGlyph(limitMarkerShapes[marker.kind] || "circle", mx, my, 3, limitMarkerColors[marker.kind] || "var(--ink-3)", label)
       );
     });
   }

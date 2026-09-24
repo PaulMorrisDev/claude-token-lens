@@ -139,6 +139,13 @@ _SECURITY_HEADERS: tuple[tuple[str, str], ...] = (
     ),
 )
 
+#: The static folders whose files are pinned by sha256 in
+#: ``static/THIRD_PARTY.sha256`` (the vendored d3 and fonts). Their bytes
+#: only change when the pin does, so the browser may keep them; every
+#: other response stays ``no-store`` (docs/api.md's Security headers).
+_PINNED_STATIC_DIRS = frozenset({"vendor", "fonts"})
+_PINNED_CACHE_CONTROL = "public, max-age=31536000, immutable"
+
 #: Default report window (days) for the report-backed routes when
 #: ``window_days`` isn't given -- matches ``docs/api.md``'s "Accept
 #: window_days (default 30) on these routes".
@@ -2378,9 +2385,13 @@ def make_handler(
 
         # -- low-level writers ------------------------------------------
 
-        def _write_headers(self, status: int, content_type: str, length: int) -> None:
+        def _write_headers(
+            self, status: int, content_type: str, length: int, *, cache_control: str | None = None
+        ) -> None:
             self.send_response(status)
             for name, value in _SECURITY_HEADERS:
+                if name == "Cache-Control" and cache_control is not None:
+                    value = cache_control
                 self.send_header(name, value)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(length))
@@ -2406,8 +2417,16 @@ def make_handler(
             if not head_only:
                 self.wfile.write(body)
 
-        def _write_bytes(self, status: int, content_type: str, data: bytes, *, head_only: bool = False) -> None:
-            self._write_headers(status, content_type, len(data))
+        def _write_bytes(
+            self,
+            status: int,
+            content_type: str,
+            data: bytes,
+            *,
+            head_only: bool = False,
+            cache_control: str | None = None,
+        ) -> None:
+            self._write_headers(status, content_type, len(data), cache_control=cache_control)
             if not head_only:
                 self.wfile.write(data)
 
@@ -2425,7 +2444,9 @@ def make_handler(
 
         def _serve_static(self, raw_name: str, *, head_only: bool = False) -> None:
             name = urllib.parse.unquote(raw_name)
-            if not name or ".." in Path(name).parts:
+            # A dot-file or dot-folder (an editor's or a tool's own cache,
+            # which may hold local paths) is never part of the UI.
+            if not name or any(part.startswith(".") for part in Path(name).parts):
                 self._write_json(*_not_found(), head_only=head_only)
                 return
             try:
@@ -2443,8 +2464,14 @@ def make_handler(
             content_type = _STATIC_CONTENT_TYPES.get(candidate.suffix.lower())
             if content_type is None:
                 content_type, _encoding = mimetypes.guess_type(str(candidate))
+            parts = candidate.relative_to(base).parts
+            pinned = len(parts) > 1 and parts[0] in _PINNED_STATIC_DIRS
             self._write_bytes(
-                200, content_type or "application/octet-stream", candidate.read_bytes(), head_only=head_only
+                200,
+                content_type or "application/octet-stream",
+                candidate.read_bytes(),
+                head_only=head_only,
+                cache_control=_PINNED_CACHE_CONTROL if pinned else None,
             )
 
         # -- dispatch --------------------------------------------------------

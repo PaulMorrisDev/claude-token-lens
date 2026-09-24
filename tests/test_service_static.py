@@ -64,7 +64,7 @@ STATIC_FILES = ("index.html", "app.js", "app.css")
 #: A floor on how many first-party ES modules the glob below must find, so
 #: a glob that silently matches nothing (or only app.js) fails loudly
 #: instead of turning every scan in this file into a no-op.
-_MIN_JS_MODULES = 18
+_MIN_JS_MODULES = 21
 
 
 def _first_party_files() -> list[Path]:
@@ -224,6 +224,18 @@ def test_index_html_loads_app_js_as_an_es_module() -> None:
     the one entry point, loaded as a module, and imports the rest."""
     html = _static_text("index.html")
     assert '<script type="module" src="/static/app.js"></script>' in html
+
+
+def test_theme_is_set_before_the_first_paint() -> None:
+    """A module script is deferred, so the saved theme is applied by a
+    classic script in <head>, ahead of the stylesheet; otherwise a
+    viewer who picked dark sees a light flash on every load."""
+    head = _static_text("index.html").split("</head>")[0]
+    boot = head.find('<script src="/static/theme-boot.js"></script>')
+    assert boot != -1, "theme-boot.js must be a classic <script> in <head>"
+    assert boot < head.find('<link rel="stylesheet"')
+    assert "tls:theme" in _static_text("theme-boot.js")
+    assert 'setAttribute("data-theme"' in _static_text("theme-boot.js")
 
 
 # -- deliverable 1: forbidden-substring / no-emoji scans -----------------
@@ -404,6 +416,15 @@ def test_es_modules_import_what_they_use_and_never_import_in_a_cycle() -> None:
 
     for name in graph:
         visit(name, [name])
+
+
+def test_every_import_names_a_file_that_exists() -> None:
+    """The named-import check above skips a side-effect import
+    (``import "./x.js"``) and a default import (``import d3 from``);
+    those still have to name a file that is really there."""
+    for path in _js_modules():
+        for target in re.findall(r'^import\s+(?:[^"\';]*?\s+from\s+)?"(\./[^"]+)";', path.read_text(encoding="utf-8"), re.M):
+            assert (STATIC_DIR / target[2:]).is_file(), f"{path.name} imports missing {target}"
 
 
 def test_app_js_restart_note_matches_fixes() -> None:
@@ -1218,14 +1239,15 @@ def test_panel_focus_ring_is_restored() -> None:
     """.panel:focus-visible used to suppress the outline outright
     (``outline: none``) even though each tab panel is a tabindex="0"
     ARIA tabpanel a keyboard user lands on right after switching tabs --
-    a WCAG 2.4.7 gap. It must use the same visible outline every other
-    focusable control in this file uses."""
+    a WCAG 2.4.7 gap. A panel now gets the same visible ring as every
+    other focusable control: the global :focus-visible rule
+    (tests/test_ui_tokens.py checks that rule itself), with nothing on
+    .panel that takes it away."""
     app_css = _static_text("app.css")
-    match = re.search(r"\.panel:focus-visible\s*\{([^}]*)\}", app_css)
-    assert match, "app.css no longer defines .panel:focus-visible"
-    body = match.group(1)
-    assert "outline: none" not in body
-    assert "outline: 2px solid var(--accent)" in body
+    assert re.search(r"(?m)^:focus-visible\s*\{[^}]*outline: 2px solid var\(--focus\)", app_css)
+    for match in re.finditer(r"\.panel:focus-visible\s*\{([^}]*)\}", app_css):
+        assert "outline: none" not in match.group(1)
+        assert "outline: 0" not in match.group(1)
 
 
 def test_lever_grid_column_minimum_shrinks_on_narrow_viewports() -> None:
@@ -1252,18 +1274,26 @@ def test_advanced_detail_raw_diff_wraps_instead_of_overflowing() -> None:
     assert "overflow-wrap: anywhere" in body
 
 
-def test_recommendation_severity_border_has_a_dark_mode_override() -> None:
-    """.severity-action/.severity-advice and .capture-banner.capture-on/
-    .capture-warning both already switch to a lighter red/amber in dark
-    mode; .rec-severity-action/.rec-severity-advice (the recommendation
-    card's own left border) used the same light-mode colors with no
-    dark-mode override at all."""
+def test_recommendation_severity_is_a_chip_with_an_icon_and_a_label() -> None:
+    """A recommendation's severity used to be a coloured left border on
+    its card, with no dark-mode colour of its own and nothing but colour
+    to carry it (WCAG 1.4.1). It is now a chip in the card's head: an
+    icon and the label, tinted from the status tokens, which have a dark
+    value each (tests/test_ui_tokens.py)."""
+    app_js = _app_js()
+    chip = _function_source(app_js, "severityChip")
+    assert "icon(" in chip and "SEVERITY_LABELS" in chip
+    card = _function_source(app_js, "renderRecommendationCard")
+    # Inside the heading, so moving by headings reads the severity first.
+    assert re.search(r'el\("h\d", \{ class: "rec-head" \}, \[\s*severityChip\(rec\.severity\)', card)
+    assert "visually-hidden" in card
     app_css = _static_text("app.css")
-    assert re.search(
-        r"@media \(prefers-color-scheme: dark\)\s*\{\s*\.rec-severity-action\s*\{\s*border-left-color:\s*#ff6b5e;\s*\}\s*"
-        r"\.rec-severity-advice\s*\{\s*border-left-color:\s*#f0b429;\s*\}",
-        app_css,
-    ), "no dark-mode override found for .rec-severity-action/.rec-severity-advice"
+    for severity, token in (("action", "serious"), ("advice", "warn")):
+        match = re.search(r"\.severity-" + severity + r"\s*\{([^}]*)\}", app_css)
+        assert match, severity
+        assert "color: var(--" + token + ")" in match.group(1)
+        assert "background: var(--" + token + "-soft)" in match.group(1)
+    assert not re.search(r"\.rec-severity-\w+\s*\{[^}]*border-left", app_css)
 
 
 def test_timeline_markers_use_a_distinct_shape_per_kind_not_only_color() -> None:
@@ -1289,6 +1319,23 @@ def test_timeline_markers_use_a_distinct_shape_per_kind_not_only_color() -> None
     assert len(set(all_kinds.values())) == 7, "two marker kinds share a shape: " + repr(all_kinds)
     # The legend draws the same glyph, not a plain color circle.
     assert "swatchIcon" in timeline and "markerGlyph(shape" in timeline
+    # Shape tells the kinds apart, so every marker is drawn in ink: a
+    # chart colour (aqua, yellow, magenta) falls under 3:1 against the
+    # light panel (WCAG 1.4.11), and ink holds it in both themes.
+    for name in ("markerColors", "limitMarkerColors"):
+        colours = re.search(r"(?:var|let|const) " + name + r" = (\{[^}]*\});", timeline)
+        assert colours, name
+        values = re.findall(r'\w+:\s*"([^"]+)"', colours.group(1))
+        assert values and all(re.fullmatch(r"var\(--ink-[12]\)", value) for value in values), values
+
+
+def test_a_signed_change_uses_a_true_minus_sign() -> None:
+    """A delta reads "+12%" or "−3%": the true minus (U+2212) is as
+    wide as the plus, so signed columns line up."""
+    helper = _function_source(_app_js(), "signedPercent")
+    assert '"\u2212"' in helper and '"+"' in helper
+    assert "signedPercent(m.change_pct)" in _function_source(_app_js(), "renderImpact")
+    assert not re.search(r'> 0 \? "\+" : ""\)', _app_js())
 
 
 def test_copy_button_only_claims_success_when_the_clipboard_write_succeeded() -> None:

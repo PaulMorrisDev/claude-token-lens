@@ -4,6 +4,7 @@
  */
 
 import { clear, el, state } from "./core.js";
+import { icon } from "./icons.js";
 import { fetchJson, findSection, loadInto, loadReport, withWindow } from "./api.js";
 import {
   AGENT_LABELS,
@@ -26,6 +27,16 @@ import { tabHeading } from "./links.js";
 export var SEVERITY_ORDER = ["action", "advice", "info"];
 
 export var SEVERITY_LABELS = { action: "Do this", advice: "Worth considering", info: "For your information" };
+var SEVERITY_ICONS = { action: "critical", advice: "warning", info: "info" };
+
+// A recommendation's severity as a chip: the icon and the label carry
+// it, the tint only repeats them (WCAG 1.4.1).
+export function severityChip(severity) {
+  var chip = el("span", { class: "severity-badge severity-" + severity });
+  chip.appendChild(icon(SEVERITY_ICONS[severity] || "info", { size: 14 }));
+  chip.appendChild(el("span", { text: SEVERITY_LABELS[severity] || severity }));
+  return chip;
+}
 
 export function renderRecommendations(panel) {
   clear(panel);
@@ -108,7 +119,15 @@ function evidenceSource(report, sourceTable, rowKey) {
 
 function renderRecommendationCard(rec, report) {
   var card = el("article", { class: "rec rec-severity-" + rec.severity });
-  card.appendChild(el("h4", { text: rec.title }));
+  // The chip sits inside the heading, so a screen reader moving by
+  // headings hears the severity ("Do this") before the title.
+  card.appendChild(
+    el("h4", { class: "rec-head" }, [
+      severityChip(rec.severity),
+      el("span", { class: "visually-hidden", text: ": " }),
+      el("span", { text: rec.title }),
+    ])
+  );
   if (rec.agent_type) {
     card.appendChild(el("div", { class: "rec-meta", text: "For: " + (AGENT_LABELS[rec.agent_type] || rec.agent_type) }));
   }

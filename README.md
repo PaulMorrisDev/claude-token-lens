@@ -443,8 +443,9 @@ Every route in short:
 | From a local copy | `python -m pip install <folder>` (or `pipx install <folder>` to keep it apart from other Python tools) | pip |
 | Single file | download `claude-token-lens.pyz` from the [latest release](https://github.com/PaulMorrisDev/claude-token-lens/releases/latest), then `python claude-token-lens.pyz <command>` | Python only |
 
-The package has no third-party dependencies; `rich` is an optional
-extra for nicer terminal output. Building the `.pyz` yourself is
+The package has no runtime Python dependencies; `rich` is an optional
+extra for nicer terminal output. The dashboard's d3 and fonts ship
+inside the package, pinned by sha256. Building the `.pyz` yourself is
 covered in [`docs/deploy.md`](docs/deploy.md#distribution-without-pip-the-pyz-build).
 
 ### What `init` does

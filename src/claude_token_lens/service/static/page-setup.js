@@ -5,6 +5,7 @@
 
 import { clear, el, state } from "./core.js";
 import { fetchJson, findSection, loadInto, loadReport, postJson, withWindow } from "./api.js";
+import { signedPercent } from "./format.js";
 import { codeBlockWithCopy, emptyState, errorNotice, loadingNode, restartNote } from "./ui.js";
 import { renderMappedSections, renderPlacedTables, renderSectionGeneric, simpleTable } from "./grid.js";
 import { tabHeading, tabLink } from "./links.js";
@@ -936,7 +937,7 @@ function renderImpact(data, container) {
         simpleTable(
           [{ label: "Measure" }, { label: "Before" }, { label: "After" }, { label: "Change" }],
           (item.measures || []).map(function (m) {
-            return [m.label, m.before, m.after, m.change_pct === null || m.change_pct === undefined ? "" : (m.change_pct > 0 ? "+" : "") + m.change_pct + "%"];
+            return [m.label, m.before, m.after, signedPercent(m.change_pct)];
           })
         )
       );

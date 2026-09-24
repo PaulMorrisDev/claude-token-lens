@@ -47,7 +47,14 @@ static-file response, not just a successful `{"ok": true, ...}` one):
 
 - `Cache-Control: no-store` — nothing served here (including a session's
   cost/usage figures) should ever be cached by an intermediary or the
-  browser's own disk cache.
+  browser's own disk cache. The one exception is a file under
+  `/static/vendor/` or `/static/fonts/` (the vendored d3 and fonts):
+  those are pinned by sha256 in `static/THIRD_PARTY.sha256`, and each
+  name carries its release (`d3-7.9.0.min.js`). New bytes therefore
+  always arrive under a new URL, so they are sent with
+  `Cache-Control: public, max-age=31536000, immutable` instead. Every
+  other static file, the first-party modules included, stays
+  `no-store`.
 - `X-Content-Type-Options: nosniff` — stops a browser from
   MIME-sniffing a JSON or static-asset response into something else.
 - `Content-Security-Policy: default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'`
@@ -55,7 +62,8 @@ static-file response, not just a successful `{"ok": true, ...}` one):
   (`docs/ui.md`): nothing may load from another origin, inline `<img>`
   data URIs are allowed (the inline-SVG charts), and inline `<style>`
   is allowed (the UI's static `app.css` plus small inline style
-  attributes) but inline `<script>` is not.
+  attributes) but inline `<script>` is not. Fonts fall back to
+  `default-src 'self'`, so only the vendored ones load.
 
 Every request method is routed through this same path: `GET`/`HEAD`
 succeed or fail through the normal envelope, and `PUT`/`DELETE`/

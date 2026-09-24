@@ -10,7 +10,7 @@ import { errorNotice, loadingNode } from "./ui.js";
 import { renderTable } from "./grid.js";
 import { tabHeading } from "./links.js";
 import { renderHealth } from "./shell.js";
-import { SEVERITY_LABELS, SEVERITY_ORDER } from "./page-actions.js";
+import { SEVERITY_ORDER, severityChip } from "./page-actions.js";
 
 var LEVEL_LABELS = { 5: "excellent", 4: "good", 3: "fair", 2: "poor", 1: "very poor" };
 
@@ -176,7 +176,7 @@ function renderStartHereRecommendations(container) {
     top.forEach(function (item) {
       var rec = item.rec;
       var li = el("li", null, [
-        el("span", { class: "severity-badge severity-" + rec.severity, text: SEVERITY_LABELS[rec.severity] || rec.severity }),
+        severityChip(rec.severity),
         el("strong", { text: rec.title }),
       ]);
       if (rec.why) li.appendChild(el("p", { class: "start-why", text: rec.why }));

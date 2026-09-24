@@ -126,11 +126,11 @@ function habitSparkline(weeks, label) {
   var parts = ['<svg viewBox="0 0 ' + width + " " + height + '" class="habit-spark" role="img" aria-label="' + escapeHtml(label) + '">'];
   values.forEach(function (value, i) {
     if (value === "-") {
-      parts.push('<rect x="' + (i * 8 + 1) + '" y="' + (height - 1) + '" width="6" height="1" fill="var(--border)"></rect>');
+      parts.push('<rect x="' + (i * 8 + 1) + '" y="' + (height - 1) + '" width="6" height="1" fill="var(--axis-line)"></rect>');
       return;
     }
     var h = Math.max(1, Math.round((Number(value) / 100) * (height - 2)));
-    parts.push('<rect x="' + (i * 8 + 1) + '" y="' + (height - h) + '" width="6" height="' + h + '" fill="var(--accent)"></rect>');
+    parts.push('<rect x="' + (i * 8 + 1) + '" y="' + (height - h) + '" width="6" height="' + h + '" fill="var(--chart-1)"></rect>');
   });
   parts.push("</svg>");
   var wrap = el("span", { class: "habit-spark-wrap" });

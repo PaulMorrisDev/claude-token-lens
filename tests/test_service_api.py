@@ -1572,6 +1572,14 @@ def test_static_file_is_served_from_a_real_static_dir(tmp_path, monkeypatch):
     (static_dir / "mark.svg").write_text("<svg></svg>", encoding="utf-8")
     (static_dir / "fonts").mkdir()
     (static_dir / "fonts" / "face.woff2").write_bytes(b"wOF2")
+    (static_dir / "vendor").mkdir()
+    (static_dir / "vendor" / "lib.js").write_text("var lib = 1;", encoding="utf-8")
+    # A first-party file whose name merely starts like a pinned folder.
+    (static_dir / "vendor.js").write_text("var v = 1;", encoding="utf-8")
+    # A tool's own cache folder and a dot-file: never part of the UI.
+    (static_dir / ".tool-cache").mkdir()
+    (static_dir / ".tool-cache" / "state.json").write_text("{}", encoding="utf-8")
+    (static_dir / ".hidden.js").write_text("var h = 1;", encoding="utf-8")
 
     config_dir = tmp_path / "config"
     config_dir.mkdir()
@@ -1602,6 +1610,37 @@ def test_static_file_is_served_from_a_real_static_dir(tmp_path, monkeypatch):
             resp3, _raw3 = handle.request("GET", path)
             assert resp3.status == 200, path
             assert resp3.getheader("Content-Type") == expected, path
+
+        # The sha256-pinned folders (vendor/, fonts/) may be kept by the
+        # browser; everything else, first-party modules included, stays
+        # no-store (SECURITY.md, docs/api.md's Security headers).
+        for path, expected in (
+            ("/static/fonts/face.woff2", "public, max-age=31536000, immutable"),
+            ("/static/vendor/lib.js", "public, max-age=31536000, immutable"),
+            ("/static/vendor.js", "no-store"),
+            ("/static/app.js", "no-store"),
+            ("/static/app.css", "no-store"),
+            ("/", "no-store"),
+        ):
+            resp4, _raw4 = handle.request("GET", path)
+            assert resp4.status == 200, path
+            assert resp4.getheader("Cache-Control") == expected, path
+            assert len(resp4.headers.get_all("Cache-Control")) == 1, path
+
+        # HEAD answers with the same header; a miss inside a pinned
+        # folder is an ordinary 404, never kept.
+        resp5, _raw5 = handle.request("HEAD", "/static/vendor/lib.js")
+        assert resp5.status == 200
+        assert resp5.getheader("Cache-Control") == "public, max-age=31536000, immutable"
+        resp6, _raw6 = handle.request("GET", "/static/vendor/missing.js")
+        assert resp6.status == 404
+        assert resp6.getheader("Cache-Control") == "no-store"
+
+        # Dot-files and dot-folders are never served: an editor's or a
+        # tool's cache in the folder may hold local paths.
+        for path in ("/static/.tool-cache/state.json", "/static/.hidden.js", "/static/%2Etool-cache/state.json"):
+            resp7, _raw7 = handle.request("GET", path)
+            assert resp7.status == 404, path
     finally:
         handle.close()
         store.close()

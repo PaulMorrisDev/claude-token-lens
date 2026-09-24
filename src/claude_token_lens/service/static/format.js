@@ -130,6 +130,16 @@ export function cellSortValue(value) {
   return String(value);
 }
 
+// A change as a signed percentage: "+12%", "−3%" with a true minus
+// sign (U+2212, the width of the plus), "0%". Blank when there is none.
+export function signedPercent(value) {
+  if (value === null || value === undefined || value === "") return "";
+  var n = Number(value);
+  if (n > 0) return "+" + value + "%";
+  if (n < 0) return "−" + String(value).replace(/^-/, "") + "%";
+  return value + "%";
+}
+
 // "2026-09-23T10:44:22.705Z" -> "2026-09-23 10:44 UTC", for a table cell.
 export function shortTs(ts) {
   var text = String(ts || "");

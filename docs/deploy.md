@@ -358,7 +358,7 @@ Three layers, from "always runs" to "manual, occasional":
 
 For a machine where `pip install` is unavailable or unwanted (no
 internet access to PyPI, a locked-down environment, or just "copy one
-file and run it"), `claude-token-lens` has zero third-party
+file and run it"), `claude-token-lens` has zero runtime Python
 dependencies (`pyproject.toml`'s `dependencies = []`), which makes a
 single-file [zipapp](https://docs.python.org/3/library/zipapp.html)
 distribution straightforward:

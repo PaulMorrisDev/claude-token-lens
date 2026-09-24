@@ -5,6 +5,7 @@
  */
 
 import { el } from "./core.js";
+import { icon } from "./icons.js";
 
 export function errorNotice(error) {
   var code = (error && error.code) || "error";
@@ -147,14 +148,17 @@ export function emptyState(message, gate) {
 }
 
 var CHECK_STATUS = {
-  act: { label: "Worth a look", cls: "severity-action" },
-  ok: { label: "Nothing to do", cls: "severity-info" },
-  no_data: { label: "Not enough data", cls: "severity-info" },
+  act: { label: "Worth a look", cls: "severity-action", icon: "critical" },
+  ok: { label: "Nothing to do", cls: "severity-good", icon: "success" },
+  no_data: { label: "Not enough data", cls: "severity-info", icon: "info" },
 };
 
 export function statusBadge(status) {
-  var info = CHECK_STATUS[status] || { label: status, cls: "severity-info" };
-  return el("span", { class: "severity-badge " + info.cls, text: info.label });
+  var info = CHECK_STATUS[status] || { label: status, cls: "severity-info", icon: "info" };
+  var badge = el("span", { class: "severity-badge " + info.cls });
+  badge.appendChild(icon(info.icon, { size: 14 }));
+  badge.appendChild(el("span", { text: info.label }));
+  return badge;
 }
 
 export function renderTips(tips, container) {

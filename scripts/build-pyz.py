@@ -58,19 +58,21 @@ PACKAGE_DIR = SRC_DIR / "claude_token_lens"
 DEFAULT_OUTPUT = REPO_ROOT / "dist" / "claude-token-lens.pyz"
 
 #: Never let a stray build artefact from the developer's own environment
-#: end up inside the shipped archive.
+#: end up inside the shipped archive: byte-code caches, and any dot-file
+#: or dot-folder (an editor's or a tool's own cache, which may hold local
+#: paths).
 _EXCLUDED_DIR_NAMES = {"__pycache__"}
 
 
 def _copy_source_tree(dest: Path) -> None:
     """Copy ``src/claude_token_lens`` into ``dest`` (a fresh temp
-    directory), skipping ``__pycache__`` -- ``zipapp.create_archive``
+    directory), skipping ``__pycache__`` and dot-files -- ``zipapp.create_archive``
     has no include/exclude filter of its own, so this is done with a
     plain filtered copy first rather than archiving ``src/`` in place.
     """
 
     def _ignore(_dir: str, names: list[str]) -> set[str]:
-        return {name for name in names if name in _EXCLUDED_DIR_NAMES}
+        return {name for name in names if name in _EXCLUDED_DIR_NAMES or name.startswith(".")}
 
     shutil.copytree(PACKAGE_DIR, dest / "claude_token_lens", ignore=_ignore)
 

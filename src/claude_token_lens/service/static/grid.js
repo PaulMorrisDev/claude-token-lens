@@ -223,7 +223,7 @@ function renderTableBody(rows, columns, tbody, currency, maxima, valueLabels, ro
         var barWidth = (barPct * 0.6).toFixed(1); // viewBox is 0..60
         var barSvg =
           '<svg viewBox="0 0 60 10" class="bar-svg" aria-hidden="true">' +
-          '<rect x="0" y="2" width="' + barWidth + '" height="6" rx="1" fill="var(--bar-bg)"></rect>' +
+          '<rect x="0" y="2" width="' + barWidth + '" height="6" rx="1" fill="var(--chart-1)"></rect>' +
           "</svg>";
         var cellWrap = el("span", { class: "bar-cell", html: barSvg });
         cellWrap.appendChild(el("span", { text: display }));

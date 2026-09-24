@@ -416,10 +416,12 @@ Outside `src/claude_token_lens/service/` and `update`'s `pip`
 subprocess above, no module imports `socket`, `urllib`, `http.client`,
 `requests` or equivalent — `cli.py`'s two `urllib.request.urlopen`
 calls (`_http_health_ok`, `_http_health_version`) are the only ones,
-both loopback-only as just described. The package has zero third-party
-dependencies (`pyproject.toml`'s `dependencies = []`); `rich` is an
-optional, opt-in extra for nicer terminal output, not a networking
-dependency. Pricing comes from a user-edited local `pricing.toml`,
+both loopback-only as just described. The package has zero runtime
+Python dependencies (`pyproject.toml`'s `dependencies = []`). The
+dashboard vendors d3 and two fonts, pinned by sha256 in
+`service/static/THIRD_PARTY.sha256`, and makes no remote requests.
+`rich` is an optional, opt-in extra for nicer terminal output, not a
+networking dependency. Pricing comes from a user-edited local `pricing.toml`,
 never a live lookup — there is no code path that could fetch it.
 
 For the CLI's analytics/report subcommands this is a structural
@@ -485,7 +487,11 @@ it through your browser:
 - **Response headers.** Every response carries
   `Content-Security-Policy: default-src 'self'` (scripts only from the
   service itself), `X-Content-Type-Options: nosniff` and
-  `Cache-Control: no-store`.
+  `Cache-Control: no-store`. The vendored d3 and fonts under
+  `/static/vendor/` and `/static/fonts/` are the one exception to
+  `no-store`. They are pinned by sha256 and carry no data about you.
+  Each name carries its release, so new bytes always arrive under a new
+  URL, and they are sent as `public, max-age=31536000, immutable`.
 - **Static files.** `/static/*` serves only files inside the packaged
   UI folder; a path that escapes it gets `404`.
 - **No request log.** Request paths are never written to stdout or a
