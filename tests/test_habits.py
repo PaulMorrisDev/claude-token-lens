@@ -21,7 +21,7 @@ from claude_token_lens.model import CaptureTag, TranscriptMeta
 from claude_token_lens.parse import parse_transcript
 from claude_token_lens.pricing import load_pricing
 
-from helpers import tool_result_block, tool_use_block, turn_line, user_block_line, user_str_line, write_jsonl
+from helpers import assert_privacy, tool_result_block, tool_use_block, turn_line, user_block_line, user_str_line, write_jsonl
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 MODEL = "claude-widget-9"
@@ -365,6 +365,59 @@ def test_the_capture_section_says_what_capture_cost_and_since_when(tmp_path, pri
     assert section.key == "capture"
     off = dict(habits.capture_section(NS(sessions=[]), pricing, NS(level="off", enabled_at="")).tables[0].rows)
     assert off["level"] == catalogue.LEVEL_TITLES["off"] and off["since"] == ""
+
+
+def _tagged_session_with_attempted_leaks(tmp_path):
+    """Same shape as ``_tagged_session``, plus a prompt naming a real
+    path/secret and a tag trying to smuggle a skill name the transcript
+    never listed, an unknown vocabulary word and a path through
+    ``missing=``/``skill=``. Everything here should be dropped or
+    reduced to a closed-vocabulary word well before it could reach a
+    playbook evidence sentence or a skills-table row.
+    """
+    top = _parse(tmp_path, "top.jsonl", [
+        user_str_line(
+            "fix C:\\Users\\paulm\\secret-project\\auth.py, token=sk-testonly1234567890",
+            origin={"kind": "human"}, timestamp=_ts(0),
+        ),
+        _reply(
+            1,
+            text="Looking.\n[tl: task=bugfix brief=vague level=hard "
+            "missing=files,/etc/passwd skill=would-help:not-a-real-skill]",
+        ),
+        user_str_line("do it again properly", origin={"kind": "human"}, timestamp=_ts(10)),
+        _reply(11, text="Redone.\n[tl: task=bugfix shift=redo]"),
+    ], kind="top-level")
+    sub = _parse(tmp_path, "agent-a1.jsonl", [
+        user_str_line("find where the cookie is set", timestamp=_ts(2)),
+        _reply(3, text="src/auth.py\n[result: done fit=larger rules=unused]"),
+    ], kind="subagent", agent_id="agent-a1", agent_type="Explore", tool_use_id="toolu_A")
+    return NS(sessions=[NS(top=top, subs=[sub], session_id="s1", project_dir="p")])
+
+
+def test_habits_and_capture_sections_pass_the_privacy_scan(tmp_path, pricing):
+    """Coverage gap fix (phase 10 privacy sweep): the parser-level tests
+    in test_capture_parse.py already prove a raw path/secret/unknown
+    skill name never survives into a ``Turn``'s ``CaptureTag``, but
+    nothing ran ``helpers.assert_privacy`` over the rendered ``habits``/
+    ``capture`` report sections themselves -- the tables actually shown
+    on the Work habits and Capture tabs, built from those tags plus
+    template evidence/example sentences. This closes that gap, with a
+    fixture that also tries to smuggle a path/secret/unknown skill name
+    through, matching test_capture_parse.py's own attempted-leak shape.
+    """
+    corpus = _tagged_session_with_attempted_leaks(tmp_path)
+    section = habits.build_section(corpus, pricing, ratings={"s1": {
+        "outcome": "partly", "slow": ["rework"], "worth": "fair", "helped": ["none"],
+    }})
+    assert_privacy(section)
+    capture = habits.capture_section(corpus, pricing, NS(level="standard", enabled_at="2026-09-01T08:00:00+00:00"))
+    assert_privacy(capture)
+    # The attempted leaks never even reach a table cell.
+    skills_rows = _rows(_table(section, "habits_skills"))
+    assert "not-a-real-skill" not in {r["skill"] for r in skills_rows}
+    briefs_rows = _rows(_table(section, "habits_briefs"))
+    assert all("/etc/passwd" not in (r.get("missing") or "") for r in briefs_rows)
 
 
 # -- the best setup per kind of task -----------------------------------------------
