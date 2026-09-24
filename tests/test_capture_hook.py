@@ -1,4 +1,4 @@
-"""``hooks/capture-note.py``, the metrics-capture hook, run the way Claude
+"""``hooks/capture-hook.py``, the metrics-capture hook, run the way Claude
 Code runs it: a subprocess fed the hook payload on stdin. It must add
 exactly the note ``capture_catalogue.note_text`` builds, add nothing
 when capture is off, sampled out, past its end, in a skipped project or
@@ -21,7 +21,7 @@ from claude_token_lens import capture_catalogue as cat
 from claude_token_lens import hook_health
 from claude_token_lens.config import CaptureConfig
 
-SCRIPT = Path(str(resources.files("claude_token_lens") / "hooks" / cat.NOTE_SCRIPT))
+SCRIPT = Path(str(resources.files("claude_token_lens") / "hooks" / cat.HOOK_SCRIPT))
 
 
 def _load_hook_module():
@@ -209,8 +209,8 @@ def test_a_half_written_config_reads_as_off(tmp_path):
 
 def test_an_installed_copy_runs_from_the_data_folder(tmp_path):
     config_dir = _config(tmp_path / "token-lens", '[capture]\nlevel = "essentials"\n')
-    written = hook_health.install_hook_files(config_dir, hook_health.CAPTURE_FILES[cat.NOTE_SCRIPT])
-    assert [p.name for p in written] == [cat.NOTE_SCRIPT, cat.CATALOGUE_FILE]
+    written = hook_health.install_hook_files(config_dir, hook_health.CAPTURE_FILES[cat.HOOK_SCRIPT])
+    assert [p.name for p in written] == [cat.HOOK_SCRIPT, cat.CATALOGUE_FILE]
     rc, out, _ = _run(config_dir, _start(), script=written[0])
     assert rc == 0 and json.loads(out)["hookSpecificOutput"]["additionalContext"].startswith(cat.NOTE_MARKER)
 

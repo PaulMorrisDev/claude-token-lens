@@ -40,4 +40,4 @@ claude-token-lens = "claude_token_lens.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-claude_token_lens = ["pricing.toml", "hooks/snapshot-config.py", "hooks/capture-catalogue.json", "service/static/*", "profiles/catalogue/*.toml"]
+claude_token_lens = ["pricing.toml", "hooks/snapshot-config.py", "hooks/capture-hook.py", "hooks/capture-catalogue.json", "service/static/*", "profiles/catalogue/*.toml"]

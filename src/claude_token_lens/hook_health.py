@@ -16,9 +16,10 @@ a ``%VAR%`` that Claude Code's shell on Windows (Git Bash) never expands.
 tab (``GET /api/diagnostics``) and ``init``; :func:`repair` rewrites
 only that one command string, after a backup, when ``init`` is told to.
 
-Metrics capture adds its own entries (``hooks/capture-note.py`` on
-SessionStart, SubagentStart and, for Deep, PostToolUse), described by
-:class:`HookSpec`. :func:`check_capture` checks them the same way;
+Metrics capture adds its own entries (``hooks/capture-hook.py`` on
+SessionStart and SubagentStart for its note, PostToolUse for Deep, and
+SessionEnd, Notification and PermissionRequest for the free signals),
+described by :class:`HookSpec`. :func:`check_capture` checks them the same way;
 :func:`plan_capture` works out the change that makes settings.json run
 exactly the entries the chosen metrics need, and :func:`connect` writes
 it. :func:`install_hook_files` copies the hook scripts out of the
@@ -45,10 +46,10 @@ HOOK_SCRIPT_NAME = "snapshot-config.py"
 
 #: Hook scripts metrics capture installs; an entry whose command runs one
 #: of them belongs to capture.
-CAPTURE_SCRIPTS = (capture_catalogue.NOTE_SCRIPT,)
+CAPTURE_SCRIPTS = (capture_catalogue.HOOK_SCRIPT,)
 
 #: Files each capture script needs next to it under ``<config-dir>/hooks``.
-CAPTURE_FILES = {capture_catalogue.NOTE_SCRIPT: (capture_catalogue.NOTE_SCRIPT, capture_catalogue.CATALOGUE_FILE)}
+CAPTURE_FILES = {capture_catalogue.HOOK_SCRIPT: (capture_catalogue.HOOK_SCRIPT, capture_catalogue.CATALOGUE_FILE)}
 
 #: Seconds Claude Code waits for a capture hook before giving up on it.
 CAPTURE_TIMEOUT_S = 5
@@ -70,6 +71,9 @@ class HookSpec:
             "SessionStart": "when a session starts, is cleared or compacts",
             "SubagentStart": "when a subagent starts",
             "PostToolUse": "after " + ("web results" if self.matcher else "each tool result") + ", in the background",
+            "SessionEnd": "when a session ends",
+            "Notification": "when Claude waits for you, in the background",
+            "PermissionRequest": "when Claude asks for permission, in the background",
         }.get(self.event, f"on {self.event}")
         return f"{self.script} {when}"
 

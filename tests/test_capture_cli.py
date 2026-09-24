@@ -77,16 +77,20 @@ def test_plan_capture_adds_the_entries_a_level_needs_and_writes_nothing(tmp_path
         ("SessionStart", "startup|clear|compact"),
         ("SubagentStart", ""),
         ("PostToolUse", ""),
+        ("SessionEnd", ""),
+        ("Notification", ""),
+        ("PermissionRequest", ""),
     ]
     assert all(entry["timeout"] == 5 for _, _, entry in entries)
-    assert [entry.get("async", False) for _, _, entry in entries] == [False, False, True]
+    assert [entry.get("async", False) for _, _, entry in entries] == [False, False, True, False, True, True]
     assert after["model"] == "opus"
-    assert len(plan.changes) == 3 and all(line.startswith("Add the capture hook") for line in plan.changes)
+    assert len(plan.changes) == 6 and all(line.startswith("Add the capture hook") for line in plan.changes)
+    assert "Add the capture hook that runs capture-hook.py when Claude waits for you, in the background." in plan.changes
 
 
 def test_plan_capture_is_a_no_op_once_connected(tmp_path):
     config_dir = _claude(tmp_path, {})
-    hook_health.install_hook_files(config_dir, hook_health.CAPTURE_FILES[cat.NOTE_SCRIPT])
+    hook_health.install_hook_files(config_dir, hook_health.CAPTURE_FILES[cat.HOOK_SCRIPT])
     hook_health.connect(hook_health.plan_capture(ESSENTIALS, _commands(config_dir)), now=NOW)
     again = hook_health.plan_capture(ESSENTIALS, _commands(config_dir))
     assert again.new_text is None and again.changes == []
@@ -95,19 +99,19 @@ def test_plan_capture_is_a_no_op_once_connected(tmp_path):
 
 def test_a_changed_command_is_updated_in_place_not_duplicated(tmp_path):
     config_dir = _claude(tmp_path, {})
-    old = {cat.NOTE_SCRIPT: '"/old/python" "/old/hooks/capture-note.py"'}
+    old = {cat.HOOK_SCRIPT: '"/old/python" "/old/hooks/capture-hook.py"'}
     hook_health.connect(hook_health.plan_capture(ESSENTIALS, old), now=NOW)
     plan = hook_health.plan_capture(ESSENTIALS, _commands(config_dir))
     assert all(line.startswith("Update the capture hook") for line in plan.changes)
     entries = _entries(json.loads(plan.new_text))
-    assert len(entries) == 2 and all("/old/python" not in entry["command"] for _, _, entry in entries)
+    assert len(entries) == len(ESSENTIALS) and all("/old/python" not in entry["command"] for _, _, entry in entries)
 
 
 def test_lowering_the_level_takes_out_entries_no_metric_needs(tmp_path):
     config_dir = _claude(tmp_path, {})
     hook_health.connect(hook_health.plan_capture(DEEP, _commands(config_dir)), now=NOW)
     plan = hook_health.plan_capture(ESSENTIALS, _commands(config_dir))
-    assert plan.changes == ["Remove the capture hook that runs capture-note.py after each tool result, in the background."]
+    assert plan.changes == ["Remove the capture hook that runs capture-hook.py after each tool result, in the background."]
     assert "PostToolUse" not in json.loads(plan.new_text)["hooks"]
 
 
@@ -123,11 +127,11 @@ def test_other_hooks_are_never_touched(tmp_path):
 def test_a_capture_entry_sharing_a_group_leaves_the_rest_of_the_group(tmp_path):
     mine = {"type": "command", "command": "echo mine"}
     config_dir = _claude(tmp_path, {})
-    capture_entry = {"type": "command", "command": _commands(config_dir)[cat.NOTE_SCRIPT], "timeout": 5}
+    capture_entry = {"type": "command", "command": _commands(config_dir)[cat.HOOK_SCRIPT], "timeout": 5}
     (config_dir.parent / "settings.json").write_text(
         json.dumps({"hooks": {"SubagentStart": [{"hooks": [mine, capture_entry]}]}}), encoding="utf-8"
     )
-    assert hook_health.check_capture(ESSENTIALS).missing == (ESSENTIALS[0],)
+    assert hook_health.check_capture(ESSENTIALS).missing == tuple(s for s in ESSENTIALS if s.event != "SubagentStart")
     after = json.loads(hook_health.plan_capture((), {}).new_text)
     assert after == {"hooks": {"SubagentStart": [{"hooks": [mine]}]}}
 
@@ -147,18 +151,18 @@ def test_check_capture_names_missing_extra_and_broken_entries(tmp_path):
     assert "capture connect" in health.summary()
     hook_health.connect(hook_health.plan_capture(DEEP, _commands(config_dir)), now=NOW)
     health = hook_health.check_capture(ESSENTIALS)
-    assert not health.missing and health.extra == DEEP[2:]
+    assert not health.missing and health.extra == tuple(spec for spec in DEEP if spec not in ESSENTIALS)
     # The script isn't installed yet, so the entries point at nothing.
     assert any("does not exist" in problem for problem in health.problems)
-    hook_health.install_hook_files(config_dir, hook_health.CAPTURE_FILES[cat.NOTE_SCRIPT])
+    hook_health.install_hook_files(config_dir, hook_health.CAPTURE_FILES[cat.HOOK_SCRIPT])
     health = hook_health.check_capture(ESSENTIALS)
     assert health.ok and "add nothing" in health.summary()
 
 
 def test_check_capture_spots_a_percent_variable(tmp_path):
     config_dir = _claude(tmp_path, {})
-    hook_health.install_hook_files(config_dir, hook_health.CAPTURE_FILES[cat.NOTE_SCRIPT])
-    commands = {cat.NOTE_SCRIPT: _commands(config_dir)[cat.NOTE_SCRIPT] + " --x %USERPROFILE%"}
+    hook_health.install_hook_files(config_dir, hook_health.CAPTURE_FILES[cat.HOOK_SCRIPT])
+    commands = {cat.HOOK_SCRIPT: _commands(config_dir)[cat.HOOK_SCRIPT] + " --x %USERPROFILE%"}
     hook_health.connect(hook_health.plan_capture(ESSENTIALS, commands), now=NOW)
     assert any("%VARIABLE%" in problem for problem in hook_health.check_capture(ESSENTIALS).problems)
 
@@ -175,7 +179,7 @@ def test_backups_made_in_the_same_second_never_overwrite_each_other(tmp_path):
 def test_hook_files_are_copied_from_the_package(tmp_path):
     from importlib import resources
 
-    written = hook_health.install_hook_files(tmp_path, [cat.NOTE_SCRIPT, cat.CATALOGUE_FILE, hook_health.HOOK_SCRIPT_NAME])
+    written = hook_health.install_hook_files(tmp_path, [cat.HOOK_SCRIPT, cat.CATALOGUE_FILE, hook_health.HOOK_SCRIPT_NAME])
     for path in written:
         packaged = resources.files("claude_token_lens") / "hooks" / path.name
         assert path.read_bytes() == packaged.read_bytes()
@@ -207,7 +211,7 @@ def test_on_dry_run_shows_the_cost_and_the_diff_and_writes_nothing(tmp_path):
     assert "This makes Claude use more of your tokens" in out
     assert f"about {cat.rough_tokens(cat.level_metrics('essentials'))['session_note']} tokens of note" in out
     assert "Dry run: config.toml left unchanged." in out and "Dry run: settings.json left unchanged." in out
-    assert "+" in out and "capture-note.py" in out
+    assert "+" in out and "capture-hook.py" in out
     assert (config_dir.parent / "settings.json").read_text(encoding="utf-8") == before
     assert not (config_dir / "config.toml").exists() and not (config_dir / "hooks").exists()
 
@@ -234,7 +238,8 @@ def test_on_yes_connects_everything_and_a_second_run_changes_nothing(tmp_path):
     assert rc == 0 and "Restart Claude Code" in out
     capture = load_config(config_dir=config_dir).capture
     assert (capture.level, capture.sample, capture.enabled_at) == ("essentials", 25, "2026-09-24T06:00:00+00:00")
-    assert (config_dir / "hooks" / cat.NOTE_SCRIPT).is_file() and (config_dir / "hooks" / cat.CATALOGUE_FILE).is_file()
+    assert (config_dir / "hooks" / cat.HOOK_SCRIPT).is_file() and (config_dir / "hooks" / cat.CATALOGUE_FILE).is_file()
+    assert len((config_dir / "salt").read_bytes()) == 32  # the free signals hash session ids with it
     assert hook_health.check_capture(ESSENTIALS).ok
     rc, out = _capture(config_dir, "on", "--yes")
     assert "already Essentials" in out and "already runs the capture hooks" in out
@@ -247,7 +252,7 @@ def test_levels_up_and_down_sync_the_entries(tmp_path):
     assert hook_health.check_capture(DEEP).ok
     rc, out = _capture(config_dir, "level", "essentials", "--yes")
     assert "This makes Claude use more" not in out  # lowering asks nothing about cost
-    assert [e for e, _, _ in _entries(_settings(config_dir))] == ["SessionStart", "SubagentStart"]
+    assert [e for e, _, _ in _entries(_settings(config_dir))] == [spec.event for spec in ESSENTIALS]
 
 
 def test_disabling_a_metric_takes_what_needs_it_along(tmp_path):
@@ -308,7 +313,7 @@ def test_off_keeps_the_entries_and_remove_takes_them_out(tmp_path):
     rc, out = _capture(config_dir, "off")
     assert rc == 0 and "add nothing while capture is off" in out and "capture remove" in out
     assert load_config(config_dir=config_dir).capture == CaptureConfig(level="off")
-    assert len(_entries(_settings(config_dir))) == 3
+    assert len(_entries(_settings(config_dir))) == len(ESSENTIALS) + 1  # and the Stop entry of their own
     rc, out = _capture(config_dir, "remove", "--dry-run")
     assert "Dry run: settings.json left unchanged. Run 'claude-token-lens capture remove'" in out
     rc, out = _capture(config_dir, "remove", "--yes")
@@ -326,7 +331,7 @@ def test_status_reports_hooks_that_are_missing(tmp_path):
     _capture(config_dir, "on", stdin="y\nn\n")
     rc, out = _capture(config_dir, "status")
     assert "Metrics capture: Essentials (since 2026-09-24)" in out
-    assert "Hooks: settings.json does not run capture-note.py" in out
+    assert "Hooks: settings.json does not run capture-hook.py" in out
 
 
 def test_a_bad_config_is_reported_not_overwritten(tmp_path):
@@ -356,7 +361,7 @@ def test_expectations_say_capture_uses_tokens_only_while_it_does():
     assert on[0][0] == "It uses a few of your Claude tokens while capture is on" and "(Standard)" in on[0][1]
     assert on[1:] == footprint.EXPECTATIONS[1:]
     free = footprint.expectations(CaptureConfig(level="free"))
-    assert "adds no tokens" in free[0][1]
+    assert "adds no tokens" in free[0][1] and "(Free)" in free[0][1]
 
 
 def test_inventory_lists_the_capture_hooks_only_when_there_are_any(tmp_path):
@@ -365,8 +370,11 @@ def test_inventory_lists_the_capture_hooks_only_when_there_are_any(tmp_path):
     _capture(config_dir, "on", "--yes")
     items = {item.key: item for item in footprint.inventory(config_dir, service_registered=False)}
     item = items["capture_hooks"]
-    assert item.status == "installed" and item.title == "Metrics capture hooks (2 entries)"
+    assert item.status == "installed" and item.title == "Metrics capture hooks (5 entries)"
     assert "Essentials" in item.token_cost and "capture off" in item.undo
+    _capture(config_dir, "level", "free", "--yes")
+    item = {item.key: item for item in footprint.inventory(config_dir, service_registered=False)}["capture_hooks"]
+    assert item.title == "Metrics capture hooks (3 entries)" and item.token_cost.startswith("None at Free")
 
 
 def test_uninstall_takes_out_the_capture_entries(tmp_path):
@@ -374,8 +382,11 @@ def test_uninstall_takes_out_the_capture_entries(tmp_path):
     _capture(config_dir, "on", "--yes")
     plan = footprint.plan_uninstall(config_dir)
     assert plan.settings_changes == [
-        "Remove the capture hook that runs capture-note.py when a session starts, is cleared or compacts.",
-        "Remove the capture hook that runs capture-note.py when a subagent starts.",
+        "Remove the capture hook that runs capture-hook.py when a session starts, is cleared or compacts.",
+        "Remove the capture hook that runs capture-hook.py when a subagent starts.",
+        "Remove the capture hook that runs capture-hook.py when a session ends.",
+        "Remove the capture hook that runs capture-hook.py when Claude waits for you, in the background.",
+        "Remove the capture hook that runs capture-hook.py when Claude asks for permission, in the background.",
     ]
     assert json.loads(plan.new_settings_text) == {}
 
@@ -385,5 +396,5 @@ def test_changes_prints_the_capture_expectation(tmp_path, capsys):
     _capture(config_dir, "on", "--yes")
     rc = cli.main(["changes", "--config-dir", str(config_dir)])
     out = capsys.readouterr().out
-    assert rc == 0 and "Metrics capture hooks (2 entries): installed" in out
+    assert rc == 0 and "Metrics capture hooks (5 entries): installed" in out
     assert "It uses a few of your Claude tokens while capture is on" in out

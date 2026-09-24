@@ -5,11 +5,7 @@
   "free": [
    "session_end",
    "waits",
-   "permissions",
-   "instructions_loaded",
-   "prompt_expansion",
-   "tasks",
-   "stop_failure"
+   "permissions"
   ],
   "essentials": [
    "task",
@@ -20,11 +16,7 @@
    "retry",
    "session_end",
    "waits",
-   "permissions",
-   "instructions_loaded",
-   "prompt_expansion",
-   "tasks",
-   "stop_failure"
+   "permissions"
   ],
   "standard": [
    "task",
@@ -44,11 +36,7 @@
    "agent_brief",
    "session_end",
    "waits",
-   "permissions",
-   "instructions_loaded",
-   "prompt_expansion",
-   "tasks",
-   "stop_failure"
+   "permissions"
   ],
   "deep": [
    "task",
@@ -73,11 +61,7 @@
    "web",
    "session_end",
    "waits",
-   "permissions",
-   "instructions_loaded",
-   "prompt_expansion",
-   "tasks",
-   "stop_failure"
+   "permissions"
   ]
  },
  "feedback_ids": [
@@ -324,46 +308,6 @@
    "tool_note": ""
   },
   {
-   "id": "instructions_loaded",
-   "group": "free",
-   "requires": [],
-   "main_line": "",
-   "main_extra": "",
-   "sub_line": "",
-   "sub_extra": "",
-   "tool_note": ""
-  },
-  {
-   "id": "prompt_expansion",
-   "group": "free",
-   "requires": [],
-   "main_line": "",
-   "main_extra": "",
-   "sub_line": "",
-   "sub_extra": "",
-   "tool_note": ""
-  },
-  {
-   "id": "tasks",
-   "group": "free",
-   "requires": [],
-   "main_line": "",
-   "main_extra": "",
-   "sub_line": "",
-   "sub_extra": "",
-   "tool_note": ""
-  },
-  {
-   "id": "stop_failure",
-   "group": "free",
-   "requires": [],
-   "main_line": "",
-   "main_extra": "",
-   "sub_line": "",
-   "sub_extra": "",
-   "tool_note": ""
-  },
-  {
    "id": "feedback_reminder",
    "group": "feedback",
    "requires": [],
@@ -391,6 +335,25 @@
   "Plan"
  ],
  "big_output_tokens": 8000,
+ "signal_events": {
+  "SessionEnd": "session_end",
+  "Notification": "waits",
+  "PermissionRequest": "permissions"
+ },
+ "session_end_reasons": [
+  "clear",
+  "logout",
+  "prompt_input_exit",
+  "bypass_permissions_disabled",
+  "other"
+ ],
+ "wait_kinds": [
+  "permission",
+  "idle",
+  "question",
+  "other"
+ ],
+ "signals_dir": "signals",
  "web_tools": [
   "WebFetch",
   "WebSearch"

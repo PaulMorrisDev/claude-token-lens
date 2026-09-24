@@ -166,7 +166,7 @@ def expectations(capture: CaptureConfig | None = None) -> tuple[tuple[str, str],
     if capture is None or not capture.is_on:
         return EXPECTATIONS
     level = capture_catalogue.LEVEL_TITLES.get(capture.level, capture.level)
-    if capture_catalogue.hook_specs(capture.active_metrics()):
+    if _uses_tokens(capture):
         text = (
             f"Metrics capture is on ({level}). Claude reads a short note when a session or subagent starts and "
             "writes a one-line tag at the end of its replies, so it uses some of your tokens. The Capture tab "
@@ -174,10 +174,16 @@ def expectations(capture: CaptureConfig | None = None) -> tuple[tuple[str, str],
         )
     else:
         text = (
-            f"Metrics capture is on ({level}), but at this level it records only what your sessions already do, "
-            "so it adds no tokens. This tool never calls Claude itself."
+            f"Metrics capture is on ({level}), but at this level it only logs a few free signals to a local "
+            "file, so it adds no tokens. This tool never calls Claude itself."
         )
     return ((("It uses a few of your Claude tokens while capture is on"), text),) + EXPECTATIONS[1:]
+
+
+def _uses_tokens(capture: CaptureConfig) -> bool:
+    """Whether any metric switched on has Claude read a note or write a
+    tag (the free signals don't)."""
+    return any(capture_catalogue.asks_claude(i) for i in capture.active_metrics())
 
 
 def capture_setting(config_dir: str | Path) -> CaptureConfig:
@@ -248,11 +254,15 @@ def inventory(
                 what_it_does=(
                     "While metrics capture is on, adds a short note when a session or subagent starts asking Claude "
                     "to end its replies with a one-line tag (task kind, how clear the request was, and so on), so "
-                    "this tool can tell where your tokens go. With capture off the hooks add nothing."
+                    "this tool can tell where your tokens go. The free signals (why sessions end, when Claude "
+                    "waited for you, which tools asked for permission) go to a file in this tool's data folder. "
+                    "With capture off the hooks add nothing."
                 ),
                 token_cost=(
                     f"Some while capture is on (now: {level}): the note and the tags. The Capture tab shows the "
                     "measured amount."
+                    if capture.is_on and _uses_tokens(capture)
+                    else f"None at {level}: the free signals only write to a local file."
                     if capture.is_on
                     else "None while capture is off."
                 ),

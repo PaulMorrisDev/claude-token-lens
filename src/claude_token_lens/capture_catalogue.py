@@ -1,7 +1,7 @@
 """Metrics capture: the words Claude may write, and the metrics behind them.
 
 Metrics capture is opt-in. While it is on, a small hook adds a short note
-to each session and subagent start (see ``hooks/capture-note.py``) asking
+to each session and subagent start (see ``hooks/capture-hook.py``) asking
 Claude to end its replies with a one-line tag, for example
 ``[tl: task=bugfix brief=partial level=normal]``. Token Lens reads the tags
 back out of the transcripts to explain what the work was, not only what it
@@ -179,9 +179,23 @@ BIG_OUTPUT_TOKENS = 8000
 #: Tools whose results get a ``web`` note (Deep).
 WEB_TOOLS = ("WebFetch", "WebSearch")
 
+#: Hook event -> the free signal it records.
+SIGNAL_EVENTS = {"SessionEnd": "session_end", "Notification": "waits", "PermissionRequest": "permissions"}
+
+#: Why a session ended, as SessionEnd reports it; anything else is "other".
+SESSION_END_REASONS = ("clear", "logout", "prompt_input_exit", "bypass_permissions_disabled", "other")
+
+#: What Claude waited for: a permission prompt, your next message, a
+#: question it asked (an MCP elicitation), or something else.
+WAIT_KINDS = ("permission", "idle", "question", "other")
+
+#: Folder under the data folder that holds the signal files, one per
+#: month (``YYYY-MM.jsonl``).
+SIGNALS_DIR = "signals"
+
 #: The hook script that adds capture notes, and the catalogue it reads,
 #: installed side by side under ``<config-dir>/hooks/``.
-NOTE_SCRIPT = "capture-note.py"
+HOOK_SCRIPT = "capture-hook.py"
 CATALOGUE_FILE = "capture-catalogue.json"
 
 
@@ -540,7 +554,8 @@ METRICS: tuple[Metric, ...] = (
         group="free",
         section="signals",
         title="Waiting on you",
-        what="When Claude waited for your permission or input, and how long until you answered.",
+        what="When Claude waited for your permission or input. The transcript shows how long until you "
+        "answered.",
         why="How often Claude sat waiting, and allow rules for routine commands.",
         powers=("waiting",),
         hooks=("Notification",),
@@ -550,52 +565,52 @@ METRICS: tuple[Metric, ...] = (
         group="free",
         section="signals",
         title="Permission decisions",
-        what="Permission prompts and denials: the tool name and the decision, never its arguments.",
+        what="Each permission prompt: the tool name, never its arguments. The transcript shows what you "
+        "decided.",
         why="Denials that led to rework, and allowlist suggestions.",
         powers=("waiting",),
         hooks=("PermissionRequest",),
     ),
+    # -- Always measured --------------------------------------------------
+    # The transcripts already record these, so they need no hook: the
+    # nested CLAUDE.md and rules files that load, the commands and skills
+    # you run, task lists, and API errors.
     Metric(
         id="instructions_loaded",
-        group="free",
-        section="signals",
+        group="derived",
+        section="derived",
         title="Instruction files loaded",
-        what="Instruction files loaded during a session: kind, salted hash and size.",
+        what="Instruction files that load during a session (nested CLAUDE.md and rules): kind and size.",
         why="What nested CLAUDE.md and rules files cost as they load.",
         powers=("information",),
-        hooks=("InstructionsLoaded",),
     ),
     Metric(
         id="prompt_expansion",
-        group="free",
-        section="signals",
+        group="derived",
+        section="skills_plans",
         title="Commands and skills you ran",
-        what="Slash commands and skills you ran: name, expanded size and when in the session.",
+        what="Slash commands and skills you ran: name, what they added to context, and when in the session.",
         why="When you invoke skills, and what they add to context.",
         powers=("skills",),
-        hooks=("UserPromptSubmit",),
     ),
     Metric(
         id="tasks",
-        group="free",
-        section="signals",
+        group="derived",
+        section="derived",
         title="Task lists",
         what="How many tasks Claude created and completed.",
         why="How work is split into tasks, and how many get finished.",
         powers=("breakdown",),
-        hooks=("TaskCreated", "TaskCompleted"),
     ),
     Metric(
         id="stop_failure",
-        group="free",
-        section="signals",
+        group="derived",
+        section="derived",
         title="API errors",
         what="The kind of each API error that stopped a turn.",
         why="Turns lost to errors.",
         powers=("outcome",),
-        hooks=("StopFailure",),
     ),
-    # -- Always measured --------------------------------------------------
     Metric(
         id="prompt_features",
         group="derived",
@@ -792,7 +807,7 @@ def note_text(ids, scope: str, agent_type: str = "") -> str:
     ``"subagent"`` at agent start) with the metrics in ``ids`` switched
     on; ``""`` when none of them asks anything there.
 
-    ``hooks/capture-note.py`` builds the same text from
+    ``hooks/capture-hook.py`` builds the same text from
     ``capture-catalogue.json`` (:func:`export_json`); a test holds the two
     to the same output.
     """
@@ -833,27 +848,32 @@ def tool_note_text(metric_id: str, tool_name: str = "") -> str:
 
 def hook_specs(ids) -> tuple[tuple[str, str, str, bool], ...]:
     """The Claude Code hook entries the metrics in ``ids`` need, as
-    ``(script, event, matcher, async)``: the note hook at session and
-    agent start, and after tool results for Deep's tool notes. (The free
-    signals' entries are added with the signals hook.)"""
+    ``(script, event, matcher, async)``: the note at session and agent
+    start, after tool results for Deep's tool notes, and the free
+    signals' events. Only SessionStart and SubagentStart wait for the
+    hook, since their note must be in place before Claude starts;
+    SessionEnd runs as the session closes, when nothing waits on it."""
     wanted = set(ids)
     main = any(m.id in wanted and (m.main_line or m.main_extra) for m in METRICS)
     sub = any(m.id in wanted and (m.sub_line or m.sub_extra) for m in METRICS)
     specs: list[tuple[str, str, str, bool]] = []
     if main:
-        specs.append((NOTE_SCRIPT, "SessionStart", SESSION_START_MATCHER, False))
+        specs.append((HOOK_SCRIPT, "SessionStart", SESSION_START_MATCHER, False))
     if sub:
-        specs.append((NOTE_SCRIPT, "SubagentStart", "", False))
+        specs.append((HOOK_SCRIPT, "SubagentStart", "", False))
     if "big_output" in wanted:
-        specs.append((NOTE_SCRIPT, "PostToolUse", "", True))
+        specs.append((HOOK_SCRIPT, "PostToolUse", "", True))
     elif "web" in wanted:
-        specs.append((NOTE_SCRIPT, "PostToolUse", "|".join(WEB_TOOLS), True))
+        specs.append((HOOK_SCRIPT, "PostToolUse", "|".join(WEB_TOOLS), True))
+    for event in SIGNAL_EVENTS:
+        if SIGNAL_EVENTS[event] in wanted:
+            specs.append((HOOK_SCRIPT, event, "", event != "SessionEnd"))
     return tuple(specs)
 
 
 
 def export_json() -> dict:
-    """What ``hooks/capture-note.py`` needs from this module, as JSON-safe
+    """What ``hooks/capture-hook.py`` needs from this module, as JSON-safe
     data. The packaged ``hooks/capture-catalogue.json`` is this, written
     by :func:`catalogue_json_text` (a test keeps it in step)."""
     return {
@@ -886,6 +906,10 @@ def export_json() -> dict:
         "skip_agent_types": list(SKIP_AGENT_TYPES),
         "no_rules_agent_types": list(NO_RULES_AGENT_TYPES),
         "big_output_tokens": BIG_OUTPUT_TOKENS,
+        "signal_events": dict(SIGNAL_EVENTS),
+        "session_end_reasons": list(SESSION_END_REASONS),
+        "wait_kinds": list(WAIT_KINDS),
+        "signals_dir": SIGNALS_DIR,
         "web_tools": list(WEB_TOOLS),
     }
 

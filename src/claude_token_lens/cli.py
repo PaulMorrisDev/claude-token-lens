@@ -2826,11 +2826,13 @@ def _capture_settings_step(
 ) -> bool:
     """Show the settings.json change that makes it run exactly the
     capture entries in ``wanted``, and make it after a yes. Installs the
-    hook scripts into this tool's folder first. Returns False when the
-    change was needed but not made."""
+    hook scripts into this tool's folder first, and the salt the free
+    signals hash session ids with. Returns False when the change was
+    needed but not made."""
     if wanted and not dry_run:
         for script in hook_health.CAPTURE_SCRIPTS:
             hook_health.install_hook_files(config_dir, hook_health.CAPTURE_FILES[script])
+        load_or_create_salt(config_dir)
     plan = hook_health.plan_capture(wanted, _capture_hook_commands(config_dir), claude_root=claude_root)
     if plan.new_text is None:
         for line in plan.changes:  # a settings.json it can't read

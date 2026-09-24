@@ -149,14 +149,43 @@ def test_a_subagent_tag_shape_follows_whether_it_has_extra_keys():
 
 
 def test_hook_entries_follow_the_metrics():
-    assert cat.hook_specs(cat.level_metrics("free")) == ()
-    assert cat.hook_specs(cat.level_metrics("essentials")) == (
-        ("capture-note.py", "SessionStart", "startup|clear|compact", False),
-        ("capture-note.py", "SubagentStart", "", False),
+    signals = (
+        ("capture-hook.py", "SessionEnd", "", False),
+        ("capture-hook.py", "Notification", "", True),
+        ("capture-hook.py", "PermissionRequest", "", True),
     )
-    assert cat.hook_specs(cat.level_metrics("deep"))[-1] == ("capture-note.py", "PostToolUse", "", True)
-    assert cat.hook_specs(["web"]) == (("capture-note.py", "PostToolUse", "WebFetch|WebSearch", True),)
-    assert cat.hook_specs(["result"]) == (("capture-note.py", "SubagentStart", "", False),)
+    assert cat.hook_specs(cat.level_metrics("free")) == signals
+    assert cat.hook_specs(["waits"]) == (signals[1],)
+    assert cat.hook_specs(cat.level_metrics("essentials")) == (
+        ("capture-hook.py", "SessionStart", "startup|clear|compact", False),
+        ("capture-hook.py", "SubagentStart", "", False),
+    ) + signals
+    assert cat.hook_specs(cat.level_metrics("deep"))[2] == ("capture-hook.py", "PostToolUse", "", True)
+    assert cat.hook_specs(["web"]) == (("capture-hook.py", "PostToolUse", "WebFetch|WebSearch", True),)
+    assert cat.hook_specs(["result"]) == (("capture-hook.py", "SubagentStart", "", False),)
+
+
+def test_only_signals_the_transcripts_lack_get_a_hook():
+    """The transcripts already record instruction files, commands and
+    skills, task lists and API errors, so those are always measured;
+    only why sessions end, waits and permission prompts need a hook."""
+    free = {m.id: m for m in cat.METRICS if m.group == "free"}
+    assert set(free) == set(cat.SIGNAL_EVENTS.values())
+    for event, metric_id in cat.SIGNAL_EVENTS.items():
+        assert free[metric_id].hooks == (event,) and not cat.asks_claude(metric_id)
+    for metric_id in ("instructions_loaded", "prompt_expansion", "tasks", "stop_failure"):
+        assert cat.METRICS_BY_ID[metric_id].group == "derived" and not cat.METRICS_BY_ID[metric_id].hooks
+
+
+def test_every_hook_file_ships_in_the_package():
+    import tomllib
+    from pathlib import Path
+
+    pyproject = tomllib.loads((Path(__file__).parents[1] / "pyproject.toml").read_text(encoding="utf-8"))
+    declared = set(pyproject["tool"]["setuptools"]["package-data"]["claude_token_lens"])
+    hooks = resources.files("claude_token_lens") / "hooks"
+    shipped = {f"hooks/{p.name}" for p in hooks.iterdir() if p.is_file() and not p.name.startswith("__")}
+    assert shipped <= declared, f"add {sorted(shipped - declared)} to package-data in pyproject.toml"
 
 
 def test_the_packaged_json_is_the_catalogue_export():

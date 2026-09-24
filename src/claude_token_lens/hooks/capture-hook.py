@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""Claude Code hook: add Token Lens's metrics-capture note.
+"""Claude Code hook: Token Lens's metrics capture.
 
 While metrics capture is on (``[capture]`` in Token Lens's ``config.toml``),
 this adds a short note to Claude's context asking it to end its replies
 with a one-line tag of closed-vocabulary words, such as
 ``[tl: task=bugfix brief=partial level=normal]``. Token Lens reads the
-tags back from the transcripts.
+tags back from the transcripts. It also logs a few free signals that
+cost no tokens.
 
-It runs on three hook events, each added to Claude Code's settings.json
+It runs on these hook events, each added to Claude Code's settings.json
 only when a chosen metric needs it (``claude-token-lens capture
 connect``):
 
@@ -19,6 +20,13 @@ connect``):
 - ``SubagentStart``: the subagent note, at every depth.
 - ``PostToolUse`` (async): a one-line note after a large tool result or
   a web result, for the Deep level.
+- ``SessionEnd``, ``Notification`` and ``PermissionRequest`` (the last
+  two async): one line each in ``<config-dir>/signals/YYYY-MM.jsonl``
+  saying why a session ended, what Claude waited for, or which tool
+  asked for permission. A line holds the time, a salted hash of the
+  session id, and a word from a fixed list or a tool name; never a
+  message, a tool's input or a path. Nothing is logged until Token Lens
+  has made its salt.
 
 What the note says comes from ``capture-catalogue.json`` next to this
 script, written from ``claude_token_lens.capture_catalogue``;
@@ -27,15 +35,16 @@ script, written from ``claude_token_lens.capture_catalogue``;
 It adds nothing when capture is off, past its ``until`` time, outside
 the sampled share of sessions (a hash of the session id, so a session's
 subagents follow it), or in a project left out by ``[capture] projects``
-or ``exclude_projects``. It uses only the standard library, and always
-exits 0 without printing anything on an error, so it can never block or
-break a session.
+or ``exclude_projects``, and logs nothing then either. It uses only the
+standard library, and always exits 0 without printing anything on an
+error, so it can never block or break a session.
 """
 
 from __future__ import annotations
 
 import argparse
 import hashlib
+import hmac
 import json
 import os
 import re
@@ -53,6 +62,22 @@ _SLUG_HASH_HEX_CHARS = 8
 
 #: Characters per token, for the large-output threshold.
 _CHARS_PER_TOKEN = 4
+
+#: Token Lens's salt (``parse.load_or_create_salt``), which the session
+#: id is hashed with, and its length.
+SALT_FILE = "salt"
+_SALT_BYTES = 32
+
+#: The short event names in a signal line.
+_SIGNAL_CODES = {"SessionEnd": "end", "Notification": "wait", "PermissionRequest": "perm"}
+
+#: Notification types (and, for older Claude Code versions without them,
+#: the start of the message) -> what Claude waited for.
+_WAIT_TYPES = {"permission_prompt": "permission", "idle_prompt": "idle", "elicitation_dialog": "question"}
+_WAIT_MESSAGES = (("Claude needs your permission", "permission"), ("Claude is waiting for your input", "idle"))
+
+#: What a tool name may look like to be logged; anything else is "other".
+_TOOL_NAME_RE = re.compile(r"[A-Za-z0-9_.:-]{1,128}")
 
 
 def resolve_config_dir(cli_arg: str | None = None) -> Path:
@@ -195,23 +220,33 @@ def _in_subagent(payload: dict) -> bool:
     return isinstance(transcript, str) and Path(transcript.replace("\\", "/")).parent.name == "subagents"
 
 
-def note_for(payload: dict, config: dict, catalogue: dict, now: datetime | None = None) -> str:
-    """The note this hook call should add, or ``""``."""
+def _capture_for(payload: dict, config: dict, now: datetime) -> dict | None:
+    """The ``[capture]`` table when capture applies to this hook call:
+    on, not past its end, this session sampled in, and the project not
+    left out. ``None`` otherwise."""
     capture = config.get("capture")
     if not isinstance(capture, dict) or capture.get("level", "off") == "off":
-        return ""
+        return None
     until = capture.get("until") or ""
     if until:
         stop = _parse_time(until)
-        if stop is None or (now or datetime.now(timezone.utc)) >= stop:
-            return ""
+        if stop is None or now >= stop:
+            return None
     if not sampled_in(str(payload.get("session_id") or ""), int(capture.get("sample", 100))):
-        return ""
+        return None
     cwd = payload.get("cwd")
     if isinstance(cwd, str) and cwd:
         exclude = config.get("exclude_projects", [])
         if not project_allowed(slug_for(cwd), capture.get("projects", []), exclude if isinstance(exclude, list) else []):
-            return ""
+            return None
+    return capture
+
+
+def note_for(payload: dict, config: dict, catalogue: dict, now: datetime | None = None) -> str:
+    """The note this hook call should add, or ``""``."""
+    capture = _capture_for(payload, config, now or datetime.now(timezone.utc))
+    if capture is None:
+        return ""
     ids = active_ids(catalogue, capture)
     event = payload.get("hook_event_name")
     agent_type = str(payload.get("agent_type") or "")
@@ -231,8 +266,70 @@ def note_for(payload: dict, config: dict, catalogue: dict, now: datetime | None 
     return ""
 
 
+def read_salt(config_dir: Path) -> bytes | None:
+    """Token Lens's salt, or ``None`` when it isn't there (yet) or is the
+    wrong length: a line hashed with anything else could never be joined
+    to its session."""
+    try:
+        salt = (config_dir / SALT_FILE).read_bytes()
+    except OSError:
+        return None
+    return salt if len(salt) == _SALT_BYTES else None
+
+
+def session_hash(salt: bytes, session_id: str) -> str:
+    """The session id as a signal line keeps it (``signals.session_hash``)."""
+    return hmac.new(salt, session_id.encode("utf-8"), hashlib.sha256).hexdigest()[:16]
+
+
+def _wait_kind(payload: dict) -> str:
+    notification_type = payload.get("notification_type")
+    if notification_type:
+        return _WAIT_TYPES.get(str(notification_type), "other")
+    message = payload.get("message")
+    if isinstance(message, str):
+        for start, found in _WAIT_MESSAGES:
+            if message.startswith(start):
+                return found
+    return "other"
+
+
+def signal_for(payload: dict, config: dict, catalogue: dict, salt: bytes | None, now: datetime | None = None) -> dict | None:
+    """The line to log for a SessionEnd, Notification or PermissionRequest
+    call, or ``None`` when its metric is off or there's no salt."""
+    event = payload.get("hook_event_name")
+    metric = catalogue["signal_events"].get(event) if isinstance(event, str) else None
+    session_id = payload.get("session_id")
+    if metric is None or salt is None or not isinstance(session_id, str) or not session_id:
+        return None
+    now = now or datetime.now(timezone.utc)
+    capture = _capture_for(payload, config, now)
+    if capture is None or metric not in active_ids(catalogue, capture):
+        return None
+    record = {"ts": now.strftime("%Y-%m-%dT%H:%M:%SZ"), "sid": session_hash(salt, session_id), "e": _SIGNAL_CODES[event]}
+    if event == "SessionEnd":
+        reason = payload.get("reason")
+        record["reason"] = reason if reason in catalogue["session_end_reasons"] else "other"
+    elif event == "Notification":
+        record["kind"] = _wait_kind(payload)
+    else:
+        tool = payload.get("tool_name")
+        record["tool"] = tool if isinstance(tool, str) and _TOOL_NAME_RE.fullmatch(tool) else "other"
+    if payload.get("agent_id"):
+        record["sub"] = 1
+    return record
+
+
+def write_signal(config_dir: Path, catalogue: dict, record: dict) -> None:
+    """Append ``record`` to this month's signal file, as one write."""
+    folder = config_dir / catalogue["signals_dir"]
+    folder.mkdir(parents=True, exist_ok=True)
+    with open(folder / f"{record['ts'][:7]}.jsonl", "a", encoding="utf-8", newline="\n") as handle:
+        handle.write(json.dumps(record, separators=(",", ":")) + "\n")
+
+
 def _run(argv: list[str]) -> None:
-    parser = argparse.ArgumentParser(prog="capture-note.py")
+    parser = argparse.ArgumentParser(prog="capture-hook.py")
     parser.add_argument("--config-dir", default=None)
     args = parser.parse_args(argv)
     # Claude Code sends UTF-8 whatever the console's code page is.
@@ -240,11 +337,18 @@ def _run(argv: list[str]) -> None:
     payload = json.loads(raw) if raw.strip() else {}
     if not isinstance(payload, dict):
         return
+    config_dir = resolve_config_dir(args.config_dir)
     try:
-        config = load_config(resolve_config_dir(args.config_dir))
+        config = load_config(config_dir)
     except (OSError, ValueError):
         return  # an unreadable or half-written config reads as off
-    note = note_for(payload, config, load_catalogue())
+    catalogue = load_catalogue()
+    if payload.get("hook_event_name") in catalogue["signal_events"]:
+        record = signal_for(payload, config, catalogue, read_salt(config_dir))
+        if record:
+            write_signal(config_dir, catalogue, record)
+        return
+    note = note_for(payload, config, catalogue)
     if note:
         output = {"hookSpecificOutput": {"hookEventName": payload.get("hook_event_name"), "additionalContext": note}}
         sys.stdout.write(json.dumps(output))

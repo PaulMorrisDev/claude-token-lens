@@ -424,7 +424,9 @@ that actually delete a row.
   a marked-missing (or still-present) transcript's row, not the
   missing-file check itself. Off by default: without the flag, `serve`
   uses `retention_days` from `config.toml`, and with neither set nothing
-  is ever pruned.
+  is ever pruned. The same tick deletes metrics capture's signal files
+  (`<config-dir>/signals/YYYY-MM.jsonl`) for months wholly older than
+  `N` days.
 - **`serve --purge`** (deliverable 2.e): deletes `<config-dir>/service.db`
   and its `-wal`/`-shm` sidecars, then exits — never starts the watcher
   or API. Always prints exactly which files it would delete first; only
