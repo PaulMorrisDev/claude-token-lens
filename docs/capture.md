@@ -15,11 +15,55 @@ Costs rise with depth, so capture comes in levels, each including every metric o
 | Off | Nothing is captured and no tokens are used. | – | – |
 | Free | Local signals from hooks that log to a file. Uses no Claude tokens. | – | – |
 | Essentials | Claude tags each piece of work: what kind it was, how clear the request was, how hard, and when the task changed. Subagents say whether they finished. | ~182 tokens | ~88 tokens |
-| Standard | Adds size, what the request lacked, planning, skills, research, why an agent was used, and each subagent's view of its model, rules and brief. | ~342 tokens | ~196 tokens |
-| Deep | Adds how much earlier context was needed, detours, how the change was checked, and a short rating after large tool outputs and web results. | ~405 tokens | ~196 tokens |
+| Standard | Adds size, what the request lacked, planning, skills, research, and each subagent's view of its model, rules and brief. | ~311 tokens | ~172 tokens |
+| Deep | Adds how much earlier context was needed, how the change was checked, and a short rating after large tool outputs. | ~352 tokens | ~172 tokens |
 | Custom | Any other set of metrics, turned on one by one (`capture enable`/`capture disable`). | depends what's on | depends what's on |
 
 These are rough sizes — characters in the note divided by four — and don't include the tag Claude writes back (each metric below says roughly how many output tokens its own words cost) or Claude Code's own hook-wrapper overhead. The Capture tab replays your last 14 days of transcripts against each level before you turn it on, and once it's on, measures the real note and tag cost from what Claude Code actually recorded — read that number, not this one, when it matters.
+
+## What each metric is worth
+
+Gap 4: every metric here has to earn its keep — something has to actually read it and turn it into a decision, not just log it. This table is that trace: each metric's rough cost against what it feeds. The Capture page shows the same thing measured from your own transcripts, in tokens a week instead of per occurrence.
+
+| Metric | Level | ~Output tokens each time | Feeds |
+|---|---|---|---|
+| Kind of task (`task`) | Essentials | ~3 | Profiles per kind of task, Cost per finished piece of work, Model and effort fit |
+| How clear the request was (`brief`) | Essentials | ~3 | Giving Claude information |
+| How hard the work was (`level`) | Essentials | ~3 | Model and effort fit, Profiles per kind of task, Planning |
+| Task changes (`shift`) | Essentials | ~1 | Breaking down work, Clearing context, Planning |
+| Did the agent finish (`result`) | Essentials | ~4 | Delegating to agents, Model and effort fit, Cost per finished piece of work |
+| Why an agent was run again (`retry`) | Essentials | ~1 | Delegating to agents, Model and effort fit |
+| Size of the work (`size`) | Standard | ~2 | Breaking down work |
+| What the request lacked (`missing`) | Standard | ~4 | Giving Claude information, Researching |
+| Planning (`plan`) | Standard | ~2 | Planning |
+| Skills (`skill`) | Standard | ~3 | Using skills |
+| Research result (`found`) | Standard | ~2 | Researching |
+| Agent model fit (`fit`) | Standard | ~2 | Model and effort fit, Delegating to agents |
+| Agent used your rules (`rules`) | Standard | ~2 | Delegating to agents |
+| Agent brief quality (`agent_brief`) | Standard | ~6 | Delegating to agents, Giving Claude information |
+| Earlier context needed (`prior`) | Deep | ~2 | Clearing context |
+| How changes were checked (`check`) | Deep | ~3 | Checking changes |
+| Large tool outputs (`big_output`) | Deep | ~2 | Tool output |
+| Why sessions end (`session_end`) | Free | – | Breaking down work, Clearing context |
+| Waiting on you (`waits`) | Free | – | Waiting and permissions |
+| Permission decisions (`permissions`) | Free | – | Waiting and permissions |
+| Instruction files loaded (`instructions_loaded`) | Always measured, no hook | – | Giving Claude information |
+| Commands and skills you ran (`prompt_expansion`) | Always measured, no hook | – | Using skills |
+| Task lists (`tasks`) | Always measured, no hook | – | Breaking down work |
+| API errors (`stop_failure`) | Always measured, no hook | – | Cost per finished piece of work |
+| What your messages contain (`prompt_features`) | Always measured, no hook | – | Giving Claude information |
+| What agent briefs contain (`brief_features`) | Always measured, no hook | – | Delegating to agents, Giving Claude information |
+| Plans (`plan_features`) | Always measured, no hook | – | Planning |
+| Skill timing (`skill_timing`) | Always measured, no hook | – | Using skills |
+| Agent chains (`spawn_tree`) | Always measured, no hook | – | Delegating to agents |
+| Repeated failures (`tool_loops`) | Always measured, no hook | – | Checking changes, Tool output |
+| Where research happens (`research_split`) | Always measured, no hook | – | Researching, Delegating to agents |
+| Coaching line (`coaching_line`) | Live coaching, any level | – | Clearing context, Tool output, Researching |
+| Brief templates (`brief_templates`) | Live coaching, any level | – | Giving Claude information |
+| Feedback skill (`feedback_skill`) | Feedback, any level | – | Cost per finished piece of work |
+| Feedback reminder in the status line (`feedback_note`) | Feedback, any level | – | Cost per finished piece of work |
+| Feedback reminder from Claude (`feedback_reminder`) | Feedback, any level | ~20 | Cost per finished piece of work |
+| Rate sessions on the dashboard (`dashboard_rating`) | Feedback, any level | – | Cost per finished piece of work |
 
 ## Main session
 
@@ -103,16 +147,6 @@ These are rough sizes — characters in the note divided by four — and don't i
 - **Hook:** SessionStart
 - **Powers:** Clearing context
 
-### Detours (`detour`)
-
-- **Level:** Deep
-- **Captures:** The main time sink, if any: a dead end, rereading files, building more than asked, environment trouble, or flaky tests.
-- **Why:** Waste the transcript's shape can't show.
-- **Tag:** `detour=none|dead-end|reread|overbuilt|env|flaky`
-- **Costs:** about 3 output tokens each time
-- **Hook:** SessionStart
-- **Powers:** Breaking down work, Checking changes, Giving Claude information
-
 ### How changes were checked (`check`)
 
 - **Level:** Deep
@@ -144,16 +178,6 @@ These are rough sizes — characters in the note divided by four — and don't i
 - **Costs:** about 1 output token each time
 - **Hook:** SessionStart, SubagentStart
 - **Powers:** Delegating to agents, Model and effort fit
-
-### Why an agent was used (`spawn`)
-
-- **Level:** Standard
-- **Captures:** When Claude hands work to an agent, why: to run in parallel, to keep the main context clean, for a cheaper model, for a specialist, or for a review.
-- **Why:** Whether delegating paid off, for example isolated agents that send back long reports.
-- **Tag:** `[spawn: parallel|isolate|cheaper|specialist|review]`
-- **Costs:** about 1 output token each time
-- **Hook:** SessionStart, SubagentStart
-- **Powers:** Delegating to agents
 
 ### Agent model fit (`fit`)
 
@@ -245,16 +269,6 @@ These are rough sizes — characters in the note divided by four — and don't i
 - **Costs:** about 2 output tokens each time
 - **Hook:** PostToolUse
 - **Powers:** Tool output
-
-### Web results (`web`)
-
-- **Level:** Deep
-- **Captures:** After a web search or fetch, whether the result was useful. Claude Code waits for the hook after each one; 'capture status' shows how long that has actually added, measured from your own sessions.
-- **Why:** Web research against handing Claude the page or document yourself.
-- **Tag:** `useful=yes|part|no`
-- **Costs:** about 2 output tokens each time
-- **Hook:** PostToolUse
-- **Powers:** Researching
 
 ## Free local signals
 
@@ -417,7 +431,7 @@ Every note (`capture-hook.py` builds the same text from `capture-catalogue.json`
 
 A subagent's note asks for `[result: done|partial|blocked]` when nothing else needs a key of its own, or `[result: done|partial|blocked key=word ...]` once Standard's extra keys are on: "End your final report with one line, [result: done|partial|blocked key=word ...], using only these words:"
 
-Starting an agent again after its last run fell short, or handing work to one at all, is marked at the start of its brief instead of the end of a report: `[retry: model|brief|tools|scope|other]` and `[spawn: parallel|isolate|cheaper|specialist|review]`.
+Starting an agent again after its last run fell short is marked at the start of its brief instead of the end of a report: `[retry: model|brief|tools|scope|other]`.
 
 The `/tl-feedback` skill ends with its own line: `[tl-fb: outcome=met|partly|missed|stopped slow=unclear,rework,tools,none worth=yes|fair|no helped=context,plan,smaller,none]`.
 

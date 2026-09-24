@@ -1880,6 +1880,34 @@ def build_report(
         snapshot=latest_snapshot,
         units=units,
     )
+
+    # EST-P7 + CAP-3: what the habits section buys recommend() -- run it
+    # again on a variant with that section stripped and diff by (id,
+    # agent_type, lever); recommend() doesn't read the "capture" section
+    # (only "habits"), so this second run is otherwise identical. The
+    # capture section, already in `sections` (mutated in place, so
+    # report_model.sections sees it too), gets its habit_value/held_back
+    # patched with the result.
+    if _want("capture") and _want("habits"):
+        without_habits_model = dataclasses.replace(
+            report_model, sections=[s for s in sections if s.key != "habits"], recommendations=[],
+        )
+        without_habits_recs = recommend(
+            without_habits_model,
+            config=config,
+            archetype=corpus_archetype,
+            snapshot=latest_snapshot,
+            units=units,
+        )
+        for i, section in enumerate(sections):
+            if section.key == "capture":
+                sections[i] = habits.patch_capture_recommend_value(
+                    section, corpus, pricing, config.capture, ratings=ratings,
+                    with_habits=report_model.recommendations, without_habits=without_habits_recs,
+                    h=_habits_built,
+                )
+                break
+
     fixes.attach_fixes(report_model.recommendations)
     # UX-3: a habit covered by a rule that fired here shouldn't report
     # its own saving too -- see habits.COVERED_BY. Also after recommend()

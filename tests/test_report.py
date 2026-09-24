@@ -135,6 +135,21 @@ def test_subagents_are_never_double_counted(tmp_path):
     assert totals["priced_turns"] == 7
 
 
+def test_capture_section_gets_a_held_back_row_from_the_recommend_diff(tmp_path):
+    """EST-P7 + CAP-3 wiring: build_report runs recommend() a second time
+    without the habits section and folds the diff into the capture
+    section afterwards. This corpus is too small for recommend() to
+    surface anything (its own min-sample gate), so the diff is empty --
+    this only proves the wiring runs end to end and leaves a well-formed
+    row, not the arithmetic (that's habits.py's own unit tests)."""
+    corpus = _two_session_corpus(tmp_path)
+    report = build_report(corpus, PRICING, Config(), projects=("proj-two",), window="last 7 days")
+    capture = next(s for s in report.sections if s.key == "capture")
+    rows = {row[0]: row[1] for row in capture.tables[0].rows}
+    assert rows["held_back"] == 0
+    assert rows["habit_value"] is None
+
+
 # -- group-sum invariant -----------------------------------------------------
 
 

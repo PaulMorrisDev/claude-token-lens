@@ -214,6 +214,36 @@ def _window_label(window: int | None) -> str:
     return "none" if window is None else f"{window:,}"
 
 
+#: EST-P8: a kind of task's ``autoCompactWindow`` candidates are only
+#: rendered once at least this many main sessions reported that task
+#: (metrics capture's ``task=``) -- the same "small group, don't report on
+#: it" threshold as ``habits.MIN_GROUP``, kept as a local constant rather
+#: than an import: this module's docstring limits its dependencies to
+#: model.py/pricing.py/recache.py/compaction.py, and ``habits.py`` pulls
+#: in ``classify.py``, which itself imports ``limits.py`` -- which imports
+#: this module, so reaching for either would cycle back here.
+MIN_TASK_SESSIONS = 5
+
+
+def _reported_task(turns: list[Turn]) -> str | None:
+    """EST-P8: the kind of task Claude reported (metrics capture's
+    ``task=``) for at least half of this transcript's tagged turns, twice
+    or more. Mirrors ``classify.reported_task`` exactly (same closed
+    vocabulary, same majority gate) as a local re-implementation, for the
+    same reason :func:`_real_compaction_turn_indices` re-implements
+    ``compaction.py``'s own join instead of importing it -- see the
+    module docstring and :data:`MIN_TASK_SESSIONS`.
+    """
+    tasks = [t.cap.task for t in turns if t.cap is not None and t.cap.has_tl and t.cap.task]
+    if len(tasks) < 2:
+        return None
+    counts: dict[str, int] = {}
+    for task in tasks:
+        counts[task] = counts.get(task, 0) + 1
+    task = max(counts, key=lambda k: (counts[k], k))
+    return task if 2 * counts[task] >= len(tasks) else None
+
+
 # -- thresholds ---------------------------------------------------------
 
 
@@ -737,7 +767,9 @@ class CompactionSimStats:
     transcripts, keyed by ``(agent-type key, candidate window)`` --
     ``"top-level"`` for the main session, otherwise
     ``TranscriptMeta.agent_type`` (``"unknown"`` fallback), same
-    convention as ``ttl.TtlStats``/``compaction.CompactionStats``.
+    convention as ``ttl.TtlStats``/``compaction.CompactionStats``. Also
+    keeps a second, parallel accumulation by ``(reported task, candidate
+    window)`` for main sessions only (EST-P8; see :meth:`by_task`).
     """
 
     def __init__(
@@ -755,6 +787,10 @@ class CompactionSimStats:
         self._acc: dict[tuple[str, int | None], _WindowAccumulator] = {}
         self._sessions_by_key: dict[str, int] = {}
         self._fidelity_rows: list[CompactionSimFidelityRow] = []
+        #: EST-P8: same shape as ``_acc``/``_sessions_by_key`` above, keyed
+        #: by reported task instead of agent-type key, main sessions only.
+        self._task_acc: dict[tuple[str, int | None], _WindowAccumulator] = {}
+        self._sessions_by_task: dict[str, int] = {}
 
     def add_transcript(
         self,
@@ -769,6 +805,11 @@ class CompactionSimStats:
         key = "top-level" if tr.meta.kind == "top-level" else (tr.meta.agent_type or "unknown")
         real_after = _real_compaction_turn_indices(tr, priced_turns, th)
         self._sessions_by_key[key] = self._sessions_by_key.get(key, 0) + 1
+        # EST-P8: task aggregation only makes sense for a main session --
+        # a subagent run has no self-reported "kind of task" of its own.
+        task = _reported_task(tr.turns) if tr.meta.kind == "top-level" else None
+        if task is not None:
+            self._sessions_by_task[task] = self._sessions_by_task.get(task, 0) + 1
 
         results_by_window: dict[int | None, _ReplayResult] = {}
         for window in CANDIDATE_WINDOWS:
@@ -779,6 +820,12 @@ class CompactionSimStats:
             acc.ctx_sum += result.ctx_sum
             acc.ctx_turns += result.turns
             acc.cost += result.cost
+            if task is not None:
+                tacc = self._task_acc.setdefault((task, window), _WindowAccumulator())
+                tacc.compactions += result.compactions
+                tacc.ctx_sum += result.ctx_sum
+                tacc.ctx_turns += result.turns
+                tacc.cost += result.cost
 
         if tr.meta.kind == "top-level" and snapshot_window is not None:
             observed_cost = results_by_window[None].cost
@@ -847,6 +894,36 @@ class CompactionSimStats:
             )
         return out
 
+    def by_task(self) -> dict[str, CompactionSimTypeStats]:
+        """EST-P8: every reported task's best candidate window, same shape
+        as :meth:`by_key`, keyed by task instead of agent type -- a task
+        appears only once at least :data:`MIN_TASK_SESSIONS` main sessions
+        reported it."""
+        out: dict[str, CompactionSimTypeStats] = {}
+        for task in sorted(self._sessions_by_task):
+            sessions = self._sessions_by_task[task]
+            if sessions < MIN_TASK_SESSIONS:
+                continue
+            observed_acc = self._task_acc.get((task, None))
+            observed_cost = observed_acc.cost if observed_acc else 0.0
+            best_window: int | None = None
+            best_cost: float | None = None
+            for window in CANDIDATE_WINDOWS:
+                acc = self._task_acc.get((task, window))
+                if acc is None:
+                    continue
+                if best_cost is None or acc.cost < best_cost:
+                    best_cost = acc.cost
+                    best_window = window
+            out[task] = CompactionSimTypeStats(
+                key=task,
+                sessions=sessions,
+                observed_cost=observed_cost,
+                best_window=best_window,
+                best_cost=best_cost if best_cost is not None else observed_cost,
+            )
+        return out
+
     @property
     def fidelity_rows(self) -> list[CompactionSimFidelityRow]:
         return list(self._fidelity_rows)
@@ -907,7 +984,8 @@ def build_section(
     """Render a :class:`CompactionSimStats` roll-up as the report's
     "Compaction-window sweep" section: ``compaction_sim_by_window``
     (top-level sessions only), ``compaction_sim_by_agent_type`` (every
-    key's best window, top-level and subagent), and
+    key's best window, top-level and subagent), ``compaction_sim_by_task``
+    (every reported task's best window, main sessions only, EST-P8), and
     ``compaction_sim_fidelity`` (top-level sessions with a known
     configured window). Notes print :data:`ASSUMPTIONS` verbatim, the
     summary size, trigger reserve, cached share and rediscovery allowance
@@ -979,6 +1057,41 @@ def build_section(
             for key, row in sorted(by_key.items())
         ],
         notes=(["No transcripts with priced turns in this corpus."] if not by_key else []),
+    )
+
+    by_task_columns = [
+        Column(key="task", label="Kind of task", kind="str"),
+        Column(key="sessions", label="Sessions", kind="int"),
+        Column(key="observed_cost", label="Observed cost", kind="money"),
+        Column(key="best_window", label="Best window", kind="str"),
+        Column(key="best_cost", label="Best cost", kind="money"),
+        Column(key="saving_usd", label="Saving if switched (USD, 0 floor)", kind="money"),
+        Column(key="delta_pct", label="Delta at best window (%, negative = cheaper)", kind="pct"),
+        Column(key="recommendation", label="Recommendation", kind="str"),
+    ]
+    by_task = stats.by_task()
+    by_task_table = Table(
+        name="compaction_sim_by_task",
+        title="Compaction-window sweep: best window by kind of task",
+        columns=by_task_columns,
+        rows=[
+            [
+                task,
+                row.sessions,
+                row.observed_cost,
+                _window_label(row.best_window),
+                row.best_cost,
+                row.saving_usd,
+                row.delta_pct,
+                row.recommendation(th),
+            ]
+            for task, row in sorted(by_task.items())
+        ],
+        notes=(
+            [f"No kind of task reported by at least {MIN_TASK_SESSIONS} main sessions in this corpus."]
+            if not by_task
+            else []
+        ),
     )
 
     fidelity_columns = [
@@ -1062,7 +1175,7 @@ def build_section(
     return Section(
         key="compaction_sim",
         title="Compaction-window sweep",
-        tables=[by_window_table, by_type_table, fidelity_table],
+        tables=[by_window_table, by_type_table, by_task_table, fidelity_table],
         notes=notes,
     )
 

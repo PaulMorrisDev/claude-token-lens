@@ -15,9 +15,9 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from claude_token_lens import capture_catalogue as catalogue, habits, parse
+from claude_token_lens import capture as capture_mod, capture_catalogue as catalogue, habits, parse
 from claude_token_lens.habits import AgentFact, CycleFact, Habits, Item, Piece
-from claude_token_lens.model import CaptureTag, TranscriptMeta
+from claude_token_lens.model import CaptureTag, Recommendation, TranscriptMeta
 from claude_token_lens.parse import parse_transcript
 from claude_token_lens.pricing import load_pricing
 
@@ -608,6 +608,19 @@ def test_the_capture_section_says_what_capture_cost_and_since_when(tmp_path, pri
     assert off["level"] == catalogue.LEVEL_TITLES["off"] and off["since"] == ""
 
 
+def test_the_capture_section_reports_sessions_with_notes_and_after_compact_cost(tmp_path, pricing):
+    """SURV-3/8: the capture_usage table passes ``capture.usage``'s
+    ``sessions``/``after_compact_notes``/``after_compact_cost`` straight
+    through -- ``_tagged_session`` has one captured main session and no
+    compact boundary, so there's nothing after one yet."""
+    config = NS(level="standard", enabled_at="2026-09-01T08:00:00+00:00")
+    section = habits.capture_section(_tagged_session(tmp_path), pricing, config)
+    rows = dict(_table(section, "capture_usage").rows)
+    assert rows["sessions_with_notes"] == 1
+    assert rows["after_compact_notes"] == 0
+    assert rows["after_compact_cost"] == 0.0
+
+
 def _tagged_session_with_attempted_leaks(tmp_path):
     """Same shape as ``_tagged_session``, plus a prompt naming a real
     path/secret and a tag trying to smuggle a skill name the transcript
@@ -679,6 +692,162 @@ def test_the_capture_section_prices_nothing_when_capture_never_started(pricing):
     off = habits.capture_section(NS(sessions=[]), pricing, NS(level="off", enabled_at=""))
     rows = dict(_table(off, "capture_usage").rows)
     assert rows["weekly_cost"] is None and rows["habit_value"] is None
+    assert rows["held_back"] == 0
+
+
+# -- CAP-5: a derived fallback for check -------------------------------------
+
+
+def test_targeted_checks_prices_unchecked_redone_work_from_self_reports():
+    h = Habits(cycles=[
+        *(_cycle(tag=CaptureTag(check="none"), redone=True, redo_cost=2.0) for _ in range(3)),
+        *(_cycle(tag=CaptureTag(check="targeted")) for _ in range(2)),
+    ])
+    item = habits._item_targeted_checks(h)
+    assert item is not None
+    assert item.n == 5
+    assert item.saving == pytest.approx(3 * 0.5 * 2.0)
+    assert item.sources == ("reported",)
+
+
+def test_targeted_checks_counts_a_test_command_as_derived_evidence_without_a_tag():
+    h = Habits(cycles=[
+        *(_cycle(tag=CaptureTag(check="none"), redone=True, redo_cost=2.0) for _ in range(3)),
+        *(_cycle(checked_by_tool=True) for _ in range(2)),  # no tag at all
+    ])
+    item = habits._item_targeted_checks(h)
+    assert item is not None
+    # The derived-only cycles widen the evidence base (n) even though
+    # they can't be "unchecked" (there's no deriving that from a missing
+    # command), so the priced saving is unchanged.
+    assert item.n == 5
+    assert item.sources == ("reported", "inferred")
+    assert item.saving == pytest.approx(3 * 0.5 * 2.0)
+
+
+def test_targeted_checks_does_not_blame_a_report_a_test_command_contradicts():
+    h = Habits(cycles=[
+        # Said "none" but a test command ran anyway -- CAP-6-adjacent
+        # contradiction, and not really unchecked, so no waste to price.
+        *(_cycle(tag=CaptureTag(check="none"), redone=True, redo_cost=2.0, checked_by_tool=True) for _ in range(5)),
+    ])
+    assert habits._item_targeted_checks(h) is None
+
+
+# -- EST-P7 + CAP-3: what capture buys in recommend() -----------------------
+
+
+def _rec(id: str, saving_usd: float | None, agent_type: str | None = None, lever: str | None = None) -> Recommendation:
+    return Recommendation(id=id, agent_type=agent_type, lever=lever, saving_usd=saving_usd)
+
+
+def test_capture_recommend_delta_counts_what_appears_or_grows_and_vetoes_the_rest():
+    without = [
+        _rec("effort-mismatch", 5.0, agent_type="reviewer"),
+        _rec("only-without-habits", 2.0),
+    ]
+    with_ = [
+        _rec("effort-mismatch", 8.0, agent_type="reviewer"),  # grows: +3
+        _rec("only-with-habits", 3.0),  # appears: +3
+    ]
+    grown, vetoed = habits.capture_recommend_delta(with_, without)
+    assert grown[("effort-mismatch", "reviewer", None)] == pytest.approx(3.0)
+    assert grown[("only-with-habits", None, None)] == pytest.approx(3.0)
+    assert [r.id for r in vetoed] == ["only-without-habits"]
+
+
+def test_capture_recommend_delta_ignores_a_recommendation_that_shrinks():
+    without = [_rec("effort-mismatch", 8.0)]
+    with_ = [_rec("effort-mismatch", 5.0)]  # capture's evidence made it look smaller, not bigger
+    grown, vetoed = habits.capture_recommend_delta(with_, without)
+    assert grown == {}
+    assert vetoed == []
+
+
+def test_capture_value_breakdown_dedups_through_the_closed_map_taking_the_larger_figure():
+    # The playbook item's own saving (10) beats what recommend() grows by
+    # (4) for the SAME waste (effort_fit <-> effort-mismatch, CAP-3) --
+    # taking the larger figure, never the sum (10 + 4).
+    items = [Item(key="effort_fit", saving=10.0, n=5, sources=("reported",), evidence="e")]
+    with_ = [_rec("effort-mismatch", 4.0)]
+    breakdown = habits.capture_value_breakdown(items, with_, without_habits=[])
+    assert breakdown["usd"] == pytest.approx(10.0)
+    assert breakdown["held_back"] == 0
+
+    # The other way around: recommend()'s grown figure (40) beats the
+    # item's own saving (10).
+    with_bigger = [_rec("effort-mismatch", 40.0)]
+    breakdown_bigger = habits.capture_value_breakdown(items, with_bigger, without_habits=[])
+    assert breakdown_bigger["usd"] == pytest.approx(40.0)
+
+
+def test_capture_value_breakdown_adds_unclaimed_recommend_value_in_full():
+    # effort_fit dedups against effort-mismatch (max(2*0.5, 1.0) == 1.0);
+    # ttl-switch has no playbook counterpart in the closed map, so it's
+    # added in full rather than dropped or weighted.
+    items = [Item(key="effort_fit", saving=2.0, n=5, sources=("reported",), evidence="e", reported_share=0.5)]
+    with_ = [_rec("effort-mismatch", 1.0), _rec("ttl-switch", 6.0, agent_type="reviewer", lever="ttl")]
+    breakdown = habits.capture_value_breakdown(items, with_, without_habits=[])
+    assert breakdown["usd"] == pytest.approx(7.0)
+
+
+def test_capture_value_breakdown_holds_back_vetoes_without_pricing_them():
+    items = []
+    without = [_rec("only-without-habits", 9.0)]
+    breakdown = habits.capture_value_breakdown(items, with_habits=[], without_habits=without)
+    assert breakdown["usd"] == pytest.approx(0.0)
+    assert breakdown["held_back"] == 1
+
+
+def test_capture_value_breakdown_skips_items_with_no_reported_share():
+    # Finding A3: an item whose saving is entirely inferred (reported_share
+    # 0.0) shouldn't be counted as something capture is buying.
+    items = [Item(key="skill_early", saving=5.0, n=5, sources=("inferred",), evidence="e", reported_share=0.0)]
+    breakdown = habits.capture_value_breakdown(items, with_habits=[], without_habits=[])
+    assert breakdown["usd"] == pytest.approx(0.0)
+
+
+def test_capture_dependent_value_normalises_per_week_since_enabled(pricing):
+    h = Habits(cycles=[_cycle(week=w) for w in WEEKS])
+    items = [Item(key="effort_fit", saving=14.0, n=5, sources=("reported",), evidence="e")]
+    since = "2026-08-10T00:00:00+00:00"
+    value = habits.capture_dependent_value(h, items, with_habits=[], without_habits=[], since=since)
+    # weeks_since uses the real wall clock by default, so assert
+    # consistency with the same helper rather than a hand-picked number --
+    # the fallback to h.span_weeks is covered by the "no since" test below.
+    expected_weeks = capture_mod.weeks_since(since) or h.span_weeks
+    assert value == pytest.approx(14.0 / expected_weeks)
+
+
+def test_capture_dependent_value_falls_back_to_span_weeks_without_since():
+    h = Habits(cycles=[_cycle(week=w) for w in WEEKS])
+    items = [Item(key="effort_fit", saving=14.0, n=5, sources=("reported",), evidence="e")]
+    value = habits.capture_dependent_value(h, items, with_habits=[], without_habits=[], since="")
+    assert value == pytest.approx(14.0 / h.span_weeks)
+
+
+def test_capture_dependent_value_none_when_nothing_depends_on_capture_or_recommend():
+    h = Habits(cycles=[_cycle(week=w) for w in WEEKS])
+    items = [Item(key="effort_fit", saving=14.0, n=5, sources=("inferred",), evidence="e", reported_share=0.0)]
+    assert habits.capture_dependent_value(h, items, with_habits=[], without_habits=[]) is None
+
+
+def test_patch_capture_recommend_value_folds_the_diff_into_the_table(pricing):
+    config = NS(level="standard", enabled_at="")
+    corpus = NS(sessions=[])
+    section = habits.capture_section(corpus, pricing, config)
+    without = [_rec("only-without-habits", 5.0)]
+    with_ = [_rec("only-with-habits", 12.0)]
+    patched = habits.patch_capture_recommend_value(
+        section, corpus, pricing, config, with_habits=with_, without_habits=without,
+    )
+    table = _table(patched, "capture_usage")
+    rows = dict(table.rows)
+    assert rows["held_back"] == 1
+    # No cycles in this corpus, so Habits.span_weeks falls back to 1.0.
+    assert rows["habit_value"] == pytest.approx(12.0)
+    assert any("held back 1 recommendation" in note for note in table.notes)
+    assert "Nothing measured yet" not in " ".join(table.notes)
 
 
 # -- Claude's reports against your feedback --------------------------------------
@@ -761,6 +930,93 @@ def test_feedback_that_contradicts_easy_reports_lowers_effort_fits_confidence():
 
 def test_confidence_ignores_self_report_calibration_for_other_habits():
     assert habits.confidence(Item("tool_loops", None, 20, ("inferred",), ""), self_report_ok=False) == "medium"
+
+
+# -- CAP-6: a consistency score for self-reports -----------------------------
+
+
+def test_auc_reads_perfect_backwards_and_undefined_discrimination():
+    assert habits._auc([0, 0, 1, 1], [False, False, True, True]) == pytest.approx(1.0)
+    assert habits._auc([1, 1, 0, 0], [False, False, True, True]) == pytest.approx(0.0)
+    assert habits._auc([0, 1, 0, 1], [False, True, True, False]) == pytest.approx(0.5)
+    assert habits._auc([1, 1], [True, True]) is None  # no negative class to discriminate from
+
+
+def test_d_level_is_positive_when_harder_self_reports_track_more_misses():
+    h = Habits(cycles=[
+        *(_cycle(tag=CaptureTag(level="easy"), outcome="met") for _ in range(4)),
+        _cycle(tag=CaptureTag(level="easy"), outcome="missed"),
+        *(_cycle(tag=CaptureTag(level="hard"), outcome="missed") for _ in range(4)),
+        _cycle(tag=CaptureTag(level="hard"), outcome="met"),
+    ])
+    assert habits.d_level(h) > 0
+
+
+def test_d_level_is_negative_when_self_reports_run_backwards():
+    h = Habits(cycles=[
+        *(_cycle(tag=CaptureTag(level="easy"), outcome="missed") for _ in range(4)),
+        _cycle(tag=CaptureTag(level="easy"), outcome="met"),
+        *(_cycle(tag=CaptureTag(level="hard"), outcome="met") for _ in range(4)),
+        _cycle(tag=CaptureTag(level="hard"), outcome="missed"),
+    ])
+    assert habits.d_level(h) < 0
+
+
+def test_d_level_none_under_min_group():
+    h = Habits(cycles=[_cycle(tag=CaptureTag(level="easy"), outcome="missed") for _ in range(4)])
+    assert habits.d_level(h) is None
+
+
+def test_brief_clarity_index_is_positive_when_vaguer_briefs_track_more_misses():
+    h = Habits(cycles=[
+        *(_cycle(tag=CaptureTag(brief="clear"), outcome="met") for _ in range(4)),
+        _cycle(tag=CaptureTag(brief="clear"), outcome="missed"),
+        *(_cycle(tag=CaptureTag(brief="vague"), outcome="missed") for _ in range(4)),
+        _cycle(tag=CaptureTag(brief="vague"), outcome="met"),
+    ])
+    assert habits.brief_clarity_index(h) > 0
+
+
+def test_effort_percentiles_rank_within_reported_task_only():
+    a1 = _cycle(tag=CaptureTag(task="bugfix"), cost=1.0)
+    a2 = _cycle(tag=CaptureTag(task="bugfix"), cost=2.0)
+    a3 = _cycle(tag=CaptureTag(task="bugfix"), cost=3.0)
+    solo = _cycle(tag=CaptureTag(task="docs"), cost=5.0)  # the only "docs" cycle -- nothing to rank it against
+    h = Habits(cycles=[a1, a2, a3, solo])
+    pcts = habits._effort_percentiles(h)
+    assert pcts[id(a1)] == 0.0 and pcts[id(a3)] == 1.0 and pcts[id(a2)] == pytest.approx(0.5)
+    assert id(solo) not in pcts
+
+
+def test_contradiction_flags_counts_checked_and_effort_contradictions():
+    h = Habits(cycles=[
+        *(_cycle(tag=CaptureTag(check="none"), checked_by_tool=True) for _ in range(3)),
+        _cycle(tag=CaptureTag(task="bugfix", level="easy"), cost=10.0),
+        *(_cycle(tag=CaptureTag(task="bugfix", level="normal"), cost=1.0) for _ in range(3)),
+    ])
+    flags = habits.contradiction_flags(h)
+    assert flags["checked_contradicted"] == 3
+    assert flags["easy_high_effort"] == 1  # the easy-tagged message is by far the priciest of its task
+
+
+def test_self_report_calibration_carries_the_cap_6_fields_and_flips_on_a_frequent_contradiction():
+    # Neither easy-vs-normal nor d_level alone would flag this corpus --
+    # only a frequent, concrete contradiction does (>= MIN_GROUP times).
+    checked = [
+        _cycle(tag=CaptureTag(level="normal", check="none"), checked_by_tool=True, outcome="met")
+        for _ in range(5)
+    ]
+    easy = [_cycle(tag=CaptureTag(level="easy"), outcome="met") for _ in range(5)]
+    h = Habits(cycles=[*checked, *easy])
+    calibration = habits._self_report_calibration(h)
+    assert calibration is not None
+    assert calibration["contradiction_flags"]["checked_contradicted"] == 5
+    assert calibration["contradicts"] is True
+    # Nobody missed a goal in this fixture, so there's no positive class
+    # for d_level's AUC to discriminate -- None, not a division error.
+    assert calibration["d_level"] is None
+    note = habits._self_report_note(h)
+    assert "5 times it said a change was unchecked but a test command ran anyway" in note
 
 
 # -- the best setup per kind of task -----------------------------------------------

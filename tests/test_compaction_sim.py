@@ -346,7 +346,12 @@ def test_build_section_tables_and_notes():
 
     assert section.key == "compaction_sim"
     names = [t.name for t in section.tables]
-    assert names == ["compaction_sim_by_window", "compaction_sim_by_agent_type", "compaction_sim_fidelity"]
+    assert names == [
+        "compaction_sim_by_window",
+        "compaction_sim_by_agent_type",
+        "compaction_sim_by_task",
+        "compaction_sim_fidelity",
+    ]
 
     by_window = next(t for t in section.tables if t.name == "compaction_sim_by_window")
     assert [row[0] for row in by_window.rows] == [
@@ -381,6 +386,127 @@ def test_build_section_empty_corpus_notes_instead_of_crashing():
     by_window = next(t for t in section.tables if t.name == "compaction_sim_by_window")
     assert by_window.rows == []
     assert by_window.notes
+
+
+# -- EST-P8: per-task compaction aggregate -----------------------------------
+
+
+def _tag_task(turns: list[model.Turn], task: str) -> list[model.Turn]:
+    """Give every turn the same self-reported ``task=`` tag: guarantees
+    ``_reported_task``'s majority-of-tagged-turns gate regardless of how
+    many turns a transcript has."""
+    return [replace(t, cap=model.CaptureTag(task=task, has_tl=True)) for t in turns]
+
+
+def test_by_task_needs_min_task_sessions_before_it_reports_a_task():
+    """A task reported by fewer than MIN_TASK_SESSIONS main sessions is
+    tallied but never surfaced -- same "small group" gate as
+    habits.MIN_GROUP (kept local to this module; see MIN_TASK_SESSIONS's
+    docstring)."""
+    from claude_token_lens.compaction_sim import MIN_TASK_SESSIONS
+
+    results = [
+        _top_level_transcript(f"sess-{i}", _tag_task(_synthetic_20_turn_transcript(), "review"))
+        for i in range(MIN_TASK_SESSIONS - 1)
+    ]
+    stats = simulate_compaction_windows(results, SONNET_RATES, {})
+    assert stats.by_task() == {}
+
+
+def test_by_task_reports_once_min_task_sessions_is_reached():
+    from claude_token_lens.compaction_sim import MIN_TASK_SESSIONS
+
+    results = [
+        _top_level_transcript(f"sess-{i}", _tag_task(_synthetic_20_turn_transcript(), "review"))
+        for i in range(MIN_TASK_SESSIONS)
+    ]
+    stats = simulate_compaction_windows(results, SONNET_RATES, {})
+    by_task = stats.by_task()
+    assert set(by_task) == {"review"}
+    row = by_task["review"]
+    assert row.sessions == MIN_TASK_SESSIONS
+    # Every session here is a main session, all tagged "review", so the
+    # per-task roll-up must land on the same cheapest window and costs as
+    # the equivalent by_key() roll-up for "top-level".
+    by_key = stats.by_key()
+    assert row.best_window == by_key["top-level"].best_window
+    assert row.observed_cost == pytest.approx(by_key["top-level"].observed_cost)
+    assert row.best_cost == pytest.approx(by_key["top-level"].best_cost)
+
+
+def test_by_task_ignores_subagent_transcripts():
+    """A subagent run's ``cap.task`` is never tallied: task aggregation is
+    restricted to main sessions in ``add_transcript`` (a subagent has no
+    self-reported "kind of task" of its own)."""
+    from claude_token_lens.compaction_sim import MIN_TASK_SESSIONS
+
+    results = [
+        TranscriptResult(
+            meta=TranscriptMeta(kind="subagent", agent_type="Explore"),
+            turns=_tag_task(_synthetic_20_turn_transcript(), "review"),
+        )
+        for _ in range(MIN_TASK_SESSIONS)
+    ]
+    stats = simulate_compaction_windows(results, SONNET_RATES, {})
+    assert stats.by_task() == {}
+
+
+def test_by_task_ignores_a_session_with_fewer_than_two_tagged_turns():
+    """A single tagged turn never counts toward any task -- mirrors
+    ``classify.reported_task``'s own ``len(tasks) < 2`` gate exactly."""
+    from claude_token_lens.compaction_sim import MIN_TASK_SESSIONS
+
+    results = []
+    for i in range(MIN_TASK_SESSIONS):
+        turns = _synthetic_20_turn_transcript()
+        turns[0] = replace(turns[0], cap=model.CaptureTag(task="review", has_tl=True))
+        results.append(_top_level_transcript(f"sess-{i}", turns))
+    stats = simulate_compaction_windows(results, SONNET_RATES, {})
+    assert stats.by_task() == {}
+
+
+def test_by_task_ignores_a_session_with_no_majority_task():
+    """Three tagged turns split three ways never reaches "at least half,
+    twice or more" for any one task -- mirrors ``classify.reported_task``'s
+    own majority gate exactly."""
+    from claude_token_lens.compaction_sim import MIN_TASK_SESSIONS
+
+    results = []
+    for i in range(MIN_TASK_SESSIONS):
+        turns = _synthetic_20_turn_transcript()
+        turns[0] = replace(turns[0], cap=model.CaptureTag(task="review", has_tl=True))
+        turns[1] = replace(turns[1], cap=model.CaptureTag(task="test-triage", has_tl=True))
+        turns[2] = replace(turns[2], cap=model.CaptureTag(task="planning", has_tl=True))
+        results.append(_top_level_transcript(f"sess-{i}", turns))
+    stats = simulate_compaction_windows(results, SONNET_RATES, {})
+    assert stats.by_task() == {}
+
+
+def test_build_section_by_task_table_renders_rows_and_recommendation():
+    from claude_token_lens.compaction_sim import MIN_TASK_SESSIONS
+
+    results = [
+        _top_level_transcript(f"sess-{i}", _tag_task(_synthetic_20_turn_transcript(), "review"))
+        for i in range(MIN_TASK_SESSIONS)
+    ]
+    stats = simulate_compaction_windows(results, SONNET_RATES, {})
+    section = build_section(stats)
+    by_task = next(t for t in section.tables if t.name == "compaction_sim_by_task")
+    assert [row[0] for row in by_task.rows] == ["review"]
+    row = dict(zip([c.key for c in by_task.columns], by_task.rows[0]))
+    assert row["sessions"] == MIN_TASK_SESSIONS
+    assert row["recommendation"]
+    assert_privacy(section)
+
+
+def test_build_section_by_task_table_notes_when_no_task_clears_the_gate():
+    turns = _synthetic_20_turn_transcript()
+    tr = _top_level_transcript("sess-synthetic", turns)
+    stats = simulate_compaction_windows([tr], SONNET_RATES, {})
+    section = build_section(stats)
+    by_task = next(t for t in section.tables if t.name == "compaction_sim_by_task")
+    assert by_task.rows == []
+    assert by_task.notes
 
 
 # -- thresholds -------------------------------------------------------------

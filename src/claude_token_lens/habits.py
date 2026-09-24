@@ -37,14 +37,15 @@ from __future__ import annotations
 import bisect
 import statistics
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
 from . import capture as capture_mod
 from . import capture_catalogue as catalogue
+from . import classify
 from .context_files import _parse_ts
-from .model import PROMPT_FLAGS, Column, EventKind, Feedback, Section, Table, Turn
+from .model import PROMPT_FLAGS, Column, EventKind, Feedback, Recommendation, Section, Table, Turn
 from .pricing import Pricing, effective_rates, price_turn
 from .topology import agent_key
 
@@ -96,6 +97,10 @@ LARGE_TURNS = 60
 LATE_SKILL_TURNS = 3
 #: How many messages a comparison group needs before it counts.
 MIN_GROUP = 5
+#: CAP-6: a message reported ``level=easy`` whose cost lands at or above
+#: this percentile among same-``task`` messages is flagged as an effort
+#: contradiction (:func:`contradiction_flags`'s ``easy_high_effort``).
+EASY_HIGH_EFFORT_PCT = 0.75
 #: Points of "went well" a cheaper setup may give up against your usual
 #: one and still count as doing as well.
 SETUP_OK_TOLERANCE = 5.0
@@ -507,6 +512,11 @@ class CycleFact:
     #: Your next message redid this work (``shift=redo``) or corrected it.
     redone: bool = False
     redo_cost: float = 0.0
+    #: CAP-5: derived fallback for ``tag.check`` -- a test-runner command
+    #: (``classify._matches_test_tool``'s closed prefix set, the same one
+    #: ``classify_purpose`` uses) ran during this message, whether or not
+    #: Claude also self-reported ``check=``.
+    checked_by_tool: bool = False
     output_cost: float = 0.0
     thinking_cost: float = 0.0
     #: Your feedback on the work this message belongs to, and where it
@@ -767,6 +777,8 @@ def _cycle_fact(session_id, cycle, carry: _CarryCost, index_of, rates: _Rates, b
             fact.plan_cost = sum(carry.costs[j] for j in idx[: n + 1])
         if _shell_failed(turn):
             failing.setdefault(turn.cmd_prefix, []).append(i)
+        if turn.cmd_prefix and "Bash" in turn.tool_names and classify._matches_test_tool(turn.cmd_prefix):
+            fact.checked_by_tool = True
         by_you = set(first.commands_run)
         for name in turn.skills_invoked:
             fact.skill_calls.append((name, name in by_you, n, sum(carry.costs[j] for j in idx[:n])))
@@ -909,6 +921,16 @@ class Item:
     example: str = ""
     #: week -> USD the habit addresses, for the trend.
     waste: dict = field(default_factory=dict)
+    #: EST-P7: the share of ``saving`` that comes from a ``reported`` or
+    #: ``your feedback`` row, rather than one merely inferred from the
+    #: transcript's shape -- 1.0 when every dollar needs capture (or your
+    #: feedback) to exist, 0.0 when none of it does, and something
+    #: between for an item whose evidence is a genuine mix. Unlike
+    #: ``sources`` (which only says *whether* a source is present),
+    #: this says *how much of the dollar figure* depends on it, so
+    #: ``capture_dependent_value`` can weight instead of gating
+    #: all-or-nothing (A3).
+    reported_share: float = 1.0
 
     @property
     def source(self) -> str:
@@ -961,9 +983,11 @@ def _item_split_large(h: Habits) -> Item | None:
     redone = sum(1 for c, _ in big if c.redone)
     if redone:
         parts.append(f"{redone} had to be redone")
+    reported_saving = sum(0.5 * c.growth_cost for c, r in big if r)
     return Item(
         "split_large", saving, len(big), _sources(any(r for _, r in big), any(not r for _, r in big)),
         "; ".join(parts) + ".", waste=_by_week((c.week, 0.5 * c.growth_cost) for c, _ in big),
+        reported_share=reported_saving / saving if saving else 0.0,
     )
 
 
@@ -976,12 +1000,14 @@ def _item_batch_small(h: Habits) -> Item | None:
     if not extra or saving <= 0:
         return None
     week_of = {c.session_id: c.week for c in h.cycles}
+    reported_saving = sum(entry[3] for entry in extra if entry[4])
     return Item(
         "batch_small", saving, len(h.small_sessions),
         _sources(any(e[4] for e in extra), any(not e[4] for e in extra)),
         f"{len(h.small_sessions)} sessions were one small ask each; {len(extra)} times you started another "
         "the same day in the same project, paying the start-up cost again.",
         waste=_by_week((week_of.get(e[0], ""), e[3]) for e in extra),
+        reported_share=reported_saving / saving if saving else 0.0,
     )
 
 
@@ -1011,9 +1037,11 @@ def _item_clear_between(h: Habits) -> Item | None:
             f"{len(inferred)} messages came after a break of over an hour with about {_k(avg)} tokens of earlier "
             "work, which the first reply wrote to the cache again"
         )
+    reported_saving = sum(usd for _, usd in reported)
     return Item(
         "clear_between", saving, len(found), _sources(bool(reported), bool(inferred)),
         "; ".join(parts) + ".", waste=_by_week((c.week, usd) for c, usd in found),
+        reported_share=reported_saving / saving if saving else 0.0,
     )
 
 
@@ -1076,6 +1104,7 @@ def _item_name_files(h: Habits) -> Item | None:
         f"Asks that named a file ran {reads_named:.1f} reads and searches on average; the {len(unnamed)} that "
         f"didn't ran {reads_unnamed:.1f}.",
         waste=_by_week((c.week, usd) for c, usd in gaps),
+        reported_share=0.0,
     )
 
 
@@ -1095,6 +1124,7 @@ def _item_paste_errors(h: Habits) -> Item | None:
         f"{len(without)} bug reports came without the error or its output; they cost {avg_without / avg_with:.1f}x "
         "the ones that had it.",
         waste=_by_week((c.week, usd) for c, usd in gaps),
+        reported_share=0.5,
     )
 
 
@@ -1108,12 +1138,18 @@ def _item_explore_research(h: Habits) -> Item | None:
         return None
     parts = [f"{len(heavy)} asks ran {_mean(c.reads for c in heavy):.0f} reads and searches in the main session on "
              "average, with no Explore agent"]
-    not_found = sum(1 for c in h.cycles if c.tag is not None and c.tag.found == "no")
+    # CAP-5: found=no|partial on one of these *heavy* cycles is direct
+    # evidence its reading didn't pay off, so it -- not an unrelated count
+    # over the whole corpus (A4) -- decides which dollars of ``saving``
+    # count as reported.
+    confirmed = sum(usd for c, usd in gaps if c.tag is not None and c.tag.found in ("no", "partial"))
+    not_found = sum(1 for c in heavy if c.tag is not None and c.tag.found == "no")
     if not_found:
         parts.append(f"Claude said it didn't find what it looked for {not_found} times")
     return Item(
-        "explore_research", saving, len(heavy), _sources(bool(not_found), True), "; ".join(parts) + ".",
+        "explore_research", saving, len(heavy), _sources(confirmed > 0, confirmed < saving), "; ".join(parts) + ".",
         waste=_by_week((c.week, usd) for c, usd in gaps),
+        reported_share=confirmed / saving if saving else 0.0,
     )
 
 
@@ -1134,7 +1170,7 @@ def _item_plan_hard(h: Habits) -> Item | None:
         text += f", against {rate_p:.0%} of the {len(planned)} planned ones"
     return Item(
         "plan_hard", sum(usd for _, usd in redos), len(unplanned), ("reported", "inferred"), text + ".",
-        waste=_by_week((c.week, usd) for c, usd in redos),
+        waste=_by_week((c.week, usd) for c, usd in redos), reported_share=0.5,
     )
 
 
@@ -1145,7 +1181,7 @@ def _item_skip_plan_easy(h: Habits) -> Item | None:
     return Item(
         "skip_plan_easy", sum(c.plan_cost for c in easy), len(easy), ("reported", "inferred"),
         f"{len(easy)} easy asks went through plan mode first.",
-        waste=_by_week((c.week, c.plan_cost) for c in easy),
+        waste=_by_week((c.week, c.plan_cost) for c in easy), reported_share=0.5,
     )
 
 
@@ -1173,9 +1209,14 @@ def _item_skill_early(h: Habits) -> Item | None:
     if top:
         parts.append(f"most often {top}")
     saving = sum(0.5 * before for _, _, before in late)
+    # ``saving`` is built entirely from ``late`` (inferred: Claude reached
+    # for a skill only after many replies); ``would_help`` (reported) only
+    # adds to ``n`` and the evidence text, so it contributes no dollars --
+    # the same disconnect CAP-5 fixes for explore_research (A4).
     return Item(
         "skill_early", saving or None, len(late) + would_help, _sources(bool(would_help), bool(late)),
         "; ".join(parts) + ".", example=example, waste=_by_week((c.week, 0.5 * before) for c, _, before in late),
+        reported_share=0.0,
     )
 
 
@@ -1205,7 +1246,8 @@ def _item_short_reports(h: Habits) -> Item | None:
     if capped is not None:
         text += f"; {capped:.0f}% of briefs asked for a short one"
     return Item(
-        "short_reports", saving, len(long), ("inferred",), text + ".", waste=_by_week((a.week, usd) for a, usd in gaps)
+        "short_reports", saving, len(long), ("inferred",), text + ".", waste=_by_week((a.week, usd) for a, usd in gaps),
+        reported_share=0.0,
     )
 
 
@@ -1250,6 +1292,7 @@ def _item_flatten_nesting(h: Habits) -> Item | None:
     return Item(
         "flatten_nesting", saving or None, sum(a.overlap_reads for a in overlap) + len(nested), ("inferred",),
         body[:1].upper() + body[1:] + ".", waste=_by_week((a.week, a.overlap_cost) for a in overlap),
+        reported_share=0.0,
     )
 
 
@@ -1264,11 +1307,13 @@ def _item_quiet_output(h: Habits) -> Item | None:
     if not found or saving <= 0:
         return None
     tool = Counter(f[1] for f in found).most_common(1)[0][0]
+    reported_saving = sum(f[3] for f in found if f[4])
     return Item(
         "quiet_output", saving, len(found), _sources(any(f[4] for f in found), True),
         f"{len(found)} tool outputs of {_k(BIG_OUTPUT_TOKENS)} tokens or more, mostly from {tool}, stayed in context "
         "for the rest of the work.",
         waste=_by_week((f[0].week, f[3]) for f in found),
+        reported_share=reported_saving / saving if saving else 0.0,
     )
 
 
@@ -1282,15 +1327,23 @@ def _item_tool_loops(h: Habits) -> Item | None:
         "tool_loops", saving, loops, ("inferred",),
         f"A command failed {LOOP_FAILURES} or more times within one message {loops} times.",
         waste=_by_week((c.week, c.loop_cost) for c in looping),
+        reported_share=0.0,
     )
 
 
 def _item_targeted_checks(h: Habits) -> Item | None:
-    checked = [c for c in h.cycles if c.tag is not None and c.tag.check]
+    # CAP-5: derive a fallback for ``check`` -- a test-runner command
+    # actually running (``checked_by_tool``, from the same closed prefix
+    # set ``classify_purpose`` uses) is evidence a message was checked
+    # even without a ``[tl: check=...]`` tag, and stronger evidence than
+    # one that contradicts it (said "none" but ran a test anyway).
+    reported_checked = [c for c in h.cycles if c.tag is not None and c.tag.check]
+    inferred_checked = [c for c in h.cycles if c.checked_by_tool]
+    checked = list({id(c): c for c in (*reported_checked, *inferred_checked)}.values())
     if len(checked) < MIN_GROUP:
         return None
-    unchecked = [c for c in checked if c.tag.check == "none"]
-    full = [c for c in checked if c.tag.check == "full"]
+    unchecked = [c for c in checked if c.tag is not None and c.tag.check == "none" and not c.checked_by_tool]
+    full = [c for c in checked if c.tag is not None and c.tag.check == "full"]
     redone = [c for c in unchecked if c.redone]
     if not redone and len(full) < MIN_GROUP:
         return None
@@ -1299,9 +1352,17 @@ def _item_targeted_checks(h: Habits) -> Item | None:
         parts.append(f"{len(unchecked)} changes weren't checked and {len(redone)} of them were redone")
     if full:
         parts.append(f"{len(full)} ran the full suite")
+    contradicted = sum(1 for c in reported_checked if c.tag.check == "none" and c.checked_by_tool)
+    if contradicted:
+        parts.append(f"{contradicted} said unchecked but a test command ran anyway")
     body = "; ".join(parts)
+    # Every dollar of saving is earned by an *unchecked, redone* cycle,
+    # which needs the tag (there's no deriving "unchecked" from a
+    # command's absence) -- the derived signal only widens `n`/evidence,
+    # so it stays fully reported.
     return Item(
-        "targeted_checks", sum(0.5 * c.redo_cost for c in redone) or None, len(checked), ("reported",),
+        "targeted_checks", sum(0.5 * c.redo_cost for c in redone) or None, len(checked),
+        _sources(bool(reported_checked), bool(inferred_checked)),
         body[:1].upper() + body[1:] + ".", waste=_by_week((c.week, 0.5 * c.redo_cost) for c in redone),
     )
 
@@ -1322,6 +1383,7 @@ def _item_allow_routine(h: Habits) -> Item | None:
     return Item(
         "allow_routine", sum(c.blocked_cost for c in blocked) or None, prompts + count, ("inferred",),
         body[:1].upper() + body[1:] + ".", waste=_by_week((c.week, c.blocked_cost) for c in blocked),
+        reported_share=0.0,
     )
 
 
@@ -1335,6 +1397,7 @@ def _item_state_limits(h: Habits) -> Item | None:
         f"{count} requests were turned down, by a deny rule or by you, in {len(refused)} messages, and "
         "Claude had to change course.",
         waste=_by_week((c.week, c.refused_cost) for c in refused),
+        reported_share=0.0,
     )
 
 
@@ -1450,6 +1513,121 @@ def confidence(item: Item, *, self_report_ok: bool | None = None) -> str:
     return level
 
 
+def _ranks(values: list[float]) -> list[float]:
+    """1-based ranks, tied values sharing their average rank."""
+    order = sorted(range(len(values)), key=lambda i: values[i])
+    ranks = [0.0] * len(values)
+    i = 0
+    while i < len(order):
+        j = i
+        while j + 1 < len(order) and values[order[j + 1]] == values[order[i]]:
+            j += 1
+        avg_rank = (i + j) / 2 + 1
+        for k in range(i, j + 1):
+            ranks[order[k]] = avg_rank
+        i = j + 1
+    return ranks
+
+
+def _percentile_ranks(values: list[float]) -> list[float]:
+    """Each value's rank rescaled to 0-1 (the lowest is 0, the highest is
+    1); every value gets 0.5 when there's only one of them to rank."""
+    n = len(values)
+    if n < 2:
+        return [0.5] * n
+    return [(r - 1) / (n - 1) for r in _ranks(values)]
+
+
+def _auc(scores: list[float], positive: list[bool]) -> float | None:
+    """CAP-6: the rank-sum (Mann-Whitney) AUC of ``scores`` discriminating
+    ``positive`` -- 0.5 is no better than chance, 1.0 perfect, 0.0
+    perfectly backwards. ``None`` without at least one of each class."""
+    pos_n = sum(positive)
+    neg_n = len(positive) - pos_n
+    if not pos_n or not neg_n:
+        return None
+    ranks = _ranks(scores)
+    rank_sum_pos = sum(r for r, p in zip(ranks, positive) if p)
+    return (rank_sum_pos - pos_n * (pos_n + 1) / 2) / (pos_n * neg_n)
+
+
+#: CAP-6: reported word -> its ordinal position, low to high, for the AUC
+#: helpers below (``d_level``/``brief_clarity_index``): the direction a
+#: genuine self-report should point outcomes.
+_LEVEL_ORDER = {"easy": 0, "normal": 1, "hard": 2}
+_BRIEF_ORDER = {"clear": 0, "partial": 1, "vague": 2}
+
+
+def _rated_outcomes(h: Habits) -> list[CycleFact]:
+    """Cycles whose outcome came from your own answer or rating -- never
+    Claude's own ``[tl-fb: ...]`` tag (SEC-P1)."""
+    return [c for c in h.cycles if c.outcome and c.outcome_source != "tag"]
+
+
+def d_level(h: Habits) -> float | None:
+    """CAP-6: ``2 * AUC - 1`` for reported ``level`` (easy < normal <
+    hard) discriminating your feedback's outcome (``missed`` as the
+    positive class). Positive when harder self-reports genuinely track
+    more misses (real signal); at or below zero when they don't -- the
+    generalisation of ``_self_report_calibration``'s easy-vs-normal check
+    across all three words at once. ``None`` under ``MIN_GROUP`` rated
+    messages."""
+    rated = [c for c in _rated_outcomes(h) if c.tag is not None and c.tag.level in _LEVEL_ORDER]
+    if len(rated) < MIN_GROUP:
+        return None
+    auc = _auc([_LEVEL_ORDER[c.tag.level] for c in rated], [c.outcome == "missed" for c in rated])
+    return None if auc is None else 2 * auc - 1
+
+
+def brief_clarity_index(h: Habits) -> float | None:
+    """CAP-6: ``d_level``'s twin for reported brief clarity (clear <
+    partial < vague) discriminating your feedback's outcome. Positive
+    when a vaguer brief genuinely tracks more misses. ``None`` under
+    ``MIN_GROUP`` rated messages."""
+    rated = [c for c in _rated_outcomes(h) if c.tag is not None and c.tag.brief in _BRIEF_ORDER]
+    if len(rated) < MIN_GROUP:
+        return None
+    auc = _auc([_BRIEF_ORDER[c.tag.brief] for c in rated], [c.outcome == "missed" for c in rated])
+    return None if auc is None else 2 * auc - 1
+
+
+def _effort_percentiles(h: Habits) -> dict[int, float]:
+    """CAP-6: each cycle's cost percentile rank among cycles of the same
+    reported ``task`` -- the "effort index" gap 4/CAP-6 name, keyed by
+    ``id(cycle)`` (only meaningful for the run that built ``h``). A
+    cycle with no reported task, or the only one of its task, gets no
+    entry (nothing to rank it against)."""
+    groups: dict[str, list[CycleFact]] = {}
+    for c in h.cycles:
+        if c.tag is not None and c.tag.task:
+            groups.setdefault(c.tag.task, []).append(c)
+    out: dict[int, float] = {}
+    for cycles in groups.values():
+        if len(cycles) < 2:
+            continue
+        for c, pct in zip(cycles, _percentile_ranks([c.cost for c in cycles])):
+            out[id(c)] = pct
+    return out
+
+
+def contradiction_flags(h: Habits) -> dict[str, int]:
+    """CAP-6: concrete per-message contradictions between a self-report
+    and what was actually derived or measured, as counts (not a trend
+    like ``d_level``): ``checked_contradicted`` said ``check=none`` but a
+    test command ran anyway (CAP-5's ``checked_by_tool``); ``easy_high_effort``
+    said ``level=easy`` but cost landed in the priciest quarter of
+    same-task messages (``EASY_HIGH_EFFORT_PCT``)."""
+    checked_contradicted = sum(
+        1 for c in h.cycles if c.tag is not None and c.tag.check == "none" and c.checked_by_tool
+    )
+    pcts = _effort_percentiles(h)
+    easy_high_effort = sum(
+        1 for c in h.cycles
+        if c.tag is not None and c.tag.level == "easy" and pcts.get(id(c), 0.0) >= EASY_HIGH_EFFORT_PCT
+    )
+    return {"checked_contradicted": checked_contradicted, "easy_high_effort": easy_high_effort}
+
+
 def _self_report_calibration(h: Habits) -> dict | None:
     """Whether the ``level`` word Claude reports carries signal: work it
     called "easy" missing its goal (your feedback, never its own report)
@@ -1457,7 +1635,19 @@ def _self_report_calibration(h: Habits) -> dict | None:
     messages on each side to compare. ``None`` while there isn't enough
     feedback yet to tell either way. SEC-P1: a cycle rated only by
     Claude's own ``[tl-fb: ...]`` tag doesn't count -- calibration needs
-    your answers or your dashboard rating, not Claude grading itself."""
+    your answers or your dashboard rating, not Claude grading itself.
+
+    CAP-6 additionally plugs in three richer signals, all consistency
+    checks in their own right, not only inputs to ``contradicts``:
+    ``d_level`` and ``brief_clarity`` (this file's ``d_level``/
+    ``brief_clarity_index``, the AUC-based generalisation of the
+    easy-vs-normal check to every level/brief word and to a continuous
+    score instead of a single flip), and ``contradiction_flags`` (named,
+    concrete per-message contradictions). Any of the three tips
+    ``contradicts`` too, at ``MIN_GROUP`` messages' worth of evidence --
+    that flows into ``confidence`` already, through ``playbook_table``'s
+    existing ``self_report_ok`` plumbing, so ``confidence`` itself needs
+    no new parameter."""
     def _rated(word: str) -> list[CycleFact]:
         return [
             c for c in h.cycles
@@ -1469,10 +1659,22 @@ def _self_report_calibration(h: Habits) -> dict | None:
         return None
     easy_missed = _pct(sum(c.outcome == "missed" for c in easy), len(easy)) or 0.0
     normal_missed = _pct(sum(c.outcome == "missed" for c in normal), len(normal)) or 0.0
+    d = d_level(h)
+    brief_clarity = brief_clarity_index(h)
+    flags = contradiction_flags(h)
+    contradicts = (
+        easy_missed > normal_missed
+        or (d is not None and d < 0)
+        or flags["checked_contradicted"] >= MIN_GROUP
+        or flags["easy_high_effort"] >= MIN_GROUP
+    )
     return {
         "easy_missed_pct": easy_missed,
         "normal_missed_pct": normal_missed,
-        "contradicts": easy_missed > normal_missed,
+        "contradicts": contradicts,
+        "d_level": d,
+        "brief_clarity": brief_clarity,
+        "contradiction_flags": flags,
     }
 
 
@@ -1482,15 +1684,20 @@ def _self_report_note(h: Habits) -> str | None:
         return None
     easy, normal = calibration["easy_missed_pct"], calibration["normal_missed_pct"]
     if calibration["contradicts"]:
-        return (
+        note = (
             f"Work Claude called easy missed its goal {easy:.0f}% of the time, more often than normal work at "
             f"{normal:.0f}%: treat what it calls easy with caution. Habits built on it (effort, planning) show low "
             "confidence."
         )
-    return (
-        f"Work Claude called easy missed its goal {easy:.0f}% of the time, no more often than normal work at "
-        f"{normal:.0f}%: its reports carry signal."
-    )
+    else:
+        note = (
+            f"Work Claude called easy missed its goal {easy:.0f}% of the time, no more often than normal work at "
+            f"{normal:.0f}%: its reports carry signal."
+        )
+    contradicted = calibration["contradiction_flags"]["checked_contradicted"]
+    if contradicted >= MIN_GROUP:
+        note += f" {contradicted} times it said a change was unchecked but a test command ran anyway."
+    return note
 
 
 # -- tables --------------------------------------------------------------------
@@ -2319,16 +2526,109 @@ def unfit_agents(rows: list[dict]) -> dict[str, str]:
 # -- the capture section -------------------------------------------------------
 
 
-def capture_dependent_value(h: Habits, items: list[Item] | None = None) -> float | None:
+#: CAP-3: playbook ``Item.key`` -> ``recommend.py`` ``Recommendation.id`` for
+#: pairs that price the SAME underlying waste (finding F4) -- when both a
+#: playbook item and a recommendation claim it, ``capture_value_breakdown``
+#: takes the larger of the two figures, never their sum.
+_CAPTURE_DEDUP_KEYS: dict[str, str] = {
+    "effort_fit": "effort-mismatch",
+    "short_reports": "agent-report-size",
+    "explore_research": "discovery-share",
+    "clear_between": "discovery-share",
+    "tool_loops": "tool-output-carry",
+}
+
+
+def _recommend_key(r: Recommendation) -> tuple:
+    return (r.id, r.agent_type, r.lever)
+
+
+def capture_recommend_delta(
+    with_habits: list[Recommendation], without_habits: list[Recommendation],
+) -> tuple[dict[tuple, float], list[Recommendation]]:
+    """EST-P7: what ``recommend()`` finds with the habits section present
+    against the same run without it, matched by ``(id, agent_type,
+    lever)``. Returns the USD each recommendation gains -- it appears, or
+    its ``saving_usd`` grows -- keyed the same way, and the recommendations
+    ``without_habits`` has that ``with_habits`` doesn't: vetoes, where
+    capture's evidence argued a recommendation away rather than for it, so
+    they're held back, never counted as a saving."""
+    without_by_key = {_recommend_key(r): r for r in without_habits}
+    with_by_key = {_recommend_key(r): r for r in with_habits}
+    grown: dict[tuple, float] = {}
+    for key, r in with_by_key.items():
+        before = without_by_key.get(key)
+        before_usd = (before.saving_usd or 0.0) if before is not None else 0.0
+        after_usd = r.saving_usd or 0.0
+        if after_usd > before_usd:
+            grown[key] = after_usd - before_usd
+    vetoed = [r for key, r in without_by_key.items() if key not in with_by_key]
+    return grown, vetoed
+
+
+def capture_value_breakdown(
+    items: list[Item], with_habits: list[Recommendation], without_habits: list[Recommendation],
+) -> dict:
+    """CAP-3: total USD (over the whole span, not weekly) that metrics
+    capture and your feedback are worth -- playbook items weighted by
+    ``reported_share`` (A3), plus what capture grows or unlocks in
+    ``recommend()`` (EST-P7), deduplicated through ``_CAPTURE_DEDUP_KEYS``
+    by taking the larger of the two figures for the same waste, never the
+    sum. ``held_back`` is how many recommendations capture's evidence
+    argued away (``capture_recommend_delta``'s vetoes)."""
+    grown, vetoed = capture_recommend_delta(with_habits, without_habits)
+    grown_by_id: dict[str, float] = {}
+    for (rec_id, _agent_type, _lever), usd in grown.items():
+        grown_by_id[rec_id] = grown_by_id.get(rec_id, 0.0) + usd
+
+    claimed_ids: set[str] = set()
+    total = 0.0
+    for item in items:
+        if not item.saving or item.reported_share <= 0:
+            continue
+        weighted = item.saving * item.reported_share
+        rec_id = _CAPTURE_DEDUP_KEYS.get(item.key)
+        if rec_id is not None and rec_id in grown_by_id:
+            claimed_ids.add(rec_id)
+            total += max(weighted, grown_by_id[rec_id])
+        else:
+            total += weighted
+
+    # What capture unlocks in recommend() that no playbook item already
+    # claims through the dedup map -- counted in full: the with/without
+    # diff is itself the evidence, not any one item's reported_share.
+    for rec_id, usd in grown_by_id.items():
+        if rec_id not in claimed_ids:
+            total += usd
+
+    return {"usd": total, "held_back": len(vetoed)}
+
+
+def capture_dependent_value(
+    h: Habits,
+    items: list[Item] | None = None,
+    *,
+    with_habits: list[Recommendation] | None = None,
+    without_habits: list[Recommendation] | None = None,
+    since: str = "",
+) -> float | None:
     """What metrics capture is buying you a week: the habits worth trying
-    whose evidence needs it or your feedback (a ``reported`` or ``your
-    feedback`` source), added up and spread over the weeks ``h`` covers.
-    ``None`` when nothing measured yet depends on either."""
+    whose evidence needs it or your feedback, weighted by how genuinely
+    reported each item's saving is (``reported_share``, A3) rather than
+    gated all-or-nothing, plus what it grows or unlocks in ``recommend()``
+    when ``with_habits``/``without_habits`` are given (EST-P7 + CAP-3).
+    Spread over the weeks since ``since`` (when capture was enabled), or
+    ``h``'s whole span when that isn't known. ``None`` when nothing
+    measured yet depends on either."""
     items = playbook(h) if items is None else items
-    dependent = [i for i in items if i.saving and ("reported" in i.sources or "your feedback" in i.sources)]
-    if not dependent:
+    if with_habits is not None and without_habits is not None:
+        total = capture_value_breakdown(items, with_habits, without_habits)["usd"]
+    else:
+        total = sum(i.saving * i.reported_share for i in items if i.saving and i.reported_share > 0)
+    if total <= 0:
         return None
-    return sum(i.saving for i in dependent) / h.span_weeks
+    weeks = capture_mod.weeks_since(since) if since else 0.0
+    return total / (weeks or h.span_weeks)
 
 
 def capture_section(
@@ -2347,14 +2647,24 @@ def capture_section(
     config (UX-3), which this section has never done, so reusing a
     differently-thresholded ``h`` could change ``capture_dependent_value``
     for a config that overrides it. Otherwise a fresh, unthresholded
-    ``collect`` runs exactly as before."""
+    ``collect`` runs exactly as before.
+
+    ``sessions_with_notes`` is ``capture.usage``'s own main-session count
+    (SURV-8's gate on the Capture page's per-metric worth table lives
+    there, in ``capture_view._worth``); ``after_compact_notes``/
+    ``after_compact_cost`` (SURV-3) are the notes that landed after a
+    compact boundary, priced at the fuller post-compaction rate, shown as
+    their own line rather than folded into a scope's cost. The
+    EST-P7/CAP-3 recommend-diff value isn't available yet here --
+    ``report.build_report`` patches ``habit_value``/``held_back`` in once
+    it has run ``recommend()`` with and without the habits section."""
     level = getattr(capture_config, "level", "off") or "off"
     since = getattr(capture_config, "enabled_at", "") or ""
     use = capture_mod.usage(corpus, pricing, since=since)
     weekly = capture_mod.weekly_cost(use)
     if h is None or h.effort_share_threshold_pct != 30.0:
         h = collect(corpus, pricing, ratings=ratings)
-    value = capture_dependent_value(h)
+    value = capture_dependent_value(h, since=since)
     rows = [
         ["level", catalogue.LEVEL_TITLES.get(level, level)],
         ["since", since[:10] if since else ""],
@@ -2366,8 +2676,12 @@ def capture_section(
         ["report_coverage", use.report_coverage],
         ["feedback_runs", use.feedback_runs],
         ["feedback_cost", use.feedback_cost],
+        ["sessions_with_notes", use.sessions],
+        ["after_compact_notes", use.after_compact_notes],
+        ["after_compact_cost", use.after_compact_cost],
         ["weekly_cost", weekly],
         ["habit_value", value],
+        ["held_back", 0],
     ]
     table = Table(
         name="capture_usage",
@@ -2380,6 +2694,59 @@ def capture_section(
         ],
     )
     return Section(key="capture", title="Metrics capture", tables=[table])
+
+
+def patch_capture_recommend_value(
+    section: Section,
+    corpus,
+    pricing: Pricing | None,
+    capture_config,
+    *,
+    ratings: dict | None = None,
+    with_habits: list[Recommendation],
+    without_habits: list[Recommendation],
+    h: Habits | None = None,
+) -> Section:
+    """EST-P7 + CAP-3: ``report.build_report`` calls this right after
+    running ``recommend()`` twice (with and without the habits section),
+    to fold what capture grows or unlocks there into the "capture"
+    section's ``habit_value`` and add a ``held_back`` row for the
+    recommendations capture's evidence argued away. ``section`` must be
+    the one ``capture_section`` built (same corpus/pricing/config), since
+    this recomputes the habits playbook rather than threading it through
+    the whole report pipeline. ``h`` is reused under the same rule as
+    :func:`capture_section` (S5/ROB-P3: one ``collect`` pass per report)."""
+    since = getattr(capture_config, "enabled_at", "") or ""
+    if h is None or h.effort_share_threshold_pct != 30.0:
+        h = collect(corpus, pricing, ratings=ratings)
+    items = playbook(h)
+    value = capture_dependent_value(h, items, with_habits=with_habits, without_habits=without_habits, since=since)
+    held_back = capture_value_breakdown(items, with_habits, without_habits)["held_back"]
+    new_tables = []
+    for table in section.tables:
+        if table.name != "capture_usage":
+            new_tables.append(table)
+            continue
+        new_rows = [
+            (["held_back", held_back] if row and row[0] == "held_back"
+             else ["habit_value", value] if row and row[0] == "habit_value"
+             else row)
+            for row in table.rows
+        ]
+        notes = list(table.notes)
+        if value is None and not notes:
+            notes = [
+                "Nothing measured yet relies on metrics capture or your feedback, so there's nothing to weigh "
+                "its cost against."
+            ]
+        elif value is not None and any("Nothing measured yet" in n for n in notes):
+            notes = [n for n in notes if "Nothing measured yet" not in n]
+        if held_back:
+            plural = "s" if held_back != 1 else ""
+            notes = [*notes, f"Capture's evidence held back {held_back} recommendation{plural} recommend() "
+                              "would otherwise make -- not counted as savings."]
+        new_tables.append(replace(table, rows=new_rows, notes=notes))
+    return replace(section, tables=new_tables)
 
 
 __all__ = [

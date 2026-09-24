@@ -709,6 +709,79 @@ snapshot run on the pre-change code).
 - Checked the CHANGELOG's latest released version heading against
   `__version__`/`pyproject.toml`: both already read `0.5.2` — no fix
   needed.
+### P5 — Capture value and cost accounting
+
+Metrics capture's own displayed and estimated costs rise: tag carry
+pricing (below) adds a cache-write leg that was missing, and a session
+billed under the 1-hour cache TTL now prices that write at the 1-hour
+rate instead of the 5-minute one.
+
+- **A `[tl: ...]`/`[result: ...]` tag's cost now includes what it costs
+  to carry**, not only what it cost to write. Every reply after the one
+  that wrote a tag re-sends it as part of the prompt until the next
+  compaction — a cache write into the very next turn, then cache reads
+  after that — priced the same way a note's own carry already was
+  (`context_files._Carry`, one rate for the 5-minute TTL and one for the
+  1-hour TTL, chosen the same way `habits._Rates.write` already chose
+  between them). This lands in both places capture prices a tag: the
+  real, post-hoc `capture.usage()` (already carry-priced tags going into
+  this phase) and the pre-enable `capture.history()`/`capture.estimate()`
+  path used for "what would this level have cost you" projections, which
+  had priced a tag's own output only — found while bringing the two
+  paths to parity. The brief marker (`[spawn: ...]`/`[retry: ...]`) is
+  words inside the *spawning* tool call's own prompt, not a `[tl:]`/
+  `[result:]` tag, and stays priced at output cost alone in both paths,
+  unchanged.
+- **What capture's habits section is worth to `recommend()`, measured
+  rather than assumed.** `recommend()` now runs a second time per report
+  with the habits section stripped, and the capture section's
+  `habit_value` is the dollar total of recommendations that only exist,
+  or grew, with it — matched by `(id, agent_type, lever)`, the larger of
+  a pair taken (never summed) when the same lever is named through more
+  than one route, weighted down to the share of that total capture's own
+  evidence actually reported (vs. inferred from the transcript alone),
+  and normalised per week since capture was turned on. A recommendation
+  capture's evidence argued *against* making no longer inflates this
+  total — it's counted and shown as "held back N", a new row on the
+  Capture tab's own usage table, not folded into the savings figure.
+- **A per-metric worth table** on the Capture tab and in `docs/capture.md`
+  (generated, not hand-edited): each metric's own tokens a week set
+  against the dollar value of the decisions it feeds, so "is this metric
+  worth what it costs" has a direct answer per row instead of one lump
+  sum for the whole level. Hidden below `MIN_GROUP` (5) sessions with
+  notes, the same small-sample floor the rest of Work habits already
+  uses — it built a full row per metric off a single session before this.
+- **`spawn`, `detour` and `useful` (the web-result note and its
+  `PostToolUse` matcher) are retired from the metrics vocabulary** —
+  their evidence didn't hold up against what the transcript already
+  shows on its own. A `config.toml` written before this still loads (the
+  retired ids are accepted, just no longer asked for or shown). The
+  `explore_research` habit now reads `found=no|partial` off the *specific*
+  heavy-research cycles it's judging, rather than a corpus-wide count
+  disconnected from which cycles it's pricing.
+- **Effort index, brief clarity and contradiction flags.** Every rated
+  task now gets a percentile-ranked effort index; `d_level = 2·AUC−1`
+  scores how well self-reported difficulty actually separates the tasks
+  that needed more effort from the ones that didn't (an AUC/Mann-Whitney
+  rank-sum computed directly, no numpy/scipy dependency), with
+  `brief_clarity_index` its twin for reported brief clarity. Contradiction
+  flags (e.g. `check=none` reported on a task the transcript shows was
+  actually redone) feed `_self_report_calibration`, and `confidence()`
+  now downgrades a habit's confidence when its own self-reports don't
+  calibrate against what happened.
+- **`autoCompactWindow` swept per kind of task, not only per session or
+  agent type.** `compaction_sim_by_task` groups the existing window sweep
+  by the task metrics capture reported (`task=`), once at least 5 main
+  sessions have reported the same one — the same shape and recommendation
+  rule as the existing per-agent-type table, and a candidate a future
+  per-task profile can draft `autoCompactWindow` from the same way
+  `goals._compaction` already drafts it for the whole session.
+- **A note written after a real compaction is priced and shown
+  separately.** The carried prefix a compaction would otherwise have
+  discounted it against is gone by then, so it costs more — the Work
+  habits capture table now shows `sessions_with_notes` and
+  `after_compact_notes`/`after_compact_cost` as their own line rather
+  than silently folding a higher rate into a scope's ordinary cost.
 
 ## [0.5.2] - 2026-09-23
 

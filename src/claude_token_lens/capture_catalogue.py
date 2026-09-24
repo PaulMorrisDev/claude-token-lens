@@ -133,10 +133,10 @@ LEVEL_SUMMARIES = {
     "free": "Local signals from hooks that log to a file. Uses no Claude tokens.",
     "essentials": "Claude tags each piece of work: what kind it was, how clear the request was, how hard, "
     "and when the task changed. Subagents say whether they finished.",
-    "standard": "Adds size, what the request lacked, planning, skills, research, why an agent was used, "
+    "standard": "Adds size, what the request lacked, planning, skills, research, "
     "and each subagent's view of its model, rules and brief.",
-    "deep": "Adds how much earlier context was needed, detours, how the change was checked, and a "
-    "short rating after large tool outputs and web results.",
+    "deep": "Adds how much earlier context was needed, how the change was checked, and a "
+    "short rating after large tool outputs.",
 }
 
 #: Suggestion themes a metric can feed (``Metric.powers``), in the order
@@ -443,22 +443,6 @@ METRICS: tuple[Metric, ...] = (
         out_chars=6,
     ),
     Metric(
-        id="spawn",
-        group="standard",
-        section="subagents",
-        title="Why an agent was used",
-        what="When Claude hands work to an agent, why: to run in parallel, to keep the main context clean, "
-        "for a cheaper model, for a specialist, or for a review.",
-        why="Whether delegating paid off, for example isolated agents that send back long reports.",
-        powers=("delegation",),
-        tag="[spawn: parallel|isolate|cheaper|specialist|review]",
-        hooks=("SessionStart", "SubagentStart"),
-        main_extra="When you hand work to an agent, begin the brief with "
-        "[spawn: parallel|isolate|cheaper|specialist|review]: why an agent.",
-        sub_extra="Starting an agent? Begin its brief with [spawn: parallel|isolate|cheaper|specialist|review].",
-        out_chars=5,
-    ),
-    Metric(
         id="fit",
         group="standard",
         section="subagents",
@@ -520,20 +504,6 @@ METRICS: tuple[Metric, ...] = (
         out_chars=10,
     ),
     Metric(
-        id="detour",
-        group="deep",
-        section="main",
-        title="Detours",
-        what="The main time sink, if any: a dead end, rereading files, building more than asked, "
-        "environment trouble, or flaky tests.",
-        why="Waste the transcript's shape can't show.",
-        powers=("breakdown", "verification", "information"),
-        tag="detour=none|dead-end|reread|overbuilt|env|flaky",
-        hooks=("SessionStart",),
-        main_line="detour: none|dead-end|reread|overbuilt|env|flaky (the main time sink, if any)",
-        out_chars=11,
-    ),
-    Metric(
         id="check",
         group="deep",
         section="main",
@@ -563,22 +533,6 @@ METRICS: tuple[Metric, ...] = (
         tool_note="That tool result was large. Add out=needed|part|unneeded (how much of it you needed) to "
         "the tag that ends your final reply.",
         out_chars=9,
-    ),
-    Metric(
-        id="web",
-        group="deep",
-        section="tools",
-        title="Web results",
-        what="After a web search or fetch, whether the result was useful. Claude Code waits for the hook "
-        "after each one; 'capture status' shows how long that has actually added, measured from your own "
-        "sessions.",
-        why="Web research against handing Claude the page or document yourself.",
-        powers=("research",),
-        tag="useful=yes|part|no",
-        hooks=("PostToolUse",),
-        tool_note="Add useful=yes|part|no (whether that web result helped) to the tag that ends your final "
-        "reply.",
-        out_chars=10,
     ),
     # -- Free local signals ----------------------------------------------
     Metric(
@@ -795,6 +749,16 @@ LEVEL_METRIC_IDS = tuple(m.id for m in METRICS if m.group in LEVEL_GROUPS)
 #: Metrics switched on one by one (``[capture] feedback``/``coaching``).
 FEEDBACK_IDS = tuple(m.id for m in METRICS if m.group == "feedback")
 COACHING_IDS = tuple(m.id for m in METRICS if m.group == "coaching")
+
+#: CAP-5: metric ids retired from :data:`METRICS` (no longer asked, priced,
+#: or shown), kept here only so a ``config.toml`` written before the
+#: retirement still loads: ``_capture_list``'s config-file validation
+#: allows them through, and ``with_requirements``/``active_metrics``
+#: silently drop them (they are not in :data:`METRICS_BY_ID`) rather than
+#: ever asking Claude for them again. Their words stay in
+#: :data:`TAG_VOCAB` (``detour``, ``useful``) and :data:`SPAWN_REASONS` so
+#: a transcript recorded before the retirement still parses.
+RETIRED_METRIC_IDS: tuple[str, ...] = ("detour", "web", "spawn")
 
 #: The persistent feedback note (``feedback_note``): the status line's
 #: second line and the dashboard banner show it word for word.
@@ -1119,7 +1083,7 @@ def tool_note_text(metric_id: str) -> str:
 #: The literal tool names each PostToolUse-triggered metric matches
 #: (see ``hook_specs``'s own matchers): an MCP wildcard entry
 #: ("mcp__.*") isn't a real tool name, so it's left out.
-_POST_TOOL_USE_TOOLS = {"big_output": BIG_OUTPUT_TOOLS, "web": WEB_TOOLS}
+_POST_TOOL_USE_TOOLS = {"big_output": BIG_OUTPUT_TOOLS}
 
 
 def tool_suffix_chars(metric_id: str) -> int:
@@ -1156,8 +1120,6 @@ def hook_specs(ids) -> tuple[tuple[str, str, str, bool], ...]:
         specs.append((HOOK_SCRIPT, "SubagentStart", "", False))
     if "big_output" in wanted:
         specs.append((HOOK_SCRIPT, "PostToolUse", "|".join(BIG_OUTPUT_TOOLS), False))
-    elif "web" in wanted:
-        specs.append((HOOK_SCRIPT, "PostToolUse", "|".join(WEB_TOOLS), False))
     for event in SIGNAL_EVENTS:
         if SIGNAL_EVENTS[event] in wanted:
             specs.append((HOOK_SCRIPT, event, "", event != "SessionEnd"))
@@ -1203,7 +1165,6 @@ def export_json() -> dict:
         "session_end_reasons": list(SESSION_END_REASONS),
         "wait_kinds": list(WAIT_KINDS),
         "signals_dir": SIGNALS_DIR,
-        "web_tools": list(WEB_TOOLS),
     }
 
 
@@ -1373,6 +1334,24 @@ def render_markdown() -> str:
     )
     p("")
 
+    # -- Worth (CAP-5, gap 4) ------------------------------------------------
+    p("## What each metric is worth")
+    p("")
+    p(
+        "Gap 4: every metric here has to earn its keep — something has to actually read it and turn it into "
+        "a decision, not just log it. This table is that trace: each metric's rough cost against what it "
+        "feeds. The Capture page shows the same thing measured from your own transcripts, in tokens a week "
+        "instead of per occurrence."
+    )
+    p("")
+    p("| Metric | Level | ~Output tokens each time | Feeds |")
+    p("|---|---|---|---|")
+    for m in METRICS:
+        cost_cell = f"~{max(1, round(m.out_chars / 4))}" if m.out_chars else "–"
+        feeds = ", ".join(THEMES.get(theme, theme) for theme in m.powers) if m.powers else "–"
+        p(f"| {m.title} (`{m.id}`) | {_metric_group_label(m)} | {cost_cell} | {feeds} |")
+    p("")
+
     # -- Metrics grouped by scope ------------------------------------------
     for section_key, section_title in SECTIONS.items():
         metrics = [m for m in METRICS if m.section == section_key]
@@ -1420,9 +1399,8 @@ def render_markdown() -> str:
     )
     p("")
     p(
-        "Starting an agent again after its last run fell short, or handing work to one at all, is marked at "
-        f"the start of its brief instead of the end of a report: `{METRICS_BY_ID['retry'].tag}` and "
-        f"`{METRICS_BY_ID['spawn'].tag}`."
+        "Starting an agent again after its last run fell short is marked at the start of its brief instead "
+        f"of the end of a report: `{METRICS_BY_ID['retry'].tag}`."
     )
     p("")
     p(f"The `/tl-feedback` skill ends with its own line: `{_feedback_tag_words()}`.")

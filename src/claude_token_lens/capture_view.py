@@ -20,6 +20,7 @@ from datetime import datetime
 
 from . import capture as capture_mod
 from . import capture_catalogue as catalogue
+from . import habits
 from .config import CAPTURE_SAMPLES, CaptureConfig
 from .render.tables import format_cell
 
@@ -339,6 +340,37 @@ def _metric_row(
     }
 
 
+def _worth(rows: list[dict], capture: CaptureConfig, use, units, now: datetime | None = None) -> list[dict]:
+    """CAP-5 (gap 4): each active, asked metric's measured cost a week
+    against the decisions it feeds (``powers``, already worked out on
+    each row) -- the same trace ``capture_catalogue.render_markdown``
+    gives statically (rough output tokens per occurrence), measured here
+    from your own transcripts instead, in money a week (``use.by_metric``
+    only splits cost, not raw tokens, per metric). Empty while there's no
+    start time to spread a week's figure over, nothing measured yet, or
+    (SURV-8) fewer than ``habits.MIN_GROUP`` sessions have a note to
+    measure from yet -- a metric's per-note weighting looks stable well
+    before that many sessions, and a table built from one session's notes
+    (formerly a dozen rows from a single session) is noise, not a trend."""
+    if use is None or not capture.enabled_at:
+        return []
+    if use.sessions < habits.MIN_GROUP:
+        return []
+    weeks = capture_mod.weeks_since(capture.enabled_at, now)
+    if not weeks:
+        return []
+    worth = []
+    for row in rows:
+        if not row["on"] or not row["asks_claude"]:
+            continue
+        total = use.by_metric.get(row["id"], 0.0)
+        if total <= 0:
+            continue
+        worth.append({"id": row["id"], "title": row["title"], "feeds": row["powers"], **_money(units, total / weeks, "a week")})
+    worth.sort(key=lambda r: r["usd"], reverse=True)
+    return worth
+
+
 def _measured(use, units) -> dict | None:
     if use is None:
         return None
@@ -364,6 +396,10 @@ def _measured(use, units) -> dict | None:
             scope: {"note_tokens": s.note_tokens, "tag_tokens": s.tag_tokens, **_money(units, s.cost)}
             for scope, s in sorted(use.scopes.items())
         },
+        # SURV-3: notes landing after a compact boundary, shown as their
+        # own line rather than folded into a scope's cost -- the carried
+        # prefix a compaction would have discounted them against is gone.
+        "after_compact": {"notes": use.after_compact_notes, **_money(units, use.after_compact_cost)},
         "daily": [{"day": day, "usd": round(usd, 6)} for day, usd in sorted(use.daily.items())],
     }
 
@@ -545,6 +581,7 @@ def view(
         for section, title in catalogue.SECTIONS.items()
     ]
     measured = _measured(use, units)
+    worth = _worth(rows, capture, use, units, now)
     history = (
         {"days": past.days, "sessions": past.sessions, "subagents": past.subagents, "cycles": past.cycles}
         if past is not None
@@ -558,6 +595,10 @@ def view(
         "levels": levels,
         "sections": [s for s in sections if s["metrics"]],
         "measured": measured,
+        "worth": worth,
+        # SURV-8: so a consumer can explain an empty ``worth`` as "N of
+        # <worth_min_sessions> sessions with notes" rather than silence.
+        "worth_min_sessions": habits.MIN_GROUP,
         "history": history,
         "hooks": hooks_data,
         "billing": {
