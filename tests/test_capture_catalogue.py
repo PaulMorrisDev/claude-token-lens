@@ -160,8 +160,10 @@ def test_hook_entries_follow_the_metrics():
         ("capture-hook.py", "SessionStart", "startup|clear|compact", False),
         ("capture-hook.py", "SubagentStart", "", False),
     ) + signals
-    assert cat.hook_specs(cat.level_metrics("deep"))[2] == ("capture-hook.py", "PostToolUse", "", True)
-    assert cat.hook_specs(["web"]) == (("capture-hook.py", "PostToolUse", "WebFetch|WebSearch", True),)
+    assert cat.hook_specs(cat.level_metrics("deep"))[2] == (
+        "capture-hook.py", "PostToolUse", "Bash|Read|Grep|Glob|WebFetch|WebSearch|mcp__.*", False,
+    )
+    assert cat.hook_specs(["web"]) == (("capture-hook.py", "PostToolUse", "WebFetch|WebSearch", False),)
     assert cat.hook_specs(["result"]) == (("capture-hook.py", "SubagentStart", "", False),)
 
 

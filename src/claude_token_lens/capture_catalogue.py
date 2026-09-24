@@ -179,6 +179,13 @@ BIG_OUTPUT_TOKENS = 8000
 #: Tools whose results get a ``web`` note (Deep).
 WEB_TOOLS = ("WebFetch", "WebSearch")
 
+#: Tools whose results can be large enough for a ``big_output`` note
+#: (Deep), as the PostToolUse matcher. Claude Code only reads a hook's
+#: note when it waits for the hook, so this entry runs in the
+#: foreground; matching only these tools keeps edits and agent calls
+#: from waiting on it.
+BIG_OUTPUT_TOOLS = ("Bash", "Read", "Grep", "Glob", *WEB_TOOLS, "mcp__.*")
+
 #: Hook event -> the free signal it records.
 SIGNAL_EVENTS = {"SessionEnd": "session_end", "Notification": "waits", "PermissionRequest": "permissions"}
 
@@ -515,7 +522,8 @@ METRICS: tuple[Metric, ...] = (
         section="tools",
         title="Large tool outputs",
         what=f"After a tool result of about {BIG_OUTPUT_TOKENS:,} tokens or more, how much of it Claude "
-        "needed: all, part or none.",
+        "needed: all, part or none. Claude Code waits for the hook after each shell, read, search, web or "
+        "MCP result, which adds a fraction of a second to each.",
         why="Quieter commands, offset reads and output caps where big outputs weren't needed.",
         powers=("tool_output",),
         tag="out=needed|part|unneeded",
@@ -529,7 +537,8 @@ METRICS: tuple[Metric, ...] = (
         group="deep",
         section="tools",
         title="Web results",
-        what="After a web search or fetch, whether the result was useful.",
+        what="After a web search or fetch, whether the result was useful. Claude Code waits for the hook "
+        "after each one, which adds a fraction of a second.",
         why="Web research against handing Claude the page or document yourself.",
         powers=("research",),
         tag="useful=yes|part|no",
@@ -1070,9 +1079,11 @@ def hook_specs(ids) -> tuple[tuple[str, str, str, bool], ...]:
     """The Claude Code hook entries the metrics in ``ids`` need, as
     ``(script, event, matcher, async)``: the note at session and agent
     start, after tool results for Deep's tool notes, and the free
-    signals' events. Only SessionStart and SubagentStart wait for the
-    hook, since their note must be in place before Claude starts;
-    SessionEnd runs as the session closes, when nothing waits on it."""
+    signals' events. Every entry that adds a note runs in the
+    foreground, since Claude Code ignores what a background hook
+    prints; the tool note's matcher keeps that wait to the tools whose
+    results can be large. SessionEnd runs as the session closes, when
+    nothing waits on it; the other signals run in the background."""
     wanted = set(ids)
     main = any(m.id in wanted and (m.main_line or m.main_extra) for m in METRICS)
     sub = any(m.id in wanted and (m.sub_line or m.sub_extra) for m in METRICS)
@@ -1082,9 +1093,9 @@ def hook_specs(ids) -> tuple[tuple[str, str, str, bool], ...]:
     if sub:
         specs.append((HOOK_SCRIPT, "SubagentStart", "", False))
     if "big_output" in wanted:
-        specs.append((HOOK_SCRIPT, "PostToolUse", "", True))
+        specs.append((HOOK_SCRIPT, "PostToolUse", "|".join(BIG_OUTPUT_TOOLS), False))
     elif "web" in wanted:
-        specs.append((HOOK_SCRIPT, "PostToolUse", "|".join(WEB_TOOLS), True))
+        specs.append((HOOK_SCRIPT, "PostToolUse", "|".join(WEB_TOOLS), False))
     for event in SIGNAL_EVENTS:
         if SIGNAL_EVENTS[event] in wanted:
             specs.append((HOOK_SCRIPT, event, "", event != "SessionEnd"))

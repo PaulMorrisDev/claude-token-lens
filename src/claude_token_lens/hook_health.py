@@ -70,7 +70,8 @@ class HookSpec:
         when = {
             "SessionStart": "when a session starts, is cleared or compacts",
             "SubagentStart": "when a subagent starts",
-            "PostToolUse": "after " + ("web results" if self.matcher else "each tool result") + ", in the background",
+            "PostToolUse": "after "
+            + ("web results" if set(self.matcher.split("|")) <= set(capture_catalogue.WEB_TOOLS) else "shell, read, search, web and MCP results"),
             "SessionEnd": "when a session ends",
             "Notification": "when Claude waits for you, in the background",
             "PermissionRequest": "when Claude asks for permission, in the background",

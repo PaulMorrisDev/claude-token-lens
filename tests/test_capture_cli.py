@@ -76,13 +76,14 @@ def test_plan_capture_adds_the_entries_a_level_needs_and_writes_nothing(tmp_path
     assert [(event, matcher) for event, matcher, _ in entries] == [
         ("SessionStart", "startup|clear|compact"),
         ("SubagentStart", ""),
-        ("PostToolUse", ""),
+        ("PostToolUse", "Bash|Read|Grep|Glob|WebFetch|WebSearch|mcp__.*"),
         ("SessionEnd", ""),
         ("Notification", ""),
         ("PermissionRequest", ""),
     ]
     assert all(entry["timeout"] == 5 for _, _, entry in entries)
-    assert [entry.get("async", False) for _, _, entry in entries] == [False, False, True, False, True, True]
+    # Claude Code ignores what a background hook prints, so every entry that adds a note waits.
+    assert [entry.get("async", False) for _, _, entry in entries] == [False, False, False, False, True, True]
     assert after["model"] == "opus"
     assert len(plan.changes) == 6 and all(line.startswith("Add the capture hook") for line in plan.changes)
     assert "Add the capture hook that runs capture-hook.py when Claude waits for you, in the background." in plan.changes
@@ -111,7 +112,7 @@ def test_lowering_the_level_takes_out_entries_no_metric_needs(tmp_path):
     config_dir = _claude(tmp_path, {})
     hook_health.connect(hook_health.plan_capture(DEEP, _commands(config_dir)), now=NOW)
     plan = hook_health.plan_capture(ESSENTIALS, _commands(config_dir))
-    assert plan.changes == ["Remove the capture hook that runs capture-hook.py after each tool result, in the background."]
+    assert plan.changes == ["Remove the capture hook that runs capture-hook.py after shell, read, search, web and MCP results."]
     assert "PostToolUse" not in json.loads(plan.new_text)["hooks"]
 
 

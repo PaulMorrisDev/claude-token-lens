@@ -15,11 +15,14 @@ connect``):
 - ``SessionStart`` (matcher ``startup|clear|compact``): the main
   session's note. A resumed session already has it, so ``resume`` is not
   matched. A SessionStart inside a subagent (after it compacts) gets the
-  subagent note: Claude Code sends no ``agent_id`` then, so a transcript
-  under a ``subagents`` folder counts as one too.
+  subagent note: it carries an ``agent_id``, and if a Claude Code
+  version leaves that out, a transcript under a ``subagents`` folder
+  counts as one too.
 - ``SubagentStart``: the subagent note, at every depth.
-- ``PostToolUse`` (async): a one-line note after a large tool result or
-  a web result, for the Deep level.
+- ``PostToolUse``: a one-line note after a large tool result or a web
+  result, for the Deep level. Claude Code ignores what a background
+  hook prints, so this entry runs in the foreground, matched only to
+  tools whose results can be large, and returns at once for the rest.
 - ``SessionEnd``, ``Notification`` and ``PermissionRequest`` (the last
   two async): one line each in ``<config-dir>/signals/YYYY-MM.jsonl``
   saying why a session ended, what Claude waited for, or which tool
