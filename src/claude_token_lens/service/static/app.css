@@ -553,6 +553,53 @@ details.fix[open] > summary {
   cursor: pointer;
 }
 
+.session-rating {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.5rem 0.9rem 0.75rem;
+  margin: 0.75rem 0;
+}
+
+.session-rating legend {
+  font-weight: 600;
+  padding: 0 0.3rem;
+}
+
+.rating-question {
+  margin: 0.5rem 0;
+}
+
+.rating-label {
+  margin: 0 0 0.25rem;
+  font-size: 0.9rem;
+}
+
+.rating-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  margin: 0 1rem 0.25rem 0;
+  font-size: 0.9rem;
+}
+
+.rating-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: center;
+  margin-top: 0.5rem;
+}
+
+.rating-actions button {
+  font: inherit;
+  padding: 0.3rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--fg);
+  cursor: pointer;
+}
+
 .timeline-svg {
   width: 100%;
   height: auto;
@@ -1116,4 +1163,268 @@ tr.row-group th {
 @media (prefers-color-scheme: dark) {
   .severity-action { color: #ff6b5e; }
   .severity-advice { color: #f0b429; }
+}
+
+/* -- metrics capture: banner on every tab, and the Capture tab ------ */
+
+.capture-banner {
+  margin: 0.5rem 0 0.75rem;
+  padding: 0.5rem 0.9rem;
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--muted);
+  border-radius: 4px;
+  font-size: 0.9rem;
+}
+
+.capture-banner.capture-on {
+  border-left-color: #a06a00;
+}
+
+.capture-banner p {
+  margin: 0;
+}
+
+.capture-notes {
+  margin: 0.35rem 0 0;
+  padding-left: 1.2rem;
+}
+
+.capture-feedback-note {
+  margin-top: 0.35rem !important;
+  color: var(--muted);
+}
+
+.capture-hide {
+  color: var(--muted);
+}
+
+.capture-warning {
+  border-left-color: #a06a00;
+}
+
+.capture-levels {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 0.75rem;
+  margin: 0.75rem 0 1rem;
+}
+
+.capture-level {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.capture-level.current {
+  border-color: var(--accent);
+  border-width: 2px;
+}
+
+.capture-level p {
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+.capture-level-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 0.5rem;
+}
+
+.capture-cost {
+  font-weight: 600;
+}
+
+.capture-level .capture-button {
+  align-self: flex-start;
+  margin-top: auto;
+}
+
+.capture-button {
+  font: inherit;
+  font-size: 0.9rem;
+  padding: 0.3rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--header-bg);
+  color: var(--fg);
+  cursor: pointer;
+}
+
+.capture-button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--bg);
+}
+
+.capture-button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.capture-controls {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 0.4rem 0.75rem;
+  align-items: center;
+  max-width: 44rem;
+}
+
+.capture-controls select {
+  font: inherit;
+  justify-self: start;
+}
+
+.capture-controls .notes {
+  grid-column: 1 / -1;
+  margin: 0 0 0.5rem;
+}
+
+.metric-list {
+  display: grid;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.metric-row {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.6rem 0.75rem;
+}
+
+.metric-row.on {
+  border-left: 4px solid var(--accent);
+}
+
+.metric-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.metric-title {
+  font-weight: 600;
+}
+
+.metric-what {
+  margin: 0.3rem 0;
+}
+
+.metric-facts {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 0.2rem 0.75rem;
+  margin: 0;
+  font-size: 0.88rem;
+}
+
+.metric-facts dt {
+  color: var(--muted);
+}
+
+.metric-facts dd {
+  margin: 0;
+}
+
+.metric-tag {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  overflow-wrap: anywhere;
+}
+
+.capture-dialog {
+  max-width: min(32rem, calc(100vw - 2rem));
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+  padding: 1rem 1.25rem;
+}
+
+.capture-dialog::backdrop {
+  background: rgba(0, 0, 0, 0.45);
+}
+
+.capture-dialog h4 {
+  margin: 0 0 0.5rem;
+}
+
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 1rem;
+}
+
+@media (max-width: 600px) {
+  .capture-controls, .metric-facts {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .metric-facts dd {
+    margin-bottom: 0.3rem;
+  }
+}
+
+@media (prefers-color-scheme: dark) {
+  .capture-banner.capture-on, .capture-warning {
+    border-left-color: #f0b429;
+  }
+}
+
+/* -- Work habits tab ------------------------------------------------ */
+
+.habit-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 0.75rem;
+  margin: 0.5rem 0 1rem;
+}
+
+.habit-card {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  min-width: 0;
+}
+
+.habit-card p {
+  margin: 0;
+}
+
+.habit-card .code-block pre {
+  white-space: pre-wrap;
+}
+
+.habit-saving {
+  font-weight: 600;
+}
+
+.habit-try {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.habit-spark-wrap {
+  display: inline-block;
+  margin-left: 0.5rem;
+  vertical-align: middle;
+}
+
+.habit-spark {
+  height: 1.2rem;
+  width: auto;
+  display: block;
+}
+
+@media (max-width: 480px) {
+  .habit-cards {
+    grid-template-columns: 1fr;
+  }
 }

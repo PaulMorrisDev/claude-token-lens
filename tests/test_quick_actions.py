@@ -7,7 +7,7 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from claude_token_lens import quality
+from claude_token_lens import capture_catalogue, discovery, quality
 from claude_token_lens import quick_actions as qa
 from claude_token_lens.fixes import PROMPT_RESTART
 from claude_token_lens.model import Recommendation
@@ -338,29 +338,55 @@ def test_models_check_does_not_suggest_a_model_the_agent_was_often_retried_from(
 _NO_MARKERS = [{"marker": "[retry: ...]", "runs": 0, "of_runs": 40}, {"marker": "[result: ...]", "runs": 0, "of_runs": 40}]
 
 
-def test_quality_offers_the_marker_lines_when_agents_ran_and_none_wrote_one(tmp_path):
+def _capture_table(level: str) -> NS:
+    return NS(key="capture", tables=[_table("capture_usage", [{"metric": "level", "value": level}])])
+
+
+def _claude_md(text: str) -> None:
+    root = discovery.claude_root()
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "CLAUDE.md").write_text(text, encoding="utf-8")
+
+
+def test_quality_offers_metrics_capture_when_agents_ran_and_none_wrote_a_marker(tmp_path):
     calm = {**_AGENT, "unfinished_pct": 3.0, "turn_limit_pct": 0.0}
     result = qa.run("quality", _ctx(tmp_path, model=_quality_model([calm], markers=_NO_MARKERS)))
     assert result["status"] == "ok"
     [fix] = result["fixes"]
     assert set(fix) == FIX_KEYS and fix["key"] is None
-    assert quality.MARKER_LINES in fix["prompt"] and "Show me the diff before saving" in fix["prompt"]
-    assert fix["prompt"].endswith(PROMPT_RESTART)
+    assert fix["title"] == "Turn on metrics capture"
+    assert fix["command"] == "claude-token-lens capture on --level essentials --dry-run"
+    assert "--dry-run" in fix["prompt"] and "Don't run it without --dry-run" in fix["prompt"]
     explainer = dict(fix["explainer"])
-    assert f"About {round(len(quality.MARKER_LINES) / 4)} tokens" in explainer["What it costs"]
-    assert "Explore and Plan" in explainer["Where and who it affects"]
-    assert quality.MARKER_HEADING in explainer["How to undo it"]
+    metrics = capture_catalogue.level_metrics("essentials")
+    assert f"about {round(len(capture_catalogue.note_text(metrics, 'main')) / 4)} tokens" in explainer["What it costs"]
+    assert "capture off" in explainer["How to undo it"]
 
 
-@pytest.mark.parametrize("already", ["written", "in_claude_md", "no_agents"])
-def test_quality_does_not_offer_the_marker_lines_again(tmp_path, already):
+@pytest.mark.parametrize("already", ["written", "in_claude_md", "no_agents", "capture_on"])
+def test_quality_does_not_offer_metrics_capture_again(tmp_path, already):
     markers = [{"marker": "[result: ...]", "runs": 3 if already == "written" else 0,
                 "of_runs": 0 if already == "no_agents" else 40}]
-    ctx = _ctx(tmp_path, model=_quality_model([{**_AGENT, "unfinished_pct": 3.0, "turn_limit_pct": 0.0}],
-                                              markers=markers))
+    model = _quality_model([{**_AGENT, "unfinished_pct": 3.0, "turn_limit_pct": 0.0}], markers=markers)
+    if already == "capture_on":
+        model.sections.append(_capture_table("Essentials"))
+    ctx = _ctx(tmp_path, model=model)
     if already == "in_claude_md":
-        (ctx.config_dir.parent / "CLAUDE.md").write_text(f"# Rules\n\n{quality.MARKER_LINES}\n", encoding="utf-8")
+        _claude_md(f"# Rules\n\n{quality.MARKER_LINES}\n")
     assert qa.run("quality", ctx)["fixes"] == []
+
+
+def test_quality_offers_to_remove_the_older_markers_section_while_capture_is_on(tmp_path):
+    model = _quality_model([{**_AGENT, "unfinished_pct": 3.0, "turn_limit_pct": 0.0}], markers=_NO_MARKERS)
+    model.sections.append(_capture_table("Standard"))
+    _claude_md(f"# Rules\n\n{quality.MARKER_LINES}\n")
+    [fix] = qa.run("quality", _ctx(tmp_path, model=model))["fixes"]
+    assert set(fix) == FIX_KEYS and fix["command"] is None
+    assert quality.MARKER_HEADING in fix["prompt"] and "Show me the diff before saving" in fix["prompt"]
+    assert fix["prompt"].endswith(PROMPT_RESTART)
+    explainer = dict(fix["explainer"])
+    assert f"About {round(len(quality.MARKER_LINES) / 4)} tokens" in explainer["What it saves"]
+    assert quality.MARKER_LINES in explainer["How to undo it"]
 
 
 def test_retries_that_blame_the_brief_or_tools_are_tips(tmp_path):
@@ -372,3 +398,78 @@ def test_retries_that_blame_the_brief_or_tools_are_tips(tmp_path):
     assert tips["claude-implementer: retried because the brief was unclear"].startswith(
         "3 of its retries said the instructions it was given were the problem, not haiku.")
     assert tips["claude-implementer: retried because it lacked a tool or permission"].startswith("2 of its retries")
+
+
+
+# -- Work habits evidence in the checks -----------------------------------------
+
+
+def _habits_tables(**tables) -> NS:
+    return NS(key="habits", tables=[_table(name, rows) for name, rows in tables.items()])
+
+
+_PLAYBOOK = [
+    {"habit": key, "saving": saving, "evidence": f"{key} evidence.", "example": f"{key} example.", "source": "inferred"}
+    for key, saving in (("tool_loops", 2.0), ("short_reports", 1.0), ("name_files", 0.5), ("quiet_output", 0.25))
+]
+
+
+def test_habits_shows_the_top_of_the_playbook_as_tips(tmp_path):
+    model = _full_model()
+    model.recommendations = []
+    model.sections.append(_habits_tables(habits_playbook=_PLAYBOOK))
+    result = qa.run("habits", _ctx(tmp_path, model=model))
+    assert result["status"] == "act" and "The Work habits tab has the rest." in result["summary"]
+    tips = result["tips"][-qa.PLAYBOOK_TIPS:]
+    assert [t["title"] for t in tips] == [
+        "Stop retrying a failing command", "Ask agents for short reports", "Name the files you already know",
+    ]
+    assert tips[0]["text"] == (
+        f"tool_loops evidence. Try: tool_loops example. About {qa._money(_ctx(tmp_path), 2.0)} a week (inferred)."
+    )
+
+
+def test_skills_late_or_not_needed_become_tips(tmp_path):
+    model = _full_model()
+    model.sections.append(_habits_tables(habits_skills=[
+        {"skill": "review", "late": 3, "unneeded": 0, "before": 0.4},
+        {"skill": "deploy", "late": 1, "unneeded": 2, "before": None},
+        {"skill": "lint", "late": 1, "unneeded": 1, "before": None},
+    ]))
+    tips = qa._skill_timing_tips(_ctx(tmp_path, model=model))
+    assert [t["title"] for t in tips] == ["review: run it at the start", "deploy: often not needed"]
+    assert "3 times, with about 0.40 USD already spent each time" in tips[0]["text"]
+    assert "/review" in tips[0]["text"] and "disable-model-invocation: true" in tips[1]["text"]
+
+
+def test_tool_output_says_to_stop_a_failing_command_sooner(tmp_path):
+    model = _full_model()
+    model.sections.append(_habits_tables(habits_tool_output=[{"tool": "loops", "loops": 4, "cost": 1.2}]))
+    tips = qa.run("tool-output", _ctx(tmp_path, model=model))["tips"]
+    tip = next(t for t in tips if t["title"] == "Stop a failing command sooner")
+    assert tip["text"].startswith("4 commands failed three or more times within one message")
+
+
+def test_quality_tells_you_what_came_before_work_you_said_missed(tmp_path):
+    model = _quality_model([{**_AGENT, "unfinished_pct": 3.0, "turn_limit_pct": 0.0}])
+    model.sections.append(_habits_tables(habits_outcomes=[
+        {"outcome": "missed", "pieces": 2, "cost": 3.0, "slow": "Wrong approach or rework", "helped": "A plan first"},
+    ]))
+    tips = qa.run("quality", _ctx(tmp_path, model=model))["tips"]
+    tip = next(t for t in tips if t["title"] == "Work you said missed its goal")
+    assert tip["text"] == (
+        "2 pieces of work missed their goal, costing 3.00 USD. Most often slowed by: Wrong approach or rework. "
+        "Would have helped most: A plan first."
+    )
+
+
+def test_models_check_leaves_out_an_agent_claude_said_needed_a_larger_model(tmp_path):
+    model = _full_model()
+    model.sections.append(_habits_tables(habits_agents=[
+        {"agent_type": "Explore", "fit_smaller": 0, "fit_larger": 2, "hard_pct": None, "retried_model": 0},
+    ]))
+    result = qa.run("models", _ctx(tmp_path, model=model))
+    assert [fix["agent"] for fix in result["fixes"]] == [None]
+    [tip] = result["tips"]
+    assert tip["title"] == "Explore: haiku not suggested"
+    assert tip["text"].endswith("but Claude said 2 of its runs needed a larger model.")

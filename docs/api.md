@@ -195,7 +195,7 @@ Liveness/diagnostics probe (also the Docker healthcheck target — plan:
 `serve` binds its port before its first scan, so it answers from the
 first second.
 
-`data`: `{"status": "ok"|"starting"|"degraded"|"stale", "message": str|null, "scan": WatcherState-as-dict|null, "version": str, "schema_version": int, "transcripts_missing": int, "watcher": WatcherStats-as-dict, "service_registered": true|false|null}`.
+`data`: `{"status": "ok"|"starting"|"degraded"|"stale", "message": str|null, "scan": WatcherState-as-dict|null, "version": str, "schema_version": int, "transcripts_missing": int, "watcher": WatcherStats-as-dict, "service_registered": true|false|null, "capture": {...}|null}`.
 
 `status` says whether the figures are keeping up, and `message` says
 what it means in plain words (`null` when `"ok"`). The HTTP status is
@@ -262,6 +262,17 @@ SQLite's own message for a database error (it names no path or
 transcript text); other errors give their type only, since their
 messages can carry a path.
 
+`capture` is metrics capture's setting, cheap enough to read on every
+poll (`config.toml` and `settings.json` only): `level`, `title`,
+`describe` (such as `"Essentials (since 2026-09-20, 25% of sessions)"`),
+`on`, `expired` (its end time has passed), `effective` (on and not
+expired), `enabled_at`, `until`, `sample`, `metrics`, `feedback`,
+`coaching`, `projects_limited` (only whether `[capture] projects` is
+set, never the patterns) and `hooks_ok` (whether `settings.json` runs
+every hook the chosen metrics need; `true` when they need none). The
+dashboard fetches `GET /api/capture` for its banner when this block
+changes. `capture` is `null` when `config.toml` can't be read.
+
 ### `GET /api/summary`
 
 Corpus-wide totals — `Store.summary`.
@@ -312,7 +323,13 @@ if `<id>` is unknown.
 
 `data`: the session-summary fields above, plus `transcripts` (list of
 `{"id", "kind", "agent_id", "agent_type", "spawn_depth", "parent_agent_id"}`
-— no `path`) and `tags` (`{key: value}`).
+— no `path`), `tags` (`{key: value}`) and `feedback`: your rating
+from the Sessions tab (`{"outcome", "slow", "worth", "helped",
+"set_at"}`, words only; `null` when unrated). While the dashboard
+rating is switched on (`[capture] feedback` holds `dashboard_rating`),
+`data` also carries `feedback_questions`: the `/tl-feedback` questions
+to rate it with, each `{"key", "question", "multi", "options": [{"word",
+"label"}]}`.
 
 If the session has a stored top-level transcript digest, `data` also
 carries `turn_series` and `markers` (S1-integration fix 1.g), sourced
@@ -401,10 +418,12 @@ resolution). `/api/summary` accepts `window` and `window_days` only.
 `/api/sessions` and `/api/compactions` accept them all but, unlike the
 report routes, list everything when none is given. Every other route
 (`/api/health`, `/api/session/<id>`, `/api/recache`, `/api/baseline`,
-`/api/profiles*`, `/api/impact`, `/api/setup`) ignores them.
+`/api/profiles*`, `/api/impact`, `/api/setup`, `/api/capture`) ignores them.
 
 **Caching.** The service builds each window's report once per store
-change (`Store.change_token()`) and keeps the last eight. When the store
+change (`Store.change_token()`) or `config.toml` change (its
+modification time: a new billing mode or capture setting changes the
+figures) and keeps the last eight. When the store
 has changed since a window's report was built (a live session writes
 every few seconds), a request is answered from the kept report at once
 and a rebuild starts in the background (one at a time), so a tab never
@@ -763,18 +782,32 @@ hides every unused skill at once, when there are two or more.
 
 Without `goal`: `{"goals": [{"id", "title", "what"}, ...]}`, the goals a
 profile can start from (`profiles/goals.py`): `recommendations`,
-`subagents`, `models`, `cache`, `compaction`, `thinking` and `current`.
-With `goal=<id>`: that goal's draft. An unknown goal is `400`.
+`subagents`, `models`, `cache`, `compaction`, `thinking`, `tasks` and
+`current`. With `goal=<id>`: that goal's draft. An unknown goal is `400`.
 
-Query: `goal`, plus the windowing params above (used only with `goal`).
+Query: `goal`, `task` (for `tasks`: a kind of task from the capture
+vocabulary, `feature` ... `chat`; any other value is `400`), plus the
+windowing params above (used only with `goal`).
 
-`data` (with `goal`): `{"goal": {"id", "title", "what"}, "period", "from_current", "candidates": [{"key", "agent", "label", "now", "value", "ticked", "evidence", "what", "tradeoff", "note", "estimate"}, ...], "profile": {"settings", "agents"}, "whatif"}`.
+`data` (with `goal`): `{"goal": {"id", "title", "what"}, "period", "from_current", "tasks", "task", "note", "candidates": [{"key", "agent", "label", "now", "value", "ticked", "evidence", "what", "tradeoff", "note", "estimate"}, ...], "profile": {"settings", "agents"}, "whatif"}`.
+For `tasks`: `tasks` lists the kinds of task in the Work habits
+section's `habits_setups` table, `task` is the one drafted (the one
+asked for when it's there, else the first with a cheaper setup) and
+`note` says what was found; other goals return `[]`, `null` and `null`.
 A candidate is ticked only when the data supports it; the main model is
-never pre-ticked. `estimate` is that one change's `POST /api/whatif`
-row; `profile` holds the ticked changes and `whatif` their combined
-estimate. `current` returns no candidates (`from_current: true`): the
-dashboard saves your current settings with
-`POST /api/profiles/from-current` instead.
+never pre-ticked. `tasks` also drafts a cheaper-model candidate (`key`
+`"model"`, `agent` the subagent type) for each agent type that most
+answered that kind of task, from the Work habits section's
+`habits_agents_by_task` table, vetoed the same way as the `models`
+goal's own draft. `estimate` is that one change's `POST /api/whatif`
+row; for `tasks`, its `saving_usd` and `effect_text` are then scaled to
+that task's own share of the window (`habits_by_task`, or the agent's
+task share of its own cost for an agent candidate) — `saving_usd` is
+`null` and `basis` says why when there's no clean share to scale by.
+`profile` holds the ticked changes and `whatif` their combined
+estimate, scaled the same way for `tasks`. `current` returns no
+candidates (`from_current: true`): the dashboard saves your current
+settings with `POST /api/profiles/from-current` instead.
 
 ### `GET /api/impact`
 
@@ -786,8 +819,11 @@ Takes no window: each change is compared over its own before and after
 periods, looking back at most `lookback_days`.
 
 `data`: `{"changes": [{"change": {"ts", "source", "label", "keys", "changes", "backup_ts", "reverted"}, "before_sessions", "after_sessions", "enough", "verdict", "measures": [{"label", "before", "after", "before_n", "after_n", "change_pct", "direction"}, ...], "quality": [{"group", "label", "before_runs", "after_runs", "verdict", "judged", "min_runs", "signals": [{"key", "label", "kind", "worse_when", "unit", "before", "after", "before_text", "after_text", "before_counts", "after_counts", "before_runs", "after_runs", "p", "label_key", "verdict"}, ...]}, ...]}, ...], "caveat", "min_sessions", "lookback_days"}`.
-Newest change first, at most ten. `change.source` is `apply`, `revert`
-or `config` (a settings change the hook saw). `enough` is false until each side has
+Newest change first, at most ten. `change.source` is `apply`, `revert`,
+`config` (a settings change the hook saw) or `capture` (a metrics
+capture change from `capture-log.jsonl`, whose keys are `capture.<field>`
+and are measured by capture's own tokens per session and the share of
+messages Claude tagged). `enough` is false until each side has
 `min_sessions` sessions. `before`/`after` are display text in the
 billing mode's units; `direction` is `lower`, `higher`, `same` or
 `null`. For an `apply` that is not yet undone, `backup_ts` is what
@@ -813,6 +849,83 @@ costs in tokens and how to undo it, plus what to expect
 (`footprint.py`). Used by the Data quality tab.
 
 `data`: `{"items": [{"key", "title", "status", "where", "what_it_does", "token_cost", "undo"}, ...], "expectations": [{"title", "text"}, ...], "uninstall_command"}`.
+
+### `GET /api/capture`
+
+Metrics capture for the Capture tab and the banner on every tab
+(`capture_view.view`): the setting, each level and metric with what it
+captures, why and what it costs on your own usage, and what capture
+has cost since it was turned on. Built from `[capture]` in
+`config.toml`, the metric catalogue (`capture_catalogue.py`), the
+last 14 days replayed as if capture had been on (`capture.estimate`),
+and the notes and tags measured in transcripts since `enabled_at`
+(`capture.usage`). The replay is kept for 30 minutes and the measured
+part until the store changes; an older copy is served while a fresh
+one is built in the background.
+
+`data`: `{"config", "warning", "samples", "levels", "sections", "measured", "history", "hooks", "billing", "roi", "banner", "commands"}`:
+
+- `config`: the same block as `/api/health`'s `capture`, without `hooks_ok`.
+- `warning`: the cost warning the dashboard repeats before any change
+  that uses more tokens.
+- `samples`: the allowed sampling percentages, `[100, 50, 25, 10]`.
+- `levels`: one card each for `off`, `free`, `essentials`, `standard`,
+  `deep` and `custom`: `title`, `summary`, `adds` (metric titles over
+  the level before), `metrics`, `asks_claude`, `current`, `rough`
+  (token sizes from the catalogue) and `estimate` (`tokens_per_week`,
+  `tokens_text`, `usd`, `text`, `share_pct`, `share_text`; `null`
+  when it costs nothing or there is no history).
+- `sections`: the metrics grouped as on the page. Each has `id`,
+  `kind` (`level`, `derived`, `feedback` or `coaching`), `group`,
+  `title`, `what`, `why`, `powers`, `tag` (what Claude writes),
+  `hooks`, `requires`, `on`, `toggle` (`false` for metrics that are
+  always measured), `asks_claude`, `needs_hook` (on, but its hook
+  entry is missing), `needs_install` with `install_note` and
+  `install_command` (the `/tl-feedback` skill is on but its file is
+  missing, out of date or someone else's: the dashboard never writes
+  Claude Code's folder, so it names the CLI command), `statusline_note`
+  (a status-line toggle is on but Claude Code's status line isn't this
+  tool's), `estimate` and `actual` (`{usd, text}` a week, and over
+  `actual_label`: since it was turned on, or the last 14 days for the
+  skill), and `answers`/`target`/`enough` (whether enough has been
+  collected for firm suggestions; for the skill and the dashboard
+  rating, the runs answered and the sessions rated).
+- `measured`: `null` while off; otherwise `since`, `sessions`,
+  `subagents`, `notes`, `note_tokens`, `tag_tokens`, the amount and
+  share of spend, coverage (`coverage_pct`: the share of messages
+  Claude tagged; `report_coverage_pct` for agent reports), `scopes`
+  (`main`, `subagent`, `tool`, `brief`) and a `daily` series.
+- `history`: what the estimates replay (`days`, `sessions`,
+  `subagents`, `cycles`), `null` with no history.
+- `hooks`: `ok` (`true` when nothing is missing), `summary`, `missing`,
+  `missing_events`, `problems` (a count: problem text can hold a
+  path) and `connect_command`.
+- `billing`: `mode` and `basis` (what the amounts are).
+- `roi`: what capture is costing against what depends on it, both
+  spread over a week (`capture.weekly_cost`,
+  `habits.capture_dependent_value`): `{"cost", "value", "measured"}`,
+  `cost` and `value` each `{usd, text}` amounts in billing units
+  (`units.Units.money`). `null` while there's no start time to price a
+  weekly cost from (capture off, or turned on too recently). `value` is
+  `null` and `measured` is `false` while nothing measured yet — no habit
+  worth trying whose evidence needs capture's reports or your feedback —
+  depends on either; the dashboard says so instead of showing a zero.
+- `banner`: `on`, `headline`, `notes` (end time passed, hook entries
+  missing, no notes seen, low coverage, enough collected, the skill
+  needs installing, what capture costs a week against what depends on
+  it) and `feedback_note`.
+- `feedback`: `skill` (`installed`, `outdated`, `foreign`, `missing`,
+  or `null` while the skill is off), `runs` and `answered` (its runs
+  over the last `days` days), `ratings` (sessions rated on the
+  dashboard, `null` while that is off), `questions` (as in
+  `GET /api/session/<id>`'s `feedback_questions`) and `brief_skill`
+  (the `/tl-brief` skill's file, in the same words as `skill`, or
+  `null` while brief templates are off).
+- `commands`: the `status`, `connect`, `feedback` and `brief` CLI
+  commands.
+
+`409` with the `claude-token-lens capture status` command in
+`error.commands` when `config.toml` can't be read.
 
 ### `GET /api/report.md` / `GET /api/report.html` / `GET /api/report.json`
 
@@ -852,6 +965,59 @@ taking precedence over `sessions.toml`.
 
 `data`: `{"session_id": str, "tags": {key: value}}` (the session's full
 tag set after the write).
+
+### `POST /api/sessions/<id>/feedback`
+
+Your rating of a session: the `/tl-feedback` questions as checkboxes,
+kept in this tool's own store (the `session_feedback` table), so it
+costs no tokens. The Sessions tab shows the form while the dashboard
+rating is switched on; the route itself works either way.
+
+Body: `{"outcome": word|null, "slow": [word], "worth": word|null,
+"helped": [word]}`, any key left out counting as nothing ticked. The
+words are `capture_catalogue.FEEDBACK_VOCAB`'s, never free text:
+`outcome` is `met`, `partly`, `missed` or `stopped`; `slow` any of
+`unclear`, `rework`, `tools`, `none`; `worth` is `yes`, `fair` or
+`no`; `helped` any of `context`, `plan`, `smaller`, `none`. A body
+with nothing ticked clears the rating. `404` if `<id>` is unknown;
+`400` if the body is not a JSON object, has another key, or a word
+isn't one of these (the cross-site checks above run first).
+
+`data`: `{"session_id": str, "feedback": {...} | null}` (as in
+`GET /api/session/<id>`).
+
+### `POST /api/capture`
+
+Changes metrics capture in this tool's own `config.toml` (`[capture]`,
+through `config.set_capture`, which writes atomically and logs the
+change to `capture-log.jsonl`). It never touches Claude Code's
+`settings.json`: when a chosen metric needs a hook entry that isn't
+there, the answer's `hooks` block names the `capture connect` command
+to run.
+
+Body: a JSON object with any of these keys:
+
+- `level`: `off`, `free`, `essentials`, `standard` or `deep`.
+- `metrics`: the level metrics to capture (a custom set). Not with
+  `level`.
+- `feedback`, `coaching`: the feedback and live-coaching items to
+  switch on (the list replaces the current one).
+- `sample`: `100`, `50`, `25` or `10` (percent of sessions).
+- `until`: an ISO 8601 time in the future when capture switches
+  itself off, or `""` for no end.
+
+Only from this machine: `403` unless the request comes from a
+loopback address, on top of the cross-site checks above (a service
+bound to `0.0.0.0` for a container still can't be switched from
+another machine). `400` on an unknown key or value, both `level` and
+`metrics`, or a past `until`. `409` when `config.toml` can't be read
+or written (such as a read-only file system); its `error.commands`
+lists the `claude-token-lens capture ...` commands that make the
+same change from a terminal. The message never quotes the error,
+which can hold a path.
+
+`data`: `GET /api/capture`'s answer after the change, plus
+`changed` (`false` when it was already set that way).
 
 ### `POST /api/profiles`
 
@@ -990,7 +1156,8 @@ every request would make every tab switch in the UI (`docs/ui.md`)
 re-parse the whole corpus. The implementation caches the assembled
 `ReportModel` in-process, keyed by `(window_days, since, until,
 change_token)` (a named `window` is first turned into its `since`,
-rounded to the minute), where `change_token` is `Store.change_token()` (S1-integration fix 1.f) — a
+rounded to the minute), where `change_token` is `Store.change_token()` (S1-integration fix 1.f),
+paired with `config.toml`'s modification time — a
 single string combining `(COUNT(*), MAX(updated_at))` over `transcripts`
 and `(COUNT(*), MAX(ts))` over `snapshots`. A cache hit only requires
 this token to be unchanged since the entry was built; any transcript or

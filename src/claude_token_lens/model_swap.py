@@ -147,7 +147,7 @@ _ALL_ARCHETYPES: tuple[str, ...] = ()
 #: convention -- see module docstring for the full explanation of each.
 ASSUMPTIONS: list[str] = [
     "token volumes, turn counts, and the observed 5m/1h cache-write split are held constant across every alternative-model repricing -- every saving figure is a price ceiling at today's usage shape, never a prediction",
-    "a smaller model may need more turns to reach the same result, or fail the task outright; neither possibility is represented here",
+    "a smaller model may need more turns to reach the same result, or fail the task outright; neither possibility is priced here -- with metrics capture on, how hard Claude reported the work and whether it said a smaller model would do are cited as evidence, and a run that said it needed a larger model holds the suggestion back (advice._merge_model_tier), but they never change a figure",
     "alternative columns cover every model in pricing.toml (legacy dated ids included), but the model-tier rule only ever recommends the immediately next cheaper family's current aliased model, never the cheapest alternative overall",
     "tier order (fable > opus > sonnet > haiku) is workstyle.model_tier's existing family-substring ranking, not a cost-derived ordering computed here",
 ]
@@ -763,9 +763,28 @@ def _rule_model_tier(
                     _evidence("Best cheaper alternative", alt_label, "model_swap", "model_swap_by_agent_type", agent_type),
                     _evidence("Ceiling saving (USD)", saving_usd, "model_swap", "model_swap_by_agent_type", agent_type),
                     _evidence("Ceiling saving (%)", saving_pct, "model_swap", "model_swap_by_agent_type", agent_type),
+                    *_reported_fit_evidence(report, agent_type),
                 ],
             )
         )
+    return out
+
+
+def _reported_fit_evidence(report: ReportModel, agent_type: str) -> list[tuple]:
+    """Metrics-capture evidence for one agent type from the Work habits
+    section's ``habits_agents`` table: the share of its work Claude
+    reported easy, and runs that said a smaller model would have done.
+    Empty without those tags."""
+    table = _table(report, "habits", "habits_agents")
+    row = _row(table, agent_type) if table is not None else None
+    if row is None:
+        return []
+    out = []
+    for key, label in (("easy_pct", "Work reported easy (%)"), ("fit_smaller", "Runs that said a smaller model would do")):
+        idx = _col_index(table, key)
+        value = row[idx] if idx is not None and idx < len(row) else None
+        if isinstance(value, (int, float)) and value > 0:
+            out.append(_evidence(label, value, "habits", "habits_agents", agent_type))
     return out
 
 

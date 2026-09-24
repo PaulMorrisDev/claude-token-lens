@@ -135,3 +135,45 @@ def test_suggest_falls_back_to_archetype_default_when_no_purpose_matches():
 def test_suggest_is_deterministic():
     for _ in range(5):
         assert suggest("plan-high-implement-low", ["refactor", "test-triage"]) == "implementation-heavy"
+
+
+# -- reported kinds of task (metrics capture) ------------------------------------------
+
+from claude_token_lens import capture_catalogue  # noqa: E402
+from claude_token_lens.profiles import catalogue as catalogue_mod  # noqa: E402
+
+
+def test_for_words_normalise_to_the_task_vocabulary():
+    vocab = set(capture_catalogue.TAG_VOCAB["task"])
+    for tasks in catalogue_mod.FOR_TASKS.values():
+        assert set(tasks) <= vocab
+
+
+def test_every_task_but_ops_has_a_catalogue_profile():
+    covered = {task: catalogue_mod.task_profile(task) for task in capture_catalogue.TAG_VOCAB["task"]}
+    assert covered == {
+        "feature": "implementation-heavy",
+        "bugfix": "implementation-heavy",
+        "refactor": "implementation-heavy",
+        "debug": "implementation-heavy",
+        "docs": "interactive-chat",
+        "review": "implementation-heavy",
+        "test": "implementation-heavy",
+        "research": "discovery-scrape",
+        "plan": "planning-requirements",
+        "ops": None,
+        "chat": "interactive-chat",
+    }
+
+
+def test_tasks_for_reads_the_profiles_for_list():
+    assert catalogue_mod.tasks_for(catalogue_mod.get("planning-requirements")) == ("plan",)
+    assert catalogue_mod.tasks_for(catalogue_mod.get("overseer-fanout")) == ()
+
+
+def test_a_reported_task_beats_a_guessed_purpose_but_not_a_structural_one():
+    assert suggest("single-model", ["general-dev"], ["research"]) == "discovery-scrape"
+    assert suggest("single-model", ["general-dev", "agent-fanout"], ["plan"]) == "overseer-fanout"
+    # A task no profile covers falls through to the purposes.
+    assert suggest("single-model", ["review"], ["ops"]) == "implementation-heavy"
+    assert suggest("chat-only", [], ["ops", "chat"]) == "interactive-chat"

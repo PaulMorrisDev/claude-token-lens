@@ -14,6 +14,10 @@ Sessions differ in size and kind of work, so a difference is a signal,
 not proof; with fewer than :data:`MIN_SESSIONS` on either side there is
 no verdict at all.
 
+A change to metrics capture is measured by what capture itself adds
+per session (its notes and tags, in tokens) and how many of your
+messages Claude tagged.
+
 Each change is also checked for quality (:mod:`quality`): the runs of the
 agent it changed (or the main session, for any other setting) before and
 after, on every quality signal, each marked worse, better, no clear
@@ -26,6 +30,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
+from . import capture as capture_mod
 from . import quality, recache
 from .change_points import ChangePoint
 from .model import EventKind, TranscriptResult
@@ -71,12 +76,17 @@ class _Transcript:
     rebuild_tokens: int = 0
     write_tokens: int = 0
     summaries: int = 0
+    #: Characters of capture notes injected and tags written.
+    capture_chars: int = 0
 
 
 @dataclass(slots=True)
 class SessionFacts:
     start: datetime
     main: _Transcript
+    #: Your messages, and how many of them Claude tagged.
+    messages: int = 0
+    tagged: int = 0
     #: (agent type, facts) per subagent spawn.
     spawns: list[tuple[str, _Transcript]] = field(default_factory=list)
     #: Quality counts per transcript: the main session and each spawn.
@@ -102,6 +112,7 @@ def _transcript(result: TranscriptResult, pricing: Pricing) -> _Transcript:
             facts.peak_context, turn.input_tokens + turn.cache_creation_tokens + turn.cache_read_tokens
         )
         facts.write_tokens += turn.cache_creation_tokens
+        facts.capture_chars += turn.cap_note_chars + (turn.cap.chars if turn.cap is not None else 0)
         if turn.message_id in rebuilt:
             facts.rebuild_tokens += turn.cache_creation_tokens
     facts.summaries = sum(1 for event in result.events if event.kind == EventKind.COMPACT_BOUNDARY)
@@ -119,12 +130,15 @@ def session_facts(corpus, pricing: Pricing) -> list[SessionFacts]:
         start = next((_ts(turn.ts) for turn in _priced(top) if _ts(turn.ts)), None)
         if start is None:
             continue
+        cycles = capture_mod.prompt_cycles(top)
         out.append(
             SessionFacts(
                 start=start,
                 main=_transcript(top, pricing),
                 spawns=[(sub.meta.agent_type or "(unknown)", _transcript(sub, pricing)) for sub in bundle.subs],
                 runs=quality.session_runs(bundle, pricing),
+                messages=len(cycles),
+                tagged=sum(1 for cycle in cycles if cycle.tag is not None),
             )
         )
     out.sort(key=lambda s: s.start)
@@ -168,6 +182,14 @@ def _value(measure: Measure, sessions: list[SessionFacts]) -> tuple[float | None
         return _mean([float(s.main.peak_context) for s in sessions]), len(sessions)
     if measure.key == "startup_tokens":
         return _mean([float(s.main.startup_tokens) for s in sessions]), len(sessions)
+    if measure.key == "capture_tokens":
+        return _mean([
+            (s.main.capture_chars + sum(f.capture_chars for _agent, f in s.spawns)) / capture_mod.CHARS_PER_TOKEN
+            for s in sessions
+        ]), len(sessions)
+    if measure.key == "tagged_share":
+        messages = sum(s.messages for s in sessions)
+        return (100.0 * sum(s.tagged for s in sessions) / messages if messages else None), len(sessions)
     return None, 0  # pragma: no cover
 
 
@@ -177,6 +199,8 @@ _REBUILD = Measure("rebuild_share", "Cache writes that rebuilt expired context",
 _SUMMARIES = Measure("summaries", "Conversation summaries per session", "count")
 _PEAK = Measure("peak_context", "Largest context per session", "tokens")
 _STARTUP = Measure("startup_tokens", "Context at the start of a session", "tokens")
+_CAPTURE = Measure("capture_tokens", "Metrics capture notes and tags per session", "tokens")
+_TAGGED = Measure("tagged_share", "Messages Claude tagged", "pct")
 
 
 def measures_for(point: ChangePoint) -> list[Measure]:
@@ -194,7 +218,10 @@ def measures_for(point: ChangePoint) -> list[Measure]:
         if label.startswith("agents."):
             parts = label.split(".")
             agent, key = (parts[1], parts[-1]) if len(parts) >= 3 else ("", key)
-        if agent:
+        if key.startswith("capture."):
+            add(_CAPTURE)
+            add(_TAGGED)
+        elif agent:
             add(Measure("agent_cost", f"{agent}: cost per spawn", "money", agent))
             add(Measure("agent_startup", f"{agent}: context at the start of each spawn", "tokens", agent))
         elif key in ("model", "effortLevel", "alwaysThinkingEnabled", "MAX_THINKING_TOKENS", "fastMode"):

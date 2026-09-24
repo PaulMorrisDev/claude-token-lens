@@ -30,6 +30,8 @@ so `onboarding.py` stays free of installer side effects.
 claude-token-lens init [--answers FILE] [--non-interactive] [--no-install]
                         [--repair-hook] [--connect]
                         [--install-service | --no-service] [--dry-run]
+                        [--capture-level LEVEL] [--capture-no-limit]
+                        [--feedback {on,off}]
 ```
 
 1. **Detect** what's already on the machine (`onboarding.detect` ->
@@ -120,6 +122,56 @@ claude-token-lens init [--answers FILE] [--non-interactive] [--no-install]
    anything else. `serve` answers within seconds of starting (it binds
    its port before reading your history, and shows that scan's progress),
    so "not responding yet" means it is still starting or has failed.
+9. **Ask about metrics capture** (`onboarding.ask_capture_level`, then
+   `onboarding.ask_capture_until`, then `cli.py`'s
+   `_cmd_init_capture_step`), after the service step. It warns that
+   capture uses tokens: Claude reads a short note when a session or
+   subagent starts, and ends each reply with a one-line tag you will
+   see. It then shows what each level would have cost over your last 14
+   days, from every project's sessions (`capture.history`, amounts in
+   your billing units), and asks for a level (`off`, the default,
+   `free`, `essentials`, `standard` or `deep`; `yes` means `essentials`
+   and `no` means `off`). `--capture-level LEVEL` or the answers file's
+   `capture_level` key answers it without asking; the warning is still
+   printed. Under `--non-interactive` with neither, capture stays off
+   and a `(derived) capture_level: ...` line says so, without reading
+   your sessions.
+
+   Turning a level on asks one more question: capture switches itself
+   off in `DEFAULT_CAPTURE_TIMEBOX_DAYS` (14) days by default, and the
+   prompt says the exact date and how to change it — keep it on longer
+   with `claude-token-lens capture on --for 30d` once it's running, or
+   answer this question **yes** to turn the time limit off entirely so
+   capture runs until you switch it off yourself. `--capture-no-limit`
+   or the answers file's `capture_no_limit` key (`true`/`false`) answers
+   it without asking. Under `--non-interactive` with neither, today's
+   behaviour is kept exactly: no time-box is set (this only matters the
+   first time a level is turned on — a later `init` never shortens or
+   removes a limit you already set with `capture on --for`).
+
+   A level (and, when set, an `until`) is saved to `[capture]` in
+   `config.toml`, then the `settings.json` entries the level needs are
+   shown and added after a yes (or at once with `--connect`), as
+   `capture on` does; with `--no-install`, or `--non-interactive`
+   without `--connect`, the `claude-token-lens capture connect` command
+   is printed instead. Capture that is already on is left as it is
+   unless a level is given.
+10. **Ask about feedback** (`onboarding.ask_feedback`, then `cli.py`'s
+    `_cmd_init_feedback_step`), last, whatever the capture level
+    (including off): whether to add the `/tl-feedback` skill — run it
+    after a piece of work to tick four quick questions (did it deliver,
+    what slowed it, was it worth the tokens, what would have helped)
+    and get a second status-line reminder that it's there. It costs
+    nothing until you run it, then about two short turns.
+    `--feedback {on,off}` or the answers file's `feedback` key answers
+    it without asking. Under `--non-interactive` with neither, it stays
+    off and a `(derived) feedback: ...` line says so. A yes is saved to
+    `config.toml`, then the `/tl-feedback` skill file is shown in full
+    and written after a yes (or at once with `--connect`), as `capture
+    feedback on` does; with `--no-install`, or `--non-interactive`
+    without `--connect`, the `claude-token-lens capture feedback on`
+    command is printed instead. Feedback already on is left as it is
+    unless `--feedback`/the answers file says otherwise.
 
 ### The question set
 
@@ -132,6 +184,9 @@ claude-token-lens init [--answers FILE] [--non-interactive] [--no-install]
 | `tz` | Time zone, such as Europe/London (blank for this computer's) | `config.tz` |
 | `apply_scope` | Where should changes you apply go by default (`user`/`project-local`/`repo`) | `config.apply_scope` and this project's `projects/<slug>.toml` |
 | `capture_window` | How many days to collect data before the first baseline | `config.capture_window` (default 7) |
+| `capture_level` | Metrics capture level: off, free, essentials, standard, deep (asked after the token-use warning and each level's estimate; see step 9) | `[capture] level` |
+| `capture_no_limit` | Turn off that time limit (capture then runs until you switch it off) — only asked when a level other than off is chosen (see step 9) | `[capture] until` |
+| `feedback` | Add the /tl-feedback skill? (asked last, whatever the capture level; see step 10) | `[capture] feedback` |
 | `extra_projects_roots` | Asked once per WSL folder `init` finds that `config.toml` doesn't list yet: Claude Code also runs in WSL: <distro>; include those sessions? (default yes; `--non-interactive` adds them with a note). An answers-file list replaces the whole setting | `config.extra_projects_roots` |
 
 `config.capture_started` is set to the current UTC timestamp by the
@@ -168,7 +223,10 @@ omits falls back to interactive prompting, or a derived default under
   "shared_project_config": true,
   "tz": "Europe/London",
   "apply_scope": "repo",
-  "capture_window": 14
+  "capture_window": 14,
+  "capture_level": "essentials",
+  "capture_no_limit": false,
+  "feedback": true
 }
 ```
 

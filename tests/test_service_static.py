@@ -36,8 +36,8 @@ from pathlib import Path
 
 import pytest
 
-from claude_token_lens import footprint, helptext, quick_actions, skills_review
-from claude_token_lens.config import Config
+from claude_token_lens import capture_view, footprint, helptext, quick_actions, skills_review
+from claude_token_lens.config import CaptureConfig, Config
 from claude_token_lens.corpus import load_corpus
 from claude_token_lens.pricing import load_pricing
 from claude_token_lens.profiles import goals
@@ -376,6 +376,7 @@ def _build_fixture_data(tmp_path: Path) -> tuple[dict, dict]:
             "version": "0.5.2",
             "schema_version": store.schema_version(),
             "watcher": {"finished_at": "2026-09-19T00:00:00Z", "files_parsed": 1, "errors": 0},
+            "capture": {**capture_view.config_block(CaptureConfig()), "hooks_ok": None},
         },
         "/api/summary": store.summary(),
         "/api/sessions": store.sessions(),
@@ -461,6 +462,7 @@ def _build_fixture_data(tmp_path: Path) -> tuple[dict, dict]:
         "expectations": [{"title": title, "text": text} for title, text in footprint.EXPECTATIONS],
         "uninstall_command": footprint.UNINSTALL_COMMAND,
     }
+    canned["/api/capture"] = capture_view.view(CaptureConfig(), units=units)
 
     return canned, sessions_map
 
@@ -877,3 +879,32 @@ def test_tab_titles_match_the_tab_buttons() -> None:
     assert set(intros) == set(buttons)
     # One h2 per tab: tabHeading is the only place a tab panel gets one.
     assert app_js.count('el("h2"') == 1
+
+
+def _function_source(app_js: str, name: str) -> str:
+    start = app_js.index("function " + name + "(")
+    end = app_js.index("\n  function ", start + 1)
+    return app_js[start:end]
+
+
+def test_capture_banner_is_polled_with_health_and_links_to_its_tab() -> None:
+    """The capture banner sits under the health banner on every tab and
+    is refreshed from /api/health's capture block."""
+    app_js = _static_text("app.js")
+    html = _static_text("index.html")
+    assert html.index('id="health-banner"') < html.index('id="capture-banner"') < html.index("<nav")
+    assert "updateCaptureBanner(health.capture)" in _function_source(app_js, "pollHealth")
+    banner = _function_source(app_js, "renderCaptureBanner")
+    assert "feedback_note" in banner and "captureTabLink" in banner
+
+
+def test_capture_tab_repeats_the_cost_warning_before_using_more_tokens() -> None:
+    """Switching to a level, a metric or a larger sample that asks Claude
+    for more goes through confirmCapture, which shows data.warning."""
+    app_js = _static_text("app.js")
+    for name in ("renderCaptureLevels", "renderCaptureControls", "renderMetricRow"):
+        src = _function_source(app_js, name)
+        assert "confirmCapture(" in src and "data.warning" in src, name
+    post = _function_source(app_js, "postCapture")
+    assert 'postJson("/api/capture"' in post and "error.commands" in post
+

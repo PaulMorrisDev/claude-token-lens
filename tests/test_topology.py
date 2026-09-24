@@ -30,13 +30,21 @@ Scenario shared by most tests here (``_build_scenario``):
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace as NS
 
 import pytest
 
 from claude_token_lens.model import TranscriptMeta
 from claude_token_lens.parse import parse_transcript
 from claude_token_lens.pricing import load_pricing, price_turn
-from claude_token_lens.topology import TopologyStats, build_section
+from claude_token_lens.topology import (
+    TopologyStats,
+    _report_index,
+    _report_tokens,
+    _transitive_closure,
+    agent_key,
+    build_section,
+)
 
 from helpers import (
     assert_privacy,
@@ -46,6 +54,7 @@ from helpers import (
     tool_use_block,
     turn_line,
     user_block_line,
+    user_str_line,
     write_jsonl,
 )
 
@@ -278,8 +287,10 @@ def test_upward_agent_tool_result_and_report_proxy(tmp_path):
     assert stats.workflow_tool_result_chars == 0
     assert stats.workflow_tool_result_calls == 0
 
-    assert stats.report_proxy_by_agent_type["claude-implementer"] == [400, 150]
-    assert stats.report_proxy_by_agent_type["general-purpose"] == [250]
+    # agent-a1 handed back a 400-char report (100 tokens); agent-a1-child
+    # has no tool_use_id of its own, so it falls back to its last output.
+    assert stats.report_proxy_by_agent_type["claude-implementer"] == [100, 150]
+    assert stats.report_proxy_by_agent_type["general-purpose"] == [50]  # a 200-char report
 
 
 # -- (c) skill roll-up: direct + spawned = total --------------------------
@@ -293,7 +304,7 @@ def test_skill_rollup_direct_plus_spawned_equals_total(tmp_path):
     acc = stats.skills["grill-me"]
     assert acc.invocations == 1
     assert acc.direct_spawns == 1  # only agent-a1 (agent-b1 has no skill turn)
-    assert acc.report_proxy_values == [400, 150]  # agent-a1 then agent-a1-child
+    assert acc.report_proxy_values == [100, 150]  # agent-a1 then agent-a1-child
 
     top_1_turn = next(t for t in top.turns if t.message_id == "top_1")
     a1 = subs[0]
@@ -332,7 +343,7 @@ def test_skill_rollup_uses_turn_tool_use_ids_without_the_raw_file(tmp_path):
     acc = stats.skills["grill-me"]
     assert acc.invocations == 1
     assert acc.direct_spawns == 1
-    assert acc.report_proxy_values == [400, 150]
+    assert acc.report_proxy_values == [100, 150]
 
 
 def test_skill_rollup_falls_back_to_raw_scan_when_turns_carry_no_tool_use_ids(tmp_path):
@@ -342,7 +353,9 @@ def test_skill_rollup_falls_back_to_raw_scan_when_turns_carry_no_tool_use_ids(tm
     import dataclasses
 
     top, subs, pricing = _build_scenario(tmp_path)
-    top.turns = [dataclasses.replace(t, tool_use_ids=()) for t in top.turns]
+    # A digest that old has no agent_result_chars either, so report sizes
+    # fall back to each agent's last output.
+    top.turns = [dataclasses.replace(t, tool_use_ids=(), agent_result_chars={}) for t in top.turns]
     assert all(t.tool_use_ids == () for t in top.turns)
 
     stats = TopologyStats()
@@ -642,3 +655,50 @@ def test_add_session_accumulates_across_multiple_sessions(tmp_path):
     assert stats.total_spawns == 6
     assert stats.session_baseline_writes == [5000, 5000]
     assert stats.skills["grill-me"].invocations == 2
+
+
+# -- redundant reads: a read after an edit is checking the change ----------
+
+
+def test_a_read_after_an_edit_to_the_same_file_is_not_a_repeat(tmp_path):
+    from claude_token_lens import parse
+
+    parse.set_salt(b"t" * 32)
+    top = _parse(tmp_path, "top-reads", [
+        turn_line(message_id="r1", content=[tool_use_block("Read", "t1", {"file_path": "C:/app/a.py"})]),
+        turn_line(message_id="r2", content=[tool_use_block("Edit", "t2", {"file_path": "C:/app/a.py"})]),
+        turn_line(message_id="r3", content=[tool_use_block("Read", "t3", {"file_path": "C:/app/a.py"})]),
+        turn_line(message_id="r4", content=[tool_use_block("Read", "t4", {"file_path": "C:/app/b.py"})]),
+        turn_line(message_id="r5", content=[tool_use_block("Read", "t5", {"file_path": "C:/app/b.py"})]),
+    ])
+    stats = TopologyStats()
+    stats.add_session("sess-1", top, [], load_pricing())
+    assert stats.redundant_reads_per_session == [1]  # b.py read twice; a.py re-read after its edit
+
+
+# -- agent ids as a child and a task notification spell them ------------------------
+
+
+def test_agent_key_strips_the_file_prefix_only():
+    assert agent_key("agent-a98f") == agent_key("a98f") == "a98f"
+    assert agent_key(None) == agent_key("") == ""
+
+
+def test_nested_agents_join_their_parent_by_its_bare_id():
+    """A child's ``parentAgentId`` is ``a1`` while its parent's file stem
+    (``meta.agent_id``) is ``agent-a1``."""
+    parent = NS(meta=NS(agent_id="agent-a1", parent_agent_id=None))
+    child = NS(meta=NS(agent_id="agent-b2", parent_agent_id="a1"))
+    assert _transitive_closure([parent], {"a1": [child]}) == [parent, child]
+
+
+def test_a_background_agent_report_is_found_by_its_task_id(tmp_path):
+    report = "<task-notification><task-id>a2</task-id><status>completed</status><result>" + "r" * 400 + \
+        "</result></task-notification>"
+    top_path, sub_path = tmp_path / "top.jsonl", tmp_path / "agent-a2.jsonl"
+    write_jsonl(top_path, [user_str_line("go"), turn_line(), user_str_line(report, origin={"kind": "task-notification"}),
+                           turn_line()])
+    write_jsonl(sub_path, [user_str_line("look"), turn_line(output_tokens=7)])
+    top = parse_transcript(top_path, TranscriptMeta(path=str(top_path), kind="top-level"))
+    sub = parse_transcript(sub_path, TranscriptMeta(path=str(sub_path), kind="subagent", agent_id="agent-a2"))
+    assert _report_tokens(sub, _report_index(top, [sub])) == round(len(report) / 4)

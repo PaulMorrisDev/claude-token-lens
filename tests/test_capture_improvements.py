@@ -248,7 +248,7 @@ def test_read_target_hash_never_contains_a_path_segment(tmp_path: Path):
     lines = [
         turn_line(
             message_id="msg_1",
-            content=[tool_use_block("Write", "tu_a", {"file_path": "C:/Users/paulm/secret.txt"})],
+            content=[tool_use_block("Read", "tu_a", {"file_path": "C:/Users/paulm/secret.txt"})],
         )
     ]
     path = tmp_path / "session.jsonl"
@@ -259,7 +259,7 @@ def test_read_target_hash_never_contains_a_path_segment(tmp_path: Path):
         assert segment not in hashed
 
 
-def test_read_target_hashes_cover_read_edit_write_multiedit_notebookedit(tmp_path: Path):
+def test_read_target_hashes_cover_reads_and_edits_go_to_edit_target_hashes(tmp_path: Path):
     parse.set_salt(b"d" * 32)
     lines = [
         turn_line(
@@ -276,9 +276,10 @@ def test_read_target_hashes_cover_read_edit_write_multiedit_notebookedit(tmp_pat
     path = tmp_path / "session.jsonl"
     write_jsonl(path, lines)
     result = parse_transcript(path, TranscriptMeta(path=str(path)))
-    # Each hashes its own target; all but Read are edits too.
-    assert len(result.turns[0].read_target_hashes) == 5
+    # Only Read is a read (PARSER_VERSION 15); the other four are edits.
+    assert len(result.turns[0].read_target_hashes) == 1
     assert len(result.turns[0].edit_target_hashes) == 4
+    assert not set(result.turns[0].read_target_hashes) & set(result.turns[0].edit_target_hashes)
 
 
 def test_load_or_create_salt_persists_across_calls(tmp_path: Path):

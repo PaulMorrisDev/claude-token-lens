@@ -3,9 +3,14 @@ one-off ``--set``), each revert, and each change the config hook's
 snapshots show between one session start and the next (a change you or
 Claude made by hand, or with a prompt from the dashboard).
 
+Each change to metrics capture (``capture-log.jsonl``, written by
+``config.set_capture``) is one too: it changes what Claude writes and
+what it costs.
+
 Used for the "Since my last change" window and for the before-and-after
-comparison in :mod:`impact`. Reads ``<config_dir>/backups/*/manifest.json``
-and ``<config_dir>/snapshots/``; writes nothing.
+comparison in :mod:`impact`. Reads ``<config_dir>/backups/*/manifest.json``,
+``<config_dir>/snapshots/`` and ``<config_dir>/capture-log.jsonl``;
+writes nothing.
 """
 
 from __future__ import annotations
@@ -15,6 +20,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
+from . import capture_catalogue
+from . import config as config_mod
 from . import snapshots as snapshots_mod
 from .profiles import apply as apply_mod
 from .profiles.frontmatter import parse_frontmatter
@@ -30,7 +37,7 @@ _BEHAVIOUR_PREFIXES = ("effective.", "agents.", "user_settings.", "project_setti
 @dataclass(slots=True)
 class ChangePoint:
     ts: datetime
-    #: "apply", "revert" or "config".
+    #: "apply", "revert", "config" or "capture".
     source: str
     label: str
     #: Settings keys that changed, as ``key`` or ``agent: key``, when known.
@@ -206,6 +213,45 @@ def _config_points(config_dir: Path) -> list[tuple[datetime | None, ChangePoint]
     return points
 
 
+def _capture_label(record: dict) -> str:
+    changed = record.get("changed") if isinstance(record.get("changed"), dict) else {}
+    level = str(record.get("level") or "off")
+    title = capture_catalogue.LEVEL_TITLES.get(level, level)
+    old = changed.get("level", {}).get("from") if isinstance(changed.get("level"), dict) else None
+    if level == "off":
+        return "Turned metrics capture off"
+    if old == "off":
+        return f"Turned metrics capture on: {title}"
+    if "level" in changed:
+        return f"Metrics capture level: {title}"
+    return "Changed metrics capture"
+
+
+def _capture_points(config_dir: Path) -> list[ChangePoint]:
+    """A change point for each ``[capture]`` change in ``capture-log.jsonl``."""
+    points = []
+    for record in config_mod.load_capture_log(config_dir):
+        when = _parse_iso(record.get("ts"))
+        changed = record.get("changed")
+        if when is None or not isinstance(changed, dict) or not changed:
+            continue
+        changes = [
+            {"key": f"capture.{key}", "agent": None, "old": value.get("from"), "new": value.get("to")}
+            for key, value in sorted(changed.items())
+            if isinstance(value, dict)
+        ]
+        points.append(
+            ChangePoint(
+                ts=when,
+                source="capture",
+                label=_capture_label(record),
+                keys=[c["key"] for c in changes],
+                changes=changes,
+            )
+        )
+    return points
+
+
 def change_points(config_dir: Path | str) -> list[ChangePoint]:
     """Every change point, oldest first. A snapshot difference that spans
     an apply or revert is that change seen again, not a second one."""
@@ -216,6 +262,7 @@ def change_points(config_dir: Path | str) -> list[ChangePoint]:
         if any((since is None or since <= other.ts) and other.ts <= point.ts for other in applied):
             continue
         points.append(point)
+    points.extend(_capture_points(config_dir))
     points.sort(key=lambda p: p.ts)
     return points
 

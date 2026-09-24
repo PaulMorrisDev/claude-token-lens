@@ -992,7 +992,7 @@ def _rule_agent_report_size(report: ReportModel, th: RecommendThresholds, archet
                 lever=None,
                 agent_type=agent_type,
                 evidence=[
-                    _evidence("Mean report proxy (output tokens)", mean_proxy, "agents", "topology_report_proxy", agent_type),
+                    _evidence("Mean report size (tokens)", mean_proxy, "agents", "topology_report_proxy", agent_type),
                 ],
             )
         )
@@ -1099,15 +1099,29 @@ def _rule_spawn_parts(
         all_read_only = isinstance(read_only, int) and read_only == spawns
 
         claude_md = part(agent_type, "claude_md")
+        # Metrics capture: whether its runs said they used CLAUDE.md. Held
+        # back when most that said, said they did.
+        rules_used = _cell(report, "habits", "habits_agents", agent_type, "rules_used") or 0
+        rules_unused = _cell(report, "habits", "habits_agents", agent_type, "rules_unused") or 0
         if (
             isinstance(claude_md, (int, float))
             and claude_md >= th.spawn_part_tokens
             and agent_type not in _SKIPS_CLAUDE_MD
             and overridable
+            and rules_used <= rules_unused
         ):
+            rules_evidence = []
             why = f"Each {agent_type} spawn starts with about {claude_md:,.0f} tokens of CLAUDE.md files and memory."
             if all_read_only:
                 why += " Every measured spawn only searched or read files, so it rarely needs your working rules."
+            if rules_unused:
+                why += (
+                    f" {rules_unused} of the {rules_used + rules_unused} runs that said, said they didn't use "
+                    "your CLAUDE.md."
+                )
+                rules_evidence = [
+                    _evidence("Runs that said they didn't use CLAUDE.md", rules_unused, "habits", "habits_agents", agent_type)
+                ]
             out.append(
                 Recommendation(
                     id="spawn-claude-md",
@@ -1129,6 +1143,7 @@ def _rule_spawn_parts(
                     evidence=[
                         _evidence("CLAUDE.md and memory per spawn", claude_md, "agent_startup", "agent_startup_breakdown", agent_type),
                         spawns_evidence,
+                        *rules_evidence,
                     ],
                     changes=[
                         SettingChange(
@@ -1415,12 +1430,77 @@ def _rule_spawn_cost(
     return out
 
 
+#: Effort levels that count as high for ``effort-mismatch``.
+_HIGH_EFFORT_LEVELS = ("high", "xhigh", "max")
+#: Easy messages at one effort level before the direct path cites them.
+_EFFORT_MIN_MESSAGES = 5
+
+
+def _effort_mismatch_reported(report: ReportModel, th: RecommendThresholds) -> list[Recommendation]:
+    """``effort-mismatch`` from messages Claude reported as easy work
+    (metrics capture's ``level``) that ran at high effort or above: the
+    Work habits section's ``habits_effort_fit`` rows, joined per message,
+    so no approximation caveat. Empty without those tags."""
+    table = _table(report, "habits", "habits_effort_fit")
+    if table is None:
+        return []
+    cycles_idx = _col_index(table, "cycles")
+    share_idx = _col_index(table, "thinking_pct")
+    saving_idx = _col_index(table, "saving")
+    if None in (cycles_idx, share_idx, saving_idx):
+        return []
+    rows = [
+        row
+        for row in table.rows
+        if row
+        and isinstance(row[0], str)
+        and row[0].partition(":")[0] == "easy"
+        and row[0].partition(":")[2] in _HIGH_EFFORT_LEVELS
+        and isinstance(row[cycles_idx], int)
+        and row[cycles_idx] >= _EFFORT_MIN_MESSAGES
+        and isinstance(row[share_idx], (int, float))
+        and row[share_idx] > th.effort_mismatch_thinking_share_pct
+    ]
+    if not rows:
+        return []
+    evidence = []
+    for row in rows:
+        effort = row[0].partition(":")[2]
+        evidence.append(_evidence(f"Easy messages at {effort} effort", row[cycles_idx], "habits", "habits_effort_fit", row[0]))
+        evidence.append(
+            _evidence(f"Easy work at {effort} effort, thinking share of output", row[share_idx], "habits", "habits_effort_fit", row[0])
+        )
+    saving = sum(row[saving_idx] for row in rows if isinstance(row[saving_idx], (int, float)))
+    return [
+        Recommendation(
+            id="effort-mismatch",
+            severity="advice",
+            category="settings",
+            archetypes=_ALL_ARCHETYPES,
+            title="High effort is being spent on easy work",
+            action=(
+                "Lower effortLevel -- Claude reported these messages as easy work, yet most of their output "
+                "was thinking."
+            ),
+            lever="effortLevel",
+            evidence=evidence,
+            saving_usd=saving or None,
+        )
+    ]
+
+
 def _rule_effort_mismatch(report: ReportModel, th: RecommendThresholds) -> list[Recommendation]:
-    """Fix R22 (see module docstring's deviations list): the corpus-wide
-    high-effort thinking share and the docs/general-dev session counts
-    below are read from two independent group-bys with no report table
-    joining them by session -- this is an approximation, not a per-
+    """Direct from reported work levels when metrics capture has them
+    (:func:`_effort_mismatch_reported`); otherwise the fallback below.
+
+    Fix R22 (see module docstring's deviations list): the fallback's
+    corpus-wide high-effort thinking share and the docs/general-dev
+    session counts are read from two independent group-bys with no report
+    table joining them by session -- this is an approximation, not a per-
     session join, and both ``action`` and the module docstring say so."""
+    direct = _effort_mismatch_reported(report, th)
+    if direct:
+        return direct
     purpose_table = _table(report, "sessions", "sessions_by_purpose")
     effort_table = _table(report, "agents", "topology_effort_tokens")
     if purpose_table is None or effort_table is None:

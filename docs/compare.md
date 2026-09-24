@@ -95,6 +95,14 @@ purpose; `overnight`, `long-agentic`, `interactive`, `mixed` for mode).
 Pass `--stratify purpose`, `--stratify mode`, or `--stratify ""` (no
 split — one "all" row) to narrow it.
 
+A third key, `task`, is the kind of task metrics capture reported for
+the session (`classify.reported_task`: at least two tagged messages,
+half of them the same kind), or `untagged`. Without `--stratify`, `task`
+joins the default keys once at least half of both arms' sessions have
+one (`compare.TASK_COVERAGE_PCT`), so arms tagged at different rates
+aren't split into near-empty strata. Name it (`--stratify task`, or
+`purpose,task`) to use it regardless.
+
 `--min-sessions` (default: `config.toml`'s `min_sessions`, itself 5)
 gates whether a row's metrics are shown at all:
 

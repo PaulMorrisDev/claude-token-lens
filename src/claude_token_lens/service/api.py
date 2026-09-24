@@ -92,6 +92,7 @@ from __future__ import annotations
 
 import dataclasses
 import hashlib
+import ipaddress
 import json
 import mimetypes
 import os
@@ -110,10 +111,10 @@ from zoneinfo import ZoneInfo
 
 from .. import __version__ as _TOOL_VERSION
 from .. import baseline as baseline_mod
-from .. import helptext, hook_health
+from .. import capture_catalogue, helptext, hook_health
 from .. import snapshots as snapshots_mod
-from ..config import ConfigError, load_config, load_session_overrides
-from ..pricing import load_pricing
+from ..config import CAPTURE_SAMPLES, ConfigError, load_config, load_session_overrides, set_capture
+from ..pricing import PricingError, load_pricing
 from ..profiles import catalogue as profile_catalogue
 from ..profiles import diff as profile_diff_mod
 from ..profiles import schema as profile_schema
@@ -168,6 +169,17 @@ _REPORT_CACHE_SIZE = 8
 _STALE_REPORT_MAX_AGE_S = 600.0
 
 _RESTART_ADVICE = "Restart the dashboard: claude-token-lens install-service, or stop and start serve."
+
+#: How long the Capture tab's estimates (a replay of your last two
+#: weeks of sessions) are kept before they are worked out again, in the
+#: background: they move slowly, and each is a whole-corpus read.
+_CAPTURE_HISTORY_TTL_S = 1800.0
+#: How long kept estimates may be served while newer ones are built.
+_CAPTURE_HISTORY_MAX_AGE_S = 6 * 3600.0
+
+#: What each free signal's hook logs, by the metric it belongs to
+#: (``signals.Signal.event``).
+_SIGNAL_METRICS = {"end": "session_end", "wait": "waits", "perm": "permissions"}
 
 
 def _now_utc_iso() -> str:
@@ -274,6 +286,7 @@ _PLACEHOLDER_INDEX_HTML = (
 
 _SESSION_ID_RE = re.compile(r"^/api/session/([^/]+)$")
 _SESSION_TAGS_RE = re.compile(r"^/api/sessions/([^/]+)/tags$")
+_SESSION_FEEDBACK_RE = re.compile(r"^/api/sessions/([^/]+)/feedback$")
 _PROFILE_DIFF_RE = re.compile(r"^/api/profiles/([^/]+)/diff$")
 _PROFILE_RE = re.compile(r"^/api/profiles/([^/]+)$")
 _SESSION_EXPLAIN_RE = re.compile(r"^/api/session/([^/]+)/explain$")
@@ -391,7 +404,8 @@ def _named_window_since(name: str, config_dir: Path | None, now: datetime | None
         if point is None:
             return None, (
                 "No change recorded yet. This window starts at your latest `apply` (a profile or a "
-                "one-off change), its undo, or a settings change the config hook saw."
+                "one-off change), its undo, a settings change the config hook saw, or a change to metrics "
+                "capture."
             )
         start = point.ts
     else:
@@ -476,6 +490,21 @@ def _find_section(model, key: str):
 
 
 #: Host names every request may carry in its ``Host`` header.
+def _is_loopback_address(address: str | None) -> bool:
+    """Whether a client address is this machine (an IPv4-mapped IPv6
+    loopback counts). Changing metrics capture changes what Claude
+    writes, so only this machine may, even when ``serve`` listens on
+    more than loopback."""
+    if not address:
+        return False
+    try:
+        ip = ipaddress.ip_address(address.split("%", 1)[0])
+    except ValueError:
+        return False
+    mapped = getattr(ip, "ipv4_mapped", None)
+    return ip.is_loopback or (mapped is not None and mapped.is_loopback)
+
+
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 #: Wildcard binds: never a name a browser should be sending as ``Host``.
 _WILDCARD_BINDS = frozenset({"0.0.0.0", "::", ""})
@@ -608,6 +637,17 @@ def make_handler(
 
     # -- report building / caching --------------------------------------
 
+    def _config_mtime_ns() -> int:
+        try:
+            return (Path(options.config_dir) / "config.toml").stat().st_mtime_ns
+        except OSError:
+            return 0
+
+    def _cache_token():
+        """What a kept report is checked against: the store's content and
+        when config.toml last changed (billing, thresholds, capture)."""
+        return (store.change_token(), _config_mtime_ns())
+
     def _snapshots_from_store() -> list[Snapshot]:
         out: list[Snapshot] = []
         for row in store.snapshots():
@@ -701,6 +741,8 @@ def make_handler(
             snapshots=snaps or None,
             session_overrides=overrides,
             usage_log_rows=usage_log_rows,
+            # Your Sessions-tab ratings, for the Work habits tab.
+            ratings=store.all_feedback(),
             # v4 wiring round: without this, waste.WasteStats's salted
             # session-id hash would fall back to report.py's own
             # temp-directory default (see _default_waste_config_dir) --
@@ -742,7 +784,7 @@ def make_handler(
             request_ctx.as_of = (current[0], True)
 
     def _build_and_keep(cache_key, building: Future):
-        token = store.change_token()
+        token = _cache_token()
         started = time.monotonic()
         as_of = _now_utc_iso()
         try:
@@ -787,7 +829,7 @@ def make_handler(
         # never collides with (or is served from) a plain window_days
         # entry for the same store change_token.
         cache_key = (window_days, since, until)
-        token = store.change_token()
+        token = _cache_token()
         now = time.monotonic()
         with report_lock:
             slot = _slot_for(cache_key)
@@ -855,7 +897,319 @@ def make_handler(
             # query tool itself missing). Never a raw path -- a plain
             # boolean, per this route's existing privacy posture.
             "service_registered": _cached_service_registered(),
+            # Metrics capture as set in config.toml, and whether
+            # settings.json runs the hooks it needs, for the banner on
+            # every tab. Cheap: no transcript is read here (the costs
+            # are /api/capture's). null when config.toml can't be read.
+            "capture": _capture_health(),
         }
+        return _ok(data)
+
+    # -- metrics capture ---------------------------------------------------
+
+    def _capture_health() -> dict | None:
+        from .. import capture_view
+
+        try:
+            capture = load_config(options.config_dir).capture
+        except (ConfigError, OSError, ValueError):
+            return None
+        block = capture_view.config_block(capture)
+        hooks = hook_health.check_capture(hook_health.capture_specs(capture.active_metrics()))
+        block["hooks_ok"] = hooks.ok
+        return block
+
+    #: name -> {"key", "soft", "data", "started", "as_of", "building"}:
+    #: the parts of /api/capture that read transcripts, kept like the
+    #: report (see _capture_part).
+    capture_parts: dict = {}
+
+    def _keep_capture_part(name, key, soft, build):
+        started = time.monotonic()
+        as_of = _now_utc_iso()
+        data = build()
+        with report_lock:
+            kept = capture_parts.get(name)
+            if kept is None or started >= kept["started"]:
+                capture_parts[name] = {
+                    "key": key, "soft": soft, "data": data, "started": started, "as_of": as_of, "building": False,
+                }
+        return data, as_of
+
+    def _capture_part(name: str, key, soft, build, max_age: float):
+        """``build()``'s result, kept like the report (see
+        _get_report_model): the kept one when its ``key`` still matches;
+        when only ``soft`` does (the same window, a newer store) and it
+        is under ``max_age`` seconds old, the kept one while a new one is
+        built in the background; otherwise one built now."""
+        now = time.monotonic()
+        refresh = False
+        with report_lock:
+            kept = capture_parts.get(name)
+            if kept is not None and kept["key"] == key:
+                _note_as_of(kept["as_of"], False)
+                return kept["data"]
+            if kept is not None and kept["soft"] == soft and now - kept["started"] <= max_age:
+                refresh = not kept["building"]
+                if refresh:
+                    kept["building"] = True
+                _note_as_of(kept["as_of"], True)
+                data = kept["data"]
+            else:
+                kept = None
+        if kept is not None:
+            if refresh:
+
+                def run():
+                    try:
+                        with background_builds:
+                            _keep_capture_part(name, key, soft, build)
+                    except BaseException:  # noqa: BLE001 -- the next request retries
+                        pass
+                    finally:
+                        with report_lock:
+                            current = capture_parts.get(name)
+                            if current is not None:
+                                current["building"] = False
+                        store.close()
+
+                threading.Thread(target=run, name=f"claude-token-lens-capture-{name}", daemon=True).start()
+            return data
+        data, as_of = _keep_capture_part(name, key, soft, build)
+        _note_as_of(as_of, False)
+        return data
+
+    def _capture_rates(config):
+        try:
+            return load_pricing(path=config.pricing_path, config_dir=options.config_dir)
+        except (PricingError, OSError, ValueError):
+            return None
+
+    def _capture_history(config):
+        """``(history, units)`` from your last two weeks of sessions, in
+        every project the store holds; ``(None, units)`` when the rate
+        card can't be read."""
+        from .. import capture as capture_mod
+        from ..report import _report_units
+        from ..units import Units
+        from . import rebuild
+
+        rates = _capture_rates(config)
+        if rates is None:
+            return None, Units(billing_mode=config.billing)
+        corpus = rebuild.corpus_from_store(store, days=capture_mod.HISTORY_DAYS)
+        past = capture_mod.history(corpus, rates, days=capture_mod.HISTORY_DAYS)
+        return past, _report_units(corpus, rates, config, options.config_dir)
+
+    def _capture_usage(config, enabled_at: str):
+        """``(usage, sessions started since, signal sessions by metric,
+        cost a week, what depends on capture or your feedback a week)``
+        from ``enabled_at`` on."""
+        from .. import capture as capture_mod
+        from .. import habits as habits_mod
+        from .. import signals as signals_mod
+        from ..corpus import _session_first_ts
+        from ..discovery import _parse_bound
+        from . import rebuild
+
+        rates = _capture_rates(config)
+        corpus = rebuild.corpus_from_store(store, since=enabled_at)
+        use = capture_mod.usage(corpus, rates, since=enabled_at)
+        weekly_cost = capture_mod.weekly_cost(use)
+        dependent_value = habits_mod.capture_dependent_value(
+            habits_mod.collect(corpus, rates, ratings=store.all_feedback())
+        )
+        start = _parse_bound(enabled_at)
+        started = 0
+        for bundle in corpus.sessions:
+            first = _session_first_ts(bundle)
+            try:
+                if first and _parse_bound(first) >= start:
+                    started += 1
+            except ValueError:
+                continue
+        seen: dict[str, set] = {}
+        for signal in signals_mod.load(options.config_dir, since=start):
+            metric_id = _SIGNAL_METRICS.get(signal.event)
+            if metric_id is not None:
+                seen.setdefault(metric_id, set()).add(signal.session_hash)
+        return (
+            use, started, {metric_id: len(hashes) for metric_id, hashes in seen.items()}, weekly_cost,
+            dependent_value,
+        )
+
+    def _capture_feedback(config):
+        """``capture.feedback_usage`` over the replayed days: your
+        /tl-feedback runs, whatever the capture level."""
+        from .. import capture as capture_mod
+        from . import rebuild
+
+        corpus = rebuild.corpus_from_store(store, days=capture_mod.HISTORY_DAYS)
+        return capture_mod.feedback_usage(corpus, _capture_rates(config))
+
+    def _capture_view(config) -> dict:
+        from .. import capture_view
+
+        capture = config.capture
+        soft = (config.billing, str(config.pricing_path))
+        bucket = int(time.time() // _CAPTURE_HISTORY_TTL_S)
+        # A replay taken while the first scan was still filling the store
+        # is short of sessions: replay again once that scan has finished.
+        state = watcher_state() if watcher_state is not None else None
+        scanned = state is None or state.last_success_at is not None
+        past, units = _capture_part(
+            "history",
+            (bucket, scanned, *soft),
+            (scanned, *soft),
+            lambda: _capture_history(config),
+            _CAPTURE_HISTORY_MAX_AGE_S,
+        )
+        use, started, signal_sessions, weekly_cost, dependent_value = None, 0, {}, None, None
+        if capture.is_on and capture.enabled_at:
+            use, started, signal_sessions, weekly_cost, dependent_value = _capture_part(
+                "usage",
+                (store.change_token(), capture.enabled_at, *soft),
+                (capture.enabled_at, *soft),
+                lambda: _capture_usage(config, capture.enabled_at),
+                _STALE_REPORT_MAX_AGE_S,
+            )
+        feedback_use = skill = ratings = None
+        if "feedback_skill" in capture.feedback:
+            from .. import footprint
+
+            token = store.change_token()
+            feedback_use = _capture_part(
+                "feedback", (token, *soft), soft, lambda: _capture_feedback(config), _STALE_REPORT_MAX_AGE_S
+            )
+            skill = footprint.feedback_skill_state()
+        brief_skill = None
+        if "brief_templates" in capture.coaching:
+            from .. import footprint
+
+            brief_skill = footprint.skill_state(capture_catalogue.BRIEF_SKILL)
+        if "dashboard_rating" in capture.feedback:
+            ratings = store.feedback_count()
+        statusline = None
+        if "feedback_note" in capture.feedback or "coaching_line" in capture.coaching:
+            from .. import footprint
+
+            try:
+                settings = json.loads(hook_health.settings_path().read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                settings = None
+            statusline = footprint.is_own_statusline(settings if isinstance(settings, dict) else None)
+        hooks = hook_health.check_capture(hook_health.capture_specs(capture.active_metrics()))
+        return capture_view.view(
+            capture, past=past, units=units, use=use, hooks=hooks, signal_sessions=signal_sessions,
+            started_since=started, feedback_use=feedback_use, skill=skill, brief_skill=brief_skill, ratings=ratings,
+            statusline=statusline, weekly_cost=weekly_cost, dependent_value=dependent_value,
+        )
+
+    def _capture_conflict(message: str, commands: list[str]) -> tuple[int, dict]:
+        """409 with the commands that make the change from a terminal."""
+        return 409, {"ok": False, "error": {"code": "conflict", "message": message, "commands": commands}}
+
+    def route_capture(store, query, body):
+        """The Capture tab and the banner: every metric with what it
+        captures and why, what each level and metric would cost you, and
+        what capture has cost since it was turned on."""
+        try:
+            config = load_config(options.config_dir)
+        except ConfigError:
+            return _capture_conflict(
+                "config.toml can't be read, so metrics capture can't be shown. "
+                "'claude-token-lens capture status' says what is wrong with it.",
+                ["claude-token-lens capture status"],
+            )
+        return _ok(_capture_view(config))
+
+    def _capture_changes(body) -> tuple[dict | None, str | None]:
+        """``set_capture`` arguments from a POST body, or a reason it's
+        refused."""
+        if not isinstance(body, dict) or not body:
+            return None, "request body must be a JSON object with one or more of: level, metrics, sample, until, feedback, coaching"
+        allowed = ("level", "metrics", "sample", "until", "feedback", "coaching")
+        unknown = sorted(set(body) - set(allowed))
+        if unknown:
+            return None, f"unknown key {', '.join(unknown)}; allowed: {', '.join(allowed)}"
+        if "level" in body and "metrics" in body:
+            return None, "give 'level' (a preset) or 'metrics' (your own pick), not both"
+        changes: dict = {}
+        if "level" in body:
+            if body["level"] not in capture_catalogue.LEVELS:
+                return None, f"'level' must be one of: {', '.join(capture_catalogue.LEVELS)}"
+            changes["level"] = body["level"]
+        for key, known in (
+            ("metrics", capture_catalogue.LEVEL_METRIC_IDS),
+            ("feedback", capture_catalogue.FEEDBACK_IDS),
+            ("coaching", capture_catalogue.COACHING_IDS),
+        ):
+            if key not in body:
+                continue
+            value = body[key]
+            if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+                return None, f"'{key}' must be a list of metric ids"
+            bad = [v for v in value if v not in known]
+            if bad:
+                return None, f"'{key}' has unknown id {', '.join(bad)}; known: {', '.join(known)}"
+            changes[key] = list(dict.fromkeys(value))
+        if "sample" in body:
+            sample = body["sample"]
+            if isinstance(sample, bool) or sample not in CAPTURE_SAMPLES:
+                return None, f"'sample' must be one of: {', '.join(str(s) for s in CAPTURE_SAMPLES)}"
+            changes["sample"] = sample
+        if "until" in body:
+            until = body["until"]
+            if not isinstance(until, str):
+                return None, "'until' must be an ISO-8601 time, or \"\" for no end"
+            if until:
+                from ..discovery import _parse_bound
+
+                try:
+                    stop = _parse_bound(until)
+                except ValueError:
+                    return None, "'until' must be an ISO-8601 time, or \"\" for no end"
+                if stop <= datetime.now(timezone.utc):
+                    return None, "'until' is in the past"
+            changes["until"] = until
+        return changes, None
+
+    def route_capture_post(store, query, body):
+        """Change ``[capture]`` in this tool's own config.toml. Never
+        touches Claude Code's settings: hook entries a new metric needs
+        are added by 'claude-token-lens capture connect', which the
+        response names."""
+        from .. import capture_view
+
+        if not _is_loopback_address(getattr(request_ctx, "client", None)):
+            return _forbidden(
+                "metrics capture can only be changed from this machine; run 'claude-token-lens capture' there"
+            )
+        changes, reason = _capture_changes(body)
+        if reason is not None:
+            return _bad_request(reason)
+        try:
+            config = load_config(options.config_dir)
+        except ConfigError:
+            return _capture_conflict(
+                "config.toml can't be read, so the change wasn't saved. "
+                "'claude-token-lens capture status' says what is wrong with it.",
+                ["claude-token-lens capture status"],
+            )
+        before = config.capture
+        try:
+            after = set_capture(options.config_dir, **changes)
+        except (ConfigError, OSError):
+            return _capture_conflict(
+                "The change couldn't be saved to config.toml here. Make it from a terminal instead.",
+                capture_view.change_commands(before, changes),
+            )
+        try:
+            config = load_config(options.config_dir)
+        except ConfigError:
+            pass
+        data = _capture_view(config)
+        data["changed"] = after != before
         return _ok(data)
 
     def route_summary(store, query, body):
@@ -913,6 +1267,22 @@ def make_handler(
             # markers for the session-timeline chart, alongside the
             # existing compactions/spawns/human markers above.
             result["limit_markers"] = turns["limit_markers"]
+        # Metrics-capture feedback: the questions to rate it with, while
+        # the dashboard rating is switched on (the Capture tab).
+        try:
+            rating_on = "dashboard_rating" in load_config(options.config_dir).capture.feedback
+        except ConfigError:
+            rating_on = False
+        if rating_on:
+            result["feedback_questions"] = [
+                {
+                    "key": q.key,
+                    "question": q.question,
+                    "multi": q.multi,
+                    "options": [{"word": word, "label": label} for word, label, _text in q.options],
+                }
+                for q in capture_catalogue.FEEDBACK_QUESTIONS
+            ]
         return _ok(result)
 
     def route_recache(store, query, body):
@@ -1055,6 +1425,33 @@ def make_handler(
             return _bad_request("'value' must be a string")
         store.set_tag(session_id, key, value)
         return _ok({"session_id": session_id, "tags": store.tags(session_id)})
+
+    def route_set_feedback(store, query, body):
+        """Your rating of a session (the /tl-feedback questions as
+        checkboxes): words from ``capture_catalogue.FEEDBACK_VOCAB`` only.
+        Nothing ticked clears it."""
+        session_id = query.get("id", "")
+        if store.session(session_id) is None:
+            return _not_found("session not found")
+        if not isinstance(body, dict):
+            return _bad_request("request body must be a JSON object")
+        unknown = sorted(set(body) - set(capture_catalogue.FEEDBACK_VOCAB))
+        if unknown:
+            return _bad_request(f"unknown field {', '.join(unknown)}; known: {', '.join(capture_catalogue.FEEDBACK_VOCAB)}")
+        values: dict = {}
+        for key, words in capture_catalogue.FEEDBACK_VOCAB.items():
+            value = body.get(key)
+            if key in capture_catalogue.FEEDBACK_LIST_KEYS:
+                value = [] if value is None else value
+                if not isinstance(value, list) or any(w not in words for w in value):
+                    return _bad_request(f"'{key}' must be a list of: {', '.join(words)}")
+                values[key] = list(dict.fromkeys(value))
+            else:
+                if value is not None and value not in words:
+                    return _bad_request(f"'{key}' must be one of: {', '.join(words)}, or null")
+                values[key] = value
+        store.set_feedback(session_id, **values)
+        return _ok({"session_id": session_id, "feedback": store.feedback(session_id)})
 
     # -- v0.3 profile routes -----------------------------------------------
 
@@ -1479,6 +1876,11 @@ def make_handler(
         window, err = _window_query(query)
         if err is not None:
             return err
+        task = query.get("task") or None
+        if task is not None and task not in capture_catalogue.TAG_VOCAB["task"]:
+            return _bad_request(
+                f"unknown task {task!r}; expected one of: {', '.join(capture_catalogue.TAG_VOCAB['task'])}"
+            )
         model = _get_report_model(*window)
         effective, effective_agents = _current_settings()
         return _ok(
@@ -1489,6 +1891,7 @@ def make_handler(
                 effective=effective,
                 effective_agents=effective_agents,
                 period=_period_text(*window, name=query.get("window")),
+                task=task,
             )
         )
 
@@ -1565,7 +1968,10 @@ def make_handler(
         return _ok(
             {
                 "items": [item.as_dict() for item in items],
-                "expectations": [{"title": title, "text": text} for title, text in footprint.EXPECTATIONS],
+                "expectations": [
+                    {"title": title, "text": text}
+                    for title, text in footprint.expectations(footprint.capture_setting(options.config_dir))
+                ],
                 "uninstall_command": footprint.UNINSTALL_COMMAND,
             }
         )
@@ -1573,8 +1979,8 @@ def make_handler(
     impact_cache: dict = {"key": None, "data": None, "started": 0.0, "as_of": None, "building": False}
 
     def route_impact(store, query, body):
-        """Each change you made (an apply, its undo, or a settings change
-        the config hook saw) with the sessions before it against those
+        """Each change you made (an apply, its undo, a settings change the
+        config hook saw, or a metrics capture change) with the sessions before it against those
         after it, on the measures that change should move. Cached like
         the report (see _get_report_model): a store change serves the
         kept answer and refreshes it in the background, while a new
@@ -1694,6 +2100,7 @@ def make_handler(
         "/api/profile-goals": route_profile_goals,
         "/api/quick-actions": route_quick_actions,
         "/api/setup": route_setup,
+        "/api/capture": route_capture,
         "/api/report.json": _render_report("application/json", lambda model: render_json(model)),
         # Finding 22: charset was missing on the two text-ish renderers
         # (application/json has no encoding ambiguity, but text/markdown
@@ -1711,12 +2118,14 @@ def make_handler(
         (_QUICK_ACTION_RE, route_quick_action),
     )
     post_routes: dict[str, Callable] = {
+        "/api/capture": route_capture_post,
         "/api/profiles": route_profiles_post,
         "/api/profiles/from-current": route_profiles_from_current,
         "/api/whatif": route_whatif,
     }
     post_patterns: tuple[tuple[re.Pattern, Callable], ...] = (
         (_SESSION_TAGS_RE, route_set_tag),
+        (_SESSION_FEEDBACK_RE, route_set_feedback),
     )
 
     class Handler(BaseHTTPRequestHandler):
@@ -1816,6 +2225,7 @@ def make_handler(
 
         def _dispatch(self, body: dict | None, *, head_only: bool = False) -> None:
             request_ctx.as_of = None
+            request_ctx.client = self.client_address[0] if self.client_address else None
             if not self._host_allowed():
                 self._write_json(
                     *_forbidden("this Host is not allowed; start serve with --allowed-host NAME to add it"),

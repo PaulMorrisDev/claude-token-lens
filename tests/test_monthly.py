@@ -488,3 +488,26 @@ def test_cli_monthly_report_empty_target_month_exits_0_with_stderr_note(tmp_path
     err = capsys.readouterr().err
     assert "2020-01" in err
     assert "zeroed tables" in err
+
+
+
+def test_the_monthly_report_carries_the_work_habits_digest_when_there_is_one(tmp_path):
+    from helpers import user_str_line
+
+    corpus = _build_month_corpus(tmp_path / "projects")
+    md_path, _ = monthly.write_monthly_report(corpus, PRICING, Config(), "2026-09", tmp_path / "out")
+    assert "Work habits" not in md_path.read_text(encoding="utf-8")
+
+    project_dir = tmp_path / "rated" / "acme"
+    project_dir.mkdir(parents=True)
+    write_jsonl(project_dir / "sep-rated.jsonl", [
+        user_str_line("fix it", origin={"kind": "human"}, timestamp="2026-09-10T09:00:00.000Z", sessionId="sep-rated"),
+        turn_line(timestamp="2026-09-10T09:00:05.000Z", model="claude-sonnet-5", input_tokens=500, output_tokens=100,
+                  sessionId="sep-rated"),
+    ])
+    rated = load_corpus([project_dir])
+    ratings = {"sep-rated": {"outcome": "met", "slow": [], "worth": "yes", "helped": []}}
+    md_path, _ = monthly.write_monthly_report(rated, PRICING, Config(), "2026-09", tmp_path / "out2", ratings=ratings)
+    text = md_path.read_text(encoding="utf-8")
+    assert "Work habits" in text and "Cost per goal met" in text
+    assert "1 of 1 pieces you gave feedback on" in text

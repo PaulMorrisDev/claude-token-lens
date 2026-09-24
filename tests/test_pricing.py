@@ -20,6 +20,7 @@ from claude_token_lens.pricing import (
     PricingCoverage,
     PricingError,
     ResolvedRates,
+    effective_rates,
     load_pricing,
     price_turn,
 )
@@ -832,3 +833,57 @@ def test_resolved_rates_wraps_model_rates(min_pricing):
     assert isinstance(resolved, ResolvedRates)
     assert isinstance(resolved.rates, ModelRates)
     assert resolved.rates.canonical_id == "claude-widget-9"
+
+
+# --------------------------------------------------------------------
+# effective_rates: the per-token rates price_turn charges a turn at
+# --------------------------------------------------------------------
+
+
+def _component_rates(turn_fields: dict, resolved, geo=...) -> tuple[float, ...]:
+    """What price_turn charges one million tokens of each component."""
+    kwargs = {} if geo is ... else {"geo": geo}
+    per_million = []
+    for tokens in (
+        {"input_tokens": 1_000_000},
+        {"output_tokens": 1_000_000},
+        {"cache_creation_tokens": 1_000_000, "cc_5m": 1_000_000},
+        {"cache_creation_tokens": 1_000_000, "cc_1h": 1_000_000},
+        {"cache_read_tokens": 1_000_000},
+    ):
+        breakdown = price_turn(_turn(**turn_fields, **tokens), resolved, **kwargs)
+        per_million.append(breakdown.total)
+    return tuple(per_million)
+
+
+@pytest.mark.parametrize(
+    "turn_fields, geo",
+    [
+        ({"model": "claude-widget-9"}, ...),
+        ({"model": "claude-widget-9", "speed": "fast"}, ...),
+        ({"model": "claude-widget-9", "ctx": 150_000}, ...),
+        ({"model": "claude-widget-9", "speed": "fast", "ctx": 150_000, "inference_geo": "us"}, ...),
+        ({"model": "claude-widget-9", "inference_geo": "us"}, None),
+        ({"model": "claude-widget-9"}, "us"),
+        ({"model": "claude-gadget-2", "ctx": 60_000}, ...),
+        ({"model": "claude-gadget-2", "speed": "fast"}, ...),
+    ],
+)
+def test_effective_rates_match_what_price_turn_charges(min_pricing, turn_fields, geo):
+    resolved = min_pricing.resolve_model(turn_fields["model"])
+    kwargs = {} if geo is ... else {"geo": geo}
+    rates = effective_rates(_turn(**turn_fields), resolved, **kwargs)
+    expected = _component_rates(turn_fields, resolved, geo)
+    got = (rates.input, rates.output, rates.cache_write_5m, rates.cache_write_1h, rates.cache_read)
+    assert got == pytest.approx(expected)
+
+
+def test_effective_rates_accept_bare_model_rates(min_pricing):
+    resolved = min_pricing.resolve_model("claude-widget-9")
+    turn = _turn(model="claude-widget-9", speed="fast")
+    assert effective_rates(turn, resolved.rates) == effective_rates(turn, resolved)
+    assert effective_rates(turn, resolved).output == pytest.approx(4.0)
+
+
+def test_effective_rates_none_for_an_unresolved_model():
+    assert effective_rates(_turn(), None) is None

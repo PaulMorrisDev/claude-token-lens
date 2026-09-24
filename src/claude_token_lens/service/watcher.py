@@ -22,7 +22,8 @@ Each :meth:`FileWatcher.run_once` tick:
    transcript into the store via ``Store.upsert_transcript``, and every
    session's classification/cost totals via ``Store.upsert_session``.
 4. Removes rows for files no longer on disk (``Store.remove_missing``),
-   prunes old sessions when ``options.retention_days`` is set, and
+   prunes old sessions (and old capture signal files, see
+   ``signals.prune``) when ``options.retention_days`` is set, and
    ingests any new config-snapshot file under
    ``options.config_dir/snapshots/`` (see :meth:`_scan_snapshots`).
 
@@ -74,6 +75,7 @@ from ..parse import parse_transcript
 from ..pricing import Pricing, PricingError, load_pricing, price_turn
 from ..profiles import catalogue as profile_catalogue, schema as profile_schema
 from ..report import _dominant_transcript_model, _extract_workstyle_features
+from .. import signals as signals_mod
 from .. import snapshots as snapshots_mod
 from .contracts import ServeOptions, WatcherState, WatcherStats
 from .store import GLOBAL_PROJECT_SLUG, Store, decode_digest_blob
@@ -547,6 +549,7 @@ class FileWatcher:
 
         if self.options.retention_days is not None:
             self._time_store(stats, self.store.retention_prune, self.options.retention_days)
+            signals_mod.prune(self.options.config_dir, self.options.retention_days)
 
     # -- S1-perf item 2: bulk parallel prewarm -------------------------------
 

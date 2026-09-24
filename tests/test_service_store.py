@@ -1076,3 +1076,100 @@ def test_sessions_say_where_they_ran_without_the_path():
     detail = store.session("s-wsl")
     assert detail["source"] == "WSL: Ubuntu"
     assert "wsl.localhost" not in json.dumps(detail)
+
+
+# -- session_feedback (v6) -------------------------------------------------
+
+
+def test_feedback_round_trips_and_nothing_ticked_clears_it(store: Store) -> None:
+    _seed(store)
+    assert store.feedback("session-a") is None and store.feedback_count() == 0
+    store.set_feedback("session-a", outcome="met", slow=["unclear", "tools"], worth="yes", helped=[])
+    saved = store.feedback("session-a")
+    assert saved["outcome"] == "met" and saved["slow"] == ["unclear", "tools"] and saved["helped"] == []
+    assert saved["set_at"]
+    assert store.session("session-a")["feedback"] == saved
+    assert store.all_feedback() == {"session-a": saved}
+    store.set_feedback("session-a", outcome=None, slow=["tools"], worth=None, helped=["context"])
+    assert store.feedback("session-a")["outcome"] is None and store.feedback_count() == 1
+    store.set_feedback("session-a", outcome=None, worth=None)
+    assert store.feedback("session-a") is None and store.session("session-a")["feedback"] is None
+
+
+def test_change_token_changes_when_a_rating_is_set(store: Store) -> None:
+    _seed(store)
+    before = store.change_token()
+    store.set_feedback("session-a", outcome="partly", worth="no")
+    assert store.change_token() != before
+
+
+def test_retention_prune_removes_old_ratings(store: Store) -> None:
+    _seed(store)
+    store.upsert_session(
+        session_id="session-old", project_slug="proj-a", slug="proj-a",
+        first_ts="2000-01-01T00:00:00Z", last_ts="2000-01-01T01:00:00Z",
+    )
+    store.set_feedback("session-old", outcome="missed", worth="no")
+    assert store.retention_prune(retention_days=30) == 1
+    assert store.all_feedback() == {}
+
+
+def test_migrate_upgrades_a_v5_store_with_the_feedback_table(tmp_path) -> None:
+    from claude_token_lens.service import schema
+    from claude_token_lens.service import store as store_mod
+
+    db_path = tmp_path / "v5.db"
+    store = Store(str(db_path))
+    store.open()
+    _seed(store)
+    conn = store._connection()
+    conn.execute("DROP TABLE session_feedback")
+    conn.execute("UPDATE meta SET value = '5' WHERE key = ?", (store_mod._SCHEMA_VERSION_KEY,))
+    conn.commit()
+    store.close()
+
+    store = Store(str(db_path))
+    store.open()
+    try:
+        assert store.schema_version() == schema.SCHEMA_VERSION == 6
+        assert store.session("session-a") is not None
+        assert store.tags("session-a") == {"purpose": "refactor-override"}
+        store.set_feedback("session-a", outcome="met", worth="yes")
+        assert store.feedback_count() == 1
+    finally:
+        store.close()
+
+
+
+def test_read_session_marks_reads_tags_and_ratings_without_writing(tmp_path) -> None:
+    from claude_token_lens.service.store import read_session_marks
+
+    db_path = tmp_path / "service.db"
+    assert read_session_marks(db_path) == ({}, {})
+    store = Store(str(db_path))
+    store.open()
+    _seed(store)
+    store.set_feedback("session-a", outcome="met", slow=["tools"], worth="yes", helped=[])
+    expected_ratings = store.all_feedback()
+    store.close()
+    before = db_path.read_bytes()
+    tags, ratings = read_session_marks(db_path)
+    assert tags == {"session-a": {"purpose": "refactor-override"}}
+    assert ratings == expected_ratings and ratings["session-a"]["slow"] == ["tools"]
+    assert db_path.read_bytes() == before
+
+
+def test_read_session_marks_of_a_store_without_the_ratings_table_reads_the_tags(tmp_path) -> None:
+    from claude_token_lens.service.store import read_session_marks
+
+    db_path = tmp_path / "service.db"
+    store = Store(str(db_path))
+    store.open()
+    _seed(store)
+    conn = store._connection()
+    conn.execute("DROP TABLE session_feedback")
+    conn.commit()
+    store.close()
+    assert read_session_marks(db_path) == ({"session-a": {"purpose": "refactor-override"}}, {})
+    (tmp_path / "junk.db").write_bytes(b"not a database")
+    assert read_session_marks(tmp_path / "junk.db") == ({}, {})

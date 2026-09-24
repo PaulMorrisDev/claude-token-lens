@@ -252,6 +252,25 @@ v3-limits addition: two small, self-contained changes so a usage-cap hit
    sync by value, documented here) — the statusline's hot path stays free
    of any dependency whose own failure mode could threaten the "never
    raises" contract above.
+
+Metrics capture addition: an optional **second line** (:func:`second_line`),
+printed by :func:`main` after the first and only while ``config.toml``'s
+``[capture]`` switches it on. The first line is unchanged, still bounded
+and single-line. The second is either:
+
+- a live **coaching hint** (``coaching = ["coaching_line"]``) from
+  :func:`coaching_hint`: a large context at the end of a turn (``/clear``
+  before a new task), a large last tool output, many reads and searches
+  in the current message, or a warm cache about to go cold. Worked out
+  from the payload and the transcript's last :data:`_COACH_TAIL_BYTES`;
+  amounts are tokens, since this hot path loads no pricing; or
+- the **feedback note** (``feedback = ["feedback_note"]``),
+  ``capture_catalogue.FEEDBACK_NOTE`` word for word.
+
+A hint that fires beats the note: it is about this moment, the note is
+always true. Neither ever reaches Claude: Claude Code shows the status
+line to you and sends it nowhere, so both cost no tokens. No escape codes,
+bounded to :data:`_MAX_LINE_LEN` like the first line.
 """
 
 from __future__ import annotations
@@ -266,6 +285,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import installer as installer_mod
+from .capture_catalogue import FEEDBACK_NOTE
 from .model import Column, Table
 from .tools import log_usage
 
@@ -561,7 +581,9 @@ def _fmt_cache_estimate(payload: dict, now: datetime, effective_ttl_s: int | Non
 
     ttl_hint_s = _ttl_hint_from_assistant_line(d)
     label = _TTL_LABELS.get(ttl_hint_s, f"{ttl_hint_s}s")
-    remaining = ttl_hint_s - (now_utc - last_ts).total_seconds()
+    # A reply stamped ahead of this clock (skew) never shows more than a
+    # full TTL, as the ground-truth path caps it too.
+    remaining = min(ttl_hint_s - (now_utc - last_ts).total_seconds(), ttl_hint_s)
     if remaining <= 0:
         return f"cache est {label} expired"
     return f"cache est {label} {_format_mmss(remaining)}"
@@ -695,7 +717,9 @@ def _parse_ttl_value(value: object) -> int | None:
     return None
 
 
-def _read_default_ttl_from_config(config_dir: Path | None) -> int | None:
+def _read_config_toml(config_dir: Path | None) -> dict | None:
+    """``<config_dir>/config.toml`` parsed, or ``None`` when it's missing
+    or unreadable."""
     if config_dir is None:
         return None
     config_path = Path(config_dir) / "config.toml"
@@ -706,6 +730,13 @@ def _read_default_ttl_from_config(config_dir: Path | None) -> int | None:
     try:
         data = tomllib.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, tomllib.TOMLDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _read_default_ttl_from_config(config_dir: Path | None) -> int | None:
+    data = _read_config_toml(config_dir)
+    if data is None:
         return None
     return _parse_ttl_value(data.get("default_ttl"))
 
@@ -1559,6 +1590,205 @@ def _tag_limit_hit_rows(rows: list[dict]) -> list[dict]:
     return tagged
 
 
+# -- second line: coaching hint or feedback note ---------------------------
+
+#: How much of the transcript's end :func:`coaching_hint` reads. Larger
+#: than :data:`_TAIL_BYTES` so a big tool output fits: Claude Code caps
+#: one at about 100 KB.
+_COACH_TAIL_BYTES = 256 * 1024
+#: A context this large at the end of a turn earns the ``/clear`` hint.
+_COACH_CTX_TOKENS = 100_000
+#: A tool output this large earns the quieter-command hint.
+_COACH_OUTPUT_TOKENS = 8_000
+#: This many reads and searches in one message earns the Explore hint.
+_COACH_READS = 5
+#: The cache hint shows in the last this-many seconds of a warm cache,
+#: for a context of at least :data:`_COACH_COLD_MIN_TOKENS`.
+_COACH_COLD_S = 60
+_COACH_COLD_MIN_TOKENS = 20_000
+#: Same rough rate as ``capture.CHARS_PER_TOKEN`` (not imported: see the
+#: v3-limits note on keeping this hot path's dependencies small).
+_CHARS_PER_TOKEN = 4
+_READ_TOOLS = frozenset({"Read", "Grep", "Glob"})
+
+
+def _capture_lines(config_dir: Path | None) -> tuple[bool, bool]:
+    """``(feedback note on, coaching line on)`` from ``config.toml``'s
+    ``[capture]``; both off when it's missing or malformed."""
+    data = _read_config_toml(config_dir)
+    capture = data.get("capture") if data is not None else None
+    if not isinstance(capture, dict):
+        return False, False
+    feedback = capture.get("feedback")
+    coaching = capture.get("coaching")
+    return (
+        isinstance(feedback, list) and "feedback_note" in feedback,
+        isinstance(coaching, list) and "coaching_line" in coaching,
+    )
+
+
+def _tail_records(transcript_path: str, max_bytes: int = _COACH_TAIL_BYTES) -> list[dict]:
+    """The transcript's lines in the last ``max_bytes``, parsed, in file
+    order. A line cut by the seek fails to parse and is skipped, as in
+    :func:`_last_assistant_line`."""
+    try:
+        path = Path(transcript_path)
+        size = path.stat().st_size
+        with open(_windows_long_path(path), "rb") as fh:
+            fh.seek(max(0, size - max_bytes))
+            tail = fh.read()
+    except OSError:
+        return []
+    records: list[dict] = []
+    for raw_line in tail.decode("utf-8", errors="replace").split("\n"):
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
+            d = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(d, dict):
+            records.append(d)
+    return records
+
+
+def _content_blocks(d: dict) -> list:
+    message = d.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    return content if isinstance(content, list) else []
+
+
+def _is_human_prompt(d: dict) -> bool:
+    """A message you typed: a ``user`` line that isn't meta and carries no
+    tool result."""
+    if d.get("type") != "user" or d.get("isMeta") or "toolUseResult" in d:
+        return False
+    message = d.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    if isinstance(content, str):
+        return bool(content.strip())
+    if not isinstance(content, list):
+        return False
+    kinds = {b.get("type") for b in content if isinstance(b, dict)}
+    return "tool_result" not in kinds and bool(kinds & {"text", "image"})
+
+
+def _result_chars(block: dict) -> int:
+    content = block.get("content")
+    if isinstance(content, str):
+        return len(content)
+    if isinstance(content, list):
+        return sum(len(b.get("text", "")) for b in content if isinstance(b, dict) and isinstance(b.get("text"), str))
+    return 0
+
+
+def _cache_remaining_s(payload: dict, last_assistant: dict | None, now: datetime) -> float | None:
+    """Seconds until the prompt cache goes cold: the payload's own
+    ``prompt_cache`` when it has it, else the last reply's time plus its
+    TTL (as :func:`_fmt_cache_estimate` works it out)."""
+    now_ts = (now if now.tzinfo is not None else now.replace(tzinfo=timezone.utc)).timestamp()
+    prompt_cache = payload.get("prompt_cache")
+    if isinstance(prompt_cache, dict) and isinstance(prompt_cache.get("warm"), bool):
+        expires_at = _numeric(prompt_cache.get("expires_at"))
+        if not prompt_cache["warm"] or expires_at is None:
+            return None
+        if expires_at > _EPOCH_MS_THRESHOLD:
+            expires_at = expires_at / 1000.0
+        return expires_at - now_ts
+    if last_assistant is None or not isinstance(last_assistant.get("timestamp"), str):
+        return None
+    try:
+        last_ts = datetime.fromisoformat(last_assistant["timestamp"].replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if last_ts.tzinfo is None:
+        last_ts = last_ts.replace(tzinfo=timezone.utc)
+    ttl_s = _ttl_hint_from_assistant_line(last_assistant)
+    return min(ttl_s - (now_ts - last_ts.timestamp()), ttl_s)
+
+
+def _k(tokens: float) -> str:
+    return f"{round(tokens / 1000.0)}k"
+
+
+def coaching_hint(payload: dict, tail: list[dict], now: datetime) -> tuple[float, str] | None:
+    """The live hint most worth showing, as ``(tokens at stake, text)``,
+    or ``None`` when none applies. ``tail`` is :func:`_tail_records`.
+
+    - **cache about to go cold**: the last :data:`_COACH_COLD_S` seconds
+      of a warm cache; the next message would write the whole context
+      again at the cache-write price instead of reading it.
+    - **large context at the end of a turn**: ``/clear`` before starting
+      something new, or every message re-reads it.
+    - **large last tool output** in the current message: it stays in
+      context for every later message.
+    - **many reads and searches** in the current message: an Explore
+      agent reads in its own context and sends back a summary.
+
+    Stakes are rough token counts, only for picking one hint: the context
+    for the cache, a quarter of it for ``/clear`` (it pays only if you
+    change task), the output's size, and the reads' result sizes.
+    """
+    hints: list[tuple[float, str]] = []
+    context_window = payload.get("context_window")
+    ctx = _context_window_used_tokens(context_window) if isinstance(context_window, dict) else None
+    last_assistant = next((d for d in reversed(tail) if d.get("type") == "assistant"), None)
+
+    remaining = _cache_remaining_s(payload, last_assistant, now)
+    if ctx is not None and ctx >= _COACH_COLD_MIN_TOKENS and remaining is not None and 0 < remaining <= _COACH_COLD_S:
+        hints.append((ctx, f"cache goes cold in {int(remaining)}s: reply now, or the next message writes all {_k(ctx)} again"))
+
+    last = tail[-1] if tail else None
+    message = last.get("message") if last is not None else None
+    turn_over = (
+        last is not None and last.get("type") == "assistant"
+        and isinstance(message, dict) and message.get("stop_reason") == "end_turn"
+    )
+    if ctx is not None and ctx >= _COACH_CTX_TOKENS and turn_over:
+        hints.append((ctx / 4, f"ctx {_k(ctx)}: starting something new? /clear first, or every message re-reads it"))
+
+    start = max((i for i, d in enumerate(tail) if _is_human_prompt(d)), default=-1)
+    current = tail[start + 1 :]
+    reads: set[str] = set()
+    for d in current:
+        if d.get("type") == "assistant":
+            for block in _content_blocks(d):
+                if isinstance(block, dict) and block.get("type") == "tool_use" and block.get("name") in _READ_TOOLS:
+                    reads.add(str(block.get("id")))
+    results = [
+        block for d in current if d.get("type") == "user"
+        for block in _content_blocks(d) if isinstance(block, dict) and block.get("type") == "tool_result"
+    ]
+    if results:
+        output = _result_chars(results[-1]) / _CHARS_PER_TOKEN
+        if output >= _COACH_OUTPUT_TOKENS:
+            hints.append((output, f"last tool output ~{_k(output)} tokens stays in context: try a quieter command, | tail or an offset read"))
+    if len(reads) >= _COACH_READS:
+        read_tokens = sum(_result_chars(b) for b in results if str(b.get("tool_use_id")) in reads) / _CHARS_PER_TOKEN
+        hints.append((read_tokens, f"{len(reads)} reads and searches this message: an Explore agent keeps them out of this context"))
+
+    return max(hints, key=lambda hint: hint[0]) if hints else None
+
+
+def second_line(payload: dict, config_dir: Path | None, now: datetime) -> str | None:
+    """The optional second status line (see the module docstring): a
+    coaching hint when one fires, else the feedback note, else ``None``."""
+    feedback_on, coaching_on = _capture_lines(config_dir)
+    text = None
+    if coaching_on:
+        transcript_path = payload.get("transcript_path")
+        tail = _tail_records(transcript_path) if isinstance(transcript_path, str) and transcript_path else []
+        hint = coaching_hint(payload, tail, now)
+        if hint is not None:
+            text = hint[1]
+    if text is None and feedback_on:
+        text = FEEDBACK_NOTE
+    if text is None:
+        return None
+    return text.replace("\n", " ").replace("\r", " ")[:_MAX_LINE_LEN]
+
+
 # -- CLI entry point ------------------------------------------------------
 
 
@@ -1579,9 +1809,10 @@ def _safe_print(text: str) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Read the status-line JSON payload from stdin, print one line, and
-    (when ``rate_limits`` is present) append a deduped usage-log row.
-    Always exits 0 and never lets an exception escape.
+    """Read the status-line JSON payload from stdin, print one line (and
+    the optional second, :func:`second_line`), and (when ``rate_limits``
+    is present) append a deduped usage-log row. Always exits 0 and never
+    lets an exception escape.
     """
     try:
         # Windows consoles / redirected pipes can default to a narrow
@@ -1634,6 +1865,13 @@ def main(argv: list[str] | None = None) -> int:
     _safe_print(line)
 
     try:
+        extra = second_line(payload, config_dir, now)
+        if extra:
+            _safe_print(extra)
+    except Exception:
+        pass
+
+    try:
         rate_limits = payload.get("rate_limits")
         if isinstance(rate_limits, dict):
             rows = log_usage.parse_usage_json(json.dumps(payload))
@@ -1663,6 +1901,8 @@ if __name__ == "__main__":
 
 
 __all__ = [
+    "coaching_hint",
+    "second_line",
     "render_status",
     "resolve_effective_ttl",
     "print_install_fragment",

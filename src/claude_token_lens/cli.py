@@ -26,18 +26,21 @@ import importlib.resources
 import importlib.util
 import json
 import os
+import re
 import sys
 import types
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import available_timezones
 
-from . import __version__, baseline as baseline_mod, classify, discovery, installer as installer_mod, onboarding
+from . import __version__, baseline as baseline_mod, capture_catalogue, capture_view, classify, discovery, installer as installer_mod
+from . import onboarding
 from . import helptext, hook_health, probe as probe_mod, recache, snapshots
 from . import statusline as statusline_mod
 from .fixes import RESTART_NOTE
 from .cache import DigestCache
-from .config import Config, ConfigError, load_config, load_session_overrides
+from .capture import HISTORY_DAYS as CAPTURE_HISTORY_DAYS
+from .config import CAPTURE_SAMPLES, CaptureConfig, Config, ConfigError, load_config, load_session_overrides, set_capture
 from .corpus import Corpus, load_corpus
 from .parse import load_or_create_salt
 from .model import Diagnostics, EventKind, PricingMeta, ReportMeta, ReportModel, Section, TranscriptResult
@@ -91,6 +94,7 @@ SUBCOMMANDS: tuple[str, ...] = (
     "uninstall",
     "import",
     "team-report",
+    "capture",
 )
 
 DEFAULT_SUBCOMMAND = "report"
@@ -286,9 +290,10 @@ def _add_compare_args(sub: argparse.ArgumentParser) -> None:
     )
     sub.add_argument(
         "--stratify",
-        default="purpose,mode",
+        default=None,
         metavar="KEY,KEY",
-        help="comma-separated stratification keys (purpose, mode; default: purpose,mode)",
+        help="comma-separated stratification keys (purpose, mode, task); default: purpose,mode, plus task "
+        "(the kind of task metrics capture reported) once half of both arms' sessions have one",
     )
     sub.add_argument(
         "--min-sessions",
@@ -619,6 +624,75 @@ def _add_uninstall_args(sub: argparse.ArgumentParser) -> None:
     )
 
 
+#: ``capture``'s actions; "status" is the default.
+CAPTURE_ACTIONS = ("status", "on", "off", "level", "enable", "disable", "connect", "remove", "feedback", "brief")
+
+#: What ``capture feedback on`` turns on, and what ``off`` turns off: the
+#: skill and the reminders to run it. The dashboard rating stays as set.
+_FEEDBACK_ON = ("feedback_skill", "feedback_note")
+_FEEDBACK_OFF = ("feedback_skill", "feedback_note", "feedback_reminder")
+
+#: ``capture <action> on|off`` -> the skill it adds or removes, what the
+#: change is called, and what it turns on.
+_SKILL_SWITCHES = {
+    "feedback": (capture_catalogue.FEEDBACK_SKILL, "Feedback", "the /tl-feedback skill and its status-line reminder"),
+    "brief": (capture_catalogue.BRIEF_SKILL, "Brief templates", "the /tl-brief skill"),
+}
+
+
+def _add_capture_args(sub: argparse.ArgumentParser) -> None:
+    """Arguments for ``capture``. Changes to this tool's own config.toml
+    are made after the cost warning (and a yes when capture uses more
+    tokens); settings.json changes always show the diff and ask."""
+    _add_claude_root_arg(sub)
+    sub.add_argument(
+        "action",
+        nargs="?",
+        default="status",
+        choices=CAPTURE_ACTIONS,
+        help="status (default); on; off; level LEVEL; enable/disable METRIC...; connect (add the hook entries "
+        "the chosen metrics need to settings.json); remove (switch off and take the entries out); "
+        "feedback on|off (the /tl-feedback skill and its status-line reminder); "
+        "brief on|off (the /tl-brief skill, which checks a request against its checklist)",
+    )
+    sub.add_argument(
+        "values",
+        nargs="*",
+        metavar="VALUE",
+        help="the level for 'level'; metric ids for 'enable' and 'disable' (see 'capture status'); "
+        "on or off for 'feedback' and 'brief'",
+    )
+    sub.add_argument(
+        "--level",
+        choices=capture_catalogue.LEVELS[1:],
+        default=None,
+        help="for 'on': the level to use (default: essentials, or the current level when already on)",
+    )
+    # --until DATE (the shared option) sets the end time instead.
+    sub.add_argument(
+        "--for",
+        dest="for_duration",
+        metavar="DURATION",
+        default=None,
+        help="switch capture off by itself after this long: a number and h, d or w (e.g. 7d); "
+        "--until DATE sets an ISO 8601 end date or time instead",
+    )
+    sub.add_argument(
+        "--sample",
+        type=int,
+        choices=CAPTURE_SAMPLES,
+        default=None,
+        help="capture this share of sessions, in percent (each session is in or out for its whole length)",
+    )
+    sub.add_argument("--yes", action="store_true", help="make the changes without asking (they are still printed)")
+    sub.add_argument(
+        "--dry-run",
+        action="store_true",
+        dest="dry_run",
+        help="show what would change, without changing anything",
+    )
+
+
 def _add_snapshot_config_args(sub: argparse.ArgumentParser) -> None:
     """Extra flags for the ``snapshot-config`` subcommand only (WP7). Every
     other subcommand stays a bare stub, so this is added just for this one
@@ -823,6 +897,29 @@ def _add_init_args(sub: argparse.ArgumentParser) -> None:
         help="show the settings.json change and the service-install plan without "
         "making either (config.toml and the initial baseline are still written)",
     )
+    sub.add_argument(
+        "--capture-level",
+        choices=capture_catalogue.LEVELS,
+        default=None,
+        help="answer the metrics capture question without asking: off, or the level to turn on "
+        "(capture uses tokens; 'claude-token-lens capture status' shows how many)",
+    )
+    sub.add_argument(
+        "--feedback",
+        choices=("on", "off"),
+        default=None,
+        help="answer the feedback question without asking: add the /tl-feedback skill and its status-line "
+        "reminder (on), or not (off)",
+    )
+    sub.add_argument(
+        "--capture-no-limit",
+        action="store_true",
+        dest="capture_no_limit",
+        help="answer the metrics capture time-box question without asking: no time limit, so capture runs "
+        f"until you switch it off (default: it switches itself off after "
+        f"{onboarding.DEFAULT_CAPTURE_TIMEBOX_DAYS} days; 'claude-token-lens capture on --for 30d' picks "
+        "another length once it's on)",
+    )
 
 
 def _add_baseline_args(sub: argparse.ArgumentParser) -> None:
@@ -938,6 +1035,7 @@ def _make_parser() -> argparse.ArgumentParser:
             "uninstall": "remove the hook, statusline and logon service, optionally undo applied changes and delete data",
             "import": "validate and copy team-aggregate document(s) into <config_dir>/team/",
             "team-report": "cross-machine comparison built from every imported team document",
+            "capture": "metrics capture: have Claude tag its replies so suggestions fit how you work (uses tokens)",
         }.get(name, f"{name} (not implemented yet)")
         sub = subparsers.add_parser(name, parents=[common], help=help_text)
         if name == "pricing-check":
@@ -1005,6 +1103,8 @@ def _make_parser() -> argparse.ArgumentParser:
             _add_import_args(sub)
         if name == "team-report":
             _add_team_report_args(sub)
+        if name == "capture":
+            _add_capture_args(sub)
     return parser
 
 
@@ -1161,6 +1261,22 @@ def _print_corpus_stats(corpus: Corpus) -> None:
         f"elapsed_s={corpus.elapsed_s:.3f}",
         file=sys.stderr,
     )
+
+
+def _merge_dashboard_marks(config_dir: Path, overrides: dict) -> tuple[dict, dict]:
+    """``(overrides, ratings)``: ``overrides`` with the dashboard's
+    session tags merged over it, and the dashboard's session ratings,
+    both read from ``<config-dir>/service.db`` without writing to it."""
+    from .service.serve import STORE_FILENAME
+    from .service.store import read_session_marks
+
+    tags, ratings = read_session_marks(config_dir / STORE_FILENAME)
+    if not tags:
+        return overrides, ratings
+    merged = {sid: dict(entry) for sid, entry in overrides.items()}
+    for session_id, entry in tags.items():
+        merged.setdefault(session_id, {}).update(entry)
+    return merged, ratings
 
 
 def _load_corpus_for_args(
@@ -1337,6 +1453,10 @@ def _cmd_report_like(args: argparse.Namespace, include: set[str] | None, *, emit
     except ConfigError as exc:
         print(f"claude-token-lens {command}: {exc}", file=sys.stderr)
         return 2
+    # The dashboard's Sessions-tab tags and ratings, read without writing,
+    # so the CLI report classifies and rates sessions as the dashboard
+    # does (a tag set there wins over sessions.toml, as in api.py).
+    session_overrides, ratings = _merge_dashboard_marks(config_dir, session_overrides)
 
     # S1-exports: when the statusline has been logging ground truth
     # (context_window/cache) into <config_dir>/usage-log.csv, feed those
@@ -1412,6 +1532,7 @@ def _cmd_report_like(args: argparse.Namespace, include: set[str] | None, *, emit
             baseline_record=baseline_record,
             baseline_note=baseline_note,
             config_dir=config_dir,
+            ratings=ratings,
         )
     except ScorecardError as exc:
         # Fix R20: a misordered [thresholds.scorecard] override in
@@ -1587,6 +1708,7 @@ def _cmd_config_diff(args: argparse.Namespace) -> int:
     except ConfigError as exc:
         print(f"claude-token-lens config-diff: {exc}", file=sys.stderr)
         return 2
+    session_overrides, _ratings = _merge_dashboard_marks(config_dir, session_overrides)
 
     recache_th = recache.RecacheThresholds.from_config(config.thresholds)
     session_metrics = _build_session_metrics(corpus, rates, recache_th, config, session_overrides)
@@ -1659,11 +1781,14 @@ def _cmd_compare(args: argparse.Namespace) -> int:
         print(f"claude-token-lens compare: {exc}", file=sys.stderr)
         return 2
 
-    stratify_by = tuple(s.strip() for s in args.stratify.split(",") if s.strip())
-    bad_keys = [k for k in stratify_by if k not in ("purpose", "mode")]
+    stratify_by = (
+        None if args.stratify is None else tuple(s.strip() for s in args.stratify.split(",") if s.strip())
+    )
+    bad_keys = [k for k in stratify_by or () if k not in compare_mod.STRATIFY_CHOICES]
     if bad_keys:
         print(
-            f"claude-token-lens compare: bad --stratify key(s) {bad_keys}: expected purpose and/or mode",
+            f"claude-token-lens compare: bad --stratify key(s) {bad_keys}: expected any of "
+            f"{', '.join(compare_mod.STRATIFY_CHOICES)}",
             file=sys.stderr,
         )
         return 2
@@ -1687,6 +1812,7 @@ def _cmd_compare(args: argparse.Namespace) -> int:
     except ConfigError as exc:
         print(f"claude-token-lens compare: {exc}", file=sys.stderr)
         return 2
+    session_overrides, _ratings = _merge_dashboard_marks(config_dir, session_overrides)
 
     # Fewer than min_sessions in either arm is not an error (plan's
     # minimum-sample gate is a caveat on the reading, not a reason to
@@ -2095,6 +2221,9 @@ def _load_snapshot_hook_module():
     module.__file__ = str(hook_resource)
     code = compile(source, str(hook_resource), "exec")
     exec(code, module.__dict__)
+    # The script's own install_hook copies its __file__, which is not a
+    # real file inside a zipapp; copy it out of the package instead.
+    module.install_hook = lambda config_dir: hook_health.install_hook_files(config_dir, (hook_health.HOOK_SCRIPT_NAME,))[0]
     return module
 
 
@@ -2300,7 +2429,159 @@ def _cmd_init(args: argparse.Namespace) -> int:
     # draws for the hook/statusLine fragments above.
     if not args.no_install and (args.connect or not args.non_interactive):
         _cmd_init_connect_step(args, config_dir=config_dir, hook=hook, claude_root=claude_root)
-    return _cmd_init_service_step(args, config_dir=config_dir, projects_root_path=service_roots)
+    rc = _cmd_init_service_step(args, config_dir=config_dir, projects_root_path=service_roots)
+    _cmd_init_capture_step(args, config_dir=config_dir, claude_root=claude_root)
+    _cmd_init_feedback_step(args, config_dir=config_dir, claude_root=claude_root)
+    return rc
+
+
+def _cmd_init_capture_step(
+    args: argparse.Namespace, *, config_dir: Path, claude_root: Path, stdin=None, stdout=None, now=None
+) -> None:
+    """``init``'s last question: metrics capture
+    (:func:`onboarding.ask_capture_level`, which warns that it uses
+    tokens and shows what each level would have cost over your last
+    :data:`CAPTURE_HISTORY_DAYS` days). A level other than ``off``
+    is followed by :func:`onboarding.ask_capture_until`'s time-box
+    question, then both are saved to config.toml together; the
+    settings.json entries the level needs are shown and added after a
+    yes (or ``--connect``), as in ``capture on``; when init isn't
+    connecting to Claude Code, the command that adds them is printed.
+    Capture already on is left as it is unless ``--capture-level`` or
+    the answers file names a level."""
+    stdin = stdin if stdin is not None else sys.stdin
+    stdout = stdout if stdout is not None else sys.stdout
+    now = now or datetime.now(timezone.utc)
+    try:
+        config = load_config(config_dir)
+        given = onboarding.capture_answer(args.answers, args.capture_level)
+    except (ConfigError, onboarding.OnboardingError) as exc:
+        stdout.write(f"Metrics capture: skipped ({exc}).\n")
+        return
+    if config.capture.is_on and given is None:
+        stdout.write(
+            f"\nMetrics capture is {capture_view.describe(config.capture)}. "
+            "'claude-token-lens capture' shows what it costs and changes it.\n"
+        )
+        return
+
+    def estimates() -> list[str]:
+        past, units = _capture_history(args, config, config_dir)
+        return _capture_estimate_lines(past, units) if past is not None else []
+
+    level, notes = onboarding.ask_capture_level(
+        estimates=estimates,
+        preset=given,
+        non_interactive=args.non_interactive,
+        stdin=stdin,
+        stdout=stdout,
+    )
+    for note in notes:
+        stdout.write(f"(derived) {note}\n")
+    if level not in capture_catalogue.LEVELS:
+        stdout.write(
+            f"{level!r} isn't a level, so metrics capture is left as it is. "
+            "'claude-token-lens capture on --level LEVEL' turns it on.\n"
+        )
+        return
+    if level == "off" and not config.capture.is_on:
+        if not notes:
+            stdout.write("Metrics capture left off.\n")
+        return
+    until = None
+    if level != "off":
+        until, timebox_notes = onboarding.ask_capture_until(
+            now=now,
+            preset=True if args.capture_no_limit else None,
+            answers_path=args.answers,
+            non_interactive=args.non_interactive,
+            stdin=stdin,
+            stdout=stdout,
+        )
+        for note in timebox_notes:
+            stdout.write(f"(derived) {note}\n")
+    try:
+        capture = set_capture(config_dir, level=level, until=until, now=now)
+    except ConfigError as exc:
+        stdout.write(f"{exc}\n")
+        return
+    if level == "off":
+        stdout.write("Metrics capture switched off.\n")
+        return
+    stdout.write(f"Saved to config.toml: metrics capture {capture_view.describe(capture)}.\n")
+    wanted = hook_health.capture_specs(capture.active_metrics())
+    if args.no_install or not (args.connect or not args.non_interactive):
+        if hook_health.check_capture(wanted, claude_root=claude_root).missing:
+            stdout.write("Add the hook entries it needs with: claude-token-lens capture connect\n")
+        return
+    done = _capture_settings_step(
+        wanted,
+        config_dir=config_dir,
+        claude_root=claude_root,
+        dry_run=args.dry_run,
+        assume_yes=args.connect,
+        stdin=stdin,
+        stdout=stdout,
+    )
+    if not done and wanted and not args.dry_run:
+        stdout.write("Until then the chosen metrics can't be captured.\n")
+
+
+def _cmd_init_feedback_step(
+    args: argparse.Namespace, *, config_dir: Path, claude_root: Path, stdin=None, stdout=None, now=None
+) -> None:
+    """``init``'s feedback question (:func:`onboarding.ask_feedback`),
+    after capture's: the ``/tl-feedback`` skill and its status-line
+    reminder, which work at any capture level. A yes is saved to
+    config.toml, then the skill is shown and written after a yes (or
+    ``--connect``), as in ``capture feedback on``; when init isn't
+    connecting to Claude Code, that command is printed. Feedback already
+    on is left as it is unless ``--feedback`` or the answers file says."""
+    stdin = stdin if stdin is not None else sys.stdin
+    stdout = stdout if stdout is not None else sys.stdout
+    now = now or datetime.now(timezone.utc)
+    try:
+        config = load_config(config_dir)
+        given = onboarding.feedback_answer(args.answers, getattr(args, "feedback", None))
+    except (ConfigError, onboarding.OnboardingError) as exc:
+        stdout.write(f"Feedback: skipped ({exc}).\n")
+        return
+    current = config.capture
+    was_on = "feedback_skill" in current.feedback
+    if was_on and given is None:
+        stdout.write("\nThe /tl-feedback skill is on. 'claude-token-lens capture feedback off' turns it off.\n")
+        return
+    on, notes = onboarding.ask_feedback(
+        preset=given, non_interactive=args.non_interactive, stdin=stdin, stdout=stdout
+    )
+    for note in notes:
+        stdout.write(f"(derived) {note}\n")
+    if on != was_on:
+        feedback = [i for i in current.feedback if i not in _FEEDBACK_OFF]
+        if on:
+            feedback = list(current.feedback) + [i for i in _FEEDBACK_ON if i not in current.feedback]
+        try:
+            set_capture(config_dir, feedback=feedback, now=now)
+        except ConfigError as exc:
+            stdout.write(f"{exc}\n")
+            return
+        stdout.write("Saved to config.toml: feedback " + ("on" if on else "off") + ".\n")
+    elif not on:
+        if not notes:
+            stdout.write("Feedback left off.\n")
+        return
+    if args.no_install or not (args.connect or not args.non_interactive):
+        from . import footprint
+
+        text = footprint.read_feedback_skill(claude_root)
+        if on and text != capture_catalogue.feedback_skill_text():
+            stdout.write("Add the skill with: claude-token-lens capture feedback on\n")
+        elif not on and text is not None and footprint.is_own_feedback_skill(text):
+            stdout.write("Remove the skill with: claude-token-lens capture feedback off\n")
+        return
+    _capture_skill_step(
+        on, claude_root=claude_root, dry_run=args.dry_run, assume_yes=args.connect, stdin=stdin, stdout=stdout
+    )
 
 
 def _cmd_init_connect_step(
@@ -2659,9 +2940,586 @@ def _cmd_changes(args: argparse.Namespace) -> int:
             print(f"  To undo: {item.undo}")
         print()
     print("What to expect\n")
-    for title, text in footprint.EXPECTATIONS:
+    for title, text in footprint.expectations(footprint.capture_setting(config_dir)):
         print(f"- {title}. {text}")
     print(f"\nTo remove everything: {footprint.UNINSTALL_COMMAND}")
+    return 0
+
+
+_DURATION_RE = re.compile(r"\s*(\d+)\s*([hdw])\s*", re.IGNORECASE)
+_DURATION_UNIT_HOURS = {"h": 1, "d": 24, "w": 24 * 7}
+
+
+def _capture_until(args: argparse.Namespace, now: datetime) -> str | None:
+    """``--until`` as given, or ``--for`` turned into an ISO time;
+    ``None`` when neither was given. Raises ``ValueError`` for a
+    duration it can't read."""
+    if args.until and args.for_duration:
+        raise ValueError("give --for or --until, not both")
+    if args.until:
+        return args.until
+    if not args.for_duration:
+        return None
+    match = _DURATION_RE.fullmatch(args.for_duration)
+    if not match or int(match.group(1)) == 0:
+        raise ValueError(f"--for {args.for_duration!r}: use a number and h, d or w, such as 12h, 7d or 2w")
+    hours = int(match.group(1)) * _DURATION_UNIT_HOURS[match.group(2).lower()]
+    return (now + timedelta(hours=hours)).isoformat(timespec="seconds")
+
+
+def _capture_cost_lines(ids) -> list[str]:
+    """Plain lines on what ``ids`` add to Claude's context and replies."""
+    rough = capture_catalogue.rough_tokens(ids)
+    lines = []
+    if rough["session_note"]:
+        lines.append(f"about {rough['session_note']} tokens of note when a session starts, is cleared or compacts")
+    if rough["subagent_note"]:
+        lines.append(f"about {rough['subagent_note']} tokens of note when a subagent starts")
+    if rough["reply_tag"]:
+        lines.append(f"about {rough['reply_tag']} tokens of tag at the end of each reply")
+    if rough["report_tag"]:
+        lines.append(f"about {rough['report_tag']} tokens of tag at the end of each subagent report")
+    if rough["tool_note"]:
+        lines.append(f"about {rough['tool_note']} tokens of note after each large or web tool result")
+    return lines
+
+
+def _capture_corpus(args: argparse.Namespace, config: Config, config_dir: Path, *, days=None, since=None) -> Corpus:
+    """Every project's sessions over ``days`` or from ``since`` on:
+    capture runs in all of them unless ``[capture] projects`` narrows
+    it. ``--until`` is the capture end time here, not a window."""
+    roots = discovery.projects_roots(args.projects_root, config.extra_projects_roots)
+    project_dirs = discovery.resolve_project_dirs(
+        roots, slugs=None, all_projects=True, family_regex=None, exclude_projects=config.exclude_projects
+    )
+    window = argparse.Namespace(**{**vars(args), "days": days, "since": since, "until": None, "limit": None})
+    return _load_corpus_for_args(window, config, config_dir, project_dirs)
+
+
+def _capture_pricing(args: argparse.Namespace, config: Config, config_dir: Path) -> Pricing | None:
+    try:
+        return load_pricing(path=args.pricing or config.pricing_path, config_dir=config_dir)
+    except PricingError:
+        return None
+
+
+def _capture_history(args: argparse.Namespace, config: Config, config_dir: Path):
+    """``(history, units)`` from your last :data:`CAPTURE_HISTORY_DAYS`
+    days, or ``(None, None)`` when the rate card can't be read."""
+    from . import capture
+    from .report import _report_units
+
+    rates = _capture_pricing(args, config, config_dir)
+    if rates is None:
+        return None, None
+    corpus = _capture_corpus(args, config, config_dir, days=CAPTURE_HISTORY_DAYS)
+    return capture.history(corpus, rates, days=CAPTURE_HISTORY_DAYS), _report_units(corpus, rates, config, config_dir)
+
+
+def _plural(count: int, word: str) -> str:
+    return f"{count} {word}{'' if count == 1 else 's'}"
+
+
+def _capture_estimate_lines(past, units, sample: int = 100) -> list[str]:
+    """What each level would have cost over ``past``, one line each."""
+    from . import capture
+
+    if not past.sessions:
+        return [
+            f"No sessions in your last {past.days} days to work out what it would cost. Roughly, at Essentials:",
+            *(f"  - {line}" for line in _capture_cost_lines(capture_catalogue.level_metrics("essentials"))),
+        ]
+    sampled = f", {sample}% of sessions captured" if sample < 100 else ""
+    lines = [
+        f"What each level would have cost over your last {past.days} days "
+        f"({_plural(past.sessions, 'session')}, {_plural(past.subagents, 'subagent')}{sampled}):"
+    ]
+    for level, est in capture.level_estimates(past, sample).items():
+        title = capture_catalogue.LEVEL_TITLES.get(level, level)
+        if est.cost <= 0:
+            lines.append(f"  {title:<11} nothing: it only logs a few events to a local file")
+            continue
+        tokens = round((est.note_tokens + est.tag_tokens) * 7 / est.days) if est.days else 0
+        share = f", {capture_view.share_text(est.share)} of what you spent" if est.share is not None else ""
+        amount = capture_view.amount_text(units, est.per_week, "a week")
+        lines.append(f"  {title:<11} about {format_cell(tokens, 'tokens')} tokens and {amount}{share}")
+    return lines
+
+
+def _capture_usage_lines(use, units) -> list[str]:
+    """What capture measured since it was turned on."""
+    if not use.sessions and not use.subagents:
+        return [
+            "No captured sessions yet: the note is added to sessions and subagents started after capture was "
+            "turned on."
+        ]
+    since = f" since {use.since[:10]}" if use.since else ""
+    share = f", {capture_view.share_text(use.share)} of what those sessions cost" if use.share is not None else ""
+    lines = [
+        f"Measured{since}: {_plural(use.sessions, 'session')} and {_plural(use.subagents, 'subagent')} captured",
+        f"  about {format_cell(use.note_tokens, 'tokens')} tokens of note and {format_cell(use.tag_tokens, 'tokens')} "
+        f"tokens of tag: {capture_view.amount_text(units, use.cost)}{share}",
+    ]
+    if use.coverage is not None:
+        reports = (
+            f" and {format_cell(use.report_coverage, 'pct')} of agent reports"
+            if use.report_coverage is not None
+            else ""
+        )
+        lines.append(f"  Claude tagged {format_cell(use.coverage, 'pct')} of your messages{reports}")
+    return lines
+
+
+def _capture_metric_changes(action: str, values: list[str], current: CaptureConfig) -> dict:
+    """``set_capture`` arguments for ``enable``/``disable``. Raises
+    ``ValueError`` naming an id it doesn't know."""
+    if not values:
+        raise ValueError(f"'capture {action}' needs one or more metric ids (see 'claude-token-lens capture status')")
+    known = capture_catalogue.METRICS_BY_ID
+    unknown = [v for v in values if v not in known]
+    if unknown:
+        raise ValueError(f"unknown metric {', '.join(unknown)}; known: {', '.join(known)}")
+    derived = [v for v in values if known[v].group == "derived"]
+    if derived:
+        raise ValueError(f"{', '.join(derived)} {'is' if len(derived) == 1 else 'are'} always measured, from what the transcripts already hold")
+    level_ids = [v for v in values if v in capture_catalogue.LEVEL_METRIC_IDS]
+    changes: dict = {}
+    if level_ids:
+        base = [m for m in capture_catalogue.active_metrics(current.level, current.metrics) if m in capture_catalogue.LEVEL_METRIC_IDS]
+        if action == "enable":
+            chosen = base + [m for m in level_ids if m not in base]
+        else:
+            dropped = set(level_ids)
+            dropped |= {m.id for m in capture_catalogue.METRICS if set(m.requires) & dropped}
+            chosen = [m for m in base if m not in dropped]
+        changes["metrics"] = chosen
+    for key, ids in (("feedback", capture_catalogue.FEEDBACK_IDS), ("coaching", capture_catalogue.COACHING_IDS)):
+        picked = [v for v in values if v in ids]
+        if picked:
+            now_on = list(getattr(current, key))
+            changes[key] = now_on + [v for v in picked if v not in now_on] if action == "enable" else [v for v in now_on if v not in picked]
+    return changes
+
+
+def _capture_hook_commands(config_dir: Path) -> dict[str, str]:
+    hooks_dir = Path(config_dir).resolve() / "hooks"
+    extra_args = _config_dir_args(config_dir)
+    return {script: hook_health.hook_command(hooks_dir / script, extra_args) for script in hook_health.CAPTURE_SCRIPTS}
+
+
+def _capture_settings_step(
+    wanted: tuple, *, config_dir: Path, claude_root: Path, dry_run: bool, assume_yes: bool, stdin, stdout, removing: bool = False
+) -> bool:
+    """Show the settings.json change that makes it run exactly the
+    capture entries in ``wanted``, and make it after a yes. Installs the
+    hook scripts into this tool's folder first, and the salt the free
+    signals hash session ids with. Returns False when the change was
+    needed but not made."""
+    if wanted and not dry_run:
+        for script in hook_health.CAPTURE_SCRIPTS:
+            hook_health.install_hook_files(config_dir, hook_health.CAPTURE_FILES[script])
+        load_or_create_salt(config_dir)
+    plan = hook_health.plan_capture(wanted, _capture_hook_commands(config_dir), claude_root=claude_root)
+    if plan.new_text is None:
+        for line in plan.changes:  # a settings.json it can't read
+            stdout.write(f"{line}\n")
+        if not plan.changes:
+            stdout.write(
+                "settings.json already runs the capture hooks these metrics need.\n"
+                if wanted
+                else "settings.json runs no capture hooks.\n"
+            )
+        return not plan.changes
+    stdout.write(f"\nThis changes {plan.settings_path}:\n")
+    for line in plan.changes:
+        stdout.write(f"- {line}\n")
+    stdout.write("\n" + plan.diff + "\n")
+    later = "claude-token-lens capture remove" if removing else "claude-token-lens capture connect"
+    if dry_run:
+        stdout.write(f"Dry run: settings.json left unchanged. Run '{later}' to make it.\n")
+        return False
+    if not assume_yes:
+        stdout.write("Make this change? settings.json is backed up first. (y/n) [n]: ")
+        stdout.flush()
+        if (stdin.readline() or "").strip().lower() not in ("y", "yes"):
+            stdout.write(f"Left unchanged. Run '{later}' to make it later.\n")
+            return False
+    try:
+        backup = hook_health.connect(plan)
+    except (OSError, ValueError) as exc:
+        stdout.write(f"Could not change settings.json: {exc}\n")
+        return False
+    stdout.write("Done." + (f" The previous settings.json is at {backup}" if backup else "") + f"\n{RESTART_NOTE}\n")
+    return True
+
+
+def _capture_skill_step(
+    want: bool,
+    *,
+    claude_root: Path,
+    dry_run: bool,
+    assume_yes: bool,
+    stdin,
+    stdout,
+    skill: str = capture_catalogue.FEEDBACK_SKILL,
+) -> bool:
+    """Make the skill (``<claude-root>/skills/<skill>/SKILL.md``: by
+    default ``/tl-feedback``, or ``/tl-brief``) there or not, as ``want``
+    says: show the file to add, the diff, or the file to remove, and make
+    the change after a yes. A ``SKILL.md`` there that this tool didn't
+    write is left alone. Returns False when a change was needed but not
+    made."""
+    from . import footprint
+
+    action = next(a for a, (name, _t, _w) in _SKILL_SWITCHES.items() if name == skill)
+    path = footprint.skill_path(skill, claude_root)
+    now_text = footprint.read_skill(skill, claude_root)
+    ours = now_text is not None and footprint.is_own_skill(skill, now_text)
+    text = footprint.SKILL_TEXTS[skill]()
+    if want:
+        later = f"claude-token-lens capture {action} on"
+        if now_text == text:
+            stdout.write(f"The /{skill} skill is in place: {path}\n")
+            return True
+        if now_text is not None and not ours:
+            stdout.write(
+                f"{path} holds a skill this tool didn't write, so it is left alone. Move it elsewhere, then run "
+                f"'{later}'.\n"
+            )
+            return False
+        if now_text is None:
+            stdout.write(f"\nThis adds the /{skill} skill, {path}:\n\n")
+            stdout.write("".join(f"    {line}\n" if line else "\n" for line in text.splitlines()) + "\n")
+            question = "Add it?"
+        else:
+            import difflib
+
+            diff = "".join(
+                difflib.unified_diff(
+                    now_text.splitlines(keepends=True),
+                    text.splitlines(keepends=True),
+                    fromfile="SKILL.md (now)",
+                    tofile="SKILL.md (after)",
+                )
+            )
+            stdout.write(f"\nThis updates the /{skill} skill, {path}:\n\n{diff}\n")
+            question = "Update it?"
+    else:
+        later = f"claude-token-lens capture {action} off"
+        if not ours:
+            return True
+        stdout.write(f"\nThis removes the /{skill} skill, {path}.\n")
+        question = "Remove it?"
+    if dry_run:
+        stdout.write(f"Dry run: the skill is left as it is. Run '{later}' to make the change.\n")
+        return False
+    if not assume_yes:
+        stdout.write(f"{question} (y/n) [n]: ")
+        stdout.flush()
+        if (stdin.readline() or "").strip().lower() not in ("y", "yes"):
+            stdout.write(f"Left as it is. Run '{later}' to make the change later.\n")
+            return False
+    try:
+        if want:
+            footprint.write_skill(skill, claude_root)
+        else:
+            footprint.remove_skill(skill, claude_root)
+    except OSError as exc:
+        stdout.write(f"Could not change {path}: {exc}\n")
+        return False
+    when = (
+        "when you finish a piece of work"
+        if skill == capture_catalogue.FEEDBACK_SKILL
+        else "followed by your request, before Claude starts on it"
+    )
+    stdout.write(
+        f"Done. Run /{skill} in Claude Code {when} (start a new session if it isn't listed yet).\n"
+        if want
+        else "Removed.\n"
+    )
+    return True
+
+
+def _capture_status(
+    capture: CaptureConfig, *, config_dir: Path, claude_root: Path, stdout, args=None, config: Config | None = None
+) -> int:
+    stdout.write(f"Metrics capture: {capture_view.describe(capture)}\n")
+    ids = capture.active_metrics()
+    if capture.is_on:
+        if capture.expired():
+            stdout.write("Its end time has passed, so the hook adds nothing now. Turn it back on with 'capture on'.\n")
+        if capture.projects:
+            only = [p for p in capture.projects if not p.startswith("!")]
+            skip = [p[1:] for p in capture.projects if p.startswith("!")]
+            stdout.write(
+                "Projects: " + "; ".join(
+                    part for part in (
+                        f"only those matching {', '.join(only)}" if only else "",
+                        f"not those matching {', '.join(skip)}" if skip else "",
+                    ) if part
+                ) + "\n"
+            )
+    by_group: dict[str, list[str]] = {}
+    for metric_id in ids:
+        by_group.setdefault(capture_catalogue.METRICS_BY_ID[metric_id].group, []).append(metric_id)
+    for group, members in by_group.items():
+        stdout.write(f"  {group}: {', '.join(members)}\n")
+    if capture.coaching:
+        stdout.write(f"  coaching: {', '.join(capture.coaching)}\n")
+    cost = _capture_cost_lines(ids)
+    if cost:
+        stdout.write("Rough size:\n")
+        for line in cost:
+            stdout.write(f"  - {line}\n")
+    elif capture.is_on:
+        stdout.write("It adds nothing to Claude's context at this level.\n")
+    if args is not None and config is not None:
+        for line in _capture_measured(capture, args=args, config=config, config_dir=config_dir):
+            stdout.write(f"{line}\n")
+    wanted = hook_health.capture_specs(ids)
+    health = hook_health.check_capture(wanted, claude_root=claude_root)
+    if wanted or health.extra:
+        stdout.write(f"Hooks: {health.summary()}\n")
+    if "feedback_skill" in capture.feedback:
+        from . import footprint
+
+        note = capture_view.SKILL_NOTES.get(footprint.feedback_skill_state(claude_root))
+        if note:
+            stdout.write(f"{note}\n")
+    if "brief_templates" in capture.coaching:
+        from . import footprint
+
+        note = capture_view.BRIEF_SKILL_NOTES.get(footprint.skill_state(capture_catalogue.BRIEF_SKILL, claude_root))
+        if note:
+            stdout.write(f"{note}\n")
+    lines_on = [m for m in ("feedback_note", "coaching_line") if m in capture.feedback or m in capture.coaching]
+    if lines_on:
+        from . import footprint
+
+        try:
+            settings = json.loads(hook_health.settings_path(claude_root).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            settings = None
+        if not footprint.is_own_statusline(settings if isinstance(settings, dict) else None):
+            stdout.write(f"{capture_view.STATUSLINE_NOTES[lines_on[-1]]}\n")
+    stdout.write(
+        "\nChange it: claude-token-lens capture level " + "|".join(capture_catalogue.LEVELS)
+        + ", capture enable|disable METRIC..., or the Capture tab on the dashboard.\n"
+    )
+    return 0
+
+
+def _capture_measured(capture: CaptureConfig, *, args, config: Config, config_dir: Path) -> list[str]:
+    """While capture is on, what it has cost since it was turned on;
+    while it is off, what each level would have cost you."""
+    from . import capture as capture_mod
+    from .report import _report_units
+
+    if capture.is_on and not capture.enabled_at:
+        return []
+    rates = _capture_pricing(args, config, config_dir)
+    if rates is None:
+        return []
+    if capture.is_on:
+        corpus = _capture_corpus(args, config, config_dir, since=capture.enabled_at)
+        units = _report_units(corpus, rates, config, config_dir)
+        return _capture_usage_lines(capture_mod.usage(corpus, rates, since=capture.enabled_at), units)
+    past, units = _capture_history(args, config, config_dir)
+    return _capture_estimate_lines(past, units) if past is not None else []
+
+
+def _cmd_capture(args: argparse.Namespace, *, stdin=None, stdout=None, now: datetime | None = None) -> int:
+    """``capture``: see and change metrics capture.
+
+    ``status`` shows the level, the metrics on, their rough size and
+    whether settings.json runs the hooks they need. ``on``, ``level``,
+    ``enable`` and ``disable`` change ``[capture]`` in this tool's
+    config.toml; a change that makes Claude use more tokens is shown
+    with its rough size and made only after a yes (or ``--yes``). Then,
+    when settings.json doesn't run exactly the hook entries the metrics
+    need, the diff is shown and made after a yes (``connect`` does only
+    this step). ``off`` switches capture off and leaves the entries,
+    which add nothing while it is off; ``remove`` switches it off and
+    takes them out. ``feedback on|off`` turns the ``/tl-feedback`` skill
+    and its reminders on or off and adds or removes the skill file, after
+    showing it and asking; enabling or disabling ``feedback_skill`` does
+    the same. ``brief on|off`` does that for the ``/tl-brief`` skill (the
+    ``brief_templates`` toggle). ``--dry-run`` changes nothing."""
+    stdin = stdin if stdin is not None else sys.stdin
+    stdout = stdout if stdout is not None else sys.stdout
+    now = now or datetime.now(timezone.utc)
+    config_dir = _resolve_config_dir(args.config_dir)
+    claude_root = _resolve_claude_root(getattr(args, "claude_root", None))
+    try:
+        config = load_config(config_dir=config_dir)
+    except ConfigError as exc:
+        stdout.write(f"config.toml has a problem, so capture can't be changed: {exc}\n")
+        return 2
+    current = config.capture
+    action = args.action
+    if action == "status":
+        return _capture_status(
+            current, config_dir=config_dir, claude_root=claude_root, stdout=stdout, args=args, config=config
+        )
+
+    changes: dict = {}
+    try:
+        if action == "on":
+            changes["level"] = args.level or (current.level if current.is_on and current.level != "custom" else "essentials")
+            if current.level == "custom" and not args.level:
+                changes = {"metrics": list(current.metrics)}
+        elif action == "level":
+            if len(args.values) != 1 or args.values[0] not in capture_catalogue.LEVELS:
+                raise ValueError(f"'capture level' needs one of: {', '.join(capture_catalogue.LEVELS)}")
+            changes["level"] = args.values[0]
+        elif action in ("enable", "disable"):
+            changes = _capture_metric_changes(action, args.values, current)
+        elif action in ("off", "remove"):
+            changes["level"] = "off"
+        elif action in _SKILL_SWITCHES:
+            if len(args.values) != 1 or args.values[0] not in ("on", "off"):
+                raise ValueError(f"'capture {action}' needs on or off")
+            on = args.values[0] == "on"
+            if action == "feedback" and on:
+                changes["feedback"] = list(current.feedback) + [i for i in _FEEDBACK_ON if i not in current.feedback]
+            elif action == "feedback":
+                changes["feedback"] = [i for i in current.feedback if i not in _FEEDBACK_OFF]
+            elif on:
+                changes["coaching"] = list(current.coaching) + [
+                    i for i in ("brief_templates",) if i not in current.coaching
+                ]
+            else:
+                changes["coaching"] = [i for i in current.coaching if i != "brief_templates"]
+        until = _capture_until(args, now)
+        if until is not None and action not in ("off", "remove", *_SKILL_SWITCHES):
+            changes["until"] = until
+        if args.sample is not None and action not in ("off", "remove", *_SKILL_SWITCHES):
+            changes["sample"] = args.sample
+    except ValueError as exc:
+        stdout.write(f"{exc}\n")
+        return 2
+
+    try:
+        preview = set_capture(config_dir, now=now, dry_run=True, **changes) if changes else current
+    except ConfigError as exc:
+        stdout.write(f"{exc}\n")
+        return 2
+    original = current
+    if action in _SKILL_SWITCHES:
+        skill, title, what = _SKILL_SWITCHES[action]
+        on = args.values[0] == "on"
+        if preview != current:
+            stdout.write(
+                f"{title}: " + (f"{what} on" if on else "off")
+                + (". Nothing is added to Claude's context until you run the skill.\n" if on else ".\n")
+            )
+            if args.dry_run:
+                stdout.write("Dry run: config.toml left unchanged.\n")
+            else:
+                try:
+                    set_capture(config_dir, now=now, **changes)
+                except ConfigError as exc:
+                    stdout.write(f"{exc}\n")
+                    return 2
+                stdout.write("Saved to config.toml.\n")
+        else:
+            stdout.write(f"{title} {'are' if action == 'brief' else 'is'} already {'on' if on else 'off'}.\n")
+        _capture_skill_step(
+            on,
+            claude_root=claude_root,
+            dry_run=args.dry_run,
+            assume_yes=args.yes,
+            stdin=stdin,
+            stdout=stdout,
+            skill=skill,
+        )
+        return 0
+    if preview != current:
+        stdout.write(f"Metrics capture: {capture_view.describe(current)} -> {capture_view.describe(preview)}\n")
+        if action == "disable":
+            also = [m for m in current.active_metrics() if m not in preview.active_metrics() and m not in args.values]
+            if also:
+                stdout.write(f"{', '.join(also)} need{'s' if len(also) == 1 else ''} {', '.join(args.values)}, so {'it goes' if len(also) == 1 else 'they go'} too.\n")
+        added =[m for m in preview.active_metrics() if m not in current.active_metrics()]
+        costly = [m for m in added if capture_catalogue.asks_claude(m)]
+        if costly:
+            stdout.write(
+                "\nThis makes Claude use more of your tokens. It adds " + ", ".join(costly) + ", and Claude then "
+                "reads a short note and ends its replies with a one-line tag such as [tl: task=bugfix brief=clear].\n"
+                "At this setting, roughly:\n"
+            )
+            for line in _capture_cost_lines(preview.active_metrics()):
+                stdout.write(f"  - {line}\n")
+            if preview.sample < 100:
+                stdout.write(f"  (in {preview.sample}% of sessions)\n")
+            stdout.write("The Capture tab and 'capture status' show what it really costs once it runs.\n")
+        if args.dry_run:
+            stdout.write("Dry run: config.toml left unchanged.\n")
+        else:
+            if costly and not args.yes:
+                stdout.write("Go ahead? (y/n) [n]: ")
+                stdout.flush()
+                if (stdin.readline() or "").strip().lower() not in ("y", "yes"):
+                    stdout.write("Left unchanged.\n")
+                    return 1
+            try:
+                current = set_capture(config_dir, now=now, **changes)
+            except ConfigError as exc:
+                stdout.write(f"{exc}\n")
+                return 2
+            stdout.write("Saved to config.toml. It takes effect in new sessions and subagents.\n")
+    elif action != "connect":
+        stdout.write(f"Metrics capture is already {capture_view.describe(current)}.\n")
+
+    skill_on = "feedback_skill" in preview.feedback
+    brief_on = "brief_templates" in preview.coaching
+    for name, now_on, was_on in (
+        (capture_catalogue.FEEDBACK_SKILL, skill_on, "feedback_skill" in original.feedback),
+        (capture_catalogue.BRIEF_SKILL, brief_on, "brief_templates" in original.coaching),
+    ):
+        if (action in ("enable", "disable") and now_on != was_on) or (action == "connect" and now_on):
+            _capture_skill_step(
+                now_on,
+                claude_root=claude_root,
+                dry_run=args.dry_run,
+                assume_yes=args.yes,
+                stdin=stdin,
+                stdout=stdout,
+                skill=name,
+            )
+    if action == "off":
+        if hook_health.check_capture((), claude_root=claude_root).extra:
+            stdout.write(
+                "The capture hooks stay in settings.json and add nothing while capture is off. "
+                "'claude-token-lens capture remove' takes them out.\n"
+            )
+        return 0
+    if action == "remove" and skill_on:
+        stdout.write(
+            "The /tl-feedback skill stays: it works with capture off. "
+            "'claude-token-lens capture feedback off' removes it.\n"
+        )
+    if action == "remove" and brief_on:
+        stdout.write(
+            "The /tl-brief skill stays: it works with capture off. "
+            "'claude-token-lens capture brief off' removes it.\n"
+        )
+    wanted = () if action == "remove" else hook_health.capture_specs(preview.active_metrics())
+    if action == "connect" and not preview.is_on:
+        stdout.write("Capture is off, so no hook entries are needed. 'claude-token-lens capture on' turns it on.\n")
+        return 0
+    done = _capture_settings_step(
+        wanted,
+        config_dir=config_dir,
+        claude_root=claude_root,
+        dry_run=args.dry_run,
+        assume_yes=args.yes,
+        stdin=stdin,
+        stdout=stdout,
+        removing=action == "remove",
+    )
+    if not done and wanted and not args.dry_run:
+        stdout.write("Until then the chosen metrics can't be captured.\n")
     return 0
 
 
@@ -2711,6 +3569,24 @@ def _cmd_uninstall(args: argparse.Namespace) -> int:
             print(f"   {RESTART_NOTE}\n")
         else:
             print("   Left unchanged.\n")
+    for name, skill_file in (
+        (capture_catalogue.FEEDBACK_SKILL, plan.feedback_skill),
+        (capture_catalogue.BRIEF_SKILL, plan.brief_skill),
+    ):
+        if skill_file is None:
+            continue
+        print(f"   The /{name} skill: {footprint.home_label(skill_file)}")
+        if dry:
+            print("   Dry run: the skill is left in place.\n")
+        elif _ask("   Remove the skill?", assume_yes=args.yes):
+            try:
+                footprint.remove_skill(name, claude_root)
+                print("   Removed.\n")
+            except OSError as exc:
+                problems += 1
+                print(f"   Could not remove it: {exc}\n")
+        else:
+            print("   Left in place.\n")
 
     print("2. Dashboard at logon")
     registered = installer_mod.is_registered()
@@ -3355,6 +4231,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_check(args)
     if command == "uninstall":
         return _cmd_uninstall(args)
+    if command == "capture":
+        return _cmd_capture(args)
 
     print(f"claude-token-lens {command}: not implemented", file=sys.stderr)
     return 2

@@ -440,3 +440,24 @@ def test_privacy(tmp_path: Path):
     recs = model_swap.RULES["model-tier"](report, th, archetype=None, snapshot=None)
     for rec in recs:
         assert_privacy(rec)
+
+
+
+def test_reported_fit_is_cited_but_never_changes_the_saving():
+    from claude_token_lens import habits
+
+    tr = _agent(FABLE, "claude-implementer")
+    stats = model_swap.compute_model_swap([tr], PRICING)
+    th = model_swap.ModelSwapThresholds(saving_pct_min=10.0, saving_usd_min=1.0, min_sessions=1, min_turns=1)
+    report = _report_with_section(model_swap.build_section(stats, th))
+    (plain,) = model_swap.RULES["model-tier"](report, th, archetype=None, snapshot=None)
+    runs = [habits.AgentFact(session_id="s", agent_type="claude-implementer", week="", cost=1.0, fit=fit, level=level)
+            for fit, level in (("smaller", "easy"), ("smaller", "easy"), ("right", "normal"), (None, "easy"))]
+    report.sections.append(habits.section_from(habits.Habits(agents=runs)))
+    (rec,) = model_swap.RULES["model-tier"](report, th, archetype=None, snapshot=None)
+    assert rec.evidence[: len(plain.evidence)] == plain.evidence
+    assert rec.evidence[len(plain.evidence):] == [
+        ("Work reported easy (%)", 75.0, "habits.habits_agents", "claude-implementer"),
+        ("Runs that said a smaller model would do", 2, "habits.habits_agents", "claude-implementer"),
+    ]
+    _assert_evidence_resolves(report, rec)

@@ -126,6 +126,8 @@ pressing Enter through all of them is a reasonable first pass:
 | Where should changes you apply go by default | `user` (all your projects), `project-local` (this project, just you) or `repo` (this project, everyone) |
 | How many days to collect data before the first baseline | How long `baseline` waits before it has enough data for a confident first read (default 7) |
 | Claude Code also runs in WSL: Ubuntu on this computer. Include those sessions? | Asked only when `init` finds Claude Code sessions inside a WSL distro (it runs `wsl -l -q` and looks in each distro's `/home/*/.claude/projects`). Yes adds the folder to `config.toml`'s `extra_projects_roots`, and the dashboard and every command read it alongside your Windows folder. Default yes; `--non-interactive` adds it and says so |
+| Metrics capture level: off, free, essentials, standard, deep | Asked last, after a warning that this uses your Claude tokens and a table of what each level would have cost over your last 14 days of your own sessions. Default `off`. Turning a level on asks one more question — a 14-day time-box that switches capture back off by itself unless you say otherwise — see "Metrics capture" below |
+| Add the /tl-feedback skill? | A short survey you can run yourself after a piece of work, at any capture level (even off). Default no. See "Metrics capture" below |
 
 Running it unattended (a script, or just to skip the prompts) derives
 every answer instead of asking, and prints exactly what it derived and
@@ -189,11 +191,32 @@ If your existing hook command is broken (a mis-escaped path, a missing
 interpreter or a `%VARIABLE%`), `init` shows the fixed command at the
 start and asks before changing it. See the troubleshooting table.
 
+**Metrics capture — optional, and it costs tokens.** `init`'s last two
+questions are the only place this tool ever spends your Claude usage.
+Say yes to a level above `off` and Claude reads a short note at the
+start of a session (and a subagent's) and ends each reply with a
+one-line tag you will see, such as `[tl: task=bugfix brief=clear]`;
+`init` shows what each level would have cost over your last 14 days
+before you pick one, and turning a level on adds a follow-up question
+about a 14-day time-box (capture switches itself off then, unless you
+say otherwise — `claude-token-lens capture on --for 30d` keeps it on
+longer, or answer the question yes for no limit at all). The last
+question offers `/tl-feedback`, an optional self-review skill that
+costs nothing until you run it. Skip either at `init` time and turn it on
+later with `claude-token-lens capture on`/`capture feedback on`, which
+ask the same way and show the same `settings.json`/skill-file diff
+first. Full detail: [`docs/onboarding.md`](onboarding.md).
+
 ## What to expect
 
-- **It never uses your Claude tokens.** It only reads files Claude Code
-  has already written. It never calls Claude or any other service, so
-  there is no bump in usage from running it, however often.
+- **It uses no Claude tokens unless metrics capture is on.** With
+  capture off (the default), it only reads files Claude Code has
+  already written — it never calls Claude or any other service, so
+  there is no bump in usage from running it, however often. Metrics
+  capture (above) is the one opt-in exception: while it's on, Claude
+  spends a small number of tokens reading a note and writing a tag
+  inside your own session, never through a call this tool makes
+  itself.
 - **The hook and statusline add nothing to your conversations.** The
   hook starts a short Python process in the background when a session
   starts (well under a second) and prints nothing. The statusline draws
@@ -219,7 +242,7 @@ tool installed and the command that undoes each.
 
 ## 3. The logon service
 
-`init`'s last step asks whether to register `claude-token-lens serve`
+`init`'s service step asks whether to register `claude-token-lens serve`
 to start automatically at logon (default yes). `--no-service` skips the
 question. `--install-service` answers yes without asking. Under
 `--non-interactive` without `--install-service`, the answer is no.
@@ -326,10 +349,11 @@ claude-token-lens uninstall --revert-changes --delete-data --dry-run
 Then run it without `--dry-run`. It shows each step and asks before
 making it:
 
-1. Removes this tool's `SessionStart` hook and statusline from
-   `settings.json`. The diff is shown, and the file is copied to
-   `settings.json.bak-<UTC time>` first. A statusline of your own is
-   left alone.
+1. Removes this tool's `SessionStart` hook, any metrics-capture hook
+   entries, and statusline from `settings.json`. The diff is shown, and
+   the file is copied to `settings.json.bak-<UTC time>` first. A
+   statusline of your own is left alone. Then, separately, offers to
+   remove the `/tl-feedback` and `/tl-brief` skill files, if present.
 2. Removes the logon service, if registered, stopping the running
    dashboard first on every system.
 3. With `--revert-changes`: undoes every `apply` still in place, newest

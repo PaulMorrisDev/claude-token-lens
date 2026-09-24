@@ -116,7 +116,7 @@ def test_an_edit_that_failed_is_not_an_edit(tmp_path):
         tool_result_block("t4", "Exit code 1", is_error=True),
     ])
     assert len(turn.edit_target_hashes) == 2
-    assert len(turn.read_target_hashes) == 2  # the failed Edit still read its file
+    assert turn.read_target_hashes == ()  # an edit is not a read
 
 
 def test_a_relative_shell_write_with_no_working_directory_is_not_recorded(tmp_path):
@@ -620,6 +620,27 @@ def test_markers_table_counts_who_could_have_written_them_and_what_they_cost(tmp
     row = dict(zip([c.key for c in counts.columns], counts.rows[[r[0] for r in counts.rows].index("claude-implementer")]))
     assert (row["said_done"], row["said_partial"], row["said_blocked"]) == (1, 1, 0)
 
+
+
+def test_marker_cost_is_priced_at_the_writing_turn_fast_mode_included(tmp_path):
+    pricing = load_pricing()
+    top = _parse(tmp_path, [
+        user_str_line("hi", timestamp=_ts(0)),
+        _reply(1, tool_use_block("Agent", "toolu_A", {"prompt": "[retry: brief] write it"}), model="claude-opus-5-5",
+               speed="fast"),
+        _result(2, "toolu_A"),
+        _reply(3, model="claude-opus-5-5"),
+    ], "top.jsonl", kind="top-level")
+    sub = _parse(tmp_path, [
+        user_str_line("[retry: brief] write it", timestamp=_ts(1)),
+        _reply(2, {"type": "text", "text": "Done.\n[result: done]"}, model="claude-opus-5-5", speed="fast"),
+    ], "agent-a1.jsonl", kind="subagent", agent_id="agent-a1", agent_type="claude-implementer", tool_use_id="toolu_A")
+    [_, run] = quality.session_runs(NS(top=top, subs=[sub], session_id="s1"), pricing)
+    fast_output = 2 * pricing.resolve_model("claude-opus-5-5").rates.output
+    # The retry word was written by the fast turn that started the agent,
+    # not the main session's last (standard) turn.
+    assert run.retry_marker_cost == pytest.approx(quality.MARKER_TOKENS * fast_output / 1e6)
+    assert run.result_marker_cost == pytest.approx(quality.MARKER_TOKENS * fast_output / 1e6)
 
 def test_marker_lines_stay_short():
     assert quality.MARKER_LINES.startswith(quality.MARKER_HEADING + "\n")

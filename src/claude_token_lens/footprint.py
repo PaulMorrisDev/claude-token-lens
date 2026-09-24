@@ -7,6 +7,9 @@ uninstall`` and the Data quality tab (``GET /api/setup``):
 - the SessionStart snapshot hook and the statusline in Claude Code's
   ``settings.json`` (``hook_health.settings_path``: ``--claude-root``,
   else ``$CLAUDE_CONFIG_DIR``, else ``~/.claude``);
+- the metrics-capture hook entries, when capture was connected;
+- the ``/tl-feedback`` skill (``<claude-root>/skills/tl-feedback``), when
+  feedback was turned on;
 - the logon service (``install-service`` or ``init``);
 - each change ``apply`` made to your Claude Code settings or agent files
   that has not been reverted;
@@ -29,7 +32,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import hook_health
+from . import capture_catalogue, discovery, hook_health
+from .config import CaptureConfig, ConfigError, load_config
 from .profiles import apply as apply_mod
 
 #: What a statusLine command of this tool's looks like.
@@ -106,13 +110,14 @@ def _size_label(size: int) -> str:
 
 
 #: What to expect from installing and using this tool, in plain words:
-#: (title, text). Shown by ``changes``, the Data quality tab (``GET
-#: /api/setup``) and docs/first-run.md.
+#: (title, text), while metrics capture is off. Shown by ``changes``, the
+#: Data quality tab (``GET /api/setup``) and docs/first-run.md;
+#: :func:`expectations` swaps the first item while capture is on.
 EXPECTATIONS: tuple[tuple[str, str], ...] = (
     (
         "It never uses your Claude tokens",
         "This tool reads files Claude Code already writes. It never calls Claude, so it adds nothing to your "
-        "usage, on the first run or after.",
+        "usage, on the first run or after, unless you turn on metrics capture.",
     ),
     (
         "The hook and statusline add nothing to Claude's context",
@@ -155,6 +160,131 @@ EXPECTATIONS: tuple[tuple[str, str], ...] = (
 
 #: The one command that takes everything back out, shown dry-run first.
 UNINSTALL_COMMAND = "claude-token-lens uninstall --revert-changes --delete-data --dry-run"
+
+
+def expectations(capture: CaptureConfig | None = None) -> tuple[tuple[str, str], ...]:
+    """:data:`EXPECTATIONS`, with the first item saying what metrics
+    capture costs while ``capture`` is on."""
+    if capture is None or not capture.is_on:
+        return EXPECTATIONS
+    level = capture_catalogue.LEVEL_TITLES.get(capture.level, capture.level)
+    if _uses_tokens(capture):
+        text = (
+            f"Metrics capture is on ({level}). Claude reads a short note when a session or subagent starts and "
+            "writes a one-line tag at the end of its replies, so it uses some of your tokens. The Capture tab "
+            "shows how many. Turn it off with 'claude-token-lens capture off'."
+        )
+    else:
+        text = (
+            f"Metrics capture is on ({level}), but at this level it only logs a few free signals to a local "
+            "file, so it adds no tokens. This tool never calls Claude itself."
+        )
+    return ((("It uses a few of your Claude tokens while capture is on"), text),) + EXPECTATIONS[1:]
+
+
+def _uses_tokens(capture: CaptureConfig) -> bool:
+    """Whether any metric switched on has Claude read a note or write a
+    tag (the free signals don't)."""
+    return any(capture_catalogue.asks_claude(i) for i in capture.active_metrics())
+
+
+#: The skills this tool can write into Claude Code's skills folder, and
+#: what each ``SKILL.md`` holds: ``/tl-feedback`` (``capture feedback on``)
+#: and ``/tl-brief`` (``capture brief on``).
+SKILL_TEXTS = {
+    capture_catalogue.FEEDBACK_SKILL: capture_catalogue.feedback_skill_text,
+    capture_catalogue.BRIEF_SKILL: capture_catalogue.brief_skill_text,
+}
+
+
+def skill_path(name: str, claude_root: str | Path | None = None) -> Path:
+    """Where this tool writes the skill ``name``."""
+    return discovery.claude_root(claude_root) / "skills" / name / "SKILL.md"
+
+
+def is_own_skill(name: str, text: str) -> bool:
+    """Whether a ``SKILL.md`` is the ``name`` skill this tool writes, in
+    any version."""
+    return f"name: {name}\n" in text and "Claude Token Lens" in text
+
+
+def read_skill(name: str, claude_root: str | Path | None = None) -> str | None:
+    """The skill's ``SKILL.md`` as it is now, or ``None`` when there is
+    none (or it can't be read)."""
+    try:
+        return skill_path(name, claude_root).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def skill_state(name: str, claude_root: str | Path | None = None) -> str:
+    """``installed`` (this version), ``outdated`` (an earlier one),
+    ``foreign`` (a SKILL.md there this tool didn't write) or ``missing``."""
+    text = read_skill(name, claude_root)
+    if text is None:
+        return "missing"
+    if not is_own_skill(name, text):
+        return "foreign"
+    return "installed" if text == SKILL_TEXTS[name]() else "outdated"
+
+
+def write_skill(name: str, claude_root: str | Path | None = None) -> Path:
+    """Write the skill (a temporary file, then a rename)."""
+    path = skill_path(name, claude_root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(SKILL_TEXTS[name](), encoding="utf-8", newline="\n")
+    os.replace(tmp, path)
+    return path
+
+
+def remove_skill(name: str, claude_root: str | Path | None = None) -> Path:
+    """Delete the skill, and its folder once empty."""
+    path = skill_path(name, claude_root)
+    path.unlink()
+    try:
+        path.parent.rmdir()
+    except OSError:
+        pass
+    return path
+
+
+def feedback_skill_path(claude_root: str | Path | None = None) -> Path:
+    """Where ``capture feedback on`` writes the ``/tl-feedback`` skill."""
+    return skill_path(capture_catalogue.FEEDBACK_SKILL, claude_root)
+
+
+def is_own_feedback_skill(text: str) -> bool:
+    """Whether a ``SKILL.md`` is the ``/tl-feedback`` this tool writes."""
+    return is_own_skill(capture_catalogue.FEEDBACK_SKILL, text)
+
+
+def read_feedback_skill(claude_root: str | Path | None = None) -> str | None:
+    """The ``/tl-feedback`` ``SKILL.md`` as it is now, or ``None``."""
+    return read_skill(capture_catalogue.FEEDBACK_SKILL, claude_root)
+
+
+def feedback_skill_state(claude_root: str | Path | None = None) -> str:
+    """:func:`skill_state` of ``/tl-feedback``."""
+    return skill_state(capture_catalogue.FEEDBACK_SKILL, claude_root)
+
+
+def write_feedback_skill(claude_root: str | Path | None = None) -> Path:
+    """Write the ``/tl-feedback`` skill."""
+    return write_skill(capture_catalogue.FEEDBACK_SKILL, claude_root)
+
+
+def remove_feedback_skill(claude_root: str | Path | None = None) -> Path:
+    """Delete the ``/tl-feedback`` skill."""
+    return remove_skill(capture_catalogue.FEEDBACK_SKILL, claude_root)
+
+
+def capture_setting(config_dir: str | Path) -> CaptureConfig:
+    """``[capture]`` from ``config.toml``; off when it can't be read."""
+    try:
+        return load_config(config_dir=config_dir).capture
+    except (ConfigError, OSError, ValueError):
+        return CaptureConfig()
 
 
 def inventory(
@@ -200,6 +330,79 @@ def inventory(
             undo="claude-token-lens uninstall",
         )
     )
+    capture = capture_setting(config_dir)
+    capture_health = hook_health.check_capture(
+        hook_health.capture_specs(capture.active_metrics()), claude_root=claude_root
+    )
+    installed = capture_health.needed + capture_health.extra
+    installed = tuple(spec for spec in installed if spec not in capture_health.missing)
+    if installed or capture.is_on:
+        level = capture_catalogue.LEVEL_TITLES.get(capture.level, capture.level)
+        items.append(
+            FootprintItem(
+                key="capture_hooks",
+                title=f"Metrics capture hooks ({len(installed)} entr{'y' if len(installed) == 1 else 'ies'})",
+                status="installed" if installed else "not installed",
+                where=home_label(settings_path),
+                what_it_does=(
+                    "While metrics capture is on, adds a short note when a session or subagent starts asking Claude "
+                    "to end its replies with a one-line tag (task kind, how clear the request was, and so on), so "
+                    "this tool can tell where your tokens go. The free signals (why sessions end, when Claude "
+                    "waited for you, which tools asked for permission) go to a file in this tool's data folder. "
+                    "With capture off the hooks add nothing."
+                ),
+                token_cost=(
+                    f"Some while capture is on (now: {level}): the note and the tags. The Capture tab shows the "
+                    "measured amount."
+                    if capture.is_on and _uses_tokens(capture)
+                    else f"None at {level}: the free signals only write to a local file."
+                    if capture.is_on
+                    else "None while capture is off."
+                ),
+                undo="claude-token-lens capture off, then claude-token-lens capture remove",
+            )
+        )
+    skill_text = read_feedback_skill(claude_root)
+    own_skill = skill_text is not None and is_own_feedback_skill(skill_text)
+    if own_skill or "feedback_skill" in capture.feedback:
+        items.append(
+            FootprintItem(
+                key="feedback_skill",
+                title="The /tl-feedback skill",
+                status="installed" if own_skill else "not installed",
+                where=home_label(feedback_skill_path(claude_root)),
+                what_it_does=(
+                    "A skill you run after a piece of work: four checkbox questions whose answers Token Lens reads "
+                    "from the transcript, so its suggestions fit how you work. Claude never runs it by itself."
+                ),
+                token_cost=(
+                    "None until you run it: Claude doesn't see its description. Each run costs about two short "
+                    "turns, shown on the Capture tab."
+                ),
+                undo="claude-token-lens capture feedback off",
+            )
+        )
+    brief_name = capture_catalogue.BRIEF_SKILL
+    brief_text = read_skill(brief_name, claude_root)
+    own_brief = brief_text is not None and is_own_skill(brief_name, brief_text)
+    if own_brief or "brief_templates" in capture.coaching:
+        items.append(
+            FootprintItem(
+                key="brief_skill",
+                title="The /tl-brief skill",
+                status="installed" if own_brief else "not installed",
+                where=home_label(skill_path(brief_name, claude_root)),
+                what_it_does=(
+                    "A skill you run with a request: Claude checks it against a short checklist for its kind of "
+                    "task and asks once for anything missing. Claude never runs it by itself."
+                ),
+                token_cost=(
+                    "None until you run it: Claude doesn't see its description. Each run adds the checklist, "
+                    "about 400 tokens, and at most one short question."
+                ),
+                undo="claude-token-lens capture brief off",
+            )
+        )
     items.append(
         FootprintItem(
             key="service",
@@ -287,6 +490,10 @@ class UninstallPlan:
     #: Applied changes still in place, newest first.
     applied: list[apply_mod.BackupInfo] = field(default_factory=list)
     data_dir: Path | None = None
+    #: The ``/tl-feedback`` skill this tool wrote, when it is there.
+    feedback_skill: Path | None = None
+    #: The ``/tl-brief`` skill this tool wrote, when it is there.
+    brief_skill: Path | None = None
 
 
 def plan_uninstall(config_dir: str | Path, *, claude_root: str | Path | None = None) -> UninstallPlan:
@@ -296,6 +503,12 @@ def plan_uninstall(config_dir: str | Path, *, claude_root: str | Path | None = N
     settings_path, settings = _settings(claude_root)
     plan = UninstallPlan(settings_path=settings_path, data_dir=config_dir if config_dir.is_dir() else None)
     plan.applied = [b for b in reversed(apply_mod.list_backups(config_dir)) if not b.reverted_at]
+    skill_text = read_feedback_skill(claude_root)
+    if skill_text is not None and is_own_feedback_skill(skill_text):
+        plan.feedback_skill = feedback_skill_path(claude_root)
+    brief_text = read_skill(capture_catalogue.BRIEF_SKILL, claude_root)
+    if brief_text is not None and is_own_skill(capture_catalogue.BRIEF_SKILL, brief_text):
+        plan.brief_skill = skill_path(capture_catalogue.BRIEF_SKILL, claude_root)
     if settings is None:
         return plan
 
@@ -325,6 +538,7 @@ def plan_uninstall(config_dir: str | Path, *, claude_root: str | Path | None = N
             hooks.pop("SessionStart", None)
             if not hooks:
                 after_settings.pop("hooks", None)
+    plan.settings_changes += hook_health.remove_capture_entries(after_settings)
     if is_own_statusline(after_settings):
         after_settings.pop("statusLine", None)
         plan.settings_changes.append("Remove the claude-token-lens statusline.")
@@ -349,7 +563,7 @@ def remove_settings_entries(plan: UninstallPlan, *, now: datetime | None = None)
     if plan.new_settings_text is None:
         raise ValueError("nothing to remove")
     now = now or datetime.now(timezone.utc)
-    backup = plan.settings_path.with_name(f"settings.json.bak-{now.strftime('%Y%m%dT%H%M%SZ')}")
+    backup = hook_health.backup_path(plan.settings_path, now)
     shutil.copy2(plan.settings_path, backup)
     plan.settings_path.write_text(plan.new_settings_text, encoding="utf-8")
     return backup
@@ -372,10 +586,22 @@ __all__ = [
     "FootprintItem",
     "UNINSTALL_COMMAND",
     "UninstallPlan",
+    "capture_setting",
     "delete_data",
+    "expectations",
+    "feedback_skill_path",
+    "feedback_skill_state",
     "home_label",
     "inventory",
+    "is_own_feedback_skill",
+    "is_own_skill",
     "is_own_statusline",
     "plan_uninstall",
+    "read_feedback_skill",
+    "read_skill",
+    "remove_feedback_skill",
+    "remove_skill",
     "remove_settings_entries",
+    "write_feedback_skill",
+    "write_skill",
 ]

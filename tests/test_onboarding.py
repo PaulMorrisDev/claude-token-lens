@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import io
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -705,3 +706,93 @@ def test_run_init_current_project_line_uses_the_redacted_slug(tmp_path, monkeypa
     assert f"- current project: {expected_slug}" in out
     assert "home-<user>" in expected_slug
     assert "reallife-username" not in expected_slug
+
+
+# -- the metrics capture question ---------------------------------------------------
+
+
+def test_capture_question_works_out_estimates_only_when_it_shows_them():
+    calls = []
+
+    def estimates():
+        calls.append(1)
+        return ["  Essentials  about 900 tokens and 0.40 USD a week"]
+
+    out = io.StringIO()
+    level, notes = onboarding.ask_capture_level(estimates=estimates, non_interactive=True, stdout=out)
+    assert (level, calls, out.getvalue()) == ("off", [], "")
+    assert notes and "metrics capture left off" in notes[0]
+
+    level, notes = onboarding.ask_capture_level(estimates=estimates, stdin=io.StringIO("yes\n"), stdout=out)
+    assert (level, notes, calls) == ("essentials", [], [1])
+    assert "This uses your tokens" in out.getvalue() and "0.40 USD a week" in out.getvalue()
+
+
+def test_capture_answer_prefers_the_flag_then_the_answers_file(tmp_path):
+    answers = tmp_path / "answers.json"
+    answers.write_text(json.dumps({"capture_level": "deep"}), encoding="utf-8")
+    assert onboarding.capture_answer(answers, "free") == "free"
+    assert onboarding.capture_answer(answers) == "deep"
+    assert onboarding.capture_answer(None) is None
+
+
+# --------------------------------------------------------------------
+# the time-box question (ask_capture_until / capture_no_limit_answer)
+# --------------------------------------------------------------------
+
+_NOW = datetime(2026, 9, 24, 6, 0, tzinfo=timezone.utc)
+
+
+def test_capture_no_limit_answer_prefers_the_flag_then_the_answers_file(tmp_path):
+    answers = tmp_path / "answers.json"
+    answers.write_text(json.dumps({"capture_no_limit": True}), encoding="utf-8")
+    assert onboarding.capture_no_limit_answer(answers, False) is False
+    assert onboarding.capture_no_limit_answer(answers) is True
+    assert onboarding.capture_no_limit_answer(None) is None
+
+
+def test_ask_capture_until_defaults_to_a_14_day_box_on_a_blank_answer():
+    out = io.StringIO()
+    until, notes = onboarding.ask_capture_until(now=_NOW, stdin=io.StringIO("\n"), stdout=out)
+    assert until == "2026-10-08T06:00:00+00:00"
+    assert notes == []
+    assert "switch itself off on 2026-10-08 06:00 UTC (14 days from now)" in out.getvalue()
+    assert "claude-token-lens capture on --for 30d" in out.getvalue()
+    assert "Turn off that time limit" in out.getvalue()
+
+
+def test_ask_capture_until_yes_answer_means_no_limit():
+    until, notes = onboarding.ask_capture_until(now=_NOW, stdin=io.StringIO("y\n"), stdout=io.StringIO())
+    assert (until, notes) == ("", [])
+
+
+def test_ask_capture_until_flag_skips_the_question():
+    out = io.StringIO()
+    until, notes = onboarding.ask_capture_until(now=_NOW, preset=True, stdout=out)
+    assert (until, notes) == ("", [])
+    assert out.getvalue() == ""
+
+
+def test_ask_capture_until_answers_file_false_applies_the_default_box_without_asking(tmp_path):
+    answers = tmp_path / "answers.json"
+    answers.write_text(json.dumps({"capture_no_limit": False}), encoding="utf-8")
+    out = io.StringIO()
+    until, notes = onboarding.ask_capture_until(now=_NOW, answers_path=answers, stdout=out)
+    assert until == "2026-10-08T06:00:00+00:00"
+    assert notes == []
+    assert out.getvalue() == ""
+
+
+def test_ask_capture_until_non_interactive_without_an_answer_leaves_until_untouched():
+    # Assumption: keeps today's behaviour (no time-box) rather than
+    # silently adopting the new default -- see onboarding.ask_capture_until's
+    # own docstring and the cli.py --capture-no-limit flag help text.
+    until, notes = onboarding.ask_capture_until(now=_NOW, non_interactive=True, stdout=io.StringIO())
+    assert until is None
+    assert notes and "capture_no_limit: not given in --answers" in notes[0]
+
+
+def test_ask_capture_until_non_interactive_with_a_preset_needs_no_stdin():
+    until, notes = onboarding.ask_capture_until(now=_NOW, preset=False, non_interactive=True, stdout=io.StringIO())
+    assert until == "2026-10-08T06:00:00+00:00"
+    assert notes == []

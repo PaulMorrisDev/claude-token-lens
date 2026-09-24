@@ -73,6 +73,13 @@ def _transcript_cost(result: TranscriptResult, rates_lookup: Pricing) -> float:
     return total
 
 
+def agent_key(agent_id: str | None) -> str:
+    """An agent id as ``parent_agent_id`` spells it. A subagent's
+    ``meta.agent_id`` is its file stem (``agent-a98...``), while the
+    ``parentAgentId`` its children record is the bare id (``a98...``)."""
+    return (agent_id or "").removeprefix("agent-")
+
+
 def _first_priced_turn(result: TranscriptResult) -> Turn | None:
     for turn in result.turns:
         if turn.turn_index == 1:
@@ -80,14 +87,50 @@ def _first_priced_turn(result: TranscriptResult) -> Turn | None:
     return None
 
 
-def _report_proxy_tokens(result: TranscriptResult) -> int:
-    """"Last assistant output tokens" of one transcript — the per-agent
-    proxy for the size of the report it hands back to its parent (see
-    module docstring: the parent-side ``Agent`` tool_result total from
-    the TOP transcript is the only *direct* measurement, and it isn't
-    split by agent type, so this is the alternative the plan asks for
-    alongside it).
-    """
+@dataclass(slots=True)
+class _ReportIndex:
+    """Where each agent's report was measured, for :func:`_report_tokens`:
+    characters by the ``Agent`` tool_use id it answered (a synchronous
+    agent's tool_result, ``Turn.agent_result_chars``) and by agent id (a
+    background agent's task notification, which carries its report)."""
+
+    by_tool_use: dict[str, int] = field(default_factory=dict)
+    by_agent_id: dict[str, int] = field(default_factory=dict)
+
+
+def _report_index(top: TranscriptResult, subs: Sequence[TranscriptResult]) -> _ReportIndex:
+    """Every report size one session measured, from the transcript each
+    report was handed back to (the top level for direct spawns, a
+    subagent for the agents it started)."""
+    index = _ReportIndex()
+    for result in (top, *subs):
+        for turn in result.turns:
+            index.by_tool_use.update(turn.agent_result_chars)
+        for event in result.events:
+            if event.kind == EventKind.TASK_NOTIFICATION and event.size_chars:
+                task_id = event.detail.get("task_id")
+                if isinstance(task_id, str) and task_id:
+                    index.by_agent_id[agent_key(task_id)] = event.size_chars
+    return index
+
+
+def _report_tokens(result: TranscriptResult, index: _ReportIndex | None = None) -> int:
+    """The size of the report one agent handed back to whatever started
+    it, in approximate tokens: the parent-side tool_result (or, for a
+    background agent, its task notification) when ``index`` has it,
+    measured in characters over :data:`_CHARS_PER_TOKEN_APPROX`. Falls
+    back to the agent's own last priced turn's output tokens -- a proxy,
+    since that turn can also carry tool calls or thinking -- when the
+    parent side wasn't found (a digest parsed before ``PARSER_VERSION``
+    15, or a parent transcript that is missing)."""
+    if index is not None:
+        chars = None
+        if result.meta.tool_use_id:
+            chars = index.by_tool_use.get(result.meta.tool_use_id)
+        if chars is None and result.meta.agent_id:
+            chars = index.by_agent_id.get(agent_key(result.meta.agent_id))
+        if chars is not None:
+            return round(chars / _CHARS_PER_TOKEN_APPROX)
     priced = _priced_turns(result)
     return priced[-1].output_tokens if priced else 0
 
@@ -180,7 +223,7 @@ def _transitive_closure(
             continue
         seen.add(id(sub))
         result.append(sub)
-        agent_id = sub.meta.agent_id
+        agent_id = agent_key(sub.meta.agent_id)
         if agent_id:
             stack.extend(children_by_parent.get(agent_id, []))
     return result
@@ -355,9 +398,10 @@ class TopologyStats:
         self.agent_tool_result_calls += top.tool_result_calls.get("Agent", 0)
         self.workflow_tool_result_chars += top.tool_result_chars.get("Workflow", 0)
         self.workflow_tool_result_calls += top.tool_result_calls.get("Workflow", 0)
+        index = _report_index(top, subs)
         for sub in subs:
             label = _agent_type_label(sub)
-            self.report_proxy_by_agent_type.setdefault(label, []).append(_report_proxy_tokens(sub))
+            self.report_proxy_by_agent_type.setdefault(label, []).append(_report_tokens(sub, index))
 
     # -- (c) skill roll-up -------------------------------------------------
 
@@ -375,7 +419,7 @@ class TopologyStats:
 
         children_by_parent: dict[str, list[TranscriptResult]] = {}
         for sub in subs:
-            parent = sub.meta.parent_agent_id
+            parent = agent_key(sub.meta.parent_agent_id)
             if parent:
                 children_by_parent.setdefault(parent, []).append(sub)
 
@@ -394,6 +438,7 @@ class TopologyStats:
         for turn in _priced_turns(top):
             if turn.attribution_skill:
                 skill_turns.setdefault(turn.attribution_skill, []).append(turn)
+        report_index = _report_index(top, subs) if skill_turns else None
 
         for skill_name, turns in skill_turns.items():
             acc = self.skills.setdefault(skill_name, _SkillAccumulator())
@@ -409,7 +454,7 @@ class TopologyStats:
 
             closure = _transitive_closure(direct_subs, children_by_parent)
             acc.spawned_cost += sum(_transcript_cost(sub, rates_lookup) for sub in closure)
-            acc.report_proxy_values.extend(_report_proxy_tokens(sub) for sub in closure)
+            acc.report_proxy_values.extend(_report_tokens(sub, report_index) for sub in closure)
 
     # -- (d) chains --------------------------------------------------------
 
@@ -542,11 +587,13 @@ class TopologyStats:
 
     def _add_redundant_reads(self, top: TranscriptResult) -> None:
         """Fix #8: the only consumer of ``Turn.read_target_hashes`` (a
-        salted hash of each Read/Edit/Write tool's target path -- see
+        salted hash of each Read tool's target path -- see
         ``parse.set_salt``/``parse.load_or_create_salt``'s own
         docstrings). Counts, per top-level transcript, how many times a
-        target hash already seen earlier in the same transcript is read
-        again, and how many of those repeats land within
+        file already read earlier in the same transcript is read again
+        with no edit to it in between (``Turn.edit_target_hashes``: after
+        an edit, reading the file again is checking the change, not
+        rereading it), and how many of those repeats land within
         :data:`_REDISCOVERY_WINDOW_TURNS` turns of a ``COMPACT_BOUNDARY``
         -- the same window ``_add_redundant_work``'s rediscovery metric
         uses, since this is the same phenomenon (context lost to
@@ -583,6 +630,9 @@ class TopologyStats:
                         repeats_after_compaction += 1
                 else:
                     seen_hashes.add(target_hash)
+            # A turn's reads come before its edits: an edited file's next
+            # read is a first read again.
+            seen_hashes.difference_update(turn.edit_target_hashes)
         self.redundant_reads_per_session.append(repeats)
         self.redundant_reads_after_compaction_per_session.append(repeats_after_compaction)
 
@@ -688,8 +738,8 @@ def _build_report_proxy_table(stats: TopologyStats) -> Table:
     columns = [
         Column(key="agent_type", label="Agent type", kind="str"),
         Column(key="spawns", label="Spawns", kind="int"),
-        Column(key="mean_proxy", label="Mean report proxy (output tokens)", kind="tokens"),
-        Column(key="median_proxy", label="Median report proxy (output tokens)", kind="tokens"),
+        Column(key="mean_proxy", label="Mean report size (tokens)", kind="tokens"),
+        Column(key="median_proxy", label="Median report size (tokens)", kind="tokens"),
     ]
     rows = [
         [agent_type, len(values), _mean(values), _median(values)]
@@ -697,14 +747,16 @@ def _build_report_proxy_table(stats: TopologyStats) -> Table:
     ]
     return Table(
         name="topology_report_proxy",
-        title="Upward: per-subagent report-size proxy, by agent type",
+        title="Upward: per-subagent report size, by agent type",
         columns=columns,
         rows=rows,
         notes=[
-            "Proxy = each subagent transcript's own last priced turn's"
-            " output_tokens: an approximation of the report handed back to"
-            " the parent, not the parent-side Agent tool_result size itself"
-            " (that total isn't split by agent type — see the table above).",
+            "Report size = the report each subagent handed back, measured"
+            " where it arrived: the parent's Agent tool_result, or a"
+            " background agent's task notification, in characters over"
+            f" {_CHARS_PER_TOKEN_APPROX}. When the parent side wasn't found"
+            " it falls back to the subagent's own last reply's output"
+            " tokens, an approximation.",
         ],
     )
 
@@ -717,7 +769,7 @@ def _build_skills_table(stats: TopologyStats) -> Table:
         Column(key="spawned_cost", label="Spawned cost", kind="money"),
         Column(key="total_cost", label="Total cost", kind="money"),
         Column(key="mean_spawns", label="Mean spawns/invocation", kind="float"),
-        Column(key="mean_report_proxy", label="Mean report proxy (tokens)", kind="tokens"),
+        Column(key="mean_report_proxy", label="Mean report size (tokens)", kind="tokens"),
     ]
     rows = []
     for name, acc in sorted(stats.skills.items()):
@@ -1031,8 +1083,9 @@ def _build_redundant_reads_table(stats: TopologyStats) -> Table:
         rows=rows,
         notes=[
             "Computed from the top-level transcript only, via "
-            "Turn.read_target_hashes -- a salted hash of each read/write "
-            "tool's target path, never the path itself. Requires the "
+            "Turn.read_target_hashes -- a salted hash of each Read "
+            "tool's target path, never the path itself. A read after an "
+            "edit to the same file is not counted. Requires the "
             "corpus load to have wired up a salt (the CLI does this "
             "automatically via parse.load_or_create_salt); every count is "
             "0 when no salt was set for this parse.",

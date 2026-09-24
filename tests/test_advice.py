@@ -129,7 +129,7 @@ def test_model_tier_leaves_out_an_agent_that_did_worse_on_the_cheaper_model():
     recs = [_tier("reviewer"), _tier("implementer")]
     (tier,) = [r for r in advice.finish(recs, report, snap, Units()) if r.id == "model-tier"]
     assert [c.agent for c in tier.changes] == ["implementer"]
-    assert "Left out, from the quality section: reviewer (did worse on haiku)." in tier.why
+    assert "Left out: reviewer (did worse on haiku)." in tier.why
 
 
 def test_model_tier_is_dropped_when_every_agent_is_already_moved():
@@ -335,3 +335,49 @@ def test_model_tier_leaves_out_an_agent_often_retried_on_a_larger_model():
     )
     snap = Snapshot(path=None, ts="2026-09-20T00:00:00Z", data={"agents": {}})
     assert not any(r.id == "model-tier" for r in advice.finish([_tier("reviewer")], report, snap, Units()))
+
+
+
+def test_model_tier_leaves_out_an_agent_whose_runs_said_they_needed_a_larger_model():
+    from claude_token_lens import habits
+
+    report = _model_swap_report(
+        [
+            ["reviewer", "claude-sonnet-5", "claude-haiku-4-5-20251001", 50.0],
+            ["implementer", "claude-opus-5-5", "claude-sonnet-5", 20.0],
+        ]
+    )
+    runs = [habits.AgentFact(session_id="s", agent_type="reviewer", week="", cost=1.0, fit=fit)
+            for fit in ("larger", "larger", "smaller")]
+    report.sections.append(habits.section_from(habits.Habits(agents=runs)))
+    snap = Snapshot(path=None, ts="2026-09-20T00:00:00Z", data={"agents": {}})
+    (tier,) = [r for r in advice.finish([_tier("reviewer"), _tier("implementer")], report, snap, Units())
+               if r.id == "model-tier"]
+    assert [c.agent for c in tier.changes] == ["implementer"]
+    assert "Left out: reviewer (Claude said 2 of its runs needed a larger model)." in tier.why
+
+
+def test_effort_mismatch_from_reported_work_is_explained_as_measured():
+    rec = Recommendation(
+        id="effort-mismatch",
+        severity="advice",
+        category="settings",
+        title="x",
+        lever="effortLevel",
+        saving_usd=1.5,
+        evidence=[
+            ("Easy messages at high effort", 6, "habits.habits_effort_fit", "easy:high"),
+            ("Easy work at high effort, thinking share of output", 55.0, "habits.habits_effort_fit", "easy:high"),
+        ],
+    )
+    report = ReportModel(meta=ReportMeta(pricing=PricingMeta(coverage_pct=100.0)), sections=[],
+                         diagnostics=Diagnostics(lines=1000))
+    snap = Snapshot(path=None, ts="2026-09-20T00:00:00Z", data={"effective": {}})
+    (out,) = [r for r in advice.finish([rec], report, snap, Units()) if r.id == "effort-mismatch"]
+    assert out.title == "High effort is being spent on easy work"
+    assert out.why == (
+        "Claude reported 6 of your messages as easy work, yet they ran at high effort or above, and up to 55% of "
+        "their output was thinking."
+    )
+    assert out.changes[0].key == "effortLevel" and out.changes[0].value == "medium"
+    assert out.estimated_saving.startswith("About ")

@@ -797,3 +797,57 @@ def test_build_section_notes_report_configured_overnight_window():
         mode_thresholds={"overnight_night_start_hour": 23, "overnight_night_end_hour": 6},
     )
     assert any("23:00" in note and "06:00" in note for note in section.notes)
+
+
+# --------------------------------------------------------------------
+# classify_session: the kind of task metrics capture reported
+# --------------------------------------------------------------------
+
+
+def _tagged_top(tmp_path, *tasks, session_id="s-tagged"):
+    from helpers import user_str_line
+
+    lines = []
+    for n, task in enumerate(tasks):
+        ts = f"2026-09-18T12:00:{2 * n:02d}.000Z"
+        lines.append(user_str_line("go on", origin={"kind": "human"}, timestamp=ts))
+        tag = f"[tl: task={task}]" if task else "no tag"
+        lines.append(turn_line(content=[{"type": "text", "text": f"Done.\n{tag}"}],
+                               timestamp=f"2026-09-18T12:00:{2 * n + 1:02d}.000Z"))
+    path = tmp_path / f"{session_id}.jsonl"
+    write_jsonl(path, lines)
+    return parse_transcript(path, TranscriptMeta(path=str(path), kind="top-level", session_id=session_id))
+
+
+@pytest.mark.parametrize(
+    "tasks, expected",
+    [
+        (("review", "review", "bugfix"), ("review", 3)),
+        (("review",), (None, 1)),
+        (("review", "bugfix", "feature"), (None, 3)),
+        (("docs", "docs", None), ("docs", 2)),
+    ],
+)
+def test_reported_task_needs_two_tags_and_half_of_them(tmp_path, tasks, expected):
+    assert classify.reported_task(_tagged_top(tmp_path, *tasks)) == expected
+    assert classify.reported_task(None) == (None, 0)
+
+
+def test_a_reported_task_that_maps_one_to_one_decides_the_purpose(tmp_path):
+    top = _tagged_top(tmp_path, "review", "review", "review")
+    classification = classify.classify_session(top, [], overrides={}, tz=None)
+    assert classification.purpose == "review" and classification.purpose_source == "reported"
+    assert classification.purpose_evidence == {"reported_task": "review", "tagged_messages": 3}
+
+
+def test_a_reported_task_spanning_several_purposes_leaves_the_rules_to_decide(tmp_path):
+    top = _tagged_top(tmp_path, "bugfix", "bugfix")
+    assert "bugfix" not in classify.REPORTED_PURPOSES
+    assert classify.classify_session(top, [], overrides={}, tz=None).purpose_source == "rule"
+
+
+def test_an_override_still_wins_over_the_reported_task(tmp_path):
+    top = _tagged_top(tmp_path, "review", "review")
+    overrides = {"s-tagged": {"purpose": "planning"}}
+    classification = classify.classify_session(top, [], overrides=overrides, tz=None)
+    assert (classification.purpose, classification.purpose_source) == ("planning", "override")

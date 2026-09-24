@@ -127,6 +127,7 @@ from . import (
     discovery,
     elasticity,
     fixes,
+    habits,
     helptext,
     limits,
     model_swap,
@@ -184,10 +185,12 @@ _SECTION_ORDER: tuple[str, ...] = (
     "agents",
     "quality",
     "workstyle",
+    "habits",
     "workflows",
     "phases",
     "config",
     "context_budget",
+    "capture",
     "scorecard",
 )
 
@@ -196,6 +199,23 @@ _SECTION_ORDER: tuple[str, ...] = (
 #: over a long window against a churning config could otherwise produce
 #: an unbounded number of tables.
 _MAX_CONFIG_DIFF_KEYS = 20
+
+
+def _capture_signals(corpus: Corpus, config_dir: str | Path | None) -> dict | None:
+    """The free signals metrics capture logged under ``config_dir``, by
+    session id; ``None`` without a config directory, a signals folder or
+    the salt the hook hashed session ids with (never created here)."""
+    if config_dir is None:
+        return None
+    from . import parse, signals
+
+    try:
+        if not signals.signals_dir(config_dir).is_dir() or not (Path(config_dir) / "salt").is_file():
+            return None
+        salt = parse.load_or_create_salt(config_dir)
+        return signals.by_session(signals.load(config_dir), [b.session_id for b in corpus.sessions], salt)
+    except (OSError, ValueError):
+        return None
 
 
 def _default_waste_config_dir() -> Path:
@@ -1092,6 +1112,7 @@ def build_report(
     baseline_record: dict | None = None,
     baseline_note: str | None = None,
     config_dir: str | Path | None = None,
+    ratings: dict | None = None,
 ) -> ReportModel:
     """Assemble the whole :class:`ReportModel` for ``corpus``. See the
     module docstring for section order/keys and the deviations from the
@@ -1153,7 +1174,13 @@ def build_report(
     for each session's ``profile_id`` (``snapshots.load_profile_marks``:
     the profile active at the session's start) and, under subscription
     billing, the usage log behind :func:`_report_units`. Without it,
-    ``profile_id`` comes from the hook captures in ``snapshots``.
+    ``profile_id`` comes from the hook captures in ``snapshots``. The
+    ``habits`` section also reads the free signals metrics capture logged
+    there (``signals.load``), only when its salt already exists.
+
+    ``ratings`` holds your dashboard ratings by session id
+    (``Store.all_feedback``), for the ``habits`` section's outcomes; the
+    CLI and the service pass them when the store has any.
     """
     from . import usage as usage_mod  # local import: avoids a cycle risk with any future usage<->report coupling
     from . import statusline as statusline_mod  # local import: same rationale as usage_mod above
@@ -1550,6 +1577,14 @@ def build_report(
     if _want("workstyle"):
         sections.append(workstyle.build_section(session_records))
 
+    if _want("habits"):
+        sections.append(
+            habits.build_section(
+                corpus, pricing, ratings=ratings, signals=_capture_signals(corpus, config_dir),
+                model_swap=model_swap_stats,
+            )
+        )
+
     if _want("workflows"):
         sections.append(workflows.build_section(all_workflow_runs))
 
@@ -1595,6 +1630,9 @@ def build_report(
 
     if _want("context_budget"):
         sections.append(context_budget.build_section(cb, snapshots=snapshots, usage_log_rows=usage_log_rows))
+
+    if _want("capture"):
+        sections.append(habits.capture_section(corpus, pricing, config.capture, ratings=ratings))
 
     if _want("scorecard"):
         sections.append(_build_scorecard_section(rs, ls, ts, tp, cs, pricing_coverage, diagnostics, session_records, snapshots, config, scorecard_th))
@@ -1664,6 +1702,7 @@ def build_report(
         thresholds=thresholds_dict,
         billing_mode=config.billing,
         billing_source=config.billing_source,
+        amounts_basis=units.basis(),
         assumptions=assumptions,
     )
 

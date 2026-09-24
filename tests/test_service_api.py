@@ -1774,6 +1774,10 @@ def test_profile_goals_lists_goals_and_drafts_one(server):
     assert set(data) >= {"candidates", "profile", "whatif"}
     resp, payload = server.get_json("/api/profile-goals?goal=nope")
     assert resp.status == 400
+    resp, payload = server.get_json("/api/profile-goals?goal=tasks&task=bugfix")
+    assert resp.status == 200 and set(payload["data"]) >= {"tasks", "task", "note"}
+    resp, payload = server.get_json("/api/profile-goals?goal=tasks&task=not-a-task")
+    assert resp.status == 400 and "unknown task" in payload["error"]["message"]
 
 
 def test_whatif_estimates_and_validates(server):
@@ -1814,3 +1818,297 @@ def test_setup_lists_the_footprint_expectations_and_uninstall(server):
     assert all(set(item) >= {"title", "status", "token_cost", "undo"} for item in data["items"])
     assert data["expectations"][0]["title"] == "It never uses your Claude tokens"
     assert data["uninstall_command"].endswith("--dry-run")
+
+
+# -- metrics capture (/api/health's capture block, /api/capture) -----------
+
+
+def _config_text(server) -> str:
+    path = server.options.config_dir / "config.toml"
+    return path.read_text(encoding="utf-8") if path.is_file() else ""
+
+
+def test_health_carries_capture_as_set(server):
+    resp, payload = server.get_json("/api/health")
+    capture = payload["data"]["capture"]
+    assert capture["level"] == "off" and capture["on"] is False and capture["effective"] is False
+    assert capture["hooks_ok"] is True
+    assert capture["metrics"] == []
+
+
+def test_capture_lists_every_metric_with_what_why_and_cost(server):
+    from claude_token_lens import capture_catalogue
+
+    resp, raw = server.request("GET", "/api/capture")
+    assert resp.status == 200
+    _assert_no_leak(raw)
+    data = json.loads(raw)["data"]
+    assert_privacy(data)
+    assert [level["id"] for level in data["levels"]] == [*capture_catalogue.LEVELS, "custom"]
+    rows = [row for section in data["sections"] for row in section["metrics"]]
+    assert {row["id"] for row in rows} == set(capture_catalogue.METRICS_BY_ID)
+    assert all(row["what"] and row["why"] for row in rows)
+    assert all(row["on"] and not row["toggle"] for row in rows if row["kind"] == "derived")
+    assert data["config"]["on"] is False
+    assert data["history"]["sessions"] == 1
+    assert data["measured"] is None
+    assert data["roi"] is None
+    assert data["banner"]["on"] is False
+    assert data["banner"]["headline"].startswith("Metrics capture is off.")
+    assert "uses your tokens" in data["warning"]
+
+
+def test_post_capture_saves_the_level_and_names_the_hooks_it_needs(server):
+    resp, payload = server.post_json("/api/capture", {"level": "essentials"})
+    assert resp.status == 200
+    data = payload["data"]
+    assert data["changed"] is True
+    assert data["config"]["level"] == "essentials" and data["config"]["on"] is True
+    assert data["config"]["enabled_at"]
+    assert 'level = "essentials"' in _config_text(server)
+    assert (server.options.config_dir / "capture-log.jsonl").is_file()
+    # settings.json runs no capture hook yet: the page says how to add them.
+    assert data["hooks"]["ok"] is False
+    assert data["hooks"]["connect_command"] == "claude-token-lens capture connect"
+    task = next(row for s in data["sections"] for row in s["metrics"] if row["id"] == "task")
+    assert task["on"] is True and task["needs_hook"] is True
+    assert data["measured"]["sessions"] == 0
+    assert "no captured sessions yet" in data["banner"]["headline"]
+    # Turned on moments ago: too little time has passed to price a
+    # weekly cost from, so there's nothing to weigh against either.
+    assert data["roi"] is None
+    _resp, health = server.get_json("/api/health")
+    assert health["data"]["capture"]["level"] == "essentials"
+    assert health["data"]["capture"]["hooks_ok"] is False
+    # The same change again changes nothing.
+    resp, payload = server.post_json("/api/capture", {"level": "essentials"})
+    assert payload["data"]["changed"] is False
+
+
+def test_post_capture_picks_metrics_sampling_end_and_feedback(server):
+    resp, payload = server.post_json("/api/capture", {"metrics": ["task", "fit"]})
+    assert resp.status == 200
+    config = payload["data"]["config"]
+    # fit rides on result, so result comes with it.
+    assert config["level"] == "custom" and config["metrics"] == ["task", "result", "fit"]
+    resp, payload = server.post_json(
+        "/api/capture", {"sample": 25, "until": "2099-01-01T00:00:00+00:00", "feedback": ["feedback_note"]}
+    )
+    assert resp.status == 200
+    config = payload["data"]["config"]
+    assert config["sample"] == 25 and config["until"].startswith("2099-01-01")
+    assert config["feedback"] == ["feedback_note"]
+    assert payload["data"]["banner"]["feedback_note"].startswith("Finished a piece of work?")
+    resp, payload = server.post_json("/api/capture", {"level": "off"})
+    assert payload["data"]["config"]["on"] is False and payload["data"]["config"]["until"] == ""
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {},
+        {"colour": "red"},
+        {"level": "everything"},
+        {"level": "essentials", "metrics": ["task"]},
+        {"metrics": ["task", "nope"]},
+        {"metrics": "task"},
+        {"sample": 33},
+        {"sample": True},
+        {"until": "2001-01-01"},
+        {"until": "next week"},
+        {"feedback": ["task"]},
+    ],
+)
+def test_post_capture_refuses_bad_bodies(server, body):
+    resp, payload = server.post_json("/api/capture", body)
+    assert resp.status == 400
+    assert payload["error"]["code"] == "bad_request"
+    assert _config_text(server) == ""
+
+
+def test_post_capture_refuses_cross_site_and_other_machines(server, monkeypatch):
+    resp, _raw = server.request(
+        "POST", "/api/capture", body={"level": "deep"}, headers={"Origin": "https://evil.example"}
+    )
+    assert resp.status == 403
+    monkeypatch.setattr(service_api, "_is_loopback_address", lambda address: False)
+    resp, payload = server.post_json("/api/capture", {"level": "deep"})
+    assert resp.status == 403
+    assert "this machine" in payload["error"]["message"]
+    assert _config_text(server) == ""
+
+
+def test_is_loopback_address():
+    for address in ("127.0.0.1", "127.8.9.10", "::1", "::ffff:127.0.0.1"):
+        assert service_api._is_loopback_address(address), address
+    for address in ("192.168.1.5", "10.0.0.2", "::ffff:192.168.1.5", "", None, "not-an-ip"):
+        assert not service_api._is_loopback_address(address), address
+
+
+def test_post_capture_that_cannot_be_saved_is_a_conflict_with_the_command(server, monkeypatch):
+    def refuse(*args, **kwargs):
+        raise ConfigError("config.toml is read-only")
+
+    monkeypatch.setattr(service_api, "set_capture", refuse)
+    resp, payload = server.post_json("/api/capture", {"level": "standard"})
+    assert resp.status == 409
+    assert payload["error"]["code"] == "conflict"
+    assert payload["error"]["commands"] == ["claude-token-lens capture level standard"]
+
+
+def test_capture_routes_with_a_broken_config_are_conflicts(server):
+    (server.options.config_dir / "config.toml").write_text("[capture\nlevel = ", encoding="utf-8")
+    resp, raw = server.request("GET", "/api/capture")
+    assert resp.status == 409
+    _assert_no_leak(raw)
+    assert json.loads(raw)["error"]["commands"] == ["claude-token-lens capture status"]
+    resp, payload = server.post_json("/api/capture", {"level": "essentials"})
+    assert resp.status == 409
+    _resp, health = server.get_json("/api/health")
+    assert health["data"]["capture"] is None
+
+
+def test_a_config_change_refreshes_the_kept_report(server, monkeypatch):
+    builds = []
+    real = service_api.build_report
+
+    def counting(*args, **kwargs):
+        builds.append(1)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(service_api, "build_report", counting)
+    server.get_json("/api/recommendations")
+    server.get_json("/api/recommendations")
+    assert len(builds) == 1
+    resp, _payload = server.post_json("/api/capture", {"level": "free"})
+    assert resp.status == 200
+    server.get_json("/api/recommendations")  # served kept, rebuilt behind it
+    deadline = time.monotonic() + 10
+    while len(builds) < 2 and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert len(builds) == 2
+
+
+def test_report_meta_says_what_amounts_mean(server):
+    resp, payload = server.get_json("/api/report.json")
+    assert payload["report"]["meta"]["amounts_basis"] == "Amounts are what the tokens cost at list price."
+
+
+def test_capture_replays_history_again_once_the_first_scan_finishes(tmp_path, monkeypatch):
+    """A replay taken mid-scan is short of sessions, so it isn't kept for
+    the usual 30 minutes: the first request after the scan replays again."""
+    from claude_token_lens import capture as capture_mod
+
+    calls = []
+    real_history = capture_mod.history
+
+    def counting_history(*args, **kwargs):
+        calls.append(1)
+        return real_history(*args, **kwargs)
+
+    monkeypatch.setattr(capture_mod, "history", counting_history)
+    holder = {"state": WatcherState(running=True, scanning=True, scan_started_at="2026-09-23T10:00:00Z")}
+    handle = _start_server(tmp_path, monkeypatch, watcher_stats=lambda: None, watcher_state=lambda: holder["state"])
+    try:
+        handle.get_json("/api/capture")
+        handle.get_json("/api/capture")
+        assert len(calls) == 1
+        holder["state"] = WatcherState(running=True, last_success_at="2026-09-23T10:05:00Z")
+        _resp, body = handle.get_json("/api/capture")
+        assert len(calls) == 2
+        assert body["data"]["history"]["sessions"] == 1
+        handle.get_json("/api/capture")
+        assert len(calls) == 2
+    finally:
+        handle.close()
+        handle.store.close()
+
+
+# -- metrics capture feedback: the Sessions tab rating ------------------------
+
+
+def _feedback_on(server, *ids):
+    resp, _payload = server.post_json("/api/capture", {"feedback": list(ids)})
+    assert resp.status == 200
+
+
+def test_session_detail_offers_the_rating_questions_only_while_it_is_on(server):
+    resp, payload = server.get_json(f"/api/session/{server.session_id}")
+    assert "feedback_questions" not in payload["data"] and payload["data"]["feedback"] is None
+    _feedback_on(server, "dashboard_rating")
+    resp, payload = server.get_json(f"/api/session/{server.session_id}")
+    questions = payload["data"]["feedback_questions"]
+    assert [q["key"] for q in questions] == ["outcome", "slow", "worth", "helped"]
+    assert questions[1]["multi"] is True and {"word": "none", "label": "Nothing"} in questions[1]["options"]
+
+
+def test_rating_a_session_saves_words_and_an_empty_rating_clears_it(server):
+    url = f"/api/sessions/{server.session_id}/feedback"
+    resp, payload = server.post_json(url, {"outcome": "met", "slow": ["tools", "tools"], "worth": "fair", "helped": []})
+    assert resp.status == 200
+    saved = payload["data"]["feedback"]
+    assert saved["outcome"] == "met" and saved["slow"] == ["tools"] and saved["worth"] == "fair"
+    resp, payload = server.get_json(f"/api/session/{server.session_id}")
+    assert payload["data"]["feedback"]["slow"] == ["tools"]
+    resp, payload = server.post_json(url, {"outcome": None, "slow": [], "worth": None, "helped": []})
+    assert resp.status == 200 and payload["data"]["feedback"] is None
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        [],
+        {"mood": "great"},
+        {"outcome": "brilliant"},
+        {"outcome": ["met"]},
+        {"slow": "tools"},
+        {"slow": ["tools", "my boss"]},
+        {"worth": 5},
+    ],
+)
+def test_rating_refuses_anything_but_known_words(server, body):
+    resp, payload = server.post_json(f"/api/sessions/{server.session_id}/feedback", body)
+    assert resp.status == 400 and payload["error"]["code"] == "bad_request"
+    assert server.store.feedback(server.session_id) is None
+
+
+def test_rating_an_unknown_session_is_not_found(server):
+    resp, payload = server.post_json("/api/sessions/does-not-exist/feedback", {"outcome": "met"})
+    assert resp.status == 404
+
+
+def test_rating_refuses_cross_site_posts(server):
+    resp, _raw = server.request(
+        "POST", f"/api/sessions/{server.session_id}/feedback", body={"outcome": "met"},
+        headers={"Origin": "https://evil.example"},
+    )
+    assert resp.status == 403
+    assert server.store.feedback(server.session_id) is None
+
+
+def test_capture_shows_feedback_counts_and_the_skill_install_note(server):
+    import os
+
+    _feedback_on(server, "feedback_skill", "feedback_note", "dashboard_rating")
+    server.post_json(f"/api/sessions/{server.session_id}/feedback", {"outcome": "met"})
+    resp, payload = server.get_json("/api/capture")
+    data = payload["data"]
+    rows = {row["id"]: row for section in data["sections"] for row in section["metrics"]}
+    assert data["feedback"]["skill"] == "missing" and data["feedback"]["ratings"] == 1
+    assert [q["key"] for q in data["feedback"]["questions"]] == ["outcome", "slow", "worth", "helped"]
+    skill = rows["feedback_skill"]
+    assert skill["needs_install"] is True and skill["install_command"] == "claude-token-lens capture feedback on"
+    assert skill["actual_label"] == "Over the last 14 days"
+    assert rows["dashboard_rating"]["answers"] == 1 and rows["dashboard_rating"]["target"] == 10
+    assert skill["install_note"] == "The /tl-feedback skill isn't installed"
+    assert "The /tl-feedback skill isn't installed: claude-token-lens capture feedback on" in data["banner"]["notes"]
+    # No status line of this tool's in the (fake) settings.json.
+    assert rows["feedback_note"]["statusline_note"].startswith("Your status line isn't Token Lens's")
+
+    from claude_token_lens import footprint
+
+    root = os.environ["CLAUDE_CONFIG_DIR"]
+    footprint.write_feedback_skill(root)
+    resp, payload = server.get_json("/api/capture")
+    rows = {row["id"]: row for section in payload["data"]["sections"] for row in section["metrics"]}
+    assert payload["data"]["feedback"]["skill"] == "installed" and rows["feedback_skill"]["needs_install"] is False

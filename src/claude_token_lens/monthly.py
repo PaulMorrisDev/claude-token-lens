@@ -219,6 +219,37 @@ def _finance_summary_table(
     )
 
 
+def _habits_digest_table(corpus: Corpus, pricing: Pricing, currency: str, ratings: dict | None) -> Table | None:
+    """The Work habits digest (``habits.digest_table``) for the month,
+    pre-formatted like :func:`_finance_summary_table`: the habits worth
+    the most, what habits already picked up save, and what a piece of
+    work that met its goal cost. ``None`` when there's nothing to say."""
+    from . import habits
+    from .helptext import TABLE_COPY
+    from .model import Column
+
+    digest = habits.digest_table(habits.collect(corpus, pricing, ratings=ratings))
+    if not digest.rows:
+        return None
+    copy = TABLE_COPY["habits_digest"]
+    rows = [
+        [copy.value_labels.get(item, item), what, format_cell(value, copy.row_kinds.get(item, "str"), currency), detail]
+        for item, what, value, detail in digest.rows
+    ]
+    return Table(
+        name="habits_digest",
+        title="Work habits",
+        columns=[
+            Column(key="item", label="Item", kind="str"),
+            Column(key="what", label="What", kind="str"),
+            Column(key="value", label="Saving a week, or the figure", kind="str"),
+            Column(key="detail", label="Detail", kind="str"),
+        ],
+        rows=rows,
+        notes=["Savings are a week's worth at this month's pace; the Work habits tab has an example to copy for each."],
+    )
+
+
 # -- local, deterministic renderers (see module docstring) -------------------
 
 
@@ -302,6 +333,7 @@ def write_monthly_report(
     out_dir: str | Path,
     usage_log_rows: list[dict] | None = None,
     generated_at: str | None = None,
+    ratings: dict | None = None,
 ) -> list[Path]:
     """Write ``claude-token-lens-<month>.md`` and ``.html`` into
     ``out_dir`` (created if absent) for the given ``month`` (``YYYY-MM``,
@@ -332,6 +364,9 @@ def write_monthly_report(
     byte-identical, not merely "identical apart from one line". Defaults
     to ``datetime.now().astimezone().isoformat()`` when omitted,
     preserving the previous behaviour for any other caller.
+
+    ``ratings``: your Sessions-tab ratings by session id, for the Work
+    habits digest (``Store.all_feedback``).
     """
     filtered = filter_corpus_to_month(corpus, month, config.tz)
     projects = tuple(sorted({b.slug for b in filtered.sessions if b.slug}))
@@ -384,6 +419,9 @@ def write_monthly_report(
         header_tables.append(cost_by_project)
     if cost_by_entrypoint is not None:
         header_tables.append(cost_by_entrypoint)
+    digest = _habits_digest_table(filtered, pricing, currency, ratings)
+    if digest is not None:
+        header_tables.append(digest)
 
     usage_section = next((s for s in model.sections if s.key == "usage"), None)
     body_tables = list(usage_section.tables) if usage_section else []
@@ -470,8 +508,13 @@ def run_monthly_report(
     if note is not None and not filter_corpus_to_month(corpus, month, config.tz).sessions:
         note(f"no sessions found for {month} -- writing a report with zeroed tables")
 
+    from .service.serve import STORE_FILENAME
+    from .service.store import read_session_marks
+
+    _tags, ratings = read_session_marks(Path(config_dir) / STORE_FILENAME)
     return write_monthly_report(
-        corpus, pricing, config, month, out_dir, usage_log_rows=usage_log_rows, generated_at=generated_at
+        corpus, pricing, config, month, out_dir, usage_log_rows=usage_log_rows, generated_at=generated_at,
+        ratings=ratings,
     )
 
 

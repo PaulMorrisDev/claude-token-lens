@@ -6,18 +6,25 @@ evidence, the trade-off and a what-if estimate (:mod:`whatif`).
 A change is ticked only when the data supports it; the rest are offered
 unticked, so a goal never quietly makes a quality trade for you (the
 main session's model, for one, is never pre-ticked).
+
+The ``tasks`` goal needs metrics capture: it reads the Work habits
+section's ``habits_setups`` table (the model and effort each kind of
+task Claude reported ran on, and how often it went well) and drafts the
+cheapest setup that went about as well as your usual one.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .. import quality, whatif
+from .. import habits, quality, whatif
 from ..compaction_sim import CompactionSimThresholds
 from ..fixes import LEVER_LABELS, SETTING_TEXT, already_set
 from ..recommend import _NOT_OVERRIDABLE, _SKIPS_CLAUDE_MD
 from ..units import Units
+from . import catalogue
 from .diff import _EFFECTIVE_AGENT_FIELD
+from .schema import _EFFORT_LEVELS
 
 TOP = whatif.TOP
 
@@ -65,6 +72,12 @@ GOALS: tuple[Goal, ...] = (
         "thinking",
         "Less thinking where it isn't needed",
         "A lower effort for the main session or agents that spend a large share of their output thinking.",
+    ),
+    Goal(
+        "tasks",
+        "A profile for one kind of task",
+        "The cheapest model and effort that went about as well as your usual setup, for one kind of task "
+        "Claude reported. Needs metrics capture.",
     ),
     Goal(
         "current",
@@ -151,15 +164,19 @@ def _models(draft: _Draft, tables, *, subagents_only: bool) -> None:
     worse = quality.worse_models(tables.rows("quality", "quality_by_setup"))
     worse.update({key: row for key, row in quality.retried_models(tables.rows("quality", "quality_retried")).items()
                   if key not in worse})
+    # Metrics capture: agents whose runs said they needed a larger model,
+    # or whose work was mostly reported hard (advice._merge_model_tier).
+    unfit = habits.unfit_agents(tables.rows("habits", "habits_agents"))
     for row in tables.rows("model_swap", "model_swap_by_agent_type"):
         agent = row.get("agent_type")
         best = row.get("best_cheaper_alternative_model")
         pct = whatif._num(row.get("saving_pct")) or 0.0
         if not best or pct < MIN_SHARE_PCT or (subagents_only and agent == TOP):
             continue
-        if (agent, _alias(best)) in worse:
+        if (agent, _alias(best)) in worse or agent in unfit:
             # The quality check found this agent did worse on that model,
-            # or its runs on it were often retried on a larger one.
+            # or its runs on it were often retried on a larger one; or
+            # Claude reported its work needed a larger model.
             continue
         who = "the main session" if agent == TOP else agent
         draft.add(
@@ -256,20 +273,180 @@ def _thinking(draft: _Draft, tables, *, subagents_only: bool) -> None:
 
 
 def _omit_claude_md(draft: _Draft, tables) -> None:
+    # Metrics capture: what each agent type's runs said about CLAUDE.md.
+    said = {row.get("agent_type"): row for row in tables.rows("habits", "habits_agents")}
     for row in tables.rows("agent_startup", "agent_startup_breakdown"):
         tokens = whatif._num(row.get("claude_md")) or 0.0
-        if tokens < 1000 or row.get("agent_type") == TOP:
+        agent = row.get("agent_type")
+        if tokens < 1000 or agent == TOP:
+            continue
+        told = said.get(agent) or {}
+        used = int(whatif._num(told.get("rules_used")) or 0)
+        unused = int(whatif._num(told.get("rules_unused")) or 0)
+        if used > unused:
+            # Most of its runs that said, said they used it.
+            continue
+        evidence = f"About {round(tokens):,} CLAUDE.md tokens at each of {int(whatif._num(row.get('spawns')) or 0)} spawns."
+        if unused:
+            evidence += f" {unused} of the {used + unused} runs that said, said they didn't use it."
+        else:
+            evidence += " Not ticked: move the rules it needs into its agent file first."
+        draft.add("omitClaudeMd", agent, True, ticked=unused > used, evidence=evidence)
+
+
+def _setups_by_task(tables) -> dict[str, list[dict]]:
+    """``habits_setups``' all-levels rows per kind of task, the most-used
+    task first (the table's own order)."""
+    by_task: dict[str, list[dict]] = {}
+    for row in tables.rows("habits", "habits_setups"):
+        if row.get("level") == "all" and row.get("task"):
+            by_task.setdefault(str(row["task"]), []).append(row)
+    return by_task
+
+
+def _setup_text(row: dict) -> str:
+    effort = row.get("effort")
+    return f"{row.get('model')}" + (f" at {effort} effort" if effort and effort != "default" else "")
+
+
+def _tasks(draft: _Draft, tables, task: str | None) -> tuple[list[str], str | None, str]:
+    """The main session's model and effort for ``task`` (or, without
+    one, the first kind of task that has a cheaper setup): the kinds of
+    task there are, the one drafted, and a note."""
+    by_task = _setups_by_task(tables)
+    tasks = list(by_task)
+    if not tasks:
+        return [], None, (
+            "No kind of task has been reported yet. Turn on metrics capture at Essentials or above on the "
+            "Capture tab, then come back after a week or so of work."
+        )
+    if task not in by_task:
+        task = next((t for t in tasks if any(r.get("verdict") == "cheaper" for r in by_task[t])), tasks[0])
+    rows = by_task[task]
+    usual = next((r for r in rows if r.get("verdict") == "usual"), rows[0])
+    cheaper = next((r for r in rows if r.get("verdict") == "cheaper"), None)
+    if cheaper is None:
+        note = (
+            f"Your usual setup for {task} work is {_setup_text(usual)}. No cheaper setup went as well over at "
+            f"least {habits.MIN_GROUP} messages yet."
+        )
+    else:
+        evidence = (
+            f"For {task} work, {_setup_text(cheaper)} cost {whatif._num(cheaper.get('saving_pct')) or 0:.0f}% less "
+            f"a message than your usual {_setup_text(usual)}, and went well "
+            f"{whatif._num(cheaper.get('ok_pct')) or 0:.0f}% of the time against "
+            f"{whatif._num(usual.get('ok_pct')) or 0:.0f}% ({int(whatif._num(cheaper.get('cycles')) or 0)} and "
+            f"{int(whatif._num(usual.get('cycles')) or 0)} messages), compared level for level. They still ran on "
+            "different work, so it's a lead, not proof."
+        )
+        if cheaper.get("model") != usual.get("model") and cheaper.get("model") in habits._FAMILIES:
+            draft.add("model", None, cheaper["model"], ticked=False, evidence=evidence)
+        if cheaper.get("effort") != usual.get("effort") and cheaper.get("effort") in _EFFORT_LEVELS:
+            draft.add("effortLevel", None, cheaper["effort"], ticked=True, evidence=evidence)
+        note = f"Save it, then launch Claude with it when you start {task} work."
+    profile_id = catalogue.task_profile(task)
+    if profile_id is not None:
+        note += f" The catalogue profile {profile_id} is also a starting point for this kind of task."
+    return tasks, task, note
+
+
+def _task_agents(draft: _Draft, tables, task: str) -> None:
+    """Cheaper-model candidates for the agent types that most often
+    answered ``task``'s work (metrics capture's ``habits_agents_by_task``),
+    vetoed exactly as ``_models`` vetoes its corpus-wide draft: a setup
+    the quality check found worse, one often retried for the model, or
+    an agent whose runs said, or were mostly, hard work
+    (``habits.unfit_agents``)."""
+    worse = quality.worse_models(tables.rows("quality", "quality_by_setup"))
+    worse.update({key: row for key, row in quality.retried_models(tables.rows("quality", "quality_retried")).items()
+                  if key not in worse})
+    unfit = habits.unfit_agents(tables.rows("habits", "habits_agents"))
+    rows = [r for r in tables.rows("habits", "habits_agents_by_task") if r.get("task") == task]
+    for row in sorted(rows, key=lambda r: -(whatif._num(r.get("runs")) or 0.0)):
+        agent = row.get("agent_type")
+        best = row.get("cheaper_model")
+        pct = whatif._num(row.get("cheaper_saving_pct")) or 0.0
+        if not agent or not best or pct < MIN_SHARE_PCT:
+            continue
+        if (agent, best) in worse or agent in unfit:
             continue
         draft.add(
-            "omitClaudeMd",
-            row.get("agent_type"),
-            True,
-            ticked=False,
-            evidence=(
-                f"About {round(tokens):,} CLAUDE.md tokens at each of {int(whatif._num(row.get('spawns')) or 0)} "
-                "spawns. Not ticked: move the rules it needs into its agent file first."
-            ),
+            "model",
+            agent,
+            best,
+            ticked=pct >= 20.0,
+            evidence=f"{agent}'s {task} runs in this window would have cost {pct:.0f}% less on {best}.",
         )
+
+
+def _task_share(tables, task: str) -> float | None:
+    """This task's share (%) of everything ``habits_by_task`` covers in
+    the window, from its own ``cost`` column against the ``all`` row's.
+    Used to scale down a main-session estimate that reprices the whole
+    window (``whatif`` has no notion of a task). ``None`` without the
+    data to compare."""
+    by_task = {r.get("task"): r for r in tables.rows("habits", "habits_by_task")}
+    task_row, all_row = by_task.get(task), by_task.get("all")
+    total = whatif._num(all_row.get("cost")) if all_row else None
+    if task_row is None or not total:
+        return None
+    return 100.0 * (whatif._num(task_row.get("cost")) or 0.0) / total
+
+
+def _task_agent_share(tables, task: str, agent: str) -> float | None:
+    """This task's share (%) of ``agent``'s total cost, from
+    ``habits_agents_by_task`` (runs at this task, times its cost per
+    run) against ``habits_agents``' own total. ``None`` without the data
+    to compare."""
+    row = next(
+        (r for r in tables.rows("habits", "habits_agents_by_task") if r.get("task") == task and r.get("agent_type") == agent),
+        None,
+    )
+    total_row = tables.row("habits", "habits_agents", agent)
+    total = whatif._num(total_row.get("cost")) if total_row else None
+    if row is None or not total:
+        return None
+    task_cost = (whatif._num(row.get("runs")) or 0.0) * (whatif._num(row.get("avg_cost")) or 0.0)
+    return 100.0 * task_cost / total
+
+
+def _scale_estimate(row: dict, pct: float | None, units: Units, period: str) -> dict:
+    """A ``whatif`` row reprices *all* of a setup's observed work in the
+    window, but a task's draft is for that task's share of it alone.
+    Scale the saving down to ``pct``; without a clean share to scale by,
+    drop the number rather than leave the unscaled (too large) one."""
+    row = dict(row)
+    if row.get("saving_usd") is None:
+        return row
+    if pct is None:
+        row["saving_usd"] = None
+        row["fidelity"] = "none"
+        row["effect_text"] = "Not estimated"
+        row["basis"] = "Not estimated: no per-task cost to scale this window's reprice by."
+        return row
+    row["saving_usd"] = round(row["saving_usd"] * pct / 100.0, 6)
+    row["effect_text"] = whatif._effect_text(row["saving_usd"], units, period)
+    row["basis"] = row.get("basis", "") + f" Scaled to this task's {pct:.0f}% share of what was repriced above."
+    return row
+
+
+def _task_share_for(tables, task: str, agent: str | None) -> float | None:
+    return _task_share(tables, task) if agent is None else _task_agent_share(tables, task, agent)
+
+
+def _scale_whatif(result: dict, tables, task: str, units: Units, period: str) -> dict:
+    """Scale every row of a combined ``whatif.estimate`` result to
+    ``task``'s share, and recompute the total from the scaled rows."""
+    rows = [_scale_estimate(row, _task_share_for(tables, task, row.get("agent")), units, period) for row in result["rows"]]
+    estimated = [row for row in rows if row["saving_usd"] is not None]
+    total = sum(row["saving_usd"] for row in estimated)
+    out = dict(result)
+    out["rows"] = rows
+    out["total_usd"] = round(total, 6)
+    out["total_text"] = whatif._effect_text(total, units, period) if estimated else ""
+    out["estimated"] = len(estimated)
+    out["not_estimated"] = len(rows) - len(estimated)
+    return out
 
 
 def draft(
@@ -280,15 +457,26 @@ def draft(
     effective: dict | None = None,
     effective_agents: dict | None = None,
     period: str = "",
+    task: str | None = None,
 ) -> dict:
     """The candidate changes for ``goal_id``, each with its what-if row.
-    Raises ``KeyError`` for an unknown goal."""
+    Raises ``KeyError`` for an unknown goal. ``task``: for the ``tasks``
+    goal, the kind of task to draft for (the first with a cheaper setup
+    when it's missing or not in the data)."""
     goal = next(g for g in GOALS if g.id == goal_id) if goal_id in GOAL_IDS else None
     if goal is None:
         raise KeyError(goal_id)
     tables = whatif._Tables(model)
     d = _Draft(goal, dict(effective or {}), dict(effective_agents or {}), [])
     recommendations = getattr(model, "recommendations", ()) or ()
+    tasks: list[str] = []
+    note = None
+    if goal.id == "tasks":
+        tasks, task, note = _tasks(d, tables, task)
+        if task is not None:
+            _task_agents(d, tables, task)
+    else:
+        task = None
     if goal.id == "recommendations":
         _from_recommendations(d, recommendations)
     elif goal.id == "subagents":
@@ -309,17 +497,27 @@ def draft(
         _thinking(d, tables, subagents_only=False)
     for candidate in d.candidates:
         settings, agents = _as_profile([candidate])
-        candidate["estimate"] = whatif.estimate(settings, agents, model, units, period=period,
-                                                current=d.effective)["rows"][0]
+        estimate = whatif.estimate(settings, agents, model, units, period=period, current=d.effective)["rows"][0]
+        if goal.id == "tasks" and task is not None:
+            # whatif reprices all of that setup's work in the window;
+            # a task's own draft only covers its share of it.
+            estimate = _scale_estimate(estimate, _task_share_for(tables, task, candidate["agent"]), units, period)
+        candidate["estimate"] = estimate
     ticked = [c for c in d.candidates if c["ticked"]]
     settings, agents = _as_profile(ticked)
+    combined = whatif.estimate(settings, agents, model, units, period=period, current=d.effective)
+    if goal.id == "tasks" and task is not None:
+        combined = _scale_whatif(combined, tables, task, units, period)
     return {
         "goal": {"id": goal.id, "title": goal.title, "what": goal.what},
         "period": period,
         "from_current": goal.id == "current",
+        "tasks": tasks,
+        "task": task,
+        "note": note,
         "candidates": d.candidates,
         "profile": {"settings": settings, "agents": agents},
-        "whatif": whatif.estimate(settings, agents, model, units, period=period, current=d.effective),
+        "whatif": combined,
     }
 
 

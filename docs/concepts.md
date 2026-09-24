@@ -204,8 +204,8 @@ size. No text is kept (`context_files.py`).
   change straight away; they hold few sessions, so read them as a quick
   signal, not a verdict.
 - **Since my last change**: starts at the latest change point: an
-  `apply`, its undo, or a settings change the snapshot hook saw
-  (`change_points.py`).
+  `apply`, its undo, a settings change the snapshot hook saw, or a
+  change to metrics capture (`change_points.py`).
 - **What-if estimate** (`whatif.py`): what a change would have saved
   over the window, looked up in the report's own simulations rather
   than computed afresh: the model-swap repricing for a model change, the
@@ -303,31 +303,49 @@ another model, those runs were started on the cheaper one by whatever
 dispatched them, and it says so.
 
 **Markers Claude writes.** Some things only Claude knows: why it ran an
-agent again, and whether a subagent really finished. "Is any agent
-struggling?" offers two lines for `~/.claude/CLAUDE.md`
-(`quality.MARKER_LINES`, about 100 tokens) that ask for them, when agents
-ran in the window, none wrote a marker and the file doesn't have the
-lines yet. A brief that starts `[retry: model]`, `[retry: brief]`,
-`[retry: tools]` or `[retry: other]` says the agent is being run again
-because its last run's work wasn't good enough, and why; a subagent's
-last reply ending `[result: done]`, `[result: partial]` or
-`[result: blocked]` says whether it finished. Only the word is kept,
-never the text around it, and only a marker at the start of the brief or
-in the last characters of the reply's last text block counts, so one
-quoted mid-text doesn't. A retry that gives a reason is matched to the
-agent run it retries: the latest one that ended before it started,
-within 2 hours, preferring one whose files it edits and then one of the
-same agent type. `brief`, `tools` and `other` mean the cheaper model
-wasn't the problem, so that retry never counts as retried on a larger
-model (and two or more of `brief` or `tools` for one agent become a tip
-to fix the task prompt or its tools); `model` on a larger model family
-counts even for a different agent type or with no file in common.
-`partial` and `blocked` count as didn't finish. Each marker costs about
-six output tokens; **Markers Claude wrote** (advanced) shows how often
-each was written, of the runs that could have, and what that cost.
-Explore and Plan start without CLAUDE.md, so they are left out of the
-result marker's share. The markers are Claude's own account and are
-taken at their word.
+agent again, and whether a subagent really finished. A brief that starts
+`[retry: model]`, `[retry: brief]`, `[retry: tools]`, `[retry: scope]` or
+`[retry: other]` says the agent is being run again because its last
+run's work wasn't good enough, and why; a subagent's last reply ending
+`[result: done]`, `[result: partial]` or `[result: blocked]` says
+whether it finished. Only the word is kept, never the text around it,
+and only a marker at the start of the brief or in the last characters of
+the reply's last text block counts, so one quoted mid-text doesn't. A
+retry that gives a reason is matched to the agent run it retries: the
+latest one that ended before it started, within 2 hours, preferring one
+whose files it edits and then one of the same agent type. `brief`,
+`tools` and `other` mean the cheaper model wasn't the problem, so that
+retry never counts as retried on a larger model (and two or more of
+`brief` or `tools` for one agent become a tip to fix the task prompt or
+its tools); `model` on a larger model family counts even for a different
+agent type or with no file in common. `partial` and `blocked` count as
+didn't finish. Explore and Plan start without CLAUDE.md, so they are
+left out of the result marker's share. The markers are Claude's own
+account and are taken at their word.
+
+These two markers were first asked for by adding two lines to
+`~/.claude/CLAUDE.md` (commit 30f930b, `quality.MARKER_LINES`, about 115
+tokens, sent with every session and most subagents whether or not any
+agent ran that day). [Metrics capture](#8-metrics-capture) now supersedes
+that: at its Essentials level it asks for the same `[retry: ...]` and
+`[result: ...]` words, plus everything else Essentials and the levels
+above it capture, from a note the hook adds only at each session and
+subagent start — never a permanent CLAUDE.md addition, and nothing at
+all while capture is off. See [`docs/capture.md`](capture.md) for the
+full catalogue. The old CLAUDE.md lines still parse exactly as above if
+you already added them, or if Claude keeps writing the markers on its
+own after capture is off. The Quick actions check "Is any agent
+struggling?" (`quick_actions._capture_fix`) reflects this: when agents
+ran in the window, none wrote a `[result: ...]` marker, capture is off
+and CLAUDE.md doesn't already have the section, it offers to turn on
+metrics capture at Essentials instead of adding the old lines; once
+capture is on, it instead offers to remove the CLAUDE.md section if it
+is still there (`quick_actions._remove_markers_fix`), since capture
+already asks for the same markers and the section would otherwise be
+asked for twice, and would keep being asked for after capture is turned
+off. Each marker costs about six output tokens; **Markers Claude wrote**
+(advanced) shows how often each was written, of the runs that could
+have, and what that cost.
 
 **Comparing.** Each signal is a ratio of two counts summed over runs,
 and two sets of runs are compared with a two-sided z-test whose
@@ -358,3 +376,121 @@ like a correction is a yes/no from a fixed phrase list; the text is
 never stored. Files are known only by a salted hash. The phrase list
 misses disagreement worded another way, so the correction rate is a
 floor.
+
+## 8. Metrics capture
+
+Metrics capture is an opt-in feature: while it's on, a hook adds a short
+note to each session and subagent start, and Claude ends its replies
+with a one-line tag (`[tl: task=bugfix brief=partial level=normal]`; a
+subagent's report ends `[result: done]` plus whatever extra words its
+level asks for). It costs tokens, and levels trade depth of insight for
+that cost: Free (local signals only, no Claude tokens), Essentials,
+Standard and Deep, each including the levels below it, plus Custom. The
+full catalogue — every metric's id, level, what it captures, why, its
+exact tag and vocabulary, and what it feeds — is generated straight from
+the single source of truth, `capture_catalogue.py`, into
+[`docs/capture.md`](capture.md); this section covers only the numbers
+behind it, not the catalogue itself.
+
+**What it costs is measured, not estimated, once it has run.** An
+injected note shows up in the transcript as a `capture_note` event sized
+from exactly what Claude Code showed the model (the attachment's own
+`rendered` text where present), and it is carried like any other prompt
+content: written once, read from the cache on every later reply, written
+again whenever the cache rebuilds. A tag Claude writes back is priced at
+that turn's own effective output rate — fast mode and data residency
+included (`pricing.effective_rates`) — not a flat rate. `capture.usage`
+totals both, per metric and per scope, as list-price USD phrased for
+your billing mode (`units.Units.money`), and that is what the Capture
+tab and the report's `capture` section show; the levels table in
+`docs/capture.md` gives only a rough size (characters / 4) for before
+you turn a level on.
+
+**Prompt cycle.** `capture.prompt_cycles` is the unit metrics capture's
+own numbers are counted over: one message of yours, the reply that
+answers it, and every subagent that message started, at any depth, up to
+(not including) the turn that answers your next message.
+
+**Coverage.** The share of prompt cycles whose final reply carried a
+`[tl: ...]` tag (`CaptureUsage.coverage`), and separately the share of
+agent reports that carried `[result: ...]` (`report_coverage`). Low
+coverage means Claude is skipping the tag more often than writing it
+wrong, so a habit built on few tagged cycles is shown with that caveat.
+
+**Enough data.** Each metric has a target answer count before its
+suggestions are treated as settled rather than early (`capture.ENOUGH`):
+40 tagged cycles for a main-session metric (`task`, `brief`, `level`,
+...), 25 for a subagent metric (`result`, `fit`, `rules`, `agent_brief`),
+20 for a brief-start marker (`retry`, `spawn`), 15 for a tool-note metric
+(`big_output`, `web`), 20 for a free signal, 10 for a feedback answer.
+The Capture tab uses this to suggest lowering a level once a metric has
+collected enough.
+
+**What the tags feed directly.** `classify.classify_purpose` uses the
+kind of task Claude reported (`task=`, on at least half of a session's
+tagged messages, twice or more) to decide the session's purpose where it
+maps one to one, unless a `sessions.toml` override or a structural
+purpose (a local-LLM pipeline, a workflow run) settles it first; without
+a majority reported task the structural rules run exactly as before.
+[Work habits](#9-work-habits), next, covers what the rest of the tags
+and the always-measured signals feed once `habits.py` has turned them
+into tables.
+
+Turn capture on, change its level, or remove it with
+`claude-token-lens capture ...`; `docs/capture.md` lists every command,
+and the dashboard's Capture page and banner offer the same choices with
+the measured cost attached.
+
+## 9. Work habits
+
+`habits.py` turns the same prompt cycles and subagent runs — whatever
+metrics capture reported on them, what the parser measures without
+asking (a message naming a file, a command failing repeatedly, a skill
+loaded late...), and your own `/tl-feedback` answers and dashboard
+ratings — into ranked habits: an estimated saving, how sure it is, and
+whether you've already picked it up. Every table is always present in a
+report, empty (with a note saying why) when capture is off or nothing's
+been collected yet — the tab never disappears out from under you.
+
+**Evidence and confidence.** Each habit is labelled by where its
+evidence came from: **reported** (a capture tag), **inferred** (measured
+without asking Claude), or **your feedback**. Confidence is **high**
+from 20 supporting cases, **medium** from 8; inferred evidence alone is
+never high, since it's the weakest of the three. **Trend** is **new**,
+**falling**, **rising** or **steady**, from the habit's rate per message
+over the last eight weeks; a fall sustained over at least four known
+weeks counts as **picked up**, and the saving that implies moves into
+the "This week" digest's `adopted` figure instead of still being
+suggested.
+
+**Cheaper-setup verdicts** (`habits_setups`, shown on the Profiles tab):
+for a kind of task, the model and effort you used most (`usual`) against
+the cheapest setup that cost less, went at least as well within 5
+points, and has 5 or more messages (`cheaper`). "Went well" is your
+feedback's `met` where you gave it, else not redone by your next
+message. The two are compared level for level, on only the capture
+levels both setups ran, weighted by the usual setup's own mix
+(`habits._like_for_like`), and only once those shared levels hold at
+least half the usual setup's messages — comparing a setup that mostly
+ran Essentials against one that mostly ran Deep would otherwise credit
+the cheaper setup for being asked less, not for doing better.
+
+**Feeding existing rules.** Habits data gives three rules direct
+evidence instead of a heuristic: `recommend._rule_effort_mismatch` joins
+`habits_effort_fit` rows for messages Claude reported easy that ran at
+high effort or above, with no approximation caveat, ahead of its
+structural fallback. `advice._merge_model_tier` reads
+`habits.unfit_agents` (built from `habits_agents`) as a veto over a
+cheaper-model suggestion: an agent whose runs said a larger model would
+suit, whose work was mostly reported hard, or that was retried for the
+model, is left out of the suggestion — never added to one just because
+its runs said "smaller" would do. The `spawn-claude-md` rule adds
+`habits_agents`' reported `rules_used`/`rules_unused` counts on top of
+its structural evidence (whether every measured spawn only searched or
+read files): it holds back suggesting `omitClaudeMd: true` once most of
+an agent's reported runs said they did use the rules, and otherwise
+cites how many said they didn't.
+
+The full table reference — every column of every `habits` and `capture`
+table — is in
+[`docs/sections-reference.md`](sections-reference.md#habits-habitspy).

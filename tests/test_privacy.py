@@ -10,13 +10,13 @@ human-prompt text — and asserts no ``str`` field exceeds 64 characters
 outside the documented allowlist, and ``cmd_prefix``/
 ``preceding_cmd_prefix`` never exceed 40.
 
-Scope note: ``Event.detail`` and the other ``dict``-typed fields
-(``Diagnostics.ignored_line_types``, ``Classification.*_evidence``, …)
-are deliberately not walked key-by-key here — they're free-form small
-counters the module controls, not a place message text could leak
-through structurally. What this test guards is every *named, typed*
-``str``/``str | None`` dataclass field, which is where an accidental
-"just pass the raw value through" bug would actually show up.
+Scope note: ``Event.detail`` *is* walked, keys and values, all the way
+down: it is where events.py keeps what it reads from a line (retry and
+spawn markers, prompt flags, capture-note codes, skill names), so an
+accidental "just pass the raw value through" there would be a leak. The
+other ``dict``-typed fields (``Diagnostics.ignored_line_types``,
+``Classification.*_evidence``, …) are small counters keyed by closed
+labels and are not walked key-by-key.
 
 Independent-review follow-up (task 6): every fixture below is also run
 through ``helpers.assert_privacy``, a second, shape-based scan (not
@@ -90,7 +90,24 @@ def _walk(obj, violations: list[str], where: str) -> None:
                         _walk(item, violations, f"{field_where}[{i}]")
             elif dataclasses.is_dataclass(value):
                 _walk(value, violations, field_where)
-            # dict-typed fields intentionally not walked — see module docstring.
+            elif f.name == "detail" and isinstance(value, dict):
+                _walk_detail(value, violations, field_where)
+            # other dict-typed fields intentionally not walked — see module docstring.
+
+
+def _walk_detail(value, violations: list[str], where: str, key: str = "") -> None:
+    """``Event.detail``, keys and values, at every depth."""
+    if isinstance(value, str):
+        if key not in _LONG_FIELD_ALLOWLIST and len(value) > _MAX_STR_LEN:
+            violations.append(f"{where} exceeds {_MAX_STR_LEN} chars: {value!r}")
+    elif isinstance(value, dict):
+        for k, v in value.items():
+            if isinstance(k, str) and len(k) > _MAX_STR_LEN:
+                violations.append(f"{where} key exceeds {_MAX_STR_LEN} chars: {k!r}")
+            _walk_detail(v, violations, f"{where}[{k!r}]", k if isinstance(k, str) else key)
+    elif isinstance(value, (list, tuple)):
+        for i, item in enumerate(value):
+            _walk_detail(item, violations, f"{where}[{i}]", key)
 
 
 def _assert_no_violations(result) -> None:

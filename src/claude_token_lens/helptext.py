@@ -23,6 +23,8 @@ from __future__ import annotations
 import dataclasses
 from dataclasses import dataclass, field
 
+from .capture_catalogue import THEMES as CAPTURE_THEMES
+from .habits import ITEMS as HABIT_ITEMS
 from .model import Column, Diagnostics, Help, ReportModel, Section, Table
 
 # -- the table audit ------------------------------------------------------
@@ -133,6 +135,22 @@ PLACEMENT: dict[str, str] = {
     "quality_failing_tools": "advanced",
     "quality_counts": "advanced",
     "quality_markers": "advanced",
+    # work habits and metrics capture
+    "habits_digest": "keep",
+    "habits_playbook": "keep",
+    "habits_by_task": "keep",
+    "habits_briefs": "keep",
+    "habits_brief_templates": "keep",
+    "habits_agents": "keep",
+    "habits_effort_fit": "keep",
+    "habits_setups": "keep",
+    "habits_agents_by_task": "keep",
+    "habits_outcomes": "keep",
+    "habits_self_report": "keep",
+    "habits_prompt_flags": "advanced",
+    "habits_skills": "advanced",
+    "habits_tool_output": "advanced",
+    "capture_usage": "report",
     # workstyle / workflows
     "workstyle_archetypes": "keep",
     "workflows_summary": "keep",
@@ -285,6 +303,30 @@ SECTION_COPY: dict[str, SectionCopy] = {
             "tool calls. A difference is marked only when it is unlikely to be chance; with few runs it says so.",
             act="If a setup is marked worse, move that agent back to the model or effort that did better. "
             "Profiles shows the same signals before and after each change you made.",
+        ),
+    ),
+    "habits": SectionCopy(
+        title="Work habits",
+        intro=(
+            "How the way you work shapes what it costs: breaking work down, what you tell Claude, research, "
+            "planning, skills, agents and checks, with the habits worth trying."
+        ),
+        help=Help(
+            shows="A playbook of habits ranked by what they would have saved you, then the evidence per kind of "
+            "task, brief, agent, effort and outcome.",
+            read="Everything is worked out per message of yours, with all the work that answered it, subagents "
+            "included. Evidence is labelled inferred, reported by Claude or your feedback.",
+            act="Try the top habit for a week and watch its trend. Metrics capture (the Capture tab) and "
+            "feedback fill in the rest of the tables.",
+        ),
+    ),
+    "capture": SectionCopy(
+        title="Metrics capture",
+        intro="What metrics capture cost while it was on.",
+        help=Help(
+            shows="The notes and tags metrics capture adds, and what they cost, measured from the transcripts.",
+            read="Amounts are measured, not estimated. The Capture tab estimates each level before you turn it on.",
+            act="Lower the level or turn metrics off on the Capture tab once enough has been collected.",
         ),
     ),
     "workstyle": SectionCopy(
@@ -613,6 +655,418 @@ TABLE_COPY: dict[str, TableCopy] = {
         },
     ),
     # -- quality signals ----------------------------------------------------
+    "habits_digest": TableCopy(
+        title="This week",
+        help=Help(
+            shows="The three habits worth the most to you right now, what the habits you already picked up are "
+            "saving, and what a piece of work that met its goal cost.",
+            read="Savings are a week's worth at your recent pace. A habit counts as picked up when what it "
+            "addresses per message fell by a fifth or more over recent weeks.",
+            act="Start with the first habit: Habits worth trying below has an example to copy for each.",
+        ),
+        columns={
+            "item": ("", "Which figure this is."),
+            "what": ("", "The habit, or what the figure measures."),
+            "value": ("", "A week's saving for a habit, or the figure itself."),
+            "detail": ("", "What your sessions show behind it."),
+        },
+        value_labels={
+            "top_1": "Worth the most",
+            "top_2": "Next",
+            "top_3": "Then",
+            "adopted": "Already saving",
+            "cost_per_met": "Cost per goal met",
+            "tagged": "Messages tagged",
+        },
+        row_kinds={
+            "top_1": "money",
+            "top_2": "money",
+            "top_3": "money",
+            "adopted": "money",
+            "cost_per_met": "money",
+            "tagged": "pct",
+        },
+    ),
+    "habits_playbook": TableCopy(
+        title="Habits worth trying",
+        help=Help(
+            shows="Ways of working that would have cost less in your own sessions: how you break work down, "
+            "brief Claude, research, plan, use skills, delegate to agents and check changes.",
+            read="Each saving is rough, with how it was worked out alongside. Source says where the evidence came "
+            "from: inferred from the transcripts, reported by Claude in metrics-capture tags, or your own "
+            "feedback, which outranks the rest. By week shows what the habit addresses per message over recent "
+            "weeks, scaled so the worst week is 100; a dash is a week with too few messages.",
+            act="Copy the example into your next message of that kind. Turning on metrics capture adds the "
+            "reported evidence and makes the estimates firmer.",
+        ),
+        columns={
+            "habit": ("Habit", "The habit to try."),
+            "theme": ("Theme", "Which part of how you work it's about."),
+            "saving": ("Saving a week, about", "What the habit would have saved, spread over the weeks shown."),
+            "evidence": ("What your sessions show", "The evidence behind it, as counts and ratios."),
+            "example": ("Try", "An example to copy or adapt."),
+            "basis": ("How the saving is worked out", "What the estimate counts."),
+            "n": ("Seen", "How many times the evidence turned up."),
+            "source": ("Source", "Inferred from the transcripts, reported by Claude, or your feedback."),
+            "confidence": ("Confidence", "High with 20 or more cases, medium with 8 or more, else low."),
+            "trend": ("Trend", "Whether it's getting better or worse over recent weeks."),
+            "weeks": ("By week", "What it addresses per message, by week, the worst week as 100."),
+        },
+        value_labels={
+            **{key: title for key, (_theme, title) in HABIT_ITEMS.items()},
+            **CAPTURE_THEMES,
+            "high": "High",
+            "medium": "Medium",
+            "low": "Low",
+            "falling": "Improving",
+            "rising": "Getting worse",
+            "steady": "Steady",
+            "new": "Too early to say",
+        },
+    ),
+    "habits_by_task": TableCopy(
+        title="Kinds of task",
+        help=Help(
+            shows="What each kind of task cost, as Claude reported it in metrics-capture tags, with every message "
+            "in the first row.",
+            read="Clear asks and large asks are shares of the messages Claude rated for them. Redone counts "
+            "messages whose next message redid the work or corrected Claude. Met the goal needs your feedback.",
+            act="The costliest kinds are where the brief templates and the habits above pay off most.",
+        ),
+        columns={
+            "task": ("Task", "The kind of task Claude reported."),
+            "cycles": ("Messages", "Your messages of this kind, each with the work that answered it."),
+            "share": ("Share", "Out of all your messages."),
+            "cost": ("Cost", "What the work cost, subagents included."),
+            "avg_cost": ("Per message", "The average cost of one."),
+            "clear_pct": ("Clear asks", "Messages Claude called clear, out of those it rated."),
+            "large_pct": ("Large asks", "Messages Claude sized large or extra large."),
+            "redo_pct": ("Redone", "Messages whose work was redone or corrected by your next message."),
+            "met_pct": ("Met the goal", "Pieces you said met their goal, out of those you gave feedback on."),
+        },
+        value_labels={"all": "All messages"},
+    ),
+    "habits_briefs": TableCopy(
+        title="How clear your asks were",
+        help=Help(
+            shows="Your messages by how clear Claude said they were, and what each cost.",
+            read="Claude judges your message, so treat it as a sign. A vague ask that costs much more than a "
+            "clear one is the pattern to look for.",
+            act="Most often missing names what to add; Brief templates has a checklist per kind of task.",
+        ),
+        columns={
+            "brief": ("Brief", "How clear Claude said the message was."),
+            "cycles": ("Messages", "Messages it rated this way."),
+            "avg_cost": ("Per message", "The average cost of the work."),
+            "redo_pct": ("Redone", "Messages whose work was redone or corrected next."),
+            "met_pct": ("Met the goal", "From your feedback."),
+            "missing": ("Most often missing", "What Claude said the message left out."),
+        },
+        value_labels={"clear": "Clear", "partial": "Partly clear", "vague": "Vague"},
+    ),
+    "habits_brief_templates": TableCopy(
+        title="Brief templates",
+        help=Help(
+            shows="A checklist per kind of task, built from what your own asks most often left out.",
+            read="Without metrics capture these are starting points; with it, the lines your asks miss most "
+            "come first.",
+            act="Copy the template into your message and fill it in. The optional /tl-brief skill gives Claude "
+            "the same checklists: claude-token-lens capture brief on.",
+        ),
+        columns={
+            "task": ("Task", "The kind of task."),
+            "checklist": ("Checklist", "What to include."),
+            "why": ("Why these", "The evidence for the order."),
+            "template": ("Template", "The lines to copy and fill in."),
+        },
+    ),
+    "habits_agents": TableCopy(
+        title="How agents were used",
+        help=Help(
+            shows="Each subagent type: its reports, whether it finished, why it was retried, whether Claude "
+            "thought its model fit the work, whether it used your CLAUDE.md, and files it read again. The main "
+            "session's row says how hard its work was.",
+            read="Model fit and CLAUDE.md use are the agent's own report, so they only hold a cheaper model "
+            "back and never push one. Files read again are files the main session had already read.",
+            act="A cheaper model isn't suggested for an agent whose runs said they needed a larger one or "
+            "were mostly hard work. For long reports, ask for a short one in the brief.",
+        ),
+        columns={
+            "agent_type": ("Agent", "The subagent type."),
+            "runs": ("Runs", "Its runs, at any depth; for the main session, your messages."),
+            "cost": ("Cost", "What the runs cost."),
+            "report_tokens": ("Report", "A typical report handed back, in tokens."),
+            "capped_pct": ("Asked for a short report", "Briefs that capped the report's length."),
+            "done_pct": ("Finished", "Runs that said done, out of those that said."),
+            "retried": ("Retried", "Runs started again with a reason."),
+            "retried_model": ("Retried for the model", "Retries that said the model wasn't enough."),
+            "fit_smaller": ("Smaller would do", "Runs that said a smaller model would have done."),
+            "fit_right": ("Model was right", "Runs that said the model fit."),
+            "fit_larger": ("Needed larger", "Runs that said a larger model would have done better."),
+            "rules_used": ("Used CLAUDE.md", "Runs that said they used your CLAUDE.md."),
+            "rules_unused": ("Didn't use CLAUDE.md", "Runs that said they didn't."),
+            "easy_pct": ("Easy work", "Runs on messages Claude called easy."),
+            "hard_pct": ("Hard work", "Runs on messages Claude called hard."),
+            "overlap_reads": ("Files read again", "Files it read that the main session had already read."),
+            "nested": ("Started by an agent", "Runs another agent started."),
+        },
+        value_labels={"top-level": "Main session"},
+    ),
+    "habits_effort_fit": TableCopy(
+        title="Effort against how hard the work was",
+        help=Help(
+            shows="Your messages by how hard Claude said the work was and the effort it ran at.",
+            read="Easy work at high effort spends thinking it doesn't need. Hard work at low effort that was "
+            "often redone needed more.",
+            act="Lower the effort (the effortLevel setting) for quick edits and raise it for hard problems.",
+        ),
+        columns={
+            "setup": ("Work and effort", "How hard the work was, and the effort it ran at."),
+            "cycles": ("Messages", "Messages with this pairing."),
+            "avg_cost": ("Per message", "The average cost of the work."),
+            "thinking_pct": ("Thinking share of output", "Output that was thinking."),
+            "redo_pct": ("Redone", "Messages whose work was redone or corrected next."),
+            "met_pct": ("Met the goal", "From your feedback."),
+            "saving": ("Lower effort would save, about", "Half the thinking on easy work at high effort or above."),
+        },
+        value_labels={
+            f"{level}:{effort}": f"{level.capitalize()} work, {effort_label}"
+            for level in ("easy", "normal", "hard")
+            for effort, effort_label in (
+                ("low", "low effort"),
+                ("medium", "medium effort"),
+                ("high", "high effort"),
+                ("xhigh", "extra high effort"),
+                ("max", "max effort"),
+                ("default", "default effort"),
+            )
+        },
+    ),
+    "habits_setups": TableCopy(
+        title="Best setup for each kind of task",
+        help=Help(
+            shows="Each kind of task Claude reported, all together and by how hard it said the work was, with "
+            "the model and effort that answered it: what a message cost and how often the work went well.",
+            read="Went well is your feedback where you gave it, otherwise whether your next message redid the "
+            "work. The cheaper setup cost less per message and went well about as often as your usual one, over "
+            "at least 5 messages each, compared level for level on the work both ran, so easy work alone doesn't "
+            "make a setup look cheap. It's still a lead, not proof.",
+            act="On the Profiles tab, start from the goal A profile for one kind of task, save it, and launch "
+            "Claude with it for that kind of work.",
+        ),
+        columns={
+            "task": ("Task", "The kind of task Claude reported."),
+            "level": ("How hard", "How hard Claude said the work was. All is every level together."),
+            "model": ("Model", "The model most of the work ran on."),
+            "effort": ("Effort", "The effort it ran at."),
+            "cycles": ("Messages", "Messages with this setup."),
+            "avg_cost": ("Per message", "The average cost of the work."),
+            "ok_pct": ("Went well", "Met its goal by your feedback, or not redone by your next message."),
+            "rated": ("With your feedback", "Messages your feedback covers."),
+            "verdict": ("Setup", "Your usual setup, and the cheaper one that did as well."),
+            "saving_pct": ("Cheaper by", "Per message, against your usual setup, level for level."),
+        },
+        value_labels={
+            "all": "All",
+            "easy": "Easy",
+            "normal": "Normal",
+            "hard": "Hard",
+            "default": "Default",
+            "usual": "Your usual",
+            "cheaper": "Cheaper, did as well",
+        },
+    ),
+    "habits_agents_by_task": TableCopy(
+        title="Agents by kind of task",
+        help=Help(
+            shows="Each kind of task Claude reported, split by the subagent type that answered it: its runs, "
+            "what a run cost, whether it finished, and whether its runs said the model fit.",
+            read="Finished and model fit are the agent's own reports, the same signals as How agents were used, "
+            "just split by task. A cheaper model is named only when enough runs of that pairing point to one, "
+            "none of them said they needed a larger model or were mostly hard work, and the quality check hasn't "
+            "found that model worse for this agent.",
+            act="On the Profiles tab, the goal A profile for one kind of task offers this cheaper model as a "
+            "candidate when the evidence here supports one.",
+        ),
+        columns={
+            "task": ("Task", "The kind of task Claude reported."),
+            "agent_type": ("Agent", "The subagent type that answered it."),
+            "runs": ("Runs", "Its runs on this task, at any depth."),
+            "avg_cost": ("Per run", "The average cost of a run."),
+            "done_pct": ("Finished", "Runs that said done, out of those that said."),
+            "fit_smaller": ("Smaller would do", "Runs that said a smaller model would have done."),
+            "fit_right": ("Model was right", "Runs that said the model fit."),
+            "fit_larger": ("Needed larger", "Runs that said a larger model would have done better."),
+            "cheaper_model": ("Cheaper model", "A cheaper model the evidence supports for this pairing, if any."),
+            "cheaper_saving_pct": ("Cheaper by", "What that model would have saved, against the model it ran on."),
+        },
+    ),
+    "habits_outcomes": TableCopy(
+        title="Did the work meet its goal?",
+        help=Help(
+            shows="The pieces of work you gave feedback on, with /tl-feedback or a rating on the Sessions tab, "
+            "by outcome.",
+            read="A /tl-feedback answer rates the messages since the last one; a rating covers the whole "
+            "session. Misses that cost much more than work that met its goal are worth a look.",
+            act="Slowed most by and Would have helped most say what to change first.",
+        ),
+        columns={
+            "outcome": ("Outcome", "What you said about the result."),
+            "pieces": ("Pieces of work", "Answers or ratings with this outcome."),
+            "cycles": ("Messages", "The messages they cover."),
+            "cost": ("Cost", "What that work cost."),
+            "avg_cost": ("Per piece", "The average cost of one piece."),
+            "task": ("Most often", "The kind of task Claude reported most for them."),
+            "slow": ("Slowed most by", "Your most common answer to what slowed it down."),
+            "helped": ("Would have helped most", "Your most common answer to what would have helped."),
+            "source": ("Source", "Where the feedback came from."),
+        },
+        value_labels={"met": "Met", "partly": "Partly", "missed": "Missed", "stopped": "Stopped early"},
+    ),
+    "habits_self_report": TableCopy(
+        title="Claude's reports against your feedback",
+        help=Help(
+            shows="Each level and brief quality Claude reported, against your feedback: how many messages it "
+            "covers, the share that met or missed its goal, and the share your next message redid or "
+            "corrected.",
+            read="Met and missed are out of the messages your feedback covers; redone counts every message "
+            "tagged this way, feedback or not. A note below the table says whether work Claude called easy "
+            "missed its goal more often than normal work, once there is enough feedback on both to tell.",
+            act="If the note says easy work misses more than normal work, treat what Claude calls easy with "
+            "caution, including the effort suggestion built from it.",
+        ),
+        columns={
+            "signal": ("What Claude reported", "The level or brief quality it tagged the message with."),
+            "cycles": ("Messages", "Messages tagged this way."),
+            "rated": ("With your feedback", "Of those, the messages your feedback covers."),
+            "met_pct": ("Met the goal", "Of the rated messages, the share that met its goal."),
+            "missed_pct": ("Missed", "Of the rated messages, the share that missed its goal."),
+            "redone_pct": ("Redone by your next message", "Of all messages tagged this way, the share your "
+                           "next message redid or corrected."),
+        },
+        value_labels={
+            "level:easy": "Called easy",
+            "level:normal": "Called normal",
+            "level:hard": "Called hard",
+            "brief:clear": "Called a clear brief",
+            "brief:partial": "Called a partial brief",
+            "brief:vague": "Called a vague brief",
+        },
+    ),
+    "habits_prompt_flags": TableCopy(
+        title="What your messages contained",
+        help=Help(
+            shows="How often your messages named a file, had code, an error, a link, done criteria, numbered "
+            "steps, a length cap or pasted text, and what the work cost with and without it. Always measured, "
+            "no metrics capture needed.",
+            read="Only whether each was there is kept, never the text. Bigger asks tend to carry more of "
+            "everything, so compare the reads and searches as well as the cost.",
+            act="If messages that name a file need far fewer reads and searches, name the files you know.",
+        ),
+        columns={
+            "flag": ("Contained", "What the message had in it."),
+            "cycles": ("Messages", "Messages that had it."),
+            "share": ("Share", "Out of all your messages."),
+            "avg_with": ("Per message with it", "The average cost of the work when it had it."),
+            "avg_without": ("Per message without it", "The same, when it didn't."),
+            "reads_with": ("Reads and searches with it", "Main-session reads and searches per message."),
+            "reads_without": ("Reads and searches without it", "The same, without it."),
+        },
+        value_labels={
+            "path": "A file path",
+            "code": "A code block",
+            "error": "An error or stack trace",
+            "url": "A link",
+            "done": "What done looks like",
+            "steps": "Numbered steps",
+            "short": "A length cap",
+            "paste": "Pasted text",
+        },
+    ),
+    "habits_skills": TableCopy(
+        title="When skills ran",
+        help=Help(
+            shows="Each skill you ran or Claude loaded, how late Claude reached for it, and whether Claude said "
+            "it helped.",
+            read="Loaded late means after three or more replies to the message, when the work so far could "
+            "have been guided by it from the start.",
+            act="Run a skill Claude keeps reaching for late yourself at the start. One that often wasn't "
+            "needed can be set to load only when you run it (disable-model-invocation).",
+        ),
+        columns={
+            "skill": ("Skill", "The skill's name."),
+            "by_you": ("You ran it", "Times you ran it with a slash command."),
+            "by_claude": ("Claude loaded it", "Times Claude loaded it itself."),
+            "late": ("Loaded late", "Times Claude loaded it after three or more replies."),
+            "before": ("Spent before it, typical", "What the message had cost before a late load."),
+            "helped": ("Helped", "Messages where Claude said the skill helped."),
+            "unneeded": ("Wasn't needed", "Messages where Claude said it wasn't needed."),
+            "would_help": ("Would have helped", "Messages where Claude said it would have helped."),
+        },
+    ),
+    "habits_tool_output": TableCopy(
+        title="Big tool output and failing commands",
+        help=Help(
+            shows="Tool results of 8,000 tokens or more in one reply, per tool, and what keeping them in "
+            "context cost; plus commands that failed again and again within one message.",
+            read="Carrying is priced from the next reply to the next compaction, a cache write and then a "
+            "read per reply, so it's a floor.",
+            act="Ask for quieter output (only failures, a tail, an offset read) and to stop after two failed "
+            "attempts at the same command.",
+        ),
+        columns={
+            "tool": ("Tool", "The tool that returned it."),
+            "outputs": ("Big outputs", "Replies that got 8,000 tokens or more back from it."),
+            "tokens": ("Tokens", "Their size together."),
+            "cost": ("Carrying them cost", "What keeping them in context cost."),
+            "loops": ("Commands failing again and again", "Commands that failed three or more times in one message."),
+        },
+        value_labels={"loops": "Failing commands"},
+    ),
+    "capture_usage": TableCopy(
+        title="What metrics capture cost",
+        help=Help(
+            shows="What metrics capture cost since it was turned on, measured from the transcripts: the notes "
+            "that ask Claude for tags, the tags Claude wrote, /tl-feedback runs, a weekly rate, and what that "
+            "buys you: the habits worth trying whose evidence needs capture or your feedback.",
+            read="Share is out of what the captured sessions cost. Coverage is how many messages and agent "
+            "reports carried the tag they were asked for. What it's worth only counts habits whose evidence is "
+            "reported by Claude or your feedback, not everything the report finds; it says so instead of a "
+            "zero when nothing measured yet depends on either.",
+            act="The Capture tab turns metrics on and off, one by one or by level. Once what it's worth "
+            "clears what it costs by a comfortable margin, a lower level or fewer metrics may do.",
+        ),
+        columns={
+            "metric": ("", "What is measured."),
+            "value": ("", "The figure."),
+        },
+        value_labels={
+            "level": "Level",
+            "since": "On since",
+            "note_tokens": "Notes, tokens",
+            "tag_tokens": "Tags, tokens",
+            "cost": "Cost",
+            "share": "Share of spend",
+            "coverage": "Messages tagged",
+            "report_coverage": "Agent reports tagged",
+            "feedback_runs": "Feedback runs",
+            "feedback_cost": "Feedback cost",
+            "weekly_cost": "Cost a week",
+            "habit_value": "What it's worth a week",
+        },
+        row_kinds={
+            "note_tokens": "tokens",
+            "tag_tokens": "tokens",
+            "cost": "money",
+            "share": "pct",
+            "coverage": "pct",
+            "report_coverage": "pct",
+            "feedback_runs": "int",
+            "feedback_cost": "money",
+            "weekly_cost": "money",
+            "habit_value": "money",
+        },
+    ),
     "quality_by_agent": TableCopy(
         title="Quality signals by agent",
         help=Help(
@@ -793,14 +1247,14 @@ TABLE_COPY: dict[str, TableCopy] = {
         title="Why agents were run again",
         help=Help(
             shows="Each agent and model whose runs were started again with a brief that said why: [retry: model], "
-            "[retry: brief], [retry: tools] or [retry: other]. Claude writes these when CLAUDE.md asks it to (Quick "
-            "actions, \"Is any agent struggling?\").",
+            "[retry: brief], [retry: tools], [retry: scope] or [retry: other]. Claude writes these when metrics "
+            "capture or CLAUDE.md asks it to (Quick actions, \"Is any agent struggling?\").",
             read="Only retries that said why are here, on any model. A retry is matched to the agent run that ended "
             "last before it started, within two hours, preferring one whose files it edited and then one of the "
             "same agent type.",
             act="The model: a larger model is worth trying (Agent runs retried on a larger model counts these). The "
             "brief: say what done looks like in the task prompt. Tools: give the agent the tools and permissions it "
-            "needs.",
+            "needs. The task: split the work smaller before handing it over.",
         ),
         columns={
             "agent_type": ("Agent", "The agent type whose run was retried."),
@@ -809,6 +1263,7 @@ TABLE_COPY: dict[str, TableCopy] = {
             "said_model": ("The model", "Retries that said it needed a stronger model."),
             "said_brief": ("The brief", "Retries that said the instructions were unclear."),
             "said_tools": ("Tools", "Retries that said it lacked a tool or permission."),
+            "said_scope": ("The task", "Retries that said the task itself changed or was cut too wide."),
             "said_other": ("Other", "Retries that gave another reason."),
             "last_retried": ("Last time", "The day the latest of these retried runs ended."),
         },
@@ -962,15 +1417,15 @@ TABLE_COPY: dict[str, TableCopy] = {
         value_labels={"Agent": "Subagents", "Workflow": "Workflows"},
     ),
     "topology_report_proxy": TableCopy(
-        title="Length of each agent type's final reply",
+        title="Size of the report each agent type hands back",
         help=Help(
-            shows="The output tokens of each agent type's last reply, which is roughly the report it hands back.",
+            shows="The size of the report each agent type hands back, measured where it arrives.",
             read="Higher means longer reports carried in the main session afterwards.",
             act="For a type with long reports, add a length limit to its instructions.",
         ),
         columns={
-            "mean_proxy": ("Average final reply (tokens)", "Average output tokens of the last reply."),
-            "median_proxy": ("Typical final reply (tokens)", "The middle value."),
+            "mean_proxy": ("Average report (tokens)", "Average size of the report handed back."),
+            "median_proxy": ("Typical report (tokens)", "The middle value."),
         },
     ),
     "topology_skills_rollup": TableCopy(
@@ -987,7 +1442,7 @@ TABLE_COPY: dict[str, TableCopy] = {
             "spawned_cost": ("Subagent cost", "Every subagent the skill started, and the ones they started."),
             "total_cost": ("", "Own cost plus subagent cost."),
             "mean_spawns": ("Subagents per use", "Average subagents started per use."),
-            "mean_report_proxy": ("Average report (tokens)", "Average length of those subagents' final replies."),
+            "mean_report_proxy": ("Average report (tokens)", "Average size of the reports those subagents handed back."),
         },
     ),
     "topology_spawn_depth": TableCopy(
@@ -1499,7 +1954,9 @@ TABLE_COPY: dict[str, TableCopy] = {
             shows="Your sessions grouped by the kind of work, judged from the tools used: tests run, files "
             "edited, reviews, plan mode, subagents started, and so on.",
             read="Each session gets the first purpose whose signs it shows. A review that also started "
-            "subagents counts as a review; subagent fan-out only catches sessions with no clearer purpose.",
+            "subagents counts as a review; subagent fan-out only catches sessions with no clearer purpose. "
+            "While metrics capture is on, the kind of task Claude reported for most of a session's messages "
+            "decides it instead where it matches one of these (review, tests, planning, docs, refactoring).",
             act="Recommendations are tuned to your largest groups. A large subagent fan-out group is worth a "
             "look in the Subagents tab.",
         ),
@@ -2043,6 +2500,7 @@ TABLE_COPY: dict[str, TableCopy] = {
             "hook_blocking_error": "Hook blocked an action",
             "hook_system_message": "Hook message",
             "hook_additional_context": "Context added by a hook",
+            "capture_note": "Token Lens metrics capture note",
             "hook_cancelled": "Hook cancelled",
             # settings and lists that change mid-session
             "model": "Model changed",

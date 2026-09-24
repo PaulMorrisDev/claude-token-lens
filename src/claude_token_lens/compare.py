@@ -93,10 +93,17 @@ from .pricing import Pricing, PricingCoverage, price_turn
 from .render.tables import format_cell
 from .snapshots import Snapshot
 
-#: The two stratification keys :func:`compare` understands (mirrors
+#: The default stratification keys (mirrors
 #: ``classify.Classification.mode``/``.purpose``, the only two fields the
 #: brief names for stratification).
 _STRATIFY_KEYS = ("purpose", "mode")
+#: Every key :func:`compare` can stratify by: ``task`` is the kind of task
+#: metrics capture reported for the session (``classify.reported_task``),
+#: ``untagged`` without one.
+STRATIFY_CHOICES = ("purpose", "mode", "task")
+#: With no keys given, ``task`` joins the defaults once at least this
+#: share of both arms' sessions has a reported task.
+TASK_COVERAGE_PCT = 50.0
 
 
 # -- arm selection -----------------------------------------------------------
@@ -235,6 +242,7 @@ class _SessionMetrics:
     purpose: str
     profile_id: str | None
     project_key: str | None = None
+    task: str = "untagged"
     priced_turns: int = 0
     cost: float = 0.0
     input_tokens: int = 0
@@ -293,6 +301,7 @@ def _collect_session_metrics(
             purpose=classification.purpose,
             profile_id=snapshots_mod.profile_for(record.first_ts, profile_marks or [], record.session_id),
             project_key=snapshots_mod.snapshot_project_key(bundle.slug),
+            task=classify.reported_task(bundle.top)[0] or "untagged",
         )
 
         first_priced = _priced_turns(bundle.top)
@@ -470,7 +479,7 @@ def _build_overview_table(
 
 
 def _stratum_key(sm: _SessionMetrics, stratify_by: tuple[str, ...]) -> tuple[str, ...]:
-    field_map = {"purpose": sm.purpose, "mode": sm.mode}
+    field_map = {"purpose": sm.purpose, "mode": sm.mode, "task": sm.task}
     return tuple(field_map.get(f, "") for f in stratify_by)
 
 
@@ -646,7 +655,7 @@ def compare(
     *,
     arm_a: ArmSpec,
     arm_b: ArmSpec,
-    stratify_by: tuple[str, ...] = _STRATIFY_KEYS,
+    stratify_by: tuple[str, ...] | None = None,
     min_sessions: int = 5,
     snapshots: list[Snapshot] | None = None,
     session_overrides: dict | None = None,
@@ -665,6 +674,9 @@ def compare(
     ``report.build_report`` does. ``config_dir`` (read only) gives
     ``profile:`` arms the full record of which profile was active when;
     without it they use the hook captures in ``snapshots``.
+    ``stratify_by`` (keys from :data:`STRATIFY_CHOICES`): ``None`` means
+    purpose and mode, plus the reported task once at least
+    :data:`TASK_COVERAGE_PCT` of both arms' sessions have one.
 
     Never raises for a too-small sample: an arm with fewer than
     ``min_sessions`` sessions still gets a full ``compare_overview`` row
@@ -690,6 +702,12 @@ def compare(
     group_a = [m for m in metrics if _session_matches(m, arm_a, snapshot_by_session)]
     group_b = [m for m in metrics if _session_matches(m, arm_b, snapshot_by_session)]
 
+    if stratify_by is None:
+        both = group_a + group_b
+        tagged = sum(1 for m in both if m.task != "untagged")
+        covered = bool(both) and 100.0 * tagged / len(both) >= TASK_COVERAGE_PCT
+        stratify_by = (*_STRATIFY_KEYS, "task") if covered else _STRATIFY_KEYS
+
     currency = pricing.currency
     overview_table = _build_overview_table(group_a, group_b, min_sessions, currency)
     stratum_table = _build_stratum_table(group_a, group_b, stratify_by, min_sessions, currency)
@@ -712,4 +730,4 @@ def compare(
     )
 
 
-__all__ = ["ArmSpec", "parse_arm_spec", "compare"]
+__all__ = ["ArmSpec", "STRATIFY_CHOICES", "TASK_COVERAGE_PCT", "parse_arm_spec", "compare"]

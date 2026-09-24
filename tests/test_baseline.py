@@ -587,3 +587,25 @@ def test_build_baseline_does_not_count_orphan_subagent_bundles_as_sessions(tmp_p
         config=Config(), pricing=PRICING, config_dir=tmp_path / "config", project_dirs=[project_dir]
     )
     assert record["sessions_analysed"] == 1
+
+
+# -- metrics capture: the kinds of task Claude reported ----------------------------
+
+
+def test_dominant_tasks_come_from_the_habits_by_task_table_without_its_all_row():
+    table = Table(
+        name="habits_by_task",
+        columns=[Column(key="task"), Column(key="cycles", kind="int")],
+        rows=[["all", 20], ["research", 12], ["bugfix", 8]],
+    )
+    model = _model_with_sections(Section(key="habits", tables=[table]))
+    assert baseline._dominant_tasks(model) == ["research", "bugfix"]
+    assert baseline._dominant_tasks(_model_with_sections()) == []
+
+
+def test_the_suggested_profile_follows_the_reported_task_and_says_so():
+    profile_id, reason = baseline._suggested_profile({"mixed": 5}, "single-model", ["general-dev"], ["research"])
+    assert profile_id == "discovery-scrape"
+    assert reason.endswith("tasks=['research'])")
+    _, without = baseline._suggested_profile({"mixed": 5}, "single-model", ["general-dev"])
+    assert without.endswith("purposes=['general-dev'])")

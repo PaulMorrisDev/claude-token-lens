@@ -1,0 +1,634 @@
+"""What the dashboard shows about metrics capture: the Capture tab and
+the banner on every tab.
+
+:func:`view` turns ``[capture]`` as set, the metric catalogue, what
+each level and metric would cost (``capture.history``, your own last
+14 days) and what capture has cost since it was turned on
+(``capture.usage``) into one JSON-safe dict, with amounts phrased for
+the billing mode (``units.Units``). :func:`config_block` is the cheap
+part ``/api/health`` carries on every poll. Nothing here reads a file
+or the store: ``service/api.py`` gathers the inputs and caches them.
+
+No path or project name ever goes into the output: hook problems are
+counted, not quoted (their text can name a script path), and
+``[capture] projects`` patterns are reported only as "limited".
+"""
+
+from __future__ import annotations
+
+from datetime import datetime
+
+from . import capture as capture_mod
+from . import capture_catalogue as catalogue
+from .config import CAPTURE_SAMPLES, CaptureConfig
+from .render.tables import format_cell
+
+#: The cost warning, shown before anything that makes Claude use more
+#: tokens (the init question and ``capture on`` say the same).
+WARNING = (
+    "Metrics capture uses your tokens. Claude reads a short note when a session or subagent starts, "
+    "and ends each reply with a one-line tag you will see, such as [tl: task=bugfix brief=clear]. "
+    "The free level only logs a few events to a local file."
+)
+
+CONNECT_COMMAND = "claude-token-lens capture connect"
+STATUS_COMMAND = "claude-token-lens capture status"
+FEEDBACK_COMMAND = "claude-token-lens capture feedback on"
+BRIEF_COMMAND = "claude-token-lens capture brief on"
+
+
+def _skill_words(name: str, command: str) -> tuple[dict[str, str], dict[str, str]]:
+    states = {
+        "missing": f"The /{name} skill isn't installed",
+        "outdated": f"The /{name} skill is out of date",
+        "foreign": f"Another skill named {name} is in the way: move it elsewhere first",
+    }
+    notes = {
+        "missing": f"{states['missing']}: {command}",
+        "outdated": f"{states['outdated']}: {command}",
+        "foreign": f"Another skill named {name} is in the way: move it elsewhere, then run {command}",
+    }
+    return states, notes
+
+
+#: What to say when the /tl-feedback skill is on but its file isn't right
+#: (``footprint.feedback_skill_state``), and the same with the command,
+#: for the banner and ``capture status``. The dashboard never writes it:
+#: it lives in Claude Code's own folder.
+SKILL_STATES, SKILL_NOTES = _skill_words(catalogue.FEEDBACK_SKILL, FEEDBACK_COMMAND)
+#: The same for the /tl-brief skill (brief templates).
+BRIEF_SKILL_STATES, BRIEF_SKILL_NOTES = _skill_words(catalogue.BRIEF_SKILL, BRIEF_COMMAND)
+
+#: A metric that installs a skill -> (its state's key in the feedback
+#: facts, the state words, the command that installs it).
+_SKILL_METRICS = {
+    "feedback_skill": ("skill", SKILL_STATES, FEEDBACK_COMMAND),
+    "brief_templates": ("brief_skill", BRIEF_SKILL_STATES, BRIEF_COMMAND),
+}
+
+#: What to say when a status-line toggle is on but Claude Code's status
+#: line isn't this tool's (``footprint.is_own_statusline``), so the
+#: second line never shows.
+STATUSLINE_NOTES = {
+    "feedback_note": "Your status line isn't Token Lens's, so this second line won't show there; the banner "
+    "here still does. 'claude-token-lens init --connect' offers to set the status line up.",
+    "coaching_line": "Your status line isn't Token Lens's, so this line won't show. "
+    "'claude-token-lens init --connect' offers to set the status line up.",
+}
+
+#: Below this percentage of your messages tagged, once there are
+#: :data:`LOW_COVERAGE_MIN_CYCLES` of them, the banner says Claude is
+#: skipping tags.
+LOW_COVERAGE_PCT = 60.0
+LOW_COVERAGE_MIN_CYCLES = 20
+
+#: Sessions started since capture was turned on, with no note in any of
+#: them, before the banner says the hook doesn't seem to run.
+NO_NOTES_MIN_SESSIONS = 3
+
+
+def amount_text(units, usd: float, period: str = "") -> str:
+    """``usd`` phrased for the billing mode (a share of the weekly limit
+    on a subscription, when it can be worked out); ``"nothing"`` for
+    zero."""
+    if usd <= 0:
+        return "nothing"
+    if units.billing_mode != "subscription" and usd < 0.005:
+        return f"under {format_cell(0.01, 'money', units.currency)}" + (f" {period}" if period else "")
+    amount = units.money(usd, period=period)
+    return amount.text() if amount is not None else "nothing"
+
+
+def describe(capture: CaptureConfig) -> str:
+    """One line: the level and, when on, its date, end and sample."""
+    if not capture.is_on:
+        return "Off"
+    parts = [catalogue.LEVEL_TITLES.get(capture.level, capture.level)]
+    if capture.enabled_at:
+        parts.append(f"since {capture.enabled_at[:10]}")
+    if capture.until:
+        parts.append(f"until {capture.until[:16].replace('T', ' ')}")
+    if capture.sample < 100:
+        parts.append(f"{capture.sample}% of sessions")
+    return parts[0] + (f" ({', '.join(parts[1:])})" if len(parts) > 1 else "")
+
+
+def config_block(capture: CaptureConfig, now: datetime | None = None) -> dict:
+    """``[capture]`` as set, for ``/api/health`` and the Capture tab."""
+    expired = capture.is_on and capture.expired(now)
+    return {
+        "level": capture.level,
+        "title": catalogue.LEVEL_TITLES.get(capture.level, capture.level),
+        "describe": describe(capture),
+        "on": capture.is_on,
+        "expired": expired,
+        "effective": capture.is_on and not expired,
+        "enabled_at": capture.enabled_at,
+        "until": capture.until,
+        "sample": capture.sample,
+        "metrics": list(capture.active_metrics()),
+        "feedback": list(capture.feedback),
+        "coaching": list(capture.coaching),
+        "projects_limited": bool(capture.projects),
+    }
+
+
+def hooks_block(health) -> dict:
+    """Whether settings.json runs the entries the chosen metrics need.
+    Problems are counted, never quoted: their text can hold a path."""
+    if health is None:
+        return {
+            "ok": None, "summary": "", "missing": [], "missing_events": [], "problems": 0,
+            "connect_command": CONNECT_COMMAND,
+        }
+    if health.ok:
+        summary = health.summary()
+    else:
+        # One sentence however many are missing: the banner shows this on
+        # every tab, and the Capture tab lists them (``missing``).
+        missing = len(health.missing)
+        if missing == 1:
+            parts = [f"settings.json does not run {health.missing[0].describe()}."]
+        elif missing:
+            parts = [f"settings.json lacks {missing} of the hook entries your metrics need, so they aren't captured."]
+        else:
+            parts = []
+        if health.problems:
+            count = len(health.problems)
+            parts.append(
+                f"{count} capture hook entr{'y' if count == 1 else 'ies'} in settings.json can't run "
+                f"('{STATUS_COMMAND}' says why)."
+            )
+        summary = " ".join(parts) + f" Run '{CONNECT_COMMAND}' to fix it."
+    return {
+        "ok": health.ok,
+        "summary": summary,
+        "missing": [spec.describe() for spec in health.missing],
+        "missing_events": sorted({spec.event for spec in health.missing}),
+        "problems": len(health.problems),
+        "connect_command": CONNECT_COMMAND,
+    }
+
+
+def _pct(value: float | None) -> str:
+    return format_cell(value, "pct") if value is not None else ""
+
+
+def share_text(value: float | None) -> str:
+    """A share of spend: "under 0.1%" rather than a bare "0.0%"."""
+    if value is None:
+        return ""
+    return "under 0.1%" if 0 < value < 0.05 else _pct(value)
+
+
+def _tokens(value: int) -> str:
+    return format_cell(value, "tokens")
+
+
+def _money(units, usd: float, period: str = "") -> dict:
+    return {"usd": round(usd, 6), "text": amount_text(units, usd, period) if units is not None else ""}
+
+
+def _estimate_block(est, units) -> dict:
+    tokens = round((est.note_tokens + est.tag_tokens) * 7 / est.days) if est.days else 0
+    return {
+        "tokens_per_week": tokens,
+        "tokens_text": _tokens(tokens),
+        **_money(units, est.per_week, "a week"),
+        "share_pct": est.share,
+        "share_text": share_text(est.share),
+    }
+
+
+def _levels(capture: CaptureConfig, past, units) -> list[dict]:
+    estimates = capture_mod.level_estimates(past, capture.sample) if past is not None and past.sessions else {}
+    out = []
+    for level in catalogue.LEVELS:
+        adds = [m.title for m in catalogue.METRICS if m.group == level]
+        ids = catalogue.level_metrics(level)
+        est = estimates.get(level)
+        out.append(
+            {
+                "id": level,
+                "title": catalogue.LEVEL_TITLES[level],
+                "summary": catalogue.LEVEL_SUMMARIES[level],
+                "adds": adds,
+                "metrics": list(ids),
+                "asks_claude": any(catalogue.asks_claude(i) for i in ids),
+                "current": capture.level == level,
+                "rough": catalogue.rough_tokens(ids),
+                "estimate": _estimate_block(est, units) if est is not None and est.cost > 0 else None,
+            }
+        )
+    custom_ids = catalogue.with_requirements(capture.metrics) if capture.level == catalogue.CUSTOM_LEVEL else ()
+    custom = capture_mod.estimate(past, custom_ids, capture.sample) if custom_ids and past is not None and past.sessions else None
+    out.append(
+        {
+            "id": catalogue.CUSTOM_LEVEL,
+            "title": catalogue.LEVEL_TITLES[catalogue.CUSTOM_LEVEL],
+            "summary": "Pick the metrics one by one in the table below.",
+            "adds": [],
+            "metrics": list(custom_ids),
+            "asks_claude": any(catalogue.asks_claude(i) for i in custom_ids),
+            "current": capture.level == catalogue.CUSTOM_LEVEL,
+            "rough": catalogue.rough_tokens(custom_ids),
+            "estimate": _estimate_block(custom, units) if custom is not None and custom.cost > 0 else None,
+        }
+    )
+    return out
+
+
+def _marginal(past, active: tuple[str, ...], metric_id: str, sample: int) -> float:
+    """USD over the replayed days that ``metric_id`` adds to ``active``
+    (or saves, when it is already on)."""
+    if metric_id in active:
+        without = tuple(
+            i for i in active if i != metric_id and metric_id not in catalogue.METRICS_BY_ID[i].requires
+        )
+        return capture_mod.estimate(past, active, sample).cost - capture_mod.estimate(past, without, sample).cost
+    with_it = catalogue.with_requirements(active + (metric_id,)) + tuple(
+        i for i in active + (metric_id,) if i in catalogue.FEEDBACK_IDS
+    )
+    return capture_mod.estimate(past, with_it, sample).cost - capture_mod.estimate(past, active, sample).cost
+
+
+def _kind(metric) -> str:
+    if metric.group in catalogue.LEVEL_GROUPS:
+        return "level"
+    return metric.group
+
+
+def _feedback_facts(metric_id: str, feedback: dict) -> tuple[dict | None, int | None, int | None]:
+    """``(actual, answers, target)`` for the skill and the dashboard
+    rating, over the last :data:`capture.HISTORY_DAYS` days."""
+    target = capture_mod.ENOUGH["feedback"]
+    if metric_id == "feedback_skill" and feedback.get("use") is not None:
+        use = feedback["use"]
+        return _money(feedback.get("units"), use.feedback_cost), use.feedback_answered, target
+    if metric_id == "dashboard_rating" and feedback.get("ratings") is not None:
+        return None, feedback["ratings"], target
+    return None, None, None
+
+
+def _metric_row(
+    metric, capture: CaptureConfig, active, past, units, use, signal_sessions, missing_events, feedback=None
+) -> dict:
+    kind = _kind(metric)
+    if kind == "derived":
+        on = True
+    elif kind == "feedback":
+        on = metric.id in capture.feedback
+    elif kind == "coaching":
+        on = metric.id in capture.coaching
+    else:
+        on = metric.id in active
+    asks = catalogue.asks_claude(metric.id)
+    estimate = None
+    if asks and past is not None and past.sessions:
+        usd = max(0.0, _marginal(past, active, metric.id, capture.sample)) * 7 / past.days if past.days else 0.0
+        estimate = _money(units, usd, "a week")
+    actual = None
+    actual_label = "Since it was turned on"
+    have = want = None
+    if use is not None and on and kind in ("level", "feedback"):
+        if asks:
+            actual = _money(units, use.by_metric.get(metric.id, 0.0))
+        if kind == "level":
+            have, want = capture_mod.enough_data(use, metric.id, signal_sessions.get(metric.id, 0))
+    skill = (feedback or {}).get("skill")
+    if on and kind == "feedback" and metric.id in ("feedback_skill", "dashboard_rating"):
+        fb_actual, have, want = _feedback_facts(metric.id, {**(feedback or {}), "units": units})
+        if fb_actual is not None:
+            actual, actual_label = fb_actual, f"Over the last {capture_mod.HISTORY_DAYS} days"
+    install = _SKILL_METRICS.get(metric.id)
+    skill_now = (feedback or {}).get(install[0]) if install else None
+    needs_install = bool(on and install and skill_now not in (None, "installed"))
+    no_statusline = bool(on and metric.id in STATUSLINE_NOTES and (feedback or {}).get("statusline") is False)
+    return {
+        "id": metric.id,
+        "kind": kind,
+        "group": metric.group,
+        "section": metric.section,
+        "title": metric.title,
+        "what": metric.what,
+        "why": metric.why,
+        "powers": [catalogue.THEMES.get(p, p) for p in metric.powers],
+        "tag": metric.tag,
+        "hooks": list(metric.hooks),
+        "requires": list(metric.requires),
+        "on": on,
+        "toggle": kind != "derived",
+        "asks_claude": asks,
+        "needs_hook": bool(on and kind != "derived" and set(metric.hooks) & missing_events),
+        "needs_install": needs_install,
+        "install_note": install[1].get(skill_now) if needs_install else None,
+        "install_command": install[2] if needs_install else None,
+        "statusline_note": STATUSLINE_NOTES[metric.id] if no_statusline else None,
+        "estimate": estimate,
+        "actual": actual,
+        "actual_label": actual_label,
+        "answers": have,
+        "target": want,
+        "enough": (have >= want) if have is not None and want else None,
+    }
+
+
+def _measured(use, units) -> dict | None:
+    if use is None:
+        return None
+    return {
+        "since": use.since,
+        "sessions": use.sessions,
+        "subagents": use.subagents,
+        "notes": use.notes,
+        "note_tokens": use.note_tokens,
+        "tag_tokens": use.tag_tokens,
+        "tokens_text": _tokens(use.note_tokens + use.tag_tokens),
+        **_money(units, use.cost),
+        "share_pct": use.share,
+        "share_text": share_text(use.share),
+        "cycles": use.cycles,
+        "tagged_cycles": use.tagged_cycles,
+        "coverage_pct": use.coverage,
+        "coverage_text": _pct(use.coverage),
+        "reports": use.reports,
+        "tagged_reports": use.tagged_reports,
+        "report_coverage_pct": use.report_coverage,
+        "scopes": {
+            scope: {"note_tokens": s.note_tokens, "tag_tokens": s.tag_tokens, **_money(units, s.cost)}
+            for scope, s in sorted(use.scopes.items())
+        },
+        "daily": [{"day": day, "usd": round(usd, 6)} for day, usd in sorted(use.daily.items())],
+    }
+
+
+def _plural(count: int, word: str) -> str:
+    return f"{count} {word}{'' if count == 1 else 's'}"
+
+
+def _roi(weekly_cost: float | None, dependent_value: float | None, units) -> dict | None:
+    """What capture costs a week against what suggestions that depend on
+    it or your feedback are worth a week, in billing units. ``None``
+    while there's no start time to price a weekly cost from (capture
+    off, or never turned on with a start time). ``value`` stays ``None``,
+    not a zero, while nothing measured yet depends on either."""
+    if weekly_cost is None:
+        return None
+    return {
+        "cost": _money(units, weekly_cost, "a week"),
+        "value": _money(units, dependent_value, "a week") if dependent_value is not None else None,
+        "measured": dependent_value is not None,
+    }
+
+
+def _banner(
+    capture, config, levels, measured, use, rows, hooks, started_since, skill=None, brief_skill=None, roi=None
+) -> dict:
+    """The banner's lines: a headline, then any notes worth acting on."""
+    notes: list[str] = []
+    feedback_note = catalogue.FEEDBACK_NOTE if "feedback_note" in capture.feedback else None
+    for metric_id, state, words in (
+        ("feedback_skill", skill, SKILL_NOTES),
+        ("brief_templates", brief_skill, BRIEF_SKILL_NOTES),
+    ):
+        skill_row = next((r for r in rows if r["id"] == metric_id), None)
+        if skill_row is not None and skill_row["needs_install"] and state in words:
+            notes.append(words[state])
+    if not capture.is_on:
+        essentials = next((lv for lv in levels if lv["id"] == "essentials"), None)
+        est = essentials["estimate"] if essentials else None
+        invite = "Metrics capture is off. Turn it on to get suggestions that fit how you work."
+        if est is not None and est["text"]:
+            share = f", {est['share_text']} of what you spent" if est["share_text"] else ""
+            invite = (
+                "Metrics capture is off. At Essentials it would have cost about "
+                f"{est['tokens_text']} tokens and {est['text']}{share}, for suggestions that fit how you work."
+            )
+        return {"on": False, "headline": invite, "notes": notes, "feedback_note": feedback_note}
+
+    parts = [f"Metrics capture: {config['title']}"]
+    if capture.enabled_at:
+        parts.append(f"since {capture.enabled_at[:10]}")
+    if capture.sample < 100:
+        parts.append(f"{capture.sample}% of sessions")
+    if measured is not None and (measured["sessions"] or measured["subagents"]):
+        parts.append(f"{measured['tokens_text']} tokens")
+        if measured["text"]:
+            share = f" ({measured['share_text']} of spend)" if measured["share_text"] else ""
+            parts.append(measured["text"] + share)
+        if measured["coverage_text"]:
+            parts.append(f"tagged on {measured['coverage_text']} of messages")
+    elif measured is not None:
+        parts.append("no captured sessions yet")
+    if config["expired"]:
+        notes.append(
+            f"Its end time ({capture.until[:16].replace('T', ' ')}) has passed, so nothing is captured now."
+        )
+    if hooks.get("ok") is False:
+        notes.append(hooks["summary"])
+    elif (
+        use is not None
+        and not use.sessions
+        and started_since * capture.sample / 100 >= NO_NOTES_MIN_SESSIONS
+        and any(catalogue.asks_claude(i) for i in capture.active_metrics())
+    ):
+        notes.append(
+            f"No capture note seen in the {_plural(started_since, 'session')} started since it was turned on: "
+            f"the hook may be blocked. '{STATUS_COMMAND}' checks it."
+        )
+    if (
+        use is not None
+        and use.cycles >= LOW_COVERAGE_MIN_CYCLES
+        and use.coverage is not None
+        and use.coverage < LOW_COVERAGE_PCT
+    ):
+        notes.append(
+            f"Claude tagged only {_pct(use.coverage)} of your messages, so some figures rest on few answers."
+        )
+    if roi is not None and roi["cost"]["usd"] > 0 and roi["cost"]["text"]:
+        if roi["measured"]:
+            notes.append(
+                f"Capture cost about {roi['cost']['text']}; suggestions that rely on it are worth about "
+                f"{roi['value']['text']}."
+            )
+        else:
+            notes.append(f"Capture cost about {roi['cost']['text']}; nothing measured yet relies on it.")
+    counted = [r for r in rows if r["enough"] is not None and r["asks_claude"]]
+    ready = [r for r in counted if r["enough"]]
+    if counted and len(ready) == len(counted):
+        notes.append("Enough collected for every metric on: you could lower the level to save its cost.")
+    elif ready:
+        notes.append(
+            f"Enough collected for {', '.join(r['title'].lower() for r in ready)}: "
+            "you could switch them off to save their cost."
+        )
+    return {"on": True, "headline": " · ".join(parts), "notes": notes, "feedback_note": feedback_note}
+
+
+def view(
+    capture: CaptureConfig,
+    *,
+    past=None,
+    units=None,
+    use=None,
+    hooks=None,
+    signal_sessions: dict[str, int] | None = None,
+    started_since: int = 0,
+    feedback_use=None,
+    skill: str | None = None,
+    brief_skill: str | None = None,
+    ratings: int | None = None,
+    statusline: bool | None = None,
+    weekly_cost: float | None = None,
+    dependent_value: float | None = None,
+    now: datetime | None = None,
+) -> dict:
+    """Everything the Capture tab and the banner show.
+
+    ``past`` is ``capture.history`` over your recent sessions (``None``
+    when it couldn't be worked out, and then nothing is estimated);
+    ``use`` is ``capture.usage`` since capture was turned on (``None``
+    while it is off); ``hooks`` is ``hook_health.check_capture`` for the
+    metrics on; ``signal_sessions`` maps each free signal's metric id to
+    the sessions that logged it since capture was turned on;
+    ``started_since`` is how many sessions started since then.
+    ``feedback_use`` is ``capture.feedback_usage`` over the last
+    :data:`capture.HISTORY_DAYS` days, ``skill`` the
+    ``footprint.feedback_skill_state`` of the /tl-feedback skill,
+    ``brief_skill`` that of the /tl-brief skill and
+    ``ratings`` how many sessions you rated on the dashboard (each only
+    while its toggle is on). ``statusline`` is whether Claude Code's
+    status line is this tool's (``None`` when not checked).
+    ``weekly_cost`` is ``capture.weekly_cost(use)`` and ``dependent_value``
+    ``habits.capture_dependent_value`` over the same window: together
+    they're the capture-pays-for-itself figures in ``roi`` and the
+    banner (``None`` while there's no measured cost to weigh anything
+    against).
+    """
+    signal_sessions = signal_sessions or {}
+    config = config_block(capture, now)
+    hooks_data = hooks_block(hooks)
+    missing_events = set(hooks_data["missing_events"])
+    active = capture.active_metrics()
+    levels = _levels(capture, past, units)
+    feedback = {
+        "use": feedback_use,
+        "skill": skill,
+        "brief_skill": brief_skill,
+        "ratings": ratings,
+        "statusline": statusline,
+    }
+    rows = [
+        _metric_row(m, capture, active, past, units, use, signal_sessions, missing_events, feedback)
+        for m in catalogue.METRICS
+    ]
+    sections = [
+        {"id": section, "title": title, "metrics": [r for r in rows if r["section"] == section]}
+        for section, title in catalogue.SECTIONS.items()
+    ]
+    measured = _measured(use, units)
+    history = (
+        {"days": past.days, "sessions": past.sessions, "subagents": past.subagents, "cycles": past.cycles}
+        if past is not None
+        else None
+    )
+    roi = _roi(weekly_cost, dependent_value, units)
+    return {
+        "config": config,
+        "warning": WARNING,
+        "samples": list(CAPTURE_SAMPLES),
+        "levels": levels,
+        "sections": [s for s in sections if s["metrics"]],
+        "measured": measured,
+        "history": history,
+        "hooks": hooks_data,
+        "billing": {
+            "mode": units.billing_mode if units is not None else "",
+            "basis": units.basis() if units is not None else "",
+        },
+        "roi": roi,
+        "banner": _banner(
+            capture, config, levels, measured, use, rows, hooks_data, started_since, skill, brief_skill, roi
+        ),
+        "feedback": {
+            "skill": skill,
+            "runs": feedback_use.feedback_runs if feedback_use is not None else None,
+            "answered": feedback_use.feedback_answered if feedback_use is not None else None,
+            "ratings": ratings,
+            "days": capture_mod.HISTORY_DAYS,
+            "questions": [
+                {
+                    "key": q.key,
+                    "question": q.question,
+                    "multi": q.multi,
+                    "options": [{"word": word, "label": label} for word, label, _text in q.options],
+                }
+                for q in catalogue.FEEDBACK_QUESTIONS
+            ],
+        },
+        "commands": {
+            "status": STATUS_COMMAND,
+            "connect": CONNECT_COMMAND,
+            "feedback": FEEDBACK_COMMAND,
+            "brief": BRIEF_COMMAND,
+        },
+    }
+
+
+def change_commands(before: CaptureConfig, changes: dict) -> list[str]:
+    """The ``claude-token-lens capture`` commands that make ``changes``
+    (``set_capture``'s arguments) from the CLI, for when the dashboard
+    can't write ``config.toml`` itself."""
+    out: list[str] = []
+    level = changes.get("level")
+    if level == "off":
+        return ["claude-token-lens capture off"]
+    if level is not None:
+        out.append(f"claude-token-lens capture level {level}")
+    if "metrics" in changes:
+        now_on = [i for i in before.active_metrics() if i in catalogue.LEVEL_METRIC_IDS]
+        wanted = list(catalogue.with_requirements(changes["metrics"]))
+        added = [i for i in wanted if i not in now_on]
+        dropped = [i for i in now_on if i not in wanted]
+        if added:
+            out.append("claude-token-lens capture enable " + " ".join(added))
+        if dropped:
+            out.append("claude-token-lens capture disable " + " ".join(dropped))
+    for key in ("feedback", "coaching"):
+        if key in changes:
+            current = list(getattr(before, key))
+            added = [i for i in changes[key] if i not in current]
+            dropped = [i for i in current if i not in changes[key]]
+            if added:
+                out.append("claude-token-lens capture enable " + " ".join(added))
+            if dropped:
+                out.append("claude-token-lens capture disable " + " ".join(dropped))
+    options = []
+    if changes.get("sample") is not None:
+        options.append(f"--sample {changes['sample']}")
+    if changes.get("until"):
+        options.append(f"--until {changes['until']}")
+    if options:
+        out.append("claude-token-lens capture on " + " ".join(options))
+    return out
+
+
+__all__ = [
+    "CONNECT_COMMAND",
+    "FEEDBACK_COMMAND",
+    "BRIEF_COMMAND",
+    "BRIEF_SKILL_NOTES",
+    "BRIEF_SKILL_STATES",
+    "SKILL_NOTES",
+    "SKILL_STATES",
+    "STATUSLINE_NOTES",
+    "STATUS_COMMAND",
+    "WARNING",
+    "amount_text",
+    "change_commands",
+    "config_block",
+    "describe",
+    "hooks_block",
+    "share_text",
+    "view",
+]

@@ -294,12 +294,13 @@ def assert_privacy(result) -> None:
     version silently skipped a list-of-lists because it only recursed
     into an item when the item was itself a dataclass.
 
-    Dict values reached through a dataclass field are intentionally not
-    walked, matching test_privacy.py's scope note: they're free-form
-    small counters the module controls (``Event.detail``,
-    ``Diagnostics.agent_settings``, ...), not a place message text/paths
-    could leak through structurally. A dict passed as ``result`` itself
-    (the top-level argument) *is* walked, since item 3 requires
+    Dict values reached through a dataclass field are not walked, matching
+    test_privacy.py's scope note -- except ``Event.detail``, which is
+    walked keys and values all the way down: it holds what events.py read
+    from a line, so a raw value passed through would leak there. The
+    others are small counters keyed by closed labels
+    (``Diagnostics.agent_settings``, ...). A dict passed as ``result``
+    itself (the top-level argument) *is* walked, since item 3 requires
     ``assert_privacy`` to accept a plain ``dict`` as input.
     """
     violations: list[str] = []
@@ -335,11 +336,27 @@ def assert_privacy(result) -> None:
             _walk_dataclass(value, where)
         # dict: intentionally not walked when reached through a field.
 
+    def _walk_detail(value, where: str, key: str) -> None:
+        if isinstance(value, str):
+            _check(value, where, key)
+        elif isinstance(value, dict):
+            for k, v in value.items():
+                if isinstance(k, str):
+                    _check(k, f"{where}.<key>", "")
+                _walk_detail(v, f"{where}[{k!r}]", k if isinstance(k, str) else key)
+        elif isinstance(value, (list, tuple)):
+            for i, item in enumerate(value):
+                _walk_detail(item, f"{where}[{i}]", key)
+
     def _walk_dataclass(obj, where: str) -> None:
         for f in dataclasses.fields(obj):
             if f.name in _PRIVACY_EXCLUDED_FIELDS:
                 continue
-            _walk_value(getattr(obj, f.name), f"{where}.{f.name}", f.name)
+            value = getattr(obj, f.name)
+            if f.name == "detail" and isinstance(value, dict):
+                _walk_detail(value, f"{where}.detail", "")
+                continue
+            _walk_value(value, f"{where}.{f.name}", f.name)
 
     is_transcript_result = all(
         hasattr(result, attr) for attr in ("meta", "diagnostics", "turns", "events")

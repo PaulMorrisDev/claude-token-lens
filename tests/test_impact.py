@@ -116,3 +116,31 @@ def test_a_group_with_too_few_runs_is_not_judged():
     group = impact.compare(ChangePoint(CHANGE, "apply", "x", keys=["model"]), sessions, UNITS)["quality"][0]
     assert group["judged"] is False and group["min_runs"] == quality.MIN_RUNS
     assert "6 before and 1 after" in group["verdict"]
+
+
+# -- metrics capture changes ---------------------------------------------------
+
+
+def _captured(days: float, chars: int, messages: int, tagged: int) -> SessionFacts:
+    return SessionFacts(
+        start=CHANGE + timedelta(days=days),
+        main=_Transcript(cost=1.0, turns=messages, capture_chars=chars),
+        spawns=[("Explore", _Transcript(cost=0.1, turns=2, capture_chars=chars // 2))],
+        messages=messages,
+        tagged=tagged,
+    )
+
+
+def test_a_capture_change_is_measured_by_what_capture_adds_and_how_much_was_tagged():
+    point = ChangePoint(CHANGE, "capture", "Turned metrics capture on: Essentials", keys=["capture.level"])
+    assert [m.key for m in impact.measures_for(point)] == ["capture_tokens", "tagged_share", "cost_per_session"]
+    after = [_captured(d, 800, 4, 3) for d in (0.1, 0.2, 0.3)]
+    # 800 characters in the main session and 400 in its agent: 300 tokens.
+    assert impact._value(impact._CAPTURE, after) == (300.0, 3)
+    assert impact._value(impact._TAGGED, after) == (75.0, 3)
+    sessions = [_captured(-d, 0, 4, 0) for d in (1, 2, 3)] + after
+    result = impact.compare(point, sessions, UNITS, now=CHANGE + timedelta(days=1))
+    assert [m["label"] for m in result["measures"]][:2] == [
+        "Metrics capture notes and tags per session",
+        "Messages Claude tagged",
+    ]

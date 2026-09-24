@@ -129,3 +129,185 @@ def test_models_goal_skips_a_model_the_agent_was_often_retried_from():
     )]))
     out = goals.draft("models", model, UNITS)
     assert [(c["agent"], c["value"]) for c in out["candidates"]] == [(None, "sonnet")]
+
+
+# -- a profile for one kind of task (metrics capture) ------------------------------
+
+from test_whatif import _table  # noqa: E402
+
+_SETUP_KEYS = ("task", "level", "model", "effort", "cycles", "avg_cost", "ok_pct", "rated", "verdict", "saving_pct")
+
+
+def _with_setups(*rows):
+    model = _report()
+    model.sections.append(NS(key="habits", tables=[
+        NS(name="habits_setups", columns=[NS(key=k) for k in _SETUP_KEYS], rows=[list(r) for r in rows]),
+    ]))
+    return model
+
+
+_SETUPS = (
+    ("chat", "all", "opus", "high", 9, 1.0, 90.0, 0, "usual", None),
+    ("bugfix", "all", "opus", "high", 12, 2.0, 80.0, 3, "usual", None),
+    ("bugfix", "all", "sonnet", "medium", 6, 0.5, 83.0, 1, "cheaper", 75.0),
+    ("bugfix", "normal", "sonnet", "medium", 6, 0.5, 83.0, 1, "cheaper", 75.0),
+)
+
+
+def test_the_tasks_goal_drafts_the_cheaper_setup_for_the_first_task_that_has_one():
+    out = goals.draft("tasks", _with_setups(*_SETUPS), UNITS, effective={"model": "opus", "effortLevel": "high"})
+    assert out["tasks"] == ["chat", "bugfix"] and out["task"] == "bugfix"
+    by_key = {c["key"]: c for c in out["candidates"]}
+    # The main session's model stays yours to decide; the effort is ticked.
+    assert (by_key["model"]["value"], by_key["model"]["ticked"]) == ("sonnet", False)
+    assert (by_key["effortLevel"]["value"], by_key["effortLevel"]["ticked"]) == ("medium", True)
+    assert by_key["model"]["evidence"].startswith(
+        "For bugfix work, sonnet at medium effort cost 75% less a message than your usual opus at high effort"
+    )
+    assert "went well 83% of the time against 80% (6 and 12 messages)" in by_key["model"]["evidence"]
+    assert out["note"].startswith("Save it, then launch Claude with it when you start bugfix work.")
+    assert "implementation-heavy" in out["note"]
+    assert out["profile"] == {"settings": {"effortLevel": "medium"}, "agents": {}}
+
+
+def test_a_task_with_no_cheaper_setup_says_what_your_usual_one_is():
+    out = goals.draft("tasks", _with_setups(*_SETUPS), UNITS, task="chat")
+    assert out["task"] == "chat" and out["candidates"] == []
+    assert out["note"].startswith("Your usual setup for chat work is opus at high effort. No cheaper setup")
+    assert "interactive-chat" in out["note"]
+
+
+def test_the_tasks_goal_without_capture_says_how_to_get_the_data():
+    out = goals.draft("tasks", _report(), UNITS)
+    assert out["tasks"] == [] and out["task"] is None and out["candidates"] == []
+    assert "metrics capture" in out["note"]
+    # Other goals carry no task.
+    other = goals.draft("cache", _report(), UNITS)
+    assert (other["tasks"], other["task"], other["note"]) == ([], None, None)
+
+
+def test_an_unknown_task_falls_back_to_the_first_with_a_cheaper_setup():
+    assert goals.draft("tasks", _with_setups(*_SETUPS), UNITS, task="docs")["task"] == "bugfix"
+
+
+# -- the tasks goal's estimate is scaled to the task's own share ------------------
+
+_BY_TASK_KEYS = ("task", "cycles", "share", "cost", "avg_cost", "clear_pct", "large_pct", "redo_pct", "met_pct")
+_AGENTS_BY_TASK_KEYS = (
+    "task", "agent_type", "runs", "avg_cost", "done_pct", "fit_smaller", "fit_right", "fit_larger",
+    "cheaper_model", "cheaper_saving_pct",
+)
+_AGENTS_KEYS = (
+    "agent_type", "runs", "cost", "report_tokens", "capped_pct", "done_pct", "retried", "retried_model",
+    "fit_smaller", "fit_right", "fit_larger", "rules_used", "rules_unused", "easy_pct", "hard_pct",
+    "overlap_reads", "nested",
+)
+
+
+def _row_for(keys, mapping):
+    return [mapping.get(k) for k in keys]
+
+
+def _with_task_data(setups=(), by_task=(), agents_by_task=(), agents=()):
+    model = _report()
+    tables = [NS(name="habits_setups", columns=[NS(key=k) for k in _SETUP_KEYS], rows=[list(r) for r in setups])]
+    if by_task:
+        tables.append(NS(name="habits_by_task", columns=[NS(key=k) for k in _BY_TASK_KEYS],
+                          rows=[_row_for(_BY_TASK_KEYS, r) for r in by_task]))
+    if agents_by_task:
+        tables.append(NS(name="habits_agents_by_task", columns=[NS(key=k) for k in _AGENTS_BY_TASK_KEYS],
+                          rows=[_row_for(_AGENTS_BY_TASK_KEYS, r) for r in agents_by_task]))
+    if agents:
+        tables.append(NS(name="habits_agents", columns=[NS(key=k) for k in _AGENTS_KEYS],
+                          rows=[_row_for(_AGENTS_KEYS, r) for r in agents]))
+    model.sections.append(NS(key="habits", tables=tables))
+    return model
+
+
+def test_the_tasks_goal_scales_its_estimate_to_the_task_cost_share():
+    model = _with_task_data(_SETUPS, by_task=[{"task": "all", "cost": 100.0}, {"task": "bugfix", "cost": 60.0}])
+    out = goals.draft("tasks", model, UNITS, effective={"model": "opus", "effortLevel": "high"})
+    by_key = {c["key"]: c for c in out["candidates"]}
+    # model_swap's top-level row reprices the WHOLE window (40.0 raw saving); bugfix is 60% of it.
+    assert by_key["model"]["estimate"]["saving_usd"] == pytest.approx(24.0)
+    assert by_key["model"]["estimate"]["effect_text"] == "Saves 24.00 USD"
+    assert "60%" in by_key["model"]["estimate"]["basis"]
+
+
+def test_without_a_by_task_cost_the_estimate_is_left_unscaled_and_explained():
+    out = goals.draft("tasks", _with_setups(*_SETUPS), UNITS, effective={"model": "opus", "effortLevel": "high"})
+    estimate = next(c for c in out["candidates"] if c["key"] == "model")["estimate"]
+    assert estimate["saving_usd"] is None and estimate["effect_text"] == "Not estimated"
+    assert "no per-task cost" in estimate["basis"]
+
+
+def test_the_tasks_goal_drafts_a_cheaper_model_for_the_agent_that_ran_the_task_most():
+    model = _with_task_data(
+        _SETUPS,
+        agents_by_task=[{"task": "bugfix", "agent_type": "Explore", "runs": 8, "avg_cost": 1.0,
+                          "cheaper_model": "haiku", "cheaper_saving_pct": 25.0}],
+        agents=[{"agent_type": "Explore", "cost": 10.0}],
+    )
+    out = goals.draft("tasks", model, UNITS, task="bugfix")
+    explore = next(c for c in out["candidates"] if c["agent"] == "Explore")
+    assert (explore["key"], explore["value"], explore["ticked"]) == ("model", "haiku", True)
+    assert explore["evidence"] == "Explore's bugfix runs in this window would have cost 25% less on haiku."
+    # model_swap's Explore row reprices ALL of its work (raw saving 8.0); bugfix is 80% of its cost (8 of 10).
+    assert explore["estimate"]["saving_usd"] == pytest.approx(6.4)
+
+
+def test_agent_candidates_for_a_task_are_vetoed_by_unfit_agents():
+    model = _with_task_data(
+        _SETUPS,
+        agents_by_task=[{"task": "bugfix", "agent_type": "Explore", "runs": 8, "avg_cost": 1.0,
+                          "cheaper_model": "haiku", "cheaper_saving_pct": 25.0}],
+        agents=[{"agent_type": "Explore", "cost": 10.0, "fit_larger": 1, "fit_smaller": 0}],
+    )
+    out = goals.draft("tasks", model, UNITS, task="bugfix")
+    assert not [c for c in out["candidates"] if c["agent"] == "Explore"]
+
+
+def test_agent_candidates_for_a_task_are_vetoed_by_the_quality_check_too():
+    model = _with_task_data(
+        _SETUPS,
+        agents_by_task=[{"task": "bugfix", "agent_type": "reviewer", "runs": 8, "avg_cost": 1.0,
+                          "cheaper_model": "sonnet", "cheaper_saving_pct": 30.0}],
+        agents=[{"agent_type": "reviewer", "cost": 10.0}],
+    )
+    model.sections.append(NS(key="quality", tables=[NS(
+        name="quality_by_setup",
+        columns=[NS(key=k) for k in ("agent_type", "model", "setup_verdict", "compared_model")],
+        rows=[["reviewer", "claude-sonnet-4-5", "worse", "claude-opus-5-5"]],
+    )]))
+    out = goals.draft("tasks", model, UNITS, task="bugfix")
+    assert not [c for c in out["candidates"] if c["agent"] == "reviewer"]
+
+
+def _with_agent_reports(used, unused):
+    model = _report()
+    model.sections = [s for s in model.sections if s.key != "agent_startup"]
+    model.sections.append(NS(key="agent_startup", tables=[_table("agent_startup_breakdown", [
+        {"agent_type": "reviewer", "claude_md": 4000, "spawns": 20, "write_price": 3.75},
+    ])]))
+    model.sections.append(NS(key="habits", tables=[_table("habits_agents", [
+        {"agent_type": "reviewer", "runs": used + unused, "rules_used": used, "rules_unused": unused},
+    ])]))
+    return model
+
+
+def test_agents_that_said_they_did_not_use_claude_md_get_it_left_out_ticked():
+    [candidate] = [c for c in goals.draft("subagents", _with_agent_reports(1, 3), UNITS)["candidates"]
+                   if c["key"] == "omitClaudeMd"]
+    assert candidate["agent"] == "reviewer" and candidate["ticked"]
+    assert candidate["evidence"].endswith("3 of the 4 runs that said, said they didn't use it.")
+
+
+def test_agents_that_said_they_used_claude_md_keep_it():
+    out = goals.draft("subagents", _with_agent_reports(3, 1), UNITS)
+    assert not [c for c in out["candidates"] if c["key"] == "omitClaudeMd"]
+
+
+def test_without_reports_claude_md_is_offered_unticked():
+    [candidate] = [c for c in goals.draft("subagents", _with_agent_reports(0, 0), UNITS)["candidates"]
+                   if c["key"] == "omitClaudeMd"]
+    assert not candidate["ticked"] and "Not ticked" in candidate["evidence"]
