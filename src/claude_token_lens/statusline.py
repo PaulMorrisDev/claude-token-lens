@@ -285,7 +285,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import installer as installer_mod
-from .capture_catalogue import FEEDBACK_NOTE
 from .model import Column, Table
 from .tools import log_usage
 
@@ -1783,6 +1782,11 @@ def second_line(payload: dict, config_dir: Path | None, now: datetime) -> str | 
         if hint is not None:
             text = hint[1]
     if text is None and feedback_on:
+        # ROB-P10: lazy -- this module runs on every prompt refresh
+        # (the statusline's hot path), and capture_catalogue is only
+        # needed for its one FEEDBACK_NOTE constant when feedback is on.
+        from .capture_catalogue import FEEDBACK_NOTE
+
         text = FEEDBACK_NOTE
     if text is None:
         return None

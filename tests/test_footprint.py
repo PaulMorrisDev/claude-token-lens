@@ -177,6 +177,20 @@ def test_uninstall_keeps_data_while_changes_are_in_place(tmp_path, monkeypatch, 
     assert config_dir.is_dir()
 
 
+def test_uninstall_refuses_delete_data_while_hook_entries_remain(tmp_path, monkeypatch, capsys):
+    # ROB-P7: declining step 1 (or it failing) leaves settings.json
+    # running a hook from the folder --delete-data would remove; Claude
+    # Code would then call a script that no longer exists and fail
+    # silently on every session.
+    config_dir = _claude(tmp_path, {"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": HOOK_CMD}]}]}})
+    rc, out = _run(["uninstall", "--config-dir", str(config_dir), "--delete-data"], monkeypatch, capsys, stdin="n\n")
+    assert rc == 1
+    assert "Left unchanged." in out  # step 1 declined
+    assert "Not deleted" in out and "hook" in out.lower()
+    assert config_dir.is_dir()
+    assert "SessionStart" in json.loads((config_dir.parent / "settings.json").read_text(encoding="utf-8"))["hooks"]
+
+
 def test_uninstall_yes_removes_entries_and_data(tmp_path, monkeypatch, capsys):
     config_dir = _claude(tmp_path, {"model": "opus", "statusLine": {"type": "command", "command": STATUS_CMD}})
     rc, out = _run(["uninstall", "--config-dir", str(config_dir), "--yes", "--delete-data"], monkeypatch, capsys)
@@ -208,6 +222,26 @@ def test_init_dry_run_shows_the_connect_change_and_writes_nothing(tmp_path):
     cli._cmd_init_connect_step(args, config_dir=config_dir, hook=hook, stdin=io.StringIO("y\n"), stdout=out)
     assert settings.read_text(encoding="utf-8") == before
     assert "Dry run" in out.getvalue() and "SessionStart" in out.getvalue()
+
+
+def test_init_connect_step_refuses_an_unsafe_hook_command(tmp_path):
+    # ROB-P9: hook.hook_command returning None (a quote/$/backtick/UNC
+    # path in the Python or script path) must never reach settings.json
+    # as a broken "command": null entry.
+    from types import SimpleNamespace
+
+    config_dir = _claude(tmp_path, {"model": "opus"})
+    settings = config_dir.parent / "settings.json"
+    before = settings.read_text(encoding="utf-8")
+    hook = SimpleNamespace(
+        install_hook=lambda cfg: cfg / "hooks" / "snapshot-config.py",
+        hook_command=lambda script, extra_args="": None,
+    )
+    out = io.StringIO()
+    args = SimpleNamespace(connect=True, dry_run=False)
+    cli._cmd_init_connect_step(args, config_dir=config_dir, hook=hook, stdin=io.StringIO(""), stdout=out)
+    assert settings.read_text(encoding="utf-8") == before
+    assert "Could not build a safe hook command" in out.getvalue()
 
 
 # --------------------------------------------------------------------

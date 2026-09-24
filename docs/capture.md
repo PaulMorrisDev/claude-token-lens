@@ -239,7 +239,7 @@ These are rough sizes — characters in the note divided by four — and don't i
 ### Large tool outputs (`big_output`)
 
 - **Level:** Deep
-- **Captures:** After a tool result of about 8,000 tokens or more, how much of it Claude needed: all, part or none. Claude Code waits for the hook after each shell, read, search, web or MCP result, which adds a fraction of a second to each.
+- **Captures:** After a tool result of about 8,000 tokens or more, how much of it Claude needed: all, part or none. Claude Code waits for the hook after each shell, read, search, web or MCP result; 'capture status' shows how long that has actually added, measured from your own sessions.
 - **Why:** Quieter commands, offset reads and output caps where big outputs weren't needed.
 - **Tag:** `out=needed|part|unneeded`
 - **Costs:** about 2 output tokens each time
@@ -249,7 +249,7 @@ These are rough sizes — characters in the note divided by four — and don't i
 ### Web results (`web`)
 
 - **Level:** Deep
-- **Captures:** After a web search or fetch, whether the result was useful. Claude Code waits for the hook after each one, which adds a fraction of a second.
+- **Captures:** After a web search or fetch, whether the result was useful. Claude Code waits for the hook after each one; 'capture status' shows how long that has actually added, measured from your own sessions.
 - **Why:** Web research against handing Claude the page or document yourself.
 - **Tag:** `useful=yes|part|no`
 - **Costs:** about 2 output tokens each time
@@ -427,7 +427,7 @@ If Claude writes more than one tag, the last one wins, key by key.
 
 Claude writes closed vocabularies only. Every `[tl: ...]`, `[result: ...]`, `[retry: ...]`, `[spawn: ...]` and `[tl-fb: ...]` word is checked against the lists on this page; anything else — an unknown word, a key outside those lists, free text, a path — is dropped by the parser and never stored. The one exception that can carry a name is `skill=would-help:<name>`, and only when `<name>` matches a skill this transcript actually listed or invoked in the window; any other name is cut down to a bare `would-help`.
 
-Free local signals never involve Claude at all: a hook logs the session id (hashed with this tool's own salt), the event word, and — for a permission prompt — the tool name, never its arguments, to a local file under `<config-dir>/signals/`.
+Free local signals never involve Claude at all: a hook logs the session id (hashed with this tool's own salt), the event word, and — for a permission prompt — the tool name, never its arguments, to a local file under `<config-dir>/signals/`. Those files, and the `capture-log.jsonl` record of every on/off/level change, aren't kept forever: `serve`'s watcher (or `capture prune` by hand) deletes entries past your configured retention, a default applying when none is set.
 
 "Always measured" metrics read only what Claude Code's own transcript already contains — instruction files loaded, commands and skills run, task counts, API errors, and simple yes/no facts about a message's shape (does it name a file path, does it contain a code block) — and keep only those flags and counts, never the text itself.
 
@@ -435,7 +435,7 @@ Free local signals never involve Claude at all: a hook logs the session id (hash
 
 The hook script and its catalogue (`capture-hook.py`, `capture-catalogue.json`) live side by side under `<config-dir>/hooks/`. Only `capture on` and `capture connect` ever change `~/.claude/settings.json` — and only after showing the diff and asking first, unless you pass `--yes`. Every other change writes only this tool's own `config.toml`.
 
-- `claude-token-lens capture status` — the level, what's on, since when, and the cost measured so far.
+- `claude-token-lens capture status` — the level, what's on, since when, and the cost measured so far. While big_output or web is on, it also prints Deep's actual measured wait (median and p90, over the last 7 days). It also flags any hook — Token Lens's own or one of yours — that failed on most of its calls over the last 14 days, naming it (event name only, never a matcher or tool name), where to find it in `settings.json`, the trade-off, and the undo; this is only ever a printed prompt, never an automatic change.
 - `claude-token-lens capture on [--level LEVEL] [--for DURATION | --until DATE | --no-limit] [--sample N] [--yes] [--dry-run]` — turn it on (default level: Essentials).
 - `claude-token-lens capture level LEVEL` — change the level.
 
@@ -446,4 +446,5 @@ A fresh switch from off to on — at `init`, `capture on`/`level`, or the Captur
 - `claude-token-lens capture remove` — switch off and take those hook entries back out.
 - `claude-token-lens capture feedback on|off` — the `/tl-feedback` skill and its status-line reminder.
 - `claude-token-lens capture brief on|off` — the `/tl-brief` skill.
+- `claude-token-lens capture prune [--dry-run]` — delete signal files and `capture-log.jsonl` records past your configured retention (`retention_days` in `config.toml`, or a default when it's unset); `serve`'s watcher already runs this same cleanup on every tick, so this is for anyone not running it.
 - `claude-token-lens changes` and `claude-token-lens uninstall` also cover metrics capture: they list everything it installed and can remove all of it — hooks, skills and signal files included.

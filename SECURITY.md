@@ -180,7 +180,13 @@ permissions where the OS supports it); without a salt in effect
 rather than falling back to an unsalted, offline-crackable hash. Because
 the hash is keyed to a salt private to one machine's `<config-dir>`, it
 cannot be correlated against a hash produced on a different machine or
-after the salt file is rotated/deleted.
+after the salt file is rotated/deleted. The on-disk digest cache
+(`cache.py`) enforces the "after rotation" half of that: each entry's
+header carries a hash of the salt that wrote it (never the raw salt),
+and `DigestCache.get` misses rather than serving a hit when a caller
+that was itself given a salt finds a different one on the entry —
+without this, a cache entry written before a salt rotation would go on
+being served afterward, quietly carrying hashes keyed to the old salt.
 
 **The `claude-token-lens serve` service's SQLite store**
 (`<config-dir>/service.db`) is a narrow, documented exception to "no
@@ -316,15 +322,31 @@ asserts nothing is written before a salt exists.
 
 **Hook timing.** The SessionStart and SubagentStart note hooks, and the
 SessionEnd signal hook, run in the foreground (Claude waits for them,
-capped at `CAPTURE_TIMEOUT_S` = 5 seconds) because Claude Code ignores
-what a background hook prints and the note has to reach the
-transcript. At the Deep level, the PostToolUse hook that notes an
-unusually large result or a web call (matcher
-`Bash|Read|Grep|Glob|WebFetch|WebSearch|mcp__.*`) is foreground too, for
-the same reason, adding on the order of 0.1 seconds to a matching tool
-call (only `WebFetch|WebSearch` when a custom set turns on the web
-metric alone); without either metric nothing is registered on
-PostToolUse at all.
+capped at `CAPTURE_TIMEOUT_S` = 5 seconds). An async hook's
+`additionalContext` does still reach Claude (Claude Code delivers it on
+the *next* conversation turn), but that's too late for a note about a
+tool result Claude just saw, so these stay synchronous. At the Deep
+level, the PostToolUse hook that notes an unusually large result or a
+web call (matcher `Bash|Read|Grep|Glob|WebFetch|WebSearch|mcp__.*`) is
+foreground too, for the same reason. Claude Code records each hook
+call's real `durationMs`; `capture status` prints your own median and
+p90 wait for this hook over the last 7 days ("Deep's large-output/web
+hook waited...") whenever big_output or web is on (only
+`WebFetch|WebSearch` matter when a custom set turns on the web metric
+alone); without either metric nothing is registered on PostToolUse at
+all.
+
+**Hook health is bucketed, not named.** `hook_health.count_hook_errors`
+tallies every hook attachment Claude Code writes to a transcript —
+yours as well as Token Lens's own — by the closed hook-*event* name
+only (`PreToolUse`, `PostToolUse`, and so on; `events._HOOK_EVENT_NAMES`,
+verified against Claude Code's own docs). The matcher/tool-name suffix
+after the `:` (e.g. the `Bash` in `PreToolUse:Bash`, or an MCP server's
+own name in `PreToolUse:mcp__server__tool`) is always dropped before it
+reaches `Event.detail` — never kept, never shown — so `capture status`'s
+"this hook keeps failing" prompt can never leak which MCP servers or
+tools you have configured. It is a prompt only: nothing here ever
+writes to `settings.json`.
 The two free signal hooks, Notification and PermissionRequest, run
 asynchronously (in the background) since nothing needs to read what
 they print.
@@ -354,6 +376,12 @@ yourself instead (`service/api.py`'s `route_capture_post`).
 `tests/test_capture_parse.py` and `tests/test_privacy.py` all exercise
 this feature's output against the same "no free text, no path, no raw
 session id" checks the rest of this document describes.
+`tests/test_parse_events.py` (`test_hook_output_mcp_matched_hook_name_never_reaches_detail`,
+`test_hook_output_command_string_never_reaches_detail`) and
+`tests/test_capture_cli.py` (`test_status_never_prints_a_raw_matcher_or_tool_name`)
+cover hook health specifically: an MCP tool/matcher name or a hook
+command's own path never reaches `Event.detail` or `capture status`'s
+output.
 
 ## No outbound network calls
 

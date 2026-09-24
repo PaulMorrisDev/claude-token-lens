@@ -9,12 +9,16 @@ from __future__ import annotations
 
 import io
 import json
+import os
+import sys
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
 import pytest
 
 from claude_token_lens import capture_catalogue as cat
-from claude_token_lens import cli, footprint, hook_health, installer
-from claude_token_lens.config import CaptureConfig, load_config
+from claude_token_lens import cli, footprint, hook_health, installer, signals
+from claude_token_lens.config import CAPTURE_LOG_NAME, SIGNAL_RETENTION_DEFAULT_DAYS, CaptureConfig, load_capture_log, load_config
 
 NOW = datetime(2026, 9, 24, 6, 0, tzinfo=timezone.utc)
 ESSENTIALS = hook_health.capture_specs(cat.level_metrics("essentials"))
@@ -169,6 +173,166 @@ def test_check_capture_spots_a_percent_variable(tmp_path):
     assert any("%VARIABLE%" in problem for problem in hook_health.check_capture(ESSENTIALS).problems)
 
 
+# -- hook_health: SEC-P7/ROB-P7 hash-stamping -------------------------------
+
+
+def _packaged(name: str) -> bytes:
+    from importlib import resources
+
+    return (resources.files("claude_token_lens") / "hooks" / name).read_bytes()
+
+
+def _connect_essentials(config_dir):
+    hook_health.install_hook_files(config_dir, hook_health.CAPTURE_FILES[cat.HOOK_SCRIPT])
+    hook_health.connect(hook_health.plan_capture(ESSENTIALS, _commands(config_dir)), now=NOW)
+
+
+def test_check_capture_with_config_dir_is_ok_right_after_install(tmp_path):
+    config_dir = _claude(tmp_path, {})
+    _connect_essentials(config_dir)
+    health = hook_health.check_capture(ESSENTIALS, config_dir=config_dir)
+    assert health.ok and not health.outdated and not health.modified
+
+
+def test_check_capture_flags_a_hand_edited_hook_file_as_modified(tmp_path):
+    config_dir = _claude(tmp_path, {})
+    _connect_essentials(config_dir)
+    (config_dir / "hooks" / cat.HOOK_SCRIPT).write_text("# someone edited this by hand\n", encoding="utf-8")
+    health = hook_health.check_capture(ESSENTIALS, config_dir=config_dir)
+    # Every entry runs the one shared script file, so all of them are affected.
+    assert health.modified == ESSENTIALS
+    assert "edited by hand" in health.summary()
+
+
+def test_check_capture_flags_its_own_older_copy_as_outdated(tmp_path):
+    import hashlib
+
+    config_dir = _claude(tmp_path, {})
+    _connect_essentials(config_dir)
+    script_path = config_dir / "hooks" / cat.HOOK_SCRIPT
+    old = b"# an older copy this tool itself wrote\n"
+    script_path.write_bytes(old)
+    manifest_path = config_dir / "hooks" / ".manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest[cat.HOOK_SCRIPT] = hashlib.sha256(old).hexdigest()
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    health = hook_health.check_capture(ESSENTIALS, config_dir=config_dir)
+    assert health.outdated == ESSENTIALS
+    assert "older copy" in health.summary()
+
+
+def test_check_capture_reports_a_missing_catalogue(tmp_path):
+    config_dir = _claude(tmp_path, {})
+    _connect_essentials(config_dir)
+    (config_dir / "hooks" / cat.CATALOGUE_FILE).unlink()
+    health = hook_health.check_capture(ESSENTIALS, config_dir=config_dir)
+    assert any("catalogue" in p and "missing" in p for p in health.problems)
+
+
+def test_check_capture_python_version_is_off_by_default_and_bounded_when_asked(tmp_path, monkeypatch):
+    config_dir = _claude(tmp_path, {})
+    _connect_essentials(config_dir)
+    calls = []
+
+    def _fake(program):
+        calls.append(program)
+        return (3, 9)
+
+    monkeypatch.setattr(hook_health, "_interpreter_version", _fake)
+    assert hook_health.check_capture(ESSENTIALS).ok and calls == []  # not spawned unless asked
+    health = hook_health.check_capture(ESSENTIALS, check_python=True)
+    assert any("older than 3.11" in p for p in health.problems)
+    assert calls == [hook_health.stable_python()]  # one interpreter shared by every entry: checked once
+
+
+def test_install_hook_files_skips_a_file_whose_replace_fails(tmp_path, monkeypatch):
+    config_dir = _claude(tmp_path, {})
+    real_replace = os.replace
+
+    def _boom(src, dst):
+        if Path(dst).name == cat.CATALOGUE_FILE:
+            raise OSError("locked")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(hook_health.os, "replace", _boom)
+    written = hook_health.install_hook_files(config_dir, hook_health.CAPTURE_FILES[cat.HOOK_SCRIPT])
+    assert [p.name for p in written] == [cat.HOOK_SCRIPT]
+    assert not (config_dir / "hooks" / cat.CATALOGUE_FILE).exists()
+    assert not list((config_dir / "hooks").glob("*.tmp"))
+
+
+def test_refresh_hook_files_with_nothing_installed_is_a_no_op(tmp_path):
+    config_dir = _claude(tmp_path, {})
+    assert hook_health.refresh_hook_files(config_dir) == []
+
+
+def test_refresh_hook_files_fixes_outdated_but_leaves_modified(tmp_path):
+    import hashlib
+
+    config_dir = _claude(tmp_path, {})
+    _connect_essentials(config_dir)
+    script_path = config_dir / "hooks" / cat.HOOK_SCRIPT
+    old = b"# an older copy\n"
+    script_path.write_bytes(old)
+    manifest_path = config_dir / "hooks" / ".manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest[cat.HOOK_SCRIPT] = hashlib.sha256(old).hexdigest()
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    catalogue_path = config_dir / "hooks" / cat.CATALOGUE_FILE
+    catalogue_path.write_bytes(b"tampered")
+
+    refreshed = hook_health.refresh_hook_files(config_dir)
+    assert [p.name for p in refreshed] == [cat.HOOK_SCRIPT]
+    assert script_path.read_bytes() == _packaged(cat.HOOK_SCRIPT)
+    assert catalogue_path.read_bytes() == b"tampered"
+
+
+def test_refresh_hook_files_self_heals_a_manifest_that_predates_it(tmp_path):
+    config_dir = _claude(tmp_path, {})
+    hooks_dir = config_dir / "hooks"
+    hooks_dir.mkdir(parents=True)
+    for name in hook_health.CAPTURE_FILES[cat.HOOK_SCRIPT]:
+        (hooks_dir / name).write_bytes(_packaged(name))
+    assert not (hooks_dir / ".manifest.json").exists()
+
+    assert hook_health.refresh_hook_files(config_dir) == []  # already current: nothing to rewrite
+    manifest = json.loads((hooks_dir / ".manifest.json").read_text(encoding="utf-8"))
+    assert all(name in manifest for name in hook_health.CAPTURE_FILES[cat.HOOK_SCRIPT])
+
+
+def test_capture_settings_step_refuses_an_unsafe_hook_command(tmp_path, monkeypatch):
+    # ROB-P9: hook_health.hook_command returning None (an unsafe Python
+    # or config-dir path) must never reach settings.json as a broken
+    # "command": null entry.
+    config_dir = _claude(tmp_path, {})
+    monkeypatch.setattr(hook_health, "hook_command", lambda *a, **k: None)
+    out = io.StringIO()
+    done = cli._capture_settings_step(
+        ESSENTIALS,
+        config_dir=config_dir,
+        claude_root=config_dir.parent,
+        dry_run=False,
+        assume_yes=True,
+        stdin=io.StringIO(""),
+        stdout=out,
+    )
+    assert done is False
+    assert "Could not build a safe capture hook command" in out.getvalue()
+    assert not _settings(config_dir).get("hooks")
+
+
+def test_refresh_hook_files_treats_a_pre_manifest_file_as_outdated_not_modified(tmp_path):
+    config_dir = _claude(tmp_path, {})
+    hooks_dir = config_dir / "hooks"
+    hooks_dir.mkdir(parents=True)
+    (hooks_dir / cat.HOOK_SCRIPT).write_bytes(b"# installed before the manifest existed\n")
+    (hooks_dir / cat.CATALOGUE_FILE).write_bytes(_packaged(cat.CATALOGUE_FILE))
+
+    refreshed = hook_health.refresh_hook_files(config_dir)
+    assert [p.name for p in refreshed] == [cat.HOOK_SCRIPT]
+    assert (hooks_dir / cat.HOOK_SCRIPT).read_bytes() == _packaged(cat.HOOK_SCRIPT)
+
+
 def test_backups_made_in_the_same_second_never_overwrite_each_other(tmp_path):
     config_dir = _claude(tmp_path, {"model": "opus"})
     first = hook_health.connect(hook_health.plan_capture(ESSENTIALS, _commands(config_dir)), now=NOW)
@@ -185,7 +349,11 @@ def test_hook_files_are_copied_from_the_package(tmp_path):
     for path in written:
         packaged = resources.files("claude_token_lens") / "hooks" / path.name
         assert path.read_bytes() == packaged.read_bytes()
-    assert sorted(p.name for p in (tmp_path / "hooks").iterdir()) == sorted(p.name for p in written)
+    # SEC-P7/ROB-P7: a SHA-256 manifest of what was just written sits alongside.
+    installed = {p.name for p in (tmp_path / "hooks").iterdir()} - {".manifest.json"}
+    assert sorted(installed) == sorted(p.name for p in written)
+    manifest = json.loads((tmp_path / "hooks" / ".manifest.json").read_text(encoding="utf-8"))
+    assert set(manifest) == {p.name for p in written}
 
 
 def test_the_snapshot_hook_is_installed_from_the_package_too(tmp_path):
@@ -502,6 +670,154 @@ def test_status_while_on_before_any_captured_session_says_so(tmp_path):
     _capture(config_dir, "on", "--yes")
     rc, out = _capture(config_dir, "status")
     assert "No captured sessions yet" in out
+
+
+# -- SURV-HE: a failing hook flagged in capture status -----------------------
+
+
+def _hook_call_lines(hook_name: str, *, success: int, errors: int, start) -> list[dict]:
+    """``success`` hook_success + ``errors`` hook_non_blocking_error
+    attachment lines for ``hook_name``, a second apart from ``start``."""
+    from helpers import attachment_line
+
+    lines = []
+    for i in range(success):
+        line = attachment_line("hook_success", hookName=hook_name)
+        line["timestamp"] = (start + timedelta(seconds=i)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        lines.append(line)
+    for i in range(errors):
+        line = attachment_line("hook_non_blocking_error", hookName=hook_name)
+        line["timestamp"] = (start + timedelta(seconds=success + i)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        lines.append(line)
+    return lines
+
+
+def _session_with_hook_calls(config_dir, *, hook_name: str, success: int, errors: int, days_ago: float = 1):
+    """A normal one-message session (so the corpus counts it as a real
+    session) whose transcript also carries ``success`` + ``errors`` hook
+    attachment lines for ``hook_name``."""
+    from helpers import turn_line, user_str_line, write_jsonl
+
+    start = datetime.now(timezone.utc) - timedelta(days=days_ago)
+
+    def ts(second):
+        return (start + timedelta(seconds=second)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+    lines = [
+        user_str_line("fix the failing test", origin={"kind": "human"}, timestamp=ts(0)),
+        turn_line(content=[{"type": "text", "text": "Fixed."}], timestamp=ts(1), input_tokens=2000, output_tokens=400),
+    ]
+    lines += _hook_call_lines(hook_name, success=success, errors=errors, start=start + timedelta(seconds=2))
+    project = config_dir.parent / "projects" / "C--work-app"
+    project.mkdir(parents=True, exist_ok=True)
+    write_jsonl(project / "s1.jsonl", lines)
+
+
+def test_status_flags_a_hook_failing_on_most_of_its_calls(tmp_path):
+    config_dir = _claude(tmp_path, {})
+    _session_with_hook_calls(config_dir, hook_name="PreToolUse", success=8, errors=12)
+    rc, out = _capture(config_dir, "status")
+    assert rc == 0
+    assert "PreToolUse" in out
+    assert "60%" in out
+    assert "20 calls" in out
+    assert "settings.json" in out
+
+
+def test_status_says_nothing_when_too_few_calls_to_judge(tmp_path):
+    config_dir = _claude(tmp_path, {})
+    # 3 calls, all errors: a 100% failure rate, but far too few to act on.
+    _session_with_hook_calls(config_dir, hook_name="PreToolUse", success=0, errors=3)
+    rc, out = _capture(config_dir, "status")
+    assert rc == 0
+    assert "PreToolUse" not in out
+
+
+def test_status_says_nothing_when_the_error_rate_is_under_the_threshold(tmp_path):
+    config_dir = _claude(tmp_path, {})
+    _session_with_hook_calls(config_dir, hook_name="PreToolUse", success=15, errors=5)
+    rc, out = _capture(config_dir, "status")
+    assert rc == 0
+    assert "PreToolUse" not in out
+
+
+def test_status_never_prints_a_raw_matcher_or_tool_name(tmp_path):
+    # events._hook_name_bucket keeps only the closed hook-event name; an
+    # MCP tool or bash-matcher suffix must never reach this output.
+    config_dir = _claude(tmp_path, {})
+    from helpers import attachment_line, turn_line, user_str_line, write_jsonl
+
+    start = datetime.now(timezone.utc) - timedelta(days=1)
+
+    def ts(second):
+        return (start + timedelta(seconds=second)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+    lines = [
+        user_str_line("fix the failing test", origin={"kind": "human"}, timestamp=ts(0)),
+        turn_line(content=[{"type": "text", "text": "Fixed."}], timestamp=ts(1), input_tokens=2000, output_tokens=400),
+    ]
+    for i in range(20):
+        line = attachment_line("hook_non_blocking_error", hookName="PreToolUse:mcp__secret-server__do_thing")
+        line["timestamp"] = ts(2 + i)
+        lines.append(line)
+    project = config_dir.parent / "projects" / "C--work-app"
+    project.mkdir(parents=True, exist_ok=True)
+    write_jsonl(project / "s1.jsonl", lines)
+
+    rc, out = _capture(config_dir, "status")
+    assert rc == 0
+    assert "secret-server" not in out
+    assert "do_thing" not in out
+    assert "mcp__" not in out
+    assert "PreToolUse" in out
+
+
+# -- CAP-9/F10: Deep's measured wait in capture status -----------------------
+
+
+def test_status_shows_deeps_measured_wait_when_its_tool_note_metrics_are_on(tmp_path):
+    config_dir = _claude(tmp_path, {})
+    from claude_token_lens.config import set_capture
+    from helpers import attachment_line, turn_line, user_str_line, write_jsonl
+
+    set_capture(config_dir, level="deep", now=datetime.now(timezone.utc) - timedelta(days=2))
+    start = datetime.now(timezone.utc) - timedelta(days=1)
+
+    def ts(second):
+        return (start + timedelta(seconds=second)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+    command = (
+        '"python.exe" -I -S "C:\\Users\\me\\scratch\\tl\\hooks\\capture-hook.py" '
+        '--config-dir "C:\\Users\\me\\scratch\\tl"'
+    )
+    lines = [
+        user_str_line("fix the failing test", origin={"kind": "human"}, timestamp=ts(0)),
+        turn_line(content=[{"type": "text", "text": "Fixed."}], timestamp=ts(1), input_tokens=2000, output_tokens=400),
+    ]
+    for i, ms in enumerate([100] * 8 + [900] * 2):
+        line = attachment_line("hook_success", hookName="PostToolUse:Bash", durationMs=ms, command=command)
+        line["timestamp"] = ts(2 + i)
+        lines.append(line)
+    project = config_dir.parent / "projects" / "C--work-app"
+    project.mkdir(parents=True, exist_ok=True)
+    write_jsonl(project / "s1.jsonl", lines)
+
+    rc, out = _capture(config_dir, "status")
+    assert rc == 0
+    assert "Deep's large-output/web hook waited \u22480.1s (median, p90 \u22480.9s) over 10 calls this week." in out
+
+
+def test_status_hides_deep_wait_when_its_tool_note_metrics_are_off(tmp_path):
+    config_dir = _claude(tmp_path, {})
+    from claude_token_lens.config import set_capture
+
+    # Standard doesn't turn on big_output/web, so there's nothing to show
+    # even though there's a session in the window.
+    set_capture(config_dir, level="standard", now=datetime.now(timezone.utc) - timedelta(days=2))
+    _session(config_dir)
+    rc, out = _capture(config_dir, "status")
+    assert rc == 0
+    assert "hook waited" not in out
 
 
 def _init_args(config_dir, *argv):
@@ -908,3 +1224,69 @@ def test_status_says_when_the_status_line_is_someone_elses(tmp_path):
         json.dumps({"statusLine": {"type": "command", "command": "claude-token-lens statusline"}}), encoding="utf-8"
     )
     assert "Your status line isn't" not in _capture(config_dir, "status")[1]
+
+
+# -- capture prune (SEC-P8/G7: signal files and capture-log.jsonl were --
+# -- never pruned; now this is the same housekeeping serve's watcher    --
+# -- does on every tick, offered as a standalone command)               --
+
+
+def _write_signal_month_file(config_dir: Path, year: int, month: int) -> Path:
+    signals.signals_dir(config_dir).mkdir(parents=True, exist_ok=True)
+    path = signals.signals_dir(config_dir) / f"{year:04d}-{month:02d}.jsonl"
+    path.write_text("", encoding="utf-8")
+    return path
+
+
+def _write_capture_log_lines(config_dir: Path, *timestamps: datetime) -> None:
+    lines = [
+        json.dumps({"ts": ts.isoformat(timespec="seconds"), "level": "essentials", "changed": {}}, sort_keys=True)
+        for ts in timestamps
+    ]
+    (config_dir / CAPTURE_LOG_NAME).write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def test_prune_dry_run_changes_nothing(tmp_path):
+    config_dir = _claude(tmp_path, {})
+    old_signal = _write_signal_month_file(config_dir, 2020, 1)
+    _write_capture_log_lines(config_dir, NOW - timedelta(days=200))
+
+    rc, out = _capture(config_dir, "prune", "--dry-run")
+
+    assert rc == 0
+    assert "Dry run: nothing pruned." in out
+    assert old_signal.exists()
+    assert len(load_capture_log(config_dir)) == 1
+
+
+def test_prune_removes_old_signal_files_and_capture_log_records(tmp_path):
+    config_dir = _claude(tmp_path, {})
+    old_signal = _write_signal_month_file(config_dir, 2020, 1)
+    recent_signal = _write_signal_month_file(config_dir, NOW.year, NOW.month)
+    _write_capture_log_lines(config_dir, NOW - timedelta(days=200), NOW - timedelta(days=5))
+
+    rc, out = _capture(config_dir, "prune")
+
+    assert rc == 0
+    assert f"older than {SIGNAL_RETENTION_DEFAULT_DAYS} days" in out
+    assert not old_signal.exists()
+    assert recent_signal.exists()
+    log = load_capture_log(config_dir)
+    assert len(log) == 1
+    assert log[0]["ts"] == (NOW - timedelta(days=5)).isoformat(timespec="seconds")
+
+
+def test_prune_uses_retention_days_from_config_when_set(tmp_path):
+    config_dir = _claude(tmp_path, {})
+    (config_dir / "config.toml").write_text("retention_days = 30\n", encoding="utf-8")
+    old_signal = _write_signal_month_file(config_dir, 2020, 1)
+    _write_capture_log_lines(config_dir, NOW - timedelta(days=60), NOW - timedelta(days=1))
+
+    rc, out = _capture(config_dir, "prune")
+
+    assert rc == 0
+    assert "older than 30 days" in out
+    assert not old_signal.exists()
+    log = load_capture_log(config_dir)
+    assert len(log) == 1
+    assert log[0]["ts"] == (NOW - timedelta(days=1)).isoformat(timespec="seconds")

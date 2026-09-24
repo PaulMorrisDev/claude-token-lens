@@ -97,10 +97,15 @@ def test_each_signal_is_one_line_of_closed_words(tmp_path):
 
 @pytest.mark.parametrize("payload, field, value", [
     (_end(reason="prompt_input_exit"), "reason", "prompt_input_exit"),
-    (_end(reason="resume"), "reason", "other"),
+    (_end(reason="resume"), "reason", "resume"),  # SIG-1: curl-verified against docs/en/hooks.md
     (_end(reason={"x": 1}), "reason", "other"),
     (_wait(notification_type="idle_prompt"), "kind", "idle"),
     (_wait(notification_type="elicitation_dialog"), "kind", "question"),
+    (_wait(notification_type="elicitation_url_dialog"), "kind", "question"),
+    (_wait(notification_type="agent_needs_input"), "kind", "agent"),
+    (_wait(notification_type="quota_auto_resume_fired"), "kind", "quota"),
+    (_wait(notification_type="quota_auto_resume_stale"), "kind", "quota"),
+    (_wait(notification_type="quota_auto_resume_disabled"), "kind", "quota"),
     (_wait(notification_type="auth_success"), "kind", "other"),
     (_wait(notification_type=None, message="Claude is waiting for your input"), "kind", "idle"),
     (_wait(notification_type=None, message="Claude needs your permission to use Bash"), "kind", "permission"),

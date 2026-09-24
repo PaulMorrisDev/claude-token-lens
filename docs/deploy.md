@@ -424,9 +424,16 @@ that actually delete a row.
   a marked-missing (or still-present) transcript's row, not the
   missing-file check itself. Off by default: without the flag, `serve`
   uses `retention_days` from `config.toml`, and with neither set nothing
-  is ever pruned. The same tick deletes metrics capture's signal files
-  (`<config-dir>/signals/YYYY-MM.jsonl`) for months wholly older than
-  `N` days.
+  in the store is ever pruned.
+
+  Metrics capture's own signal files (`<config-dir>/signals/YYYY-MM.jsonl`)
+  and `capture-log.jsonl` are different: they're this tool's own
+  background telemetry, not report data, so every tick prunes them
+  regardless of whether `--retention-days`/`config.toml` set anything —
+  at `N` when one is set, or a 180-day default
+  (`config.SIGNAL_RETENTION_DEFAULT_DAYS`) otherwise.
+  `claude-token-lens capture prune [--dry-run]` runs the identical
+  cleanup by hand for anyone not running `serve`.
 - **`serve --purge`** (deliverable 2.e): deletes `<config-dir>/service.db`
   and its `-wal`/`-shm` sidecars, then exits — never starts the watcher
   or API. Always prints exactly which files it would delete first; only

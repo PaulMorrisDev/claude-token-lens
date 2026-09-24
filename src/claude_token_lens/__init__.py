@@ -120,7 +120,18 @@ __version__ = "0.5.2"
 #: whole set, sizes ``_big_output`` per call instead of per turn, and
 #: ``_WRAP`` carries a ``:Tool`` suffix. None of this is recoverable from
 #: an older digest, so every transcript is re-parsed once to pick it up.
-PARSER_VERSION = 17
+#:
+#: Bumped to 18 by the P3 hook-lifecycle batch: a HOOK_OUTPUT event's
+#: ``Event.detail`` now carries the closed hook-event bucket it ran under
+#: (``hookName``, e.g. ``"PreToolUse"``, never the matcher/tool-name
+#: suffix -- SURV-HE, G7), its real ``durationMs`` when Claude Code
+#: recorded one (CAP-9/F10: this used to be dropped), and, only when
+#: ``True``, whether the call ran Token Lens's own capture hook script
+#: (``capture``, never the command string itself). ``hook_health.py``'s
+#: new ``count_hook_errors``/``measure_deep_wait`` both read these
+#: straight off already-parsed events; a pre-18 digest has none of them,
+#: so every transcript is re-parsed once to pick them up.
+PARSER_VERSION = 18
 
 #: Bump when the model.py contract changes in a way that invalidates the
 #: on-disk digest cache (see model.py's module docstring for the contract

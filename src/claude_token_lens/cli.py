@@ -35,7 +35,7 @@ from zoneinfo import available_timezones
 
 from . import __version__, baseline as baseline_mod, capture_catalogue, capture_view, classify, discovery, installer as installer_mod
 from . import onboarding
-from . import helptext, hook_health, probe as probe_mod, recache, snapshots
+from . import helptext, hook_health, probe as probe_mod, recache, signals as signals_mod, snapshots
 from . import statusline as statusline_mod
 from .fixes import RESTART_NOTE
 from .cache import DigestCache
@@ -44,11 +44,13 @@ from .config import (
     CAPTURE_SAMPLES,
     RETENTION_DAYS_MAX,
     RETENTION_DAYS_MIN,
+    SIGNAL_RETENTION_DEFAULT_DAYS,
     CaptureConfig,
     Config,
     ConfigError,
     load_config,
     load_session_overrides,
+    prune_capture_log,
     set_capture,
 )
 from .corpus import Corpus, load_corpus
@@ -635,7 +637,7 @@ def _add_uninstall_args(sub: argparse.ArgumentParser) -> None:
 
 
 #: ``capture``'s actions; "status" is the default.
-CAPTURE_ACTIONS = ("status", "on", "off", "level", "enable", "disable", "connect", "remove", "feedback", "brief")
+CAPTURE_ACTIONS = ("status", "on", "off", "level", "enable", "disable", "connect", "remove", "feedback", "brief", "prune")
 
 #: What ``capture feedback on`` turns on, and what ``off`` turns off: the
 #: skill and the reminders to run it. The dashboard rating stays as set.
@@ -663,7 +665,9 @@ def _add_capture_args(sub: argparse.ArgumentParser) -> None:
         help="status (default); on; off; level LEVEL; enable/disable METRIC...; connect (add the hook entries "
         "the chosen metrics need to settings.json); remove (switch off and take the entries out); "
         "feedback on|off (the /tl-feedback skill and its status-line reminder); "
-        "brief on|off (the /tl-brief skill, which checks a request against its checklist)",
+        "brief on|off (the /tl-brief skill, which checks a request against its checklist); "
+        "prune (delete signal files and capture-log.jsonl records older than retention_days, "
+        f"or {SIGNAL_RETENTION_DEFAULT_DAYS} days by default)",
     )
     sub.add_argument(
         "values",
@@ -1309,9 +1313,18 @@ def _merge_dashboard_marks(config_dir: Path, overrides: dict) -> tuple[dict, dic
 def _load_corpus_for_args(
     args: argparse.Namespace, config: Config, config_dir: Path, project_dirs: list[Path]
 ) -> Corpus:
+    # Fix #8: wire the A3 read-target-hash salt up to the actual corpus
+    # load -- previously nothing in src/ ever called set_salt/
+    # load_or_create_salt, so Turn.read_target_hashes was always empty in
+    # every shipped code path. load_corpus threads this through to both
+    # the in-process (jobs == 1) parse calls and, for jobs > 1, every
+    # ProcessPoolExecutor worker's own initializer. Loaded before the
+    # cache below (SEC-P8) so a cache entry's own salt_fp header field
+    # can be checked/stamped against the same salt this load will use.
+    salt = load_or_create_salt(config_dir)
     cache = None
     if not args.no_cache:
-        cache = DigestCache(config_dir)
+        cache = DigestCache(config_dir, salt=salt)
         if args.rebuild_cache:
             cache.purge(all=True)
         else:
@@ -1324,13 +1337,6 @@ def _load_corpus_for_args(
             # version's own folder, and a prune right after would just
             # be extra directory churn for no benefit.
             cache.prune_stale_versions()
-    # Fix #8: wire the A3 read-target-hash salt up to the actual corpus
-    # load -- previously nothing in src/ ever called set_salt/
-    # load_or_create_salt, so Turn.read_target_hashes was always empty in
-    # every shipped code path. load_corpus threads this through to both
-    # the in-process (jobs == 1) parse calls and, for jobs > 1, every
-    # ProcessPoolExecutor worker's own initializer.
-    salt = load_or_create_salt(config_dir)
     corpus = load_corpus(
         project_dirs,
         days=args.days,
@@ -2559,7 +2565,7 @@ def _cmd_init_capture_step(
     stdout.write(f"Saved to config.toml: metrics capture {capture_view.describe(capture)}.\n")
     wanted = hook_health.capture_specs(capture.active_metrics())
     if args.no_install or not (args.connect or not args.non_interactive):
-        if hook_health.check_capture(wanted, claude_root=claude_root).missing:
+        if hook_health.check_capture(wanted, claude_root=claude_root, config_dir=config_dir).missing:
             stdout.write("Add the hook entries it needs with: claude-token-lens capture connect\n")
         return
     done = _capture_settings_step(
@@ -2651,13 +2657,24 @@ def _cmd_init_connect_step(
     claude_root = claude_root if claude_root is not None else _resolve_claude_root(None)
     extra_args = _config_dir_args(config_dir)
     script = hook.install_hook(Path(config_dir).resolve())
+    command = hook.hook_command(script=script, extra_args=extra_args)
+    stdout.write("Connect to Claude Code\n")
+    if command is None:
+        # ROB-P9: the interpreter's or script's own path can't be safely
+        # written into a command string -- refuse rather than write a
+        # broken or unsafe one into settings.json.
+        stdout.write(
+            f"- Could not build a safe hook command: {sys.executable} or {script} holds a quote, $, backtick, "
+            "or is a UNC path. Move claude-token-lens's data folder (or this Python) somewhere with a plain "
+            "path, then run 'claude-token-lens init --connect' again.\n\n"
+        )
+        return
     plan = hook_health.plan_connect(
         config_dir,
-        hook_command=hook.hook_command(script=script, extra_args=extra_args),
+        hook_command=command,
         statusline_command=statusline_mod.install_command(extra_args=extra_args),
         claude_root=claude_root,
     )
-    stdout.write("Connect to Claude Code\n")
     if plan.new_text is None:
         for line in plan.changes:
             stdout.write(f"- {line}\n")
@@ -2938,6 +2955,25 @@ def _cmd_update(args: argparse.Namespace, *, runner=None, is_registered_fn=None)
     new_version = (probe.stdout or "").strip() or "unknown"
     print(f"   Installed version {new_version}.")
 
+    # ROB-P7: refresh any hook file this tool itself wrote that the new
+    # version changed, so Claude Code picks it up without waiting for
+    # 'capture connect'. Run with the newly-installed package (this
+    # process still has the old one loaded), config_dir passed as its own
+    # argv entry rather than interpolated into the -c source (ROB-P9).
+    refresh = runner(
+        [
+            sys.executable,
+            "-c",
+            "import sys\nfrom claude_token_lens import hook_health\nprint(len(hook_health.refresh_hook_files(sys.argv[1])))",
+            str(config_dir),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    refreshed_count = (refresh.stdout or "").strip()
+    if refresh.returncode == 0 and refreshed_count.isdigit() and int(refreshed_count) > 0:
+        print(f"   Refreshed {refreshed_count} hook file{'s' if refreshed_count != '1' else ''} this version changed.")
+
     if args.no_service:
         print("Left the dashboard alone (--no-service). Restart it with: python -m claude_token_lens install-service")
         return 0
@@ -3070,6 +3106,41 @@ def _capture_history(args: argparse.Namespace, config: Config, config_dir: Path)
     return capture.history(corpus, rates, days=CAPTURE_HISTORY_DAYS), _report_units(corpus, rates, config, config_dir)
 
 
+def _flatten_corpus(corpus: Corpus) -> list[TranscriptResult]:
+    """Every parsed transcript in ``corpus`` (top-level session plus its
+    subagents), for a hook_health scan that reads events, not turns."""
+    results: list[TranscriptResult] = []
+    for bundle in corpus.sessions:
+        if bundle.top is None:
+            continue
+        results.extend([bundle.top, *bundle.subs])
+    return results
+
+
+def _scan_hook_errors(args: argparse.Namespace, config: Config, config_dir: Path) -> hook_health.HookErrorHealth:
+    """Non-blocking hook errors (SURV-HE) over your last
+    :data:`CAPTURE_HISTORY_DAYS` days -- every hook Claude Code ran, not
+    only metrics capture's own, so this runs whether or not capture is
+    on."""
+    corpus = _capture_corpus(args, config, config_dir, days=CAPTURE_HISTORY_DAYS)
+    return hook_health.count_hook_errors(_flatten_corpus(corpus))
+
+
+#: "This week" for :func:`_measure_deep_wait` -- independent of
+#: :data:`CAPTURE_HISTORY_DAYS`, which is a cost-estimate window, not a
+#: latency one.
+_DEEP_WAIT_DAYS = 7
+
+
+def _measure_deep_wait(args: argparse.Namespace, config: Config, config_dir: Path) -> hook_health.DeepWaitStats:
+    """Deep's big_output/web PostToolUse hook's real median/p90 wait
+    (CAP-9/F10), over the last :data:`_DEEP_WAIT_DAYS` days -- "this
+    week", the same window :meth:`hook_health.DeepWaitStats.summary`
+    names."""
+    corpus = _capture_corpus(args, config, config_dir, days=_DEEP_WAIT_DAYS)
+    return hook_health.measure_deep_wait(_flatten_corpus(corpus))
+
+
 def _plural(count: int, word: str) -> str:
     return f"{count} {word}{'' if count == 1 else 's'}"
 
@@ -3155,7 +3226,11 @@ def _capture_metric_changes(action: str, values: list[str], current: CaptureConf
     return changes
 
 
-def _capture_hook_commands(config_dir: Path) -> dict[str, str]:
+def _capture_hook_commands(config_dir: Path) -> dict[str, str | None]:
+    """A command per :data:`hook_health.CAPTURE_SCRIPTS`, or ``None``
+    (ROB-P9) for one whose path can't be safely written into a command
+    string -- the caller's job to refuse the change rather than write a
+    broken or unsafe one (:func:`_capture_settings_step`)."""
     hooks_dir = Path(config_dir).resolve() / "hooks"
     extra_args = _config_dir_args(config_dir)
     return {script: hook_health.hook_command(hooks_dir / script, extra_args) for script in hook_health.CAPTURE_SCRIPTS}
@@ -3173,7 +3248,18 @@ def _capture_settings_step(
         for script in hook_health.CAPTURE_SCRIPTS:
             hook_health.install_hook_files(config_dir, hook_health.CAPTURE_FILES[script])
         load_or_create_salt(config_dir)
-    plan = hook_health.plan_capture(wanted, _capture_hook_commands(config_dir), claude_root=claude_root)
+    commands = _capture_hook_commands(config_dir)
+    if any(commands[spec.script] is None for spec in wanted):
+        # ROB-P9: the Python or a hook script's own path can't be safely
+        # written into a command string -- refuse rather than write a
+        # broken or unsafe one into settings.json.
+        stdout.write(
+            f"Could not build a safe capture hook command: {config_dir} or this Python holds a quote, $, "
+            "backtick, or is a UNC path, none of which can be written into settings.json safely. Move "
+            "claude-token-lens's data folder somewhere with a plain path, then try again.\n"
+        )
+        return False
+    plan = hook_health.plan_capture(wanted, commands, claude_root=claude_root)
     if plan.new_text is None:
         for line in plan.changes:  # a settings.json it can't read
             stdout.write(f"{line}\n")
@@ -3294,6 +3380,30 @@ def _capture_skill_step(
     return True
 
 
+def _capture_prune(
+    config_dir: Path, *, retention_days: int | None, dry_run: bool, stdout, now: datetime
+) -> int:
+    """``capture prune``: delete capture signal files
+    (:func:`~claude_token_lens.signals.prune`) and old
+    ``capture-log.jsonl`` records (:func:`~claude_token_lens.config.
+    prune_capture_log`) older than ``retention_days`` (or
+    :data:`SIGNAL_RETENTION_DEFAULT_DAYS` when unset) -- the same
+    telemetry housekeeping ``serve``'s watcher already does on every tick
+    (SEC-P8/G7), offered here for someone who isn't running the service,
+    or wants to run it once by hand or on their own schedule."""
+    days = retention_days or SIGNAL_RETENTION_DEFAULT_DAYS
+    if dry_run:
+        stdout.write(
+            f"Dry run: nothing pruned. Run 'claude-token-lens capture prune' to delete signal files and "
+            f"capture-log.jsonl records older than {days} days.\n"
+        )
+        return 0
+    signals_removed = signals_mod.prune(config_dir, days, now=now)
+    log_removed = prune_capture_log(config_dir, days, now=now)
+    stdout.write(f"Pruned {signals_removed} signal file(s) and {log_removed} capture-log record(s) older than {days} days.\n")
+    return 0
+
+
 def _capture_status(
     capture: CaptureConfig, *, config_dir: Path, claude_root: Path, stdout, args=None, config: Config | None = None
 ) -> int:
@@ -3330,8 +3440,20 @@ def _capture_status(
     if args is not None and config is not None:
         for line in _capture_measured(capture, args=args, config=config, config_dir=config_dir):
             stdout.write(f"{line}\n")
+        if "big_output" in ids or "web" in ids:
+            # CAP-9/F10: a real measured figure, replacing the old
+            # unsourced "a fraction of a second" guess.
+            deep_wait = _measure_deep_wait(args, config, config_dir).summary()
+            if deep_wait:
+                stdout.write(f"{deep_wait}\n")
+        # SURV-HE: a hook failing on most calls is a prompt here, never
+        # an automatic edit -- settings.json is only ever changed after
+        # a shown diff and a yes, elsewhere in this command.
+        recommendation = _scan_hook_errors(args, config, config_dir).recommendation()
+        if recommendation:
+            stdout.write(f"{recommendation}\n")
     wanted = hook_health.capture_specs(ids)
-    health = hook_health.check_capture(wanted, claude_root=claude_root)
+    health = hook_health.check_capture(wanted, claude_root=claude_root, config_dir=config_dir, check_python=True)
     if wanted or health.extra:
         stdout.write(f"Hooks: {health.summary()}\n")
     if "feedback_skill" in capture.feedback:
@@ -3398,7 +3520,12 @@ def _cmd_capture(args: argparse.Namespace, *, stdin=None, stdout=None, now: date
     and its reminders on or off and adds or removes the skill file, after
     showing it and asking; enabling or disabling ``feedback_skill`` does
     the same. ``brief on|off`` does that for the ``/tl-brief`` skill (the
-    ``brief_templates`` toggle). ``--dry-run`` changes nothing."""
+    ``brief_templates`` toggle). ``prune`` deletes signal files and
+    ``capture-log.jsonl`` records older than ``retention_days`` (or
+    :data:`~claude_token_lens.config.SIGNAL_RETENTION_DEFAULT_DAYS` when
+    unset) -- the same housekeeping ``serve``'s watcher already does on
+    every tick (SEC-P8/G7), offered here for someone not running the
+    service. ``--dry-run`` changes nothing."""
     stdin = stdin if stdin is not None else sys.stdin
     stdout = stdout if stdout is not None else sys.stdout
     now = now or datetime.now(timezone.utc)
@@ -3415,6 +3542,8 @@ def _cmd_capture(args: argparse.Namespace, *, stdin=None, stdout=None, now: date
         return _capture_status(
             current, config_dir=config_dir, claude_root=claude_root, stdout=stdout, args=args, config=config
         )
+    if action == "prune":
+        return _capture_prune(config_dir, retention_days=config.retention_days, dry_run=args.dry_run, stdout=stdout, now=now)
 
     changes: dict = {}
     try:
@@ -3542,7 +3671,7 @@ def _cmd_capture(args: argparse.Namespace, *, stdin=None, stdout=None, now: date
                 skill=name,
             )
     if action == "off":
-        if hook_health.check_capture((), claude_root=claude_root).extra:
+        if hook_health.check_capture((), claude_root=claude_root, config_dir=config_dir).extra:
             stdout.write(
                 "The capture hooks stay in settings.json and add nothing while capture is off. "
                 "'claude-token-lens capture remove' takes them out.\n"
@@ -3595,8 +3724,12 @@ def _cmd_uninstall(args: argparse.Namespace) -> int:
        place, newest first (``apply --revert``; a file edited since is
        skipped and reported, never overwritten).
     4. With ``--delete-data``: delete the data folder, including the
-       backups, so it runs last and refuses while applied changes are
-       still in place unless they were just reverted.
+       backups, so it runs last. Refuses while applied changes are
+       still in place unless they were just reverted, and refuses
+       (ROB-P7) while settings.json still runs a claude-token-lens hook
+       from that folder -- step 1 declined, or failed -- since deleting
+       it then would leave Claude Code calling a hook script that no
+       longer exists.
 
     The package itself is removed with pip (printed at the end)."""
     from . import footprint
@@ -3618,9 +3751,14 @@ def _cmd_uninstall(args: argparse.Namespace) -> int:
         if dry:
             print("   Dry run: settings.json left unchanged.\n")
         elif _ask("   Remove these entries? settings.json is backed up first.", assume_yes=args.yes):
-            backup = footprint.remove_settings_entries(plan)
-            print(f"   Removed. The previous settings.json is at {backup}")
-            print(f"   {RESTART_NOTE}\n")
+            try:
+                backup = footprint.remove_settings_entries(plan)
+            except OSError as exc:
+                problems += 1
+                print(f"   Could not remove them: {exc}\n")
+            else:
+                print(f"   Removed. The previous settings.json is at {backup}")
+                print(f"   {RESTART_NOTE}\n")
         else:
             print("   Left unchanged.\n")
     for name, skill_file in (
@@ -3687,6 +3825,13 @@ def _cmd_uninstall(args: argparse.Namespace) -> int:
         still_applied = [b for b in footprint.plan_uninstall(config_dir, claude_root=claude_root).applied] if not dry else (
             [] if args.revert_changes else plan.applied
         )
+        # ROB-P7: re-check live settings.json, not a flag tracked through
+        # step 1 -- a "no" there, or a step 1 that failed to write, both
+        # leave hook entries in place the same way.
+        hooks_remain = not dry and (
+            hook_health.check(config_dir, claude_root=claude_root).command is not None
+            or hook_health.check_capture((), claude_root=claude_root).extra
+        )
         if still_applied:
             problems += 1
             print(
@@ -3695,6 +3840,14 @@ def _cmd_uninstall(args: argparse.Namespace) -> int:
             )
         elif dry:
             print(f"   Would delete {footprint.home_label(plan.data_dir)}.\n")
+        elif hooks_remain:
+            problems += 1
+            print(
+                "   Not deleted: settings.json still runs claude-token-lens hooks from this folder (step 1 "
+                "above). Deleting it now would leave Claude Code calling hook scripts that no longer exist, "
+                "failing silently on every session or tool call. Remove the entries first (answer yes at step "
+                "1, or run 'claude-token-lens capture remove'), then run uninstall --delete-data again.\n"
+            )
         elif _ask(f"   Delete {footprint.home_label(plan.data_dir)}? This cannot be undone.", assume_yes=args.yes):
             failures = footprint.delete_data(plan.data_dir)
             if failures:

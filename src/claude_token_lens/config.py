@@ -80,6 +80,18 @@ CAPTURE_SAMPLES = (100, 50, 25, 10)
 RETENTION_DAYS_MIN = 1
 RETENTION_DAYS_MAX = 36500
 
+#: SEC-P8/G7: how long a capture signal file (``signals.prune``) or a
+#: ``capture-log.jsonl`` record (:func:`prune_capture_log`) is kept when
+#: the user hasn't set an explicit ``retention_days`` of their own --
+#: unlike :attr:`Config.retention_days` (which only takes effect when the
+#: user opts in, since it prunes visible report data), this is Token
+#: Lens's own background telemetry and is never allowed to grow forever
+#: just because nobody configured a retention window (previously: G7
+#: found capture-log.jsonl was never pruned at all, under any setting).
+#: An explicit ``retention_days`` still overrides this default in both
+#: directions -- see ``service/watcher.py``'s per-tick prune call.
+SIGNAL_RETENTION_DEFAULT_DAYS = 180
+
 #: Every change to ``[capture]`` is appended here, one JSON object per
 #: line, so a change can be lined up against the costs around it.
 CAPTURE_LOG_NAME = "capture-log.jsonl"
@@ -1074,10 +1086,63 @@ def load_capture_log(config_dir: str | Path | None = None) -> list[dict]:
     return records
 
 
+def prune_capture_log(
+    config_dir: str | Path | None = None,
+    retention_days: int = SIGNAL_RETENTION_DEFAULT_DAYS,
+    now: datetime | None = None,
+) -> int:
+    """Drop every ``capture-log.jsonl`` record older than
+    ``retention_days`` (G7: this file was never pruned at all -- the
+    same retention idea :func:`~claude_token_lens.signals.prune` already
+    applies to capture signal files). A record whose line can't be
+    parsed back as ``{"ts": <str>, ...}`` (never written by
+    :func:`_append_capture_log` itself, but see :func:`load_capture_log`'s
+    own tolerant-read posture) is dropped along with the rest -- a prune
+    pass is also a chance to repair the file, not just trim it, and such
+    a line was already invisible to :func:`load_capture_log`'s own reader
+    either way. Rewritten atomically via :func:`_write_atomic`. Returns
+    how many lines were removed; a missing file, or one with nothing to
+    remove, is a no-op returning 0.
+    """
+    path = _resolve_config_dir(config_dir) / CAPTURE_LOG_NAME
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return 0
+    if not lines:
+        return 0
+
+    cutoff = (now or datetime.now(timezone.utc)) - timedelta(days=retention_days)
+    kept = []
+    for line in lines:
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(record, dict) or not isinstance(record.get("ts"), str):
+            continue
+        try:
+            ts = datetime.fromisoformat(record["ts"])
+        except ValueError:
+            continue
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        if ts >= cutoff:
+            kept.append(line)
+
+    removed = len(lines) - len(kept)
+    if removed == 0:
+        return 0
+    text = "".join(f"{line}\n" for line in kept)
+    _write_atomic(path, text)
+    return removed
+
+
 __all__ = [
     "TOKEN_LENS_DIRNAME",
     "CAPTURE_LOG_NAME",
     "CAPTURE_SAMPLES",
+    "SIGNAL_RETENTION_DEFAULT_DAYS",
     "CaptureConfig",
     "ConfigError",
     "Config",
@@ -1088,6 +1153,7 @@ __all__ = [
     "write_config_values",
     "set_capture",
     "load_capture_log",
+    "prune_capture_log",
     "load_session_overrides",
     "save_session_override",
 ]

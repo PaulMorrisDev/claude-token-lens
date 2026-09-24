@@ -14,11 +14,12 @@ import json
 import os
 import threading
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 
-from claude_token_lens import PARSER_VERSION
+from claude_token_lens import PARSER_VERSION, config, signals
 from claude_token_lens.service.contracts import ServeOptions
 from claude_token_lens.service.store import Store
 from claude_token_lens.service.watcher import LIVE_FILE_WINDOW_S, FileWatcher
@@ -1093,3 +1094,63 @@ def test_a_large_tick_reports_finding_then_reading_then_storing(
     watcher.run_once()
 
     assert phases == [("finding", 0), ("reading", 3), ("storing", 2), (None, 0)]
+
+
+# -- SEC-P8/G7: signal/capture-log pruning is unconditional -----------------
+
+
+def _write_signal_month_file(config_dir: Path, year: int, month: int) -> Path:
+    signals.signals_dir(config_dir).mkdir(parents=True, exist_ok=True)
+    path = signals.signals_dir(config_dir) / f"{year:04d}-{month:02d}.jsonl"
+    path.write_text("", encoding="utf-8")
+    return path
+
+
+def _write_capture_log(config_dir: Path, *timestamps: datetime) -> None:
+    config_dir.mkdir(parents=True, exist_ok=True)
+    lines = [
+        json.dumps({"ts": ts.isoformat(timespec="seconds"), "level": "essentials", "changed": {}}, sort_keys=True)
+        for ts in timestamps
+    ]
+    (config_dir / config.CAPTURE_LOG_NAME).write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def test_run_once_prunes_old_signals_and_capture_log_with_no_retention_days_set(tmp_path: Path, store: Store):
+    # Previously this whole block (store rows, signal files, capture-log)
+    # was skipped entirely unless the user set retention_days -- G7 found
+    # capture-log.jsonl (and, the same way, signal files) grew forever by
+    # default. Now the telemetry files are pruned unconditionally, at the
+    # 180-day default, even with retention_days left at None.
+    options = _options(tmp_path)
+    old_signal = _write_signal_month_file(options.config_dir, 2020, 1)
+    recent_signal = _write_signal_month_file(
+        options.config_dir, datetime.now(timezone.utc).year, datetime.now(timezone.utc).month
+    )
+    now = datetime.now(timezone.utc)
+    _write_capture_log(options.config_dir, now - timedelta(days=200), now - timedelta(days=5))
+
+    watcher = FileWatcher(store, options)
+    watcher.run_once()
+
+    assert not old_signal.exists()
+    assert recent_signal.exists()
+    log = config.load_capture_log(options.config_dir)
+    assert len(log) == 1
+    assert log[0]["ts"] == (now - timedelta(days=5)).isoformat(timespec="seconds")
+
+
+def test_run_once_uses_an_explicit_retention_days_for_signals_and_capture_log(tmp_path: Path, store: Store):
+    # An explicit retention_days narrower than the 180-day default must
+    # still reach the signal/capture-log path, not just store rows.
+    options = _options(tmp_path, retention_days=30)
+    old_signal = _write_signal_month_file(options.config_dir, 2020, 1)
+    now = datetime.now(timezone.utc)
+    _write_capture_log(options.config_dir, now - timedelta(days=60), now - timedelta(days=1))
+
+    watcher = FileWatcher(store, options)
+    watcher.run_once()
+
+    assert not old_signal.exists()
+    log = config.load_capture_log(options.config_dir)
+    assert len(log) == 1
+    assert log[0]["ts"] == (now - timedelta(days=1)).isoformat(timespec="seconds")

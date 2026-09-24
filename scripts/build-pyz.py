@@ -44,6 +44,8 @@ it is included automatically; no separate step is needed.
 from __future__ import annotations
 
 import argparse
+import compileall
+import py_compile
 import shutil
 import sys
 import tempfile
@@ -85,6 +87,27 @@ def build(output: Path = DEFAULT_OUTPUT) -> Path:
     with tempfile.TemporaryDirectory(prefix="claude-token-lens-pyz-") as tmp:
         tmp_path = Path(tmp)
         _copy_source_tree(tmp_path)
+        # ROB-P10: byte-compile before archiving, so the shipped .pyz
+        # carries .pyc files and zipimport never has to parse and
+        # compile every .py from inside the zip on each run it starts.
+        # legacy=True writes "module.pyc" next to "module.py" (no
+        # __pycache__ directory -- test_built_pyz_excludes_pycache_and_tests
+        # forbids one, and zipimport only ever reads that legacy layout
+        # from inside a zip, never PEP 3147's __pycache__ one).
+        # UNCHECKED_HASH: source and bytecode are built together right
+        # here and shipped as one immutable archive, so there is nothing
+        # to invalidate against at import time -- a timestamp-based pyc
+        # would depend on mtimes surviving the copy and the zip write
+        # unchanged, which zipapp makes no promise about.
+        compiled_ok = compileall.compile_dir(
+            str(tmp_path),
+            quiet=1,
+            legacy=True,
+            workers=1,
+            invalidation_mode=py_compile.PycInvalidationMode.UNCHECKED_HASH,
+        )
+        if not compiled_ok:
+            raise RuntimeError("claude-token-lens.pyz build failed: compileall could not byte-compile the source tree")
         zipapp.create_archive(
             source=tmp_path,
             target=output,

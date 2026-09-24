@@ -6,17 +6,20 @@ relies on.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+import json
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from claude_token_lens import capture_catalogue
 from claude_token_lens.config import (
     CAPTURE_LOG_NAME,
+    SIGNAL_RETENTION_DEFAULT_DAYS,
     CaptureConfig,
     ConfigError,
     load_capture_log,
     load_config,
+    prune_capture_log,
     set_capture,
     write_config_values,
 )
@@ -184,6 +187,75 @@ def test_an_unreadable_log_line_is_skipped(tmp_path):
         handle.write("not json\n[1, 2]\n")
     assert len(load_capture_log(tmp_path)) == 1
     assert load_capture_log(tmp_path / "missing") == []
+
+
+# -- prune_capture_log (SEC-P8/G7: capture-log.jsonl was never pruned) -----
+
+
+def _log_line(ts: datetime, level: str = "essentials") -> str:
+    record = {"ts": ts.isoformat(timespec="seconds"), "level": level, "changed": {}}
+    return json.dumps(record, sort_keys=True)
+
+
+def test_prune_capture_log_removes_records_older_than_retention(tmp_path):
+    old = NOW - timedelta(days=200)
+    recent = NOW - timedelta(days=10)
+    (tmp_path / CAPTURE_LOG_NAME).write_text(
+        _log_line(old) + "\n" + _log_line(recent) + "\n", encoding="utf-8"
+    )
+
+    removed = prune_capture_log(tmp_path, retention_days=180, now=NOW)
+
+    assert removed == 1
+    log = load_capture_log(tmp_path)
+    assert len(log) == 1 and log[0]["ts"] == recent.isoformat(timespec="seconds")
+
+
+def test_prune_capture_log_keeps_everything_within_retention(tmp_path):
+    (tmp_path / CAPTURE_LOG_NAME).write_text(
+        _log_line(NOW - timedelta(days=5)) + "\n" + _log_line(NOW - timedelta(days=10)) + "\n",
+        encoding="utf-8",
+    )
+
+    assert prune_capture_log(tmp_path, retention_days=180, now=NOW) == 0
+    assert len(load_capture_log(tmp_path)) == 2
+
+
+def test_prune_capture_log_on_a_missing_file_is_a_noop(tmp_path):
+    assert prune_capture_log(tmp_path / "missing", retention_days=180, now=NOW) == 0
+
+
+def test_prune_capture_log_also_drops_unparseable_lines(tmp_path):
+    # A prune pass is also a chance to repair the file -- a line that
+    # load_capture_log already treats as invisible (see
+    # test_an_unreadable_log_line_is_skipped) doesn't survive a rewrite
+    # either.
+    (tmp_path / CAPTURE_LOG_NAME).write_text(
+        _log_line(NOW) + "\nnot json\n[1, 2]\n", encoding="utf-8"
+    )
+
+    removed = prune_capture_log(tmp_path, retention_days=180, now=NOW)
+
+    assert removed == 2
+    assert len(load_capture_log(tmp_path)) == 1
+
+
+def test_prune_capture_log_defaults_to_the_signal_retention_default(tmp_path):
+    assert SIGNAL_RETENTION_DEFAULT_DAYS == 180
+    just_over = NOW - timedelta(days=SIGNAL_RETENTION_DEFAULT_DAYS + 1)
+    (tmp_path / CAPTURE_LOG_NAME).write_text(_log_line(just_over) + "\n", encoding="utf-8")
+
+    assert prune_capture_log(tmp_path, now=NOW) == 1
+
+
+def test_prune_capture_log_is_atomic_and_leaves_no_temp_file(tmp_path):
+    (tmp_path / CAPTURE_LOG_NAME).write_text(
+        _log_line(NOW - timedelta(days=200)) + "\n" + _log_line(NOW) + "\n", encoding="utf-8"
+    )
+
+    prune_capture_log(tmp_path, retention_days=180, now=NOW)
+
+    assert sorted(p.name for p in tmp_path.iterdir()) == [CAPTURE_LOG_NAME]
 
 
 def test_describe_mentions_capture_only_when_on(tmp_path):

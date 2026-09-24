@@ -207,12 +207,20 @@ BIG_OUTPUT_TOOLS = ("Bash", "Read", "Grep", "Glob", *WEB_TOOLS, "mcp__.*")
 #: Hook event -> the free signal it records.
 SIGNAL_EVENTS = {"SessionEnd": "session_end", "Notification": "waits", "PermissionRequest": "permissions"}
 
-#: Why a session ended, as SessionEnd reports it; anything else is "other".
-SESSION_END_REASONS = ("clear", "logout", "prompt_input_exit", "bypass_permissions_disabled", "other")
+#: Why a session ended, as SessionEnd reports it; anything else is
+#: "other". ``bypass_permissions_disabled`` was removed in Claude Code
+#: v2.1.234 (docs/en/hooks.md, curl-verified) -- it is kept here only so
+#: an old signal line that still holds it reads back correctly; a
+#: current SessionEnd never sends it again. ``resume`` (also
+#: curl-verified) was missing outright (SIG-1).
+SESSION_END_REASONS = ("clear", "resume", "logout", "prompt_input_exit", "bypass_permissions_disabled", "other")
 
 #: What Claude waited for: a permission prompt, your next message, a
-#: question it asked (an MCP elicitation), or something else.
-WAIT_KINDS = ("permission", "idle", "question", "other")
+#: question it asked (an MCP elicitation), someone else's input in an
+#: agent view or team, a claude.ai usage limit's auto-resume, or
+#: something else (SIG-1; the full Notification type list is
+#: curl-verified against docs/en/hooks.md).
+WAIT_KINDS = ("permission", "idle", "question", "agent", "quota", "other")
 
 #: Folder under the data folder that holds the signal files, one per
 #: month (``YYYY-MM.jsonl``).
@@ -546,7 +554,8 @@ METRICS: tuple[Metric, ...] = (
         title="Large tool outputs",
         what=f"After a tool result of about {BIG_OUTPUT_TOKENS:,} tokens or more, how much of it Claude "
         "needed: all, part or none. Claude Code waits for the hook after each shell, read, search, web or "
-        "MCP result, which adds a fraction of a second to each.",
+        "MCP result; 'capture status' shows how long that has actually added, measured from your own "
+        "sessions.",
         why="Quieter commands, offset reads and output caps where big outputs weren't needed.",
         powers=("tool_output",),
         tag="out=needed|part|unneeded",
@@ -561,7 +570,8 @@ METRICS: tuple[Metric, ...] = (
         section="tools",
         title="Web results",
         what="After a web search or fetch, whether the result was useful. Claude Code waits for the hook "
-        "after each one, which adds a fraction of a second.",
+        "after each one; 'capture status' shows how long that has actually added, measured from your own "
+        "sessions.",
         why="Web research against handing Claude the page or document yourself.",
         powers=("research",),
         tag="useful=yes|part|no",
@@ -1435,7 +1445,9 @@ def render_markdown() -> str:
     p(
         "Free local signals never involve Claude at all: a hook logs the session id (hashed with this "
         "tool's own salt), the event word, and — for a permission prompt — the tool name, never its "
-        "arguments, to a local file under `<config-dir>/signals/`."
+        "arguments, to a local file under `<config-dir>/signals/`. Those files, and the `capture-log.jsonl` "
+        "record of every on/off/level change, aren't kept forever: `serve`'s watcher (or `capture prune` by "
+        "hand) deletes entries past your configured retention, a default applying when none is set."
     )
     p("")
     p(
@@ -1456,7 +1468,14 @@ def render_markdown() -> str:
         "`--yes`. Every other change writes only this tool's own `config.toml`."
     )
     p("")
-    p("- `claude-token-lens capture status` — the level, what's on, since when, and the cost measured so far.")
+    p(
+        "- `claude-token-lens capture status` — the level, what's on, since when, and the cost measured so "
+        "far. While big_output or web is on, it also prints Deep's actual measured wait (median and p90, "
+        "over the last 7 days). It also flags any hook — Token Lens's own or one of yours — that failed on "
+        "most of its calls over the last 14 days, naming it (event name only, never a matcher or tool name), "
+        "where to find it in `settings.json`, the trade-off, and the undo; this is only ever a printed "
+        "prompt, never an automatic change."
+    )
     p(
         "- `claude-token-lens capture on [--level LEVEL] [--for DURATION | --until DATE | --no-limit] "
         "[--sample N] [--yes] [--dry-run]` — turn it on (default level: Essentials)."
@@ -1486,6 +1505,12 @@ def render_markdown() -> str:
     p("- `claude-token-lens capture remove` — switch off and take those hook entries back out.")
     p("- `claude-token-lens capture feedback on|off` — the `/tl-feedback` skill and its status-line reminder.")
     p("- `claude-token-lens capture brief on|off` — the `/tl-brief` skill.")
+    p(
+        "- `claude-token-lens capture prune [--dry-run]` — delete signal files and `capture-log.jsonl` "
+        "records past your configured retention (`retention_days` in `config.toml`, or a default when it's "
+        "unset); `serve`'s watcher already runs this same cleanup on every tick, so this is for anyone not "
+        "running it."
+    )
     p(
         "- `claude-token-lens changes` and `claude-token-lens uninstall` also cover metrics capture: they "
         "list everything it installed and can remove all of it — hooks, skills and signal files included."

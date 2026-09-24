@@ -373,28 +373,35 @@ def load_or_create_salt(config_dir: str | Path | None = None) -> bytes:
     ``_default_token_lens_dir()``. Does not call ``set_salt`` itself — the
     caller decides when the process-wide salt is wired up.
 
-    Fix #4: any read failure — not just a missing file (``PermissionError``,
-    ``IsADirectoryError``, a dead network mount, ...) — is treated as "no
-    salt yet" rather than propagating and crashing the caller, and a salt
-    file whose length is not exactly :data:`_SALT_LENGTH_BYTES` (a
-    zero-byte file from an interrupted first write, a truncated sync, a
-    hand-edited file) is likewise treated as absent and regenerated —
-    returning it unsalted would defeat the whole hashing mechanism (a
-    zero-length salt makes ``_read_target_hash`` produce a plain,
-    rainbow-table-able HMAC). The replacement file is created via
-    ``os.open`` with ``O_CREAT`` and mode ``0o600`` together, so a
-    brand-new file is never briefly world-readable between creation and a
-    separate ``chmod`` call; ``chmod`` still runs afterwards (best-effort,
-    ignored on Windows, which has no equivalent bit) to cover the
-    overwrite-an-existing-but-invalid-file branch, where ``O_CREAT``'s mode
-    argument has no effect on an already-existing inode's permissions.
+    Fix #4, narrowed by SEC-P8/G7: only a missing file (``FileNotFoundError``)
+    is treated as "no salt yet" and silently regenerated. A read failure
+    that means the file is *there* but unreadable right now
+    (``PermissionError``, ``IsADirectoryError``, a dead network mount, ...)
+    propagates instead of being folded into the same "missing" case --
+    the old, broader ``except OSError`` would rotate the salt on a
+    transient permission problem exactly as if the file had never
+    existed, silently breaking every session-id hash correlation this
+    tool has ever written to ``signals/`` or a cache's provenance header,
+    for a condition that is usually temporary. A salt file whose length
+    is not exactly :data:`_SALT_LENGTH_BYTES` (a zero-byte file from an
+    interrupted first write, a truncated sync, a hand-edited file) is
+    still treated as absent and regenerated -- returning it unsalted
+    would defeat the whole hashing mechanism (a zero-length salt makes
+    ``_read_target_hash`` produce a plain, rainbow-table-able HMAC). The
+    replacement file is created via ``os.open`` with ``O_CREAT`` and mode
+    ``0o600`` together, so a brand-new file is never briefly
+    world-readable between creation and a separate ``chmod`` call;
+    ``chmod`` still runs afterwards (best-effort, ignored on Windows,
+    which has no equivalent bit) to cover the overwrite-an-existing-but-
+    invalid-file branch, where ``O_CREAT``'s mode argument has no effect
+    on an already-existing inode's permissions.
     """
     directory = Path(config_dir) if config_dir is not None else _default_token_lens_dir()
     directory.mkdir(parents=True, exist_ok=True)
     salt_path = directory / _SALT_FILENAME
     try:
         existing = salt_path.read_bytes()
-    except OSError:
+    except FileNotFoundError:
         existing = None
     if existing is not None and len(existing) == _SALT_LENGTH_BYTES:
         return existing

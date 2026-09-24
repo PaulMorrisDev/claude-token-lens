@@ -137,6 +137,28 @@ def _fingerprint() -> str:
 FINGERPRINT = _fingerprint()
 
 
+def _salt_fingerprint(salt: bytes) -> str:
+    """SHA-256 (hex) over ``salt`` itself (SEC-P8) -- never the raw salt,
+    folded into a cache entry's header alongside :data:`FINGERPRINT` (see
+    :meth:`DigestCache.get`/:meth:`DigestCache.put`).
+
+    ``parse.set_salt``/``Turn.read_target_hashes`` and
+    ``discovery.redact_slug``-adjacent skill-name hashing bake the salt
+    directly into a parsed ``TranscriptResult``'s own fields (see
+    ``service/serve.py``'s "Salt the path and skill-name hashes the same
+    way the CLI does" comment). Without this check, a cache entry written
+    under one salt would keep being served as a hit after the salt
+    changed -- ``mtime_ns``/``size_bytes``/``FINGERPRINT`` all still
+    match, since none of them have anything to do with the salt -- so its
+    salted hashes would silently disagree with anything freshly parsed
+    (or with another cache entry written after the rotation), breaking
+    the CLAUDE.md/skills-review and custom-agent-type joins that assume
+    every hash in the corpus was salted the same way, with nothing to
+    show for it but a wrong answer.
+    """
+    return hashlib.sha256(salt).hexdigest()
+
+
 # -- encode/decode --------------------------------------------------------
 
 
@@ -321,10 +343,16 @@ class DigestCache:
     (current and stale) side by side -- see :meth:`prune_stale_versions`.
     """
 
-    def __init__(self, config_dir: str | Path):
+    def __init__(self, config_dir: str | Path, *, salt: bytes | None = None):
         self.config_dir = Path(config_dir)
         self.versions_dir = self.config_dir / _CACHE_SUBDIR
         self.cache_dir = self.versions_dir / f"p{PARSER_VERSION}"
+        # SEC-P8: only checked (in both get() and put()) when the caller
+        # actually threads a salt through -- see _salt_fingerprint's
+        # docstring. A caller that never salts anything (e.g. a purge-only
+        # or cache-inspection path) leaves this None and every entry's own
+        # salt_fp, whatever it is, is simply not looked at.
+        self._salt_fp = _salt_fingerprint(salt) if salt is not None else None
 
     # -- key/path helpers ----------------------------------------------
 
@@ -359,10 +387,14 @@ class DigestCache:
         though ``cache_dir`` already scopes every read to this
         ``PARSER_VERSION``'s own folder, in case a caller reuses a
         ``DigestCache`` across a hot-reload or a test monkeypatches
-        ``PARSER_VERSION`` without also moving the directory). A live
-        file (see the module docstring) is always a miss, regardless of
-        what's on disk. A corrupt entry is deleted; a stale (version- or
-        size/mtime-mismatched) one is left for :meth:`put` to overwrite.
+        ``PARSER_VERSION`` without also moving the directory), plus
+        ``salt_fp`` (SEC-P8, see :func:`_salt_fingerprint`) -- but only
+        when this instance was constructed with a ``salt`` of its own; a
+        caller that never salts anything doesn't care what salt, if any,
+        wrote the entry. A live file (see the module docstring) is always
+        a miss, regardless of what's on disk. A corrupt entry is deleted;
+        a stale (version-, salt-, or size/mtime-mismatched) one is left
+        for :meth:`put` to overwrite.
         """
         if self._is_live(meta):
             return None
@@ -396,6 +428,8 @@ class DigestCache:
             or header.get("size_bytes") != meta.size_bytes
         ):
             return None
+        if self._salt_fp is not None and header.get("salt_fp") != self._salt_fp:
+            return None
 
         try:
             return result_from_jsonable(body)
@@ -424,6 +458,7 @@ class DigestCache:
             "realpath_hash": key,
             "mtime_ns": meta.mtime_ns,
             "size_bytes": meta.size_bytes,
+            "salt_fp": self._salt_fp,
         }
         payload = {"header": header, "result": encode_result(result)}
         text = json.dumps(payload)

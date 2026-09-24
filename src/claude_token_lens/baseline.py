@@ -379,8 +379,8 @@ def build_baseline(
     provisional = not finalise and not status.complete
 
     config_dir = Path(config_dir)
-    cache = DigestCache(config_dir)
     salt = load_or_create_salt(config_dir)
+    cache = DigestCache(config_dir, salt=salt)
     corpus = load_corpus(
         project_dirs,
         days=days,

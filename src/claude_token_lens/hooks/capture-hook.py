@@ -55,7 +55,6 @@ import json
 import os
 import re
 import sys
-import tomllib
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -78,8 +77,25 @@ _SALT_BYTES = 32
 _SIGNAL_CODES = {"SessionEnd": "end", "Notification": "wait", "PermissionRequest": "perm"}
 
 #: Notification types (and, for older Claude Code versions without them,
-#: the start of the message) -> what Claude waited for.
-_WAIT_TYPES = {"permission_prompt": "permission", "idle_prompt": "idle", "elicitation_dialog": "question"}
+#: the start of the message) -> what Claude waited for. The full list
+#: (SIG-1, curl-verified against docs/en/hooks.md) is
+#: ``permission_prompt``, ``idle_prompt``, ``auth_success``,
+#: ``elicitation_dialog``, ``elicitation_url_dialog``,
+#: ``elicitation_complete``, ``elicitation_response``,
+#: ``agent_needs_input``, ``agent_completed``, ``quota_auto_resume_fired``,
+#: ``quota_auto_resume_stale``, ``quota_auto_resume_disabled``; anything
+#: not mapped here (a completion notice, not a wait, or a type newer
+#: than this list) reads as "other".
+_WAIT_TYPES = {
+    "permission_prompt": "permission",
+    "idle_prompt": "idle",
+    "elicitation_dialog": "question",
+    "elicitation_url_dialog": "question",
+    "agent_needs_input": "agent",
+    "quota_auto_resume_fired": "quota",
+    "quota_auto_resume_stale": "quota",
+    "quota_auto_resume_disabled": "quota",
+}
 _WAIT_MESSAGES = (("Claude needs your permission", "permission"), ("Claude is waiting for your input", "idle"))
 
 #: What a tool name may look like to be logged; anything else is "other".
@@ -101,7 +117,15 @@ def load_catalogue(path: Path | None = None) -> dict:
 
 
 def load_config(config_dir: Path) -> dict:
-    """``config.toml`` as a dict (``{}`` when there is none)."""
+    """``config.toml`` as a dict (``{}`` when there is none, or on a
+    Python older than 3.11, which has no ``tomllib`` at all -- ROB-P8:
+    the import lives here, inside ``main``'s catch-everything, rather
+    than at module level, where it would raise before ``main`` ever
+    runs and break the "always exits 0" contract)."""
+    try:
+        import tomllib
+    except ImportError:
+        return {}
     try:
         text = (config_dir / "config.toml").read_text(encoding="utf-8")
     except FileNotFoundError:
@@ -229,15 +253,6 @@ def build_tool_note(catalogue: dict, metric_id: str) -> str:
     return f"{catalogue['marker']}{catalogue['version']} {metric_id}\n{metric['tool_note']}"
 
 
-def _result_chars(response) -> int:
-    if isinstance(response, str):
-        return len(response)
-    try:
-        return len(json.dumps(response, ensure_ascii=False))
-    except (TypeError, ValueError):
-        return 0
-
-
 def _in_subagent(payload: dict) -> bool:
     """Whether a SessionStart comes from a subagent's compaction. It
     carries no agent fields today, only the transcript it belongs to.
@@ -287,8 +302,12 @@ def _capture_for(payload: dict, config: dict, now: datetime) -> dict | None:
     return capture
 
 
-def note_for(payload: dict, config: dict, catalogue: dict, now: datetime | None = None) -> str:
-    """The note this hook call should add, or ``""``."""
+def note_for(payload: dict, config: dict, catalogue: dict, now: datetime | None = None, raw_len: int = 0) -> str:
+    """The note this hook call should add, or ``""``. ``raw_len`` (ROB-P8)
+    is the length of the whole stdin payload as Claude Code sent it: a
+    cheap stand-in for the tool result's own size that costs no extra
+    JSON re-encoding, close enough for a threshold this coarse (the
+    result is normally most of the payload)."""
     capture = _capture_for(payload, config, now or datetime.now(timezone.utc))
     if capture is None:
         return ""
@@ -306,7 +325,7 @@ def note_for(payload: dict, config: dict, catalogue: dict, now: datetime | None 
         if "web" in ids and tool in catalogue["web_tools"]:
             return build_tool_note(catalogue, "web")
         threshold = catalogue["big_output_tokens"] * _CHARS_PER_TOKEN
-        if "big_output" in ids and _result_chars(payload.get("tool_response")) >= threshold:
+        if "big_output" in ids and raw_len >= threshold:
             return build_tool_note(catalogue, "big_output")
     return ""
 
@@ -377,23 +396,34 @@ def _run(argv: list[str]) -> None:
     parser = argparse.ArgumentParser(prog="capture-hook.py")
     parser.add_argument("--config-dir", default=None)
     args = parser.parse_args(argv)
-    # Claude Code sends UTF-8 whatever the console's code page is.
+    # Claude Code sends UTF-8 whatever the console's code page is. Read
+    # to the end no matter what: leaving stdin unread on an early return
+    # is the kind of thing that has surprised a caller elsewhere in the
+    # hooks ecosystem, and it costs nothing here.
     raw = sys.stdin.buffer.read().decode("utf-8", errors="replace")
-    payload = json.loads(raw) if raw.strip() else {}
-    if not isinstance(payload, dict):
-        return
+    # ROB-P8: config_dir/config are worked out and checked BEFORE the
+    # payload is parsed. Most calls are on a machine where capture is
+    # off (it is opt-in), so this skips json.loads on the -- sometimes
+    # large -- payload, and load_catalogue()'s own file read, for the
+    # common case, without changing what a call that IS captured sees.
     config_dir = resolve_config_dir(args.config_dir)
     try:
         config = load_config(config_dir)
     except (OSError, ValueError):
         return  # an unreadable or half-written config reads as off
+    capture = config.get("capture")
+    if not isinstance(capture, dict) or capture.get("level", "off") == "off":
+        return
+    payload = json.loads(raw) if raw.strip() else {}
+    if not isinstance(payload, dict):
+        return
     catalogue = load_catalogue()
     if payload.get("hook_event_name") in catalogue["signal_events"]:
         record = signal_for(payload, config, catalogue, read_salt(config_dir))
         if record:
             write_signal(config_dir, catalogue, record)
         return
-    note = note_for(payload, config, catalogue)
+    note = note_for(payload, config, catalogue, raw_len=len(raw))
     if note:
         output = {"hookSpecificOutput": {"hookEventName": payload.get("hook_event_name"), "additionalContext": note}}
         sys.stdout.write(json.dumps(output))

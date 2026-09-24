@@ -1113,6 +1113,44 @@ def test_snapshot_project_key_matches_the_hooks_stored_slug():
     assert snap_mod.snapshot_project_key(raw) == hook._redact_slug(raw)
 
 
+# -- hook_command / hook_fragment_text (ROB-P8/ROB-P9, install-time only) --
+
+
+def _load_hook_module():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("snapshot_config_hook", _HOOK_PATH)
+    hook = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(hook)
+    return hook
+
+
+def test_hook_command_runs_python_isolated_and_without_site():
+    hook = _load_hook_module()
+    script = Path("C:/token-lens/hooks/snapshot-config.py")
+    command = hook.hook_command(python="C:/Python311/python.exe", script=script)
+    assert command == f'"C:/Python311/python.exe" -I -S "{script}"'
+
+
+@pytest.mark.parametrize("bad", ['C:/weird"quote/python.exe', "C:/weird$var/python.exe", "C:/weird`tick/python.exe"])
+def test_hook_command_refuses_an_unsafe_python_path(bad):
+    hook = _load_hook_module()
+    assert hook.hook_command(python=bad, script=Path("script.py")) is None
+
+
+def test_hook_command_refuses_a_unc_script_path():
+    hook = _load_hook_module()
+    unc = Path(r"\\server\share\snapshot-config.py")
+    assert hook.hook_command(python="C:/Python311/python.exe", script=unc) is None
+
+
+def test_hook_fragment_text_explains_when_the_command_cant_be_built():
+    hook = _load_hook_module()
+    text = hook.hook_fragment_text(python='C:/weird"quote/python.exe', script=Path("script.py"))
+    assert "Could not build a safe hook command" in text
+    assert "SessionStart" not in text  # no broken JSON fragment is printed
+
+
 def test_hook_with_config_dir_elsewhere_reads_claude_settings_not_its_parent(tmp_path, home, project):
     # init adds --config-dir to the hook command when the data folder is
     # not <claude folder>/token-lens; settings.json and agents/ still come

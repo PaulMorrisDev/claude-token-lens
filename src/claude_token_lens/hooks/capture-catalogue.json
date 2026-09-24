@@ -366,6 +366,7 @@
  },
  "session_end_reasons": [
   "clear",
+  "resume",
   "logout",
   "prompt_input_exit",
   "bypass_permissions_disabled",
@@ -375,6 +376,8 @@
   "permission",
   "idle",
   "question",
+  "agent",
+  "quota",
   "other"
  ],
  "signals_dir": "signals",

@@ -7,6 +7,7 @@ encode/decode round trip against every real fixture under
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import time
@@ -181,6 +182,109 @@ def test_fingerprint_is_pinned():
     to remember to bump this by hand), not to silently ship it.
     """
     assert FINGERPRINT == "2809b4c179c98b50cab78e91e9deb31a8db4a44a6e09c38d39a9d74bed0ba725"
+
+
+# -- salt fingerprint (SEC-P8) ----------------------------------------------
+
+
+def test_put_stores_the_salt_fingerprint_of_the_given_salt(tmp_path):
+    salt = b"a" * 32
+    cache = DigestCache(tmp_path / "config", salt=salt)
+    transcript_path = _write_transcript(tmp_path)
+    meta = _meta_for(transcript_path)
+    result = parse_transcript(transcript_path, meta)
+    cache.put(transcript_path, meta, result)
+
+    cache_file = next(cache.cache_dir.glob("*.json"))
+    raw = json.loads(cache_file.read_text(encoding="utf-8"))
+    assert raw["header"]["salt_fp"] == hashlib.sha256(salt).hexdigest()
+
+
+def test_hit_when_a_later_instance_uses_the_same_salt(tmp_path):
+    salt = b"b" * 32
+    config_dir = tmp_path / "config"
+    transcript_path = _write_transcript(tmp_path)
+    meta = _meta_for(transcript_path)
+    result = parse_transcript(transcript_path, meta)
+    DigestCache(config_dir, salt=salt).put(transcript_path, meta, result)
+
+    hit = DigestCache(config_dir, salt=salt).get(transcript_path, meta)
+    assert hit is not None
+
+
+def test_miss_when_the_salt_rotates(tmp_path):
+    """SEC-P8: a cache entry written under one salt must never be served
+    to a reader carrying a different one -- mtime/size/fingerprint alone
+    would still match, but the entry's own salted hashes
+    (``Turn.read_target_hashes``, skill-name hashes -- see
+    ``cache._salt_fingerprint``'s docstring) no longer agree with
+    anything a fresh parse under the new salt would produce.
+    """
+    config_dir = tmp_path / "config"
+    transcript_path = _write_transcript(tmp_path)
+    meta = _meta_for(transcript_path)
+    result = parse_transcript(transcript_path, meta)
+    DigestCache(config_dir, salt=b"c" * 32).put(transcript_path, meta, result)
+
+    miss = DigestCache(config_dir, salt=b"d" * 32).get(transcript_path, meta)
+    assert miss is None
+
+
+def test_salt_is_not_checked_when_the_reader_has_none(tmp_path):
+    """A caller that never threads a salt through (e.g. a purge-only or
+    cache-inspection path) doesn't care what salt, if any, wrote the
+    entry -- see ``DigestCache.__init__``'s own docstring note.
+    """
+    config_dir = tmp_path / "config"
+    transcript_path = _write_transcript(tmp_path)
+    meta = _meta_for(transcript_path)
+    result = parse_transcript(transcript_path, meta)
+    DigestCache(config_dir, salt=b"e" * 32).put(transcript_path, meta, result)
+
+    hit = DigestCache(config_dir).get(transcript_path, meta)
+    assert hit is not None
+
+
+def test_miss_when_salt_fingerprint_does_not_match(tmp_path):
+    """Same tampered-header pattern as
+    ``test_miss_when_fingerprint_does_not_match``, for ``salt_fp``.
+    """
+    salt = b"f" * 32
+    cache = DigestCache(tmp_path / "config", salt=salt)
+    transcript_path = _write_transcript(tmp_path)
+    meta = _meta_for(transcript_path)
+    result = parse_transcript(transcript_path, meta)
+    cache.put(transcript_path, meta, result)
+
+    cache_file = next(cache.cache_dir.glob("*.json"))
+    raw = json.loads(cache_file.read_text(encoding="utf-8"))
+    raw["header"]["salt_fp"] = "not-the-real-salt-fp"
+    cache_file.write_text(json.dumps(raw), encoding="utf-8")
+
+    assert cache.get(transcript_path, meta) is None
+    assert cache_file.exists()
+
+
+def test_miss_for_a_pre_existing_entry_with_no_salt_fp_when_reader_has_a_salt(tmp_path):
+    """An entry written before this feature existed (no ``salt_fp`` key
+    at all) is treated as a stale miss once a salted reader comes along
+    -- the same "unknown means invalidate, not silently trust" posture
+    every other header field here already has.
+    """
+    config_dir = tmp_path / "config"
+    transcript_path = _write_transcript(tmp_path)
+    meta = _meta_for(transcript_path)
+    result = parse_transcript(transcript_path, meta)
+    DigestCache(config_dir).put(transcript_path, meta, result)
+
+    cache_file = next((config_dir / "cache").glob(f"p{PARSER_VERSION}/*.json"))
+    raw = json.loads(cache_file.read_text(encoding="utf-8"))
+    assert raw["header"]["salt_fp"] is None
+    del raw["header"]["salt_fp"]
+    cache_file.write_text(json.dumps(raw), encoding="utf-8")
+
+    salted_cache = DigestCache(config_dir, salt=b"g" * 32)
+    assert salted_cache.get(transcript_path, meta) is None
 
 
 # -- live-file bypass ------------------------------------------------------

@@ -22,10 +22,16 @@ Each :meth:`FileWatcher.run_once` tick:
    transcript into the store via ``Store.upsert_transcript``, and every
    session's classification/cost totals via ``Store.upsert_session``.
 4. Removes rows for files no longer on disk (``Store.remove_missing``),
-   prunes old sessions (and old capture signal files, see
-   ``signals.prune``) when ``options.retention_days`` is set, and
-   ingests any new config-snapshot file under
-   ``options.config_dir/snapshots/`` (see :meth:`_scan_snapshots`).
+   prunes old sessions when ``options.retention_days`` is set, and always
+   prunes old capture signal files (``signals.prune``) and old
+   ``capture-log.jsonl`` records (``config.prune_capture_log``) -- at
+   ``options.retention_days`` when set, else
+   ``config.SIGNAL_RETENTION_DEFAULT_DAYS`` (SEC-P8/G7: this telemetry
+   must never grow forever just because nobody set a retention window,
+   unlike session rows, which are visible report data and are only ever
+   pruned on an explicit opt-in) -- and ingests any new config-snapshot
+   file under ``options.config_dir/snapshots/`` (see
+   :meth:`_scan_snapshots`).
 
 Never raises out of :meth:`run_once` for a single bad file or session —
 each is wrapped in its own ``try``/``except`` and recorded in
@@ -66,6 +72,7 @@ from pathlib import Path
 
 from .. import PARSER_VERSION, classify, discovery, recache, workflows as workflows_mod, workstyle
 from .. import baseline as baseline_mod
+from .. import config as config_mod
 from ..cache import DigestCache, encode_result, result_from_jsonable
 from ..compaction import compaction_records_for_transcript
 from ..corpus import _parse_worker
@@ -549,7 +556,20 @@ class FileWatcher:
 
         if self.options.retention_days is not None:
             self._time_store(stats, self.store.retention_prune, self.options.retention_days)
-            signals_mod.prune(self.options.config_dir, self.options.retention_days)
+
+        # SEC-P8/G7: signal files and the capture-change log are Token
+        # Lens's own background telemetry, not visible report data --
+        # unlike the store-row pruning above (which only ever runs when
+        # the user opts in with an explicit retention_days, since that
+        # deletes what a report shows), these must never be left to grow
+        # forever just because nobody configured a retention window.
+        # `or` (not `is not None`) so a 0 -- which config.py's own
+        # RETENTION_DAYS_MIN already forbids on the way in, but a caller
+        # could still construct ServeOptions directly with one -- falls
+        # back to the safe default rather than pruning everything.
+        signal_retention = self.options.retention_days or config_mod.SIGNAL_RETENTION_DEFAULT_DAYS
+        signals_mod.prune(self.options.config_dir, signal_retention)
+        config_mod.prune_capture_log(self.options.config_dir, signal_retention)
 
     # -- S1-perf item 2: bulk parallel prewarm -------------------------------
 

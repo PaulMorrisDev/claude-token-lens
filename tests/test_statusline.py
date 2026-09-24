@@ -1318,6 +1318,14 @@ def test_no_capture_config_prints_one_line(tmp_path, monkeypatch, capsys):
     assert _lines(tmp_path, monkeypatch, capsys, {"context_window": {"used_tokens": 10000}}) == ["ctx 10k"]
 
 
+def test_feedback_note_is_imported_lazily_not_on_every_prompt_refresh():
+    # ROB-P10: statusline.py runs on every prompt refresh (its hot path);
+    # capture_catalogue (and everything it pulls in) should only load
+    # when a feedback note is actually about to be shown, not eagerly at
+    # module import time.
+    assert not hasattr(statusline, "FEEDBACK_NOTE")
+
+
 def test_the_feedback_note_is_a_second_line_and_line_one_is_unchanged(tmp_path, monkeypatch, capsys):
     _capture_config(tmp_path, '[capture]\nfeedback = ["feedback_skill", "feedback_note"]\n')
     lines = _lines(tmp_path, monkeypatch, capsys, {"context_window": {"used_tokens": 10000}})

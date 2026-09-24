@@ -24,23 +24,41 @@ described by :class:`HookSpec`. :func:`check_capture` checks them the same way;
 exactly the entries the chosen metrics need, and :func:`connect` writes
 it. :func:`install_hook_files` copies the hook scripts out of the
 package, which works inside the ``.pyz`` build too.
+
+None of the above needs a transcript. :func:`count_hook_errors` does --
+it tallies each hook event's non-blocking errors (``PreToolUse``,
+``PostToolUse``, and so on; never the matcher or tool-name suffix, so an
+MCP server name never surfaces) across already-parsed transcripts, and
+:meth:`HookErrorHealth.recommendation` turns a hook that fails on most
+of its calls into one plain-English prompt naming where it's configured,
+the latency/noise trade-off, and the undo. It only ever prints; nothing
+here writes to settings.json on that account.
+
+:func:`measure_deep_wait` reads the same transcripts for Deep's own
+big_output/web PostToolUse hook's real ``durationMs`` (CAP-9/F10: it used
+to be dropped, and the catalogue guessed at a figure with no source
+behind it) and turns it into a median/p90 :class:`DeepWaitStats`.
 """
 
 from __future__ import annotations
 
 import csv
 import difflib
+import hashlib
 import importlib.resources
 import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Iterable
 
 from . import capture_catalogue, discovery, snapshots
+from .model import EventKind, TranscriptResult
 
 HOOK_SCRIPT_NAME = "snapshot-config.py"
 
@@ -51,8 +69,15 @@ CAPTURE_SCRIPTS = (capture_catalogue.HOOK_SCRIPT,)
 #: Files each capture script needs next to it under ``<config-dir>/hooks``.
 CAPTURE_FILES = {capture_catalogue.HOOK_SCRIPT: (capture_catalogue.HOOK_SCRIPT, capture_catalogue.CATALOGUE_FILE)}
 
+#: Every file name this tool ever installs under ``<config-dir>/hooks``.
+ALL_HOOK_FILES = frozenset({HOOK_SCRIPT_NAME} | {name for names in CAPTURE_FILES.values() for name in names})
+
 #: Seconds Claude Code waits for a capture hook before giving up on it.
 CAPTURE_TIMEOUT_S = 5
+
+#: The oldest Python a hook command can safely name: ``tomllib``, which
+#: ``capture-hook.py`` reads config.toml with, is stdlib only from here.
+_MIN_PYTHON = (3, 11)
 
 
 @dataclass(frozen=True, slots=True)
@@ -230,10 +255,150 @@ def stable_python() -> str:
     return base if base and Path(base).is_file() else sys.executable
 
 
-def _python_command(script: Path, python: str | None = None) -> str:
+def _interpreter_version(program: str) -> tuple[int, int] | None:
+    """``(major, minor)`` reported by the Python ``program`` names, or
+    ``None`` when it can't be run in a few seconds. Bounded (ROB-P7): a
+    broken, hanging or non-Python interpreter never blocks a health
+    check, it just reads as "unknown" rather than as a problem."""
+    expanded = _expand(program)
+    try:
+        result = subprocess.run(
+            [expanded, "-I", "-S", "-c", "import sys; print(sys.version_info[0], sys.version_info[1])"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    try:
+        major, minor = result.stdout.split()
+        return int(major), int(minor)
+    except ValueError:
+        return None
+
+
+#: SEC-P7/ROB-P7: hash-stamp manifest recording the SHA-256 of every hook
+#: file this tool itself last wrote under ``<config-dir>/hooks``, so
+#: :func:`check_capture` can tell a file that is merely an older release
+#: this tool wrote ("outdated" -- :func:`refresh_hook_files` fixes it)
+#: apart from one that was changed by something else since ("modified" --
+#: left alone, only reported).
+_MANIFEST_NAME = ".manifest.json"
+
+
+def _manifest_path(config_dir: str | Path) -> Path:
+    return Path(config_dir) / "hooks" / _MANIFEST_NAME
+
+
+def _load_manifest(config_dir: str | Path) -> dict[str, str]:
+    try:
+        data = json.loads(_manifest_path(config_dir).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _save_manifest(config_dir: str | Path, manifest: dict[str, str]) -> None:
+    path = _manifest_path(config_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f"{_MANIFEST_NAME}.{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    try:
+        os.replace(tmp, path)
+    except OSError:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+
+
+def _packaged_bytes(name: str) -> bytes:
+    return (importlib.resources.files("claude_token_lens") / "hooks" / name).read_bytes()
+
+
+def _sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _file_provenance(path: Path, name: str, manifest: dict[str, str]) -> str:
+    """``"ok"`` when ``path`` matches the packaged copy of ``name`` this
+    version ships, ``"missing"`` when it isn't there, ``"outdated"`` when
+    it doesn't match but the manifest confirms this tool wrote exactly
+    that older copy (or the manifest predates this file, in which case a
+    file living in a folder only this tool writes to is assumed to be its
+    own older copy rather than raising a false "modified" alarm on
+    upgrade), and ``"modified"`` when it matches neither the current
+    package nor its own last-known stamp -- something else changed it."""
+    if not path.is_file():
+        return "missing"
+    try:
+        on_disk = path.read_bytes()
+    except OSError:
+        return "missing"
+    packaged = _packaged_bytes(name)
+    if on_disk == packaged:
+        return "ok"
+    stamp = manifest.get(name)
+    on_disk_hash = _sha256(on_disk)
+    return "outdated" if stamp is None or stamp == on_disk_hash else "modified"
+
+
+#: ROB-P9: a character a double-quoted JSON command string and Claude
+#: Code's shell on Windows (Git Bash) cannot both carry safely. A quote
+#: would close the string early; ``$`` or a backtick would let the shell
+#: interpolate a variable or run a command instead of passing the path
+#: through literally.
+_UNSAFE_COMMAND_CHARS = ('"', "$", "`")
+
+
+def _quote_for_command(path: str) -> str | None:
+    """``path`` double-quoted for a hook command, or ``None`` when it
+    holds something that quoting alone can't make safe (ROB-P9):
+
+    - a quote, ``$`` or a backtick (:data:`_UNSAFE_COMMAND_CHARS`) --
+      refused outright, rather than escaped, since the escape that is
+      correct inside a POSIX double-quoted string (what Git Bash reads
+      the command as) is not the same one that is correct for Windows's
+      own argv parsing, and this one command string has to work as both;
+    - a UNC path (``\\\\server\\share\\...``) -- its leading double
+      backslash is itself a POSIX double-quote escape sequence for one
+      literal backslash, so passing it through unescaped would silently
+      collapse it to a single backslash and break the path.
+
+    A single trailing backslash *is* escaped (doubled): both Windows's
+    own argv parsing and a POSIX double-quoted string treat a backslash
+    right before the closing quote as escaping that quote rather than
+    ending the string, so an unmodified trailing backslash would swallow
+    the closing ``"`` and run on into whatever follows.
+    """
+    if any(ch in path for ch in _UNSAFE_COMMAND_CHARS):
+        return None
+    if path.startswith("\\\\") or path.startswith("//"):
+        return None
+    n = len(path) - len(path.rstrip("\\"))
+    if n:
+        path = path + "\\" * n
+    return f'"{path}"'
+
+
+def _python_command(script: Path, python: str | None = None) -> str | None:
     """A hook command that names a Python and the script by their full
-    paths, so it depends on neither PATH nor shell variables."""
-    return f'"{python or stable_python()}" "{script}"'
+    paths, so it depends on neither PATH nor shell variables, with
+    ``-I -S`` (ROB-P8: isolated mode plus no ``site`` import) so a
+    stdlib-only hook script never picks up a ``PYTHON*`` environment
+    variable, a ``sitecustomize.py``, or a ``.pth`` file from whatever
+    happens to be on this machine. ``None`` when the Python or the
+    script's path can't be safely written into a command string
+    (:func:`_quote_for_command`, ROB-P9) -- the caller's job to refuse
+    building the hook entry at all rather than write a broken or unsafe
+    one."""
+    quoted_python = _quote_for_command(python or stable_python())
+    quoted_script = _quote_for_command(str(script))
+    if quoted_python is None or quoted_script is None:
+        return None
+    return f"{quoted_python} -I -S {quoted_script}"
 
 
 def _expand_percent_vars(command: str) -> str | None:
@@ -323,7 +488,12 @@ def check(
         else:
             # Keep any arguments after the script (such as the
             # --config-dir init adds for a non-default data folder).
-            health.fixed_command = _python_command(candidate_path.resolve(), python) + _args_after_script(candidate)
+            # ROB-P9: a path that can't be safely written into a command
+            # string at all leaves fixed_command None -- there is no fix
+            # to offer, only "move it somewhere else and try again".
+            fixed = _python_command(candidate_path.resolve(), python)
+            if fixed is not None:
+                health.fixed_command = fixed + _args_after_script(candidate)
     return health
 
 
@@ -620,6 +790,14 @@ class CaptureHookHealth:
     #: Capture entries no chosen metric needs. Harmless: the hook adds
     #: nothing for a metric that is off.
     extra: tuple[HookSpec, ...] = ()
+    #: Needed entries whose script or catalogue is this tool's own older
+    #: copy (SEC-P7/ROB-P7): ``refresh_hook_files`` or ``capture connect``
+    #: fixes it.
+    outdated: tuple[HookSpec, ...] = ()
+    #: Needed entries whose script or catalogue matches neither this
+    #: tool's current package nor its own last-known stamp -- changed by
+    #: something else since this tool wrote it. Reported, never rewritten.
+    modified: tuple[HookSpec, ...] = ()
     #: Plain sentences, one per problem with an entry that is there.
     problems: list[str] = field(default_factory=list)
 
@@ -641,10 +819,24 @@ class CaptureHookHealth:
 
 
 def check_capture(
-    wanted: tuple[HookSpec, ...], *, claude_root: str | Path | None = None
+    wanted: tuple[HookSpec, ...],
+    *,
+    claude_root: str | Path | None = None,
+    config_dir: str | Path | None = None,
+    check_python: bool = False,
 ) -> CaptureHookHealth:
     """Compare settings.json's capture entries with ``wanted``. Never
-    raises: an unreadable settings file reads as no entries."""
+    raises: an unreadable settings file reads as no entries.
+
+    With ``config_dir``, each entry's script and catalogue (SEC-P7/ROB-P7)
+    are also hash-stamp checked against the manifest :func:`install_hook_files`
+    writes, adding to ``.outdated``/``.modified`` -- cheap (a few files
+    hashed, no transcript read), so safe for a hot status path. With
+    ``check_python`` too, each distinct interpreter is also asked its own
+    version once (:func:`_interpreter_version`, a bounded subprocess
+    call) and flagged when older than 3.11, since ``capture-hook.py``
+    needs ``tomllib`` to read config.toml at all -- left off by default
+    since spawning a process isn't free."""
     health = CaptureHookHealth(settings_path=settings_path(claude_root), needed=tuple(wanted))
     try:
         settings = json.loads(health.settings_path.read_text(encoding="utf-8"))
@@ -654,6 +846,10 @@ def check_capture(
     specs = [spec for spec, _entry in present]
     health.missing = tuple(spec for spec in wanted if spec not in specs)
     health.extra = tuple(spec for spec in specs if spec not in wanted)
+    manifest = _load_manifest(config_dir) if config_dir is not None else {}
+    outdated: list[HookSpec] = []
+    modified: list[HookSpec] = []
+    python_versions: dict[str, tuple[int, int] | None] = {}
     for spec, entry in present:
         if spec not in wanted:
             continue
@@ -664,11 +860,49 @@ def check_capture(
         script = _script_path_for(command, spec.script)
         if script is None or not script.is_file():
             health.problems.append(f"The command for {spec.describe()} runs {script or spec.script}, which does not exist.")
+        elif config_dir is not None:
+            worst = "ok"
+            for name in CAPTURE_FILES.get(spec.script, (spec.script,)):
+                target = script if name == spec.script else script.with_name(name)
+                state = _file_provenance(target, name, manifest)
+                if state == "missing" and name != spec.script:
+                    health.problems.append(
+                        f"The catalogue {name} next to {spec.script} is missing, so its notes fall back to "
+                        "plain wording."
+                    )
+                elif state == "modified":
+                    worst = "modified"
+                elif state == "outdated" and worst != "modified":
+                    worst = "outdated"
+            if worst == "modified":
+                modified.append(spec)
+                health.problems.append(
+                    f"The command for {spec.describe()} does not match what claude-token-lens installed or "
+                    "ships now, so it may have been edited by hand."
+                )
+            elif worst == "outdated":
+                outdated.append(spec)
+                health.problems.append(
+                    f"The command for {spec.describe()} runs an older copy than this version of "
+                    "claude-token-lens ships. 'claude-token-lens capture connect' refreshes it, as does the "
+                    "next 'update' or dashboard restart."
+                )
         program = _interpreter(command)
         if program is None or not _interpreter_found(program):
             health.problems.append(f"The command for {spec.describe()} starts '{program}', which is not installed or not on your PATH.")
+        elif check_python:
+            if program not in python_versions:
+                python_versions[program] = _interpreter_version(program)
+            version = python_versions[program]
+            if version is not None and version < _MIN_PYTHON:
+                health.problems.append(
+                    f"The command for {spec.describe()} starts Python {version[0]}.{version[1]}, older than "
+                    "3.11, so it can't read config.toml (tomllib) and capture stays off."
+                )
         if _PERCENT_VAR_RE.search(command):
             health.problems.append(f"The command for {spec.describe()} uses a %VARIABLE%, which Git Bash does not expand.")
+    health.outdated = tuple(outdated)
+    health.modified = tuple(modified)
     return health
 
 
@@ -679,28 +913,85 @@ def _script_path_for(command: str, script_name: str) -> Path | None:
     return Path(_expand(match.group(1))) if match else None
 
 
-def hook_command(script: Path, extra_args: str = "", python: str | None = None) -> str:
+def hook_command(script: Path, extra_args: str = "", python: str | None = None) -> str | None:
     """The command a hook entry runs: a Python and ``script`` by their
-    full paths, then ``extra_args`` as written."""
-    return _python_command(script, python) + extra_args
+    full paths, then ``extra_args`` as written. ``None`` (ROB-P9) when
+    the Python or the script's own path can't be safely written into a
+    command string -- the caller's job to refuse the hook entry rather
+    than write one."""
+    command = _python_command(script, python)
+    return command + extra_args if command is not None else None
 
 
 def install_hook_files(config_dir: str | Path, names) -> list[Path]:
     """Copy the packaged ``hooks/<name>`` files into
-    ``<config_dir>/hooks/``, replacing older copies. Reads them through
-    ``importlib.resources``, so it works from a ``.pyz`` too. Returns the
-    paths written."""
+    ``<config_dir>/hooks/``, replacing older copies, and stamp each in
+    the SHA-256 manifest (:func:`_save_manifest`) so a later
+    :func:`check_capture` can tell this tool's own older copy apart from
+    one someone else changed. Reads the packaged bytes through
+    ``importlib.resources``, so it works from a ``.pyz`` too. When the
+    final rename fails (ROB-P7: a locked file on Windows, say), that one
+    file is skipped -- its previous copy is left running rather than the
+    whole install failing -- and it keeps its old manifest stamp, so
+    :func:`check_capture` still reports it accurately. Returns the paths
+    actually written."""
     dest_dir = Path(config_dir) / "hooks"
     dest_dir.mkdir(parents=True, exist_ok=True)
     written = []
+    manifest = _load_manifest(config_dir)
+    changed = False
     for name in names:
         data = (importlib.resources.files("claude_token_lens") / "hooks" / name).read_bytes()
         dest = dest_dir / name
         tmp = dest.with_name(f"{name}.{os.getpid()}.tmp")
         tmp.write_bytes(data)
-        os.replace(tmp, dest)
+        try:
+            os.replace(tmp, dest)
+        except OSError:
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+            continue
+        manifest[name] = _sha256(data)
+        changed = True
         written.append(dest)
+    if changed:
+        _save_manifest(config_dir, manifest)
     return written
+
+
+def refresh_hook_files(config_dir: str | Path) -> list[Path]:
+    """Re-copy each packaged hook file already installed under
+    ``<config_dir>/hooks`` (:data:`ALL_HOOK_FILES`) whose on-disk copy is
+    only outdated -- this tool's own older copy, per
+    :func:`_file_provenance` -- never one :func:`check_capture` would
+    call modified. Called when ``update`` finishes and when ``serve``
+    starts (ROB-P7), so a newer pip install reaches the hook scripts
+    Claude Code actually runs without waiting for the next ``capture
+    connect``. A file nothing has installed yet, or one already current,
+    is left alone; returns the paths actually rewritten."""
+    dest_dir = Path(config_dir) / "hooks"
+    if not dest_dir.is_dir():
+        return []
+    manifest = _load_manifest(config_dir)
+    stale = []
+    healed = False
+    for name in sorted(ALL_HOOK_FILES):
+        dest = dest_dir / name
+        state = _file_provenance(dest, name, manifest)
+        if state == "ok":
+            packaged_hash = _sha256(_packaged_bytes(name))
+            if manifest.get(name) != packaged_hash:
+                manifest[name] = packaged_hash  # self-heal a manifest that predates this file
+                healed = True
+        elif state == "outdated":
+            stale.append(name)
+    if healed and not stale:
+        _save_manifest(config_dir, manifest)
+    if stale:
+        return install_hook_files(config_dir, stale)
+    return []
 
 
 def connect(plan: ConnectPlan, *, now: datetime | None = None) -> Path | None:
@@ -719,11 +1010,176 @@ def connect(plan: ConnectPlan, *, now: datetime | None = None) -> Path | None:
     return backup
 
 
+# -- SURV-HE: non-blocking hook errors, by hook event (S6) -------------------
+
+#: A hook call counts toward a hook event's tally only for these two
+#: outcomes -- a non-blocking error is a silent failure worth flagging
+#: (S6: "That's latency on every call, and it would bury capture-hook
+#: failures"); a *blocking* error is often a hook working exactly as
+#: designed (e.g. a permission-denial hook), so it's left out of both the
+#: numerator and the denominator here rather than counted as a "failure";
+#: hook_system_message/hook_cancelled/capture_note aren't a pass/fail
+#: outcome of the hook itself and are left out too.
+_HOOK_CALL_SUBKINDS = frozenset({"hook_success", "hook_non_blocking_error"})
+
+#: Below this many calls in the window, a hook's error rate is too noisy
+#: to act on (a hook that ran twice and failed once is not "fails on
+#: most calls" in any useful sense) -- same reasoning as
+#: ``config.min_sessions``/``min_turns`` gating other corpus-wide advice.
+_MIN_CALLS_FOR_RECOMMENDATION = 20
+
+#: SURV-HE's own recommendation threshold: "fails on most calls".
+_RECOMMEND_ERROR_RATE = 0.5
+
+
+@dataclass(slots=True)
+class HookErrorStat:
+    """One hook event's non-blocking call/error tally over a window."""
+
+    hook_name: str
+    calls: int = 0
+    errors: int = 0
+
+    @property
+    def error_rate(self) -> float:
+        return self.errors / self.calls if self.calls else 0.0
+
+
+@dataclass(slots=True)
+class HookErrorHealth:
+    """Non-blocking hook errors seen across a corpus, tallied by hook
+    event name (SURV-HE, S6: one real corpus had 47,858 non-blocking
+    PreToolUse errors, almost all from one Bash hook -- latency on every
+    matching tool call, and enough noise to bury a genuine capture-hook
+    failure among it). Built by :func:`count_hook_errors`.
+    """
+
+    stats: tuple[HookErrorStat, ...] = ()
+
+    def worst(self) -> HookErrorStat | None:
+        """The highest error-rate hook with at least
+        :data:`_MIN_CALLS_FOR_RECOMMENDATION` calls, or ``None`` when no
+        hook has enough calls to judge."""
+        candidates = [s for s in self.stats if s.calls >= _MIN_CALLS_FOR_RECOMMENDATION]
+        if not candidates:
+            return None
+        return max(candidates, key=lambda s: s.error_rate)
+
+    def recommendation(self) -> str | None:
+        """A plain-English prompt naming the worst hook, its failure
+        share, where it's configured, the trade-off and the undo --
+        ``None`` when nothing crosses :data:`_RECOMMEND_ERROR_RATE`.
+        Text only: this ships as a prompt, never as an edit -- nothing in
+        this module ever touches settings.json on its account."""
+        worst = self.worst()
+        if worst is None or worst.error_rate < _RECOMMEND_ERROR_RATE:
+            return None
+        pct = round(worst.error_rate * 100)
+        return (
+            f"Your {worst.hook_name} hook(s) failed (non-blocking) on {pct}% of {worst.calls} calls this window "
+            f"-- see settings.json's hooks.{worst.hook_name} list to find which one. Trade-off: every failing "
+            "call still adds that hook's own latency before the tool runs, and a hook failing this often can "
+            "bury a real capture-hook failure in the same noise; the failing entry is probably doing little for "
+            "you either way. Undo: whatever it was for stops working once you remove or fix it, so put it back "
+            "if you need it."
+        )
+
+
+def count_hook_errors(results: Iterable[TranscriptResult]) -> HookErrorHealth:
+    """Tally ``HOOK_OUTPUT`` events across ``results`` (already-parsed
+    transcripts -- this module never reads or parses one itself, matching
+    :func:`check_capture`'s own "cheap, no transcript read here"
+    contract; the caller does the parsing, e.g. via ``corpus.load_corpus``)
+    by hook event name (never the matcher/tool-name suffix -- see
+    ``events._hook_name_bucket``'s docstring for why).
+    """
+    tally: dict[str, HookErrorStat] = {}
+    for result in results:
+        for event in result.events:
+            if event.kind != EventKind.HOOK_OUTPUT or event.subkind not in _HOOK_CALL_SUBKINDS:
+                continue
+            name = event.detail.get("hookName")
+            if not isinstance(name, str):
+                continue
+            stat = tally.setdefault(name, HookErrorStat(hook_name=name))
+            stat.calls += 1
+            if event.subkind == "hook_non_blocking_error":
+                stat.errors += 1
+    return HookErrorHealth(stats=tuple(tally[name] for name in sorted(tally)))
+
+
+# -- CAP-9: Deep's measured wait (F10) ---------------------------------------
+
+
+@dataclass(slots=True)
+class DeepWaitStats:
+    """How long Deep's big_output/web PostToolUse hook actually took, from
+    real ``durationMs`` values on Token Lens's own calls (F10: this used
+    to be dropped, and the catalogue guessed "a fraction of a second"
+    with no source behind it). Only a median and a p90 are kept -- never
+    the raw per-call durations -- built by :func:`measure_deep_wait`.
+    """
+
+    calls: int = 0
+    median_ms: float | None = None
+    p90_ms: float | None = None
+
+    def summary(self) -> str | None:
+        """``"Deep waited ~=N s this week"``, or ``None`` with no calls to
+        measure from (capture off, Deep's tool-note metrics off, or no
+        matching tool result yet)."""
+        if not self.calls or self.median_ms is None or self.p90_ms is None:
+            return None
+        return (
+            f"Deep's large-output/web hook waited ≈{self.median_ms / 1000:.1f}s (median, "
+            f"p90 ≈{self.p90_ms / 1000:.1f}s) over {self.calls} calls this week."
+        )
+
+
+def _percentile(sorted_values: list[float], fraction: float) -> float:
+    """Nearest-rank percentile; fine for the handful of calls a week
+    of Deep hook activity produces -- no interpolation needed."""
+    index = min(len(sorted_values) - 1, int(fraction * len(sorted_values)))
+    return sorted_values[index]
+
+
+def measure_deep_wait(results: Iterable[TranscriptResult]) -> DeepWaitStats:
+    """Median/p90 ``durationMs`` (:func:`_hook_output_detail` <- events.py)
+    across every PostToolUse call Token Lens's own capture hook made in
+    ``results`` (already-parsed transcripts -- same "no I/O here"
+    contract as :func:`count_hook_errors`) -- every outcome counts, not
+    only a successful one, because Claude Code waited for the hook to
+    finish either way.
+    """
+    durations: list[float] = []
+    for result in results:
+        for event in result.events:
+            if event.kind != EventKind.HOOK_OUTPUT:
+                continue
+            if event.detail.get("hookName") != "PostToolUse" or not event.detail.get("capture"):
+                continue
+            duration = event.detail.get("durationMs")
+            if isinstance(duration, (int, float)):
+                durations.append(float(duration))
+    if not durations:
+        return DeepWaitStats()
+    durations.sort()
+    return DeepWaitStats(
+        calls=len(durations),
+        median_ms=_percentile(durations, 0.5),
+        p90_ms=_percentile(durations, 0.9),
+    )
+
+
 __all__ = [
+    "ALL_HOOK_FILES",
     "CAPTURE_SCRIPTS",
     "CaptureHookHealth",
     "ConnectPlan",
+    "DeepWaitStats",
     "HOOK_SCRIPT_NAME",
+    "HookErrorHealth",
+    "HookErrorStat",
     "HookHealth",
     "HookSpec",
     "backup_path",
@@ -731,10 +1187,13 @@ __all__ = [
     "check",
     "check_capture",
     "connect",
+    "count_hook_errors",
     "hook_command",
     "install_hook_files",
+    "measure_deep_wait",
     "plan_capture",
     "plan_connect",
+    "refresh_hook_files",
     "remove_capture_entries",
     "repair",
     "settings_path",

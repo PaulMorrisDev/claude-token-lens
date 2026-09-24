@@ -1407,21 +1407,57 @@ def install_hook(config_dir: Path) -> Path:
     return dest
 
 
-def hook_command(python: str | None = None, script: Path | None = None, extra_args: str = "") -> str:
+#: ROB-P9: a character a double-quoted JSON command string and Claude
+#: Code's shell on Windows (Git Bash) cannot both carry safely -- see
+#: ``hook_health._quote_for_command``, which this mirrors: this script
+#: must stay standalone stdlib, so the two copies can't share code.
+_UNSAFE_COMMAND_CHARS = ('"', "$", "`")
+
+
+def _quote_for_command(path: str) -> str | None:
+    """``path`` double-quoted for a hook command, or ``None`` when
+    quoting alone can't make it safe: a quote/``$``/backtick, or a UNC
+    path (``\\\\server\\share\\...`` would silently collapse to one
+    backslash inside a POSIX double-quoted string). A single trailing
+    backslash is doubled, which both Windows's argv parsing and a POSIX
+    double-quoted string treat as an escaped backslash rather than one
+    that escapes the closing quote."""
+    if any(ch in path for ch in _UNSAFE_COMMAND_CHARS):
+        return None
+    if path.startswith("\\\\") or path.startswith("//"):
+        return None
+    n = len(path) - len(path.rstrip("\\"))
+    if n:
+        path = path + "\\" * n
+    return f'"{path}"'
+
+
+def hook_command(python: str | None = None, script: Path | None = None, extra_args: str = "") -> str | None:
     """The SessionStart command for this machine: ``python`` (default:
     this interpreter) and ``script`` (default: the installed copy under
-    ``<config dir>/hooks``) by their full paths. A ``py -3`` or
-    ``%USERPROFILE%`` command fails silently when the Python launcher is
-    missing, or when Claude Code runs the hook through Git Bash, which
-    does not expand ``%VAR%``. The default is the base interpreter
-    when this one runs in a virtual environment: this script needs only
-    the standard library, and a venv can be deleted or rebuilt.
-    ``extra_args`` (for example ``--config-dir "<path>"`` when this
-    tool's data folder is not the default) is appended as written."""
+    ``<config dir>/hooks``) by their full paths, run with ``-I -S``
+    (ROB-P8: isolated mode, no ``site`` import) so this stdlib-only
+    script never picks up a ``PYTHON*`` environment variable or a
+    ``sitecustomize.py``/``.pth`` file from whatever happens to be on
+    this machine. A ``py -3`` or ``%USERPROFILE%`` command fails
+    silently when the Python launcher is missing, or when Claude Code
+    runs the hook through Git Bash, which does not expand ``%VAR%``.
+    The default is the base interpreter when this one runs in a virtual
+    environment: this script needs only the standard library, and a venv
+    can be deleted or rebuilt. ``extra_args`` (for example
+    ``--config-dir "<path>"`` when this tool's data folder is not the
+    default) is appended as written. ``None`` (ROB-P9) when the Python
+    or the script's own path can't be safely written into a command
+    string (:func:`_quote_for_command`) -- the caller's job to refuse
+    the hook entry rather than write a broken or unsafe one."""
     base = getattr(sys, "_base_executable", "") or ""
     python = python or (base if base and Path(base).is_file() else sys.executable)
     script = script or (resolve_config_dir(None) / "hooks" / "snapshot-config.py")
-    return f'"{python}" "{script}"{extra_args}'
+    quoted_python = _quote_for_command(python)
+    quoted_script = _quote_for_command(str(script))
+    if quoted_python is None or quoted_script is None:
+        return None
+    return f"{quoted_python} -I -S {quoted_script}{extra_args}"
 
 
 def hook_fragment_text(python: str | None = None, script: Path | None = None, extra_args: str = "") -> str:
@@ -1431,9 +1467,18 @@ def hook_fragment_text(python: str | None = None, script: Path | None = None, ex
     error so a broken Python never blocks a session or blanks the status
     line — this script already guarantees that). The block for the
     platform this runs on is :func:`hook_command`; the other shows the
-    general shape.
+    general shape. When this machine's own Python or script path can't
+    be safely written into a command string (ROB-P9, :func:`hook_command`
+    returning ``None``), explains that instead of the fragment.
     """
     native = hook_command(python, script, extra_args)
+    if native is None:
+        return (
+            "Could not build a safe hook command: the Python interpreter's path or "
+            f"{script or '(this script)'} holds a quote, $, backtick, or is a UNC path (\\\\server\\share\\...), "
+            "none of which can be written into settings.json safely. Move claude-token-lens's data folder (or "
+            "this Python) somewhere with a plain path, then try again."
+        )
     if os.name == "nt":
         windows_command = native
         posix_command = 'python3 "$HOME/.claude/token-lens/hooks/snapshot-config.py"'

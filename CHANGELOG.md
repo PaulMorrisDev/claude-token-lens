@@ -8,12 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 After updating, the first dashboard start re-reads every transcript (a
-few minutes): `PARSER_VERSION` bumped to 17 (from 14) to pick up each
+few minutes): `PARSER_VERSION` bumped to 18 (from 14) to pick up each
 reply's fast-mode flag, the fuller edit records, the quality markers,
-the metrics-capture tags and notes below, the feedback tag, and the
+the metrics-capture tags and notes below, the feedback tag, the
 capture-integrity fixes below (tag/reminder splitting, forged-tag and
 self-authorisation rejection, the coverage-denominator and per-call
-sizing corrections).
+sizing corrections), and each hook call's event name, real duration and
+whether it was Token Lens's own (below).
 
 ### Added
 
@@ -148,6 +149,39 @@ sizing corrections).
   `C:\`, so the same file changed both ways counts once. Only a salted
   hash of each path is kept, as before. An edit whose tool call failed
   (the text to replace wasn't found, you declined it) no longer counts.
+- **A hook that fails on most of its calls is now flagged.** Every hook
+  attachment Claude Code writes to a transcript (`PreToolUse`,
+  `PostToolUse`, and so on — the event name only, never the
+  matcher/tool-name suffix, so an MCP server or tool name can never
+  surface) is tallied by outcome; `capture status` now prints one plain
+  prompt when a hook's non-blocking-error rate crosses 50% over at
+  least 20 calls, naming it, its failure share, where to find it in
+  `settings.json`, the latency/noise trade-off, and the undo. This only
+  ever prints — nothing here changes `settings.json`.
+- **`capture status` now shows Deep's actual measured wait**, replacing
+  the old, unsourced "a fraction of a second" guess: the big_output/web
+  PostToolUse hook's real `durationMs` (Claude Code records one on every
+  hook call; this parser used to drop it) is now kept, and while either
+  metric is on, `capture status` prints the median and p90 wait over
+  Token Lens's own calls in the last 7 days ("Deep's large-output/web
+  hook waited ≈Ns (median, p90 ≈Ns) over N calls this week").
+- **The digest cache now carries a salt fingerprint.** A cache entry's
+  path/skill-name hashes are salted; without recording which salt wrote
+  them, a cache hit after the salt rotated (e.g. a fresh `~/.claude`) would
+  keep serving hashes salted under the old one. `DigestCache` now hashes
+  the salt itself (never the raw salt) into each entry's header and
+  misses when it doesn't match a reader that was itself given a salt; a
+  reader given no salt is unaffected.
+- **Signal files and the capture-change log now prune themselves by
+  default.** `serve`'s watcher already pruned report data
+  (`retention_days`) only when you set it; it now also prunes
+  `<config-dir>/signals/` and `capture-log.jsonl` on every tick
+  regardless, at `retention_days` when set or a new 180-day default
+  (`config.SIGNAL_RETENTION_DEFAULT_DAYS`) otherwise — this is Token
+  Lens's own background telemetry, not visible report data, so it was
+  never meant to accumulate forever. `capture prune` runs the same
+  housekeeping by hand (`--dry-run` to preview) for anyone not running
+  the service.
 
 ### Fixed
 

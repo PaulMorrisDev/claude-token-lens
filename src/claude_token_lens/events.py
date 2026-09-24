@@ -47,7 +47,7 @@ import json
 import re
 from typing import Iterable, Sequence
 
-from .capture_catalogue import NOTE_MARKER
+from .capture_catalogue import HOOK_SCRIPT, NOTE_MARKER
 from .capture_tags import parse_brief_markers, parse_note_codes
 from .model import Event, EventKind
 
@@ -93,6 +93,92 @@ _HOOK_ATTACHMENT_TYPES = frozenset(
         "hook_cancelled",
     }
 )
+
+#: SURV-HE: every hook *event* name Claude Code documents (verified
+#: against code.claude.com/docs/en/hooks.md 2026-09-24) -- closed, so a
+#: hook attachment's event is safe to keep on ``Event.detail``. The
+#: matcher/tool-name suffix after ":" (e.g. the "Bash" in
+#: "PreToolUse:Bash") is always dropped: an MCP-matched hook's name there
+#: (``"PreToolUse:mcp__server__tool"``) could otherwise identify which
+#: MCP servers/tools someone has configured (G7's "MCP tool names in
+#: signals" caution) -- the same reason ``_CAPTURE_NOTE_HOOKS`` below
+#: only ever keeps the event name, never the matcher, for a capture
+#: note's own ``detail["hook"]``. Not exhaustive against every future
+#: hook event Claude Code might add; anything not in this set becomes
+#: "other" (see :func:`_hook_name_bucket`), the same closed-vocabulary-
+#: plus-fallback shape ``_CAPTURE_NOTE_HOOKS`` already uses.
+_HOOK_EVENT_NAMES = frozenset(
+    {
+        "SessionStart",
+        "SessionEnd",
+        "UserPromptSubmit",
+        "Stop",
+        "StopFailure",
+        "PreToolUse",
+        "PostToolUse",
+        "PostToolUseFailure",
+        "PostToolBatch",
+        "SubagentStart",
+        "SubagentStop",
+        "PreCompact",
+        "PostCompact",
+        "Notification",
+        "PermissionRequest",
+        "PermissionDenied",
+        "TeammateIdle",
+        "TaskCreated",
+        "TaskCompleted",
+        "WorktreeCreate",
+        "WorktreeRemove",
+        "MessageDisplay",
+        "PreModelSwitch",
+        "PostModelSwitch",
+        "ConfigChange",
+        "InstructionsLoaded",
+        "CwdChanged",
+        "FileChanged",
+        "DirectoryAdded",
+        "Elicitation",
+        "ElicitationResult",
+        "Setup",
+    }
+)
+
+
+def _hook_name_bucket(attachment: dict) -> str:
+    """The hook *event* ``attachment.get("hookName")`` fired under
+    (``"PreToolUse"``, never ``"PreToolUse:Bash"``), or ``"other"`` when
+    it's missing, not a string, or not one of :data:`_HOOK_EVENT_NAMES`
+    -- see that set's own docstring for why the matcher/tool-name suffix
+    is always dropped."""
+    hook_name = attachment.get("hookName")
+    if not isinstance(hook_name, str):
+        return "other"
+    event = hook_name.split(":", 1)[0]
+    return event if event in _HOOK_EVENT_NAMES else "other"
+
+
+def _hook_output_detail(attachment: dict) -> dict:
+    """``detail`` for a non-capture-note HOOK_OUTPUT event: the closed
+    hook-event bucket (:func:`_hook_name_bucket`), the real
+    ``durationMs`` Claude Code recorded for the call when there is one
+    (CAP-9/F10: a hook_success entry carries it -- fixture: 140 ms for a
+    SessionStart hook -- and this used to be dropped), and, only when
+    ``True``, whether the call ran Token Lens's own hook script. That
+    last check never keeps the command string itself -- only whether it
+    names ``capture_catalogue.HOOK_SCRIPT``, the same substring check
+    ``hook_health.py`` already uses on settings.json commands -- so a
+    measured "Deep waited" figure can find its own PostToolUse calls
+    among a settings.json that may run other PostToolUse hooks too.
+    """
+    detail: dict = {"hookName": _hook_name_bucket(attachment)}
+    duration = attachment.get("durationMs")
+    if isinstance(duration, (int, float)):
+        detail["durationMs"] = duration
+    command = attachment.get("command")
+    if isinstance(command, str) and HOOK_SCRIPT in command:
+        detail["capture"] = True
+    return detail
 
 _CACHE_SIGNAL_TYPES = frozenset(
     {
@@ -907,7 +993,19 @@ def classify_line(d: dict) -> Event | None:
                 return Event(
                     kind=EventKind.HOOK_OUTPUT, subkind="capture_note", ts=ts, size_chars=note_chars, detail=detail
                 )
-        return Event(kind=EventKind.HOOK_OUTPUT, subkind=attachment_type, ts=ts, size_chars=size_chars)
+        # SURV-HE/CAP-9: which hook event this ran under (closed bucket,
+        # never the matcher/tool-name suffix -- see _hook_name_bucket),
+        # its real durationMs, and whether it was Token Lens's own hook
+        # -- see _hook_output_detail -- so hook_health.count_hook_errors
+        # and hook_health.measure_deep_wait can both work from this one
+        # parse, without a second read of the transcript.
+        return Event(
+            kind=EventKind.HOOK_OUTPUT,
+            subkind=attachment_type,
+            ts=ts,
+            size_chars=size_chars,
+            detail=_hook_output_detail(attachment),
+        )
 
     # 7. CACHE_SIGNAL
     if attachment_type in _CACHE_SIGNAL_TYPES:
