@@ -1325,3 +1325,14 @@ def test_prune_removes_old_usage_log_rows_too(tmp_path):
     rows = log_usage.load_usage_log(csv_path)
     assert len(rows) == 1
     assert rows[0]["session_id"] == "recent"
+
+
+def test_on_warns_when_a_settings_policy_stops_hooks_running(tmp_path):
+    # disableAllHooks (or a managed allowManagedHooksOnly) means Claude
+    # Code won't run the entries at all; say so before showing the diff.
+    config_dir = _claude(tmp_path, {"disableAllHooks": True})
+    rc, out = _capture(config_dir, "on", "--dry-run", stdin="y\ny\n")
+    assert rc == 0
+    assert hook_health.POLICY_TEXT[hook_health.POLICY_ALL_OFF] in out
+    assert "won't run them while that holds" in out
+    assert out.index("won't run them") < out.index("This changes")

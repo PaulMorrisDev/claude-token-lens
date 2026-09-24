@@ -1586,3 +1586,16 @@ def test_hook_with_config_dir_elsewhere_reads_claude_settings_not_its_parent(tmp
     assert result.returncode == 0
     snapshot = _latest_snapshot(data)
     assert snapshot["user_settings"]["model"] == "fable[1m]"
+
+
+@pytest.mark.parametrize("platform", ["win32", "darwin", "linux"])
+def test_hook_health_managed_dir_matches_the_snapshot_hooks(monkeypatch, platform):
+    # hook_health.managed_settings_dir mirrors the standalone script's
+    # default_managed_settings_dir (the package can't import the script);
+    # conftest stubs the package copy, and keeps the real one aside.
+    from claude_token_lens import hook_health
+
+    hook = _load_hook_module()
+    monkeypatch.setattr(sys, "platform", platform)
+    monkeypatch.setenv("ProgramFiles", r"C:\fake-program-files")
+    assert hook_health._real_managed_settings_dir() == hook.default_managed_settings_dir()

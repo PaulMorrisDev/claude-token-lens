@@ -3265,6 +3265,12 @@ def _capture_settings_step(
             "claude-token-lens's data folder somewhere with a plain path, then try again.\n"
         )
         return False
+    policy = hook_health.hook_policy(claude_root) if wanted else None
+    if policy is not None:
+        stdout.write(
+            f"{hook_health.POLICY_TEXT[policy]} The entries below can still be written, but Claude Code "
+            "won't run them while that holds.\n"
+        )
     plan = hook_health.plan_capture(wanted, commands, claude_root=claude_root)
     if plan.new_text is None:
         for line in plan.changes:  # a settings.json it can't read

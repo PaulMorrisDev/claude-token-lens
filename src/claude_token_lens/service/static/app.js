@@ -1684,7 +1684,11 @@
 
     // Hook entries Claude Code needs to run for the chosen metrics.
     var hooks = data.hooks || {};
-    if (hooks.ok === false) {
+    if (hooks.ok === false && hooks.blocked_by) {
+      // A settings policy stops Claude Code running these hooks at all;
+      // 'capture connect' can't change that, so it isn't offered.
+      container.appendChild(el("div", { class: "notice error" }, [el("p", { text: hooks.summary })]));
+    } else if (hooks.ok === false) {
       container.appendChild(
         el("div", { class: "notice error" }, [
           el("p", { text: hooks.summary }),
