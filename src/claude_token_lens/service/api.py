@@ -1638,15 +1638,18 @@ def make_handler(
 
     def route_session_explain(store, query, body):
         from .explain import explain_session
-        from ..units import Units
 
         session_id = query.get("id", "")
         detail = store.session(session_id)
         if detail is None:
             return _not_found("session not found")
-        config = load_config(options.config_dir)
-        rates = load_pricing(path=config.pricing_path, config_dir=options.config_dir)
-        units = Units(billing_mode=config.billing, currency=rates.currency)
+        rates = load_pricing(path=load_config(options.config_dir).pricing_path, config_dir=options.config_dir)
+        # UX-1: the same units.Units a full report would carry (with a
+        # real elasticity fit under a subscription, from this machine's
+        # own statusline usage-limit readings) rather than a bare
+        # Units(billing_mode, currency) that always fell back to
+        # "list-price equivalent" -- same idiom _compute_impact uses.
+        units = _report_units(_get_report_model(_DEFAULT_WINDOW_DAYS))
         explained = explain_session(
             detail, store.session_parts(session_id), rates, units, store.median_session_cost()
         )

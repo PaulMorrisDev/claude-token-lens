@@ -88,13 +88,16 @@ import math
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Callable, Iterable
+from typing import TYPE_CHECKING, Callable, Iterable
 
 from . import capture_catalogue
 from .fixes import _model_family
 from .model import Column, EventKind, Section, Table, TranscriptResult, Turn
 from .pricing import Pricing, effective_rates, price_turn
 from .workstyle import model_tier
+
+if TYPE_CHECKING:
+    from .units import Units
 
 #: The group name of main-session runs; subagent runs are grouped by
 #: agent type.
@@ -849,11 +852,13 @@ def _setup(run: Run) -> tuple[str, str]:
     return run.model or "(unknown)", run.effort or "default"
 
 
-def setup_rows(runs: list[Run]) -> list[dict]:
+def setup_rows(runs: list[Run], money: Callable[[float], str] | None = None) -> list[dict]:
     """Per agent (and the main session), per model and effort: the setup
     signals, and how each setup compares with the agent's most-used one.
     Runs with no reply have no model, so they are left out here (the
-    other tables count them)."""
+    other tables count them). ``money`` (UX-2) formats a cost-unit
+    signal's ``before_text``/``after_text`` for the report's billing
+    mode; see :func:`compare_runs`."""
     out = []
     for group, group_runs in _groups(runs):
         if group == ALL_AGENTS:
@@ -886,7 +891,7 @@ def setup_rows(runs: list[Run]) -> list[dict]:
                 # Not retries: the largest model can never be retried on a
                 # larger one, so the test would favour it by construction.
                 compared = [s for s in signals_for(group) if s.key != "retried"]
-                comparison = compare_runs(by_setup[base], setup_runs, compared)
+                comparison = compare_runs(by_setup[base], setup_runs, compared, money)
                 row["compared_with"] = f"{base[0]}, effort {base[1]}"
                 row["compared_model"], row["compared_effort"] = base
                 row["comparison"] = comparison
@@ -1152,8 +1157,11 @@ def _failing_tools_table(runs: list[Run]) -> Table:
     )
 
 
-def build_section(runs: list[Run]) -> Section:
-    setups = setup_rows(runs)
+def build_section(runs: list[Run], units: "Units | None" = None) -> Section:
+    # UX-2: units may be unset (a caller without a billing config) --
+    # money_text still gives a plain currency-suffixed number rather than
+    # a bare "$" in that case.
+    setups = setup_rows(runs, money=units.money_text if units is not None else None)
     retried = retried_rows(runs)
     reasons = retry_reason_rows(runs)
     notes = [

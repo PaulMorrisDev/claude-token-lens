@@ -10,6 +10,8 @@ from claude_token_lens import claude_md_review as cmr
 from claude_token_lens import parse
 from claude_token_lens.units import Units
 
+from helpers import elasticity_with_slope
+
 SALT = b"r" * 32
 UNITS = Units(billing_mode="api", currency="USD")
 PERIOD = "over the last 30 days"
@@ -119,6 +121,31 @@ def test_usage_joins_by_hash_and_fixes_carry_the_undo_and_diff_step(tmp_path):
         assert "show me the diff" in fix["prompt"].lower()
     markdown = cmr.render_markdown(review, UNITS, PERIOD)
     assert "# CLAUDE.md review" in markdown and "db-migrator" in markdown
+
+
+def test_trim_this_file_fix_has_no_bare_dollar_or_doubled_about_under_a_subscription():
+    """UX-2 / finding F3: "Trim this file"'s effect clause
+    (f"About {...} if you halve it.") must route through Units and
+    ``.phrase(prefix="About ")``, never a bare "$" and never "About
+    about ..." (a subscription's own share text already opens with
+    "about")."""
+    subscription = Units(billing_mode="subscription", currency="USD", elasticity=elasticity_with_slope())
+    review = cmr.FileReview(
+        id="trim-me",
+        path=Path("CLAUDE.md"),
+        level="Project",
+        project="repo",
+        chars=cmr.TRIM_TOKENS * 4 * 2,  # well over the trim threshold
+        scoped=False,
+        sections=[],
+        imports=[],
+        usage={"cost_usd": 3.0, "sends": {"main": 4}},
+    )
+    fixes = cmr.build_fixes(review, subscription, PERIOD)
+    trim = next(f for f in fixes if f["title"] == "Trim this file")
+    effect = next(value for label, value in trim["explainer"] if label == "Expected effect")
+    assert "$" not in effect
+    assert "about about" not in effect.lower()
 
 
 def test_sections_ignore_headings_inside_code_fences():

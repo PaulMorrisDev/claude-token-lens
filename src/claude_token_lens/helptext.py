@@ -657,11 +657,12 @@ TABLE_COPY: dict[str, TableCopy] = {
     ),
     # -- quality signals ----------------------------------------------------
     "habits_digest": TableCopy(
-        title="This week",
+        title="",  # UX-4/7: the builder's title names the actual day span
         help=Help(
             shows="The three habits worth the most to you right now, what the habits you already picked up are "
             "saving, and what a piece of work that met its goal cost.",
-            read="Savings are a week's worth at your recent pace. A habit counts as picked up when what it "
+            read="Savings are a week's worth at your recent pace once there's a week of it; under 7 days, it's the "
+            "raw total so far, not stretched into a weekly rate. A habit counts as picked up when what it "
             "addresses per message fell by a fifth or more over recent weeks.",
             act="Start with the first habit: Habits worth trying below has an example to copy for each.",
         ),
@@ -712,6 +713,13 @@ TABLE_COPY: dict[str, TableCopy] = {
             "confidence": ("Confidence", "High with 20 or more cases, medium with 8 or more, else low."),
             "trend": ("Trend", "Whether it's getting better or worse over recent weeks."),
             "weeks": ("By week", "What it addresses per message, by week, the worst week as 100."),
+            "where": ("Where and who it affects", "Where trying this habit shows up and who it affects."),
+            "trade_off": ("Trade-off", "What trying this habit costs or risks."),
+            "how_to_undo": ("How to undo it", "How to go back if it doesn't work out."),
+            "covered_by": (
+                "Already covered by",
+                "The recommendation that already reports this saving, when one has fired -- blank otherwise.",
+            ),
         },
         value_labels={
             **{key: title for key, (_theme, title) in HABIT_ITEMS.items()},

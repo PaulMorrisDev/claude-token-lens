@@ -171,6 +171,25 @@ def test_no_button_label_or_handler_says_apply() -> None:
     assert "apply_command" not in app_js, "app.js must not read the removed data.apply_command fallback"
 
 
+def test_habits_playbook_caps_featured_cards_and_collapses_the_rest() -> None:
+    """UX-4/7 (F3: "uncapped playbook"): only the top
+    ``PLAYBOOK_CARD_LIMIT`` habits get a card outright; the rest render
+    into a collapsed ``<details>`` so the tab isn't a wall of cards down
+    to the least useful habit. Regression test for
+    ``renderHabitsPlaybook``/``appendHabitCards`` in app.js."""
+    app_js = _static_text("app.js")
+    limit_match = re.search(r"var PLAYBOOK_CARD_LIMIT = (\d+);", app_js)
+    assert limit_match, "app.js no longer defines PLAYBOOK_CARD_LIMIT"
+    assert int(limit_match.group(1)) == 5
+
+    fn_match = re.search(r"function renderHabitsPlaybook\([\s\S]*?\n  \}\n", app_js)
+    assert fn_match, "app.js no longer defines renderHabitsPlaybook"
+    body = fn_match.group(0)
+    assert "PLAYBOOK_CARD_LIMIT" in body
+    assert '"details"' in body and "more habit" in body, "the rest of the playbook must collapse into a <details>"
+    assert "appendHabitCards" in body
+
+
 @pytest.mark.parametrize("name", STATIC_FILES)
 def test_no_emoji_code_points(name: str) -> None:
     text = _static_text(name)

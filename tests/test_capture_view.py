@@ -11,7 +11,7 @@ from claude_token_lens.config import CaptureConfig
 from claude_token_lens.hook_health import CaptureHookHealth, HookSpec
 from claude_token_lens.units import Units
 
-from helpers import assert_privacy
+from helpers import assert_privacy, elasticity_with_slope
 
 API = Units(billing_mode="api")
 
@@ -117,6 +117,22 @@ def test_roi_adds_no_banner_note_when_nothing_was_spent():
     data = capture_view.view(_on(), units=API, use=_use(), weekly_cost=0.0, dependent_value=None)
     assert data["roi"]["cost"]["usd"] == 0.0
     assert not any("Capture cost about" in note for note in data["banner"]["notes"])
+
+
+def test_roi_banner_has_no_bare_dollar_or_doubled_about_or_doubled_weekly_under_a_subscription():
+    """UX-2 / finding F3: a subscription's ROI banner note must route
+    through Units, never a bare "$", never double "about" (the "about"
+    manually prepended in ``_banner`` used to collide with a subscription
+    share's own "about X% of your weekly usage limit"), and never say
+    "...weekly usage limit a week" (the roi cost/value used to keep the
+    "a week" period suffix even once the primary text already read as a
+    share of the *weekly* usage limit)."""
+    subscription = Units(billing_mode="subscription", elasticity=elasticity_with_slope())
+    data = capture_view.view(_on(), units=subscription, use=_use(), weekly_cost=2.0, dependent_value=5.0)
+    note = next(n for n in data["banner"]["notes"] if n.startswith("Capture cost"))
+    assert "$" not in note
+    assert "about about" not in note.lower()
+    assert "usage limit a week" not in note.lower()
 
 
 def test_on_with_no_notes_seen_says_the_hook_may_be_blocked():

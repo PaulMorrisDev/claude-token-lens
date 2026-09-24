@@ -87,16 +87,19 @@ LOW_COVERAGE_MIN_CYCLES = 20
 NO_NOTES_MIN_SESSIONS = 3
 
 
-def amount_text(units, usd: float, period: str = "") -> str:
+def amount_text(units, usd: float, period: str = "", *, prefix: str = "") -> str:
     """``usd`` phrased for the billing mode (a share of the weekly limit
     on a subscription, when it can be worked out); ``"nothing"`` for
-    zero."""
+    zero. ``prefix`` (UX-2, e.g. ``"about "``) is joined via
+    ``Amount.phrase``, which avoids doubling "about" when the phrased
+    text already opens with it -- not applied to the tiny-API-amount
+    "under $0.01" branch, which already reads as an approximation."""
     if usd <= 0:
         return "nothing"
     if units.billing_mode != "subscription" and usd < 0.005:
         return f"under {format_cell(0.01, 'money', units.currency)}" + (f" {period}" if period else "")
     amount = units.money(usd, period=period)
-    return amount.text() if amount is not None else "nothing"
+    return amount.phrase(prefix) if amount is not None else "nothing"
 
 
 def describe(capture: CaptureConfig) -> str:
@@ -185,8 +188,11 @@ def _tokens(value: int) -> str:
     return format_cell(value, "tokens")
 
 
-def _money(units, usd: float, period: str = "") -> dict:
-    return {"usd": round(usd, 6), "text": amount_text(units, usd, period) if units is not None else ""}
+def _money(units, usd: float, period: str = "", *, prefix: str = "") -> dict:
+    return {
+        "usd": round(usd, 6),
+        "text": amount_text(units, usd, period, prefix=prefix) if units is not None else "",
+    }
 
 
 def _estimate_block(est, units) -> dict:
@@ -374,9 +380,18 @@ def _roi(weekly_cost: float | None, dependent_value: float | None, units) -> dic
     not a zero, while nothing measured yet depends on either."""
     if weekly_cost is None:
         return None
+    # UX-2: weekly_cost/dependent_value are already per-week figures. A
+    # subscription's own phrasing already says "of your weekly usage
+    # limit" (units.Units.money), so period="a week" there would read as
+    # "weekly usage limit a week" -- only stated for API billing, where
+    # the phrased amount is just a dollar figure. Both amounts also carry
+    # "about " via Amount.phrase, which dedupes against a subscription's
+    # own "about" rather than doubling it (_banner/app.js's ROI note
+    # doesn't repeat "about" itself, relying on this).
+    period = "a week" if units is None or units.billing_mode != "subscription" else ""
     return {
-        "cost": _money(units, weekly_cost, "a week"),
-        "value": _money(units, dependent_value, "a week") if dependent_value is not None else None,
+        "cost": _money(units, weekly_cost, period, prefix="about "),
+        "value": _money(units, dependent_value, period, prefix="about ") if dependent_value is not None else None,
         "measured": dependent_value is not None,
     }
 
@@ -446,13 +461,16 @@ def _banner(
             f"Claude tagged only {_pct(use.coverage)} of your messages, so some figures rest on few answers."
         )
     if roi is not None and roi["cost"]["usd"] > 0 and roi["cost"]["text"]:
+        # UX-2: roi["cost"]["text"]/["value"]["text"] already carry their
+        # own "about" (see _roi) -- not repeated here, or a subscription's
+        # would double into "about about X%...".
         if roi["measured"]:
             notes.append(
-                f"Capture cost about {roi['cost']['text']}; suggestions that rely on it are worth about "
+                f"Capture cost {roi['cost']['text']}; suggestions that rely on it are worth "
                 f"{roi['value']['text']}."
             )
         else:
-            notes.append(f"Capture cost about {roi['cost']['text']}; nothing measured yet relies on it.")
+            notes.append(f"Capture cost {roi['cost']['text']}; nothing measured yet relies on it.")
     counted = [r for r in rows if r["enough"] is not None and r["asks_claude"]]
     ready = [r for r in counted if r["enough"]]
     if counted and len(ready) == len(counted):

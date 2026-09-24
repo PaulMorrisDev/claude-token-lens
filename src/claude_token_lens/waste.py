@@ -768,8 +768,17 @@ def _rule_wasted_turns(report: ReportModel, th: WasteThresholds) -> list[Recomme
         why = "These replies cost money but produced nothing you kept." + why
 
     cause_clause = f"mostly '{dominant_cause}'" if dominant_cause else "see waste_by_cause for the breakdown"
+    # UX-2: units may be unset (a caller that built this ReportModel
+    # without a billing config) -- money_text still gives a plain
+    # currency-suffixed number rather than a bare "$" in that case.
+    units = report.units
+    wasted_cost_text = (
+        units.money_text(wasted_cost)
+        if units is not None and isinstance(wasted_cost, (int, float))
+        else f"${wasted_cost:,.2f}"
+    )
     action = (
-        f"{share:.1f}% of priced cost (a recoverable ceiling of ${wasted_cost:,.2f}) went to turns whose "
+        f"{share:.1f}% of priced cost (a recoverable ceiling of {wasted_cost_text}) went to turns whose "
         f"output was never used, {cause_clause}. {lever_text}"
     )
 

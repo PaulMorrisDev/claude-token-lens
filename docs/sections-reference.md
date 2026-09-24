@@ -611,11 +611,15 @@ skill loaded late), and your ratings from the Sessions tab. Every table
 is always there, empty when there's nothing to show; the notes say when
 capture is off or no feedback has been given.
 
-- `habits_digest` — "This week": the three habits worth the most (saving
+- `habits_digest` — "Weekly pace (last N days)": the three habits worth the most (saving
   a week, `top_1` to `top_3`), what the habits you already picked up
   save (`adopted`), the average cost of a piece of work that met its
   goal (`cost_per_met`), and the share of messages Claude tagged
-  (`tagged`). The monthly report carries the same digest.
+  (`tagged`). The monthly report carries the same digest. `N` is
+  `Habits.span_days`; a saving is only spread into a per-week rate once
+  there's a full week of it (`Habits.span_weeks`, UX-4/7/F3) -- under 7
+  days it's the raw total observed so far, not a figure stretched by
+  dividing by a fraction of a week.
 - `habits_playbook` — one row per habit worth trying (`habits.ITEMS`),
   the largest weekly saving first: theme, saving a week, what your
   sessions show, an example to copy, how the saving is worked out, how
@@ -623,9 +627,17 @@ capture is off or no feedback has been given.
   feedback`), confidence (`high` from 20 cases, `medium` from 8; inferred
   alone is never `high`), trend (`new`, `falling`, `rising`, `steady`)
   and the rate per message over the last eight weeks scaled to 0-100
-  (`-` for a week with fewer than three messages). A fall over at least
-  four known weeks counts as picked up, and the saving it implies goes
-  into the digest's `adopted` row.
+  (`-` for a week with fewer than three messages), then where trying it
+  affects things, its trade-off and how to undo it (`where`,
+  `trade_off`, `how_to_undo` -- UX-8, the same three-part shape as a
+  recommendation's fix explainer), and `covered_by`: the recommendation
+  already reporting this same saving, when one fired this report, in
+  which case `saving` is blank rather than double-counted (UX-3,
+  `habits.COVERED_BY`/`apply_covered_by`). A fall over at least four
+  known weeks counts as picked up, and the saving it implies goes into
+  the digest's `adopted` row. The dashboard shows the top 5 habits as
+  cards; the rest collapse into a "more habits worth trying" `<details>`
+  (UX-4/7).
 - `habits_by_task` — per kind of task Claude reported (`task=`), after
   an `all` row: messages, share, cost, per message, and the shares
   that were clear asks, large asks, redone by your next message (a

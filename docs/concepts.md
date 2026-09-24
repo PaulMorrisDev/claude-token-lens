@@ -462,7 +462,7 @@ never high, since it's the weakest of the three. **Trend** is **new**,
 **falling**, **rising** or **steady**, from the habit's rate per message
 over the last eight weeks; a fall sustained over at least four known
 weeks counts as **picked up**, and the saving that implies moves into
-the "This week" digest's `adopted` figure instead of still being
+the "Weekly pace" digest's `adopted` figure instead of still being
 suggested.
 
 **Cheaper-setup verdicts** (`habits_setups`, shown on the Profiles tab):

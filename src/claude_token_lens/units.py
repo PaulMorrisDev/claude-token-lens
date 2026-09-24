@@ -41,6 +41,24 @@ class Amount:
     def text(self) -> str:
         return f"{self.primary} ({self.secondary})" if self.secondary else self.primary
 
+    def phrase(self, prefix: str = "") -> str:
+        """``prefix`` (e.g. ``"About "``, ``"At most "``) joined to
+        :meth:`text`, without doubling "about" when ``primary`` already
+        opens with it -- a subscription's weekly-limit share always
+        reads "about X% of your weekly usage limit" (see
+        :meth:`Units.money`), so a caller that also wants to say "about"
+        would otherwise produce "About about X%...". ``prefix`` is
+        expected to carry its own trailing separator (e.g. ``"About "``,
+        matching every caller in this codebase); one is inserted for a
+        bare word so ``phrase("About")`` also works."""
+        text = self.text()
+        if not prefix:
+            return text
+        if prefix.strip().rstrip(".").lower() == "about" and text.lower().startswith("about "):
+            return text
+        joiner = "" if prefix[-1:] in (" ", "-", "‑") else " "
+        return f"{prefix}{joiner}{text}"
+
 
 @dataclass(frozen=True, slots=True)
 class Units:
@@ -73,6 +91,27 @@ class Units:
             secondary=f"{dollars} list-price equivalent",
             basis="from your own usage-limit readings against the tokens used between them",
         )
+
+    def money_text(self, usd: float, *, prefix: str = "") -> str:
+        """A one-line amount that is never empty, for an inline spot
+        (a table cell, a ``f"...{...}"`` clause) that used to interpolate
+        a raw ``f"${usd:.2f}"``: :meth:`money`'s full text when ``usd``
+        is phraseable, otherwise the plain currency-suffixed number
+        (``"0.00 USD"``, never a bare ``$``) for zero, negative or
+        non-finite amounts a recommendation's own prose still needs to
+        state (e.g. "$0.00 saved" reads oddly, but a per-session cost
+        column has to show a zero row). ``prefix`` (e.g. ``"about "``) is
+        joined via :meth:`Amount.phrase`, so a caller building a sentence
+        like "would have saved about {...}" doesn't double a
+        subscription's own "about X% of your weekly usage limit" into
+        "saved about about X%..." (finding F3) -- dropped silently for
+        the zero/negative/non-finite fallback, which is a bare figure a
+        caller's own sentence already hedges some other way."""
+        amount = self.money(usd)
+        if amount is not None:
+            return amount.phrase(prefix)
+        value = float(usd) if isinstance(usd, (int, float)) and math.isfinite(usd) else 0.0
+        return format_cell(value, "money", self.currency)
 
     def basis(self) -> str:
         """One sentence on what amounts mean in this billing mode, for

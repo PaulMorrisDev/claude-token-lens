@@ -1135,6 +1135,19 @@ class ReportMeta:
     #: list price, a share of the weekly limit, or list-price
     #: equivalents when that share can't be worked out.
     amounts_basis: str = ""
+    #: UX-1: ``{mode, share_per_usd, period_label, basis}`` -- the same
+    #: billing-mode facts as ``billing_mode``/``amounts_basis`` above, in
+    #: the shape ``units.Units.money``'s JS mirror (app.js's own
+    #: ``money()``) needs to phrase an arbitrary amount client-side
+    #: without a round trip through a table cell: ``mode`` is
+    #: ``billing_mode``; ``share_per_usd`` is the percentage points of
+    #: the weekly usage limit one list-price dollar is worth
+    #: (``elasticity.express_in_window(1.0, ...)``), or ``None`` when
+    #: there's no accepted fit yet; ``period_label`` is what that share
+    #: is "of" ("weekly usage limit"); ``basis`` is ``amounts_basis``
+    #: again, kept alongside so a consumer of ``meta.units`` alone (no
+    #: other ``meta`` field) still has the caveat text.
+    units: dict = field(default_factory=dict)
     #: TTL/RE-CACHE/etc. assumption text, rendered as the report's
     #: "## Assumptions" block. See the module docstring's deviation note.
     assumptions: list[str] = field(default_factory=list)

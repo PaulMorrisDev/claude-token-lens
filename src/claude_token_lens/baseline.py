@@ -86,6 +86,7 @@ from .model import ReportModel, Table
 from .parse import load_or_create_salt
 from .pricing import Pricing
 from .profiles import catalogue
+from .units import Units
 from .report import (
     build_report,
     compactions_per_session_metric,
@@ -406,6 +407,11 @@ def build_baseline(
             "suggested_profile": _NO_DATA_PROFILE,
             "suggested_profile_reason": "no sessions found in this window yet",
             "projected_saving_usd": 0.0,
+            # UX-2: so render_onboarding_report -- which only ever sees a
+            # saved record, never a live Config/ReportModel -- can still
+            # phrase amounts for the right billing mode.
+            "billing_mode": config.billing,
+            "currency": pricing.currency,
             "billing_mismatch_warning": None,
             "projects": redacted_projects,
             # v0.3 Task 2 fields -- see module docstring's addition note.
@@ -464,6 +470,11 @@ def build_baseline(
         "suggested_profile": profile_id,
         "suggested_profile_reason": profile_reason,
         "projected_saving_usd": round(_projected_saving_usd(model), 4),
+        # UX-2: so render_onboarding_report -- which only ever sees a
+        # saved record, never a live Config/ReportModel -- can still
+        # phrase amounts for the right billing mode.
+        "billing_mode": config.billing,
+        "currency": pricing.currency,
         "billing_mismatch_warning": _billing_mismatch_warning(config, model),
         "projects": redacted_projects,
         # v0.3 Task 2 fields -- see module docstring's addition note.
@@ -578,6 +589,14 @@ def render_onboarding_report(record: dict) -> str:
     the report's own tables -- see :func:`build_baseline`), so there is
     nothing here to fabricate.
     """
+    # UX-2: a saved record has no live Config/ReportModel to read a
+    # Units instance off of, so build one from the billing_mode/currency
+    # build_baseline stored alongside it -- an older record from before
+    # that field existed falls back to "api" (its previous, only, behaviour).
+    # No elasticity fit travels with a record, so a subscription record
+    # phrases its saving as a list-price equivalent with the usual hint,
+    # never a bare "$".
+    units = Units(billing_mode=record.get("billing_mode") or "api", currency=record.get("currency") or "USD")
     lines: list[str] = ["# Onboarding baseline report", ""]
 
     lines.append("## Summary")
@@ -606,7 +625,7 @@ def render_onboarding_report(record: dict) -> str:
     lines.append("## Projected saving")
     lines.append("")
     lines.append(
-        f"- ${record['projected_saving_usd']:.2f}, the sum of the TTL break-even "
+        f"- {units.money_text(record['projected_saving_usd'])}, the sum of the TTL break-even "
         "simulation's `saving_usd` column across every agent type already computed in "
         "this report (see the `ttl` section's `ttl_by_agent_type` table)."
     )

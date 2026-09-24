@@ -50,10 +50,15 @@ class Check:
 # -- helpers ---------------------------------------------------------------
 
 
-def _money(ctx: Context, usd, *, period: bool = False) -> str:
+def _money(ctx: Context, usd, *, period: bool = False, prefix: str = "") -> str:
     value = whatif._num(usd)
     amount = ctx.units.money(value, period=ctx.period if period else "") if value else None
-    return amount.text() if amount is not None else "none"
+    if amount is None:
+        return "none"
+    # UX-2: Amount.phrase avoids "about about X% of your weekly usage
+    # limit" when a caller's own sentence also says "about" -- a
+    # subscription's share text already opens with it.
+    return amount.phrase(prefix)
 
 
 def _short(text: str, limit: int = 160) -> str:
@@ -404,11 +409,13 @@ def _skill_timing_tips(ctx: Context) -> list[dict]:
         late = int(whatif._num(row.get("late")) or 0)
         unneeded = int(whatif._num(row.get("unneeded")) or 0)
         if late >= MIN_SKILL_TIMING:
-            before = _money(ctx, row.get("before")) if whatif._num(row.get("before")) else ""
+            before = (
+                _money(ctx, row.get("before"), prefix="about ") if whatif._num(row.get("before")) else ""
+            )
             tips.append({
                 "title": f"{name}: run it at the start",
                 "text": f"Claude loaded it after three or more replies {late} times"
-                + (f", with about {before} already spent each time" if before else "")
+                + (f", with {before} already spent each time" if before else "")
                 + f". Start that kind of task with /{name} so the work follows it from the first reply.",
             })
         if unneeded >= MIN_SKILL_TIMING:
@@ -555,7 +562,7 @@ def _tool_output(ctx: Context) -> dict:
         tips.append({
             "title": "Stop a failing command sooner",
             "text": f"{int(whatif._num(loops.get('loops')) or 0)} commands failed three or more times within one "
-            f"message, costing about {_money(ctx, loops.get('cost'), period=True)}. Ask Claude to stop after two failed tries "
+            f"message, costing {_money(ctx, loops.get('cost'), period=True, prefix='about ')}. Ask Claude to stop after two failed tries "
             "at the same command and tell you what it saw.",
         })
     if not fixes and not tips:
@@ -612,20 +619,48 @@ PLAYBOOK_TIPS = 3
 
 def _playbook_tips(ctx: Context, tables) -> list[dict]:
     """The Work habits playbook's top habits (``habits_playbook``, ranked
-    by saving), each with its evidence, an example and the saving."""
+    by saving), each with its evidence, an example and the saving.
+
+    UX-3, "quick actions deduped by theme": skips a habit already
+    ``covered_by`` a fired recommendation (``habits.apply_covered_by``) --
+    that finding is already a tip via ``_HABIT_RECS`` or shown in
+    Recommendations, so repeating it here would say the same thing twice
+    -- and picks at most one habit per ``theme``, so the top few tips
+    aren't several variations on the same underlying issue."""
     tips = []
-    for row in tables.rows("habits", "habits_playbook")[:PLAYBOOK_TIPS]:
+    seen_themes: set = set()
+    for row in tables.rows("habits", "habits_playbook"):
+        if len(tips) >= PLAYBOOK_TIPS:
+            break
+        if row.get("covered_by"):
+            continue
+        theme = row.get("theme")
+        if theme and theme in seen_themes:
+            continue
         key = row.get("habit")
         title = habits.ITEMS.get(key, ("", key))[1]
-        saving = _money(ctx, row.get("saving")) if whatif._num(row.get("saving")) else ""
+        saving = ""
+        if whatif._num(row.get("saving")):
+            saving = _money(ctx, row.get("saving"), prefix="About ")
+            # habits.playbook_table already normalizes ``saving`` to a
+            # per-week figure; say so explicitly for API billing, where
+            # the phrased amount is just a dollar figure. A subscription's
+            # own phrasing already says "of your weekly usage limit", so
+            # adding "a week" there would read as "weekly usage limit a
+            # week" (the same doubling this prefix already avoids for
+            # "about").
+            if saving and ctx.units.billing_mode != "subscription":
+                saving = f"{saving} a week"
         tips.append({
             "title": title,
             "text": " ".join(part for part in (
                 row.get("evidence") or "",
                 f"Try: {row.get('example')}" if row.get("example") else "",
-                f"About {saving} a week ({row.get('source')})." if saving else "",
+                f"{saving} ({row.get('source')})." if saving else "",
             ) if part),
         })
+        if theme:
+            seen_themes.add(theme)
     return tips
 
 

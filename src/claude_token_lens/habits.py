@@ -39,6 +39,7 @@ import statistics
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from typing import TYPE_CHECKING
 
 from . import capture as capture_mod
 from . import capture_catalogue as catalogue
@@ -46,6 +47,9 @@ from .context_files import _parse_ts
 from .model import PROMPT_FLAGS, Column, EventKind, Feedback, Section, Table, Turn
 from .pricing import Pricing, effective_rates, price_turn
 from .topology import agent_key
+
+if TYPE_CHECKING:
+    from .model import ReportModel
 
 _READ_TOOLS = ("Read", "Grep", "Glob")
 _SHELL_TOOLS = ("Bash", "PowerShell")
@@ -61,6 +65,12 @@ _HIGH_EFFORT = ("high", "xhigh", "max")
 #: confidence is capped when self-reports don't carry signal (see
 #: ``_self_report_calibration``).
 _LEVEL_ITEMS = frozenset({"effort_fit", "skip_plan_easy", "plan_hard"})
+#: Easy-at-high-effort messages before ``effort_fit`` fires -- the same
+#: number as ``recommend._EFFORT_MIN_MESSAGES`` (UX-3, "one shared effort
+#: threshold"): the habit item is ``COVERED_BY`` the ``effort-mismatch``
+#: rule, which reads this same ``habits_effort_fit`` data, so the two
+#: shouldn't disagree on when there's enough to say something.
+_EFFORT_MIN_MESSAGES = 5
 
 #: A message whose main session ran this many reads and searches itself
 #: did research an Explore agent could have done.
@@ -127,6 +137,23 @@ ITEMS: dict[str, tuple[str, str]] = {
     "outcome_misses": ("outcome", "Look at what came before the misses"),
 }
 
+#: UX-3: habit item -> the ``recommend.py`` (or a module folded into it,
+#: e.g. carry.py) rule id that prices the same underlying finding. When
+#: that rule actually fires in a report, the habit's own saving would
+#: double-count it -- ``apply_covered_by`` drops the habit's figure and
+#: names the rule instead, once recommendations are known (the playbook
+#: table is built before recommend() runs, so this can't happen inline
+#: in ``playbook_table``). Every pair here is a genuine same-finding
+#: match, not just a related theme -- e.g. ``better_briefs`` (give
+#: agents a complete brief) is deliberately left unmapped to
+#: ``spawn-task-prompt`` (keep the brief short): they pull in opposite
+#: directions, not the same one twice.
+COVERED_BY = {
+    "effort_fit": "effort-mismatch",
+    "short_reports": "agent-report-size",
+    "quiet_output": "tool-output-carry",
+}
+
 #: An example of the habit, to copy or adapt.
 EXAMPLES = {
     "split_large": "Plan this first and list the steps. Then do step 1 only and stop, so I can start a new "
@@ -182,6 +209,160 @@ BASES = {
     "state_limits": "the replies after a request was turned down",
     "effort_fit": "half the thinking on easy asks at high effort or above",
     "outcome_misses": "not estimated",
+}
+
+#: UX-8: where each habit is put into practice -- a Claude Code setting
+#: or file when there is one, otherwise a plain statement that it's about
+#: how you write messages, not a setting.
+WHERE = {
+    "split_large": "Nowhere in Claude Code's config -- this is how you phrase your own messages.",
+    "batch_small": "Nowhere in Claude Code's config -- this is when you start a new session.",
+    "clear_between": "Nowhere in Claude Code's config -- this is /clear or starting a fresh session.",
+    "brief_clearly": "Nowhere in Claude Code's config -- this is how you phrase your first message for a task.",
+    "name_files": "Nowhere in Claude Code's config -- this is what you put in your message.",
+    "paste_errors": "Nowhere in Claude Code's config -- this is what you put in your message.",
+    "explore_research": (
+        "Nowhere in Claude Code's config -- this is choosing to spawn an Explore agent instead of reading "
+        "and searching yourself in the main session."
+    ),
+    "plan_hard": "Nowhere in Claude Code's config -- this is asking for plan mode before a hard change.",
+    "skip_plan_easy": "Nowhere in Claude Code's config -- this is choosing not to ask for plan mode.",
+    "skill_early": (
+        "Nowhere in Claude Code's config -- this is running /<skill> as your first message instead of "
+        "partway through."
+    ),
+    "skill_unneeded": "The skill's own SKILL.md frontmatter (disable-model-invocation: true).",
+    "short_reports": "The Agent prompt you write when you spawn it, or the agent's own frontmatter file if it has one.",
+    "better_briefs": "The Agent prompt you write when you spawn it.",
+    "flatten_nesting": "The Agent prompt you write when you spawn it.",
+    "quiet_output": (
+        "Nowhere in Claude Code's config directly -- this is how you invoke tools (head/tail, a digest "
+        "script), and separately, the env caps in settings.json (BASH_MAX_OUTPUT_LENGTH, "
+        "MAX_MCP_OUTPUT_TOKENS) that the env-caps card covers on their own."
+    ),
+    "tool_loops": (
+        "Nowhere in Claude Code's config -- this is stopping to explain the failure instead of retrying, "
+        "once it fails again."
+    ),
+    "targeted_checks": "Nowhere in Claude Code's config -- this is which tests you ask Claude to run, and when.",
+    "allow_routine": "/permissions, in the allow list for this project or your user settings.",
+    "state_limits": (
+        "Nowhere in Claude Code's config -- this is what you put in your message, or a standing rule in "
+        "CLAUDE.md if it should apply every time."
+    ),
+    "effort_fit": (
+        "settings.json's effortLevel (or an agent's own effort frontmatter field); /effort raises it back "
+        "for a single task without changing the setting."
+    ),
+    "outcome_misses": "Nowhere in Claude Code's config -- this is reviewing your own /tl-feedback answers and messages.",
+}
+
+#: UX-8: the cost of trying each habit -- what you give up, or risk, by
+#: adopting it. ``allow_routine``'s is a security trade-off, not just a
+#: cost one (a broad allow rule runs without asking again, for better or
+#: worse).
+TRADE_OFFS = {
+    "split_large": (
+        "Planning steps first costs a message up front, and a step you thought was separate sometimes "
+        "turns out to depend on the next one anyway."
+    ),
+    "batch_small": (
+        "Batching small asks into one session means an unrelated one waits until you're ready to send it, "
+        "and the session's context keeps growing across all of them."
+    ),
+    "clear_between": (
+        "A new session loses the context of what you were just doing, so anything from the last task you "
+        "still needed has to be re-explained."
+    ),
+    "brief_clearly": (
+        "Spelling out \"done\" up front takes longer to write than a short ask, and can lock in a "
+        "definition of done you'd have refined after seeing Claude's first attempt."
+    ),
+    "name_files": (
+        "Naming files means checking you've got the right ones first; naming the wrong one sends Claude "
+        "down the wrong path faster than letting it search would have."
+    ),
+    "paste_errors": "A full paste can be long and include noise (stack frames, unrelated warnings) that costs tokens to send.",
+    "explore_research": (
+        "An Explore agent's report only carries back what it chose to include; a detail you'd have "
+        "noticed reading the files yourself can get left out."
+    ),
+    "plan_hard": (
+        "Planning first costs a round trip before any code changes, and a plan can go stale if you change "
+        "your mind partway through building it."
+    ),
+    "skip_plan_easy": (
+        "Skipping the plan means an easy-looking change that turns out to have a wrinkle gets discovered "
+        "mid-edit instead of up front."
+    ),
+    "skill_early": (
+        "Running the skill first commits you to its checklist before you've seen whether the task "
+        "actually needs all of it."
+    ),
+    "skill_unneeded": (
+        "With auto-invocation off, Claude won't reach for the skill on its own even when it would have "
+        "helped -- you have to run it by name."
+    ),
+    "short_reports": (
+        "A shorter report can leave out detail you'd have wanted, especially for a task whose outcome is "
+        "hard to summarise briefly."
+    ),
+    "better_briefs": "A complete brief takes longer to write than a short one, and repeats things the agent might have found out cheaply on its own.",
+    "flatten_nesting": (
+        "Passing along what you already know assumes it's still accurate; a file you read a while ago may "
+        "have changed since."
+    ),
+    "quiet_output": "Trimming output before it enters context can cut a detail (an error further up a long log, say) that turns out to matter.",
+    "tool_loops": (
+        "Stopping after one retry means a command that would have worked on a third try (a flaky network "
+        "call, say) gets treated as broken instead."
+    ),
+    "targeted_checks": (
+        "Running only the targeted tests during the work can miss a change's effect on an unrelated part "
+        "of the suite until the final full run catches it."
+    ),
+    "allow_routine": (
+        "This is a security trade-off, not just a convenience one: once a command pattern is allowed, "
+        "Claude Code runs any future call that matches it without asking again, including one you would "
+        "have wanted to review this time -- keep the pattern as narrow as the commands you actually meant."
+    ),
+    "state_limits": (
+        "A stated limit is something Claude then has to check against before every relevant action, which "
+        "can make it ask for confirmation even when the limit wouldn't actually have been hit."
+    ),
+    "effort_fit": "Lower effort can miss things on a task that turns out to be harder than it looked.",
+    "outcome_misses": "None -- reviewing past work costs time but changes nothing on its own.",
+}
+
+#: UX-8: how to undo each habit, once tried.
+UNDO = {
+    "split_large": "Nothing to undo -- go back to asking for the whole thing in one message.",
+    "batch_small": "Nothing to undo -- go back to starting a session per ask.",
+    "clear_between": "Nothing to undo -- go back to continuing the same session.",
+    "brief_clearly": "Nothing to undo -- go back to writing briefer asks.",
+    "name_files": "Nothing to undo -- go back to describing the code instead of naming files.",
+    "paste_errors": "Nothing to undo -- go back to describing the failure in words.",
+    "explore_research": "Nothing to undo -- go back to reading and searching directly in the main session.",
+    "plan_hard": "Nothing to undo -- go back to building directly.",
+    "skip_plan_easy": "Nothing to undo -- go back to planning every change.",
+    "skill_early": "Nothing to undo -- go back to reaching for the skill only once you notice you need it.",
+    "skill_unneeded": (
+        "Remove disable-model-invocation from the skill's frontmatter (Claude Code shows the change "
+        "before saving it)."
+    ),
+    "short_reports": "Stop asking for a short report, or remove the added instruction from the agent file.",
+    "better_briefs": "Nothing to undo -- go back to writing shorter briefs.",
+    "flatten_nesting": "Nothing to undo -- go back to letting agents re-read files themselves.",
+    "quiet_output": "Nothing to undo -- go back to letting full output through.",
+    "tool_loops": "Nothing to undo -- go back to letting it retry as many times as it likes.",
+    "targeted_checks": "Nothing to undo -- go back to running the full suite after every change.",
+    "allow_routine": "/permissions, then remove the rule (Claude Code shows the current allow list there).",
+    "state_limits": "Nothing to undo -- go back to not stating the limit, or remove it from CLAUDE.md if you added it there.",
+    "effort_fit": (
+        "Set effortLevel back to its previous value, or raise it for one task with /effort without "
+        "touching the setting."
+    ),
+    "outcome_misses": "Nothing to undo.",
 }
 
 #: A ``missing`` word -> what to add to a brief, for the templates (the
@@ -380,19 +561,35 @@ class Habits:
     #: Skills Claude has loaded, so a slash command can be told from one.
     skill_names: set = field(default_factory=set)
     commands_run: Counter = field(default_factory=Counter)
+    #: Thinking share of output (percent) before ``effort_fit`` fires --
+    #: same default as ``recommend.RecommendThresholds
+    #: .effort_mismatch_thinking_share_pct``; ``build_section`` resolves
+    #: the configured value so the two never disagree (UX-3).
+    effort_share_threshold_pct: float = 30.0
 
     @property
     def weeks(self) -> list[str]:
         return sorted({c.week for c in self.cycles if c.week})
 
     @property
-    def span_weeks(self) -> float:
-        """How many weeks the messages cover (a day at least)."""
+    def span_days(self) -> float:
+        """How many days the messages cover (a day at least)."""
         moments = [c.ts for c in self.cycles if c.ts is not None]
         if not moments:
             return 1.0
-        days = max(1.0, (max(moments) - min(moments)).total_seconds() / 86400)
-        return days / 7
+        return max(1.0, (max(moments) - min(moments)).total_seconds() / 86400)
+
+    @property
+    def span_weeks(self) -> float:
+        """How many weeks the messages cover, for spreading a total into a
+        weekly rate -- never less than a full week (UX-4/7, F3: this used
+        to divide by a fraction of a week for a corpus under 7 days old,
+        e.g. ``1 / 7`` for one day, which *multiplies* that one day's total
+        by about 7x to fake a weekly rate from a single day of noise).
+        Under 7 days, this is 1.0: dividing by it shows the raw total
+        observed so far, not an extrapolated "week", matching "no weekly
+        figure under 7 days"."""
+        return max(self.span_days, 7.0) / 7
 
 
 def _week(moment: datetime | None) -> str:
@@ -660,11 +857,20 @@ def _spawn_index(sub, main_spawn, by_agent) -> int | None:
     return None
 
 
-def collect(corpus, pricing: Pricing | None, *, ratings: dict | None = None, signals: dict | None = None) -> Habits:
+def collect(
+    corpus,
+    pricing: Pricing | None,
+    *,
+    ratings: dict | None = None,
+    signals: dict | None = None,
+    effort_share_threshold_pct: float = 30.0,
+) -> Habits:
     """Work out the facts for every session in ``corpus``. ``ratings``
     holds your dashboard ratings by session id (``Store.all_feedback``);
-    ``signals`` the free signals by session id (``signals.by_session``)."""
-    out = Habits()
+    ``signals`` the free signals by session id (``signals.by_session``).
+    ``effort_share_threshold_pct`` is ``effort_fit``'s share gate -- see
+    ``Habits.effort_share_threshold_pct``."""
+    out = Habits(effort_share_threshold_pct=effort_share_threshold_pct)
     rates = _Rates(pricing)
     for bundle in corpus.sessions:
         if bundle.top is None:
@@ -1122,8 +1328,16 @@ def _effort_waste(c: CycleFact) -> float:
 
 
 def _item_effort_fit(h: Habits) -> Item | None:
+    """UX-3: gated the same way as the ``effort-mismatch`` rule this item
+    is ``COVERED_BY`` (:data:`_EFFORT_MIN_MESSAGES` messages, more than
+    ``h.effort_share_threshold_pct`` of output spent thinking) -- one
+    shared effort threshold, not two that can disagree."""
     easy = [c for c in h.cycles if c.tag is not None and c.tag.level == "easy" and c.effort in _HIGH_EFFORT]
-    if len(easy) < 3:
+    if len(easy) < _EFFORT_MIN_MESSAGES:
+        return None
+    output = sum(c.output_cost for c in easy)
+    share = _pct(sum(c.thinking_cost for c in easy), output) if output else None
+    if share is None or share <= h.effort_share_threshold_pct:
         return None
     return Item(
         "effort_fit", sum(_effort_waste(c) for c in easy), len(easy), ("reported",),
@@ -1291,6 +1505,17 @@ def playbook_table(h: Habits, items: list[Item]) -> Table:
             confidence(item, self_report_ok=self_report_ok),
             word,
             spark,
+            # UX-8: where it's put into practice, what trying it costs or
+            # risks, and how to go back -- same three-part shape as
+            # fixes.py's explainer, added here since a habit has no
+            # SettingChange for fixes.build_fixes to work from.
+            WHERE[item.key],
+            TRADE_OFFS[item.key],
+            UNDO[item.key],
+            # UX-3: filled in later by apply_covered_by, once the rules
+            # this report actually fired are known -- "" until then, and
+            # for any item COVERED_BY doesn't name.
+            "",
         ])
     return Table(
         name="habits_playbook",
@@ -1307,6 +1532,10 @@ def playbook_table(h: Habits, items: list[Item]) -> Table:
             Column(key="confidence", label="Confidence", kind="str"),
             Column(key="trend", label="Trend", kind="str"),
             Column(key="weeks", label="By week", kind="str"),
+            Column(key="where", label="Where", kind="str"),
+            Column(key="trade_off", label="Trade-off", kind="str"),
+            Column(key="how_to_undo", label="How to undo it", kind="str"),
+            Column(key="covered_by", label="Already covered by", kind="str"),
         ],
         rows=rows,
         notes=[] if rows else [
@@ -1316,12 +1545,51 @@ def playbook_table(h: Habits, items: list[Item]) -> Table:
     )
 
 
+def apply_covered_by(report: "ReportModel") -> None:
+    """UX-3: for each habit in :data:`COVERED_BY` whose rule actually
+    fired in ``report.recommendations``, drop that habit's own saving
+    and name the rule instead, so the same finding isn't reported as
+    two separate savings -- one from the playbook, one from
+    Recommendations. Mutates the ``habits_playbook`` table found in
+    ``report.sections`` in place; a no-op when that table isn't present
+    (a report built with ``include`` leaving the habits section out) or
+    has no rows.
+
+    Called from ``report.build_report`` right after ``recommend()``
+    runs, since the playbook table itself (``playbook_table`` above) is
+    built earlier, before any rule has fired -- there is no report yet
+    to check ``COVERED_BY`` against at that point.
+    """
+    table = next(
+        (t for section in report.sections for t in section.tables if t.name == "habits_playbook"),
+        None,
+    )
+    if table is None or not table.rows:
+        return
+    key_idx = next(i for i, c in enumerate(table.columns) if c.key == "habit")
+    saving_idx = next(i for i, c in enumerate(table.columns) if c.key == "saving")
+    covered_idx = next(i for i, c in enumerate(table.columns) if c.key == "covered_by")
+    rule_titles = {rec.id: rec.title for rec in report.recommendations}
+    for row in table.rows:
+        rule_id = COVERED_BY.get(row[key_idx])
+        if rule_id is not None and rule_id in rule_titles:
+            row[saving_idx] = None
+            row[covered_idx] = rule_titles[rule_id]
+
+
 def digest_table(h: Habits, items: list[Item] | None = None) -> Table:
-    """"This week": the three habits worth the most, what the habits you
-    already picked up save, and what a piece of work that met its goal
-    cost."""
+    """"Weekly pace (last N days)": the three habits worth the most, what
+    the habits you already picked up save, and what a piece of work that
+    met its goal cost.
+
+    UX-4/7 (F3): titled with the actual number of days the corpus covers,
+    not a bare "This week" that implies a calendar week regardless of
+    span -- ``h.span_weeks`` itself no longer stretches a short span into
+    a fake weekly rate (see its docstring), so the figures here are
+    already honest; the title says so too."""
     items = playbook(h) if items is None else items
     weeks = h.span_weeks
+    days = round(h.span_days)
     rows = []
     for n, item in enumerate([i for i in items if i.saving][:3], start=1):
         rows.append([f"top_{n}", ITEMS[item.key][1], _money_or_none(item.saving / weeks), item.evidence])
@@ -1344,7 +1612,7 @@ def digest_table(h: Habits, items: list[Item] | None = None) -> Table:
         rows.append(["tagged", "Messages Claude tagged", _pct(tagged, len(h.cycles)), f"{tagged} of {len(h.cycles)}"])
     return Table(
         name="habits_digest",
-        title="This week",
+        title=f"Weekly pace (last {days} day{'s' if days != 1 else ''})",
         columns=[
             Column(key="item", label="Item", kind="str"),
             Column(key="what", label="What", kind="str"),
@@ -1953,14 +2221,24 @@ def _tool_output_table(h: Habits) -> Table:
 
 
 def build_section(
-    corpus, pricing: Pricing | None, *, ratings: dict | None = None, signals: dict | None = None, model_swap=None
+    corpus,
+    pricing: Pricing | None,
+    *,
+    ratings: dict | None = None,
+    signals: dict | None = None,
+    model_swap=None,
+    effort_share_threshold_pct: float = 30.0,
 ) -> Section:
     """The "habits" report section. Every table is always there, empty
     when there's nothing to show, so the report keeps its shape.
     ``model_swap`` (``model_swap.ModelSwapStats``, already computed for
     the report's own ``model_swap`` section) feeds ``habits_agents_by_task``'s
-    cheaper-model column."""
-    h = collect(corpus, pricing, ratings=ratings, signals=signals)
+    cheaper-model column. ``effort_share_threshold_pct`` should be the
+    caller's resolved ``recommend.RecommendThresholds
+    .effort_mismatch_thinking_share_pct`` (UX-3's shared effort
+    threshold), so ``effort_fit`` and the ``effort-mismatch`` rule agree
+    on when there's enough to say something."""
+    h = collect(corpus, pricing, ratings=ratings, signals=signals, effort_share_threshold_pct=effort_share_threshold_pct)
     return section_from(h, model_swap=model_swap)
 
 

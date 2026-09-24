@@ -723,3 +723,18 @@ def test_recommend_every_rule_fires_with_valid_evidence():
 
     model.recommendations = recs
     _assert_recommendation_evidence_is_valid(model)
+
+
+def test_every_rule_id_that_can_fire_with_no_setting_change_has_a_workflow_explainer():
+    """UX-8 (rest): every id ``recommend.recommend()`` can natively
+    produce (``_ALL_RULE_IDS``, none of which build a ``SettingChange`` --
+    see ``_build_every_rule_fixture``) must be registered in
+    ``fixes._WORKFLOW_EXPLAINER``, so ``build_fixes`` gives it a
+    where/trade-off/undo entry instead of an empty or missing fix. This
+    is a linkage check: it catches a new rule id added to
+    ``_ALL_RULE_IDS`` (and therefore to ``recommend.py``) without a
+    matching entry here, which is exactly the gap UX-8 closed."""
+    from claude_token_lens import fixes
+
+    missing = _ALL_RULE_IDS - set(fixes._WORKFLOW_EXPLAINER)
+    assert not missing, f"rule ids with no where/trade-off/undo explainer: {sorted(missing)}"

@@ -778,6 +778,27 @@ def _recommend_min_sample_values(config: Config) -> tuple[int, int]:
     return recommend_th.min_sessions, recommend_th.min_turns
 
 
+def _effort_mismatch_share_threshold(config: Config) -> float:
+    """UX-3: the thinking-share percent ``habits.py``'s ``effort_fit``
+    item gates on, resolved from the same ``[thresholds.recommend]``
+    config the ``effort-mismatch`` rule reads (``recommend
+    .RecommendThresholds.effort_mismatch_thinking_share_pct``) -- one
+    shared effort threshold instead of an independent number in each
+    module. Same defensive posture as ``_recommend_min_sample_values``
+    above: falls back to the class default if ``recommend.py`` isn't
+    importable."""
+    from . import recommend as recommend_mod
+
+    recommend_th_cls = getattr(recommend_mod, "RecommendThresholds", None)
+    if recommend_th_cls is None:
+        return 30.0
+
+    recommend_th = recommend_th_cls.from_config(
+        config.thresholds.get("recommend") if isinstance(config.thresholds, dict) else None, config
+    )
+    return recommend_th.effort_mismatch_thinking_share_pct
+
+
 def _merge_diagnostics(acc: Diagnostics, d: Diagnostics) -> None:
     """Fold one transcript's :class:`Diagnostics` into the running
     corpus-wide total: sum every int counter, merge every dict counter
@@ -1642,10 +1663,10 @@ def build_report(
         sections.append(carry.build_section(carry_stats, carry_th))
 
     if _want("compaction_sim"):
-        sections.append(compaction_sim.build_section(compaction_sim_stats, compaction_sim_th))
+        sections.append(compaction_sim.build_section(compaction_sim_stats, compaction_sim_th, units=units))
 
     if _want("model_swap"):
-        sections.append(model_swap.build_section(model_swap_stats, model_swap_th))
+        sections.append(model_swap.build_section(model_swap_stats, model_swap_th, units=units))
 
     if _want("waste"):
         sections.append(waste.build_section(ws, waste_th))
@@ -1660,7 +1681,7 @@ def build_report(
         sections.append(topology.build_section(tp))
 
     if _want("quality"):
-        sections.append(quality.build_section(quality.corpus_runs(corpus, pricing)))
+        sections.append(quality.build_section(quality.corpus_runs(corpus, pricing), units=units))
 
     if _want("workstyle"):
         sections.append(workstyle.build_section(session_records))
@@ -1670,6 +1691,7 @@ def build_report(
             habits.build_section(
                 corpus, pricing, ratings=ratings, signals=_capture_signals(corpus, config_dir),
                 model_swap=model_swap_stats,
+                effort_share_threshold_pct=_effort_mismatch_share_threshold(config),
             )
         )
 
@@ -1809,6 +1831,14 @@ def build_report(
         billing_source=config.billing_source,
         amounts_basis=units.basis(),
         assumptions=assumptions,
+        units={
+            "mode": units.billing_mode,
+            "share_per_usd": (
+                elasticity.express_in_window(1.0, units.elasticity) if units.elasticity is not None else None
+            ),
+            "period_label": "weekly usage limit",
+            "basis": units.basis(),
+        },
     )
 
     # Fixes 2/3: these two counters are pricing-time totals (every turn
@@ -1848,6 +1878,10 @@ def build_report(
         units=units,
     )
     fixes.attach_fixes(report_model.recommendations)
+    # UX-3: a habit covered by a rule that fired here shouldn't report
+    # its own saving too -- see habits.COVERED_BY. Also after recommend()
+    # runs, for the same reason: which rules fired isn't known before it.
+    habits.apply_covered_by(report_model)
     # Display copy last: it never touches table names, column keys or row
     # values, so recommend() above sees exactly what the builders emitted.
     helptext.annotate(report_model)

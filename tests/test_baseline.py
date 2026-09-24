@@ -534,6 +534,30 @@ def test_render_onboarding_report_mentions_provisional_next_step_only_when_provi
     assert "capture window has not finished" not in final_markdown
 
 
+def test_render_onboarding_report_projected_saving_has_no_bare_dollar_under_a_subscription():
+    """UX-2 / finding F1-F2: a subscription record's projected-saving
+    line must route through Units, never a raw f"${...:.2f}"."""
+    record = {
+        "sessions_analysed": 1,
+        "provisional": False,
+        "archetype": None,
+        "dominant_purposes": [],
+        "mode_mix": {},
+        "scorecard_overall": None,
+        "scorecard_label": None,
+        "billing_mismatch_warning": None,
+        "suggested_profile": "interactive-chat",
+        "suggested_profile_reason": "test",
+        "projected_saving_usd": 12.34,
+        "billing_mode": "subscription",
+        "currency": "USD",
+    }
+    markdown = baseline.render_onboarding_report(record)
+    saving_section = markdown.split("## Projected saving", 1)[1].split("## Next steps", 1)[0]
+    assert "$" not in saving_section
+    assert "about about" not in saving_section.lower()
+
+
 # --------------------------------------------------------------------
 # Persistence: baselines_dir / save_baseline / list_baselines / load_baseline
 # --------------------------------------------------------------------

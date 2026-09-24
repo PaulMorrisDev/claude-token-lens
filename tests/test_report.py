@@ -635,6 +635,27 @@ def test_report_meta_is_fully_populated(tmp_path):
     assert meta.assumptions  # ttl + recache assumptions merged in
     assert meta.tool_version
     assert meta.generated_at.endswith("Z")
+    # UX-1: meta.units {mode, share_per_usd, period_label, basis} -- the
+    # JS mirror's (app.js money()) only source of billing-mode facts.
+    assert meta.units["mode"] == "api"
+    assert meta.units["share_per_usd"] is None  # API billing has no window share
+    assert meta.units["period_label"] == "weekly usage limit"
+    assert meta.units["basis"] == meta.amounts_basis
+
+
+def test_report_meta_units_reflects_subscription_billing_with_no_elasticity_fit(tmp_path):
+    """UX-1: under a subscription with no elasticity fit yet (this
+    corpus logs no statusline usage-limit samples), ``meta.units``
+    still reports ``mode == "subscription"`` and a ``None`` share
+    rather than crashing or silently defaulting to API's shape."""
+    corpus = _two_session_corpus(tmp_path)
+    report = build_report(
+        corpus, PRICING, Config(billing="subscription"), projects=("proj-two",), window="last 7 days"
+    )
+    assert report.meta.units["mode"] == "subscription"
+    assert report.meta.units["share_per_usd"] is None
+    assert report.meta.units["period_label"] == "weekly usage limit"
+    assert report.meta.units["basis"] == report.meta.amounts_basis
 
 
 def test_thresholds_min_sample_reflects_recommend_overrides_not_config_defaults(tmp_path):
