@@ -44,7 +44,7 @@ and [docs/deploy.md](docs/deploy.md).
   `.claude/commands/`, skills, `.mcp.json`, output styles, auto-memory,
   and installed plugins.
 
-- **On request only**, when you open the Context files tab or run
+- **On request only**, when you open Agents & context › Context or run
   `claude-token-lens review claude-md|skills` or `check claude-md|skills`:
   the text of your CLAUDE.md-family files (user, project, local, rule
   files, nested CLAUDE.md files, auto memory `MEMORY.md` and one level of
@@ -57,7 +57,7 @@ and [docs/deploy.md](docs/deploy.md).
 
 - `settings.json` in the folder above `<config-dir>` (normally
   `~/.claude/settings.json`), read directly by `init`, `changes`,
-  `uninstall` and the dashboard's Data quality tab, to see whether the
+  `uninstall` and the dashboard's Data quality page, to see whether the
   SessionStart hook and statusline are set up. Only the hook command and
   whether `statusLine` runs this tool are used; nothing from it is
   stored.

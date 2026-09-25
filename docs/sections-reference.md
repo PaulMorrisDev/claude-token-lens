@@ -73,7 +73,7 @@ respects.
   same coverage count behind `meta.pricing.coverage_pct`, and appended
   onto this section by `report.build_report` only when at least one
   reply was unpriced. The `pricing-coverage` recommendation names these
-  model ids. Shown under Spend › Usage's advanced detail.
+  model ids. Shown on Spend › Usage under More tables.
 - `pricing_closest_match` — one row per model id that resolved only via
   `pricing.Pricing.resolve_model`'s longest-registered-id *prefix* step
   (`ResolvedRates.approximate`; not `"exact"`/`"alias"`/`"strip_1m"`, and
@@ -86,14 +86,14 @@ respects.
   `pricing.PricingCoverage.as_closest_match_table`, appended onto this
   section only when at least one reply matched this way, and named by
   the `pricing-coverage` recommendation alongside (or instead of) any
-  unpriced model ids. Shown under Spend › Usage's advanced detail.
+  unpriced model ids. Shown on Spend › Usage under More tables.
 - `pricing_fast_priced_as_standard` — one row per model id seen with at
   least one reply flagged `usage.speed == "fast"` whose rate card entry
   has no `[models."<id>".fast]` table, so it was priced at that model's
   standard rate instead: `model_id`, `turns`, `tokens`. Built by
   `pricing.PricingCoverage.as_fast_priced_as_standard_table`, appended
   onto this section only when at least one such reply exists. Shown
-  under Spend › Usage's advanced detail.
+  on Spend › Usage under More tables.
 - `pricing_fast_applied` (PROF-08) — the mirror image of the table
   above: one row per model id seen with at least one reply *actually*
   billed at its `[models."<id>".fast]` rate: `model_id`, `turns`,
@@ -102,8 +102,8 @@ respects.
   with the flat per-request server-tool fee — never scaled by the fast
   multiplier — added back unscaled on both sides). Built by
   `pricing.PricingCoverage.as_fast_applied_table`, appended onto this
-  section only when at least one such reply exists. Shown under the
-  Usage tab's advanced detail; read by `whatif._fast_mode` to price a
+  section only when at least one such reply exists. Shown under
+  More tables on Spend › Usage; read by `whatif._fast_mode` to price a
   profile's `fastMode = false` candidate.
 - `cache_ground_truth` (S1-exports) — one row per session: `session_id`,
   `rows_logged`, `warm_share` (percentage of *logged rows* — statusline
@@ -159,9 +159,9 @@ not real invoice lines.
 Per-session `mode`/`purpose` overrides live in
 `<config-dir>/sessions.toml` (`<config-dir>` defaults to
 `~/.claude/token-lens`) and always win over the rule engine
-(`config.load_session_overrides`). Tags set on the dashboard's Sessions
-tab win over `sessions.toml`, in the dashboard and in the CLI's
-`report`, `compare` and `config-diff`, which read them from
+(`config.load_session_overrides`). Tags set in the dashboard's session
+drawer (Spend › Sessions) win over `sessions.toml`, in the dashboard and
+in the CLI's `report`, `compare` and `config-diff`, which read them from
 `<config-dir>/service.db` without writing to it
 (`service.store.read_session_marks`).
 
@@ -742,9 +742,9 @@ capture is off or no feedback has been given.
   folded into a scope's cost); then what it has cost a week since it
   began (`capture.weekly_cost`) next to what the habits worth trying
   that need its reports or your feedback are worth a week
-  (`habits.capture_dependent_value`) — a note says so instead of a
-  value when nothing measured yet depends on either. The dashboard's
-  Capture tab and banner show the same figures from `/api/capture`'s
+  (`habits.capture_dependent_value`) — a note says so instead of a value
+  when nothing measured yet depends on either. The dashboard's Setup ›
+  Capture and capture banner show the same figures from `/api/capture`'s
   `roi` field; its per-metric "worth" table (SURV-8) is hidden until at
   least `habits.MIN_GROUP` sessions have a note to measure from.
   `step_down_target`/`step_down_tokens_saved`/`step_down_weekly_saving`
@@ -759,8 +759,8 @@ capture is off or no feedback has been given.
   note spells it out with a runnable `claude-token-lens capture level
   <lower> --dry-run` command and the command that undoes it -- this
   never changes `config.toml` itself ("no apply button": Token Lens
-  never lowers the level on its own). The Capture tab's banner shows a
-  cheaper, unstable-signal-agnostic version of the same command
+  never lowers the level on its own). The dashboard's capture banner
+  shows a cheaper, unstable-signal-agnostic version of the same command
   (`capture_view._step_down_note`) once the dropped metrics alone have
   enough answers, since checking `d_level_stability` there would need a
   full habits pass the dashboard's poll doesn't already pay for.
@@ -1163,7 +1163,7 @@ phrases every amount as "about x% of your weekly usage limit"
 (`express_in_window`). Under API billing, or with no readings, the
 section is left out. On the dashboard it sits on Spend › Usage:
 `elasticity_budget` and `elasticity_recent_burn` are shown, and
-`elasticity_fit` is under the advanced detail.
+`elasticity_fit` is under More tables.
 
 `recommend.recommend()` runs the `window-budget` rule
 (`elasticity.RULES`) last, after the other recommendations are

@@ -41,8 +41,8 @@ of the 5-minute one (below).
   `managed-settings.d/` drop-ins), or whose own settings.json sets
   `disableAllHooks`, Claude Code runs none of the hooks you add
   yourself. `capture on`/`connect` now say so before showing the
-  change, and `capture status`, the Capture tab, the banner and the
-  Data quality tab's snapshot-hook row name the policy instead of
+  change, and `capture status`, Setup › Capture, the capture banner and
+  the Data quality page's snapshot-hook row name the policy instead of
   reporting the hooks as set up or offering `capture connect`, which
   can't fix it. `/api/capture`'s `hooks` gains `blocked_by`. Policies
   delivered another way (the Windows registry, a macOS profile,
@@ -63,11 +63,11 @@ of the 5-minute one (below).
   changes it at any other time, always showing the `settings.json` diff
   first and asking before writing it. See
   [`docs/capture.md`](docs/capture.md).
-- **A capture banner and Capture tab on the dashboard.** A banner under
-  the health banner, on every tab, shows the running token cost,
-  coverage, and a note when hooks are missing, no notes have been seen,
-  the time-box has passed, or there isn't enough data yet. The Capture
-  tab adds level cards, a row per metric (what it captures, the exact
+- **A capture banner and Setup › Capture on the dashboard.** When
+  something needs you, such as a missing hook entry, no notes seen yet
+  or a time-box that has passed, a banner under the health banner says
+  so, with capture's running token cost and coverage. Setup › Capture
+  adds level cards, a row per metric (what it captures, the exact
   tag, why, what it feeds, estimate against actual cost, how much has
   been collected), and sampling and time-box controls, each repeating
   the cost warning before anything that spends more tokens. Turning
@@ -90,7 +90,7 @@ of the 5-minute one (below).
   a second line: a live coaching hint (a large context building up,
   a large last tool result, many reads so far) or a reminder to run
   `/tl-feedback`; the first line is unchanged.
-- **Work habits tab and habit playbook.** A new section, built per
+- **Work habits page and habit playbook.** A new section, built per
   message and per agent run, turns everything metrics capture and your
   own feedback have reported into a weekly digest and a playbook of
   habits worth trying, each with its evidence, a rough saving, and
@@ -98,16 +98,16 @@ of the 5-minute one (below).
   transcript shows, or your own feedback, in that order of trust).
   Brief templates — checklists per kind of task, built from what your
   own requests tend to lack — and an optional `/tl-brief` skill that
-  checks a new request against its checklist are part of the same tab.
+  checks a new request against its checklist are part of the same page.
   The model-tier, effort-fit, spawn-CLAUDE.md and wasted-turns checks,
   and session purpose, now also read what capture reported, and
   `report`, `compare` and `config-diff` read the dashboard's own tags
   and ratings.
 - **Profiles tuned per kind of task.** Once enough sessions carry a
-  reported task, the Work habits tab breaks cost and how often the
-  work went well down by task, model and effort, and picks the
-  cheapest setup that did as well as your usual one; a new "A profile
-  for one kind of task" goal on the Profiles tab drafts from it, and
+  reported task, Work habits breaks cost and how often the work went
+  well down by task, model and effort, and picks the cheapest setup
+  that did as well as your usual one; a new "A profile for one kind of
+  task" goal on Setup › Profiles drafts from it, and
   `compare` can stratify by task the same way. A `capture` change (a
   level, enabling a metric) now counts as a change point the same way
   an `apply` does, measured by capture's own token cost and the share
@@ -122,21 +122,21 @@ of the 5-minute one (below).
   something else no longer counts against the cheaper model (two or more
   for one agent become a tip to fix its task prompt or tools); one that
   blames the model counts even for a different agent type. Partial or
-  blocked counts as didn't finish. The Agents tab adds **Why agents were
-  run again** and, under advanced, **Markers Claude wrote** with how
-  often each was written and what it cost. The fix explains how to
-  remove the lines again.
+  blocked counts as didn't finish. Agents & context › Quality adds **Why
+  agents were run again** and, under More tables, **Markers Claude
+  wrote** with how often each was written and what it cost. The fix
+  explains how to remove the lines again.
 - **Spots when a cheaper model wasn't enough.** When an agent's run on
   a cheaper model is followed, in the same session, by the same agent
   started again on a larger model that edits the same files within two
-  hours, the run counts as retried on a larger model. The Agents tab
-  lists each agent and model this happened to ("Agent runs retried on a
-  larger model"), and the retried share joins the quality signals and
-  Profiles' before-and-after. Once a tenth of an agent's runs on a model
-  were retried, that model is no longer suggested for it: the models
-  recommendation, the Models quick action and the Profiles models goal
-  skip it and say why. When the agent file is on that model and it
-  happened twice or more, "Is any agent struggling?" offers to move it
+  hours, the run counts as retried on a larger model.
+  Agents & context › Quality lists each agent and model this happened
+  to ("Agent runs retried on a larger model"), and the retried share
+  joins the quality signals and Profiles' before-and-after. Once a
+  tenth of an agent's runs on a model were retried, that model is no
+  longer suggested for it: the models recommendation, the models check
+  on Actions › Checks and the Profiles models goal skip it and say why.
+  When the agent file is on that model and it happened twice or more, "Is any agent struggling?" offers to move it
   back up; when the agent file names another model, it says the cheaper
   model was picked by whatever started the agent. On real history this
   flagged claude-implementer on Haiku (4 of 31 runs retried on Sonnet,
@@ -147,12 +147,13 @@ of the 5-minute one (below).
   first scan of the whole history finished (a minute or more on a large
   one). A banner shows the scan's progress (files found, read and
   stored), and once it finishes offers **Redraw figures**.
-- **Tabs no longer wait on a report rebuild while you work.** Every
+- **Pages no longer wait on a report rebuild while you work.** Every
   reply in a live session changed the store and threw away every built
-  report, so each tab opened afterwards rebuilt the whole report first,
+  report, so each page opened afterwards rebuilt the whole report first,
   and the "last hour" and "last 24 hours" windows rebuilt every minute.
   The dashboard now answers from the report it has and rebuilds it in
-  the background, and its footer says what time the figures are from.
+  the background, and the sidebar's status line says what time the
+  figures are from.
   A report is only rebuilt while you wait when there is none for that
   window yet or it is over ten minutes old. Responses built from a
   report carry `X-Figures-As-Of` (and `X-Figures-Refreshing: 1` while a
@@ -160,11 +161,11 @@ of the 5-minute one (below).
 - **Every change now ends by telling you to restart Claude Code.**
   Claude Code reads settings and agent files when it starts, so a
   session already open kept the old ones with nothing saying so. Every
-  fix on the dashboard and in `report`/`check` output, the Profiles
-  tab's apply command, and `apply`, `apply --revert`, `init`'s connect
-  and hook repair and `uninstall`'s settings removal now say to restart
-  it, and every prompt for Claude asks it to remind you once it has
-  saved.
+  fix on the dashboard and in `report`/`check` output, the apply
+  command on Setup › Profiles, and `apply`, `apply --revert`, `init`'s
+  connect and hook repair and `uninstall`'s settings removal now say to
+  restart it, and every prompt for Claude asks it to remind you once it
+  has saved.
 - `serve --store PATH` puts the dashboard's database somewhere other
   than `<config-dir>/service.db`, so a second copy (a dev checkout) can
   run beside the logon service without sharing it.
@@ -231,7 +232,7 @@ of the 5-minute one (below).
   tick a change to track (not while just exploring "what if?"), the
   dashboard logs its estimate and later checks it against what actually
   happened once a matching real change and enough sessions have come in
-  — a new "Did your estimates come true?" table on the Profiles tab
+  — a new "Did your estimates come true?" table on Setup › Settings
   (`GET /api/backtest`) and a read-only `claude-token-lens backtest` CLI
   command show a verdict (`as_estimated`, `smaller`, `larger`,
   `opposite`, or `too_little_data` while the window is still open) for
@@ -317,7 +318,7 @@ of the 5-minute one (below).
   twice; `effort_fit` and `effort-mismatch` now also agree on the exact
   message-count and thinking-share gate that decides whether there's
   enough evidence to say something, instead of two independent numbers
-  that could disagree; the dashboard's Quick actions tips pick at most
+  that could disagree; the tips on Actions › Checks pick at most
   one habit per theme and skip one already covered by a recommendation,
   instead of listing near-duplicates. A saving spread over "a week" no
   longer divides by a fraction of a week for a corpus under 7 days old
@@ -364,10 +365,10 @@ of the 5-minute one (below).
   shows the `/tl-feedback` nudge at most once per session; the
   transcript reads behind it are all bounded tail reads, not
   whole-file.
-- **The dashboard's Quick actions, Impact and Backtest tabs now show a
-  plain "not enough data yet" placeholder — with the actual count
-  ("N of need so far") once one is available — instead of an empty
-  panel or a bare prose sentence**, and `/api/impact`'s per-change rows
+- **Actions › Checks and the changes and estimates tables on
+  Setup › Settings now show a plain "not enough data yet" placeholder —
+  with the actual count ("N of need so far") once one is available —
+  instead of an empty panel or a bare prose sentence**, and `/api/impact`'s per-change rows
   carry a structured `gate` (`{"reason": "min_sessions", "have",
   "need"}`, or `null` once there's enough) alongside the existing prose
   verdict, so the UI doesn't have to parse a sentence to decide whether
@@ -502,24 +503,25 @@ of the 5-minute one (below).
 
 ### Changed
 
-- **Long tables open on their top rows.** A report table of more than 12 rows shows its first 10, in the order you sorted it, with a "Show all N rows" button; a table by day, week, month or five-hour block shows its latest 10, and a link to a later row shows them all first. Cost by MCP server and the main session against subagents context table moved under More tables on Agents & context › Subagents, and the cheaper-model table no longer repeats its saving as a sentence.
-- **Setup, Agents & context and Work habits are shorter, with detail one click away.** Setup › Settings now opens with what your changes did and whether your estimates came true, beside the settings they judge; a change marker on the daily spend chart opens it at that day's change. On Setup › Profiles, "Show what it changes" opens the profile in a side panel. Setup › Capture folds each group of metrics, showing how many are on, and each metric shows what it captures and costs, with why it helps and what Claude writes one click away. Agents & context › Context lists CLAUDE.md files and skills as sortable tables; a row opens the file's review or the skill's detail in a side panel, and the prompt that hides unused skills is folded until you want it. Agents & context › Quality shades each quality signal by how high it runs, so the one to look at first stands out. Work habits keeps its habits, brief templates and kinds of task in view and folds the other breakdowns under **More tables**.
-- **Spend and Cache now lead with the chart that answers each page's question.** Spend › Usage shows daily spend split by main session and subagents or by model (kept in the address as `?split=model`, and through a window change); a day opens the sessions active on it. Spend › Savings opens with the four ways to save side by side, hatched unless measured, and each bar leads to the row its figure comes from. Spend › Sessions plots every session in the window by when it started and what it cost, coloured by how it ran: drag across the chart, or hold Shift and press the arrow keys, to list only the sessions from that stretch, and **Show all sessions** clears it. The list now holds the whole window in one sortable grid instead of pages of 50. Cache › Rebuilds opens with **What the cache does for you**: what the cache saved you after paying for its writes, what avoidable rebuilds cost (rebuilds after a usage-limit pause aren't counted), and how many agent types a 1-hour lifetime would help, each with the price multiplier from your pricing and a link to how it works. Sections draw their chart above their tables: the compaction window, idle gaps against the cache lifetime, the 1-hour lifetime per agent type and startup context. A one-row summary table reads as up to four tiles with **All figures** one click away, and long notes on how figures are worked out fold away, so pages are shorter.
-- **Links in a drawer work.** A popover opened in the session or table drawer can be clicked and reached with Tab, and a link to another page closes the drawer instead of changing the page behind it. A help popover that holds a link takes focus, so the keyboard reaches it. The **Feeds N actions** list names a rule that fires for several agent types the way the Actions inbox does ("7 agent types are sent your CLAUDE.md files every time they start").
-- **Report notes and column names are in plain English.** Section and table notes, threshold lines and column labels no longer name code fields (`cache_read`, `agent_type`, `share_pct = 10.0%`) or say "USD": a money column is just "Cache write cost" or "Saving if switched", and each note says what its figure means. The pricing note reads "Costs use prices from pricing.toml, version …" without the currency and file hash. Column keys, row values and CSV/JSON fields are unchanged.
-- **The Glossary now explains how costs work.** A new "How costs work" segment gives one short card per pricing rule (cache reads, writes and rebuilds, model choice, startup context, tool output kept, conversation summaries, billing mode), each stating the rule, its price multiplier, your own numbers for the window, and a link to the page that acts on it. Terms that a cost card explains now show a "Why it matters" line linking straight to it, and both segments support deep links (`?card=`, `?term=`) that scroll to and briefly highlight the right entry.
-- **Text on the dashboard now links where it points, and explains its terms.** Where help, notes, a recommendation, a check, a habit or a session's explanation names another page, the name is a link to it. The first time a card or section uses a term the Glossary explains, such as cache lifetime (TTL), cache rebuild or subagent, the word has a dotted underline: it opens the definition, with a link to the Glossary. A section's "How to read this" ends with a link to the Glossary card that explains the price behind it. A table whose figures back a recommendation says **Feeds N actions** beside its heading, and each row a recommendation cites has a small mark; both list the actions, each a link to its detail in Actions. A habit already covered by a recommendation now links to it.
-- **Actions is now an inbox you can link to.** Recommendations and Checks each show a list to pick from beside the one you picked, with filter chips for importance and area (Models, Cache, Context, Agents, Habits, Data and settings), or for a check's answer. A rule that fires for several agent types is one item with one table of changes: the agent, the value it sets, the saving and a Copy button per row, with the value now said once when every agent shares it. Each recommendation now explains **how it saves you money**: what it costs you now, what the change does to the price with the multiplier from your own pricing ("Reading from the cache costs a tenth of the input price"), and the saving with how sure it is. **The numbers behind this** are links: each opens the page that shows that table, opens what hides it, scrolls to the row and highlights it, or shows the table in a side panel when no page does. Recommendations link to the checks they answer and checks to the recommendations they lead to, and the Overview's next best actions open the one they name. The address says what is open (`#/actions/recommendations?id=<key>`), so Back, Forward and bookmarks return to it.
+- **The dashboard is redesigned around what to change next.** Seven pages in a sidebar replace the sixteen tabs, and every page and segment has its own address. The Overview opens with what the window cost and the five changes most worth making. Charts answer one question each, with **Show as table** beside them. Each figure behind a recommendation links to the exact row it comes from. Ctrl+K searches pages, tables, recommendations, checks, sessions and projects. A project picker narrows the figures to one project. Light and dark themes follow your system until you pick one. Pages and figures move to show what changed, and stop if your system asks for reduced motion. Notes, labels and help are in plain English, and a Glossary term opens its definition in place. The entries below give the detail.
+- **The dashboard's sixteen tabs are now seven pages in a sidebar.** Overview, Actions, Spend, Cache, Agents & context, Work habits and Setup, with Data quality and the Glossary below them. A page with more than one part shows them as segments beside its title, such as Spend › Usage, Savings and Sessions. Each page has its own address (`#/spend/usage?w=30`), so Back, Forward and bookmarks work, and each keeps its scroll position. The page title, its segments, Search, the project picker, the window picker and the theme toggle stay pinned while you scroll. The window picker is a menu you can drive from the keyboard, and pages whose figures don't depend on it say so. The sidebar can narrow to a rail of icons (`tls:sidebar`); below 1024px wide it always does. Its foot holds a status line: whether the figures are up to date, when they are from, **Redraw figures** after a scan, the capture level and the version. The capture banner now shows only when a note needs attention; the invitation to turn capture on moved to the status line's link. Cost by model moved from the Overview to Spend › Usage, and the context budget from Config to Agents & context › Context. The last tab you had open opens once as its page. Links between pages replace the old "see the X tab" text, and the dashboard's own words are held to `docs/writing-help.md` by a new test.
 - **The Overview now answers "What should I change next?"** It opens with one sentence on the window: what it cost, how that compares with the period of the same length before, how many changes are worth making and what the ways to save come to, in your billing mode. Four tiles follow: Spend (with its change and a daily trend), Available saving (the ways to save on Spend › Savings added up, marked "At most" because they overlap), Saved by the cache (what your cache reads would have cost sent fresh, with what a cache read costs on the model you use most) and Sessions (with the subagent runs). Daily spend is split into your main session and subagents, with your settings changes marked on the days they happened, beside the five next best actions, each with a Copy prompt button. How your setup scores is now five meters, each linking to where to look and to a change that would help. The totals and the billing basis moved into a disclosure, and the full service health moved to Data quality; the warning when the service doesn't start at logon still shows on the Overview. Before any session is read, the Overview says what Token Lens does for you.
-- **The dashboard's charts share one frame, drawn with d3.** Each chart asks a question as its title, opens with a sentence that answers it from your figures, and has **Show as table** for the same rows as a grid. You can read it with the keyboard: Tab to the chart, then the arrow keys step from mark to mark. Colours stay with the thing they stand for (the main session, subagents, a model tier), so changing the window never repaints what stays on screen, and money axes follow your billing mode. The session timeline is the first to use it: usage-limit events now sit in one lane per kind, and a run of the same event becomes one mark whose tooltip gives the count and the time span, so they no longer draw over each other. Eight charts are catalogued in `docs/ui.md` ("Charts") with the rule a new chart must meet; the pages that show the rest arrive with their redesign.
+- **Actions is now an inbox you can link to.** Recommendations and Checks each show a list to pick from beside the one you picked, with filter chips for importance and area (Models, Cache, Context, Agents, Habits, Data and settings), or for a check's answer. A rule that fires for several agent types is one item with one table of changes: the agent, the value it sets, the saving and a Copy button per row, with the value now said once when every agent shares it. Each recommendation now explains **how it saves you money**: what it costs you now, what the change does to the price with the multiplier from your own pricing ("Reading from the cache costs a tenth of the input price"), and the saving with how sure it is. **The numbers behind this** are links: each opens the page that shows that table, opens what hides it, scrolls to the row and highlights it, or shows the table in a side panel when no page does. Recommendations link to the checks they answer and checks to the recommendations they lead to, and the Overview's next best actions open the one they name. The address says what is open (`#/actions/recommendations?id=<key>`), so Back, Forward and bookmarks return to it.
+- **Spend and Cache now lead with the chart that answers each page's question.** Spend › Usage shows daily spend split by main session and subagents or by model (kept in the address as `?split=model`, and through a window change); a day opens the sessions active on it. Spend › Savings opens with the four ways to save side by side, hatched unless measured, and each bar leads to the row its figure comes from. Spend › Sessions plots every session in the window by when it started and what it cost, coloured by how it ran: drag across the chart, or hold Shift and press the arrow keys, to list only the sessions from that stretch, and **Show all sessions** clears it. The list now holds the whole window in one sortable grid instead of pages of 50. Cache › Rebuilds opens with **What the cache does for you**: what the cache saved you after paying for its writes, what avoidable rebuilds cost (rebuilds after a usage-limit pause aren't counted), and how many agent types a 1-hour lifetime would help, each with the price multiplier from your pricing and a link to how it works. Sections draw their chart above their tables: the compaction window, idle gaps against the cache lifetime, the 1-hour lifetime per agent type and startup context. A one-row summary table reads as up to four tiles with **All figures** one click away, and long notes on how figures are worked out fold away, so pages are shorter.
+- **Setup, Agents & context and Work habits are shorter, with detail one click away.** Setup › Settings now opens with what your changes did and whether your estimates came true, beside the settings they judge; a change marker on the daily spend chart opens it at that day's change. On Setup › Profiles, "Show what it changes" opens the profile in a side panel. Setup › Capture folds each group of metrics, showing how many are on, and each metric shows what it captures and costs, with why it helps and what Claude writes one click away. Agents & context › Context lists CLAUDE.md files and skills as sortable tables; a row opens the file's review or the skill's detail in a side panel, and the prompt that hides unused skills is folded until you want it. Agents & context › Quality shades each quality signal by how high it runs, so the one to look at first stands out. Work habits keeps its habits, brief templates and kinds of task in view and folds the other breakdowns under **More tables**.
+- **Long tables open on their top rows.** A report table of more than 12 rows shows its first 10, in the order you sorted it, with a "Show all N rows" button; a table by day, week, month or five-hour block shows its latest 10, and a link to a later row shows them all first. Cost by MCP server and the main session against subagents context table moved under More tables on Agents & context › Subagents, and the cheaper-model table no longer repeats its saving as a sentence.
+- **The dashboard's charts share one frame, drawn with d3.** Each chart asks a question as its title, opens with a sentence that answers it from your figures, and has **Show as table** for the same rows as a grid. You can read it with the keyboard: Tab to the chart, then the arrow keys step from mark to mark. Colours stay with the thing they stand for (the main session, subagents, a model tier), so changing the window never repaints what stays on screen, and money axes follow your billing mode. On the session timeline, usage-limit events sit in one lane per kind, and a run of the same event becomes one mark whose tooltip gives the count and the time span, so they no longer draw over each other. Eight charts use the frame, each catalogued in `docs/ui.md` ("Charts") with the rule a new chart must meet.
+- **Text on the dashboard now links where it points, and explains its terms.** Where help, notes, a recommendation, a check, a habit or a session's explanation names another page, the name is a link to it. The first time a card or section uses a term the Glossary explains, such as cache lifetime (TTL), cache rebuild or subagent, the word has a dotted underline: it opens the definition, with a link to the Glossary. A section's "How to read this" ends with a link to the Glossary card that explains the price behind it. A table whose figures back a recommendation says **Feeds N actions** beside its heading, and each row a recommendation cites has a small mark; both list the actions, each a link to its detail in Actions. A habit already covered by a recommendation now links to it.
+- **Links in a drawer work.** A popover opened in the session or table drawer can be clicked and reached with Tab, and a link to another page closes the drawer instead of changing the page behind it. A help popover that holds a link takes focus, so the keyboard reaches it. The **Feeds N actions** list names a rule that fires for several agent types the way the Actions inbox does ("7 agent types are sent your CLAUDE.md files every time they start").
+- **The Glossary now explains how costs work.** A new "How costs work" segment gives one short card per pricing rule (cache reads, writes and rebuilds, model choice, startup context, tool output kept, conversation summaries, billing mode), each stating the rule, its price multiplier, your own numbers for the window, and a link to the page that acts on it. Terms that a cost card explains now show a "Why it matters" line linking straight to it, and both segments support deep links (`?card=`, `?term=`) that scroll to and briefly highlight the right entry.
+- **Search the dashboard with Ctrl+K, and move around it from the keyboard.** Search finds every page, the report's sections and tables, the window's recommendations and checks, glossary terms and cost cards, recent sessions and projects, and runs a few commands: set the window, show all projects, pick a theme, or copy a recommendation's prompt. With nothing typed it lists the pages. G then a letter opens a page (O, A, S, C, E, H, U), `[` and `]` step through a page's segments, J and K move through the Actions inbox and the Sessions list, and `?` shows them all. Search only opens pages and copies text; it never changes Claude Code.
 - **Show one project at a time.** A project picker beside the window picker narrows every page that follows the window to one project, listed as its folder name with the most expensive first. The address keeps it (`?project=`) and nothing else stores it, so it never outlives the visit that chose it. Panels that always cover every project say so while one is picked, search finds projects too, and an address naming a project Token Lens doesn't know shows every project and says why.
-- **Search the dashboard with Ctrl+K, and move around it from the keyboard.** Search finds every page, the report's sections and tables, the window's recommendations and checks, glossary terms and recent sessions, and runs a few commands: set the window, pick a theme, or copy a recommendation's prompt. With nothing typed it lists the pages. G then a letter opens a page (O, A, S, C, E, H, U), `[` and `]` step through a page's segments, J and K move through the Actions inbox and the Sessions list, and `?` shows them all. Search only opens pages and copies text; it never changes Claude Code.
-- **The dashboard's sixteen tabs are now seven pages in a sidebar.** Overview, Actions, Spend, Cache, Agents & context, Work habits and Setup, with Data quality and the Glossary below them. A page with more than one part shows them as segments beside its title, such as Spend › Usage, Savings and Sessions. Each page has its own address (`#/spend/usage?w=30`), so Back, Forward and bookmarks work, and each keeps its scroll position. The page title, segments, window picker and theme toggle stay pinned while you scroll. The window picker is a menu you can drive from the keyboard, and pages whose figures don't depend on it say so. The sidebar can narrow to a rail of icons (`tls:sidebar`); below 1024px wide it always does. Its foot shows whether the figures are up to date, when they are from, **Redraw figures** after a scan, the capture level and the version. The capture banner now shows only when a note needs attention; the invitation to turn capture on moved to the status line's link. Cost by model moved from the Overview to Spend › Usage, and the context budget from Config to Agents & context › Context. The last tab you had open opens once as its page. Links between pages replace the old "see the X tab" text, and the dashboard's own words are held to `docs/writing-help.md` by a new test.
 - **One set of dashboard components and one number format.** Buttons, chips, tiles, panels, callouts, command blocks, drawers, toasts and tooltips now look and behave the same on every page. Every table is one grid: its sort is kept per table, a wide table shows its first 7 columns with a chooser for the rest, the lead measure carries a thin bar, and long tables stay quick. Numbers follow one format everywhere ("$56.7", "1.24M tokens", "2h 14m"), project names read as their folder name, and amounts follow your billing mode on every page, including Setup › Capture; the service's "1,962.05 USD" now reads "$1,962.05". Empty states say what happened and what to do next, loading shows the shape of what is coming, and if the service stops answering the last figures stay on the page, marked stale, while it retries. A change's explainer (what it controls, where, the trade-off and how to undo it) sits under its prompt and command.
 - **The dashboard has a new visual system.** Every colour, type size, space and motion value is now a token in `app.css`. Each has a light and a dark value. The theme follows the system, and a saved choice (`tls:theme`) is applied before the first paint. Text is set in Inter and commands in JetBrains Mono, both served by the service itself. A recommendation's severity and a check's status are now chips with an icon and a label, not a coloured card edge. Every focusable control shows the same focus ring. A negative change reads with a true minus sign. The session timeline's markers are drawn in ink, so each one stands out in both themes. Animation stops under reduced motion. d3 7.9.0 ships in `static/vendor/` for the charts. The vendored d3 and fonts are pinned by sha256 in `static/THIRD_PARTY.sha256`, and each name carries its release. They are the one thing the service lets the browser cache (`immutable`); everything else stays `no-store`.
 - **The dashboard moves with a purpose, and reads in High Contrast.** A new page fades in over the old one. On the Overview, the headline figures count up to their values, the chart draws in after them and the next best actions arrive one after another. None of it runs if your system asks for reduced motion. Actions' figures load while the Overview sits idle, so Actions opens at once. In Windows High Contrast, charts keep their colours and hatching, while text, gridlines, borders and focus rings use your system's colours.
-- **The dashboard is native ES modules.** `service/static/app.js` is now the entry point that loads a set of small modules (`core.js`, `format.js`, `api.js`, `ui.js`, `grid.js`, `links.js`, `shell.js` and one `page-*.js` per group of tabs), loaded with `<script type="module">` and no build step. Nothing on screen changes. The service now serves `.js` as `text/javascript` and pins the types for `.css`, `.woff2` and `.svg`: browsers refuse a module script with the wrong type under `nosniff`, and the pins keep Python's `mimetypes` from reading a type out of the Windows registry.
-- **Deep includes the feedback survey.** Switching capture into Deep (`capture on`/`level`, `init`, or the Capture page) also turns on the `/tl-feedback` survey, its reminder note, and Claude's one-line reminder to run it when a piece of work is done. The CLI and `init` write the skill after the usual diff and yes; the Capture page offers the command. The Deep card, its estimate and `docs/capture.md` count the reminder (about 43 more note tokens at each session start). Leaving Deep keeps them, `capture feedback off` removes them, and picking Deep again while already on it doesn't bring them back.
+- **Report notes and column names are in plain English.** Section and table notes, threshold lines and column labels no longer name code fields (`cache_read`, `agent_type`, `share_pct = 10.0%`) or say "USD": a money column reads "Cache write cost" or "Saving if switched", and each note says what its figure means. The pricing note reads "Costs use prices from pricing.toml, version …" without the currency and file hash. Column keys, row values and CSV/JSON fields are unchanged.
+- **The dashboard is native ES modules.** `service/static/app.js` is now the entry point that loads a set of small modules (`core.js`, `format.js`, `api.js`, `ui.js`, `icons.js`, `grid.js`, `links.js`, `evidence.js`, `costs.js`, `charts.js`, `charts-types.js`, `palette.js`, `shell.js` and one `page-*.js` per page, with Setup › Capture in its own), loaded with `<script type="module">` and no build step. The service now serves `.js` as `text/javascript` and pins the types for `.css`, `.woff2` and `.svg`: browsers refuse a module script with the wrong type under `nosniff`, and the pins keep Python's `mimetypes` from reading a type out of the Windows registry.
+- **Deep includes the feedback survey.** Switching capture into Deep (`capture on`/`level`, `init`, or Setup › Capture) also turns on the `/tl-feedback` survey, its reminder note, and Claude's one-line reminder to run it when a piece of work is done. The CLI and `init` write the skill after the usual diff and yes; Setup › Capture offers the command. The Deep card, its estimate and `docs/capture.md` count the reminder (about 43 more note tokens at each session start). Leaving Deep keeps them, `capture feedback off` removes them, and picking Deep again while already on it doesn't bring them back.
 
 The report's performance work (building the work-habits facts once per
 report, and the cache-carry and compaction-replay costing off their
@@ -552,9 +554,9 @@ algorithm to 1e-12 on fixtures and randomised sessions.
   evidence actually reported (vs. inferred from the transcript alone),
   and normalised per week since capture was turned on. A recommendation
   capture's evidence argued *against* making no longer inflates this
-  total — it's counted and shown as "held back N", a new row on the
-  Capture tab's own usage table, not folded into the savings figure.
-- **A per-metric worth table** on the Capture tab and in `docs/capture.md`
+  total — it's counted and shown as "held back N", a new row on
+  Setup › Capture's own usage table, not folded into the savings figure.
+- **A per-metric worth table** on Setup › Capture and in `docs/capture.md`
   (generated, not hand-edited): each metric's own tokens a week set
   against the dollar value of the decisions it feeds, so "is this metric
   worth what it costs" has a direct answer per row instead of one lump
@@ -709,8 +711,8 @@ algorithm to 1e-12 on fixtures and randomised sessions.
   calibration-gated suggestion (new `step_down_target`/
   `step_down_tokens_saved`/`step_down_weekly_saving` rows and a note
   with a runnable `claude-token-lens capture level <lower> --dry-run`
-  command and its undo, in numbers and level names only); the Capture
-  tab's banner (`capture_view._step_down_note`) shows a cheaper,
+  command and its undo, in numbers and level names only); the capture
+  banner (`capture_view._step_down_note`) shows a cheaper,
   readiness-only version of the same command, since checking
   `d_level_stability` there would need a full habits pass the
   dashboard's poll doesn't already pay for. Both name the metrics the
@@ -795,8 +797,8 @@ algorithm to 1e-12 on fixtures and randomised sessions.
 
 - Data quality › Setup showed `{page:setup/capture}` in the capture hooks' token cost line while capture was on; it now reads as a link to Setup › Capture. A test stops a page token being written inside an f-string again.
 - **A subagent's main-session tag no longer sets the task of the prompt it ran in.** Found by validating live capture: an Explore agent asked only for `[result: ...]` also wrote a full `[tl: task=... level=...]` tag, and SEC-P2's filter never checked the main-session keys in a subagent, so they reached the cycle's merged tag. Keys only the other scope is asked for are now dropped, a subagent's `[tl: ...]` no longer counts as a tag, and a subagent's `out=` is kept when a large-output note asked for it. The cost weighting also skips retired metrics (`detour`, `web`) instead of failing on an older transcript. PARSER_VERSION 21: every transcript is re-parsed once.
-- **A catalogue profile's "Estimated effect" on the Profiles tab never
-  appeared.** The tab sent the profile's first `for` word
+- **A catalogue profile's "Estimated effect" on Setup › Profiles never
+  appeared.** The page sent the profile's first `for` word
   (`implementation`, `data-exploration`, ...) to `/api/whatif` as its
   task, which only takes the capture task words, so the request failed
   quietly. Profiles now carry `tasks`, their `for` words normalised to
@@ -842,8 +844,8 @@ algorithm to 1e-12 on fixtures and randomised sessions.
   during the first scan, `degraded` when the last scan failed and
   `stale` when the scanner has stopped or nothing has finished for ten
   minutes, with a plain-words `message` and the scan's progress
-  (`scan`). The dashboard shows these in a banner on every tab and in
-  its footer, with the command to restart it.
+  (`scan`). The dashboard shows these in a banner on every page and in
+  the sidebar's status line, with the command to restart it.
 - A failed scan's error now keeps SQLite's own reason ("database is
   locked") rather than only "OperationalError".
 - Two `serve`s on one database are refused. `serve` locks its database
@@ -852,12 +854,12 @@ algorithm to 1e-12 on fixtures and randomised sessions.
   database a running `serve` has open.
 - A port already in use is reported in a sentence instead of a
   traceback.
-- The Profiles tab's "Or try it for one session" command was
+- Setup › Profiles' "Or try it for one session" command was
   `claude --settings <config-dir>/profiles/<id>.settings.json`: a
   placeholder, pointing at a file that only `apply <id> --launch`
   writes. It is now `claude-token-lens apply <id> --launch`, which
   writes the file and prints the command with its real path, and the
-  tab says when the profile's agent or environment changes can't come
+  page says when the profile's agent or environment changes can't come
   along for a one-session trial.
 - `--since` and `--until` given a bare date (`--since 2026-09-01`), as
   the README documents, or a time with no offset, crashed comparing it
@@ -874,9 +876,9 @@ algorithm to 1e-12 on fixtures and randomised sessions.
 - **A reply priced against another, similar model's rate — because its
   own model id only prefix-matched, not because it had its own
   pricing.toml row — counted as "100% priced," so the report read as if
-  every model had an exact price.** The Usage tab now gets a "Priced by
+  every model had an exact price.** Spend › Usage now gets a "Priced by
   closest match" table (model, priced as, replies, tokens) whenever this
-  happens, the Data quality tab's counters and the `pricing-coverage`
+  happens, the Data quality page's counters and the `pricing-coverage`
   recommendation name it too, and `pricing-check --models` marks a
   closest-match resolution `(closest match, not this model's own rate)`.
   The coverage percentage itself is unchanged — a closest-match reply
@@ -888,7 +890,7 @@ algorithm to 1e-12 on fixtures and randomised sessions.
   `[models."<id>".fast]` multiplier for those three models, and a fast
   reply on a model with no such table still prices at standard (as
   before) but now says so: a new "Fast turns priced at standard rate"
-  table on the Usage tab, and matching Data quality tab counters, name
+  table on Spend › Usage, and matching Data quality page counters, name
   which models and how many replies. Recording each reply's own speed
   needed a new `Turn.speed` field, hence the `PARSER_VERSION` bump above.
 - **The `opus`/`opus[1m]` aliases resolved to Claude Opus 5 instead of
