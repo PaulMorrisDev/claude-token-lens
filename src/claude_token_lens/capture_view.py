@@ -322,6 +322,10 @@ def _metric_row(
         fb_actual, have, want = _feedback_facts(metric.id, {**(feedback or {}), "units": units})
         if fb_actual is not None:
             actual, actual_label = fb_actual, f"Over the last {capture_mod.HISTORY_DAYS} days"
+    coaching_use = (feedback or {}).get("coaching_use")
+    if on and metric.id == "coaching_notes" and coaching_use is not None:
+        actual = _money(units, coaching_use.cost)
+        actual_label = f"{_plural(coaching_use.notes, 'note')} over the last {capture_mod.HISTORY_DAYS} days"
     install = _SKILL_METRICS.get(metric.id)
     skill_now = (feedback or {}).get(install[0]) if install else None
     needs_install = bool(on and install and skill_now not in (None, "installed"))
@@ -581,6 +585,7 @@ def view(
     statusline: bool | None = None,
     weekly_cost: float | None = None,
     dependent_value: float | None = None,
+    coaching_use=None,
     now: datetime | None = None,
 ) -> dict:
     """Everything the Capture tab and the banner show.
@@ -597,7 +602,9 @@ def view(
     ``footprint.feedback_skill_state`` of the /tl-feedback skill,
     ``brief_skill`` that of the /tl-brief skill and
     ``ratings`` how many sessions you rated on the dashboard (each only
-    while its toggle is on). ``statusline`` is whether Claude Code's
+    while its toggle is on). ``coaching_use`` is
+    ``capture.coaching_usage`` over the same days, while coaching notes
+    are on. ``statusline`` is whether Claude Code's
     status line is this tool's (``None`` when not checked).
     ``weekly_cost`` is ``capture.weekly_cost(use)`` and ``dependent_value``
     ``habits.capture_dependent_value`` over the same window: together
@@ -617,6 +624,7 @@ def view(
         "brief_skill": brief_skill,
         "ratings": ratings,
         "statusline": statusline,
+        "coaching_use": coaching_use,
     }
     rows = [
         _metric_row(m, capture, active, past, units, use, signal_sessions, missing_events, feedback)

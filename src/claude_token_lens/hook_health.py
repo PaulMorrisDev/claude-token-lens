@@ -92,11 +92,14 @@ class HookSpec:
     async_: bool = False
 
     def describe(self) -> str:
+        tools = set(self.matcher.split("|"))
         when = {
             "SessionStart": "when a session starts, is cleared or compacts",
             "SubagentStart": "when a subagent starts",
+            "UserPromptSubmit": "when you send a message",
             "PostToolUse": "after "
-            + ("web results" if set(self.matcher.split("|")) <= set(capture_catalogue.WEB_TOOLS) else "shell, read, search, web and MCP results"),
+            + ("web results" if tools - {"ExitPlanMode"} <= set(capture_catalogue.WEB_TOOLS) else "shell, read, search, web and MCP results")
+            + (" and an approved plan" if "ExitPlanMode" in tools else ""),
             "SessionEnd": "when a session ends",
             "Notification": "when Claude waits for you, in the background",
             "PermissionRequest": "when Claude asks for permission, in the background",

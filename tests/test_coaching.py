@@ -152,6 +152,15 @@ def test_a_hint_rests_after_it_shows_unless_the_stake_grows(tmp_path):
     assert _kind(_coach(tmp_path, _prompt_payload(path), now=later)) == "clear_context"
 
 
+def test_the_state_keeps_a_session_by_its_salted_hash(tmp_path):
+    config_dir = _config_dir(tmp_path)
+    salt = b"s" * 32
+    (config_dir / HOOK.SALT_FILE).write_bytes(salt)
+    _coach(tmp_path, _prompt_payload(_transcript(tmp_path, [_prompt(), _reply(120_000)])))
+    state = json.loads((config_dir / cat.COACH_STATE_FILE).read_text(encoding="utf-8"))
+    assert list(state["sessions"]) == [HOOK.session_hash(salt, "s1")]
+
+
 def test_a_large_result_gets_the_quiet_hint_for_its_tool(tmp_path):
     bash = {"hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_input": {"command": "ls"}}
     note = _coach(tmp_path, bash, raw_len=40_000)
@@ -510,3 +519,46 @@ def test_off_leaves_coaching_notes_on_and_remove_turns_them_off(_claude_folder):
     assert load_config(config_dir).capture.coaching_notes_on
     rc, out = _capture(config_dir, "remove", "--yes")
     assert rc == 0 and not load_config(config_dir).capture.coaching_notes_on
+
+
+# -- what the dashboard says about them -------------------------------------------------
+
+
+def test_the_footprint_says_coaching_notes_cost_tokens_with_capture_off():
+    from claude_token_lens import footprint
+    from claude_token_lens.config import CaptureConfig
+
+    coach = footprint.expectations(CaptureConfig(coaching=["coaching_notes"]))
+    assert coach[0] == ("It uses a few of your Claude tokens while coaching notes are on", footprint.COACHING_COST)
+    assert coach[1:] == footprint.EXPECTATIONS[1:]
+    both = footprint.expectations(CaptureConfig(level="free", coaching=["coaching_notes"]))
+    assert "adds no tokens" in both[0][1] and both[0][1].endswith(footprint.COACHING_COST)
+    assert footprint._hooks_token_cost(CaptureConfig(coaching=["coaching_notes"]), "Off").startswith(
+        "None from capture while it's off. Coaching notes:"
+    )
+
+
+def test_the_hook_list_says_when_the_coaching_entries_run():
+    specs = {spec.event: spec for spec in hook_health.capture_specs(("coaching_notes",))}
+    assert specs["UserPromptSubmit"].describe() == "capture-hook.py when you send a message"
+    assert specs["PostToolUse"].describe().endswith("MCP results and an approved plan")
+
+
+def test_setup_capture_shows_what_coaching_notes_cost(tmp_path):
+    from claude_token_lens import capture_view
+    from claude_token_lens.config import CaptureConfig
+
+    use = capture.CoachingUsage(since="", sessions=2, notes=3, note_tokens=240, cost=0.02, by_kind={"quiet_output": 3})
+    data = capture_view.view(CaptureConfig(coaching=["coaching_notes"]), coaching_use=use)
+    row = next(r for s in data["sections"] for r in s["metrics"] if r["id"] == "coaching_notes")
+    assert row["on"] and row["actual"]["usd"] == pytest.approx(0.02)
+    assert row["actual_label"] == f"3 notes over the last {capture.HISTORY_DAYS} days"
+
+
+def test_refresh_works_the_split_points_out_now(_claude_folder):
+    config_dir = _claude_folder
+    rc, out = _capture(config_dir, "refresh", "--dry-run")
+    assert rc == 0 and not coaching.path(config_dir).exists()
+    rc, out = _capture(config_dir, "refresh")
+    assert rc == 0 and coaching.read(config_dir)["split_run"] == {}
+    assert "coaching_notes" in out

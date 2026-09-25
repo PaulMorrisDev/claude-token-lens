@@ -105,5 +105,6 @@ agent: Claude can only follow a hint within the task you gave it, or
 tell you. The hook reads the end of the session's transcript (and a
 subagent's own, for `split_run`) and keeps a small state file,
 `coach-state.json`, holding when each hint last showed in each session
-(by a hash of its id) and how many replies each subagent run has made.
+(by a salted hash of its id, as the free signals keep it) and how many
+replies each subagent run has made.
 Entries older than a day are dropped.

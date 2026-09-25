@@ -9,6 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Coaching notes: live hints inside the session, in the desktop app
+  too.** The status line's coaching line only shows in a terminal. With
+  `capture enable coaching_notes`, the capture hook adds a short note
+  (about 50 to 120 tokens) to Claude's context when a hint applies, and
+  Claude acts on it or tells you in one line:
+  - `plan_fresh`: an approved plan kept a lot of planning context, so
+    building it after `/clear` would carry less on every reply.
+  - `split_run`: a subagent run passed the reply count your own history
+    says its type is best split at.
+  - `quiet_output`: a tool result of about 8,000 tokens or more.
+  - `explore_reads`: 8 reads and searches for one message.
+  - `cache_cold` and `clear_context`: you sent a message after the cache
+    expired, or with 100,000 tokens of context, and it starts something
+    unrelated.
+
+  Notes run at any capture level, rest 30 minutes per hint and session,
+  and never change a setting. Your split points and plan habit come from
+  `coaching.json`, which the service works out daily from your last 30
+  days (leaving out tips you ignored) and `capture refresh` works out
+  now. `capture status` and Setup › Capture show what the notes cost.
+  Every threshold is a `[thresholds] coaching_*` key. See
+  [`docs/coaching.md`](docs/coaching.md). Transcripts are read again
+  once (`PARSER_VERSION` 25).
 - **Agents & context › Hooks: whether each hook you set up works, and
   what it costs.** Per hook, by its script's file name: failed runs and
   why (script not found, timed out or an error), whether its path is

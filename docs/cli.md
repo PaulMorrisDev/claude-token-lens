@@ -329,13 +329,14 @@ python -m claude_token_lens capture on --level essentials --for 7d
 
 | Action | What it does |
 |---|---|
-| `status` | The default. Shows the level, the metrics that are on and their rough size, and what capture has cost since it was turned on. While it's off, shows what each level would have cost over your last 14 days. Also says whether `settings.json` runs the hooks it needs |
+| `status` | The default. Shows the level, the metrics that are on and their rough size, and what capture has cost since it was turned on. While it's off, shows what each level would have cost over your last 14 days. Also says whether `settings.json` runs the hooks it needs and, with coaching notes on, your split points and what the notes cost over the last 14 days |
 | `on`, `off`, `level LEVEL` | Turn capture on or off, or change the level. Anything that uses more tokens shows a cost warning and asks first |
 | `enable METRIC...`, `disable METRIC...` | Turn single metrics on or off. `capture status` lists their ids |
 | `connect` | Add the hook entries the chosen metrics need to `settings.json`, after showing the diff |
 | `remove` | Switch capture off and take the hook entries out, after showing the diff |
 | `feedback on\|off` | Add or remove the `/tl-feedback` skill and its status-line reminder |
 | `brief on\|off` | Add or remove the `/tl-brief` skill, which asks for what a request is missing before Claude starts |
+| `refresh` | Work out your coaching-note split points (`coaching.json`) from your last 30 days now, as the dashboard's service does once a day. `--dry-run` prints them without writing. See [`coaching.md`](coaching.md) |
 | `prune` | Delete signal files, capture log records and usage log rows older than `retention_days`, or 180 days. A running `serve` already does this on every poll |
 
 | Flag | What it does |

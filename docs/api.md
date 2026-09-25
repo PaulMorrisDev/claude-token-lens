@@ -1159,7 +1159,7 @@ one is built in the background.
   (a status-line toggle is on but Claude Code's status line isn't this
   tool's), `estimate` and `actual` (`{usd, text}` a week, and over
   `actual_label`: since it was turned on, or the last 14 days for the
-  skill), and `answers`/`target`/`enough` (whether enough has been
+  skill and, with how many there were, for coaching notes), and `answers`/`target`/`enough` (whether enough has been
   collected for firm suggestions; for the skill and the dashboard
   rating, the runs answered and the sessions rated).
 - `measured`: `null` while off; otherwise `since`, `sessions`,

@@ -1303,6 +1303,16 @@ def make_handler(
         corpus = rebuild.corpus_from_store(store, days=capture_mod.HISTORY_DAYS)
         return capture_mod.feedback_usage(corpus, _capture_rates(config))
 
+    def _capture_coaching(config):
+        """``capture.coaching_usage`` over the replayed days: the coaching
+        notes the capture hook added, whatever the capture level."""
+        from .. import capture as capture_mod
+        from . import rebuild
+
+        since = (datetime.now(timezone.utc) - timedelta(days=capture_mod.HISTORY_DAYS)).isoformat(timespec="seconds")
+        corpus = rebuild.corpus_from_store(store, days=capture_mod.HISTORY_DAYS)
+        return capture_mod.coaching_usage(corpus, _capture_rates(config), since=since)
+
     def _capture_view(config) -> dict:
         from .. import capture_view
 
@@ -1338,6 +1348,12 @@ def make_handler(
                 "feedback", (token, *soft), soft, lambda: _capture_feedback(config), _STALE_REPORT_MAX_AGE_S
             )
             skill = footprint.feedback_skill_state()
+        coaching_use = None
+        if capture.coaching_notes_on:
+            token = store.change_token()
+            coaching_use = _capture_part(
+                "coaching", (token, *soft), soft, lambda: _capture_coaching(config), _STALE_REPORT_MAX_AGE_S
+            )
         brief_skill = None
         if "brief_templates" in capture.coaching:
             from .. import footprint
@@ -1361,6 +1377,7 @@ def make_handler(
             capture, past=past, units=units, use=use, hooks=hooks, signal_sessions=signal_sessions,
             started_since=started, feedback_use=feedback_use, skill=skill, brief_skill=brief_skill, ratings=ratings,
             statusline=statusline, weekly_cost=weekly_cost, dependent_value=dependent_value,
+            coaching_use=coaching_use,
         )
 
     def _capture_conflict(message: str, commands: list[str]) -> tuple[int, dict]:

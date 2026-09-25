@@ -446,7 +446,13 @@ def coaching_thresholds(coaching: dict, config: dict, personal: dict) -> dict:
     return out
 
 
-def _session_key(session_id: str) -> str:
+def _session_key(session_id: str, config_dir: Path) -> str:
+    """The session id as ``coach-state.json`` keeps it: salted as a signal
+    line keeps it (:func:`session_hash`), or plainly hashed before there's
+    a salt."""
+    salt = read_salt(config_dir)
+    if salt is not None:
+        return session_hash(salt, session_id)
     return hashlib.sha256(session_id.encode("utf-8")).hexdigest()[:16]
 
 
@@ -800,7 +806,7 @@ def coaching_note_for(
         candidates.append(_quiet_hint(payload, raw_len, coaching["quiet_how"], th))
         if not in_agent and tool in coaching["read_tools"]:
             candidates.append(_reads_hint(payload, raw_len, coaching["read_tools"], th))
-    session = _session_key(session_id)
+    session = _session_key(session_id, config_dir)
     for found in candidates:
         if found is None:
             continue
