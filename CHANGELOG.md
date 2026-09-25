@@ -88,6 +88,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   costliest agent type, it now adds up that type's direct and workflow
   runs. Transcripts are read again once (`PARSER_VERSION` 24).
 
+- **Model advice for a subagent prices only the runs its agent file
+  decides.** A model named when a run starts wins over the agent file's
+  `model:` line, and a workflow script sets the model for the agents it
+  starts. The `.meta.json` `model` turned out to be the model the spawn
+  asked for: on real history it matched the spawn's own `model` on every
+  direct run, and the run's replies always used it. The saving still
+  counted those runs, so it offered to change a file that decided almost
+  none of them. On a 30-day corpus, one reviewer type had 106 runs: 60
+  from workflow scripts, 43 given a model, 3 following its file; its
+  saving falls from $82.08 to $4.39. The corpus-wide ceiling falls from
+  $333.08 to $47.36. A type none of whose runs followed its file gets no
+  `.md` advice. The advice now says how many runs a workflow script or
+  the spawn decided, and where to change those. `model_swap_by_agent_type`
+  gains additive `lever_runs`, `lever_priced_turns`, `lever_model`,
+  `lever_cost`, `workflow_runs` and `spawn_model_runs` columns, and a
+  report-tier `model_swap_agent_file_runs` table feeds the what-if
+  engine. Spawns, observed cost and every `Cost at` column are
+  unchanged. The Models quick action gains a "Model set by" column.
+
 - **The dashboard reads each project's own settings again.** It filed
   every settings snapshot under "(unknown project)", so Setup › Settings
   showed one project instead of each, and per-project settings never

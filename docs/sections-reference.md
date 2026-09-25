@@ -529,19 +529,36 @@ changes a figure.
   observed model is already the cheapest available, its own volumes
   already beat the next tier down, or the family/tier can't be
   determined — the table never implies a saving where none exists.
-  Each row also carries the `lever` to change.
+  Each row also carries the `lever` to change. A subagent's saving and
+  alternative cover only the runs its agent file's `model:` line
+  decides (`model_swap.model_set_by`): runs a workflow script started,
+  or given a model when they started, keep that model whatever the
+  file says. Additive columns: `lever_runs`, `lever_priced_turns`,
+  `lever_model`, `lever_cost` (those runs), `workflow_runs` and
+  `spawn_model_runs` (the rest). Spawns, observed cost and every `Cost
+  at` column still cover every run. Two more states: `set_elsewhere`
+  (no run followed the file) and `no_lever` (`workflow-subagent`,
+  `fork`, `unknown`).
 - `model_swap_summary` — `scope`, `agent_types`, `observed_cost_usd`,
   `cost_after_tier_down_usd`, `saving_usd` and `saving_pct`: the
-  corpus-wide ceiling if every subagent type currently on Fable or Opus
-  moved one tier down (excludes top-level and any Fable/Opus type
-  already cheaper than its next tier).
+  corpus-wide ceiling if every subagent type whose agent-file runs are
+  on Fable or Opus moved one tier down, priced on those runs only
+  (excludes top-level and any Fable/Opus type already cheaper than its
+  next tier).
+- `model_swap_agent_file_runs` (report tier) — per named subagent type
+  with agent-file runs: `runs`, `priced_turns`, `observed_model`,
+  `observed_cost` and a `cost_<model-id>` column per model, for those
+  runs only. The what-if engine prices a subagent's model from it.
 
 `recommend.recommend()` runs the `model-tier` rule
 (`model_swap.RULES`). It fires per qualifying row (real cheaper
 alternative, sample and saving thresholds cleared) and names the exact
 lever: `settings.json`'s `"model"` key for the top-level conversation,
 or the subagent's `.claude/agents/<type>.md` frontmatter `model:` line.
-A Sonnet main session never gets Haiku: its row's state is
+When some runs were set elsewhere, it says the saving covers the runs
+started without a model and names how many a workflow script started
+or were given a model, with where each is set. A type whose runs were
+all set elsewhere gets no `.md` advice. A Sonnet main session never gets Haiku: its row's state is
 `main_floor`, with no alternative and no saving. `advice.finish` gives
 the main session's card its own id, `model-tier-main`, ranked last
 among cards of its severity.

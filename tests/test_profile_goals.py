@@ -59,6 +59,22 @@ def test_models_goal_reads_the_cheapest_alternative_per_agent():
     assert rows == {(None, "sonnet", False), ("Explore", "haiku", True)}
     explore = next(c for c in out["candidates"] if c["agent"] == "Explore")
     assert explore["estimate"]["saving_usd"] == 8.0
+    assert explore["evidence"] == "Explore's replies in this window would have cost 80% less on claude-haiku-4-5-20251001."
+
+
+def test_models_goal_evidence_names_the_runs_the_agent_file_decides():
+    model = _report()
+    [table] = model.sections[0].tables
+    for key in ("best_cheaper_alternative_model", "saving_pct", "workflow_runs", "spawn_model_runs"):
+        table.columns.append(NS(key=key))
+    table.rows[0] += ["claude-sonnet-4-5", 40.0, 0, 0]
+    table.rows[1] += ["claude-haiku-4-5-20251001", 80.0, 12, 0]
+    out = goals.draft("models", model, UNITS)
+    explore = next(c for c in out["candidates"] if c["agent"] == "Explore")
+    assert explore["evidence"] == (
+        "The replies of Explore's runs started without a model of their own would have cost 80% less on "
+        "claude-haiku-4-5-20251001 in this window."
+    )
 
 
 def _with_plans(observed="claude-opus-5-5", build=100.0, sonnet=60.0):

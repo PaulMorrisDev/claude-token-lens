@@ -633,7 +633,12 @@ at every model the rate card carries, the best cheaper alternative and
 the ceiling saving; plus the corpus-wide summary if every eligible
 Fable/Opus subagent type moved one tier down) — same shape as the CLI's
 `model-swap` section tables, sourced from the assembled report's
-`"model_swap"` section (`model_swap.py`).
+`"model_swap"` section (`model_swap.py`). A subagent's saving covers
+only the runs its agent file's model decides; the per-type table's
+additive `lever_runs`, `lever_priced_turns`, `lever_model`,
+`lever_cost`, `workflow_runs` and `spawn_model_runs` columns say which,
+and a third table, `model_swap_agent_file_runs`, reprices those runs at
+every model (see [`model-swap.md`](model-swap.md)).
 
 Query: `window`, `window_days`, or `since`/`until` (see "Report-backed
 routes: windowing query params" above).
@@ -1433,7 +1438,10 @@ how it was worked out (`fidelity_text` in plain words) and `basis`
 explains it in a sentence: `"ceiling"` (a `model` change -- the same
 tokens repriced at the new model's rate, same "ceiling" sense as
 `/api/model-swap`'s own saving column, not a real simulation since a
-different model may need more or fewer replies for the same work),
+different model may need more or fewer replies for the same work; for
+a subagent, only its runs started without a model of their own, and
+`"none"` when every run's model came from a workflow script or the
+spawn),
 `"simulated"` (`autoCompactWindow`, a cache-TTL change -- real sessions
 replayed with the new value), `"measured"` (`omitClaudeMd` -- the
 greater of per spawn times the spawns in the window, and the carry cost

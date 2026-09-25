@@ -40,7 +40,7 @@ import re
 from dataclasses import dataclass
 from typing import Callable
 
-from . import model_gate, whatif
+from . import model_gate, model_swap, whatif
 from .fixes import already_set
 from .model import Recommendation, ReportModel, SettingChange
 from .pricing import model_names_in
@@ -147,6 +147,10 @@ def _family_alias(model_id: str) -> str:
     return model_id
 
 
+def _int(value) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
 def _who(agent_type: str) -> str:
     return "your main session" if agent_type == "top-level" else agent_type
 
@@ -229,7 +233,10 @@ def _merge_model_tier(recs: list[Recommendation], ctx: _Context) -> list[Recomme
             continue
         alt = ctx.cell("model_swap", "model_swap_by_agent_type", agent, "best_cheaper_alternative_model")
         saving = ctx.cell("model_swap", "model_swap_by_agent_type", agent, "saving_usd")
-        observed = ctx.cell("model_swap", "model_swap_by_agent_type", agent, "observed_model")
+        # The model on the runs the setting decides (the saving is theirs).
+        observed = ctx.cell("model_swap", "model_swap_by_agent_type", agent, "lever_model") or ctx.cell(
+            "model_swap", "model_swap_by_agent_type", agent, "observed_model"
+        )
         if not alt:
             continue
         now = ctx.setting_now("model") if agent == "top-level" else ctx.agent_now(agent, "model")
@@ -319,11 +326,21 @@ def _agent_tier_card(
 ) -> Recommendation:
     changes = []
     evidence = []
+    set_elsewhere = False
     for rec, agent, alt, saving, observed in rows:
         evidence.extend(rec.evidence)
         now = observed or "unknown"
         scope, has_file = ctx.agent_scope(agent)
         current = ctx.agent_now(agent, "model")
+        # Runs a workflow script started, or given a model when they
+        # started, don't follow the agent file: the saving leaves them out.
+        elsewhere = model_swap.set_elsewhere_sentence(
+            *(
+                _int(ctx.cell("model_swap", "model_swap_by_agent_type", agent, column))
+                for column in ("workflow_runs", "spawn_model_runs")
+            )
+        )
+        set_elsewhere = set_elsewhere or bool(elsewhere)
         changes.append(
             SettingChange(
                 target="agent",
@@ -344,7 +361,8 @@ def _agent_tier_card(
                 # then on: labelled as such, and given the plain saving
                 # figure rather than the "At most" session ceiling used
                 # for a change that might only be tried for a session.
-                note="Persistent: affects every task this agent runs, not only one session.",
+                note="Persistent: applies to every later run of this agent that isn't given a model when it "
+                "starts, not only one session." + elsewhere,
                 saving=ctx.money(saving),
             )
         )
@@ -362,6 +380,12 @@ def _agent_tier_card(
             if len(rows) == 1
             else f"{len(rows)} of your agent types ran on a larger model than their work may need. "
             f"The biggest saving is {_who(top[1])}."
+        )
+        + (
+            " Only runs started without a model follow the agent file. Runs a workflow script started, or given "
+            "a model when they started, aren't counted."
+            if set_elsewhere
+            else ""
         )
         + _left_out_note(left_out),
         action=(

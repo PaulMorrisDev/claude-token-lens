@@ -149,18 +149,8 @@ def test_reprice_holds_token_volumes_and_write_split_constant():
 
 def test_alias_handling_bare_alias_resolves_same_as_full_id():
     fields = dict(input_tokens=200_000, output_tokens=100_000)
-    tr_alias = _transcript(
-        [_turn(model="sonnet", **fields)],
-        kind="subagent",
-        agent_type="claude-implementer",
-        agent_model_alias="sonnet",
-    )
-    tr_full = _transcript(
-        [_turn(model=SONNET, **fields)],
-        kind="subagent",
-        agent_type="claude-implementer",
-        agent_model_alias="sonnet",
-    )
+    tr_alias = _transcript([_turn(model="sonnet", **fields)], kind="subagent", agent_type="claude-implementer")
+    tr_full = _transcript([_turn(model=SONNET, **fields)], kind="subagent", agent_type="claude-implementer")
 
     stats_alias = model_swap.compute_model_swap([tr_alias], PRICING)
     stats_full = model_swap.compute_model_swap([tr_full], PRICING)
@@ -176,23 +166,132 @@ def test_alias_handling_bare_alias_resolves_same_as_full_id():
     assert row_alias.tier_verdict.alt_model == row_full.tier_verdict.alt_model == HAIKU
 
 
-def test_alias_handling_turn_model_takes_priority_over_meta_alias():
-    """Turn.model carries the ground truth actually billed; when it
-    disagrees with TranscriptMeta.agent_model_alias, the turn's own
-    model wins for the tier lookup (workstyle.model_tier's own documented
-    precedence)."""
-    tr = _transcript(
-        [_turn(model=OPUS, input_tokens=1_000_000, output_tokens=1_000_000)],
-        kind="subagent",
-        agent_type="claude-implementer",
-        agent_model_alias="sonnet",
-    )
-    stats = model_swap.compute_model_swap([tr], PRICING)
-    row = stats.by_key["claude-implementer"]
+# -- which runs the agent file's model line decides ------------------------------
 
-    # Opus (rank 2) beats what the alias alone ("sonnet", rank 1) would
-    # have suggested -- one tier down from Opus is Sonnet, not Haiku.
+
+def _run(model_id: str, agent_type: str, *, kind: str = "subagent", spawn_model: str | None = None) -> TranscriptResult:
+    return _transcript(
+        [_turn(model=model_id, input_tokens=1_000_000, output_tokens=1_000_000)],
+        kind=kind,
+        agent_type=agent_type,
+        agent_model_alias=spawn_model,
+    )
+
+
+def test_model_set_by_follows_claude_codes_order():
+    """.meta.json's ``model`` is the model the spawn asked for (absent when
+    it asked for none) and wins over the agent file; a workflow script
+    sets its agents' model whatever their type."""
+    assert model_swap.model_set_by(_run(OPUS, "", kind="top-level")) == "settings"
+    assert model_swap.model_set_by(_run(OPUS, "reviewer")) == "agent file"
+    assert model_swap.model_set_by(_run(SONNET, "reviewer", spawn_model="sonnet")) == "spawn"
+    assert model_swap.model_set_by(_run(OPUS, "reviewer", kind="workflow-agent")) == "workflow"
+    assert model_swap.model_set_by(_run(SONNET, "reviewer", kind="workflow-agent", spawn_model="sonnet")) == "workflow"
+    assert model_swap.model_set_by(_run(OPUS, "workflow-subagent", kind="workflow-agent")) == "workflow"
+    assert model_swap.model_set_by(_run(OPUS, "fork")) == "none"
+
+
+def _row_cells(section: Section, agent_type: str, table_name: str = "model_swap_by_agent_type") -> dict:
+    table = next(t for t in section.tables if t.name == table_name)
+    row = next(r for r in table.rows if r[0] == agent_type)
+    return dict(zip([c.key for c in table.columns], row))
+
+
+def _firing_th() -> model_swap.ModelSwapThresholds:
+    return model_swap.ModelSwapThresholds(saving_pct_min=10.0, saving_usd_min=1.0, min_sessions=1, min_turns=1)
+
+
+def test_a_named_type_with_workflow_runs_prices_its_direct_runs_only():
+    direct = [_run(OPUS, "reviewer") for _ in range(2)]
+    workflow = [_run(OPUS, "reviewer", kind="workflow-agent") for _ in range(3)]
+    stats = model_swap.compute_model_swap(direct + workflow, PRICING)
+    alone = model_swap.compute_model_swap(direct, PRICING).by_key["reviewer"]
+    row = stats.by_key["reviewer"]
+
+    # The row still counts every run and every dollar.
+    assert row.spawns == 5
+    assert row.observed_cost == pytest.approx(5 * alone.observed_cost / 2)
+    assert row.workflow_runs == 3
+    # The saving is the direct runs' alone.
     assert row.tier_verdict.alt_model == SONNET
+    assert row.tier_verdict.saving_usd == pytest.approx(alone.tier_verdict.saving_usd)
+    assert row.tier_verdict.saving_pct == pytest.approx(alone.tier_verdict.saving_pct)
+    assert "on the 2 runs its agent file sets" in row.tier_verdict.label
+
+    section = model_swap.build_section(stats)
+    cells = _row_cells(section, "reviewer")
+    assert (cells["spawns"], cells["lever_runs"], cells["workflow_runs"], cells["spawn_model_runs"]) == (5, 2, 3, 0)
+    assert cells["observed_cost"] == pytest.approx(row.observed_cost)
+    assert cells["lever_cost"] == pytest.approx(alone.observed_cost)
+    assert cells["saving_usd"] == pytest.approx(alone.tier_verdict.saving_usd)
+    file_cells = _row_cells(section, "reviewer", "model_swap_agent_file_runs")
+    assert file_cells["runs"] == 2
+    assert file_cells[f"cost_{SONNET}"] == pytest.approx(alone.cost_by_model[SONNET])
+
+    report = _report_with_section(section)
+    (rec,) = model_swap.RULES["model-tier"](report, _firing_th(), archetype=None, snapshot=None)
+    assert "on the 2 runs started without a model" in rec.action
+    assert "3 runs a workflow script started" in rec.action
+    assert "agent() call" in rec.action
+    _assert_evidence_resolves(report, rec)
+
+
+def test_a_type_with_only_workflow_runs_gets_no_agent_file_lever():
+    runs = [_run(OPUS, "reviewer", kind="workflow-agent") for _ in range(4)]
+    stats = model_swap.compute_model_swap(runs, PRICING)
+    row = stats.by_key["reviewer"]
+
+    assert row.spawns == 4 and row.observed_cost > 0
+    assert row.tier_verdict.state == "set_elsewhere"
+    assert row.tier_verdict.alt_model is None
+    assert row.tier_verdict.saving_usd == 0.0
+    assert "4 came from workflow scripts" in row.tier_verdict.label
+
+    section = model_swap.build_section(stats)
+    assert not next(t for t in section.tables if t.name == "model_swap_agent_file_runs").rows
+    summary = next(t for t in section.tables if t.name == "model_swap_summary")
+    assert summary.rows[0][1] == 0
+    report = _report_with_section(section)
+    assert model_swap.RULES["model-tier"](report, _firing_th(), archetype=None, snapshot=None) == []
+
+
+def test_runs_given_a_model_when_started_are_left_out_of_the_agent_file_saving():
+    """Real transcripts show the spawn's model wins: an agent file set to
+    Opus whose spawn asked for Sonnet ran on Sonnet. So those runs aren't
+    the agent file's to change."""
+    direct = [_run(OPUS, "reviewer") for _ in range(2)]
+    named = [_run(SONNET, "reviewer", spawn_model="sonnet") for _ in range(3)]
+    stats = model_swap.compute_model_swap(direct + named, PRICING)
+    alone = model_swap.compute_model_swap(direct, PRICING).by_key["reviewer"]
+    row = stats.by_key["reviewer"]
+
+    assert row.spawn_model_runs == 3
+    # Most of the row ran on Sonnet, but the runs the file decides ran on
+    # Opus, so its cheaper tier is Sonnet, priced on those runs alone.
+    assert row.observed_model == SONNET
+    assert row.tier_verdict.alt_model == SONNET
+    assert row.tier_verdict.saving_usd == pytest.approx(alone.tier_verdict.saving_usd)
+
+    section = model_swap.build_section(stats)
+    assert _row_cells(section, "reviewer")["lever_model"] == OPUS
+    report = _report_with_section(section)
+    (rec,) = model_swap.RULES["model-tier"](report, _firing_th(), archetype=None, snapshot=None)
+    assert f"currently effectively {OPUS} on the 2 runs started without a model" in rec.action
+    assert "3 runs given a model when they started" in rec.action
+    assert "workflow" not in rec.action
+
+    only_named = model_swap.compute_model_swap(named, PRICING).by_key["reviewer"]
+    assert only_named.tier_verdict.state == "set_elsewhere"
+
+
+def test_workflow_subagents_have_no_agent_file_lever():
+    stats = model_swap.compute_model_swap([_run(OPUS, "workflow-subagent", kind="workflow-agent")], PRICING)
+    row = stats.by_key["workflow-subagent"]
+    assert row.tier_verdict.state == "no_lever"
+    assert row.tier_verdict.saving_usd == 0.0
+    cells = _row_cells(model_swap.build_section(stats), "workflow-subagent")
+    assert cells["lever"] == "none (the workflow script sets it)"
+    assert cells["lever_runs"] == 0 and cells["workflow_runs"] == 1
 
 
 # -- unknown model ---------------------------------------------------------------

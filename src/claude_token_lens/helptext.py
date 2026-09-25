@@ -103,6 +103,7 @@ PLACEMENT: dict[str, str] = {
     "plan_handoff_by_session": "keep",
     "model_swap_by_agent_type": "keep",
     "model_swap_summary": "keep",
+    "model_swap_agent_file_runs": "report",
     "waste_summary": "keep",
     "waste_by_cause": "keep",
     "waste_by_agent_type": "advanced",
@@ -579,7 +580,8 @@ SECTION_COPY: dict[str, SectionCopy] = {
             "cheaper model uses the same tokens and replies. A smaller model may need more replies or fail "
             "the task, so every saving is the most you could save, not a forecast.",
             act="Try a cheaper model on the agent type with the biggest saving, on routine work first, and "
-            "compare results before switching more. Set it with the model field in that agent's file.",
+            "compare results before switching more. Set it with the model field in that agent's file. A "
+            "workflow script, or a model named when a run starts, overrides that field.",
         ),
     ),
     "waste": SectionCopy(
@@ -3676,7 +3678,8 @@ TABLE_COPY: dict[str, TableCopy] = {
             shows="One row for the main session and one per subagent type. Each shows its real cost, the same tokens "
             "repriced at every known model, and the saving one tier down.",
             read="Only real cost is measured. The saving is the most you could save at today's usage, and it "
-            "appears only when a cheaper tier exists.",
+            "appears only when a cheaper tier exists. A subagent's saving counts only the runs its agent file "
+            "decides.",
             act="A saving above 10% and above $1.00 at list price, on at least 5 runs or 200 replies, becomes "
             "a recommendation.",
         ),
@@ -3695,9 +3698,28 @@ TABLE_COPY: dict[str, TableCopy] = {
                 "The current model one tier cheaper than the one used. Empty when there is none.",
             ),
             "best_cheaper_alternative": ("Verdict", "The cheaper model and its saving, or why there isn't one."),
-            "saving_usd": ("Most you could save", "Real cost minus the cost one tier down, at list price."),
-            "saving_pct": ("Most you could save (%)", "That saving as a share of real cost."),
+            "saving_usd": (
+                "Most you could save",
+                "Cost of the runs that setting decides, minus their cost one tier down, at list price.",
+            ),
+            "saving_pct": ("Most you could save (%)", "That saving as a share of those runs' cost."),
             "lever": ("Where to change it", "The file and field that set this agent type's model."),
+            "lever_runs": (
+                "Runs it decides",
+                "Main session: every session. Subagents: runs started without a model of their own, which follow "
+                "the agent file.",
+            ),
+            "lever_priced_turns": ("Replies on those runs", "Model replies on the runs that setting decides."),
+            "lever_model": ("Model on those runs", "The model most of those replies used."),
+            "lever_cost": ("Cost of those runs", "Measured cost of the runs that setting decides, at list price."),
+            "workflow_runs": (
+                "From workflows",
+                "Runs a workflow script started. The script sets their model, so the agent file doesn't.",
+            ),
+            "spawn_model_runs": (
+                "Model named at start",
+                "Runs given a model when they started. That model wins over the agent file.",
+            ),
         },
         value_labels={
             "top-level": "Main session",
@@ -3715,19 +3737,40 @@ TABLE_COPY: dict[str, TableCopy] = {
             shows="The combined saving if every subagent type on Fable or Opus moved one tier down. The main "
             "session is left out.",
             read="The most you could save, not a forecast: same tokens and replies at cheaper prices. Agent "
-            "types that would be no cheaper one tier down are left out.",
+            "types that would be no cheaper one tier down are left out. So are runs whose model a workflow "
+            "script or the run's start named.",
             act="",
         ),
         columns={
             "scope": ("Scope", "Which agent types this row covers."),
             "agent_types": ("Agent types", "Subagent types on Fable or Opus with a cheaper tier available."),
-            "observed_cost_usd": ("Real cost", "Measured cost of those agent types, at list price."),
+            "observed_cost_usd": (
+                "Real cost",
+                "Measured cost of the runs those agent types' files decide, at list price.",
+            ),
             "cost_after_tier_down_usd": ("Cost one tier down", "The same tokens at the cheaper tier's list price."),
             "saving_usd": ("Most you could save", "Real cost minus the cost one tier down, at list price."),
             "saving_pct": ("Most you could save (%)", "That saving as a share of real cost."),
         },
         value_labels={"subagent types currently on Fable/Opus": "Subagent types on Fable or Opus"},
         lead_columns=["saving_usd", "saving_pct", "observed_cost_usd", "agent_types"],
+    ),
+    "model_swap_agent_file_runs": TableCopy(
+        title="Runs each agent file's model decides, on other models",
+        help=Help(
+            shows="Per subagent type, only its runs started without a model of their own, repriced at every "
+            "known model.",
+            read="These are the runs a model line in the agent file would change. A what-if for that line "
+            "prices these runs.",
+            act="",
+        ),
+        columns={
+            "agent_type": ("", "The subagent type."),
+            "runs": ("Runs", "Runs started without a model of their own."),
+            "priced_turns": ("Replies", "Model replies on those runs."),
+            "observed_model": ("Model used", "The model most of those replies used."),
+            "observed_cost": ("Real cost", "Measured cost of those runs, at list price."),
+        },
     ),
     # -- savings: building fresh after a plan ------------------------------------
     "plan_handoff_summary": TableCopy(

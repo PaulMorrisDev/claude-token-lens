@@ -564,7 +564,9 @@ sections, each from its own route rather than the full report:
 - `/api/plan-handoff`: what building in a fresh session after each big
   approved plan could have saved (no bar in chart 2: it overlaps with
   the conversation-summary saving);
-- `/api/model-swap`: the most a one-tier-cheaper model could save;
+- `/api/model-swap`: the most a one-tier-cheaper model could save,
+  counting for each subagent only the runs its agent file's model
+  decides;
 - `/api/waste`: spend on replies whose output was never used.
 
 Their recommendations show on Actions › Recommendations, not here.

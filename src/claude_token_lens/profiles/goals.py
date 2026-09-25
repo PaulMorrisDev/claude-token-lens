@@ -191,8 +191,27 @@ def _models(draft: _Draft, tables, *, subagents_only: bool) -> None:
             None if agent == TOP else agent,
             _alias(best),
             ticked=agent != TOP and pct >= 20.0,
-            evidence=f"{who}'s replies in this window would have cost {pct:.0f}% less on {best}.",
+            evidence=(
+                f"{who}'s replies in this window would have cost {pct:.0f}% less on {best}."
+                if agent == TOP or not _set_elsewhere(row)
+                else f"The replies of {agent}'s runs started without a model of their own would have cost "
+                f"{pct:.0f}% less on {best} in this window."
+            ),
         )
+
+
+def _set_elsewhere(row: dict) -> bool:
+    """Whether a workflow script or a model named at spawn set the model
+    for some of this model-swap row's runs. The row's saving is on the
+    rest, the runs its agent file decides."""
+    return bool((whatif._num(row.get("workflow_runs")) or 0) + (whatif._num(row.get("spawn_model_runs")) or 0))
+
+
+def _file_runs(tables, agent: str) -> str:
+    """How the task-agents evidence names what runs cheaper: the agent,
+    or only its runs started without a model when others weren't."""
+    row = tables.row("model_swap", "model_swap_by_agent_type", agent) or {}
+    return f"{agent}'s runs started without a model of their own run" if _set_elsewhere(row) else f"{agent} runs"
 
 
 def _opusplan(draft: _Draft, tables) -> None:
@@ -539,7 +558,7 @@ def _task_agents(draft: _Draft, tables, task: str) -> None:
             best,
             ticked=pct >= 20.0,
             evidence=(
-                f"{agent} runs {pct:.0f}% cheaper on {best} across every task it did; "
+                f"{_file_runs(tables, agent)} {pct:.0f}% cheaper on {best} across every task it did; "
                 f"{task_words(task)} work was {runs} of its runs in this window."
             ),
         )
