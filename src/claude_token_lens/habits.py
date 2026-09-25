@@ -2645,12 +2645,12 @@ def section_from(h: Habits, *, model_swap=None) -> Section:
     notes = []
     if h.cycles and not any(c.tag is not None for c in h.cycles):
         notes.append(
-            "Nothing here was reported by Claude yet: turn on metrics capture (the Capture tab or "
+            "Nothing here was reported by Claude yet: turn on metrics capture ({{page:setup/capture}} or "
             "claude-token-lens capture on) for kinds of task, brief quality and how hard the work was."
         )
     if h.cycles and not h.pieces:
         notes.append(
-            "No feedback yet: rate sessions on the Sessions tab or run /tl-feedback to see cost per piece of "
+            "No feedback yet: rate sessions on {{page:spend/sessions}} or run /tl-feedback to see cost per piece of "
             "work that met its goal."
         )
     return Section(

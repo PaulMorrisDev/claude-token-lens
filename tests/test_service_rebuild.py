@@ -196,6 +196,41 @@ def test_corpus_from_store_window_filters_like_discovery(tmp_path: Path):
     assert {b.session_id for b in corpus_recent.sessions} == {"sess-new"}
 
 
+def test_corpus_from_store_filters_by_project_slugs(tmp_path: Path):
+    """``project_slugs`` (additive, project-filter work) keeps only
+    sessions whose raw ``sessions.slug`` is in the given list, and
+    composes with window filtering rather than replacing it -- a project
+    filter plus a window that excludes that project's only session still
+    leaves nothing, even though the project itself is allowed."""
+    root = tmp_path / "projects"
+    proj_a = root / "proj-a"
+    proj_b = root / "proj-b"
+    proj_a.mkdir(parents=True)
+    proj_b.mkdir(parents=True)
+    write_jsonl(proj_a / "sess-a.jsonl", [turn_line(timestamp="2026-09-18T00:00:00.000Z")])
+    write_jsonl(proj_b / "sess-b.jsonl", [turn_line(timestamp="2026-09-18T00:00:00.000Z")])
+
+    options = ServeOptions(projects_root=root, config_dir=tmp_path / "config")
+    store = Store(":memory:")
+    store.open()
+    FileWatcher(store, options).run_once()
+
+    corpus_a = corpus_from_store(store, project_slugs=["proj-a"])
+    assert {b.session_id for b in corpus_a.sessions} == {"sess-a"}
+
+    corpus_b = corpus_from_store(store, project_slugs=["proj-b"])
+    assert {b.session_id for b in corpus_b.sessions} == {"sess-b"}
+
+    corpus_both = corpus_from_store(store, project_slugs=["proj-a", "proj-b"])
+    assert {b.session_id for b in corpus_both.sessions} == {"sess-a", "sess-b"}
+
+    corpus_unknown = corpus_from_store(store, project_slugs=["no-such-project"])
+    assert corpus_unknown.sessions == []
+
+    corpus_windowed = corpus_from_store(store, since="2030-01-01T00:00:00Z", project_slugs=["proj-a"])
+    assert corpus_windowed.sessions == []
+
+
 def test_corpus_from_store_skips_session_with_no_stored_transcripts(tmp_path: Path):
     """A ``sessions`` row with no matching ``transcripts`` rows at all
     (shouldn't normally arise from the watcher, but is cheap to guard) is

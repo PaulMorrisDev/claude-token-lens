@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from . import capture_catalogue, carry, discovery, habits, model_gate, quality, whatif
+from . import capture_catalogue, carry, discovery, habits, model_gate, pages, quality, whatif
 from .compaction_sim import CompactionSimThresholds
 from .fixes import PROMPT_RESTART, RESTART_NOTE, build_fix, build_fixes
 from .model import Recommendation, SettingChange
@@ -610,7 +610,7 @@ def _habits(ctx: Context) -> dict:
     return _result(
         "act",
         f"{ways} way{'s' if ways != 1 else ''} of working cost tokens {ctx.period}. These are habits, not "
-        "settings: nothing changes unless you change how you work. The Work habits tab has the rest.",
+        "settings: nothing changes unless you change how you work. {{page:habits}} has the rest.",
         table=table,
         fixes=fixes,
         tips=tips,
@@ -752,15 +752,15 @@ def _capture_fix(ctx: Context, tables) -> dict | None:
              "why it was run again. This tool keeps only those words, never the text around them."],
             ["Why", "Without them this check guesses: a retry on a larger model counts against the cheaper one even "
              "when the brief was the problem, and an agent that stopped half-done looks finished. With them, "
-             "retries and unfinished runs are counted from what Claude said, and the Work habits tab can rank "
+             "retries and unfinished runs are counted from what Claude said, and {{page:habits}} can rank "
              "habits by kind of task."],
             ["What it costs", f"A note of about {main} tokens at each session start and about {sub} at each "
              "subagent start, read from the prompt cache after the first reply, and about 15 output tokens per "
-             "message. The Capture tab estimates it from your own recent sessions before you turn it on, and the "
+             "message. {{page:setup/capture}} estimates it from your own recent sessions before you turn it on, and the "
              "banner shows what it has cost while it's on."],
             ["Where and who it affects", "~/.claude/settings.json gets the hook entries (the command shows the "
              "change and asks first); this tool's own config.toml holds the level. Every session, in every "
-             "project, until you turn it off; the Capture tab can sample sessions or set an end date."],
+             "project, until you turn it off; {{page:setup/capture}} can sample sessions or set an end date."],
             ["How to undo it", "claude-token-lens capture off stops the notes at once; claude-token-lens capture "
              "remove also takes the hook entries out of settings.json."],
         ],
@@ -945,7 +945,7 @@ def _quality(ctx: Context) -> dict:
                 "text": (f"{out_of_turns:.0f}% of its runs most likely ran out of turns (the agent's maxTurns). "
                          if out_of_turns else "")
                 + "Give it a smaller task, or raise maxTurns in its agent file if it keeps stopping mid-task. "
-                "Quality signal counts (Agents tab) splits failed, stopped, cut off and out of turns.",
+                "Quality signal counts ({{page:agents/quality}}) splits failed, stopped, cut off and out of turns.",
             })
         if (whatif._num(row.get("corrections_pct")) or 0) >= STRUGGLE_PCT["corrections_pct"]:
             tips.append({
@@ -1049,7 +1049,7 @@ def run_all(ctx: Context) -> list[dict]:
 
 
 def render_markdown(result: dict) -> str:
-    lines = [f"## {result['question']}", "", result["summary"], ""]
+    lines = [f"## {result['question']}", "", pages.plain(result["summary"]), ""]
     table = result.get("table")
     if table:
         lines.append("| " + " | ".join(c["label"] for c in table["columns"]) + " |")
@@ -1058,13 +1058,13 @@ def render_markdown(result: dict) -> str:
             lines.append("| " + " | ".join(str(cell).replace("|", "/") for cell in row) + " |")
         lines.append("")
     for tip in result.get("tips") or ():
-        lines += [f"- **{tip['title']}**: {tip['text']}"]
+        lines += [f"- **{tip['title']}**: {pages.plain(tip['text'])}"]
     if result.get("tips"):
         lines.append("")
     for fix in result.get("fixes") or ():
         lines += [f"### {fix.get('title') or fix.get('key')}", ""]
         for heading, text in fix.get("explainer") or ():
-            lines.append(f"- **{heading}**: {text}")
+            lines.append(f"- **{heading}**: {pages.plain(text)}")
         if fix.get("prompt"):
             lines += ["", "Prompt for Claude:", "", "```text", fix["prompt"], "```"]
         if fix.get("command"):

@@ -1067,6 +1067,37 @@ Only models `pricing.toml` prices are keys here. Each entry carries
 ratio}` map of that model's `input` rate as a multiple of every other
 priced model's `input` rate.
 
+`meta.projects`: every project slug with a session in this window
+(already redacted -- see "Privacy" above), sorted by this window's cost
+descending, ties broken alphabetically (the same `(-cost, slug)` order
+`usage.by_project`'s rows already sort by). This is the list a `project`
+filter (below) accepts and the dashboard's project picker can render
+without a second request.
+
+### Filtering by project
+
+Every report-backed route (`/api/report.json`/`.md`/`.html` and every
+per-section route: `/api/ttl`, `/api/carry`, `/api/recommendations`,
+`/api/quick-actions[/<id>]`, `/api/compaction-sim`, `/api/model-swap`,
+`/api/waste`, `/api/config-diff`, `/api/diagnostics`,
+`/api/claude-md[/<id>]`, `/api/skills`, `/api/profile-goals`, `/api/whatif`),
+plus `/api/summary`, `/api/sessions`, `/api/daily-usage` and
+`/api/compactions`, additionally accept a `project=<slug>` query param
+(additive). `<slug>` is one of `meta.projects`'/`/api/sessions`'
+already-redacted slugs -- never the raw, unredacted slug a filesystem
+path could embed a username in, since the API never hands one out
+(see "Privacy" above). The route narrows to that project's sessions
+only: fewer sessions, fewer transcripts, and (for report-backed routes)
+a report built from just that subset -- the same shape as an unfiltered
+response, just scoped.
+
+An unrecognized or malformed `project` (a slug redacting to no known
+project in the current store) is a `400 bad_request`, same envelope as
+every other malformed query param above -- the message never echoes the
+given value back, only that `project` was the problem. The report cache
+(below) keys on `project` alongside the window, so two different
+`project` values for the same window never share a cache entry.
+
 ## Mutating routes
 
 The `POST` routes. All but `POST /api/whatif` write something, each
@@ -1343,6 +1374,22 @@ document's own "the raw rendered document" language for `.md`/`.html`.
 A request error on one of these three routes (a bad `window_days`,
 `since` or `until`, or an unexpected exception) still falls back to the
 normal JSON error envelope; only the success path is raw.
+
+**`{{page:<page>}}`/`{{page:<page>/<segment>}}` tokens (`pages.py`) survive
+into every JSON response**, `/api/report.json` included: help text, table
+notes, recommendation `action`/`estimated_saving` and similar fields can
+carry one, and the dashboard's own `links.js` turns it into a link. They
+never appear in a recommendation's `why`/`title` or in `fixes[].prompt`/
+`fixes[].command` (those feed a prompt or a standalone command, never
+dashboard markup). `render_json`/`to_jsonable` never call `pages.plain()`.
+`render_markdown`/`render_html` do, on every field that can carry a
+token, so `/api/report.md` and `/api/report.html` -- unwrapped native
+output from the very same renderers `report --format md`/`--format
+html` calls -- show the plain label ("Spend › Usage"), not the token;
+this keeps the byte-equivalence above, since both callers still run the
+identical renderer. `report --json`/`/api/report.json` are the one pair
+that stay byte-equivalent *with* the token still in place, for the same
+reason: both call the same `render_json`.
 
 **`GET /api/session/<id>` returns a superset of the listed fields.**
 `Store.session()`'s dict includes `mode_source`/`purpose_source`

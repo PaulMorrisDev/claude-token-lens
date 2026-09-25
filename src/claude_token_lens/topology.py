@@ -877,8 +877,8 @@ def _build_chains_summary_table(stats: TopologyStats) -> Table:
         rows=rows,
         notes=[
             "No field records that a run stopped because maxTurns was reached,"
-            " so only stoppedByUser is counted here. Quality signals (Agents"
-            " tab) infers likely maxTurns endings from how a run ends.",
+            " so only stoppedByUser is counted here. Quality signals"
+            " ({{page:agents/quality}}) infers likely maxTurns endings from how a run ends.",
         ],
     )
 

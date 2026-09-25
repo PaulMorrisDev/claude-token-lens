@@ -63,6 +63,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from . import pages
 from .config import Config
 from .corpus import Corpus, SessionBundle
 from .model import ReportModel, Table
@@ -279,7 +280,7 @@ def _habits_digest_table(
             Column(key="detail", label="Detail", kind="str"),
         ],
         rows=rows,
-        notes=["Savings are a week's worth at this month's pace; the Work habits tab has an example to copy for each."],
+        notes=["Savings are a week's worth at this month's pace; {{page:habits}} has an example to copy for each."],
     )
 
 
@@ -303,7 +304,7 @@ def _md_table(table: Table, currency: str, units: "Units | None" = None) -> list
         lines.append("| " + " | ".join(cells) + " |")
     if table.notes:
         lines.append("")
-        lines.extend(f"- {note}" for note in table.notes)
+        lines.extend(f"- {pages.plain(note)}" for note in table.notes)
     return lines
 
 
@@ -331,7 +332,7 @@ def _html_table(table: Table, currency: str, units: "Units | None" = None) -> st
         body_rows.append("<tr>" + "".join(cells) + "</tr>")
     notes_html = ""
     if table.notes:
-        notes_html = "<ul>" + "".join(f"<li>{_esc(note)}</li>" for note in table.notes) + "</ul>"
+        notes_html = "<ul>" + "".join(f"<li>{_esc(pages.plain(note))}</li>" for note in table.notes) + "</ul>"
     return f"<h2>{_esc(table.title)}</h2><table><thead>{thead}</thead><tbody>{''.join(body_rows)}</tbody></table>{notes_html}"
 
 

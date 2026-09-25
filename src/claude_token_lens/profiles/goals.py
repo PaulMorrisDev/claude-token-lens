@@ -377,8 +377,8 @@ def _tasks(draft: _Draft, tables, task: str | None) -> tuple[list[str], str | No
     tasks = list(by_task)
     if not tasks:
         return [], None, (
-            "No kind of task has been reported yet. Turn on metrics capture at Essentials or above on the "
-            "Capture tab, then come back after a week or so of work."
+            "No kind of task has been reported yet. Turn on metrics capture at Essentials or above on "
+            "{{page:setup/capture}}, then come back after a week or so of work."
         )
     if task not in by_task:
         task = next((t for t in tasks if any(r.get("verdict") == "cheaper" for r in by_task[t])), tasks[0])

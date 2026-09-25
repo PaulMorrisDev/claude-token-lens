@@ -738,8 +738,8 @@ METRICS: tuple[Metric, ...] = (
         group="coaching",
         section="coaching",
         title="Brief templates",
-        what="Checklists per kind of task, built from what your own requests tend to lack, on the Work "
-        "habits tab to copy. Turned on, it also adds a /tl-brief skill you run with a request: Claude "
+        what="Checklists per kind of task, built from what your own requests tend to lack, on "
+        "Work habits to copy. Turned on, it also adds a /tl-brief skill you run with a request: Claude "
         "checks it against its checklist and asks once for anything missing.",
         why="Better first messages, so Claude spends less finding things out.",
         powers=("information",),
@@ -785,7 +785,7 @@ METRICS: tuple[Metric, ...] = (
         group="feedback",
         section="feedback",
         title="Rate sessions on the dashboard",
-        what="The same checkboxes on the dashboard's Sessions tab, kept in Token Lens's own store.",
+        what="The same checkboxes on Spend › Sessions, kept in Token Lens's own store.",
         why="Feedback without spending tokens.",
         powers=("outcome",),
     ),
@@ -1364,8 +1364,8 @@ def render_markdown() -> str:
     p(
         "It costs tokens. The note is written to the prompt cache once, then read from it on every later "
         "reply of that session; the tag itself is a handful of output tokens on every reply and every "
-        "subagent report. [Levels](#levels) below gives rough sizes; once capture is on, the dashboard's "
-        "Capture tab measures the real cost from your own transcripts, and a banner on every tab shows the "
+        "subagent report. [Levels](#levels) below gives rough sizes; once capture is on, Setup › Capture "
+        "measures the real cost from your own transcripts, and a banner on every page shows the "
         "running total."
     )
     p("")
@@ -1401,7 +1401,7 @@ def render_markdown() -> str:
     p(
         "These are rough sizes — the note's characters divided by four, plus Claude Code's own hook-wrapper "
         "overhead (the system-reminder tags around it) — and don't include the tag Claude writes back (each "
-        "metric below says roughly how many output tokens its own words cost). The Capture tab replays your "
+        "metric below says roughly how many output tokens its own words cost). Setup › Capture replays your "
         "last 14 days of transcripts against each level before you turn it on, and once it's on, measures the "
         "real note and tag cost from what Claude Code actually recorded — read that number, not this one, "
         "when it matters."

@@ -30,7 +30,9 @@ SRC = Path(__file__).resolve().parent.parent / "src" / "claude_token_lens"
 NOT_YET_COVERED: set[str] = set()
 
 #: Words the house style replaces (see the "Words to use" table).
-BANNED = re.compile(r"\b(re-?cache[sd]?|top-level|briefing|cache_creation|cache_read|attribution_\w+|per_turn_\w+)\b", re.I)
+BANNED = re.compile(
+    r"\b(re-?cache[sd]?|top-level|briefing|cache_creation|cache_read|attribution_\w+|per_turn_\w+|tabs?)\b", re.I
+)
 SNAKE_CASE = re.compile(r"\b[a-z]+_[a-z0-9_]+\b")
 
 

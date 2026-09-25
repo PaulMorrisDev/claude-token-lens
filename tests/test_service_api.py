@@ -169,8 +169,24 @@ def _install_fake_rebuild(monkeypatch, corpus: corpus_mod.Corpus) -> None:
 
     fake = types.ModuleType("claude_token_lens.service.rebuild")
 
-    def corpus_from_store(store, *, days=None, since=None, until=None, window_by="mtime"):
-        return corpus
+    def corpus_from_store(store, *, days=None, since=None, until=None, window_by="mtime", project_slugs=None):
+        # project_slugs (additive, project-filter work): the one argument
+        # this fake does *not* ignore -- api.py's own project filter
+        # (_project_query/_build_report_model) is what a test in this
+        # file exercises, and it can only see an effect if this stand-in
+        # actually narrows `corpus` the same way the real
+        # service.rebuild.corpus_from_store does.
+        if project_slugs is None:
+            return corpus
+        allowed = set(project_slugs)
+        return corpus_mod.Corpus(
+            sessions=[b for b in corpus.sessions if b.slug in allowed],
+            total_files=corpus.total_files,
+            total_bytes=corpus.total_bytes,
+            cache_hits=corpus.cache_hits,
+            cache_misses=corpus.cache_misses,
+            elapsed_s=corpus.elapsed_s,
+        )
 
     fake.corpus_from_store = corpus_from_store
     # Both forms so `from . import rebuild` resolves it regardless of
@@ -1426,7 +1442,7 @@ def test_report_json_forwards_since_until_to_rebuild_and_ignores_default_window(
     calls = []
     real_corpus = server.corpus
 
-    def recording_corpus_from_store(store, *, days=None, since=None, until=None, window_by="mtime"):
+    def recording_corpus_from_store(store, *, days=None, since=None, until=None, window_by="mtime", project_slugs=None):
         calls.append({"days": days, "since": since, "until": until, "window_by": window_by})
         return real_corpus
 
@@ -1457,7 +1473,7 @@ def test_report_json_since_until_is_a_separate_cache_key_from_window_days(server
     calls = {"n": 0}
     real_corpus = server.corpus
 
-    def counting_corpus_from_store(store, *, days=None, since=None, until=None, window_by="mtime"):
+    def counting_corpus_from_store(store, *, days=None, since=None, until=None, window_by="mtime", project_slugs=None):
         calls["n"] += 1
         return real_corpus
 
@@ -1479,7 +1495,7 @@ def test_report_json_is_memoized_per_window(server, monkeypatch):
     calls = {"n": 0}
     real_corpus = server.corpus
 
-    def counting_corpus_from_store(store, *, days=None, since=None, until=None, window_by="mtime"):
+    def counting_corpus_from_store(store, *, days=None, since=None, until=None, window_by="mtime", project_slugs=None):
         calls["n"] += 1
         return real_corpus
 
@@ -1509,7 +1525,7 @@ def test_requests_for_a_window_already_being_built_share_that_build(server, monk
     started, release = threading.Event(), threading.Event()
     real_corpus = server.corpus
 
-    def slow_corpus_from_store(store, *, days=None, since=None, until=None, window_by="mtime"):
+    def slow_corpus_from_store(store, *, days=None, since=None, until=None, window_by="mtime", project_slugs=None):
         calls["n"] += 1
         started.set()
         release.wait(10)
@@ -1549,7 +1565,7 @@ def test_report_json_cache_invalidates_when_store_change_token_changes(server, m
     calls = {"n": 0}
     real_corpus = server.corpus
 
-    def counting_corpus_from_store(store, *, days=None, since=None, until=None, window_by="mtime"):
+    def counting_corpus_from_store(store, *, days=None, since=None, until=None, window_by="mtime", project_slugs=None):
         calls["n"] += 1
         return real_corpus
 
@@ -1589,7 +1605,7 @@ def _count_builds(server, monkeypatch) -> dict:
     calls = {"n": 0}
     real_corpus = server.corpus
 
-    def counting_corpus_from_store(store, *, days=None, since=None, until=None, window_by="mtime"):
+    def counting_corpus_from_store(store, *, days=None, since=None, until=None, window_by="mtime", project_slugs=None):
         calls["n"] += 1
         return real_corpus
 
@@ -2640,3 +2656,287 @@ def test_capture_shows_feedback_counts_and_the_skill_install_note(server):
     resp, payload = server.get_json("/api/capture")
     rows = {row["id"]: row for section in payload["data"]["sections"] for row in section["metrics"]}
     assert payload["data"]["feedback"]["skill"] == "installed" and rows["feedback_skill"]["needs_install"] is False
+
+
+# -- project filter (Task Group C) ---------------------------------------
+
+
+def _build_two_project_corpus(tmp_path: Path) -> corpus_mod.Corpus:
+    """Two distinctly-slugged projects (``proj-alpha`` cheaper,
+    ``proj-beta`` pricier), for the project-filter tests below."""
+    projects_root = tmp_path / "projects"
+    alpha_dir = projects_root / "proj-alpha"
+    beta_dir = projects_root / "proj-beta"
+    alpha_dir.mkdir(parents=True)
+    beta_dir.mkdir(parents=True)
+    write_jsonl(
+        alpha_dir / "session-alpha.jsonl",
+        [turn_line(input_tokens=100 + i, output_tokens=20 + i, cache_read_input_tokens=30) for i in range(3)],
+    )
+    write_jsonl(
+        beta_dir / "session-beta.jsonl",
+        [turn_line(input_tokens=200 + i, output_tokens=40 + i, cache_read_input_tokens=60) for i in range(3)],
+    )
+    return corpus_mod.load_corpus([alpha_dir, beta_dir])
+
+
+def _seed_two_projects(store: Store, corpus: corpus_mod.Corpus) -> dict[str, str]:
+    """Seed both of ``corpus``'s sessions under their own slugs -- unlike
+    ``_seed_store`` above (which always hardcodes a single ``"proj-a"``
+    session regardless of the corpus passed in), this keeps each
+    bundle's own ``slug``/``session_id`` so ``resolve_project_slug``/
+    project filtering can actually tell the two projects apart.
+    ``proj-alpha`` costs 1.0, ``proj-beta`` costs 9.0 -- distinctly
+    different so a filtered total can't pass by coincidence. Returns
+    ``{slug: session_id}``.
+    """
+    session_ids: dict[str, str] = {}
+    costs = {"proj-alpha": 1.0, "proj-beta": 9.0}
+    dropped = {"proj-alpha": 800, "proj-beta": 1600}
+    for bundle in corpus.sessions:
+        slug = bundle.slug
+        cost = costs[slug]
+        fake_root = rf"C:\Users\definitely-not-a-real-person\.claude\projects\{slug}"
+        store.upsert_session(
+            session_id=bundle.session_id,
+            project_slug=slug,
+            project_root_path=fake_root,
+            slug=slug,
+            first_ts="2026-09-18T12:00:00Z",
+            last_ts="2026-09-18T13:00:00Z",
+            span_s=3600.0,
+            total_cost=cost,
+            total_tokens=450,
+        )
+        store.upsert_transcript(
+            session_id=bundle.session_id,
+            path=rf"{fake_root}\{bundle.session_id}.jsonl",
+            kind="top-level",
+            mtime_ns=123,
+            size_bytes=456,
+            parser_version=3,
+            digest_json=json.dumps({"turns": 3}),
+            turns_agg=[
+                {
+                    "day": "2026-09-18",
+                    "model": "claude-sonnet-5",
+                    "turns": 3,
+                    "input_tokens": 300,
+                    "cache_creation_tokens": 0,
+                    "cache_read_tokens": 90,
+                    "output_tokens": 63,
+                    "thinking_tokens": 0,
+                    "cc_5m": 0,
+                    "cc_1h": 0,
+                    "cost": cost,
+                }
+            ],
+            compactions=[
+                {
+                    "ts": "2026-09-18T12:30:00Z",
+                    "pre_tokens": 1000,
+                    "post_tokens": 200,
+                    "dropped_tokens": dropped[slug],
+                    "trigger": "auto",
+                    "join_delta_s": 5.0,
+                }
+            ],
+        )
+        session_ids[slug] = bundle.session_id
+    return session_ids
+
+
+def _start_server_with_two_projects(tmp_path, monkeypatch) -> tuple[_ServerHandle, dict[str, str]]:
+    """A server backed by two distinct projects (see
+    ``_build_two_project_corpus``/``_seed_two_projects``), for the
+    project-filter tests below. Bypasses ``_start_server``'s
+    ``_seed_store`` (which hardcodes a single ``"proj-a"`` session) so
+    both sessions actually land in the store under their own slugs --
+    ``resolve_project_slug`` reads ``sessions.slug`` directly, and a
+    mismatch here would make every filter assertion meaningless."""
+    corpus = _build_two_project_corpus(tmp_path)
+    _install_fake_rebuild(monkeypatch, corpus)
+
+    store = Store(tmp_path / "service.db")
+    store.open()
+    session_ids = _seed_two_projects(store, corpus)
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    options = ServeOptions(projects_root=tmp_path / "projects", config_dir=config_dir)
+
+    handler_cls = service_api.make_handler(store, options)
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler_cls)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+
+    handle = _ServerHandle(httpd, thread, corpus=corpus, store=store, options=options)
+    return handle, session_ids
+
+
+@pytest.fixture
+def two_project_server(tmp_path, monkeypatch):
+    handle, session_ids = _start_server_with_two_projects(tmp_path, monkeypatch)
+    handle.session_ids = session_ids
+    try:
+        yield handle
+    finally:
+        handle.close()
+        handle.store.close()
+
+
+def _overview_metric(report: dict, metric: str):
+    for section in report["sections"]:
+        if section["key"] == "overview":
+            for table in section["tables"]:
+                if table["name"] == "totals":
+                    for row in table["rows"]:
+                        if row[0] == metric:
+                            return row[1]
+    raise KeyError(metric)
+
+
+def test_summary_filters_by_project(two_project_server):
+    resp, body = two_project_server.get_json("/api/summary?project=proj-alpha")
+    assert resp.status == 200
+    assert body["data"]["sessions"] == 1
+    assert body["data"]["total_cost"] == pytest.approx(1.0)
+
+    resp, body = two_project_server.get_json("/api/summary?project=proj-beta")
+    assert resp.status == 200
+    assert body["data"]["sessions"] == 1
+    assert body["data"]["total_cost"] == pytest.approx(9.0)
+
+    resp, body = two_project_server.get_json("/api/summary")
+    assert resp.status == 200
+    assert body["data"]["sessions"] == 2
+    assert_privacy(body)
+
+
+def test_sessions_filters_by_project(two_project_server):
+    resp, body = two_project_server.get_json("/api/sessions?project=proj-alpha")
+    assert resp.status == 200
+    assert [s["id"] for s in body["data"]] == [two_project_server.session_ids["proj-alpha"]]
+    assert body["data"][0]["slug"] == "proj-alpha"
+    assert_privacy(body)
+
+
+def test_daily_usage_filters_by_project(two_project_server):
+    resp, body = two_project_server.get_json("/api/daily-usage?project=proj-beta&window=all")
+    assert resp.status == 200
+    assert sum(row["cost"] for row in body["data"]) == pytest.approx(9.0)
+
+    resp, body = two_project_server.get_json("/api/daily-usage?project=proj-alpha&window=all&split=agent")
+    assert resp.status == 200
+    assert all(row["agent"] == "main" for row in body["data"])
+    assert sum(row["cost"] for row in body["data"]) == pytest.approx(1.0)
+
+
+def test_compactions_filters_by_project(two_project_server):
+    resp, body = two_project_server.get_json("/api/compactions?project=proj-alpha")
+    assert resp.status == 200
+    assert len(body["data"]) == 1
+    assert body["data"][0]["dropped_tokens"] == 800
+
+    resp, body = two_project_server.get_json("/api/compactions?project=proj-beta")
+    assert resp.status == 200
+    assert len(body["data"]) == 1
+    assert body["data"][0]["dropped_tokens"] == 1600
+
+
+@pytest.mark.parametrize("route", ["/api/summary", "/api/ttl", "/api/sessions", "/api/compactions"])
+def test_unknown_project_is_bad_request_without_echoing_it(two_project_server, route):
+    needle = "not-a-real-project-xyz"
+    resp, body = two_project_server.get_json(f"{route}?project={needle}")
+    assert resp.status == 400
+    assert body["ok"] is False
+    assert body["error"]["code"] == "bad_request"
+    assert needle not in body["error"]["message"]
+
+
+def test_report_json_scoped_by_project(two_project_server):
+    resp, body = two_project_server.get_json("/api/report.json?project=proj-alpha")
+    assert resp.status == 200
+    report = body["report"]
+    assert report["meta"]["projects"] == ["proj-alpha"]
+    assert _overview_metric(report, "sessions") == 1
+    assert_privacy(body)
+
+    resp, body = two_project_server.get_json("/api/report.json?project=proj-beta")
+    assert resp.status == 200
+    report = body["report"]
+    assert report["meta"]["projects"] == ["proj-beta"]
+    assert _overview_metric(report, "sessions") == 1
+
+
+def test_report_meta_projects_sorted_by_cost_descending_at_the_api_level(two_project_server):
+    resp, body = two_project_server.get_json("/api/report.json")
+    assert resp.status == 200
+    # proj-beta (cost 9.0) outspends proj-alpha (cost 1.0) this window --
+    # the API's own meta.projects must reflect the same (-cost, slug)
+    # order tests/test_report.py already pins at the build_report level.
+    assert body["report"]["meta"]["projects"] == ["proj-beta", "proj-alpha"]
+
+
+def test_report_cache_does_not_leak_across_project_filters(two_project_server):
+    """Two different `project` filters (and the unfiltered request) for
+    the same window must never share a cached report -- the report
+    cache key was widened to include `project` precisely so this
+    doesn't happen (see api.py's `_get_report_model`/`_slot_for`)."""
+    _resp, alpha = two_project_server.get_json("/api/report.json?project=proj-alpha")
+    _resp, beta = two_project_server.get_json("/api/report.json?project=proj-beta")
+    _resp, both = two_project_server.get_json("/api/report.json")
+
+    assert alpha["report"]["meta"]["projects"] == ["proj-alpha"]
+    assert beta["report"]["meta"]["projects"] == ["proj-beta"]
+    assert sorted(both["report"]["meta"]["projects"]) == ["proj-alpha", "proj-beta"]
+
+    # Re-requesting alpha after beta and the combined view must still
+    # return alpha's own scoped data, not something left behind by a
+    # collided cache slot.
+    _resp, alpha_again = two_project_server.get_json("/api/report.json?project=proj-alpha")
+    assert alpha_again["report"]["meta"]["projects"] == ["proj-alpha"]
+    assert _overview_metric(alpha_again["report"], "sessions") == 1
+
+
+@pytest.mark.parametrize(
+    "route",
+    [
+        "/api/ttl",
+        "/api/carry",
+        "/api/compaction-sim",
+        "/api/model-swap",
+        "/api/waste",
+        "/api/config-diff?auto_keys=1",
+        "/api/recommendations",
+        "/api/diagnostics",
+        "/api/claude-md",
+        "/api/skills",
+        "/api/profile-goals",
+        "/api/quick-actions",
+        "/api/report.json",
+        "/api/report.md",
+        "/api/report.html",
+    ],
+)
+def test_project_filter_does_not_error_on_any_report_backed_route(server, route):
+    """A `project=<valid slug>` filter must not error on any
+    report-backed route -- `server`'s own single project is `proj-a`
+    (see `_seed_store`), so this is a smoke test that the filter is
+    wired through every one of them, not a correctness check (the
+    dedicated `two_project_server` tests above cover correctness)."""
+    sep = "&" if "?" in route else "?"
+    resp, _raw = server.request("GET", f"{route}{sep}project=proj-a")
+    assert resp.status == 200, f"{route} -> {resp.status}"
+
+
+def test_project_filter_does_not_error_on_whatif_or_quick_action(server):
+    resp, body = server.get_json("/api/quick-actions?project=proj-a")
+    assert resp.status == 200
+    checks = body["data"]["checks"]
+    if checks:
+        check_id = checks[0]["id"]
+        resp, _body = server.get_json(f"/api/quick-actions/{check_id}?project=proj-a")
+        assert resp.status == 200
+    resp, _body = server.post_json("/api/whatif?project=proj-a", {"settings": {"model": "sonnet"}, "agents": {}})
+    assert resp.status == 200

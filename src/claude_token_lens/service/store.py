@@ -1260,7 +1260,12 @@ class Store:
         }
 
     def summary(
-        self, *, window_days: int | None = None, since: str | None = None, until: str | None = None
+        self,
+        *,
+        window_days: int | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        project_slugs: list[str] | None = None,
     ) -> dict:
         """Corpus-wide totals: session/transcript counts and cost/token
         sums, optionally restricted to a ``window_days``/``since``/
@@ -1275,9 +1280,16 @@ class Store:
         ``last_ts``) falls in the window, and every transcript belonging to
         it (top-level and every subagent) then counts, matching
         ``corpus_from_store``'s own ``total_files``.
+
+        ``project_slugs`` (additive, project-filter work): raw
+        ``sessions.slug`` values (already resolved from the client's
+        redacted ``project`` query param by ``api.py``'s
+        ``_project_query`` -- see ``resolve_project_slug`` below) to
+        restrict to; ``None`` (the default) keeps every project, matching
+        every existing caller exactly.
         """
         conn = self._connection()
-        if window_days is None and since is None and until is None:
+        if window_days is None and since is None and until is None and project_slugs is None:
             row = conn.execute(
                 "SELECT COUNT(*) AS sessions, COALESCE(SUM(total_cost), 0) AS total_cost, "
                 "COALESCE(SUM(total_tokens), 0) AS total_tokens FROM sessions"
@@ -1292,7 +1304,7 @@ class Store:
             }
 
         since_dt, until_dt = _resolve_window(window_days, since, until)
-        session_ids = self._session_ids_in_window(since_dt, until_dt)
+        session_ids = self._session_ids_in_window(since_dt, until_dt, project_slugs=project_slugs)
         if not session_ids:
             return {
                 "window_days": window_days,
@@ -1329,12 +1341,38 @@ class Store:
         ).fetchall()
         return {row["entrypoint"]: {"count": row["n"], "last_ts": row["last_ts"]} for row in rows}
 
-    def _session_ids_in_window(self, since_dt: datetime | None, until_dt: datetime | None) -> list[str]:
+    def _session_ids_in_window(
+        self,
+        since_dt: datetime | None,
+        until_dt: datetime | None,
+        *,
+        project_slugs: list[str] | None = None,
+    ) -> list[str]:
         """Sessions whose last reply falls in the window: the rule
         ``service.rebuild.corpus_from_store`` and ``corpus.load_corpus``
-        use to decide what a windowed report counts."""
-        rows = self._connection().execute("SELECT id, last_ts FROM sessions").fetchall()
+        use to decide what a windowed report counts. ``project_slugs``
+        (additive), when given, further restricts to sessions whose raw
+        ``slug`` is one of them."""
+        rows = self._connection().execute("SELECT id, slug, last_ts FROM sessions").fetchall()
+        if project_slugs is not None:
+            allowed = set(project_slugs)
+            rows = [row for row in rows if row["slug"] in allowed]
         return [row["id"] for row in rows if ts_in_window(row["last_ts"], since_dt, until_dt)]
+
+    def resolve_project_slug(self, redacted: str) -> list[str] | None:
+        """The raw ``sessions.slug`` value(s) that redact
+        (``discovery.redact_slug``) to ``redacted`` -- resolves a
+        client-supplied project slug, which is always already redacted
+        (the API never hands out a raw one -- see "Privacy" in
+        ``docs/api.md``), back to what a ``project`` filter must actually
+        match in SQL/``Corpus`` filtering. Two raw slugs can share one
+        redacted form (each under its own ``Users-<name>`` segment), so
+        every match is returned, sorted; ``None`` when ``redacted``
+        matches no session's slug at all -- ``api.py``'s ``_project_query``
+        treats that as an unknown project (``400 bad_request``)."""
+        rows = self._connection().execute("SELECT DISTINCT slug FROM sessions WHERE slug IS NOT NULL").fetchall()
+        matches = sorted({row["slug"] for row in rows if redact_slug(row["slug"]) == redacted})
+        return matches or None
 
     def sessions(
         self,
@@ -1344,28 +1382,40 @@ class Store:
         window_days: int | None = None,
         since: str | None = None,
         until: str | None = None,
+        project_slugs: list[str] | None = None,
     ) -> list[dict]:
         """The most recent ``limit`` sessions (by ``first_ts`` descending),
         one summary dict each — no transcript paths. ``source`` says
         where it ran ("This computer" or "WSL: <distro>", see
         ``discovery.source_label``). ``window_days``/``since``/``until``
         keep only the sessions a report over that window counts (last
-        reply in the window)."""
-        query = """
+        reply in the window). ``project_slugs`` (additive), when given,
+        further restricts to raw slugs in that list -- see
+        ``resolve_project_slug``."""
+        where_sql = ""
+        where_params: list = []
+        if project_slugs:
+            placeholders = ",".join("?" * len(project_slugs))
+            where_sql = f" WHERE s.slug IN ({placeholders})"
+            where_params = list(project_slugs)
+        query = f"""
             SELECT s.id, s.slug, s.first_ts, s.last_ts, s.span_s, s.archetype,
                    s.mode, s.purpose, s.entrypoint, s.billing_mode, s.profile_id,
                    s.total_cost, s.total_tokens,
                    (SELECT t.path FROM transcripts t WHERE t.session_id = s.id LIMIT 1) AS source_path
             FROM sessions s
+            {where_sql}
             ORDER BY s.first_ts DESC
             """
         since_dt, until_dt = _resolve_window(window_days, since, until)
         if since_dt is None and until_dt is None:
-            rows = self._connection().execute(query + " LIMIT ? OFFSET ?", (limit, offset)).fetchall()
+            rows = self._connection().execute(
+                query + " LIMIT ? OFFSET ?", (*where_params, limit, offset)
+            ).fetchall()
         else:
             rows = [
                 row
-                for row in self._connection().execute(query).fetchall()
+                for row in self._connection().execute(query, where_params).fetchall()
                 if ts_in_window(row["last_ts"], since_dt, until_dt)
             ][offset : offset + limit]
         result = [dict(row) for row in rows]
@@ -1413,6 +1463,7 @@ class Store:
         since: str | None = None,
         until: str | None = None,
         split: str | None = None,
+        project_slugs: list[str] | None = None,
     ) -> list[dict]:
         """Per-day, per-model token/cost rollups, joined from
         ``turns_agg`` (no per-transcript or path detail).
@@ -1432,6 +1483,13 @@ class Store:
         ``"subagent"``), adding an ``"agent"`` key. ``split="model"`` or
         omitted keeps the original, unsplit shape -- the default, so
         existing callers see no change.
+
+        ``project_slugs`` (additive), when given, further restricts to
+        raw slugs in that list -- see ``resolve_project_slug``. Reaching
+        a project from ``turns_agg`` needs two joins it otherwise
+        skips (``turns_agg.transcript_id -> transcripts.session_id ->
+        sessions.slug``), added only when filtering is requested so an
+        unfiltered call plans identically to before.
         """
         since_dt, until_dt = _resolve_window(days, since, until)
         conditions = []
@@ -1442,8 +1500,13 @@ class Store:
         if until_dt is not None:
             conditions.append("a.day <= ?")
             params.append(until_dt.strftime("%Y-%m-%d"))
+        if project_slugs:
+            placeholders = ",".join("?" * len(project_slugs))
+            conditions.append(f"s2.slug IN ({placeholders})")
+            params.extend(project_slugs)
         where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
         if split == "agent":
+            project_join = " JOIN sessions s2 ON s2.id = t.session_id" if project_slugs else ""
             rows = self._connection().execute(
                 f"""
                 SELECT a.day AS day,
@@ -1458,7 +1521,7 @@ class Store:
                        SUM(a.cc_5m) AS cc_5m,
                        SUM(a.cc_1h) AS cc_1h,
                        SUM(a.cost) AS cost
-                FROM turns_agg a JOIN transcripts t ON t.id = a.transcript_id
+                FROM turns_agg a JOIN transcripts t ON t.id = a.transcript_id{project_join}
                 {where}
                 GROUP BY a.day, agent, a.model
                 ORDER BY a.day, agent, a.model
@@ -1466,6 +1529,7 @@ class Store:
                 params,
             ).fetchall()
             return [dict(row) for row in rows]
+        project_join = " JOIN transcripts t ON t.id = a.transcript_id JOIN sessions s2 ON s2.id = t.session_id" if project_slugs else ""
         rows = self._connection().execute(
             f"""
             SELECT a.day AS day, a.model AS model,
@@ -1478,7 +1542,7 @@ class Store:
                    SUM(a.cc_5m) AS cc_5m,
                    SUM(a.cc_1h) AS cc_1h,
                    SUM(a.cost) AS cost
-            FROM turns_agg a
+            FROM turns_agg a{project_join}
             {where}
             GROUP BY a.day, a.model
             ORDER BY a.day, a.model
@@ -1488,7 +1552,12 @@ class Store:
         return [dict(row) for row in rows]
 
     def cache_read_tokens_by_model(
-        self, *, days: int | None = 30, since: str | None = None, until: str | None = None
+        self,
+        *,
+        days: int | None = 30,
+        since: str | None = None,
+        until: str | None = None,
+        project_slugs: list[str] | None = None,
     ) -> dict[str, int]:
         """``cache_read_tokens`` summed per model over the sessions a
         window counts, for ``/api/summary``'s additive ``cache_saved``
@@ -1497,15 +1566,17 @@ class Store:
         the window, and then every turn of it (main and subagents) does.
         Day buckets would pull in other sessions' reads whenever a bound
         falls mid-day (a 1-hour window, or "the same hours yesterday").
-        With no window at all, every turn counts."""
+        With no window and no project, every turn counts.
+        ``project_slugs`` (additive): see :meth:`summary`'s own parameter
+        of the same name."""
         since_dt, until_dt = _resolve_window(days, since, until)
         conn = self._connection()
-        if since_dt is None and until_dt is None:
+        if since_dt is None and until_dt is None and project_slugs is None:
             rows = conn.execute(
                 "SELECT model, COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens FROM turns_agg GROUP BY model"
             ).fetchall()
             return {row["model"]: row["cache_read_tokens"] for row in rows}
-        session_ids = self._session_ids_in_window(since_dt, until_dt)
+        session_ids = self._session_ids_in_window(since_dt, until_dt, project_slugs=project_slugs)
         if not session_ids:
             return {}
         placeholders = ",".join("?" * len(session_ids))
@@ -1530,18 +1601,44 @@ class Store:
         return {"by_signature": by_signature}
 
     def compactions(
-        self, *, window_days: int | None = None, since: str | None = None, until: str | None = None
+        self,
+        *,
+        window_days: int | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        project_slugs: list[str] | None = None,
     ) -> list[dict]:
         """Every recorded compaction event (no transcript path — only
         the opaque, store-local ``transcript_id``), oldest first; with a
-        window, only those that happened in it."""
-        rows = self._connection().execute(
-            """
-            SELECT transcript_id, ts, pre_tokens, post_tokens, dropped_tokens, trigger, join_delta_s
-            FROM compactions
-            ORDER BY ts
-            """
-        ).fetchall()
+        window, only those that happened in it. ``project_slugs``
+        (additive), when given, further restricts to raw slugs in that
+        list -- see ``resolve_project_slug``; reaching a project needs
+        two joins ``compactions`` otherwise skips
+        (``transcript_id -> transcripts.session_id -> sessions.slug``),
+        added only when filtering is requested."""
+        if project_slugs:
+            placeholders = ",".join("?" * len(project_slugs))
+            rows = self._connection().execute(
+                f"""
+                SELECT c.transcript_id AS transcript_id, c.ts AS ts, c.pre_tokens AS pre_tokens,
+                       c.post_tokens AS post_tokens, c.dropped_tokens AS dropped_tokens,
+                       c.trigger AS trigger, c.join_delta_s AS join_delta_s
+                FROM compactions c
+                JOIN transcripts t ON t.id = c.transcript_id
+                JOIN sessions s ON s.id = t.session_id
+                WHERE s.slug IN ({placeholders})
+                ORDER BY c.ts
+                """,
+                list(project_slugs),
+            ).fetchall()
+        else:
+            rows = self._connection().execute(
+                """
+                SELECT transcript_id, ts, pre_tokens, post_tokens, dropped_tokens, trigger, join_delta_s
+                FROM compactions
+                ORDER BY ts
+                """
+            ).fetchall()
         since_dt, until_dt = _resolve_window(window_days, since, until)
         return [dict(row) for row in rows if ts_in_window(row["ts"], since_dt, until_dt)]
 

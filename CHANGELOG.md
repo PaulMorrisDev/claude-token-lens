@@ -473,6 +473,23 @@ of the 5-minute one (below).
   `[]` for a check with no rule behind it. Each habit in the "Habits
   worth trying" table gains `covered_by_rule`, the rule id behind its
   existing `covered_by` title, once that rule has actually fired.
+- **A `project` filter, on every route that reads sessions.** Every
+  report-backed route (`report.json`/`.md`/`.html`, `/api/ttl`,
+  `/api/carry`, `/api/compaction-sim`, `/api/model-swap`, `/api/waste`,
+  `/api/config-diff`, `/api/recommendations`, `/api/diagnostics`,
+  `/api/claude-md`, `/api/claude-md/<id>`, `/api/skills`,
+  `/api/profile-goals`, `/api/quick-actions`, `/api/quick-actions/<id>`,
+  `/api/whatif`) plus `/api/summary`, `/api/sessions`, `/api/daily-usage`
+  and `/api/compactions` now accept `project=<slug>`, narrowing to that
+  one project's sessions; an unrecognised slug is a `400 bad_request`
+  ("'project' does not match a known project") that never echoes the
+  value back. `report.json`'s `meta` gains `projects`: every project
+  with a session in the window, already redacted, sorted by that
+  window's cost descending (ties broken alphabetically -- the same
+  order `usage.by_project`'s own rows already sort by), so a dashboard
+  project picker can render straight from it. The report cache key now
+  includes `project`, so a filtered and an unfiltered request for the
+  same window never share a cached report.
 
 ### Changed
 

@@ -171,7 +171,7 @@ def expectations(capture: CaptureConfig | None = None) -> tuple[tuple[str, str],
     if _uses_tokens(capture):
         text = (
             f"Metrics capture is on ({level}). Claude reads a short note when a session or subagent starts and "
-            "writes a one-line tag at the end of its replies, so it uses some of your tokens. The Capture tab "
+            "writes a one-line tag at the end of its replies, so it uses some of your tokens. {{page:setup/capture}} "
             "shows how many. Turn it off with 'claude-token-lens capture off'."
         )
     else:
@@ -324,7 +324,7 @@ def inventory(
             where=home_label(settings_path),
             what_it_does=(
                 "Shows context, usage limits and cache health under the prompt in the terminal, and logs them "
-                "for the Usage and Cache tabs. Claude Code runs it in the terminal only, not in the desktop app."
+                "for {{page:spend/usage}} and {{page:cache/rebuilds}}. Claude Code runs it in the terminal only, not in the desktop app."
             ),
             token_cost="None. The statusline is shown to you; Claude never reads it.",
             undo="claude-token-lens uninstall",
@@ -352,7 +352,7 @@ def inventory(
                     "With capture off the hooks add nothing."
                 ),
                 token_cost=(
-                    f"Some while capture is on (now: {level}): the note and the tags. The Capture tab shows the "
+                    f"Some while capture is on (now: {level}): the note and the tags. {{page:setup/capture}} shows the "
                     "measured amount."
                     if capture.is_on and _uses_tokens(capture)
                     else f"None at {level}: the free signals only write to a local file."
@@ -377,7 +377,7 @@ def inventory(
                 ),
                 token_cost=(
                     "None until you run it: Claude doesn't see its description. Each run costs about two short "
-                    "turns, shown on the Capture tab."
+                    "turns, shown on {{page:setup/capture}}."
                 ),
                 undo="claude-token-lens capture feedback off",
             )

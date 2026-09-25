@@ -1306,6 +1306,14 @@ def build_report(
 
     session_records: list[SessionRecord] = []
     session_cost: dict[str, float] = {}
+    #: Additive (project-filter work): each *redacted* project slug's
+    #: total cost across every session in this corpus, accumulated
+    #: alongside ``session_cost`` below from the same per-session totals
+    #: -- the source ``meta.projects`` sorts by, so a caller never has to
+    #: separately request ``usage.by_project`` (which sorts its own rows
+    #: the same way, ``(-cost, slug)``) just to know which project cost
+    #: the most in this window.
+    project_cost: dict[str, float] = {}
     session_snapshot_key: dict[str, str] = {}
     session_cc_total: dict[str, int] = {}
     session_recache_cc: dict[str, int] = {}
@@ -1465,6 +1473,7 @@ def build_report(
             )
 
         session_cost[record.session_id] = session_cost_total
+        project_cost[slug] = project_cost.get(slug, 0.0) + session_cost_total
         session_cc_total[record.session_id] = session_cc_total_tokens
         session_recache_cc[record.session_id] = session_recache_cc_tokens
 
@@ -1842,7 +1851,21 @@ def build_report(
         # store-derived set) -- redact defensively here too, not only at
         # the `bundle.slug` call sites above, so a caller that hasn't
         # redacted its own list can't leak a raw slug through this field.
-        projects=tuple(sorted({discovery.redact_slug(p) for p in projects})),
+        # Project-filter addition: sorted by this window's cost
+        # (descending), ties broken alphabetically -- the same
+        # ``(-cost, slug)`` key ``usage.by_project`` already sorts its own
+        # rows by, so the highest-spend project a caller could filter to
+        # always sorts first. A project with no session in this window
+        # (the CLI's ``--all-projects`` can pass one that exists on disk
+        # but never appears in ``corpus.sessions``) has no entry in
+        # ``project_cost`` and sinks to the bottom, alphabetically among
+        # its own kind.
+        projects=tuple(
+            sorted(
+                {discovery.redact_slug(p) for p in projects},
+                key=lambda slug: (-project_cost.get(slug, 0.0), slug),
+            )
+        ),
         pricing=PricingMeta(
             path=pricing.path,
             version=pricing.version,

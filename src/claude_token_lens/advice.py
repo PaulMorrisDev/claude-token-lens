@@ -560,7 +560,7 @@ def _explain_limit_pressure(rec: Recommendation, ctx: _Context) -> None:
         parts.append(f"{killed:,.0f} subagents were cut off by it")
     rec.why = (" and ".join(parts) + ".") if parts else "Sessions keep stopping at a usage limit."
     rec.action = (
-        "Run fewer agents at once when a limit is close, and check the Usage limits tab for when yours resets."
+        "Run fewer agents at once when a limit is close, and check {{page:spend/usage}} for when yours resets."
     )
 
 
@@ -578,7 +578,7 @@ def _explain_cache_read_dominance(rec: Recommendation, ctx: _Context) -> None:
 def _explain_data_quality(rec: Recommendation, ctx: _Context) -> None:
     rec.title = "A few numbers may be slightly off"
     rec.why = rec.action.split(":", 1)[-1].strip() if ":" in rec.action else rec.action
-    rec.action = "See the Data quality tab for what could not be read."
+    rec.action = "See {{page:data}} for what could not be read."
 
 
 def _explain_pricing_coverage(rec: Recommendation, ctx: _Context) -> None:
