@@ -301,12 +301,28 @@ changes. `capture` is `null` when `config.toml` can't be read.
 Corpus-wide totals — `Store.summary`.
 
 Query: `window_days` (int, optional; no default, so all time when
-omitted) or `window` (a named window, as for the report-backed routes
+omitted), `window` (a named window, as for the report-backed routes
 below; it takes precedence, and `window_days` is then `null` in the
-response).
+response), or, additively, explicit `since`/`until` (ISO 8601) — the same
+four params `/api/sessions`/`/api/compactions` accept, and, like those two
+(unlike the report-backed routes below), *no* params at all still means
+all time rather than a 30-day default. An explicit `since`/`until` is
+rounded down to the minute the same way a named window's own resolved
+`since` already is, so two requests for "the same" bound issued a few
+seconds apart — the dashboard's own current-period and previous-period
+calls, for instance — agree on exactly the same window.
 
-`data`: `{"window_days": int|null, "sessions": int, "transcripts": int, "total_cost": float, "total_tokens": int}`.
-`total_cost` is at list price, whatever the billing mode.
+`data`: `{"window_days": int|null, "sessions": int, "transcripts": int, "total_cost": float, "total_tokens": int, "cache_read_tokens": int, "cache_saved": float}`.
+`total_cost` is at list price, whatever the billing mode. Additive:
+`cache_read_tokens` is `turns_agg.cache_read_tokens` summed across every
+model in the window (day-bounded, the same granularity `/api/daily-usage`
+reads at); `cache_saved` is what those cache reads actually saved against
+sending the same tokens fresh as input instead — per model,
+`cache_read_tokens × (input_price − cache_read_price)`, summed, in USD at
+list price (a model the rate card doesn't price is left out, the same
+"priced models only" rule every other per-model pricing loop in this
+project follows). `cache_saved` is `0.0`, never an error, when the rate
+card itself can't be loaded.
 
 With a window given, a session qualifies when its last reply (from its
 main transcript or any subagent's) falls in the window — the same
@@ -422,10 +438,24 @@ dashboard does not call this route (so its heading is not in the
 `GET /api/...` form `tests/test_service_static.py` checks against
 the dashboard's modules); it is here for other clients.
 
-Query: `days` (int, default 30, at least 1). Days are UTC calendar days.
+Query: `days` (int, default 30, at least 1; unchanged for existing
+callers). Days are UTC calendar days. Additive: the same `window`/
+`window_days`/`since`/`until` params the report-backed routes below
+accept (see "Report-backed routes: windowing query params") take
+precedence over `days` when any of the four is given, so `?window=all`
+or an explicit `since`/`until` isn't also clamped to a trailing `days`
+window; with none of them, `days` (default 30) applies exactly as
+before. Additive: `split` — `agent` breaks each day/model row into the
+main session and every subagent (`transcripts.kind` joined in from
+`turns_agg.transcript_id`: `"top-level"` is `"main"`, `"subagent"`/
+`"workflow-agent"` are `"subagent"`), adding an `"agent"` key; `model`,
+or omitting `split`, keeps the original, unsplit shape. Any other
+`split` value is `400`.
 
-`data`: `[{"day", "model", "turns", "input_tokens", "cache_creation_tokens", "cache_read_tokens", "output_tokens", "thinking_tokens", "cc_5m", "cc_1h", "cost"}, ...]`,
-ordered by day, then model. `cost` is at list price.
+`data`: `[{"day", "model", "turns", "input_tokens", "cache_creation_tokens", "cache_read_tokens", "output_tokens", "thinking_tokens", "cc_5m", "cc_1h", "cost"}, ...]`
+(with `split=agent`, each row additionally carries `"agent"`:
+`"main"`|`"subagent"`), ordered by day, then (with `split=agent`) agent,
+then model. `cost` is at list price.
 
 ### Report-backed routes: windowing query params
 
@@ -1012,6 +1042,18 @@ list-price dollar is worth, or `null` without an accepted elasticity
 fit yet; `period_label` is what that share is "of" (`"weekly usage
 limit"`); `basis` repeats `amounts_basis` so a consumer of `meta.units`
 alone still has the caveat text.
+
+`meta.rates` (additive): every priced model's own rates and a few
+derived ratios, keyed by canonical model id -- the dashboard's own
+rate card, without a second round trip to read `pricing.toml` itself.
+Only models `pricing.toml` prices are keys here. Each entry carries
+`input`, `output`, `cache_write_5m`, `cache_write_1h`, `cache_read`
+(USD per million tokens, `pricing.toml`'s own field names);
+`cache_read_ratio`, `cache_write_5m_ratio`, `cache_write_1h_ratio`
+(each of those rates divided by that model's own `input` rate, or
+`null` if `input` is zero); and `input_ratio_to`, a `{model_id:
+ratio}` map of that model's `input` rate as a multiple of every other
+priced model's `input` rate.
 
 ## Mutating routes
 

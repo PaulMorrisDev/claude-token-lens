@@ -114,7 +114,7 @@ from .. import baseline as baseline_mod
 from .. import capture_catalogue, helptext, hook_health
 from .. import snapshots as snapshots_mod
 from ..config import CAPTURE_SAMPLES, ConfigError, load_config, load_session_overrides, set_capture
-from ..pricing import PricingError, load_pricing
+from ..pricing import PricingError, cache_read_savings_usd, load_pricing
 from ..profiles import catalogue as profile_catalogue
 from ..profiles import diff as profile_diff_mod
 from ..profiles import schema as profile_schema
@@ -395,6 +395,19 @@ def _parse_iso8601(value: str) -> bool:
     except ValueError:
         return False
     return True
+
+
+def _round_iso_to_minute(value: str) -> str:
+    """An ISO 8601 timestamp, rounded down to the minute -- the same
+    ``%Y-%m-%dT%H:%M:00Z`` form :func:`_named_window_since` returns for a
+    named window's own ``since``, so an explicit ``since``/``until`` bound
+    a caller passes gets the same minute-level granularity the report
+    cache key already gives a named window (see that function and the
+    report cache key built around ``_get_report_model``)."""
+    dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:00Z")
 
 
 #: Short windows the dashboard offers by name (``?window=``), each as the
@@ -1264,15 +1277,41 @@ def make_handler(
         return _ok(data)
 
     def route_summary(store, query, body):
-        if _str_query(query, "window") is not None:
-            window, err = _window_query(query)
-            if err is not None:
-                return err
-            return _ok(store.summary(since=window[1]))
-        window_days, err = _int_query(query, "window_days", None, minimum=0)
+        # v0.4 windowing (dashboard delta support): the same window
+        # params every report-backed route accepts, plus since/until --
+        # but, unlike those routes, no params at all still means "all
+        # time" (docs/api.md's original contract), matching how
+        # /api/sessions and /api/compactions already treat "nothing
+        # given" via _listing_window rather than _window_query's own
+        # 30-day default.
+        window, err = _listing_window(query)
         if err is not None:
             return err
-        return _ok(store.summary(window_days=window_days))
+        window_days, since, until = window
+        # Round explicit bounds to the minute the same way a named
+        # window's own `since` already is (_named_window_since) -- so two
+        # requests for "the same" period (e.g. the dashboard's current
+        # and previous-period calls) a few seconds apart agree exactly.
+        if since is not None:
+            since = _round_iso_to_minute(since)
+        if until is not None:
+            until = _round_iso_to_minute(until)
+        result = store.summary(window_days=window_days, since=since, until=until)
+        # Additive: what cache reads saved against sending the same
+        # tokens fresh as input, from turns_agg in the same window.
+        config = load_config(options.config_dir)
+        rates = _capture_rates(config)
+        by_model = store.cache_read_tokens_by_model(days=window_days, since=since, until=until)
+        result["cache_read_tokens"] = sum(by_model.values())
+        result["cache_saved"] = (
+            cache_read_savings_usd(
+                [{"model": model_id, "cache_read_tokens": tokens} for model_id, tokens in by_model.items()],
+                rates,
+            )
+            if rates is not None
+            else 0.0
+        )
+        return _ok(result)
 
     def _listing_window(query):
         """The window a store listing is limited to: none unless the
@@ -1340,10 +1379,24 @@ def make_handler(
         return _ok(store.recache())
 
     def route_daily_usage(store, query, body):
-        days, err = _int_query(query, "days", 30, minimum=1)
-        if err is not None:
-            return err
-        return _ok(store.daily_usage(days=days))
+        # The original `days` param stays exactly as it was for existing
+        # callers; the shared window params (window/window_days/since/
+        # until) are additive and, when any is given, take precedence --
+        # the same "new params win when present" rule route_summary uses.
+        if any(key in query for key in ("window", "window_days", "since", "until")):
+            window, err = _window_query(query)
+            if err is not None:
+                return err
+            window_days, since, until = window
+        else:
+            window_days, err = _int_query(query, "days", 30, minimum=1)
+            if err is not None:
+                return err
+            since = until = None
+        split = _str_query(query, "split")
+        if split not in (None, "agent", "model"):
+            return _bad_request("'split' must be 'agent' or 'model'")
+        return _ok(store.daily_usage(days=window_days, since=since, until=until, split=split))
 
     def route_compactions(store, query, body):
         window, err = _listing_window(query)

@@ -1863,6 +1863,7 @@ def build_report(
             "period_label": "weekly usage limit",
             "basis": units.basis(),
         },
+        rates=pricing.rates_meta(),
     )
 
     # Fixes 2/3: these two counters are pricing-time totals (every turn
