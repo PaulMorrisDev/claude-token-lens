@@ -64,14 +64,14 @@ removed by ``retention_prune`` or ``claude-token-lens serve --purge``.
 ``count_missing_transcripts`` is the one query that reports the current
 total, for ``/api/health``.
 
-``GLOBAL_PROJECT_SLUG`` is the synthetic project slug the watcher
-attributes a machine-wide config snapshot to when the snapshot itself
-carries no per-project identity (``hooks/snapshot-config.py`` writes one
-``<config_dir>/snapshots/<ts>.json`` per machine, never one per
-project). ``Store.snapshots()`` maps this slug back to a ``None``
-``project_slug`` in its own read query, so an API/UI consumer sees an
-honest "no project" rather than a fabricated one (S1-integration fix
-1.c).
+``GLOBAL_PROJECT_SLUG`` is the synthetic project slug the watcher files
+every config snapshot under (``hooks/snapshot-config.py`` writes them all
+to one ``<config_dir>/snapshots/`` folder). ``Store.snapshots()`` maps
+this slug back to a ``None`` ``project_slug`` in its own read query, so
+an API/UI consumer sees an honest "no project" rather than a fabricated
+one (S1-integration fix 1.c). A schema-2 snapshot's own
+``project_slug`` field, kept in ``digest_json``, still names the project
+it was taken in; ``api.py`` reads that one.
 """
 
 from __future__ import annotations

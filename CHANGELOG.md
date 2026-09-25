@@ -29,8 +29,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   200 or 300 replies, each part starting fresh from a short note. It
   takes off what each split adds back: the note, the parent carrying it,
   a fresh cache write and an allowance for re-reading files. It then
-  picks the interval that saves most per agent type. The `run-split`
-  recommendation gives a prompt that adds the habit to your CLAUDE.md.
+  picks the interval that saves most per agent type. Workflow agents are
+  left out, even those started as a named agent type: their script
+  decides how the work is split. The `run-split` recommendation gives a
+  prompt that adds the habit to your CLAUDE.md.
   See [`docs/run-split.md`](docs/run-split.md).
 - **The dashboard notices when its own code changes on disk.** An
   editable install left running across a pull or release kept its old
@@ -73,6 +75,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   names are each worked out once.
 
 ### Fixed
+
+- **The dashboard reads each project's own settings again.** It filed
+  every settings snapshot under "(unknown project)", so Setup › Settings
+  showed one project instead of each, and per-project settings never
+  reached the sessions they applied to. With an auto-compact window set
+  in a project, the context budget then assumed a 200,000-token window,
+  not the 1,000,000 in use. The CLI's report was right; the dashboard
+  now matches it.
 
 - **Kept reports stay kept while a workflow runs.** Re-reading a
   workflow run file that hadn't changed stamped its row as updated,
