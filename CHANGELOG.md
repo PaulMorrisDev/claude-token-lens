@@ -50,6 +50,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the spend chart and under "Your changes and what they did" on
   Setup › Settings each time. It now compares sessions within the same
   project only, as the reports already did.
+- On Linux and macOS, `--project` and `--project-family` stopped with
+  "expected one argument", because a project slug there starts with `-`
+  (`/home/alice/shop` is `-home-alice-shop`). They take it as the value
+  now.
 
 ## [0.8.0] - 2026-09-25
 

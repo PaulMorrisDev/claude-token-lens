@@ -1054,9 +1054,35 @@ def _add_team_report_args(sub: argparse.ArgumentParser) -> None:
     )
 
 
+#: Options whose value is a project slug, or a pattern over slugs.
+_SLUG_OPTIONS = frozenset({"--project", "--project-family"})
+
+
+class _Parser(argparse.ArgumentParser):
+    """Takes a project slug that starts with ``-`` as the value it is.
+    Every slug on Linux and macOS does (``/home/alice/shop`` is
+    ``-home-alice-shop``), and argparse would read it as an option and
+    stop with "expected one argument"."""
+
+    def parse_known_args(self, args=None, namespace=None):
+        args = list(sys.argv[1:] if args is None else args)
+        joined: list[str] = []
+        i = 0
+        while i < len(args):
+            value = args[i + 1] if i + 1 < len(args) else ""
+            # A single dash and more than one letter: not -h, not --all-projects.
+            if args[i] in _SLUG_OPTIONS and len(value) > 2 and value[0] == "-" and value[1] != "-":
+                joined.append(f"{args[i]}={value}")
+                i += 2
+            else:
+                joined.append(args[i])
+                i += 1
+        return super().parse_known_args(joined, namespace)
+
+
 def _make_parser() -> argparse.ArgumentParser:
     common = _build_common_parser()
-    parser = argparse.ArgumentParser(prog="claudeglass")
+    parser = _Parser(prog="claudeglass")
     parser.add_argument(
         "--version", action="version", version=f"claudeglass {__version__}"
     )

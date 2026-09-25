@@ -1866,3 +1866,16 @@ def test_cli_reports_merge_the_dashboards_session_tags_over_sessions_toml(tmp_pa
     assert overrides["s1"]["purpose"] == "planning"
     assert ratings["s1"]["outcome"] == "missed" and ratings["s1"]["helped"] == ["plan"]
     assert cli._merge_dashboard_marks(tmp_path / "none", overrides) == (overrides, {})
+
+
+def test_a_project_slug_may_start_with_a_dash():
+    """Every slug on Linux and macOS starts with '-' (/home/alice/shop is
+    -home-alice-shop); argparse alone reads it as an option."""
+    args = cli._make_parser().parse_args(
+        ["report", "--project", "-home-alice-shop", "--project", "C--work-docs", "--project-family", "-home-alice-"]
+    )
+    assert args.project == ["-home-alice-shop", "C--work-docs"]
+    assert args.project_family == "-home-alice-"
+    # A missing value is still an error, not the next flag taken as one.
+    with pytest.raises(SystemExit):
+        cli._make_parser().parse_args(["report", "--project", "--all-projects"])
