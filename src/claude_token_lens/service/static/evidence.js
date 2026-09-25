@@ -10,7 +10,7 @@
  * its section's tables.
  */
 
-import { clear, el, goTo, state } from "./core.js";
+import { clear, cli, el, goTo, state } from "./core.js";
 import { findSection, loadReport } from "./api.js";
 import { formatEvidenceValue, pulseNode, pulseRow, renderTable, setReportTableDrawer } from "./grid.js";
 import { drawer, emptyState, loadingNode } from "./ui.js";
@@ -236,7 +236,7 @@ function showTable(found, gridId, rowKey, shownOn) {
             (found.section.title ? "From " + found.section.title + ". " : "") +
             (shownOn
               ? "It's also on " + viewLabel(shownOn) + "."
-              : "No page shows this table; the full report has it too (claude-token-lens report)."),
+              : "No page shows this table; the full report has it too (" + cli("report") + ")."),
         })
       );
       var wrap = el("div");

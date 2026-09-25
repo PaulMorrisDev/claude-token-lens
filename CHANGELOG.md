@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The dashboard's commands now run on the machine that shows them. They
+  said `claude-token-lens ...`, which works only when pip's Scripts
+  folder is on `PATH`; a default Windows Python install leaves it off,
+  so a copied `claude-token-lens capture connect` was "not recognized".
+  The service now writes each command in the form that runs its own
+  install: `claude-token-lens` when that launcher belongs to its Python,
+  `python <archive>` for the `.pyz`, else `python -m claude_token_lens`,
+  with the interpreter's full path when the `python` on `PATH` is a
+  different one. Set `CLAUDE_TOKEN_LENS_COMMAND` to choose the form
+  yourself (for example an alias).
+- Setup › Capture says how its end time works: a choice saves as soon
+  as you pick it, the days count from that moment, and the menu's first
+  entry shows when capture ends now ("In 12 days: 2026-10-07 09:00
+  UTC"). While capture is off, it says the first switch on ends by
+  itself after 14 days. `/api/capture`'s `config` gains `timebox_days`.
+
 ## [0.6.0] - 2026-09-25
 
 After updating, the first dashboard start re-reads every transcript (a

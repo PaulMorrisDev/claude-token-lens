@@ -58,6 +58,13 @@ changes Claude Code itself.
   a share of the weekly usage limit when the service can work one out,
   else the list-price equivalent. See "One number format" and
   [`docs/writing-help.md`](writing-help.md), "Amounts".
+- **Commands in this install's form.** The short `claude-token-lens`
+  runs only when pip's Scripts folder is on `PATH`. The service writes
+  the form that runs its own install into `index.html`'s
+  `<meta name="tl-command">` and into the commands in every API
+  response (`invocation.py`, [`docs/api.md`](api.md#envelope)). A command
+  the page writes itself goes through `core.js`'s `cli("capture off")`;
+  fixed text that names one (the glossary) through `withCli`.
 - **Privacy.** The service binds to localhost and has no login, so the
   page stores no token and sets no cookie. File text (CLAUDE.md sections,
   skill descriptions) is fetched when a drawer asks and never stored. No
@@ -664,6 +671,12 @@ it (`roi`); a warning with `capture connect` when a hook entry is
 missing; the level cards (Off, Free, Essentials, Standard, Deep, Custom)
 with weekly estimates; sampling and end time; and every metric grouped
 by where it is captured.
+
+The end-time menu's first entry is the end already set ("In 12 days:
+2026-10-07 09:00 UTC", or "Ended: ..."). A choice saves the moment it is
+picked, and its days count from then, not from when capture started.
+While capture is off the menu is hidden and a note says the first switch
+on ends by itself after `timebox_days` (14).
 
 A group folds ("Main session (3 of 12 on)") unless a metric in it needs
 a hook entry or an install. The feedback and brief skill rows show

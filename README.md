@@ -169,8 +169,8 @@ Windows and WSL sessions together, with a **Where** column on
 
 | What you see | What to do |
 |---|---|
-| `claude-token-lens` "is not recognized as a name of a cmdlet" or "command not found" | pip's Scripts folder isn't on your `PATH`. Use `python -m claude_token_lens` instead; everything else stays the same |
-| The dashboard still looks old after updating (the foot of its sidebar shows an old version, or none at all) | Something else is still serving port 8765, such as an older copy started by hand, from another Python install, or from Docker. See [An old dashboard won't go away](#an-old-dashboard-wont-go-away) |
+| `claude-token-lens` "is not recognized as a name of a cmdlet" or "command not found" | pip's Scripts folder isn't on your `PATH`. Use `python -m claude_token_lens` instead; everything else stays the same. The dashboard's own commands already use the form that runs on your machine (from 0.6.1); set `CLAUDE_TOKEN_LENS_COMMAND` where the service runs to pick another |
+| The dashboard still looks old after updating (the foot of its sidebar shows an old version, or none at all) | Something else is still serving port 8765, such as an older copy started by hand, from another Python install, or from Docker. See [An old dashboard won't go away](#an-old-dashboard-wont-go-away). If `--version` shows the new version but the dashboard doesn't, it runs from another Python: see [An update doesn't take](#an-update-doesnt-take-more-than-one-python) |
 | http://127.0.0.1:8765 doesn't open | Run `python -m claude_token_lens serve` in a PowerShell window and leave it open; any error prints there. "Already in use by another serve" names the process that has the dashboard's database open: stop that one first |
 | A banner says the dashboard is **not updating** or its **last scan failed** | The background scan has stopped or keeps failing, so figures are frozen at the time shown. Restart the dashboard: `python -m claude_token_lens install-service` (or stop and start `serve`) |
 | Sessions you ran in WSL are missing | Run `python -m claude_token_lens init` again and say yes when it offers the WSL folder. It only finds a distro that is installed for your Windows user; `wsl -l -v` lists them. See [Using Claude Code in WSL too](#using-claude-code-in-wsl-too) |
@@ -204,6 +204,37 @@ Get-NetTCPConnection -LocalPort 8765 -State Listen | ForEach-Object { Get-Proces
 
 Then reload http://127.0.0.1:8765 and check the version at the foot of
 the sidebar.
+
+#### An update doesn't take (more than one Python)
+
+`update` and `pip install` change only the Python you run them with. If
+the dashboard was set up from a different Python, it keeps running the
+old copy. See which Python it runs, and which one `python` is:
+
+```powershell
+(Get-ScheduledTask ClaudeTokenLens).Actions | Format-List Execute, Arguments
+(Get-Command python).Source
+```
+
+If they differ, pick one Python (the one `python` finds is simplest),
+then in a normal PowerShell window (not Administrator; nothing here needs it):
+
+```powershell
+python -m pip install --upgrade --force-reinstall git+https://github.com/PaulMorrisDev/claude-token-lens
+python -m claude_token_lens --version
+python -m claude_token_lens install-service
+python -m claude_token_lens capture status
+```
+
+`install-service` points the logon task at this Python and restarts the
+dashboard. `capture status` says whether Claude Code's hooks still run;
+if one names a Python that no longer exists, run
+`python -m claude_token_lens init --repair-hook`, and
+`python -m claude_token_lens capture connect` for capture's own. Your
+settings and history live in `%USERPROFILE%\.claude\token-lens`, which
+every copy shares, so nothing is lost. Once the sidebar shows the new
+version, remove the old copy with
+`& "<the other python.exe>" -m pip uninstall claude-token-lens`.
 
 ### Uninstalling
 

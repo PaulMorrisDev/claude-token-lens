@@ -5,7 +5,7 @@
  * config.toml.
  */
 
-import { clear, el } from "./core.js";
+import { clear, cli, el } from "./core.js";
 import { currencyAmount, formatCell, thousands } from "./format.js";
 import { loadInto, postJson } from "./api.js";
 import { button, callout, chip, codeBlockWithCopy, confirmDialog, emptyState, errorNotice, prose, toast } from "./ui.js";
@@ -247,7 +247,7 @@ function renderCaptureData(data, container) {
                 return el("li", { text: "Missing: " + entry });
               }))
             : null,
-          el("p", { text: "This page never changes Claude Code's settings.json. This command shows the change and asks before making it; it backs the file up first, and 'claude-token-lens capture remove' takes the entries out again." }),
+          el("p", { text: "This page never changes Claude Code's settings.json. This command shows the change and asks before making it; it backs the file up first, and '" + cli("capture remove") + "' takes the entries out again." }),
           codeBlockWithCopy(hooks.connect_command, "Command"),
         ],
       })
@@ -301,6 +301,23 @@ function renderCaptureLevels(data, container) {
   block.appendChild(grid);
 }
 
+// When capture ends, as the end-time menu's first choice: "In 12 days:
+// 2026-10-09 06:00 UTC", or "Ended: ..." once it has passed.
+function endText(until, expired) {
+  if (expired) return "Ended: " + endMoment(until);
+  var hours = (Date.parse(until) - Date.now()) / 3600000;
+  var soon = hours < 36 ? Math.max(1, Math.round(hours)) + (Math.round(hours) <= 1 ? " hour" : " hours") : Math.round(hours / 24) + " days";
+  return "In " + soon + ": " + endMoment(until);
+}
+
+// "2026-10-09T06:00:00+00:00" -> "2026-10-09 06:00 UTC", whatever
+// offset the end was saved with (the CLI's --until takes any).
+function endMoment(until) {
+  var at = Date.parse(until);
+  if (!isFinite(at)) return String(until);
+  return new Date(at).toISOString().slice(0, 16).replace("T", " ") + " UTC";
+}
+
 var CAPTURE_ENDS = [
   { value: "", label: "No end" },
   { value: "1", label: "1 day from now" },
@@ -314,7 +331,7 @@ function renderCaptureControls(data, container) {
   var config = data.config || {};
   var block = captureBlock(container, "How much and for how long");
   if (!config.on) {
-    block.appendChild(el("p", { class: "notes", text: "Sampling and an end time apply once capture is on." }));
+    block.appendChild(el("p", { class: "notes", text: "When you switch capture on, it ends by itself after " + config.timebox_days + " days. Once it's on, you can pick another end here, or none." }));
     return;
   }
   var form = el("div", { class: "capture-controls" });
@@ -343,7 +360,7 @@ function renderCaptureControls(data, container) {
   var endId = "capture-end";
   var end = el("select", { id: endId });
   // The end already set, as the first choice (the others count from now).
-  if (config.until) end.appendChild(el("option", { value: "keep", text: "On " + config.until.slice(0, 16).replace("T", " ") + " (UTC)" }));
+  if (config.until) end.appendChild(el("option", { value: "keep", text: endText(config.until, config.expired) }));
   CAPTURE_ENDS.forEach(function (opt) {
     end.appendChild(el("option", { value: opt.value, text: opt.label }));
   });
@@ -352,11 +369,12 @@ function renderCaptureControls(data, container) {
     if (end.value === "keep") return;
     var until = "";
     if (end.value) until = new Date(Date.now() + parseInt(end.value, 10) * 86400000).toISOString().slice(0, 19) + "+00:00";
-    postCapture({ until: until }, container, until ? "Saved: capture switches itself off on " + until.slice(0, 10) + "." : "Saved: no end time.");
+    postCapture({ until: until }, container, until ? "Saved: capture ends " + endMoment(until) + "." : "Saved: capture has no end.");
   });
-  form.appendChild(el("label", { for: endId, text: "Switch itself off" }));
+  form.appendChild(el("label", { for: endId, text: "Capture ends" }));
   form.appendChild(end);
-  form.appendChild(el("p", { class: "notes", text: "A time-box keeps the cost bounded: capture switches itself off and the banner says so." }));
+  form.appendChild(el("p", { class: "notes", text: "A choice saves as soon as you pick it. The days count from when you pick, not from when capture started." }));
+  form.appendChild(el("p", { class: "notes", text: "At the end, capture stops by itself and the banner says so. Your level stays set, so picking a new end starts it again." }));
   block.appendChild(form);
 }
 
