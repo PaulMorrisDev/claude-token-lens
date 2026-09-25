@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-09-25
+
 ### Changed
 
 - **`init` asks four things and shows one review.** How you pay (`1` a
