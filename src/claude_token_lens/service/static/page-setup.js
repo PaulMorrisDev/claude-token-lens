@@ -5,7 +5,7 @@
 
 import { clear, cli, el, onParams, state } from "./core.js";
 import { fetchJson, findSection, loadInto, loadReport, postJson, withWindow } from "./api.js";
-import { shortTs, signedPercent } from "./format.js";
+import { projectName, shortTs, signedPercent } from "./format.js";
 import { button, callout, chip, codeBlockWithCopy, commandBlock, drawer, emptyState, errorNotice, loadingNode, prose, toast } from "./ui.js";
 import { dataGrid, pulseNode, renderMappedSections, renderPlacedTables, renderSectionGeneric, simpleTable } from "./grid.js";
 import { captureLink, viewIntro } from "./links.js";
@@ -1050,7 +1050,7 @@ function renderImpact(data, container) {
     var card = el("article", { class: "rec impact-card", "data-day": String(change.ts || "").slice(0, 10) });
     card.appendChild(el("h3", { text: change.label + (change.reverted ? " (since undone)" : "") }));
     var what = change.summary || (change.keys || []).join(", ");
-    var where = change.project ? "In " + (change.project_name || "one project") + " only" : "";
+    var where = change.project ? "In " + (change.project_name ? projectName(change.project_name) : "one project") + " only" : "";
     card.appendChild(el("p", { class: "profile-card-meta", text: [shortTs(change.ts), where, what].filter(Boolean).join(" · ") }));
     renderWithout(item.without, card);
     if (item.gate) {

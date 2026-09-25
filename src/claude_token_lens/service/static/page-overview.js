@@ -58,7 +58,7 @@ function lastChangeLine(impactBody) {
   if (!without || !without.since_text) return null;
   var change = first.change || {};
   var when = [shortTs(change.ts)];
-  if (change.project) when.push("in " + (change.project_name || "one project") + " only");
+  if (change.project) when.push("in " + (change.project_name ? projectName(change.project_name) : "one project") + " only");
   return el("p", { class: "notes last-change-without" }, [
     el("span", { text: "Without your last change (" }),
     pageLink("setup/settings", change.label || "a settings change", { day: String(change.ts || "").slice(0, 10) }),

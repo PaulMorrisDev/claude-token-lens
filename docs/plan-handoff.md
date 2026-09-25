@@ -38,7 +38,10 @@ For every main session (scheduled checks left out) and every
   costs a fresh start adds back: the first reply writes the fresh start
   to the cache (5-minute) instead of reading it, and an allowance for
   re-reading files, the one `compaction_sim` measures from this corpus's
-  real summaries. Never below zero.
+  real summaries. Never below zero. The allowance comes from the
+  sessions in view, and is $0.00 when they include no real summaries,
+  so one project's view can show a larger saving for the same session
+  than the all-projects view does.
 
 A plan counts when the kept context is at least
 `plan_handoff_min_dropped_tokens` (default 40,000) and at least

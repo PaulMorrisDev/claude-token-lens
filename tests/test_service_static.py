@@ -2123,7 +2123,8 @@ def test_a_signed_change_uses_a_true_minus_sign() -> None:
 def test_an_impact_card_says_what_changed_where_and_each_measures_reading() -> None:
     impact = _function_source(_app_js(), "renderImpact")
     assert "change.summary ||" in impact
-    assert 'change.project ? "In " + (change.project_name' in impact
+    # Named as the project picker names it, not by its folder.
+    assert 'change.project ? "In " + (change.project_name ? projectName(change.project_name)' in impact
     assert '{ label: "Reading" }' in impact and 'm.label_text || ""' in impact
 
 
@@ -2145,6 +2146,7 @@ def test_the_last_change_window_says_what_it_would_have_cost_without_that_change
     assert "(impactBody.data.changes || [])[0]" in line
     assert "without.since_text" in line and '"Without your last change ("' in line
     assert 'pageLink("setup/settings"' in line
+    assert "projectName(change.project_name)" in line
     overview = _function_source(source, "renderOverview")
     assert 'state.window !== "change" || state.project' in overview
     assert "lastChangeLine(loaded[0].body)" in overview

@@ -2478,7 +2478,7 @@ def make_handler(
             names = {snapshot_project_key(b.slug): redact_slug(b.slug) for b in corpus.sessions if b.slug}
             for change in changes:
                 project = change["change"]["project"]
-                change["change"]["project_name"] = names.get(project, "one project") if project else ""
+                change["change"]["project_name"] = names.get(project, "") if project else ""
                 # P4 leftover: a structured gate the dashboard's
                 # emptyState() can key off, alongside the existing prose
                 # verdict -- same "enough" predicate impact.compare
