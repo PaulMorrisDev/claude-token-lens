@@ -423,7 +423,7 @@ _WORKFLOW_EXPLAINER: dict[str, tuple[str, str, str]] = {
         "are often more than 5 minutes apart; the 1-hour lifetime is also ignored while a Pro or Max plan "
         "is drawing on extra usage credits.",
         "Set the TTL key back to its previous value (Claude Code shows the change before saving it, and "
-        "apply --revert undoes a change made with apply).",
+        "claude-token-lens apply --revert undoes a change made with apply).",
     ),
     "long-tool-waits": (
         "Nowhere in Claude Code's config -- this is about how you sequence messages around a "
@@ -758,7 +758,7 @@ def explainer_for(rec: Recommendation, change: SettingChange) -> list[tuple[str,
         effect += " Claude Code's docs don't confirm this effect, so check the numbers after the change."
     notes = " ".join(n for n in (caveat, change.note) if n)
     undo = (
-        "Run the apply --revert command that apply prints, or set the value back by hand."
+        "Run the 'claude-token-lens apply --revert' command that apply prints, or set the value back by hand."
         if command_for(change, rec.scope)
         else "Put the file back as it was (Claude Code shows the change before saving it)."
     )

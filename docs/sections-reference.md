@@ -707,7 +707,7 @@ capture is off or no feedback has been given.
 - `habits_by_task` — per kind of task Claude reported (`task=`), after
   an `all` row: messages, share, cost, per message, and the shares
   that were clear asks, large asks, redone by your next message (a
-  `shift=redo` tag or a correction), and met their goal.
+  `shift=redo` or `shift=fix` tag, or a correction), and met their goal.
 - `habits_briefs` — per brief word (`clear`, `partial`, `vague`):
   messages, per message, redone, met the goal, and the lines most
   often missing.
@@ -758,13 +758,13 @@ capture is off or no feedback has been given.
   `level` word (`easy`, `normal`, `hard`) and `brief` word (`clear`,
   `partial`, `vague`) it tagged a message with, the messages that carries,
   how many your feedback covers, the shares that met or missed their
-  goal, and the share your next message redid or corrected. A note says
-  whether work Claude called easy missed its goal more often than normal
-  work, once there is enough rated feedback on both sides to tell
-  (`habits.MIN_GROUP`); when it does, the habits built from the `level`
-  word (`effort_fit` and others in `habits._LEVEL_ITEMS`) are capped at
-  low confidence in `habits_playbook`, with a note in their evidence
-  explaining why.
+  goal, and the share your next message redid, fixed or corrected. A
+  note says whether work Claude called easy missed its goal more often
+  than normal work, once there is enough rated feedback on both sides to
+  tell (`habits.MIN_GROUP`); when it does, the habits built from the
+  `level` word (`effort_fit` and others in `habits._LEVEL_ITEMS`) are
+  capped at low confidence in `habits_playbook`, with a note in their
+  evidence explaining why.
 - `habits_prompt_flags` — per thing a message contained (a file path, a
   code block, an error, a link, what done means, numbered steps, a
   paste): messages and share, then cost per message and reads and

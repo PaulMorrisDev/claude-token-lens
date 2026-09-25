@@ -171,11 +171,21 @@ change before making it.
 
 ### `update`
 
-Installs the newest version with pip. If the dashboard starts at logon,
-it then runs the new copy's `install-service`, which restarts the
-dashboard on that version and checks which version answers on the port.
+Installs the newest version with pip, then hands over to the new copy
+(`update --finish`). That:
+
+- restarts the dashboard on the new version, when it starts at logon,
+  and checks which version answers on the port. On Windows, an older
+  copy started by hand that still holds the port is named, and stopped
+  after a yes;
+- brings this tool's hook and status line entries in Claude Code's
+  `settings.json` up to date, showing each change and asking first;
+- finds copies installed for other Pythons and offers to remove the
+  ones nothing uses any more.
+
 This is the one command that goes online: pip downloads the new version
-from GitHub.
+from GitHub. Updating from 0.6.0 or older, `update` stops after the
+install; run `update --finish` once afterwards.
 
 ```powershell
 python -m claude_token_lens update --dry-run
@@ -186,8 +196,11 @@ python -m claude_token_lens update
 |---|---|
 | `--from SOURCE` | What pip installs from. Default: the GitHub repository. A local folder works too |
 | `--no-service` | Install the new version but leave the running dashboard alone |
+| `--yes` | Answer yes to each change it offers: `settings.json` entries, stopping an old dashboard, removing copies for other Pythons |
+| `--finish` | The steps after the install, without installing. `update` runs it itself; run it by hand after updating from 0.6.0 or older |
+| `--claude-root PATH` | The Claude Code folder whose `settings.json` it updates, as for `init` |
 | `--port N`, `--bind ADDRESS` | Where the dashboard runs, if not the defaults |
-| `--dry-run` | Print both commands without running either |
+| `--dry-run` | Show what it would do, changing nothing |
 
 ### `install-service`
 

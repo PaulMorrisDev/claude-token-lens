@@ -23,8 +23,8 @@ from .render.tables import format_cell
 #: Shown when a subscription amount can't be given as a share of the
 #: usage limits yet.
 NO_LIMIT_SHARE_HINT = (
-    "Log your statusline's usage-limit readings (claude-token-lens statusline) "
-    "to see this as a share of your plan's weekly limit."
+    "Log your usage-limit readings, through this tool's statusline or with "
+    "'claude-token-lens log-usage', to see this as a share of your plan's weekly limit."
 )
 
 

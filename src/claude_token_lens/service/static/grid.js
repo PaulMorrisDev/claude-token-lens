@@ -15,7 +15,7 @@
  * mark on each row the recommendation cites, which a fold never hides.
  */
 
-import { clear, el, highlight, listenHighlight, state, storageGet, storageSet } from "./core.js";
+import { clear, cli, el, highlight, listenHighlight, state, storageGet, storageSet } from "./core.js";
 import { cellSortValue, formatCell, fullValue, modelNames, moneyParts, moneyText, moneyUnit, NUMERIC_KINDS, PROJECT_KEYS, projectName } from "./format.js";
 import { actionIndex, findSection } from "./api.js";
 import { COST_CARDS, pageLink, plainText, viewForSection, viewForTable } from "./links.js";
@@ -1240,7 +1240,7 @@ function reportTablesNote(tables, sectionTitle) {
     class: "notes report-tables-note",
     text:
       (tables.length === 1 ? "1 more table is" : tables.length + " more tables are") +
-      " in the full report (claude-token-lens report).",
+      " in the full report (" + cli("report") + ").",
   });
   if (!reportTableDrawer) return note;
   tables.forEach(function (table) {

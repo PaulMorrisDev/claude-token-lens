@@ -53,7 +53,7 @@ TAG_VOCAB: dict[str, tuple[str, ...]] = {
     ),
     "brief": ("clear", "partial", "vague"),
     "level": ("easy", "normal", "hard"),
-    "shift": ("new", "build", "grew", "redo"),
+    "shift": ("new", "build", "grew", "redo", "fix"),
     # Standard, main session
     "size": ("xs", "s", "m", "l", "xl"),
     "missing": ("files", "goal", "constraints", "done", "repro", "scope", "none"),
@@ -390,15 +390,15 @@ METRICS: tuple[Metric, ...] = (
         group="essentials",
         section="main",
         title="Task changes",
-        what="When the work changed: a new unrelated task, building on the last one, the scope growing, or "
-        "redoing earlier work.",
-        why="Task switching, scope creep and rework, and when a fresh session or plan mode would have been "
-        "cheaper.",
+        what="When the work changed: a new unrelated task, building on the last one, the scope growing, "
+        "redoing earlier work, or fixing a fault in earlier work.",
+        why="Task switching, scope creep, rework and fixes, and when a fresh session or plan mode would have "
+        "been cheaper.",
         powers=("breakdown", "context", "planning"),
-        tag="shift=new|build|grew|redo",
+        tag="shift=new|build|grew|redo|fix",
         hooks=("SessionStart",),
-        main_line="shift: new|build|grew|redo, only when it applies (a new unrelated task; building on the "
-        "last one; the scope grew; redoing earlier work)",
+        main_line="shift: new|build|grew|redo|fix, only if it applies (a new unrelated task; building on the "
+        "last one; the scope grew; redoing earlier work; fixing a fault in it)",
         out_chars=5,
     ),
     Metric(
@@ -572,7 +572,7 @@ METRICS: tuple[Metric, ...] = (
         title="How changes were checked",
         what="How a change was verified: targeted tests, the full suite, a build, running it, by hand, or "
         "not at all.",
-        why="Unchecked changes that later needed redoing, and full-suite output carried in context.",
+        why="Unchecked changes that later needed redoing or fixing, and full-suite output carried in context.",
         powers=("verification",),
         tag="check=targeted|full|build|run|manual|none",
         hooks=("SessionStart",),
@@ -586,7 +586,7 @@ METRICS: tuple[Metric, ...] = (
         title="Large tool outputs",
         what=f"After a tool result of about {BIG_OUTPUT_TOKENS:,} tokens or more, how much of it Claude "
         "needed: all, part or none. Claude Code waits for the hook after each shell, read, search, web or "
-        "MCP result. 'capture status' shows how long that has added, measured from your own sessions.",
+        "MCP result. 'claude-token-lens capture status' shows how long that has added, measured from your own sessions.",
         why="Quieter commands, offset reads and output caps where big outputs weren't needed.",
         powers=("tool_output",),
         tag="out=needed|part|unneeded",

@@ -86,7 +86,7 @@ python -m pip install git+https://github.com/PaulMorrisDev/claude-token-lens
 python -m claude_token_lens --version
 ```
 
-The second line should print `claude-token-lens 0.6.0` or later.
+The second line should print `claude-token-lens 0.6.1` or later.
 
 No git on this machine, or no pip at all? See
 [Other ways to install](#other-ways-to-install) below.

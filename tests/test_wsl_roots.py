@@ -2,7 +2,7 @@
 ``source_label``/``find_wsl_projects_roots``, ``config.toml``'s
 ``extra_projects_roots``, ``init`` offering WSL folders, the logon
 service registration with several ``--projects-root`` flags, and the
-``update`` command.
+version check after it (``update`` is in test_update.py).
 """
 
 from __future__ import annotations
@@ -197,95 +197,7 @@ def test_service_registration_passes_every_projects_root(tmp_path):
     assert text.count("--projects-root") == 2
 
 
-# -- update ----------------------------------------------------------------------
-
-
-class _Runner:
-    def __init__(self, *, pip_rc=0, version="9.9.9", restart_rc=0):
-        self.calls: list[list[str]] = []
-        self.pip_rc, self.version, self.restart_rc = pip_rc, version, restart_rc
-
-    def __call__(self, command, **kwargs):
-        self.calls.append(list(command))
-        if "pip" in command:
-            return subprocess.CompletedProcess(command, self.pip_rc)
-        if "-c" in command:
-            return subprocess.CompletedProcess(command, 0, stdout=self.version + "\n")
-        return subprocess.CompletedProcess(command, self.restart_rc)
-
-
-def _update_args(*extra):
-    return cli._make_parser().parse_args(["update", *extra])
-
-
-def test_update_dry_run_prints_both_steps_and_runs_nothing(capsys):
-    assert cli.main(["update", "--dry-run"]) == 0
-    out = capsys.readouterr().out
-    assert "--force-reinstall" in out
-    assert "install-service" in out
-    assert "Dry run" in out
-
-
-def test_update_installs_then_restarts_a_registered_dashboard(capsys):
-    runner = _Runner()
-    rc = cli._cmd_update(_update_args(), runner=runner, is_registered_fn=lambda: True)
-    assert rc == 0
-    assert runner.calls[0][1:4] == ["-m", "pip", "install"]
-    assert runner.calls[0][-1] == cli.UPDATE_SOURCE
-    assert runner.calls[-1][1:4] == ["-m", "claude_token_lens", "install-service"]
-    assert "Installed version 9.9.9" in capsys.readouterr().out
-
-
-def test_update_stops_when_pip_fails(capsys):
-    runner = _Runner(pip_rc=1)
-    assert cli._cmd_update(_update_args(), runner=runner, is_registered_fn=lambda: True) == 1
-    assert len(runner.calls) == 1
-    assert "Nothing else was changed" in capsys.readouterr().err
-
-
-def test_update_does_not_register_a_dashboard_that_was_not_registered(capsys):
-    runner = _Runner()
-    assert cli._cmd_update(_update_args(), runner=runner, is_registered_fn=lambda: False) == 0
-    assert not any("install-service" in call for call in runner.calls)
-    assert "nothing to restart" in capsys.readouterr().out
-
-
-def test_update_from_a_local_folder(capsys):
-    runner = _Runner()
-    cli._cmd_update(_update_args("--from", ".", "--no-service"), runner=runner, is_registered_fn=lambda: True)
-    assert runner.calls[0][-1] == "."
-    assert not any("install-service" in call for call in runner.calls)
-
-
-def test_update_refreshes_hook_files_with_the_new_version(capsys, tmp_path):
-    # ROB-P7: a hook file this tool itself changed since the last install
-    # is refreshed with the *new* package, via its own subprocess (this
-    # process still has the old one loaded) -- config_dir is its own argv
-    # entry, never interpolated into the -c source (ROB-P9).
-    calls = []
-
-    def runner(command, **kwargs):
-        calls.append(list(command))
-        if "pip" in command:
-            return subprocess.CompletedProcess(command, 0)
-        if len(command) > 2 and "refresh_hook_files" in command[2]:
-            assert command[-1] == str(cli._resolve_config_dir(str(tmp_path)))
-            return subprocess.CompletedProcess(command, 0, stdout="2\n")
-        if "-c" in command:
-            return subprocess.CompletedProcess(command, 0, stdout="9.9.9\n")
-        return subprocess.CompletedProcess(command, 0)
-
-    args = _update_args("--config-dir", str(tmp_path), "--no-service")
-    rc = cli._cmd_update(args, runner=runner, is_registered_fn=lambda: True)
-    assert rc == 0
-    assert "Refreshed 2 hook files this version changed." in capsys.readouterr().out
-
-
-def test_update_says_nothing_when_no_hook_file_needed_refreshing(capsys, tmp_path):
-    runner = _Runner()  # every "-c" call, including the refresh one, answers "9.9.9\n"
-    args = _update_args("--config-dir", str(tmp_path), "--no-service")
-    cli._cmd_update(args, runner=runner, is_registered_fn=lambda: True)
-    assert "Refreshed" not in capsys.readouterr().out
+# -- install-service ---------------------------------------------------------------
 
 
 def test_install_service_probe_flags_an_old_copy_on_the_port(capsys):

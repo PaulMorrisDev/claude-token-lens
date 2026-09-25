@@ -57,6 +57,7 @@ __all__ = [
     "detect_pyz_path",
     "plan_service_install",
     "is_registered",
+    "registered_python",
     "install",
     "uninstall",
     "TASK_NAME",
@@ -482,6 +483,49 @@ def is_registered(
     if returncode is None:
         return None
     return returncode == 0
+
+
+def registered_python(
+    platform: str | None = None,
+    *,
+    runner: Callable[..., subprocess.CompletedProcess] = subprocess.run,
+) -> str | None:
+    """The interpreter the registered service starts ``serve`` with (the
+    Scheduled Task's action, the unit's ``ExecStart``, the LaunchAgent's
+    first program argument), or ``None`` when there is none or it can't
+    be read. ``update`` reads it before re-registering, to find the copy
+    the dashboard ran from until now. Never raises."""
+    plat = platform or detect_platform()
+    try:
+        if plat == "windows":
+            script = (
+                f"(Get-ScheduledTask -TaskName {_ps_quote(TASK_NAME)} -ErrorAction Stop).Actions "
+                "| Select-Object -First 1 -ExpandProperty Execute"
+            )
+            result = runner(
+                ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            if getattr(result, "returncode", 1) != 0:
+                return None
+            found = (result.stdout or "").strip().strip('"')
+            return found or None
+        if plat == "linux":
+            unit = (Path.home() / ".config" / "systemd" / "user" / SYSTEMD_UNIT_NAME).read_text(encoding="utf-8")
+            for line in unit.splitlines():
+                if line.startswith("ExecStart="):
+                    words = line[len("ExecStart="):].split()
+                    return words[0] if words else None
+            return None
+        import plistlib
+
+        with (Path.home() / "Library" / "LaunchAgents" / f"{LAUNCHD_LABEL}.plist").open("rb") as fh:
+            argv = plistlib.load(fh).get("ProgramArguments") or []
+        return str(argv[0]) if argv else None
+    except (OSError, ValueError, subprocess.SubprocessError, AttributeError):
+        return None
 
 
 def _print_plan(action: str, plan: InstallPlan, *, commands: list[list[str]], files: list[Path]) -> None:

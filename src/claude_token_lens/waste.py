@@ -740,14 +740,14 @@ def _rule_wasted_turns(report: ReportModel, th: WasteThresholds) -> list[Recomme
     if dominant_cause is not None:
         evidence.append(_evidence(f"{dominant_cause} cost", dominant_cost, "waste", "waste_by_cause", dominant_cause))
 
-    # Work habits: how often your next message redid the work, and the
-    # pieces of work you said missed their goal (metrics capture and
-    # feedback), cited alongside when they're there.
+    # Work habits: how often your next message redid, fixed or corrected
+    # the work, and the pieces of work you said missed their goal
+    # (metrics capture and feedback), cited alongside when they're there.
     why = ""
     redo_pct = _cell(report, "habits", "habits_by_task", "all", "redo_pct")
     if isinstance(redo_pct, (int, float)) and redo_pct > 0:
-        evidence.append(_evidence("Messages redone or corrected next (%)", redo_pct, "habits", "habits_by_task", "all"))
-        why += f" {redo_pct:.0f}% of your messages were redone or corrected by the next one."
+        evidence.append(_evidence("Messages redone, fixed or corrected next (%)", redo_pct, "habits", "habits_by_task", "all"))
+        why += f" {redo_pct:.0f}% of your messages were redone, fixed or corrected by the next one."
     missed = _cell(report, "habits", "habits_outcomes", "missed", "pieces")
     if isinstance(missed, int) and missed > 0:
         evidence.append(_evidence("Pieces of work you said missed their goal", missed, "habits", "habits_outcomes", "missed"))

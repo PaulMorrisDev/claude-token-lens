@@ -3,7 +3,7 @@
  * The Setup page's Settings and Profiles, with what each change did.
  */
 
-import { clear, el, onParams, state } from "./core.js";
+import { clear, cli, el, onParams, state } from "./core.js";
 import { fetchJson, findSection, loadInto, loadReport, postJson, withWindow } from "./api.js";
 import { shortTs, signedPercent } from "./format.js";
 import { button, callout, chip, codeBlockWithCopy, commandBlock, drawer, emptyState, errorNotice, loadingNode, prose, toast } from "./ui.js";
@@ -111,7 +111,7 @@ function renderBaseline(data, container) {
       emptyState(
         "No baseline yet: Token Lens hasn't taken a snapshot of your usage to compare later changes against.",
         null,
-        "Run claude-token-lens baseline to take one."
+        "Run " + cli("baseline") + " to take one."
       )
     );
     return;
@@ -1083,7 +1083,7 @@ function renderImpact(data, container) {
     }
     if (change.source === "apply" && change.backup_ts && !change.reverted) {
       card.appendChild(el("p", { class: "notes", text: "To undo it:" }));
-      card.appendChild(codeBlockWithCopy("claude-token-lens apply --revert " + change.backup_ts, "Command", "undoing " + change.label));
+      card.appendChild(codeBlockWithCopy(cli("apply --revert " + change.backup_ts), "Command", "undoing " + change.label));
     }
     var levelChange = change.source === "capture" && (change.changes || []).filter(function (c) {
       return c.key === "capture.level" && c.old;
@@ -1092,7 +1092,7 @@ function renderImpact(data, container) {
       card.appendChild(el("p", { class: "notes" }, [el("span", { text: "To change it back, use " }), captureLink(), el("span", { text: " or:" })]));
       card.appendChild(
         codeBlockWithCopy(
-          levelChange.old === "off" ? "claude-token-lens capture off" : "claude-token-lens capture level " + levelChange.old,
+          levelChange.old === "off" ? cli("capture off") : cli("capture level " + levelChange.old),
           "Command",
           "undoing " + change.label
         )

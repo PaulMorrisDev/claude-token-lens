@@ -320,10 +320,12 @@ def test_apply_command_user_scope_has_no_project_flag():
     assert launch_line == "claude-token-lens apply interactive-chat --launch"
 
 
-def test_apply_command_project_local_without_path_omits_project_flag():
-    text = apply_command("interactive-chat", "project-local")
-    apply_line = text.splitlines()[0]
-    assert "--project-dir" not in apply_line
+def test_apply_command_project_scope_without_path_names_the_current_folder():
+    # apply refuses a project scope without --project-dir, so the command
+    # names the folder it is run from rather than leave the flag out.
+    for scope in ("project-local", "repo"):
+        apply_line = apply_command("interactive-chat", scope).splitlines()[0]
+        assert "--project-dir . " in apply_line + " "
 
 
 def test_apply_command_project_local_with_path_prints_it_verbatim():

@@ -92,6 +92,7 @@ from __future__ import annotations
 
 import dataclasses
 import hashlib
+import html
 import ipaddress
 import json
 import mimetypes
@@ -111,7 +112,7 @@ from zoneinfo import ZoneInfo
 
 from .. import __version__ as _TOOL_VERSION
 from .. import baseline as baseline_mod
-from .. import capture_catalogue, helptext, hook_health
+from .. import capture_catalogue, helptext, hook_health, invocation
 from .. import snapshots as snapshots_mod
 from ..config import CAPTURE_SAMPLES, ConfigError, load_config, load_session_overrides, set_capture
 from ..pricing import PricingError, cache_read_savings_usd, load_pricing
@@ -305,10 +306,27 @@ _STATIC_CONTENT_TYPES = {
     ".svg": "image/svg+xml",
 }
 
+#: index.html's placeholder for the command that runs claude-token-lens
+#: on this install (invocation.py), filled in as the page is served so
+#: the dashboard's own commands read right before any API call returns.
+_COMMAND_META = b'<meta name="tl-command" content="claude-token-lens">'
+
 _PLACEHOLDER_INDEX_HTML = (
     "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>claude-token-lens</title>"
     "</head><body>UI not built yet.</body></html>"
 )
+
+def _command_meta() -> bytes:
+    prefix = html.escape(invocation.command_prefix(), quote=True)
+    return b'<meta name="tl-command" content="' + prefix.encode("utf-8") + b'">'
+
+
+def _report_json_commands(text: str) -> str:
+    """/api/report.json with its commands in this install's form. It is
+    rendered text (render_json), so it is parsed and re-rendered the same
+    way (sorted keys, 2-space indent), and only when the form differs."""
+    return invocation.rewrite_rendered(text, "json")
+
 
 _SESSION_ID_RE = re.compile(r"^/api/session/([^/]+)$")
 _SESSION_TAGS_RE = re.compile(r"^/api/sessions/([^/]+)/tags$")
@@ -1686,10 +1704,12 @@ def make_handler(
         # (unlike diff.py's own apply_command signature) -- this route's
         # response is API/UI output, and this project's privacy rule
         # forbids a raw filesystem path in any of it; a project-scoped
-        # apply command is rendered without --project-dir, exactly as
-        # apply_command's own docstring describes for "project_path
-        # omitted" (the user fills it in themselves when they run it).
+        # apply command names the folder it is run from (--project-dir .),
+        # as apply_command's own docstring describes for "project_path
+        # omitted", and a note says where to run it.
         apply_cmd, launch_cmd = profile_diff_mod.apply_command(profile.id, scope).split("\n", 1)
+        if scope != "user":
+            notes.append("Run the command in the project's own folder: --project-dir . means the folder you run it from.")
 
         from ..fixes import LEVER_LABELS, SETTING_TEXT, profile_change_where, profile_prompt
 
@@ -2566,7 +2586,7 @@ def make_handler(
             self.end_headers()
 
         def _write_json(self, status: int, payload: dict, *, head_only: bool = False) -> None:
-            body = json.dumps(payload).encode("utf-8")
+            body = json.dumps(invocation.rewrite_payload(payload, invocation.command_prefix())).encode("utf-8")
             self._write_headers(status, "application/json", len(body))
             if not head_only:
                 self.wfile.write(body)
@@ -2596,7 +2616,8 @@ def make_handler(
             index_path = static_dir / "index.html"
             if static_dir.is_dir() and index_path.is_file():
                 try:
-                    self._write_bytes(200, "text/html", index_path.read_bytes(), head_only=head_only)
+                    page = index_path.read_bytes().replace(_COMMAND_META, _command_meta())
+                    self._write_bytes(200, "text/html", page, head_only=head_only)
                     return
                 except OSError:
                     pass
@@ -2698,6 +2719,12 @@ def make_handler(
                 result = handler(store, query, body)
                 if isinstance(result, tuple) and len(result) == 3 and result[0] == "raw":
                     _tag, content_type, text = result
+                    if content_type == "application/json":
+                        text = _report_json_commands(text)
+                    elif content_type.startswith("text/html"):
+                        text = invocation.rewrite_rendered(text, "html")
+                    elif content_type.startswith("text/markdown"):
+                        text = invocation.rewrite_rendered(text, "markdown")
                     self._write_text(200, content_type, text, head_only=head_only)
                     return
                 status, payload = result

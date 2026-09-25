@@ -5,7 +5,7 @@
  * links between pages.
  */
 
-import { el, goTo, state } from "./core.js";
+import { el, goTo, state, withCli } from "./core.js";
 
 // ======================================================================
 // Pages and segments
@@ -421,6 +421,10 @@ export var GLOSSARY = [
   ["Sampling", "Running metrics capture in only a share of sessions (100, 50, 25 or 10 percent, [capture] sample) to spend fewer tokens on it. Picked at random, per session."],
   ["Time-box", "The date metrics capture switches itself back off. By default it's 14 days after you turn a level on, whether at init, with capture on or level, or on the Capture page. So turning it on never means it runs unattended forever. --for or --capture-for sets another length, and --no-limit or --capture-no-limit turns the limit off. You can also say so when asked."],
 ];
+// Two entries name a command; they read in this install's form.
+GLOSSARY.forEach(function (pair) {
+  pair[1] = withCli(pair[1]);
+});
 
 // A glossary term's anchor: #/glossary/terms?term=<slug>.
 export function termSlug(term) {

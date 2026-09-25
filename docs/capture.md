@@ -14,9 +14,9 @@ Costs rise with depth, so capture comes in levels, each including every metric o
 |---|---|---|---|
 | Off | Nothing is captured and no tokens are used. | – | – |
 | Free | Local signals from hooks that log to a file. Uses no Claude tokens. | – | – |
-| Essentials | Claude tags each piece of work: what kind it was, how clear the request was, how hard, and when the task changed. Subagents say whether they finished. | ~201 tokens | ~107 tokens |
-| Standard | Adds size, what the request lacked, planning, skills, research, and each subagent's view of its model, rules and brief. | ~330 tokens | ~190 tokens |
-| Deep | Adds how much earlier context was needed, how the change was checked, and a short rating after large tool outputs. Also turns on the /tl-feedback survey, its reminder note, and Claude's one-line reminder to run it when a piece of work is done. | ~414 tokens | ~190 tokens |
+| Essentials | Claude tags each piece of work: what kind it was, how clear the request was, how hard, and when the task changed. Subagents say whether they finished. | ~207 tokens | ~107 tokens |
+| Standard | Adds size, what the request lacked, planning, skills, research, and each subagent's view of its model, rules and brief. | ~336 tokens | ~190 tokens |
+| Deep | Adds how much earlier context was needed, how the change was checked, and a short rating after large tool outputs. Also turns on the /tl-feedback survey, its reminder note, and Claude's one-line reminder to run it when a piece of work is done. | ~420 tokens | ~190 tokens |
 | Custom | Any other set of metrics, turned on one by one (`capture enable`/`capture disable`). | depends what's on | depends what's on |
 
 These are rough sizes — the note's characters divided by four, plus Claude Code's own hook-wrapper overhead (the system-reminder tags around it) — and don't include the tag Claude writes back (each metric below says roughly how many output tokens its own words cost). Setup › Capture replays your last 14 days of transcripts against each level before you turn it on, and once it's on, measures the real note and tag cost from what Claude Code actually recorded — read that number, not this one, when it matters.
@@ -101,9 +101,9 @@ Every metric here has to earn its keep. Something has to read it and turn it int
 ### Task changes (`shift`)
 
 - **Level:** Essentials
-- **Captures:** When the work changed: a new unrelated task, building on the last one, the scope growing, or redoing earlier work.
-- **Why:** Task switching, scope creep and rework, and when a fresh session or plan mode would have been cheaper.
-- **Tag:** `shift=new|build|grew|redo`
+- **Captures:** When the work changed: a new unrelated task, building on the last one, the scope growing, redoing earlier work, or fixing a fault in earlier work.
+- **Why:** Task switching, scope creep, rework and fixes, and when a fresh session or plan mode would have been cheaper.
+- **Tag:** `shift=new|build|grew|redo|fix`
 - **Costs:** about 1 output token each time
 - **Hook:** SessionStart
 - **Powers:** Breaking down work, Clearing context, Planning
@@ -152,7 +152,7 @@ Every metric here has to earn its keep. Something has to read it and turn it int
 
 - **Level:** Deep
 - **Captures:** How a change was verified: targeted tests, the full suite, a build, running it, by hand, or not at all.
-- **Why:** Unchecked changes that later needed redoing, and full-suite output carried in context.
+- **Why:** Unchecked changes that later needed redoing or fixing, and full-suite output carried in context.
 - **Tag:** `check=targeted|full|build|run|manual|none`
 - **Costs:** about 3 output tokens each time
 - **Hook:** SessionStart
@@ -264,7 +264,7 @@ Every metric here has to earn its keep. Something has to read it and turn it int
 ### Large tool outputs (`big_output`)
 
 - **Level:** Deep
-- **Captures:** After a tool result of about 8,000 tokens or more, how much of it Claude needed: all, part or none. Claude Code waits for the hook after each shell, read, search, web or MCP result. 'capture status' shows how long that has added, measured from your own sessions.
+- **Captures:** After a tool result of about 8,000 tokens or more, how much of it Claude needed: all, part or none. Claude Code waits for the hook after each shell, read, search, web or MCP result. 'claude-token-lens capture status' shows how long that has added, measured from your own sessions.
 - **Why:** Quieter commands, offset reads and output caps where big outputs weren't needed.
 - **Tag:** `out=needed|part|unneeded`
 - **Costs:** about 2 output tokens each time
