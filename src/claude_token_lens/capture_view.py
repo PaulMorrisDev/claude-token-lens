@@ -459,7 +459,7 @@ def _step_down_note(capture: CaptureConfig, rows: list[dict]) -> str | None:
         return None
     return (
         f"Every metric {catalogue.LEVEL_TITLES[capture.level]} adds over {catalogue.LEVEL_TITLES[target]} has "
-        f"enough collected ({', '.join(r['id'] for r in dropped_rows)}). "
+        f"enough collected ({habits.metric_list(r['id'] for r in dropped_rows)}). "
         + habits.step_down_terms(capture.level, target)
     )
 

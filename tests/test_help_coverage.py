@@ -34,6 +34,12 @@ BANNED = re.compile(
     r"\b(re-?cache[sd]?|top-level|briefing|cache_creation|cache_read|attribution_\w+|per_turn_\w+|tabs?)\b", re.I
 )
 SNAKE_CASE = re.compile(r"\b[a-z]+_[a-z0-9_]+\b")
+#: A setting key or field name written in camelCase ("autoCompactWindow").
+CAMEL_CASE = re.compile(r"\b[a-z]+[A-Z][A-Za-z]*\b")
+#: Words the "Dashboard copy" rules rule out.
+FILLER = re.compile(r"\b(just|simply)\b", re.I)
+#: The hard limit on a sentence (``docs/writing-help.md``: aim for under 20).
+MAX_SENTENCE_WORDS = 25
 
 
 def _static_table_names() -> set[str]:
@@ -111,6 +117,18 @@ def _copy_strings():
 def test_copy_has_no_internal_names_or_banned_terms(where, text):
     assert not SNAKE_CASE.search(text), f"{where}: internal name in {text!r}"
     assert not BANNED.search(text), f"{where}: banned term in {text!r}"
+
+
+@pytest.mark.parametrize("where,text", [pair for pair in _copy_strings() if pair[1]])
+def test_copy_keeps_to_short_plain_sentences(where, text):
+    """One idea per sentence, 25 words at most, no " -- " aside, no
+    "just" or "simply", and no camelCase setting key: a setting's key
+    belongs in a fix's command or prompt, not in help."""
+    for sentence in re.split(r"(?<=[.?!])\s+", text):
+        assert len(sentence.split()) <= MAX_SENTENCE_WORDS, f"{where}: sentence over 25 words: {sentence!r}"
+    assert " -- " not in text, f"{where}: dash aside in {text!r}"
+    assert not FILLER.search(text), f"{where}: filler word in {text!r}"
+    assert not CAMEL_CASE.search(text), f"{where}: camelCase name in {text!r}"
 
 
 @pytest.fixture(scope="module")

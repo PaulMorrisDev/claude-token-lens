@@ -107,7 +107,11 @@ def test_step_down_note_names_the_specific_command_once_its_dropped_metrics_are_
     step = [n for n in notes if n.startswith("Every metric Standard adds over Essentials has enough collected (")]
     assert len(step) == 1
     # What changes, where, the trade-off and the undo -- a command, never an apply.
-    assert all(i in step[0] for i in dropped)
+    # The metrics it would drop, by their Capture page names, never their ids.
+    shown = {r["id"]: r for s in data["sections"] for r in s["metrics"]}
+    named = [m.id for m in catalogue.METRICS if m.id in dropped and shown[m.id]["asks_claude"]]
+    assert habits.metric_list(named) in step[0]
+    assert not any(f"{i}," in step[0] or f"{i})" in step[0] for i in dropped if "_" in i)
     assert "stops collecting them" in step[0]
     assert "[capture] level in Token Lens's config.toml" in step[0] and "settings.json" in step[0]
     assert (

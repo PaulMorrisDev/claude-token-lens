@@ -1094,6 +1094,40 @@ class PricingCoverage:
         )
 
 
+#: A raw Claude model id inside prose, e.g. ``claude-haiku-4-5-20251001``
+#: or ``claude-3-5-haiku-20241022``, with an optional ``[1m]`` suffix.
+_MODEL_ID_RE = re.compile(r"\bclaude-(?:\d+-)*(?:opus|sonnet|haiku|fable)(?:-\d+)*(?:\[[0-9a-z]+\])?")
+
+
+def model_name(model_id: str) -> str:
+    """A model id as people say it: ``claude-opus-5-5`` -> ``Opus 5.5``,
+    ``claude-haiku-4-5-20251001`` -> ``Haiku 4.5``, ``claude-3-5-haiku-20241022``
+    -> ``Haiku 3.5``. A ``[1m]`` suffix is kept (``Opus 5 [1m]``); an id of
+    another shape comes back as it is. The Python twin of the dashboard's
+    ``format.js`` ``modelName``, for prose only: table cells and JSON keep
+    the raw id."""
+    text = str(model_id or "")
+    suffix = ""
+    bracket = re.search(r"\[[^\]]*\]$", text)
+    if bracket:
+        suffix = " " + bracket.group(0)
+        text = text[: bracket.start()]
+    core = re.sub(r"-\d{8}$", "", re.sub(r"^claude-", "", text))
+    family = re.search(r"[a-z]+", core)
+    if not family or not text.startswith("claude-"):
+        return str(model_id or "")
+    numbers = re.findall(r"\d+", core)
+    name = family.group(0).capitalize() + (" " + ".".join(numbers) if numbers else "")
+    return name + suffix
+
+
+def model_names_in(text: str) -> str:
+    """``text`` with every raw Claude model id in it read as a model name
+    (:func:`model_name`), for a sentence built from a table cell such as
+    ``claude-sonnet-5 (+2 more)``."""
+    return _MODEL_ID_RE.sub(lambda m: model_name(m.group(0)), str(text))
+
+
 __all__ = [
     "PricingError",
     "LongContextRule",
@@ -1106,5 +1140,7 @@ __all__ = [
     "load_pricing",
     "price_turn",
     "effective_rates",
+    "model_name",
+    "model_names_in",
     "TOKEN_LENS_DIRNAME",
 ]

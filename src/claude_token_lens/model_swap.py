@@ -118,7 +118,7 @@ from typing import TYPE_CHECKING, Callable, Sequence
 
 from . import workstyle
 from .model import Column, Recommendation, ReportModel, Section, Table, TranscriptResult, Turn, agent_type_label
-from .pricing import Pricing, price_turn
+from .pricing import Pricing, model_name, price_turn
 from .snapshots import Snapshot, managed_keys
 
 if TYPE_CHECKING:
@@ -149,9 +149,14 @@ _ALL_ARCHETYPES: tuple[str, ...] = ()
 #: Deviations from the brief/plan, reported per this project's own
 #: convention -- see module docstring for the full explanation of each.
 ASSUMPTIONS: list[str] = [
-    "token volumes, turn counts, and the observed 5m/1h cache-write split are held constant across every alternative-model repricing -- every saving figure is a price ceiling at today's usage shape, never a prediction",
-    "a smaller model may need more turns to reach the same result, or fail the task outright; neither possibility is priced here -- with metrics capture on, how hard Claude reported the work and whether it said a smaller model would do are cited as evidence, and a run that said it needed a larger model holds the suggestion back, but they never change a figure",
-    "alternative columns cover every model in pricing.toml (legacy dated ids included), but the model-tier rule only ever recommends the immediately next cheaper family's current aliased model, never the cheapest alternative overall",
+    "token volumes, turn counts and the observed 5-minute/1-hour cache-write split stay the same when each "
+    "alternative model is priced. So every saving figure is a price ceiling at today's usage, never a prediction",
+    "a smaller model may need more turns to reach the same result, or fail the task outright. Neither is priced "
+    "here. With metrics capture on, the evidence cites how hard Claude reported the work and whether it said a "
+    "smaller model would do. A run that said it needed a larger model holds the suggestion back. None of this "
+    "ever changes a figure",
+    "alternative columns cover every model in pricing.toml, older dated ids included. But the cheaper-model "
+    "advice only ever suggests the next cheaper family's current model, never the cheapest alternative overall",
     "tier order (Fable, then Opus, then Sonnet, then Haiku) follows each model's family name, not its price",
 ]
 
@@ -242,7 +247,7 @@ class ModelSwapThresholds:
         return [
             f"A one-tier-down swap is suggested only when the most it could save at today's "
             f"volumes is over {self.saving_pct_min:.1f}% and over ${self.saving_usd_min:.2f} at "
-            "list price; both must hold.",
+            "list price. Both must hold.",
             f"An agent type needs at least {self.min_sessions} runs or {self.min_turns} replies "
             "before its saving is trusted enough to suggest.",
         ]
@@ -282,7 +287,7 @@ def _tier_verdict(stats: "ModelSwapTypeStats", pricing: Pricing) -> TierVerdict:
     if rank == -1:
         return TierVerdict(
             "unknown_tier", None, 0.0, 0.0,
-            "model family not recognised -- cannot determine a cheaper tier",
+            "model family not recognised, so no cheaper tier can be named",
         )
     if rank == 0:
         return TierVerdict(
@@ -295,7 +300,7 @@ def _tier_verdict(stats: "ModelSwapTypeStats", pricing: Pricing) -> TierVerdict:
     if alt_model is None or alt_model not in stats.cost_by_model:
         return TierVerdict(
             "unknown_tier", None, 0.0, 0.0,
-            f"no {family} rate in this pricing file -- cannot determine a cheaper tier",
+            f"no {family} rate in this pricing file, so no cheaper tier can be named",
         )
 
     alt_cost = stats.cost_by_model[alt_model]
@@ -303,12 +308,12 @@ def _tier_verdict(stats: "ModelSwapTypeStats", pricing: Pricing) -> TierVerdict:
     if saving_usd <= 0:
         return TierVerdict(
             "already_cheapest", None, 0.0, 0.0,
-            f"{_ALREADY_CHEAPEST_LABEL} at today's volumes (already cheaper than {alt_model})",
+            f"{_ALREADY_CHEAPEST_LABEL} at today's volumes (already cheaper than {model_name(alt_model)})",
         )
     saving_pct = 100.0 * saving_usd / stats.observed_cost
     return TierVerdict(
         "cheaper_available", alt_model, saving_usd, saving_pct,
-        f"{alt_model} (saves ${saving_usd:,.2f}, {saving_pct:.1f}%, at today's volumes)",
+        f"{model_name(alt_model)} (saves ${saving_usd:,.2f}, {saving_pct:.1f}%, at today's volumes)",
     )
 
 
@@ -503,7 +508,10 @@ def build_section(
         label = verdict.label
         if units is not None and verdict.state == "cheaper_available":
             saving_text = units.money_text(verdict.saving_usd)
-            label = f"{verdict.alt_model} (saves {saving_text}, {verdict.saving_pct:.1f}%, at today's volumes)"
+            label = (
+                f"{model_name(verdict.alt_model)} (saves {saving_text}, {verdict.saving_pct:.1f}%, at today's "
+                "volumes)"
+            )
         row = [
             row_stats.key,
             row_stats.spawns,
@@ -570,19 +578,19 @@ def build_section(
             ]
         ],
         notes=[
-            "Leaves out the main session (this figure is for subagents only) and any Fable or "
-            "Opus agent type that already costs no more than the next tier down at today's "
-            "volumes.",
+            "This figure is for subagents only, so it leaves out the main session. It also leaves "
+            "out any Fable or Opus agent type that already costs no more than the next tier down "
+            "at today's volumes.",
         ],
     )
 
     notes = list(ASSUMPTIONS)
     if any_unpriced:
         notes.append(
-            "At least one agent type has priced turns whose observed model this pricing file "
-            "doesn't resolve (see its own \"Unpriced turns\" column) -- those turns count as "
-            "zero in the observed cost but are still priced at every alternative model, so "
-            "that agent type's saving is understated."
+            "At least one agent type has replies whose model has no price in your pricing file "
+            "(see its \"Unpriced turns\" column). Those replies count as zero in the observed cost, "
+            "but are still priced at every alternative model. So that agent type's saving is "
+            "understated."
         )
     notes.append(f"Thresholds: {' '.join(th.describe())}")
 

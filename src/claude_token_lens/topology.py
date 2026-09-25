@@ -665,8 +665,8 @@ def _build_spawn_write_table(stats: TopologyStats) -> Table:
         rows=rows,
         notes=[
             "The startup write is the cache write on each subagent's first"
-            " reply: the task prompt, system prompt and any preloaded skills"
-            " you pay to write into that agent's cache.",
+            " reply. It holds the task prompt, system prompt and any preloaded"
+            " skills you pay to write into that agent's cache.",
             "Your MCP servers and plugins aren't matched against this table:"
             " nothing yet links a subagent's startup write to the settings in"
             " effect when it ran.",
@@ -747,10 +747,10 @@ def _build_report_proxy_table(stats: TopologyStats) -> Table:
         columns=columns,
         rows=rows,
         notes=[
-            "Report size is the report each subagent handed back, measured"
-            " where it arrived (the Agent tool's result in the parent, or a"
-            " background agent's task notification), in characters divided"
-            f" by {_CHARS_PER_TOKEN_APPROX}. When the parent side wasn't found,"
+            "Report size is the report each subagent handed back, in"
+            f" characters divided by {_CHARS_PER_TOKEN_APPROX}. It is measured"
+            " where the report arrived: the Agent tool's result in the parent,"
+            " or a background agent's task notification. When the parent side wasn't found,"
             " it falls back to the output tokens of the subagent's own last"
             " reply, an approximation.",
         ],
@@ -789,10 +789,10 @@ def _build_skills_table(stats: TopologyStats) -> Table:
         rows=rows,
         notes=[
             "Subagent cost counts every subagent the skill's replies started,"
-            " and every subagent those started in turn, so a skill that fans"
+            " and every subagent those started in turn. So a skill that fans"
             " out is costed as a whole.",
             "Agents inside a workflow don't record the call that started"
-            " them, so they can't be linked to a skill this way and are left"
+            " them. So they can't be linked to a skill this way, and are left"
             " out of its subagent cost. The workflows section covers them.",
         ],
     )
@@ -810,9 +810,9 @@ def _build_spawn_depth_table(stats: TopologyStats) -> Table:
     ]
     rows = [[str(depth), count] for depth, count in sorted(stats.spawn_depth_histogram.items())]
     mean_spawns_per_session = _mean(stats.spawns_per_session)
-    note = f"Sessions seen: {stats.sessions_seen}; total spawns: {stats.total_spawns}"
+    note = f"Sessions seen: {stats.sessions_seen}. Total spawns: {stats.total_spawns}"
     if mean_spawns_per_session is not None:
-        note += f"; mean spawns/session: {mean_spawns_per_session:.2f}."
+        note += f". Average spawns per session: {mean_spawns_per_session:.2f}."
     else:
         note += "."
     return Table(
@@ -849,8 +849,8 @@ def _build_cost_per_spawn_table(stats: TopologyStats) -> Table:
         rows=rows,
         notes=[
             "Average tool wait is how long that agent type's own tool calls"
-            " took to answer, averaged over its replies, not the parent's"
-            " wait on the whole run.",
+            " took to answer, averaged over its replies. It is not the"
+            " parent's wait on the whole run.",
         ],
     )
 
@@ -870,9 +870,10 @@ def _build_chains_summary_table(stats: TopologyStats) -> Table:
         columns=columns,
         rows=rows,
         notes=[
-            "No field records that a run stopped because maxTurns was reached,"
-            " so only stoppedByUser is counted here. Quality signals"
-            " ({{page:agents/quality}}) infers likely maxTurns endings from how a run ends.",
+            "Claude Code doesn't record when a run stopped because it reached"
+            " the agent's turn limit. So only runs stopped by you are counted"
+            " here. The quality signals on {{page:agents/quality}} infer likely"
+            " turn-limit endings from how a run ends.",
         ],
     )
 
@@ -1008,9 +1009,9 @@ def _build_composition_table(stats: TopologyStats) -> Table:
         columns=columns,
         rows=rows,
         notes=[
-            "Tool-result and attachment token counts are approximate: chars /"
-            f" {_CHARS_PER_TOKEN_APPROX} (no tokenizer is run over transcript"
-            " content, per the privacy rule) — labelled approximate throughout.",
+            "Tool result and Claude Code note token counts are approximate:"
+            f" characters divided by {_CHARS_PER_TOKEN_APPROX}. No tokenizer"
+            " reads your transcripts, to keep them private.",
         ],
     )
 
@@ -1042,9 +1043,9 @@ def _build_redundant_work_table(stats: TopologyStats) -> Table:
         columns=columns,
         rows=rows,
         notes=[
-            "Computed from the top-level transcript only: command-prefix"
-            " repetition and rediscovery reads are conversational-continuity"
-            " signals that a subagent transcript, spawned fresh, doesn't carry.",
+            "Counted in the main session only. Repeated commands and files"
+            " read again after a summary are signs of a long conversation,"
+            " which a freshly started subagent doesn't have.",
         ],
     )
 
@@ -1083,9 +1084,9 @@ def _build_redundant_reads_table(stats: TopologyStats) -> Table:
             "automatically).",
             "The second row is the part of the first whose repeat read "
             f"came within {_REDISCOVERY_WINDOW_TURNS} replies of a "
-            "conversation summary: the same window the redundant work "
-            "table uses for files re-read after a summary, since both show "
-            "context a summary dropped being paid for again.",
+            "conversation summary. The redundant work table uses the same "
+            "window for files re-read after a summary. Both show context "
+            "that a summary dropped being paid for again.",
         ],
     )
 
