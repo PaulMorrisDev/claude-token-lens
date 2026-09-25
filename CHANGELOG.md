@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.3] - 2026-09-25
+
 ### Changed
 
 - **The README is a short landing page now.** It keeps the quick start,
@@ -33,6 +35,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **On Windows the dashboard no longer flashes a console window every
+  few minutes, or opens a new tab in Windows Terminal.** While a
+  dashboard page is open it checks that its logon task is still set up
+  by running `schtasks`. The dashboard itself runs without a console
+  (`pythonw`), so each check got a console of its own. It now runs
+  without one, and terminal windows you already have open are left
+  alone. Run `python -m claude_token_lens update` to get the fix and
+  restart the dashboard.
 - **Quality verdicts no longer compare your work with scheduled checks.**
   Main sessions a scheduled or looped task started, with no message of
   yours, are left out of "Quality by model and effort" and of the

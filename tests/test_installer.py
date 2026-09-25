@@ -33,10 +33,12 @@ class _RecordingRunner:
 
     def __init__(self, returncode: int = 0):
         self.calls: list[list[str]] = []
+        self.kwargs: list[dict] = []
         self.returncode = returncode
 
     def __call__(self, command, **kwargs):
         self.calls.append(list(command))
+        self.kwargs.append(kwargs)
         return _FakeResult(returncode=self.returncode)
 
 
@@ -434,3 +436,49 @@ def test_is_registered_defaults_to_detect_platform(monkeypatch):
     runner = _RecordingRunner(returncode=0)
     assert installer.is_registered(runner=runner) is True
     assert runner.calls == [["systemctl", "--user", "is-enabled", "claude-token-lens"]]
+
+
+# --------------------------------------------------------------------
+# no console window on Windows
+# --------------------------------------------------------------------
+
+#: Windows' CREATE_NO_WINDOW, spelled out: ``subprocess`` only defines
+#: the name on Windows, and these tests run everywhere.
+_CREATE_NO_WINDOW = 0x08000000
+
+
+def test_is_registered_runs_schtasks_without_a_console_window_on_windows(monkeypatch):
+    """The dashboard runs under pythonw.exe, which has no console, and
+    calls this every few minutes: without the flag each schtasks run
+    flashes a window, or opens a tab in Windows Terminal."""
+    monkeypatch.setattr(installer.sys, "platform", "win32")
+    runner = _RecordingRunner(returncode=0)
+    assert installer.is_registered("windows", runner=runner) is True
+    assert runner.kwargs[0]["creationflags"] == _CREATE_NO_WINDOW
+
+
+def test_registered_python_runs_powershell_without_a_console_window_on_windows(monkeypatch):
+    monkeypatch.setattr(installer.sys, "platform", "win32")
+    runner = _RecordingRunner(returncode=0)
+    installer.registered_python("windows", runner=runner)
+    assert runner.kwargs[0]["creationflags"] == _CREATE_NO_WINDOW
+
+
+def test_install_and_uninstall_run_without_a_console_window_on_windows(tmp_path, monkeypatch):
+    monkeypatch.setattr(installer.sys, "platform", "win32")
+    plan = installer.plan_service_install(
+        str(tmp_path / "python.exe"), tmp_path / "projects", tmp_path / "config", platform="windows"
+    )
+    runner = _RecordingRunner()
+    installer.install(plan, runner=runner)
+    installer.uninstall(plan, runner=runner)
+    assert len(runner.kwargs) == len(plan.commands) + len(plan.uninstall_commands)
+    assert all(kwargs["creationflags"] == _CREATE_NO_WINDOW for kwargs in runner.kwargs)
+
+
+def test_no_creationflags_off_windows(monkeypatch):
+    """Python raises ValueError for creationflags on other platforms."""
+    monkeypatch.setattr(installer.sys, "platform", "linux")
+    runner = _RecordingRunner(returncode=0)
+    installer.is_registered("linux", runner=runner)
+    assert "creationflags" not in runner.kwargs[0]
