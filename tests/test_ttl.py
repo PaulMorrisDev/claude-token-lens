@@ -615,6 +615,12 @@ def test_lever_text_top_level_vs_subagent():
     assert sub.lever == "experimental.cacheTtl in claude-implementer.md (or subagentPromptCacheTtl for all subagents)"
 
 
+def test_lever_text_for_subagents_with_no_recorded_type_is_the_setting():
+    """A subagent whose type wasn't recorded has no agent file to edit,
+    so the only lever that reaches it is subagentPromptCacheTtl."""
+    assert _stats(10.0, 10.0, 9.0, key="unknown").lever == "subagentPromptCacheTtl"
+
+
 # --------------------------------------------------------------------
 # TtlStats: agent-type keying, gap buckets, p50/p90
 # --------------------------------------------------------------------
@@ -770,7 +776,13 @@ def test_build_section_recommends_switch_to_1h_in_api_mode():
     assert row[rec_idx] == "switch to 1h"
 
 
-def test_build_section_suppresses_subagent_switch_in_subscription_mode_but_not_top_level():
+def test_build_section_gives_subagents_switch_advice_in_subscription_mode():
+    """Within plan usage a subscription's subagents honour a 1h lifetime
+    (Claude Code's prompt-caching docs); only an agent file's 1h is
+    ignored while the plan draws on usage credits. So subscription mode
+    keeps every row's advice and states that caveat in a note, instead
+    of suppressing subagent rows as if every subscription were on
+    usage credits."""
     turns = _rewrite_every_time_turns()
     stats = TtlStats()
     stats.add(TranscriptResult(meta=TranscriptMeta(kind="top-level"), turns=turns), SONNET_RATES)
@@ -785,8 +797,17 @@ def test_build_section_suppresses_subagent_switch_in_subscription_mode_but_not_t
     by_key = {r[0]: r for r in table.rows}
 
     assert by_key["top-level"][rec_idx] == "switch to 1h"
-    assert "suppressed" in by_key["claude-implementer"][rec_idx]
-    assert any("usage credits" in note for note in section.notes)
+    assert by_key["claude-implementer"][rec_idx] == "switch to 1h"
+    note = next(note for note in section.notes if "usage credits" in note)
+    assert "agent file is ignored" in note
+    assert "subagentPromptCacheTtl" in note
+
+
+def test_build_section_api_mode_has_no_usage_credits_note():
+    stats = TtlStats()
+    stats.add(TranscriptResult(meta=TranscriptMeta(kind="top-level"), turns=_rewrite_every_time_turns()), SONNET_RATES)
+    section = build_section(stats, billing_mode="api")
+    assert not any("usage credits" in note for note in section.notes)
 
 
 _REAL_SESSION_A = Path(__file__).parent / "fixtures" / "real" / "session-a"

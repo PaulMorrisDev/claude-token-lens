@@ -546,16 +546,33 @@ def _explain_ttl_switch(rec: Recommendation, ctx: _Context) -> None:
     verdict = _evidence_value(rec, "TTL recommendation")
     target = "1h" if isinstance(verdict, str) and verdict.endswith("1h") else "5m"
     saving = ctx.cell("ttl", "ttl_by_agent_type", agent, "saving_usd")
-    who = "your main session" if agent == "top-level" else agent
+    who = {"top-level": "your main session", "unknown": "subagents with no recorded type"}.get(agent, agent)
     lifetime = "1 hour" if target == "1h" else "5 minutes"
     rec.title = f"A {'1-hour' if target == '1h' else '5-minute'} cache lifetime would suit {who} better"
     rec.why = (
-        f"At the pauses {who} actually takes between replies, a {lifetime} cache would have cost less than "
-        "the one it used."
+        f"At the actual pauses between replies from {who}, a {lifetime} cache would have cost less than "
+        "the one used."
     )
     rec.action = f"Set {who}'s cache lifetime to {lifetime} ({target})."
     if agent == "top-level":
         change = SettingChange(target="settings", key="promptCacheTtl", value=target, current=ctx.setting_now("promptCacheTtl"))
+    elif rec.lever == "subagentPromptCacheTtl":
+        # recommend._ttl_row_lever: no agent file to edit ("unknown"),
+        # or the setting is already set and outranks every agent file.
+        current = ctx.setting_now("subagentPromptCacheTtl")
+        change = SettingChange(
+            target="settings",
+            key="subagentPromptCacheTtl",
+            value=target,
+            current=current,
+            note=(
+                "This setting is already set, and Claude Code uses it before any agent file's cacheTtl, so "
+                "changing it changes every subagent's cache lifetime, not just this one's."
+                if current not in (None, _UNKNOWN)
+                else ""
+            ),
+        )
+        rec.action = f"Set every subagent's cache lifetime to {lifetime} ({target})."
     else:
         scope, has_file = ctx.agent_scope(agent)
         change = SettingChange(

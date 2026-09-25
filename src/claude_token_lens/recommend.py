@@ -47,11 +47,19 @@ Deviations from the plan/brief, reported rather than made silently (see
   (``source`` is only ever ``"user"``/``"project"``), so that branch
   keeps its plain ``"repo"``.
 - A5's ``ttl-switch`` clause "suppressed for subagents in subscription
-  mode" is already implemented inside ``ttl.build_section`` itself (the
-  ``recommendation`` cell reads back as ``"no material difference
-  (suppressed: subscription billing)"``), so this module only has to read
-  that cell -- it does not re-implement the suppression. The plan's
-  further "Enterprise use" clause ("TTL rules are suppressed where the
+  mode" is deliberately *not* implemented. Claude Code's prompt-caching
+  docs say a subscription only draws on usage credits once it goes over
+  the plan's limit; within plan usage a subagent's 1h lifetime works,
+  and even on usage credits only an agent file's ``cacheTtl: 1h`` is
+  ignored (``subagentPromptCacheTtl`` still applies). ``ttl.build_section``
+  explains why this tool can't tell which replies ran on usage credits,
+  and states the caveat in a note in subscription mode; ``fixes.py``
+  repeats it on the agent-file change itself. Precedence does change the
+  lever, though: a ``subagentPromptCacheTtl`` already set in any
+  settings layer outranks every agent file's ``cacheTtl``, so
+  ``_rule_ttl_switch`` names that setting instead of the agent file
+  (``_ttl_row_lever``). The plan's further "Enterprise use" clause
+  ("TTL rules are suppressed where the
   [cloud] provider cannot honour 1h") has no supporting capability data
   anywhere in this codebase (``pricing.py`` has no ``[providers.*]``
   table, no ``supports_1h_cache`` flag -- confirmed by reading the whole
@@ -137,7 +145,7 @@ from . import carry, compaction_sim, elasticity, handoff, model_swap, waste
 from .config import Config
 from .context_budget import _READ_ONLY_TOOLS
 from .model import Recommendation, ReportModel, Section, SettingChange, Table
-from .snapshots import Snapshot, effective_provenance, managed_keys
+from .snapshots import Snapshot, effective_config, effective_provenance, managed_keys
 from .units import NO_LIMIT_SHARE_HINT, Units
 
 #: Purposes ``classify.classify_purpose`` can return that count as
@@ -522,6 +530,21 @@ def _action_with_scope(action: str, scope: str) -> str:
     return action
 
 
+def _ttl_row_lever(agent_type, lever, snapshot: Snapshot | None):
+    """The lever a ``ttl_by_agent_type`` row's switch can actually pull.
+    Claude Code resolves a subagent's cache lifetime from the
+    ``subagentPromptCacheTtl`` setting before an agent file's
+    ``experimental.cacheTtl`` (prompt-caching docs, "Choose the TTL
+    yourself"), so once any settings layer sets it, editing the agent
+    file does nothing and the setting is the lever. Otherwise ``lever``
+    (``ttl.TtlTypeStats.lever``) unchanged."""
+    if agent_type == "top-level" or snapshot is None:
+        return lever
+    if "subagentPromptCacheTtl" in effective_config(snapshot):
+        return "subagentPromptCacheTtl"
+    return lever
+
+
 # -- individual rules ---------------------------------------------------
 
 
@@ -568,7 +591,7 @@ def _rule_ttl_switch(
         if not _row_meets_min_sample(th, spawns, priced_turns):
             continue
         target = recommendation_text[len("switch to ") :]
-        lever = row[lever_idx]
+        lever = _ttl_row_lever(agent_type, row[lever_idx], snapshot)
         lever, scope = _lever_scope(lever, snapshot)
         action = _action_with_scope(
             f"Switch {agent_type}'s prompt cache TTL to {target}.", scope
@@ -2345,6 +2368,10 @@ def _unique_keys(recs: list[Recommendation]) -> None:
 
 _TTL_TARGET_RE = re.compile(r"\bto (1h|5m)\b")
 
+#: The two settings.json cache-lifetime keys a ``ttl-switch`` lever can
+#: name, rendered as a settings stanza with the switch's target value.
+_TTL_SETTINGS_KEYS = ("promptCacheTtl", "subagentPromptCacheTtl")
+
 
 def _patch_value(value, missing: str) -> str:
     """A ``SettingChange`` value as ``render_patch_set`` prints it."""
@@ -2421,7 +2448,11 @@ def render_patch_set(recs: list[Recommendation]) -> str:
         # "top-level" is the main session, not a subagent -- its levers
         # (e.g. promptCacheTtl) are genuine top-level settings keys, so
         # only route on agent_type when it names an actual subagent.
+        # subagentPromptCacheTtl is a settings key too, even on a
+        # per-agent-type row (see _ttl_row_lever).
         agent_type = rec.agent_type if rec.agent_type not in (None, "top-level") else None
+        if bare_lever in _TTL_SETTINGS_KEYS:
+            agent_type = None
         if agent_type is None and agent_match:
             agent_type = agent_match.group(1)
 
@@ -2439,7 +2470,7 @@ def render_patch_set(recs: list[Recommendation]) -> str:
                 stanza["keys"].setdefault(bare_lever, "(see recommendation action)")
             continue
 
-        if bare_lever == "promptCacheTtl":
+        if bare_lever in _TTL_SETTINGS_KEYS:
             if bare_lever in seen_settings_keys:
                 continue
             seen_settings_keys.add(bare_lever)
@@ -2449,8 +2480,8 @@ def render_patch_set(recs: list[Recommendation]) -> str:
             lines.append("+++ settings (user)")
             if is_managed:
                 lines.append("# managed by policy -- shown for reference only")
-            lines.append("-promptCacheTtl: (unset)")
-            lines.append(f"+promptCacheTtl: {target}")
+            lines.append(f"-{bare_lever}: (unset)")
+            lines.append(f"+{bare_lever}: {target}")
             lines.append("")
             continue
 

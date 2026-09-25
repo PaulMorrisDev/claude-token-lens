@@ -1065,9 +1065,13 @@ class TtlTypeStats:
     @property
     def lever(self) -> str:
         """The concrete setting/frontmatter change the recommendation
-        names (plan "TTL break-even" section)."""
+        names (plan "TTL break-even" section). The ``"unknown"`` row
+        (subagents whose type wasn't recorded) has no agent file to edit,
+        so its only lever is ``subagentPromptCacheTtl``."""
         if self.key == "top-level":
             return "promptCacheTtl"
+        if self.key == "unknown":
+            return "subagentPromptCacheTtl"
         return f"experimental.cacheTtl in {self.key}.md (or subagentPromptCacheTtl for all subagents)"
 
 
@@ -1496,11 +1500,19 @@ class TtlStats:
         return list(self._subagent_mtimes_ns)
 
 
-#: The plan's Risk 1 (subscription users are not billed in USD), in plain
-#: words: the documented reason a 1h subagent recommendation is moot in
-#: subscription mode.
-_SUBSCRIPTION_1H_IGNORED_NOTE = (
-    "a 1-hour cache lifetime is ignored while on usage credits"
+#: What changes for a Pro or Max plan, per Claude Code's prompt-caching
+#: docs ("Which TTL each request gets", "Choose the TTL yourself"): the
+#: defaults differ by request bucket, and only while the plan draws on
+#: extra usage credits does the main session drop to 5 minutes and an
+#: agent file's ``cacheTtl: 1h`` stop applying. Settings keys still apply
+#: then. Nothing this tool reads says which replies ran on usage credits
+#: (see ``build_section``), so the note says so.
+_SUBSCRIPTION_TTL_NOTE = (
+    "On a Pro or Max plan, Claude Code keeps the main session's cache for 1 hour and a subagent's for"
+    " 5 minutes by default, while you are within your plan's usage. Once the plan draws on extra usage"
+    " credits, the main session drops to 5 minutes and a 1-hour lifetime set in an agent file is ignored;"
+    " promptCacheTtl and subagentPromptCacheTtl in settings.json still apply. This report can't tell which"
+    " replies ran on usage credits, so its advice assumes a lifetime you set applies to every reply."
 )
 
 
@@ -1517,7 +1529,7 @@ def build_section(
     share, near-miss histogram, TTL-addressable share, cache economy),
     and notes (a fidelity warning for any agent type above the
     configured threshold, plus — in ``billing_mode="subscription"`` —
-    the subscription-suppression note, plus — when ``window_start`` is
+    the plan's cache-lifetime note, plus — when ``window_start`` is
     given and a subagent transcript predates it — the subagent-window
     discovery caveat, plus the thresholds themselves, spelled out —
     same convention as ``recache.build_section``'s own notes).
@@ -1528,14 +1540,23 @@ def build_section(
     printed here agree with the numbers actually accumulated. Defaults
     to :data:`_DEFAULT_THRESHOLDS` when omitted.
 
-    ``billing_mode="subscription"`` suppresses every subagent (non
-    "top-level") row's switch recommendation, per plan Appendix A5's
-    ``ttl-switch`` row ("suppressed for subagents in subscription mode"):
-    the harness ignores a 1h ``cacheTtl`` while on usage credits, so
-    recommending a subagent TTL change there would promise an effect the
-    harness cannot deliver. The top-level row is never suppressed — the
-    main conversation's TTL is a real, user-set lever
-    (``promptCacheTtl``) in both billing modes.
+    ``billing_mode="subscription"`` no longer suppresses any row's
+    switch recommendation (plan Appendix A5's ``ttl-switch`` row once
+    said "suppressed for subagents in subscription mode"). That clause
+    read "usage credits" as any subscription, but Claude Code's docs say
+    a subscription only draws on usage credits once it goes over the
+    plan's limit; within plan usage a subagent's 1h lifetime works from
+    either lever. Even on usage credits only an agent file's
+    ``cacheTtl: 1h`` is ignored, and ``subagentPromptCacheTtl`` still
+    applies. The tool can't tell which replies ran on usage credits:
+    ``five_hour``/``seven_day`` readings stop at 100%, which says the
+    plan ran out but not whether extra usage was switched on (a
+    ``LIMIT_HIT`` pause says it wasn't); the statusline that logs those
+    readings doesn't run in the desktop app; and no transcript line
+    ``events.py`` parses marks the switch. The main session's observed
+    5m share hints at it, but ``promptCacheTtl``, an env var or an older
+    Claude Code version look the same. So every row keeps its advice
+    and the section carries :data:`_SUBSCRIPTION_TTL_NOTE` instead.
 
     ``window_start`` is the report window's start timestamp (a caller
     building a date-bounded corpus, e.g. "last 30 days", knows this;
@@ -1588,12 +1609,6 @@ def build_section(
     for key in sorted(by_key):
         row_stats = by_key[key]
         recommendation = row_stats.recommendation(th)
-        if (
-            billing_mode == "subscription"
-            and key != "top-level"
-            and recommendation != "no material difference"
-        ):
-            recommendation = "no material difference (suppressed: subscription billing)"
         rows.append(
             [
                 row_stats.key,
@@ -1929,11 +1944,7 @@ def build_section(
             + "."
         )
     if billing_mode == "subscription":
-        notes.append(
-            "No cache lifetime switch is suggested for subagents on a subscription: "
-            + _SUBSCRIPTION_1H_IGNORED_NOTE
-            + "."
-        )
+        notes.append(_SUBSCRIPTION_TTL_NOTE)
     if window_start is not None:
         stale = False
         for mtime_ns in stats.subagent_mtimes_ns:

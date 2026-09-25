@@ -568,7 +568,7 @@ The dashboard's Glossary page uses the same words, term for term.
 - **Cache read**: Re-reading context from the prompt cache. About a tenth of the normal input price.
 - **Cache write**: Putting context into the prompt cache. Costs more than normal input: 1.25 times for a 5-minute lifetime, 2 times for 1 hour.
 - **Cache rebuild**: Writing context to the cache again because the cached copy expired or something early in the conversation changed.
-- **Cache lifetime (TTL)**: How long the prompt cache stays warm after a reply: 5 minutes by default, or 1 hour. A pause longer than this means a rebuild.
+- **Cache lifetime (TTL)**: How long the prompt cache stays warm after a reply: 5 minutes or 1 hour. On a Pro or Max plan within its usage limits, the main session gets 1 hour by default. Otherwise, and for subagents, the default is 5 minutes. A pause longer than this means a rebuild.
 - **Conversation summary**: When the context gets too large, Claude Code replaces the conversation so far with a summary. Also called compaction.
 - **List price**: Anthropic's published price per token. On a Pro or Max plan you don't pay this; it is shown to compare costs.
 - **Usage limits**: On a Pro or Max plan, the share of your five-hour and weekly allowance you have used.

@@ -273,8 +273,12 @@ Simulation assumptions: [Concepts section 4](concepts.md#4-ttl-simulation-assump
   p50/p90, cost observed / all-5m / all-1h, best policy, delta vs. best
   (USD and %), saving if switched, fidelity, unsimulatable and unpriced
   turns, a recommendation string, and the lever (`promptCacheTtl` for
-  the top-level row; otherwise `experimental.cacheTtl` in `<agent>.md`,
-  or `subagentPromptCacheTtl` for all subagents).
+  the top-level row; `subagentPromptCacheTtl` for the `"unknown"` row,
+  which has no agent file; otherwise `experimental.cacheTtl` in
+  `<agent>.md`, or `subagentPromptCacheTtl` for all subagents). A
+  subscription gets the same advice as pay-per-token billing, plus a
+  note on what changes while the plan is on usage credits
+  ([Concepts section 2](concepts.md#2-how-caching-works-in-claude-code)).
 - `ttl_gap_distribution` — inter-turn gap histogram per agent type.
 
 ### TTL utilisation metrics

@@ -64,6 +64,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   changes the model and the next session runs on it, that's one change,
   not two; the second one used to cut the first one's after sessions
   short.
+- **Cache lifetime advice for subagents on a Pro or Max plan.** It was
+  always held back, as if every subscription were on usage credits.
+  Claude Code only draws on usage credits once a plan goes over its
+  limit. Within plan usage a subagent's 1-hour lifetime works, so the
+  advice now shows. A note says what changes on usage credits: the
+  main session drops to 5 minutes, and a 1-hour lifetime in an agent
+  file is ignored.
+- **The setting to change for a subagent's cache lifetime.** When
+  `subagentPromptCacheTtl` is already set, Claude Code uses it before
+  any agent file, so the card now changes that setting instead of an
+  agent file that would have no effect. Subagents whose type wasn't
+  recorded also get that setting, not an agent file named `unknown.md`.
+- The `promptCacheTtl` and `subagentPromptCacheTtl` explainers no longer
+  say a 1-hour lifetime is ignored on usage credits. Only an agent
+  file's is. The glossary's "Cache lifetime (TTL)" entry now gives the
+  main session's 1-hour default on a Pro or Max plan.
 
 ### Added
 
