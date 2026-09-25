@@ -6,14 +6,15 @@
  * column chooser for wide tables (tls:cols:<table>), numbers right-
  * aligned in even-width digits, an inline bar on the lead measure, an
  * optional tint by value, readable project names, and only the visible
- * rows drawn once a table passes 200 rows.
+ * rows drawn once a table passes 200 rows. A row can link to the same
+ * thing's mark in the chart above it (core.js's highlight).
  */
 
-import { clear, el, state, storageGet, storageSet } from "./core.js";
+import { clear, el, highlight, listenHighlight, state, storageGet, storageSet } from "./core.js";
 import { cellSortValue, formatCell, fullValue, moneyText, moneyUnit, NUMERIC_KINDS, PROJECT_KEYS, projectName } from "./format.js";
 import { findSection } from "./api.js";
 import { viewForSection, viewForTable } from "./links.js";
-import { button, emptyState, helpButton, motionOK, popoverButton } from "./ui.js";
+import { button, emptyState, helpButton, motionOK, popoverButton, swatch } from "./ui.js";
 import { icon } from "./icons.js";
 
 // Mirrors render/tables.py::resolve_evidence_column_kind /
@@ -173,6 +174,10 @@ function proseColumns(columns, rows) {
 //   rowAction {label(row), run(row, tr)}: each row opens something
 //   rowKey    row -> the key evidence links and pulses use
 //   rowClass  row -> a class for its <tr> (e.g. "row-unchanged"), or null
+//   link      {scope, key(row)}: hovering or focusing a row lights the
+//             chart mark with the same key in that scope, and back
+//   swatch    row -> the colour the row's entity has on the chart, shown
+//             as a swatch before its first cell, or null
 //   sortable  false for a form laid out as a table
 //   empty     what to say when there are no rows
 //   caption   the table's name, read aloud
@@ -415,7 +420,9 @@ export function dataGrid(spec) {
     var rowClass = spec.rowClass ? spec.rowClass(row) : null;
     if (rowClass) tr.classList.add(rowClass);
     var rowKind = spec.rowKinds && Array.isArray(row) && typeof row[0] === "string" ? spec.rowKinds[row[0]] : null;
-    visibleColumns().forEach(function (column) {
+    if (spec.link) linkRow(tr, spec.link.key(row));
+    var colour = spec.swatch ? spec.swatch(row) : null;
+    visibleColumns().forEach(function (column, position) {
       var value = columnValue(column, row);
       // Same rule as the header (headerNumeric): in a table whose rows
       // carry their own kinds, a number is right-aligned even in a row
@@ -435,6 +442,7 @@ export function dataGrid(spec) {
       } else if (content) {
         td.appendChild(content);
       }
+      if (colour && position === 0) td.insertBefore(swatch(colour), td.firstChild);
       if (spec.tint && numeric && typeof value === "number" && maxima[column.index] > 0 && column.index !== bar) {
         td.classList.add("tint-" + Math.max(1, Math.min(5, Math.ceil((value / maxima[column.index]) * 5))));
       }
@@ -461,6 +469,23 @@ export function dataGrid(spec) {
       });
     }
     return tr;
+  }
+
+  // A row that means the same thing as a chart mark: pointing at either
+  // lights both.
+  function linkRow(tr, key) {
+    if (key === null || key === undefined) return;
+    tr.setAttribute("data-link-key", String(key));
+    var on = function () {
+      highlight(spec.link.scope, key);
+    };
+    var off = function () {
+      highlight(spec.link.scope, null);
+    };
+    tr.addEventListener("mouseenter", on);
+    tr.addEventListener("mouseleave", off);
+    tr.addEventListener("focusin", on);
+    tr.addEventListener("focusout", off);
   }
 
   function spacer(height) {
@@ -563,6 +588,19 @@ export function dataGrid(spec) {
         }
       }
     }).observe(scroller);
+  }
+  if (spec.link) {
+    // Dropped once the grid has been on the page and left it.
+    var seen = false;
+    listenHighlight(function (scope, key) {
+      if (!wrap.isConnected) return !seen;
+      seen = true;
+      if (scope !== spec.link.scope) return true;
+      Array.prototype.forEach.call(tbody.querySelectorAll("tr[data-link-key]"), function (tr) {
+        tr.classList.toggle("is-linked", key !== null && tr.getAttribute("data-link-key") === String(key));
+      });
+      return true;
+    });
   }
   wrap.grid = { table: table, scroller: scroller };
   return wrap;

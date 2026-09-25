@@ -117,6 +117,21 @@ export function chip(text, opts) {
   return node;
 }
 
+// The small colour square that ties a legend entry or a grid row to its
+// chart marks (charts.js's entity colours). opts.hatch: an estimate's
+// hatched fill; opts.line: a line series; opts.glyph: a marker's own
+// shape, as SVG markup the caller built from fixed values.
+export function swatch(colour, opts) {
+  opts = opts || {};
+  var node = el("span", {
+    class: "swatch" + (opts.hatch ? " is-hatched" : "") + (opts.line ? " is-line" : "") + (opts.glyph ? " is-glyph" : ""),
+    "aria-hidden": "true",
+    html: opts.glyph || null,
+  });
+  if (colour) node.style.setProperty("--swatch", colour);
+  return node;
+}
+
 export var SEVERITY_ORDER = ["action", "advice", "info"];
 
 export var SEVERITY_LABELS = { action: "Do this", advice: "Worth considering", info: "For your information" };

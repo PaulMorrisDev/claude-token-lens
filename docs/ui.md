@@ -43,11 +43,11 @@ inline SVG charts, `prefers-color-scheme` dark."
   fetched at runtime. Chart code reaches d3 only through `d3.js` (`import d3 from "./d3.js"`), and
   never calls d3's CSV/TSV parsers, which build code with
   `new Function` and so fail under `script-src 'self'`.
-- **Inline SVG charts.** Every chart is `<svg>` markup built in the
-  page from the JSON the API already returns: the session timeline
-  (`page-spend.js`), the inline bars in report tables (`grid.js`) and
-  the habit sparklines (`page-habits.js`). Colours come from the
-  `--chart-*` tokens, so each has a dark-mode value.
+- **Inline SVG charts.** Every chart is `<svg>` built in the page by
+  d3 from the JSON the API already returns, through `renderChart` in
+  `charts-types.js` (see "Charts"); the grid's inline bars stay plain
+  elements. Colours come from the `--chart-*`, `--div-*` and ink
+  tokens, so each has a dark-mode value.
 - **Design tokens, light and dark.** `app.css` opens with every
   colour, type size, space, radius, shadow, layer and motion value as
   a custom property on `:root`. Dark values are declared twice with the
@@ -205,6 +205,107 @@ header says so and retries after 2, 4, 8, 16 and then every 30
 seconds. The last figures stay on the page, dimmed and marked stale,
 so the page is never blank. Once the service answers again, the loads
 that failed run again (`retryOnReconnect`), and the callout goes.
+
+## Charts
+
+`charts.js` is the frame every chart shares; `charts-types.js` draws
+the marks. A page draws a chart with one call,
+`renderChart(container, key, data, opts)`, and nothing else in
+`static/` builds a chart.
+
+### The catalogue and the rule for adding a chart
+
+`CHART_SPECS` in `charts.js` is closed: it holds these eight rows, and
+`tests/test_service_static.py` fails if a row is added or removed
+without this table changing too.
+
+| Key | Question (the chart's title) | Data | Form |
+|---|---|---|---|
+| `daily-spend` | Is spend rising, and did my changes move it? | `/api/daily-usage` | stacked columns, main session and subagents (or model tier), with a rule for each change |
+| `savings-levers` | Which change saves the most, and how sure is it? | the `carry`, `compaction_sim`, `model_swap` and `waste` totals | horizontal bars, hatched when the figure is not measured |
+| `summary-point` | Would summarising conversations at a different size cost less? | `compaction_sim.compaction_sim_by_window` | dashed line (simulated) with "Now" and "Cheapest" marked |
+| `session-outliers` | Which sessions are the expensive outliers? | `/api/sessions` | scatter on a log scale, coloured by work mode, with a time brush |
+| `session-context` | Where in this session did context grow or reset? | `/api/session/<id>` | line with shape markers per turn, and limit events in a strip above, one lane per kind |
+| `idle-gaps` | Do idle gaps outlast the cache? | `recache.recache_gap_buckets` | column histogram with 5-minute and 1-hour rules |
+| `lifetime-by-agent` | Which agent types gain from a 1-hour cache lifetime? | `ttl.ttl_break_even_share` | diverging bars around zero |
+| `startup-context` | What fills each agent's context before it starts? | `agent_startup.agent_startup_breakdown` | stacked horizontal bars, at most 12 agent types |
+
+A new chart needs a new row, and a row must meet both tests:
+
+- it shows at a glance something a sorted grid with inline bars
+  can't: a trend over time, a distribution against a threshold, the
+  sign across entities, a part-to-whole of 8 or fewer parts, or
+  outliers in two dimensions;
+- it leads somewhere: an action, a drawer or a filtered grid.
+
+A ranking is a grid with an inline bar, never a chart. There are no
+pies, donuts, treemaps, gauges, calendar heatmaps, 3D or dual-axis
+charts. A chart with fewer than 3 points says so in its frame instead
+of drawing, except daily spend, where one day is still a reading.
+
+### The frame
+
+Every chart has the same parts, top to bottom:
+
+- the question as its title (`h3`) and a **Show as table** toggle
+  (`aria-pressed`), which swaps the plot for a grid of the same rows;
+- a summary sentence filled from the data (`fillSummary`), which is
+  also the plot's accessible name;
+- a legend whenever there are 2 or more series, each entry a swatch or
+  the marker's own shape, so no series is told apart by colour alone;
+- the plot: bars at most 24px thick with a 4px rounded end, 2px lines,
+  hairline grid lines, a 2px gap between stacked parts, text in ink;
+- a note for what the reader needs to trust it, such as "Days run
+  midnight to midnight UTC" or why a bar is hatched.
+
+Money axes use `moneyAxis`, the chart mirror of `Units.money`: "% of
+your weekly usage limit" when there is a share, "list-price $" when
+there isn't, and plain "$" (no unit label) for the API. Token axes
+compact (1.2M).
+
+### Colour follows the thing, not its place
+
+`ENTITY_COLOURS` fixes a colour per entity: the main session is
+`--chart-1` and subagents `--chart-3`; model tiers (Opus and Fable,
+Sonnet, Haiku) have their own slots; work modes and startup-context
+parts too. Anything else is `--chart-other`. A chart never picks
+colours by rank, so changing the window never repaints what stays on
+screen.
+
+### Reading a chart
+
+- **Pointer:** a tooltip shows the value first, then the label. Every
+  mark has a hit area at least 24px across. Clicking a mark that leads
+  somewhere (`opts.open`) opens it.
+- **Keyboard:** the plot is one tab stop. The arrow keys move a cursor
+  from mark to mark and read it in the tooltip, Home and End jump to
+  the ends, Enter opens the mark where it leads somewhere, and Esc
+  lets go.
+- **Brush:** on the session scatter, dragging across a time range calls
+  `opts.brushed` with the range, so the grid below can list only those
+  sessions.
+- **Linked highlight:** a grid given `link: {scope, key(row)}` shares
+  hover and focus with the chart marks of the same scope (a day, a
+  session, an agent type) through `highlight`/`listenHighlight` in
+  `core.js`. Hovering either lights the other and dims the rest.
+  `swatch(row)` puts the entity's colour in the row's first cell.
+
+### Motion
+
+When the data changes (a new window), `renderChart` keeps the frame
+and d3 moves the marks to their new places over 600ms, unless there
+are more than 1,500 of them. While new data loads, `holdChart` keeps
+the last drawing at 0.55 opacity, so nothing jumps. The first drawing
+of a line draws in once. Under reduced motion every transition has
+zero duration.
+
+### Micro-forms
+
+`sparkline(values)` draws a small trend for a tile, with no axes: the
+tile's value is the reading. `meter(level, opts)` draws a level out of
+5 as segments (`role="meter"`), with the level always written beside
+it and the status as a word, not only a colour. `habitSparkline` is
+the weekly pace line on a Work habits card.
 
 ## Pages
 
@@ -608,7 +709,7 @@ the modules fetch every `GET /api/...` route this document's sibling
 and the view renderers name the same views, that the heading policy
 holds, and that every section `report._SECTION_ORDER` can emit is mapped
 to a view. `tests/test_ui_copy.py` holds the dashboard's own words to
-`docs/writing-help.md` ("Dashboard copy"). There is no headless browser: `urllib.request` plus string checks is enough for a
+`docs/writing-help.md` ("Dashboard copy"). The chart tests hold `CHART_SPECS` to the catalogue above, check every chart's data names a real route or report table, and keep bars thin, colours tied to entities and money axes in step with the billing mode. There is no headless browser: `urllib.request` plus string checks is enough for a
 stdlib-only test suite.
 
 ## Modules
@@ -616,11 +717,13 @@ stdlib-only test suite.
 | File | Holds |
 |---|---|
 | `app.js` | the entry point: the router (`resolveRoute`, `showView`, `VIEW_RENDERERS`), the sidebar, the page header, the window picker and the theme toggle |
-| `core.js` | `el`/`clear`, `localStorage` helpers, the shared `state`, `WINDOW_OPTIONS`, `renderedViews` and the `goTo` hook |
+| `core.js` | `el`/`clear`, `localStorage` helpers, the shared `state`, `WINDOW_OPTIONS`, `renderedViews`, the `goTo` hook and the linked-highlight bus (`highlight`, `listenHighlight`) |
 | `format.js` | the one number format: `formatCell`, `money`/`moneyText`/`moneyNode`/`moneyParts` (the `Units.money` mirror), `currencyAmount`, `moneyUnit`, `readableAmounts`, `compactNumber`, `signedPercent`, `shortTs`/`relativeTime`, `projectName` |
 | `api.js` | `fetchJson`, `loadInto`, `postJson`, `withWindow`, `loadReport` (cached per window), the figures-as-of stamp, and the connection state behind "Service unreachable" |
 | `ui.js` | the components (see "Components"): buttons, chips, tiles, panels, callouts, empty states, skeletons, command blocks and `RESTART_NOTE`, popovers, tooltips, drawers, toasts and the confirm dialog |
-| `grid.js` | the data grid (`dataGrid`), report tables (`renderTable`, `renderPlacedTables`), `renderMappedSections`, `simpleTable`, `pulseRow` |
+| `grid.js` | the data grid (`dataGrid`, with `link` and `swatch` for linked highlight), report tables (`renderTable`, `renderPlacedTables`), `renderMappedSections`, `simpleTable`, `pulseRow` |
+| `charts.js` | the chart frame: `CHART_SPECS`, `fillSummary`, `ENTITY_COLOURS`/`entityColour`, axes, the tooltip, keyboard reading, the table view, resize, `drawChart`/`holdChart`/`chartError` |
+| `charts-types.js` | the chart forms and `renderChart`, `sessionContextChart`, `savingsLevers`, and the micro-forms `sparkline`, `meter`, `habitSparkline` |
 | `links.js` | `PAGES` (pages, segments, intros), `SECTION_PAGE_MAP`/`TABLE_PAGE_MAP`, `parseHash`/`formatHash`, `viewIntro`, `pageLink`/`captureLink` |
 | `shell.js` | what is on every view: the health banner, the sidebar's status line, the capture banner |
 | `icons.js` | the icon set: `icon(name, opts)` returns an inline 16px SVG |
@@ -628,7 +731,7 @@ stdlib-only test suite.
 | `theme-boot.js` | a classic script, not a module: sets `data-theme` before the first paint |
 | `page-overview.js` | Overview |
 | `page-actions.js` | Actions › Recommendations and Checks |
-| `page-spend.js` | Spend › Usage, Savings and Sessions (with the session timeline) |
+| `page-spend.js` | Spend › Usage, Savings and Sessions (with the session drawer) |
 | `page-cache.js` | Cache › Rebuilds and Lifetime (TTL) |
 | `page-agents.js` | Agents & context › Subagents, Quality and Context |
 | `page-habits.js` | Work habits |

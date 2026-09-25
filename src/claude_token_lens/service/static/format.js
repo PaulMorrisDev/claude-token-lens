@@ -20,7 +20,7 @@
 
 import { el, state } from "./core.js";
 
-var MINUS = "−";
+export var MINUS = "−";
 
 export function thousands(n) {
   return Math.round(Number(n)).toLocaleString("en-US");
@@ -275,6 +275,46 @@ export function withUnit(value, unit) {
   var node = el("span", { class: "with-unit" }, [el("span", { text: value })]);
   if (unit) node.appendChild(el("span", { class: "unit", text: " " + unit }));
   return node;
+}
+
+// A short amount for a chart's ticks and labels: "$0", "$2.5", "$45",
+// "$1.2K". Another currency writes the number alone; the axis names
+// the unit.
+function axisNumber(value) {
+  var abs = Math.abs(value);
+  var text = abs >= 1000 ? compactNumber(abs) : abs >= 10 ? String(Math.round(abs)) : String(Number(abs.toFixed(abs >= 1 ? 1 : 2)));
+  return signed(text, value < 0 && text !== "0");
+}
+
+// Mirrors units.Units.money for a chart axis: the unit the axis is
+// labelled in, and each value written in it. On a plan with a known
+// share of the weekly limit, the axis reads in that share; on a plan
+// without one, in list-price dollars; on the API, in dollars. Values
+// stay in USD for the scale: tick(usd) writes one in the axis's unit.
+export function moneyAxis() {
+  var currency = state.currency || "USD";
+  var symbol = currency === "USD" ? "$" : currency;
+  var unitsInfo = state.units || {};
+  var share = unitsInfo.mode === "subscription" ? unitsInfo.share_per_usd : null;
+  if (share !== null && share !== undefined) {
+    return {
+      unit: "% of your " + (unitsInfo.period_label || "weekly usage limit"),
+      tick: function (usd) {
+        var value = usd * share;
+        var abs = Math.abs(value);
+        var text = abs >= 10 ? String(Math.round(abs)) : String(Number(abs.toFixed(abs >= 1 ? 1 : 2)));
+        return signed(text, value < 0 && text !== "0") + "%";
+      },
+    };
+  }
+  return {
+    unit: unitsInfo.mode === "subscription" ? "list-price " + symbol : symbol,
+    tick: function (usd) {
+      var text = axisNumber(usd);
+      if (currency !== "USD") return text;
+      return text.charAt(0) === MINUS ? MINUS + "$" + text.slice(1) : "$" + text;
+    },
+  };
 }
 
 export function cellSortValue(value) {

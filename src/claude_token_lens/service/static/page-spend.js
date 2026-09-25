@@ -3,12 +3,13 @@
  * The Spend page: Usage, Savings and Sessions.
  */
 
-import { clear, el, escapeHtml } from "./core.js";
+import { clear, el } from "./core.js";
 import { compactNumber, formatDuration, fullValue, moneyParts, projectName, shortTs, thousands } from "./format.js";
 import { fetchJson, loadInto, loadReport, postJson, withWindow } from "./api.js";
-import { button, drawer, emptyState, errorNotice, loadingNode, tile, tileRow, toast } from "./ui.js";
+import { button, drawer, errorNotice, loadingNode, tile, tileRow, toast } from "./ui.js";
 import { dataGrid, renderMappedSections, renderReportBackedSection } from "./grid.js";
 import { viewIntro } from "./links.js";
+import { sessionContextChart } from "./charts-types.js";
 
 // ======================================================================
 // Spend, Sessions
@@ -309,9 +310,8 @@ function buildSessionDetail(container, session) {
 
   if (session.feedback_questions) wrap.appendChild(buildSessionRating(container, session));
 
-  // -- timeline: context size over turns with event markers ----------
-  wrap.appendChild(el("h3", { text: "Where did the context grow or reset?" }));
-  wrap.appendChild(buildSessionTimeline(session));
+  // -- chart 5: context size over turns with event markers ------------
+  wrap.appendChild(sessionContextChart(session));
 
   // -- transcripts table (no path -- see docs/api.md's privacy rule) --
   wrap.appendChild(el("h3", { text: "Transcripts" }));
@@ -395,251 +395,6 @@ function buildTagSelect(options, current) {
   });
   if (current && options.indexOf(current) !== -1) select.value = current;
   return select;
-}
-
-// `/api/session/<id>` (S1-integration fix 1.g, see docs/api.md) adds
-// `turn_series`: a list of `[turn_index, ctx, cache_creation_tokens,
-// is_recache, preceding_primary]` per priced turn of the session's
-// top-level transcript, plus `markers`: `{compactions, spawns,
-// human}`, each a list of turn_index values, and (v3-limits wiring)
-// `limit_markers`: `[{ts, kind, detail}, ...]` usage-cap pause/resume/
-// agent-terminated events. It's absent (rather than an empty list)
-// whenever the store has no stored top-level transcript digest to
-// source it from -- e.g. a session ingested before the watcher parsed
-// a top-level transcript, or one whose digest failed to decode -- so
-// this still falls back to a clearly labelled placeholder rather than
-// inventing a curve.
-function findPerTurnSeries(session) {
-  var series = session.turn_series;
-  return Array.isArray(series) && series.length ? series : null;
-}
-
-function toTurnIndexSet(list) {
-  var set = {};
-  (list || []).forEach(function (turnIndex) {
-    set[turnIndex] = true;
-  });
-  return set;
-}
-
-// UX-6/9: every timeline marker used to be an identical circle,
-// distinguished only by fill colour -- color alone (WCAG 1.4.1), so a
-// colorblind viewer or a low-color display can't tell recache from
-// compaction from spawn, etc. Each kind now also gets its own shape;
-// colour stays as a second, redundant cue rather than the only one.
-// ``titleText`` is optional (the legend's own tiny icons pass none).
-function markerGlyph(shape, cx, cy, r, fill, titleText) {
-  var title = titleText ? "<title>" + titleText + "</title>" : "";
-  var pts;
-  switch (shape) {
-    case "square":
-      return (
-        '<rect x="' + (cx - r * 0.9).toFixed(1) + '" y="' + (cy - r * 0.9).toFixed(1) +
-        '" width="' + (r * 1.8).toFixed(1) + '" height="' + (r * 1.8).toFixed(1) +
-        '" fill="' + fill + '">' + title + "</rect>"
-      );
-    case "triangle-up":
-    case "triangle-down":
-      var flip = shape === "triangle-down" ? -1 : 1;
-      pts = [
-        [cx, cy - flip * r * 1.3],
-        [cx - r * 1.2, cy + flip * r * 0.9],
-        [cx + r * 1.2, cy + flip * r * 0.9],
-      ];
-      return (
-        '<polygon points="' +
-        pts.map(function (p) { return p[0].toFixed(1) + "," + p[1].toFixed(1); }).join(" ") +
-        '" fill="' + fill + '">' + title + "</polygon>"
-      );
-    case "diamond":
-      pts = [
-        [cx, cy - r * 1.3],
-        [cx + r * 1.3, cy],
-        [cx, cy + r * 1.3],
-        [cx - r * 1.3, cy],
-      ];
-      return (
-        '<polygon points="' +
-        pts.map(function (p) { return p[0].toFixed(1) + "," + p[1].toFixed(1); }).join(" ") +
-        '" fill="' + fill + '">' + title + "</polygon>"
-      );
-    case "plus":
-      return (
-        '<rect x="' + (cx - r * 0.35).toFixed(1) + '" y="' + (cy - r * 1.2).toFixed(1) +
-        '" width="' + (r * 0.7).toFixed(1) + '" height="' + (r * 2.4).toFixed(1) + '" fill="' + fill + '"></rect>' +
-        '<rect x="' + (cx - r * 1.2).toFixed(1) + '" y="' + (cy - r * 0.35).toFixed(1) +
-        '" width="' + (r * 2.4).toFixed(1) + '" height="' + (r * 0.7).toFixed(1) + '" fill="' + fill + '">' + title + "</rect>"
-      );
-    case "x":
-      return (
-        '<line x1="' + (cx - r * 1.1).toFixed(1) + '" y1="' + (cy - r * 1.1).toFixed(1) +
-        '" x2="' + (cx + r * 1.1).toFixed(1) + '" y2="' + (cy + r * 1.1).toFixed(1) +
-        '" stroke="' + fill + '" stroke-width="1.6"></line>' +
-        '<line x1="' + (cx - r * 1.1).toFixed(1) + '" y1="' + (cy + r * 1.1).toFixed(1) +
-        '" x2="' + (cx + r * 1.1).toFixed(1) + '" y2="' + (cy - r * 1.1).toFixed(1) +
-        '" stroke="' + fill + '" stroke-width="1.6">' + title + "</line>"
-      );
-    case "circle":
-    default:
-      return '<circle cx="' + cx.toFixed(1) + '" cy="' + cy.toFixed(1) + '" r="' + r + '" fill="' + fill + '">' + title + "</circle>";
-  }
-}
-
-function buildSessionTimeline(session) {
-  var series = findPerTurnSeries(session);
-  if (!series) {
-    return emptyState(
-      "No turn-by-turn record for this session: Token Lens hasn't stored its main transcript yet.",
-      null,
-      "It appears once the service has read the session. Open it again in a minute."
-    );
-  }
-
-  var markers = session.markers || {};
-  var compactionTurns = toTurnIndexSet(markers.compactions);
-  var spawnTurns = toTurnIndexSet(markers.spawns);
-  var humanTurns = toTurnIndexSet(markers.human);
-
-  var width = 640, height = 180, padding = 28;
-  // Finding 10: this used to compute the max via Math.max, spreading
-  // the whole per-turn array as individual call arguments -- a
-  // session with tens of thousands of turns could blow the engine's
-  // argument-count/call-stack limit ("Maximum call stack size
-  // exceeded"). A plain loop has no such limit (also cheaper: no
-  // intermediate array allocation).
-  var maxCtx = 0;
-  for (var mi = 0; mi < series.length; mi++) {
-    var ctxValue = series[mi][1] || 0;
-    if (ctxValue > maxCtx) maxCtx = ctxValue;
-  }
-  maxCtx = maxCtx || 1;
-  var n = series.length;
-  var points = series.map(function (t, i) {
-    var x = padding + (n > 1 ? (i / (n - 1)) * (width - 2 * padding) : 0);
-    var y = height - padding - ((t[1] || 0) / maxCtx) * (height - 2 * padding);
-    return [x, y];
-  });
-
-  // Built as an inline markup string rather than via
-  // `document.createElementNS`: an <svg> assigned through
-  // `innerHTML` into an HTML document is placed in the SVG namespace
-  // automatically by the HTML5 parser's own foreign-content handling
-  // (no explicit namespace URI needed), which keeps this file free of
-  // the XML namespace URI's own URL-scheme literal -- see docs/ui.md's
-  // "no bare URL-scheme literal anywhere in static/*" rule; that
-  // namespace string names no reachable resource, but this file
-  // avoids it anyway rather than relying on that distinction. Every
-  // dynamic value embedded below is either a fixed-precision number
-  // or passed through `escapeHtml`.
-  // Markers are drawn in ink, not chart colours: the shape tells kinds
-  // apart, and ink keeps every glyph at 3:1 or better against the panel
-  // in both themes (WCAG 1.4.11), where a light yellow or pink would not.
-  var markerColors = { recache: "var(--ink-2)", compaction: "var(--ink-2)", spawn: "var(--ink-2)", human: "var(--ink-2)" };
-  // UX-6/9: one shape per kind (see markerGlyph above), never reused
-  // across the two marker sets below -- 7 kinds, 7 distinct shapes.
-  var markerShapes = { recache: "circle", compaction: "square", spawn: "triangle-up", human: "diamond" };
-  // v3-limits wiring: drawn in the blank strip above the context-size
-  // line (y well below
-  // `padding`) rather than pinned to a turn's own point -- a
-  // usage-limit event's `ts` falls *inside* the pause gap between two
-  // turns, not at a turn_index of its own, so unlike recache/
-  // compaction/spawn/human it cannot share the index-based x position
-  // those markers use. Positioned instead by interpolating `ts`
-  // between the session's own `first_ts`/`last_ts` (docs/limits.md's
-  // "Session-timeline marker contract" / docs/ui.md).
-  var limitMarkerColors = { limit_hit: "var(--ink-2)", limit_resume: "var(--ink-2)", agent_terminated: "var(--ink-2)" };
-  var limitMarkerShapes = { limit_hit: "triangle-down", limit_resume: "plus", agent_terminated: "x" };
-  var svgParts = [];
-  svgParts.push(
-    '<svg viewBox="0 0 ' + width + " " + height + '" class="timeline-svg" role="img" aria-label="' +
-      escapeHtml("Context size over turns for session " + session.id) +
-      '">'
-  );
-  if (points.length > 1) {
-    svgParts.push(
-      '<polyline points="' +
-        points
-          .map(function (p) {
-            return p[0].toFixed(1) + "," + p[1].toFixed(1);
-          })
-          .join(" ") +
-        '" fill="none" stroke="var(--chart-1)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"></polyline>'
-    );
-  } else if (points.length === 1) {
-    // Finding 11: a single-turn session has exactly one point, and a
-    // <polyline> needs at least two to draw anything -- it silently
-    // rendered nothing at all. Draw the one point as a dot instead.
-    svgParts.push(
-      '<circle cx="' + points[0][0].toFixed(1) + '" cy="' + points[0][1].toFixed(1) +
-        '" r="4" fill="var(--chart-1)"></circle>'
-    );
-  }
-  series.forEach(function (turn, i) {
-    var turnIndex = turn[0];
-    var isRecache = turn[3];
-    var kinds = [];
-    if (isRecache) kinds.push("recache");
-    if (compactionTurns[turnIndex]) kinds.push("compaction");
-    if (spawnTurns[turnIndex]) kinds.push("spawn");
-    if (humanTurns[turnIndex]) kinds.push("human");
-    kinds.forEach(function (kind) {
-      var label = escapeHtml("Turn " + (turnIndex || i + 1) + ": " + kind);
-      svgParts.push(
-        markerGlyph(markerShapes[kind] || "circle", points[i][0], points[i][1], 3, markerColors[kind] || "var(--ink-3)", label)
-      );
-    });
-  });
-
-  var limitMarkers = Array.isArray(session.limit_markers) ? session.limit_markers : [];
-  var limitKindsSeen = {};
-  if (limitMarkers.length) {
-    var firstMs = Date.parse(session.first_ts);
-    var lastMs = Date.parse(session.last_ts);
-    var hasTimeRange = !isNaN(firstMs) && !isNaN(lastMs) && lastMs > firstMs;
-    limitMarkers.forEach(function (marker) {
-      var ms = Date.parse(marker.ts);
-      if (isNaN(ms)) return;
-      var fraction = hasTimeRange ? Math.max(0, Math.min(1, (ms - firstMs) / (lastMs - firstMs))) : 0;
-      var mx = padding + fraction * (width - 2 * padding);
-      var my = Math.round(padding / 2);
-      var subkind = marker.detail && marker.detail.subkind;
-      var label = escapeHtml(marker.kind + (subkind ? " (" + subkind + ")" : "") + " at " + marker.ts);
-      limitKindsSeen[marker.kind] = true;
-      svgParts.push(
-        markerGlyph(limitMarkerShapes[marker.kind] || "circle", mx, my, 3, limitMarkerColors[marker.kind] || "var(--ink-3)", label)
-      );
-    });
-  }
-  svgParts.push("</svg>");
-
-  var wrap = el("div", { html: svgParts.join("") });
-  var legend = el("div", { class: "timeline-legend" });
-  // UX-6/9: the legend's own swatch mirrors the marker's real shape
-  // (not just a colour dot), via the same markerGlyph a viewer just
-  // saw drawn on the chart -- so the legend stays a genuine key
-  // rather than a second color-only cue.
-  function swatchIcon(shape, fill) {
-    return el("span", { class: "swatch", html: '<svg viewBox="0 0 14 14" width="14" height="14" aria-hidden="true">' + markerGlyph(shape, 7, 7, 3, fill) + "</svg>" });
-  }
-  Object.keys(markerColors).forEach(function (kind) {
-    legend.appendChild(el("span", null, [swatchIcon(markerShapes[kind] || "circle", markerColors[kind]), document.createTextNode(kind)]));
-  });
-  Object.keys(limitMarkerColors).forEach(function (kind) {
-    if (!limitKindsSeen[kind]) return;
-    legend.appendChild(
-      el("span", null, [swatchIcon(limitMarkerShapes[kind] || "circle", limitMarkerColors[kind]), document.createTextNode(kind.replace(/_/g, " "))])
-    );
-  });
-  wrap.appendChild(legend);
-  if (session.truncated) {
-    // Finding 11: /api/session/<id> downsamples turn_series above
-    // Store.MAX_TURN_SERIES_POINTS -- say so rather than silently
-    // showing a thinned-out chart as the complete picture.
-    wrap.appendChild(
-      el("p", { class: "notes", text: "This session has many turns; the chart above is downsampled (every marked turn is kept)." })
-    );
-  }
-  return wrap;
 }
 
 // ======================================================================

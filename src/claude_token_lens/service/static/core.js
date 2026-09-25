@@ -2,7 +2,9 @@
  *
  * Shared DOM helpers, browser storage, the dashboard's state and the
  * navigation hook (goTo) that lets a module link to another view
- * without importing app.js.
+ * without importing app.js, and the hub that links a grid row to the
+ * chart mark for the same thing (highlight), so grid.js and charts.js
+ * never import each other.
  */
 
 // -- tiny DOM helpers ------------------------------------------------
@@ -43,8 +45,8 @@ export function clear(node) {
   while (node.firstChild) node.removeChild(node.firstChild);
 }
 
-// Used only where a value must go through innerHTML (the inline-SVG
-// timeline in page-spend.js) rather than textContent/setAttribute.
+// Used only where a value must go through innerHTML (the habit
+// sparkline in charts-types.js) rather than textContent/setAttribute.
 export function escapeHtml(value) {
   return String(value)
     .replace(/&/g, "&amp;")
@@ -134,4 +136,29 @@ export function setRouteHandler(handler) {
 // options: focus (move focus to the page title), force (draw again).
 export function goTo(viewKey, options) {
   if (routeHandler) routeHandler(viewKey, options);
+}
+
+// -- linked highlight ------------------------------------------------------
+// A grid row and a chart mark that mean the same thing light up together
+// (charts.js, grid.js). highlight(scope, key) tells every listener; a
+// null key clears. scope names what the keys are ("session",
+// "agent-type"). A listener returns false once its chart or grid has
+// left the page, and is dropped.
+
+var highlightListeners = [];
+
+export function highlight(scope, key) {
+  var active = key === undefined ? null : key;
+  highlightListeners = highlightListeners.filter(function (listener) {
+    return listener(scope, active) !== false;
+  });
+}
+
+export function listenHighlight(listener) {
+  highlightListeners.push(listener);
+  return function stop() {
+    highlightListeners = highlightListeners.filter(function (other) {
+      return other !== listener;
+    });
+  };
 }

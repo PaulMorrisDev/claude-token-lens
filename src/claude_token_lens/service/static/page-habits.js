@@ -3,12 +3,13 @@
  * The Work habits page.
  */
 
-import { clear, el, escapeHtml, state } from "./core.js";
+import { clear, el, state } from "./core.js";
 import { formatCell, money, moneyText } from "./format.js";
 import { findSection, loadReport } from "./api.js";
 import { chip, codeBlockWithCopy, emptyState, errorNotice, helpButton, loadingNode, tile, tileRow } from "./ui.js";
 import { headRow, renderPlacedTables } from "./grid.js";
 import { viewIntro } from "./links.js";
+import { habitSparkline } from "./charts-types.js";
 
 // ======================================================================
 // Work habits: the habits section's "This week" digest as tiles,
@@ -130,30 +131,6 @@ function renderHabitsDigest(table, container) {
     );
   });
   block.appendChild(tileRow(tiles, { class: "metric-tiles-fit habits-digest" }));
-}
-
-// The playbook's `weeks` column: 0-100 per week, "-" for a week with
-// too few messages, drawn as a small bar chart.
-function habitSparkline(weeks, label) {
-  var values = String(weeks || "").split(" ").filter(function (part) {
-    return part !== "";
-  });
-  if (!values.length) return null;
-  var width = 8 * values.length;
-  var height = 24;
-  var parts = ['<svg viewBox="0 0 ' + width + " " + height + '" class="habit-spark" role="img" aria-label="' + escapeHtml(label) + '">'];
-  values.forEach(function (value, i) {
-    if (value === "-") {
-      parts.push('<rect x="' + (i * 8 + 1) + '" y="' + (height - 1) + '" width="6" height="1" fill="var(--axis-line)"></rect>');
-      return;
-    }
-    var h = Math.max(1, Math.round((Number(value) / 100) * (height - 2)));
-    parts.push('<rect x="' + (i * 8 + 1) + '" y="' + (height - h) + '" width="6" height="' + h + '" fill="var(--chart-1)"></rect>');
-  });
-  parts.push("</svg>");
-  var wrap = el("span", { class: "habit-spark-wrap" });
-  wrap.innerHTML = parts.join("");
-  return wrap;
 }
 
 //: UX-4/7: habits shown as cards before the rest collapse into <details>

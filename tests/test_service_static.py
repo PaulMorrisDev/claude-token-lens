@@ -1034,12 +1034,14 @@ def test_app_js_timeline_draws_a_circle_for_a_single_turn_session() -> None:
     against the pre-fix source (a single unconditional ``<polyline>``
     push, no ``points.length`` branch) and passes once
     ``buildSessionTimeline`` draws a ``<circle>`` for the one-point case.
+    The timeline is a d3 chart type in charts-types.js now, so the circle
+    is appended with d3 rather than written as markup.
     """
     timeline_src = _function_source(_app_js(), "buildSessionTimeline")
-    assert "points.length === 1" in timeline_src or "points.length == 1" in timeline_src, (
-        "buildSessionTimeline must special-case a single-point series"
-    )
-    assert "<circle" in timeline_src
+    marker = "points.length === 1"
+    assert marker in timeline_src, "buildSessionTimeline must special-case a single-point series"
+    one_point = timeline_src.split(marker, 1)[1].split("}", 1)[0]
+    assert 'append("circle")' in one_point
 
 
 def _split_top_level_args(args_str: str) -> list[str]:
@@ -1576,3 +1578,146 @@ def test_evidence_row_pulse_moves_only_opacity_and_holds_under_reduced_motion() 
     assert "if (motionOK())" in pulse
     assert 'addEventListener("pointerdown", clearTarget, true)' in pulse
     assert 'addEventListener("keydown", clearTarget, true)' in pulse
+
+
+# -- charts (charts.js, charts-types.js) ------------------------------------
+
+
+#: docs/ui.md's chart catalogue: the only charts the dashboard draws, by
+#: catalogue row. A new chart needs a row there first.
+_CHART_CATALOGUE = {
+    "daily-spend": 1,
+    "savings-levers": 2,
+    "summary-point": 3,
+    "session-outliers": 4,
+    "session-context": 5,
+    "idle-gaps": 6,
+    "lifetime-by-agent": 7,
+    "startup-context": 8,
+}
+
+
+def _chart_specs() -> dict:
+    source = _declaration_source(_app_js(), "CHART_SPECS")
+    return _js_literal_to_json(source[source.index("{") :])
+
+
+def _chart_forms() -> set[str]:
+    source = _declaration_source(_app_js(), "FORMS")
+    return set(re.findall(r'^\s*"?([\w-]+)"?\s*:', source, re.MULTILINE))
+
+
+def test_chart_specs_are_exactly_the_catalogue() -> None:
+    """The catalogue is closed: CHART_SPECS lists catalogue rows 1-8 and
+    nothing else, each titled with the question it answers and read out
+    by a summary built from its figures."""
+    specs = _chart_specs()
+    assert {key: spec["n"] for key, spec in specs.items()} == _CHART_CATALOGUE
+    forms = _chart_forms()
+    for key, spec in specs.items():
+        assert spec["title"].endswith("?"), key
+        assert re.search(r"\{\w+\}", spec["summary"]), key
+        assert spec["form"] in forms, f"{key}: no chart type draws form {spec['form']!r}"
+        for variant, text in spec.get("alt", {}).items():
+            assert text.endswith("."), (key, variant)
+
+
+def test_every_chart_source_is_a_route_or_a_report_table() -> None:
+    """A chart's figures come from a documented route or from a table the
+    report really builds, so the catalogue can't name data that doesn't
+    exist."""
+    api_py = (REPO_ROOT / "src" / "claude_token_lens" / "service" / "api.py").read_text(encoding="utf-8")
+    python = "\n".join(p.read_text(encoding="utf-8") for p in (REPO_ROOT / "src" / "claude_token_lens").rglob("*.py"))
+    for key, spec in _chart_specs().items():
+        sources = spec["source"] if isinstance(spec["source"], list) else [spec["source"]]
+        for source in sources:
+            if source.startswith("/api/"):
+                # A route with an id is matched by a pattern (^/api/session/...).
+                prefix = source.split("<")[0]
+                assert '"' + prefix in api_py or "^" + prefix in api_py, f"{key}: no route {source}"
+            else:
+                section, table = source.split(".")
+                assert re.search(r'["\']' + re.escape(table) + r'["\']', python), f"{key}: no report table {table}"
+                assert re.search(r'["\']' + re.escape(section) + r'["\']', python), f"{key}: no report section {section}"
+
+
+def test_charts_are_drawn_only_through_render_chart_and_the_catalogue() -> None:
+    """Every page draws a chart with renderChart and a catalogued key;
+    only the chart types reach drawChart itself."""
+    specs = _chart_specs()
+    for path in _js_modules():
+        text = path.read_text(encoding="utf-8")
+        for key in re.findall(r'renderChart\(\s*[\w.]+\s*,\s*"([\w-]+)"', text):
+            assert key in specs, f"{path.name} draws uncatalogued chart {key!r}"
+        if path.name not in ("charts.js", "charts-types.js"):
+            assert "drawChart(" not in text, f"{path.name} calls drawChart; use renderChart"
+    assert re.findall(r'renderChart\(\s*[\w.]+\s*,\s*"([\w-]+)"', _app_js()), "no chart is drawn anywhere"
+
+
+def test_every_chart_has_a_table_view_and_a_reading() -> None:
+    """Colour is never the only way in: every chart frame carries a Table
+    toggle with the same figures, and every chart type returns a table
+    and the facts its summary sentence is built from."""
+    frame = _function_source(_app_js(), "buildFrame")
+    assert '"Show as table"' in frame and '"aria-pressed"' in frame
+    assert '"Show as chart"' in _function_source(_app_js(), "showTable")
+    source = _app_js()
+    forms = _declaration_source(source, "FORMS")
+    for name in re.findall(r":\s*(\w+),?\s*$", forms, re.MULTILINE):
+        body = _function_source(source, name)
+        assert "table: {" in body, f"{name} returns no table view"
+        assert "facts: {" in body, f"{name} returns no facts for its summary"
+        assert "empty:" in body, f"{name} has no reasoned empty state"
+
+
+def test_bars_stay_thin_and_charts_hold_the_minimum_points() -> None:
+    """Thin marks (24px at most) and no chart for fewer than three points:
+    below that the page shows tiles instead."""
+    source = _app_js()
+    assert re.search(r"var MAX_BAR = (\d+);", source) and int(re.search(r"var MAX_BAR = (\d+);", source).group(1)) <= 24
+    assert int(re.search(r"var BAR = (\d+);", source).group(1)) <= 24
+    assert "var MIN_POINTS = 3;" in source
+    for name in ("bars", "line", "histogram", "diverging", "stackedBars", "scatter"):
+        assert "MIN_POINTS" in _function_source(source, name), name
+
+
+def test_a_replaced_chart_lets_go_and_a_fresh_one_starts_as_a_chart() -> None:
+    """A chart replaced in its slot (the next session opened, or an error)
+    disconnects its resize observer and highlight listener, so frames
+    don't pile up; a fresh chart drops the last one's table choice; a
+    table view measures its own width, so it follows new figures while
+    the plot is hidden; and new figures clear the scatter's brush and
+    tell the page, so its grid isn't left filtered to a range the chart
+    no longer shows."""
+    source = _app_js()
+    retire = _function_source(source, "retireFrame")
+    assert "observer.disconnect()" in retire and "stopHighlight()" in retire
+    draw = _function_source(source, "drawChart")
+    assert "retireFrame(frame)" in draw and "delete tableShown[slot]" in draw
+    assert "plotWidth(frame)" in draw
+    assert "retireFrame(" in _function_source(source, "chartError")
+    assert "frame.tableHost" in _function_source(source, "plotWidth")
+    scatter = _function_source(source, "scatter")
+    assert "opts.brushed(null)" in scatter
+
+
+def test_money_axis_mirrors_the_billing_units() -> None:
+    """A money axis says what its numbers are in the same words units.py
+    uses: a share of the usage limit, list-price dollars, or dollars."""
+    units_py = (REPO_ROOT / "src" / "claude_token_lens" / "units.py").read_text(encoding="utf-8")
+    assert "% of your weekly usage limit" in units_py and "list-price" in units_py
+    axis = _function_source(_app_js(), "moneyAxis")
+    assert '"% of your "' in axis and '"weekly usage limit"' in axis
+    assert '"list-price "' in axis
+    assert "share_per_usd" in axis
+
+
+def test_chart_colours_follow_the_entity_not_the_window() -> None:
+    """A thing keeps its colour everywhere: the maps are fixed, and
+    whatever doesn't fit falls to Other in grey."""
+    source = _declaration_source(_app_js(), "ENTITY_COLOURS").split("=", 1)[1]
+    colours = _js_literal_to_json(re.sub(r"^\s*//.*$", "", source, flags=re.MULTILINE))
+    for kind, mapping in colours.items():
+        assert mapping.get("other") == "var(--chart-other)" or kind == "agent", kind
+        for value in mapping.values():
+            assert re.fullmatch(r"var\(--chart-(?:[1-8]|other)\)", value), (kind, value)
