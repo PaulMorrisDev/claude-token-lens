@@ -21,7 +21,8 @@ sessions after the change, in the most exact way that setting allows:
   change to after it.
 - **From before** (``"before"``): anything else. Each session after the
   change, at the cost per reply of the sessions before it that did the
-  same kind of work (``impact.stratum``), or all of them when none did.
+  same kind of work, as hard and as big where capture says
+  (``impact.stratum``), or all of them when none did.
 
 A change to several settings at once is headlined by the before method:
 their effects overlap, so the per-setting figures, still listed, don't
@@ -275,15 +276,16 @@ def _from_before(before_facts, after_facts) -> tuple[float, float, str] | None:
     if pooled_turns <= 0:
         return None
     pooled = sum(s.cost for s in before_facts) / pooled_turns
+    fields = impact.stratum_fields(before_facts + after_facts)
     by_stratum: dict[str, list[float]] = {}
     for s in before_facts:
-        acc = by_stratum.setdefault(impact.stratum(s), [0.0, 0.0])
+        acc = by_stratum.setdefault(impact.stratum(s, fields), [0.0, 0.0])
         acc[0] += s.cost
         acc[1] += s.main.turns
     paid = sum(s.cost for s in after_facts)
     without = 0.0
     for s in after_facts:
-        cost, turns = by_stratum.get(impact.stratum(s), (0.0, 0.0))
+        cost, turns = by_stratum.get(impact.stratum(s, fields), (0.0, 0.0))
         without += s.main.turns * (cost / turns if turns > 0 else pooled)
     basis = (
         f"{len(after_facts)} sessions since the change, at the cost per reply of "

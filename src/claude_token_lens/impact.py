@@ -21,7 +21,9 @@ as :mod:`quality`, duplicated here since the pairs a measure draws from
 sessions aren't :class:`quality.Run` signals). The "after" side is
 stratum-reweighted to "before"'s mix of task/purpose (EST-P3) first, so
 a change in the kind of work people did after a change doesn't read as
-the change's own effect. Main sessions a scheduled task started with no
+the change's own effect. Once at least half the sessions compared carry
+metrics capture's ``level`` and ``size`` tags, how hard and how big the
+work was split the strata too (:func:`stratum_fields`). Main sessions a scheduled task started with no
 message of yours are a stratum of their own: their cost still counts,
 but more or fewer of them running after a change doesn't read as a
 saving or a rise. ``label_key`` carries the closed verdict:
@@ -110,6 +112,10 @@ class SessionFacts:
     #: The kind of task Claude reported (metrics capture's task=), or None
     #: without at least two tagged messages agreeing (see classify.reported_task).
     task: str | None = None
+    #: How hard and how big Claude reported the work (capture's level= and
+    #: size=), the same way as ``task``; they refine its stratum.
+    level: str | None = None
+    size: str | None = None
     #: Heuristic purpose and mode (classify.classify_session), used to
     #: stratify the "after" side onto "before"'s mix of work (EST-P3).
     purpose: str = ""
@@ -180,6 +186,8 @@ def session_facts(corpus, pricing: Pricing) -> list[SessionFacts]:
                 main=_transcript(top, pricing),
                 session_id=bundle.session_id,
                 task=task,
+                level=classify_mod.reported_word(top, "level")[0],
+                size=classify_mod.reported_word(top, "size")[0],
                 purpose=classification.purpose,
                 mode=classification.mode,
                 scheduled=scheduled_main_session(top),
@@ -194,14 +202,31 @@ def session_facts(corpus, pricing: Pricing) -> list[SessionFacts]:
     return out
 
 
-def stratum(session: SessionFacts) -> str:
+#: Capture fields that refine a stratum, in order (:func:`stratum_fields`).
+STRATUM_FIELDS = ("level", "size")
+
+
+def stratum_fields(sessions: list[SessionFacts]) -> tuple[str, ...]:
+    """The :data:`STRATUM_FIELDS` at least half of ``sessions`` carry.
+    Fewer would put the rest in strata of their own, with nothing like
+    them on the other side of the change."""
+    return tuple(
+        name for name in STRATUM_FIELDS if sessions and 2 * sum(1 for s in sessions if getattr(s, name)) >= len(sessions)
+    )
+
+
+def stratum(session: SessionFacts, fields: tuple[str, ...] = ()) -> str:
     """EST-P3's stratification key: ``"(scheduled)"`` for a main session a
     scheduled task started with no message of yours, else the
     capture-reported task where we have one, else the heuristic purpose,
-    else a catch-all bucket."""
+    else a catch-all bucket; then each of ``fields`` (how hard and how
+    big, from :func:`stratum_fields`), so like is compared with like."""
     if session.scheduled:
         return "(scheduled)"
-    return session.task or session.purpose or "(unspecified)"
+    key = session.task or session.purpose or "(unspecified)"
+    for name in fields:
+        key += "/" + (getattr(session, name) or "-")
+    return key
 
 
 # -- measures ------------------------------------------------------------
@@ -286,9 +311,10 @@ def _stratified_estimate(
     pooled = _ratio_estimate(_pairs(measure, after))
     if not before or not after:
         return pooled
+    fields = stratum_fields(before + after)
     weights: dict[str, float] = {}
     for session in before:
-        key = stratum(session)
+        key = stratum(session, fields)
         weights[key] = weights.get(key, 0.0) + 1.0
     total = sum(weights.values())
     if total <= 0:
@@ -299,7 +325,7 @@ def _stratified_estimate(
     contributed = False
     for key, count in weights.items():
         weight = count / total
-        group = [s for s in after if stratum(s) == key]
+        group = [s for s in after if stratum(s, fields) == key]
         est = _ratio_estimate(_pairs(measure, group)) if group else pooled
         if est.value is None:
             est = pooled

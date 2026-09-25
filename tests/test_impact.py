@@ -231,6 +231,55 @@ def test_stratum_prefers_task_then_purpose_then_a_catch_all():
     assert impact.stratum(facts) == "test"
 
 
+def test_how_hard_and_how_big_split_the_stratum_once_half_the_sessions_carry_them():
+    facts = _tasked(0, 1.0, "feature")
+    facts.level = "hard"
+    assert impact.stratum(facts, ("level", "size")) == "feature/hard/-"
+    assert impact.stratum(facts) == "feature"
+    others = [_tasked(0, 1.0, "feature") for _ in range(2)]
+    assert impact.stratum_fields([facts] + others) == ()
+    others[0].level, others[0].size = "easy", "s"
+    assert impact.stratum_fields([facts] + others) == ("level",)
+
+
+def test_harder_work_after_a_change_doesnt_read_as_the_change_costing_more(tmp_path):
+    """Before: easy features at 2.00. After: easy features at 2.00 and
+    hard ones at 20.00. Reweighted to before's all-easy mix, nothing
+    changed; the same mix by task alone reads as a big rise."""
+    def work(days, cost, level):
+        facts = _tasked(days, cost, "feature")
+        facts.level = level
+        return facts
+
+    before = [work(-d, 2.0, "easy") for d in (1, 2, 3)]
+    after = [work(d, 2.0, "easy") for d in (0.1, 0.2)] + [work(d, 20.0, "hard") for d in (0.3, 0.4, 0.5)]
+    assert impact._stratified_estimate(impact._COST, before, after).value == pytest.approx(2.0)
+    for s in before + after:
+        s.level = None
+    assert impact._stratified_estimate(impact._COST, before, after).value > 10.0
+
+
+def test_session_facts_reads_how_hard_and_how_big_from_capture_tags(tmp_path):
+    from helpers import attachment_line, user_str_line
+
+    note_text = "Token Lens metrics capture (tl-cap v1 task,level,size): ..."
+    note = attachment_line(
+        "hook_additional_context",
+        rendered=f"<system-reminder>\nSessionStart hook additional context: {note_text}\n</system-reminder>",
+        content=[note_text], hookName="SessionStart", hookEvent="SessionStart", toolUseID="SessionStart",
+    )
+    note["timestamp"] = "2026-09-18T11:59:59.000Z"
+    lines = [note]
+    for n, tag in enumerate(("task=feature level=hard size=l", "task=feature level=hard size=m", "task=feature level=hard size=l")):
+        lines.append(user_str_line("go on", origin={"kind": "human"}, timestamp=f"2026-09-18T12:00:{2 * n:02d}.000Z"))
+        lines.append(turn_line(content=[{"type": "text", "text": f"Done.\n[tl: {tag}]"}], timestamp=f"2026-09-18T12:00:{2 * n + 1:02d}.000Z"))
+    project_dir = tmp_path / "proj"
+    project_dir.mkdir()
+    write_jsonl(project_dir / "s.jsonl", lines)
+    [facts] = impact.session_facts(load_corpus([project_dir]), load_pricing())
+    assert (facts.task, facts.level, facts.size) == ("feature", "hard", "l")
+
+
 def test_scheduled_sessions_are_their_own_stratum_so_their_count_does_not_move_cost():
     """Before: 3 real sessions at 10.00 and 3 scheduled checks at 0.10.
     After: the same real sessions and prices, but 30 checks ran. Pooled,

@@ -142,7 +142,10 @@ that cost less but failed more shows up here. It needs 5 runs on each
 side.
 
 Sessions differ in size and kind of work, so a difference is a signal,
-not proof.
+not proof. The sessions after a change are weighted to the mix of work
+before it: by the kind of task, and also by how hard and how big it was
+once at least half the sessions carry those tags (metrics capture's
+Essentials level tags all three).
 
 **Did your estimates come true?** Below "Your changes and what they
 did" is a table of every what-if estimate the dashboard logged for you

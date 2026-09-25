@@ -273,7 +273,7 @@ def test_change_commands():
     assert capture_view.change_commands(before, {"level": "deep"}) == ["claude-token-lens capture level deep"]
     assert capture_view.change_commands(before, {"metrics": ["task", "fit"]}) == [
         "claude-token-lens capture enable fit",
-        "claude-token-lens capture disable brief level shift retry session_end waits permissions turn_signals",
+        "claude-token-lens capture disable brief level shift size retry session_end waits permissions turn_signals",
     ]
     assert capture_view.change_commands(before, {"feedback": ["feedback_note"], "sample": 50}) == [
         "claude-token-lens capture enable feedback_note",

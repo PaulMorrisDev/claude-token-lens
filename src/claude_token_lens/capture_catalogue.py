@@ -158,8 +158,8 @@ LEVEL_SUMMARIES = {
     "off": "Nothing is captured and no tokens are used.",
     "free": "Local signals from hooks that log to a file. Uses no Claude tokens.",
     "essentials": "Claude tags each piece of work: what kind it was, how clear the request was, how hard, "
-    "and when the task changed. Subagents say whether they finished.",
-    "standard": "Adds size, what the request lacked, planning, skills, research, "
+    "how big, and when the task changed. Subagents say whether they finished.",
+    "standard": "Adds what the request lacked, planning, skills, research, "
     "and each subagent's view of its model, rules and brief.",
     "deep": "Adds how much earlier context was needed, how the change was checked, and a "
     "short rating after large tool outputs. Also turns on the /tl-feedback survey, its reminder note, "
@@ -182,6 +182,7 @@ THEMES = {
     "outcome": "Cost per finished piece of work",
     "models": "Model and effort fit",
     "profiles": "Profiles per kind of task",
+    "measuring": "Measuring your changes",
 }
 
 #: Where a metric is captured, in the order the Capture page groups them.
@@ -352,7 +353,7 @@ METRICS: tuple[Metric, ...] = (
         "review, test, research, plan, ops or chat.",
         why="Cost per kind of task, and a profile tuned to each kind. Replaces Token Lens's guess from the "
         "session's shape.",
-        powers=("profiles", "outcome", "models"),
+        powers=("profiles", "outcome", "models", "measuring"),
         tag="task=" + _TASK_WORDS,
         hooks=("SessionStart",),
         main_line=f"task: {_TASK_WORDS} (the kind of work asked for)",
@@ -379,7 +380,7 @@ METRICS: tuple[Metric, ...] = (
         what="Whether the work was easy, normal or hard.",
         why="Whether your model and effort fit the work: a lighter setup for easy work, and no cheaper-model "
         "suggestion for hard work.",
-        powers=("models", "profiles", "planning"),
+        powers=("models", "profiles", "planning", "measuring"),
         tag="level=easy|normal|hard",
         hooks=("SessionStart",),
         main_line="level: easy|normal|hard (how hard the work was)",
@@ -400,6 +401,21 @@ METRICS: tuple[Metric, ...] = (
         main_line="shift: new|build|grew|redo|fix, only if it applies (a new unrelated task; building on the "
         "last one; the scope grew; redoing earlier work; fixing a fault in it)",
         out_chars=5,
+    ),
+    Metric(
+        id="size",
+        group="essentials",
+        section="main",
+        title="Size of the work",
+        what="How big each piece of work was, from xs to xl.",
+        why="How you break work down: big asks that end in compaction or rework, and tiny asks that each "
+        "pay the start-up cost. With the kind and difficulty of the work, it lets a change be judged on "
+        "like-for-like work before and after it.",
+        powers=("breakdown", "measuring"),
+        tag="size=xs|s|m|l|xl",
+        hooks=("SessionStart",),
+        main_line="size: xs|s|m|l|xl (how big the work was)",
+        out_chars=7,
     ),
     Metric(
         id="result",
@@ -433,20 +449,6 @@ METRICS: tuple[Metric, ...] = (
         out_chars=2,
     ),
     # -- Standard ---------------------------------------------------------
-    Metric(
-        id="size",
-        group="standard",
-        section="main",
-        title="Size of the work",
-        what="How big each piece of work was, from xs to xl.",
-        why="How you break work down: big asks that end in compaction or rework, and tiny asks that each "
-        "pay the start-up cost.",
-        powers=("breakdown",),
-        tag="size=xs|s|m|l|xl",
-        hooks=("SessionStart",),
-        main_line="size: xs|s|m|l|xl (how big the work was)",
-        out_chars=7,
-    ),
     Metric(
         id="missing",
         group="standard",

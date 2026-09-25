@@ -228,10 +228,12 @@ size. No text is kept (`context_files.py`).
   that change should move (cost per reply for a model or effort change,
   cost per spawn for a change to one agent, summaries per session for
   `autoCompactWindow`, cache rebuild share for a TTL change, and so on).
-  Nothing is said until each side has at least 3 sessions, and the
-  result always notes that other things (the work itself, Claude Code
-  updates) change too. [Profiles](profiles.md#on-the-dashboard) has the
-  full rules.
+  The sessions after it are weighted to the mix of work before it: the
+  kind of task, and how hard and how big it was once at least half the
+  sessions carry capture's `level` and `size` tags. Nothing is said
+  until each side has at least 3 sessions, and the result always notes
+  that other things (the work itself, Claude Code updates) change too.
+  [Profiles](profiles.md#on-the-dashboard) has the full rules.
 - **Without this change** (`counterfactual.py`): the sessions after a
   change, priced as if it hadn't been made. A model or fast mode change
   is repriced reply by reply; a cache lifetime change, or a compaction
