@@ -209,6 +209,17 @@ def test_a_new_task_on_old_context_is_worth_a_clear_unless_the_work_built_on_it(
     assert item.sources == ("reported", "inferred")
 
 
+@pytest.mark.parametrize("shift", ["build", "grew", "redo", "fix"])
+def test_work_that_carries_on_after_a_long_break_is_not_worth_a_clear(shift):
+    stale = habits.STALE_TOKENS
+    h = Habits(cycles=[
+        _cycle(tag=CaptureTag(shift=shift), stale_tokens=stale, stale_cost=9.0, gap_s=habits.LONG_BREAK_S),
+        _cycle(stale_tokens=stale, stale_cost=0.2, stale_rewrite=0.2, gap_s=habits.LONG_BREAK_S),
+    ])
+    item = _by_key(habits.playbook(h))["clear_between"]
+    assert item.n == 1 and item.saving == pytest.approx(0.5 * (0.2 + 0.2))
+
+
 def test_clear_between_names_how_often_you_cleared_explicitly():
     """SIG-2: end_reasons' "clear" count is session-level evidence, added
     to the evidence text alongside the message-level stale-context count
@@ -546,11 +557,12 @@ def _note(second: int, ids, *, hook: str = "SessionStart", agent_type: str = "")
     return line
 
 
-def _tagged_session(tmp_path, *, captured: bool = True):
+def _tagged_session(tmp_path, *, captured: bool = True, shift: str = "redo"):
     """``captured=False`` leaves out the capture notes, for the tests
     that want a session capture never started in (SEC-P2 drops an
     uninvited tag's content either way, so the tag lines below are
-    identical -- only whether they're trusted differs)."""
+    identical -- only whether they're trusted differs). ``shift`` is
+    the word the second message's tag reports."""
     top_lines = [
         user_str_line("fix the login bug", origin={"kind": "human"}, timestamp=_ts(0)),
         _reply(1, tool_use_block("Agent", "toolu_A", {"prompt": "find where the cookie is set"}),
@@ -558,7 +570,7 @@ def _tagged_session(tmp_path, *, captured: bool = True):
         user_block_line([tool_result_block("toolu_A", "src/auth.py")], timestamp=_ts(5)),
         _reply(6, text="Fixed.\n[tl: task=bugfix brief=vague level=hard]"),
         user_str_line("do it again properly", origin={"kind": "human"}, timestamp=_ts(10)),
-        _reply(11, text="Redone.\n[tl: task=bugfix shift=redo]"),
+        _reply(11, text=f"Redone.\n[tl: task=bugfix shift={shift}]"),
     ]
     if captured:
         top_lines.insert(0, _note(0, ["task", "brief", "level", "shift"]))
@@ -597,6 +609,20 @@ def test_collect_turns_tags_ratings_and_agent_reports_into_facts(tmp_path, prici
     assert (agent.agent_type, agent.result, agent.fit, agent.rules, agent.level, agent.task) == (
         "Explore", "done", "larger", None, "hard", "bugfix"
     )
+
+
+@pytest.mark.parametrize("shift, redone", [("redo", True), ("fix", True), ("build", False)])
+def test_a_fix_next_counts_as_rework_exactly_like_a_redo(tmp_path, pricing, shift, redone):
+    """``shift=fix`` (the next message fixed a fault in this work) marks
+    the work redone and prices it just as ``shift=redo`` does; building
+    on it doesn't."""
+    corpus = _tagged_session(tmp_path, shift=shift)
+    first, second = habits.collect(corpus, pricing).cycles
+    assert second.tag.shift == shift and not second.redone
+    assert first.redone is redone
+    assert first.redo_cost == (pytest.approx(second.cost) if redone else 0.0)
+    by_task = {r["task"]: r for r in _rows(_table(habits.build_section(corpus, pricing), "habits_by_task"))}
+    assert by_task["bugfix"]["redo_pct"] == pytest.approx(50.0 if redone else 0.0)
 
 
 def test_collect_folds_in_the_free_signals_by_session():

@@ -759,7 +759,8 @@ TABLE_COPY: dict[str, TableCopy] = {
             shows="What each kind of task cost, as Claude reported it in metrics-capture tags, with every message "
             "in the first row.",
             read="Clear asks and large asks are shares of the messages Claude rated for them. Redone counts "
-            "messages whose next message redid the work or corrected Claude. Met the goal needs your feedback.",
+            "messages whose next message redid the work, fixed a fault in it or corrected Claude. Met the goal "
+            "needs your feedback.",
             act="The costliest kinds are where the brief templates and the habits above pay off most.",
         ),
         columns={
@@ -772,7 +773,7 @@ TABLE_COPY: dict[str, TableCopy] = {
                           "any subagents it spawned."),
             "clear_pct": ("Clear asks", "Messages Claude called clear, out of those it rated."),
             "large_pct": ("Large asks", "Messages Claude sized large or extra large."),
-            "redo_pct": ("Redone", "Messages whose work was redone or corrected by your next message."),
+            "redo_pct": ("Redone", "Messages whose work was redone, fixed or corrected by your next message."),
             "met_pct": ("Met the goal", "Pieces you said met their goal, out of those you gave feedback on."),
         },
         value_labels={"all": "All messages"},
@@ -790,7 +791,7 @@ TABLE_COPY: dict[str, TableCopy] = {
             "brief": ("Brief", "How clear Claude said the message was."),
             "cycles": ("Messages", "Messages it rated this way."),
             "avg_cost": ("Per message", "The average cost of the work."),
-            "redo_pct": ("Redone", "Messages whose work was redone or corrected next."),
+            "redo_pct": ("Redone", "Messages whose work was redone, fixed or corrected next."),
             "met_pct": ("Met the goal", "From your feedback."),
             "missing": ("Most often missing", "What Claude said the message left out."),
         },
@@ -859,7 +860,7 @@ TABLE_COPY: dict[str, TableCopy] = {
             "cycles": ("Messages", "Messages with this pairing."),
             "avg_cost": ("Per message", "The average cost of the work."),
             "thinking_pct": ("Thinking share of output", "Output that was thinking."),
-            "redo_pct": ("Redone", "Messages whose work was redone or corrected next."),
+            "redo_pct": ("Redone", "Messages whose work was redone, fixed or corrected next."),
             "met_pct": ("Met the goal", "From your feedback."),
             "saving": ("Lower effort would save, about", "Half the thinking on easy work at high effort or above."),
         },
@@ -882,7 +883,8 @@ TABLE_COPY: dict[str, TableCopy] = {
             shows="Each kind of task Claude reported, all together and by how hard it said the work was. Each is "
             "split by the exact model, effort and speed that answered it. It shows what a message cost and how often "
             "the work went well.",
-            read="Went well is your feedback where you gave it, otherwise whether your next message redid the work. "
+            read="Went well is your feedback where you gave it, otherwise whether your next message redid, fixed or "
+            "corrected the work. "
             "The last message of each session is left out, since nothing after it confirms how it went. Shown from 5 "
             "messages each side. A cheaper setup that's mostly hard work at the all-levels row is held back, even if "
             "nothing else looks wrong. The hard work is what made it look cheap, not the setup itself. A cheaper "
@@ -969,7 +971,8 @@ TABLE_COPY: dict[str, TableCopy] = {
         title="Claude's reports against your feedback",
         help=Help(
             shows="Each level and brief quality Claude reported, against your feedback. It shows how many messages "
-            "each covers, the share that met or missed its goal, and the share your next message redid or corrected.",
+            "each covers, the share that met or missed its goal, and the share your next message redid, fixed or "
+            "corrected.",
             read="Met and missed are out of the messages your feedback covers. Redone counts every message tagged "
             "this way, feedback or not. A note below the table says whether work Claude called easy missed its goal "
             "more often than normal work. It appears once there is enough feedback on both to tell.",
@@ -983,7 +986,7 @@ TABLE_COPY: dict[str, TableCopy] = {
             "met_pct": ("Met the goal", "Of the rated messages, the share that met its goal."),
             "missed_pct": ("Missed", "Of the rated messages, the share that missed its goal."),
             "redone_pct": ("Redone by your next message", "Of all messages tagged this way, the share your "
-                           "next message redid or corrected."),
+                           "next message redid, fixed or corrected."),
         },
         value_labels={
             "level:easy": "Called easy",
