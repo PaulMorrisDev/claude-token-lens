@@ -145,8 +145,10 @@ function barNode(value, max) {
 function cellContent(column, row, value, spec, rowKind) {
   if (column.render) return column.render(row, value);
   var kind = column.kind;
-  // Table.row_kinds: how to format this row's "str" cells.
+  // Table.row_kinds: how to format this row's "str" cells. A money row
+  // says its unit itself: the column mixes kinds, so its header can't.
   if (rowKind && column.index > 0 && kind === "str" && typeof value === "number") kind = rowKind;
+  if (rowKind === "money" && kind === "money" && column.index > 0 && typeof value === "number") return moneyText(value);
   if (PROJECT_KEYS[column.key] && typeof value === "string") {
     return el("span", { class: "entity-name", title: value, text: projectName(value) });
   }

@@ -475,6 +475,15 @@ def test_session_scatter_picks_a_range_from_the_keyboard() -> None:
     assert "hold Shift and press the arrow keys" in scatter
 
 
+def test_a_money_row_in_a_mixed_column_carries_its_unit() -> None:
+    """Phase 10: Workflow runs lists counts and amounts in one Value
+    column, so no header can hold the unit; "Total cost" read "208". A
+    row whose kind is money is written in the billing mode (moneyText),
+    while a money column stays a plain number under its header's unit."""
+    cell = _function_source(_app_js(), "cellContent")
+    assert 'if (rowKind === "money" && kind === "money" && column.index > 0 && typeof value === "number") return moneyText(value);' in cell
+
+
 def test_amount_rewrite_keeps_row_keys_and_their_labels_in_step() -> None:
     """Phase 10: readableAmounts turns "Total cost (USD)" into "Total
     cost ($)" in a row's cell; a table's value_labels and row_kinds are
