@@ -576,10 +576,12 @@ def _add_install_service_args(sub: argparse.ArgumentParser) -> None:
 
 
 def _add_update_args(sub: argparse.ArgumentParser) -> None:
-    """Extra flags for ``update``: where to install from, and the same
+    """Extra flags for ``update``: where to install from, the same
     ``--port``/``--bind``/``--dry-run`` as ``install-service``, which it
-    runs last."""
+    runs to restart the dashboard, and ``--claude-root`` for the
+    settings.json entries it brings up to date."""
     _add_install_service_args(sub)
+    _add_claude_root_arg(sub)
     sub.add_argument(
         "--from",
         dest="source",
@@ -592,6 +594,20 @@ def _add_update_args(sub: argparse.ArgumentParser) -> None:
         action="store_true",
         dest="no_service",
         help="install the new version but leave the running dashboard alone",
+    )
+    sub.add_argument(
+        "--yes",
+        action="store_true",
+        dest="yes",
+        help="answer yes to each change it offers (settings.json entries, stopping an old dashboard, "
+        "removing copies for other Pythons)",
+    )
+    sub.add_argument(
+        "--finish",
+        action="store_true",
+        help="finish an update without installing: restart the dashboard on this version, bring hook entries "
+        "up to date and look for copies installed for other Pythons. update runs this itself; run it by hand "
+        "after updating from 0.6.0 or older",
     )
 
 
@@ -1061,7 +1077,7 @@ def _make_parser() -> argparse.ArgumentParser:
             "serve": "run the local JSON API + watcher service",
             "install-service": "register 'serve' to start at logon/boot (Scheduled Task / systemd user unit / LaunchAgent)",
             "uninstall-service": "remove a logon/boot registration made by install-service (or by init)",
-            "update": "install the newest version and restart the dashboard on it",
+            "update": "install the newest version, restart the dashboard on it and tidy up what an older one left",
             "changes": "list what this tool has installed and changed, and the command that undoes each",
             "review": "review your CLAUDE.md files or skills: size, how often each is sent, cost, and fixes",
             "check": "quick actions: answer one token question (or all of them) with evidence and fixes",
@@ -2917,19 +2933,17 @@ UPDATE_SOURCE = "git+https://github.com/PaulMorrisDev/claude-token-lens"
 _RELEASES_URL = "https://github.com/PaulMorrisDev/claude-token-lens/releases/latest"
 
 
-def _cmd_update(args: argparse.Namespace, *, runner=None, is_registered_fn=None) -> int:
-    """``update``: the README's two update steps as one command. Installs
-    the newest version with pip (``--force-reinstall``, because pip skips
-    a copy whose version number hasn't changed), then, when the dashboard
-    is registered to start at logon, runs the *new* copy's
-    ``install-service``, which stops the old dashboard, starts the new one
-    and checks the version that answers on the port."""
+def _cmd_update(args: argparse.Namespace, *, runner=None) -> int:
+    """``update``: install the newest version with pip
+    (``--force-reinstall``, because pip skips a copy whose version number
+    hasn't changed), then hand over to it. ``update --finish`` runs with
+    the *new* code, so every step after the install is the new version's
+    own (:func:`_cmd_update_finish`)."""
     import subprocess
 
     from . import __version__
 
     runner = runner or subprocess.run
-    is_registered_fn = is_registered_fn or installer_mod.is_registered
     if installer_mod.detect_pyz_path() is not None:
         print(
             "claude-token-lens update: this copy runs from a .pyz file, which pip can't update. "
@@ -2939,25 +2953,15 @@ def _cmd_update(args: argparse.Namespace, *, runner=None, is_registered_fn=None)
         )
         return 2
 
-    config_dir = _resolve_config_dir(args.config_dir)
     install = [sys.executable, "-m", "pip", "install", "--upgrade", "--force-reinstall", "--no-deps", args.source]
-    restart = [
-        sys.executable,
-        "-m",
-        "claude_token_lens",
-        "install-service",
-        *(arg for root in _service_projects_roots(args) for arg in ("--projects-root", str(root))),
-        "--config-dir",
-        str(config_dir),
-        "--port",
-        str(args.port),
-        "--bind",
-        args.bind,
-    ]
+    finish = [sys.executable, "-m", "claude_token_lens", "update", "--finish", *_update_finish_args(args)]
     print(f"claude-token-lens update: this is version {__version__}.")
     print("1. Install the newest version:\n   " + " ".join(install))
     if args.dry_run:
-        print("2. Restart the dashboard on it (only if it starts at logon):\n   " + " ".join(restart))
+        print(
+            "2. Finish with the new version: restart the dashboard on it, bring Claude Code's hook entries "
+            "up to date, and look for copies installed for other Pythons:\n   " + " ".join(finish)
+        )
         print("Dry run: nothing installed or restarted.")
         return 0
 
@@ -2975,38 +2979,248 @@ def _cmd_update(args: argparse.Namespace, *, runner=None, is_registered_fn=None)
     )
     new_version = (probe.stdout or "").strip() or "unknown"
     print(f"   Installed version {new_version}.")
+    print("2. Finish with the new version:\n   " + " ".join(finish))
+    sys.stdout.flush()
+    return runner(finish).returncode
 
-    # ROB-P7: refresh any hook file this tool itself wrote that the new
-    # version changed, so Claude Code picks it up without waiting for
-    # 'capture connect'. Run with the newly-installed package (this
-    # process still has the old one loaded), config_dir passed as its own
-    # argv entry rather than interpolated into the -c source (ROB-P9).
-    refresh = runner(
-        [
-            sys.executable,
-            "-c",
-            "import sys\nfrom claude_token_lens import hook_health\nprint(len(hook_health.refresh_hook_files(sys.argv[1])))",
-            str(config_dir),
-        ],
-        capture_output=True,
-        text=True,
-    )
-    refreshed_count = (refresh.stdout or "").strip()
-    if refresh.returncode == 0 and refreshed_count.isdigit() and int(refreshed_count) > 0:
-        print(f"   Refreshed {refreshed_count} hook file{'s' if refreshed_count != '1' else ''} this version changed.")
 
+def _update_finish_args(args: argparse.Namespace) -> list[str]:
+    """The flags ``update`` passes on to ``update --finish``."""
+    out = [
+        *(arg for root in _service_projects_roots(args) for arg in ("--projects-root", str(root))),
+        "--config-dir",
+        str(_resolve_config_dir(args.config_dir)),
+        "--port",
+        str(args.port),
+        "--bind",
+        args.bind,
+    ]
+    if args.claude_root:
+        out += ["--claude-root", str(_resolve_claude_root(args.claude_root))]
     if args.no_service:
-        print("Left the dashboard alone (--no-service). Restart it with: python -m claude_token_lens install-service")
-        return 0
-    if is_registered_fn() is False:
-        print(
-            "The dashboard isn't set to start at logon, so there is nothing to restart. "
-            "Start it with 'python -m claude_token_lens serve', or have it start at logon with "
-            "'python -m claude_token_lens install-service'."
+        out.append("--no-service")
+    if args.yes:
+        out.append("--yes")
+    return out
+
+
+def _cmd_update_finish(
+    args: argparse.Namespace,
+    *,
+    stdin=None,
+    stdout=None,
+    runner=None,
+    is_registered_fn=None,
+    install_service_fn=None,
+    health_version_fn=None,
+    registered_python_fn=None,
+    copies_fn=None,
+    port_holder_fn=None,
+    now: datetime | None = None,
+) -> int:
+    """``update --finish``: the rest of an update, run by the version just
+    installed. ``update`` runs it itself; after an update from 0.6.0 or
+    older, whose ``update`` doesn't, run it by hand.
+
+    1. Refresh the hook files this version changed.
+    2. Restart the dashboard on this Python (``install-service``, which
+       also points the logon service here) when it starts at logon. On
+       Windows, an older dashboard started by hand that still holds the
+       port is named and, after a yes, stopped.
+    3. Bring Claude Code's settings.json up to date: a SessionStart hook
+       command that can't run, the entries capture needs, and this tool's
+       statusline when it runs another Python. Each change is shown and
+       made after a yes; settings.json is backed up first.
+    4. Name copies of this tool installed for other Pythons and, once the
+       dashboard runs the new version and nothing else needs them, remove
+       them after a yes.
+
+    ``--yes`` answers yes throughout; ``--dry-run`` shows and asks nothing.
+    Returns 2 when the dashboard couldn't be registered, 1 when an older
+    dashboard still answers on the port, else 0."""
+    import subprocess
+
+    from . import __version__, invocation, upgrade
+
+    stdin = stdin if stdin is not None else sys.stdin
+    stdout = stdout if stdout is not None else sys.stdout
+    runner = runner or subprocess.run
+    windows = installer_mod.detect_platform() == "windows"
+    is_registered_fn = is_registered_fn or installer_mod.is_registered
+    install_service_fn = install_service_fn or _cmd_install_service
+    health_version_fn = health_version_fn or _http_health_version
+    registered_python_fn = registered_python_fn or (lambda: installer_mod.registered_python(runner=runner))
+    port_holder_fn = port_holder_fn or (lambda port: upgrade.port_holder(port, runner=runner) if windows else None)
+    copies_fn = copies_fn or (
+        lambda also: upgrade.other_copies(
+            upgrade.candidate_pythons(also=also, runner=runner, windows=windows), runner=runner
         )
-        return 0
-    print("2. Restart the dashboard on the new version:\n   " + " ".join(restart))
-    return runner(restart).returncode
+    )
+    config_dir = _resolve_config_dir(args.config_dir)
+    claude_root = _resolve_claude_root(args.claude_root)
+    command = invocation.command_prefix()
+    url = f"http://{args.bind}:{args.port}"
+
+    def ask(question: str) -> bool:
+        if args.dry_run:
+            return False
+        if args.yes:
+            stdout.write(f"{question} yes (--yes)\n")
+            return True
+        stdout.write(f"{question} (y/n) [n]: ")
+        stdout.flush()
+        return (stdin.readline() or "").strip().lower() in ("y", "yes")
+
+    stdout.write(f"claude-token-lens update: finishing with version {__version__}, installed for {sys.executable}.\n")
+    ran_from = registered_python_fn()
+
+    if not args.dry_run:
+        try:
+            refreshed = hook_health.refresh_hook_files(config_dir)
+        except OSError:
+            refreshed = []
+        if refreshed:
+            stdout.write(f"Refreshed {len(refreshed)} hook file{'s' if len(refreshed) != 1 else ''} this version changed.\n")
+
+    # -- the dashboard ---------------------------------------------------
+    status = 0
+    registered = None
+    if args.no_service:
+        stdout.write("Left the dashboard alone (--no-service).\n")
+    else:
+        registered = is_registered_fn()
+        if registered is False:
+            stdout.write(
+                "The dashboard isn't set to start at logon, so there is nothing to restart. "
+                f"Start it with '{command} serve', or have it start at logon with '{command} install-service'.\n"
+            )
+        else:
+            stdout.flush()
+            if install_service_fn(args) != 0:
+                status = 2
+    answering = None if args.dry_run else health_version_fn(url)
+    if answering not in (None, __version__):
+        holder = port_holder_fn(args.port)
+        if holder is not None and upgrade.is_python(holder[1]):
+            pid, program = holder
+            stdout.write(
+                f"An older dashboard (version {answering}) still holds port {args.port}: process {pid}, {program}. "
+                "The logon service didn't start it, so restarting the service can't replace it.\n"
+            )
+            if ask("Stop it and start this version?"):
+                if not upgrade.stop_process(pid, runner=runner):
+                    stdout.write(f"Could not stop process {pid}. See 'An old dashboard won't go away' in the README.\n")
+                elif registered is False or args.no_service:
+                    stdout.write(f"Stopped. Start this version with '{command} serve'.\n")
+                    answering = None
+                else:
+                    stdout.flush()
+                    install_service_fn(args)
+                    answering = health_version_fn(url)
+        elif holder is not None:
+            stdout.write(
+                f"Port {args.port} is held by {holder[1] or f'process {holder[0]}'}, which isn't a Python: an old "
+                "Docker setup? See 'An old dashboard won't go away' in the README.\n"
+            )
+    if answering not in (None, __version__) and registered is not False and not args.no_service:
+        status = status or 1
+
+    # -- Claude Code's settings.json -----------------------------------------
+    stdout.write("\nClaude Code's settings:\n")
+    changed_any = False
+    health = hook_health.check(config_dir, claude_root=claude_root)
+    if health.fixed_command is not None:
+        changed_any = True
+        onboarding._offer_hook_repair(
+            health, repair_hook=args.yes, non_interactive=args.dry_run, stdin=stdin, stdout=stdout, now=now
+        )
+    try:
+        capture = load_config(config_dir=config_dir).capture
+    except ConfigError as exc:
+        capture = None
+        stdout.write(f"config.toml has a problem, so capture's hook entries weren't checked: {exc}\n")
+    if capture is not None and capture.is_on:
+        wanted = hook_health.capture_specs(capture.active_metrics())
+        capture_health = hook_health.check_capture(wanted, claude_root=claude_root, config_dir=config_dir)
+        if capture_health.blocked_by is not None:
+            stdout.write(f"{hook_health.POLICY_TEXT[capture_health.blocked_by]}\n")
+        elif not capture_health.ok:
+            changed_any = True
+            _capture_settings_step(
+                wanted,
+                config_dir=config_dir,
+                claude_root=claude_root,
+                dry_run=args.dry_run,
+                assume_yes=args.yes,
+                stdin=stdin,
+                stdout=stdout,
+            )
+    statusline_plan = hook_health.plan_statusline_python(sys.executable, claude_root=claude_root)
+    if statusline_plan.new_text is not None:
+        changed_any = True
+        stdout.write(f"\nThis changes {statusline_plan.settings_path}:\n")
+        for line in statusline_plan.changes:
+            stdout.write(f"- {line}\n")
+        stdout.write("\n" + statusline_plan.diff + "\n")
+        if ask("Make this change? settings.json is backed up first."):
+            try:
+                backup = hook_health.connect(statusline_plan)
+                stdout.write(f"Done. The previous settings.json is at {backup}\n")
+            except (OSError, ValueError) as exc:
+                stdout.write(f"Could not change settings.json: {exc}\n")
+        elif not args.dry_run:
+            stdout.write("Left unchanged.\n")
+    if not changed_any:
+        stdout.write("Up to date: the hooks and statusline this tool added run as they should.\n")
+
+    # -- copies for other Pythons ----------------------------------------------
+    copies = copies_fn([ran_from])
+    statusline_runs = hook_health.statusline_python(claude_root)
+    # The logon service moved to this Python only if install-service ran
+    # and succeeded; until then it still starts the copy it ran before.
+    service_moved = registered is not False and not args.no_service and status != 2 and not args.dry_run
+
+    def same_install(a: str | None, b: str) -> bool:
+        # python.exe and pythonw.exe of one install sit side by side.
+        return bool(a) and os.path.normcase(os.path.dirname(os.path.realpath(a))) == os.path.normcase(
+            os.path.dirname(os.path.realpath(b))
+        )
+
+    for copy in copies:
+        remove_later = f"{invocation._quote(copy.python)} -m pip uninstall claude-token-lens"
+        stdout.write(f"\nAnother copy, version {copy.version}, is installed for {copy.python}.\n")
+        if answering not in (None, __version__):
+            stdout.write(f"An older dashboard still runs, so it stays for now. Remove it later with: {remove_later}\n")
+            continue
+        if not service_moved and same_install(ran_from, copy.python):
+            stdout.write(
+                f"The dashboard still starts from it at logon, so it stays. Remove it after '{command} install-service' "
+                f"with: {remove_later}\n"
+            )
+            continue
+        if same_install(statusline_runs, copy.python):
+            stdout.write(f"The statusline still runs it, so it stays. Remove it later with: {remove_later}\n")
+            continue
+        stdout.write("Nothing this tool set up uses it now, and running it shows an older version.\n")
+        if ask("Remove it?"):
+            if upgrade.remove_copy(copy, runner=runner):
+                stdout.write("Removed.\n")
+            else:
+                stdout.write(f"pip could not remove it (its message is above). Try: {remove_later}\n")
+        elif not args.dry_run:
+            stdout.write(f"Left installed. Remove it later with: {remove_later}\n")
+
+    if args.dry_run:
+        stdout.write("\nDry run: nothing restarted, changed or removed.\n")
+    elif status == 0:
+        where = f" The dashboard at {url} runs it." if answering == __version__ else ""
+        stdout.write(f"\nclaude-token-lens update: done. Version {__version__} is installed for {sys.executable}.{where}\n")
+    elif status == 1:
+        stdout.write(
+            f"\nclaude-token-lens update: version {__version__} is installed, but {url} still answers with "
+            f"version {answering}. See 'An old dashboard won't go away' in the README.\n"
+        )
+    return status
 
 
 def _cmd_uninstall_service(args: argparse.Namespace) -> int:
@@ -4572,7 +4786,7 @@ def main(argv: list[str] | None = None) -> int:
     if command == "uninstall-service":
         return _cmd_uninstall_service(args)
     if command == "update":
-        return _cmd_update(args)
+        return _cmd_update_finish(args) if args.finish else _cmd_update(args)
     if command == "import":
         return _cmd_import(args)
     if command == "team-report":

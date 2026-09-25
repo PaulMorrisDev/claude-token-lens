@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `update` does the whole upgrade in one command. After pip installs the
+  new version it hands over to it (`update --finish`, run by the new
+  code, so each later update runs the newest steps), which restarts the
+  dashboard on it, then:
+  - on Windows, names an older dashboard started by hand that still
+    holds the port and, after a yes, stops it and starts the new one
+    (never a program that isn't a Python, such as Docker);
+  - brings Claude Code's settings.json up to date: a SessionStart hook
+    command that can't run, the entries capture needs, and this tool's
+    statusline when it runs another Python's copy, each shown and made
+    after a yes, with settings.json backed up first;
+  - finds copies of this tool installed for other Pythons (the one the
+    dashboard ran until now, the `py` launcher's, and each `python` on
+    `PATH`) and, once the dashboard runs the new version and the
+    statusline no longer uses them, offers to remove them.
+
+  `--yes` answers yes throughout. Updating from 0.6.0 or older, whose
+  `update` doesn't hand over, run `update --finish` once afterwards.
+
 ### Fixed
 
 - The dashboard's commands now run on the machine that shows them. They

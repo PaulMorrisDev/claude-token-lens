@@ -115,20 +115,37 @@ analysis. Both print to the terminal and change nothing.
 python -m claude_token_lens update
 ```
 
-That one command installs the newest version, restarts the dashboard on
-it, and checks that the dashboard answering on port 8765 is the new one.
-If an older copy is still holding the port, it says so; see
-[An old dashboard won't go away](#an-old-dashboard-wont-go-away). Add
-`--dry-run` to see the commands it would run first. On macOS, restart the
-dashboard afterwards with
+That one command:
+
+- installs the newest version for this Python;
+- restarts the dashboard on it and checks that the dashboard answering on
+  port 8765 is the new one. On Windows, if an older copy started by hand
+  still holds the port, it names it and offers to stop it;
+- brings the hook and statusline entries this tool added to Claude Code's
+  `settings.json` up to date, showing each change and asking first
+  (`settings.json` is backed up before any change);
+- finds copies installed for other Pythons and offers to remove the ones
+  nothing uses any more.
+
+Add `--dry-run` to see what it would do, or `--yes` to answer yes to
+every question. On macOS, restart the dashboard afterwards with
 `launchctl kickstart -k gui/$(id -u)/com.claude-token-lens`.
 
-**On version 0.4 or older** (`update` says it's an invalid choice), run
-the two steps it replaces once; after that, `update` works:
+**Updating from 0.6.0 or older**, `update` installs the new version but
+not the steps after it. Run them once, and from then on `update` alone
+does everything:
 
 ```powershell
-python -m pip install --force-reinstall git+https://github.com/PaulMorrisDev/claude-token-lens
-python -m claude_token_lens install-service
+python -m claude_token_lens update
+python -m claude_token_lens update --finish
+```
+
+**On version 0.4 or older** (`update` says it's an invalid choice),
+install by hand once, then finish:
+
+```powershell
+python -m pip install --upgrade --force-reinstall git+https://github.com/PaulMorrisDev/claude-token-lens
+python -m claude_token_lens update --finish
 ```
 
 Check the foot of the dashboard's sidebar shows the new version. After an update it
@@ -209,32 +226,27 @@ the sidebar.
 
 `update` and `pip install` change only the Python you run them with. If
 the dashboard was set up from a different Python, it keeps running the
-old copy. See which Python it runs, and which one `python` is:
+old copy. Run the update with the Python you want to keep (the one
+`python` finds is simplest), in a normal PowerShell window (not
+Administrator; nothing here needs it):
+
+```powershell
+python -m claude_token_lens update
+```
+
+From 0.6.1 it points the logon task and the statusline at this Python,
+fixes hook entries that name a Python that no longer exists, and offers
+to remove the copies for other Pythons. Updating from 0.6.0 or older,
+follow it with `python -m claude_token_lens update --finish`. Your
+settings and history live in `%USERPROFILE%\.claude\token-lens`, which
+every copy shares, so nothing is lost.
+
+To see which Python the dashboard runs, and which one `python` is:
 
 ```powershell
 (Get-ScheduledTask ClaudeTokenLens).Actions | Format-List Execute, Arguments
 (Get-Command python).Source
 ```
-
-If they differ, pick one Python (the one `python` finds is simplest),
-then in a normal PowerShell window (not Administrator; nothing here needs it):
-
-```powershell
-python -m pip install --upgrade --force-reinstall git+https://github.com/PaulMorrisDev/claude-token-lens
-python -m claude_token_lens --version
-python -m claude_token_lens install-service
-python -m claude_token_lens capture status
-```
-
-`install-service` points the logon task at this Python and restarts the
-dashboard. `capture status` says whether Claude Code's hooks still run;
-if one names a Python that no longer exists, run
-`python -m claude_token_lens init --repair-hook`, and
-`python -m claude_token_lens capture connect` for capture's own. Your
-settings and history live in `%USERPROFILE%\.claude\token-lens`, which
-every copy shares, so nothing is lost. Once the sidebar shows the new
-version, remove the old copy with
-`& "<the other python.exe>" -m pip uninstall claude-token-lens`.
 
 ### Uninstalling
 
@@ -595,7 +607,7 @@ this table only lists what's specific to each one.
 | `uninstall` | Take it back out: remove the SessionStart hook, any metrics-capture hook entries and the statusline from `settings.json` (diff shown, file backed up first), offer to remove the `/tl-feedback`/`/tl-brief` skill files, and remove the logon service | `--claude-root PATH` (as for `init`), `--revert-changes` (also undo every `apply` still in place, newest first), `--delete-data` (also delete the data folder), `--dry-run` (show every step without changing anything), `--yes` (make the changes without asking; they are still printed) |
 | `check` | Quick actions: answer one token question (or all of them) from your own sessions, with the evidence, fixes and tips — Actions › Checks in the terminal | `ID` (optional: `models`, `effort`, `compaction`, `cache`, `tools`, `skills`, `claude-md`, `tool-output`, `habits` or `quality`), plus the global `--days`/`--since`/`--until` |
 | `review` | Review your CLAUDE.md files or skills: size, how often each is sent, cost, and fixes — Agents & context › Context in the terminal | `claude-md` or `skills`, plus the global window flags |
-| `update` | Install the newest version with pip, then, when the dashboard starts at logon, run the new copy's `install-service` to restart it on that version and check which version answers on the port | `--from SOURCE` (what pip installs from; default the GitHub repository, a local folder also works), `--no-service` (install but leave the dashboard alone), `--port`, `--bind`, `--dry-run` (print both commands without running either) |
+| `update` | Install the newest version with pip, then hand over to it (`update --finish`): restart the dashboard on it when it starts at logon and check which version answers on the port, bring this tool's hook and statusline entries in Claude Code's settings.json up to date, and offer to remove copies installed for other Pythons | `--from SOURCE` (what pip installs from; default the GitHub repository, a local folder also works), `--no-service` (install but leave the dashboard alone), `--yes` (answer yes to each change it offers), `--finish` (the steps after the install, without installing; run it by hand after updating from 0.6.0 or older), `--claude-root`, `--port`, `--bind`, `--dry-run` (show what it would do, changing nothing) |
 | `uninstall-service` | Remove whatever `install-service` (or `init`) registered — stops the dashboard it is running (`Stop-ScheduledTask` on Windows; `systemctl --user disable --now` and `launchctl bootout` stop it on Linux and macOS), then deletes the task/unit/agent definition it wrote, and says which steps it did | `--dry-run` (print what would be removed, without removing anything) |
 | `compare` | A/B compare two arms of sessions (`window:`/`key:`/`profile:`/`project:` specs), stratified by purpose/mode (and the kind of task metrics capture reported, once half the sessions have one) with a minimum-sample gate — see [`docs/compare.md`](docs/compare.md) | `--a SPEC` / `--b SPEC` (required), `--stratify purpose,mode,task` (default `purpose,mode`, plus `task` when covered), `--min-sessions N` (default: `config.toml`'s `min_sessions`), plus the same `--json`/`--html PATH`/`--csv-dir DIR` output flags as `report` |
 | `reconcile` | Compare local usage/cost accounting against an Admin API CSV export, entirely offline — see [`docs/compare.md`](docs/compare.md) | `--admin-csv FILE` (required), `--by {day,model,"day,model"}` (default `day`), plus the same `--json`/`--html PATH`/`--csv-dir DIR` output flags as `report` (the window comes from the global `--days`/`--since`/`--until` flags, not a separate flag) |
