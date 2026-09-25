@@ -453,15 +453,19 @@ def test_managed_settings_dir_windows_honours_programfiles_env(monkeypatch):
     # the function under test was correct.
     hook = _load_hook_module()
 
+    #
+    # Expected values are joined with `/` like the code joins them: faking
+    # sys.platform doesn't make Path a WindowsPath, so on the Linux CI
+    # runners a backslash is an ordinary character, not a separator.
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setenv("ProgramFiles", r"C:\fake-program-files")
-    assert hook.default_managed_settings_dir() == Path(r"C:\fake-program-files\ClaudeCode")
-    assert hook.default_managed_settings_path() == Path(
-        r"C:\fake-program-files\ClaudeCode\managed-settings.json"
+    assert hook.default_managed_settings_dir() == Path(r"C:\fake-program-files") / "ClaudeCode"
+    assert hook.default_managed_settings_path() == (
+        Path(r"C:\fake-program-files") / "ClaudeCode" / "managed-settings.json"
     )
 
     monkeypatch.delenv("ProgramFiles", raising=False)
-    assert hook.default_managed_settings_dir() == Path(r"C:\Program Files\ClaudeCode")
+    assert hook.default_managed_settings_dir() == Path(r"C:\Program Files") / "ClaudeCode"
 
 
 def test_managed_settings_dir_non_windows_platforms(monkeypatch):
