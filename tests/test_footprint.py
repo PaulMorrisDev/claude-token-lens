@@ -1,4 +1,4 @@
-"""Tests for ``footprint.py`` and the ``init`` connect step, ``changes``
+"""Tests for ``footprint.py`` and ``init``'s connect question, ``changes``
 and ``uninstall`` commands: what claude-token-lens installs, and taking
 every part of it back out, always showing the change and backing up
 settings.json first."""
@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from claude_token_lens import cli, footprint, hook_health, installer
+from claude_token_lens import cli, footprint, hook_health, installer, setup_flow
 from claude_token_lens.profiles import apply as apply_mod
 
 NOW = datetime(2026, 9, 23, 12, 0, tzinfo=timezone.utc)
@@ -207,41 +207,42 @@ def test_uninstall_asks_and_a_no_changes_nothing(tmp_path, monkeypatch, capsys):
     assert "statusLine" in json.loads((config_dir.parent / "settings.json").read_text(encoding="utf-8"))
 
 
-def test_init_dry_run_shows_the_connect_change_and_writes_nothing(tmp_path):
-    from types import SimpleNamespace
+def _init(config_dir, *argv, **tools):
+    """``init --non-interactive --connect --no-service``, with any of
+    :class:`setup_flow.Tools` replaced; returns ``(rc, output)``."""
+    import dataclasses
 
+    args = cli._make_parser().parse_args(
+        ["init", "--config-dir", str(config_dir), "--non-interactive", "--connect", "--no-service", *argv]
+    )
+    options, real = cli._setup_flow_inputs(args)
+    out = io.StringIO()
+    rc = setup_flow.run(options, dataclasses.replace(real, **tools), stdin=io.StringIO(""), stdout=out, now=NOW)
+    return rc, out.getvalue()
+
+
+def test_init_dry_run_shows_the_connect_change_and_writes_nothing(tmp_path):
     config_dir = _claude(tmp_path, {"model": "opus"})
     settings = config_dir.parent / "settings.json"
     before = settings.read_text(encoding="utf-8")
-    hook = SimpleNamespace(
-        install_hook=lambda cfg: cfg / "hooks" / "snapshot-config.py",
-        hook_command=lambda script, extra_args="": f'"{sys.executable}" "{script}"{extra_args}',
-    )
-    out = io.StringIO()
-    args = SimpleNamespace(connect=True, dry_run=True)
-    cli._cmd_init_connect_step(args, config_dir=config_dir, hook=hook, stdin=io.StringIO("y\n"), stdout=out)
+    rc, out = _init(config_dir, "--dry-run")
+    assert rc == 0
     assert settings.read_text(encoding="utf-8") == before
-    assert "Dry run" in out.getvalue() and "SessionStart" in out.getvalue()
+    assert "Dry run" in out and "SessionStart" in out
+    assert list(config_dir.iterdir()) == []
 
 
-def test_init_connect_step_refuses_an_unsafe_hook_command(tmp_path):
-    # ROB-P9: hook.hook_command returning None (a quote/$/backtick/UNC
+def test_init_refuses_an_unsafe_hook_command(tmp_path):
+    # ROB-P9: a hook command that can't be built (a quote/$/backtick/UNC
     # path in the Python or script path) must never reach settings.json
     # as a broken "command": null entry.
-    from types import SimpleNamespace
-
     config_dir = _claude(tmp_path, {"model": "opus"})
     settings = config_dir.parent / "settings.json"
     before = settings.read_text(encoding="utf-8")
-    hook = SimpleNamespace(
-        install_hook=lambda cfg: cfg / "hooks" / "snapshot-config.py",
-        hook_command=lambda script, extra_args="": None,
-    )
-    out = io.StringIO()
-    args = SimpleNamespace(connect=True, dry_run=False)
-    cli._cmd_init_connect_step(args, config_dir=config_dir, hook=hook, stdin=io.StringIO(""), stdout=out)
+    rc, out = _init(config_dir, hook_command=None)
+    assert rc == 0
     assert settings.read_text(encoding="utf-8") == before
-    assert "Could not build a safe hook command" in out.getvalue()
+    assert "Connect to Claude Code: not possible, because this Python's path" in out
 
 
 # --------------------------------------------------------------------
@@ -261,13 +262,10 @@ def _elsewhere(tmp_path):
 
 
 def test_init_connect_with_config_dir_elsewhere_writes_claude_settings(tmp_path):
-    from types import SimpleNamespace
-
     claude_settings = _claude(tmp_path, {"model": "opus"}).parent / "settings.json"
     data, decoy = _elsewhere(tmp_path)
-    hook = cli._load_snapshot_hook_module()
-    args = SimpleNamespace(connect=True, dry_run=False)
-    cli._cmd_init_connect_step(args, config_dir=data, hook=hook, stdin=io.StringIO(""), stdout=io.StringIO())
+    rc, out = _init(data)
+    assert rc == 0, out
 
     assert decoy.read_text(encoding="utf-8") == '{"decoy": true}\n'
     written = json.loads(claude_settings.read_text(encoding="utf-8"))

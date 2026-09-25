@@ -62,6 +62,7 @@ __all__ = [
     "http_health_version",
     "DEFAULT_URL",
     "install",
+    "plan_lines",
     "uninstall",
     "TASK_NAME",
     "SYSTEMD_UNIT_NAME",
@@ -575,14 +576,18 @@ def http_health_version(url: str) -> str | None:
     return version if isinstance(version, str) else "older than 0.4.1"
 
 
+def plan_lines(action: str, plan: InstallPlan, *, commands: list[list[str]], files: list[Path]) -> list[str]:
+    """What ``plan`` writes and runs, one line each."""
+    lines = [f"claude-token-lens {action}: {plan.description}"]
+    lines += [f"  will write: {path}" for path in files]
+    lines += [f"  will run:   {' '.join(command)}" for command in commands]
+    lines += [f"  note: {note}" for note in plan.notes]
+    return lines
+
+
 def _print_plan(action: str, plan: InstallPlan, *, commands: list[list[str]], files: list[Path]) -> None:
-    print(f"claude-token-lens {action}: {plan.description}")
-    for path in files:
-        print(f"  will write: {path}")
-    for command in commands:
-        print(f"  will run:   {' '.join(command)}")
-    for note in plan.notes:
-        print(f"  note: {note}")
+    for line in plan_lines(action, plan, commands=commands, files=files):
+        print(line)
 
 
 def install(
@@ -590,25 +595,30 @@ def install(
     *,
     runner: Callable[..., subprocess.CompletedProcess] = subprocess.run,
     dry_run: bool = False,
+    quiet: bool = False,
 ) -> int:
     """Write ``plan.files_to_write`` then run ``plan.commands``, in
     that order (a systemd/launchd unit must exist on disk before
-    ``daemon-reload``/``bootstrap`` can see it). Always prints exactly
-    what it is about to do before doing it. ``dry_run`` prints the same
-    plan and returns without writing or running anything. Returns 0 on
-    success; raises :class:`InstallerError` if any command's injected
-    ``runner`` reports a non-zero exit code.
+    ``daemon-reload``/``bootstrap`` can see it). Prints exactly what it
+    is about to do before doing it, unless ``quiet`` (``init``, which
+    showed the plan in its review and says what it's doing in its own
+    words). ``dry_run`` prints the same plan and returns without writing
+    or running anything. Returns 0 on success; raises
+    :class:`InstallerError` if any command's injected ``runner`` reports
+    a non-zero exit code.
     """
-    _print_plan("install-service", plan, commands=plan.commands, files=list(plan.files_to_write))
+    say = (lambda _text: None) if quiet else print
+    if not quiet:
+        _print_plan("install-service", plan, commands=plan.commands, files=list(plan.files_to_write))
 
     if dry_run:
-        print("Dry run -- nothing written or run.")
+        say("Dry run -- nothing written or run.")
         return 0
 
     for path, content in plan.files_to_write.items():
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
-        print(f"Wrote {path}")
+        say(f"Wrote {path}")
 
     for command in plan.commands:
         result = runner(command, capture_output=True, text=True)
@@ -617,7 +627,7 @@ def install(
             stderr = getattr(result, "stderr", "") or ""
             raise InstallerError(f"command failed ({returncode}): {' '.join(command)}\n{stderr}")
 
-    print("Service install complete.")
+    say("Service install complete.")
     return 0
 
 

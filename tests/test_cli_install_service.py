@@ -1,7 +1,7 @@
 """CLI wiring tests for the v3 ``install-service``/``uninstall-service``
-subcommands and ``init``'s new "run the service at logon?" final step
+subcommands and ``init``'s "start the dashboard at logon?" question
 (``src/claude_token_lens/cli.py``'s ``_cmd_install_service``/
-``_cmd_uninstall_service``/``_cmd_init_service_step``).
+``_cmd_uninstall_service``, and ``setup_flow``).
 
 Every test here either uses ``--dry-run`` (the real code path, which by
 construction never writes a file or spawns a process -- see
@@ -16,9 +16,6 @@ reach this machine.
 from __future__ import annotations
 
 import io
-from pathlib import Path
-
-import pytest
 
 from claude_token_lens import cli, installer as installer_mod
 
@@ -166,11 +163,11 @@ def test_uninstall_service_calls_uninstall(tmp_path, monkeypatch):
 
 
 # --------------------------------------------------------------------
-# init: the "run the service at logon?" final step
+# init: the "start the dashboard at logon?" question
 # --------------------------------------------------------------------
 
 
-def _run_init(tmp_path, extra_args, stdin_text: str = ""):
+def _run_init(tmp_path, extra_args):
     config_dir = tmp_path / "config"
     projects_root = tmp_path / "projects"
     exit_code = cli.main(
@@ -187,76 +184,130 @@ def _run_init(tmp_path, extra_args, stdin_text: str = ""):
     return exit_code
 
 
-def test_init_non_interactive_defaults_to_not_installing_the_service(tmp_path, capsys):
+def _fake_install(monkeypatch) -> list:
+    """``installer.install`` recording its calls, and a dashboard that
+    answers once it's installed."""
+    calls = []
+    monkeypatch.setattr(installer_mod, "install", lambda plan, **k: calls.append((plan, k)) or 0)
+    monkeypatch.setattr(installer_mod, "http_health_ok", lambda url: bool(calls))
+    return calls
+
+
+def test_init_non_interactive_defaults_to_not_installing_the_service(tmp_path, capsys, monkeypatch):
+    calls = _fake_install(monkeypatch)
     exit_code = _run_init(tmp_path, ["--non-interactive"])
     assert exit_code == 0
     out = capsys.readouterr().out
     assert "(derived) run_service" in out
-    assert "Service not installed" in out
+    assert "Dashboard at logon: not now. Run 'claude-token-lens install-service' any time to add it." in out
+    assert calls == []
 
 
 def test_init_no_service_skips_the_step_entirely(tmp_path, capsys, monkeypatch):
-    install_called = []
-    monkeypatch.setattr(installer_mod, "install", lambda *a, **k: install_called.append(1))
+    calls = _fake_install(monkeypatch)
     exit_code = _run_init(tmp_path, ["--non-interactive", "--no-service"])
     assert exit_code == 0
     out = capsys.readouterr().out
-    assert "Service-at-logon step skipped (--no-service)" in out
-    assert install_called == []
+    assert "Dashboard at logon: skipped (--no-service)." in out
+    assert "(derived) run_service" not in out
+    assert calls == []
 
 
-def test_init_install_service_flag_installs_without_asking(tmp_path, capsys):
-    exit_code = _run_init(tmp_path, ["--non-interactive", "--install-service", "--dry-run"])
+def test_init_install_service_flag_installs_without_asking(tmp_path, capsys, monkeypatch):
+    calls = _fake_install(monkeypatch)
+    exit_code = _run_init(tmp_path, ["--non-interactive", "--install-service"])
     assert exit_code == 0
     out = capsys.readouterr().out
     assert "(derived) run_service" not in out
-    assert "install-service:" in out
-    assert "Dry run" in out
+    assert "Start it at logon?" not in out
+    assert "Starting the dashboard... running." in out
+    # init says what it's doing in its own words; install-service's own
+    # plan and progress lines stay out of it.
+    assert len(calls) == 1 and calls[0][1] == {"quiet": True}
+    assert "Next: open http://127.0.0.1:8765" in out
 
 
-#: gather_answers() prompts interactively for 7 questions (billing,
-#: exclude_projects, launch_overlays, shared_project_config, tz,
-#: apply_scope, capture_window) before init's own new "run the service
-#: at logon?" question -- a blank line per question accepts its
-#: printed default, so these tests can reach the new prompt without
-#: exercising (or caring about) the rest of that Q&A.
-_ONBOARDING_DEFAULTS = "\n" * 7
+#: A blank line answers "How do you pay?" with the saved billing, and
+#: "Connect?" is skipped (--no-install): the next line answers the
+#: logon question.
+_BILLING = 'billing = "api"\n'
+
+
+def _saved_billing(tmp_path):
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "config.toml").write_text(_BILLING, encoding="utf-8")
 
 
 def test_init_interactive_yes_installs(tmp_path, capsys, monkeypatch):
-    monkeypatch.setattr(cli.sys, "stdin", io.StringIO(_ONBOARDING_DEFAULTS + "y\n"))
-    exit_code = _run_init(tmp_path, ["--dry-run"])
-    assert exit_code == 0
-    out = capsys.readouterr().out
-    assert "Run the service at logon?" in out
-    assert "install-service:" in out
-
-
-def test_init_interactive_blank_line_defaults_to_yes(tmp_path, capsys, monkeypatch):
-    monkeypatch.setattr(cli.sys, "stdin", io.StringIO(_ONBOARDING_DEFAULTS + "\n"))
-    exit_code = _run_init(tmp_path, ["--dry-run"])
-    assert exit_code == 0
-    out = capsys.readouterr().out
-    assert "install-service:" in out
-
-
-def test_init_interactive_no_declines(tmp_path, capsys, monkeypatch):
-    monkeypatch.setattr(cli.sys, "stdin", io.StringIO(_ONBOARDING_DEFAULTS + "n\n"))
+    _saved_billing(tmp_path)
+    calls = _fake_install(monkeypatch)
+    monkeypatch.setattr(cli.sys, "stdin", io.StringIO("\ny\n\n"))
     exit_code = _run_init(tmp_path, [])
     assert exit_code == 0
     out = capsys.readouterr().out
-    assert "Run the service at logon?" in out
-    assert "Service not installed" in out
+    assert "Start it at logon? [Y/n]:" in out
+    assert "Dashboard at logon: add a" in out
+    assert len(calls) == 1
 
 
-def test_init_dry_run_writes_no_service_files(tmp_path, capsys, monkeypatch):
-    monkeypatch.setattr(cli.sys, "stdin", io.StringIO(_ONBOARDING_DEFAULTS + "y\n"))
-    exit_code = _run_init(tmp_path, ["--dry-run"])
+def test_init_interactive_blank_line_defaults_to_yes(tmp_path, capsys, monkeypatch):
+    _saved_billing(tmp_path)
+    calls = _fake_install(monkeypatch)
+    monkeypatch.setattr(cli.sys, "stdin", io.StringIO("\n\n\n"))
+    exit_code = _run_init(tmp_path, [])
     assert exit_code == 0
-    # config.toml IS written (init's own config step is unaffected by
-    # --dry-run, which only governs the logon-service step) -- only the
-    # *service* registration must be untouched.
-    assert (tmp_path / "config" / "config.toml").is_file()
+    assert len(calls) == 1
+
+
+def test_init_interactive_no_declines(tmp_path, capsys, monkeypatch):
+    _saved_billing(tmp_path)
+    calls = _fake_install(monkeypatch)
+    monkeypatch.setattr(cli.sys, "stdin", io.StringIO("\nn\n\n"))
+    exit_code = _run_init(tmp_path, [])
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "Start it at logon? [Y/n]:" in out
+    assert "Dashboard at logon: not now." in out
+    assert calls == []
+
+
+def test_init_dry_run_shows_the_logon_task_and_writes_nothing(tmp_path, capsys, monkeypatch):
+    calls = _fake_install(monkeypatch)
+    exit_code = _run_init(tmp_path, ["--non-interactive", "--install-service", "--dry-run"])
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "install-service:" in out and "Dry run: nothing was written." in out
+    assert calls == []
+    # --dry-run writes nothing at all now, config.toml included.
+    assert not (tmp_path / "config").exists()
+
+
+def test_init_repairs_a_logon_task_whose_dashboard_does_not_answer(tmp_path, capsys, monkeypatch):
+    _saved_billing(tmp_path)
+    calls = _fake_install(monkeypatch)
+    monkeypatch.setattr(installer_mod, "is_registered", lambda *a, **k: True)
+    monkeypatch.setattr(cli.sys, "stdin", io.StringIO("\n\n\n"))
+    exit_code = _run_init(tmp_path, [])
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "The dashboard's logon task is set up, but nothing answers at http://127.0.0.1:8765." in out
+    assert "Repair the dashboard's logon task? [Y/n]:" in out
+    assert "Dashboard at logon: set up a" in out and "again, and start the dashboard now." in out
+    assert len(calls) == 1
+
+
+def test_init_skips_the_question_when_the_dashboard_already_runs(tmp_path, capsys, monkeypatch):
+    _saved_billing(tmp_path)
+    calls = _fake_install(monkeypatch)
+    monkeypatch.setattr(installer_mod, "is_registered", lambda *a, **k: True)
+    monkeypatch.setattr(installer_mod, "http_health_ok", lambda url: True)
+    monkeypatch.setattr(cli.sys, "stdin", io.StringIO("\n\n"))
+    exit_code = _run_init(tmp_path, [])
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "Start it at logon?" not in out and "Repair" not in out
+    assert "Dashboard at logon: already running at http://127.0.0.1:8765." in out
+    assert calls == []
 
 
 # --------------------------------------------------------------------

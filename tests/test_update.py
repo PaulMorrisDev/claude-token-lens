@@ -335,7 +335,7 @@ def test_finish_offers_the_snapshot_hook_repair(tmp_path, monkeypatch):
             settings_path=tmp_path / "claude" / "settings.json", command="old", fixed_command="new"
         )
     )
-    monkeypatch.setattr(cli.onboarding, "_offer_hook_repair", offer)
+    monkeypatch.setattr(cli.onboarding, "offer_hook_repair", offer)
     _Finish(tmp_path).run("--yes")
     assert offered == [(True, False)]
 

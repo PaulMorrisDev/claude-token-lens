@@ -4,8 +4,8 @@ onboarding.detect`, :func:`~claude_token_lens.onboarding.load_answers_file`/
 :func:`~claude_token_lens.onboarding.gather_answers` (an ``--answers``
 file, interactive stdin prompting, and ``--non-interactive`` derivation,
 each exercised directly against :class:`Detection`/hand-built answers
-data), and :func:`~claude_token_lens.onboarding.run_init`'s end-to-end
-orchestration against synthetic projects built with ``tests/helpers``.
+data), and what ``init`` (``setup_flow.run``) writes from them, end to
+end, against synthetic projects built with ``tests/helpers``.
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from claude_token_lens import discovery, onboarding
+from claude_token_lens import cli, discovery, installer, onboarding, setup_flow
 from claude_token_lens.baseline import list_baselines
 from claude_token_lens.config import Config, load_config
 
@@ -233,7 +233,7 @@ def test_gather_answers_invalid_capture_window_falls_back_with_note():
 
 
 # --------------------------------------------------------------------
-# run_init: end to end
+# init: end to end
 # --------------------------------------------------------------------
 
 
@@ -246,218 +246,119 @@ def _make_project(tmp_path: Path, name: str = "my-proj") -> tuple[Path, Path, st
     real_project_path.mkdir(parents=True)
     slug = discovery.slug_for(str(real_project_path))
     projects_root = tmp_path / "projects"
-    (projects_root / slug).mkdir(parents=True)
+    (projects_root / slug).mkdir(parents=True, exist_ok=True)
     return real_project_path, projects_root, slug
 
 
-def test_run_init_writes_config_and_project_files(tmp_path, monkeypatch):
+def _init(config_dir, projects_root, *argv, stdin="", now=None, rc=0) -> str:
+    """``init --non-interactive --no-install --no-service`` plus ``argv``;
+    returns the output."""
+    args = cli._make_parser().parse_args(
+        [
+            "init", "--config-dir", str(config_dir), "--projects-root", str(projects_root),
+            "--non-interactive", "--no-install", "--no-service", *argv,
+        ]
+    )
+    stdout = io.StringIO()
+    assert setup_flow.run(*cli._setup_flow_inputs(args), stdin=io.StringIO(stdin), stdout=stdout, now=now) == rc
+    return stdout.getvalue()
+
+
+def test_init_writes_config_only_and_advanced_writes_the_project_file(tmp_path, monkeypatch):
     real_project_path, projects_root, slug = _make_project(tmp_path)
     monkeypatch.chdir(real_project_path)
     config_dir = tmp_path / "config"
-    stdout = io.StringIO()
 
-    rc = onboarding.run_init(
-        config_dir=config_dir,
-        projects_root_path=projects_root,
-        non_interactive=True,
-        no_install=True,
-        hook_fragment="HOOK",
-        statusline_fragment="STATUSLINE",
-        stdin=io.StringIO(""),
-        stdout=stdout,
-    )
-    assert rc == 0
+    out = _init(config_dir, projects_root)
     project_toml_path = config_dir / "projects" / f"{slug}.toml"
     assert (config_dir / "config.toml").is_file()
-    assert project_toml_path.is_file()
-
+    assert not project_toml_path.exists()
     config = load_config(config_dir)
     assert config.capture_window == onboarding.DEFAULT_CAPTURE_WINDOW_DAYS
     assert config.capture_started is not None
 
-    # Fix N3: assert_privacy_deep was imported but never actually called
-    # anywhere in this file -- the privacy assertion its import implies
-    # was never run against init's own written output. Exercise it here
-    # against everything init writes/prints: the written config.toml,
-    # the written projects/<slug>.toml, and stdout.
+    advanced = _init(config_dir, projects_root, "--advanced")
+    assert project_toml_path.is_file()
+    # Fix N3: everything init writes and prints is checked for private
+    # paths and names.
     assert_privacy_deep(
         {
             "config_toml": (config_dir / "config.toml").read_text(encoding="utf-8"),
             "project_toml": project_toml_path.read_text(encoding="utf-8"),
-            "stdout": stdout.getvalue(),
+            # The dashboard's own address is the one URL init prints.
+            "stdout": out.replace(installer.DEFAULT_URL, ""),
+            "advanced": advanced.replace(installer.DEFAULT_URL, ""),
         }
     )
 
 
 # --------------------------------------------------------------------
-# Fix S6: run_init's initial baseline capture used to be hard-wired to
-# the cwd project's own slug, ignoring --all-projects/--project/
-# --project-family entirely. Each test below builds two synthetic
-# project directories -- the cwd project (no sessions of its own) and a
-# second, unrelated project (with sessions) -- and checks that the
-# baseline only picks up the second project's sessions when a selector
-# says to include it.
+# Fix S6: init's first baseline used to be hard-wired to the cwd
+# project's own slug, ignoring --all-projects/--project/--project-family
+# entirely. Each test below builds two synthetic project directories --
+# the cwd project (no sessions of its own) and a second, unrelated
+# project (with sessions) -- and checks that the baseline only picks up
+# the second project's sessions when a selector says to include it.
 # --------------------------------------------------------------------
 
 
-def test_run_init_default_baseline_is_scoped_to_the_cwd_project_only(tmp_path, monkeypatch):
+def _two_projects(tmp_path, monkeypatch, sessions: int) -> tuple[Path, str]:
     real_project_path, projects_root, _slug = _make_project(tmp_path, name="my-proj")
     _other_project_path, _projects_root2, other_slug = _make_project(tmp_path, name="other-proj")
-    write_jsonl(
-        projects_root / other_slug / "session-1.jsonl",
-        [turn_line(input_tokens=100 + i, output_tokens=20 + i) for i in range(3)],
-    )
-    monkeypatch.chdir(real_project_path)
-    config_dir = tmp_path / "config"
-    stdout = io.StringIO()
-
-    rc = onboarding.run_init(
-        config_dir=config_dir,
-        projects_root_path=projects_root,
-        non_interactive=True,
-        no_install=True,
-        hook_fragment="HOOK",
-        statusline_fragment="STATUSLINE",
-        stdin=io.StringIO(""),
-        stdout=stdout,
-    )
-    assert rc == 0
-    records = list_baselines(config_dir)
-    assert len(records) == 1
-    # my-proj has no sessions of its own -- the other project's 3
-    # sessions must not leak into the default (cwd-only) baseline.
-    assert records[0]["sessions_analysed"] == 0
-
-
-def test_run_init_all_projects_includes_other_projects_baseline(tmp_path, monkeypatch):
-    real_project_path, projects_root, _slug = _make_project(tmp_path, name="my-proj")
-    _other_project_path, _projects_root2, other_slug = _make_project(tmp_path, name="other-proj")
-    for i in range(3):
+    for i in range(sessions):
         write_jsonl(
             projects_root / other_slug / f"session-{i}.jsonl",
             [turn_line(input_tokens=100 + i, output_tokens=20 + i)],
         )
     monkeypatch.chdir(real_project_path)
-    config_dir = tmp_path / "config"
-    stdout = io.StringIO()
+    return projects_root, other_slug
 
-    rc = onboarding.run_init(
-        config_dir=config_dir,
-        projects_root_path=projects_root,
-        non_interactive=True,
-        no_install=True,
-        hook_fragment="HOOK",
-        statusline_fragment="STATUSLINE",
-        stdin=io.StringIO(""),
-        stdout=stdout,
-        all_projects=True,
-    )
-    assert rc == 0
+
+@pytest.mark.parametrize(
+    ("argv", "sessions", "expected"),
+    [
+        # my-proj has no sessions of its own: the other project's must
+        # not leak into the default (cwd-only) baseline.
+        ((), 3, 0),
+        (("--all-projects",), 3, 3),
+        (("--project", "OTHER"), 2, 2),
+        (("--project-family", "other-proj"), 5, 5),
+    ],
+)
+def test_init_baseline_follows_the_project_selectors(tmp_path, monkeypatch, argv, sessions, expected):
+    projects_root, other_slug = _two_projects(tmp_path, monkeypatch, sessions)
+    config_dir = tmp_path / "config"
+    out = _init(config_dir, projects_root, *(other_slug if arg == "OTHER" else arg for arg in argv))
     records = list_baselines(config_dir)
     assert len(records) == 1
-    assert records[0]["sessions_analysed"] == 3
+    assert records[0]["sessions_analysed"] == expected
+    scope = "this project's" if not argv else "the chosen projects'"
+    assert f"Reading {scope} history for a first baseline... " in out
 
 
-def test_run_init_project_flag_selects_named_project_only(tmp_path, monkeypatch):
-    real_project_path, projects_root, _slug = _make_project(tmp_path, name="my-proj")
-    _other_project_path, _projects_root2, other_slug = _make_project(tmp_path, name="other-proj")
-    for i in range(2):
-        write_jsonl(
-            projects_root / other_slug / f"session-{i}.jsonl",
-            [turn_line(input_tokens=100 + i, output_tokens=20 + i)],
-        )
-    monkeypatch.chdir(real_project_path)
-    config_dir = tmp_path / "config"
-    stdout = io.StringIO()
-
-    rc = onboarding.run_init(
-        config_dir=config_dir,
-        projects_root_path=projects_root,
-        non_interactive=True,
-        no_install=True,
-        hook_fragment="HOOK",
-        statusline_fragment="STATUSLINE",
-        stdin=io.StringIO(""),
-        stdout=stdout,
-        project=[other_slug],
-    )
-    assert rc == 0
-    records = list_baselines(config_dir)
-    assert len(records) == 1
-    assert records[0]["sessions_analysed"] == 2
-
-
-def test_run_init_project_family_regex_selects_matching_projects(tmp_path, monkeypatch):
-    real_project_path, projects_root, _slug = _make_project(tmp_path, name="my-proj")
-    _other_project_path, _projects_root2, other_slug = _make_project(tmp_path, name="other-proj")
-    for i in range(5):
-        write_jsonl(
-            projects_root / other_slug / f"session-{i}.jsonl",
-            [turn_line(input_tokens=100 + i, output_tokens=20 + i)],
-        )
-    monkeypatch.chdir(real_project_path)
-    config_dir = tmp_path / "config"
-    stdout = io.StringIO()
-
-    rc = onboarding.run_init(
-        config_dir=config_dir,
-        projects_root_path=projects_root,
-        non_interactive=True,
-        no_install=True,
-        hook_fragment="HOOK",
-        statusline_fragment="STATUSLINE",
-        stdin=io.StringIO(""),
-        stdout=stdout,
-        project_family="other-proj",
-    )
-    assert rc == 0
-    records = list_baselines(config_dir)
-    assert len(records) == 1
-    assert records[0]["sessions_analysed"] == 5
-
-
-def test_run_init_no_install_skips_fragments(tmp_path, monkeypatch):
+def test_init_no_install_leaves_claude_code_alone(tmp_path, monkeypatch):
     real_project_path, projects_root, _slug = _make_project(tmp_path)
     monkeypatch.chdir(real_project_path)
-    stdout = io.StringIO()
-
-    onboarding.run_init(
-        config_dir=tmp_path / "config",
-        projects_root_path=projects_root,
-        non_interactive=True,
-        no_install=True,
-        hook_fragment="THE-HOOK-FRAGMENT",
-        statusline_fragment="THE-STATUSLINE-FRAGMENT",
-        stdin=io.StringIO(""),
-        stdout=stdout,
-    )
-    out = stdout.getvalue()
-    assert "THE-HOOK-FRAGMENT" not in out
-    assert "THE-STATUSLINE-FRAGMENT" not in out
-    assert "skipped (--no-install)" in out
+    out = _init(tmp_path / "config", projects_root)
+    assert "Connect to Claude Code: skipped (--no-install)." in out
+    assert "Claude Code's settings.json" not in out
 
 
-def test_run_init_prints_install_fragments_by_default(tmp_path, monkeypatch):
+def test_init_non_interactive_connects_only_with_the_flag(tmp_path, monkeypatch):
     real_project_path, projects_root, _slug = _make_project(tmp_path)
     monkeypatch.chdir(real_project_path)
-    stdout = io.StringIO()
-
-    onboarding.run_init(
-        config_dir=tmp_path / "config",
-        projects_root_path=projects_root,
-        non_interactive=True,
-        no_install=False,
-        hook_fragment="THE-HOOK-FRAGMENT",
-        statusline_fragment="THE-STATUSLINE-FRAGMENT",
-        stdin=io.StringIO(""),
-        stdout=stdout,
+    args = cli._make_parser().parse_args(
+        ["init", "--config-dir", str(tmp_path / "config"), "--projects-root", str(projects_root),
+         "--non-interactive", "--no-service"]
     )
+    stdout = io.StringIO()
+    assert setup_flow.run(*cli._setup_flow_inputs(args), stdin=io.StringIO(""), stdout=stdout) == 0
     out = stdout.getvalue()
-    assert "THE-HOOK-FRAGMENT" in out
-    assert "THE-STATUSLINE-FRAGMENT" in out
+    assert "(derived) connect: not given on the command line; left unconnected (pass --connect to connect)" in out
+    assert "Connect to Claude Code: not now. Run 'claude-token-lens init --connect' to connect." in out
 
 
-def test_run_init_runs_an_initial_baseline_when_sessions_exist(tmp_path, monkeypatch):
+def test_init_runs_an_initial_baseline_when_sessions_exist(tmp_path, monkeypatch):
     real_project_path, projects_root, slug = _make_project(tmp_path)
     write_jsonl(
         projects_root / slug / "session-1.jsonl",
@@ -465,120 +366,54 @@ def test_run_init_runs_an_initial_baseline_when_sessions_exist(tmp_path, monkeyp
     )
     monkeypatch.chdir(real_project_path)
     config_dir = tmp_path / "config"
-    stdout = io.StringIO()
-
-    rc = onboarding.run_init(
-        config_dir=config_dir,
-        projects_root_path=projects_root,
-        non_interactive=True,
-        no_install=True,
-        hook_fragment="HOOK",
-        statusline_fragment="STATUSLINE",
-        stdin=io.StringIO(""),
-        stdout=stdout,
-    )
-    assert rc == 0
-    assert "Wrote initial baseline" in stdout.getvalue()
+    out = _init(config_dir, projects_root)
+    assert "Then read this project's history for a first baseline." in out
+    assert "Reading this project's history for a first baseline... 1 session.\n" in out
     records = list_baselines(config_dir)
     assert len(records) == 1
     assert records[0]["sessions_analysed"] == 1
 
 
-def test_run_init_skips_baseline_when_no_project_directory_exists_yet(tmp_path, monkeypatch):
-    # Unlike test_run_init_saves_a_minimal_baseline_when_project_dir_has_
+def test_init_skips_baseline_when_no_project_directory_exists_yet(tmp_path, monkeypatch):
+    # Unlike test_init_saves_a_minimal_baseline_when_project_dir_has_
     # no_sessions_yet below, this project has never been recorded by
     # Claude Code at all -- projects_root/<slug> doesn't exist -- so
-    # discovery.resolve_project_dirs finds nothing and run_init's own
-    # early check skips calling build_baseline entirely.
+    # discovery.resolve_project_dirs finds nothing and init skips the
+    # baseline without a word.
     real_project_path = tmp_path / "work" / "brand-new-project"
     real_project_path.mkdir(parents=True)
     projects_root = tmp_path / "projects"
     projects_root.mkdir(parents=True)
     monkeypatch.chdir(real_project_path)
     config_dir = tmp_path / "config"
-    stdout = io.StringIO()
-
-    rc = onboarding.run_init(
-        config_dir=config_dir,
-        projects_root_path=projects_root,
-        non_interactive=True,
-        no_install=True,
-        hook_fragment="HOOK",
-        statusline_fragment="STATUSLINE",
-        stdin=io.StringIO(""),
-        stdout=stdout,
-    )
-    assert rc == 0
+    out = _init(config_dir, projects_root)
     assert list_baselines(config_dir) == []
-    assert "skipping the initial baseline capture" in stdout.getvalue()
+    assert "first baseline" not in out
 
 
-def test_run_init_saves_a_minimal_baseline_when_project_dir_has_no_sessions_yet(tmp_path, monkeypatch):
+def test_init_saves_a_minimal_baseline_when_project_dir_has_no_sessions_yet(tmp_path, monkeypatch):
     # projects_root/<slug> exists (Claude Code has recorded this project)
     # but has no session transcripts in it yet -- build_baseline's own
     # "no sessions" branch still produces and saves a minimal,
-    # provisional record rather than run_init skipping the call outright.
+    # provisional record rather than init skipping the call outright.
     real_project_path, projects_root, _slug = _make_project(tmp_path)
     monkeypatch.chdir(real_project_path)
     config_dir = tmp_path / "config"
-    stdout = io.StringIO()
-
-    rc = onboarding.run_init(
-        config_dir=config_dir,
-        projects_root_path=projects_root,
-        non_interactive=True,
-        no_install=True,
-        hook_fragment="HOOK",
-        statusline_fragment="STATUSLINE",
-        stdin=io.StringIO(""),
-        stdout=stdout,
-    )
-    assert rc == 0
+    out = _init(config_dir, projects_root)
     records = list_baselines(config_dir)
     assert len(records) == 1
     assert records[0]["sessions_analysed"] == 0
     assert records[0]["provisional"] is True
-
-
-def test_run_init_prints_capture_window_status(tmp_path, monkeypatch):
-    real_project_path, projects_root, _slug = _make_project(tmp_path)
-    monkeypatch.chdir(real_project_path)
-    stdout = io.StringIO()
-
-    onboarding.run_init(
-        config_dir=tmp_path / "config",
-        projects_root_path=projects_root,
-        non_interactive=True,
-        no_install=True,
-        hook_fragment="HOOK",
-        statusline_fragment="STATUSLINE",
-        stdin=io.StringIO(""),
-        stdout=stdout,
-    )
-    assert "Capture window:" in stdout.getvalue()
+    assert "first baseline... 0 sessions." in out
 
 
 def _init_at(config_dir, projects_root, now, *, repair_hook=False):
-    rc = onboarding.run_init(
-        config_dir=config_dir,
-        projects_root_path=projects_root,
-        non_interactive=True,
-        no_install=True,
-        hook_fragment="HOOK",
-        statusline_fragment="STATUSLINE",
-        stdin=io.StringIO(""),
-        stdout=io.StringIO(),
-        now=now,
-        repair_hook=repair_hook,
-    )
-    assert rc == 0
+    _init(config_dir, projects_root, *(["--repair-hook"] if repair_hook else []), now=now)
     return load_config(config_dir)
 
 
 @pytest.mark.parametrize("repair_hook", [False, True])
-def test_run_init_again_keeps_the_original_capture_start(tmp_path, monkeypatch, repair_hook):
-    from datetime import datetime, timezone
-
+def test_init_again_keeps_the_original_capture_start(tmp_path, monkeypatch, repair_hook):
     real_project_path, projects_root, _slug = _make_project(tmp_path)
     monkeypatch.chdir(real_project_path)
     config_dir = tmp_path / "config"
@@ -591,9 +426,7 @@ def test_run_init_again_keeps_the_original_capture_start(tmp_path, monkeypatch, 
     assert _init_at(config_dir, projects_root, later, repair_hook=repair_hook).capture_started == first.isoformat()
 
 
-def test_run_init_sets_capture_start_when_config_has_none(tmp_path, monkeypatch):
-    from datetime import datetime, timezone
-
+def test_init_sets_capture_start_when_config_has_none(tmp_path, monkeypatch):
     real_project_path, projects_root, _slug = _make_project(tmp_path)
     monkeypatch.chdir(real_project_path)
     config_dir = tmp_path / "config"
@@ -604,108 +437,46 @@ def test_run_init_sets_capture_start_when_config_has_none(tmp_path, monkeypatch)
     assert _init_at(config_dir, projects_root, now).capture_started == now.isoformat()
 
 
-def test_run_init_bad_answers_file_exits_2(tmp_path, monkeypatch):
+def test_init_bad_answers_file_exits_2(tmp_path, monkeypatch):
     real_project_path, projects_root, _slug = _make_project(tmp_path)
     monkeypatch.chdir(real_project_path)
     answers_path = tmp_path / "answers.json"
     answers_path.write_text("{not valid json", encoding="utf-8")
-    stdout = io.StringIO()
-
-    rc = onboarding.run_init(
-        config_dir=tmp_path / "config",
-        projects_root_path=projects_root,
-        answers_path=answers_path,
-        non_interactive=True,
-        no_install=True,
-        hook_fragment="HOOK",
-        statusline_fragment="STATUSLINE",
-        stdin=io.StringIO(""),
-        stdout=stdout,
-    )
-    assert rc == 2
+    config_dir = tmp_path / "config"
+    _init(config_dir, projects_root, "--answers", str(answers_path), rc=2)
+    assert not config_dir.exists()
 
 
-def test_run_init_invalid_answer_value_exits_2_without_writing(tmp_path, monkeypatch):
+def test_init_invalid_answer_value_exits_2_without_writing(tmp_path, monkeypatch):
     real_project_path, projects_root, _slug = _make_project(tmp_path)
     monkeypatch.chdir(real_project_path)
     answers_path = tmp_path / "answers.json"
     answers_path.write_text(json.dumps({"billing": "not-a-real-mode"}), encoding="utf-8")
     config_dir = tmp_path / "config"
-
-    rc = onboarding.run_init(
-        config_dir=config_dir,
-        projects_root_path=projects_root,
-        answers_path=answers_path,
-        non_interactive=True,
-        no_install=True,
-        hook_fragment="HOOK",
-        statusline_fragment="STATUSLINE",
-        stdin=io.StringIO(""),
-        stdout=io.StringIO(),
-    )
-    assert rc == 2
+    _init(config_dir, projects_root, "--answers", str(answers_path), rc=2)
     assert not (config_dir / "config.toml").exists()
 
 
-def test_run_init_derived_notes_are_printed(tmp_path, monkeypatch):
+def test_init_derived_notes_are_printed(tmp_path, monkeypatch):
     real_project_path, projects_root, _slug = _make_project(tmp_path)
     monkeypatch.chdir(real_project_path)
-    stdout = io.StringIO()
-
-    onboarding.run_init(
-        config_dir=tmp_path / "config",
-        projects_root_path=projects_root,
-        non_interactive=True,
-        no_install=True,
-        hook_fragment="HOOK",
-        statusline_fragment="STATUSLINE",
-        stdin=io.StringIO(""),
-        stdout=stdout,
-    )
-    out = stdout.getvalue()
-    assert "(derived) billing:" in out
+    out = _init(tmp_path / "config", projects_root)
+    assert "(derived) billing: not given in --answers; used 'auto', worked out from usage-limit readings" in out
 
 
-def test_run_init_current_project_line_uses_the_redacted_slug(tmp_path, monkeypatch):
-    # discovery.redact_slug only scrubs the OS-username segment right
-    # after a "Users-"/"home-" marker (a project's own name is expected
-    # to appear -- that's the point of a slug); this pins the "current
-    # project" line to exactly what detect()/redact_slug produce, rather
-    # than a stronger guarantee redact_slug doesn't make.
-    #
+def test_init_output_never_names_the_user_in_the_project_path(tmp_path, monkeypatch):
     # The project directory is nested under a "home-<name>" segment we
-    # control here rather than relying on _make_project's plain
-    # tmp_path/"work"/name shape: whether that shape happens to carry a
-    # redactable marker depends entirely on where the *pytest tmp root*
-    # itself sits, which varies by platform (Windows: ".../Users-<real
-    # user>/AppData/Local/Temp/...", so the old "Users-<user>" assertion
-    # only ever passed there; Linux: "/tmp/pytest-of-<real user>/...",
-    # which redact_slug's marker regex does not match at all). Building
-    # the marker explicitly makes the assertion deterministic on every
-    # platform.
+    # control here, so the user name in the project's path is known on
+    # every platform, wherever the pytest tmp root sits.
     real_project_path = tmp_path / "home-reallife-username" / "work" / "secret-client-name"
     real_project_path.mkdir(parents=True)
     slug = discovery.slug_for(str(real_project_path))
     projects_root = tmp_path / "projects"
     (projects_root / slug).mkdir(parents=True)
     monkeypatch.chdir(real_project_path)
-    stdout = io.StringIO()
-
-    onboarding.run_init(
-        config_dir=tmp_path / "config",
-        projects_root_path=projects_root,
-        non_interactive=True,
-        no_install=True,
-        hook_fragment="HOOK",
-        statusline_fragment="STATUSLINE",
-        stdin=io.StringIO(""),
-        stdout=stdout,
-    )
-    out = stdout.getvalue()
-    expected_slug = discovery.redact_slug(slug)
-    assert f"- current project: {expected_slug}" in out
-    assert "home-<user>" in expected_slug
-    assert "reallife-username" not in expected_slug
+    out = _init(tmp_path / "config", projects_root, "--advanced")
+    assert "reallife-username" not in out
+    assert "Found 1 project with Claude Code history." in out
 
 
 # -- the metrics capture question ---------------------------------------------------

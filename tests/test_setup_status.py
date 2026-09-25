@@ -88,7 +88,7 @@ def test_hook_not_connected_waiting_then_done(tmp_path):
     _connect(config_dir, claude)
     item = _items(config_dir, claude)["hook"]
     assert item.state == "waiting"
-    assert item.detail == "Waiting for your first Claude Code session since you connected."
+    assert item.detail == "No Claude Code session has started since you connected."
 
     _snapshot(config_dir, "2026-09-20T12:00:00Z")
     item = _items(config_dir, claude)["hook"]
@@ -215,5 +215,5 @@ def test_status_exits_0_while_only_waiting_or_off(tmp_path, capsys, monkeypatch)
     _connect(config_dir, claude)
     rc, out = _run_status(config_dir, claude, capsys)
     assert rc == 0
-    assert "Waiting for your first Claude Code session since you connected." in out
+    assert "No Claude Code session has started since you connected." in out
     assert "Everything's set up." in out

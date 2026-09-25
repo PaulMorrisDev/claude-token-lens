@@ -132,7 +132,7 @@ def _snapshot_hook(config_dir: Path, claude_root, now: datetime | None) -> Setup
             "hook",
             label,
             "waiting",
-            "Waiting for your first Claude Code session since you connected.",
+            "No Claude Code session has started since you connected.",
             essential=True,
         )
     days = int(health.last_snapshot_days)

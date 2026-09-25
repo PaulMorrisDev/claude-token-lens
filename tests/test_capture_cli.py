@@ -10,14 +10,13 @@ from __future__ import annotations
 import io
 import json
 import os
-import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 
 from claude_token_lens import capture_catalogue as cat
-from claude_token_lens import cli, footprint, hook_health, installer, signals
+from claude_token_lens import cli, footprint, hook_health, installer, setup_flow, signals
 from claude_token_lens.config import CAPTURE_LOG_NAME, SIGNAL_RETENTION_DEFAULT_DAYS, CaptureConfig, load_capture_log, load_config
 
 NOW = datetime(2026, 9, 24, 6, 0, tzinfo=timezone.utc)
@@ -856,20 +855,43 @@ def _init_args(config_dir, *argv):
     return cli._make_parser().parse_args(["init", "--config-dir", str(config_dir), *argv])
 
 
-def _init_capture(config_dir, *argv, stdin=""):
+#: Every init question but the capture and feedback ones, answered.
+_OTHER_ANSWERS = {
+    "billing": "api",
+    "exclude_projects": [],
+    "launch_overlays": False,
+    "shared_project_config": False,
+    "tz": "",
+    "apply_scope": "user",
+    "capture_window": 14,
+}
+
+
+def _init(config_dir, *argv, stdin="", answers=None):
+    """Run ``init --advanced --no-service`` (the full capture and feedback
+    questions) through the real parser, every other question answered by
+    an answers file; returns the output. Without ``--connect`` or
+    ``--no-install``, the first line of ``stdin`` answers 'Connect?', and
+    the end of ``stdin`` says yes to 'Go ahead?'."""
+    path = config_dir.parent.parent / "answers.json"
+    path.write_text(json.dumps({**_OTHER_ANSWERS, **(answers or {})}), encoding="utf-8")
+    args = _init_args(config_dir, "--advanced", "--no-service", "--answers", str(path), *argv)
     out = io.StringIO()
-    cli._cmd_init_capture_step(
-        _init_args(config_dir, *argv), config_dir=config_dir, claude_root=config_dir.parent,
-        stdin=io.StringIO(stdin), stdout=out, now=NOW,
-    )
+    setup_flow.run(*cli._setup_flow_inputs(args), stdin=io.StringIO(stdin), stdout=out, now=NOW)
     return out.getvalue()
+
+
+def _capture_entries(config_dir) -> list:
+    commands = set(_commands(config_dir).values())
+    return [entry for entry in _entries(_settings(config_dir)) if entry[2].get("command") in commands]
 
 
 def test_init_warns_shows_estimates_and_connects_after_a_yes(tmp_path):
     config_dir = _claude(tmp_path, {})
     _api_billing(config_dir)
     _session(config_dir)
-    out = _init_capture(config_dir, stdin="standard\n\ny\n")
+    # Connect: yes; Standard; keep the time limit; no feedback; go ahead.
+    out = _init(config_dir, stdin="y\nstandard\n\n\ny\n")
     assert "This uses your tokens" in out and "[tl: task=bugfix brief=clear], which you will see" in out
     assert "What each level would have cost over your last 14 days" in out
     assert "Metrics capture level: off, free, essentials, standard, deep [off]:" in out
@@ -879,12 +901,12 @@ def test_init_warns_shows_estimates_and_connects_after_a_yes(tmp_path):
     assert "Saved to config.toml: metrics capture Standard (since 2026-09-24, until 2026-10-08 06:00)." in out
     assert load_config(config_dir).capture.level == "standard"
     assert load_config(config_dir).capture.until == "2026-10-08T06:00:00+00:00"
-    assert len(_entries(_settings(config_dir))) == len(hook_health.capture_specs(cat.level_metrics("standard")))
+    assert len(_capture_entries(config_dir)) == len(hook_health.capture_specs(cat.level_metrics("standard")))
 
 
 def test_init_time_box_question_yes_turns_the_limit_off(tmp_path):
     config_dir = _claude(tmp_path, {})
-    out = _init_capture(config_dir, stdin="essentials\ny\n")
+    out = _init(config_dir, stdin="n\nessentials\ny\n")
     assert "Turn off that time limit" in out
     assert load_config(config_dir).capture.level == "essentials"
     assert load_config(config_dir).capture.until == ""
@@ -892,7 +914,7 @@ def test_init_time_box_question_yes_turns_the_limit_off(tmp_path):
 
 def test_init_capture_no_limit_flag_skips_the_question(tmp_path):
     config_dir = _claude(tmp_path, {})
-    out = _init_capture(config_dir, "--capture-no-limit", stdin="essentials\n")
+    out = _init(config_dir, "--capture-no-limit", stdin="n\nessentials\n")
     assert "Turn off that time limit" not in out
     assert load_config(config_dir).capture.level == "essentials"
     assert load_config(config_dir).capture.until == ""
@@ -900,9 +922,9 @@ def test_init_capture_no_limit_flag_skips_the_question(tmp_path):
 
 def test_init_capture_no_limit_answers_file(tmp_path):
     config_dir = _claude(tmp_path, {})
-    answers = tmp_path / "answers.json"
-    answers.write_text(json.dumps({"capture_level": "essentials", "capture_no_limit": True}), encoding="utf-8")
-    out = _init_capture(config_dir, "--non-interactive", "--no-install", "--answers", str(answers))
+    out = _init(
+        config_dir, "--non-interactive", "--no-install", answers={"capture_level": "essentials", "capture_no_limit": True}
+    )
     assert "Turn off that time limit" not in out
     assert load_config(config_dir).capture.level == "essentials"
     assert load_config(config_dir).capture.until == ""
@@ -917,7 +939,7 @@ def test_non_interactive_init_with_explicit_level_gets_the_default_time_box(tmp_
     # --capture-no-limit (or the answers file's capture_no_limit key)
     # still opts out explicitly.
     config_dir = _claude(tmp_path, {})
-    out = _init_capture(config_dir, "--non-interactive", "--no-install", "--capture-level", "essentials")
+    out = _init(config_dir, "--non-interactive", "--no-install", "--capture-level", "essentials")
     assert "(derived) capture_no_limit: not given in --answers; used default 'n'" in out
     assert load_config(config_dir).capture.level == "essentials"
     assert load_config(config_dir).capture.until == "2026-10-08T06:00:00+00:00"
@@ -927,14 +949,14 @@ def test_non_interactive_init_capture_for_sets_a_specific_time_box(tmp_path):
     # CAP-8: --capture-for answers the time-box question without asking,
     # parallel to 'capture on --for'.
     config_dir = _claude(tmp_path, {})
-    out = _init_capture(config_dir, "--non-interactive", "--no-install", "--capture-level", "essentials", "--capture-for", "30d")
+    out = _init(config_dir, "--non-interactive", "--no-install", "--capture-level", "essentials", "--capture-for", "30d")
     assert "capture_no_limit" not in out
     assert load_config(config_dir).capture.until == (NOW + timedelta(days=30)).isoformat(timespec="seconds")
 
 
 def test_capture_for_and_capture_no_limit_together_is_rejected(tmp_path):
     config_dir = _claude(tmp_path, {})
-    out = _init_capture(
+    out = _init(
         config_dir, "--non-interactive", "--no-install", "--capture-level", "essentials",
         "--capture-for", "30d", "--capture-no-limit",
     )
@@ -944,7 +966,7 @@ def test_capture_for_and_capture_no_limit_together_is_rejected(tmp_path):
 
 def test_capture_for_rejects_a_bad_duration(tmp_path):
     config_dir = _claude(tmp_path, {})
-    out = _init_capture(config_dir, "--non-interactive", "--no-install", "--capture-level", "essentials", "--capture-for", "soon")
+    out = _init(config_dir, "--non-interactive", "--no-install", "--capture-level", "essentials", "--capture-for", "soon")
     assert "--capture-for 'soon': use a number and h, d or w" in out
     assert not (config_dir / "config.toml").exists()
 
@@ -952,19 +974,19 @@ def test_capture_for_rejects_a_bad_duration(tmp_path):
 @pytest.mark.parametrize("typed, level", [("", "off"), ("n", "off"), ("yes", "essentials"), ("Deep", "deep")])
 def test_init_reads_yes_no_and_level_names(tmp_path, typed, level):
     config_dir = _claude(tmp_path, {})
-    _init_capture(config_dir, stdin=f"{typed}\nn\n")
+    _init(config_dir, stdin=f"n\n{typed}\nn\n")
     assert load_config(config_dir).capture.level == level
 
 
 def test_init_does_not_turn_it_on_for_a_word_it_does_not_know(tmp_path):
     config_dir = _claude(tmp_path, {})
-    out = _init_capture(config_dir, stdin="max\n")
+    out = _init(config_dir, stdin="n\nmax\n")
     assert "'max' isn't a level" in out and load_config(config_dir).capture.level == "off"
 
 
 def test_non_interactive_init_leaves_it_off_and_says_so(tmp_path):
     config_dir = _claude(tmp_path, {})
-    out = _init_capture(config_dir, "--non-interactive")
+    out = _init(config_dir, "--non-interactive")
     assert "(derived) capture_level: not given in --answers; metrics capture left off" in out
     assert "This uses your tokens" not in out
     assert load_config(config_dir).capture.level == "off"
@@ -972,42 +994,42 @@ def test_non_interactive_init_leaves_it_off_and_says_so(tmp_path):
 
 def test_init_capture_level_flag_without_connecting_prints_the_command(tmp_path):
     config_dir = _claude(tmp_path, {})
-    out = _init_capture(config_dir, "--non-interactive", "--no-install", "--capture-level", "essentials")
+    out = _init(config_dir, "--non-interactive", "--no-install", "--capture-level", "essentials")
     assert "This uses your tokens" in out
-    assert "Add the hook entries it needs with: claude-token-lens capture connect" in out
+    assert "add the hooks it needs later with 'claude-token-lens capture connect'" in out
     assert load_config(config_dir).capture.level == "essentials"
     assert _settings(config_dir) == {}
 
 
 def test_init_answers_file_level_with_connect_writes_without_asking(tmp_path):
     config_dir = _claude(tmp_path, {})
-    answers = tmp_path / "answers.json"
-    answers.write_text(json.dumps({"capture_level": "free"}), encoding="utf-8")
-    out = _init_capture(config_dir, "--non-interactive", "--connect", "--answers", str(answers))
+    out = _init(config_dir, "--non-interactive", "--connect", answers={"capture_level": "free"})
     assert load_config(config_dir).capture.level == "free"
-    assert len(_entries(_settings(config_dir))) == len(hook_health.capture_specs(cat.level_metrics("free")))
-    assert "Make this change?" not in out
+    assert len(_capture_entries(config_dir)) == len(hook_health.capture_specs(cat.level_metrics("free")))
+    assert "Go ahead?" not in out
 
 
 def test_init_leaves_capture_that_is_already_on_alone(tmp_path):
     config_dir = _claude(tmp_path, {})
     _capture(config_dir, "on", "--level", "standard", "--yes")
-    out = _init_capture(config_dir, stdin="off\n")
+    # Connect: no; then "off" would answer the capture question if it were
+    # asked.
+    out = _init(config_dir, stdin="n\noff\n")
     # CAP-8: the earlier "on" call got the default time-box too.
     assert "Metrics capture is Standard (since 2026-09-24, until 2026-10-08 06:00)." in out
     assert load_config(config_dir).capture.level == "standard"
-    out = _init_capture(config_dir, "--capture-level", "off")
+    out = _init(config_dir, "--capture-level", "off", stdin="n\n")
     assert "Metrics capture switched off." in out and load_config(config_dir).capture.level == "off"
 
 
-def test_init_asks_about_capture_last(tmp_path, monkeypatch, capsys):
+def test_init_asks_about_capture_before_writing_anything(tmp_path, monkeypatch, capsys):
     config_dir = _claude(tmp_path, {})
     monkeypatch.chdir(tmp_path)
     rc = cli.main(["init", "--non-interactive", "--no-install", "--no-service", "--config-dir", str(config_dir),
                    "--capture-level", "essentials"])
     out = capsys.readouterr().out
     assert rc == 0
-    assert out.rindex("Metrics capture (optional)") > out.index("Wrote config.toml")
+    assert out.rindex("Metrics capture (optional)") < out.index("Ready to set up:") < out.index("Wrote config.toml")
     assert load_config(config_dir).capture.level == "essentials"
 
 
@@ -1190,42 +1212,36 @@ def test_the_brief_skill_is_listed_and_taken_out_by_uninstall(tmp_path, monkeypa
     out = capsys.readouterr().out
     assert "The /tl-brief skill:" in out and not _brief_skill(config_dir).exists()
 
-def _init_feedback(config_dir, *argv, stdin=""):
-    out = io.StringIO()
-    cli._cmd_init_feedback_step(
-        _init_args(config_dir, *argv), config_dir=config_dir, claude_root=config_dir.parent,
-        stdin=io.StringIO(stdin), stdout=out, now=NOW,
-    )
-    return out.getvalue()
-
-
 def test_init_at_deep_skips_the_feedback_question_and_adds_the_skill(tmp_path):
     config_dir = _claude(tmp_path, {})
-    _init_capture(config_dir, "--non-interactive", "--connect", "--capture-level", "deep")
+    out = _init(config_dir, "--non-interactive", "--no-install", "--capture-level", "deep")
     assert load_config(config_dir).capture.feedback == list(cat.DEEP_FEEDBACK_IDS)
-    out = _init_feedback(config_dir, "--non-interactive")
+    assert "Feedback after a piece of work" not in out
+    assert "The /tl-feedback skill: add it with 'claude-token-lens capture feedback on'." in out
+    assert not _skill(config_dir).exists()
+    out = _init(config_dir, "--non-interactive", "--connect")
     assert "The /tl-feedback survey is on, as part of Deep." in out
-    assert "Add the skill with: claude-token-lens capture feedback on" in out and not _skill(config_dir).exists()
-    _init_feedback(config_dir, "--non-interactive", "--connect")
     assert _skill(config_dir).read_text(encoding="utf-8") == cat.feedback_skill_text()
-    assert "The /tl-feedback skill is on." in _init_feedback(config_dir, "--non-interactive")
+    assert "The /tl-feedback skill is on." in _init(config_dir, "--non-interactive")
 
 
-def test_init_offers_the_skill_and_writes_it_after_two_yeses(tmp_path):
+def test_init_offers_the_skill_and_writes_it_after_a_yes(tmp_path):
     config_dir = _claude(tmp_path, {})
-    out = _init_feedback(config_dir, stdin="y\ny\n")
+    # Connect: no; capture left off; feedback: yes; go ahead.
+    out = _init(config_dir, stdin="n\n\ny\n")
     assert "Feedback after a piece of work (optional)" in out and "It works at any capture level" in out
-    assert "Add the /tl-feedback skill? (y/n) [n]:" in out and "Add it? (y/n) [n]:" in out
+    assert "Add the /tl-feedback skill? (y/n) [n]:" in out and "Add it?" not in out
+    assert "Sharper tips (metrics capture): add the /tl-feedback skill." in out
     assert _skill(config_dir).is_file()
     assert load_config(config_dir).capture.feedback == ["feedback_skill", "feedback_note"]
-    out = _init_feedback(config_dir, stdin="n\n")
+    out = _init(config_dir, stdin="n\n\n")
     assert "The /tl-feedback skill is on." in out and _skill(config_dir).is_file()
 
 
 def test_init_feedback_no_and_non_interactive_leave_it_off(tmp_path):
     config_dir = _claude(tmp_path, {})
-    assert "Feedback left off." in _init_feedback(config_dir, stdin="\n")
-    out = _init_feedback(config_dir, "--non-interactive")
+    assert "Sharper tips (metrics capture): off." in _init(config_dir, stdin="n\n\n\n")
+    out = _init(config_dir, "--non-interactive")
     assert "(derived) feedback: not given in --answers; left off" in out
     assert "Feedback after a piece of work" not in out
     assert not _skill(config_dir).exists() and load_config(config_dir).capture.feedback == []
@@ -1233,19 +1249,17 @@ def test_init_feedback_no_and_non_interactive_leave_it_off(tmp_path):
 
 def test_init_feedback_flag_without_connecting_prints_the_command(tmp_path):
     config_dir = _claude(tmp_path, {})
-    out = _init_feedback(config_dir, "--non-interactive", "--no-install", "--feedback", "on")
-    assert "Add the skill with: claude-token-lens capture feedback on" in out
+    out = _init(config_dir, "--non-interactive", "--no-install", "--feedback", "on")
+    assert "The /tl-feedback skill: add it with 'claude-token-lens capture feedback on'." in out
     assert not _skill(config_dir).exists()
     assert load_config(config_dir).capture.feedback == ["feedback_skill", "feedback_note"]
 
 
 def test_init_feedback_answers_file_with_connect_writes_without_asking(tmp_path):
     config_dir = _claude(tmp_path, {})
-    answers = tmp_path / "answers.json"
-    answers.write_text(json.dumps({"feedback": True}), encoding="utf-8")
-    out = _init_feedback(config_dir, "--non-interactive", "--connect", "--answers", str(answers))
-    assert _skill(config_dir).is_file() and "Add it?" not in out
-    out = _init_feedback(config_dir, "--non-interactive", "--connect", "--feedback", "off")
+    out = _init(config_dir, "--non-interactive", "--connect", answers={"feedback": True})
+    assert _skill(config_dir).is_file() and "Add the /tl-feedback skill?" not in out
+    out = _init(config_dir, "--non-interactive", "--connect", "--feedback", "off")
     assert "Saved to config.toml: feedback off." in out and not _skill(config_dir).exists()
 
 
@@ -1256,7 +1270,10 @@ def test_init_asks_about_feedback_after_capture(tmp_path, monkeypatch, capsys):
                    "--capture-level", "off", "--feedback", "on"])
     out = capsys.readouterr().out
     assert rc == 0
-    assert out.index("Add the skill with: claude-token-lens capture feedback on") > out.index("Metrics capture (optional)")
+    assert out.index("Metrics capture (optional)") < out.index("Ready to set up:")
+    assert out.index("The /tl-feedback skill: add it with 'claude-token-lens capture feedback on'.") > out.index(
+        "Ready to set up:"
+    )
 
 
 def test_status_says_when_the_status_line_is_someone_elses(tmp_path):

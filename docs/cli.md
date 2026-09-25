@@ -139,12 +139,14 @@ python -m claude_token_lens serve
 
 ### `init`
 
-Sets the tool up. It finds what's already there, asks a few questions,
-writes `config.toml`, and records a first baseline for this project.
-Then it offers, one at a time and asking first: connecting to Claude
-Code, starting the dashboard at logon, metrics capture, and the
-`/tl-feedback` skill. [`onboarding.md`](onboarding.md) lists every
-question.
+Sets the tool up. It asks four things: how you pay, whether to connect
+to Claude Code, whether to start the dashboard at logon, and whether to
+turn on sharper tips (metrics capture at Essentials for 14 days, plus
+the `/tl-feedback` skill). Then it lists every change in one review and
+asks `Go ahead? [Y/n/d]`, where `d` shows the exact changes. After a yes
+it writes `config.toml`, makes the changes, records a first baseline
+for this project, and ends with a summary of what works.
+[`onboarding.md`](onboarding.md) lists every question.
 
 ```powershell
 python -m claude_token_lens init
@@ -153,21 +155,23 @@ python -m claude_token_lens init
 | Flag | What it does |
 |---|---|
 | `--claude-root PATH` | Claude Code's folder, the one holding `settings.json`. Default `$CLAUDE_CONFIG_DIR`, else `~/.claude` |
+| `--advanced` | Also ask the rest: projects to leave out, extra settings files, a shared `.claude` folder, the time zone, where `apply` writes, the capture window, WSL folders, and the full metrics capture and feedback questions |
 | `--answers FILE` | A JSON file answering some or all of the questions |
-| `--non-interactive` | Never ask. Work out every unanswered question instead, and print what it chose. This doesn't start the dashboard at logon unless you add `--install-service` |
+| `--non-interactive` | Never ask, and make the changes without a yes. Work out every unanswered question instead, and print what it chose. This doesn't connect to Claude Code unless you add `--connect`, or start the dashboard at logon unless you add `--install-service` |
 | `--no-install` | Don't connect to Claude Code |
 | `--connect` | Make the `settings.json` change without asking. It's still shown, and the file is backed up first |
 | `--install-service` | Start the dashboard at logon without asking |
 | `--no-service` | Skip the logon question entirely |
-| `--dry-run` | Show the `settings.json` change and the logon plan without making either. `config.toml` and the baseline are still written |
+| `--dry-run` | Show every change, including the `settings.json` diff and the logon task, and write nothing: no `config.toml`, no hook files, no baseline |
 | `--repair-hook` | Fix a SessionStart hook command that can't run, without asking. It fixes single backslashes in a JSON path, and a `%VARIABLE%` that Git Bash doesn't expand. It also replaces a Python that can't be found, such as a missing `py` launcher. It keeps your own Python when it's found, writes the folder out in full, and backs up `settings.json` first |
 | `--capture-level LEVEL` | Answer the metrics capture question: `off`, `free`, `essentials`, `standard` or `deep`. Capture uses tokens |
 | `--capture-for DURATION` | Switch capture off by itself after this long, such as `30d`, instead of after 14 days |
 | `--capture-no-limit` | Let capture run until you switch it off |
 | `--feedback {on,off}` | Answer the `/tl-feedback` question |
 
-Running `init` again is safe. It keeps your capture window and shows any
-change before making it.
+Running `init` again is safe. Your answers are the defaults, what is
+already done is skipped, and it keeps your capture window. Check the
+result any time with [`status`](#status).
 
 ### `update`
 
