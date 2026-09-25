@@ -657,16 +657,21 @@ Glossary has no figures and shows neither.
     agent redid on a larger model) and **Why agents were run again** (the
     reasons retries gave, when Claude writes the `[retry: ...]` marker);
     the failing-tools, counts and markers tables sit under the advanced
-    toggle.
+    toggle. The per-agent signals grid is a heat grid: each percentage
+    cell is shaded against its column's largest value (`TINT_TABLES` in
+    `grid.js`), with the value always shown.
 11. **Agents & context › Context** — what Claude reads at the start of every
-    session and subagent. **CLAUDE.md files** (`/api/claude-md`): one
-    row per file with its level, size in tokens, how often it was sent
-    and to whom, the cost and its findings; "Review" loads
-    `/api/claude-md/<id>` with the sections by size, duplicates, stale
-    references and fix prompts. **Skills** (`/api/skills`): each skill's
-    description, source, how often it was listed and used, and what the
-    listing cost, with a "Show only skills Claude never used" checkbox
-    and, when two or more are unused, one fix that hides them all. File text and skill descriptions are read when
+    session and subagent. **CLAUDE.md files** (`/api/claude-md`): a grid,
+    one row per file with who reads it, its size in tokens, how often it
+    was sent and to whom, the cost and its number of fixes; a row opens a
+    drawer with its findings and `/api/claude-md/<id>`'s sections by
+    size, duplicates, stale references and fix prompts. **Skills**
+    (`/api/skills`): the listing's size and cost, then, when two or more
+    skills are unused, one folded fix that hides them all, then a grid of
+    skills (where each comes from, status, listing size, uses, listing
+    cost) with a "Show only skills Claude never used" checkbox; a row
+    opens a drawer with the skill's description, facts and its own fixes.
+    File text and skill descriptions are read when
     the view asks and never stored. The terminal equivalent is
     `claude-token-lens review claude-md|skills`. The report's
     `context_budget` section follows: what fills the context window at
@@ -682,18 +687,35 @@ Glossary has no figures and shows neither.
     the saving is worked out. Then the brief templates, one card per
     kind of task with a Copy button (`claude-token-lens capture brief
     on` installs the `/tl-brief` skill that asks for the same lines),
-    then the section's other tables and its notes (capture off, no
-    feedback yet). Every item is a way of working to try: nothing on
+    then **Kinds of task**, and the section's other breakdowns (briefs,
+    agents, effort, outcomes, Claude's own reports) folded under "More
+    tables" (their `helptext.PLACEMENT` is `advanced`), then its notes
+    (capture off, no feedback yet). Every item is a way of working to try: nothing on
     this page changes a setting.
-13. **Setup › Settings** — `/api/config-diff?auto_keys=1`: `effective_config`/`config_layers`/
+13. **Setup › Settings** — what your changes did, then the settings
+    themselves. **Your changes and what they did** (`/api/impact`, all
+    history) comes first: each `apply`, undo or settings change the
+    hook saw, with the sessions before against those after on the
+    measures that change should move, then a "Quality, <agent>:" line
+    per agent the change touched (or the main session) with a collapsed
+    Signal / Before / After / Verdict table (agents with too few runs
+    yet share one line), and, for an apply, "To undo it:
+    `claude-token-lens apply --revert <backup_ts>`". A metrics capture
+    change is measured by capture's tokens per session and the share of
+    messages tagged, and its card gives the `capture level <old>` (or
+    `capture off`) command that changes it back. A change marker on the
+    daily spend chart opens this view with `?day=`, and that day's
+    change is pulsed. **Did your estimates come true?**
+    (`/api/backtest`) follows: each estimated effect Profiles showed,
+    against what happened after a matching change. Then
+    `/api/config-diff?auto_keys=1`: `effective_config`/`config_layers`/
     `config_groups`/`config_drift` and the per-key diff tables, rendered
     once (the config section is skipped when the view walks the full
-    report for `baseline_comparison`) (plan "Configuration layers and
-    per-project effective config" section) — which layer supplied each
+    report for `baseline_comparison`) — which layer supplied each
     key, and which projects share an identical effective config. A
     snapshot with no project attribution (`project_slug: null`, see
     `docs/api.md`) is shown as a user-level layer rather than a project's.
-    A "Latest baseline" panel below the drift table renders
+    A "Latest baseline" section renders
     `/api/baseline` (v0.3): the capture window's one-line status
     (`capture_status.summary`), the latest capture (or "no baseline
     captured yet"), and every past capture in a history table — with a
@@ -713,16 +735,14 @@ Glossary has no figures and shows neither.
     profile for one kind of task" adds a "Kind of task" picker (it
     reloads the draft with `task=`) and a note on what was found, and
     names the profile after the task. Name it and save
-    (`POST /api/profiles`). **Best setup for each kind of task** follows:
-    the report's `habits_setups` table (a note and a link to Setup ›
-    Capture while nothing is tagged). Then **Your profiles and the built-in
-    ones**: one card per profile from `/api/profiles` (the
+    (`POST /api/profiles`). **Your profiles and the built-in
+    ones** follows: one card per profile from `/api/profiles` (the
     catalogue's seven shipped profiles plus every user profile): name,
     "Built in" or "Yours", who it is for, and "Changes N settings: ..."
     listed by their plain labels (from `/api/profiles/<id>` and
     `/api/profile-schema`). The card matching the latest baseline's
     `suggested_profile_id` carries a "Suggested for you" badge. "Show what
-    it changes" opens the detail view from `/api/profiles/<id>/diff`,
+    it changes" opens the profile in a drawer, from `/api/profiles/<id>/diff`,
     with a scope picker ("Apply it to:", in plain words): one table of
     Setting / Now / After / Set in (unchanged and policy-locked rows are
     greyed and say so), an **Estimated effect** table from
@@ -737,18 +757,9 @@ Glossary has no figures and shows neither.
     block. The UI never runs a command itself, and never
     fills in a project directory on the user's behalf (`docs/api.md`'s
     own note on why that route never accepts one).
-    **Your changes and what they did** (`/api/impact`, all history):
-    each `apply`, undo or settings change the hook saw, with the
-    sessions before against those after on the measures that change
-    should move, then a "Quality, <agent>:" line per agent the change
-    touched (or the main session) with a collapsed Signal / Before /
-    After / Verdict table (agents with too few runs yet share one line),
-    and, for an apply, "To undo it:
-    `claude-token-lens apply --revert <backup_ts>`". A metrics capture
-    change is measured by capture's tokens per session and the share of
-    messages tagged, and its card gives the `capture level <old>` (or
-    `capture off`) command that changes it back.
-    "Make your own profile" is a form built from
+    **Best setup for each kind of task** follows: the report's
+    `habits_setups` table (a note and a link to Setup › Capture while
+    nothing is tagged). "Make your own profile" is a form built from
     `/api/profile-schema`: "Start from" any profile, one field per
     setting (a select for fixed values and on/off, a number box with
     the allowed range, or a comma-separated list), an "Add an agent"
@@ -768,9 +779,12 @@ Glossary has no figures and shows neither.
     metric needs, the level cards (Off, Free, Essentials, Standard,
     Deep, Custom) each with what it adds and its weekly estimate, the
     sampling and end-time selects, and every metric grouped by where
-    it is captured: a checkbox, what it captures, what Claude writes
-    for it, why, what it helps with, its estimate against its actual
-    cost, and how much has been collected. The feedback skill's row
+    it is captured. Each group folds ("Main session (3 of 12 on)"), open
+    only when one of its metrics needs a hook entry or an install. A
+    metric is a row: a checkbox, what it captures, its estimate against
+    its actual cost and how much has been collected, then "Why it helps
+    and what Claude writes" folded (why, the tag Claude writes, what it
+    helps with). The feedback skill's row
     shows its runs over the last 14 days and, while its file is
     missing or out of date, a **Needs installing** badge with the
     `capture feedback on` command (Copy button): the dashboard never

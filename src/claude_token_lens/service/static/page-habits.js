@@ -197,7 +197,7 @@ function appendHabitCards(table, rows, cards) {
     ].filter(function (part) {
       return part && part.trim();
     });
-    var metaLine = el("p", { class: "profile-card-meta", text: meta.join(" | ") });
+    var metaLine = el("p", { class: "profile-card-meta", text: meta.join(" · ") });
     var spark = habitSparkline(row.weeks, "By week, " + labelFor(table, row.trend) + ": " + row.weeks);
     if (spark) metaLine.appendChild(spark);
     card.appendChild(metaLine);
@@ -227,7 +227,7 @@ function renderBriefTemplates(table, container) {
   var cards = el("div", { class: "habit-cards" });
   tableRowsAsObjects(table).forEach(function (row) {
     var card = el("article", { class: "habit-card" });
-    card.appendChild(el("h3", { text: labelFor(table, row.task) }));
+    card.appendChild(el("div", { class: "card-head" }, [el("h3", { text: labelFor(table, row.task) })]));
     if (row.why) card.appendChild(el("p", { class: "profile-card-meta" }, prose(row.why, new Set())));
     card.appendChild(codeBlockWithCopy(row.template || ""));
     cards.appendChild(card);

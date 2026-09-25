@@ -174,11 +174,13 @@ export function dailyChanges(impact) {
   var rows = (impact && impact.ok === true && impact.data && impact.data.changes) || [];
   return rows.map(function (row) {
     var change = row.change || {};
+    var day = String(change.ts || "").slice(0, 10);
     return {
-      day: String(change.ts || "").slice(0, 10),
+      day: day,
       label: change.label || "A settings change",
+      // Setup, Settings pulses that day's change in its impact list.
       open: function () {
-        goTo("setup/profiles");
+        goTo("setup/settings", { params: { day: day } });
       },
     };
   });

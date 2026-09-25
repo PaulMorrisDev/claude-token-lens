@@ -1365,8 +1365,6 @@ tr.row-group th {
 .profile-card,
 .habit-card,
 .capture-level,
-.capture-metric,
-.skill-row,
 .agent-block,
 .session-detail,
 .session-rating,
@@ -2454,24 +2452,9 @@ span.severity-mark {
 
 /* -- quick actions and skills ------------------------------------------------------ */
 
-.skill-list {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-5);
-}
-
 .quick-summary {
   margin: var(--space-2) 0 var(--space-4);
   font-weight: var(--weight-semibold);
-}
-
-.skill-row {
-  padding: var(--space-4) var(--space-5);
-}
-
-.skill-row p {
-  max-width: 80ch;
-  margin: var(--space-4) 0 0;
 }
 
 /* -- impact and setup ---------------------------------------------------------------- */
@@ -2554,18 +2537,24 @@ span.severity-mark {
   margin: 0 0 var(--space-4);
 }
 
+/* One panel per group; each metric a row in it, text indented past its
+   checkbox. */
 .capture-metric-list {
-  display: grid;
-  gap: var(--space-4);
-  margin-bottom: var(--space-6);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-panel);
+  overflow: hidden;
 }
 
 .capture-metric {
-  padding: var(--space-4) var(--space-5);
+  padding: var(--space-4) var(--space-5) var(--space-4) calc(var(--space-5) + 16px + var(--space-4));
+}
+
+.capture-metric + .capture-metric {
+  border-top: 1px solid var(--border-subtle);
 }
 
 .capture-metric.on {
-  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
   background: color-mix(in srgb, var(--accent-soft) 55%, var(--surface-panel));
 }
 
@@ -2573,7 +2562,14 @@ span.severity-mark {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: var(--space-4);
+  gap: var(--space-2) var(--space-4);
+  margin-left: calc(-16px - var(--space-4));
+}
+
+.capture-metric-head input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
 }
 
 .capture-metric-title {
@@ -2581,7 +2577,30 @@ span.severity-mark {
 }
 
 .view .capture-metric-what {
-  margin: var(--space-2) 0;
+  max-width: 80ch;
+  margin: var(--space-1) 0 0;
+  color: var(--ink-2);
+}
+
+.view .capture-metric-cost {
+  max-width: 80ch;
+  margin: var(--space-1) 0 0;
+  font-size: var(--text-md);
+}
+
+.capture-metric-more {
+  margin-top: var(--space-2);
+}
+
+.capture-metric-more > summary {
+  width: fit-content;
+  color: var(--accent-ink);
+  font-size: var(--text-sm);
+  border-radius: var(--radius-xs);
+}
+
+.capture-metric-more[open] > summary {
+  margin-bottom: var(--space-3);
 }
 
 .capture-metric-facts {

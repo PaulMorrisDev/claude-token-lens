@@ -109,7 +109,7 @@ away from it — this is why the log always uses the uncalibrated figure.
 
 ## Reading it
 
-- **Dashboard:** the Profiles tab's "Did your estimates come true?"
+- **Dashboard:** Setup › Settings' "Did your estimates come true?"
   table (`GET /api/backtest`), right under "Your changes and what they
   did" — see `docs/profiles.md`.
 - **CLI:** `claude-token-lens backtest` reads the store read-only

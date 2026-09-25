@@ -103,7 +103,8 @@ Any other key says "not estimated" rather than guessing. Changes
 overlap, so a total of several rows is rough. Each profile's detail
 shows the same estimate.
 
-**Your changes and what they did** lists every `apply`, its undo,
+**Your changes and what they did** (on Setup › Settings, beside the
+settings it judges) lists every `apply`, its undo,
 any settings change the snapshot hook saw between one session start
 and the next, and every change to metrics capture (from
 `capture-log.jsonl`) (`change_points.py`). A snapshot change that spans an

@@ -3,11 +3,11 @@
  * The Setup page's Settings and Profiles, with what each change did.
  */
 
-import { clear, el, state } from "./core.js";
+import { clear, el, onParams, state } from "./core.js";
 import { fetchJson, findSection, loadInto, loadReport, postJson, withWindow } from "./api.js";
 import { shortTs, signedPercent } from "./format.js";
-import { button, callout, chip, codeBlockWithCopy, commandBlock, emptyState, errorNotice, loadingNode, prose, toast } from "./ui.js";
-import { dataGrid, renderMappedSections, renderPlacedTables, renderSectionGeneric, simpleTable } from "./grid.js";
+import { button, callout, chip, codeBlockWithCopy, commandBlock, drawer, emptyState, errorNotice, loadingNode, prose, toast } from "./ui.js";
+import { dataGrid, pulseNode, renderMappedSections, renderPlacedTables, renderSectionGeneric, simpleTable } from "./grid.js";
 import { captureLink, viewIntro } from "./links.js";
 
 // ======================================================================
@@ -18,14 +18,15 @@ export function renderConfig(panel) {
   clear(panel);
   viewIntro(panel, "setup/settings");
 
-  var driftContainer = el("div", { id: "config-drift" });
-  panel.appendChild(el("h2", { text: "Your settings and how they changed" }));
-  panel.appendChild(driftContainer);
+  var impactContainer = setupSection(panel, "Your changes and what they did", "settings-impact");
+  var impactLoaded = loadInto(impactContainer, "/api/impact", renderImpact, { skeleton: "rows" });
+  var backtestContainer = setupSection(panel, "Did your estimates come true?", "settings-backtest");
+  loadInto(backtestContainer, "/api/backtest", renderBacktest, { skeleton: "rows" });
+
+  var driftContainer = setupSection(panel, "Your settings and how they changed", "config-drift");
   loadInto(driftContainer, withWindow("/api/config-diff?auto_keys=1"), renderConfigDiff, { skeleton: "rows" });
 
-  var baselineContainer = el("div", { id: "config-baseline" });
-  panel.appendChild(el("h2", { text: "Latest baseline" }));
-  panel.appendChild(baselineContainer);
+  var baselineContainer = setupSection(panel, "Latest baseline", "config-baseline");
   loadInto(baselineContainer, "/api/baseline", renderBaseline, { skeleton: "rows" });
 
   var sectionContainer = el("div", { id: "config-sections" });
@@ -40,6 +41,27 @@ export function renderConfig(panel) {
     // The config section's own tables came from /api/config-diff above.
     renderMappedSections(result.report, "setup/settings", sectionContainer, ["config"]);
   });
+
+  // ?day=: a change marker on the daily spend chart. Its change (the
+  // first made that day) is brought into view and pulsed.
+  onParams("setup/settings", function (params) {
+    if (!/^\d{4}-\d\d-\d\d$/.test(params.day || "")) return;
+    impactLoaded.then(function () {
+      var card = impactContainer.querySelector('.impact-card[data-day="' + params.day + '"]');
+      if (card) pulseNode(card, "block-target");
+    });
+  });
+}
+
+// One part of a Setup view: a titled section and the body its data
+// fills (id: the body's).
+function setupSection(panel, title, id) {
+  var section = el("section", { class: "report-section" });
+  section.appendChild(el("div", { class: "block-head" }, [el("h2", { class: "section-title", text: title })]));
+  var body = el("div", { id: id });
+  section.appendChild(body);
+  panel.appendChild(section);
+  return body;
 }
 
 function renderConfigDiff(data, container) {
@@ -174,29 +196,11 @@ export function renderProfiles(panel) {
     })
   );
 
-  var listContainer = el("div", { id: "profiles-list" });
-  var detailContainer = el("div", { id: "profiles-diff" });
   var formContainer = el("div", { id: "profiles-save-form" });
-
-  var creatorContainer = el("div", { id: "profiles-create" });
-  var impactContainer = el("div", { id: "profiles-impact" });
-  var setupsContainer = el("div", { id: "profiles-setups" });
-
-  panel.appendChild(el("h2", { text: "Create a profile" }));
-  panel.appendChild(creatorContainer);
-  panel.appendChild(el("h2", { text: "Best setup for each kind of task" }));
-  panel.appendChild(setupsContainer);
+  var creatorContainer = setupSection(panel, "Create a profile", "profiles-create");
+  var listContainer = setupSection(panel, "Your profiles and the built-in ones", "profiles-list");
+  var setupsContainer = setupSection(panel, "Best setup for each kind of task", "profiles-setups");
   renderTaskSetups(setupsContainer);
-  panel.appendChild(el("h2", { text: "Your profiles and the built-in ones" }));
-  panel.appendChild(listContainer);
-  panel.appendChild(detailContainer);
-  panel.appendChild(el("h2", { text: "Your changes and what they did" }));
-  panel.appendChild(impactContainer);
-  loadInto(impactContainer, "/api/impact", renderImpact, { skeleton: "rows" });
-  var backtestContainer = el("div", { id: "profiles-backtest" });
-  panel.appendChild(el("h2", { text: "Did your estimates come true?" }));
-  panel.appendChild(backtestContainer);
-  loadInto(backtestContainer, "/api/backtest", renderBacktest, { skeleton: "rows" });
   var editorDetails = el("details", { class: "advanced-detail" });
   editorDetails.appendChild(el("summary", { text: "Edit settings directly" }));
   editorDetails.appendChild(formContainer);
@@ -206,7 +210,7 @@ export function renderProfiles(panel) {
 
   function refreshList() {
     loadInto(listContainer, "/api/profiles", function (data, container) {
-      renderProfilesList(data, container, detailContainer);
+      renderProfilesList(data, container);
       // Built once, so a save's status line stays on screen.
       if (!editorShown) {
         editorShown = true;
@@ -259,7 +263,7 @@ export function renderProfiles(panel) {
   refreshList();
 }
 
-function renderProfilesList(data, container, detailContainer) {
+function renderProfilesList(data, container) {
   var profiles = (data && data.profiles) || [];
   var suggestedId = data && data.suggested_profile_id;
   if (!profiles.length) {
@@ -308,8 +312,13 @@ function renderProfilesList(data, container, detailContainer) {
     card.appendChild(
       button("Show what it changes", {
         action: function () {
-          renderProfileDetail(profile, detailContainer);
-          detailContainer.scrollIntoView({ behavior: "smooth", block: "start" });
+          drawer({
+            title: "What " + (profile.name || profile.id) + " changes",
+            wide: true,
+            fill: function (body) {
+              renderProfileDetail(profile, body);
+            },
+          });
         },
       })
     );
@@ -384,9 +393,9 @@ function renderDiffRowsTable(rows) {
   });
 }
 
+// Inside the profile's drawer: the file to target, the estimate, then
+// the changes and how to make them.
 function renderProfileDetail(profile, container) {
-  clear(container);
-  container.appendChild(el("h2", { text: "What " + (profile.name || profile.id) + " changes" }));
   var scopeRow = el("div", { class: "pager" });
   scopeRow.appendChild(el("label", { for: "profile-scope", text: "Target file:" }));
   var scopeSelect = el("select", { id: "profile-scope" });
@@ -768,7 +777,7 @@ function renderTaskSetups(container) {
       );
       return;
     }
-    container.appendChild(el("p", { class: "notes", text: "To make a profile from a cheaper setup, pick \"A profile for one kind of task\" above." }));
+    container.appendChild(el("p", { class: "notes", text: "To make a profile from a cheaper setup, pick \"A profile for one kind of task\" under Create a profile." }));
     renderPlacedTables(container, [table], state.currency, "profiles", "Best setup for each kind of task");
   });
 }
@@ -993,7 +1002,7 @@ function renderImpact(data, container) {
   container.appendChild(el("p", { class: "notes" }, prose(data.caveat)));
   changes.forEach(function (item) {
     var change = item.change || {};
-    var card = el("article", { class: "rec impact-card" });
+    var card = el("article", { class: "rec impact-card", "data-day": String(change.ts || "").slice(0, 10) });
     card.appendChild(el("h3", { text: change.label + (change.reverted ? " (since undone)" : "") }));
     card.appendChild(el("p", { class: "profile-card-meta", text: shortTs(change.ts) + (change.keys && change.keys.length ? " · " + change.keys.join(", ") : "") }));
     if (item.gate) {
@@ -1071,14 +1080,14 @@ function renderBacktest(data, container) {
   var predictions = (data && data.predictions) || [];
   if (!predictions.length) {
     container.appendChild(
-      emptyState("No estimates logged yet. Estimates shown in “What if?” are logged automatically, then checked here once the sessions to judge them arrive.")
+      emptyState("No estimates logged yet. Each estimated effect Profiles shows is logged, then checked here once enough sessions after a matching change arrive.")
     );
     return;
   }
   container.appendChild(
     el("p", {
       class: "notes",
-      text: "Estimates from “What if?”, checked against what actually happened after a matching change.",
+      text: "Estimated effects from Profiles, checked against what happened after a matching change.",
     })
   );
   container.appendChild(

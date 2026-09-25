@@ -53,8 +53,8 @@ export function renderDataQuality(panel) {
     withWindow("/api/diagnostics"),
     function (table, target) {
       var title = table.title || "How well your transcripts were read";
-      target.appendChild(headRow(el("h2", { class: "section-title", text: title }), table.help, title));
-      target.appendChild(renderTable(table, "diagnostics-counters-table", state.currency, { heading: false }));
+      var head = target.appendChild(headRow(el("h2", { class: "section-title", text: title }), table.help, title));
+      target.appendChild(renderTable(table, "diagnostics-counters-table", state.currency, { heading: false, helpInto: head }));
     },
     { skeleton: "rows" }
   );

@@ -233,7 +233,7 @@ first. Full detail: [`docs/onboarding.md`](onboarding.md).
 - **Cheaper isn't free.** A cheaper model, lower effort or an earlier
   summary can make Claude less thorough. Each change says what it trades
   away. Pick **Since my last change** in the window picker, or look at
-  **Profiles > Your changes and what they did**, to check the effect.
+  **Setup › Settings > Your changes and what they did**, to check the effect.
 - **Amounts on a Pro or Max plan are list-price equivalents** until the
   statusline has logged enough usage-limit readings.
 

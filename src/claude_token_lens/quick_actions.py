@@ -260,7 +260,7 @@ def _effort(ctx: Context) -> dict:
         "act",
         f"{len(fixes)} of your agents or sessions spent more than {goals.THINKING_PCT:.0f}% of their output "
         "thinking. Thinking is billed as output; a lower effort thinks less, but how much less isn't measured, so "
-        "check \"Your changes and what they did\" on Profiles after a few sessions.",
+        "check \"Your changes and what they did\" on {{page:setup/settings}} after a few sessions.",
         table=table,
         fixes=fixes,
     )
@@ -981,7 +981,7 @@ def _quality(ctx: Context) -> dict:
                      f"{'doesn' if one else 'don'}'t finish")
     caveat = (
         " Setups ran at different times and maybe on different work, so check \"Your changes and what they did\" "
-        "on Profiles before you switch back." if worse else ""
+        "on {{page:setup/settings}} before you switch back." if worse else ""
     )
     return _result(
         "act",

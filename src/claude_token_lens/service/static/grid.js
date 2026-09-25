@@ -166,6 +166,10 @@ function proseColumns(columns, rows) {
   return wraps;
 }
 
+// Report tables read as a heat grid: agent by quality signal, where the
+// darker cell is the signal to look at first.
+var TINT_TABLES = ["quality_by_agent"];
+
 // A grid for spec (see docs/ui.md for the whole contract):
 //   id        stable across draws: the saved sort and columns hang on it
 //   columns   [{key, label, kind, help, render(row, value), value(row),
@@ -175,7 +179,8 @@ function proseColumns(columns, rows) {
 //   lead      column keys shown until more are chosen (else the first 7
 //             of a table wider than 8)
 //   bar       the index of the column with the inline bar (-1: none)
-//   tint      true: numeric cells shade by value (the Quality grid)
+//   tint      true: percentage cells shade by value, each column against
+//             its own largest (the Quality grid)
 //   rowAction {label(row), run(row, tr)}: each row opens something
 //   rowKey    row -> the key evidence links and pulses use
 //   rowClass  row -> a class for its <tr> (e.g. "row-unchanged"), or null
@@ -452,7 +457,7 @@ export function dataGrid(spec) {
         td.appendChild(content);
       }
       if (colour && position === 0) td.insertBefore(swatch(colour), td.firstChild);
-      if (spec.tint && numeric && typeof value === "number" && maxima[column.index] > 0 && column.index !== bar) {
+      if (spec.tint && column.kind === "pct" && typeof value === "number" && maxima[column.index] > 0 && column.index !== bar) {
         td.classList.add("tint-" + Math.max(1, Math.min(5, Math.ceil((value / maxima[column.index]) * 5))));
       }
       tr.appendChild(td);
@@ -839,6 +844,12 @@ export function renderTable(table, tableId, currency, options) {
   var head = null;
   if (!options || options.heading !== false) {
     head = wrap.appendChild(headRow(el("h3", { text: table.title || table.name }), table.help, table.title || table.name));
+  } else if (options.helpInto) {
+    // The heading above says it already: its row takes the table's
+    // "How to read this" (unless it has one) and its Feeds chip.
+    head = options.helpInto;
+    var ownHelp = table.help && !head.querySelector(".help-button") ? helpButton(table.help, table.title || table.name) : null;
+    if (ownHelp) head.appendChild(ownHelp);
   } else if (table.help) {
     var helpNode = helpButton(table.help, table.title || table.name);
     if (helpNode) head = wrap.appendChild(el("div", { class: "block-head block-head-help" }, [helpNode]));
@@ -874,7 +885,9 @@ export function renderTable(table, tableId, currency, options) {
       valueLabels: table.value_labels,
       rowGroups: table.row_groups,
       rowKinds: table.row_kinds,
-      empty: "No rows for this window.",
+      empty: "Nothing to show for this window.",
+      emptyNext: "A longer window may include some.",
+      tint: TINT_TABLES.indexOf(table.name) !== -1,
     })
   );
   if (table.notes && table.notes.length) wrap.appendChild(notesList(table.notes, (options && options.seen) || new Set()));
@@ -896,9 +909,12 @@ export function renderPlacedTables(container, tables, currency, idPrefix, sectio
     } else if (placement === "advanced") {
       advanced.push({ table: table, id: tableId });
     } else {
-      // A section's one table often shares its title: say it once.
+      // A section's one table often shares its title: say it once, in
+      // the section's own heading row.
       var sameTitle = sectionTitle && (table.title || table.name) === sectionTitle;
-      container.appendChild(renderTable(table, tableId, currency, { heading: !sameTitle, seen: seen }));
+      var section = sameTitle ? (container.closest && container.closest("section")) || container : null;
+      var sectionHead = section ? section.querySelector(".block-head") : null;
+      container.appendChild(renderTable(table, tableId, currency, { heading: !sameTitle, helpInto: sectionHead, seen: seen }));
     }
   });
   if (advanced.length) {

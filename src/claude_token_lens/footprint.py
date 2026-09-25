@@ -143,7 +143,7 @@ EXPECTATIONS: tuple[tuple[str, str], ...] = (
     (
         "Cheaper isn't free",
         "A cheaper model, lower effort or earlier summaries can mean more replies or missed details on hard work. "
-        "Check \"Your changes and what they did\" on Profiles after a few sessions, and undo with the apply "
+        "Check \"Your changes and what they did\" on {{page:setup/settings}} after a few sessions, and undo with the apply "
         "--revert command if it's worse.",
     ),
     (

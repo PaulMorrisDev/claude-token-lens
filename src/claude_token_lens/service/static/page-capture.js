@@ -360,16 +360,27 @@ function renderCaptureControls(data, container) {
   block.appendChild(form);
 }
 
+// Each group of metrics folds, so the page opens on the levels. A group
+// with a metric that needs something from you (a hook entry, an
+// install) starts open.
 function renderCaptureMetrics(data, container) {
   var block = captureBlock(container, "Metrics");
-  block.appendChild(el("p", { class: "notes", text: "What each one captures, what Claude writes for it, why it helps, and what it costs. Ticking one here picks your own set (Custom)." }));
+  block.appendChild(el("p", { class: "notes", text: "What each one captures and what it costs. Open one for why it helps and what Claude writes for it. Ticking one here picks your own set (Custom)." }));
   (data.sections || []).forEach(function (section) {
-    block.appendChild(el("h3", { text: section.title }));
+    var on = section.metrics.filter(function (row) {
+      return row.on;
+    }).length;
+    var group = el("details", { class: "disclosure capture-group" });
+    group.open = section.metrics.some(function (row) {
+      return row.needs_hook || row.needs_install;
+    });
+    group.appendChild(el("summary", { text: section.title + " (" + on + " of " + section.metrics.length + " on)" }));
     var list = el("div", { class: "capture-metric-list" });
     section.metrics.forEach(function (row) {
       list.appendChild(renderMetricRow(row, data, container));
     });
-    block.appendChild(list);
+    group.appendChild(list);
+    block.appendChild(group);
   });
 }
 
@@ -389,6 +400,16 @@ function renderMetricRow(row, data, container) {
   // Each glossary term is explained once per metric: its first use.
   var seen = new Set();
   box.appendChild(el("p", { class: "capture-metric-what" }, prose(row.what, seen)));
+  // What it costs and how far along it is stay in view; why it helps
+  // and what Claude writes are one click away.
+  var cost;
+  if (!row.asks_claude) cost = row.kind === "free" ? "No Claude tokens: a hook logs it to a local file." : "No tokens.";
+  else if (row.estimate) cost = (row.on ? "Saves about " : "Adds about ") + billed(row.estimate, "a week") + (row.on ? " if switched off." : ".");
+  if (row.actual) cost = (cost ? cost + " " : "") + (row.actual_label || "Since it was turned on") + ": " + billed(row.actual) + ".";
+  var status = [];
+  if (cost) status.push(cost);
+  if (row.target) status.push("Collected " + row.answers + " of " + row.target + " answers" + (row.enough ? (row.asks_claude ? ": enough for firm suggestions, so switching it off would save its cost." : ": enough for firm suggestions.") : "."));
+  if (status.length) box.appendChild(el("p", { class: "capture-metric-cost", text: status.join(" ") }));
   var facts = el("dl", { class: "capture-metric-facts" });
   function fact(label, value, cls) {
     if (!value) return;
@@ -398,13 +419,12 @@ function renderMetricRow(row, data, container) {
   fact("Why", row.why);
   if (row.tag) fact("Claude writes", row.tag, "capture-metric-tag");
   if (row.powers && row.powers.length) fact("Helps with", row.powers.join(", "));
-  var cost;
-  if (!row.asks_claude) cost = row.kind === "free" ? "No Claude tokens: a hook logs it to a local file." : "No tokens.";
-  else if (row.estimate) cost = (row.on ? "Saves about " : "Adds about ") + billed(row.estimate, "a week") + (row.on ? " if switched off." : ".");
-  if (row.actual) cost = (cost ? cost + " " : "") + (row.actual_label || "Since it was turned on") + ": " + billed(row.actual) + ".";
-  fact("Cost", cost);
-  if (row.target) fact("Collected", row.answers + " of " + row.target + " answers" + (row.enough ? (row.asks_claude ? ": enough for firm suggestions, so switching it off would save its cost." : ": enough for firm suggestions.") : "."));
-  box.appendChild(facts);
+  if (facts.childNodes.length) {
+    var more = el("details", { class: "capture-metric-more" });
+    more.appendChild(el("summary", { text: row.tag ? "Why it helps and what Claude writes" : "Why it helps" }));
+    more.appendChild(facts);
+    box.appendChild(more);
+  }
   if (row.needs_install) {
     // The dashboard never writes Claude Code's folder: the CLI adds the
     // skill after showing it and asking.

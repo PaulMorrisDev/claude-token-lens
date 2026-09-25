@@ -368,7 +368,7 @@ has every signal per agent type, then per model and effort, with each
 setup compared against the one that agent used most (across the whole
 window, so a setup used for other work or in another week can differ for
 that reason), then each agent and model whose runs were retried on a
-larger model. Profiles' "Your changes and what they did" compares the
+larger model. Setup › Settings' "Your changes and what they did" compares the
 runs of the agent a change touched (or the main session) before and
 after it. The Quick actions check "Is any agent struggling?" turns both
 into fixes.
