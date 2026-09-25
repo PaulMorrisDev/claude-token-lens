@@ -1773,7 +1773,7 @@ def test_a_named_window_serves_its_last_report_when_its_start_moves_on(server, m
     the tab waits."""
     calls = _count_builds(server, monkeypatch)
     start = {"since": "2026-09-23T10:00:00Z"}
-    monkeypatch.setattr(service_api, "_named_window_since", lambda name, config_dir, now=None: (start["since"], ""))
+    monkeypatch.setattr(service_api, "_named_window_since", lambda name, config_dir, now=None, **_kw: (start["since"], ""))
 
     server.request("GET", "/api/report.json?window=1h")
     assert calls["n"] == 1
@@ -2177,6 +2177,40 @@ def test_impact_is_empty_without_changes_and_lists_an_apply(server):
     assert change["gate"] == {"reason": "min_sessions", "have": 0, "need": impact_mod.MIN_SESSIONS}
     resp, payload = server.get_json("/api/summary?window=change")
     assert resp.status == 200
+
+
+def test_impact_and_the_last_change_window_see_a_change_only_sessions_show(tmp_path, monkeypatch):
+    """A model change no apply or snapshot recorded (EST-P9) reaches the
+    impact card and starts the "since my last change" window."""
+    from datetime import datetime, timedelta, timezone
+
+    from claude_token_lens.snapshots import snapshot_project_key
+
+    project_dir = tmp_path / "projects" / "proj-a"
+    project_dir.mkdir(parents=True)
+    now = datetime.now(timezone.utc)
+    for name, days, model in (("s1", 3, "claude-sonnet-5"), ("s2", 1, "claude-opus-5-5")):
+        start = now - timedelta(days=days)
+        write_jsonl(
+            project_dir / f"{name}.jsonl",
+            [
+                turn_line(timestamp=(start + timedelta(seconds=s)).strftime("%Y-%m-%dT%H:%M:%S.000Z"), model=model)
+                for s in (0, 5)
+            ],
+        )
+    handle = _start_server(tmp_path, monkeypatch, corpus=corpus_mod.load_corpus([project_dir]))
+    try:
+        resp, payload = handle.get_json("/api/summary?window=change")
+        assert resp.status == 200, payload
+        resp, payload = handle.get_json("/api/impact")
+        [change] = payload["data"]["changes"]
+        assert change["change"]["source"] == "transcript"
+        assert change["change"]["summary"] == "model: claude-sonnet-5 → claude-opus-5-5"
+        assert change["change"]["project"] == snapshot_project_key("proj-a")
+        assert change["change"]["project_name"] == "proj-a"
+    finally:
+        handle.close()
+        handle.store.close()
 
 
 def test_impact_gate_is_null_once_both_sides_have_enough_sessions(server):

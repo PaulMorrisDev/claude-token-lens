@@ -174,6 +174,9 @@ _REPORT_CACHE_SIZE = 8
 #: than served while a rebuild runs (a tab reopened after a long idle
 #: shouldn't show figures from hours ago, even briefly).
 _STALE_REPORT_MAX_AGE_S = 600.0
+#: How long the "since my last change" window's newest change is kept
+#: while sessions keep arriving (each would otherwise re-read them).
+_LATEST_CHANGE_MAX_AGE_S = 120.0
 
 _RESTART_ADVICE = "Restart the dashboard: claude-token-lens install-service, or stop and start serve."
 
@@ -444,10 +447,14 @@ WINDOW_NAMES = {
 }
 
 
-def _named_window_since(name: str, config_dir: Path | None, now: datetime | None = None) -> tuple[str | None, str]:
+def _named_window_since(
+    name: str, config_dir: Path | None, now: datetime | None = None, *, latest=None
+) -> tuple[str | None, str]:
     """``(since, "")`` for a named window as an ISO timestamp, rounded
     down to the minute so repeat requests share one cached report, or
-    ``(None, reason)`` when it can't be worked out."""
+    ``(None, reason)`` when it can't be worked out. ``latest``, when
+    given, returns the newest change point for the "change" window (the
+    service passes one that counts changes only your sessions show)."""
     now = now or datetime.now(timezone.utc)
     if name == "1h":
         start = now - timedelta(hours=1)
@@ -466,12 +473,15 @@ def _named_window_since(name: str, config_dir: Path | None, now: datetime | None
     elif name == "change":
         from .. import change_points
 
-        point = change_points.latest(config_dir) if config_dir is not None else None
+        if latest is not None:
+            point = latest()
+        else:
+            point = change_points.latest(config_dir) if config_dir is not None else None
         if point is None:
             return None, (
                 "No change recorded yet. This window starts at your latest `apply` (a profile or a "
-                "one-off change), its undo, a settings change the config hook saw, or a change to metrics "
-                "capture."
+                "one-off change), its undo, a settings change the config hook saw, a change to metrics "
+                "capture, or a model, effort or CLAUDE.md size change your sessions show."
             )
         start = point.ts
     else:
@@ -483,6 +493,7 @@ def _window_query(
     query: dict[str, str],
     *,
     config_dir: Path | None = None,
+    latest=None,
 ) -> tuple[tuple[int | None, str | None, str | None], tuple[int, dict] | None]:
     """Parse the report-backed routes' windowing query params: ``window``
     (a named short window, :data:`WINDOW_NAMES`, resolved to ``since``), or
@@ -501,7 +512,7 @@ def _window_query(
     if name == "all":
         return (None, None, None), None
     if name is not None:
-        since, reason = _named_window_since(name, config_dir)
+        since, reason = _named_window_since(name, config_dir, latest=latest)
         if since is None:
             return None, _bad_request(reason)
         return (None, since, None), None
@@ -681,10 +692,44 @@ def make_handler(
     #: header (see Handler._write_headers).
     request_ctx = threading.local()
 
+    #: The newest change, counting the ones only sessions show, for the
+    #: "since my last change" window: {"key", "point", "at" (monotonic)}.
+    latest_change_cache: dict = {"key": None, "point": None, "at": 0.0}
+
+    def _latest_change():
+        """The newest change point, counting a model, effort or CLAUDE.md
+        size change only your sessions show (``change_points``' EST-P9),
+        so the "since my last change" window starts where the impact
+        card's newest change does. Reads the sessions from the newest
+        recorded change (less impact's lookback, for the session before
+        it). While sessions keep arriving, the answer is kept for
+        ``_LATEST_CHANGE_MAX_AGE_S`` rather than worked out per request."""
+        from .. import change_points
+        from .. import impact as impact_mod
+        from . import rebuild
+
+        points = change_points.change_points(options.config_dir)
+        point_key = tuple((p.iso(), p.source, p.backup_ts) for p in points)
+        token = store.change_token()
+        now = time.monotonic()
+        with report_lock:
+            kept_key = latest_change_cache["key"]
+            if kept_key is not None and kept_key[1] == point_key and (
+                kept_key[0] == token or now - latest_change_cache["at"] <= _LATEST_CHANGE_MAX_AGE_S
+            ):
+                return latest_change_cache["point"]
+        newest = points[-1].ts if points else datetime.now(timezone.utc) - timedelta(days=_DEFAULT_WINDOW_DAYS)
+        since = newest - timedelta(days=impact_mod.LOOKBACK_DAYS)
+        corpus = rebuild.corpus_from_store(store, since=since.strftime("%Y-%m-%dT%H:%M:%SZ"))
+        point = change_points.latest(options.config_dir, corpus)
+        with report_lock:
+            latest_change_cache.update(key=(token, point_key), point=point, at=now)
+        return point
+
     def _window_query(query, _parse=globals()["_window_query"]):
         # Named windows ("since your last change", "today") need this
         # service's config dir: its apply backups, snapshots and tz.
-        window, err = _parse(query, config_dir=options.config_dir)
+        window, err = _parse(query, config_dir=options.config_dir, latest=_latest_change)
         name = _str_query(query, "window")
         if err is None and name in WINDOW_NAMES and window[1] is not None:
             with report_lock:
@@ -2349,11 +2394,13 @@ def make_handler(
 
     def route_impact(store, query, body):
         """Each change you made (an apply, its undo, a settings change the
-        config hook saw, or a metrics capture change) with the sessions before it against those
-        after it, on the measures that change should move. Cached like
-        the report (see _get_report_model): a store change serves the
-        kept answer and refreshes it in the background, while a new
-        change point (the list itself changing) is worked out at once."""
+        config hook saw, or a metrics capture change), and each model,
+        effort or CLAUDE.md size change your sessions show, with the
+        sessions before it against those after it, on the measures that
+        change should move. Cached like the report (see
+        _get_report_model): a store change serves the kept answer and
+        refreshes it in the background, while a new recorded change point
+        (the list itself changing) is worked out at once."""
         from .. import change_points
 
         points = change_points.change_points(options.config_dir)
@@ -2384,7 +2431,7 @@ def make_handler(
                 def run():
                     try:
                         with background_builds:
-                            _compute_impact(points, key)
+                            _compute_impact(key)
                     except BaseException:  # noqa: BLE001 -- the next request retries
                         pass
                     finally:
@@ -2394,26 +2441,42 @@ def make_handler(
 
                 threading.Thread(target=run, name="claude-token-lens-impact", daemon=True).start()
             return _ok(kept)
-        data = _compute_impact(points, key)
+        data = _compute_impact(key)
         _note_as_of(impact_cache["as_of"] or _now_utc_iso(), False)
         return _ok(data)
 
-    def _compute_impact(points, key):
+    def _compute_impact(key):
+        from .. import change_points
         from .. import impact as impact_mod
+        from ..discovery import redact_slug
+        from ..snapshots import snapshot_project_key
         from . import rebuild
 
         started = time.monotonic()
         as_of = _now_utc_iso()
         changes: list = []
+        recorded = change_points.change_points(options.config_dir)
+        # The corpus reaches back to the oldest recorded change, or this
+        # service's default window when that is newer, so changes only
+        # sessions show (EST-P9) are found over at least that window.
+        oldest = datetime.now(timezone.utc) - timedelta(days=_DEFAULT_WINDOW_DAYS)
+        if recorded and recorded[0].ts < oldest:
+            oldest = recorded[0].ts
+        earliest = oldest - timedelta(days=impact_mod.LOOKBACK_DAYS)
+        corpus = rebuild.corpus_from_store(store, since=earliest.strftime("%Y-%m-%dT%H:%M:%SZ"))
+        points = change_points.change_points(options.config_dir, corpus)
         if points:
             config = load_config(options.config_dir)
             rates = load_pricing(path=config.pricing_path, config_dir=options.config_dir)
-            earliest = points[0].ts - timedelta(days=impact_mod.LOOKBACK_DAYS)
-            corpus = rebuild.corpus_from_store(store, since=earliest.strftime("%Y-%m-%dT%H:%M:%SZ"))
             sessions = impact_mod.session_facts(corpus, rates)
             units = _report_units(_get_report_model(_DEFAULT_WINDOW_DAYS))
             changes = impact_mod.impact(points, sessions, units)
+            # A project change names its project as the dashboard's
+            # project filter does (redacted), never by its snapshot key.
+            names = {snapshot_project_key(b.slug): redact_slug(b.slug) for b in corpus.sessions if b.slug}
             for change in changes:
+                project = change["change"]["project"]
+                change["change"]["project_name"] = names.get(project, "one project") if project else ""
                 # P4 leftover: a structured gate the dashboard's
                 # emptyState() can key off, alongside the existing prose
                 # verdict -- same "enough" predicate impact.compare

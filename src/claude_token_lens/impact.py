@@ -8,7 +8,9 @@ writes that rebuilt expired context, summaries per session, the context
 at session start, and, for a change to one agent, that agent's cost and
 start-up context per spawn. "Before" is the sessions started in the
 :data:`LOOKBACK_DAYS` before the change (and after the change before
-it); "after" is those started from the change until the next one.
+it); "after" is those started from the change until the next one. A
+change made in one project (``ChangePoint.project``) is judged on that
+project's sessions only, and only changes that apply there bound it.
 
 Sessions differ in size and kind of work, so a difference is a signal,
 not proof; with fewer than :data:`MIN_SESSIONS` on either side there is
@@ -48,9 +50,10 @@ from datetime import datetime, timedelta, timezone
 from . import capture as capture_mod
 from . import classify as classify_mod
 from . import quality, recache
-from .change_points import ChangePoint
+from .change_points import ChangePoint, applies_to
 from .model import EventKind, TranscriptResult, scheduled_main_session
 from .pricing import Pricing, price_turn
+from . import snapshots as snapshots_mod
 from .units import Units
 
 #: Sessions needed on each side of a change before comparing.
@@ -121,6 +124,8 @@ class SessionFacts:
     spawns: list[tuple[str, _Transcript]] = field(default_factory=list)
     #: Quality counts per transcript: the main session and each spawn.
     runs: list[quality.Run] = field(default_factory=list)
+    #: The project, as ``snapshots.snapshot_project_key`` names it.
+    project: str = ""
 
     @property
     def cost(self) -> float:
@@ -182,6 +187,7 @@ def session_facts(corpus, pricing: Pricing) -> list[SessionFacts]:
                 runs=quality.session_runs(bundle, pricing),
                 messages=len(cycles),
                 tagged=sum(1 for cycle in cycles if cycle.tag is not None),
+                project=snapshots_mod.snapshot_project_key(bundle.slug) if bundle.slug else "",
             )
         )
     out.sort(key=lambda s: s.start)
@@ -447,13 +453,7 @@ def compare(
     following: ChangePoint | None = None,
     now: datetime | None = None,
 ) -> dict:
-    now = now or datetime.now(timezone.utc)
-    start = point.ts - timedelta(days=LOOKBACK_DAYS)
-    if previous is not None and previous.ts > start:
-        start = previous.ts
-    end = following.ts if following is not None else now
-    before = [s for s in sessions if start <= s.start < point.ts]
-    after = [s for s in sessions if point.ts <= s.start < end]
+    before, after = sides(point, sessions, previous=previous, following=following, now=now)
     enough = len(before) >= MIN_SESSIONS and len(after) >= MIN_SESSIONS
     rows = [_measure_row(measure, before, after, units) for measure in measures_for(point)]
     _label_rows(rows)
@@ -466,6 +466,44 @@ def compare(
         "measures": rows,
         "quality": _quality(point, before, after, units),
     }
+
+
+def sides(
+    point: ChangePoint,
+    sessions: list[SessionFacts],
+    *,
+    previous: ChangePoint | None = None,
+    following: ChangePoint | None = None,
+    now: datetime | None = None,
+) -> tuple[list[SessionFacts], list[SessionFacts]]:
+    """The sessions before ``point`` (back :data:`LOOKBACK_DAYS`, or to
+    ``previous``) and after it (to ``following``, or ``now``), in the
+    project it applies to."""
+    now = now or datetime.now(timezone.utc)
+    start = point.ts - timedelta(days=LOOKBACK_DAYS)
+    if previous is not None and previous.ts > start:
+        start = previous.ts
+    end = following.ts if following is not None else now
+    mine = [s for s in sessions if applies_to(point, s.project)]
+    before = [s for s in mine if start <= s.start < point.ts]
+    after = [s for s in mine if point.ts <= s.start < end]
+    return before, after
+
+
+def _overlap(a: ChangePoint, b: ChangePoint) -> bool:
+    """Whether two changes apply in a project in common."""
+    return not a.project or not b.project or a.project == b.project
+
+
+def neighbours(points: list[ChangePoint], point: ChangePoint) -> tuple[ChangePoint | None, ChangePoint | None]:
+    """The nearest earlier and later change outside :data:`TOGETHER` of
+    ``point`` that applies in a project in common with it: the changes
+    that bound its before and after."""
+    earlier = [p for p in points if p.ts < point.ts and _overlap(p, point)]
+    later = [p for p in points if p.ts > point.ts and _overlap(p, point)]
+    previous = next((p for p in reversed(earlier) if point.ts - p.ts > TOGETHER), None)
+    following = next((p for p in later if p.ts - point.ts > TOGETHER), None)
+    return previous, following
 
 
 def quality_groups(point: ChangePoint) -> list[str]:
@@ -523,10 +561,8 @@ def impact(points: list[ChangePoint], sessions: list[SessionFacts], units: Units
     """Newest change first, at most ``limit``. A change made within
     :data:`TOGETHER` of another doesn't bound its before or after."""
     out = []
-    for index in range(len(points) - 1, -1, -1):
-        point = points[index]
-        previous = next((p for p in reversed(points[:index]) if point.ts - p.ts > TOGETHER), None)
-        following = next((p for p in points[index + 1 :] if p.ts - point.ts > TOGETHER), None)
+    for point in reversed(points):
+        previous, following = neighbours(points, point)
         out.append(compare(point, sessions, units, previous=previous, following=following))
         if len(out) >= limit:
             break
@@ -541,7 +577,9 @@ __all__ = [
     "compare",
     "impact",
     "measures_for",
+    "neighbours",
     "quality_groups",
     "session_facts",
+    "sides",
     "stratum",
 ]

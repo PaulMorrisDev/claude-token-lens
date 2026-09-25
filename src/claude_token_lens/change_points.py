@@ -15,6 +15,13 @@ session and the next in the same project. These are ``source
 "transcript"`` points, timestamped at the first session that shows the
 new value.
 
+Each point names the project it applies to (``project``), as the
+config hook's snapshot key (``snapshots.snapshot_project_key``), or
+``""`` for a change that applies in every project: an apply to your user
+settings, or a settings change outside a project's own settings files.
+A config point records each changed setting's old and new value where
+both are short plain values.
+
 Used for the "Since my last change" window and for the before-and-after
 comparison in :mod:`impact`. Reads ``<config_dir>/backups/*/manifest.json``,
 ``<config_dir>/snapshots/`` and ``<config_dir>/capture-log.jsonl``;
@@ -31,6 +38,7 @@ from pathlib import Path
 
 from . import capture_catalogue
 from . import config as config_mod
+from . import discovery
 from . import snapshots as snapshots_mod
 from .model import EventKind
 from .profiles import apply as apply_mod
@@ -46,6 +54,15 @@ CLAUDE_MD_CHANGE_PCT = 10.0
 #: provenance fields are left out: they change without changing behaviour.
 _BEHAVIOUR_PREFIXES = ("effective.", "agents.", "user_settings.", "project_settings.", "mcp_servers", "enabled_plugins")
 
+#: The settings layers a project's own files hold (``snapshots.
+#: effective_provenance``): a change that only came from these applies in
+#: that project alone.
+_PROJECT_LAYERS = ("project_local", "project_shared")
+
+#: A config point records a value only when it is a plain value no longer
+#: than this: settings values, never file contents or long commands.
+_MAX_VALUE_CHARS = 80
+
 
 @dataclass(slots=True)
 class ChangePoint:
@@ -60,6 +77,9 @@ class ChangePoint:
     #: Backup timestamp, for an apply (so the undo command can name it).
     backup_ts: str = ""
     reverted: bool = False
+    #: The project it applies to, as ``snapshots.snapshot_project_key``
+    #: names it; ``""`` for every project.
+    project: str = ""
 
     def iso(self) -> str:
         return self.ts.strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -73,7 +93,48 @@ class ChangePoint:
             "changes": list(self.changes),
             "backup_ts": self.backup_ts,
             "reverted": self.reverted,
+            "project": self.project,
+            "summary": summary(self),
         }
+
+
+def _words(value) -> str:
+    if value is None:
+        return "not set"
+    if isinstance(value, bool):
+        return "on" if value else "off"
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
+    if isinstance(value, int):
+        return f"{value:,}"
+    return str(value)
+
+
+def summary(point: ChangePoint) -> str:
+    """What changed, in one line: each change with both values known as
+    "key: old → new", then any other key by name."""
+    parts: list[str] = []
+    named: set[str] = set()
+    for change in point.changes:
+        if "old" not in change or "new" not in change:
+            continue
+        label = _key_label(change)
+        named.add(label)
+        parts.append(f"{label}: {_words(change['old'])} → {_words(change['new'])}")
+    parts.extend(k for k in point.keys if k not in named and _plain_key(k) not in named)
+    return "; ".join(parts)
+
+
+def _plain_key(label: str) -> str:
+    """A config key label as a change names it: ``effective.model`` is
+    ``model``, ``agents.reviewer.model`` is ``reviewer: model``."""
+    if label.startswith("effective."):
+        return label[len("effective."):]
+    if label.startswith("agents."):
+        parts = label.split(".")
+        if len(parts) >= 3:
+            return f"{parts[1]}: {parts[-1]}"
+    return label
 
 
 def _parse_backup_ts(ts: str) -> datetime | None:
@@ -150,6 +211,34 @@ def _key_label(change: dict) -> str:
     return f"{change['agent']}: {change['key']}" if change.get("agent") else str(change["key"])
 
 
+def project_key(project_path: str | Path) -> str:
+    """The snapshot project key (``snapshots.snapshot_project_key``) for a
+    project folder."""
+    return snapshots_mod.snapshot_project_key(discovery.slug_for(str(project_path)))
+
+
+def _manifest_project(config_dir: Path, backup) -> str:
+    """The project an apply wrote to, from its manifest's settings or
+    agent file path; ``""`` for an apply to your user settings."""
+    if backup.scope in ("", "user"):
+        return ""
+    try:
+        manifest = json.loads((config_dir / "backups" / backup.ts / "manifest.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    for entry in manifest.get("entries") or ():
+        if not isinstance(entry, dict) or entry.get("kind") not in ("settings", "agent_frontmatter"):
+            continue
+        if not entry.get("path"):
+            continue
+        path = Path(entry["path"])
+        # <project>/.claude/settings(.local).json or <project>/.claude/agents/<name>.md
+        claude_dir = path.parent if entry["kind"] == "settings" else path.parent.parent
+        if claude_dir.name == ".claude":
+            return project_key(claude_dir.parent)
+    return ""
+
+
 def _apply_points(config_dir: Path) -> list[ChangePoint]:
     points: list[ChangePoint] = []
     for backup in apply_mod.list_backups(config_dir):
@@ -157,6 +246,7 @@ def _apply_points(config_dir: Path) -> list[ChangePoint]:
         if when is None:
             continue
         changes = _manifest_changes(config_dir, backup.ts)
+        project = _manifest_project(config_dir, backup)
         profile = backup.profile_id
         label = "Applied a one-off change" if profile in ("one-off", "") else f"Applied profile {profile}"
         points.append(
@@ -168,6 +258,7 @@ def _apply_points(config_dir: Path) -> list[ChangePoint]:
                 changes=changes,
                 backup_ts=backup.ts,
                 reverted=backup.reverted_at is not None,
+                project=project,
             )
         )
         reverted = _parse_iso(backup.reverted_at)
@@ -179,6 +270,7 @@ def _apply_points(config_dir: Path) -> list[ChangePoint]:
                     label=f"Undid {label[0].lower()}{label[1:]}",
                     keys=[_key_label(c) for c in changes],
                     backup_ts=backup.ts,
+                    project=project,
                 )
             )
     return points
@@ -205,6 +297,43 @@ def _changed_keys(before: snapshots_mod.Snapshot, after: snapshots_mod.Snapshot)
     return changed
 
 
+def _plain_value(value) -> bool:
+    if isinstance(value, str):
+        return len(value) <= _MAX_VALUE_CHARS
+    return value is None or isinstance(value, (bool, int, float))
+
+
+def _config_changes(before: snapshots_mod.Snapshot, after: snapshots_mod.Snapshot, keys: list[str]) -> list[dict]:
+    """Each changed settings lever (``effective.*``) or agent model with
+    its old and new value, when both are plain values."""
+    old, new = _flat(before), _flat(after)
+    out = []
+    for key in keys:
+        if key.startswith("effective."):
+            agent, name = None, key[len("effective."):]
+        elif key.startswith("agents.") and key.count(".") == 2 and key.endswith(".model"):
+            agent, name = key.split(".")[1], "model"
+        else:
+            continue
+        if _plain_value(old.get(key)) and _plain_value(new.get(key)):
+            out.append({"key": name, "agent": agent, "old": old.get(key), "new": new.get(key)})
+    return out
+
+
+def _config_project(before: snapshots_mod.Snapshot, after: snapshots_mod.Snapshot, keys: list[str]) -> str:
+    """The snapshot's project when every changed key is a settings lever
+    a project's own settings file set (before or after), else ``""``."""
+    if not keys or not all(k.startswith("effective.") for k in keys):
+        return ""
+    old, new = snapshots_mod.effective_provenance(before), snapshots_mod.effective_provenance(after)
+    for key in keys:
+        name = key[len("effective."):]
+        if old.get(name) not in _PROJECT_LAYERS and new.get(name) not in _PROJECT_LAYERS:
+            return ""
+    slug = after.data.get("project_slug")
+    return str(slug) if isinstance(slug, str) and slug else ""
+
+
 def _config_points(config_dir: Path) -> list[tuple[datetime | None, ChangePoint]]:
     """A change point wherever one project's snapshot differs from its
     previous one in a key that changes how Claude Code runs, with the
@@ -222,7 +351,19 @@ def _config_points(config_dir: Path) -> list[tuple[datetime | None, ChangePoint]
         if not keys or when is None:
             continue
         since = _parse_backup_ts(before.ts) or _parse_iso(before.ts)
-        points.append((since, ChangePoint(ts=when, source="config", label="Your settings changed", keys=keys)))
+        points.append(
+            (
+                since,
+                ChangePoint(
+                    ts=when,
+                    source="config",
+                    label="Your settings changed",
+                    keys=keys,
+                    changes=_config_changes(before, snap, keys),
+                    project=_config_project(before, snap, keys),
+                ),
+            )
+        )
     return points
 
 
@@ -307,6 +448,8 @@ class _SessionSignature:
     claude_md_chars: int
     model: str
     effort: str
+    #: The project as ``snapshots.snapshot_project_key`` names it.
+    key: str = ""
 
 
 def _session_signature(bundle) -> _SessionSignature | None:
@@ -323,6 +466,7 @@ def _session_signature(bundle) -> _SessionSignature | None:
         claude_md_chars=_claude_md_chars(top),
         model=_dominant(turn.model for turn in turns),
         effort=_dominant(turn.effort or "" for turn in turns) or "default",
+        key=snapshots_mod.snapshot_project_key(bundle.slug) if bundle.slug else "",
     )
 
 
@@ -377,7 +521,14 @@ def _transcript_points(corpus) -> list[ChangePoint]:
         if not keys:
             continue
         points.append(
-            ChangePoint(ts=sig.start, source="transcript", label=_transcript_label(keys), keys=keys, changes=changes)
+            ChangePoint(
+                ts=sig.start,
+                source="transcript",
+                label=_transcript_label(keys),
+                keys=keys,
+                changes=changes,
+                project=sig.key,
+            )
         )
     return points
 
@@ -388,7 +539,7 @@ def change_points(config_dir: Path | str, corpus=None) -> list[ChangePoint]:
     ``corpus``, when given, adds transcript-derived points too (EST-P9,
     see the module docstring) -- opt-in, since building a corpus is more
     than ``config_dir`` alone can do, and most callers (the "since my
-    last change" window) don't have one on hand yet."""
+    last change" window) build one only when asked for that window."""
     config_dir = Path(config_dir)
     applied = _apply_points(config_dir)
     points = list(applied)
@@ -403,9 +554,15 @@ def change_points(config_dir: Path | str, corpus=None) -> list[ChangePoint]:
     return points
 
 
-def latest(config_dir: Path | str) -> ChangePoint | None:
-    points = change_points(config_dir)
+def latest(config_dir: Path | str, corpus=None) -> ChangePoint | None:
+    points = change_points(config_dir, corpus)
     return points[-1] if points else None
 
 
-__all__ = ["ChangePoint", "change_points", "latest"]
+def applies_to(point: ChangePoint, project: str) -> bool:
+    """Whether ``point`` applies in ``project`` (a snapshot project key):
+    a change for every project applies everywhere."""
+    return not point.project or point.project == project
+
+
+__all__ = ["ChangePoint", "applies_to", "change_points", "latest", "project_key", "summary"]

@@ -7,7 +7,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from claude_token_lens import backtest
+from claude_token_lens import backtest, impact
 from claude_token_lens.change_points import ChangePoint
 from claude_token_lens.corpus import load_corpus
 from claude_token_lens.pricing import load_pricing
@@ -77,14 +77,24 @@ def test_match_point_requires_the_same_agent():
     assert backtest._match_point(pred, [agent_point]) is agent_point
 
 
-def test_neighbors_skips_points_made_together():
+def test_neighbours_skip_points_made_together():
     a = _point(CHANGE - timedelta(days=3), ["model"])
     together = _point(CHANGE - timedelta(minutes=1), ["model"])
     b = _point(CHANGE, ["model"])
     c = _point(CHANGE + timedelta(days=3), ["model"])
-    previous, following = backtest._neighbors([a, together, b, c], b)
+    previous, following = impact.neighbours([a, together, b, c], b)
     assert previous is a
     assert following is c
+
+
+def test_a_change_in_another_project_doesnt_bound_this_one():
+    a = _point(CHANGE - timedelta(days=3), ["model"])
+    other = _point(CHANGE - timedelta(days=1), ["model"])
+    other.project = "slug:other"
+    b = _point(CHANGE, ["model"])
+    b.project = "slug:mine"
+    everywhere = _point(CHANGE + timedelta(days=2), ["model"])
+    assert impact.neighbours([a, other, b, everywhere], b) == (a, everywhere)
 
 
 # -- verdicts ------------------------------------------------------------

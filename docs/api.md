@@ -513,7 +513,9 @@ status line, at the foot of the sidebar.
   header picker: `1h` (the last hour), `today` (since midnight in
   `config.toml`'s `tz`, else the machine's zone), `24h`, `change` (since
   your latest `apply`, its undo, a settings change the config hook saw,
-  or a change to metrics capture; `400` when none is recorded yet) or
+  a change to metrics capture, or a model, effort or CLAUDE.md size
+  change your sessions show; the same newest change `/api/impact`
+  lists; `400` when there is none yet) or
   `all` (no limit). Anything else is `400`. A named window takes
   precedence over the other three params. It is turned into a `since`
   rounded down to the minute, so repeat requests share one cached report.
@@ -949,19 +951,31 @@ settings with `POST /api/profiles/from-current` instead.
 ### `GET /api/impact`
 
 Each change you made (an `apply`, its undo, a settings change the
-config hook saw, or a change to metrics capture), with the sessions
+config hook saw, or a change to metrics capture), and each model,
+effort or CLAUDE.md size change your sessions show, with the sessions
 before it against those after it, on the measures that change should
 move.
 
 Takes no window: each change is compared over its own before and after
 periods, looking back at most `lookback_days`.
 
-`data`: `{"changes": [{"change": {"ts", "source", "label", "keys", "changes", "backup_ts", "reverted"}, "before_sessions", "after_sessions", "enough", "gate", "verdict", "measures": [{"label", "before", "after", "before_n", "after_n", "change_pct", "direction"}, ...], "quality": [{"group", "label", "before_runs", "after_runs", "verdict", "judged", "min_runs", "signals": [{"key", "label", "kind", "worse_when", "unit", "before", "after", "before_text", "after_text", "before_counts", "after_counts", "before_runs", "after_runs", "p", "label_key", "verdict"}, ...]}, ...]}, ...], "caveat", "min_sessions", "lookback_days"}`.
+`data`: `{"changes": [{"change": {"ts", "source", "label", "keys", "changes", "backup_ts", "reverted", "project", "project_name", "summary"}, "before_sessions", "after_sessions", "enough", "gate", "verdict", "measures": [{"label", "before", "after", "before_n", "after_n", "change_pct", "direction", "p", "label_key", "label_text"}, ...], "quality": [{"group", "label", "before_runs", "after_runs", "verdict", "judged", "min_runs", "signals": [{"key", "label", "kind", "worse_when", "unit", "before", "after", "before_text", "after_text", "before_counts", "after_counts", "before_runs", "after_runs", "p", "label_key", "verdict"}, ...]}, ...]}, ...], "caveat", "min_sessions", "lookback_days"}`.
 Newest change first, at most ten. `change.source` is `apply`, `revert`,
-`config` (a settings change the hook saw) or `capture` (a metrics
+`config` (a settings change the hook saw), `capture` (a metrics
 capture change from `capture-log.jsonl`, whose keys are `capture.<field>`
 and are measured by capture's own tokens per session and the share of
-messages Claude tagged). `enough` is false until each side has
+messages Claude tagged) or `transcript` (a change only the sessions
+show). `changes` lists `{"key", "agent", "old", "new"}` where the values
+are known: a `config` change records a setting's values only when both
+are plain values of at most 80 characters. `summary` is those changes
+in one line ("model: opus → sonnet"), then any other changed key by
+name. `project` is empty for a change that applies in every project;
+otherwise the change was made in one project's own settings files, it
+is judged on that project's sessions only, and `project_name` names
+that project as the project filter does. `label_key` is a measure's
+ratio-test reading (`lower`, `possibly_lower`, `higher`,
+`possibly_higher`, `no_clear_change` or `too_little_data`) and
+`label_text` the same in words. `enough` is false until each side has
 `min_sessions` sessions; `gate` is the same check as a structured
 `{"reason": "min_sessions", "have", "need"}` object for a UI empty
 state, or `null` once `enough` is true. `before`/`after` are display

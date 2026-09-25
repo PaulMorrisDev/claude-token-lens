@@ -2120,6 +2120,30 @@ def test_a_signed_change_uses_a_true_minus_sign() -> None:
     assert not re.search(r'> 0 \? "\+" : ""\)', _app_js())
 
 
+def test_an_impact_card_says_what_changed_where_and_each_measures_reading() -> None:
+    impact = _function_source(_app_js(), "renderImpact")
+    assert "change.summary ||" in impact
+    assert 'change.project ? "In " + (change.project_name' in impact
+    assert '{ label: "Reading" }' in impact and 'm.label_text || ""' in impact
+
+
+def test_an_estimate_is_logged_when_a_change_is_saved_or_its_command_copied() -> None:
+    """EST-P5: the dashboard logs a prediction (``"log": true``) for a
+    change you mean to make, never while you tick or explore."""
+    source = _app_js()
+    goal = _function_source(source, "renderGoalDraft")
+    assert goal.count("log: true") == 1
+    assert goal.index('toast("Profile saved.")') < goal.index("log: true")
+    estimate = _function_source(source, "renderProfileEstimate")
+    assert "if (logged || !request) return;" in estimate and "log: true" in estimate
+    assert "renderProfileDiff(data, box, logEstimate)" in _function_source(source, "renderProfileDetail")
+    assert "{ onCopy: onCopy }" in _function_source(source, "renderProfileDiff")
+    copy = _function_source(source, "codeBlockWithCopy")
+    assert "if (ok && onCopy) onCopy();" in copy
+    block = _function_source(source, "commandBlock")
+    assert block.count("opts.onCopy") == 2
+
+
 def test_copy_button_only_claims_success_when_the_clipboard_write_succeeded() -> None:
     """copyToClipboard used to fire-and-forget navigator.clipboard.write-
     Text and the button always flipped to "Copied" regardless of what

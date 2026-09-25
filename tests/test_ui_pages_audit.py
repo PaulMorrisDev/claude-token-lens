@@ -148,7 +148,7 @@ def test_repeated_setup_buttons_name_their_card() -> None:
 def test_copy_buttons_are_named_for_what_they_copy() -> None:
     ui = _static_text("ui.js")
     block = _function_source(ui, "codeBlockWithCopy")
-    assert "function codeBlockWithCopy(text, what, about)" in block
+    assert "function codeBlockWithCopy(text, what, about, onCopy)" in block
     assert '"aria-label": "Copy " + kind + (about ? " for " + about : "")' in block
     command = _function_source(ui, "commandBlock")
     assert command.count("fixSubject(fix)") == 3

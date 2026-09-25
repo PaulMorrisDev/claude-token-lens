@@ -55,7 +55,7 @@ Method, in full (see also ``docs/backtest.md``):
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from . import change_points as change_points_mod
 from . import impact
@@ -114,18 +114,6 @@ def _match_point(prediction: dict, points: list[ChangePoint]) -> ChangePoint | N
         if best is None or point.ts < best.ts:
             best = point
     return best
-
-
-def _neighbors(points: list[ChangePoint], point: ChangePoint) -> tuple[ChangePoint | None, ChangePoint | None]:
-    """The nearest earlier/later change point outside :data:`impact.TOGETHER`
-    of ``point`` -- the same neighbour rule :func:`impact.impact` uses for
-    each point in its own list, so a back-tested window and an impact
-    comparison of the same change never disagree about its bounds."""
-    earlier = [p for p in points if p.ts < point.ts]
-    later = [p for p in points if p.ts > point.ts]
-    previous = next((p for p in reversed(earlier) if point.ts - p.ts > impact.TOGETHER), None)
-    following = next((p for p in later if p.ts - point.ts > impact.TOGETHER), None)
-    return previous, following
 
 
 def _measure_for(prediction: dict) -> impact.Measure:
@@ -197,13 +185,10 @@ def judge_predictions(
         point = _match_point(prediction, points)
         if point is None:
             continue
-        previous, following = _neighbors(points, point)
-        start = point.ts - timedelta(days=impact.LOOKBACK_DAYS)
-        if previous is not None and previous.ts > start:
-            start = previous.ts
-        end = following.ts if following is not None else now
-        before = [s for s in sessions if start <= s.start < point.ts]
-        after = [s for s in sessions if point.ts <= s.start < end]
+        # impact's own bounds and project, so a back-tested window and an
+        # impact comparison of the same change never disagree.
+        previous, following = impact.neighbours(points, point)
+        before, after = impact.sides(point, sessions, previous=previous, following=following, now=now)
         result = _judge_row(prediction, before, after, units)
         if not result.enough:
             if following is None:

@@ -6,7 +6,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from claude_token_lens import change_points
+from claude_token_lens import change_points, snapshots
 from claude_token_lens.profiles import apply as apply_mod
 from claude_token_lens.profiles.schema import load_dict
 
@@ -20,10 +20,12 @@ def _apply(tmp_path: Path, settings: dict):
     return config_dir, apply_mod.execute(plan, config_dir=config_dir)
 
 
-def _snapshot(config_dir: Path, ts: str, effective: dict) -> None:
+def _snapshot(config_dir: Path, ts: str, effective: dict, provenance: dict | None = None) -> None:
     folder = config_dir / "snapshots"
     folder.mkdir(parents=True, exist_ok=True)
     doc = {"ts": ts, "schema_version": 2, "project_slug": "slug:abc", "effective": effective}
+    if provenance is not None:
+        doc["effective_provenance"] = provenance
     (folder / f"{ts}.json").write_text(json.dumps(doc), encoding="utf-8")
 
 
@@ -50,6 +52,53 @@ def test_a_settings_change_between_snapshots_is_a_change_point(tmp_path):
     assert point.source == "config"
     assert point.iso() == "2026-09-22T10:00:00Z"
     assert point.keys == ["effective.model"]
+
+
+def test_a_settings_change_records_its_values_and_applies_everywhere_from_user_settings(tmp_path):
+    config_dir = tmp_path / "tl"
+    _snapshot(config_dir, "20260921T100000Z", {"model": "opus", "autoCompactWindow": 100000}, {"model": "user"})
+    _snapshot(config_dir, "20260922T100000Z", {"model": "sonnet", "autoCompactWindow": 120000}, {"model": "user"})
+    [point] = change_points.change_points(config_dir)
+    assert point.changes == [
+        {"key": "autoCompactWindow", "agent": None, "old": 100000, "new": 120000},
+        {"key": "model", "agent": None, "old": "opus", "new": "sonnet"},
+    ]
+    assert point.project == ""
+    assert point.to_dict()["summary"] == "autoCompactWindow: 100,000 → 120,000; model: opus → sonnet"
+
+
+def test_a_change_only_a_projects_own_settings_made_applies_to_that_project(tmp_path):
+    config_dir = tmp_path / "tl"
+    _snapshot(config_dir, "20260921T100000Z", {"model": "opus"}, {"model": "user"})
+    _snapshot(config_dir, "20260922T100000Z", {"model": "sonnet"}, {"model": "project_local"})
+    [point] = change_points.change_points(config_dir)
+    assert point.project == "slug:abc"
+    assert point.to_dict()["project"] == "slug:abc"
+
+
+def test_a_long_value_is_named_but_not_recorded(tmp_path):
+    config_dir = tmp_path / "tl"
+    _snapshot(config_dir, "20260921T100000Z", {"apiKeyHelper": "a" * 200})
+    _snapshot(config_dir, "20260922T100000Z", {"apiKeyHelper": "b" * 200})
+    [point] = change_points.change_points(config_dir)
+    assert point.keys == ["effective.apiKeyHelper"] and point.changes == []
+    assert change_points.summary(point) == "effective.apiKeyHelper"
+
+
+def test_an_apply_to_a_project_names_that_project(tmp_path):
+    claude_root = tmp_path / ".claude"
+    config_dir = claude_root / "token-lens"
+    claude_root.mkdir()
+    project = tmp_path / "repo"
+    project.mkdir()
+    profile = load_dict({"id": "one-off", "settings": {"effortLevel": "medium"}})
+    plan = apply_mod.plan_apply(profile, scope="project-local", project_path=project, config_dir=config_dir, claude_root=claude_root)
+    apply_mod.execute(plan, config_dir=config_dir)
+    [point] = change_points.change_points(config_dir)
+    assert point.project == change_points.project_key(project)
+    (tmp_path / "u").mkdir()
+    user_dir, _result = _apply(tmp_path / "u", {"effortLevel": "medium"})
+    assert change_points.change_points(user_dir)[0].project == ""
 
 
 def test_a_snapshot_difference_spanning_an_apply_is_not_counted_twice(tmp_path):
@@ -176,6 +225,7 @@ def test_a_dominant_model_shift_between_sessions_is_a_change_point(tmp_path):
     corpus = load_corpus([project_dir])
     [point] = change_points.change_points(tmp_path, corpus)
     assert point.source == "transcript"
+    assert point.project == snapshots.snapshot_project_key(corpus.sessions[0].slug)
     assert point.keys == ["model"]
     assert point.changes == [{"key": "model", "agent": None, "old": "claude-sonnet-5", "new": "claude-opus-5"}]
     assert point.label == "Model changed"

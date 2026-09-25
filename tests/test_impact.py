@@ -61,6 +61,21 @@ def test_compare_reports_a_drop_with_counts():
     assert result["verdict"].startswith("Explore: cost per spawn fell 50%")
 
 
+def test_a_change_in_one_project_is_judged_on_that_projects_sessions():
+    sessions = [_session(-d, 2.0) for d in (1, 2, 3)] + [_session(d, 1.0) for d in (0.1, 0.2, 0.3)]
+    elsewhere = [_session(-d, 9.0) for d in (1.5, 2.5)] + [_session(0.5, 9.0)]
+    for facts in sessions:
+        facts.project = "slug:mine"
+    for facts in elsewhere:
+        facts.project = "slug:other"
+    point = ChangePoint(CHANGE, "config", "Your settings changed", keys=["effective.model"], project="slug:mine")
+    result = impact.compare(point, sessions + elsewhere, UNITS, now=CHANGE + timedelta(days=1))
+    assert (result["before_sessions"], result["after_sessions"]) == (3, 3)
+    everywhere = ChangePoint(CHANGE, "config", "Your settings changed", keys=["effective.model"])
+    result = impact.compare(everywhere, sessions + elsewhere, UNITS, now=CHANGE + timedelta(days=1))
+    assert (result["before_sessions"], result["after_sessions"]) == (5, 4)
+
+
 def test_too_few_sessions_after_gives_no_verdict():
     sessions = [_session(-d, 2.0) for d in (1, 2, 3)] + [_session(0.1, 1.0)]
     result = impact.compare(ChangePoint(CHANGE, "apply", "x", keys=["model"]), sessions, UNITS)
