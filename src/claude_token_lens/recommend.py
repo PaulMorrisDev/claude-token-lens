@@ -2311,7 +2311,29 @@ def recommend(
     # had its say on the final list: assign each recommendation's key.
     for rec in recs:
         rec.key = _rec_key(rec)
+    _unique_keys(recs)
     return recs
+
+
+def _unique_keys(recs: list[Recommendation]) -> None:
+    """Give every repeated key a suffix from its card's first evidence
+    row, so a rule that fires once per row of a table with no agent type
+    (``spawn-shared-claude-md``: one card per CLAUDE.md source) still
+    gets one key per card, and each card keeps its key whichever of the
+    others fire. Ignores and links need a key that names one card."""
+    counts: dict[str, int] = {}
+    for rec in recs:
+        counts[rec.key] = counts.get(rec.key, 0) + 1
+    seen: set[str] = set()
+    for rec in recs:
+        if counts[rec.key] > 1:
+            row = rec.evidence[0][3] if rec.evidence else None
+            base = f"{rec.key}:{_key_slug(str(row))}" if row not in (None, "") else rec.key
+            key, n = base, 2
+            while key in seen:
+                key, n = f"{base}-{n}", n + 1
+            rec.key = key
+        seen.add(rec.key)
 
 
 # -- patch-set rendering --------------------------------------------------
