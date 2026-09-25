@@ -951,6 +951,10 @@ var SECTION_CARDS = {
   compaction_sim: "conversation-summaries",
   // The planning context kept is re-read on every later reply.
   plan_handoff: "cache-reads",
+  // What a long run has read is re-read on every later reply.
+  run_split: "cache-reads",
+  // A hook's added context is re-read on every later reply.
+  hooks: "cache-reads",
   compactions: "conversation-summaries",
   elasticity: "billing-mode",
 };

@@ -338,6 +338,34 @@ def _carry_end_index(entry_index: int, boundary_indices: list[int], last_index: 
     return last_index
 
 
+def carry_rate_prefix(priced: list[Turn], lookup: RatesLookup) -> list[float]:
+    """Prefix sums of each priced turn's per-token carry rate (its read
+    share times its cache read rate plus its write share times its blended
+    cache write rate): ``prefix[j] - prefix[i]`` is what one token kept in
+    context costs across ``priced[i:j]``. Shared with ``hook_costs``."""
+    prefix_rate = [0.0] * (len(priced) + 1)
+    for i, later_turn in enumerate(priced):
+        rate = 0.0
+        cache_volume = later_turn.cache_read_tokens + later_turn.cache_creation_tokens
+        if cache_volume > 0:
+            read_rate, write_rate = _turn_read_write_rates(later_turn, lookup(later_turn.model))
+            read_share = later_turn.cache_read_tokens / cache_volume
+            write_share = later_turn.cache_creation_tokens / cache_volume
+            rate = read_share * read_rate + write_share * write_rate
+        prefix_rate[i + 1] = prefix_rate[i] + rate
+    return prefix_rate
+
+
+def carry_end_index(entry_index: int, boundary_indices: list[int], last_index: int) -> int:
+    """Public name for :func:`_carry_end_index`, shared with ``hook_costs``."""
+    return _carry_end_index(entry_index, boundary_indices, last_index)
+
+
+def boundary_turn_indices(priced: list[Turn]) -> list[int]:
+    """Public name for :func:`_boundary_turn_indices`, shared with ``hook_costs``."""
+    return _boundary_turn_indices(priced)
+
+
 def _extract_results(result: TranscriptResult, lookup: RatesLookup) -> list[CarriedResult]:
     """Every carried result in one transcript, per the module docstring's
     model. Returns ``[]`` for a transcript with no priced turns.
@@ -364,20 +392,8 @@ def _extract_results(result: TranscriptResult, lookup: RatesLookup) -> list[Carr
     agent_type = agent_type_label(result)
     boundary_indices = _boundary_turn_indices(priced)
     last_index = priced[-1].turn_index
-
     turn_indices = [t.turn_index for t in priced]
-    per_turn_rate = [0.0] * len(priced)
-    for i, later_turn in enumerate(priced):
-        cache_volume = later_turn.cache_read_tokens + later_turn.cache_creation_tokens
-        if cache_volume <= 0:
-            continue
-        read_rate, write_rate = _turn_read_write_rates(later_turn, lookup(later_turn.model))
-        read_share = later_turn.cache_read_tokens / cache_volume
-        write_share = later_turn.cache_creation_tokens / cache_volume
-        per_turn_rate[i] = read_share * read_rate + write_share * write_rate
-    prefix_rate = [0.0] * (len(priced) + 1)
-    for i, rate in enumerate(per_turn_rate):
-        prefix_rate[i + 1] = prefix_rate[i] + rate
+    prefix_rate = carry_rate_prefix(priced, lookup)
 
     out: list[CarriedResult] = []
     for i, turn in enumerate(priced):
@@ -913,6 +929,9 @@ __all__ = [
     "CarryByKeyStats",
     "TruncationSaving",
     "CarryStats",
+    "boundary_turn_indices",
+    "carry_end_index",
+    "carry_rate_prefix",
     "compute_carry",
     "build_section",
     "RULES",

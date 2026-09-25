@@ -80,7 +80,7 @@ export var PAGES = [
     label: "Agents & context",
     icon: "agents",
     segments: [
-      { id: "subagents", label: "Subagents", intro: "What your subagents cost, and what each one is given when it starts." },
+      { id: "subagents", label: "Subagents", intro: "What your subagents cost, what each one is given when it starts, and whether long runs should be split." },
       { id: "quality", label: "Quality", intro: "How subagent work went: runs that were retried, workflows, and how you split the work." },
       {
         id: "context",
@@ -88,6 +88,7 @@ export var PAGES = [
         intro:
           "What Claude reads at the start of every session and subagent: your CLAUDE.md files and the skills list. How often each is sent, what it costs, and how to trim it.",
       },
+      { id: "hooks", label: "Hooks", intro: "Whether each hook you set up works, and what it costs in kept context, blocked calls and waiting." },
     ],
   },
   {
@@ -283,10 +284,12 @@ export var SECTION_PAGE_MAP = {
   // Agents & context.
   agent_startup: "agents/subagents",
   agents: "agents/subagents",
+  run_split: "agents/subagents",
   quality: "agents/quality",
   workflows: "agents/quality",
   workstyle: "agents/quality",
   context_budget: "agents/context",
+  hooks: "agents/hooks",
   habits: "habits",
   // Setup. Settings draws the config section's tables once, from
   // /api/config-diff?auto_keys=1, and skips the section itself.

@@ -141,7 +141,7 @@ import dataclasses
 import re
 from dataclasses import dataclass
 
-from . import carry, compaction_sim, elasticity, handoff, model_swap, waste
+from . import carry, compaction_sim, elasticity, handoff, hook_costs, model_swap, run_split, waste
 from .config import Config
 from .context_budget import _READ_ONLY_TOOLS
 from .model import Recommendation, ReportModel, Section, SettingChange, Table
@@ -2279,6 +2279,8 @@ def recommend(
     model_swap_th = model_swap.ModelSwapThresholds.from_config(config.thresholds)
     waste_th = waste.WasteThresholds.from_config(config.thresholds)
     handoff_th = handoff.HandoffThresholds.from_config(config.thresholds)
+    hooks_th = hook_costs.HookThresholds.from_config(config.thresholds)
+    run_split_th = run_split.RunSplitThresholds.from_config(config.thresholds)
 
     recs: list[Recommendation] = []
     recs.extend(_rule_ttl_switch(report, config, snapshot, archetype, th))
@@ -2316,6 +2318,9 @@ def recommend(
     # rule in this file follows.
     recs.extend(carry.RULES[0](report, carry_th))
     recs.extend(handoff.RULES[0](report, handoff_th))
+    recs.extend(run_split.RULES[0](report, run_split_th))
+    for hook_rule in hook_costs.RULES:
+        recs.extend(hook_rule(report, hooks_th))
     recs.extend(compaction_sim.RULES[0](report, compaction_sim_th, snapshot))
     recs.extend(model_swap.RULES["model-tier"](report, model_swap_th, archetype, snapshot))
     recs.extend(waste.RULES[0](report, waste_th))

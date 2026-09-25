@@ -351,6 +351,34 @@ _WORKFLOW_PROMPTS = {
         "remind me to run /clear and start the build from the saved plan file, one phase per session. Show me "
         "the diff before saving. Claude Code will ask my permission before editing files under .claude."
     ),
+    "run-split": (
+        "My {agent} runs get long, and every later reply reads again all the run has read. Please add a short "
+        "instruction to my ~/.claude/CLAUDE.md: when a task for {agent} "
+        "is large, give it one part per run, and start a fresh {agent} for the next part with a short note of "
+        "what's done, what's left and the files involved, rather than one long run. If {agent} has an agent file "
+        "(~/.claude/agents/{agent}.md or .claude/agents/{agent}.md), propose a line asking it to end each run with "
+        "that note. Show me the diff before saving. Claude Code will ask my permission before editing files under "
+        ".claude."
+    ),
+    "hook-failures": (
+        "Some of my Claude Code hooks keep failing: {title_lower}. Please find these hooks in ~/.claude/settings.json, "
+        "this project's .claude/settings.json and .claude/settings.local.json, and any plugin I have enabled. For "
+        "each one, work out why it fails: a script named by a relative path (start it with ${{CLAUDE_PROJECT_DIR}} "
+        "instead), a file that isn't there, or an error in the script itself. Propose a fix for each and show me the "
+        "diff before saving. Claude Code will ask my permission before editing files under .claude."
+    ),
+    "hook-block-resent": (
+        "My {title_lower}. Please read that hook's script and its entry in my settings.json files. Propose changing it "
+        "to let the call through and pass its message as hookSpecificOutput.additionalContext, or to rewrite the "
+        "call with updatedInput, where that keeps what the hook is for. Keep any block that stops something harmful. "
+        "Show me the diff before saving. Claude Code will ask my permission before editing files under .claude."
+    ),
+    "hook-context-carry": (
+        "The {title_lower}. Please find that hook in my settings.json files or my enabled plugins and read its script. "
+        "Propose making its message shorter, or having it add context only when there's something to act on. If it "
+        "comes from a plugin, tell me how to turn it off for projects that don't need it instead. Show me the diff "
+        "before saving. Claude Code will ask my permission before editing files under .claude."
+    ),
     "spawn-task-prompt": (
         "The instructions I write when spawning {agent} are long: {title_lower}. From now on, when I'm "
         "about to give {agent} a long brief, point it at the files it needs instead of pasting their "
@@ -486,6 +514,32 @@ _WORKFLOW_EXPLAINER: dict[str, tuple[str, str, str]] = {
         "A fresh session knows only the plan and what it reads again, so a thin plan can mean re-reading "
         "files or asking again about decisions made while planning.",
         "Remove the reminder from your CLAUDE.md and keep building in the planning session.",
+    ),
+    "run-split": (
+        "Nowhere in Claude Code's config: how the main session hands work to this agent. The prompt adds an "
+        "instruction to your CLAUDE.md, and a line to the agent's file if it has one.",
+        "Each fresh run knows only its task and the note, so it may read some files again, and a thin note can "
+        "miss a decision the last run made.",
+        "Remove the instruction from your CLAUDE.md, and the line from the agent's file.",
+    ),
+    "hook-failures": (
+        "The hooks entries in your settings.json files (user, project or local) or a plugin's hooks, for every "
+        "session that runs them.",
+        "A hook that starts working again does its job again: a guard that was failing will start blocking the "
+        "calls it was written to block.",
+        "Put the hook's command back as it was (Claude Code shows the change before saving it).",
+    ),
+    "hook-block-resent": (
+        "The hook's script, and its entry in your settings.json files, for every session that runs it.",
+        "Letting a call through with a note trusts Claude to act on the note; a block makes sure the call "
+        "doesn't run as sent.",
+        "Put the hook's script back as it was.",
+    ),
+    "hook-context-carry": (
+        "The hook's script or its plugin's settings, for every session that runs it.",
+        "A shorter message, or one sent less often, gives Claude less to go on when the hook has something "
+        "to say.",
+        "Put the hook's script back as it was, or turn the plugin's hook back on.",
     ),
     "cache-read-dominance": (
         "Nothing to change here -- this card is informational.",

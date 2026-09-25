@@ -15,7 +15,8 @@ Section order and keys: ``overview``, ``usage``, ``elasticity`` (only
 under subscription billing with usage-log readings, see
 :func:`_report_units`), ``sessions``, ``recache``,
 ``ttl``, ``limits``, ``carry``, ``compaction_sim``, ``plan_handoff``,
-``model_swap``, ``waste``, ``compactions``, ``agent_startup``, ``agents``, ``quality``,
+``model_swap``, ``waste``, ``compactions``, ``agent_startup``, ``agents``, ``run_split``,
+``hooks``, ``quality``,
 ``workstyle``,
 ``workflows``, ``phases`` (only when ``phases=True``), ``config`` (only
 when snapshots are supplied), ``context_budget``, ``scorecard``,
@@ -137,10 +138,12 @@ from . import (
     habits,
     handoff,
     helptext,
+    hook_costs,
     limits,
     model_swap,
     quality,
     recache,
+    run_split,
     scorecard,
     snapshots as snapshots_mod,
     topology,
@@ -192,6 +195,8 @@ _SECTION_ORDER: tuple[str, ...] = (
     "compactions",
     "agent_startup",
     "agents",
+    "run_split",
+    "hooks",
     "quality",
     "workstyle",
     "habits",
@@ -1300,6 +1305,8 @@ def build_report(
     model_swap_th = model_swap.ModelSwapThresholds.from_config(config.thresholds)
     waste_th = waste.WasteThresholds.from_config(config.thresholds)
     handoff_th = handoff.HandoffThresholds.from_config(config.thresholds)
+    hooks_th = hook_costs.HookThresholds.from_config(config.thresholds)
+    run_split_th = run_split.RunSplitThresholds.from_config(config.thresholds)
 
     session_overrides = session_overrides or {}
     # Which profile was active at each session's start: the config
@@ -1597,6 +1604,10 @@ def build_report(
     handoff_stats = handoff.compute_handoff(
         all_results, pricing, handoff_th, compaction_sim_stats.rediscovery_allowance_usd
     )
+    run_split_stats = run_split.compute_run_split(
+        all_results, pricing, run_split_th, compaction_sim_stats.rediscovery_allowance_usd
+    )
+    hook_stats = hook_costs.compute_hook_costs(all_results, pricing, hooks_th)
 
     # How amounts are phrased (billing mode, and under subscription the
     # usage-limit fit). Built before the sections: the elasticity section
@@ -1725,6 +1736,12 @@ def build_report(
     if _want("agents"):
         sections.append(topology.build_section(tp))
 
+    if _want("run_split"):
+        sections.append(run_split.build_section(run_split_stats, run_split_th))
+
+    if _want("hooks"):
+        sections.append(hook_costs.build_section(hook_stats, hooks_th))
+
     if _want("quality"):
         sections.append(quality.build_section(quality.corpus_runs(corpus, pricing), units=units))
 
@@ -1849,6 +1866,8 @@ def build_report(
         + list(carry.ASSUMPTIONS)
         + list(compaction_sim.ASSUMPTIONS)
         + list(handoff.ASSUMPTIONS)
+        + list(run_split.ASSUMPTIONS)
+        + list(hook_costs.ASSUMPTIONS)
         + list(model_swap.ASSUMPTIONS)
         + list(waste.ASSUMPTIONS)
         + list(quality.ASSUMPTIONS)

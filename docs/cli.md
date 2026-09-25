@@ -92,7 +92,7 @@ python -m claude_token_lens check models
 
 Leave the ID out for every check's one-line answer. Give one to see it
 in full: `models`, `effort`, `compaction`, `cache`, `tools`, `skills`,
-`claude-md`, `tool-output`, `habits` or `quality`. The window comes
+`claude-md`, `tool-output`, `hooks`, `habits` or `quality`. The window comes
 from the global `--days`, `--since` and `--until`.
 
 ### `review`

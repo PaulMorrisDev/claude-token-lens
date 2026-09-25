@@ -10,7 +10,7 @@ the commands that print them.
 in this order: `overview`, `usage`, `elasticity` (only under
 subscription billing with usage-log readings), `sessions`, `recache`, `ttl`,
 `limits`, `carry`, `compaction_sim`, `plan_handoff`, `model_swap`, `waste`,
-`compactions`, `agent_startup`, `agents`, `quality`, `workstyle`, `habits`,
+`compactions`, `agent_startup`, `agents`, `run_split`, `hooks`, `quality`, `workstyle`, `habits`,
 `workflows`, `phases` (only with `--phases`), `config` (only when config
 snapshots exist), `context_budget`, `capture`, `scorecard`, and
 `baseline_comparison` (only with `--baseline`). `claude-token-lens
@@ -58,6 +58,8 @@ and it's still useful when you want one section by itself.
 | `compactions` | Compactions | `compaction.py` | compaction count, trigger mix, pre/post/dropped tokens, and the re-cache cost of the turn right after each compaction |
 | `agent_startup` | Subagent startup | `context_budget.py` | what each agent type is given before its first turn, what it was given but never used, and what every agent type receives alike |
 | `agents` | Agents and information flow | `topology.py` | downward cost (briefing/system-prompt writes into each agent type), upward cost (`Agent`/`Workflow` tool-result sizes flowing back), skill roll-ups, spawn-depth chains |
+| `run_split` | Splitting long subagent runs | `run_split.py` | what long subagent runs would have cost as several shorter runs, each starting fresh from a short note, at several split intervals, and the interval that saves most per agent type — see [`run-split.md`](run-split.md) |
+| `hooks` | Your hooks | `hook_costs.py` | whether each hook you set up works (failed runs and why, relative script paths), what the context it adds costs to keep, what the calls it blocks cost and how often Claude sent them again unchanged, and time waited — see [`hooks.md`](hooks.md) |
 | `quality` | Quality signals | `quality.py` | whether the work went well: agent runs that didn't finish or likely ran out of turns, failed tool calls and shell commands, denials, corrections, edits redone, per agent type and per model and effort, with a significance test — see [`concepts.md`](concepts.md#7-quality-signals) |
 | `workstyle` | Workstyle | `workstyle.py` | one archetype per session/corpus: `overseer-fanout`, `plan-high-implement-low`, `workflow-heavy`, `effort-varied`, `chat-only`, `single-model`, `mixed` (the fallback when none of the other six match), with the evidence features |
 | `habits` | Work habits | `habits.py` | the "Weekly pace" digest, habits worth trying with a saving estimate and evidence, per-task and per-agent setup comparisons, and (once you rate sessions or use `/tl-feedback`) cost per piece of work that met its goal |
@@ -654,6 +656,63 @@ the agents/skills/workflows it spawns" with numbers only:
   session, and how many of those repeats land within a compaction's
   rediscovery window; every count is 0 unless the corpus load wired up a
   hashing salt (see `parse.load_or_create_salt`).
+
+## `run_split` (`run_split.py`)
+
+Full write-up: [`docs/run-split.md`](run-split.md). Subagent runs only;
+workflow agents are left out. Every saving is net of what each split
+adds back, at list price.
+
+- `run_split_summary` — one row (`subagent runs`): subagent runs, agent
+  types where splitting pays, the runs it would split and their splits
+  at each such type's best interval, the median context each split
+  drops, those runs' cost, the saving and its share of subagent cost, and
+  subagent cost.
+- `run_split_by_agent` — one row per agent type, largest saving first
+  (top `run_split_top_n`, default 20): runs, longest run, the best split
+  interval (`every_n`, `null` when none pays), the runs it would split,
+  their median length, splits, median context dropped, those runs' cost,
+  the saving, its share of the agent type's cost, and its cost.
+- `run_split_sweep` — one row per interval tried
+  (`run_split_intervals`): runs it would split, splits, the net saving
+  across every agent type (below zero when splitting costs more), and
+  how many agent types it is the best interval for.
+
+`recommend.recommend()` runs the `run-split` rule (`run_split.RULES`,
+category `workflow`, no lever, no setting change, one card per agent
+type) after `plan-handoff`. It fires when an agent type has a best
+interval and splitting there saves at least
+`run_split_min_saving_share_pct` (default 5%) of its cost. Its saving
+overlaps with `compaction-window`'s, so the Overview's available saving
+doesn't add it on top.
+
+## `hooks` (`hook_costs.py`)
+
+Full write-up: [`docs/hooks.md`](hooks.md). Every transcript in the
+window, main sessions and subagents alike. A hook is named by its
+script's file name, never by its command or path.
+
+- `hooks_summary` — one row (`your hooks`): hooks seen, hooks that
+  failed, failed runs, time waited on failed runs, calls blocked, calls
+  sent again unchanged, the cost of blocks, the context added (tokens)
+  and the cost of keeping it.
+- `hooks_by_script` — one row per hook, costliest first (top
+  `hooks_top_n`, default 20): the events it runs on, failed runs, why it
+  failed (`script not found`, `timed out` or `error`, plus
+  `(relative path)` or `(%VAR% not expanded)` when a script not found is
+  named by one), sessions it
+  failed in, the last day it failed, runs seen working, calls blocked,
+  sent again unchanged, cost of blocks, times it added context, context
+  added, the cost of keeping it, and time waited.
+
+The notes give the thresholds and, when there is any, the context
+Claude Code's own hooks added (left out of the tables).
+
+`recommend.recommend()` runs `hook_costs.RULES` after `run-split`:
+`hook-failures` (severity `action`), `hook-block-resent` and
+`hook-context-carry` (severity `advice`). Each is category `workflow`
+with no lever and no setting change; see
+[`hooks.md`](hooks.md#the-recommendations) for when each fires.
 
 ## `quality` (`quality.py`)
 
@@ -1376,7 +1435,9 @@ without `agent_startup` data; otherwise the per-part `spawn-claude-md`,
 `spawn-task-prompt` and `spawn-shared-claude-md`), `effort-mismatch`,
 `discovery-share` (only with `--phases`), `pricing-coverage`,
 `data-quality`, `limit-pressure`. Then each module's own rule:
-`tool-output-carry` (`carry.RULES`), `compaction-window`
+`tool-output-carry` (`carry.RULES`), `plan-handoff` (`handoff.RULES`),
+`run-split` (`run_split.RULES`), `hook-failures`, `hook-block-resent`
+and `hook-context-carry` (`hook_costs.RULES`), `compaction-window`
 (`compaction_sim.RULES`), `model-tier` (`model_swap.RULES`) and
 `wasted-turns` (`waste.RULES`). Last, `window-budget`
 (`elasticity.RULES`, subscription billing only). Rules are gated by

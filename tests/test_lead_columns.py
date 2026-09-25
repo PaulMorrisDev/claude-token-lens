@@ -40,6 +40,8 @@ ONE_ROW_TABLES = {
     "limits_pauses",
     "model_swap_summary",
     "plan_handoff_summary",
+    "hooks_summary",
+    "run_split_summary",
     "waste_summary",
     "topology_session_baseline",
     "overall",

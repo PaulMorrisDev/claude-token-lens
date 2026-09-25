@@ -157,7 +157,17 @@ __version__ = "0.7.0"
 #: counts as a tag (it could set a whole prompt cycle's task or level);
 #: a subagent's ``out=`` is kept when a large-output note asked for it.
 #: A cached pre-21 digest still holds the unfiltered tags.
-PARSER_VERSION = 21
+#:
+#: Bumped to 22: hook events now carry the hook's label (its script's file
+#: name), why a failing hook failed and whether its script path is
+#: relative; turns carry the context your hooks added and the calls they
+#: blocked (and any unchanged re-send). None of this is in a pre-22
+#: digest.
+#:
+#: Bumped to 23: a hook event also says whether its command uses a
+#: Windows ``%VAR%`` variable, and a quoted script path with a tab in it
+#: is no longer read as relative. A pre-23 digest has neither.
+PARSER_VERSION = 23
 
 #: Bump when the model.py contract changes in a way that invalidates the
 #: on-disk digest cache (see model.py's module docstring for the contract

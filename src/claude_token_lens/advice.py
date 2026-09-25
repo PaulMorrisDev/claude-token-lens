@@ -651,6 +651,29 @@ def _explain_plan_handoff(rec: Recommendation, ctx: _Context) -> None:
     )
 
 
+def _explain_run_split(rec: Recommendation, ctx: _Context) -> None:
+    rec.estimated_saving = ctx.money(rec.saving_usd, prefix="At most ")
+    rec.saving_basis = ctx.basis(
+        "This agent's long runs repriced as fresh runs at the interval that saves most, less each split's note, "
+        "cache write and an allowance for re-reading files. At list price."
+    )
+
+
+def _explain_hook_block_resent(rec: Recommendation, ctx: _Context) -> None:
+    rec.estimated_saving = ctx.money(rec.saving_usd, prefix="About ")
+    rec.saving_basis = ctx.basis(
+        "The replies that read these blocks, each block taking its share of the reply after it. At list price."
+    )
+
+
+def _explain_hook_context_carry(rec: Recommendation, ctx: _Context) -> None:
+    rec.estimated_saving = ctx.money(rec.saving_usd, prefix="At most ")
+    rec.saving_basis = ctx.basis(
+        "What keeping this hook's context cost across the replies after it, at list price. A shorter message "
+        "saves part of that."
+    )
+
+
 def _explain_baseline_bloat(rec: Recommendation, ctx: _Context) -> None:
     table = next((t for s in ctx.report.sections if s.key == "agents" for t in s.tables
                   if t.name == "topology_session_baseline"), None)
@@ -806,6 +829,9 @@ _EXPLAIN: dict[str, Callable[[Recommendation, _Context], None]] = {
     "ttl-switch": _explain_ttl_switch,
     "effort-mismatch": _explain_effort_mismatch,
     "plan-handoff": _explain_plan_handoff,
+    "run-split": _explain_run_split,
+    "hook-block-resent": _explain_hook_block_resent,
+    "hook-context-carry": _explain_hook_context_carry,
     "baseline-bloat": _explain_baseline_bloat,
     "spawn-cost": _explain_spawn_cost,
     "agent-report-size": _explain_agent_report_size,
