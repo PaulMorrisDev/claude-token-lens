@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-09-25
+
+Updating from 0.6.0, whose `update` stops after installing, run
+`python -m claude_token_lens update --finish` once afterwards; from
+then on `update` alone does the whole upgrade.
+
 ### Added
 
 - **Capture can say a reply fixes a fault in earlier work.** The
