@@ -10,6 +10,7 @@ when absent).
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from pathlib import Path
 
@@ -17,6 +18,7 @@ import pytest
 
 from claude_token_lens.config import Config
 from claude_token_lens.corpus import load_corpus
+from claude_token_lens.model import Diagnostics
 from claude_token_lens.pricing import load_pricing
 from claude_token_lens.report import _SECTION_ORDER, _apply_autocompact_pct_override, build_report
 from claude_token_lens.render.csv_out import write_csv_dir
@@ -357,6 +359,69 @@ def test_limits_section_and_scorecard_receive_the_limit_hit(tmp_path):
     for section in report.sections:
         assert_privacy(section)
     _all_sections_row_keys_are_valid(report.sections)
+
+
+def _limit_events_session(project_dir: Path, session_id: str, terminated: int) -> None:
+    """One session-limit hit, one automatic resume, then ``terminated``
+    agent-terminated-early notifications."""
+    lines = [
+        turn_line(message_id=f"{session_id}_1", timestamp="2026-09-18T12:00:00.000Z"),
+        turn_line(
+            message_id=f"{session_id}_synth",
+            model="<synthetic>",
+            isApiErrorMessage=True,
+            input_tokens=0,
+            output_tokens=0,
+            content=[{"type": "text", "text": "You've hit your session limit · resets 3pm (Europe/London)"}],
+            timestamp="2026-09-18T12:00:05.000Z",
+        ),
+        user_str_line(
+            "I hit my usage limit while you were working, but it has reset now.",
+            promptSource="sdk",
+            origin={"kind": "human"},
+            timestamp="2026-09-18T15:00:00.000Z",
+        ),
+        *(
+            user_str_line(
+                "Agent terminated early due to a network error.",
+                origin={"kind": "task-notification"},
+                timestamp=f"2026-09-18T15:00:0{i + 1}.000Z",
+            )
+            for i in range(terminated)
+        ),
+        turn_line(message_id=f"{session_id}_2", timestamp="2026-09-18T15:00:10.000Z"),
+    ]
+    write_jsonl(project_dir / f"{session_id}.jsonl", lines)
+
+
+def test_diagnostics_limit_counters_sum_across_transcripts(tmp_path):
+    project_dir = tmp_path / "proj-limits"
+    project_dir.mkdir()
+    _limit_events_session(project_dir, "session-a", terminated=1)
+    _limit_events_session(project_dir, "session-b", terminated=2)
+    corpus = load_corpus([project_dir])
+    report = build_report(corpus, PRICING, Config(), projects=("proj-limits",), window="w")
+
+    # Each transcript contributes its own nonzero counts (not just the
+    # last one's, and not the untouched default of 0).
+    per_transcript = sorted(
+        (b.top.diagnostics.limit_hits, b.top.diagnostics.limit_resumes, b.top.diagnostics.agents_terminated)
+        for b in corpus.sessions
+    )
+    assert per_transcript == [(1, 1, 1), (1, 1, 2)]
+    assert report.diagnostics.limit_hits == 2
+    assert report.diagnostics.limit_resumes == 2
+    assert report.diagnostics.agents_terminated == 3
+
+    # Every per-transcript int counter must be summed into the report-wide
+    # total, except the two pricing fields set once after the loop.
+    post_hoc = {"pricing_closest_match_turns", "pricing_fast_priced_as_standard_turns"}
+    transcripts = [tr for b in corpus.sessions for tr in (b.top, *b.subs)]
+    for f in dataclasses.fields(Diagnostics):
+        value = getattr(report.diagnostics, f.name)
+        if f.name in post_hoc or not isinstance(value, int) or isinstance(value, bool):
+            continue
+        assert value == sum(getattr(tr.diagnostics, f.name) for tr in transcripts), f.name
 
 
 # -- subscription vs api labelling (delegated to usage.py, exercised here) --

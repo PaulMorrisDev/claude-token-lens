@@ -56,8 +56,9 @@ def test_limit_pause_intervals_reads_gap_backward_from_the_post_pause_turn(tmp_p
     assert len(intervals) == 1
     start, end = intervals[0]
     assert end.isoformat().startswith("2026-09-18T15:00:10")
-    assert (end - start).total_seconds() == (end - start).total_seconds()  # sanity: no exception
-    assert start < end
+    # From the last real turn (12:00:00), not the synthetic limit notice.
+    assert start.isoformat().startswith("2026-09-18T12:00:00")
+    assert (end - start).total_seconds() == 3 * 3600 + 10
 
 
 def test_limit_markers_carries_kind_and_detail(tmp_path: Path):

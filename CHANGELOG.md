@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Data quality counts usage-limit stops again.** "Usage-limit stops",
+  "Resumes after a limit" and "Subagents stopped early" always read 0:
+  each session's counts were never added into the report's totals. The
+  last is also renamed from "Subagents stopped by a limit", since
+  Claude Code stops a subagent early for other reasons too, such as a
+  network error.
+
 ## [0.7.0] - 2026-09-25
 
 ### Changed
