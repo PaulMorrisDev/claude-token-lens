@@ -697,6 +697,13 @@ class _PendingTurn:
     #: their answers said.
     feedback_asks: list[str] = field(default_factory=list)
     feedback: Feedback | None = None
+    #: Your-hooks addition (see model.py's ``Turn.hook_blocks``/
+    #: ``hook_resends``): tool_use id -> a hash of its tool name and
+    #: input, in memory only, so a blocked call's unchanged re-send can be
+    #: spotted later in the transcript.
+    call_keys: dict[str, int] = field(default_factory=dict)
+    hook_blocks: dict[str, int] = field(default_factory=dict)
+    hook_resends: dict[str, int] = field(default_factory=dict)
 
 
 def _plan_stats(plan: str) -> PlanStats:
@@ -706,11 +713,17 @@ def _plan_stats(plan: str) -> PlanStats:
 
 
 def _merge_content_blocks(
-    pending: _PendingTurn, content, tool_use_names: dict[str, str], cwd: str | None = None
+    pending: _PendingTurn,
+    content,
+    tool_use_names: dict[str, str],
+    cwd: str | None = None,
+    blocked_calls: dict[int, str] | None = None,
 ) -> None:
     """Fold one line's tool_use blocks into ``pending``. ``cwd`` is the
     line's own working directory, used only to resolve a shell command's
-    relative write targets before they are hashed."""
+    relative write targets before they are hashed. ``blocked_calls`` maps
+    the key of each call a hook blocked earlier in the transcript to that
+    hook's label: a call here with the same key is an unchanged re-send."""
     if not isinstance(content, list):
         return
     tmpdir = tempfile.gettempdir().lower()
@@ -757,10 +770,20 @@ def _merge_content_blocks(
             prompt = tool_input.get("prompt")
             if isinstance(prompt, str) and prompt:
                 pending.agent_brief_chars = (pending.agent_brief_chars or 0) + len(prompt)
-        input_chars = len(json.dumps(tool_input, ensure_ascii=False, default=str))
+        encoded_input = json.dumps(tool_input, ensure_ascii=False, default=str)
+        input_chars = len(encoded_input)
         pending.tool_input_chars_by_tool[name] = (
             pending.tool_input_chars_by_tool.get(name, 0) + input_chars
         )
+        # Your-hooks addition: the same call a hook blocked, sent again
+        # with the same input. Only a hash is kept, and only in memory.
+        call_key = hash((name, encoded_input))
+        if isinstance(tool_use_id, str) and tool_use_id:
+            pending.call_keys[tool_use_id] = call_key
+        if blocked_calls:
+            blocked_by = blocked_calls.pop(call_key, None)
+            if blocked_by is not None:
+                pending.hook_resends[blocked_by] = pending.hook_resends.get(blocked_by, 0) + 1
 
         # A3: hash Read targets, Edit/Write/MultiEdit/NotebookEdit targets
         # and the files a shell command writes, instead of ever storing
@@ -812,7 +835,9 @@ def _merge_content_blocks(
                 pending.feedback_asks.append(tool_use_id)
 
 
-def _new_pending(d: dict, tool_use_names: dict[str, str]) -> _PendingTurn:
+def _new_pending(
+    d: dict, tool_use_names: dict[str, str], blocked_calls: dict[int, str] | None = None
+) -> _PendingTurn:
     message = d.get("message")
     message = message if isinstance(message, dict) else {}
     usage = message.get("usage")
@@ -852,7 +877,7 @@ def _new_pending(d: dict, tool_use_names: dict[str, str]) -> _PendingTurn:
     if isinstance(usage, dict):
         _apply_usage(pending, usage)
 
-    _merge_content_blocks(pending, message.get("content"), tool_use_names, d.get("cwd"))
+    _merge_content_blocks(pending, message.get("content"), tool_use_names, d.get("cwd"), blocked_calls)
     _merge_stop_reason(pending, message)
     return pending
 
@@ -925,7 +950,9 @@ def _merge_stop_reason(pending: _PendingTurn, message) -> None:
         pending.stop_reason = stop_reason[:32]
 
 
-def _merge_into_pending(pending: _PendingTurn, d: dict, tool_use_names: dict[str, str]) -> None:
+def _merge_into_pending(
+    pending: _PendingTurn, d: dict, tool_use_names: dict[str, str], blocked_calls: dict[int, str] | None = None
+) -> None:
     if not pending.is_synthetic:
         message = d.get("message")
         model = message.get("model") if isinstance(message, dict) else None
@@ -942,7 +969,7 @@ def _merge_into_pending(pending: _PendingTurn, d: dict, tool_use_names: dict[str
     ):
         _apply_usage(pending, usage)
     content = message.get("content") if isinstance(message, dict) else None
-    _merge_content_blocks(pending, content, tool_use_names, d.get("cwd"))
+    _merge_content_blocks(pending, content, tool_use_names, d.get("cwd"), blocked_calls)
     _merge_stop_reason(pending, message)
 
 
@@ -1000,6 +1027,135 @@ _ERROR_COMMAND_WRONG_RE = re.compile(
 )
 
 
+#: A hook's block, as Claude Code words it: ``PreToolUse:Read hook error:
+#: [<command>]: <message>``. Group 1 is the hook's command.
+_HOOK_BLOCK_RE = re.compile(r"^\w+:[\w.-]+ hook error: \[(.+?)\]: ")
+#: A hook script's file name inside its command: the label a hook is
+#: shown by. The character class stops at path separators, so a
+#: directory never comes with it.
+_HOOK_SCRIPT_RE = re.compile(
+    r"([A-Za-z0-9_][A-Za-z0-9_.-]{0,79}\.(?:ps1|psm1|py|sh|bash|zsh|js|mjs|cjs|ts|cmd|bat|rb|pl|php))(?![A-Za-z0-9_])",
+    re.IGNORECASE,
+)
+#: A hook that failed because its script or program wasn't there.
+_HOOK_NOT_FOUND_RE = re.compile(
+    r"does not exist|No such file|can't open file|cannot find|is not recognized as|command not found",
+    re.IGNORECASE,
+)
+_HOOK_TIMEOUT_RE = re.compile(r"timed? ?out", re.IGNORECASE)
+#: A Windows ``%VAR%`` variable, which neither shell Claude Code runs
+#: hooks in (bash or PowerShell) expands.
+_HOOK_UNEXPANDED_RE = re.compile(r"%[A-Za-z_][A-Za-z0-9_]*%")
+#: Hook events whose plain (non-JSON) stdout Claude Code adds as context.
+_HOOK_PLAIN_STDOUT_CONTEXT_EVENTS = frozenset({"SessionStart", "UserPromptSubmit"})
+
+
+def _hook_label(command) -> str | None:
+    """The label a hook is shown by: its script's file name when the
+    command names one, else the command's first 40 characters with paths
+    redacted (the ``cmd_prefix`` rule). ``None`` for no command."""
+    if not isinstance(command, str) or not command.strip():
+        return None
+    capped = _cap_command_for_redaction(command)
+    script = _HOOK_SCRIPT_RE.search(capped)
+    if script is not None:
+        return script.group(1)
+    return _redact_paths(_escape_newlines(capped))[:_CMD_PREFIX_MAX_CHARS].strip() or None
+
+
+def _hook_script_is_relative(command: str) -> bool:
+    """Whether ``command`` names its script by a relative path
+    (``.claude/hooks/guard.ps1``), which only resolves when Claude Code
+    runs the hook from the project root. A bare file name, an absolute
+    path, or one starting with a variable (``$CLAUDE_PROJECT_DIR``,
+    ``%USERPROFILE%``) or ``~`` is not. Inside quotes the path starts at
+    the opening quote, so a space or tab in it (a settings.json path
+    whose backslash-t was read as a tab) doesn't split it."""
+    capped = _cap_command_for_redaction(command)
+    script = _HOOK_SCRIPT_RE.search(capped)
+    if script is None:
+        return False
+    head = capped[: script.start(1)]
+    quoted = [q for q in "\"'" if head.count(q) % 2]
+    if quoted:
+        prefix = head[head.rfind(quoted[0]) + 1 :]
+    else:
+        prefix = head[max(head.rfind(c) for c in " \t\"'=") + 1 :]
+    if not prefix:
+        return False
+    return not (prefix[0] in "/\\~$%" or re.match(r"[A-Za-z]:", prefix))
+
+
+def _hook_error_cause(attachment: dict) -> str:
+    """Why a hook failed, from its stderr and exit code, read here and
+    dropped: ``not-found``, ``timeout`` or ``failed``."""
+    stderr = attachment.get("stderr")
+    text = stderr[:_ERROR_TEXT_CHARS] if isinstance(stderr, str) else ""
+    if str(attachment.get("exitCode")) == "127" or _HOOK_NOT_FOUND_RE.search(text):
+        return "not-found"
+    if _HOOK_TIMEOUT_RE.search(text):
+        return "timeout"
+    return "failed"
+
+
+def _annotate_hook_event(event: Event, attachment, context_queue: dict[tuple[str, str], list[str]]) -> None:
+    """Add the hook's label (and, for an error, why it failed) to a hook
+    event's ``detail``. Context a hook adds arrives as its own attachment
+    with no command, so a run whose output carried context queues its
+    label under its tool call (for a tool hook) and hook event, and the
+    context takes it from there; context no run of yours produced is
+    Claude Code's own (``built-in``). A session-level hook's run and its
+    context carry different ids and names (``SessionStart:clear`` and a
+    run id, against ``SessionStart`` twice), so only the event is kept."""
+    if not isinstance(attachment, dict):
+        return
+    tool_use_id = attachment.get("toolUseID")
+    key = (
+        tool_use_id if isinstance(tool_use_id, str) and tool_use_id.startswith("toolu_") else "",
+        events_mod.hook_event_name(attachment),
+    )
+    if event.subkind in ("hook_additional_context", "capture_note"):
+        queued = context_queue.get(key)
+        label = queued.pop(0) if queued else None
+        if event.subkind == "hook_additional_context":
+            event.detail["script"] = label or "built-in"
+        return
+    command = attachment.get("command")
+    blocking = attachment.get("blockingError")
+    if command is None and isinstance(blocking, dict):
+        # A Stop hook's block keeps its command inside ``blockingError``.
+        command = blocking.get("command")
+    label = _hook_label(command)
+    if label is None:
+        return
+    event.detail["script"] = label
+    if _hook_script_is_relative(command):
+        event.detail["relative"] = True
+    if _HOOK_UNEXPANDED_RE.search(command):
+        event.detail["unexpanded"] = True
+    if event.subkind == "hook_non_blocking_error":
+        event.detail["cause"] = _hook_error_cause(attachment)
+    stdout = attachment.get("stdout")
+    if event.subkind == "hook_success" and isinstance(stdout, str) and stdout.strip():
+        plain = not stdout.lstrip().startswith("{")
+        if "additionalContext" in stdout or (plain and event.detail.get("hookName") in _HOOK_PLAIN_STDOUT_CONTEXT_EVENTS):
+            context_queue.setdefault(key, []).append(label)
+
+
+def _hook_block_label(content) -> str | None:
+    """The label of the hook that blocked a tool call, from the start of
+    the blocked result's text (read here and dropped), or ``None`` when a
+    hook of yours didn't block it."""
+    if isinstance(content, list):
+        content = "".join(
+            b.get("text", "") for b in content if isinstance(b, dict) and isinstance(b.get("text"), str)
+        )
+    if not isinstance(content, str):
+        return None
+    match = _HOOK_BLOCK_RE.match(content.strip()[:_ERROR_TEXT_CHARS])
+    return _hook_label(match.group(1)) if match else None
+
+
 def _tool_error_kind(content) -> str:
     """Why an erroring tool_result failed, from the start of its text:
     ``blocked``, ``denied``, ``failed`` or ``misfire`` (see model.py's
@@ -1027,6 +1183,7 @@ def _accumulate_tool_results(
     tool_result_calls: dict[str, int],
     unsized_blocks: dict[str, int],
     current: _PendingTurn | None = None,
+    blocked_calls: dict[int, str] | None = None,
 ) -> None:
     message = d.get("message")
     content = message.get("content") if isinstance(message, dict) else None
@@ -1068,6 +1225,14 @@ def _accumulate_tool_results(
                 current.tool_errors_by_tool[name] = current.tool_errors_by_tool.get(name, 0) + 1
                 kind = _tool_error_kind(block.get("content"))
                 current.tool_errors_by_kind[kind] = current.tool_errors_by_kind.get(kind, 0) + 1
+                # Your-hooks addition: which of your hooks blocked it, and
+                # the call's key, so an unchanged re-send can be spotted.
+                blocked_by = _hook_block_label(block.get("content")) if kind == "blocked" else None
+                if blocked_by is not None:
+                    current.hook_blocks[blocked_by] = current.hook_blocks.get(blocked_by, 0) + 1
+                    call_key = current.call_keys.get(tool_use_id)
+                    if call_key is not None and blocked_calls is not None:
+                        blocked_calls[call_key] = blocked_by
                 # A failed edit changed nothing, so it isn't an edit. A shell
                 # command that ran and failed may still have written its
                 # files; one that was blocked or denied didn't.
@@ -1199,10 +1364,15 @@ def _finalize_turn(
     spawn_marker: str | None = None
     flags: set[str] = set()
     cap_note_chars = 0
+    hook_context_chars: dict[str, int] = {}
     commands_run: list[str] = []
     for pending_event in pending_events:
         if pending_event.kind == EventKind.HOOK_OUTPUT and pending_event.subkind == "capture_note":
             cap_note_chars += pending_event.size_chars or 0
+            continue
+        if pending_event.kind == EventKind.HOOK_OUTPUT and pending_event.subkind == "hook_additional_context":
+            label = pending_event.detail.get("script") or "built-in"
+            hook_context_chars[label] = hook_context_chars.get(label, 0) + (pending_event.size_chars or 0)
             continue
         if pending_event.kind == EventKind.SLASH_COMMAND:
             command = pending_event.detail.get("command")
@@ -1312,6 +1482,9 @@ def _finalize_turn(
         plan_stats=pending.plan_stats,
         commands_run=tuple(commands_run),
         feedback=feedback,
+        hook_context_chars=hook_context_chars,
+        hook_blocks=dict(pending.hook_blocks),
+        hook_resends=dict(pending.hook_resends),
     )
     return turn, new_prev_ts, new_priced_count
 
@@ -1384,6 +1557,13 @@ def parse_transcript(path: str | Path, meta: TranscriptMeta) -> TranscriptResult
     #: a capture tag's ``skill=would-help:<name>`` keeps a name only if it
     #: is one of these.
     skill_names: set[str] = set()
+    #: Your-hooks addition, in memory only: the key of each tool call a
+    #: hook of yours blocked -> that hook's label (see
+    #: ``_merge_content_blocks``), and the labels of hook runs whose
+    #: output carried context, waiting for that context's own attachment
+    #: (see ``_annotate_hook_event``).
+    blocked_calls: dict[int, str] = {}
+    hook_context_queue: dict[tuple[str, str], list[str]] = {}
 
     current: _PendingTurn | None = None
     current_key: str | None = None
@@ -1414,7 +1594,7 @@ def parse_transcript(path: str | Path, meta: TranscriptMeta) -> TranscriptResult
             diagnostics.assistant_lines += 1
             key = _turn_key(d)
             if current is not None and key == current_key:
-                _merge_into_pending(current, d, tool_use_names)
+                _merge_into_pending(current, d, tool_use_names, blocked_calls)
                 continue
             if key in finalized_keys:
                 diagnostics.late_duplicate_ids += 1
@@ -1442,7 +1622,7 @@ def parse_transcript(path: str | Path, meta: TranscriptMeta) -> TranscriptResult
             attachments_for_current = attachments_since_current
             events_since_current = []
             attachments_since_current = []
-            current = _new_pending(d, tool_use_names)
+            current = _new_pending(d, tool_use_names, blocked_calls)
             current_key = key
             # Usage-limits addition (see module docstring): a usage-cap
             # hit lives on the synthetic assistant line's own text, which
@@ -1470,7 +1650,9 @@ def parse_transcript(path: str | Path, meta: TranscriptMeta) -> TranscriptResult
             continue
 
         if line_type == "user":
-            _accumulate_tool_results(d, tool_use_names, tool_result_chars, tool_result_calls, unsized_blocks, current)
+            _accumulate_tool_results(
+                d, tool_use_names, tool_result_chars, tool_result_calls, unsized_blocks, current, blocked_calls
+            )
         elif line_type == "agent-setting":
             value = d.get("agentSetting")
             if isinstance(value, str) and value:
@@ -1508,6 +1690,8 @@ def parse_transcript(path: str | Path, meta: TranscriptMeta) -> TranscriptResult
                 diagnostics.ignored_line_types.get(safe_line_type, 0) + 1
             )
             continue
+        if event.kind == EventKind.HOOK_OUTPUT and line_type == "attachment":
+            _annotate_hook_event(event, d.get("attachment"), hook_context_queue)
         events.append(event)
         events_since_current.append(event)
         if line_type == "attachment":

@@ -163,6 +163,12 @@ _HOOK_EVENT_NAMES = frozenset(
 )
 
 
+def hook_event_name(attachment: dict) -> str:
+    """Public name for :func:`_hook_name_bucket`, for parse.py's pairing
+    of a hook run with the context it added."""
+    return _hook_name_bucket(attachment)
+
+
 def _hook_name_bucket(attachment: dict) -> str:
     """The hook *event* ``attachment.get("hookName")`` fired under
     (``"PreToolUse"``, never ``"PreToolUse:Bash"``), or ``"other"`` when

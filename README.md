@@ -218,15 +218,16 @@ title.
 |---|---|
 | Overview | What should I change next, and where did my tokens go? |
 | Actions › Recommendations | What exactly should I change, where, and what is the trade-off? |
-| Actions › Checks | For each way of saving (models, effort, summaries, cache, tools, skills, CLAUDE.md, tool output, habits), and whether any agent is struggling: is there anything to do, and what exactly? |
+| Actions › Checks | For each way of saving (models, effort, summaries, cache, tools, skills, CLAUDE.md, tool output, hooks, habits), and whether any agent is struggling: is there anything to do, and what exactly? |
 | Spend › Usage | How is my usage spread over days, models, projects and five-hour blocks? |
 | Spend › Savings | What would shorter tool output, earlier summaries, cheaper models or fewer wasted replies save? |
 | Spend › Sessions | Which sessions cost the most? Pick one to see why it was expensive. |
 | Cache › Rebuilds | When did Claude Code rebuild the prompt cache, and what caused it? |
 | Cache › Lifetime (TTL) | Would a 1-hour cache lifetime have paid for itself? |
-| Agents & context › Subagents | What do my subagents cost, what are they given when they start, and what do they send back? |
+| Agents & context › Subagents | What do my subagents cost, what are they given when they start, what do they send back, and would splitting long runs save? |
 | Agents & context › Quality | Is my subagents' work going well (failed tool calls, runs that don't finish, runs a larger model had to redo, per model and effort), and how do I split the work? |
 | Agents & context › Context | What does each CLAUDE.md file and skill cost, who is it sent to, and what can be trimmed, moved or hidden? |
+| Agents & context › Hooks | Does each hook I set up work, and what do its failures, blocked calls and added context cost? |
 | Work habits | What habits are costing tokens, where did the evidence come from, and what would `/tl-feedback` and brief templates add? |
 | Setup › Settings | What are my settings, and did changing them change my costs? |
 | Setup › Profiles | Make a profile from a goal with an estimate of what it saves, compare it with my settings, and see what each change I made did. |

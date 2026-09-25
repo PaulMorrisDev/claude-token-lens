@@ -255,13 +255,13 @@ search and the README's page table all follow it.
 | Actions | Recommendations, Checks | follows |
 | Spend | Usage, Savings, Sessions | follows |
 | Cache | Rebuilds, Lifetime (TTL) | follows |
-| Agents & context | Subagents, Quality, Context | follows |
+| Agents & context | Subagents, Quality, Context, Hooks | follows |
 | Work habits | none | follows |
 | Setup | Settings, Profiles, Capture | follows, except Capture |
 | Data quality (foot) | none | follows |
 | Glossary (foot) | Terms, How costs work | follows, except Terms |
 
-That makes eighteen views. In text a place is written "Page › Segment"
+That makes nineteen views. In text a place is written "Page › Segment"
 with U+203A (`viewLabel`), such as "Spend › Sessions".
 
 ### The sidebar
@@ -614,11 +614,13 @@ as the CLI's `ttl` command shows them.
 
 ### Agents & context › Subagents
 
-**Answers:** "What do my subagents cost, and what are they given?"
+**Answers:** "What do my subagents cost, what are they given, and should long runs be split?"
 
-The `agent_startup` and `agents` sections. `agent_startup` draws chart
-8. Then cost per run, skills and MCP cost, effort, and what each agent
-never used.
+The `agent_startup`, `agents` and `run_split` sections. `agent_startup`
+draws chart 8. Then cost per run, skills and MCP cost, effort, and what
+each agent never used. `run_split` ([run splits](run-split.md)) gives
+each agent type's best split interval and what splitting its long runs
+there would save.
 
 ### Agents & context › Quality
 
@@ -646,6 +648,17 @@ is shaded against its column's largest, with the value shown.
 - The `context_budget` section.
 
 The terminal equivalent is `claude-token-lens review claude-md|skills`.
+
+### Agents & context › Hooks
+
+**Answers:** "Do my hooks work, and what do they cost?"
+
+The `hooks` section ([hooks](hooks.md)): one summary row, then each hook
+by its script's file name, costliest first. For each: the events it runs
+on, failed runs and why (a script not found by a relative path is
+marked), runs seen working, calls it blocked and how many Claude sent
+again unchanged, the context it added and what keeping it cost, and time
+waited. The same question is a check on Actions › Checks.
 
 ### Work habits
 

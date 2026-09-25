@@ -617,6 +617,40 @@ def _tool_output(ctx: Context) -> dict:
     )
 
 
+_HOOK_RECS = {"hook-failures", "hook-block-resent", "hook-context-carry"}
+
+
+def _hooks(ctx: Context) -> dict:
+    tables = whatif._Tables(ctx.model)
+    rows = tables.rows("hooks", "hooks_by_script")
+    if not rows:
+        return _result("no_data", "No hook of yours left a record in this window.")
+
+    def count(row, key) -> int:
+        return int(whatif._num(row.get(key)) or 0)
+
+    table = _table(
+        [("hook", "Hook"), ("failed", "Failed runs"), ("cause", "Why it failed"), ("blocks", "Calls blocked"),
+         ("resent", "Sent again unchanged"), ("context", "Context added"), ("cost", "Cost of its context and blocks")],
+        [[r.get("hook"), f"{count(r, 'failed'):,}", str(r.get("cause") or "")[:1].upper() + str(r.get("cause") or "")[1:],
+          f"{count(r, 'blocks'):,}", f"{count(r, 'resent'):,}", f"{count(r, 'context_tokens'):,} tokens",
+          _money(ctx, (whatif._num(r.get("carry_usd")) or 0) + (whatif._num(r.get("block_usd")) or 0))]
+         for r in rows[:10]],
+    )
+    recs = _recommendations(ctx, _HOOK_RECS)
+    if not recs:
+        return _result("ok", "Your hooks work, and none costs much in kept context or blocked calls.", table=table)
+    failing = [r for r in rows if count(r, "failed")]
+    if any(rec.id == "hook-failures" for rec in recs):
+        summary = (
+            f"{len(failing)} of your hooks failed {sum(count(r, 'failed') for r in failing):,} times, so they didn't "
+            "do their job."
+        )
+    else:
+        summary = "Some of your hooks cost more than they need to, in kept context or in replies spent on blocks."
+    return _result("act", summary, table=table, fixes=_rec_fixes(recs))
+
+
 _HABIT_RECS = {
     "batch-instructions", "long-tool-waits", "notification-invalidation", "agent-report-size", "spawn-task-prompt",
     "cache-read-dominance", "limit-pressure", "long-context-share", "subagent-volume", "discovery-share",
@@ -1035,7 +1069,7 @@ CHECKS: tuple[Check, ...] = (
           "Thinking is billed as output, the most expensive kind of token.", _effort, ("effort-mismatch",)),
     Check("compaction", "When should conversations be summarised?",
           "Every reply re-reads the whole conversation, so the point it's summarised at sets the cost of each reply.",
-          _compaction, ("compaction-window", "compaction-churn", "plan-handoff")),
+          _compaction, ("compaction-window", "compaction-churn", "plan-handoff", "run-split")),
     Check("cache", "Which cache lifetime is cheaper for you?",
           "A 5-minute cache is cheaper to write; a 1-hour one survives longer pauses without rebuilding.", _cache,
           ("ttl-switch",)),
@@ -1050,6 +1084,9 @@ CHECKS: tuple[Check, ...] = (
     Check("tool-output", "Do tool results fill your context?",
           "A tool's output stays in the conversation and is re-read on every later reply.", _tool_output,
           ("tool-output-carry",)),
+    Check("hooks", "Do your hooks work, and what do they cost?",
+          "A failing hook doesn't do its job, and context a hook adds is re-read on every later reply.", _hooks,
+          tuple(sorted(_HOOK_RECS))),
     Check("habits", "Do any habits cost tokens?",
           "Pauses, retries and long reports cost tokens that no setting can save.", _habits, tuple(sorted(_HABIT_RECS))),
     Check("quality", "Is any agent struggling?",

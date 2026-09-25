@@ -93,6 +93,7 @@ PAGES: tuple[Page, ...] = (
             Segment("subagents", "Subagents"),
             Segment("quality", "Quality"),
             Segment("context", "Context"),
+            Segment("hooks", "Hooks"),
         ),
     ),
     Page("habits", "Work habits"),

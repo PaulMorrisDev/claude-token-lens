@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Agents & context › Hooks: whether each hook you set up works, and
+  what it costs.** Per hook, by its script's file name: failed runs and
+  why (script not found, timed out or an error), whether its path is
+  relative, calls it blocked and how many Claude then sent again
+  unchanged, the context it added and what keeping that context cost,
+  and time waited. Three recommendations come with it: `hook-failures`
+  (suggests `${CLAUDE_PROJECT_DIR}` for a relative path, and `$HOME`
+  for a Windows `%VAR%` path, which the hook's shell doesn't expand),
+  `hook-block-resent` (suggests `additionalContext` or `updatedInput`
+  instead of a block) and `hook-context-carry`. Actions › Checks and
+  `claude-token-lens check hooks` ask the same question. No command,
+  output or full path is stored. See [`docs/hooks.md`](docs/hooks.md).
+  Transcripts are read again once (`PARSER_VERSION` 23).
+- **Agents & context › Subagents: whether splitting long runs pays.**
+  Everything a subagent reads is read again on every later reply, so a
+  long run costs more than its length suggests. The new `run_split`
+  section prices each agent type's runs split every 50, 75, 100, 150,
+  200 or 300 replies, each part starting fresh from a short note. It
+  takes off what each split adds back: the note, the parent carrying it,
+  a fresh cache write and an allowance for re-reading files. It then
+  picks the interval that saves most per agent type. The `run-split`
+  recommendation gives a prompt that adds the habit to your CLAUDE.md.
+  See [`docs/run-split.md`](docs/run-split.md).
+
 ### Changed
 
 - **The dashboard's service idles on far less CPU.** Every 30 seconds

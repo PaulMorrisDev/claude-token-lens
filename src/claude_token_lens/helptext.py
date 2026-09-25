@@ -133,6 +133,13 @@ PLACEMENT: dict[str, str] = {
     "topology_context_composition": "advanced",
     "topology_redundant_work": "advanced",
     "topology_redundant_reads": "advanced",
+    # splitting long subagent runs
+    "run_split_summary": "keep",
+    "run_split_by_agent": "keep",
+    "run_split_sweep": "advanced",
+    # your hooks
+    "hooks_summary": "keep",
+    "hooks_by_script": "keep",
     # quality signals
     "quality_by_agent": "keep",
     "quality_by_setup": "keep",
@@ -536,6 +543,30 @@ SECTION_COPY: dict[str, SectionCopy] = {
             "allowance for re-reading files are taken off. Replies after a conversation summary aren't counted.",
             act="When a big plan is approved, run /clear and ask Claude to carry out the plan file. Forking copies "
             "the whole conversation, so it saves nothing.",
+        ),
+    ),
+    "run_split": SectionCopy(
+        title="Splitting long subagent runs",
+        intro="Would long subagent runs cost less as several shorter runs, each starting fresh from a short note?",
+        help=Help(
+            shows="Each agent type's runs split every so many replies, and the interval that saves most. Also what "
+            "each interval saves across every agent type.",
+            read="An upper bound: a thin note can send the next run back over old ground. Each split's note, cache "
+            "write and an allowance for re-reading files are taken off.",
+            act="Give an agent that pays one part of a large task per run. Start a fresh one for the next part with "
+            "a short note.",
+        ),
+    ),
+    "hooks": SectionCopy(
+        title="Your hooks",
+        intro="Whether each hook you set up works, and what it costs in kept context, blocked calls and waiting.",
+        help=Help(
+            shows="Each hook by its script's name: failed runs and why, calls it blocked, context it added, and "
+            "the time you waited on it.",
+            read="A failing hook doesn't do its job. A block costs the reply that reads it. Context a hook adds is "
+            "read again on every later reply.",
+            act="Fix failing hooks first. A script named by a relative path works only from the project root, so "
+            "start it with ${CLAUDE_PROJECT_DIR}. Hooks don't expand a Windows %VAR% path, so use $HOME instead.",
         ),
     ),
     "model_swap": SectionCopy(
@@ -3756,6 +3787,145 @@ TABLE_COPY: dict[str, TableCopy] = {
         },
         value_labels={"yes": "Yes", "no": "No"},
         lead_columns=["session", "tokens_carried", "later_turns", "qualifies", "saving_usd", "build_usd"],
+    ),
+    # -- splitting long subagent runs ------------------------------------------------
+    "run_split_summary": TableCopy(
+        title="Splitting long subagent runs",
+        help=Help(
+            shows="Every subagent run in this window, and what splitting the long ones at each agent type's best "
+            "interval could have saved.",
+            read="Only agent types where splitting pays are counted. The saving overlaps with the auto-compact "
+            "saving.",
+            act="",
+        ),
+        columns={
+            "scope": ("Scope", "Which runs this row covers."),
+            "runs": ("Subagent runs", "Subagent runs in this window. Workflow agents are left out."),
+            "paying_agents": ("Agent types where splitting pays", "Agent types whose runs would cost less split."),
+            "long_runs": ("Runs it would split", "Their runs long enough to split at their best interval."),
+            "splits": ("Splits", "How many times those runs would start fresh."),
+            "dropped_median": (
+                "Context each split drops (median)",
+                "Context a fresh start would leave behind at each split. The middle value.",
+            ),
+            "long_run_usd": ("Cost of those runs", "What the runs it would split cost, at list price."),
+            "saving_usd": (
+                "Most you could save",
+                "Those runs split, less what splitting adds back, at list price.",
+            ),
+            "saving_pct": ("Share of subagent cost", "That saving as a share of all subagent cost."),
+            "agent_usd": ("Subagent cost", "Cost of every subagent run in this window, at list price."),
+        },
+        value_labels={"subagent runs": "Subagent runs"},
+        lead_columns=["saving_usd", "paying_agents", "long_runs", "saving_pct"],
+    ),
+    "run_split_by_agent": TableCopy(
+        title="By agent type",
+        help=Help(
+            shows="One row per agent type: how long its runs get, and the split interval that saves most.",
+            read="An empty interval means splitting doesn't pay for that agent type at any interval tried.",
+            act="",
+        ),
+        columns={
+            "agent_type": ("Agent type", "The subagent type."),
+            "runs": ("Runs", "Its runs in this window."),
+            "longest_run": ("Longest run (replies)", "Replies in its longest run."),
+            "every_n": ("Split every (replies)", "The interval that saves most. Empty when none saves anything."),
+            "long_runs": ("Runs it would split", "Its runs longer than that interval."),
+            "replies_median": ("Replies in those runs (median)", "How long those runs were. The middle value."),
+            "splits": ("Splits", "How many times those runs would start fresh."),
+            "dropped_median": (
+                "Context each split drops (median)",
+                "Context a fresh start would leave behind at each split. The middle value.",
+            ),
+            "long_run_usd": ("Cost of those runs", "What those runs cost, at list price."),
+            "saving_usd": ("Most you could save", "Those runs split, less what splitting adds back, at list price."),
+            "saving_pct": ("Share of its cost", "That saving as a share of all its runs' cost."),
+            "agent_usd": ("Cost", "Cost of all its runs, at list price."),
+        },
+        lead_columns=["agent_type", "every_n", "long_runs", "replies_median", "saving_usd", "saving_pct"],
+    ),
+    "run_split_sweep": TableCopy(
+        title="Each split interval",
+        help=Help(
+            shows="Every agent type's runs split at each interval tried, and the net saving.",
+            read="Short intervals split often and pay the cost of starting fresh often. A net saving below zero "
+            "costs more than it saves.",
+            act="",
+        ),
+        columns={
+            "interval": ("Split interval", "The interval tried, in replies."),
+            "long_runs": ("Runs it would split", "Runs longer than that interval."),
+            "splits": ("Splits", "How many times those runs would start fresh."),
+            "net_usd": (
+                "Net saving, every agent type",
+                "What splitting at this interval saves less what it adds back, at list price. Below zero costs more.",
+            ),
+            "best_for": ("Best interval for (agent types)", "Agent types for which this interval saves most."),
+        },
+    ),
+    # -- your hooks -----------------------------------------------------------------
+    "hooks_summary": TableCopy(
+        title="Your hooks at a glance",
+        help=Help(
+            shows="Every hook of yours seen in this window: how often they failed, what they blocked and the "
+            "context they added.",
+            read="Claude Code records a tool hook's run only when it fails, blocks or adds context. Clean runs "
+            "aren't counted.",
+            act="",
+        ),
+        columns={
+            "scope": ("Scope", "Which hooks this row covers."),
+            "hooks": ("Hooks seen", "Hooks of yours that left a record in this window."),
+            "failing_hooks": ("Hooks that failed", "Hooks with at least one failed run."),
+            "failed": ("Failed runs", "Runs that ended in an error, so the hook didn't do its job."),
+            "failed_wait_secs": ("Time waited on failed runs", "How long those failed runs took, added up."),
+            "blocks": ("Calls blocked", "Tool calls your hooks stopped before they ran."),
+            "resent": ("Sent again unchanged", "Blocked calls Claude then sent again with the same input."),
+            "block_usd": ("Cost of blocks", "The replies that read those blocks, at list price."),
+            "context_tokens": ("Context added", "Context your hooks added in front of Claude, in tokens."),
+            "carry_usd": (
+                "Cost of keeping that context",
+                "That context read again on every later reply until a summary, at list price.",
+            ),
+        },
+        value_labels={"your hooks": "Your hooks"},
+        lead_columns=["failed", "failing_hooks", "carry_usd", "block_usd"],
+    ),
+    "hooks_by_script": TableCopy(
+        title="Each hook",
+        help=Help(
+            shows="One row per hook, by its script's name, or the start of its command when it names no script.",
+            read="Runs seen working undercounts tool hooks: a clean run that lets the call through leaves no record.",
+            act="A hook that failed in many sessions isn't guarding anything. Check its command first.",
+        ),
+        columns={
+            "hook": ("Hook", "The hook's script, or the start of its command."),
+            "events": ("Runs on", "The hook events it ran on, as named in settings.json."),
+            "failed": ("Failed runs", "Runs that ended in an error."),
+            "cause": ("Why it failed", "The most common reason, read from the error. Relative path: the script path is relative."),
+            "failed_sessions": ("Sessions it failed in", "Sessions with at least one failed run."),
+            "last_failed": ("Last failed", "The day of its most recent failed run."),
+            "worked": ("Runs seen working", "Recorded runs that worked, including the calls and stops it blocked."),
+            "blocks": ("Calls blocked", "Tool calls it stopped before they ran."),
+            "resent": ("Sent again unchanged", "Blocked calls Claude then sent again with the same input."),
+            "block_usd": ("Cost of blocks", "The replies that read its blocks, each block taking its share, at list price."),
+            "contexts": ("Times it added context", "How often it put a message in front of Claude."),
+            "context_tokens": ("Context added", "The size of those messages, in tokens."),
+            "carry_usd": (
+                "Cost of keeping its context",
+                "Those messages read again on every later reply until a summary, at list price.",
+            ),
+            "wait_secs": ("Time waited", "How long its recorded runs took, added up."),
+        },
+        value_labels={
+            "script not found": "Script not found",
+            "script not found (relative path)": "Script not found (relative path)",
+            "script not found (%VAR% not expanded)": "Script not found (%VAR% not expanded)",
+            "timed out": "Timed out",
+            "error": "Error",
+        },
+        lead_columns=["hook", "failed", "cause", "blocks", "resent", "context_tokens", "carry_usd"],
     ),
     # -- savings: wasted replies --------------------------------------------------
     "waste_summary": TableCopy(

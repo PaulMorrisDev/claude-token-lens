@@ -360,6 +360,29 @@ Feedback addition (``PARSER_VERSION`` 16):
   -- the capture note format version seen, the metric codes the notes
   asked for, and how many notes were injected.
 
+Your-hooks addition (``PARSER_VERSION`` 22). Hook labels are a
+script's file name (``quarantine-guard.ps1``), or a hook command's first
+40 characters with paths redacted (the same rule as ``cmd_prefix``), or
+``built-in`` for context Claude Code itself adds -- never a path or a
+whole command:
+
+- ``Event.detail`` on a hook ``HOOK_OUTPUT`` event gains ``script`` (the
+  label), ``cause`` on an error (``not-found``, ``timeout`` or
+  ``failed``), ``relative`` (only when ``True``: the command names its
+  script by a relative path, which works only from the project root) and,
+  from ``PARSER_VERSION`` 23, ``unexpanded`` (only when ``True``: the
+  command uses a Windows ``%VAR%`` variable, which the shell a hook runs
+  in leaves as it is).
+- ``Turn.hook_context_chars: dict = {}`` -- label -> characters of
+  context your hooks added just before this turn (``hook_additional_
+  context``). Token Lens's own capture note stays in ``cap_note_chars``.
+- ``Turn.hook_blocks: dict = {}`` -- label -> this turn's tool calls a
+  hook blocked (the ``<Event>:<Tool> hook error: [...]`` result).
+- ``Turn.hook_resends: dict = {}`` -- label -> this turn's tool calls
+  that repeat, with the same input, a call that hook blocked earlier in
+  the transcript. Only a hash of the input is kept, in memory, while
+  parsing.
+
 Parser-signals addition (``PARSER_VERSION`` 19 -- plan SURV-4/5/6/7, see
 ``events.py``/``parse.py``'s own module docstrings). Every new value is a
 count, a closed word (with an "other" fallback) or a raw number off a
@@ -712,6 +735,15 @@ class Turn:
     commands_run: tuple[str, ...] = ()
     #: Feedback addition (see module docstring): your /tl-feedback answers.
     feedback: Feedback | None = None
+    #: Your-hooks addition (see module docstring): hook label -> characters
+    #: of context your hooks added just before this turn.
+    hook_context_chars: dict = field(default_factory=dict)
+    #: Your-hooks addition (see module docstring): hook label -> this
+    #: turn's tool calls that hook blocked.
+    hook_blocks: dict = field(default_factory=dict)
+    #: Your-hooks addition (see module docstring): hook label -> this
+    #: turn's tool calls that repeat, unchanged, a call that hook blocked.
+    hook_resends: dict = field(default_factory=dict)
 
 
 @dataclass(slots=True)

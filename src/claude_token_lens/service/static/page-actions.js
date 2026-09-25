@@ -65,6 +65,7 @@ export var RULE_AREA = {
   "baseline-bloat": "context",
   "tool-output-carry": "context",
   "plan-handoff": "context",
+  "hook-context-carry": "context",
   "env-tool-search": "context",
   "saver-tool-roi": "context",
   "unused-skills": "context",
@@ -79,6 +80,7 @@ export var RULE_AREA = {
   "spawn-task-prompt": "agents",
   "subagent-volume": "agents",
   "agent-report-size": "agents",
+  "run-split": "agents",
   "discovery-share": "habits",
   "limit-pressure": "habits",
   "window-budget": "habits",
@@ -86,6 +88,8 @@ export var RULE_AREA = {
   "data-quality": "data",
   "pricing-coverage": "data",
   "env-attribution-deprecated": "data",
+  "hook-failures": "data",
+  "hook-block-resent": "data",
 };
 
 var AREAS = [
@@ -128,6 +132,8 @@ var RULE_MECHANISM = {
   "long-context-share": "carried",
   "tool-output-carry": "carried",
   "plan-handoff": "carried",
+  "hook-context-carry": "carried",
+  "run-split": "carried",
   "baseline-bloat": "carried",
   "env-tool-search": "carried",
   "saver-tool-roi": "carried",
