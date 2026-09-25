@@ -274,9 +274,10 @@ def build_section(corpus: Corpus, pricing: Pricing, config: Config) -> Section:
             ],
             rows=block_rows,
             notes=[
-                "Blocks are a fixed local-calendar grid (00:00/05:00/10:00/15:00/20:00), "
-                "not the account's real rolling 5-hour reset window, which this tool "
-                "cannot observe from transcripts alone; treat as an approximation.",
+                "Blocks start at 00:00, 05:00, 10:00, 15:00 and 20:00 local time. "
+                "Your plan's real five-hour window doesn't follow this grid, and "
+                "transcripts can't show where it starts, so treat these blocks as "
+                "close, not exact.",
             ],
         )
         tables.append(blocks_table)
@@ -298,8 +299,8 @@ def build_section(corpus: Corpus, pricing: Pricing, config: Config) -> Section:
                 ],
                 rows=[],
                 notes=[
-                    "Skipped: five-hour usage blocks only apply to subscription "
-                    f"billing (config.billing is {config.billing!r})."
+                    "Skipped: five-hour blocks exist only on a Pro or Max plan, "
+                    "and your billing is set to the API."
                 ],
             )
         )

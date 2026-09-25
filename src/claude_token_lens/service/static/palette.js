@@ -663,6 +663,7 @@ var SHORTCUTS = [
       [["[", "]"], "The page's previous or next section"],
       [["J", "K"], "The next or previous item in its list, such as a recommendation or a session"],
       [["Enter"], "Open the item"],
+      [["?"], "On a column heading: what the column means"],
     ],
   },
 ];
