@@ -4080,6 +4080,43 @@ details.disclosure {
   background: var(--surface-panel);
 }
 
+/* The edge cues (grid.js's setCues). While the grid scrolls further
+   right, a shade sits at its right edge; once it has scrolled, the
+   pinned first column casts one over the rows under it. The frame keeps
+   the shade in place while the grid scrolls, and keeps the sticky
+   header and column's layers to itself. */
+.grid-frame {
+  position: relative;
+  isolation: isolate;
+}
+
+.grid-frame::after {
+  content: "";
+  position: absolute;
+  top: 1px;
+  right: 1px;
+  bottom: 1px;
+  z-index: calc(var(--z-sticky) + 2);
+  width: var(--space-9);
+  border-radius: 0 calc(var(--radius-md) - 1px) calc(var(--radius-md) - 1px) 0;
+  background: linear-gradient(to left, color-mix(in srgb, var(--backdrop) 80%, transparent), transparent);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--dur-fast) var(--ease-out);
+}
+
+.grid-frame.cue-end::after {
+  opacity: 1;
+}
+
+.grid-frame.cue-start .grid-wide .data-grid tbody td:first-child {
+  box-shadow: 1px 0 0 var(--border-subtle), 8px 0 8px -6px color-mix(in srgb, var(--backdrop) 80%, transparent);
+}
+
+.grid-frame.cue-start .grid-wide .data-grid thead th:first-child {
+  box-shadow: 1px 0 0 var(--border), 8px 0 8px -6px color-mix(in srgb, var(--backdrop) 80%, transparent);
+}
+
 .grid-scroll.grid-tall {
   max-height: min(70vh, 640px);
   overflow-y: auto;
@@ -4141,8 +4178,43 @@ details.disclosure {
   border: none;
 }
 
+/* A header wraps to two lines at most, never mid-word: its label keeps
+   room for the longer line of its most even split in two (grid.js's
+   labelWidth, set as its min-width), and one still longer ends in an
+   ellipsis with its full text in a title. The (?) and the sort arrow
+   sit on its last line. */
+.data-grid thead th {
+  white-space: normal;
+}
+
+.th-inner {
+  display: flex;
+  align-items: flex-end;
+}
+
+th.num .th-inner {
+  justify-content: flex-end;
+}
+
 .th-label {
-  vertical-align: bottom;
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  text-wrap: balance;
+}
+
+.th-inner .col-help-btn,
+.th-inner .sort-indicator {
+  flex: none;
+}
+
+/* A heading that sorts is the column's one Tab stop, and its ? key
+   opens the column's help: the (?) lights up to say so. */
+.data-grid thead th.sortable:focus-visible .col-help-btn {
+  border-color: var(--accent);
+  color: var(--accent-ink);
 }
 
 /* An evidence link's target row: a brief glow that fades. The glow is a

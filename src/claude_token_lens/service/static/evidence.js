@@ -5,12 +5,14 @@
  * the page that shows that table, opens "More tables" or "Details" if
  * it sits inside one, scrolls to the row and pulses it. A table no page
  * shows (one left to the full report, or a section with no page) opens
- * in a drawer instead, so every link lands somewhere.
+ * in a drawer instead, so every link lands somewhere. The same drawer
+ * opens a table a page leaves to the full report, from the note under
+ * its section's tables.
  */
 
 import { clear, el, goTo, state } from "./core.js";
 import { findSection, loadReport } from "./api.js";
-import { formatEvidenceValue, pulseNode, pulseRow, renderTable } from "./grid.js";
+import { formatEvidenceValue, pulseNode, pulseRow, renderTable, setReportTableDrawer } from "./grid.js";
 import { drawer, emptyState, loadingNode } from "./ui.js";
 import { formatHash, scopeParams, SECTION_PAGE_MAP, TABLE_PAGE_MAP, viewForTable, viewLabel } from "./links.js";
 
@@ -205,43 +207,55 @@ export function tableDrawer(sourceTable, rowKey) {
   loadReport().then(function (loaded) {
     var report = loaded && loaded.report;
     var found = findTable(report, sourceTable);
-    var title = found ? found.table.title || found.table.name : "The numbers behind this";
-    drawer({
-      title: title,
-      wide: true,
-      fill: function (body) {
-        if (!found) {
-          body.appendChild(
-            emptyState(
-              "This table has nothing for this window, so the numbers can't be shown here.",
-              null,
-              "Pick a longer window to include more sessions."
-            )
-          );
-          return;
-        }
-        var shownOn = evidenceView(report, sourceTable);
-        body.appendChild(
-          el("p", {
-            class: "drawer-intro",
-            text:
-              (found.section.title ? "From " + found.section.title + ". " : "") +
-              (shownOn
-                ? "It's also on " + viewLabel(shownOn) + "."
-                : "No page shows this table; the full report has it too (claude-token-lens report)."),
-          })
-        );
-        var wrap = el("div");
-        body.appendChild(wrap);
-        wrap.appendChild(loadingNode("Drawing the table", "rows"));
-        requestAnimationFrame(function () {
-          clear(wrap);
-          wrap.appendChild(renderTable(found.table, "drawer-" + parts.section + "-" + parts.table, state.currency, { heading: false }));
-          requestAnimationFrame(function () {
-            pulseIn(wrap, rowKey);
-          });
-        });
-      },
-    });
+    showTable(found, "drawer-" + parts.section + "-" + parts.table, rowKey, found ? evidenceView(report, sourceTable) : null);
   });
 }
+
+// found: {section, table}, or null when the window has no such table.
+// shownOn: the view that also shows it, or null.
+function showTable(found, gridId, rowKey, shownOn) {
+  var title = found ? found.table.title || found.table.name : "The numbers behind this";
+  drawer({
+    title: title,
+    wide: true,
+    fill: function (body) {
+      if (!found) {
+        body.appendChild(
+          emptyState(
+            "This table has nothing for this window, so the numbers can't be shown here.",
+            null,
+            "Pick a longer window to include more sessions."
+          )
+        );
+        return;
+      }
+      body.appendChild(
+        el("p", {
+          class: "drawer-intro",
+          text:
+            (found.section.title ? "From " + found.section.title + ". " : "") +
+            (shownOn
+              ? "It's also on " + viewLabel(shownOn) + "."
+              : "No page shows this table; the full report has it too (claude-token-lens report)."),
+        })
+      );
+      var wrap = el("div");
+      body.appendChild(wrap);
+      wrap.appendChild(loadingNode("Drawing the table", "rows"));
+      requestAnimationFrame(function () {
+        clear(wrap);
+        wrap.appendChild(renderTable(found.table, gridId, state.currency, { heading: false }));
+        requestAnimationFrame(function () {
+          pulseIn(wrap, rowKey);
+        });
+      });
+    },
+  });
+}
+
+// A table a page leaves to the full report, opened from the note under
+// its section's tables (grid.js's renderPlacedTables). The page already
+// holds the table, so it isn't looked up again.
+setReportTableDrawer(function (table, sectionTitle) {
+  showTable({ section: { title: sectionTitle || "" }, table: table }, "drawer-report-" + table.name, null, null);
+});
