@@ -1625,18 +1625,18 @@ def make_handler(
 
     def route_set_feedback(store, query, body):
         """Your rating of a session (the /tl-feedback questions as
-        checkboxes): words from ``capture_catalogue.FEEDBACK_VOCAB`` only.
+        checkboxes): words from ``capture_catalogue.RATING_VOCAB`` only.
         Nothing ticked clears it."""
         session_id = query.get("id", "")
         if store.session(session_id) is None:
             return _not_found("session not found")
         if not isinstance(body, dict):
             return _bad_request("request body must be a JSON object")
-        unknown = sorted(set(body) - set(capture_catalogue.FEEDBACK_VOCAB))
+        unknown = sorted(set(body) - set(capture_catalogue.RATING_VOCAB))
         if unknown:
-            return _bad_request(f"unknown field {', '.join(unknown)}; known: {', '.join(capture_catalogue.FEEDBACK_VOCAB)}")
+            return _bad_request(f"unknown field {', '.join(unknown)}; known: {', '.join(capture_catalogue.RATING_VOCAB)}")
         values: dict = {}
-        for key, words in capture_catalogue.FEEDBACK_VOCAB.items():
+        for key, words in capture_catalogue.RATING_VOCAB.items():
             value = body.get(key)
             if key in capture_catalogue.FEEDBACK_LIST_KEYS:
                 value = [] if value is None else value

@@ -34,7 +34,7 @@ from dataclasses import dataclass, field, fields, replace
 from datetime import datetime, timezone
 
 from . import capture_catalogue as catalogue
-from .capture_tags import MAIN_TAG_FIELDS, SUB_TAG_FIELDS
+from .capture_tags import MAIN_TAG_FIELDS, SUB_TAG_FIELDS, merge_feedback
 from .context_files import _Carry, _parse_ts
 from .model import EventKind, Feedback, TranscriptResult, Turn
 from .pricing import Pricing, effective_rates, price_turn
@@ -166,15 +166,20 @@ class FeedbackSpan:
 def cycle_feedback(cycle: Cycle) -> Feedback | None:
     """The feedback given in ``cycle``, or ``None``. A ``[tl-fb: ...]``
     tag counts only in a genuine /tl-feedback run (SEC-P1): elsewhere it
-    could be forged or quoted reply text, so it's dropped."""
+    could be forged or quoted reply text, so it's dropped. Answers of the
+    best kind are merged: the handoff question's come from a second
+    AskUserQuestion call, on a later turn."""
     genuine = is_feedback_run(cycle)
     best = None
     for turn in cycle.turns:
         fb = turn.feedback
         if fb is None or (fb.source == "tag" and not genuine):
             continue
-        if best is None or _FEEDBACK_RANK.get(fb.source, 0) >= _FEEDBACK_RANK.get(best.source, 0):
+        rank = _FEEDBACK_RANK.get(fb.source, 0)
+        if best is None or rank > _FEEDBACK_RANK.get(best.source, 0):
             best = fb
+        elif rank == _FEEDBACK_RANK.get(best.source, 0):
+            best = merge_feedback(best, fb)
     return best
 
 

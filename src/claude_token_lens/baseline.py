@@ -115,6 +115,10 @@ __all__ = [
 #: own answer to "overnight-batch" -- see module docstring.
 _OVERNIGHT_OVERRIDE_SHARE = 0.5
 
+#: Share of main sessions that plan and build in one session before the
+#: suggestion becomes ``plan-then-build``.
+_PLAN_BUILD_SHARE = 0.5
+
 #: See module docstring's second deviation note. A percentage point
 #: value, not a fraction (matches ttl.py's own "*_pct" column
 #: convention).
@@ -255,6 +259,28 @@ def _dominant_tasks(model: ReportModel, limit: int = _DOMINANT_PURPOSES_LIMIT) -
     return [str(row[0]) for row in table.rows if row and row[0] != "all"][:limit]
 
 
+def _plan_build(model: ReportModel) -> dict | None:
+    """Main sessions that approved a plan and built it in the same
+    session (the Work habits section's ``habits_by_shape``, ``plan_build``
+    row): ``sessions``, ``total`` main sessions, ``share`` (percent) and
+    the /tl-feedback handoff answers. ``None`` without that row."""
+    table = _table(model, "habits", "habits_by_shape")
+    if table is None:
+        return None
+    rows = {row[0]: dict(zip((c.key for c in table.columns), row)) for row in table.rows if row}
+    row = rows.get("plan_build")
+    if row is None:
+        return None
+    return {
+        "sessions": row.get("sessions") or 0,
+        "total": sum(r.get("sessions") or 0 for r in rows.values()),
+        "share": row.get("share") or 0.0,
+        "yes": row.get("handoff_yes") or 0,
+        "partly": row.get("handoff_partly") or 0,
+        "no": row.get("handoff_no") or 0,
+    }
+
+
 def _corpus_archetype(model: ReportModel) -> str | None:
     """The corpus's majority workstyle archetype -- "workstyle" section's
     "workstyle_archetypes" table is sorted count-descending, so row 0 is
@@ -300,12 +326,19 @@ def _projected_saving_usd(model: ReportModel) -> float:
 
 
 def _suggested_profile(
-    mode_mix: dict[str, int], archetype: str | None, purposes: list[str], tasks: list[str] | None = None
+    mode_mix: dict[str, int],
+    archetype: str | None,
+    purposes: list[str],
+    tasks: list[str] | None = None,
+    plan_build: dict | None = None,
 ) -> tuple[str, str]:
     """The catalogue profile id to suggest, and a one-line reason citing
     the evidence -- see module docstring's first deviation note for why
     the overnight override has to live here rather than inside
-    ``catalogue.suggest()``."""
+    ``catalogue.suggest()``. ``plan_build`` (:func:`_plan_build`) makes
+    the corpus ``plan-then-build`` when at least
+    ``_PLAN_BUILD_SHARE`` of its main sessions planned and built in one
+    session."""
     total_sessions = sum(mode_mix.values())
     overnight_count = mode_mix.get("overnight", 0)
     if total_sessions > 0 and overnight_count / total_sessions >= _OVERNIGHT_OVERRIDE_SHARE:
@@ -317,11 +350,28 @@ def _suggested_profile(
             "UNREACHABLE_BY_SUGGEST), so this override is applied directly from the "
             "corpus's own sessions_by_mode table.",
         )
-    profile_id = catalogue.suggest(archetype, purposes, tasks or ())
+    shape = None
+    evidence = ""
+    if plan_build and plan_build["share"] >= _PLAN_BUILD_SHARE * 100:
+        shape = "plan-then-build"
+        evidence = (
+            f"{plan_build['sessions']} of {plan_build['total']} main sessions approved a plan and built it in "
+            "the same session (habits.habits_by_shape)"
+        )
+        answers = plan_build["yes"] + plan_build["partly"] + plan_build["no"]
+        if answers:
+            evidence += (
+                f"; your /tl-feedback said the plan alone was enough for {plan_build['yes']} of {answers} builds"
+            )
+        evidence += " -- "
+    profile_id = catalogue.suggest(archetype, purposes, tasks or (), shape)
     return (
         profile_id,
-        f"catalogue.suggest(archetype={archetype!r}, purposes={purposes!r}"
-        + (f", tasks={tasks!r})" if tasks else ")"),
+        evidence
+        + f"catalogue.suggest(archetype={archetype!r}, purposes={purposes!r}"
+        + (f", tasks={tasks!r}" if tasks else "")
+        + (f", shape={shape!r}" if shape else "")
+        + ")",
     )
 
 
@@ -436,7 +486,9 @@ def build_baseline(
     purposes = _dominant_purposes(model)
     archetype = _corpus_archetype(model)
     scorecard = _scorecard_overall(model)
-    profile_id, profile_reason = _suggested_profile(mode_mix, archetype, purposes, _dominant_tasks(model))
+    profile_id, profile_reason = _suggested_profile(
+        mode_mix, archetype, purposes, _dominant_tasks(model), _plan_build(model)
+    )
 
     # v0.3 Task 2: metrics report.py's own baseline_comparison section
     # will later diff a fresh window against -- see module docstring's

@@ -660,6 +660,9 @@ def _shown(value) -> str:
 
 
 def _model_family(model_id: str) -> str:
+    # Opus while planning, Sonnet otherwise: not the same as "opus".
+    if model_id.startswith("opusplan"):
+        return "opusplan"
     for family in ("haiku", "sonnet", "opus", "fable"):
         if family in model_id:
             return family

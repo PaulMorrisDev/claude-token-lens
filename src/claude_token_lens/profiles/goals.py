@@ -195,6 +195,32 @@ def _models(draft: _Draft, tables, *, subagents_only: bool) -> None:
         )
 
 
+def _opusplan(draft: _Draft, tables) -> None:
+    """``model = "opusplan"`` (Opus while planning, Sonnet otherwise),
+    offered unticked when the main session ran on Opus and built after
+    approved plans. The model picker in the desktop app overrides the
+    settings file, so the evidence says to choose it there."""
+    top = tables.row("model_swap", "model_swap_by_agent_type", TOP)
+    if top is None or _alias(str(top.get("observed_model") or "")) != "opus":
+        return
+    row = next(iter(tables.rows("plan_handoff", "plan_handoff_summary")), None) or {}
+    build = row.get("build_usd")
+    pct = _share((whatif._num(build) or 0.0) - (whatif._num(row.get("build_usd_sonnet")) or 0.0), build)
+    if whatif._num(row.get("build_usd_sonnet")) is None or pct < MIN_SHARE_PCT:
+        return
+    draft.add(
+        "model",
+        None,
+        "opusplan",
+        ticked=False,
+        evidence=(
+            f"Plan on Opus, build on Sonnet: the replies after your approved plans would have cost {pct:.0f}% less "
+            "on Sonnet. Sessions without a plan would run on Sonnet too. The model picker overrides this setting, "
+            "so choose opusplan there or run /model opusplan."
+        ),
+    )
+
+
 def _cache(draft: _Draft, tables, *, subagents_only: bool) -> None:
     rows = tables.rows("ttl", "ttl_by_agent_type")
     top = next((r for r in rows if r.get("agent_type") == TOP), None)
@@ -660,6 +686,9 @@ def draft(
         _cache(d, tables, subagents_only=True)
         _omit_claude_md(d, tables)
     elif goal.id == "models":
+        # Before the recommendations: the main session has one model
+        # setting, and opusplan keeps Opus for the planning.
+        _opusplan(d, tables)
         _from_recommendations(d, recommendations, {"model"}, skip_keys=skip_keys)
         _models(d, tables, subagents_only=False)
     elif goal.id == "cache":

@@ -145,6 +145,33 @@ def _approved(turn: Turn) -> bool:
     return turn.plan_stats is not None and turn.plan_stats.outcome == "approved"
 
 
+def _fresh(start: int, plan_turn: Turn) -> int:
+    """The context a fresh session started from the plan would carry."""
+    return start + plan_turn.plan_stats.chars // _CHARS_PER_TOKEN_APPROX
+
+
+def plan_carried(priced: list[Turn]) -> int | None:
+    """The most planning context any approved plan in ``priced`` (a main
+    session's replies) kept into the build: what a fresh start from the
+    plan would have dropped. ``None`` without an approved plan. Shared
+    with ``habits``."""
+    approved = [t for t in priced if _approved(t)]
+    if not approved:
+        return None
+    start = starting_context(priced)
+    return max(max(0, t.ctx - _fresh(start, t)) for t in approved)
+
+
+def plan_shape(priced: list[Turn]) -> str:
+    """``"plan_build"`` when a plan was approved and files were edited
+    after it in ``priced``, ``"plan_only"`` when a plan was approved but
+    nothing was edited after it, ``"no_plan"`` otherwise."""
+    at = next((i for i, t in enumerate(priced) if _approved(t)), None)
+    if at is None:
+        return "no_plan"
+    return "plan_build" if any(t.edit_kind == "real" for t in priced[at + 1 :]) else "plan_only"
+
+
 def _fresh_start_cost(turn: Turn, rates: RatesArg, fresh: int) -> float:
     """What the first reply after ``/clear`` adds: it writes the fresh
     context to the cache (5-minute) where the real reply read it."""
@@ -214,7 +241,7 @@ def _session(
     n = len(priced)
     for i in approved:
         plan_turn = priced[i]
-        fresh = start + plan_turn.plan_stats.chars // _CHARS_PER_TOKEN_APPROX
+        fresh = _fresh(start, plan_turn)
         dropped = max(0, plan_turn.ctx - fresh)
 
         # The handoff window: until the next summary or approved plan.
@@ -375,11 +402,50 @@ def _evidence(label: str, value, section_key: str, table_name: str, row_key) -> 
     return (label, value, f"{section_key}.{table_name}", row_key)
 
 
+#: /tl-feedback handoff answers (or rated pieces) needed before your
+#: feedback changes the card.
+MIN_FEEDBACK_ANSWERS = 3
+
+
+def _cells(table: Table | None, row_key: str) -> dict:
+    """``table``'s row ``row_key`` as ``{column key: value}``, or ``{}``."""
+    if table is None:
+        return {}
+    for row in table.rows:
+        if row and row[0] == row_key:
+            return {col.key: value for col, value in zip(table.columns, row)}
+    return {}
+
+
+def _feedback_on_plans(report: ReportModel) -> dict:
+    """What your /tl-feedback answers said about sessions you planned and
+    built in (``habits_by_shape``'s ``plan_build`` row): ``yes``,
+    ``partly`` and ``no`` handoff counts, and the rated pieces and the
+    share too costly."""
+    cells = _cells(_table(report, "habits", "habits_by_shape"), "plan_build")
+    counts = {word: cells.get(f"handoff_{word}") for word in ("yes", "partly", "no")}
+    counts = {word: n if isinstance(n, int) else 0 for word, n in counts.items()}
+    pieces = cells.get("pieces")
+    costly = cells.get("costly_pct")
+    return {
+        **counts,
+        "answers": sum(counts.values()),
+        "pieces": pieces if isinstance(pieces, int) else 0,
+        "costly_pct": costly if isinstance(costly, (int, float)) else None,
+    }
+
+
 def _rule_plan_handoff(report: ReportModel, th: HandoffThresholds) -> list[Recommendation]:
     """``plan-handoff``: in at least ``min_sessions`` main sessions the
     build after an approved plan carried a lot of planning context, and
     starting it fresh would have saved at least ``min_saving_share_pct``
-    of main-session cost. ``advice`` words the saving."""
+    of main-session cost. ``advice`` words the saving.
+
+    Your /tl-feedback answers change the card once there are at least
+    :data:`MIN_FEEDBACK_ANSWERS`: when more than half say the build
+    relied on the earlier discussion, it suggests writing fuller plans
+    first; when more than half say the plan was enough, it cites them;
+    when most rated planned builds were too costly, it says so."""
     table = _table(report, "plan_handoff", "plan_handoff_summary")
     if table is None or not table.rows:
         return []
@@ -400,31 +466,70 @@ def _rule_plan_handoff(report: ReportModel, th: HandoffThresholds) -> list[Recom
     if not isinstance(share, (int, float)) or share < th.min_saving_share_pct:
         return []
     carried_text = f"about {carried:,} tokens" if isinstance(carried, int) else "a lot"
+    fb = _feedback_on_plans(report)
+    enough_answers = fb["answers"] >= MIN_FEEDBACK_ANSWERS
+    needs_discussion = enough_answers and fb["no"] * 2 > fb["answers"]
+    plan_enough = enough_answers and fb["yes"] * 2 > fb["answers"]
+    too_costly = (
+        fb["pieces"] >= MIN_FEEDBACK_ANSWERS and fb["costly_pct"] is not None and fb["costly_pct"] > 50
+    )
+
+    title = "Start building in a fresh session once a big plan is approved"
+    why = (
+        f"In {sessions} sessions you kept {carried_text} of planning in context after approving the plan, "
+        "and every later reply paid to read it again."
+    )
+    action = (
+        "When a plan is approved after a lot of exploring, run /clear and ask Claude to carry out the plan "
+        "file (Claude Code saves it under ~/.claude/plans), one phase per session."
+    )
+    if needs_discussion:
+        title = "Write fuller plans, then build in a fresh session"
+        why += (
+            f" You said {fb['no']} of {fb['answers']} builds relied on the earlier discussion, so a fresh start "
+            "would have lost what they needed. The saving needs a plan that carries it."
+        )
+        action = (
+            "Before you approve a plan, ask Claude to add the decisions, file paths and constraints the build "
+            "needs. Then run /clear and ask Claude to carry out the plan file (saved under ~/.claude/plans)."
+        )
+    elif plan_enough:
+        why += f" You said {fb['yes']} of {fb['answers']} builds could have started from the plan."
+    if too_costly:
+        why += f" You also said {fb['costly_pct']:.0f}% of the planned builds you rated cost too many tokens."
+    why += (
+        " Overlaps with the compaction tip: together they save less than the two figures added up. It also "
+        "overlaps with the habit of splitting large asks."
+    )
+    action += " Forking with /branch copies the whole conversation, so it doesn't save anything."
+
+    evidence = [
+        _evidence("Sessions where a fresh start pays", sessions, "plan_handoff", "plan_handoff_summary", "main sessions"),
+        _evidence("Planning context kept (median tokens)", carried, "plan_handoff", "plan_handoff_summary", "main sessions"),
+        _evidence("Most you could save", saving, "plan_handoff", "plan_handoff_summary", "main sessions"),
+        _evidence("Share of main-session cost", share, "plan_handoff", "plan_handoff_summary", "main sessions"),
+    ]
+    if enough_answers:
+        evidence += [
+            _evidence("Builds you said the plan was enough for", fb["yes"], "habits", "habits_by_shape", "plan_build"),
+            _evidence("Builds you said needed the discussion", fb["no"], "habits", "habits_by_shape", "plan_build"),
+        ]
+    if too_costly:
+        evidence.append(
+            _evidence("Planned builds you said were too costly", fb["costly_pct"], "habits", "habits_by_shape", "plan_build")
+        )
     return [
         Recommendation(
             id="plan-handoff",
             severity="advice",
             category="workflow",
             archetypes=(),
-            title="Start building in a fresh session once a big plan is approved",
-            why=(
-                f"In {sessions} sessions you kept {carried_text} of planning in context after approving the plan, "
-                "and every later reply paid to read it again. Overlaps with the compaction tip: together they save "
-                "less than the two figures added up. It also overlaps with the habit of splitting large asks."
-            ),
-            action=(
-                "When a plan is approved after a lot of exploring, run /clear and ask Claude to carry out the plan "
-                "file (Claude Code saves it under ~/.claude/plans), one phase per session. Forking with /branch "
-                "copies the whole conversation, so it doesn't save anything."
-            ),
+            title=title,
+            why=why,
+            action=action,
             lever=None,
             saving_usd=float(saving),
-            evidence=[
-                _evidence("Sessions where a fresh start pays", sessions, "plan_handoff", "plan_handoff_summary", "main sessions"),
-                _evidence("Planning context kept (median tokens)", carried, "plan_handoff", "plan_handoff_summary", "main sessions"),
-                _evidence("Most you could save", saving, "plan_handoff", "plan_handoff_summary", "main sessions"),
-                _evidence("Share of main-session cost", share, "plan_handoff", "plan_handoff_summary", "main sessions"),
-            ],
+            evidence=evidence,
         )
     ]
 
@@ -439,6 +544,8 @@ __all__ = [
     "PlanHandoff",
     "SessionHandoff",
     "starting_context",
+    "plan_carried",
+    "plan_shape",
     "compute_handoff",
     "build_section",
     "RULES",

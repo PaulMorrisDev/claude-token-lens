@@ -74,6 +74,41 @@ Overview's available saving counts the auto-compact figure only, and the
 card says the two together save less than their sum. It overlaps with
 the "split large asks into planned steps" habit the same way.
 
+## Your feedback
+
+After a piece of work in which you approved a plan, `/tl-feedback` asks
+a fifth question in a second call: "Could the build have started in a
+fresh session from just the plan?" (`yes`, `partly`, `no`; the tag's
+`handoff` key). `habits.habits_by_shape` counts the answers on sessions
+that planned and built (`plan_build`). Once there are at least three
+(`handoff.MIN_FEEDBACK_ANSWERS`):
+
+- More than half `no`: the card becomes "Write fuller plans, then build
+  in a fresh session". A fresh start would have lost what the build
+  needed, so it suggests adding the decisions, file paths and
+  constraints to the plan first.
+- More than half `yes`: the card cites them ("You said 5 of 6 builds
+  could have started from the plan").
+- More than half of the rated planned builds too costly (`worth=no`):
+  the card says so.
+
+With fewer answers the card is as above.
+
+## Plan on Opus, build on Sonnet
+
+Claude Code's `opusplan` model setting uses Opus in plan mode and
+Sonnet otherwise. When the main session ran on Opus, the "Cheaper
+models where it's safe" profile goal offers `model = opusplan`,
+unticked. `whatif` prices it as `build_usd` less `build_usd_sonnet`
+(fidelity `ceiling`). Sessions without a plan would run on Sonnet too,
+and their saving isn't counted. The desktop app's model picker
+overrides `settings.json`, so the candidate says to choose `opusplan`
+there or run `/model opusplan`.
+
+The `plan-then-build` catalogue profile is suggested when at least half
+the main sessions plan and build in one session; see
+[`profiles.md`](profiles.md).
+
 ## Thresholds
 
 In `config.toml`'s `[thresholds]` table, all prefixed `plan_handoff_`

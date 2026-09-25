@@ -295,9 +295,9 @@ lower effort is what thinks less.
 `overseer-fanout`, `plan-high-implement-low`, `workflow-heavy`,
 `effort-varied`, `single-model`, `chat-only`, `mixed`.
 
-## The catalogue: seven shipped starting points
+## The catalogue: eight shipped starting points
 
-`profiles/catalogue/*.toml` ships exactly seven profiles
+`profiles/catalogue/*.toml` ships eight profiles
 (`catalogue.CATALOGUE_IDS`), each a normal profile document loaded and
 validated the same way any other profile is, with `notes` citing a
 real report table/column rather than an invented number.
@@ -310,15 +310,17 @@ real report table/column rather than an invented number.
 | `implementation-heavy` | implementation, refactor, test-triage, review | `plan-high-implement-low` | `effortLevel=medium`, `subagentPromptCacheTtl=5m`; `agents.claude-implementer.model=sonnet`, `.effort=medium`, `.maxTurns=60`, `.omitClaudeMd=false`, `."experimental.cacheTtl"=5m` | `agents.topology_spawn_write`'s `mean_write` column (recommend.py's spawn-cost rule threshold — `omitClaudeMd` is left `false` deliberately, since the rule only recommends flipping it once a specific corpus clears the threshold); `ttl.ttl_by_agent_type`'s per-agent-type lever text. |
 | `overseer-fanout` | fanout, multi-agent-coordination | `overseer-fanout` | `effortLevel=high`, `subagentPromptCacheTtl=5m`; `agents.claude-implementer.effort=medium`, `.maxTurns=60` | `agents.topology_report_proxy`'s `mean_proxy` column (agent-report-size rule); `agents.topology_spawn_write`'s `mean_write` column (spawn-cost rule) for the top/implementer effort split. |
 | `overnight-batch` | overnight-run, unattended-batch | `overseer-fanout` | `subagentPromptCacheTtl=1h`, `autoCompactWindow=300000`, `cleanupPeriodDays=30`; `agents.verification-runner."experimental.cacheTtl"=1h` | `classify.classify_mode`'s "overnight" mode (span > 4h, max human gap > 60min); `ttl.ttl_by_agent_type`'s `gaps_over_1h`/`gap_p90_s` columns; `compactions.compactions_summary`'s "Compactions per session (mean)" / dropped-token-share rows for the raised `autoCompactWindow`. |
+| `plan-then-build` | plan-then-build | `single-model` | `promptCacheTtl=1h`; no model change | `habits.habits_by_shape`'s `plan_build` row (`share` column: main sessions that approve a plan with `ExitPlanMode`, then edit files in the same session); `plan_handoff.plan_handoff_summary`'s `tokens_carried_median`/`saving_usd` for the `/clear`-after-the-plan habit its notes describe. Not `implementation-heavy`, whose archetype hands the build to a cheaper model or agent. |
 | `workflow-ultracode` | workflow-run, scripted-multi-phase, ops | `workflow-heavy` | `subagentPromptCacheTtl=5m`; `agents.claude-implementer.maxTurns=40`, `."experimental.cacheTtl"=5m` | `workflows.workflows_summary`'s "Total workflow runs" row and `workflows.workflows_detail`'s per-run `agent_count`/`phases` columns; `ttl.ttl_by_agent_type`'s per-agent-type lever (short-gap scripted phases). |
 
-`list_profiles() -> list[Profile]` returns all seven, in the order
-above; `get(profile_id) -> Profile | None` returns one by id or `None`
+`list_profiles() -> list[Profile]` returns all eight, in
+`CATALOGUE_IDS` order (the table above lists `plan-then-build` next to
+the profiles it is compared with; it comes last); `get(profile_id) -> Profile | None` returns one by id or `None`
 for an unrecognised id.
 
 ## `suggest()`: archetype/purpose → catalogue id
 
-`suggest(archetype, purposes, tasks=()) -> str` is the deterministic
+`suggest(archetype, purposes, tasks=(), shape=None) -> str` is the deterministic
 mapping `baseline.py` (behind `init` and `baseline`) calls once it has
 detected a corpus's archetype and dominant purposes
 (`classify.classify_purpose`'s values, most-dominant first). A purpose
@@ -332,7 +334,18 @@ Claude reported, costliest first (the Work habits section's
 `workflow-run`, `agent-fanout`) anywhere in the list still wins, since
 the transcript's own shape decides those; next comes the first task a
 catalogue profile's `for` list covers, and only then the purposes and
-the archetype as below. A task maps to a profile through its `for`
+the archetype as below.
+
+`shape` is a way of working measured from the sessions themselves
+(`catalogue.SHAPE_PROFILES`). `baseline` passes `"plan-then-build"` when
+at least half the main sessions approved a plan and built it in the
+same session (`habits.habits_by_shape`'s `plan_build` row), and its
+reason cites those sessions and any `/tl-feedback` handoff answers.
+The shape comes after a structural purpose and before the tasks: a
+plan-then-build corpus's tasks (`feature`, `bugfix`) would otherwise
+lead to `implementation-heavy`, which hands the build to a cheaper
+model. `plan-then-build`'s own `for` word names a way of working, so it
+covers no task. A task maps to a profile through its `for`
 words (`catalogue.FOR_TASKS`, `catalogue.task_profile`):
 
 | Catalogue `for` word | Reported task |
@@ -351,7 +364,7 @@ So `feature`, `bugfix`, `debug`, `refactor`, `test` and `review` lead to
 `implementation-heavy`, `plan` to `planning-requirements`, `research` to
 `discovery-scrape`, `chat` and `docs` to `interactive-chat`, and `ops`
 (PROF-11/F11) to `workflow-ultracode` -- scripted, multi-step automation
-is the closest of the seven catalogue shapes to what `ops` names, though
+is the closest of the catalogue shapes to what `ops` names, though
 it spans several purposes (`classify.py`), so no profile is a clean fit.
 The other `for` words (`fanout`, `overnight-run`, `workflow-run`, ...)
 name a way of running rather than a kind of task.

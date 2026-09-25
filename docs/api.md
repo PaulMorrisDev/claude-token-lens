@@ -710,7 +710,7 @@ value `working` or `needs attention`.
 
 ### `GET /api/profiles`
 
-Every profile the service knows about (v0.3): the seven shipped
+Every profile the service knows about (v0.3): the eight shipped
 catalogue profiles (`profiles.catalogue`, package data — never a row in
 the store) plus every user profile written under
 `<config_dir>/profiles/*.toml` (`Store.profiles`, ingested by the
@@ -1288,7 +1288,7 @@ JSON object, or if the schema rejects an unknown key or
 an out-of-range value — the schema's own problem text, joined with
 `"; "` (plan: "the schema rejects anything else so a profile can never
 promise an effect the harness cannot deliver"). `409`
-(`error.code: "conflict"`) if `id` names one of the seven shipped
+(`error.code: "conflict"`) if `id` names one of the eight shipped
 catalogue profiles — a catalogue id can never be created or overwritten
 this way, regardless of `?replace=1` — or if a user profile with that
 `id` already exists and `?replace=1` was not given.

@@ -775,10 +775,12 @@ METRICS: tuple[Metric, ...] = (
         section="feedback",
         title="Feedback skill",
         what="A /tl-feedback skill you run after a piece of work. It asks four checkbox questions: the "
-        "outcome, what slowed it, whether it was worth the tokens, and what would have helped.",
-        why="Cost per piece of work that met its goal, which outranks what Claude reports about itself.",
-        powers=("outcome",),
-        tag="[tl-fb: outcome=… slow=… worth=… helped=…]",
+        "outcome, what slowed it, whether it was worth the tokens, and what would have helped. After an "
+        "approved plan it asks a fifth: whether the build could have started fresh from the plan.",
+        why="Cost per piece of work that met its goal, which outranks what Claude reports about itself. "
+        "The plan answer tells the fresh-session tip and the suggested profile how you work.",
+        powers=("outcome", "planning", "profiles"),
+        tag="[tl-fb: outcome=… slow=… worth=… helped=… handoff=…]",
     ),
     Metric(
         id="feedback_note",
@@ -926,11 +928,34 @@ FEEDBACK_QUESTIONS: tuple[FeedbackQuestion, ...] = (
     ),
 )
 
+#: Asked in a second AskUserQuestion call, and only when a plan was
+#: approved during the piece of work (the first call already holds four
+#: questions, AskUserQuestion's limit). Not a dashboard rating: the
+#: Sessions tab can't tell whether a plan was approved.
+HANDOFF_QUESTION = FeedbackQuestion(
+    key="handoff",
+    header="TL handoff",
+    question="Could the build have started in a fresh session from just the plan?",
+    multi=False,
+    options=(
+        ("yes", "Yes", "The plan had everything needed"),
+        ("partly", "Partly", "It needed a few things from earlier"),
+        ("no", "No", "It relied on the earlier discussion"),
+    ),
+)
+
+#: Every question a ``[tl-fb: ...]`` tag or an answer may carry.
+ALL_FEEDBACK_QUESTIONS: tuple[FeedbackQuestion, ...] = FEEDBACK_QUESTIONS + (HANDOFF_QUESTION,)
+
 #: ``[tl-fb: ...]`` key -> the words its answer may take.
-FEEDBACK_VOCAB: dict[str, tuple[str, ...]] = {q.key: tuple(o[0] for o in q.options) for q in FEEDBACK_QUESTIONS}
+FEEDBACK_VOCAB: dict[str, tuple[str, ...]] = {q.key: tuple(o[0] for o in q.options) for q in ALL_FEEDBACK_QUESTIONS}
 
 #: ``[tl-fb: ...]`` keys whose value is a comma list of words.
-FEEDBACK_LIST_KEYS = frozenset(q.key for q in FEEDBACK_QUESTIONS if q.multi)
+FEEDBACK_LIST_KEYS = frozenset(q.key for q in ALL_FEEDBACK_QUESTIONS if q.multi)
+
+#: The words a dashboard rating (the Sessions tab's checkboxes) may
+#: take: the four questions every run asks.
+RATING_VOCAB: dict[str, tuple[str, ...]] = {q.key: FEEDBACK_VOCAB[q.key] for q in FEEDBACK_QUESTIONS}
 
 
 def feedback_skill_text() -> str:
@@ -942,7 +967,7 @@ def feedback_skill_text() -> str:
         "---",
         f"name: {FEEDBACK_SKILL}",
         "description: Rate the piece of work you just finished for Claude Token Lens, with four quick "
-        "checkbox questions.",
+        "checkbox questions (five after an approved plan).",
         "disable-model-invocation: true",
         "allowed-tools: AskUserQuestion",
         "---",
@@ -958,23 +983,35 @@ def feedback_skill_text() -> str:
         lines.append(f'   - header "{q.header}", question "{q.question}", {choice}. Options:')
         for _word, label, description in q.options:
             lines.append(f'     - "{label}": {description}')
+    q = HANDOFF_QUESTION
     lines += [
         "",
-        f"2. End your reply with this one line, putting in the word for each answer ticked, joined with "
-        f"commas where several were ticked. Leave out a key whose question was skipped or answered only "
-        f"with free text:",
+        "2. Only if you approved a plan with ExitPlanMode during this piece of work, call AskUserQuestion "
+        "a second time with this one question. Otherwise skip this step and leave the handoff key out:",
         "",
-        f"   [{FEEDBACK_TAG}: " + " ".join(f"{q.key}=<{'words' if q.multi else 'word'}>" for q in FEEDBACK_QUESTIONS) + "]",
+        f'   - header "{q.header}", question "{q.question}", one answer (multiSelect false). Options:',
+    ]
+    for _word, label, description in q.options:
+        lines.append(f'     - "{label}": {description}')
+    lines += [
+        "",
+        "3. End your reply with this one line, putting in the word for each answer ticked, joined with "
+        "commas where several were ticked. Leave out a key whose question was skipped, not asked or "
+        "answered only with free text:",
+        "",
+        f"   [{FEEDBACK_TAG}: "
+        + " ".join(f"{q.key}=<{'words' if q.multi else 'word'}>" for q in ALL_FEEDBACK_QUESTIONS)
+        + "]",
         "",
         "   The word for each answer:",
         "",
     ]
-    for q in FEEDBACK_QUESTIONS:
+    for q in ALL_FEEDBACK_QUESTIONS:
         words = ", ".join(f'"{label}" = {word}' for word, label, _description in q.options)
         lines.append(f"   - {q.key}: {words}")
     lines += [
         "",
-        '3. After the tag, write one line: "Thanks: Token Lens will use this for your savings tips."',
+        '4. After the tag, write one line: "Thanks: Token Lens will use this for your savings tips."',
         "",
         'If the user declines the questions, reply only "No problem." and write no tag.',
         "",
@@ -1331,7 +1368,7 @@ def _feedback_tag_words() -> str:
     here instead of using ``METRICS_BY_ID["feedback_skill"].tag``."""
     parts = [
         f"{q.key}=" + (",".join(o[0] for o in q.options) if q.multi else "|".join(o[0] for o in q.options))
-        for q in FEEDBACK_QUESTIONS
+        for q in ALL_FEEDBACK_QUESTIONS
     ]
     return f"[{FEEDBACK_TAG}: " + " ".join(parts) + "]"
 

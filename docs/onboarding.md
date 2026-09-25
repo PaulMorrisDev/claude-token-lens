@@ -283,9 +283,10 @@ later with `claude-token-lens capture connect`.
 `_init_feedback_choice`), whatever the capture level (including off):
 whether to add the `/tl-feedback` skill — run it after a piece of work
 to tick four quick questions (did it deliver, what slowed it, was it
-worth the tokens, what would have helped) and get a second status-line
-reminder that it's there. It costs nothing until you run it, then about
-two short turns. `--feedback {on,off}` or the answers file's `feedback`
+worth the tokens, what would have helped; after an approved plan, a
+fifth: could the build have started fresh from the plan) and get a
+second status-line reminder that it's there. It costs nothing until you
+run it, then about two short turns (three after an approved plan). `--feedback {on,off}` or the answers file's `feedback`
 key answers it without asking. Under `--non-interactive` with neither,
 it stays off and a `(derived) feedback: ...` line says so. Choosing Deep
 turns the survey on, so the question isn't asked then. Feedback already
@@ -430,7 +431,11 @@ table: when at least half of the corpus's sessions are classified
 `mode=overnight`, the suggestion is `"overnight-batch"` regardless of
 what `suggest()` would otherwise say, with the reason string citing the
 exact count. Below that share, `catalogue.suggest()` is called
-normally.
+normally, with `shape="plan-then-build"` when at least half the main
+sessions approved a plan and built it in the same session
+(`habits.habits_by_shape`); the reason then cites those sessions and
+any `/tl-feedback` handoff answers (see
+[docs/profiles.md](profiles.md)).
 
 The baseline never applies the suggested profile. The report names the
 profile id and reason only; preview it with `claude-token-lens apply

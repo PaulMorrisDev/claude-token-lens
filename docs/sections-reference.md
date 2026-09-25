@@ -800,6 +800,15 @@ capture is off or no feedback has been given.
   ...): pieces of work, messages, cost, per piece, the most common kind
   of task, what slowed it most, what would have helped most, and where
   the answers came from (`/tl-feedback` or a dashboard rating).
+- `habits_by_shape` — main sessions by shape (`handoff.plan_shape`):
+  `plan_build` (a plan approved with `ExitPlanMode`, then files edited in
+  the same session), `plan_only` (approved, nothing edited after it) and
+  `no_plan`. Per shape: sessions, their share, the average cost, the
+  median planning context a fresh start would have dropped
+  (`handoff.plan_carried`), the pieces of work rated, the share that met
+  its goal, the shares worth it and too costly, and the /tl-feedback
+  handoff answers (`yes`, `partly`, `no`). The `plan-handoff` card and
+  the suggested profile read it.
 - `habits_self_report` — Claude's own reports against your feedback: per
   `level` word (`easy`, `normal`, `hard`) and `brief` word (`clear`,
   `partial`, `vague`) it tagged a message with, the messages that carries,

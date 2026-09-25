@@ -152,6 +152,7 @@ PLACEMENT: dict[str, str] = {
     "habits_setups": "keep",
     "habits_agents_by_task": "advanced",
     "habits_outcomes": "advanced",
+    "habits_by_shape": "keep",
     "habits_self_report": "advanced",
     "habits_prompt_flags": "advanced",
     "habits_skills": "advanced",
@@ -982,6 +983,39 @@ TABLE_COPY: dict[str, TableCopy] = {
         },
         value_labels={"met": "Met", "partly": "Partly", "missed": "Missed", "stopped": "Stopped early"},
         lead_columns=["outcome", "pieces", "cost", "avg_cost", "task", "slow", "helped"],
+    ),
+    "habits_by_shape": TableCopy(
+        title="Planning and building in one session",
+        help=Help(
+            shows="Your main sessions by whether you approved a plan and then built it in the same session. "
+            "Your feedback on each kind of session sits beside it.",
+            read="Planning kept is the context from before the plan that the build carried. The last three "
+            "columns count your /tl-feedback answers on whether the build could have started from the plan "
+            "alone.",
+            act="If most of your sessions plan and build and the plan was enough, start the build in a fresh "
+            "session. If the build needed the discussion, write fuller plans first.",
+        ),
+        columns={
+            "shape": ("Session", "Whether you approved a plan, and built it in the same session."),
+            "sessions": ("Sessions", "Main sessions of this kind."),
+            "share": ("Share", "Their share of your main sessions."),
+            "avg_cost": ("Per session", "The average cost of one, subagents included, at list price."),
+            "carried_median": ("Planning kept (median)", "The median context, in tokens, that a fresh start "
+                               "from the plan would have dropped."),
+            "pieces": ("Pieces rated", "Pieces of work in these sessions you gave feedback on."),
+            "met_pct": ("Met the goal", "Of the rated pieces, the share that met its goal."),
+            "worth_pct": ("Worth it", "Of the pieces you said were or weren't worth it, the share worth it."),
+            "costly_pct": ("Too costly", "Of the same pieces, the share you said cost too many tokens."),
+            "handoff_yes": ("Plan was enough", "Answers saying the build could have started fresh from the plan."),
+            "handoff_partly": ("Plan was partly enough", "Answers saying it needed a few things from earlier."),
+            "handoff_no": ("Needed the discussion", "Answers saying it relied on the earlier discussion."),
+        },
+        value_labels={
+            "plan_build": "Planned and built in one session",
+            "plan_only": "Planned, then built elsewhere",
+            "no_plan": "No plan",
+        },
+        lead_columns=["shape", "sessions", "share", "avg_cost", "carried_median", "met_pct", "handoff_yes"],
     ),
     "habits_self_report": TableCopy(
         title="Claude's reports against your feedback",

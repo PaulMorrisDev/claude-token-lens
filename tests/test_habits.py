@@ -305,6 +305,7 @@ def test_every_table_is_there_even_with_nothing_to_show():
         "habits_setups",
         "habits_agents_by_task",
         "habits_outcomes",
+        "habits_by_shape",
         "habits_self_report",
         "habits_prompt_flags",
         "habits_skills",
@@ -609,6 +610,86 @@ def test_collect_turns_tags_ratings_and_agent_reports_into_facts(tmp_path, prici
     assert (agent.agent_type, agent.result, agent.fit, agent.rules, agent.level, agent.task) == (
         "Explore", "done", "larger", None, "hard", "bugfix"
     )
+
+
+def _asked(questions) -> list[dict]:
+    return [
+        {
+            "question": q.question,
+            "header": q.header,
+            "multiSelect": q.multi,
+            "options": [{"label": label, "description": text} for _word, label, text in q.options],
+        }
+        for q in questions
+    ]
+
+
+def _plan_session(tmp_path, name: str, *, edit: bool = True, handoff: str | None = "Yes", worth: str = "Too costly"):
+    """A main session that explores, has a plan approved, then (with
+    ``edit``) edits a file; then a /tl-feedback run answering both calls."""
+    lines = [
+        user_str_line("plan the login change", origin={"kind": "human"}, timestamp=_ts(0)),
+        turn_line(model=MODEL, timestamp=_ts(1), cache_read_input_tokens=10_000, input_tokens=10),
+        turn_line(
+            content=[tool_use_block("ExitPlanMode", "tu_p", {"plan": "1. Edit a\n2. Edit b\n" + "x" * 4_000})],
+            model=MODEL, timestamp=_ts(2), cache_read_input_tokens=90_000, input_tokens=10,
+        ),
+        user_block_line([tool_result_block("tu_p", "User has approved your plan.")], timestamp=_ts(3)),
+    ]
+    if edit:
+        lines.append(turn_line(
+            content=[tool_use_block("Edit", "tu_e", {"file_path": "src/app.py", "old_string": "a", "new_string": "b"})],
+            model=MODEL, timestamp=_ts(4), cache_read_input_tokens=92_000, input_tokens=10,
+        ))
+        lines.append(user_block_line([tool_result_block("tu_e", "ok")], timestamp=_ts(5)))
+    lines.append(_reply(6, text="Done."))
+    core = _asked(catalogue.FEEDBACK_QUESTIONS)
+    answers = {catalogue.FEEDBACK_QUESTIONS[0].question: "Yes", catalogue.FEEDBACK_QUESTIONS[2].question: worth}
+    lines += [
+        user_str_line("<command-message>tl-feedback</command-message>\n<command-name>/tl-feedback</command-name>",
+                      timestamp=_ts(10)),
+        user_block_line([{"type": "text", "text": catalogue.feedback_skill_text()}], isMeta=True, timestamp=_ts(10)),
+        _reply(11, tool_use_block("AskUserQuestion", "tu_q", {"questions": core})),
+        user_block_line([tool_result_block("tu_q", "User has answered your questions.")],
+                        toolUseResult={"questions": core, "answers": answers}, timestamp=_ts(12)),
+    ]
+    if handoff is not None:
+        asked = _asked([catalogue.HANDOFF_QUESTION])
+        lines += [
+            _reply(13, tool_use_block("AskUserQuestion", "tu_h", {"questions": asked})),
+            user_block_line([tool_result_block("tu_h", "User has answered your questions.")],
+                            toolUseResult={"questions": asked,
+                                           "answers": {catalogue.HANDOFF_QUESTION.question: handoff}},
+                            timestamp=_ts(14)),
+        ]
+    lines.append(_reply(15, text="Thanks: Token Lens will use this for your savings tips."))
+    top = _parse(tmp_path, f"{name}.jsonl", lines, kind="top-level")
+    return NS(top=top, subs=[], session_id=name, project_dir="p", slug="p")
+
+
+def test_sessions_that_plan_then_build_are_told_apart(tmp_path, pricing):
+    corpus = NS(sessions=[
+        _plan_session(tmp_path, "s1"),
+        _plan_session(tmp_path, "s2", handoff="No", worth="Worth it"),
+        _plan_session(tmp_path, "s3", edit=False, handoff=None),
+    ] + [bundle for bundle in _tagged_session(tmp_path).sessions])
+    h = habits.collect(corpus, pricing)
+    assert [s.shape for s in h.shapes] == ["plan_build", "plan_build", "plan_only", "no_plan"]
+    # Starts at 10,005 tokens (the first reply less your message); the plan
+    # adds 1,005 (4,020 characters / 4).
+    assert h.shapes[0].carried == 90_010 - 10_005 - 1_005
+    assert h.shapes[3].carried is None
+    first = h.pieces[0]
+    assert (first.shape, first.worth, first.handoff) == ("plan_build", "no", "yes")
+
+    rows = {r["shape"]: r for r in _rows(_table(habits.section_from(h), "habits_by_shape"))}
+    assert list(rows) == ["plan_build", "plan_only", "no_plan"]
+    built = rows["plan_build"]
+    assert (built["sessions"], built["share"], built["pieces"]) == (2, 50.0, 2)
+    assert (built["met_pct"], built["worth_pct"], built["costly_pct"]) == (100.0, 50.0, 50.0)
+    assert (built["handoff_yes"], built["handoff_partly"], built["handoff_no"]) == (1, 0, 1)
+    assert built["carried_median"] == 79_000
+    assert rows["no_plan"]["carried_median"] is None and rows["no_plan"]["pieces"] == 0
 
 
 @pytest.mark.parametrize("shift, redone", [("redo", True), ("fix", True), ("build", False)])

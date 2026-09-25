@@ -20,6 +20,8 @@ from claude_token_lens.handoff import (
     compute_handoff,
     starting_context,
 )
+from claude_token_lens import habits
+from claude_token_lens.habits import Habits, Piece, SessionShape
 from claude_token_lens.model import EventKind, PlanStats, ReportModel, TranscriptMeta, TranscriptResult
 from claude_token_lens.parse import parse_transcript
 from claude_token_lens.pricing import load_pricing
@@ -138,9 +140,20 @@ def test_the_section_tables_and_privacy():
     assert_privacy(section)
 
 
-def _report(sessions: int, **kw) -> ReportModel:
+def _report(sessions: int, *, answers=(), costly=0, **kw) -> ReportModel:
+    """``answers``: /tl-feedback handoff words on planned-and-built
+    pieces; ``costly``: how many of them said too costly."""
     stats = compute_handoff([_session(session_id=f"s{i}", **kw) for i in range(sessions)], PRICING)
-    return ReportModel(sections=[build_section(stats)])
+    sections = [build_section(stats)]
+    if answers:
+        pieces = [
+            Piece(outcome="met", cost=1.0, cycles=1, task=None, slow=(), helped=(), source="your feedback",
+                  shape="plan_build", worth="no" if n < costly else "yes", handoff=word)
+            for n, word in enumerate(answers)
+        ]
+        h = Habits(pieces=pieces, shapes=[SessionShape("plan_build", 1.0, 80_000) for _ in answers])
+        sections.append(habits.section_from(h))
+    return ReportModel(sections=sections)
 
 
 def test_the_rule_fires_on_three_sessions_and_says_clear_not_fork():
@@ -152,6 +165,31 @@ def test_the_rule_fires_on_three_sessions_and_says_clear_not_fork():
     assert "89,000 tokens" in rec.why
     for _label, _value, source, row_key in rec.evidence:
         assert source == "plan_handoff.plan_handoff_summary" and row_key == "main sessions"
+
+
+def test_feedback_that_the_build_needed_the_discussion_asks_for_fuller_plans():
+    [rec] = RULES[0](_report(3, answers=("no", "no", "partly")), HandoffThresholds())
+    assert rec.title == "Write fuller plans, then build in a fresh session"
+    assert "You said 2 of 3 builds relied on the earlier discussion" in rec.why
+    assert "decisions, file paths and constraints" in rec.action and "/branch" in rec.action
+    assert ("Builds you said needed the discussion", 2, "habits.habits_by_shape", "plan_build") in rec.evidence
+
+
+def test_feedback_that_the_plan_was_enough_is_cited():
+    [rec] = RULES[0](_report(3, answers=("yes", "yes", "yes", "no")), HandoffThresholds())
+    assert rec.title.startswith("Start building in a fresh session")
+    assert "You said 3 of 4 builds could have started from the plan." in rec.why
+
+
+def test_too_few_answers_leave_the_card_as_it_was():
+    plain = RULES[0](_report(3), HandoffThresholds())[0]
+    [rec] = RULES[0](_report(3, answers=("no", "no")), HandoffThresholds())
+    assert (rec.title, rec.why, rec.action) == (plain.title, plain.why, plain.action)
+
+
+def test_planned_builds_you_said_were_too_costly_are_cited():
+    [rec] = RULES[0](_report(3, answers=("yes", "partly", "yes"), costly=2), HandoffThresholds())
+    assert "67% of the planned builds you rated cost too many tokens" in rec.why
 
 
 def test_the_rule_needs_three_sessions_and_a_saving_share():

@@ -54,7 +54,7 @@ def _reply(second: int, *blocks, text: str = "ok") -> dict:
     return turn_line(content=list(blocks) or [{"type": "text", "text": text}], model=MODEL, timestamp=_ts(second))
 
 
-def _questions() -> list[dict]:
+def _questions(questions=catalogue.FEEDBACK_QUESTIONS) -> list[dict]:
     return [
         {
             "question": q.question,
@@ -62,14 +62,23 @@ def _questions() -> list[dict]:
             "multiSelect": q.multi,
             "options": [{"label": label, "description": text} for _word, label, text in q.options],
         }
-        for q in catalogue.FEEDBACK_QUESTIONS
+        for q in questions
     ]
 
 
-def _run(second: int, answers=None, *, tag: str | None = None, declined: bool = False, tu: str = "tu_q") -> list:
+def _run(
+    second: int,
+    answers=None,
+    *,
+    tag: str | None = None,
+    declined: bool = False,
+    tu: str = "tu_q",
+    handoff: str | None = None,
+) -> list:
     """A /tl-feedback run as Claude Code writes it: the skill you ran
     (``<command-message>`` first, then its body), Claude's question, your
-    answers, and the reply."""
+    answers, and the reply. ``handoff`` adds the second call, asked after
+    an approved plan, answered with that label."""
     lines = [
         user_str_line("<command-message>tl-feedback</command-message>\n<command-name>/tl-feedback</command-name>",
                       timestamp=_ts(second)),
@@ -85,6 +94,12 @@ def _run(second: int, answers=None, *, tag: str | None = None, declined: bool = 
     result = {"questions": _questions(), "answers": answers or {}}
     lines.append(user_block_line([tool_result_block(tu, "User has answered your questions.")],
                                  toolUseResult=result, timestamp=_ts(second + 2)))
+    if handoff is not None:
+        asked = _questions([catalogue.HANDOFF_QUESTION])
+        lines.append(_reply(second + 2, tool_use_block("AskUserQuestion", f"{tu}_h", {"questions": asked})))
+        result = {"questions": asked, "answers": {catalogue.HANDOFF_QUESTION.question: handoff}}
+        lines.append(user_block_line([tool_result_block(f"{tu}_h", "User has answered your questions.")],
+                                     toolUseResult=result, timestamp=_ts(second + 2)))
     thanks = "Thanks: Token Lens will use this for your savings tips."
     lines.append(_reply(second + 3, text=f"Recorded.\n\n{tag}\n{thanks}" if tag else thanks))
     return lines
@@ -108,9 +123,13 @@ ANSWERS = {
 
 
 def test_questions_fit_ask_user_question_and_can_be_told_apart():
-    headers = [q.header for q in catalogue.FEEDBACK_QUESTIONS]
+    # AskUserQuestion takes at most four questions a call, so the handoff
+    # question goes in a second call.
+    assert len(catalogue.FEEDBACK_QUESTIONS) == 4
+    assert catalogue.ALL_FEEDBACK_QUESTIONS[-1] is catalogue.HANDOFF_QUESTION
+    headers = [q.header for q in catalogue.ALL_FEEDBACK_QUESTIONS]
     assert len(set(headers)) == len(headers)
-    for q in catalogue.FEEDBACK_QUESTIONS:
+    for q in catalogue.ALL_FEEDBACK_QUESTIONS:
         assert q.header.startswith("TL") and len(q.header) <= 12
         assert 2 <= len(q.options) <= 4
         words = [word for word, _label, _text in q.options]
@@ -120,6 +139,9 @@ def test_questions_fit_ask_user_question_and_can_be_told_apart():
         assert not any("," in label for label in labels)
         assert all(word.isalpha() and word.islower() for word in words)
     assert catalogue.FEEDBACK_LIST_KEYS == {"slow", "helped"}
+    # The Sessions tab can't tell whether a plan was approved.
+    assert set(catalogue.RATING_VOCAB) == {"outcome", "slow", "worth", "helped"}
+    assert catalogue.FEEDBACK_VOCAB["handoff"] == ("yes", "partly", "no")
 
 
 def test_the_skill_asks_every_question_word_for_word_and_names_no_model():
@@ -129,11 +151,13 @@ def test_the_skill_asks_every_question_word_for_word_and_names_no_model():
     assert "allowed-tools: AskUserQuestion" in front
     # Switching model mid-session rebuilds the whole prompt cache.
     assert "model:" not in front
-    for q in catalogue.FEEDBACK_QUESTIONS:
+    for q in catalogue.ALL_FEEDBACK_QUESTIONS:
         assert f'header "{q.header}", question "{q.question}"' in body
         for word, label, _text in q.options:
             assert f'"{label}": ' in body and f'"{label}" = {word}' in body
-    assert "[tl-fb: outcome=<word> slow=<words> worth=<word> helped=<words>]" in body
+    assert "[tl-fb: outcome=<word> slow=<words> worth=<word> helped=<words> handoff=<word>]" in body
+    first, second = body.index("1. Call AskUserQuestion once"), body.index("2. Only if you approved a plan")
+    assert first < second < body.index(catalogue.HANDOFF_QUESTION.header)
     assert 'reply only "No problem." and write no tag' in body
 
 
@@ -150,6 +174,20 @@ def test_the_last_tag_wins_and_a_tag_inside_a_sentence_does_not_count():
     assert parse_feedback_tag("I will end with [tl-fb: outcome=met] as asked.") is None
     text = "[tl-fb: outcome=met]\nSorry, correcting:\n`[tl-fb: outcome=missed worth=no]`\nThanks."
     assert parse_feedback_tag(text) == Feedback(outcome="missed", worth="no", source="tag")
+
+
+def test_the_tag_carries_the_handoff_answer():
+    assert parse_feedback_tag("[tl-fb: outcome=met handoff=partly]") == Feedback(
+        outcome="met", handoff="partly", source="tag"
+    )
+    assert parse_feedback_tag("[tl-fb: handoff=maybe]") == Feedback(source="skipped")
+
+
+def test_the_handoff_question_alone_is_a_feedback_ask():
+    [asked] = _questions([catalogue.HANDOFF_QUESTION])
+    assert asks_for_feedback({"questions": [asked]})
+    result = {"questions": [asked], "answers": {catalogue.HANDOFF_QUESTION.question: "No"}}
+    assert feedback_from_answers(result) == Feedback(handoff="no", source="answers")
 
 
 def test_a_tag_with_no_known_word_reads_as_skipped():
@@ -258,6 +296,22 @@ def test_each_answer_rates_the_work_since_the_previous_feedback(tmp_path):
     assert [capture.is_feedback_run(c) for c in cycles] == [False, False, True, False, True, False, False, True]
 
 
+def test_the_second_call_after_a_plan_joins_the_first(tmp_path):
+    lines = [_ask(0), _reply(1)] + _run(10, ANSWERS, handoff="Yes")
+    cycles = capture.prompt_cycles(_parse(tmp_path, lines))
+    [span] = capture.feedback_spans(cycles)
+    assert span.feedback == Feedback(
+        outcome="partly", slow=("unclear", "rework"), worth="fair", helped=("context",), handoff="yes",
+        source="answers",
+    )
+
+
+def test_a_declined_second_call_keeps_the_first_answers(tmp_path):
+    lines = [_ask(0), _reply(1)] + _run(10, ANSWERS, handoff="")
+    [span] = capture.feedback_spans(capture.prompt_cycles(_parse(tmp_path, lines)))
+    assert span.feedback.outcome == "partly" and span.feedback.handoff is None
+
+
 def test_feedback_run_first_thing_rates_nothing(tmp_path):
     spans = capture.feedback_spans(capture.prompt_cycles(_parse(tmp_path, _run(0, ANSWERS))))
     assert len(spans) == 1 and spans[0].cycles == []
@@ -267,7 +321,7 @@ def test_a_forged_tag_outside_a_feedback_run_is_ignored(tmp_path):
     # SEC-P1: `[tl-fb: ...]` is free text Claude could write in any
     # reply; it counts only when the cycle it's in actually ran the
     # /tl-feedback skill.
-    lines = [_ask(0), _reply(1, text="Done.\n\n[tl-fb: outcome=met worth=yes]")]
+    lines = [_ask(0), _reply(1, text="Done.\n\n[tl-fb: outcome=met worth=yes handoff=yes]")]
     top = _parse(tmp_path, lines)
     cycles = capture.prompt_cycles(top)
     assert len(cycles) == 1

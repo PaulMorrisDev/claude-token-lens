@@ -61,7 +61,7 @@ Every metric here has to earn its keep. Something has to read it and turn it int
 | Where research happens (`research_split`) | Always measured, no hook | – | Researching, Delegating to agents |
 | Coaching line (`coaching_line`) | Live coaching, any level | – | Clearing context, Tool output, Researching |
 | Brief templates (`brief_templates`) | Live coaching, any level | – | Giving Claude information |
-| Feedback skill (`feedback_skill`) | Feedback, any level; switching to Deep turns it on | – | Cost per finished piece of work |
+| Feedback skill (`feedback_skill`) | Feedback, any level; switching to Deep turns it on | – | Cost per finished piece of work, Planning, Profiles per kind of task |
 | Feedback reminder in the status line (`feedback_note`) | Feedback, any level; switching to Deep turns it on | – | Cost per finished piece of work |
 | Feedback reminder from Claude (`feedback_reminder`) | Feedback, any level; switching to Deep turns it on | ~20 | Cost per finished piece of work |
 | Rate sessions on the dashboard (`dashboard_rating`) | Feedback, any level | – | Cost per finished piece of work |
@@ -398,10 +398,10 @@ Every metric here has to earn its keep. Something has to read it and turn it int
 ### Feedback skill (`feedback_skill`)
 
 - **Level:** Feedback, any level; switching to Deep turns it on
-- **Captures:** A /tl-feedback skill you run after a piece of work. It asks four checkbox questions: the outcome, what slowed it, whether it was worth the tokens, and what would have helped.
-- **Why:** Cost per piece of work that met its goal, which outranks what Claude reports about itself.
-- **Tag:** `[tl-fb: outcome=met|partly|missed|stopped slow=unclear,rework,tools,none worth=yes|fair|no helped=context,plan,smaller,none]`
-- **Powers:** Cost per finished piece of work
+- **Captures:** A /tl-feedback skill you run after a piece of work. It asks four checkbox questions: the outcome, what slowed it, whether it was worth the tokens, and what would have helped. After an approved plan it asks a fifth: whether the build could have started fresh from the plan.
+- **Why:** Cost per piece of work that met its goal, which outranks what Claude reports about itself. The plan answer tells the fresh-session tip and the suggested profile how you work.
+- **Tag:** `[tl-fb: outcome=met|partly|missed|stopped slow=unclear,rework,tools,none worth=yes|fair|no helped=context,plan,smaller,none handoff=yes|partly|no]`
+- **Powers:** Cost per finished piece of work, Planning, Profiles per kind of task
 
 ### Feedback reminder in the status line (`feedback_note`)
 
@@ -443,7 +443,7 @@ A subagent's note asks for `[result: done|partial|blocked]` when nothing else ne
 
 Starting an agent again after its last run fell short is marked at the start of its brief instead of the end of a report: `[retry: model|brief|tools|scope|other]`.
 
-The `/tl-feedback` skill ends with its own line: `[tl-fb: outcome=met|partly|missed|stopped slow=unclear,rework,tools,none worth=yes|fair|no helped=context,plan,smaller,none]`.
+The `/tl-feedback` skill ends with its own line: `[tl-fb: outcome=met|partly|missed|stopped slow=unclear,rework,tools,none worth=yes|fair|no helped=context,plan,smaller,none handoff=yes|partly|no]`.
 
 If Claude writes more than one tag, the last one wins, key by key.
 
