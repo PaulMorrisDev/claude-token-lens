@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-25
+
 After updating, the first dashboard start re-reads every transcript (a
 few minutes): `PARSER_VERSION` bumped to 20 (from 14) to pick up each
 reply's fast-mode flag, the fuller edit records, the quality markers,
