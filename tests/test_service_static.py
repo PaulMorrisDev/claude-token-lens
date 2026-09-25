@@ -392,11 +392,99 @@ def test_long_report_tables_open_on_their_first_rows() -> None:
     limited = grid.index("if (limited) {")
     assert "table.gridScrollTo = function (rowKey)" in grid[limited:]
     assert "if (!expanded) setExpanded(true);" in grid[limited:]
+    # The capped table is short: it only scrolls in its own box once all
+    # its rows show (a 46-row table clipped its tenth row).
+    assert "var tall = (limited && !expanded ? spec.limit : rows.length) > TALL_ROWS;" in grid
+    assert "fitBox();\n    drawBody();" in grid
     table = _function_source(source, "renderTable")
     # row_groups and row_kinds arrive as {} when a table has neither.
-    assert "limit: hasKeys(table.row_groups) || hasKeys(table.row_kinds) ? 0 : REPORT_ROWS" in table
+    assert "limit: hasKeys(table.row_groups) || hasKeys(table.row_kinds) || (options && options.allRows) ? 0 : REPORT_ROWS" in table
+    # Data quality's checks list stays whole: a problem row must not hide
+    # behind the button.
+    assert "allRows: true" in _function_source(source, "renderDataQuality")
     pulse = _function_source(source, "pulseRow")
     assert 'typeof table.gridScrollTo === "function"' in pulse
+
+
+def test_dated_report_tables_fold_to_their_latest_rows() -> None:
+    """Phase 9 review: usage.py lists by_day, by_week, by_month and
+    five_hour_blocks oldest first, so a capped Usage by day opened on the
+    oldest days. NEWEST_LAST tables fold to their last rows until sorted;
+    every name is a real table."""
+    from claude_token_lens.helptext import TABLE_COPY
+
+    source = _app_js()
+    match = re.search(r"export var NEWEST_LAST = \{([^}]*)\};", source)
+    assert match, "grid.js declares NEWEST_LAST"
+    names = re.findall(r"(\w+): true", match.group(1))
+    assert set(names) == {"by_day", "by_week", "by_month", "five_hour_blocks"}
+    assert all(name in TABLE_COPY for name in names)
+    grid = _function_source(source, "dataGrid")
+    assert "fromEnd() ? orderedRows.slice(-spec.limit)" in grid
+    assert 'return spec.limitFrom === "end" && !sort;' in grid
+    assert 'limitFrom: NEWEST_LAST[table.name] ? "end" : "start"' in _function_source(source, "renderTable")
+
+
+def test_daily_spend_split_outlives_a_window_change_and_a_visit() -> None:
+    """Phase 9 review: a window change kept only ?id=, and coming back
+    from Savings called the params handler with {}, so the chart fell
+    back to the agent split. The split last picked is kept, and an
+    address without one keeps the split on screen."""
+    source = _app_js()
+    usage = _function_source(source, "renderUsage")
+    assert "usageSplit(state.params.split || chosenSplit)" in usage
+    assert "chosenSplit = split;" in usage
+    assert "if (params.split && usageSplit(params.split) !== split) chooseSplit(params.split);" in usage
+    assert "else keepSplitInAddress();" in usage
+
+
+def test_cache_tiles_count_what_they_cost() -> None:
+    """Phase 9 review: the Cache page's saving subtracts the write
+    premium, so it is named apart from the Overview's "Saved by the
+    cache"; the avoidable-rebuild count leaves out rebuilds after a
+    usage-limit pause, as avoidable_cost_usd does."""
+    source = _app_js()
+    explainer = _function_source(source, "renderCacheExplainer")
+    assert 'label: "Saved by the cache after write costs"' in explainer
+    assert '"recache_signature_split"' in explainer
+    assert 'row.signature === "limit-expiry" ? sum' in explainer
+    assert "recache_turns" not in explainer
+    assert 'moneyTile("Saved by the cache",' in source
+
+
+def test_show_all_sessions_hands_focus_to_the_list() -> None:
+    """Phase 9 review: focus went to a <table> with no tabindex, so it
+    fell to <body>. The grid's scroller takes focus (tabIndex -1)."""
+    source = _app_js()
+    sessions = _function_source(source, "renderSessions")
+    assert 'tableContainer.querySelector(".grid-scroll")' in sessions
+    assert "tabIndex: -1" in _function_source(source, "dataGrid")
+
+
+def test_session_scatter_picks_a_range_from_the_keyboard() -> None:
+    """Phase 9 review: d3.brushX is pointer-only. Shift with the arrow
+    keys picks the sessions from where the cursor started; the scatter
+    hands the frame a pick(from, to) that moves the brush and filters."""
+    source = _app_js()
+    keys = _function_source(source, "wireKeys")
+    assert "event.shiftKey && frame.pickRange" in keys
+    assert "frame.pickRange(frame.anchor, next);" in keys
+    scatter = _function_source(source, "scatter")
+    assert "pick: function (from, to)" in scatter
+    assert "brushLayer.call(brush.move," in scatter
+    assert "hold Shift and press the arrow keys" in scatter
+
+
+def test_amount_rewrite_keeps_row_keys_and_their_labels_in_step() -> None:
+    """Phase 10: readableAmounts turns "Total cost (USD)" into "Total
+    cost ($)" in a row's cell; a table's value_labels and row_kinds are
+    keyed on the same text, so their keys are rewritten too. Before, the
+    Workflow runs table showed "Total cost ($)" unlabelled and its money
+    rows as plain numbers."""
+    source = _function_source(_app_js(), "readableAmounts")
+    assert "var readable = readableAmounts(key);" in source
+    assert "if (readable !== key) delete value[key];" in source
+    assert "value[readable] = item;" in source
 
 
 def test_command_block_shows_every_explainer_line() -> None:
@@ -1573,6 +1661,32 @@ def test_readme_workstyle_row_names_every_archetype() -> None:
     assert named == set(_ARCHETYPE_DESCRIPTIONS)
 
 
+def test_every_working_pattern_has_a_plain_label() -> None:
+    """Phase 10: the working patterns grid showed workstyle.py's keys
+    ("overseer-fanout", "plan-high-implement-low"). Each key now has a
+    plain label in helptext's value_labels for the table."""
+    from claude_token_lens.helptext import TABLE_COPY
+    from claude_token_lens.workstyle import _ARCHETYPE_DESCRIPTIONS
+
+    labels = TABLE_COPY["workstyle_archetypes"].value_labels
+    assert set(labels) == set(_ARCHETYPE_DESCRIPTIONS)
+    assert all(label and "-" not in label for label in labels.values())
+
+
+def test_every_task_word_has_a_plain_name_in_task_tables() -> None:
+    """Phase 10: Kinds of task and the brief templates showed capture's
+    task words ("bugfix", "plan"). Every word has a plain name, and every
+    table with a task column carries them."""
+    from claude_token_lens.capture_catalogue import TAG_VOCAB
+    from claude_token_lens.helptext import TABLE_COPY, TASK_LABELS, TASK_TABLES
+
+    assert set(TASK_LABELS) == set(TAG_VOCAB["task"])
+    with_task = {name for name, copy in TABLE_COPY.items() if "task" in copy.columns}
+    assert with_task == set(TASK_TABLES)
+    for name in TASK_TABLES:
+        assert set(TASK_LABELS) <= set(TABLE_COPY[name].value_labels), name
+
+
 def test_capture_banner_is_polled_with_health_and_links_to_its_segment() -> None:
     """The capture banner sits under the health banner on every page and
     is refreshed from /api/health's capture block; the sidebar's status
@@ -2140,6 +2254,9 @@ def test_a_one_row_table_reads_as_tiles_with_every_figure_one_click_away() -> No
     columns = _function_source(app_js, "summaryColumns")
     assert "table.rows.length !== 1" in columns or "rows.length === 1" in columns or "length !== 1" in columns
     assert "lead_columns" in columns
+    # A list that has one row today (one agent type) stays a grid: only a
+    # table whose row key isn't a headline reads as tiles.
+    assert "table.lead_columns.indexOf(table.columns[0].key) !== -1) return null" in columns
     tile_source = _function_source(app_js, "summaryTile")
     assert "moneyParts(" in tile_source
     render = _function_source(app_js, "renderTable")
@@ -2201,9 +2318,9 @@ def test_cache_page_opens_with_what_the_cache_does_for_you() -> None:
     from the report's rates, never typed in."""
     app_js = _app_js()
     explainer = _function_source(app_js, "renderCacheExplainer")
-    for table in ("ttl_cache_economy", "recache_summary", "ttl_break_even_share"):
+    for table in ("ttl_cache_economy", "recache_summary", "recache_signature_split", "ttl_break_even_share"):
         assert '"' + table + '"' in explainer, table
-    for field in ("net_saving_usd", "avoidable_cost_usd", "recache_turns", "margin"):
+    for field in ("net_saving_usd", "avoidable_cost_usd", "turns", "margin"):
         assert field in explainer, field
     for ratio in ("cache_read_ratio", "cache_write_5m_ratio", "cache_write_1h_ratio"):
         assert "fraction(rates." + ratio + ")" in explainer, ratio

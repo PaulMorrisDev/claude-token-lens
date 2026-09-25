@@ -76,6 +76,10 @@ var LEAD_COLUMNS = 7;
 // the order it is sorted) and a button for the rest.
 var REPORT_ROWS = 10;
 
+// Report tables listed oldest first (usage.py): capped, they show their
+// latest rows.
+export var NEWEST_LAST = { by_day: true, by_week: true, by_month: true, five_hour_blocks: true };
+
 function hasKeys(object) {
   return !!object && Object.keys(object).length > 0;
 }
@@ -253,12 +257,7 @@ export function dataGrid(spec) {
     wrap.appendChild(toolbar);
   }
 
-  var scroller = el("div", { class: "grid-scroll", tabIndex: rows.length > TALL_ROWS ? 0 : -1 });
-  if (rows.length > TALL_ROWS) {
-    scroller.classList.add("grid-tall");
-    scroller.setAttribute("role", "region");
-    scroller.setAttribute("aria-label", (spec.caption || "Table") + ", scrolls");
-  }
+  var scroller = el("div", { class: "grid-scroll", tabIndex: -1 });
   var table = el("table", { id: gridId, class: "data-grid" + (spec.tint ? " grid-tint" : "") });
   if (spec.caption) table.appendChild(el("caption", { class: "visually-hidden", text: spec.caption }));
   var thead = el("thead");
@@ -276,6 +275,23 @@ export function dataGrid(spec) {
   var limited = !virtual && spec.limit > 0 && rows.length > spec.limit + 2;
   var expanded = false;
   var moreButton = null;
+
+  // A grid drawing more than TALL_ROWS rows scrolls in its own box, so
+  // a capped table only does once all its rows show.
+  function fitBox() {
+    var tall = (limited && !expanded ? spec.limit : rows.length) > TALL_ROWS;
+    scroller.classList.toggle("grid-tall", tall);
+    if (tall) {
+      scroller.tabIndex = 0;
+      scroller.setAttribute("role", "region");
+      scroller.setAttribute("aria-label", (spec.caption || "Table") + ", scrolls");
+    } else if (!scroller.classList.contains("grid-wide")) {
+      scroller.tabIndex = -1;
+      scroller.removeAttribute("role");
+      scroller.removeAttribute("aria-label");
+    }
+  }
+  fitBox();
 
   function visibleColumns() {
     return columns.filter(function (column) {
@@ -540,7 +556,7 @@ export function dataGrid(spec) {
     }
     var group = null;
     var groups = sort ? null : spec.rowGroups;
-    var drawn = limited && !expanded ? orderedRows.slice(0, spec.limit) : orderedRows;
+    var drawn = limited && !expanded ? (fromEnd() ? orderedRows.slice(-spec.limit) : orderedRows.slice(0, spec.limit)) : orderedRows;
     drawn.forEach(function (row) {
       var rowGroup = groups && Array.isArray(row) && typeof row[0] === "string" ? groups[row[0]] : null;
       if (rowGroup && rowGroup !== group) {
@@ -575,16 +591,23 @@ export function dataGrid(spec) {
     return -1;
   }
 
+  // A dated table (spec.limitFrom "end", oldest row first) folds to its
+  // latest rows while it keeps its own order.
+  function fromEnd() {
+    return spec.limitFrom === "end" && !sort;
+  }
+
   function setExpanded(open) {
     expanded = open;
     moreButton.setAttribute("aria-expanded", open ? "true" : "false");
-    moreButton.querySelector(".button-label").textContent = open ? "Show the first " + spec.limit : "Show all " + rows.length + " rows";
+    moreButton.querySelector(".button-label").textContent = open ? (fromEnd() ? "Show the latest " : "Show the first ") + spec.limit : "Show all " + rows.length + " rows";
+    fitBox();
     drawBody();
   }
 
   if (limited) {
     moreButton = button("Show all " + rows.length + " rows", {
-      variant: "quiet",
+      variant: "link",
       action: function () {
         setExpanded(!expanded);
       },
@@ -833,6 +856,9 @@ var STRIP_TILES = 4;
 // that stays a grid.
 function summaryColumns(table) {
   if (!table.rows || table.rows.length !== 1 || !table.lead_columns || !table.lead_columns.length) return null;
+  // A table that leads with its row key is a list that happens to have
+  // one row today (one agent type, one project): it stays a grid.
+  if (table.columns.length && table.lead_columns.indexOf(table.columns[0].key) !== -1) return null;
   var indexes = [];
   table.lead_columns.forEach(function (key) {
     for (var i = 0; i < table.columns.length; i++) if (table.columns[i].key === key) indexes.push(i);
@@ -927,8 +953,10 @@ export function renderTable(table, tableId, currency, options) {
       rowGroups: table.row_groups,
       rowKinds: table.row_kinds,
       // A table read down its rows (grouped, or one kind per row) stays
-      // whole. The report sends both as {} when a table has neither.
-      limit: hasKeys(table.row_groups) || hasKeys(table.row_kinds) ? 0 : REPORT_ROWS,
+      // whole, as does one a page asks for whole (options.allRows). The
+      // report sends both as {} when a table has neither.
+      limit: hasKeys(table.row_groups) || hasKeys(table.row_kinds) || (options && options.allRows) ? 0 : REPORT_ROWS,
+      limitFrom: NEWEST_LAST[table.name] ? "end" : "start",
       empty: "Nothing to show for this window.",
       emptyNext: "A longer window may include some.",
       tint: TINT_TABLES.indexOf(table.name) !== -1,

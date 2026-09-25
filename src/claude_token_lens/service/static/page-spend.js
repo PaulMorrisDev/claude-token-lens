@@ -122,8 +122,9 @@ export function renderSessions(panel) {
       // The chart drops its picked stretch by drawing afresh.
       if (hadRange) drawScatter(true);
       drawList();
-      var table = tableContainer.querySelector("table");
-      if (table) table.focus({ preventScroll: true });
+      // Focus goes to the list it widened (its scroller takes focus).
+      var list = tableContainer.querySelector(".grid-scroll");
+      if (list) list.focus({ preventScroll: true });
     });
     filterHost.appendChild(
       el("div", { class: "filter-row" }, [el("p", { class: "notes", text: what + ": " + thousands(shown) + " of " + thousands(sessionsView.rows.length) + "." }), showAll])
@@ -594,12 +595,17 @@ function usageSplit(value) {
   return value === "model" ? "model" : "agent";
 }
 
+// The split last picked: it outlives a redraw for a new window and a
+// visit to another page, and goes back into the address.
+var chosenSplit = "agent";
+
 export function renderUsage(panel) {
   clear(panel);
   viewIntro(panel, "spend/usage");
 
   // Chart 1, the same as the Overview's, with a choice of split.
-  var split = usageSplit(state.params.split);
+  var split = usageSplit(state.params.split || chosenSplit);
+  keepSplitInAddress();
   var controls = el("div", { class: "filter-row chart-controls", role: "group", "aria-label": "Split daily spend by" }, [el("span", { class: "filter-label", text: "Split by" })]);
   var chips = SPLITS.map(function (option) {
     var chipButton = el("button", { type: "button", class: "filter-chip", "aria-pressed": option.value === split ? "true" : "false", "data-split": option.value, text: option.label });
@@ -643,16 +649,23 @@ export function renderUsage(panel) {
       );
     });
   }
+  function keepSplitInAddress() {
+    if (split !== "agent" && state.params.split !== split) replaceParams(Object.assign({}, state.params, { split: split }));
+  }
   function chooseSplit(value) {
     split = usageSplit(value);
+    chosenSplit = split;
     chips.forEach(function (chipButton) {
       chipButton.setAttribute("aria-pressed", chipButton.getAttribute("data-split") === split ? "true" : "false");
     });
     drawDaily();
   }
-  // Back or Forward to the other split while this view is open.
+  // A link or Back to this view: an address without a split keeps the
+  // one on screen.
   onParams("spend/usage", function (params) {
-    if (usageSplit(params.split) !== split && chartHost.isConnected) chooseSplit(params.split);
+    if (!chartHost.isConnected) return;
+    if (params.split && usageSplit(params.split) !== split) chooseSplit(params.split);
+    else keepSplitInAddress();
   });
   drawDaily();
 

@@ -180,7 +180,13 @@ export function readableAmounts(value) {
   }
   if (value && typeof value === "object") {
     Object.keys(value).forEach(function (key) {
-      value[key] = readableAmounts(value[key]);
+      // A key that names a row ("Total cost (USD)" in a table's
+      // value_labels or row_kinds) is rewritten like the row's own cell,
+      // so the two still match.
+      var readable = readableAmounts(key);
+      var item = readableAmounts(value[key]);
+      if (readable !== key) delete value[key];
+      value[readable] = item;
     });
   }
   return value;

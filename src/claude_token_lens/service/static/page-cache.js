@@ -100,7 +100,7 @@ function renderCacheExplainer(report, container) {
     var saved = moneyParts(overall.net_saving_usd);
     tiles.push(
       tile({
-        label: "Saved by the cache",
+        label: "Saved by the cache after write costs",
         value: saved.value,
         unit: saved.unit,
         basis: "estimate",
@@ -118,20 +118,22 @@ function renderCacheExplainer(report, container) {
   var rebuilds = rowObjects(reportTable(report, "recache", "recache_summary"))[0];
   if (rebuilds) {
     var lost = moneyParts(rebuilds.avoidable_cost_usd);
-    var times = Number(rebuilds.recache_turns) || 0;
+    // The rebuilds that cost counts: the cache expired or a change broke
+    // it. One after a usage-limit pause isn't avoidable.
+    var causes = rowObjects(reportTable(report, "recache", "recache_signature_split"));
+    var times = causes.reduce(function (sum, row) {
+      return row.signature === "limit-expiry" ? sum : sum + (Number(row.turns) || 0);
+    }, 0);
+    var told =
+      (causes.length ? "The cache was rebuilt " + (times === 1 ? "once" : thousands(times) + " times") : "A rebuild writes the cache again") +
+      (writeWords && readWords ? ": written again at " + writeWords + " the input price, where reading it would have cost " + readWords + "." : ".");
     tiles.push(
       tile({
         label: "Cost of avoidable rebuilds",
         value: lost.value,
         unit: lost.unit,
         hint: lost.secondary || null,
-        note:
-          (times === 1 ? "Once" : thousands(times) + " times") +
-          " the cache ran out and was written again" +
-          (writeWords && readWords
-            ? " at " + writeWords + " the input price. Reading it would have cost " + readWords + " the input price."
-            : ".") +
-          " Most rebuilds follow an idle gap longer than the cache lifetime.",
+        note: told + " Most follow an idle gap longer than the cache lifetime. Rebuilds after a usage-limit pause aren't counted.",
         link: costCardLink("cache-rebuilds", "What causes a rebuild"),
       })
     );

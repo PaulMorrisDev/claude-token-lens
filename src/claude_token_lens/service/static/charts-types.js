@@ -1109,7 +1109,22 @@ function scatter(ctx, data) {
     legend: present.map(function (s) {
       return { label: s.label, colour: entityColour("mode", s.key), key: undefined };
     }),
-    note: "Drag across the chart to list only the sessions that started in that time.",
+    // The keyboard's brush: the sessions from one dot to another, in
+    // time order (the points are).
+    pick: function (from, to) {
+      var lo = dots[Math.min(from, to)].ms;
+      var hi = dots[Math.max(from, to)].ms;
+      frame.brushRange = [lo, hi];
+      var x0 = x(lo);
+      var x1 = x(hi);
+      if (x1 - x0 < 4) {
+        x0 -= 2;
+        x1 += 2;
+      }
+      brushLayer.call(brush.move, [Math.max(0, x0), Math.min(inner.w, x1)]);
+      if (typeof opts.brushed === "function") opts.brushed(frame.brushRange);
+    },
+    note: "Drag across the chart, or hold Shift and press the arrow keys, to list only the sessions that started in that time.",
   };
 }
 

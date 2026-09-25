@@ -204,36 +204,31 @@ def corpus_archetype(records: Sequence[SessionRecord]) -> tuple[str | None, dict
 
 _ARCHETYPE_DESCRIPTIONS: dict[str, str] = {
     "overseer-fanout": (
-        "The top-level session runs a higher-tier model than the agents it"
-        " spawns, and spawns three or more of them — an overseer directing"
-        " implementation work out to cheaper agents."
+        "The main session runs a larger model than its subagents and starts"
+        " three or more of them, handing the work out to cheaper models."
     ),
     "plan-high-implement-low": (
-        "The session plans at a higher tier, then hands implementation to"
-        " lower-tier model turns or agents once plan mode exits."
+        "The session plans on a larger model, then hands the building to a"
+        " smaller model or to subagents once plan mode ends."
     ),
     "workflow-heavy": (
-        "The session runs at least one Workflow (ultracode) run, coordinating"
-        " many agents through a scripted multi-phase run rather than ad-hoc"
-        " spawns."
+        "The session runs at least one workflow, which starts many subagents"
+        " in planned phases rather than one at a time."
     ),
     "effort-varied": (
-        "The session mixes at least two effort levels, each accounting for a"
-        " fifth or more of its turns, rather than running at one fixed effort"
-        " throughout."
+        "The session uses two or more effort levels, each for at least a"
+        " fifth of its replies, rather than one level throughout."
     ),
     "single-model": (
-        "The session stays on one model family throughout and spawns at most"
-        " two agents — a single operator doing the work directly."
+        "The session stays on one model and starts at most two subagents:"
+        " you and Claude do the work directly."
     ),
     "chat-only": (
-        "The session never spawns an agent and uses nothing beyond read-only"
-        " inspection tools (Read/Grep/Glob) — a conversation, not an agentic"
-        " run."
+        "The session starts no subagents and only reads and searches files"
+        " (Read, Grep, Glob): a conversation rather than a build."
     ),
     "mixed": (
-        "The session doesn't cleanly match any single archetype's evidence"
-        " thresholds."
+        "The session doesn't clearly fit any one of the other patterns."
     ),
 }
 

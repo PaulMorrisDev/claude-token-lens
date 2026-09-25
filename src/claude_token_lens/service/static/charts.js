@@ -306,6 +306,7 @@ function buildFrame(key, spec, opts) {
     form: null,
     points: [],
     cursor: -1,
+    anchor: -1,
     table: null,
     patterns: {},
     linkScope: null,
@@ -402,6 +403,7 @@ function wireKeys(frame) {
   frame.plot.addEventListener("keydown", function (event) {
     var points = frame.points;
     if (!points.length) return;
+    var from = frame.cursor;
     var next = frame.cursor;
     if (event.key === "ArrowRight" || event.key === "ArrowDown") next = Math.min(points.length - 1, frame.cursor + 1);
     else if (event.key === "ArrowLeft" || event.key === "ArrowUp") next = Math.max(0, frame.cursor - 1);
@@ -421,6 +423,12 @@ function wireKeys(frame) {
     } else return;
     event.preventDefault();
     moveCursor(frame, next);
+    // Shift with a move picks the marks from where it started (a chart
+    // that takes a range, the session scatter's time brush).
+    if (event.shiftKey && frame.pickRange) {
+      if (frame.anchor === -1) frame.anchor = from === -1 ? next : from;
+      frame.pickRange(frame.anchor, next);
+    } else frame.anchor = -1;
   });
   frame.plot.addEventListener("blur", function () {
     releaseCursor(frame);
@@ -455,6 +463,7 @@ function moveCursor(frame, index) {
 }
 
 function releaseCursor(frame) {
+  frame.anchor = -1;
   if (frame.cursor === -1) return;
   frame.cursor = -1;
   if (frame.svg) frame.svg.select("g.chart-cursor").remove();
@@ -559,6 +568,7 @@ function drawFrame(frame, how) {
     frame.svg.attr("height", 0);
     frame.plot.appendChild(el("div", { class: "chart-empty" }, [emptyState(result.empty, null, frame.opts.emptyNext)]));
     frame.points = [];
+    frame.pickRange = null;
     frame.table = null;
     frame.summaryNode.textContent = result.empty;
     setLegend(frame, []);
@@ -566,6 +576,7 @@ function drawFrame(frame, how) {
     return;
   }
   frame.points = result.points || [];
+  frame.pickRange = result.pick || null;
   frame.table = result.table || null;
   var template = (result.variant && frame.spec.alt && frame.spec.alt[result.variant]) || frame.spec.summary;
   frame.summaryNode.textContent = frame.opts.summary || fillSummary(template, result.facts || {});

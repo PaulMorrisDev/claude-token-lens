@@ -197,8 +197,10 @@ Every table on every page is `dataGrid`:
   Quality grid);
 - a report table of more than 12 rows opens on its first 10, in the
   order it is sorted, with a "Show all N rows" button (a grouped or
-  per-row-kind table stays whole); an evidence link to a later row
-  shows them all first;
+  per-row-kind table stays whole, and a table of more than 200 rows
+  scrolls instead); a dated table listed oldest first (`NEWEST_LAST`:
+  by day, week, month and five-hour block) opens on its latest 10 until
+  it is sorted; an evidence link to a later row shows them all first;
 - only the visible rows drawn once a table passes 200 rows;
 - an evidence link's row scrolled into view and briefly highlighted
   (`pulseRow`): a glow under the row's text fades over 1.2 seconds.
@@ -302,7 +304,8 @@ screen.
 - **Keyboard:** the plot is one tab stop. The arrow keys move a cursor
   from mark to mark and read it in the tooltip, Home and End jump to
   the ends, Enter opens the mark where it leads somewhere, and Esc
-  lets go.
+  lets go. On the session scatter, Shift with the arrow keys picks
+  the sessions from where the cursor started, as the brush does.
 - **Brush:** on the session scatter, dragging across a time range calls
   `opts.brushed` with the range, so the grid below can list only those
   sessions.
@@ -571,8 +574,9 @@ Glossary has no figures and shows neither.
 4. **Spend › Usage** — chart 1, daily spend, the same chart as the
    Overview's with a **Split by** choice: main session and subagents
    (`/api/daily-usage?split=agent`) or model (`split=model`, one colour
-   per tier). The choice is kept in the address (`?split=model`), so Back
-   and Forward switch it; a day leads to its sessions
+   per tier). The choice is kept in the address (`?split=model`), so a
+   reload or a link opens it, and it stays through a window change and a
+   visit to another page; a day leads to its sessions
    (`#/spend/sessions?day=YYYY-MM-DD`) and a change marker to what the
    change did. Then cost by model (the overview section's `by_model`
    table, placed here by `TABLE_PAGE_MAP`), the

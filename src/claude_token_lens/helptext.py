@@ -1645,6 +1645,16 @@ TABLE_COPY: dict[str, TableCopy] = {
             "pct": ("Share", "Share of sessions."),
             "description": ("What it means", "How the pattern is recognised."),
         },
+        # One per workstyle._ARCHETYPE_DESCRIPTIONS key (tested).
+        value_labels={
+            "overseer-fanout": "Lead session hands out work",
+            "plan-high-implement-low": "Plan big, build small",
+            "workflow-heavy": "Workflow runs",
+            "effort-varied": "Mixed effort levels",
+            "single-model": "One model, working directly",
+            "chat-only": "Conversation only",
+            "mixed": "No single pattern",
+        },
     ),
     "workflows_summary": TableCopy(
         title="Workflow runs",
@@ -3974,6 +3984,37 @@ TABLE_COPY: dict[str, TableCopy] = {
         },
     ),
 }
+
+#: Plain names for metrics capture's task words
+#: (``capture_catalogue.TAG_VOCAB["task"]``, tested), added to every table
+#: with a task column so "bugfix" reads "Bug fix". A table's own label for
+#: a word wins.
+TASK_LABELS: dict[str, str] = {
+    "feature": "Feature",
+    "bugfix": "Bug fix",
+    "refactor": "Refactor",
+    "debug": "Debugging",
+    "docs": "Docs",
+    "review": "Review",
+    "test": "Tests",
+    "research": "Research",
+    "plan": "Planning",
+    "ops": "Ops",
+    "chat": "Chat",
+}
+
+TASK_TABLES: tuple[str, ...] = (
+    "habits_by_task",
+    "habits_brief_templates",
+    "habits_setups",
+    "habits_agents_by_task",
+    "habits_outcomes",
+    "compaction_sim_by_task",
+)
+
+for _name in TASK_TABLES:
+    for _word, _label in TASK_LABELS.items():
+        TABLE_COPY[_name].value_labels.setdefault(_word, _label)
 
 
 # -- data quality ----------------------------------------------------------
