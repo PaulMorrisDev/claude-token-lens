@@ -25,7 +25,7 @@ import re
 import subprocess
 import sys
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import PureWindowsPath
 from typing import Callable
 
 from . import invocation
@@ -136,8 +136,10 @@ def port_holder(port: int, *, runner: Runner) -> tuple[int, str] | None:
 
 def is_python(program: str) -> bool:
     """Whether a program path is a Python interpreter (so a dashboard of
-    this tool, not Docker's or another program's)."""
-    return Path(program).name.lower() in _PYTHON_NAMES
+    this tool, not Docker's or another program's). Read as a Windows
+    path, which splits on either slash: the port holder's path comes
+    from Windows."""
+    return PureWindowsPath(program).name.lower() in _PYTHON_NAMES
 
 
 def stop_process(pid: int, *, runner: Runner) -> bool:

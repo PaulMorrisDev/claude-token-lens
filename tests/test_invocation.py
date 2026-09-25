@@ -288,6 +288,27 @@ def test_the_cli_prints_commands_in_this_installs_form(cli_form, monkeypatch, ca
     assert err == "claude-token-lens pricing-check: done\n"
 
 
+def test_the_cli_runs_with_no_console_streams(cli_form, monkeypatch):
+    # pythonw, which the logon service runs under, has no stdout or
+    # stderr: print() writes nothing there, and the dashboard must start.
+    import sys
+
+    printed = []
+
+    def fake(args):
+        print("Serving on http://127.0.0.1:8765 - claude-token-lens report")
+        print("claude-token-lens serve: started", file=sys.stderr)
+        printed.append(True)
+        return 0
+
+    monkeypatch.setattr(cli_form, "_cmd_pricing_check", fake)
+    monkeypatch.setattr(sys, "stdout", None)
+    monkeypatch.setattr(sys, "stderr", None)
+    assert cli_form.main(["pricing-check"]) == 0
+    assert printed == [True]
+    assert sys.stdout is None and sys.stderr is None
+
+
 def test_cli_help_comes_in_this_installs_form(cli_form, capsys):
     import sys
 

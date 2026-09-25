@@ -86,7 +86,7 @@ python -m pip install git+https://github.com/PaulMorrisDev/claude-token-lens
 python -m claude_token_lens --version
 ```
 
-The second line should print `claude-token-lens 0.6.1` or later.
+The second line should print `claude-token-lens 0.6.2` or later.
 
 No git on this machine, or no pip at all? See
 [Other ways to install](#other-ways-to-install) below.
@@ -363,6 +363,7 @@ python -m pip uninstall claude-token-lens
 
 | What you see | What to do |
 |---|---|
+| pip stops with "Failed to write executable" and `[WinError 2] ... claude-token-lens.exe' -> '...claude-token-lens.exe.deleteme'` | pip couldn't create the `claude-token-lens.exe` launcher in your Python's `Scripts` folder. Either you can't write to that folder, or antivirus blocked the new `.exe`, which is common on work machines. Nothing here needs that launcher. Install for your user instead: `python -m pip install --user --force-reinstall git+https://github.com/PaulMorrisDev/claude-token-lens`. If that stops the same way, use the single-file [`claude-token-lens.pyz`](https://github.com/PaulMorrisDev/claude-token-lens/releases/latest/download/claude-token-lens.pyz), which pip never touches. Run `python claude-token-lens.pyz` wherever this guide says `python -m claude_token_lens` |
 | `claude-token-lens` "is not recognized as a name of a cmdlet" or "command not found" | pip's Scripts folder isn't on your `PATH`. Use `python -m claude_token_lens` instead; everything else stays the same. The dashboard's own commands already use the form that runs on your machine (from 0.6.1). Set `CLAUDE_TOKEN_LENS_COMMAND` where the service runs to pick another |
 | The dashboard still looks old after updating (the foot of its sidebar shows an old version, or none at all) | Something else is still serving port 8765, such as an older copy started by hand, from another Python install, or from Docker. See [An old dashboard won't go away](#an-old-dashboard-wont-go-away). If `--version` shows the new version but the dashboard doesn't, it runs from another Python: see [An update doesn't take](#an-update-doesnt-take-more-than-one-python) |
 | http://127.0.0.1:8765 doesn't open | Run `python -m claude_token_lens serve` in a PowerShell window and leave it open; any error prints there. "Already in use by another serve" names the process that has the dashboard's database open: stop that one first |

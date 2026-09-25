@@ -4758,9 +4758,13 @@ def main(argv: list[str] | None = None) -> int:
     streams = sys.stdout, sys.stderr
     data = bool(raw_argv) and raw_argv[0] in _DATA_OUTPUT
     prefix = invocation.SHORT if data else invocation.command_prefix()
+    # Under pythonw (the logon service) both are None and print() writes
+    # nothing: a wrapper there would fail on the first print instead.
     if prefix != invocation.SHORT:
-        sys.stdout = invocation.RewritingStream(sys.stdout, prefix)
-        sys.stderr = invocation.RewritingStream(sys.stderr, prefix)
+        if sys.stdout is not None:
+            sys.stdout = invocation.RewritingStream(sys.stdout, prefix)
+        if sys.stderr is not None:
+            sys.stderr = invocation.RewritingStream(sys.stderr, prefix)
     try:
         parser = _make_parser()
         args = parser.parse_args(raw_argv)  # may raise SystemExit (--version, --help, errors)
