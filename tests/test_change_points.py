@@ -231,6 +231,27 @@ def test_a_dominant_model_shift_between_sessions_is_a_change_point(tmp_path):
     assert point.label == "Model changed"
 
 
+def test_sessions_in_different_projects_are_not_compared(tmp_path):
+    """Two projects on steady, different models: moving between them
+    changes nothing. The dashboard's corpus comes from the store, whose
+    bundles have no ``project_dir``, so each is known by its slug."""
+    from dataclasses import replace
+
+    from claudeglass.corpus import load_corpus
+
+    shop, docs = tmp_path / "C--work-shop", tmp_path / "C--work-docs"
+    for folder in (shop, docs):
+        folder.mkdir()
+    _session_file(shop, "s1", claude_md_chars=1000, model="claude-opus-5", ts_prefix="2026-09-10")
+    _session_file(docs, "s2", claude_md_chars=4000, model="claude-sonnet-5", ts_prefix="2026-09-11")
+    _session_file(shop, "s3", claude_md_chars=1000, model="claude-opus-5", ts_prefix="2026-09-12")
+    _session_file(docs, "s4", claude_md_chars=4000, model="claude-sonnet-5", ts_prefix="2026-09-13")
+    corpus = load_corpus([shop, docs])
+    assert change_points.change_points(tmp_path, corpus) == []
+    corpus.sessions[:] = [replace(bundle, project_dir="") for bundle in corpus.sessions]
+    assert change_points.change_points(tmp_path, corpus) == []
+
+
 def test_a_transcript_change_a_recorded_change_explains_is_not_a_second_point(tmp_path):
     """A model setting changed between two sessions, and the second one
     shows it: one change, not two (a second would cut the first one's

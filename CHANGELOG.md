@@ -41,6 +41,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   "Register Scheduled Task ... and start it now" and listed the unit
   file it deletes under "will write". They now say "Stop the dashboard
   and remove its logon service" and "will remove".
+- The dashboard compared each session with the one before it in *any*
+  project when looking for changes the transcripts show, so moving
+  between two projects on different models, effort levels or CLAUDE.md
+  sizes marked a "Model changed" (or effort, or CLAUDE.md size) change on
+  the spend chart and under "Your changes and what they did" on
+  Setup › Settings each time. It now compares sessions within the same
+  project only, as the reports already did.
 
 ## [0.8.0] - 2026-09-25
 

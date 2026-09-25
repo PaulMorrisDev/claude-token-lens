@@ -464,7 +464,9 @@ def _session_signature(bundle) -> _SessionSignature | None:
         return None
     return _SessionSignature(
         start=start,
-        project=bundle.project_dir,
+        # The dashboard's corpus comes from the store, which keeps no
+        # project folder: the slug tells its projects apart instead.
+        project=bundle.project_dir or bundle.slug,
         claude_md_chars=_claude_md_chars(top),
         model=_dominant(turn.model for turn in turns),
         effort=_dominant(turn.effort or "" for turn in turns) or "default",
