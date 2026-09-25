@@ -4362,3 +4362,45 @@ td.nowrap,
     color: Highlight;
   }
 }
+
+/* Glossary: How costs work and term anchors -------------------------------------- */
+
+/* How costs work: one prose card per concept (links.js's COST_CARDS),
+   stacked in order. panel() already borders, spaces and heads each
+   card; this only sets the rhythm of its own sentences and the weight
+   of its "what to do" link. Card text is plain <p>s, so it already
+   picks up .view p's reading-width cap. */
+.cost-card .panel-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.cost-card .panel-body p {
+  margin: 0;
+}
+
+.cost-card-action {
+  font-weight: var(--weight-semibold);
+}
+
+/* Terms: each entry is a <div> wrapping its dt/dd pair, so a term link
+   (?term=<slug>) has an id to scroll to and pulse (grid.js's
+   pulseNode), the same way an evidence link's target does; the dt/dd
+   selectors above still match through it. "Why it matters" is the cost
+   card's own rule sentence (costs.js's cardRuleText), set off from the
+   plain definition above it. */
+.glossary-why {
+  margin: var(--space-3) 0 0;
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid color-mix(in srgb, var(--accent) 25%, var(--border));
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft);
+  color: var(--ink-2);
+  font-size: var(--text-sm);
+  max-width: var(--measure);
+}
+
+.glossary-why strong {
+  color: var(--ink-1);
+}
