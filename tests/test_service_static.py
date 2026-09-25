@@ -1594,8 +1594,10 @@ def test_available_saving_is_never_below_an_action_it_lists() -> None:
     assert "tables.model_swap_by_agent_type" in levers
     assert "model_swap_summary" not in levers
     available = _function_source(_app_js(), "availableSaving")
-    assert "rec.saving_usd" in available
-    assert "!LEVER_RULES[rec.id]" in available
+    # Priced actions are counted as Actions lists them, one group each.
+    assert "groupSavingUsd(group)" in available
+    assert "!LEVER_RULES[group.id]" in available
+    assert "rec.saving_usd" in _function_source(_app_js(), "groupSavingUsd")
     assert '"model-tier": "model_swap"' in _app_js()
 
 
@@ -2468,7 +2470,7 @@ def test_recommendations_and_checks_open_from_the_address() -> None:
     assert "params" in _function_source(app_js, "pageLink")
     assert "history.replaceState" in _function_source(app_js, "replaceParams")
     overview = _function_source(app_js, "renderActions")
-    assert '{ id: rec.key || rec.id }' in overview
+    assert 'pageLink("actions/recommendations", title, { id: group.key })' in overview
     assert 'pageLink("actions/checks", check.question, { id: check.id })' in _function_source(app_js, "renderRecommendationDetail")
     assert 'pageLink("actions/recommendations", groupTitle(group), { id: group.key })' in _function_source(app_js, "renderCheckDetail")
     # An id this window doesn't have says so, instead of opening nothing.

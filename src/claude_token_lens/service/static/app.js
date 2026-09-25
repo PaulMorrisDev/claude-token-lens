@@ -40,7 +40,7 @@ import { revealEvidence } from "./evidence.js";
 import { setSectionChart } from "./grid.js";
 import { sectionChart } from "./charts-types.js";
 import { renderOverview } from "./page-overview.js";
-import { renderQuickActions, renderRecommendations } from "./page-actions.js";
+import { groupRecommendations, renderQuickActions, renderRecommendations } from "./page-actions.js";
 import { renderSavings, renderSessions, renderUsage } from "./page-spend.js";
 import { renderCache, renderTtl } from "./page-cache.js";
 import { renderAgentQuality, renderAgents, renderContextFiles } from "./page-agents.js";
@@ -362,7 +362,9 @@ function updateSidebar(view) {
 }
 
 // The number of "Do this" recommendations for the window and project,
-// beside Actions. Hidden when there are none or they can't be counted.
+// beside Actions, counted as the inbox lists them (one item for a rule
+// that fires per agent type). Hidden when there are none or they can't
+// be counted.
 var badgeFor = null;
 
 function refreshActionsBadge(again) {
@@ -375,8 +377,8 @@ function refreshActionsBadge(again) {
     if (!badge) return;
     var body = result.body;
     var recs = body && body.ok === true && Array.isArray(body.data) ? body.data : [];
-    var count = recs.filter(function (rec) {
-      return rec.severity === "action";
+    var count = groupRecommendations(recs).filter(function (group) {
+      return group.severity === "action";
     }).length;
     badge.textContent = "";
     badge.hidden = !count;

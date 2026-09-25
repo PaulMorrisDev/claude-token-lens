@@ -176,7 +176,8 @@ def test_the_chart_draws_in_after_the_figures() -> None:
     overview = _text("page-overview.js")
     assert re.search(r"var CHART_AFTER_MS = 80;", overview)
     assert "entrance + CHART_AFTER_MS - performance.now()" in overview
-    assert "Promise.all([dailyLoad, impactLoad, reportLoad, figuresDone])" in overview
+    # It also waits for the window's sessions, which its reading gives.
+    assert "Promise.all([dailyLoad, impactLoad, reportLoad, figuresDone, summaryLoad])" in overview
     # A failure drawing the figures doesn't stop the chart.
     assert "var figuresDone = figuresDrawn.then(null, function (err) {" in overview
     # The delay reaches every transition a chart form starts.

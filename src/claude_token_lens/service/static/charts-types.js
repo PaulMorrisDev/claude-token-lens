@@ -157,6 +157,39 @@ function utcDay(ms) {
   return new Date(ms).toISOString().slice(0, 10);
 }
 
+// The UTC days a window with fixed bounds reaches, as /api/daily-usage
+// counts them: from the day it starts to today. Given to daily spend as
+// {first, last}, so the axis spans the window, not only the days with
+// spend (a project picked, say). All time and since your last change
+// have no fixed start: {}.
+export function windowDays(windowValue, now) {
+  if (now === undefined) now = Date.now();
+  var hours = /^[0-9]+$/.test(String(windowValue)) ? Number(windowValue) * 24 : { "1h": 1, "24h": 24 }[windowValue];
+  var start;
+  if (hours) {
+    start = now - hours * 3600000;
+  } else if (windowValue === "today") {
+    // The service's "today" starts at local midnight.
+    var midnight = new Date(now);
+    midnight.setHours(0, 0, 0, 0);
+    start = midnight.getTime();
+  } else {
+    return {};
+  }
+  return { first: utcDay(start), last: utcDay(now) };
+}
+
+// A day in a span's words: "26 Aug", with the year when the span crosses one.
+var SPAN_YEAR_FORMAT = new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" });
+
+function spanText(days) {
+  var first = days[0];
+  var last = days[days.length - 1];
+  if (days.length === 1) return "on " + dayLabel(first, true);
+  if (first.slice(0, 4) === last.slice(0, 4)) return "from " + dayLabel(first) + " to " + dayLabel(last);
+  return "from " + SPAN_YEAR_FORMAT.format(new Date(first + "T00:00:00Z")) + " to " + SPAN_YEAR_FORMAT.format(new Date(last + "T00:00:00Z"));
+}
+
 // Every day from first to last, so a quiet day shows as a gap rather
 // than vanishing.
 function dayRange(first, last) {
@@ -187,9 +220,44 @@ export function dailyChanges(impact) {
   });
 }
 
-// data: {rows, split, first, last, today, changes} or the rows alone.
-// rows are /api/daily-usage's (day, model, cost, and agent with
-// split=agent). changes: [{day, label, open}] drawn as labelled rules.
+// A change's label beside its rule: to the right when it fits before
+// the next rule, the next label and the chart's edge; else to the left;
+// else cut to the larger room. Its whole name stays in the tooltip and,
+// for a link, in its name. spans: the labels placed so far, [from, to].
+function placeRuleLabel(label, full, cx, ruleXs, spans, bounds) {
+  var node = label.node();
+  var width = node && node.getComputedTextLength ? node.getComputedTextLength() : 0;
+  if (!width) return;
+  var rightEnd = bounds[1];
+  var leftEnd = bounds[0];
+  ruleXs.forEach(function (rx) {
+    if (rx > cx + 1) rightEnd = Math.min(rightEnd, rx - 4);
+    else if (rx < cx - 1) leftEnd = Math.max(leftEnd, rx + 4);
+  });
+  spans.forEach(function (span) {
+    if (span[0] >= cx) rightEnd = Math.min(rightEnd, span[0] - 6);
+    else leftEnd = Math.max(leftEnd, span[1] + 6);
+  });
+  var rightRoom = rightEnd - (cx + 4);
+  var leftRoom = cx - 4 - leftEnd;
+  var right = width <= rightRoom || (width > leftRoom && rightRoom >= leftRoom);
+  var room = right ? rightRoom : leftRoom;
+  if (width > room) {
+    var text = label.text();
+    label.text(fitLabel(full, Math.max(2, Math.floor((Math.max(0, room) / width) * text.length))));
+    width = node.getComputedTextLength();
+  }
+  label.attr("x", right ? cx + 4 : cx - 4).attr("text-anchor", right ? "start" : "end");
+  spans.push(right ? [cx + 4, cx + 4 + width] : [cx - 4 - width, cx - 4]);
+}
+
+// data: {rows, split, first, last, today, changes, sessionsTotal} or
+// the rows alone. rows are /api/daily-usage's (day, model, cost, and
+// agent with split=agent). first and last (windowDays) widen the axis to
+// the whole window; a day with spend outside them still shows.
+// changes: [{day, label, open}] drawn as labelled rules. sessionsTotal
+// is /api/summary's total_cost, which counts whole sessions: when it
+// reads differently, the summary gives it and says why.
 // opts.open(day) leads from a day to its sessions.
 function stackedColumns(ctx, data) {
   var opts = ctx.opts;
@@ -226,7 +294,9 @@ function stackedColumns(ctx, data) {
   );
   if (!seen.length || !grand) return { empty: opts.empty || "No spend in this window." };
 
-  var days = dayRange((data && data.first) || seen[0], (data && data.last) || seen[seen.length - 1]);
+  var first = data && data.first && data.first < seen[0] ? data.first : seen[0];
+  var last = data && data.last && data.last > seen[seen.length - 1] ? data.last : seen[seen.length - 1];
+  var days = dayRange(first, last);
   var series = (split === "agent" ? AGENT_SERIES : TIER_SERIES).filter(function (s) {
     return days.some(function (day) {
       return (byDay[day] || {})[s.key] > 0;
@@ -258,6 +328,8 @@ function stackedColumns(ctx, data) {
 
   var axis = moneyAxis();
   var inner = ctx.size(opts.height || 240, { top: changes.length ? 40 : 24 });
+  // Change labels sit 12px above the plot; "so far" sits over them.
+  var soFarY = changes.length ? -28 : -8;
   var x = d3.scaleBand().domain(days).range([0, inner.w]).paddingInner(0.3).paddingOuter(0.15);
   var width = Math.min(MAX_BAR, x.bandwidth());
   var inset = (x.bandwidth() - width) / 2;
@@ -318,7 +390,9 @@ function stackedColumns(ctx, data) {
     return d.day;
   });
 
-  // "so far" over today's column: the day isn't over.
+  // "so far" over today's column, in the margin above the plot: no bar
+  // reaches it, and it sits over the change labels, so a taller
+  // neighbour or a change can't run into it. The day isn't over.
   var partial = columns.filter(function (c) {
     return c.partial && c.total > 0;
   });
@@ -334,43 +408,58 @@ function stackedColumns(ctx, data) {
     .text("so far")
     .merge(soFar)
     .attr("x", function (d) {
-      return x(d.day) + x.bandwidth() / 2;
+      // Kept inside the chart's right edge (today is the last column).
+      return Math.min(x(d.day) + x.bandwidth() / 2, inner.w + ctx.margin.right - 20);
     })
-    .attr("y", function (d) {
-      return y(d.total) - 6;
-    });
+    .attr("y", soFarY);
 
   // Changes you made, as labelled rules that lead to what they did. A
   // label that leads somewhere is a link in the one layer screen readers
   // reach: a Tab stop that Enter or Space opens, like a click.
+  // Left to right, so labels are placed, and reached by Tab, in the
+  // order they read.
   var rules = ctx.layer("rules");
   var ruleLinks = ctx.layer("rule-links", { links: true });
   rules.selectAll("*").remove();
   ruleLinks.selectAll("*").remove();
-  changes.forEach(function (change) {
-    var cx = Math.round(x(change.day) + x.bandwidth() / 2) + 0.5;
-    rules.append("line").attr("class", "chart-rule").attr("x1", cx).attr("x2", cx).attr("y1", -8).attr("y2", inner.h);
-    var label = (change.open ? ruleLinks : rules)
-      .append("text")
-      .attr("class", "chart-rule-label")
-      .attr("x", cx + 4)
-      .attr("y", -12)
-      .text(fitLabel(change.label, 28));
-    if (!change.open) return;
-    label
-      .classed("is-openable", true)
-      .attr("tabindex", 0)
-      .attr("role", "link")
-      .attr("aria-label", change.label + ", changed on " + dayLabel(change.day, true) + ": see what it did")
-      .on("click", change.open)
-      .on("keydown", function (event) {
-        if (event.key !== "Enter" && event.key !== " ") return;
-        // The plot's own keys (Enter opens a day's sessions) stay out of it.
-        event.preventDefault();
-        event.stopPropagation();
-        change.open();
-      });
+  var ruleXs = changes.map(function (change) {
+    return Math.round(x(change.day) + x.bandwidth() / 2) + 0.5;
   });
+  var labelSpans = [];
+  var labelBounds = [-ctx.margin.left + 4, inner.w + ctx.margin.right - 2];
+  changes
+    .map(function (change, i) {
+      return { change: change, cx: ruleXs[i] };
+    })
+    .sort(function (a, b) {
+      return a.cx - b.cx;
+    })
+    .forEach(function (placed) {
+      var change = placed.change;
+      var cx = placed.cx;
+      rules.append("line").attr("class", "chart-rule").attr("x1", cx).attr("x2", cx).attr("y1", -8).attr("y2", inner.h);
+      var label = (change.open ? ruleLinks : rules)
+        .append("text")
+        .attr("class", "chart-rule-label")
+        .attr("x", cx + 4)
+        .attr("y", -12)
+        .text(fitLabel(change.label, 28));
+      placeRuleLabel(label, change.label, cx, ruleXs, labelSpans, labelBounds);
+      if (!change.open) return;
+      label
+        .classed("is-openable", true)
+        .attr("tabindex", 0)
+        .attr("role", "link")
+        .attr("aria-label", change.label + ", changed on " + dayLabel(change.day, true) + ": see what it did")
+        .on("click", change.open)
+        .on("keydown", function (event) {
+          if (event.key !== "Enter" && event.key !== " ") return;
+          // The plot's own keys (Enter opens a day's sessions) stay out of it.
+          event.preventDefault();
+          event.stopPropagation();
+          change.open();
+        });
+    });
 
   columns.forEach(function (column) {
     column.tip = {
@@ -411,10 +500,18 @@ function stackedColumns(ctx, data) {
   var peak = columns.reduce(function (best, c) {
     return c.total > best.total ? c : best;
   }, columns[0]);
+  // The window's whole sessions, when they read differently from the
+  // replies drawn: the Spend figure beside this chart counts them. More
+  // when sessions began before the first day; less when the first day
+  // began before the window (days run midnight to midnight UTC).
+  var sessionsUsd = data && typeof data.sessionsTotal === "number" && data.sessionsTotal > 0 ? data.sessionsTotal : null;
+  var sessionsTotal = sessionsUsd !== null && moneyText(sessionsUsd) !== moneyText(grand) ? moneyText(sessionsUsd) : null;
   return {
+    variant: sessionsTotal ? (sessionsUsd > grand ? "sessions" : "firstDay") : null,
     facts: {
       total: moneyText(grand),
-      days: days.length === 1 ? "1 day" : thousands(days.length) + " days",
+      span: spanText(days),
+      sessionsTotal: sessionsTotal,
       peakDay: dayLabel(peak.day, true),
       peak: moneyText(peak.total),
     },
@@ -937,19 +1034,36 @@ function logTicks(domain) {
   });
 }
 
+// The sessions a scatter leaves out, as a sentence without its full
+// stop: "3 cost nothing and aren't plotted". Null when it draws them all.
+function unplottedText(sessions) {
+  var free = 0;
+  var undated = 0;
+  sessions.forEach(function (d) {
+    if (!(d.cost > 0)) free += 1;
+    else if (isNaN(d.ms)) undated += 1;
+  });
+  var left = free + undated;
+  if (!left) return null;
+  var plotted = left === 1 ? " isn't plotted" : " aren't plotted";
+  if (free && undated) return thousands(free) + " cost nothing and " + thousands(undated) + (undated === 1 ? " has" : " have") + " no start time, so " + thousands(left) + plotted;
+  if (free) return thousands(free) + " cost nothing and" + plotted;
+  return thousands(undated) + (undated === 1 ? " has" : " have") + " no start time and" + plotted;
+}
+
 // data: /api/sessions rows, or {sessions}. opts.open(row) opens the
 // session; opts.brushed([fromMs, toMs] or null) filters the page's grid.
 function scatter(ctx, data) {
   var opts = ctx.opts;
   var frame = ctx.frame;
   var rows = Array.isArray(data) ? data : (data && data.sessions) || [];
-  var dots = rows
-    .map(function (row) {
-      return { id: row.id, ms: Date.parse(row.first_ts), cost: num(row.total_cost), mode: modeKey(row.mode), row: row };
-    })
-    .filter(function (d) {
-      return !isNaN(d.ms) && d.cost > 0;
-    });
+  var sessions = rows.map(function (row) {
+    return { id: row.id, ms: Date.parse(row.first_ts), cost: num(row.total_cost), mode: modeKey(row.mode), row: row };
+  });
+  // A log scale has no place for a session that cost nothing.
+  var dots = sessions.filter(function (d) {
+    return !isNaN(d.ms) && d.cost > 0;
+  });
   if (dots.length < MIN_POINTS) return { empty: opts.empty || "Fewer than three sessions cost anything in this window." };
 
   var axis = moneyAxis();
@@ -1103,9 +1217,15 @@ function scatter(ctx, data) {
     });
   var median = d3.median(sorted) || sorted[0];
   var ratio = sorted[sorted.length - 1] / median;
+  // The grid and the Sessions tile count every session: the reading says
+  // how many aren't drawn, and why.
+  var unplotted = unplottedText(sessions);
   return {
+    variant: unplotted ? "unplotted" : null,
     facts: {
       count: thousands(dots.length),
+      total: thousands(sessions.length),
+      unplotted: unplotted,
       max: moneyText(sorted[sorted.length - 1]),
       ratio: ratio >= 10 ? thousands(ratio) : String(Number(ratio.toFixed(1))),
     },

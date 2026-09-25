@@ -18,7 +18,6 @@ import {
   enterInTurn,
   errorNotice,
   loadingNode,
-  SEVERITY_ORDER,
   severityChip,
   tile,
   tileRow,
@@ -29,7 +28,8 @@ import { renderTable } from "./grid.js";
 import { pageLink, viewIntro } from "./links.js";
 import { renderLogonNotice } from "./shell.js";
 import { chartError, holdChart, setChartHeight } from "./charts.js";
-import { dailyChanges, meter, renderChart, savingsLevers, sparkline } from "./charts-types.js";
+import { dailyChanges, meter, renderChart, savingsLevers, sparkline, windowDays } from "./charts-types.js";
+import { groupRecommendations, groupSavingUsd, groupTitle, listSaving } from "./page-actions.js";
 
 // A page draw that a newer one (a new window) has replaced: its late
 // answers are dropped, so they can't take the chart back.
@@ -195,14 +195,15 @@ function moneyTile(label, usd, opts) {
 var LEVER_RULES = { "model-tier": "model_swap" };
 
 // The most the ways to save could come to: the four Savings levers, plus
-// any priced action no lever counts (lower effort, say). Every action's
-// own saving is then at or below it.
-function availableSaving(levers, recs) {
+// any priced action no lever counts (lower effort, say). An action is an
+// item on Actions (groupRecommendations), counted once with all its
+// agent types. Every action's own saving is then at or below it.
+function availableSaving(levers, groups) {
   var total = levers.reduce(function (sum, lever) {
     return sum + (lever.usd > 0 ? lever.usd : 0);
   }, 0);
-  recs.forEach(function (rec) {
-    if (typeof rec.saving_usd === "number" && rec.saving_usd > 0 && !LEVER_RULES[rec.id]) total += rec.saving_usd;
+  groups.forEach(function (group) {
+    if (!LEVER_RULES[group.id]) total += groupSavingUsd(group);
   });
   return total;
 }
@@ -215,8 +216,11 @@ function renderTiles(container, facts, meta, dailyRows) {
   var ratioWords = ratio ? fraction(ratio) : "";
   var subagentRuns = Math.max(0, (facts.summary.transcripts || 0) - (facts.summary.sessions || 0));
 
+  // Whole sessions (/api/summary): the daily spend chart counts replies
+  // by the day they were sent, and says so beside this figure.
   var spend = moneyTile("Spend", facts.cost, {
     delta: hasPrevious ? deltaChip(facts.cost, facts.previousCost, { period: period }) : null,
+    note: "Every session with a reply in this window, earlier replies included.",
     class: "overview-spend",
   });
   var available = saving > 0
@@ -290,29 +294,11 @@ function addSpendTrend(spendTile, rows) {
 
 // -- the next best actions ---------------------------------------------------------------
 
-function severityRank(severity) {
-  var rank = SEVERITY_ORDER.indexOf(severity);
-  return rank === -1 ? SEVERITY_ORDER.length : rank;
-}
-
-// Most important first; among equals, the biggest saving; then the
-// service's own order.
-function rankActions(recs) {
-  return recs
-    .map(function (rec, i) {
-      return { rec: rec, i: i };
-    })
-    .sort(function (a, b) {
-      var saving = (Number(b.rec.saving_usd) || 0) - (Number(a.rec.saving_usd) || 0);
-      return severityRank(a.rec.severity) - severityRank(b.rec.severity) || saving || a.i - b.i;
-    })
-    .map(function (item) {
-      return item.rec;
-    });
-}
-
-function copyPromptButton(prompt) {
-  var node = button("Copy prompt", { variant: "quiet", icon: "prompt", class: "action-copy" });
+// about: the action it copies for. The button shows "Copy prompt" and is
+// named "Copy prompt for <action>", as codeBlockWithCopy names its
+// buttons, so five of them read as five different things.
+function copyPromptButton(prompt, about) {
+  var node = button("Copy prompt", { variant: "quiet", icon: "prompt", class: "action-copy", label: "Copy prompt" + (about ? " for " + about : "") });
   node.addEventListener("click", function () {
     copyToClipboard(prompt).then(function (ok) {
       toast(ok ? "Prompt copied. Paste it into Claude Code." : "Couldn't copy. Open the action and copy the prompt from there.", {
@@ -323,26 +309,33 @@ function copyPromptButton(prompt) {
   return node;
 }
 
-function renderActions(container, recs) {
+// The first five items on Actions › Recommendations, as it lists them
+// (groupRecommendations): a rule for several agent types is one item,
+// titled for all of them, and opens as one.
+function renderActions(container, groups) {
   clear(container);
-  var ranked = rankActions(recs);
-  if (!ranked.length) {
+  if (!groups.length) {
     container.appendChild(emptyState("Nothing stands out to change in this window.", null, "Pick a longer window, or check back after more sessions."));
     return;
   }
   var list = el("ol", { class: "next-actions" });
-  ranked.slice(0, 5).forEach(function (rec) {
-    var fix = (rec.fixes || [])[0];
-    var text = el("div", { class: "next-action-text" }, [el("p", { class: "next-action-title" }, [pageLink("actions/recommendations", rec.title, { id: rec.key || rec.id })])]);
-    if (rec.estimated_saving) text.appendChild(el("p", { class: "next-action-saving", text: rec.estimated_saving }));
-    var item = el("li", { class: "next-action" }, [el("div", { class: "next-action-severity" }, [severityChip(rec.severity)]), text]);
-    if (fix && fix.prompt) item.appendChild(el("div", { class: "next-action-copy" }, [copyPromptButton(fix.prompt)]));
+  groups.slice(0, 5).forEach(function (group) {
+    var many = group.members.length > 1;
+    var fix = (group.members[0].fixes || [])[0];
+    var title = groupTitle(group);
+    var text = el("div", { class: "next-action-text" }, [el("p", { class: "next-action-title" }, [pageLink("actions/recommendations", title, { id: group.key })])]);
+    var saving = listSaving(group);
+    if (saving) text.appendChild(el("p", { class: "next-action-saving", text: saving }));
+    var item = el("li", { class: "next-action" }, [el("div", { class: "next-action-severity" }, [severityChip(group.severity)]), text]);
+    // Several agent types have a prompt each: Actions lists them.
+    if (many) item.appendChild(el("div", { class: "next-action-copy" }, [pageLink("actions/recommendations", "See the " + thousands(group.members.length) + " prompts", { id: group.key })]));
+    else if (fix && fix.prompt) item.appendChild(el("div", { class: "next-action-copy" }, [copyPromptButton(fix.prompt, title)]));
     list.appendChild(item);
   });
   container.appendChild(list);
   container.appendChild(
     el("p", { class: "next-actions-more" }, [
-      pageLink("actions/recommendations", ranked.length > 5 ? "See all " + thousands(ranked.length) + " recommendations" : "See the recommendations in full"),
+      pageLink("actions/recommendations", groups.length > 5 ? "See all " + thousands(groups.length) + " recommendations" : "See the recommendations in full"),
     ])
   );
 }
@@ -423,7 +416,7 @@ function tableNamed(section, name) {
   })[0];
 }
 
-function renderScorecard(container, section, recs) {
+function renderScorecard(container, section, groups) {
   var dimTable = tableNamed(section, "dimensions");
   if (!dimTable || !dimTable.rows.length) {
     container.appendChild(emptyState("No scores for this window: it had no sessions to rate.", null, "Pick a longer window."));
@@ -461,9 +454,11 @@ function renderScorecard(container, section, recs) {
     }
     container.appendChild(line);
   }
+  // A rule's first item on Actions: a rule for several agent types is
+  // one item there, named for all of them.
   var byId = {};
-  recs.forEach(function (rec) {
-    if (!byId[rec.id]) byId[rec.id] = rec;
+  groups.forEach(function (group) {
+    if (!byId[group.id]) byId[group.id] = group;
   });
   // Tagged like a report table, so evidence links from a recommendation
   // find the row (evidence.js).
@@ -493,7 +488,7 @@ function renderScorecard(container, section, recs) {
       })
       .filter(Boolean)[0];
     if (mover && level < 5) {
-      links.appendChild(el("span", { class: "score-mover" }, [el("span", { text: "What moves it: " }), pageLink("actions/recommendations", mover.title, { id: mover.key || mover.id })]));
+      links.appendChild(el("span", { class: "score-mover" }, [el("span", { text: "What moves it: " }), pageLink("actions/recommendations", groupTitle(mover), { id: mover.key })]));
     }
     if (links.childNodes.length) item.appendChild(links);
     strip.appendChild(item);
@@ -610,6 +605,9 @@ export function renderOverview(panel) {
     var report = reportResult && reportResult.report;
     var meta = (report && report.meta) || {};
     var recs = recsBody && recsBody.ok === true ? recsBody.data || [] : [];
+    // Counted as Actions lists them: one item per rule and severity,
+    // whatever the number of agent types it's for.
+    var groups = groupRecommendations(recs);
 
     if (!summary.sessions) {
       body.hidden = true;
@@ -636,19 +634,19 @@ export function renderOverview(panel) {
       phrase: previous ? previous.phrase : null,
     };
     facts.previousCost = facts.previousSummary ? facts.previousSummary.total_cost || 0 : null;
-    facts.available = availableSaving(levers, recs);
+    facts.available = availableSaving(levers, groups);
     var tiles = renderTiles(tilesHost, facts, meta, dailyRows);
     addSpendTrend(tiles.spend, dailyRows);
     countTiles(tiles.counts);
     entrance = performance.now();
     facts.saving = tiles.saving;
-    facts.worth = recs.filter(function (rec) {
-      return rec.severity === "action" || rec.severity === "advice";
+    facts.worth = groups.filter(function (group) {
+      return group.severity === "action" || group.severity === "advice";
     }).length;
     sentence.appendChild(el("p", { class: "overview-summary", text: summarySentence(facts) }));
 
     if (recsBody && recsBody.ok === true) {
-      renderActions(actionsHost, recs);
+      renderActions(actionsHost, groups);
       enterInTurn(actionsHost.querySelectorAll(".next-action"), ACTIONS_AFTER_MS);
     } else {
       clear(actionsHost);
@@ -664,7 +662,7 @@ export function renderOverview(panel) {
       detailsBody.appendChild(errorNotice(reportResult.error));
       return;
     }
-    renderScorecard(scoreHost, findSection(report, "scorecard"), recs);
+    renderScorecard(scoreHost, findSection(report, "scorecard"), groups);
     renderDetails(detailsBody, report);
 
   });
@@ -678,7 +676,7 @@ export function renderOverview(panel) {
       throw err;
     });
   });
-  var chartDone = Promise.all([dailyLoad, impactLoad, reportLoad, figuresDone]).then(function (loaded) {
+  var chartDone = Promise.all([dailyLoad, impactLoad, reportLoad, figuresDone, summaryLoad]).then(function (loaded) {
     if (!current() || body.hidden) return;
     var daily = loaded[0].body;
     if (!daily || daily.ok !== true) {
@@ -687,10 +685,16 @@ export function renderOverview(panel) {
       }, { slot: "overview", titleTag: "h2" });
       return;
     }
+    var summaryBody = loaded[4].body;
     renderChart(
       chartHost,
       "daily-spend",
-      { rows: daily.data || [], split: "agent", changes: dailyChanges(loaded[1].body) },
+      // Every day of the window, and the Spend tile's figure, so the
+      // chart's reading says why its total differs.
+      Object.assign(
+        { rows: daily.data || [], split: "agent", changes: dailyChanges(loaded[1].body), sessionsTotal: summaryBody && summaryBody.ok === true ? summaryBody.data.total_cost : null },
+        windowDays(state.window)
+      ),
       {
         slot: "overview",
         titleTag: "h2",
