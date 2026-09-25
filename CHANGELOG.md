@@ -26,6 +26,15 @@ of the 5-minute one (below).
 
 ### Added
 
+- **Report tables name the columns the dashboard shows first.** A new,
+  display-only `Table.lead_columns` (in `report --json`,
+  `/api/report.json` and every section route) lists up to 7 column
+  keys, the row key first, for each dashboard table wider than 7
+  columns, such as cache lifetime's 22 and model choice's 31, and up to
+  4 headline values for each one-row summary table (cache rebuilds,
+  usage limits, wasted replies, one tier down), which the dashboard
+  shows as tiles. Rows, CSV exports and the Markdown and HTML reports
+  are unchanged. See `docs/api.md`.
 - **Token Lens now says when a settings policy stops its hooks running.**
   On a machine whose managed settings set `allowManagedHooksOnly` or
   `disableAllHooks` (read from `managed-settings.json` and its
@@ -493,6 +502,7 @@ of the 5-minute one (below).
 
 ### Changed
 
+- **Report notes and column names are in plain English.** Section and table notes, threshold lines and column labels no longer name code fields (`cache_read`, `agent_type`, `share_pct = 10.0%`) or say "USD": a money column is just "Cache write cost" or "Saving if switched", and each note says what its figure means. The pricing note reads "Costs use prices from pricing.toml, version …" without the currency and file hash. Column keys, row values and CSV/JSON fields are unchanged.
 - **Text on the dashboard now links where it points, and explains its terms.** Where help, notes, a recommendation, a check, a habit or a session's explanation names another page, the name is a link to it. The first time a card or section uses a term the Glossary explains, such as cache lifetime (TTL), cache rebuild or subagent, the word has a dotted underline: it opens the definition, with a link to the Glossary. A section's "How to read this" ends with a link to the Glossary card that explains the price behind it. A table whose figures back a recommendation says **Feeds N actions** beside its heading, and each row a recommendation cites has a small mark; both list the actions, each a link to its detail in Actions. A habit already covered by a recommendation now links to it.
 - **Actions is now an inbox you can link to.** Recommendations and Checks each show a list to pick from beside the one you picked, with filter chips for importance and area (Models, Cache, Context, Agents, Habits, Data and settings), or for a check's answer. A rule that fires for several agent types is one item with one table of changes: the agent, the value it sets, the saving and a Copy button per row, with the value now said once when every agent shares it. Each recommendation now explains **how it saves you money**: what it costs you now, what the change does to the price with the multiplier from your own pricing ("Reading from the cache costs a tenth of the input price"), and the saving with how sure it is. **The numbers behind this** are links: each opens the page that shows that table, opens what hides it, scrolls to the row and highlights it, or shows the table in a side panel when no page does. Recommendations link to the checks they answer and checks to the recommendations they lead to, and the Overview's next best actions open the one they name. The address says what is open (`#/actions/recommendations?id=<key>`), so Back, Forward and bookmarks return to it.
 - **The Overview now answers "What should I change next?"** It opens with one sentence on the window: what it cost, how that compares with the period of the same length before, how many changes are worth making and what the ways to save come to, in your billing mode. Four tiles follow: Spend (with its change and a daily trend), Available saving (the ways to save on Spend › Savings added up, marked "At most" because they overlap), Saved by the cache (what your cache reads would have cost sent fresh, with what a cache read costs on the model you use most) and Sessions (with the subagent runs). Daily spend is split into your main session and subagents, with your settings changes marked on the days they happened, beside the five next best actions, each with a Copy prompt button. How your setup scores is now five meters, each linking to where to look and to a change that would help. The totals and the billing basis moved into a disclosure, and the full service health moved to Data quality; the warning when the service doesn't start at logon still shows on the Overview. Before any session is read, the Overview says what Token Lens does for you.

@@ -150,9 +150,9 @@ _ALL_ARCHETYPES: tuple[str, ...] = ()
 #: convention -- see module docstring for the full explanation of each.
 ASSUMPTIONS: list[str] = [
     "token volumes, turn counts, and the observed 5m/1h cache-write split are held constant across every alternative-model repricing -- every saving figure is a price ceiling at today's usage shape, never a prediction",
-    "a smaller model may need more turns to reach the same result, or fail the task outright; neither possibility is priced here -- with metrics capture on, how hard Claude reported the work and whether it said a smaller model would do are cited as evidence, and a run that said it needed a larger model holds the suggestion back (advice._merge_model_tier), but they never change a figure",
+    "a smaller model may need more turns to reach the same result, or fail the task outright; neither possibility is priced here -- with metrics capture on, how hard Claude reported the work and whether it said a smaller model would do are cited as evidence, and a run that said it needed a larger model holds the suggestion back, but they never change a figure",
     "alternative columns cover every model in pricing.toml (legacy dated ids included), but the model-tier rule only ever recommends the immediately next cheaper family's current aliased model, never the cheapest alternative overall",
-    "tier order (fable > opus > sonnet > haiku) is workstyle.model_tier's existing family-substring ranking, not a cost-derived ordering computed here",
+    "tier order (Fable, then Opus, then Sonnet, then Haiku) follows each model's family name, not its price",
 ]
 
 
@@ -240,13 +240,11 @@ class ModelSwapThresholds:
         and this module's own section notes -- same convention as
         ``RecacheThresholds.describe``/``TtlThresholds.describe``."""
         return [
-            f"saving_pct_min = {self.saving_pct_min:.1f}% and saving_usd_min = "
-            f"{self.saving_usd_min:.2f} USD: a one-tier-down swap is only surfaced as a "
-            "recommendation when the ceiling saving at today's volumes clears both -- "
-            "both conditions, independently blocking.",
-            f"min_sessions = {self.min_sessions} and min_turns = {self.min_turns}: a "
-            "per-agent-type row needs at least this many spawns or priced turns before "
-            "its swap saving is trusted enough to recommend.",
+            f"A one-tier-down swap is suggested only when the most it could save at today's "
+            f"volumes is over {self.saving_pct_min:.1f}% and over ${self.saving_usd_min:.2f} at "
+            "list price; both must hold.",
+            f"An agent type needs at least {self.min_sessions} runs or {self.min_turns} replies "
+            "before its saving is trusted enough to suggest.",
         ]
 
 
@@ -490,7 +488,7 @@ def build_section(
         [
             Column(key="best_cheaper_alternative_model", label="Best cheaper alternative (model id)", kind="str"),
             Column(key="best_cheaper_alternative", label="Best cheaper alternative", kind="str"),
-            Column(key="saving_usd", label="Ceiling saving (USD, one tier down)", kind="money"),
+            Column(key="saving_usd", label="Most you could save", kind="money"),
             Column(key="saving_pct", label="Ceiling saving (%, one tier down)", kind="pct"),
             Column(key="lever", label="Lever", kind="str"),
         ]
@@ -572,8 +570,8 @@ def build_section(
             ]
         ],
         notes=[
-            "Excludes the top-level row (this is a subagent-fleet figure, per the brief) and "
-            "any Fable/Opus agent type already at, or below, its next tier's cost at today's "
+            "Leaves out the main session (this figure is for subagents only) and any Fable or "
+            "Opus agent type that already costs no more than the next tier down at today's "
             "volumes.",
         ],
     )

@@ -647,43 +647,32 @@ def build_section(stats: CompactionStats) -> Section:
         rows=[list(row) for row in per_session_rows],
     )
 
+    # The reply after a summary is judged by the shared recache.py
+    # detector (recache.apply's full signature classification), the one
+    # the cache-rebuild section uses, so the two can't drift apart;
+    # is_recache_turn's standalone rule is kept only for its own tests.
     notes = [
-        "Whether the turn right after a compaction is itself a RE-CACHE "
-        "(the next_turn_is_recache field behind the tables above) is "
-        "decided by the shared recache.py detector's full signature "
-        "classification (recache.apply — turn_index > 1, non-synthetic, "
-        "ctx > ctx_floor, cache_read < cr_ratio*ctx), the same detector "
-        "the RE-CACHE section itself uses, so this module's notion of "
-        "\"re-cache\" can't drift from the corpus-wide one. The standalone, "
-        "minimal two-number rule (ctx > 20,000 and cache_read < 20% of "
-        "ctx) in this module's own is_recache_turn helper is no longer "
-        "used here — it's kept only because its own tests exercise it "
-        "directly.",
-        "\"Dropped tokens (share of cache_creation)\" divides total dropped "
-        "tokens by every priced turn's cache_creation across the whole "
-        "corpus, not just turns following a compaction, so it can exceed "
-        "100% when compactions are large relative to ordinary cache "
-        "growth. The \"share of new_tokens\" row below it uses "
-        "input_tokens + cache_creation_tokens as the denominator instead, "
-        "so it doesn't undercount a corpus where much of the traffic "
-        "never hit a cache_control breakpoint at all. \"Dropped tokens\" "
-        "itself is a per-compaction delta recovered from "
-        "compactMetadata's running cumulativeDroppedTokens counter, not "
-        "that raw cumulative value summed across a session's compactions "
-        "(which would double- and triple-count).",
-        "\"Total post-compaction write cost\" sums the immediate next "
-        "turn's cache-write cost after every compaction; the "
-        "RE-CACHE-flagged variant below it only counts turns that trip "
-        "the minimal RE-CACHE heuristic and is typically far smaller, "
-        "since most post-compaction turns still hit a warm cache. Both "
-        "totals (and the per-session table's write-cost column) exclude "
-        "a compaction whose matched next turn lands more than 15 minutes "
-        "(join_delta_s > 900) after the compaction event, since that gap "
-        "means the turn most likely belongs to a resumed session rather "
-        "than to recovering from this compaction.",
+        "Whether the reply right after a summary rebuilt the cache is decided "
+        "by the same check the cache rebuild section uses, so the two always "
+        "agree.",
+        "\"Tokens removed, as a % of all cache writes\" divides the tokens "
+        "removed by every reply's cache writes, not just the replies after a "
+        "summary, so it can pass 100% when summaries are large next to "
+        "ordinary cache growth. The row below it divides by new input and "
+        "cache writes together, so it doesn't undercount sessions where much "
+        "of the traffic never reached the cache. Tokens removed are counted "
+        "per summary, not from Claude Code's running total (which would count "
+        "some tokens two or three times).",
+        "\"Cache write cost on the reply after a summary\" adds up the cache "
+        "write on the reply right after every summary. The row below it counts "
+        "only the replies that rebuilt most of the cache, and is usually far "
+        "smaller, since most replies after a summary still read a warm cache. "
+        "Both totals, and the per-session write cost, leave out a summary "
+        "whose next reply came more than 15 minutes later: that reply most "
+        "likely belongs to a resumed session.",
     ]
     if not stats.records:
-        notes.insert(0, "No compact_boundary events found in this window.")
+        notes.insert(0, "No conversation summaries found in this window.")
 
     return Section(
         key="compactions",

@@ -835,21 +835,18 @@ def _build_autocompact_table(
         columns=columns,
         rows=rows,
         notes=[
-            "Observed effective threshold is the median "
-            "compactMetadata.preTokens over this project's own compactions "
-            "whose trigger is \"auto\" (compaction.effective_autocompact_threshold); "
-            "null when no auto-triggered compaction carried a preTokens value. "
-            "\"Auto compactions\" counts that same sample (trigger=\"auto\" "
-            "with a usable preTokens), not every trigger=\"auto\" boundary, "
-            "so it is never non-zero next to a null threshold.",
-            "Model context window is read from a statusline usage-log row's "
-            "own context_window fields when one is available for a session "
-            "in this project (context_window_source = \"statusline\"); "
-            "otherwise it is assumed as 1,000,000 for a \"[1m]\" model alias "
-            "or 200,000 otherwise (context_window_source = \"assumed\").",
-            "Drift is true when the observed effective threshold differs "
-            "from the configured autoCompactWindow by more than 10%; null "
-            "when either figure is unavailable.",
+            "\"Summarised at\" is the typical context size at this "
+            "project's own automatic summaries; empty when none recorded "
+            "a size. \"Automatic summaries\" counts that same sample, not "
+            "every automatic summary, so it is never above zero next to an "
+            "empty \"Summarised at\".",
+            "\"Context window\" comes from the status line's log when it "
+            "has one for a session in this project; otherwise it is taken "
+            "as 1,000,000 tokens for a \"[1m]\" model alias, or 200,000. "
+            "\"Window from\" says which.",
+            "\"Differs from setting\" is yes when \"Summarised at\" is more "
+            "than 10% away from your autoCompactWindow setting; empty when "
+            "either figure is missing.",
         ],
     )
 
@@ -887,10 +884,10 @@ def _build_statusline_table(usage_log_rows: list[dict] | None) -> Table:
     notes: list[str] = []
     if not rows:
         notes.append(
-            "No usage-log row carries context_window fields yet -- install "
-            "the statusline logger (claude-token-lens statusline "
-            "--print-install-fragment) to populate this table with ground "
-            "truth from Claude Code's own payload."
+            "The status line log has no context sizes yet. Install the "
+            "status line logger (claude-token-lens statusline "
+            "--print-install-fragment) to fill this table with the sizes "
+            "Claude Code itself reports."
         )
     return Table(
         name="context_budget_statusline",

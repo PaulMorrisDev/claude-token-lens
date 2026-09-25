@@ -237,7 +237,9 @@ COMMON_COLUMN_HELP: dict[str, str] = {
 @dataclass(frozen=True, slots=True)
 class TableCopy:
     """Display copy for one table. ``columns`` maps a column key to
-    ``(label, help)``; an empty label keeps the builder's own."""
+    ``(label, help)``; an empty label keeps the builder's own.
+    ``lead_columns`` is ``Table.lead_columns``: at most 7 keys on a wide
+    table, at most 4 headline values on a one-row summary table."""
 
     title: str = ""
     help: Help | None = None
@@ -245,6 +247,7 @@ class TableCopy:
     value_labels: dict[str, str] = field(default_factory=dict)
     row_groups: dict[str, str] = field(default_factory=dict)
     row_kinds: dict[str, str] = field(default_factory=dict)
+    lead_columns: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True, slots=True)
@@ -605,6 +608,9 @@ TABLE_COPY: dict[str, TableCopy] = {
                 "Used to put a price on each part.",
             ),
         },
+        lead_columns=[
+            "agent_type", "spawns", "startup_tokens", "claude_md", "skills_listing", "tool_lists", "task_prompt",
+        ],
     ),
     "agent_startup_unused": TableCopy(
         title="Loaded at startup but never used",
@@ -626,6 +632,10 @@ TABLE_COPY: dict[str, TableCopy] = {
             "claude_md_tokens": ("", "Average size of CLAUDE.md and memory per spawn, in tokens."),
             "read_only_spawns": ("", "Spawns given CLAUDE.md that only searched or read files."),
         },
+        lead_columns=[
+            "agent_type", "spawns", "skills_listing_tokens", "skills_used_spawns", "mcp_used_spawns",
+            "claude_md_tokens", "read_only_spawns",
+        ],
     ),
     "agent_startup_shared": TableCopy(
         title="Sent to most agent types",
@@ -740,6 +750,7 @@ TABLE_COPY: dict[str, TableCopy] = {
             "steady": "Steady",
             "new": "Too early to say",
         },
+        lead_columns=["habit", "saving", "evidence", "example", "confidence", "trend", "theme"],
     ),
     "habits_by_task": TableCopy(
         title="Kinds of task",
@@ -764,6 +775,7 @@ TABLE_COPY: dict[str, TableCopy] = {
             "met_pct": ("Met the goal", "Pieces you said met their goal, out of those you gave feedback on."),
         },
         value_labels={"all": "All messages"},
+        lead_columns=["task", "cycles", "share", "cost", "avg_cost", "redo_pct", "met_pct"],
     ),
     "habits_briefs": TableCopy(
         title="How clear your asks were",
@@ -830,6 +842,7 @@ TABLE_COPY: dict[str, TableCopy] = {
             "nested": ("Started by an agent", "Runs another agent started."),
         },
         value_labels={"top-level": "Main session"},
+        lead_columns=["agent_type", "runs", "cost", "done_pct", "retried", "fit_smaller", "report_tokens"],
     ),
     "habits_effort_fit": TableCopy(
         title="Effort against how hard the work was",
@@ -899,6 +912,7 @@ TABLE_COPY: dict[str, TableCopy] = {
             "usual": "Your usual",
             "cheaper": "Cheaper, did as well",
         },
+        lead_columns=["task", "level", "model", "effort", "avg_cost", "verdict", "saving_pct"],
     ),
     "habits_agents_by_task": TableCopy(
         title="Agents by kind of task",
@@ -924,6 +938,7 @@ TABLE_COPY: dict[str, TableCopy] = {
             "cheaper_model": ("Cheaper model", "A cheaper model the evidence supports for this pairing, if any."),
             "cheaper_saving_pct": ("Cheaper by", "What that model would have saved, against the model it ran on."),
         },
+        lead_columns=["task", "agent_type", "runs", "avg_cost", "done_pct", "cheaper_model", "cheaper_saving_pct"],
     ),
     "habits_outcomes": TableCopy(
         title="Did the work meet its goal?",
@@ -946,6 +961,7 @@ TABLE_COPY: dict[str, TableCopy] = {
             "source": ("Source", "Where the feedback came from."),
         },
         value_labels={"met": "Met", "partly": "Partly", "missed": "Missed", "stopped": "Stopped early"},
+        lead_columns=["outcome", "pieces", "cost", "avg_cost", "task", "slow", "helped"],
     ),
     "habits_self_report": TableCopy(
         title="Claude's reports against your feedback",
@@ -1027,6 +1043,7 @@ TABLE_COPY: dict[str, TableCopy] = {
             "unneeded": ("Wasn't needed", "Messages where Claude said it wasn't needed."),
             "would_help": ("Would have helped", "Messages where Claude said it would have helped."),
         },
+        lead_columns=["skill", "by_you", "by_claude", "late", "before", "helped", "unneeded"],
     ),
     "habits_tool_output": TableCopy(
         title="Big tool output and failing commands",
@@ -1153,6 +1170,9 @@ TABLE_COPY: dict[str, TableCopy] = {
             "cost_per_run": ("Cost per run", "Average cost of one run, at list price."),
         },
         value_labels={"(main session)": "Main session", "(all subagents)": "All subagents"},
+        lead_columns=[
+            "agent_type", "runs", "unfinished_pct", "retried_pct", "tool_errors_pct", "corrections_pct", "cost_per_run",
+        ],
     ),
     "quality_by_setup": TableCopy(
         title="Quality by model and effort",
@@ -1229,6 +1249,7 @@ TABLE_COPY: dict[str, TableCopy] = {
             "baseline": "Most used",
             "only": "Only setup",
         },
+        lead_columns=["agent_type", "model", "effort", "runs", "cost_per_run", "setup_verdict", "difference"],
     ),
     "quality_retried": TableCopy(
         title="Agent runs retried on a larger model",
@@ -1266,6 +1287,7 @@ TABLE_COPY: dict[str, TableCopy] = {
             "retried_on": ("Retried on", "The model the retries most often used."),
             "last_retried": ("Last time", "The day the latest retried run ended."),
         },
+        lead_columns=["agent_type", "model", "runs", "retried", "retried_pct", "retried_on", "last_retried"],
     ),
     "quality_retry_reasons": TableCopy(
         title="Why agents were run again",
@@ -1291,6 +1313,7 @@ TABLE_COPY: dict[str, TableCopy] = {
             "said_other": ("Other", "Retries that gave another reason."),
             "last_retried": ("Last time", "The day the latest of these retried runs ended."),
         },
+        lead_columns=["agent_type", "model", "retries", "said_model", "said_brief", "said_scope", "said_tools"],
     ),
     "quality_markers": TableCopy(
         title="Markers Claude wrote",
@@ -1313,6 +1336,7 @@ TABLE_COPY: dict[str, TableCopy] = {
             "tokens": ("Output tokens, about", "About six output tokens per marker."),
             "cost": ("Cost, about", "Those tokens at the output price of the model that wrote each."),
         },
+        lead_columns=["marker", "what", "runs", "of_runs", "share", "breakdown", "cost"],
     ),
     "quality_failing_tools": TableCopy(
         title="Which tools failed",
@@ -1396,6 +1420,7 @@ TABLE_COPY: dict[str, TableCopy] = {
             ),
         },
         value_labels={"(main session)": "Main session", "(all subagents)": "All subagents"},
+        lead_columns=["agent_type", "runs", "replies", "tool_calls", "tool_errors", "interrupts", "corrections"],
     ),
     # -- agents ------------------------------------------------------------
     "topology_spawn_write": TableCopy(
@@ -1424,6 +1449,7 @@ TABLE_COPY: dict[str, TableCopy] = {
             "median_baseline": ("Typical startup write", "The middle value."),
         },
         value_labels={"all": "All sessions"},
+        lead_columns=["median_baseline", "mean_baseline", "sessions"],
     ),
     "topology_upward_tool_result": TableCopy(
         title="Reports returned to the main session",
@@ -1624,6 +1650,20 @@ TABLE_COPY: dict[str, TableCopy] = {
         title="Workflow runs",
         help=Help(shows="Totals for workflow runs in the window.", read="", act=""),
         columns={"metric": ("", "What is counted."), "value": ("", "The total.")},
+        value_labels={
+            "Total workflow runs": "Workflow runs",
+            "Total agents spawned": "Agents started",
+            "Total cost (USD)": "Total cost",
+            "Mean agents per run": "Agents per run (average)",
+            "Mean cost per run (USD)": "Cost per run (average)",
+        },
+        row_kinds={
+            "Total workflow runs": "int",
+            "Total agents spawned": "int",
+            "Total cost (USD)": "money",
+            "Mean agents per run": "float",
+            "Mean cost per run (USD)": "money",
+        },
     ),
     "workflows_status_mix": TableCopy(
         title="How workflow runs ended",
@@ -1646,6 +1686,7 @@ TABLE_COPY: dict[str, TableCopy] = {
             "started": ("", "When it started."),
             "finished": ("", "When it finished."),
         },
+        lead_columns=["run_id", "cost", "status", "agent_count", "phases", "started", "finished"],
     ),
     # -- overview ---------------------------------------------------------------
     "totals": TableCopy(
@@ -1674,9 +1715,9 @@ TABLE_COPY: dict[str, TableCopy] = {
             "output_tokens": "Output, including thinking (tokens)",
             "usage_tokens": "All tokens, including cache reads (tokens)",
             "new_tokens": "New tokens: everything except cache reads (tokens)",
-            "total_cost_usd": "Total cost at list price (USD)",
+            "total_cost_usd": "Total cost at list price",
             "cache_read_cost_share_pct": "Share of cost from cache reads (%)",
-            "cache_roi": "Cache payback: net saving per 1 USD of cache writes (USD)",
+            "cache_roi": "Cache payback: net saving divided by the cost of cache writes",
             "top_level_median_ctx": "Context of a typical main session reply (tokens)",
             "top_level_turns_ctx_ge_200k_pct": "Main session replies with over 200,000 tokens of context (%)",
         },
@@ -1931,6 +1972,7 @@ TABLE_COPY: dict[str, TableCopy] = {
             "note": ("Note", "Why the share is blank, when it is."),
         },
         value_labels=_WINDOW_LABELS,
+        lead_columns=["pct_of_window", "new_tokens", "hours"],
     ),
     "elasticity_fit": TableCopy(
         title="How well your readings line up",
@@ -1961,6 +2003,7 @@ TABLE_COPY: dict[str, TableCopy] = {
             "million cache-read tokens": "Million cache-read tokens",
             "USD (list price)": "Dollar at list price",
         },
+        lead_columns=["window", "metric", "slope", "unit", "r2", "n_pairs", "accepted"],
     ),
     # -- sessions ---------------------------------------------------------------
     "sessions_by_mode": TableCopy(
@@ -2092,6 +2135,7 @@ TABLE_COPY: dict[str, TableCopy] = {
             "very poor": "Very poor",
             "unmeasured": "Not measured",
         },
+        lead_columns=["label"],
     ),
     # -- before and after -------------------------------------------------------
     "baseline_comparison_overview": TableCopy(
@@ -2186,6 +2230,10 @@ TABLE_COPY: dict[str, TableCopy] = {
             "yes": "Yes",
             "no": "No",
         },
+        lead_columns=[
+            "mode", "sessions_baseline", "sessions_current", "cost_per_session_baseline", "cost_per_session_current",
+            "cost_per_session_delta_pct", "recache_share_delta_pct",
+        ],
     ),
     # -- phases -----------------------------------------------------------------
     "phases_summary": TableCopy(
@@ -2295,6 +2343,7 @@ TABLE_COPY: dict[str, TableCopy] = {
             ),
         },
         value_labels={"all": "All replies"},
+        lead_columns=["avoidable_cost_usd", "recache_turns", "recache_turn_share_pct", "recache_cc_tokens"],
     ),
     "recache_signature_split": TableCopy(
         title="Why the cache was rebuilt",
@@ -2356,6 +2405,10 @@ TABLE_COPY: dict[str, TableCopy] = {
             ">60m": "Over 60 minutes",
             "unknown": "Not known (first reply, or time unreadable)",
         },
+        lead_columns=[
+            "bucket", "turns", "share_pct_turns", "control_share_pct_turns", "cc_tokens", "cc_share_pct",
+            "control_cc_share_pct",
+        ],
     ),
     "recache_preceding_tool": TableCopy(
         title="Cache rebuilds by the tool used just before",
@@ -2385,6 +2438,10 @@ TABLE_COPY: dict[str, TableCopy] = {
             "none": "No tool (a text reply)",
             "n/a": "No previous reply",
         },
+        lead_columns=[
+            "preceding_tool", "turns", "share_pct_turns", "control_share_pct_turns", "cc_tokens", "cc_share_pct",
+            "control_cc_share_pct",
+        ],
     ),
     "recache_top_command_prefixes": TableCopy(
         title="Commands run just before a cache rebuild",
@@ -2462,6 +2519,10 @@ TABLE_COPY: dict[str, TableCopy] = {
             "limit_resume": "Resumed after a usage limit",
             "agent_terminated": "Subagent stopped early",
         },
+        lead_columns=[
+            "preceding_primary", "avoidable_cost_usd", "turns", "share_pct_turns", "control_share_pct_turns",
+            "over_representation_points_turns", "cc_tokens",
+        ],
     ),
     "recache_primary_cause_prefix_invalidated": TableCopy(
         title="What came just before a broken cache",
@@ -2521,6 +2582,10 @@ TABLE_COPY: dict[str, TableCopy] = {
             "limit_resume": "Resumed after a usage limit",
             "agent_terminated": "Subagent stopped early",
         },
+        lead_columns=[
+            "preceding_primary", "turns", "share_pct_turns", "control_share_pct_turns", "cc_tokens", "cc_share_pct",
+            "over_representation_points_tokens",
+        ],
     ),
     "recache_attachment_subsplit": TableCopy(
         title="Claude Code notes before a broken cache",
@@ -2633,6 +2698,7 @@ TABLE_COPY: dict[str, TableCopy] = {
             "share_pct": ("Share of cache reads", "Cache reads from huge contexts as a share of all cache reads."),
         },
         value_labels={"all": "All replies"},
+        lead_columns=["share_pct", "huge_ctx_turns", "huge_ctx_cache_read_tokens"],
     ),
     "measured_miss_causes": TableCopy(
         title="Cache misses Claude Code measured (main session)",
@@ -2703,6 +2769,10 @@ TABLE_COPY: dict[str, TableCopy] = {
             ),
         },
         value_labels={"all": "All", "top-level": "Main session", "unknown": "Not known"},
+        lead_columns=[
+            "group", "avoidable_cost_usd", "recache_turns", "recache_turn_share_pct", "recache_cc_tokens",
+            "recache_cc_share_pct", "priced_turns",
+        ],
     ),
     # -- cache lifetime -----------------------------------------------------
     "ttl_by_agent_type": TableCopy(
@@ -2782,6 +2852,9 @@ TABLE_COPY: dict[str, TableCopy] = {
             ),
             "promptCacheTtl": "promptCacheTtl in your settings",
         },
+        lead_columns=[
+            "agent_type", "spawns", "cost_observed", "best_policy", "saving_usd", "delta_pct", "recommendation",
+        ],
     ),
     "ttl_gap_distribution": TableCopy(
         title="Waits between replies",
@@ -2826,6 +2899,9 @@ TABLE_COPY: dict[str, TableCopy] = {
             ),
         },
         value_labels={"top-level": "Main session", "unknown": "Subagent (type not recorded)"},
+        lead_columns=[
+            "agent_type", "usd_wasted", "share", "wasted_writes", "writes", "tokens_wasted", "terminal_writes",
+        ],
     ),
     "ttl_premium_waste": TableCopy(
         title="When a 1-hour lifetime pays off",
@@ -2877,6 +2953,10 @@ TABLE_COPY: dict[str, TableCopy] = {
             ),
         },
         value_labels={"top-level": "Main session", "unknown": "Subagent (type not recorded)"},
+        lead_columns=[
+            "agent_type", "h1_earned_usd", "h1_not_needed_usd", "h1_expired_usd", "m5_loss_usd", "h1_earned_tokens",
+            "m5_loss_tokens",
+        ],
     ),
     "ttl_break_even_share": TableCopy(
         title="Does a 1-hour lifetime pay for itself?",
@@ -2951,6 +3031,10 @@ TABLE_COPY: dict[str, TableCopy] = {
             ),
         },
         value_labels={"top-level": "Main session", "unknown": "Subagent (type not recorded)"},
+        lead_columns=[
+            "agent_type", "near_5m_miss", "near_5m_miss_usd", "near_5m_hit", "near_1h_miss", "near_1h_miss_usd",
+            "near_1h_hit",
+        ],
     ),
     "ttl_addressable_share": TableCopy(
         title="Cache rebuilds a longer lifetime could prevent",
@@ -3000,6 +3084,10 @@ TABLE_COPY: dict[str, TableCopy] = {
             "cache_roi": ("Return on cache writes", "Saving divided by cache write cost."),
         },
         value_labels={"top-level": "Main session", "unknown": "Subagent (type not recorded)", "overall": "All"},
+        lead_columns=[
+            "agent_type", "net_saving_usd", "cache_roi", "uncached_equivalent_usd", "write_usd", "read_usd",
+            "tokens_read",
+        ],
     ),
     # -- usage limits -------------------------------------------------------
     "limits_summary": TableCopy(
@@ -3040,6 +3128,7 @@ TABLE_COPY: dict[str, TableCopy] = {
             ),
         },
         value_labels={"all": "All"},
+        lead_columns=["limit_hits", "sessions_affected", "pause_total_s", "limit_turn_write_cost_usd"],
     ),
     "limits_hits_by_kind": TableCopy(
         title="Which limit you hit",
@@ -3083,6 +3172,7 @@ TABLE_COPY: dict[str, TableCopy] = {
             "mean_s": ("Average pause", "Total pause time divided by the number of pauses."),
         },
         value_labels={"all": "All"},
+        lead_columns=["pause_count", "total_s", "mean_s"],
     ),
     "limits_reset_hour_histogram": TableCopy(
         title="When your limits reset",
@@ -3126,6 +3216,10 @@ TABLE_COPY: dict[str, TableCopy] = {
             ),
         },
         value_labels={"top-level": "Main session", "unknown": "Subagent (type not recorded)"},
+        lead_columns=[
+            "agent_type", "limit_hits", "limit_turn_write_cost_usd", "pause_count", "pause_total_s",
+            "agents_terminated", "limit_resumes",
+        ],
     ),
     "limits_csv_cross_check": TableCopy(
         title="Usage log compared with conversation logs",
@@ -3262,6 +3356,10 @@ TABLE_COPY: dict[str, TableCopy] = {
                 "What cutting each of these outputs to 8,000 tokens would have saved, at list price.",
             ),
         },
+        lead_columns=[
+            "key", "carry_cost_usd", "saving_if_capped_usd", "share_of_cache_volume_pct", "result_count",
+            "carry_tokens", "mean_turns_carried",
+        ],
     ),
     "carry_by_agent_type": TableCopy(
         title="Cost of keeping tool output in context, by agent type",
@@ -3294,6 +3392,10 @@ TABLE_COPY: dict[str, TableCopy] = {
             ),
         },
         value_labels={"top-level": "Main session", "unknown": "Subagent (type not recorded)"},
+        lead_columns=[
+            "key", "carry_cost_usd", "saving_if_capped_usd", "share_of_cache_volume_pct", "result_count",
+            "carry_tokens", "mean_turns_carried",
+        ],
     ),
     "carry_top_results": TableCopy(
         title="Most expensive single tool outputs",
@@ -3352,6 +3454,7 @@ TABLE_COPY: dict[str, TableCopy] = {
             "usd_saved": ("Saving", "Cost of keeping the part over the limit, at list price."),
             "carry_cost_usd": ("Cost of keeping them", "What keeping every output it applies to cost, at list price."),
         },
+        lead_columns=["setting", "value", "usd_saved", "tokens_saved", "results_affected", "results", "carry_cost_usd"],
     ),
     # -- savings: auto-compact window -------------------------------------------
     "compaction_sim_by_window": TableCopy(
@@ -3411,6 +3514,9 @@ TABLE_COPY: dict[str, TableCopy] = {
             "none": "As now (no extra summaries)",
             "no material difference": "No clear saving",
         },
+        lead_columns=[
+            "agent_type", "best_window", "saving_usd", "delta_pct", "observed_cost", "sessions", "recommendation",
+        ],
     ),
     "compaction_sim_by_task": TableCopy(
         title="Best auto-compact window for each kind of task",
@@ -3442,6 +3548,7 @@ TABLE_COPY: dict[str, TableCopy] = {
             "none": "As now (no extra summaries)",
             "no material difference": "No clear saving",
         },
+        lead_columns=["task", "best_window", "saving_usd", "delta_pct", "observed_cost", "sessions", "recommendation"],
     ),
     "compaction_sim_fidelity": TableCopy(
         title="Simulation check against your real sessions",
@@ -3494,6 +3601,10 @@ TABLE_COPY: dict[str, TableCopy] = {
             "unknown": "Unnamed subagent",
             "model (settings.json)": "model setting in settings.json",
         },
+        lead_columns=[
+            "agent_type", "observed_model", "observed_cost", "best_cheaper_alternative_model", "saving_usd",
+            "saving_pct", "best_cheaper_alternative",
+        ],
     ),
     "model_swap_summary": TableCopy(
         title="All Fable and Opus subagents one tier down",
@@ -3513,6 +3624,7 @@ TABLE_COPY: dict[str, TableCopy] = {
             "saving_pct": ("Most you could save (%)", "That saving as a share of real cost."),
         },
         value_labels={"subagent types currently on Fable/Opus": "Subagent types on Fable or Opus"},
+        lead_columns=["saving_usd", "saving_pct", "observed_cost_usd", "agent_types"],
     ),
     # -- savings: wasted replies --------------------------------------------------
     "waste_summary": TableCopy(
@@ -3552,6 +3664,7 @@ TABLE_COPY: dict[str, TableCopy] = {
             ),
         },
         value_labels={"all": "All sessions"},
+        lead_columns=["wasted_cost_usd", "wasted_cost_share_pct", "wasted_turns", "wasted_turns_share_pct"],
     ),
     "waste_by_cause": TableCopy(
         title="Why replies were wasted",
@@ -3683,6 +3796,7 @@ TABLE_COPY: dict[str, TableCopy] = {
             "mcp_servers": ("", "MCP servers configured for this project, including your global ones."),
         },
         value_labels=_SETTINGS_FILES,
+        lead_columns=["project", "layer", "present", "agents", "skills", "claude_md_bytes", "mcp_servers"],
     ),
     "config-groups": TableCopy(
         title="Projects with the same settings",
@@ -3758,6 +3872,9 @@ TABLE_COPY: dict[str, TableCopy] = {
             "median_span": ("Typical session length", "The middle session's length, from first to last message."),
         },
         value_labels={"(unset)": "Not set", "{}": "Empty", "[]": "Empty list"},
+        lead_columns=[
+            "value", "sessions", "cost_per_session", "cost", "recache_share", "compactions_per_session", "median_span",
+        ],
     ),
     # -- context budget ------------------------------------------------------
     "context_budget_baseline": TableCopy(
@@ -3797,6 +3914,10 @@ TABLE_COPY: dict[str, TableCopy] = {
             ),
         },
         value_labels={"all": "All projects", "present, size unknown": "Yes, size unknown"},
+        lead_columns=[
+            "project", "sessions", "median_baseline", "memory_files_est", "skills_listing_est", "custom_agents_est",
+            "system_prompt_and_tools_est",
+        ],
     ),
     "context_budget_autocompact": TableCopy(
         title="When conversations get summarised",
@@ -3830,6 +3951,10 @@ TABLE_COPY: dict[str, TableCopy] = {
             ),
         },
         value_labels={"statusline": "Status line", "assumed": "Assumed"},
+        lead_columns=[
+            "project", "configured_window", "observed_threshold", "context_window_size", "implied_buffer",
+            "auto_compactions", "drift",
+        ],
     ),
     "context_budget_statusline": TableCopy(
         title="Context used, as reported by Claude Code",
@@ -3970,6 +4095,8 @@ def _apply_table_copy(table: Table, copy: TableCopy | None, billing_mode: str) -
             table.row_groups = dict(copy.row_groups)
         if copy.row_kinds:
             table.row_kinds = dict(copy.row_kinds)
+        if copy.lead_columns:
+            table.lead_columns = list(copy.lead_columns)
     for column in table.columns:
         label, help_text = ("", "")
         if copy is not None:

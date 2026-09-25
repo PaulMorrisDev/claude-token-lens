@@ -1221,6 +1221,25 @@ def test_v4_report_backed_routes_return_ok(server, route):
     assert_privacy(body)
 
 
+def test_report_backed_routes_carry_lead_columns(server):
+    """``Table.lead_columns`` (display only) reaches the dashboard the
+    same way ``value_labels`` does: in each section route's tables and in
+    ``/api/report.json``."""
+    from claude_token_lens.helptext import TABLE_COPY
+
+    resp, body = server.get_json("/api/waste")
+    assert resp.status == 200
+    tables = {t["name"]: t for t in body["data"]["tables"]}
+    assert tables["waste_summary"]["lead_columns"] == TABLE_COPY["waste_summary"].lead_columns
+    assert tables["waste_by_cause"]["lead_columns"] == []
+
+    resp, raw = server.request("GET", "/api/report.json")
+    assert resp.status == 200
+    report = json.loads(raw)["report"]
+    tables = {t["name"]: t for s in report["sections"] for t in s["tables"]}
+    assert tables["ttl_by_agent_type"]["lead_columns"] == TABLE_COPY["ttl_by_agent_type"].lead_columns
+
+
 def test_v4_report_backed_routes_accept_since_until(server):
     for route in ("/api/carry", "/api/compaction-sim", "/api/model-swap", "/api/waste"):
         resp, body = server.get_json(f"{route}?since=2026-08-01T00:00:00%2B00:00&until=2026-08-31T00:00:00%2B00:00")

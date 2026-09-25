@@ -15,7 +15,7 @@ established convention for small cross-module helpers, see
 In subscription billing mode (``config.billing == "subscription"``),
 every money column in this section is what the tokens *would* have cost
 at the resolved rate card, not a real invoice line — the report's own
-column labels say so explicitly ("list-price equivalent USD") so a
+column labels say so explicitly ("list-price equivalent") so a
 subscription-billed reader never mistakes it for an actual charge.
 
 Five-hour blocks: a genuine Claude subscription usage window is a
@@ -141,7 +141,7 @@ def build_section(corpus: Corpus, pricing: Pricing, config: Config) -> Section:
     by_block: dict[str, dict] = {}
 
     is_subscription = config.billing == "subscription"
-    money_label = "Cost (list-price equivalent USD)" if is_subscription else "Cost"
+    money_label = "Cost (list-price equivalent)" if is_subscription else "Cost"
 
     for bundle in corpus.sessions:
         # A bundle with no top-level transcript is an orphaned subagent

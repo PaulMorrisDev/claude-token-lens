@@ -121,15 +121,15 @@ ASSUMPTIONS: tuple[str, ...] = (
     "-- a second device, or a shared/team account logging into the same "
     "plan window, would need its own accounting; this module cannot see "
     "tokens it never parsed a transcript for.",
-    "A pair spanning a reset -- the two usage-log rows' own resets_at "
-    "differ -- is dropped outright, not adjusted for.",
+    "A pair spanning a reset -- the two usage log rows name different "
+    "reset times -- is dropped outright, not adjusted for.",
     "Cache-read tokens may be weighted differently from new tokens by "
     "the plan's own internal usage-window accounting; this module fits "
     "and reports the percent-per-million-cache-read-token rate exactly "
     "as observed, rather than assuming it is near zero.",
     "The fit is observational, not causal: it describes the correlation "
-    "between token volume and used_percentage movement across this "
-    "machine's own logged history, not a controlled experiment or a "
+    "between token volume and movement in the share of the limit used "
+    "across this machine's own logged history, not a controlled experiment or a "
     "guaranteed future rate.",
 )
 
@@ -193,16 +193,13 @@ class ElasticityThresholds:
         return cls(**kwargs)
 
     def describe(self) -> list[str]:
+        weekly = WINDOW_LABELS.get(self.weekly_window, self.weekly_window)
         return [
-            f"min_pairs = {self.min_pairs}, min_r2 = {self.min_r2:.2f}: a "
-            "window/metric fit is reported only when it clears both -- "
-            "below either, the slope is withheld and the reason is "
-            "stated in elasticity_fit's own 'reason' column.",
-            f"burn_window_hours = {self.burn_window_hours:.0f}: the "
-            "trailing window elasticity_recent_burn is measured over.",
-            f"weekly_window = {self.weekly_window!r}: the window kind "
-            "express_in_window and the window-budget rule treat as "
-            "\"your weekly window\".",
+            f"A fit is shown only with at least {self.min_pairs} readings and a fit "
+            f"score of {self.min_r2:.2f} or more; below either, the slope is withheld "
+            "and the fit table says why.",
+            f"Recent use is measured over the last {self.burn_window_hours:.0f} hours.",
+            f"The {weekly} limit is the one treated as your weekly limit.",
         ]
 
 
@@ -262,7 +259,6 @@ class ElasticityStats:
     recent_burn_pct: float | None = None
     recent_burn_reason: str | None = None
     pricing_version: str | None = None
-    pricing_currency: str | None = None
 
     def fit(self, window: str, metric: str) -> FitResult | None:
         return self.fits.get(window, {}).get(metric)
@@ -601,7 +597,6 @@ def compute_elasticity(
         recent_burn_pct=recent_burn_pct,
         recent_burn_reason=recent_burn_reason,
         pricing_version=rates.version,
-        pricing_currency=rates.currency,
     )
 
 
@@ -722,12 +717,13 @@ def build_section(stats: ElasticityStats, thresholds: ElasticityThresholds | Non
         dropped_r = stats.pairs_dropped_reset.get(window, 0)
         dropped_n = stats.pairs_dropped_negative.get(window, 0)
         if dropped_r or dropped_n:
+            label = WINDOW_LABELS.get(window, window)
             notes.append(
-                f"{window}: {dropped_r} pair(s) dropped for spanning a reset, "
-                f"{dropped_n} dropped for a negative used_percentage delta."
+                f"{label[:1].upper()}{label[1:]} limit: {dropped_r} pair(s) of readings dropped "
+                f"for spanning a reset, {dropped_n} for a fall in the share used."
             )
     if stats.pricing_version:
-        notes.append(f"USD volumes priced against {stats.pricing_version} ({stats.pricing_currency}).")
+        notes.append(f"Costs use prices from pricing.toml, version {stats.pricing_version}.")
 
     return Section(
         key="elasticity",
