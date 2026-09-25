@@ -460,6 +460,86 @@ def test_incremental_reparse_only_touches_the_changed_file(tmp_path: Path, store
     assert len(session_a["transcripts"]) == 1  # no duplicate row for the same path
 
 
+def _settled_watcher(tmp_path: Path, store: Store) -> FileWatcher:
+    """A watcher over one session with a subagent and a workflow run,
+    after the tick that parses them and the tick that folds them from
+    the stored digests (and remembers that it did)."""
+    root = tmp_path / "projects"
+    _write_session(root, "proj-a", "sess-a1", _two_turns())
+    _write_subagent(root, "proj-a", "sess-a1", "agent-1", [turn_line(timestamp="2026-09-18T12:06:00.000Z")])
+    _write_workflow(
+        root, "proj-a", "sess-a1", "wf_test-002",
+        {"runId": "wf_test-002", "agentCount": 0, "phases": [], "status": "completed"},
+    )
+    watcher = FileWatcher(store, _options(tmp_path))
+    watcher.run_once()
+    watcher.run_once()
+    return watcher
+
+
+def test_an_unchanged_session_is_not_read_or_folded_again(
+    tmp_path: Path, store: Store, monkeypatch: pytest.MonkeyPatch
+):
+    watcher = _settled_watcher(tmp_path, store)
+    token = store.change_token()
+    loads = []
+    monkeypatch.setattr(watcher, "_load_existing", lambda *args: loads.append(args))
+
+    stats = watcher.run_once()
+
+    assert stats.errors == 0
+    assert stats.files_scanned == 3  # the session, its subagent and its workflow run
+    assert stats.files_parsed == 0
+    assert stats.sessions_upserted == 0
+    assert loads == []
+    assert store.change_token() == token
+    assert store.session("sess-a1")["total_cost"] > 0
+
+
+def test_a_changed_subagent_folds_its_session_again(tmp_path: Path, store: Store):
+    watcher = _settled_watcher(tmp_path, store)
+    cost_before = store.session("sess-a1")["total_cost"]
+    agent_path = tmp_path / "projects" / "proj-a" / "sess-a1" / "subagents" / "agent-1.jsonl"
+    write_jsonl(
+        agent_path,
+        [turn_line(timestamp="2026-09-18T12:06:00.000Z"), turn_line(timestamp="2026-09-18T12:07:00.000Z")],
+    )
+    mtime = _backdated(_STABLE_AGE_S - 1)
+    os.utime(agent_path, (mtime, mtime))
+
+    stats = watcher.run_once()
+
+    assert stats.files_parsed == 1
+    assert stats.sessions_upserted == 1
+    assert store.session("sess-a1")["total_cost"] > cost_before
+
+
+def test_a_removed_subagent_folds_its_session_again(tmp_path: Path, store: Store):
+    watcher = _settled_watcher(tmp_path, store)
+    cost_before = store.session("sess-a1")["total_cost"]
+    (tmp_path / "projects" / "proj-a" / "sess-a1" / "subagents" / "agent-1.jsonl").unlink()
+
+    stats = watcher.run_once()
+
+    assert stats.sessions_upserted == 1
+    assert store.session("sess-a1")["total_cost"] < cost_before
+
+
+def test_a_new_snapshot_folds_settled_sessions_again(tmp_path: Path, store: Store):
+    watcher = _settled_watcher(tmp_path, store)
+    assert store.session("sess-a1")["profile_id"] is None
+    snapshots_dir = tmp_path / "config" / "snapshots"
+    snapshots_dir.mkdir(parents=True)
+    (snapshots_dir / "20260918T110000Z.json").write_text(
+        json.dumps({"ts": "20260918T110000Z", "schema_version": 2, "profile_id": "lean"}), encoding="utf-8"
+    )
+
+    stats = watcher.run_once()
+
+    assert stats.sessions_upserted == 1
+    assert store.session("sess-a1")["profile_id"] == "lean"
+
+
 # -- stale parser_version forces a re-parse of an otherwise-unchanged file --
 
 
@@ -813,16 +893,16 @@ def test_session_tag_override_is_applied_on_the_next_tick(tmp_path: Path, store:
     own overrides, but ``_fold_session`` was still classifying every
     session with an empty override mapping, so ``/api/sessions`` kept
     showing the pre-override classification until a full store rebuild.
-    Nothing on disk changes between the two ticks -- ``_scan_session``
-    always re-folds every session every tick regardless of whether its
-    transcript was re-parsed, so this exercises the fix on an otherwise
-    fully cache-hit tick.
+    Nothing on disk changes between the ticks: the session is settled
+    (folded from its stored digests and remembered as such), so only the
+    tag, which is part of its fingerprint, makes the tick fold it again.
     """
     root = tmp_path / "projects"
     _write_session(root, "proj-a", "sess-a1", _two_turns())
 
     options = _options(tmp_path)
     watcher = FileWatcher(store, options)
+    watcher.run_once()
     watcher.run_once()
 
     before = store.session("sess-a1")

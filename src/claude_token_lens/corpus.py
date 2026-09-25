@@ -164,9 +164,7 @@ def _collect_specs(
             top_meta = _build_top_meta(top_path, session_id, slug)
 
             sub_specs: list[tuple[Path, TranscriptMeta]] = []
-            for jsonl_path, _raw_meta in discovery.find_subagents(
-                project_dir, session_id, since, until, subagent_window
-            ):
+            for jsonl_path in discovery.find_subagent_paths(project_dir, session_id, since, until, subagent_window):
                 meta_path = jsonl_path.with_name(jsonl_path.stem + ".meta.json")
                 sub_specs.append((jsonl_path, discovery.load_meta(meta_path)))
 
