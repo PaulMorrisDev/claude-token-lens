@@ -187,7 +187,7 @@ function appendHabitCards(table, rows, cards) {
     if (row.evidence) card.appendChild(el("p", null, prose(row.evidence, seen)));
     if (row.example) {
       card.appendChild(el("p", { class: "habit-try", text: "Try:" }));
-      card.appendChild(codeBlockWithCopy(row.example));
+      card.appendChild(codeBlockWithCopy(row.example, "Example", String(labelFor(table, row.habit))));
     }
     var meta = [
       "Seen " + formatCell(row.n, "int", state.currency),
@@ -229,7 +229,7 @@ function renderBriefTemplates(table, container) {
     var card = el("article", { class: "habit-card" });
     card.appendChild(el("div", { class: "card-head" }, [el("h3", { text: labelFor(table, row.task) })]));
     if (row.why) card.appendChild(el("p", { class: "profile-card-meta" }, prose(row.why, new Set())));
-    card.appendChild(codeBlockWithCopy(row.template || ""));
+    card.appendChild(codeBlockWithCopy(row.template || "", "Template", String(labelFor(table, row.task))));
     cards.appendChild(card);
   });
   block.appendChild(cards);

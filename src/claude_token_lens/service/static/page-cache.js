@@ -3,17 +3,19 @@
  * The Cache page: Rebuilds and Lifetime.
  */
 
-import { clear, el, state } from "./core.js";
+import { clear, el } from "./core.js";
 import { compactNumber, fraction, moneyParts, thousands } from "./format.js";
 import { findSection, loadInto, loadReport, withWindow } from "./api.js";
-import { chip, errorNotice, loadingNode, tile, tileRow } from "./ui.js";
+import { errorNotice, loadingNode, tile, tileRow } from "./ui.js";
 import { renderMappedSections, renderReportBackedSection } from "./grid.js";
 import { pageLink, viewIntro } from "./links.js";
 import { avoidableRebuilds } from "./costs.js";
 
 // ======================================================================
-// Cache, Rebuilds (recache and limits sections + a quick /api/recache
-// stat strip)
+// Cache, Rebuilds (what the cache does for you, then the recache and
+// limits sections). Every figure here follows the window: the rebuilds
+// by cause are the recache section's "Why the cache was rebuilt", and
+// All time in the window picker gives the whole history.
 // ======================================================================
 
 export function renderCache(panel) {
@@ -22,10 +24,6 @@ export function renderCache(panel) {
 
   var explainer = el("div", { id: "cache-explainer" });
   panel.appendChild(explainer);
-
-  var quickContainer = el("div", { id: "cache-quick" });
-  panel.appendChild(quickContainer);
-  loadInto(quickContainer, "/api/recache", renderRecacheQuickStats, { skeleton: "tiles" });
 
   var sectionContainer = el("div", { id: "cache-sections" });
   panel.appendChild(sectionContainer);
@@ -120,14 +118,18 @@ function renderCacheExplainer(report, container) {
   if (rebuilds) {
     var lost = moneyParts(rebuilds.avoidable_cost_usd);
     // The rebuilds that cost counts: the cache expired or a change broke
-    // it. One after a usage-limit pause isn't avoidable.
+    // it. One after a usage-limit pause isn't avoidable. The note names
+    // both counts, so it agrees with the "Cache rebuilds" tile below
+    // (recache_turns, which counts every rebuild).
     var times = avoidableRebuilds(report);
+    var total = Number(rebuilds.recache_turns);
     var told = [];
-    if (times !== null) told.push("The cache was rebuilt " + (times === 1 ? "once" : thousands(times) + " times") + ".");
+    if (times !== null) told.push(avoidableSentence(times, isFinite(total) ? total : times));
+    else told.push("Rebuilds after a usage-limit pause aren't counted.");
     if (writeWords && readWords) {
       told.push("A rebuild writes the cache again at " + writeWords + " the input price, where reading it costs " + readWords + " the input price.");
     }
-    told.push("Most follow an idle gap longer than the cache lifetime. Rebuilds after a usage-limit pause aren't counted.");
+    told.push("Most follow an idle gap longer than the cache lifetime.");
     tiles.push(
       tile({
         label: "Cost of avoidable rebuilds",
@@ -166,36 +168,23 @@ function renderCacheExplainer(report, container) {
   container.appendChild(block);
 }
 
-// recache.SIGNATURES, in plain words. The raw signature stays in the
-// tile's title for anyone matching it against the CLI report.
-var REBUILD_CAUSES = [
-  { key: "full-expiry", label: "Cache expired while idle" },
-  { key: "prefix-invalidated", label: "Cache invalidated by a change" },
-  { key: "limit-expiry", label: "Cache expired during a usage-limit pause" },
-];
-
-function renderRecacheQuickStats(data, container) {
-  var bySignature = data.by_signature || {};
-  var tiles = REBUILD_CAUSES.map(function (cause) {
-    var entry = bySignature[cause.key] || { turns: 0, cache_creation_tokens: 0 };
-    var node = tile({
-      label: cause.label,
-      value: thousands(entry.turns || 0),
-      unit: entry.turns === 1 ? "rebuild" : "rebuilds",
-      hint: compactNumber(entry.cache_creation_tokens || 0) + " tokens written to the cache again",
-    });
-    node.title = cause.key + ": " + thousands(entry.cache_creation_tokens || 0) + " tokens";
-    return node;
-  });
-  var block = el("section", { class: "report-section cache-causes" });
-  block.appendChild(
-    el("div", { class: "block-head" }, [
-      el("h2", { class: "section-title", text: "Cache rebuilds by cause" }),
-      chip(state.project ? "All time, all projects" : "All time", { icon: "clock", class: "all-time-chip" }),
-    ])
+// "431 of the 457 cache rebuilds in this window were avoidable. The
+// other 26 came after a usage-limit pause, so they aren't counted."
+function avoidableSentence(avoidable, total) {
+  var rest = total - avoidable;
+  if (rest <= 0) {
+    return avoidable === 1 ? "It covers the one cache rebuild in this window." : "It covers all " + thousands(avoidable) + " cache rebuilds in this window.";
+  }
+  return (
+    thousands(avoidable) +
+    " of the " +
+    thousands(total) +
+    " cache rebuilds in this window were avoidable. The other " +
+    (rest === 1 ? "one" : thousands(rest)) +
+    " came after a usage-limit pause, so " +
+    (rest === 1 ? "it isn't" : "they aren't") +
+    " counted."
   );
-  block.appendChild(tileRow(tiles));
-  container.appendChild(block);
 }
 
 // ======================================================================

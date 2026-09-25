@@ -12,8 +12,9 @@ Three things are checked here:
    code point -- the same "no external reference, no inline execution"
    posture ``SECURITY.md`` and ``docs/ui.md`` require of this UI.
 2. The dashboard's modules call every documented ``GET`` route in
-   ``docs/api.md`` (minus the two routes this test deliberately
-   excludes -- see ``_EXCLUDED_ROUTE_PREFIXES``), and ``service/static/*``
+   ``docs/api.md`` (minus the routes this test deliberately
+   excludes -- see ``_EXCLUDED_ROUTE_PREFIXES`` and
+   ``_NOT_FETCHED_BY_DASHBOARD``), and ``service/static/*``
    is registered as package data in ``pyproject.toml``.
 3. A tiny, test-only fixture HTTP server -- there is no ``api.py`` yet
    for a real end-to-end run against -- serves the static directory
@@ -88,6 +89,12 @@ _EXCLUDED_ROUTE_PREFIXES = (
     "/api/report.md",
     "/api/report.html",
 )
+
+#: Documented GET routes the fixture server still serves but the
+#: dashboard no longer fetches: /api/recache is all history and takes no
+#: window, so Cache > Rebuilds draws the window's own breakdown from
+#: report.json's recache_signature_split instead (design audit P1-4).
+_NOT_FETCHED_BY_DASHBOARD = ("/api/recache",)
 
 _FORBIDDEN_SUBSTRING_PATTERNS = {
     "bare http(s):// literal": re.compile(r"https?://"),
@@ -452,7 +459,12 @@ def test_cache_tiles_count_what_they_cost() -> None:
     assert '"recache_signature_split"' in count
     assert 'row[signature] === "limit-expiry" ? sum' in count
     assert "var times = avoidableRebuilds(report);" in explainer
-    assert "recache_turns" not in explainer
+    # Design audit P1-4: the note named 431 beside a tile of 457. It now
+    # says the avoidable count is part of every rebuild, the tile's
+    # recache_turns, and never gives recache_turns as the count itself.
+    assert "avoidableSentence(times, isFinite(total) ? total : times)" in explainer
+    assert "var total = Number(rebuilds.recache_turns);" in explainer
+    assert "The cache was rebuilt" not in explainer
     assert 'moneyTile("Saved by the cache",' in source
     # Phase 10 review: "...where reading it would have cost a tenth of."
     assert 'readWords + " the input price."' in explainer
@@ -785,7 +797,7 @@ def _documented_get_routes() -> list[str]:
 
 def test_every_documented_get_route_is_fetched_by_the_dashboard() -> None:
     app_js = _app_js()
-    routes = _documented_get_routes()
+    routes = [r for r in _documented_get_routes() if r not in _NOT_FETCHED_BY_DASHBOARD]
     assert routes  # sanity: the exclusion list didn't eat everything
     for route in routes:
         # Routes with a path parameter (e.g. "/api/session/<id>") are

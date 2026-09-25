@@ -430,7 +430,9 @@ Corpus-wide RE-CACHE breakdown — `Store.recache`.
 
 `data`: `{"by_signature": {"full-expiry": {"turns", "cache_creation_tokens"}, "prefix-invalidated": {...}, "limit-expiry": {...}}}`.
 A signature with no rebuilds is absent, not zero. Always all history:
-this route takes no window.
+this route takes no window. The dashboard doesn't fetch it: Cache ›
+Rebuilds draws the window's breakdown from `report.json`'s
+`recache_signature_split`.
 
 ### `GET /api/daily-usage`
 
@@ -1106,8 +1108,8 @@ slug as `project=` with every window-aware request, the Overview's
 previous-window `/api/summary?since=&until=` included. Routes that
 don't take the filter (`/api/impact`, `/api/backtest`,
 `/api/baseline`, `/api/recache`) keep covering every project,
-and the dashboard puts an "All projects" chip beside what they draw
-while a project is picked. It checks an unknown slug once with
+and the dashboard's "All time" chip beside what the first three draw reads
+"All time, all projects" while a project is picked. It checks an unknown slug once with
 `/api/sessions?limit=1&project=` and, on the `400`, falls back to every
 project.
 

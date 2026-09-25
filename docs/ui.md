@@ -270,10 +270,14 @@ to the page" link before the sidebar moves focus to the page title
 
 **The status line** gives the service's state in words beside a dot: Up
 to date, Scanning your history, Last scan failed, Not updating, or Can't
-reach the service. Under it: when the last scan finished; "Figures as
-of", the time of the oldest figures drawn (`X-Figures-As-Of`); the
-capture level as a link to Setup › Capture ("Capture: off" when off);
-and "claude-token-lens <version>. Your data stays on this machine."
+reach the service. Under it: "Last scan", when the last scan finished;
+"Figures updated", the time of the oldest figures drawn
+(`X-Figures-As-Of`), both as "5 min ago" with the time on hover
+(`timeNode`), moved on at each health poll; the capture level as a link
+to Setup › Capture ("Capture: off" when off); and "claude-token-lens
+<version>. Your data stays on this machine." It is a group named
+"Service status", not a live region: the health banner says what
+changes.
 
 ### The page header
 
@@ -346,15 +350,14 @@ Its choices (`WINDOW_OPTIONS`) are Last hour, Today, Last 24 hours, Last
 
 A view has one of three window modes (`windowMode`). It *follows* the
 window by default. A segment marked `window: false` is *fixed*: the
-pickers hide and the chip "The window doesn't apply here" takes their
+pickers hide and the chip "Same for every window" takes their
 place. Setup › Capture and Glossary › Terms are fixed. A page without
 segments marked the same way would show neither; none ships.
 
-Some panels on views that follow the window cover all history. The
-rebuild counts on Cache › Rebuilds carry an "All time" chip ("All time,
-all projects" while a project is picked). On Setup › Settings, "Your
-changes and what they did", the estimates check and the baseline cover
-all history too.
+Some panels on views that follow the window cover all history: on
+Setup › Settings, "Your changes and what they did", the estimates check
+and the baseline. Each carries an "All time" chip ("All time, all
+projects" while a project is picked).
 
 ### The project picker
 
@@ -372,9 +375,9 @@ all-projects report, `loadProjects()`).
 - An unknown project in the address (an old bookmark, a moved folder) is
   checked once (`checkProject`, asking `/api/sessions?limit=1&project=`).
   The dashboard then shows every project, and a toast says why.
-- Panels that cover every project whatever the picker says carry an
-  "All projects" chip while one is picked: Settings' changes, estimates
-  and baseline, and Cache › Rebuilds' causes.
+- Panels that cover every project whatever the picker says say so while
+  one is picked: Settings' changes, estimates and baseline read "All
+  time, all projects".
 
 ### Banners
 
@@ -545,12 +548,15 @@ cost?"
 **What the cache does for you**: three tiles, each with its price
 multiplier from `report.meta.rates` and a link to its card in Glossary ›
 How costs work. What cache reads saved (an estimate); what avoidable
-rebuilds cost and how many rebuilds that covers, leaving out the
-usage-limit pause as the cost does (`avoidableRebuilds`, shared with the
-Glossary); and how many agent types a 1-hour lifetime would help. Then
-`/api/recache`'s rebuilds by cause (expired while idle, invalidated by a
-change, expired during a usage-limit pause), for all time. Then the
-`recache` and `limits` sections for the window; `recache` draws chart 6.
+rebuilds cost and how many of the window's rebuilds that covers ("431
+of the 457 ... were avoidable"), leaving out the usage-limit pause as
+the cost does (`avoidableRebuilds`, shared with the Glossary); and how
+many agent types a 1-hour lifetime would help. Then the `recache` and
+`limits` sections for the window; `recache` draws chart 6. Every figure
+follows the window: the rebuilds by cause are `recache`'s "Why the cache
+was rebuilt", named as the server names them (Cache expired, Cache
+broken by a change, Expired during a usage-limit pause), and All time
+in the window picker gives the whole history.
 
 ### Cache › Lifetime (TTL)
 
@@ -643,7 +649,7 @@ fills in a project folder.
 ### Setup › Capture
 
 **Answers:** "How much should Claude tell Token Lens, and what does that
-cost?" The window doesn't apply here.
+cost?" The same for every window.
 
 `/api/capture`: the cost warning; where capture stands (setting, cost so
 far, how often Claude tagged); its weekly cost against what depends on
@@ -676,9 +682,14 @@ CLI commands instead.
 
 ### Glossary › Terms
 
-**Answers:** "What does this word mean?" The window doesn't apply here.
+**Answers:** "What does this word mean?" The same for every window.
 
-`GLOSSARY` in `links.js`, word for word the README's glossary.
+`GLOSSARY` in `links.js`, word for word the README's glossary. **Find a
+term** above the list narrows it as you type: an entry stays when every
+word typed is in its term or definition. A status line counts the
+matches; with none, the page says so and offers **Show every term**.
+Esc empties the field. A `?term=` link clears a filter that hides its
+entry.
 `?term=<slug>` scrolls to an entry and pulses it. A term a How costs
 work card names also carries "Why it matters": the card's rule sentence
 (`cardRuleText`), with a link to the card.
@@ -706,7 +717,7 @@ Every helper builds nodes with `textContent`; server text goes through
 |---|---|---|
 | Button | `button` | a label that says what happens ("Copy prompt"). Primary, quiet, icon-only (with a name) or link. Refuses "Apply ..." |
 | Severity chip | `severityChip` | Do this, Worth considering, For your information: an icon and a word |
-| Status badge | `statusBadge` | a check's status, the same way |
+| Status badge | `statusBadge` | a check's status, the same way. "Worth a look" takes the amber of Worth considering, not the red of Do this |
 | Basis chip | `basisChip` | Estimate, At most, Simulated, Calibrated; a measured figure has none |
 | Delta chip | `deltaChip` | a change on the previous period, coloured by whether up is good, neutral within 1%. Three times or more reads "3.2 times"; an empty earlier period "None before" |
 | Tile | `tile`, `tileRow` | a label, the value at 28px with its unit quieter, then an optional basis chip, delta, hint and sparkline |

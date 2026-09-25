@@ -18,15 +18,15 @@ export function renderConfig(panel) {
   clear(panel);
   viewIntro(panel, "setup/settings");
 
-  var impactContainer = setupSection(panel, "Your changes and what they did", "settings-impact", { everyProject: true });
+  var impactContainer = setupSection(panel, "Your changes and what they did", "settings-impact", { allTime: true });
   var impactLoaded = loadInto(impactContainer, "/api/impact", renderImpact, { skeleton: "rows" });
-  var backtestContainer = setupSection(panel, "Did your estimates come true?", "settings-backtest", { everyProject: true });
+  var backtestContainer = setupSection(panel, "Did your estimates come true?", "settings-backtest", { allTime: true });
   loadInto(backtestContainer, "/api/backtest", renderBacktest, { skeleton: "rows" });
 
   var driftContainer = setupSection(panel, "Your settings and how they changed", "config-drift");
   loadInto(driftContainer, withWindow("/api/config-diff?auto_keys=1"), renderConfigDiff, { skeleton: "rows" });
 
-  var baselineContainer = setupSection(panel, "Latest baseline", "config-baseline", { everyProject: true });
+  var baselineContainer = setupSection(panel, "Latest baseline", "config-baseline", { allTime: true });
   loadInto(baselineContainer, "/api/baseline", renderBaseline, { skeleton: "rows" });
 
   var sectionContainer = el("div", { id: "config-sections" });
@@ -56,14 +56,16 @@ export function renderConfig(panel) {
 
 // One part of a Setup view: a titled section and the body its data
 // fills (id: the body's).
-// opts.everyProject: the section covers every project, and says so while
-// the picker shows one.
+// opts.allTime: the section covers all history and every project, on a
+// view whose other sections follow the window. Its chip says "All
+// time", and "All time, all projects" while the picker shows one.
 function setupSection(panel, title, id, opts) {
   var section = el("section", { class: "report-section" });
+  var allTime = opts && opts.allTime;
   section.appendChild(
     el("div", { class: "block-head" }, [
       el("h2", { class: "section-title", text: title }),
-      opts && opts.everyProject && state.project ? chip("All projects", { icon: "folder", class: "all-time-chip" }) : null,
+      allTime ? chip(state.project ? "All time, all projects" : "All time", { icon: "clock", class: "all-time-chip" }) : null,
     ])
   );
   var body = el("div", { id: id });
@@ -319,6 +321,9 @@ function renderProfilesList(data, container) {
 
     card.appendChild(
       button("Show what it changes", {
+        // Every card has this button: its name adds which profile, after
+        // the words on it (so saying them still finds it).
+        label: "Show what it changes: " + (profile.name || profile.id),
         action: function () {
           drawer({
             title: "What " + (profile.name || profile.id) + " changes",
@@ -599,11 +604,17 @@ function buildProfileEditor(container, schema, profiles, onSaved) {
 
   var jsonBox = el("details", { class: "advanced-detail" });
   jsonBox.appendChild(el("summary", { text: "Edit as JSON instead" }));
-  var jsonInput = el("textarea", { id: "profile-form-json", rows: 8 });
+  // Named by its label and described by the note above it, so a screen
+  // reader says what the box holds and what saving does with it.
+  var jsonInput = el("textarea", { id: "profile-form-json", rows: 8, "aria-describedby": "profile-form-json-note" });
   jsonBox.appendChild(
-    el("p", { class: "notes", text: "While this is open, saving uses the JSON below and ignores the form. It starts as a copy of the form." })
+    el("p", {
+      class: "notes",
+      id: "profile-form-json-note",
+      text: "While this is open, saving uses the JSON below and ignores the form. It starts as a copy of the form.",
+    })
   );
-  jsonBox.appendChild(jsonInput);
+  jsonBox.appendChild(el("div", { class: "lever-field" }, [el("label", { for: "profile-form-json", text: "Profile as JSON" }), jsonInput]));
   jsonBox.addEventListener("toggle", function () {
     if (jsonBox.open) jsonInput.value = JSON.stringify(collect(), null, 2);
   });
@@ -742,7 +753,8 @@ function renderProfileCreator(container, onSaved) {
       var card = el("article", { class: "profile-card goal-card" });
       card.appendChild(el("h3", { text: goal.title }));
       card.appendChild(el("p", { class: "profile-card-summary" }, prose(goal.what)));
-      var pick = button("Start here");
+      // Every goal card has this button: its name says which goal.
+      var pick = button("Start here", { label: "Start here: " + goal.title });
       pick.addEventListener("click", function () {
         if (goal.id === "current") {
           var saveBtn = document.getElementById("profiles-save-current");
@@ -1071,14 +1083,20 @@ function renderImpact(data, container) {
     }
     if (change.source === "apply" && change.backup_ts && !change.reverted) {
       card.appendChild(el("p", { class: "notes", text: "To undo it:" }));
-      card.appendChild(codeBlockWithCopy("claude-token-lens apply --revert " + change.backup_ts));
+      card.appendChild(codeBlockWithCopy("claude-token-lens apply --revert " + change.backup_ts, "Command", "undoing " + change.label));
     }
     var levelChange = change.source === "capture" && (change.changes || []).filter(function (c) {
       return c.key === "capture.level" && c.old;
     })[0];
     if (levelChange) {
       card.appendChild(el("p", { class: "notes" }, [el("span", { text: "To change it back, use " }), captureLink(), el("span", { text: " or:" })]));
-      card.appendChild(codeBlockWithCopy(levelChange.old === "off" ? "claude-token-lens capture off" : "claude-token-lens capture level " + levelChange.old));
+      card.appendChild(
+        codeBlockWithCopy(
+          levelChange.old === "off" ? "claude-token-lens capture off" : "claude-token-lens capture level " + levelChange.old,
+          "Command",
+          "undoing " + change.label
+        )
+      );
     }
     container.appendChild(card);
   });

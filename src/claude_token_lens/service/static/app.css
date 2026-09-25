@@ -2119,6 +2119,42 @@ details.disclosure[open] > summary {
   color: var(--ink-2);
 }
 
+/* Terms' filter (page-glossary.js's glossaryFilter): a labelled field
+   that narrows the list as you type. */
+.glossary-filter {
+  display: grid;
+  grid-template-columns: minmax(0, 360px);
+  gap: var(--space-2);
+  margin: var(--space-6) 0 0;
+}
+
+.glossary-filter label {
+  font-weight: var(--weight-semibold);
+}
+
+.glossary-filter .notes,
+.glossary-filter-count {
+  margin: 0;
+}
+
+.glossary-filter-count {
+  color: var(--ink-2);
+  font-size: var(--text-sm);
+}
+
+.glossary-filter-count:empty {
+  display: none;
+}
+
+.glossary-empty {
+  max-width: var(--measure);
+  margin-top: var(--space-6);
+}
+
+.glossary-empty-actions {
+  margin-top: var(--space-4);
+}
+
 /* -- Actions: the inbox ----------------------------------------------------------- */
 
 /* The list to pick from, and the one picked beside it. The list stays in
@@ -2427,20 +2463,27 @@ details.disclosure[open] > summary {
   font-size: var(--text-md);
 }
 
-/* The numbers behind it: each row it cites, linked, with its values. */
-.evidence-list {
-  display: grid;
-  gap: var(--space-4);
+/* The numbers behind it: each row it cites, linked, with its values. A
+   list parted by hairlines, not a card each: it sits inside the detail
+   panel, and panels never nest. Flush with the heading above it (the
+   view's list indent is for bulleted lists). */
+.evidence-list,
+.view .evidence-list {
   margin: 0;
   padding: 0;
   list-style: none;
 }
 
 .evidence-item {
-  padding: var(--space-4) var(--space-5);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-sm);
-  background: var(--surface-sunken);
+  padding: var(--space-4) 0;
+}
+
+.evidence-item:first-child {
+  padding-top: var(--space-2);
+}
+
+.evidence-item + .evidence-item {
+  border-top: 1px solid var(--border-subtle);
 }
 
 .evidence-source {
@@ -3481,6 +3524,12 @@ th .unit {
 .term:hover,
 .term[aria-expanded="true"] {
   text-decoration-color: var(--accent-ink);
+}
+
+/* A term and the punctuation right beside it (ui.js's termNodes): one
+   unit on a line, so a full stop never starts a line alone. */
+.term-wrap {
+  white-space: nowrap;
 }
 
 .term-popover {

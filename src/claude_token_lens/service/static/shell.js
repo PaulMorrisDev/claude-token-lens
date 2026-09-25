@@ -6,7 +6,7 @@
  */
 
 import { clear, el, goTo, renderedViews, state, storageGet, storageSet } from "./core.js";
-import { shortTs, thousands } from "./format.js";
+import { relativeTime, shortTs, thousands, timeNode } from "./format.js";
 import { connection, fetchJson, figures, resetFiguresAsOf, runReconnectRetries } from "./api.js";
 import { captureLink, pageLink } from "./links.js";
 import { button, callout, prose, toast } from "./ui.js";
@@ -108,7 +108,10 @@ function renderStatusLine() {
   // Rebuilt only when something shown changed: the poll runs every few
   // seconds during a scan.
   var sig = parts.join("|");
-  if (line.getAttribute("data-render-sig") === sig) return;
+  if (line.getAttribute("data-render-sig") === sig) {
+    refreshTimes(line);
+    return;
+  }
   line.setAttribute("data-render-sig", sig);
   clear(line);
 
@@ -118,13 +121,16 @@ function renderStatusLine() {
       el("span", { class: "status-text", text: label }),
     ])
   );
-  var detail = [];
-  if (lastScan) detail.push("Last scan " + shortTs(lastScan));
-  if (watcher.errors) detail.push(watcher.errors + (watcher.errors === 1 ? " error" : " errors"));
-  if (detail.length) line.appendChild(el("div", { class: "status-row status-detail", text: detail.join(", ") }));
+  // Freshness reads relative, with the absolute time on hover (timeNode).
+  if (lastScan || watcher.errors) {
+    var scanRow = el("div", { class: "status-row status-detail" });
+    if (lastScan) scanRow.appendChild(el("span", null, ["Last scan ", timeNode(lastScan)]));
+    if (watcher.errors) scanRow.appendChild(el("span", { text: (lastScan ? ", " : "") + watcher.errors + (watcher.errors === 1 ? " error" : " errors") }));
+    line.appendChild(scanRow);
+  }
   if (figures.asOf || healthPoll.redrawDue) {
     var row = el("div", { class: "status-row status-detail" });
-    if (figures.asOf) row.appendChild(el("span", { text: "Figures as of " + shortTs(figures.asOf) }));
+    if (figures.asOf) row.appendChild(el("span", null, ["Figures updated ", timeNode(figures.asOf)]));
     if (healthPoll.redrawDue) row.appendChild(redrawButton());
     line.appendChild(row);
   }
@@ -137,6 +143,22 @@ function renderStatusLine() {
     })
   );
 }
+
+// The status line's times read "5 min ago" (timeNode). Each health poll
+// (every minute at most) moves their words on in place, so nothing else
+// in the line is rebuilt under the reader (a focused Redraw figures
+// keeps its focus); so does coming back to the page.
+function refreshTimes(line) {
+  Array.prototype.forEach.call(line.querySelectorAll("time[datetime]"), function (node) {
+    var words = relativeTime(node.dateTime);
+    if (node.textContent !== words) node.textContent = words;
+  });
+}
+
+document.addEventListener("visibilitychange", function () {
+  var line = document.getElementById("status-line");
+  if (line && !document.hidden) refreshTimes(line);
+});
 
 // A newer or reset figures-as-of time (api.js) redraws the status line.
 figures.notify = renderStatusLine;

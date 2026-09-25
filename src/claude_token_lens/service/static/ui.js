@@ -131,11 +131,15 @@ var COPY_FAILED = "Couldn't copy. Select the text and copy it yourself.";
 
 // A block of text to paste somewhere, in the mono face, with a Copy
 // button that says "Copied" only when the copy worked (and a toast says
-// what went where).
-export function codeBlockWithCopy(text, what) {
+// what went where). what: the kind of text ("Prompt", "Command");
+// about: what it is for ("revixo-reviewer"). The button shows "Copy"
+// and is named "Copy prompt for revixo-reviewer", so a page of them
+// reads as a list of different things.
+export function codeBlockWithCopy(text, what, about) {
   var wrap = el("div", { class: "code-block" });
   var pre = el("pre", { text: text || "" });
-  var button = el("button", { type: "button", class: "copy-button", text: "Copy" });
+  var kind = what ? what.charAt(0).toLowerCase() + what.slice(1) : "text";
+  var button = el("button", { type: "button", class: "copy-button", text: "Copy", "aria-label": "Copy " + kind + (about ? " for " + about : "") });
   button.addEventListener("click", function () {
     copyToClipboard(text || "").then(function (ok) {
       button.textContent = ok ? "Copied" : "Couldn't copy";
@@ -222,7 +226,10 @@ export function severityMark(severity) {
 export var CHECK_STATUS_ORDER = ["act", "ok", "no_data"];
 
 var CHECK_STATUS = {
-  act: { label: "Worth a look", cls: "severity-action", icon: "critical" },
+  // Amber like a "Worth considering" recommendation, not red like "Do
+  // this": a check points at recommendations, and shouldn't sound more
+  // urgent than they do.
+  act: { label: "Worth a look", cls: "severity-advice", icon: "warning" },
   ok: { label: "Nothing to do", cls: "severity-good", icon: "success" },
   no_data: { label: "Not enough data", cls: "severity-info", icon: "info" },
 };
@@ -512,6 +519,12 @@ export function loadingNode(label, kind) {
 
 // -- command block: how to make a change ---------------------------------------------
 
+// Who a fix is for, when it names someone: the agent, or the main
+// session for a model change (the same rule as fixTitle below).
+function fixSubject(fix) {
+  return fix.agent || (fix.key === "model" ? "your main session" : "");
+}
+
 function fixTitle(fix) {
   if (fix.title) return fix.title;
   // Same rule as render/tables.py's fix_subject.
@@ -586,7 +599,7 @@ export function commandBlock(fix, opts) {
     tabs.push({
       label: "Prompt for Claude",
       icon: "prompt",
-      body: [el("p", { class: "command-hint", text: "Paste this into Claude Code. It shows you the change before saving it." }), codeBlockWithCopy(fix.prompt, "Prompt")],
+      body: [el("p", { class: "command-hint", text: "Paste this into Claude Code. It shows you the change before saving it." }), codeBlockWithCopy(fix.prompt, "Prompt", fixSubject(fix))],
     });
   }
   if (fix.command) {
@@ -596,7 +609,7 @@ export function commandBlock(fix, opts) {
       body: [
         el("p", { class: "command-hint", text: "It shows the change without writing anything. Run it again without --dry-run to make the change; the output tells you how to undo it." }),
         fix.command_warning ? callout({ tone: "warning", text: fix.command_warning, class: "fix-warning" }) : null,
-        codeBlockWithCopy(fix.command, "Command"),
+        codeBlockWithCopy(fix.command, "Command", fixSubject(fix)),
       ],
     });
   }
@@ -604,7 +617,7 @@ export function commandBlock(fix, opts) {
     tabs.push({
       label: "Try it for one session",
       icon: "clock",
-      body: [el("p", { class: "command-hint" }, prose(fix.trial_note || "")), codeBlockWithCopy(fix.trial_command, "Command")],
+      body: [el("p", { class: "command-hint" }, prose(fix.trial_note || "")), codeBlockWithCopy(fix.trial_command, "Command", fixSubject(fix))],
     });
   }
   if (tabs.length > 1) {
@@ -918,6 +931,14 @@ export function prose(text, seen) {
 
 var jargonPattern = null;
 
+// Punctuation that belongs to the word beside it: an opening bracket or
+// quote just before a term, and a full stop, comma, closing bracket or
+// quote just after. A term is a button, which never breaks inside, so
+// without this "list price" could end a line and its full stop start
+// the next one alone.
+var LEADING_MARKS = /[(\[\u201c\u2018"']+$/;
+var TRAILING_MARKS = /^[.,;:!?)\]\u201d\u2019"'\u2026]+/;
+
 function termNodes(text, seen) {
   if (!jargonPattern) {
     jargonPattern = new RegExp(
@@ -939,9 +960,17 @@ function termNodes(text, seen) {
     var term = JARGON[which][0];
     if (seen.has(term) || !glossaryText(term)) continue;
     seen.add(term);
-    if (match.index > last) nodes.push(document.createTextNode(text.slice(last, match.index)));
-    nodes.push(termButton(term, match[0]));
-    last = jargonPattern.lastIndex;
+    var end = jargonPattern.lastIndex;
+    var before = text.slice(last, match.index);
+    var lead = (before.match(LEADING_MARKS) || [""])[0];
+    var trail = (text.slice(end).match(TRAILING_MARKS) || [""])[0];
+    before = before.slice(0, before.length - lead.length);
+    if (before) nodes.push(document.createTextNode(before));
+    var trigger = termButton(term, match[0]);
+    // Kept on one line with its punctuation (app.css .term-wrap).
+    nodes.push(lead || trail ? el("span", { class: "term-wrap" }, [lead || null, trigger, trail || null]) : trigger);
+    last = end + trail.length;
+    jargonPattern.lastIndex = last;
   }
   if (last < text.length) nodes.push(document.createTextNode(text.slice(last)));
   return nodes;

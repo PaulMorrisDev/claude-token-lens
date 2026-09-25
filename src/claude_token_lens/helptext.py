@@ -3139,7 +3139,9 @@ TABLE_COPY: dict[str, TableCopy] = {
             ),
         },
         value_labels={"all": "All"},
-        lead_columns=["limit_hits", "sessions_affected", "pause_total_s", "limit_turn_write_cost_usd"],
+        # Total pause time leads "How long usage-limit pauses lasted", the
+        # table beside this one, so it isn't a tile here too.
+        lead_columns=["limit_hits", "sessions_affected", "limit_turn_write_cost_usd"],
     ),
     "limits_hits_by_kind": TableCopy(
         title="Which limit you hit",

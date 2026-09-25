@@ -13,7 +13,7 @@ import { clear, el, onParams, state } from "./core.js";
 import { fetchJson, findSection, loadReport, withWindow } from "./api.js";
 import { compactNumber, moneyText, thousands } from "./format.js";
 import { pulseNode } from "./grid.js";
-import { errorNotice, loadingNode, panel } from "./ui.js";
+import { button, errorNotice, loadingNode, panel } from "./ui.js";
 import { cardLink, COST_CARDS, GLOSSARY, pageLink, termSlug, viewIntro } from "./links.js";
 import { avoidableRebuilds, cardRuleText, pricingFacts } from "./costs.js";
 
@@ -68,7 +68,8 @@ export function renderGlossary(panelNode) {
   });
 
   var whySlots = {};
-  var list = el("dl", { class: "glossary" });
+  var entries = [];
+  var list = el("dl", { class: "glossary", id: "glossary-list" });
   GLOSSARY.forEach(function (pair) {
     var term = pair[0];
     var entry = el("div", { class: "glossary-entry", id: termAnchorId(termSlug(term)) });
@@ -80,17 +81,24 @@ export function renderGlossary(panelNode) {
       whySlots[term] = why;
     }
     list.appendChild(entry);
+    entries.push({ node: entry, text: (term + " " + pair[1]).toLowerCase() });
   });
+  var filter = glossaryFilter(entries);
+  panelNode.appendChild(filter.node);
   panelNode.appendChild(list);
+  panelNode.appendChild(filter.empty);
 
   // A term link (?term=<slug>) scrolls to and pulses its entry, on the
   // first draw and on every later address change while this segment
   // stays open (app.js calls this right after showing the view, and
-  // again on each address change that doesn't redraw it).
+  // again on each address change that doesn't redraw it). A filter that
+  // hides the entry is cleared first.
   onParams("glossary/terms", function (params) {
     if (!params.term) return;
     var node = document.getElementById(termAnchorId(params.term));
-    if (node) pulseNode(node, "block-target");
+    if (!node) return;
+    if (node.hidden) filter.reset();
+    pulseNode(node, "block-target");
   });
 
   // "Why it matters": the same rule sentence the term's cost card
@@ -111,6 +119,73 @@ export function renderGlossary(panelNode) {
       slot.appendChild(cardLink(slug, "How costs work"));
     });
   });
+}
+
+// The filter over Terms: a labelled search field that narrows the list
+// as you type. An entry shows when every word typed is in its term or
+// its definition. Esc empties the field; with nothing matching, the
+// page says so and offers every term again. entries: [{node, text}],
+// text in lower case.
+function glossaryFilter(entries) {
+  var input = el("input", {
+    type: "search",
+    id: "glossary-filter",
+    class: "glossary-filter-input",
+    autocomplete: "off",
+    spellcheck: false,
+    "aria-controls": "glossary-list",
+    "aria-describedby": "glossary-filter-hint",
+  });
+  var count = el("p", { class: "glossary-filter-count", role: "status" });
+  var node = el("div", { class: "glossary-filter" }, [
+    el("label", { for: "glossary-filter", text: "Find a term" }),
+    input,
+    el("p", { class: "notes", id: "glossary-filter-hint", text: "Matches a term or its definition. Esc clears it." }),
+    count,
+  ]);
+  var emptyText = el("span");
+  var showAll = button("Show every term", { variant: "quiet", action: reset });
+  var empty = el("div", { class: "empty-state glossary-empty", hidden: true }, [
+    el("p", { class: "empty-message" }, [emptyText]),
+    el("p", { class: "empty-next", text: "Try a shorter word or a different spelling." }),
+    el("div", { class: "glossary-empty-actions" }, [showAll]),
+  ]);
+
+  function apply() {
+    var words = input.value.toLowerCase().split(/\s+/).filter(Boolean);
+    var shown = 0;
+    entries.forEach(function (entry) {
+      var match = words.every(function (word) {
+        return entry.text.indexOf(word) !== -1;
+      });
+      entry.node.hidden = !match;
+      if (match) shown += 1;
+    });
+    // Said once per change, not per keystroke that changes nothing.
+    var said = !words.length ? "" : !shown ? "No term matches." : shown === entries.length ? "Every term matches." : shown + " of " + entries.length + " terms match.";
+    if (count.textContent !== said) count.textContent = said;
+    // With nothing to show, the box below says it (with the words typed)
+    // on screen; the count still says it to a screen reader.
+    count.classList.toggle("visually-hidden", !shown);
+    empty.hidden = shown > 0;
+    emptyText.textContent = shown ? "" : "No term matches “" + input.value.trim() + "”.";
+  }
+
+  function reset() {
+    input.value = "";
+    apply();
+    input.focus();
+  }
+
+  input.addEventListener("input", apply);
+  input.addEventListener("keydown", function (event) {
+    if (event.key !== "Escape" || !input.value) return;
+    // The field empties, and Esc goes no further (it would close nothing).
+    event.preventDefault();
+    event.stopPropagation();
+    reset();
+  });
+  return { node: node, empty: empty, reset: reset };
 }
 
 // ======================================================================

@@ -108,7 +108,7 @@ def test_the_scan_finds_the_dashboards_copy() -> None:
     copy = _copy()
     assert len(copy) >= 150, len(copy)
     texts = {text for _, _, text in copy}
-    assert "The window doesn't apply here" in texts
+    assert "Same for every window" in texts
     sample = 'el("p", { text: "The top-level session_id was recached." }); // "a recache comment"\nvar r = /"x"/;'
     found = [text for _, text in _string_literals(sample) if _is_copy(text)]
     assert found == ["The top-level session_id was recached."]

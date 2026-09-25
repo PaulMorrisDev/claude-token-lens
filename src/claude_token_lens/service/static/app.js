@@ -714,7 +714,10 @@ function initWindowPicker() {
       return { value: opt.value, label: opt.label };
     })
   );
-  windowFixed = el("span", { class: "window-fixed", hidden: true }, [icon("clock"), el("span", { text: "The window doesn't apply here" })]);
+  // A fixed view (Setup > Capture, Glossary > Terms) reads the same
+  // whatever the window. Its figures aren't all time, and the Glossary
+  // has none, so the chip says only that.
+  windowFixed = el("span", { class: "window-fixed", hidden: true }, [icon("clock"), el("span", { text: "Same for every window" })]);
   host.appendChild(windowFixed);
 }
 
@@ -728,7 +731,7 @@ function initProjectPicker() {
     id: "project",
     icon: "folder",
     name: "Project",
-    note: "Projects with a session in this window, the most expensive first. Settings, cache rebuild causes and Data quality always cover every project.",
+    note: "Projects with a session in this window, the most expensive first. Settings and Data quality always cover every project.",
     pick: function (value) {
       setProject(value);
     },
