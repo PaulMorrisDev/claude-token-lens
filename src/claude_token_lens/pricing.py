@@ -195,6 +195,13 @@ class Pricing:
     aliases: dict[str, str] = field(default_factory=dict)
     #: optional [server_tools] rates, e.g. "web_search_per_1000".
     server_tools: dict[str, float] = field(default_factory=dict)
+    #: :meth:`resolve_model` results by model string: one report asks
+    #: about the same handful of strings millions of times. A rate card
+    #: is never changed once loaded; ``dataclasses.replace`` of one
+    #: starts an empty cache.
+    _resolved: dict[str | None, ResolvedRates | None] = field(
+        default_factory=dict, init=False, repr=False, compare=False
+    )
 
     @property
     def sha8(self) -> str:
@@ -227,6 +234,13 @@ class Pricing:
         reading ``matched_via`` shouldn't have to also inspect the raw id
         to notice a Bedrock/Vertex form was involved.
         """
+        try:
+            return self._resolved[model_id]
+        except KeyError:
+            resolved = self._resolved[model_id] = self._resolve_uncached(model_id)
+            return resolved
+
+    def _resolve_uncached(self, model_id: str | None) -> ResolvedRates | None:
         if not model_id or model_id in _NO_WARNING_MODEL_IDS:
             return None
 

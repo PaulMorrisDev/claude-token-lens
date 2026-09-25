@@ -26,12 +26,14 @@ from claude_token_lens.compaction_sim import (
     CompactionSimThresholds,
     _rediscovery_allowance_usd_used,
     _replay_transcript,
+    _shrunk_cost,
+    _summary_request_cost,
     _Shape,
     build_section,
     simulate_compaction_windows,
 )
 from claude_token_lens.model import Event, EventKind, ReportModel, ReportMeta, TranscriptMeta, TranscriptResult
-from claude_token_lens.pricing import load_pricing
+from claude_token_lens.pricing import load_pricing, price_turn
 from claude_token_lens.units import Units
 
 from helpers import assert_privacy, elasticity_with_slope
@@ -171,6 +173,32 @@ def test_replay_transcript_caches_model_resolution_by_string():
     assert len(calls) == 2  # one resolve per distinct model, not per turn
     assert result == reference
     assert result.cost > 0
+
+
+@pytest.mark.parametrize("model_id", sorted(PRICING.models))
+@pytest.mark.parametrize("dropped", [0.0, 50_000.0, 250_000.0])
+def test_shrunk_turns_price_the_same_as_a_replaced_turn(model_id, dropped):
+    """The replay prices changed turns through a light stand-in rather
+    than ``dataclasses.replace``. Fast mode, the long-context rule, a
+    data-residency geo and web searches must all price exactly as on a
+    real ``Turn`` with the same changes."""
+    rates = PRICING.resolve_model(model_id)
+    turn = _turn(
+        model=model_id, speed="fast", inference_geo="us", web_search_requests=3,
+        input_tokens=900, output_tokens=4_000, thinking_tokens=1_000,
+        ctx=400_000, cache_read_tokens=200_000, cache_creation_tokens=199_100, cc_5m=150_000, cc_1h=49_100,
+    )
+    ctx = max(0, int(round(turn.ctx - dropped)))
+    read = max(0, int(round(turn.cache_read_tokens - dropped)))
+    keep = max(0.0, (turn.cache_creation_tokens - max(0.0, dropped - turn.cache_read_tokens)) / turn.cache_creation_tokens)
+    shrunk = replace(
+        turn, ctx=ctx, cache_read_tokens=read, cc_5m=int(round(turn.cc_5m * keep)), cc_1h=int(round(turn.cc_1h * keep))
+    )
+
+    assert _shrunk_cost(turn, rates, dropped) == price_turn(shrunk, rates).total
+    assert _summary_request_cost(turn, rates, dropped, 20_000.4) == price_turn(
+        replace(shrunk, output_tokens=20_000, thinking_tokens=0), rates
+    ).total
 
 
 def test_window_none_has_zero_synthetic_compactions_and_matches_true_observed_cost():

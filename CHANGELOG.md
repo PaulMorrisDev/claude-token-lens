@@ -17,6 +17,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   subagent's details once a check instead of four times. The same idle
   check now takes about 1 second. The first check after the service
   starts still totals every session once.
+- **CLAUDE.md and Checks open faster.** Looking for each stale file
+  reference walked every project's folders again on every request:
+  over 4 seconds for each view. The walk is now quicker and kept for 2
+  minutes, so the CLAUDE.md view takes about 0.2 seconds, and Checks
+  about 2 seconds, down from nearly 5.
+- **Reports build about a third faster** (35 to 24 seconds on a
+  2,700-transcript corpus), with the same figures to the byte. The
+  compaction replay prices each unchanged reply once rather than once
+  for each of its 12 candidate windows, and snapshot times and model
+  names are each worked out once.
 
 ### Fixed
 

@@ -160,3 +160,38 @@ def test_worktrees_fold_into_their_main_project(tmp_path):
     folders, worktrees = cmr.split_worktrees([main, worktree])
     assert folders == [main]
     assert list(worktrees.values()) == [[worktree]]
+
+
+def test_project_index_matches_subfolder_paths_and_prefixes(tmp_path):
+    (tmp_path / "src" / "App" / "Shared").mkdir(parents=True)
+    (tmp_path / "src" / "App" / "Shared" / "Foo.cs").write_text("", encoding="utf-8")
+    (tmp_path / "sql").mkdir()
+    (tmp_path / "sql" / "067_add_users.sql").write_text("", encoding="utf-8")
+    (tmp_path / "node_modules" / "pkg").mkdir(parents=True)
+    index = cmr._ProjectIndex(tmp_path)
+
+    assert index.has("Shared/Foo.cs")
+    assert index.has(r"App\Shared\foo.cs")
+    assert index.has("./src/App")
+    assert index.has("sql/067")
+    assert index.has("sql/0xx")  # a placeholder, not a path
+    assert not index.has("hared/Foo.cs")  # part of a folder name is not a folder
+    assert not index.has("Shared/Bar.cs")
+    assert not index.has("node_modules/pkg")
+    assert not index.has("Foo.cs\nsql")
+
+
+def test_project_index_is_kept_across_reviews_for_a_while(tmp_path, monkeypatch):
+    clock = [1000.0]
+    monkeypatch.setattr(cmr.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(cmr, "_INDEXES", {})
+    config_dir, project = _setup(tmp_path)
+    cmr.build_review(config_dir, {}, salt=SALT, projects=[project])
+    first = cmr._project_index(project)
+
+    clock[0] += cmr._INDEX_TTL_S - 1
+    cmr.build_review(config_dir, {}, salt=SALT, projects=[project])
+    assert cmr._project_index(project) is first
+
+    clock[0] += 1
+    assert cmr._project_index(project) is not first

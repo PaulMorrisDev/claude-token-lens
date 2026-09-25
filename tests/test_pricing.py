@@ -1032,6 +1032,21 @@ def test_coverage_tracks_fast_applied(min_pricing):
     assert table.notes
 
 
+def test_resolve_model_is_cached_per_rate_card(min_pricing):
+    import dataclasses
+
+    first = min_pricing.resolve_model("claude-widget-9")
+    assert min_pricing.resolve_model("claude-widget-9") is first
+    assert min_pricing.resolve_model("no-such-model") is None
+    assert min_pricing.resolve_model(None) is None
+
+    # A replaced rate card starts its own cache: its server-tool rate shows.
+    priced = dataclasses.replace(min_pricing, server_tools={"web_search_per_1000": 8.0})
+    assert priced.resolve_model("claude-widget-9").web_search_per_1000 == 8.0
+    assert min_pricing.resolve_model("claude-widget-9").web_search_per_1000 == first.web_search_per_1000
+    assert dataclasses.replace(min_pricing) == min_pricing  # a filled cache never counts in equality
+
+
 def test_fast_applied_standard_cost_leaves_the_server_tool_fee_unscaled(min_pricing):
     import dataclasses
 
