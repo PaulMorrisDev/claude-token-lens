@@ -60,6 +60,7 @@ Every metric here has to earn its keep. Something has to read it and turn it int
 | Repeated failures (`tool_loops`) | Always measured, no hook | – | Checking changes, Tool output |
 | Where research happens (`research_split`) | Always measured, no hook | – | Researching, Delegating to agents |
 | Coaching line (`coaching_line`) | Live coaching, any level | – | Clearing context, Tool output, Researching |
+| Coaching notes from Claude (`coaching_notes`) | Live coaching, any level | – | Clearing context, Tool output, Researching, Delegating to agents, Planning |
 | Brief templates (`brief_templates`) | Live coaching, any level | – | Giving Claude information |
 | Feedback skill (`feedback_skill`) | Feedback, any level; switching to Deep turns it on | – | Cost per finished piece of work, Planning, Profiles per kind of task |
 | Feedback reminder in the status line (`feedback_note`) | Feedback, any level; switching to Deep turns it on | – | Cost per finished piece of work |
@@ -384,6 +385,15 @@ Every metric here has to earn its keep. Something has to read it and turn it int
 - **Why:** Advice where you work, at the moment it applies. The status line is never sent to Claude.
 - **Tag:** No tag. Shown only in the status line; Claude is never asked, and it costs no tokens.
 - **Powers:** Clearing context, Tool output, Researching
+
+### Coaching notes from Claude (`coaching_notes`)
+
+- **Level:** Live coaching, any level
+- **Captures:** Live hints for where the status line doesn't show, such as the desktop app. When one applies, a hook adds a short note to Claude's context, and Claude acts on it or tells you in one line: a large tool output, many reads for one message, a subagent run past the point where your own history says splitting pays, a plan approved on top of a lot of planning context, or a large context or an expired cache when you send a message.
+- **Why:** Advice at the moment it applies, and Claude can often act on it itself. Each note costs a few dozen tokens for the rest of the session. Claude Code waits for the hook after each shell, read, search, web or MCP result and each message you send.
+- **Tag:** No tag. A hook adds a note only when a hint applies, and Claude acts on it or tells you in one line. Each hint and when it applies: [coaching.md](coaching.md).
+- **Hook:** UserPromptSubmit, PostToolUse
+- **Powers:** Clearing context, Tool output, Researching, Delegating to agents, Planning
 
 ### Brief templates (`brief_templates`)
 

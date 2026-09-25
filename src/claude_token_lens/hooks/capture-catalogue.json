@@ -379,5 +379,40 @@
   "cloud_credential_error",
   "unknown"
  ],
- "signals_dir": "signals"
+ "signals_dir": "signals",
+ "coaching": {
+  "marker": "tl-coach v",
+  "version": 1,
+  "file": "coaching.json",
+  "state_file": "coach-state.json",
+  "read_tools": [
+   "Read",
+   "Grep",
+   "Glob"
+  ],
+  "thresholds": {
+   "clear_context_tokens": 100000,
+   "cold_min_tokens": 20000,
+   "quiet_output_tokens": 8000,
+   "explore_reads": 8,
+   "plan_fresh_tokens": 40000,
+   "cooldown_minutes": 30,
+   "rearm_factor": 1.5
+  },
+  "text": {
+   "cache_cold": "The prompt cache expired while this session sat idle for {idle}, so this reply writes the whole context again: about {ctx} tokens at the cache-write price. If the user's message starts a task unrelated to the work so far, end your reply, before any tag, with one line saying so, and that /clear before a new task after a break avoids it. If it carries on the same work, don't mention it.",
+   "clear_context": "This session's context is about {ctx} tokens, and every reply reads all of it again. If the user's message starts a task unrelated to the work so far, end your reply, before any tag, with one line saying that /clear before a new task would have saved that. If it carries on the same work, don't mention it.",
+   "quiet_output": "That result was about {tokens} tokens, and every later reply reads it again. Next time, {how}.",
+   "explore_reads": "You've made {reads} reads and searches for this message, about {tokens} tokens that every later reply reads again. If more searching is needed, hand it to an Explore agent: it searches in its own context and sends back a short summary.",
+   "plan_fresh": "This plan was approved with about {kept} tokens of planning in context, which every reply of the build reads again. Before you start building, tell the user in one line that building it in a fresh session (/clear, then ask Claude to carry out the saved plan) would carry about {kept} fewer tokens on each reply. Then carry on unless they stop you.",
+   "split_run": "This run has made about {replies} replies, and every reply reads all of the run again. In this user's past sessions, {agent} runs cost less when split about every {every_n} replies. If more than a step or two is left, finish the step you're on and end your report with a short note of what's done, what's left and the files involved, so a fresh agent can carry on from it."
+  },
+  "quiet_how": {
+   "Read": "read only the lines you need, with an offset and a limit",
+   "Bash": "cut the command's output down first: a filter, head or tail, or a quieter flag",
+   "Grep": "narrow the pattern or the path, or ask for file names or counts only",
+   "Glob": "narrow the pattern",
+   "": "ask for less: a narrower query or a smaller page"
+  }
+ }
 }

@@ -173,7 +173,15 @@ __version__ = "0.7.0"
 #: every table split by kind folded workflow agents into subagents. A
 #: pre-24 digest (the parse cache's and the service store's alike) still
 #: holds the old kind.
-PARSER_VERSION = 24
+#:
+#: Bumped to 25: a coaching note (``tl-coach v``, the capture hook's live
+#: hints) is its own ``coaching_note`` event, and counts to
+#: ``Turn.cap_note_chars`` but not to ``cap_injections``; a capture note
+#: sharing an attachment with one keeps the coaching part apart
+#: (``detail["coach"]``/``["coach_chars"]``). Notes on a message you send
+#: (``UserPromptSubmit``) keep that hook name. A pre-25 digest counted
+#: neither.
+PARSER_VERSION = 25
 
 #: Bump when the model.py contract changes in a way that invalidates the
 #: on-disk digest cache (see model.py's module docstring for the contract

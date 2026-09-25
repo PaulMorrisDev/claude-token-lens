@@ -420,8 +420,10 @@ def _decide(opts: Options, tools: Tools, detection, health, *, stdin, stdout, no
     capture_line = None
     if setup.touch_settings:
         commands = None
-        if current.is_on or after.is_on:
-            setup.capture_specs = hook_health.capture_specs(after.active_metrics()) if after.is_on else ()
+        if current.is_on or after.is_on or current.coaching_notes_on:
+            setup.capture_specs = (
+                hook_health.capture_specs(after.hook_metrics()) if after.is_on or after.coaching_notes_on else ()
+            )
             commands = tools.capture_commands
             if any(commands.get(spec.script) is None for spec in setup.capture_specs):
                 commands = None

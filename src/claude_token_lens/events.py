@@ -60,7 +60,7 @@ import json
 import re
 from typing import Iterable, Sequence
 
-from .capture_catalogue import HOOK_SCRIPT, NOTE_MARKER
+from .capture_catalogue import COACH_MARKER, COACHING_HINTS, HOOK_SCRIPT, NOTE_MARKER
 from .capture_tags import parse_brief_markers, parse_note_codes
 from .model import Event, EventKind
 
@@ -398,18 +398,25 @@ def _attachment_content_chars(attachment: dict) -> int | None:
 #: when a line has no ``rendered`` field.
 _HOOK_CONTEXT_WRAPPER_CHARS = 63
 
-#: The hook events a capture note is injected by, kept on the note's
-#: ``Event.detail["hook"]``; anything else is recorded as "other".
-_CAPTURE_NOTE_HOOKS = frozenset({"SessionStart", "SubagentStart", "PostToolUse"})
+#: The hook events a capture or coaching note is injected by, kept on the
+#: note's ``Event.detail["hook"]``; anything else is recorded as "other".
+_CAPTURE_NOTE_HOOKS = frozenset({"SessionStart", "SubagentStart", "PostToolUse", "UserPromptSubmit"})
+
+#: A coaching note's marker: ``tl-coach v1 quiet_output``.
+_COACH_RE = re.compile(re.escape(COACH_MARKER) + r"(\d+) ([a-z_]+)")
 
 
-def _capture_note(d: dict, attachment: dict) -> tuple[int, dict] | None:
-    """Metrics-capture addition: ``(chars, detail)`` for a
+def _capture_note(d: dict, attachment: dict) -> tuple[str, int, dict] | None:
+    """Metrics-capture addition: ``(subkind, chars, detail)`` for a
     ``hook_additional_context`` line carrying Token Lens's capture note
-    (``capture_catalogue.NOTE_MARKER``), else ``None``. ``chars`` is what
-    the model was shown, from ``rendered`` when present; ``detail`` holds
-    the note format version, its metric codes and the hook event -- never
-    the note's text."""
+    (``capture_catalogue.NOTE_MARKER``, subkind ``capture_note``) or only
+    a coaching note (``COACH_MARKER``, ``coaching_note``), else ``None``.
+    ``chars`` is what the model was shown, from ``rendered`` when
+    present. ``detail`` holds the note format version, its metric codes
+    (a coaching note: its hint, ``kind``) and the hook event -- never the
+    note's text. A capture note the same hook call added a coaching note
+    to keeps the coaching part apart: ``detail["coach"]`` (its hint) and
+    ``detail["coach_chars"]``, taken out of ``chars``."""
     content = attachment.get("content")
     if isinstance(content, str):
         texts = [content]
@@ -418,20 +425,37 @@ def _capture_note(d: dict, attachment: dict) -> tuple[int, dict] | None:
     else:
         texts = []
     text = "\n".join(texts)
-    if NOTE_MARKER not in text:
+    note_at = text.find(NOTE_MARKER)
+    coach_at = text.find(COACH_MARKER)
+    if note_at < 0 and coach_at < 0:
         return None
-    version, codes = parse_note_codes(text)
     chars = _rendered_size_chars(d, attachment) if d.get("rendered") is not None else None
     if chars is None:
         hook_name = attachment.get("hookName")
         chars = len(text) + _HOOK_CONTEXT_WRAPPER_CHARS + (len(hook_name) if isinstance(hook_name, str) else 0)
     hook_event = attachment.get("hookEvent")
+    hook = hook_event if hook_event in _CAPTURE_NOTE_HOOKS else "other"
+    coach: dict = {}
+    if coach_at >= 0:
+        match = _COACH_RE.match(text, coach_at)
+        coach = {
+            "v": int(match.group(1)) if match else None,
+            "kind": match.group(2) if match and match.group(2) in COACHING_HINTS else "other",
+        }
+    if note_at < 0 or note_at > coach_at >= 0:
+        return "coaching_note", chars, {**coach, "hook": hook}
+    version, codes = parse_note_codes(text[:coach_at] if coach_at >= 0 else text)
     detail = {
         "v": version,
         "codes": list(codes),  # a list, as it reads back from the cache
-        "hook": hook_event if hook_event in _CAPTURE_NOTE_HOOKS else "other",
+        "hook": hook,
     }
-    return chars, detail
+    if coach:
+        # The hook joins the two with a newline, the coaching note last.
+        coach_chars = min(chars, len(text) - coach_at + 1)
+        detail.update(coach=coach["kind"], coach_chars=coach_chars)
+        chars -= coach_chars
+    return "capture_note", chars, detail
 
 
 def _rendered_size_chars(d: dict, attachment: dict) -> int | None:
@@ -1297,9 +1321,9 @@ def classify_line(d: dict) -> Event | None:
         if attachment_type == "hook_additional_context":
             note = _capture_note(d, attachment)
             if note is not None:
-                note_chars, detail = note
+                note_kind, note_chars, detail = note
                 return Event(
-                    kind=EventKind.HOOK_OUTPUT, subkind="capture_note", ts=ts, size_chars=note_chars, detail=detail
+                    kind=EventKind.HOOK_OUTPUT, subkind=note_kind, ts=ts, size_chars=note_chars, detail=detail
                 )
         # SURV-HE/CAP-9: which hook event this ran under (closed bucket,
         # never the matcher/tool-name suffix -- see _hook_name_bucket),

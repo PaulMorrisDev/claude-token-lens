@@ -2711,6 +2711,7 @@ TABLE_COPY: dict[str, TableCopy] = {
             "hook_system_message": "Hook message",
             "hook_additional_context": "Context added by a hook",
             "capture_note": "Token Lens metrics capture note",
+            "coaching_note": "Token Lens coaching note",
             "hook_cancelled": "Hook cancelled",
             # settings and lists that change mid-session
             "model": "Model changed",

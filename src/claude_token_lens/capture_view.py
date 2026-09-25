@@ -74,8 +74,18 @@ STATUSLINE_NOTES = {
     "feedback_note": "Your status line isn't Token Lens's, so this second line won't show there; the banner "
     "here still does. 'claude-token-lens init --connect' offers to set the status line up.",
     "coaching_line": "Your status line isn't Token Lens's, so this line won't show. "
-    "'claude-token-lens init --connect' offers to set the status line up.",
+    "'claude-token-lens init --connect' offers to set the status line up. Where there's no status line, "
+    "such as the desktop app, coaching notes bring the same hints into the conversation.",
 }
+
+#: Said when ``coaching_notes`` is turned on, before the yes/no: what the
+#: notes are, when they come and what they cost.
+COACHING_NOTES_ON = (
+    "Coaching notes: when a hint applies, a hook adds a short note (about 50 to 120 tokens) to Claude's context, "
+    "after a tool result or when you send a message, and Claude acts on it or tells you in one line. "
+    "They run at any capture level, at most one of a kind every half hour in a session. "
+    "'claude-token-lens capture status' shows how many there were and what they cost."
+)
 
 #: Below this percentage of your messages tagged, once there are
 #: :data:`LOW_COVERAGE_MIN_CYCLES` of them, the banner says Claude is
@@ -714,6 +724,7 @@ __all__ = [
     "BRIEF_COMMAND",
     "BRIEF_SKILL_NOTES",
     "BRIEF_SKILL_STATES",
+    "COACHING_NOTES_ON",
     "SKILL_NOTES",
     "SKILL_STATES",
     "STATUSLINE_NOTES",

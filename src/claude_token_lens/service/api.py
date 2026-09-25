@@ -1168,7 +1168,7 @@ def make_handler(
         # config_dir=: cheap (a few small hook files hashed, no subprocess,
         # no transcript read) but still catches an outdated or hand-edited
         # hook file (SEC-P7/ROB-P7), not just a missing settings.json entry.
-        hooks = hook_health.check_capture(hook_health.capture_specs(capture.active_metrics()), config_dir=options.config_dir)
+        hooks = hook_health.check_capture(hook_health.capture_specs(capture.hook_metrics()), config_dir=options.config_dir)
         block["hooks_ok"] = hooks.ok
         return block
 
@@ -1355,7 +1355,7 @@ def make_handler(
                 settings = None
             statusline = footprint.is_own_statusline(settings if isinstance(settings, dict) else None)
         hooks = hook_health.check_capture(
-            hook_health.capture_specs(capture.active_metrics()), config_dir=options.config_dir
+            hook_health.capture_specs(capture.hook_metrics()), config_dir=options.config_dir
         )
         return capture_view.view(
             capture, past=past, units=units, use=use, hooks=hooks, signal_sessions=signal_sessions,
