@@ -506,6 +506,10 @@ changes a figure.
 alternative, sample and saving thresholds cleared) and names the exact
 lever: `settings.json`'s `"model"` key for the top-level conversation,
 or the subagent's `.claude/agents/<type>.md` frontmatter `model:` line.
+A Sonnet main session never gets Haiku: its row's state is
+`main_floor`, with no alternative and no saving. `advice.finish` gives
+the main session's card its own id, `model-tier-main`, ranked last
+among cards of its severity.
 
 ## `waste` (`waste.py`)
 

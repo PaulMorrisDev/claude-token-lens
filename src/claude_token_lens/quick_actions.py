@@ -1021,7 +1021,7 @@ def _quality(ctx: Context) -> dict:
 CHECKS: tuple[Check, ...] = (
     Check("models", "Is each agent on the cheapest model that does the job?",
           "Every reply is priced by its model; a cheaper model for routine agents is usually the largest saving.",
-          _models, ("model-tier",)),
+          _models, ("model-tier", "model-tier-main")),
     Check("effort", "Is anything thinking more than the work needs?",
           "Thinking is billed as output, the most expensive kind of token.", _effort, ("effort-mismatch",)),
     Check("compaction", "When should conversations be summarised?",

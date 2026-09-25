@@ -2496,7 +2496,9 @@ def test_v4_module_rules_fire_via_recommend_and_evidence_resolves(tmp_path: Path
     recs = recommend_fn(report_model, config=config, archetype=None)
 
     found_ids = {rec.id for rec in recs}
-    for expected_id in ("tool-output-carry", "compaction-window", "model-tier", "wasted-turns"):
+    # The fixture's model swap is the main session's, which advice gives
+    # a card of its own.
+    for expected_id in ("tool-output-carry", "compaction-window", "model-tier-main", "wasted-turns"):
         assert expected_id in found_ids, f"expected {expected_id!r} to fire; got {sorted(found_ids)}"
 
     for rec in recs:

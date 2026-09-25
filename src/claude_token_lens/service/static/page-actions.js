@@ -49,6 +49,7 @@ import { modelSentence, priced, pricingFacts } from "./costs.js";
 // test keeps it in step with every rule id the service can send.
 export var RULE_AREA = {
   "model-tier": "models",
+  "model-tier-main": "models",
   "effort-mismatch": "models",
   "env-subagent-model": "models",
   "env-max-output-tokens": "models",
@@ -111,6 +112,7 @@ function areaLabel(area) {
 // pattern, a data caveat).
 var RULE_MECHANISM = {
   "model-tier": "model",
+  "model-tier-main": "model",
   "env-subagent-model": "model",
   "effort-mismatch": "thinking",
   "env-max-output-tokens": "output",

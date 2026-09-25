@@ -135,6 +135,11 @@ _TIER_FAMILIES: tuple[str, ...] = ("haiku", "sonnet", "opus", "fable")
 #: never mistakes "already on the cheapest model" for a real saving.
 _ALREADY_CHEAPEST_LABEL = "already on the cheapest model"
 
+#: Families never suggested for the main session (``"top-level"``): a
+#: Sonnet main session gets the ``"main_floor"`` verdict instead of Haiku.
+_MAIN_SESSION_BELOW_FLOOR = frozenset({"haiku"})
+_MAIN_FLOOR_LABEL = "Sonnet is the smallest model suggested for your main session"
+
 #: Archetypes that never spawn subagents of their own -- duplicated from
 #: ``recommend.py``'s own constant of the same name (see module
 #: docstring's deviation note): per-agent-type model advice makes no
@@ -267,6 +272,7 @@ class TierVerdict:
     human-readable label ``build_section`` puts in the table.
 
     ``state`` is one of ``"cheaper_available"`` / ``"already_cheapest"``
+    / ``"main_floor"`` (the main session on Sonnet: never moved to Haiku)
     / ``"unknown_tier"`` / ``"no_data"`` -- every state other than
     ``"cheaper_available"`` carries ``saving_usd == saving_pct == 0.0``,
     so the table never implies a saving where none exists.
@@ -296,6 +302,10 @@ def _tier_verdict(stats: "ModelSwapTypeStats", pricing: Pricing) -> TierVerdict:
         )
 
     family = _TIER_FAMILIES[rank - 1]
+    if stats.key == "top-level" and family in _MAIN_SESSION_BELOW_FLOOR:
+        # The main session does the hard, open-ended work; it's never
+        # moved below Sonnet, so a Sonnet main session has no cheaper tier.
+        return TierVerdict("main_floor", None, 0.0, 0.0, _MAIN_FLOOR_LABEL)
     alt_model = pricing.aliases.get(family)
     if alt_model is None or alt_model not in stats.cost_by_model:
         return TierVerdict(

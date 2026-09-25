@@ -192,7 +192,7 @@ function moneyTile(label, usd, opts) {
 }
 
 // Actions whose saving a Savings lever already counts.
-var LEVER_RULES = { "model-tier": "model_swap" };
+var LEVER_RULES = { "model-tier": "model_swap", "model-tier-main": "model_swap" };
 
 // The most the ways to save could come to: the four Savings levers, plus
 // any priced action no lever counts (lower effort, say). An action is an
