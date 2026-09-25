@@ -238,7 +238,7 @@ COMMON_COLUMN_HELP: dict[str, str] = {
     "sessions": "How many sessions this covers.",
     "transcripts": "How many conversation logs this covers: one per main session and one per subagent run.",
     "cost": "Cost at list prices for the window.",
-    "transcript_kind": "Main session or subagents.",
+    "transcript_kind": "Main session, subagents or workflow agents.",
 }
 
 
@@ -1683,7 +1683,7 @@ TABLE_COPY: dict[str, TableCopy] = {
     "topology_context_composition": TableCopy(
         title="What fills the context window: main session vs subagents",
         help=Help(
-            shows="For the main session and for subagents: the average size of each thing that fills the context, per conversation.",
+            shows="For the main session, subagents and workflow agents: the average size of each thing that fills the context, per conversation.",
             read="Startup is the first reply's cache write. Tool results and Claude Code's notes pile up as the conversation runs.",
             act="If tool results dominate, large outputs are being carried turn after turn; see {{page:spend/savings}}.",
         ),

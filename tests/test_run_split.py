@@ -120,10 +120,10 @@ def test_a_split_that_drops_little_does_not_count():
 
 
 def test_workflow_agents_and_main_sessions_are_not_split():
-    # Discovery marks a workflow agent by its run folder, not its kind, and
-    # keeps the agent type it was started as.
-    workflow = _run(workflow_run_id="wf-1")
-    stats = compute_run_split([workflow, _run(kind="workflow-agent"), _parent()], PRICING, TEN)
+    # Discovery gives an agent under a workflow run's folder its own kind,
+    # and keeps the agent type it was started as.
+    workflow = _run(kind="workflow-agent", workflow_run_id="wf-1")
+    stats = compute_run_split([workflow, _parent()], PRICING, TEN)
     assert stats.agents == {}
 
 

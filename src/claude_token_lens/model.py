@@ -112,7 +112,8 @@ Discovery fix (workflow-nested subagents), also additive:
   the ``<session_id>/subagents/workflows/<run_id>/agent-*.jsonl``
   directory a workflow-nested subagent lives under (see
   ``workflows.py``'s module docstring on this layout), set by
-  ``discovery.load_meta``. ``None`` for every other transcript kind.
+  ``discovery.load_meta`` along with ``kind="workflow-agent"`` (from
+  ``PARSER_VERSION`` 24). ``None`` for every other transcript kind.
 
 Capture-improvements batch (all additive, all defaulted -- see
 ``parse.py``'s module docstring for how each is computed):

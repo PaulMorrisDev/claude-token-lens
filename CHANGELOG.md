@@ -76,6 +76,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Workflow agents get their own row wherever a table splits by
+  transcript kind.** Every agent a workflow run started was filed as a
+  subagent, so "Workflow agents" never appeared in "Cost by phase: main
+  session vs subagents" (`report --phases`), "Claude Code notes and hook
+  output per reply" or "What fills the context window". On a 30-day
+  corpus of 1,586 subagent transcripts, 525 move to the new row. Totals,
+  and every table not split by kind, are unchanged. A workflow agent
+  keeps the agent type it was started as, so a named reviewer still
+  counts under its own name. When a session's explanation names the
+  costliest agent type, it now adds up that type's direct and workflow
+  runs. Transcripts are read again once (`PARSER_VERSION` 24).
+
 - **The dashboard reads each project's own settings again.** It filed
   every settings snapshot under "(unknown project)", so Setup › Settings
   showed one project instead of each, and per-project settings never

@@ -48,6 +48,18 @@ def test_explain_session_names_the_leading_cost_subagents_and_rebuilds():
     assert "summarised the conversation 2 times" in text
 
 
+def test_the_costliest_type_sums_its_runs_under_a_workflow_too():
+    by_agent = [
+        {"kind": "top-level", "agent_type": None, "runs": 1, "turns": 10, "cost": 3.0},
+        {"kind": "subagent", "agent_type": "Explore", "runs": 1, "turns": 5, "cost": 3.0},
+        {"kind": "subagent", "agent_type": "reviewer", "runs": 1, "turns": 5, "cost": 2.0},
+        {"kind": "workflow-agent", "agent_type": "reviewer", "runs": 2, "turns": 10, "cost": 2.0},
+    ]
+    result = explain_session({"total_cost": 10.0}, _parts(by_agent=by_agent), load_pricing(), Units())
+    text = " ".join(result["sentences"])
+    assert "4 subagent runs made 70% of the cost; the costliest type was reviewer (40%)" in text
+
+
 def test_subscription_headline_is_a_list_price_equivalent():
     result = explain_session({"total_cost": 1.0}, _parts(), load_pricing(), Units(billing_mode="subscription"))
     assert "list-price equivalent" in result["headline"]

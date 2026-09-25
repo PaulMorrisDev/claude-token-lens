@@ -469,9 +469,11 @@ asked. `404` if `<id>` is unknown.
 - `headline`: the session's cost (in the billing mode's units), replies
   and tokens.
 - `sentences`: how it compares with your median session, which part of
-  the cost led and what that means, how much went on subagents and the
-  costliest agent type, cache rebuilds and their commonest cause, and
-  conversation summaries. A sentence is left out when its data is.
+  the cost led and what that means, how much went on subagents (workflow
+  agents included) and the costliest agent type, cache rebuilds and their
+  commonest cause, and conversation summaries. A sentence is left out
+  when its data is. An agent type a workflow also started counts its
+  workflow runs and its own together.
 - `cost_split`: `part` is `cache_read`, `cache_write`, `output` or
   `input`, always in that order. `cost` is at list price from the rate
   card, whatever the billing mode; models the rate card doesn't know
@@ -503,9 +505,9 @@ window; with none of them, `days` (default 30) applies exactly as
 before. Additive: `split` — `agent` breaks each day/model row into the
 main session and every subagent (`transcripts.kind` joined in from
 `turns_agg.transcript_id`: `"top-level"` is `"main"`, `"subagent"`/
-`"workflow-agent"` are `"subagent"`), adding an `"agent"` key; `model`,
-or omitting `split`, keeps the original, unsplit shape. Any other
-`split` value is `400`.
+`"workflow-agent"` (an agent a workflow run started) are `"subagent"`),
+adding an `"agent"` key; `model`, or omitting `split`, keeps the
+original, unsplit shape. Any other `split` value is `400`.
 
 `data`: `[{"day", "model", "turns", "input_tokens", "cache_creation_tokens", "cache_read_tokens", "output_tokens", "thinking_tokens", "cc_5m", "cc_1h", "cost"}, ...]`
 (with `split=agent`, each row additionally carries `"agent"`:

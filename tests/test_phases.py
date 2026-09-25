@@ -10,9 +10,11 @@ behaviour.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
-from claude_token_lens import phases
+from claude_token_lens import discovery, phases
 from claude_token_lens.model import Section, Table, TranscriptMeta, TranscriptResult, Turn
 from claude_token_lens.pricing import load_pricing
 
@@ -197,6 +199,26 @@ def test_by_kind_and_by_agent_type_breakdowns():
     assert stats.by_kind[(phases.PHASE_IMPLEMENTATION, "subagent")].turns == 1
     assert stats.by_agent_type[(phases.PHASE_DISCOVERY, "top-level")].turns == 1
     assert stats.by_agent_type[(phases.PHASE_IMPLEMENTATION, "implementer")].turns == 1
+
+
+def test_workflow_agents_get_their_own_by_kind_row(tmp_path):
+    # An agent under a workflow run's folder, as discovery loads it.
+    run_dir = tmp_path / "sess" / "subagents" / "workflows" / "wf_1"
+    run_dir.mkdir(parents=True)
+    meta_path = run_dir / "agent-a1.meta.json"
+    meta_path.write_text(json.dumps({"agentType": "workflow-subagent"}))
+    workflow = TranscriptResult(meta=discovery.load_meta(meta_path), turns=[_turn(1, tool_names=("Read",))])
+
+    pricing = load_pricing()
+    stats = phases.PhaseStats()
+    stats.add_transcript(_result("subagent", "Explore", [_turn(1, tool_names=("Read",))]), pricing)
+    stats.add_transcript(workflow, pricing)
+
+    assert stats.by_kind[(phases.PHASE_DISCOVERY, "subagent")].turns == 1
+    assert stats.by_kind[(phases.PHASE_DISCOVERY, "workflow-agent")].turns == 1
+    assert stats.by_agent_type[(phases.PHASE_DISCOVERY, "workflow-subagent")].turns == 1
+    table = next(t for t in phases.build_section(stats).tables if t.name == "phases_by_transcript_kind")
+    assert sorted(row[0] for row in table.rows) == ["subagent", "workflow-agent"]
 
 
 def test_agent_type_is_top_level_for_main_and_unknown_for_untyped_subagent():

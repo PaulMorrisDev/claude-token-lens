@@ -634,7 +634,7 @@ the agents/skills/workflows it spawns" with numbers only:
 - `topology_chains_summary` — `stoppedByUser`/`maxTurns` truncation
   signals.
 - `topology_reminder_hook_pressure` — attachment/hook-output counts per
-  turn, by transcript kind.
+  turn, by transcript kind (`top-level`/`subagent`/`workflow-agent`).
 - `topology_cache_signal_histogram` — `CACHE_SIGNAL` subkind counts
   (model switches, thinking-stripped, ultra-effort enter/exit, deferred/
   prefix-loaded tool deltas, plan-mode/auto-mode transitions, output
@@ -647,7 +647,8 @@ the agents/skills/workflows it spawns" with numbers only:
   thinking share, by agent type.
 - `topology_context_composition` — context composition per turn
   (baseline / tool results by tool / assistant output / notifications
-  and attachments / compaction summaries), averaged per transcript kind.
+  and attachments / compaction summaries), averaged per transcript kind
+  (`top-level`/`subagent`/`workflow-agent`).
 - `topology_redundant_work` — repeated Bash/PowerShell command prefixes
   and post-compaction rediscovery signals ("how much am I paying to
   re-learn").
@@ -976,7 +977,11 @@ here since a turn usually does one or the other, not both.
 - `phases_summary` — turns, new tokens, cache-read tokens, output
   tokens, cost and cost share per phase.
 - `phases_by_transcript_kind` — the same, cross-tabbed by transcript
-  kind (`top-level`/`subagent`/`workflow-agent`).
+  kind (`top-level`/`subagent`/`workflow-agent`). A workflow agent is one
+  a workflow run started, found under
+  `<session>/subagents/workflows/<run_id>/`; it keeps the agent type it
+  was started as (`workflow-subagent` when it has no name), so
+  `phases_by_agent_type` still files a named one under its type.
 - `phases_by_agent_type` — the same, cross-tabbed by agent type.
 
 A DISCOVERY cost share above the module's threshold (default 35%, only

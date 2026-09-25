@@ -167,7 +167,13 @@ __version__ = "0.7.0"
 #: Bumped to 23: a hook event also says whether its command uses a
 #: Windows ``%VAR%`` variable, and a quoted script path with a tab in it
 #: is no longer read as relative. A pre-23 digest has neither.
-PARSER_VERSION = 23
+#:
+#: Bumped to 24: discovery.py gives an agent under a workflow run's folder
+#: ``TranscriptMeta.kind == "workflow-agent"``; it was ``"subagent"``, so
+#: every table split by kind folded workflow agents into subagents. A
+#: pre-24 digest (the parse cache's and the service store's alike) still
+#: holds the old kind.
+PARSER_VERSION = 24
 
 #: Bump when the model.py contract changes in a way that invalidates the
 #: on-disk digest cache (see model.py's module docstring for the contract
