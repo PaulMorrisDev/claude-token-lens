@@ -6,7 +6,7 @@
 
 import { clear, el, state } from "./core.js";
 import { loadInto, loadReport, withWindow } from "./api.js";
-import { codeBlockWithCopy, errorNotice, loadingNode } from "./ui.js";
+import { codeBlockWithCopy, errorNotice, loadingNode, prose } from "./ui.js";
 import { headRow, renderMappedSections, renderTable } from "./grid.js";
 import { viewIntro } from "./links.js";
 import { renderHealth } from "./shell.js";
@@ -72,7 +72,7 @@ function renderSetup(data, container) {
       "ul",
       { class: "notes expectations" },
       (data.expectations || []).map(function (item) {
-        return el("li", null, [el("strong", { text: item.title + ". " }), el("span", { text: item.text })]);
+        return el("li", null, [el("strong", { text: item.title + ". " }), el("span", null, prose(item.text))]);
       })
     )
   );
@@ -83,7 +83,7 @@ function renderSetup(data, container) {
     var list = el("dl", { class: "fix-explainer" });
     [["Where", item.where], ["What it does", item.what_it_does], ["Tokens", item.token_cost], ["To undo it", item.undo]].forEach(function (pair) {
       list.appendChild(el("dt", { text: pair[0] }));
-      list.appendChild(el("dd", { text: pair[1] }));
+      list.appendChild(el("dd", null, prose(pair[1] || "")));
     });
     box.appendChild(list);
     container.appendChild(box);

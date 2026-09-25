@@ -439,3 +439,81 @@ export function termLink(term, text) {
 export function cardLink(slug, text) {
   return pageLink("glossary/how-costs-work", text, { card: slug });
 }
+
+// The glossary terms worth explaining where they appear: not everyday
+// words ("session", "token") but the ones this dashboard coined or
+// borrowed. Each is [GLOSSARY term, the words that name it], longest
+// first, so "cache lifetime" wins over a shorter term at the same place.
+export var JARGON = [
+  ["Cache lifetime (TTL)", "cache lifetimes?|TTL"],
+  ["Conversation summary", "conversation summar(?:y|ies)|compactions?"],
+  ["Startup context", "startup context"],
+  ["Cache rebuild", "cache rebuilds?"],
+  ["Prompt cache", "prompt cache"],
+  ["Cache write", "cache writes?"],
+  ["Cache read", "cache reads?"],
+  ["What-if estimate", "what-if estimates?"],
+  ["Quality signal", "quality signals?"],
+  ["Metrics capture", "metrics capture"],
+  ["Capture level", "capture levels?"],
+  ["Managed setting", "managed settings?"],
+  ["Prompt cycle", "prompt cycles?"],
+  ["Change point", "change points?"],
+  ["Effort level", "effort levels?"],
+  ["Billing mode", "billing mode"],
+  ["Usage limits", "usage limits?"],
+  ["List price", "list[- ]price"],
+  ["Subagent", "subagents?"],
+];
+
+// The definition GLOSSARY gives a term.
+export function glossaryText(term) {
+  for (var i = 0; i < GLOSSARY.length; i++) {
+    if (GLOSSARY[i][0] === term) return GLOSSARY[i][1];
+  }
+  return "";
+}
+
+// ======================================================================
+// Page tokens in server text
+// ======================================================================
+
+// Server text names another page with a token, {{page:<page>}} or
+// {{page:<page>/<segment>}} (pages.py, docs/writing-help.md). linkText
+// turns each into a link to that view, named as the sidebar names it;
+// plainText gives the name alone, for text that can't hold a link (a
+// tooltip, a toast). An unknown token is left as it is: tests keep
+// every token the server writes resolvable.
+var PAGE_TOKEN = /\{\{page:([a-z]+(?:-[a-z]+)*)(?:\/([a-z]+(?:-[a-z]+)*))?\}\}/g;
+
+function tokenTarget(pageId, segmentId) {
+  var page = findPage(pageId);
+  if (!page) return null;
+  if (!segmentId) return { key: page.segments ? page.id + "/" + page.segments[0].id : page.id, label: page.label };
+  var view = viewFor(pageId + "/" + segmentId);
+  return view ? { key: view.key, label: viewLabel(view.key) } : null;
+}
+
+export function linkText(text) {
+  var source = text === null || text === undefined ? "" : String(text);
+  var nodes = [];
+  var last = 0;
+  var match;
+  PAGE_TOKEN.lastIndex = 0;
+  while ((match = PAGE_TOKEN.exec(source))) {
+    if (match.index > last) nodes.push(document.createTextNode(source.slice(last, match.index)));
+    var target = tokenTarget(match[1], match[2]);
+    nodes.push(target ? pageLink(target.key, target.label) : document.createTextNode(match[0]));
+    last = PAGE_TOKEN.lastIndex;
+  }
+  if (last < source.length) nodes.push(document.createTextNode(source.slice(last)));
+  return nodes;
+}
+
+export function plainText(text) {
+  var source = text === null || text === undefined ? "" : String(text);
+  return source.replace(PAGE_TOKEN, function (whole, pageId, segmentId) {
+    var target = tokenTarget(pageId, segmentId);
+    return target ? target.label : whole;
+  });
+}

@@ -6,7 +6,7 @@
 import { clear, el } from "./core.js";
 import { compactNumber, formatDuration, fullValue, moneyParts, projectName, shortTs, thousands } from "./format.js";
 import { fetchJson, loadInto, loadReport, postJson, withWindow } from "./api.js";
-import { button, drawer, errorNotice, loadingNode, tile, tileRow, toast } from "./ui.js";
+import { button, drawer, errorNotice, loadingNode, prose, tile, tileRow, toast } from "./ui.js";
 import { dataGrid, renderMappedSections, renderReportBackedSection } from "./grid.js";
 import { viewIntro } from "./links.js";
 import { sessionContextChart } from "./charts-types.js";
@@ -355,14 +355,16 @@ function buildSessionDetail(container, session) {
 }
 
 function renderSessionExplain(data, container) {
-  container.appendChild(el("p", { class: "explain-headline", text: data.headline }));
+  container.appendChild(el("p", { class: "explain-headline" }, prose(data.headline)));
+  // Each glossary term is explained once in the explanation: its first use.
+  var seen = new Set();
   if (data.sentences && data.sentences.length) {
     container.appendChild(
       el(
         "ul",
         { class: "explain-sentences" },
         data.sentences.map(function (sentence) {
-          return el("li", { text: sentence });
+          return el("li", null, prose(sentence, seen));
         })
       )
     );

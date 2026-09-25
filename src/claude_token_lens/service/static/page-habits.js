@@ -6,9 +6,9 @@
 import { clear, el, state } from "./core.js";
 import { formatCell, money, moneyText } from "./format.js";
 import { findSection, loadReport } from "./api.js";
-import { chip, codeBlockWithCopy, emptyState, errorNotice, helpButton, loadingNode, tile, tileRow } from "./ui.js";
-import { headRow, renderPlacedTables } from "./grid.js";
-import { viewIntro } from "./links.js";
+import { chip, codeBlockWithCopy, emptyState, errorNotice, helpButton, loadingNode, prose, tile, tileRow } from "./ui.js";
+import { headRow, notesList, renderPlacedTables } from "./grid.js";
+import { pageLink, viewIntro } from "./links.js";
 import { habitSparkline } from "./charts-types.js";
 
 // ======================================================================
@@ -76,17 +76,7 @@ function renderHabitsSection(section, container) {
     return ["habits_digest", "habits_playbook", "habits_brief_templates", "habits_setups"].indexOf(table.name) === -1;
   });
   renderPlacedTables(container, rest, state.currency, "habits");
-  if (section.notes && section.notes.length) {
-    container.appendChild(
-      el(
-        "ul",
-        { class: "notes" },
-        section.notes.map(function (note) {
-          return el("li", { text: note });
-        })
-      )
-    );
-  }
+  if (section.notes && section.notes.length) container.appendChild(notesList(section.notes, new Set()));
 }
 
 // A block of the page: an h2 with its "How to read this", then the body.
@@ -179,7 +169,12 @@ function appendHabitCards(table, rows, cards) {
     // fired shows no saving of its own -- it would double-count the
     // rule's -- and names the rule instead.
     if (row.covered_by) {
-      card.appendChild(el("p", { class: "habit-saving", text: "Already covered by the “" + row.covered_by + "” recommendation on the Actions page." }));
+      // Linked to the recommendation itself when the rule is named
+      // (covered_by_rule); its title alone otherwise.
+      var rule = row.covered_by_rule
+        ? pageLink("actions/recommendations", row.covered_by, { id: row.covered_by_rule })
+        : el("span", { text: "“" + row.covered_by + "”" });
+      card.appendChild(el("p", { class: "habit-saving" }, [el("span", { text: "Covered by the recommendation " }), rule, el("span", { text: "." })]));
     } else {
       var savingPeriod = (state.units || {}).mode === "subscription" ? "" : "a week";
       var saving = row.saving === null || row.saving === undefined
@@ -187,7 +182,9 @@ function appendHabitCards(table, rows, cards) {
         : moneyText(row.saving, { period: savingPeriod, prefix: "About " });
       card.appendChild(el("p", { class: "habit-saving", text: saving }));
     }
-    if (row.evidence) card.appendChild(el("p", { text: row.evidence }));
+    // Each glossary term is explained once per card: its first use.
+    var seen = new Set();
+    if (row.evidence) card.appendChild(el("p", null, prose(row.evidence, seen)));
     if (row.example) {
       card.appendChild(el("p", { class: "habit-try", text: "Try:" }));
       card.appendChild(codeBlockWithCopy(row.example));
@@ -205,7 +202,7 @@ function appendHabitCards(table, rows, cards) {
     if (spark) metaLine.appendChild(spark);
     card.appendChild(metaLine);
     // UX-3: basis explains a saving figure that isn't shown once covered.
-    if (row.basis && !row.covered_by) card.appendChild(el("p", { class: "cell-hint", text: "How the saving is worked out: " + row.basis + "." }));
+    if (row.basis && !row.covered_by) card.appendChild(el("p", { class: "cell-hint" }, prose("How the saving is worked out: " + row.basis + ".", seen)));
     // UX-8: same where/trade-off/undo shape as a recommendation's fix
     // explainer (page-actions.js's renderFix), collapsed by default so it doesn't
     // crowd out the habit itself.
@@ -216,7 +213,7 @@ function appendHabitCards(table, rows, cards) {
       [["Where", row.where], ["Trade-off", row.trade_off], ["How to undo it", row.how_to_undo]].forEach(function (pair) {
         if (!pair[1]) return;
         list.appendChild(el("dt", { text: pair[0] }));
-        list.appendChild(el("dd", { text: pair[1] }));
+        list.appendChild(el("dd", null, prose(pair[1], seen)));
       });
       explainer.appendChild(list);
       card.appendChild(explainer);
@@ -231,7 +228,7 @@ function renderBriefTemplates(table, container) {
   tableRowsAsObjects(table).forEach(function (row) {
     var card = el("article", { class: "habit-card" });
     card.appendChild(el("h3", { text: labelFor(table, row.task) }));
-    if (row.why) card.appendChild(el("p", { class: "profile-card-meta", text: row.why }));
+    if (row.why) card.appendChild(el("p", { class: "profile-card-meta" }, prose(row.why, new Set())));
     card.appendChild(codeBlockWithCopy(row.template || ""));
     cards.appendChild(card);
   });

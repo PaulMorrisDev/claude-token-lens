@@ -7,7 +7,7 @@
  */
 
 import { clear, el, onParams, state } from "./core.js";
-import { fetchJson, findSection, loadInto, loadReport, withWindow } from "./api.js";
+import { fetchJson, findSection, loadInto, loadRecommendations, loadReport, withWindow } from "./api.js";
 import {
   AGENT_LABELS,
   basisChip,
@@ -21,6 +21,7 @@ import {
   errorNotice,
   loadingNode,
   motionOK,
+  prose,
   renderFix,
   renderTips,
   SCOPE_LABELS,
@@ -384,6 +385,10 @@ function findGroup(groups, key) {
       if (groups[i].members[j].key === key) return groups[i];
     }
   }
+  // A rule's id alone (a habit's covered_by_rule) opens its group.
+  for (var k = 0; k < groups.length; k++) {
+    if (groups[k].id === key) return groups[k];
+  }
   return null;
 }
 
@@ -562,7 +567,7 @@ export function renderRecommendations(panel) {
   });
 
   var checksLoad = fetchJson(withWindow("/api/quick-actions"));
-  Promise.all([fetchJson(withWindow("/api/recommendations")), loadReport()]).then(function (results) {
+  Promise.all([loadRecommendations(), loadReport()]).then(function (results) {
     // A newer render (the window changed) has replaced this one; drawing
     // it would select a stale item and rewrite the address.
     if (!container.isConnected) return;
@@ -835,12 +840,14 @@ function renderRecommendationDetail(pane, group, memberKey, focusMember, ctx) {
   // How this saves you money: what it costs now, what the change does
   // to the price, and the saving with how sure it is.
   var story = el("dl", { class: "story-list" });
+  // Each glossary term is explained once in the detail: its first use.
+  var seen = new Set();
   function storyRow(term, nodes) {
     story.appendChild(el("div", { class: "story-row" }, [el("dt", { text: term }), el("dd", null, nodes)]));
   }
-  if (focus.why) storyRow("What it costs you now", [el("p", { text: focus.why })]);
+  if (focus.why) storyRow("What it costs you now", [el("p", null, prose(focus.why, seen))]);
   var how = mechanismText(group, ctx.facts);
-  if (how) storyRow("What the change does", [el("p", { text: how })]);
+  if (how) storyRow("What the change does", [el("p", null, prose(how, seen))]);
   var savingNodes = [];
   if (focus.estimated_saving) {
     savingNodes.push(
@@ -850,7 +857,7 @@ function renderRecommendationDetail(pane, group, memberKey, focusMember, ctx) {
         /^at most\b/i.test(focus.estimated_saving) ? null : basisChip(savingBasis(focus)),
       ])
     );
-    if (focus.saving_basis) savingNodes.push(el("p", { class: "story-basis", text: focus.saving_basis }));
+    if (focus.saving_basis) savingNodes.push(el("p", { class: "story-basis" }, prose(focus.saving_basis, seen)));
   } else {
     savingNodes.push(el("p", { class: "story-basis", text: "Not worked out for this one: it depends on how you use it." }));
   }
@@ -858,7 +865,7 @@ function renderRecommendationDetail(pane, group, memberKey, focusMember, ctx) {
   article.appendChild(detailSection("How this saves you money", [story], "detail-story"));
 
   // What to do: the action, every agent's change, and how to make it.
-  var todo = [el("p", { text: focus.action })];
+  var todo = [el("p", null, prose(focus.action, seen))];
   var table = changesTable(group, focus, focusMember);
   if (table) {
     if (many) todo.push(el("p", { class: "notes", text: "Pick an agent to see its change below." }));
@@ -936,7 +943,7 @@ export function renderQuickActions(panel) {
     }
   });
 
-  var recsLoad = fetchJson(withWindow("/api/recommendations"));
+  var recsLoad = loadRecommendations();
   fetchJson(withWindow("/api/quick-actions")).then(function (result) {
     if (!container.isConnected) return;
     clear(container);
@@ -1040,14 +1047,23 @@ function renderCheckDetail(pane, check, ctx) {
   var facts = el("div", { class: "detail-facts" }, [statusBadge(check.status)]);
   if (ctx.period) facts.appendChild(chip("Answered " + ctx.period));
   article.appendChild(facts);
-  article.appendChild(el("p", { class: "detail-why", text: check.why }));
+  // Each glossary term is explained once in the detail: its first use.
+  var seen = new Set();
+  article.appendChild(el("p", { class: "detail-why" }, prose(check.why, seen)));
   if (check.status === "no_data") {
     article.appendChild(emptyState(check.summary));
   } else {
-    article.appendChild(el("p", { class: "check-summary", text: check.summary }));
+    article.appendChild(el("p", { class: "check-summary" }, prose(check.summary, seen)));
     var more = el("div", { class: "check-more" });
     article.appendChild(more);
-    loadInto(more, withWindow("/api/quick-actions/" + encodeURIComponent(check.id)), renderCheckEvidence, { skeleton: "rows" });
+    loadInto(
+      more,
+      withWindow("/api/quick-actions/" + encodeURIComponent(check.id)),
+      function (data, container) {
+        renderCheckEvidence(data, container, seen);
+      },
+      { skeleton: "rows" }
+    );
   }
 
   var related = el("div", { class: "detail-related" });
@@ -1075,7 +1091,7 @@ function renderCheckDetail(pane, check, ctx) {
   pane.appendChild(article);
 }
 
-function renderCheckEvidence(data, container) {
+function renderCheckEvidence(data, container, seen) {
   if (data.table && data.table.rows && data.table.rows.length) {
     container.appendChild(detailSection("The numbers", [simpleTable(data.table.columns, data.table.rows)]));
   }
@@ -1095,7 +1111,7 @@ function renderCheckEvidence(data, container) {
   }
   if (data.tips && data.tips.length) {
     var tips = el("div");
-    renderTips(data.tips, tips, "h3");
+    renderTips(data.tips, tips, "h3", seen);
     container.appendChild(el("section", { class: "detail-section" }, Array.prototype.slice.call(tips.childNodes)));
   }
 }

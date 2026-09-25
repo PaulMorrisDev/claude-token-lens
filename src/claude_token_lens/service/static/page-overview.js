@@ -8,7 +8,7 @@
 
 import { clear, el, goTo, state, WINDOW_OPTIONS } from "./core.js";
 import { formatCell, fraction, money, moneyParts, thousands } from "./format.js";
-import { fetchJson, findSection, loadReport, withWindow } from "./api.js";
+import { fetchJson, findSection, loadRecommendations, loadReport, withWindow } from "./api.js";
 import {
   button,
   copyToClipboard,
@@ -514,7 +514,7 @@ export function renderOverview(panel) {
   var impactLoad = fetchJson("/api/impact");
   // Recommendations are built from the report, so they follow it.
   var recsLoad = reportLoad.then(function () {
-    return fetchJson(withWindow("/api/recommendations"));
+    return loadRecommendations();
   });
   if (!holdChart(chartHost, "daily-spend", { slot: "overview" })) chartHost.appendChild(loadingNode("Loading daily spend", "chart"));
   // Refit once both the chart and the actions are drawn, whichever lands last.

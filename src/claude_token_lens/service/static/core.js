@@ -88,6 +88,8 @@ export var state = {
   // change (docs/api.md). A single shared promise kept every view on the
   // first window's report after the picker changed.
   reportPromises: {},
+  // The same for /api/recommendations (api.js's loadRecommendations).
+  recommendationPromises: {},
   currency: "USD",
   // UX-1: report.meta.units {mode, share_per_usd, period_label,
   // basis} (model.py's ReportMeta.units) -- the billing-mode facts

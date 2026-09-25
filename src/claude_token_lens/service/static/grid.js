@@ -7,14 +7,16 @@
  * aligned in even-width digits, an inline bar on the lead measure, an
  * optional tint by value, readable project names, and only the visible
  * rows drawn once a table passes 200 rows. A row can link to the same
- * thing's mark in the chart above it (core.js's highlight).
+ * thing's mark in the chart above it (core.js's highlight). A table
+ * that is evidence for a recommendation says so: "Feeds N actions" in
+ * its header, and a mark on each row the recommendation cites.
  */
 
 import { clear, el, highlight, listenHighlight, state, storageGet, storageSet } from "./core.js";
 import { cellSortValue, formatCell, fullValue, moneyText, moneyUnit, NUMERIC_KINDS, PROJECT_KEYS, projectName } from "./format.js";
-import { findSection } from "./api.js";
-import { viewForSection, viewForTable } from "./links.js";
-import { button, emptyState, helpButton, motionOK, popoverButton, swatch } from "./ui.js";
+import { actionIndex, findSection } from "./api.js";
+import { COST_CARDS, pageLink, plainText, viewForSection, viewForTable } from "./links.js";
+import { button, emptyState, helpButton, motionOK, popoverButton, prose, swatch } from "./ui.js";
 import { icon } from "./icons.js";
 
 // Mirrors render/tables.py::resolve_evidence_column_kind /
@@ -141,7 +143,10 @@ function cellContent(column, row, value, spec, rowKind) {
   if (labels && typeof value === "string" && Object.prototype.hasOwnProperty.call(labels, value)) {
     return el("span", { class: "value-label", title: value, "data-raw": value, text: labels[value] });
   }
-  return formatCell(value, kind, state.currency);
+  // A cell can't hold a link (a row opens its own detail): a page link
+  // in its text reads as the page's name.
+  var text = formatCell(value, kind, state.currency);
+  return typeof text === "string" ? plainText(text) : text;
 }
 
 // A text column holding sentences wraps as prose; any other text (a
@@ -150,15 +155,15 @@ function cellContent(column, row, value, spec, rowKind) {
 var PROSE_CHARS = 40;
 
 function proseColumns(columns, rows) {
-  var prose = {};
+  var wraps = {};
   columns.forEach(function (column) {
     if (column.render || NUMERIC_KINDS[column.kind]) return;
-    prose[column.index] = rows.some(function (row) {
+    wraps[column.index] = rows.some(function (row) {
       var value = columnValue(column, row);
       return typeof value === "string" && value.length > PROSE_CHARS;
     });
   });
-  return prose;
+  return wraps;
 }
 
 // A grid for spec (see docs/ui.md for the whole contract):
@@ -190,6 +195,10 @@ export function dataGrid(spec) {
   var gridId = spec.id;
   var sortable = spec.sortable !== false && rows.length > 1;
   var wrap = el("div", { class: "grid" + (spec.class ? " " + spec.class : ""), "data-grid": gridId });
+  // Rows that are evidence for an action: rowMark(key) -> a node for the
+  // row's first cell, or null. Set later through wrap.grid.markRows,
+  // once the recommendations have loaded.
+  var rowMark = spec.rowMark || null;
 
   if (!rows.length) {
     wrap.appendChild(emptyState(spec.empty || "Nothing to show for this window.", null, spec.emptyNext));
@@ -215,7 +224,7 @@ export function dataGrid(spec) {
   if (sort && !columns.some(function (c) { return c.key === sort.key; })) sort = null;
 
   var maxima = columnMaxima(columns, rows);
-  var prose = proseColumns(columns, rows);
+  var proseCols = proseColumns(columns, rows);
   var bar = barColumn(columns, spec);
   if (rows.length < 2) bar = -1;
 
@@ -331,7 +340,7 @@ export function dataGrid(spec) {
         helpBtn,
         function (body) {
           body.appendChild(el("p", { class: "popover-title", text: column.label || column.key }));
-          body.appendChild(el("p", { text: column.help }));
+          body.appendChild(el("p", null, prose(column.help)));
         },
         { class: "help-popover", label: column.label || column.key, focusInside: false }
       );
@@ -428,11 +437,11 @@ export function dataGrid(spec) {
       // carry their own kinds, a number is right-aligned even in a row
       // with no kind listed.
       var numeric = isNumeric(column) || (!!spec.rowKinds && column.index > 0 && typeof value === "number");
-      var wrapClass = numeric ? "num" : prose[column.index] ? "cell-prose" : column.nowrap || prose[column.index] === false ? "nowrap" : "";
+      var wrapClass = numeric ? "num" : proseCols[column.index] ? "cell-prose" : column.nowrap || proseCols[column.index] === false ? "nowrap" : "";
       var td = el("td", { class: wrapClass + " col-" + column.key, "data-sort": cellSortValue(value) });
       var content = cellContent(column, row, value, spec, rowKind);
       var full = fullValue(value, column.kind);
-      if (full) td.title = full;
+      if (full) td.title = plainText(full);
       if (column.index === bar && typeof value === "number" && value > 0 && maxima[column.index] > 0) {
         td.appendChild(
           el("span", { class: "bar-cell" }, [barNode(value, maxima[column.index]), typeof content === "string" ? el("span", { text: content }) : content])
@@ -448,6 +457,7 @@ export function dataGrid(spec) {
       }
       tr.appendChild(td);
     });
+    if (rowMark && key !== null && key !== undefined) markRow(tr, rowMark(String(key)));
     if (spec.rowAction) {
       tr.classList.add("clickable");
       tr.tabIndex = 0;
@@ -469,6 +479,12 @@ export function dataGrid(spec) {
       });
     }
     return tr;
+  }
+
+  function markRow(tr, mark) {
+    if (!mark || !tr.firstChild) return;
+    tr.classList.add("is-evidence");
+    tr.firstChild.appendChild(mark);
   }
 
   // A row that means the same thing as a chart mark: pointing at either
@@ -602,7 +618,18 @@ export function dataGrid(spec) {
       return true;
     });
   }
-  wrap.grid = { table: table, scroller: scroller };
+  wrap.grid = {
+    table: table,
+    scroller: scroller,
+    // Marks the rows drawn now; rows drawn later (sorting, scrolling a
+    // long grid) are marked as they are drawn.
+    markRows: function (mark) {
+      rowMark = mark;
+      Array.prototype.forEach.call(tbody.querySelectorAll("tr[data-row-key]"), function (tr) {
+        if (!tr.classList.contains("is-evidence")) markRow(tr, mark(tr.getAttribute("data-row-key")));
+      });
+    },
+  };
   return wrap;
 }
 
@@ -650,28 +677,108 @@ export function pulseNode(node, cls) {
 
 // -- report tables and sections ------------------------------------------------
 
+// The Glossary > How costs work card behind each section's figures,
+// linked from the end of its "How to read this".
+var SECTION_CARDS = {
+  recache: "cache-rebuilds",
+  recache_by_group: "cache-rebuilds",
+  limits: "billing-mode",
+  ttl: "cache-writes",
+  model_swap: "model-choice",
+  agent_startup: "startup-context",
+  context_budget: "startup-context",
+  carry: "tool-output",
+  compaction_sim: "conversation-summaries",
+  compactions: "conversation-summaries",
+  elasticity: "billing-mode",
+};
+
+function sectionCard(sectionKey) {
+  var slug = SECTION_CARDS[sectionKey];
+  for (var i = 0; slug && i < COST_CARDS.length; i++) if (COST_CARDS[i].slug === slug) return COST_CARDS[i];
+  return null;
+}
+
 // A section or table's header: its heading, then the (i) that opens
-// "How to read this".
-export function headRow(heading, help, subject) {
+// "How to read this". card: the cost card it links to, if any.
+export function headRow(heading, help, subject, card) {
   var row = el("div", { class: "block-head" }, [heading]);
-  var helpNode = helpButton(help, subject);
+  var helpNode = helpButton(help, subject, card);
   if (helpNode) row.appendChild(helpNode);
   return row;
 }
 
+// Notes under a table or section, with page links and glossary terms.
+export function notesList(notes, seen) {
+  return el(
+    "ul",
+    { class: "notes" },
+    notes.map(function (note) {
+      return el("li", null, prose(note, seen));
+    })
+  );
+}
+
+// The actions a table or row is evidence for (api.js's actionIndex), as
+// a button that lists them, each linked to its detail in Actions.
+// chip: the header's "Feeds N actions"; otherwise a row's small mark.
+function feedsButton(actions, chip) {
+  var words = actions.length === 1 ? "1 action" : actions.length + " actions";
+  var trigger = chip
+    ? el("button", { type: "button", class: "chip chip-accent feeds-chip" }, [icon("actions", { size: 12 }), el("span", { text: "Feeds " + words })])
+    : el("button", { type: "button", class: "row-feeds", "aria-label": "Evidence for " + words, title: "Evidence for " + words }, [icon("actions", { size: 12 })]);
+  return popoverButton(
+    trigger,
+    function (body) {
+      body.appendChild(el("p", { class: "popover-title", text: chip ? "Actions these figures feed" : "Actions this row is evidence for" }));
+      body.appendChild(
+        el(
+          "ul",
+          { class: "feeds-list" },
+          actions.map(function (action) {
+            return el("li", null, [pageLink("actions/recommendations", action.title, { id: action.key })]);
+          })
+        )
+      );
+    },
+    { class: "feeds-popover", label: chip ? "Actions these figures feed" : "Actions this row is evidence for" }
+  );
+}
+
+// Once the recommendations load: the header chip and the row marks.
+function markFeeds(wrap, head, gridNode, tableName) {
+  actionIndex().then(function (index) {
+    var actions = index.byTable[tableName];
+    if (!actions || !actions.length) return;
+    if (!head) {
+      head = el("div", { class: "block-head block-head-help" });
+      wrap.insertBefore(head, wrap.firstChild);
+    }
+    head.appendChild(feedsButton(actions, true));
+    if (gridNode.grid) {
+      gridNode.grid.markRows(function (key) {
+        var rowActions = index.byRow[tableName + "\n" + key];
+        return rowActions && rowActions.length ? feedsButton(rowActions, false) : null;
+      });
+    }
+  });
+}
+
 // options.heading false: the caller has already titled the table (a
 // table shown away from its section, under its own section heading).
+// options.seen: the glossary terms its section has already explained.
 export function renderTable(table, tableId, currency, options) {
   // Named for evidence links (evidence.js): report table names are
   // unique across the report.
   var wrap = el("div", { class: "table-wrap", "data-table-name": table.name || null });
+  var head = null;
   if (!options || options.heading !== false) {
-    wrap.appendChild(headRow(el("h3", { text: table.title || table.name }), table.help, table.title || table.name));
+    head = wrap.appendChild(headRow(el("h3", { text: table.title || table.name }), table.help, table.title || table.name));
   } else if (table.help) {
     var helpNode = helpButton(table.help, table.title || table.name);
-    if (helpNode) wrap.appendChild(el("div", { class: "block-head block-head-help" }, [helpNode]));
+    if (helpNode) head = wrap.appendChild(el("div", { class: "block-head block-head-help" }, [helpNode]));
   }
-  wrap.appendChild(
+  var gridNode = wrap.appendChild(
     dataGrid({
       id: tableId,
       caption: table.title || table.name,
@@ -684,24 +791,15 @@ export function renderTable(table, tableId, currency, options) {
       empty: "No rows for this window.",
     })
   );
-  if (table.notes && table.notes.length) {
-    wrap.appendChild(
-      el(
-        "ul",
-        { class: "notes" },
-        table.notes.map(function (note) {
-          return el("li", { text: note });
-        })
-      )
-    );
-  }
+  if (table.notes && table.notes.length) wrap.appendChild(notesList(table.notes, (options && options.seen) || new Set()));
+  if (table.name) markFeeds(wrap, head, gridNode, table.name);
   return wrap;
 }
 
 // Tables by dashboard placement (helptext.py's table audit): "keep"
 // shown, "advanced" collapsed into "More tables", "report" left to the
 // CLI report (and the JSON/CSV exports), with a line saying so.
-export function renderPlacedTables(container, tables, currency, idPrefix, sectionTitle) {
+export function renderPlacedTables(container, tables, currency, idPrefix, sectionTitle, seen) {
   var advanced = [];
   var reportOnly = 0;
   tables.forEach(function (table, i) {
@@ -714,14 +812,14 @@ export function renderPlacedTables(container, tables, currency, idPrefix, sectio
     } else {
       // A section's one table often shares its title: say it once.
       var sameTitle = sectionTitle && (table.title || table.name) === sectionTitle;
-      container.appendChild(renderTable(table, tableId, currency, sameTitle ? { heading: false } : null));
+      container.appendChild(renderTable(table, tableId, currency, { heading: !sameTitle, seen: seen }));
     }
   });
   if (advanced.length) {
     var details = el("details", { class: "advanced-detail" });
     details.appendChild(el("summary", { text: "More tables (" + advanced.length + ")" }));
     advanced.forEach(function (item) {
-      details.appendChild(renderTable(item.table, item.id, currency));
+      details.appendChild(renderTable(item.table, item.id, currency, { seen: seen }));
     });
     container.appendChild(details);
   }
@@ -741,20 +839,14 @@ export function renderSectionGeneric(container, section, currency, idPrefix) {
   if (!section) return;
   var block = el("section", { class: "report-section", "data-section": section.key || null });
   // Sections are h2 and their tables h3: the page title is the one h1.
-  block.appendChild(headRow(el("h2", { class: "section-title", text: section.title || section.key }), section.help, section.title || section.key));
-  if (section.intro) block.appendChild(el("p", { class: "section-intro", text: section.intro }));
-  renderPlacedTables(block, section.tables || [], currency, idPrefix || section.key, section.title || section.key);
-  if (section.notes && section.notes.length) {
-    block.appendChild(
-      el(
-        "ul",
-        { class: "notes" },
-        section.notes.map(function (note) {
-          return el("li", { text: note });
-        })
-      )
-    );
-  }
+  block.appendChild(
+    headRow(el("h2", { class: "section-title", text: section.title || section.key }), section.help, section.title || section.key, sectionCard(section.key))
+  );
+  // Each glossary term is explained once per section: its first use.
+  var seen = new Set();
+  if (section.intro) block.appendChild(el("p", { class: "section-intro" }, prose(section.intro, seen)));
+  renderPlacedTables(block, section.tables || [], currency, idPrefix || section.key, section.title || section.key, seen);
+  if (section.notes && section.notes.length) block.appendChild(notesList(section.notes, seen));
   container.appendChild(block);
 }
 

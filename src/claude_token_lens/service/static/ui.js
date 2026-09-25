@@ -8,6 +8,7 @@
 
 import { clear, el } from "./core.js";
 import { icon } from "./icons.js";
+import { cardLink, glossaryText, JARGON, linkText, plainText, termLink } from "./links.js";
 
 // Reduced motion asked for (docs/ui.md, "Motion"): components that
 // animate in JS check this; CSS has its own media query.
@@ -262,7 +263,7 @@ export function tile(opts) {
     node.appendChild(foot);
   }
   if (opts.caption) node.appendChild(el("p", { class: "metric-caption", text: opts.caption }));
-  if (opts.note) node.appendChild(el("p", { class: "metric-note", text: opts.note }));
+  if (opts.note) node.appendChild(el("p", { class: "metric-note" }, prose(opts.note)));
   if (opts.spark) node.appendChild(opts.spark);
   if (opts.link) node.appendChild(el("div", { class: "metric-link" }, [opts.link]));
   return node;
@@ -332,7 +333,7 @@ export function callout(opts) {
   } else {
     body.appendChild(el("span", { class: "visually-hidden", text: TONES[tone].label + ": " }));
   }
-  if (opts.text) body.appendChild(el("p", { text: opts.text }));
+  if (opts.text) body.appendChild(el("p", null, prose(opts.text)));
   (opts.children || []).forEach(function (child) {
     if (child) body.appendChild(child);
   });
@@ -397,8 +398,8 @@ export function emptyState(message, gate, next) {
   if (gate && typeof gate.have === "number" && typeof gate.need === "number") {
     text += " (" + gate.have + " of " + gate.need + " so far.)";
   }
-  box.appendChild(el("p", { class: "empty-message", text: text }));
-  if (next) box.appendChild(typeof next === "string" ? el("p", { class: "empty-next", text: next }) : el("p", { class: "empty-next" }, [next]));
+  box.appendChild(el("p", { class: "empty-message" }, prose(text)));
+  if (next) box.appendChild(el("p", { class: "empty-next" }, typeof next === "string" ? prose(next) : [next]));
   return box;
 }
 
@@ -520,7 +521,7 @@ export function commandBlock(fix, opts) {
     tabs.push({
       label: "Try it for one session",
       icon: "clock",
-      body: [el("p", { class: "command-hint", text: fix.trial_note || "" }), codeBlockWithCopy(fix.trial_command, "Command")],
+      body: [el("p", { class: "command-hint" }, prose(fix.trial_note || "")), codeBlockWithCopy(fix.trial_command, "Command")],
     });
   }
   if (tabs.length > 1) {
@@ -542,7 +543,7 @@ export function commandBlock(fix, opts) {
     var list = el("dl", { class: "fix-explainer" });
     fix.explainer.forEach(function (pair) {
       list.appendChild(el("dt", { text: pair[0] }));
-      list.appendChild(el("dd", { text: pair[1] }));
+      list.appendChild(el("dd", null, prose(pair[1])));
     });
     box.appendChild(list);
   }
@@ -566,8 +567,9 @@ export function renderFixList(fixes, container) {
   });
 }
 
-// level: the heading's tag, for where the tips sit ("h4" by default).
-export function renderTips(tips, container, level) {
+// level: the heading's tag, for where the tips sit ("h4" by default);
+// seen: the Set of glossary terms already explained on this card.
+export function renderTips(tips, container, level, seen) {
   if (!tips || !tips.length) return;
   container.appendChild(el(level || "h4", { text: "Habits that help" }));
   container.appendChild(
@@ -575,7 +577,7 @@ export function renderTips(tips, container, level) {
       "ul",
       { class: "notes" },
       tips.map(function (tip) {
-        return el("li", null, [el("strong", { text: tip.title + ". " }), el("span", { text: tip.text })]);
+        return el("li", null, [el("strong", { text: tip.title + ". " }), el("span", null, prose(tip.text, seen))]);
       })
     )
   );
@@ -619,7 +621,10 @@ export function toast(message, opts) {
   var region = toastRegion();
   if (toastState.node) toastState.node.remove();
   var tone = opts.tone || "success";
-  var node = el("div", { class: "toast toast-" + tone }, [icon(tone === "warning" ? "warning" : tone === "info" ? "info" : "success", { size: 16 }), el("span", { text: message })]);
+  var node = el("div", { class: "toast toast-" + tone }, [
+    icon(tone === "warning" ? "warning" : tone === "info" ? "info" : "success", { size: 16 }),
+    el("span", { text: plainText(message) }),
+  ]);
   node.addEventListener("mouseenter", function () {
     toastState.paused = true;
   });
@@ -703,6 +708,9 @@ export function hideTooltip() {
 // of a control (a hidden child it points at), or read in line after a
 // plain chip. A chip is never made a Tab stop just for its tip.
 export function attachTooltip(target, content) {
+  // A tooltip can't hold a link: a page link in its text reads as the
+  // page's name.
+  if (typeof content === "string") content = plainText(content);
   var interactive = /^(BUTTON|A|INPUT|SELECT|TEXTAREA|SUMMARY)$/.test(target.tagName) || target.hasAttribute("tabindex");
   if (typeof content === "string") {
     if (interactive) {
@@ -768,6 +776,11 @@ export function popoverButton(anchorButton, build, opts) {
     pop.style.left = Math.round(left) + "px";
     pop.style.top = Math.round(top) + "px";
   }
+  // Following a link inside (a page link, a glossary term's "See it in
+  // the glossary") leaves this view: the popover closes with it.
+  pop.addEventListener("click", function (event) {
+    if (event.target.closest && event.target.closest("a[href]") && pop.matches(":popover-open")) pop.hidePopover();
+  });
   pop.addEventListener("toggle", function (event) {
     var open = event.newState === "open";
     anchorButton.setAttribute("aria-expanded", open ? "true" : "false");
@@ -793,9 +806,80 @@ export function popoverButton(anchorButton, build, opts) {
   return anchorButton;
 }
 
+// -- prose: server text with its page links and glossary terms --------------------------
+
+// Server text as nodes: each {{page:...}} token a link to its page
+// (links.js linkText). Given `seen`, a Set one card or section shares,
+// the first mention of each glossary term (links.js JARGON) also
+// becomes a button that shows its definition; later mentions stay
+// plain, so a paragraph isn't a row of underlines.
+export function prose(text, seen) {
+  var nodes = linkText(text);
+  if (!seen) return nodes;
+  var out = [];
+  nodes.forEach(function (node) {
+    if (node.nodeType !== 3) {
+      out.push(node);
+      return;
+    }
+    termNodes(node.textContent, seen).forEach(function (part) {
+      out.push(part);
+    });
+  });
+  return out;
+}
+
+var jargonPattern = null;
+
+function termNodes(text, seen) {
+  if (!jargonPattern) {
+    jargonPattern = new RegExp(
+      "\\b(?:" +
+        JARGON.map(function (entry) {
+          return "(" + entry[1] + ")";
+        }).join("|") +
+        ")\\b",
+      "gi"
+    );
+  }
+  var nodes = [];
+  var last = 0;
+  var match;
+  jargonPattern.lastIndex = 0;
+  while ((match = jargonPattern.exec(text))) {
+    var which = 0;
+    while (match[which + 1] === undefined) which += 1;
+    var term = JARGON[which][0];
+    if (seen.has(term) || !glossaryText(term)) continue;
+    seen.add(term);
+    if (match.index > last) nodes.push(document.createTextNode(text.slice(last, match.index)));
+    nodes.push(termButton(term, match[0]));
+    last = jargonPattern.lastIndex;
+  }
+  if (last < text.length) nodes.push(document.createTextNode(text.slice(last)));
+  return nodes;
+}
+
+// A glossary term in running text: a button styled as the word with a
+// dotted underline, opening the definition and a link to the Glossary.
+function termButton(term, words) {
+  var trigger = el("button", { type: "button", class: "term", text: words });
+  return popoverButton(
+    trigger,
+    function (body) {
+      body.appendChild(el("p", { class: "popover-title", text: term }));
+      body.appendChild(el("p", { class: "term-definition", text: glossaryText(term) }));
+      body.appendChild(el("p", { class: "term-more" }, [termLink(term, "See it in the glossary")]));
+    },
+    { class: "term-popover", label: term }
+  );
+}
+
 // The (i) that opens a table's or section's "How to read this": what
-// it shows, how to read it, when to act (model.Help).
-export function helpButton(help, subject) {
+// it shows, how to read it, when to act (model.Help). card: a
+// Glossary > How costs work card (links.js COST_CARDS) that explains
+// the price behind it, linked at the end.
+export function helpButton(help, subject, card) {
   if (!help || !(help.shows || help.read || help.act)) return null;
   var trigger = button("", { variant: "icon", icon: "info", label: "How to read " + (subject || "this"), class: "help-button" });
   return popoverButton(
@@ -810,9 +894,13 @@ export function helpButton(help, subject) {
       ].forEach(function (pair) {
         if (!pair[1]) return;
         list.appendChild(el("dt", { text: pair[0] }));
-        list.appendChild(el("dd", { text: pair[1] }));
+        list.appendChild(el("dd", null, prose(pair[1])));
       });
       body.appendChild(list);
+      if (card) {
+        var more = cardLink(card.slug, "How costs work: " + card.title.charAt(0).toLowerCase() + card.title.slice(1));
+        body.appendChild(el("p", { class: "term-more" }, [more]));
+      }
     },
     { class: "help-popover", label: "How to read " + (subject || "this"), focusInside: false }
   );

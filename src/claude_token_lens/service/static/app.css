@@ -501,9 +501,10 @@ button:disabled {
 }
 
 /* The plain button: every button that isn't a link, a column's (?), a
-   code block's Copy, or part of the chrome (icon, control, menu item). :where() keeps it at element specificity,
+   code block's Copy, part of the chrome (icon, control, menu item), a
+   glossary term in running text or a "Feeds N actions" button. :where() keeps it at element specificity,
    so a component's own class always wins. */
-button:where(:not(.link-button, .col-help-btn, .copy-button, .icon-button, .control-button, .menu-item)) {
+button:where(:not(.link-button, .col-help-btn, .copy-button, .icon-button, .control-button, .menu-item, .term, .row-feeds, .feeds-chip)) {
   display: inline-flex;
   align-items: center;
   gap: var(--space-3);
@@ -519,11 +520,11 @@ button:where(:not(.link-button, .col-help-btn, .copy-button, .icon-button, .cont
   transition: background-color var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out);
 }
 
-button:where(:not(.link-button, .col-help-btn, .copy-button, .icon-button, .control-button, .menu-item)):hover:not(:disabled) {
+button:where(:not(.link-button, .col-help-btn, .copy-button, .icon-button, .control-button, .menu-item, .term, .row-feeds, .feeds-chip)):hover:not(:disabled) {
   background: var(--surface-hover);
 }
 
-button:where(:not(.link-button, .col-help-btn, .copy-button, .icon-button, .control-button, .menu-item)):active:not(:disabled) {
+button:where(:not(.link-button, .col-help-btn, .copy-button, .icon-button, .control-button, .menu-item, .term, .row-feeds, .feeds-chip)):active:not(:disabled) {
   transform: translateY(0.5px);
 }
 
@@ -3327,6 +3328,89 @@ th .unit {
 
 .help-list dd:last-child {
   margin-bottom: 0;
+}
+
+/* A glossary term in running text (ui.js's prose): the word itself,
+   with a dotted underline, opening its definition. */
+.term {
+  display: inline;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: inherit;
+  text-decoration: underline dotted;
+  text-decoration-color: var(--ink-3);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+  cursor: help;
+}
+
+.term:hover,
+.term[aria-expanded="true"] {
+  text-decoration-color: var(--accent-ink);
+}
+
+.term-popover {
+  max-width: min(360px, calc(100vw - 16px));
+}
+
+.term-definition {
+  margin: 0;
+  color: var(--ink-2);
+}
+
+.term-more {
+  margin: var(--space-4) 0 0;
+  font-size: var(--text-sm);
+}
+
+/* "Feeds N actions": a table that is evidence for recommendations, in
+   its header; the same on each row a recommendation cites. */
+.feeds-chip {
+  gap: var(--space-2);
+  font-family: inherit;
+  cursor: pointer;
+  transition: background-color var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out);
+}
+
+.feeds-chip:hover,
+.feeds-chip[aria-expanded="true"] {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+}
+
+.row-feeds {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 16px;
+  /* Inside the line box, so a marked row is as tall as the rest (a long
+     grid's virtual scrolling measures one row for all). */
+  margin: -2px 0 -2px var(--space-3);
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-xs);
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  vertical-align: middle;
+  cursor: pointer;
+}
+
+.row-feeds:hover,
+.row-feeds[aria-expanded="true"] {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+}
+
+.feeds-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.feeds-list li + li {
+  margin-top: var(--space-3);
 }
 
 /* The drawer: detail that slides in from the right. */

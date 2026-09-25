@@ -383,11 +383,12 @@ def test_command_block_shows_every_explainer_line() -> None:
     trade-off and how to undo it -- the explainer fixes.build_fix
     writes (test_spawn_parts and test_fixes pin its headings). The block
     renders every pair as a definition list, whatever the headings, so
-    none is dropped on the way to the page."""
+    none is dropped on the way to the page. Phase 8: each answer goes
+    through prose(), so a page link in it is a link."""
     block = _function_source(_app_js(), "commandBlock")
     assert "fix.explainer.forEach(function (pair)" in block, block
     assert 'el("dt", { text: pair[0] })' in block
-    assert 'el("dd", { text: pair[1] })' in block
+    assert 'el("dd", null, prose(pair[1]))' in block
     assert 'class: "fix-explainer"' in block
 
 
@@ -1357,6 +1358,155 @@ def test_glossary_page_matches_the_readme_glossary() -> None:
     assert pairs, "GLOSSARY has no entries"
     app_glossary = dict(pairs)
     assert app_glossary == _readme_glossary_terms()
+
+
+# -- Phase 8: links inside text, glossary terms, "Feeds N actions" ------------
+
+
+def test_every_jargon_term_is_a_glossary_term_and_matches_its_own_name() -> None:
+    """links.js's JARGON lists the words ui.js's prose() turns into a
+    glossary popover. Each must be a GLOSSARY term (the popover shows
+    its definition) and its pattern must match the term's own name, so
+    the popover fires on the word the Glossary uses."""
+    app_js = _app_js()
+    glossary = dict(re.findall(r'\["([^"]+)", "([^"]+)"\]', _declaration_source(app_js, "GLOSSARY")))
+    jargon = re.findall(r'\["([^"]+)", "([^"]+)"\]', _declaration_source(app_js, "JARGON"))
+    assert jargon, "JARGON has no entries"
+    for term, pattern in jargon:
+        assert term in glossary, f"JARGON names {term!r}, which the Glossary doesn't define"
+        assert re.search(r"\b(?:" + pattern + r")\b", term, re.I), f"{term!r} doesn't match its own pattern {pattern!r}"
+
+
+def test_page_token_pattern_is_the_servers() -> None:
+    """The client renders the server's {{page:...}} tokens as links: its
+    pattern accepts every page and segment pages.PAGES names, as the
+    server's does, and rejects what the server's rejects."""
+    from claude_token_lens import pages
+
+    match = re.search(r"var PAGE_TOKEN = /(.+)/g;", _app_js())
+    assert match, "links.js no longer declares PAGE_TOKEN"
+    client = re.compile(match.group(1))
+    tokens = []
+    for page in pages.PAGES:
+        tokens.append("{{page:" + page.id + "}}")
+        tokens.extend("{{page:" + page.id + "/" + segment.id + "}}" for segment in page.segments)
+    for token in tokens:
+        assert client.fullmatch(token), token
+        assert pages._TOKEN_RE.fullmatch(token), token
+    for bad in ("{{page:Spend}}", "{{page:spend_usage}}", "{{page:spend/}}", "{{page:}}"):
+        assert not client.fullmatch(bad), bad
+        assert not pages._TOKEN_RE.fullmatch(bad), bad
+
+
+def test_server_text_on_the_page_goes_through_prose() -> None:
+    """Help, notes, intros, actions and explanations from the server may
+    carry {{page:...}} tokens: each place the dashboard shows them
+    renders through prose() (links.js's linkText underneath), never as
+    bare text, so no token is ever shown raw."""
+    app_js = _app_js()
+    assert "export function linkText(" in app_js and "export function prose(" in app_js
+    expected = {
+        "helpButton": 'el("dd", null, prose(pair[1]))',
+        "headerCell": "prose(column.help)",
+        "notesList": "prose(note, seen)",
+        "renderSectionGeneric": "prose(section.intro, seen)",
+        "renderTips": "prose(tip.text, seen)",
+        "callout": "prose(opts.text)",
+        "emptyState": "prose(text)",
+        "renderRecommendationDetail": "prose(focus.action, seen)",
+        "renderCheckDetail": "prose(check.summary, seen)",
+        "renderSessionExplain": "prose(sentence, seen)",
+        "renderHabitsSection": "notesList(section.notes",
+        "renderSetup": "prose(item.text)",
+    }
+    for name, call in expected.items():
+        body = _function_source(app_js, name)
+        assert call in body, f"{name}() no longer renders its server text through prose(): {call}"
+    assert 'el("li", { text: note })' not in app_js
+
+
+def test_tokens_read_as_page_names_where_a_link_cannot_go() -> None:
+    """A tooltip, a toast and a grid cell can't hold a link: a token in
+    their text reads as the page's name (plainText, the client's
+    pages.plain())."""
+    app_js = _app_js()
+    assert "export function plainText(" in app_js
+    assert "content = plainText(content)" in _function_source(app_js, "attachTooltip")
+    assert "text: plainText(message)" in _function_source(app_js, "toast")
+    assert "plainText(text)" in _function_source(app_js, "cellContent")
+
+
+def test_each_glossary_term_is_explained_once_per_card() -> None:
+    """The first use of a term in a card or section gets the popover;
+    later uses stay plain words, so the text doesn't turn into a row of
+    underlines."""
+    body = _function_source(_app_js(), "termNodes")
+    assert "seen.has(term)" in body and "seen.add(term)" in body
+
+
+def test_popovers_close_when_a_link_inside_is_followed() -> None:
+    """A link inside a popover (a page link in help, "See it in the
+    glossary", an action a table feeds) leaves the view: the popover
+    closes with it rather than floating over the next page."""
+    body = _function_source(_app_js(), "popoverButton")
+    assert 'closest("a[href]")' in body and "pop.hidePopover()" in body
+
+
+def test_recommendations_are_fetched_once_per_window() -> None:
+    """The Actions badge and inbox, the Overview and the "Feeds N
+    actions" chips share one /api/recommendations fetch per window, which
+    a new window or a redraw drops with the report's."""
+    app_js = _app_js()
+    assert app_js.count('withWindow("/api/recommendations")') == 1
+    assert "state.recommendationPromises[key]" in _function_source(app_js, "loadRecommendations")
+    assert "delete state.recommendationPromises[value]" in _function_source(app_js, "applyWindow")
+    assert "state.recommendationPromises = {}" in _function_source(app_js, "redrawEverything")
+
+
+def test_tables_say_which_actions_they_feed() -> None:
+    """Every report table that a recommendation cites as evidence says so
+    in its header ("Feeds N actions"), and each cited row carries a mark;
+    both open a list of the actions, each linked to its detail."""
+    app_js = _app_js()
+    index = _function_source(app_js, "actionIndex")
+    assert "rec.evidence" in index and "item[2]" in index and "item[3]" in index
+    assert "markFeeds(wrap, head, gridNode, table.name)" in _function_source(app_js, "renderTable")
+    feeds = _function_source(app_js, "markFeeds")
+    assert "index.byTable[tableName]" in feeds and "markRows(" in feeds
+    button = _function_source(app_js, "feedsButton")
+    assert '"Feeds " + words' in button
+    assert 'pageLink("actions/recommendations", action.title, { id: action.key })' in button
+    grid = _function_source(app_js, "dataGrid")
+    assert "var rowMark = spec.rowMark || null;" in grid and "markRows: function (mark)" in grid
+
+
+def _js_string_literals(src: str) -> list[str]:
+    """Every string and template literal in first-party JavaScript,
+    comments skipped."""
+    found = []
+    i = 0
+    while i < len(src):
+        skipped = _skip_js_string_or_comment(src, i)
+        if skipped == i:
+            i += 1
+            continue
+        if src[i] in "\"'`":
+            found.append(src[i + 1 : skipped - 1])
+        i = skipped
+    return found
+
+
+def test_no_tab_names_in_dashboard_text() -> None:
+    """The dashboard has pages, not tabs: no string it shows says "the X
+    tab" (the server's text has the same ban, test_pages.py). Words
+    only: a one-word literal is a key name ("Tab"), an ARIA role ("tab",
+    the command block's Prompt and Command) or a class name."""
+    offenders = [
+        literal
+        for literal in _js_string_literals(_app_js())
+        if " " in literal.strip() and re.search(r"\btabs?\b", literal, re.I)
+    ]
+    assert offenders == [], offenders
 
 
 def _readme_section_table_keys() -> list[str]:

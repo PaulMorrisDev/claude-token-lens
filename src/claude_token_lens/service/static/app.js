@@ -30,7 +30,7 @@
 
 import { el, paramsChanged, renderedViews, setRouteHandler, state, storageGet, storageRemove, storageSet, WINDOW_OPTIONS } from "./core.js";
 import { icon } from "./icons.js";
-import { fetchJson, resetFiguresAsOf, withWindow } from "./api.js";
+import { loadRecommendations, resetFiguresAsOf } from "./api.js";
 import { pollHealth } from "./shell.js";
 import { formatHash, OLD_TAB_VIEWS, PAGES, parseHash, VIEW_KEYS, viewFor } from "./links.js";
 import { revealEvidence } from "./evidence.js";
@@ -287,7 +287,7 @@ function refreshActionsBadge(again) {
   var windowAsked = state.window;
   if (badgeFor === windowAsked && !again) return;
   badgeFor = windowAsked;
-  fetchJson(withWindow("/api/recommendations")).then(function (result) {
+  loadRecommendations().then(function (result) {
     if (state.window !== windowAsked) return;
     var badge = document.getElementById("actions-badge");
     if (!badge) return;
@@ -357,6 +357,7 @@ function applyWindow(value) {
   storageSet("tls:window", value);
   sessionsState.offset = 0;
   delete state.reportPromises[value];
+  delete state.recommendationPromises[value];
   resetFiguresAsOf();
   Object.keys(renderedViews).forEach(function (key) {
     var view = viewFor(key);

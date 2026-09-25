@@ -6,7 +6,7 @@
 import { clear, el, state } from "./core.js";
 import { fetchJson, findSection, loadInto, loadReport, postJson, withWindow } from "./api.js";
 import { shortTs, signedPercent } from "./format.js";
-import { button, callout, chip, codeBlockWithCopy, commandBlock, emptyState, errorNotice, loadingNode, toast } from "./ui.js";
+import { button, callout, chip, codeBlockWithCopy, commandBlock, emptyState, errorNotice, loadingNode, prose, toast } from "./ui.js";
 import { dataGrid, renderMappedSections, renderPlacedTables, renderSectionGeneric, simpleTable } from "./grid.js";
 import { captureLink, viewIntro } from "./links.js";
 
@@ -705,7 +705,7 @@ function renderWhatIf(data, container) {
     return;
   }
   if (data.total_text) container.appendChild(el("p", { class: "quick-summary", text: "Estimated effect of these changes: " + data.total_text + "." }));
-  if (data.total_note) container.appendChild(el("p", { class: "notes", text: data.total_note }));
+  if (data.total_note) container.appendChild(el("p", { class: "notes" }, prose(data.total_note)));
   if (data.not_estimated) {
     container.appendChild(
       el("p", { class: "notes", text: data.not_estimated + (data.not_estimated === 1 ? " change isn't" : " changes aren't") + " estimated; see each row." })
@@ -724,7 +724,7 @@ function renderProfileCreator(container, onSaved) {
     (data.goals || []).forEach(function (goal) {
       var card = el("article", { class: "profile-card goal-card" });
       card.appendChild(el("h3", { text: goal.title }));
-      card.appendChild(el("p", { class: "profile-card-summary", text: goal.what }));
+      card.appendChild(el("p", { class: "profile-card-summary" }, prose(goal.what)));
       var pick = button("Start here");
       pick.addEventListener("click", function () {
         if (goal.id === "current") {
@@ -788,7 +788,7 @@ function renderGoalDraft(draft, container, onSaved) {
     });
     container.appendChild(el("div", { class: "profile-actions" }, [el("label", { for: "goal-task-pick", text: "Kind of task" }), taskPick]));
   }
-  if (draft.note) container.appendChild(el("p", { class: "notes", text: draft.note }));
+  if (draft.note) container.appendChild(el("p", { class: "notes" }, prose(draft.note)));
   var candidates = draft.candidates || [];
   if (!candidates.length) {
     if (!draft.note) {
@@ -990,7 +990,7 @@ function renderImpact(data, container) {
     );
     return;
   }
-  container.appendChild(el("p", { class: "notes", text: data.caveat }));
+  container.appendChild(el("p", { class: "notes" }, prose(data.caveat)));
   changes.forEach(function (item) {
     var change = item.change || {};
     var card = el("article", { class: "rec impact-card" });
@@ -999,7 +999,7 @@ function renderImpact(data, container) {
     if (item.gate) {
       card.appendChild(emptyState(item.verdict, item.gate));
     } else {
-      card.appendChild(el("p", { class: "quick-summary", text: item.verdict }));
+      card.appendChild(el("p", { class: "quick-summary" }, prose(item.verdict)));
     }
     if (item.enough) {
       card.appendChild(

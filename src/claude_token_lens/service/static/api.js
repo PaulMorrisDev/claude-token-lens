@@ -165,6 +165,55 @@ export function loadReport() {
   return state.reportPromises[key];
 }
 
+// /api/recommendations for the window on screen, fetched once per window
+// and shared by every view that reads it (the Actions badge and inbox,
+// the Overview, the "Feeds N actions" chips). Resolves to fetchJson's
+// result; a failed fetch isn't kept, so the next caller asks again.
+export function loadRecommendations() {
+  var key = state.window;
+  if (!state.recommendationPromises[key]) {
+    state.recommendationPromises[key] = fetchJson(withWindow("/api/recommendations")).then(function (result) {
+      var body = result.body;
+      if (!body || body.ok !== true || !Array.isArray(body.data)) delete state.recommendationPromises[key];
+      return result;
+    });
+  }
+  return state.recommendationPromises[key];
+}
+
+// Which actions each report table is evidence for, from the
+// recommendations' evidence ([label, value, "section.table", row_key]):
+// byTable[table name] and byRow[table name + "\n" + row key] -> the
+// actions, one per recommendation id (the inbox shows a shared id as
+// one item). Report table names are unique across the report.
+var indexed = { data: null, index: null };
+
+export function actionIndex() {
+  return loadRecommendations().then(function (result) {
+    var body = result.body;
+    var recs = body && body.ok === true && Array.isArray(body.data) ? body.data : [];
+    if (indexed.data === recs) return indexed.index;
+    var index = { byTable: {}, byRow: {} };
+    function add(map, name, rec) {
+      var list = map[name] || (map[name] = []);
+      for (var i = 0; i < list.length; i++) if (list[i].id === rec.id) return;
+      list.push({ id: rec.id, key: rec.key || rec.id, title: rec.title || rec.id });
+    }
+    recs.forEach(function (rec) {
+      (rec.evidence || []).forEach(function (item) {
+        if (!Array.isArray(item) || !item[2]) return;
+        var source = String(item[2]);
+        var name = source.slice(source.indexOf(".") + 1);
+        if (!name) return;
+        add(index.byTable, name, rec);
+        if (item[3] !== null && item[3] !== undefined && item[3] !== "") add(index.byRow, name + "\n" + String(item[3]), rec);
+      });
+    });
+    indexed = { data: recs, index: index };
+    return index;
+  });
+}
+
 export function findSection(report, key) {
   if (!report || !Array.isArray(report.sections)) return null;
   for (var i = 0; i < report.sections.length; i++) {

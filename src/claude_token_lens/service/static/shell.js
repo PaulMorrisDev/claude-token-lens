@@ -9,7 +9,7 @@ import { clear, el, goTo, renderedViews, state, storageGet, storageSet } from ".
 import { shortTs, thousands } from "./format.js";
 import { connection, fetchJson, figures, resetFiguresAsOf, runReconnectRetries } from "./api.js";
 import { captureLink, pageLink } from "./links.js";
-import { button, callout, toast } from "./ui.js";
+import { button, callout, prose, toast } from "./ui.js";
 
 // A service that doesn't start at logon loses history to Claude Code's
 // cleanup: said on the Overview, where it will be seen, and again with
@@ -161,6 +161,7 @@ function redrawEverything(options) {
     banner.hidden = true;
   }
   state.reportPromises = {};
+  state.recommendationPromises = {};
   resetFiguresAsOf();
   Object.keys(renderedViews).forEach(function (key) {
     delete renderedViews[key];
@@ -390,7 +391,7 @@ function renderCaptureBanner(data) {
         "ul",
         { class: "capture-notes" },
         notes.map(function (note) {
-          return el("li", { text: note });
+          return el("li", null, prose(note));
         })
       )
     );

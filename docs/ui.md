@@ -772,19 +772,61 @@ than `h4`; a table shown on its own in a view it was moved to takes the
 `helptext.annotate` and rendered generically:
 
 - **Section intro and "How to read this".** `Section.intro` as a line
-  under the heading; `Section.help`/`Table.help` as a collapsed
-  `<details>` with "What it shows", "How to read it", "When to act".
+  under the heading; `Section.help`/`Table.help` behind one (i) button
+  beside the heading, a popover with "What it shows", "How to read it"
+  and "When to act". A section whose figures rest on a price the
+  Glossary explains (cache rebuilds, cache lifetime, model choice,
+  startup context, tool output kept, conversation summaries, billing
+  mode: `SECTION_CARDS` in `grid.js`) ends its popover with a link to
+  that card in **Glossary › How costs work**.
 - **Column help.** A `?` button in the header (a real `<button>` with
   `aria-expanded`, keyboard and touch operable, never a `title=`-only
-  tooltip) shows that column's `Column.help` in a line above the table.
-  It stops propagation so it never also sorts the column.
+  tooltip) opens that column's `Column.help` in a popover. It stops
+  propagation so it never also sorts the column.
 - **Value labels.** `Table.value_labels` replaces raw row values such
   as `top-level` with "Main session"; the raw value stays in the
   cell's `title` and `data-raw`.
 - **Placement.** `Table.dashboard`: `keep` tables are shown,
-  `advanced` tables go into one collapsed "Advanced detail (N)" block
-  per section, and `report` tables are left to the CLI report with a
+  `advanced` tables go into one collapsed "More tables (N)" block per
+  section, and `report` tables are left to the CLI report with a
   one-line note.
+
+### Links in text, glossary terms and the actions a table feeds
+
+- **Page links.** Server text may point at a page with a
+  `{{page:<page>}}` or `{{page:<page>/<segment>}}` token
+  (`docs/writing-help.md`, "Linking to another page"). `ui.js`'s
+  `prose(text, seen)` renders it through `links.js`'s `linkText`: each
+  token becomes a link to that view, named as the sidebar and the page
+  title name it (a page with segments opens on its first). Every place
+  the dashboard shows server text uses `prose()`: help, intros, notes,
+  table and column help, callouts, empty states, recommendation and
+  check detail, tips, habit cards, capture metrics, the setup list and
+  a session's explanation. Where a link can't go (a tooltip, a toast, a
+  grid cell, whose row opens its own detail) `plainText` gives the
+  page's name instead, as `pages.plain()` does for the CLI. A token
+  naming no page is left as written rather than dropped.
+- **Glossary terms.** With a `seen` set, `prose()` also finds the words
+  in `links.js`'s `JARGON` (each a `GLOSSARY` term, with the plural and
+  other forms it goes by) and turns the first use of each in a card or
+  section into a button styled as the word with a dotted underline. It
+  opens the term's definition, the Glossary's own wording, with a link
+  to its entry (`#/glossary/terms?term=<slug>`). Later uses in the same
+  card or section stay plain words. Page intros, the Glossary itself,
+  and popovers (help, column help) show no term buttons: a popover
+  inside a popover would lose its place.
+- **Feeds N actions.** `api.js`'s `actionIndex()` reads the window's
+  recommendations (`loadRecommendations()`, one fetch per window shared
+  by the Actions badge and inbox, the Overview and the grids) and
+  indexes their evidence by report table and by row. A table that is
+  evidence for a recommendation shows **Feeds N actions** beside its
+  heading, and each row a recommendation cites carries a small mark at
+  the end of its first cell; both open a list of those actions, each a
+  link to its detail in Actions (`?id=<key>`). N counts inbox items: a
+  rule that fires for several agent types is one action. A mark sits
+  inside the row's line box, so a marked row is as tall as the rest.
+- **Popovers close on a link.** Following any link inside a popover
+  closes it, so it never floats over the view the link opens.
 
 ## Data flow
 
@@ -808,7 +850,11 @@ the modules fetch every `GET /api/...` route this document's sibling
 and the view renderers name the same views, that the heading policy
 holds, and that every section `report._SECTION_ORDER` can emit is mapped
 to a view. `tests/test_ui_copy.py` holds the dashboard's own words to
-`docs/writing-help.md` ("Dashboard copy"). The chart tests hold `CHART_SPECS` to the catalogue above, check every chart's data names a real route or report table, and keep bars thin, colours tied to entities and money axes in step with the billing mode. There is no headless browser: `urllib.request` plus string checks is enough for a
+`docs/writing-help.md` ("Dashboard copy"). The linking tests check that
+every `JARGON` word is a Glossary term, that the client's token pattern
+is the server's, that each place server text shows goes through
+`prose()` (and `plainText` where a link can't go), that no string the
+dashboard shows says "tab", and that tables name the actions they feed. The chart tests hold `CHART_SPECS` to the catalogue above, check every chart's data names a real route or report table, and keep bars thin, colours tied to entities and money axes in step with the billing mode. There is no headless browser: `urllib.request` plus string checks is enough for a
 stdlib-only test suite.
 
 ## Modules

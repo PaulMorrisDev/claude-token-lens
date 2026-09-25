@@ -8,7 +8,7 @@
 import { clear, el } from "./core.js";
 import { currencyAmount, formatCell, thousands } from "./format.js";
 import { loadInto, postJson } from "./api.js";
-import { button, callout, chip, codeBlockWithCopy, confirmDialog, emptyState, errorNotice, toast } from "./ui.js";
+import { button, callout, chip, codeBlockWithCopy, confirmDialog, emptyState, errorNotice, prose, toast } from "./ui.js";
 import { simpleTable } from "./grid.js";
 import { viewIntro } from "./links.js";
 import { capturePoll, showCaptureData } from "./shell.js";
@@ -228,7 +228,7 @@ function renderCaptureData(data, container) {
       })
     );
   }
-  if (data.billing && data.billing.basis) nowBlock.appendChild(el("p", { class: "notes", text: data.billing.basis }));
+  if (data.billing && data.billing.basis) nowBlock.appendChild(el("p", { class: "notes" }, prose(data.billing.basis)));
 
   // Hook entries Claude Code needs to run for the chosen metrics.
   var hooks = data.hooks || {};
@@ -269,7 +269,7 @@ function renderCaptureLevels(data, container) {
     var head = el("div", { class: "capture-level-head" }, [el("strong", { text: level.title })]);
     if (level.current) head.appendChild(chip("Current", { tone: "accent", icon: "check" }));
     card.appendChild(head);
-    card.appendChild(el("p", { text: level.summary }));
+    card.appendChild(el("p", null, prose(level.summary)));
     var cost;
     if (level.id === "off") cost = "No tokens.";
     else if (!level.asks_claude && level.metrics.length) cost = "No Claude tokens.";
@@ -386,12 +386,14 @@ function renderMetricRow(row, data, container) {
   if (row.needs_install) head.appendChild(chip("Needs installing", { tone: "warn", icon: "warning" }));
   if (row.enough) head.appendChild(chip("Enough collected", { tone: "good", icon: "check" }));
   box.appendChild(head);
-  box.appendChild(el("p", { class: "capture-metric-what", text: row.what }));
+  // Each glossary term is explained once per metric: its first use.
+  var seen = new Set();
+  box.appendChild(el("p", { class: "capture-metric-what" }, prose(row.what, seen)));
   var facts = el("dl", { class: "capture-metric-facts" });
   function fact(label, value, cls) {
     if (!value) return;
     facts.appendChild(el("dt", { text: label }));
-    facts.appendChild(el("dd", { class: cls || null, text: value }));
+    facts.appendChild(el("dd", { class: cls || null }, prose(value, seen)));
   }
   fact("Why", row.why);
   if (row.tag) fact("Claude writes", row.tag, "capture-metric-tag");
@@ -406,10 +408,10 @@ function renderMetricRow(row, data, container) {
   if (row.needs_install) {
     // The dashboard never writes Claude Code's folder: the CLI adds the
     // skill after showing it and asking.
-    box.appendChild(el("p", { class: "notes", text: row.install_note + ". The dashboard doesn't write Claude Code's folder, so add it from a terminal:" }));
+    box.appendChild(el("p", { class: "notes" }, prose(row.install_note + ". The dashboard doesn't write Claude Code's folder, so add it from a terminal:")));
     box.appendChild(codeBlockWithCopy(row.install_command, "Command"));
   }
-  if (row.statusline_note) box.appendChild(el("p", { class: "notes", text: row.statusline_note }));
+  if (row.statusline_note) box.appendChild(el("p", { class: "notes" }, prose(row.statusline_note)));
 
   toggle.addEventListener("change", function () {
     var turningOn = toggle.checked;
