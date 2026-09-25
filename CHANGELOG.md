@@ -42,28 +42,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and start the "Since my last change" window. Each measure shows its
   reading ("Lower", "Possibly higher", "No clear change").
 
-- **The README is a short landing page now.** It keeps the quick start,
-  the page table, troubleshooting and the glossary, and gains dashboard
-  screenshots (synthetic data), a Privacy section and a "What it can't
-  measure" section. Its reference sections moved into `docs/`, each
-  linked from the README's Documentation table:
-  - every command and flag, exit codes and CLI timings:
-    new [`docs/cli.md`](docs/cli.md);
-  - what it reads, the SessionStart hook, the status line, Windows
-    notes and the roadmap: new [`docs/reference.md`](docs/reference.md);
-  - the report-sections table and recommendation fields:
-    [`docs/sections-reference.md`](docs/sections-reference.md#sections-at-a-glance);
-  - `exclude_projects`, `retention_days`, managed settings and provider
-    detection: [`docs/team.md`](docs/team.md#settings-for-teams-and-enterprise);
-  - the privacy grep audit: [`SECURITY.md`](SECURITY.md).
-- **Claims corrected while moving them.** The README no longer says the
-  tool makes "no network calls": `update` runs pip to download the new
-  version. `SECURITY.md` and `docs/team.md` now say a malformed
-  `exclude_projects` pattern stops `config.toml` from loading; it was
-  described as skipped. Commands in the docs use
-  `python -m claude_token_lens`, which works whether or not pip's
-  Scripts folder is on your `PATH`.
-
 ### Fixed
 
 - **"Since my last change" counts only the sessions started since.**
@@ -86,32 +64,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   changes the model and the next session runs on it, that's one change,
   not two; the second one used to cut the first one's after sessions
   short.
-- **Quality verdicts no longer compare your work with scheduled checks.**
-  Main sessions a scheduled or looped task started, with no message of
-  yours, are left out of "Quality by model and effort" and of the
-  quality check in "Your changes and what they did". Twenty-two
-  two-reply watchdog runs had become the main session's most-used setup,
-  so real sessions at another effort were marked worse against them. A
-  setup whose runs averaged more than 5 times as many replies as the one
-  it would be compared with, or under a fifth, is now "Not comparable"
-  instead of tested.
-- **Scheduled checks no longer dilute the compaction figures.** The same
-  sessions are left out of the Compactions section and the compaction
-  replay: they never summarise, so they lowered the summaries per
-  session that the replay's "at most 2 a session" limit reads. In "Your
-  changes and what they did" they are a group of their own, so more or
-  fewer of them running after a change no longer reads as a saving or a
-  rise in cost per session.
-- **The compaction cards no longer disagree.** Once the compaction
-  replay has priced your main sessions, its verdict is the one answer on
-  the auto-compact window: "summarised often" (raise it) is dropped, and
-  "context running large" keeps only its workflow advice, whose prompt
-  no longer suggests lowering the window. A subagent type's row in "Best
-  auto-compact window for each agent type" names its cheapest window
-  without telling you to set it, since the window is one setting for the
-  whole session. The compaction check and the replay notes now say that
-  a larger window can't be tested: the replay keeps every real summary,
-  so windows above yours cost what your sessions did.
 
 ### Added
 
@@ -152,6 +104,72 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   back-test uses it where it's exact.
   [`docs/concepts.md`](docs/concepts.md#6-windows-what-if-estimates-and-beforeafter-comparisons)
   explains each method.
+
+## [0.6.3] - 2026-09-25
+
+### Changed
+
+- **The README is a short landing page now.** It keeps the quick start,
+  the page table, troubleshooting and the glossary, and gains dashboard
+  screenshots (synthetic data), a Privacy section and a "What it can't
+  measure" section. Its reference sections moved into `docs/`, each
+  linked from the README's Documentation table:
+  - every command and flag, exit codes and CLI timings:
+    new [`docs/cli.md`](docs/cli.md);
+  - what it reads, the SessionStart hook, the status line, Windows
+    notes and the roadmap: new [`docs/reference.md`](docs/reference.md);
+  - the report-sections table and recommendation fields:
+    [`docs/sections-reference.md`](docs/sections-reference.md#sections-at-a-glance);
+  - `exclude_projects`, `retention_days`, managed settings and provider
+    detection: [`docs/team.md`](docs/team.md#settings-for-teams-and-enterprise);
+  - the privacy grep audit: [`SECURITY.md`](SECURITY.md).
+- **Claims corrected while moving them.** The README no longer says the
+  tool makes "no network calls": `update` runs pip to download the new
+  version. `SECURITY.md` and `docs/team.md` now say a malformed
+  `exclude_projects` pattern stops `config.toml` from loading; it was
+  described as skipped. Commands in the docs use
+  `python -m claude_token_lens`, which works whether or not pip's
+  Scripts folder is on your `PATH`.
+
+### Fixed
+
+- **On Windows the dashboard no longer flashes a console window every
+  few minutes, or opens a new tab in Windows Terminal.** While a
+  dashboard page is open it checks that its logon task is still set up
+  by running `schtasks`. The dashboard itself runs without a console
+  (`pythonw`), so each check got a console of its own. It now runs
+  without one, and terminal windows you already have open are left
+  alone. Run `python -m claude_token_lens update` to get the fix and
+  restart the dashboard.
+- **Quality verdicts no longer compare your work with scheduled checks.**
+  Main sessions a scheduled or looped task started, with no message of
+  yours, are left out of "Quality by model and effort" and of the
+  quality check in "Your changes and what they did". Twenty-two
+  two-reply watchdog runs had become the main session's most-used setup,
+  so real sessions at another effort were marked worse against them. A
+  setup whose runs averaged more than 5 times as many replies as the one
+  it would be compared with, or under a fifth, is now "Not comparable"
+  instead of tested.
+- **Scheduled checks no longer dilute the compaction figures.** The same
+  sessions are left out of the Compactions section and the compaction
+  replay: they never summarise, so they lowered the summaries per
+  session that the replay's "at most 2 a session" limit reads. In "Your
+  changes and what they did" they are a group of their own, so more or
+  fewer of them running after a change no longer reads as a saving or a
+  rise in cost per session.
+- **The compaction cards no longer disagree.** Once the compaction
+  replay has priced your main sessions, its verdict is the one answer on
+  the auto-compact window: "summarised often" (raise it) is dropped, and
+  "context running large" keeps only its workflow advice, whose prompt
+  no longer suggests lowering the window. A subagent type's row in "Best
+  auto-compact window for each agent type" names its cheapest window
+  without telling you to set it, since the window is one setting for the
+  whole session. The compaction check and the replay notes now say that
+  a larger window can't be tested: the replay keeps every real summary,
+  so windows above yours cost what your sessions did.
+
+### Added
+
 - `tests/test_doc_links.py` checks that every Markdown link to a
   heading in the README, `docs/`, `SECURITY.md` and this file resolves.
 - `scripts/demo-corpus.py` builds the synthetic sessions the README's
