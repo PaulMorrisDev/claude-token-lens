@@ -263,3 +263,145 @@ def test_the_lock_is_dropped_when_its_holder_dies(tmp_path: Path):
     lock = StoreLock(store_path)
     lock.acquire({"pid": 2}, wait_s=10)
     lock.release()
+
+
+# -- the package's own code changing on disk ---------------------------------
+
+
+def _touch_code(path: Path, text: str) -> None:
+    path.write_text(text, encoding="utf-8")
+    # A modification time of its own, however coarse the file system's clock.
+    stamp = time.time_ns() + 10**9
+    os.utime(path, ns=(stamp, stamp))
+
+
+def _serve_on_a_fake_package(tmp_path: Path, monkeypatch, *, relaunch: bool, **option_kwargs):
+    """Start ``serve.run`` on its own thread, watching a small fake
+    package under ``tmp_path`` for code changes instead of this one.
+    Returns ``(package, server, thread, result, relaunches, health)``."""
+    import http.client
+    import json
+    import threading
+
+    from claude_token_lens import installer
+    from claude_token_lens.service.codewatch import CodeWatch
+
+    package = tmp_path / "package"
+    package.mkdir()
+    _touch_code(package / "__init__.py", '__version__ = "1.0.0"\n')
+    _touch_code(package / "report.py", "X = 1\n")
+    monkeypatch.setattr(serve, "CodeWatch", lambda: CodeWatch(package))
+    relaunches: list[int] = []
+
+    def _relaunch(pid):
+        relaunches.append(pid)
+        return relaunch
+
+    monkeypatch.setattr(serve, "relaunch_after_exit", _relaunch)
+    # No real schtasks/systemctl probe from a test.
+    monkeypatch.setattr(installer, "is_registered", lambda *a, **k: None)
+    servers = []
+
+    class _RecordingServer(serve.ThreadingHTTPServer):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            servers.append(self)
+
+    monkeypatch.setattr(serve, "ThreadingHTTPServer", _RecordingServer)
+    root = tmp_path / "projects"
+    root.mkdir()
+    options = ServeOptions(
+        projects_root=root, config_dir=tmp_path / "config", port=0, poll_interval_s=0.05, **option_kwargs
+    )
+    result: dict = {}
+    thread = threading.Thread(target=lambda: result.setdefault("rc", serve.run(options)), daemon=True)
+    thread.start()
+    deadline = time.monotonic() + 10
+    while not servers and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert servers, "serve never bound its port"
+
+    def _health() -> dict:
+        conn = http.client.HTTPConnection("127.0.0.1", servers[0].server_port, timeout=10)
+        try:
+            conn.request("GET", "/api/health")
+            return json.loads(conn.getresponse().read())["data"]
+        finally:
+            conn.close()
+
+    return package, servers[0], thread, result, relaunches, _health
+
+
+def _wait_for(predicate, timeout_s: float = 10) -> bool:
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.02)
+    return predicate()
+
+
+def test_exit_on_code_change_exits_so_the_service_starts_again(tmp_path: Path, monkeypatch, capsys):
+    package, server, thread, result, relaunches, health = _serve_on_a_fake_package(
+        tmp_path, monkeypatch, relaunch=True, exit_on_code_change=True
+    )
+    try:
+        assert _wait_for(lambda: health()["code"] is not None)
+        assert health()["code"]["changed"] is False
+        _touch_code(package / "__init__.py", '__version__ = "2.0.0"\n')
+        thread.join(timeout=15)
+        assert not thread.is_alive(), "serve kept running on the old code"
+    finally:
+        if thread.is_alive():
+            server.shutdown()
+            thread.join(timeout=15)
+    assert result.get("rc") == serve.EXIT_CODE_CHANGED
+    # Once, for this very process.
+    assert relaunches == [os.getpid()]
+    assert "code changed on disk" in capsys.readouterr().err
+    assert storelock.holder(tmp_path / "config" / serve.STORE_FILENAME) is None
+
+
+def test_exit_on_code_change_stays_up_when_it_cannot_be_started_again(tmp_path: Path, monkeypatch):
+    """No relaunch arranged (on Windows: no ClaudeTokenLens task to start
+    again): exiting would leave no dashboard at all, so it stays up and
+    says to restart it -- and doesn't claim it will restart by itself."""
+    package, server, thread, result, relaunches, health = _serve_on_a_fake_package(
+        tmp_path, monkeypatch, relaunch=False, exit_on_code_change=True
+    )
+    try:
+        assert _wait_for(lambda: health()["code"] is not None)
+        _touch_code(package / "report.py", "X = 2\n")
+        assert _wait_for(lambda: bool(relaunches))
+        time.sleep(0.3)  # several more ticks
+        assert thread.is_alive()
+        assert relaunches == [os.getpid()]  # tried once, not every tick
+        data = health()
+        assert data["status"] == "outdated"
+        assert data["code"]["changed"] is True
+        assert "install-service" in data["message"]
+        assert "restarts by itself" not in data["message"]
+    finally:
+        server.shutdown()
+        thread.join(timeout=15)
+    assert result.get("rc") == 0
+
+
+def test_without_exit_on_code_change_a_code_change_is_only_reported(tmp_path: Path, monkeypatch):
+    package, server, thread, result, relaunches, health = _serve_on_a_fake_package(
+        tmp_path, monkeypatch, relaunch=True
+    )
+    try:
+        assert _wait_for(lambda: health()["code"] is not None)
+        _touch_code(package / "__init__.py", '__version__ = "2.0.0"\n')
+        assert _wait_for(lambda: health()["status"] == "outdated")
+        time.sleep(0.3)
+        assert thread.is_alive()
+        assert relaunches == []
+        data = health()
+        assert data["code"]["version_on_disk"] == "2.0.0"
+        assert "restarts by itself" not in data["message"]
+    finally:
+        server.shutdown()
+        thread.join(timeout=15)
+    assert result.get("rc") == 0

@@ -72,6 +72,7 @@ import time
 import zlib
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Callable
 
 from .. import PARSER_VERSION, classify, discovery, recache, workflows as workflows_mod, workstyle
 from .. import baseline as baseline_mod
@@ -329,10 +330,16 @@ class FileWatcher:
         cache: DigestCache | None = None,
         now=None,
         salt: bytes | None = None,
+        after_tick: Callable[[], object] | None = None,
     ) -> None:
         self.store = store
         self.options = options
         self.cache = cache
+        #: Called on the background thread after each tick (``serve.py``
+        #: checks whether the package's code changed on disk). Not by
+        #: :meth:`run_once` itself, so ``serve --once`` and tests that
+        #: tick by hand never run it.
+        self._after_tick = after_tick
         #: Handed to each prewarm worker process, which (under Windows'
         #: ``spawn``) does not inherit this process's ``parse.set_salt``.
         self._salt = salt
@@ -475,6 +482,11 @@ class FileWatcher:
                 self.run_once()
             except Exception:  # run_once catches its own; this thread must outlive anything
                 pass
+            if self._after_tick is not None:
+                try:
+                    self._after_tick()
+                except Exception:  # nor may the hook stop the scans
+                    pass
             self._stop_event.wait(self.options.poll_interval_s)
 
     # -- per-tick timing helpers (S1-perf item 5) ---------------------------

@@ -520,6 +520,13 @@ def _add_serve_args(sub: argparse.ArgumentParser) -> None:
         help="run a single watcher tick, print its WatcherStats, and exit instead of serving",
     )
     sub.add_argument(
+        "--exit-on-code-change",
+        action="store_true",
+        dest="exit_on_code_change",
+        help="exit once claude-token-lens's own files change on disk (an update without a restart), "
+        "so the service manager starts serve again on the new code; install-service sets it",
+    )
+    sub.add_argument(
         "--billing-mode",
         choices=("api", "subscription"),
         default=None,
@@ -4517,6 +4524,7 @@ def _cmd_serve(args: argparse.Namespace) -> int:
         monthly_report_dir=monthly_report_dir,
         allowed_hosts=tuple(args.allowed_host or ()),
         store_path=store_path,
+        exit_on_code_change=args.exit_on_code_change,
     )
     try:
         return run_serve(options, once=args.once, allow_remote=args.allow_remote)

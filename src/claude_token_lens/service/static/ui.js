@@ -451,9 +451,11 @@ export function errorNotice(error, retry) {
       ],
     });
   }
+  // restart_needed: the service's code changed on disk (docs/api.md); the
+  // message carries the command that restarts it.
   return callout({
     tone: "critical",
-    title: offline ? "Couldn't reach Token Lens's local service." : "Couldn't load this.",
+    title: offline ? "Couldn't reach Token Lens's local service." : code === "restart_needed" ? "Token Lens needs a restart." : "Couldn't load this.",
     children: [
       el("p", { class: "callout-detail" }, [
         el("span", { text: offline ? "Check that it's still running. " : message + " " }),

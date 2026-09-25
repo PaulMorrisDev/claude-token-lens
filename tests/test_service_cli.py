@@ -57,6 +57,24 @@ def test_billing_mode_defaults_to_api_with_no_config_file(tmp_path: Path, monkey
     assert rc == 0
     assert captured["options"].billing_mode == "api"
     assert captured["options"].monthly_report_dir is None
+    assert captured["options"].exit_on_code_change is False
+
+
+def test_exit_on_code_change_flag_reaches_serve(tmp_path: Path, monkeypatch):
+    captured = _capture_options(monkeypatch)
+    rc = cli.main(
+        [
+            "serve",
+            "--projects-root",
+            str(tmp_path / "projects"),
+            "--config-dir",
+            str(tmp_path / "config"),
+            "--exit-on-code-change",
+        ]
+    )
+    assert rc == 0
+    assert captured["options"].exit_on_code_change is True
+    assert captured["once"] is False
 
 
 def test_billing_mode_defaults_from_config_toml(tmp_path: Path, monkeypatch):

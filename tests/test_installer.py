@@ -439,6 +439,80 @@ def test_is_registered_defaults_to_detect_platform(monkeypatch):
 
 
 # --------------------------------------------------------------------
+# serve --exit-on-code-change, and relaunch_after_exit
+# --------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("platform", ["windows", "linux", "macos"])
+def test_the_registered_service_exits_on_a_code_change(tmp_path, platform):
+    """So an update that lands without a restart (an editable install
+    after a pull) restarts the dashboard instead of leaving old modules
+    in memory to lazily import new ones."""
+    plan = installer.plan_service_install(
+        "/usr/bin/python3", tmp_path / "projects", tmp_path / "config", platform=platform
+    )
+    registered = plan.commands[0][-1] if platform == "windows" else next(iter(plan.files_to_write.values()))
+    assert "--exit-on-code-change" in registered
+
+
+class _RecordingSpawner:
+    def __init__(self, error: Exception | None = None):
+        self.calls: list[tuple[list[str], dict]] = []
+        self.error = error
+
+    def __call__(self, command, **kwargs):
+        self.calls.append((list(command), kwargs))
+        if self.error is not None:
+            raise self.error
+
+
+@pytest.mark.parametrize("platform", ["linux", "macos"])
+def test_relaunch_after_exit_leaves_it_to_systemd_and_launchd(platform):
+    spawner = _RecordingSpawner()
+    runner = _RecordingRunner()
+    assert installer.relaunch_after_exit(1234, platform, runner=runner, spawner=spawner) is True
+    assert spawner.calls == [] and runner.calls == []
+
+
+def test_relaunch_after_exit_starts_the_task_again_once_this_process_ends():
+    """Task Scheduler reruns nothing by exit status, so a hidden helper
+    waits for this process to end and starts the task again."""
+    spawner = _RecordingSpawner()
+    runner = _RecordingRunner(returncode=0)
+    assert installer.relaunch_after_exit(1234, "windows", runner=runner, spawner=spawner) is True
+    assert runner.calls == [["schtasks", "/Query", "/TN", installer.TASK_NAME]]
+    (command, kwargs), = spawner.calls
+    assert command[0] == "powershell.exe"
+    script = command[-1]
+    assert script.startswith("Wait-Process -Id 1234 ")
+    assert script.index("Wait-Process") < script.index("Start-ScheduledTask")
+    assert script.endswith(f"Start-ScheduledTask -TaskName '{installer.TASK_NAME}'")
+    # Detached, so it outlives this process, and silent.
+    assert kwargs["stdin"] is installer.subprocess.DEVNULL
+    assert kwargs["stdout"] is installer.subprocess.DEVNULL
+
+
+@pytest.mark.parametrize("returncode", [1, None])
+def test_relaunch_after_exit_refuses_without_the_task(returncode):
+    """Not running as the ClaudeTokenLens task (or can't tell): starting
+    it would start the wrong thing, or nothing, so serve stays up."""
+    spawner = _RecordingSpawner()
+    if returncode is None:
+
+        def runner(command, **kwargs):
+            raise FileNotFoundError("schtasks")
+
+    else:
+        runner = _RecordingRunner(returncode=returncode)
+    assert installer.relaunch_after_exit(1234, "windows", runner=runner, spawner=spawner) is False
+    assert spawner.calls == []
+
+
+def test_relaunch_after_exit_false_when_the_helper_cannot_start():
+    spawner = _RecordingSpawner(error=FileNotFoundError("powershell.exe"))
+    assert installer.relaunch_after_exit(1234, "windows", runner=_RecordingRunner(), spawner=spawner) is False
+
+# --------------------------------------------------------------------
 # no console window on Windows
 # --------------------------------------------------------------------
 

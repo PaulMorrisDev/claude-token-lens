@@ -88,7 +88,10 @@ $pythonw = Resolve-Pythonw -Explicit $PythonwPath
 $projectsRoot = Join-Path $env:USERPROFILE ".claude\projects"
 $configDir = Join-Path $env:USERPROFILE ".claude\token-lens"
 
-$argumentList = "-m claude_token_lens serve --projects-root `"$projectsRoot`" --config-dir `"$configDir`""
+# --exit-on-code-change: after an update lands without a restart, serve
+# exits and starts this task again on the new code (only when the task is
+# named ClaudeTokenLens; under another -TaskName it just reports it).
+$argumentList = "-m claude_token_lens serve --projects-root `"$projectsRoot`" --config-dir `"$configDir`" --exit-on-code-change"
 if ($BillingMode) {
     $argumentList = $argumentList + " --billing-mode $BillingMode"
 }

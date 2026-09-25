@@ -57,6 +57,7 @@ __all__ = [
     "detect_pyz_path",
     "plan_service_install",
     "is_registered",
+    "relaunch_after_exit",
     "registered_python",
     "http_health_ok",
     "http_health_version",
@@ -422,7 +423,8 @@ def plan_service_install(
 ) -> InstallPlan:
     """Build (never run) the plan to register ``claude-token-lens
     serve --projects-root <projects_root> --config-dir <config_dir>
-    --port <port> --bind <bind>`` to start at logon/boot.
+    --port <port> --bind <bind> --exit-on-code-change`` to start at
+    logon/boot.
     ``projects_root`` may be a list: each folder gets its own
     ``--projects-root``. ``config.toml``'s ``extra_projects_roots`` are
     not passed here; ``serve`` reads them each time it starts.
@@ -456,6 +458,10 @@ def plan_service_install(
         str(port),
         "--bind",
         bind,
+        # An update that lands without a restart (git pull in an editable
+        # install, pip install -U) leaves serve running old code against
+        # new files: it exits, and the service manager starts it again.
+        "--exit-on-code-change",
     ]
 
     if plat == "windows":
@@ -502,6 +508,55 @@ def is_registered(
     if returncode is None:
         return None
     return returncode == 0
+
+
+def relaunch_after_exit(
+    pid: int,
+    platform: str | None = None,
+    *,
+    runner: Callable[..., subprocess.CompletedProcess] = subprocess.run,
+    spawner: Callable[..., object] = subprocess.Popen,
+) -> bool:
+    """Arrange for the registered service to start ``serve`` again once
+    process ``pid`` (a ``serve --exit-on-code-change`` about to exit) has
+    ended, and say whether it will: ``False`` means that ``serve`` should
+    stay up instead. Never raises.
+
+    systemd (``Restart=on-failure``) and launchd (``KeepAlive``) restart
+    a non-zero exit by themselves, so there is nothing to do. Task
+    Scheduler does not: its restart settings never ran the task again
+    after its program exited with an error code (tried on Windows 11 with
+    exit codes 3 and -3). So when the Scheduled Task is registered, a
+    hidden PowerShell waits for ``pid`` to end and then runs
+    ``Start-ScheduledTask``, as ``install-service`` does. The task starts
+    the new copy, so ``Stop-ScheduledTask`` and ``uninstall-service``
+    still reach it.
+    """
+    plat = platform or detect_platform()
+    if plat != "windows":
+        return True
+    if is_registered(plat, runner=runner) is not True:
+        return False
+    script = (
+        f"Wait-Process -Id {int(pid)} -ErrorAction SilentlyContinue; "
+        # Task Scheduler notes the old run as finished a moment after its
+        # process ends; a start before then finds the task still running.
+        "Start-Sleep -Seconds 2; "
+        f"Start-ScheduledTask -TaskName {_ps_quote(TASK_NAME)}"
+    )
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    try:
+        spawner(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
+            creationflags=flags,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+        )
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return False
+    return True
 
 
 def registered_python(

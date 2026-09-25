@@ -123,9 +123,10 @@ from ..render.json_out import render_json, to_jsonable
 from ..render.markdown import render_markdown
 from ..report import build_report
 from ..snapshots import Snapshot
-from .contracts import ApiError, ServeOptions, WatcherState, WatcherStats
+from .contracts import ApiError, CodeState, ServeOptions, WatcherState, WatcherStats
 
 if TYPE_CHECKING:
+    from .codewatch import CodeWatch
     from .store import Store
 
 #: Every security header ``docs/api.md`` requires on every response,
@@ -238,19 +239,37 @@ def _scan_progress_message(state: WatcherState) -> str:
     return "Scanning your history. Figures may be incomplete until it finishes."
 
 
+def _outdated_message(code: CodeState, *, restarts_itself: bool) -> str:
+    versions = ""
+    if code.version_on_disk and code.version_on_disk != _TOOL_VERSION:
+        versions = f" ({_TOOL_VERSION} is running, {code.version_on_disk} is on disk)"
+    message = (
+        f"Token Lens's code changed on disk at {_clock(code.changed_at)}{versions}, "
+        "so parts of the dashboard may fail until it restarts. "
+    )
+    if restarts_itself:
+        return message + "It restarts by itself within a few minutes; if it doesn't, run claude-token-lens install-service."
+    return message + _RESTART_ADVICE
+
+
 def _health_status(
     stats: WatcherStats | None,
     state: WatcherState | None,
     *,
     poll_interval_s: float,
     now: datetime | None = None,
+    code: CodeState | None = None,
+    restarts_itself: bool = False,
 ) -> tuple[str, str | None]:
     """``/api/health``'s ``(status, message)``: ``"ok"`` (message
-    ``None``); ``"starting"`` while the scanner has yet to finish its
-    first scan; ``"degraded"`` when its last scan failed outright;
-    ``"stale"`` when it has stopped, or has not finished a scan for a
-    long while. With no ``state`` (no watcher wired in) it is always
-    ``"ok"``."""
+    ``None``); ``"outdated"`` once the package's code changed on disk
+    (``code``), ahead of everything else, since only a restart helps
+    then; ``"starting"`` while the scanner has yet to finish its first
+    scan; ``"degraded"`` when its last scan failed outright; ``"stale"``
+    when it has stopped, or has not finished a scan for a long while.
+    With no ``state`` (no watcher wired in) it is otherwise ``"ok"``."""
+    if code is not None and code.changed:
+        return "outdated", _outdated_message(code, restarts_itself=restarts_itself)
     if state is None:
         return "ok", None
     now = now or datetime.now(timezone.utc)
@@ -377,6 +396,25 @@ def _forbidden(message: str) -> tuple[int, dict]:
 
 def _internal_error(message: str) -> tuple[int, dict]:
     return _error(500, "internal_error", message)
+
+
+def _restart_needed(exc: ImportError, code: CodeState | None) -> tuple[int, dict]:
+    """A route's ``ImportError``: nearly always a module imported on
+    first use that no longer matches the ones loaded at start (see
+    ``codewatch.py``). Names the exception's type only; its message
+    can carry a path."""
+    name = type(exc).__name__
+    if code is not None and code.changed:
+        message = (
+            f"Token Lens's code changed on disk since the dashboard started, so this can't load ({name}). "
+            + _RESTART_ADVICE
+        )
+    else:
+        message = (
+            f"Part of Token Lens's code couldn't be loaded ({name}), usually because it was updated on disk "
+            f"since the dashboard started. {_RESTART_ADVICE} If it keeps happening after a restart, reinstall Token Lens."
+        )
+    return _error(503, "restart_needed", message)
 
 
 def _not_implemented(message: str) -> tuple[int, dict]:
@@ -632,6 +670,8 @@ def make_handler(
     static_dir: Path | None = None,
     service_registered: Callable[[], bool | None] | None = None,
     watcher_state: Callable[[], WatcherState] | None = None,
+    code_watch: "CodeWatch | None" = None,
+    restarts_itself: Callable[[], bool] | None = None,
 ) -> type[BaseHTTPRequestHandler]:
     """Build an ``http.server.BaseHTTPRequestHandler`` subclass with every
     ``/api/*`` route from ``docs/api.md`` bound to ``store``/``options``,
@@ -663,6 +703,17 @@ def make_handler(
     process; this module never imports ``installer.py`` itself, so a
     checkout with only this module's own tests never shells out to
     ``schtasks``/``systemctl``/``launchctl``.
+
+    ``code_watch``, when given, is the ``codewatch.CodeWatch`` that
+    ``serve.run`` checks after every watcher tick: ``/api/health``
+    reports its :meth:`~CodeWatch.state` as ``code`` (``null`` when
+    omitted) and turns ``"outdated"`` once the package's code changed on
+    disk, and a route's ``ImportError`` checks it again at once before
+    answering ``503 restart_needed``. ``restarts_itself``, when given,
+    says whether this process will exit and be started again on the new
+    code, so the ``"outdated"`` message can say so; ``serve.run`` turns
+    it false when ``--exit-on-code-change`` finds no way to be started
+    again. Omitted, ``options.exit_on_code_change`` answers.
 
     ``static_dir``, when given, overrides the directory the ``/`` and
     ``/static/*`` routes serve from (default: this package's own
@@ -1047,12 +1098,24 @@ def make_handler(
         last_stats = watcher_stats() if watcher_stats is not None else None
         state = watcher_state() if watcher_state is not None else None
         stats = last_stats or WatcherStats()
-        status, message = _health_status(last_stats, state, poll_interval_s=options.poll_interval_s)
+        code = code_watch.state() if code_watch is not None else None
+        status, message = _health_status(
+            last_stats,
+            state,
+            poll_interval_s=options.poll_interval_s,
+            code=code,
+            restarts_itself=restarts_itself() if restarts_itself is not None else options.exit_on_code_change,
+        )
+        try:
+            capture = _capture_health()
+        except Exception:  # noqa: BLE001 -- health answers even when this part can't (code changed on disk, say)
+            capture = None
         data = {
-            # "ok", "starting" (first scan still running), "degraded"
-            # (the last scan failed) or "stale" (the scanner stopped, or
-            # nothing has finished for a long while); ``message`` says
-            # what that means in plain words, null when ok.
+            # "ok", "outdated" (the code changed on disk), "starting"
+            # (first scan still running), "degraded" (the last scan
+            # failed) or "stale" (the scanner stopped, or nothing has
+            # finished for a long while); ``message`` says what that
+            # means in plain words, null when ok.
             "status": status,
             "message": message,
             # Where the scanner is right now (its progress through a
@@ -1062,6 +1125,10 @@ def make_handler(
             # The running code's version, so "is the dashboard still on
             # the old version after an update?" has a one-look answer.
             "version": _TOOL_VERSION,
+            # Whether the package's files on disk still match the code
+            # this process loaded (codewatch.py): an update that landed
+            # without a restart shows here, and as status "outdated".
+            "code": to_jsonable(code) if code is not None else None,
             "schema_version": store.schema_version() or 0,
             "watcher": to_jsonable(stats),
             # Finding 3: a transcript whose file has gone missing (past
@@ -1081,7 +1148,7 @@ def make_handler(
             # settings.json runs the hooks it needs, for the banner on
             # every tab. Cheap: no transcript is read here (the costs
             # are /api/capture's). null when config.toml can't be read.
-            "capture": _capture_health(),
+            "capture": capture,
         }
         return _ok(data)
 
@@ -2934,6 +3001,13 @@ def make_handler(
                     return
                 status, payload = result
                 self._write_json(status, payload, head_only=head_only)
+            except ImportError as exc:
+                # A module this route imports on first use no longer
+                # matches the ones loaded at start: look at the code on
+                # disk now, rather than at the next tick, and say what
+                # fixes it (docs/api.md, "Envelope").
+                code = code_watch.check() if code_watch is not None else None
+                self._write_json(*_restart_needed(exc, code), head_only=head_only)
             except Exception as exc:  # noqa: BLE001 - last-resort 500, see docs/api.md
                 self._write_json(
                     *_internal_error(f"unexpected error ({type(exc).__name__})"), head_only=head_only

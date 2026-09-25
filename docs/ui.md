@@ -278,11 +278,11 @@ to the page" link before the sidebar moves focus to the page title
 **The status line** gives the service's state in words beside a dot: Up
 to date, Scanning your history, Checking for new sessions (a later scan
 running while the figures are up to date), Last scan failed, Not
-updating, or Can't reach the service. While a scan runs, a line under it
-says how far it has got (`scanProgressText`, from `/api/health`'s
-`scan`): "Found 1,204 transcript files so far", "Read 12 of 40 changed
-files" or "Stored 30 of 40 sessions". Under that: "Last scan", when the
-last scan finished;
+updating, Restart needed (its code changed on disk), or Can't reach the
+service. While a scan runs, a line under it says how far it has got
+(`scanProgressText`, from `/api/health`'s `scan`): "Found 1,204
+transcript files so far", "Read 12 of 40 changed files" or "Stored 30
+of 40 sessions". Under that: "Last scan", when the last scan finished;
 "Figures updated", the time of the oldest figures drawn
 (`X-Figures-As-Of`), both as "5 min ago" with the time on hover
 (`timeNode`), moved on at each health poll; the capture level as a link
@@ -398,9 +398,16 @@ all-projects report, `loadProjects()`).
 later scan is running, and every minute otherwise. The banner hides
 while the status is `"ok"`. Otherwise it shows the route's `message`:
 the first scan's progress with a bar, or a warning with the restart
-command when `"degraded"` or `"stale"`. When a scan finishes (the first
-one, or a later one that stored sessions), the banner and the status
-line offer **Redraw figures**, which drops every drawn view and the report cache
+command when `"degraded"`, `"stale"` or `"outdated"` (the package's code
+changed on disk; see
+[docs/deploy.md](deploy.md#updating-under-a-running-serve)). When the
+service answers `/api/health` with an error rather than not at all, the
+banner says the service is running but can't report its state, with the
+error's message, not "Can't reach". When `code.id` changes between polls
+(the service restarted on new code), the banner says so and offers
+**Reload page**, so the page's own scripts match. When a scan finishes
+(the first one, or a later one that stored sessions), the banner and the
+status line offer **Redraw figures**, which drops every drawn view and the report cache
 and redraws the view on screen. Views never redraw under the reader.
 
 **The capture banner** sits under it (`#capture-banner`,
@@ -742,7 +749,8 @@ CLI commands instead.
    thing installed, what it does, its token cost and how to undo it, and
    "Remove everything".
 3. **Service health** (`/api/health`, `renderHealth`): status, version,
-   last scan, the watcher's counts and recent errors.
+   "Code on disk" (the same as running, or when it changed and to which
+   version), last scan, the watcher's counts and recent errors.
 4. Any report section no other view claims (`SECTION_PAGE_MAP`'s
    fallback).
 5. `/api/diagnostics`: whether the hook and the status line work, then
@@ -790,7 +798,7 @@ Every helper builds nodes with `textContent`; server text goes through
 | Delta chip | `deltaChip` | a change on the previous period, coloured by whether up is good, neutral within 1%. Three times or more reads "3.2 times"; an empty earlier period "None before" |
 | Tile | `tile`, `tileRow` | a label, the value at 28px with its unit quieter, then an optional basis chip, delta, hint and sparkline |
 | Panel | `panel` | a surface with a hairline border, a header and a body. Never nested |
-| Callout | `callout`, `errorNotice` | info, success, warning or critical: a tint, an icon and a label. An error says what happened and offers "Try again" when a retry can help |
+| Callout | `callout`, `errorNotice` | info, success, warning or critical: a tint, an icon and a label. An error says what happened and offers "Try again" when a retry can help; a `restart_needed` error is titled "Token Lens needs a restart." |
 | Empty state | `emptyState` | what happened, why, and what would fill it. Never "No data" |
 | Skeleton | `skeleton`, `loadingNode` | grey bars in the shape of what is loading, with a 1.4-second shimmer. `loadingNode` puts what is loading above them in words ("Loading the report…"), which stay when reduced motion stops the shimmer |
 | Command block | `commandBlock`, `renderFix` | the ways to make a change as a tab list (a prompt, a dry-run command, a one-session trial), each with Copy, then `fixes.build_fix`'s explainer and `fixes.RESTART_NOTE` |

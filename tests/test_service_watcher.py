@@ -1203,6 +1203,34 @@ def test_the_background_thread_outlives_failing_ticks(tmp_path: Path, monkeypatc
     assert watcher.state().running is False
 
 
+def test_after_tick_runs_after_each_background_tick_and_may_fail(tmp_path: Path):
+    """``serve`` checks for code changed on disk here; a hook that raises
+    must not stop the scans."""
+    store_obj = Store(str(tmp_path / "store.db"))
+    ticks: list[str | None] = []
+
+    def _after_tick():
+        ticks.append(watcher.state().last_success_at)
+        raise RuntimeError("the hook failed")
+
+    watcher = FileWatcher(store_obj, _options(tmp_path, poll_interval_s=0.01), after_tick=_after_tick)
+    # run_once (serve --once, tests) is not a background tick.
+    watcher.run_once()
+    assert ticks == []
+    watcher.start()
+    try:
+        deadline = time.monotonic() + 10
+        while len(ticks) < 3 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert len(ticks) >= 3
+        # Called after the tick finished, never before the first one.
+        assert ticks[0] is not None
+        assert watcher.state().running is True
+    finally:
+        watcher.stop()
+        store_obj.close()
+
+
 def test_state_reports_progress_while_storing(tmp_path: Path, store: Store, monkeypatch: pytest.MonkeyPatch):
     root = tmp_path / "projects"
     _write_session(root, "proj-a", "sess-a1", _two_turns())

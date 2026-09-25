@@ -32,6 +32,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   picks the interval that saves most per agent type. The `run-split`
   recommendation gives a prompt that adds the habit to your CLAUDE.md.
   See [`docs/run-split.md`](docs/run-split.md).
+- **The dashboard notices when its own code changes on disk.** An
+  editable install left running across a pull or release kept its old
+  modules in memory, and lazily loaded new ones against them: `/api/health`
+  still showed the old version while `/api/recommendations` and
+  `/api/quick-actions` failed with `internal_error (ImportError)`. Now,
+  after every scan, `serve` compares the package's files with the code it
+  loaded:
+  - `/api/health` reports `status: "outdated"` and a `code` block.
+  - The banner says to restart with `install-service`.
+  - A route that can't import answers `503 restart_needed` rather than
+    `internal_error`.
+  - The new `serve --exit-on-code-change`, which `install-service` and
+    both service scripts now register, exits once the change settles, so
+    the service starts again on the new code. Task Scheduler doesn't rerun
+    a task that exits with an error, so on Windows `serve` first arranges
+    for the `ClaudeTokenLens` task to be started again.
+  - Run `install-service` once to add the flag to an existing
+    registration. See [`docs/deploy.md`](docs/deploy.md#updating-under-a-running-serve).
 
 ### Changed
 
