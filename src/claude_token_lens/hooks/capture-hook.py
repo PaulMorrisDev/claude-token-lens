@@ -26,6 +26,17 @@ connect``):
   Claude just saw -- so this entry runs in the foreground instead,
   matched only to tools whose results can be large, and returns at once
   for the rest.
+- ``UserPromptSubmit`` and ``PostToolUse`` (also matched to
+  ``ExitPlanMode``) for coaching notes (``[capture] coaching`` has
+  ``coaching_notes``): a short ``tl-coach`` note when a hint applies --
+  an expired cache or a large context when you send a message, a large
+  result, many reads for one message, a plan approved after a lot of
+  planning, or a subagent run past the length its type's runs are best
+  split at (``coaching.json``, from your own sessions). Each hint rests
+  for a while once shown (``coach-state.json``). They run at any capture
+  level and in every session, but not in a project ``[capture]
+  projects`` leaves out. A capture note and a coaching note for the same
+  call go out as one note, the capture note first.
 - ``SessionEnd``, ``Notification``, ``PermissionRequest``, ``Stop`` and
   ``StopFailure`` (all but ``SessionEnd`` async): one line each in
   ``<config-dir>/signals/YYYY-MM.jsonl`` saying why a session ended, what
@@ -43,12 +54,13 @@ What the note says comes from ``capture-catalogue.json`` next to this
 script, written from ``claude_token_lens.capture_catalogue``;
 :func:`build_note` builds the same text as ``capture_catalogue.note_text``.
 
-It adds nothing when capture is off, past its ``until`` time, outside
-the sampled share of sessions (a hash of the session id, so a session's
-subagents follow it), or in a project left out by ``[capture] projects``
-or ``exclude_projects``, and logs nothing then either. It uses only the
-standard library, and always exits 0 without printing anything on an
-error, so it can never block or break a session.
+Coaching notes aside, it adds nothing when capture is off, past its
+``until`` time, outside the sampled share of sessions (a hash of the
+session id, so a session's subagents follow it), or in a project left
+out by ``[capture] projects`` or ``exclude_projects``, and logs nothing
+then either. It uses only the standard library, and always exits 0
+without printing anything on an error, so it can never block or break a
+session.
 """
 
 from __future__ import annotations
@@ -347,6 +359,469 @@ def note_for(payload: dict, config: dict, catalogue: dict, now: datetime | None 
     return ""
 
 
+# -- coaching notes -----------------------------------------------------------
+
+#: How much of a transcript's end the coaching hints read: enough for a
+#: message's reads and searches, as the status line's hints read.
+_COACH_TAIL_BYTES = 256 * 1024
+#: How much of a transcript's start :func:`_starting_context` reads to
+#: find the first reply.
+_COACH_HEAD_BYTES = 512 * 1024
+#: A session's (or a run's) row in the coach state is dropped once
+#: untouched this long.
+_COACH_STATE_MAX_AGE_S = 24 * 3600
+#: Cache lifetimes: 5 minutes, or an hour when the session writes to the
+#: 1-hour cache.
+_CACHE_TTL_S = 300
+_CACHE_TTL_1H_S = 3600
+
+
+def coaching_on(config: dict) -> bool:
+    """Whether ``coaching_notes`` is in ``[capture] coaching``, whatever
+    the capture level."""
+    capture = config.get("capture")
+    coaching = capture.get("coaching") if isinstance(capture, dict) else None
+    return isinstance(coaching, list) and "coaching_notes" in coaching
+
+
+def _coaching_applies(payload: dict, config: dict) -> bool:
+    """Coaching notes run at any capture level, past ``until`` and in
+    every session (no sampling), but only in the projects ``[capture]
+    projects`` and ``exclude_projects`` leave in."""
+    if not coaching_on(config):
+        return False
+    capture = config["capture"]
+    cwd = payload.get("cwd")
+    if isinstance(cwd, str) and cwd:
+        exclude = config.get("exclude_projects", [])
+        projects = capture.get("projects", [])
+        return project_allowed(
+            slug_for(cwd), projects if isinstance(projects, list) else [], exclude if isinstance(exclude, list) else []
+        )
+    return True
+
+
+def _read_json(path: Path) -> dict:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _write_json(path: Path, data: dict) -> None:
+    """Best-effort atomic write (a temp file, then ``os.replace``); a
+    clash with another hook call writing at the same moment loses one of
+    the two, which only means a hint may repeat."""
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    try:
+        tmp.write_text(json.dumps(data, separators=(",", ":")), encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+
+
+def _number(value) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
+def coaching_thresholds(coaching: dict, config: dict, personal: dict) -> dict:
+    """The catalogue's thresholds, then yours from ``coaching.json``,
+    then any ``coaching_<key>`` in ``config.toml``'s ``[thresholds]``."""
+    out = dict(coaching["thresholds"])
+    mine = personal.get("thresholds")
+    configured = config.get("thresholds")
+    for source, prefix in ((mine, ""), (configured, "coaching_")):
+        if not isinstance(source, dict):
+            continue
+        for key in out:
+            value = _number(source.get(prefix + key))
+            if value is not None and value >= 0:
+                out[key] = value
+    return out
+
+
+def _session_key(session_id: str, config_dir: Path) -> str:
+    """The session id as ``coach-state.json`` keeps it: salted as a signal
+    line keeps it (:func:`session_hash`), or plainly hashed before there's
+    a salt."""
+    salt = read_salt(config_dir)
+    if salt is not None:
+        return session_hash(salt, session_id)
+    return hashlib.sha256(session_id.encode("utf-8")).hexdigest()[:16]
+
+
+def _prune(rows: dict, now_ts: float) -> None:
+    for stale in [k for k, row in rows.items() if not isinstance(row, dict)
+                  or now_ts - (_number(row.get("touched_at")) or 0) > _COACH_STATE_MAX_AGE_S]:
+        del rows[stale]
+
+
+def _gate(state: dict, session: str, kind: str, stake: float, now_ts: float, th: dict) -> bool:
+    """Whether a hint of ``kind`` may show: not yet in this session, its
+    cooldown is over, or what's at stake has grown ``rearm_factor`` times
+    since it last showed. Same rule as the status line's hints."""
+    sessions = state.get("sessions")
+    row = sessions.get(session) if isinstance(sessions, dict) else None
+    hints = row.get("hints") if isinstance(row, dict) else None
+    prior = hints.get(kind) if isinstance(hints, dict) else None
+    if not isinstance(prior, dict):
+        return True
+    last_ts = _number(prior.get("ts"))
+    if last_ts is not None and now_ts - last_ts >= th["cooldown_minutes"] * 60:
+        return True
+    last_stake = _number(prior.get("stake"))
+    return last_stake is not None and last_stake > 0 and stake >= last_stake * th["rearm_factor"]
+
+
+def _stamp(state: dict, session: str, kind: str, stake: float, now_ts: float) -> None:
+    sessions = state.setdefault("sessions", {})
+    if not isinstance(sessions, dict):
+        sessions = state["sessions"] = {}
+    _prune(sessions, now_ts)
+    row = sessions.setdefault(session, {})
+    row["touched_at"] = now_ts
+    if not isinstance(row.get("hints"), dict):
+        row["hints"] = {}
+    row["hints"][kind] = {"ts": now_ts, "stake": stake}
+
+
+def _records(data: bytes) -> list[dict]:
+    """The JSON lines in ``data``; a line cut short fails to parse and is
+    skipped."""
+    out = []
+    for raw_line in data.decode("utf-8", errors="replace").split("\n"):
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(record, dict):
+            out.append(record)
+    return out
+
+
+def _tail(path: str, max_bytes: int = _COACH_TAIL_BYTES) -> list[dict]:
+    try:
+        with open(path, "rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            size = handle.tell()
+            handle.seek(max(0, size - max_bytes))
+            return _records(handle.read())
+    except OSError:
+        return []
+
+
+def _head(path: str, max_bytes: int = _COACH_HEAD_BYTES) -> list[dict]:
+    try:
+        with open(path, "rb") as handle:
+            return _records(handle.read(max_bytes))
+    except OSError:
+        return []
+
+
+def _usage(record: dict) -> dict:
+    message = record.get("message")
+    usage = message.get("usage") if isinstance(message, dict) else None
+    return usage if isinstance(usage, dict) else {}
+
+
+def _context(record: dict) -> int:
+    """The context a reply read: its input, cached or not."""
+    usage = _usage(record)
+    return int(sum(_number(usage.get(k)) or 0 for k in ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")))
+
+
+def _is_reply(record: dict) -> bool:
+    return record.get("type") == "assistant" and not record.get("isSidechain") and _context(record) > 0
+
+
+def _blocks(record: dict) -> list:
+    message = record.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    return content if isinstance(content, list) else []
+
+
+def _is_human_prompt(record: dict) -> bool:
+    """A message you typed: a ``user`` line that isn't meta and carries no
+    tool result (``statusline._is_human_prompt``)."""
+    if record.get("type") != "user" or record.get("isMeta") or "toolUseResult" in record:
+        return False
+    message = record.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    if isinstance(content, str):
+        return bool(content.strip())
+    if not isinstance(content, list):
+        return False
+    kinds = {b.get("type") for b in content if isinstance(b, dict)}
+    return "tool_result" not in kinds and bool(kinds & {"text", "image"})
+
+
+def _prompt_chars(record: dict) -> int:
+    message = record.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    if isinstance(content, str):
+        return len(content)
+    return sum(len(b.get("text") or "") for b in content if isinstance(b, dict)) if isinstance(content, list) else 0
+
+
+def _result_chars(block: dict) -> int:
+    content = block.get("content")
+    if isinstance(content, str):
+        return len(content)
+    if isinstance(content, list):
+        return sum(len(b.get("text", "")) for b in content if isinstance(b, dict) and isinstance(b.get("text"), str))
+    return 0
+
+
+def _k(tokens: float) -> str:
+    return f"{round(tokens / 1000):,}k"
+
+
+def _idle_text(seconds: float) -> str:
+    minutes = round(seconds / 60)
+    if minutes < 90:
+        return f"{minutes} minutes"
+    hours = round(seconds / 3600)
+    return f"{hours} hours" if hours < 48 else f"{round(hours / 24)} days"
+
+
+def _reply_time(record: dict) -> datetime | None:
+    stamp = record.get("timestamp")
+    return _parse_time(stamp.replace("Z", "+00:00")) if isinstance(stamp, str) else None
+
+
+def _cache_ttl_s(replies: list[dict]) -> int:
+    """An hour when any recent reply wrote to the 1-hour cache, else five
+    minutes (as the status line works it out)."""
+    for record in replies:
+        created = _usage(record).get("cache_creation")
+        if isinstance(created, dict) and (_number(created.get("ephemeral_1h_input_tokens")) or 0) > 0:
+            return _CACHE_TTL_1H_S
+    return _CACHE_TTL_S
+
+
+def _prompt_hints(records: list[dict], th: dict, now: datetime) -> list[tuple[str, float, dict]]:
+    """``cache_cold`` and ``clear_context`` for a message you just sent,
+    as ``(kind, stake, fields)``."""
+    replies = [r for r in records if _is_reply(r)]
+    if not replies:
+        return []
+    last = replies[-1]
+    ctx = _context(last) + int(_number(_usage(last).get("output_tokens")) or 0)
+    out = []
+    at = _reply_time(last)
+    if at is not None and ctx >= th["cold_min_tokens"]:
+        idle = (now - at).total_seconds()
+        if idle > _cache_ttl_s(replies[-5:]):
+            out.append(("cache_cold", ctx, {"idle": _idle_text(idle), "ctx": _k(ctx)}))
+    if ctx >= th["clear_context_tokens"]:
+        out.append(("clear_context", ctx, {"ctx": _k(ctx)}))
+    return out
+
+
+def _starting_context(path: str) -> int:
+    """What a fresh session starts with: the first reply's context less
+    your first message (``handoff.starting_context``)."""
+    records = _head(path)
+    first = next((r for r in records if _is_reply(r)), None)
+    if first is None:
+        return 0
+    prompt = next((r for r in records if _is_human_prompt(r)), None)
+    return max(0, _context(first) - (_prompt_chars(prompt) // _CHARS_PER_TOKEN if prompt else 0))
+
+
+def _plan_hint(payload: dict, th: dict) -> tuple[str, float, dict] | None:
+    """``plan_fresh``: an approved plan (a rejected one comes back as an
+    error, which PostToolUse doesn't see) after a lot of planning. What a
+    fresh start would drop: the approving reply's context less the
+    session's starting context and the plan (``handoff``'s model)."""
+    path = payload.get("transcript_path")
+    if not isinstance(path, str) or not path:
+        return None
+    replies = [r for r in _tail(path) if _is_reply(r)]
+    if not replies:
+        return None
+    tool_input = payload.get("tool_input")
+    plan = tool_input.get("plan") if isinstance(tool_input, dict) else None
+    plan_tokens = len(plan) // _CHARS_PER_TOKEN if isinstance(plan, str) else 0
+    kept = _context(replies[-1]) - _starting_context(path) - plan_tokens
+    if kept < th["plan_fresh_tokens"]:
+        return None
+    return "plan_fresh", kept, {"kept": _k(kept)}
+
+
+def _reads_hint(payload: dict, raw_len: int, read_tools, th: dict) -> tuple[str, float, dict] | None:
+    """``explore_reads``: this many reads and searches since your last
+    message, counted from the transcript's tool calls, with this one's
+    result (not in the transcript yet) added."""
+    path = payload.get("transcript_path")
+    if not isinstance(path, str) or not path:
+        return None
+    records = [r for r in _tail(path) if not r.get("isSidechain")]
+    start = max((i for i, r in enumerate(records) if _is_human_prompt(r)), default=-1)
+    current = records[start + 1:]
+    reads = {
+        str(block.get("id")) for r in current if r.get("type") == "assistant" for block in _blocks(r)
+        if isinstance(block, dict) and block.get("type") == "tool_use" and block.get("name") in read_tools
+    }
+    this_call = str(payload.get("tool_use_id") or "")
+    reads.add(this_call or "this call")
+    if len(reads) < th["explore_reads"]:
+        return None
+    seen = {
+        str(block.get("tool_use_id")): _result_chars(block) for r in current if r.get("type") == "user"
+        for block in _blocks(r) if isinstance(block, dict) and block.get("type") == "tool_result"
+    }
+    chars = sum(n for use_id, n in seen.items() if use_id in reads)
+    if this_call not in seen:
+        chars += raw_len
+    return "explore_reads", len(reads), {"reads": len(reads), "tokens": _k(chars / _CHARS_PER_TOKEN)}
+
+
+def _quiet_hint(payload: dict, raw_len: int, quiet_how: dict, th: dict) -> tuple[str, float, dict] | None:
+    """``quiet_output``: a result about ``quiet_output_tokens`` long. A
+    read already given a limit is left alone."""
+    tokens = raw_len / _CHARS_PER_TOKEN
+    if tokens < th["quiet_output_tokens"]:
+        return None
+    tool = str(payload.get("tool_name") or "")
+    tool_input = payload.get("tool_input")
+    if tool == "Read" and isinstance(tool_input, dict) and tool_input.get("limit"):
+        return None
+    return "quiet_output", tokens, {"tokens": _k(tokens), "how": quiet_how.get(tool, quiet_how[""])}
+
+
+def _agent_transcript(payload: dict) -> Path | None:
+    """The subagent's own transcript, under its session's ``subagents``
+    folder. A workflow agent's sits a level deeper, so it isn't found:
+    its script decides how its work is split."""
+    agent_id = str(payload.get("agent_id") or "")
+    path = payload.get("transcript_path")
+    if not agent_id or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", agent_id) or not isinstance(path, str) or not path:
+        return None
+    given = Path(path)
+    if given.name == f"agent-{agent_id}.jsonl":
+        return given
+    own = given.with_suffix("") / "subagents" / f"agent-{agent_id}.jsonl"
+    return own if own.is_file() else None
+
+
+def _count_replies(path: Path, row: dict) -> int:
+    """The run's replies since its start or its last summary, reading
+    only what was added since the last call (``row`` keeps the place)."""
+    offset = int(_number(row.get("offset")) or 0)
+    try:
+        with open(path, "rb") as handle:
+            handle.seek(offset)
+            data = handle.read()
+    except OSError:
+        return int(_number(row.get("replies")) or 0)
+    end = data.rfind(b"\n") + 1
+    replies = int(_number(row.get("replies")) or 0)
+    last_id = row.get("last_id")
+    for record in _records(data[:end]):
+        if record.get("type") == "system" and record.get("subtype") == "compact_boundary":
+            replies, last_id = 0, None
+        elif record.get("type") == "assistant":
+            message = record.get("message")
+            message_id = message.get("id") if isinstance(message, dict) else None
+            if message_id != last_id or message_id is None:
+                replies += 1
+                last_id = message_id
+    row.update(offset=offset + end, replies=replies, last_id=last_id)
+    return replies
+
+
+def _split_hint(payload: dict, personal: dict, state: dict, now_ts: float) -> tuple[str, float, dict] | None:
+    """``split_run``: a subagent whose type's long runs cost you less split
+    (``coaching.json``'s ``split_run``, from the run-split tip), past
+    that many replies."""
+    splits = personal.get("split_run")
+    agent_type = str(payload.get("agent_type") or "")
+    every_n = _number(splits.get(agent_type)) if isinstance(splits, dict) else None
+    if not every_n or every_n < 1:
+        return None
+    path = _agent_transcript(payload)
+    if path is None:
+        return None
+    agents = state.setdefault("agents", {})
+    if not isinstance(agents, dict):
+        agents = state["agents"] = {}
+    _prune(agents, now_ts)
+    row = agents.setdefault(str(payload["agent_id"]), {})
+    row["touched_at"] = now_ts
+    replies = _count_replies(path, row)
+    if replies < every_n:
+        return None
+    return f"split_run:{payload['agent_id']}", replies, {"replies": replies, "agent": agent_type, "every_n": int(every_n)}
+
+
+def coaching_note_for(
+    payload: dict, config: dict, catalogue: dict, config_dir: Path, now: datetime | None = None, raw_len: int = 0
+) -> str:
+    """The coaching note this hook call should add, or ``""``: at most one
+    hint, the first that applies and isn't resting (see :func:`_gate`),
+    in ``COACHING_HINTS`` order. Reads ``coaching.json`` and the
+    transcript; writes ``coach-state.json`` when a hint shows or a
+    subagent's run was counted."""
+    if not _coaching_applies(payload, config):
+        return ""
+    event = payload.get("hook_event_name")
+    session_id = payload.get("session_id")
+    if event not in ("PostToolUse", "UserPromptSubmit") or not isinstance(session_id, str) or not session_id:
+        return ""
+    agent_type = str(payload.get("agent_type") or "")
+    in_agent = bool(payload.get("agent_id"))
+    if in_agent and agent_type in catalogue["skip_agent_types"]:
+        return ""
+    coaching = catalogue["coaching"]
+    now = now or datetime.now(timezone.utc)
+    now_ts = now.timestamp()
+    personal = _read_json(config_dir / coaching["file"])
+    th = coaching_thresholds(coaching, config, personal)
+    state_path = config_dir / coaching["state_file"]
+    state = _read_json(state_path)
+    counted = False
+    candidates: list = []
+    tool = str(payload.get("tool_name") or "")
+    if event == "UserPromptSubmit":
+        path = payload.get("transcript_path")
+        if not in_agent and isinstance(path, str) and path:
+            candidates = _prompt_hints(_tail(path), th, now)
+    elif tool == "ExitPlanMode":
+        if not in_agent and personal.get("plan_fresh", True) is not False:
+            candidates = [_plan_hint(payload, th)]
+    else:
+        if in_agent:
+            candidates.append(_split_hint(payload, personal, state, now_ts))
+            counted = str(payload.get("agent_id")) in (state.get("agents") or {})
+        candidates.append(_quiet_hint(payload, raw_len, coaching["quiet_how"], th))
+        if not in_agent and tool in coaching["read_tools"]:
+            candidates.append(_reads_hint(payload, raw_len, coaching["read_tools"], th))
+    session = _session_key(session_id, config_dir)
+    for found in candidates:
+        if found is None:
+            continue
+        kind, stake, fields = found
+        if not _gate(state, session, kind, stake, now_ts, th):
+            continue
+        _stamp(state, session, kind, stake, now_ts)
+        _write_json(state_path, state)
+        hint = kind.split(":", 1)[0]
+        return f"{coaching['marker']}{coaching['version']} {hint}\n{coaching['text'][hint].format(**fields)}"
+    if counted:
+        _write_json(state_path, state)
+    return ""
+
+
 def read_salt(config_dir: Path) -> bytes | None:
     """Token Lens's salt, or ``None`` when it isn't there (yet) or is the
     wrong length: a line hashed with anything else could never be joined
@@ -457,7 +932,8 @@ def _run(argv: list[str]) -> None:
     except (OSError, ValueError):
         return  # an unreadable or half-written config reads as off
     capture = config.get("capture")
-    if not isinstance(capture, dict) or capture.get("level", "off") == "off":
+    coach = coaching_on(config)
+    if not isinstance(capture, dict) or (capture.get("level", "off") == "off" and not coach):
         return
     payload = json.loads(raw) if raw.strip() else {}
     if not isinstance(payload, dict):
@@ -469,8 +945,17 @@ def _run(argv: list[str]) -> None:
             write_signal(config_dir, catalogue, record)
         return
     note = note_for(payload, config, catalogue, raw_len=len(raw))
-    if note:
-        output = {"hookSpecificOutput": {"hookEventName": payload.get("hook_event_name"), "additionalContext": note}}
+    tip = ""
+    if coach:
+        try:
+            tip = coaching_note_for(payload, config, catalogue, config_dir, raw_len=len(raw))
+        except Exception:  # noqa: BLE001 - a coaching fault must not cost the capture note
+            tip = ""
+    # One attachment for both: the capture note first, so its marker
+    # opens it, and the parser splits the two at the coaching marker.
+    text = "\n".join(part for part in (note, tip) if part)
+    if text:
+        output = {"hookSpecificOutput": {"hookEventName": payload.get("hook_event_name"), "additionalContext": text}}
         sys.stdout.write(json.dumps(output))
 
 

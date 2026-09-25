@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from . import capture_catalogue, carry, discovery, habits, model_gate, pages, quality, whatif
+from . import capture_catalogue, carry, discovery, habits, model_gate, model_swap, pages, quality, whatif
 from .compaction_sim import CompactionSimThresholds
 from .fixes import PROMPT_RESTART, RESTART_NOTE, build_fix, build_fixes
 from .model import Recommendation, SettingChange
@@ -180,11 +180,11 @@ def _models(ctx: Context) -> dict:
         return _result("no_data", "No priced replies in this window.")
     rows.sort(key=lambda r: -(whatif._num(r.get("observed_cost")) or 0))
     table = _table(
-        [("agent", "Agent"), ("model", "Model used"), ("cost", "Cost"), ("cheaper", "Cheapest alternative"),
-         ("saving", "Would save")],
+        [("agent", "Agent"), ("model", "Model used"), ("cost", "Cost"), ("set_by", "Model set by"),
+         ("cheaper", "Cheapest alternative"), ("saving", "Would save")],
         [
             [_who(r.get("agent_type")), r.get("observed_model") or "", _money(ctx, r.get("observed_cost")),
-             r.get("best_cheaper_alternative_model") or "none cheaper",
+             _model_set_by(r), r.get("best_cheaper_alternative_model") or "none cheaper",
              f"{_money(ctx, r.get('saving_usd'))} ({_pct(r.get('saving_pct'))})" if whatif._num(r.get("saving_usd"))
              else ""]
             for r in rows
@@ -192,12 +192,13 @@ def _models(ctx: Context) -> dict:
     )
     draft = _goal(ctx, "models")
     fixes = _goal_fixes(ctx, draft, lambda c: f"{_who(c['agent'])}: use {c['value']}")
-    tips = _models_left_out(ctx, rows)
+    left_out = _models_left_out(ctx, rows)
+    tips = left_out + _models_set_elsewhere(rows)
     if not fixes:
         return _result(
             "ok",
             "Every agent is already on the cheapest model that priced lower by a useful margin"
-            + (", or did worse on it." if tips else "."),
+            + (", or did worse on it." if left_out else "."),
             table=table,
             tips=tips,
         )
@@ -211,6 +212,47 @@ def _models(ctx: Context) -> dict:
         fixes=fixes,
         tips=tips,
     )
+
+
+def _count(value) -> int:
+    return int(whatif._num(value) or 0)
+
+
+def _model_set_by(row: dict) -> str:
+    """Where each run's model came from, per model-swap row: the settings
+    for the main session; for a subagent, its agent file, workflow scripts
+    and a model named when the run started, with how many runs each."""
+    if row.get("agent_type") == "top-level":
+        return "settings"
+    parts = [
+        f"{words} ({count:,})"
+        for words, count in (
+            ("its agent file", _count(row.get("lever_runs"))),
+            ("workflow scripts", _count(row.get("workflow_runs"))),
+            ("when started", _count(row.get("spawn_model_runs"))),
+        )
+        if count
+    ]
+    if parts:
+        return ", ".join(parts)
+    return "Claude Code" if "lever_runs" in row else ""
+
+
+def _models_set_elsewhere(rows: list[dict]) -> list[dict]:
+    """One tip when a workflow script or a model named at spawn set some
+    subagent runs' model: an agent file change doesn't reach those, and
+    the savings above leave them out."""
+    subagents = [r for r in rows if r.get("agent_type") != "top-level"]
+    workflow = sum(_count(r.get("workflow_runs")) for r in subagents)
+    spawn = sum(_count(r.get("spawn_model_runs")) for r in subagents)
+    sentence = model_swap.set_elsewhere_sentence(workflow, spawn)
+    if not sentence:
+        return []
+    return [{
+        "title": "Some runs' model isn't set by an agent file",
+        "text": "An agent file's model line only decides the runs started without a model of their own." + sentence
+        + " Change those where they start.",
+    }]
 
 
 def _models_left_out(ctx: Context, rows: list[dict]) -> list[dict]:

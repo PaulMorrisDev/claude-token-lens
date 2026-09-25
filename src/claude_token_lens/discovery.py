@@ -541,7 +541,8 @@ def load_meta(path: str | Path) -> TranscriptMeta:
     ``worktreeBranch`` (-> ``worktree_branch_present``, a bool: never the
     branch name itself), ``stoppedByUser`` and ``toolUseId`` (->
     ``tool_use_id``, linking the subagent back to the parent turn that
-    spawned it). Returns a ``kind="subagent"`` ``TranscriptMeta`` with
+    spawned it). Returns a ``kind="subagent"`` ``TranscriptMeta`` (or
+    ``kind="workflow-agent"`` for the workflow-nested layout below) with
     defaults for anything missing or the file being absent/unparsable —
     this never raises.
 
@@ -555,11 +556,14 @@ def load_meta(path: str | Path) -> TranscriptMeta:
     for the workflow-nested layout ``<session_id>/subagents/workflows/
     <run_id>/agent-<hex>.jsonl`` (three levels under ``subagents/``, not
     one), detected by the immediate parent's parent being named
-    ``workflows``: there, ``session_id`` is the great-grandparent and
-    ``workflow_run_id`` (fix 3 addition) is set to the run id directory
-    name. A ``path`` that isn't actually under either shape (e.g. a test
-    fixture that hands ``load_meta`` a bare file) still derives *some*
-    value for each — never raises — it just won't be meaningful.
+    ``workflows``: there, ``kind`` is ``"workflow-agent"``, ``session_id``
+    is the great-grandparent and ``workflow_run_id`` (fix 3 addition) is
+    set to the run id directory name. ``agent_type`` still comes from the
+    ``.meta.json``: a named agent a workflow starts keeps its type, an
+    unnamed one is ``"workflow-subagent"``. A ``path`` that isn't
+    actually under either shape (e.g. a test fixture that hands
+    ``load_meta`` a bare file) still derives *some* value for each —
+    never raises — it just won't be meaningful.
 
     ``path`` (fix 3 addition, on the returned ``TranscriptMeta`` itself)
     is set to the sibling transcript file (``.meta.json`` -> ``.jsonl``
@@ -616,6 +620,7 @@ def load_meta(path: str | Path) -> TranscriptMeta:
     # ordinary <session_id>/subagents/agent-<hex>.meta.json shape (see
     # workflows.py's module docstring).
     if path.parent.parent.name == "workflows":
+        meta.kind = "workflow-agent"
         meta.workflow_run_id = path.parent.name
         meta.session_id = path.parent.parent.parent.parent.name
         run_file = path.parent.parent.parent.parent / "workflows" / f"{meta.workflow_run_id}.json"

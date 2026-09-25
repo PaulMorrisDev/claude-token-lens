@@ -74,8 +74,18 @@ STATUSLINE_NOTES = {
     "feedback_note": "Your status line isn't Token Lens's, so this second line won't show there; the banner "
     "here still does. 'claude-token-lens init --connect' offers to set the status line up.",
     "coaching_line": "Your status line isn't Token Lens's, so this line won't show. "
-    "'claude-token-lens init --connect' offers to set the status line up.",
+    "'claude-token-lens init --connect' offers to set the status line up. Where there's no status line, "
+    "such as the desktop app, coaching notes bring the same hints into the conversation.",
 }
+
+#: Said when ``coaching_notes`` is turned on, before the yes/no: what the
+#: notes are, when they come and what they cost.
+COACHING_NOTES_ON = (
+    "Coaching notes: when a hint applies, a hook adds a short note (about 50 to 120 tokens) to Claude's context, "
+    "after a tool result or when you send a message, and Claude acts on it or tells you in one line. "
+    "They run at any capture level, at most one of a kind every half hour in a session. "
+    "'claude-token-lens capture status' shows how many there were and what they cost."
+)
 
 #: Below this percentage of your messages tagged, once there are
 #: :data:`LOW_COVERAGE_MIN_CYCLES` of them, the banner says Claude is
@@ -312,6 +322,10 @@ def _metric_row(
         fb_actual, have, want = _feedback_facts(metric.id, {**(feedback or {}), "units": units})
         if fb_actual is not None:
             actual, actual_label = fb_actual, f"Over the last {capture_mod.HISTORY_DAYS} days"
+    coaching_use = (feedback or {}).get("coaching_use")
+    if on and metric.id == "coaching_notes" and coaching_use is not None:
+        actual = _money(units, coaching_use.cost)
+        actual_label = f"{_plural(coaching_use.notes, 'note')} over the last {capture_mod.HISTORY_DAYS} days"
     install = _SKILL_METRICS.get(metric.id)
     skill_now = (feedback or {}).get(install[0]) if install else None
     needs_install = bool(on and install and skill_now not in (None, "installed"))
@@ -571,6 +585,7 @@ def view(
     statusline: bool | None = None,
     weekly_cost: float | None = None,
     dependent_value: float | None = None,
+    coaching_use=None,
     now: datetime | None = None,
 ) -> dict:
     """Everything the Capture tab and the banner show.
@@ -587,7 +602,9 @@ def view(
     ``footprint.feedback_skill_state`` of the /tl-feedback skill,
     ``brief_skill`` that of the /tl-brief skill and
     ``ratings`` how many sessions you rated on the dashboard (each only
-    while its toggle is on). ``statusline`` is whether Claude Code's
+    while its toggle is on). ``coaching_use`` is
+    ``capture.coaching_usage`` over the same days, while coaching notes
+    are on. ``statusline`` is whether Claude Code's
     status line is this tool's (``None`` when not checked).
     ``weekly_cost`` is ``capture.weekly_cost(use)`` and ``dependent_value``
     ``habits.capture_dependent_value`` over the same window: together
@@ -607,6 +624,7 @@ def view(
         "brief_skill": brief_skill,
         "ratings": ratings,
         "statusline": statusline,
+        "coaching_use": coaching_use,
     }
     rows = [
         _metric_row(m, capture, active, past, units, use, signal_sessions, missing_events, feedback)
@@ -714,6 +732,7 @@ __all__ = [
     "BRIEF_COMMAND",
     "BRIEF_SKILL_NOTES",
     "BRIEF_SKILL_STATES",
+    "COACHING_NOTES_ON",
     "SKILL_NOTES",
     "SKILL_STATES",
     "STATUSLINE_NOTES",

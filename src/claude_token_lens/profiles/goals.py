@@ -22,6 +22,7 @@ from ..capture_catalogue import TASK_LABELS, task_words
 from ..compaction_sim import CompactionSimThresholds
 from ..fixes import LEVER_LABELS, SETTING_TEXT, already_set
 from ..recommend import _NOT_OVERRIDABLE, _SKIPS_CLAUDE_MD
+from ..snapshots import AUTO_COMPACT_WINDOW_ENV
 from ..units import Units
 from . import catalogue
 from .diff import _EFFECTIVE_AGENT_FIELD
@@ -191,8 +192,27 @@ def _models(draft: _Draft, tables, *, subagents_only: bool) -> None:
             None if agent == TOP else agent,
             _alias(best),
             ticked=agent != TOP and pct >= 20.0,
-            evidence=f"{who}'s replies in this window would have cost {pct:.0f}% less on {best}.",
+            evidence=(
+                f"{who}'s replies in this window would have cost {pct:.0f}% less on {best}."
+                if agent == TOP or not _set_elsewhere(row)
+                else f"The replies of {agent}'s runs started without a model of their own would have cost "
+                f"{pct:.0f}% less on {best} in this window."
+            ),
         )
+
+
+def _set_elsewhere(row: dict) -> bool:
+    """Whether a workflow script or a model named at spawn set the model
+    for some of this model-swap row's runs. The row's saving is on the
+    rest, the runs its agent file decides."""
+    return bool((whatif._num(row.get("workflow_runs")) or 0) + (whatif._num(row.get("spawn_model_runs")) or 0))
+
+
+def _file_runs(tables, agent: str) -> str:
+    """How the task-agents evidence names what runs cheaper: the agent,
+    or only its runs started without a model when others weren't."""
+    row = tables.row("model_swap", "model_swap_by_agent_type", agent) or {}
+    return f"{agent}'s runs started without a model of their own run" if _set_elsewhere(row) else f"{agent} runs"
 
 
 def _opusplan(draft: _Draft, tables) -> None:
@@ -250,6 +270,16 @@ def _cheapest_ttl(draft: _Draft, key: str, agent: str | None, rows: list[dict], 
     )
 
 
+def _window_overridden(draft: _Draft) -> str:
+    """While CLAUDE_CODE_AUTO_COMPACT_WINDOW is set it beats the
+    autoCompactWindow setting (``snapshots.effective_config_in_force``
+    names it), so a window candidate says so and isn't ticked: applying
+    it writes a setting that changes nothing yet."""
+    if draft.now(f"env.{AUTO_COMPACT_WINDOW_ENV}", None) is None:
+        return ""
+    return f" Won't apply while {AUTO_COMPACT_WINDOW_ENV} is set: it overrides this setting, so change the variable instead."
+
+
 def _compaction(draft: _Draft, tables) -> None:
     rows = [r for r in tables.rows("compaction_sim", "compaction_sim_by_window") if whatif._num(r.get("cost"))]
     if not rows:
@@ -274,15 +304,17 @@ def _compaction(draft: _Draft, tables) -> None:
     pct = _share(base["cost"] - best["cost"], base["cost"])
     if pct < MIN_SHARE_PCT:
         return
+    overridden = _window_overridden(draft)
     draft.add(
         "autoCompactWindow",
         None,
         int(str(best["window"]).replace(",", "")),
-        ticked=True,
+        ticked=not overridden,
         evidence=(
             f"Your sessions replayed with summaries at {best['window']} tokens cost {pct:.0f}% less, with about "
             f"{whatif._num(best.get('compactions_per_session')) or 0:.1f} summaries per session."
-        ),
+        )
+        + overridden,
     )
 
 
@@ -494,15 +526,17 @@ def _task_compaction(draft: _Draft, tables, task: str) -> None:
     if per_session is None or per_session > CompactionSimThresholds().max_compactions_per_session:
         return
     sessions = int(whatif._num(row.get("sessions")) or 0)
+    overridden = _window_overridden(draft)
     draft.add(
         "autoCompactWindow",
         None,
         int(window),
-        ticked=sessions >= habits.TICK_MIN_GROUP,
+        ticked=sessions >= habits.TICK_MIN_GROUP and not overridden,
         evidence=(
             f"Your {sessions} {task_words(task)} sessions replayed with summaries at {row.get('best_window')} tokens cost "
             f"{saving_pct:.0f}% less."
-        ),
+        )
+        + overridden,
     )
 
 
@@ -539,7 +573,7 @@ def _task_agents(draft: _Draft, tables, task: str) -> None:
             best,
             ticked=pct >= 20.0,
             evidence=(
-                f"{agent} runs {pct:.0f}% cheaper on {best} across every task it did; "
+                f"{_file_runs(tables, agent)} {pct:.0f}% cheaper on {best} across every task it did; "
                 f"{task_words(task)} work was {runs} of its runs in this window."
             ),
         )

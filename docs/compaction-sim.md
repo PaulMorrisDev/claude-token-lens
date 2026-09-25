@@ -4,8 +4,11 @@ Claude Code auto-compacts a session once its context nears
 `autoCompactWindow` tokens — observed in config snapshots (e.g.
 `300000`; a model's own context window is typically 1,000,000 for a
 "[1m]"-aliased model, 200,000 otherwise, per `context_budget.py`'s own
-assumed-window constants). That single number is a real, user-settable
-lever, and it trades off two costs directly against each other:
+assumed-window constants). `CLAUDE_CODE_AUTO_COMPACT_WINDOW`, while
+it's set, overrides the setting, so it's the window that counts then
+(`snapshots.auto_compact_window`). That single number is a real,
+user-settable lever, and it trades off two costs directly against each
+other:
 
 - **Compacting less often** (a larger window, or `none` at all) means
   every turn keeps carrying a bigger context, priced at the cheap
@@ -126,7 +129,12 @@ The action says the figure is modelled, not observed, and points to
 or `<project>/.claude/settings.local.json`, read via
 `snapshots.effective_provenance`), or `"managed"` (named, not offered as
 user-actionable) depending on which settings layer actually set the
-session's effective `autoCompactWindow`.
+session's effective `autoCompactWindow`. While
+`CLAUDE_CODE_AUTO_COMPACT_WINDOW` is set, the title and action name the
+variable instead, in the `env` block of the settings file that sets it
+now (the user's file when only the shell does, since an `env` entry
+replaces the shell's value), and the advice card's change is
+`env.CLAUDE_CODE_AUTO_COMPACT_WINDOW`.
 
 Once `compaction_sim_by_window` has priced the main sessions (its
 `none` row has a cost), the replay has a verdict on `autoCompactWindow`
@@ -209,8 +217,9 @@ Printed verbatim in the report section's own notes (`ASSUMPTIONS`):
 ## Wiring into the report and CLI
 
 `report.build_report` builds a per-session `snapshot_windows` map (the
-effective `autoCompactWindow` in the config snapshot each session's own
-project had when it started, via `snapshots.snapshot_for`), calls
+window in the config snapshot each session's own project had when it
+started, via `snapshots.snapshot_for`: `CLAUDE_CODE_AUTO_COMPACT_WINDOW`
+when it's set, else the effective `autoCompactWindow`), calls
 `compaction_sim.simulate_compaction_windows(all_results, rates, snapshot_windows, thresholds)`
 and appends `compaction_sim.build_section(...)` after the `carry`
 section. `recommend.recommend()` then runs

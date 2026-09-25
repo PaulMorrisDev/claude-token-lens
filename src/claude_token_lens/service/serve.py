@@ -36,6 +36,10 @@ Contract notes:
   ``monthly_job.MonthlyReportJob``: last month's report is written into
   ``DIR`` when missing, checked at startup and hourly on a background
   thread (once, in line, under ``--once``).
+- ``coaching_job.CoachingJob`` rewrites ``coaching.json`` (your split
+  points and plan habit, for the capture hook's coaching notes) once a
+  day while coaching notes are on, from a report built from the store
+  once the first scan is done (in line, under ``--once``).
 - A running ``serve`` fingerprints this package's files at start
   (``codewatch.CodeWatch``) and checks them after every watcher tick;
   ``/api/health`` turns ``"outdated"`` once they change on disk. With
@@ -261,6 +265,31 @@ def _run_locked(options: ServeOptions, store_path: Path, lock: StoreLock, *, onc
 
         monthly_job = MonthlyReportJob(options)
 
+    # Coaching notes' split points (service/coaching_job.py), from a
+    # 30-day report of every project built from the store.
+    from .coaching_job import CoachingJob
+
+    def _coaching_report(days: int):
+        from ..config import load_config
+        from ..pricing import load_pricing
+        from ..report import build_report
+        from . import rebuild
+
+        config = load_config(options.config_dir)
+        rates = load_pricing(path=config.pricing_path, config_dir=options.config_dir)
+        corpus = rebuild.corpus_from_store(store, days=days)
+        return build_report(
+            corpus,
+            rates,
+            config,
+            projects=tuple(sorted({bundle.slug for bundle in corpus.sessions if bundle.slug})),
+            window=f"last {days} days",
+            ratings=store.all_feedback(),
+            config_dir=options.config_dir,
+        )
+
+    coaching_job = CoachingJob(options, _coaching_report, ready=lambda: watcher.last_stats is not None)
+
     if once:
         stats = watcher.run_once()
         # Print the tick's WatcherStats before exiting -- --once is the
@@ -273,6 +302,7 @@ def _run_locked(options: ServeOptions, store_path: Path, lock: StoreLock, *, onc
         print(_format_stats_line(stats))
         if monthly_job is not None:
             monthly_job.run_once()
+        coaching_job.run_once()
         store.close()
         return 0
 
@@ -328,6 +358,7 @@ def _run_locked(options: ServeOptions, store_path: Path, lock: StoreLock, *, onc
     watcher.start()
     if monthly_job is not None:
         monthly_job.start()
+    coaching_job.start()
     try:
         print(f"claude-token-lens serve: listening on {_url(options.bind, server.server_port)}")
         try:
@@ -340,6 +371,7 @@ def _run_locked(options: ServeOptions, store_path: Path, lock: StoreLock, *, onc
     finally:
         if monthly_job is not None:
             monthly_job.stop()
+        coaching_job.stop()
         watcher.stop()
         store.close()
 

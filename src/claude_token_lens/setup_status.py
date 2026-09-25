@@ -210,7 +210,7 @@ def _capture(config_dir: Path, claude_root, capture: CaptureConfig, now: datetim
         )
     described = capture_view.describe(capture)
     health = hook_health.check_capture(
-        hook_health.capture_specs(capture.active_metrics()), claude_root=claude_root, config_dir=config_dir
+        hook_health.capture_specs(capture.hook_metrics()), claude_root=claude_root, config_dir=config_dir
     )
     if health.ok:
         return SetupItem("capture", label, "ok", f"{described}.")

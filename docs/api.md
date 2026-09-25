@@ -469,9 +469,11 @@ asked. `404` if `<id>` is unknown.
 - `headline`: the session's cost (in the billing mode's units), replies
   and tokens.
 - `sentences`: how it compares with your median session, which part of
-  the cost led and what that means, how much went on subagents and the
-  costliest agent type, cache rebuilds and their commonest cause, and
-  conversation summaries. A sentence is left out when its data is.
+  the cost led and what that means, how much went on subagents (workflow
+  agents included) and the costliest agent type, cache rebuilds and their
+  commonest cause, and conversation summaries. A sentence is left out
+  when its data is. An agent type a workflow also started counts its
+  workflow runs and its own together.
 - `cost_split`: `part` is `cache_read`, `cache_write`, `output` or
   `input`, always in that order. `cost` is at list price from the rate
   card, whatever the billing mode; models the rate card doesn't know
@@ -503,9 +505,9 @@ window; with none of them, `days` (default 30) applies exactly as
 before. Additive: `split` — `agent` breaks each day/model row into the
 main session and every subagent (`transcripts.kind` joined in from
 `turns_agg.transcript_id`: `"top-level"` is `"main"`, `"subagent"`/
-`"workflow-agent"` are `"subagent"`), adding an `"agent"` key; `model`,
-or omitting `split`, keeps the original, unsplit shape. Any other
-`split` value is `400`.
+`"workflow-agent"` (an agent a workflow run started) are `"subagent"`),
+adding an `"agent"` key; `model`, or omitting `split`, keeps the
+original, unsplit shape. Any other `split` value is `400`.
 
 `data`: `[{"day", "model", "turns", "input_tokens", "cache_creation_tokens", "cache_read_tokens", "output_tokens", "thinking_tokens", "cc_5m", "cc_1h", "cost"}, ...]`
 (with `split=agent`, each row additionally carries `"agent"`:
@@ -631,7 +633,12 @@ at every model the rate card carries, the best cheaper alternative and
 the ceiling saving; plus the corpus-wide summary if every eligible
 Fable/Opus subagent type moved one tier down) — same shape as the CLI's
 `model-swap` section tables, sourced from the assembled report's
-`"model_swap"` section (`model_swap.py`).
+`"model_swap"` section (`model_swap.py`). A subagent's saving covers
+only the runs its agent file's model decides; the per-type table's
+additive `lever_runs`, `lever_priced_turns`, `lever_model`,
+`lever_cost`, `workflow_runs` and `spawn_model_runs` columns say which,
+and a third table, `model_swap_agent_file_runs`, reprices those runs at
+every model (see [`model-swap.md`](model-swap.md)).
 
 Query: `window`, `window_days`, or `since`/`until` (see "Report-backed
 routes: windowing query params" above).
@@ -1152,7 +1159,7 @@ one is built in the background.
   (a status-line toggle is on but Claude Code's status line isn't this
   tool's), `estimate` and `actual` (`{usd, text}` a week, and over
   `actual_label`: since it was turned on, or the last 14 days for the
-  skill), and `answers`/`target`/`enough` (whether enough has been
+  skill and, with how many there were, for coaching notes), and `answers`/`target`/`enough` (whether enough has been
   collected for firm suggestions; for the skill and the dashboard
   rating, the runs answered and the sessions rated).
 - `measured`: `null` while off; otherwise `since`, `sessions`,
@@ -1200,8 +1207,9 @@ one is built in the background.
 ### `GET /api/report.md` / `GET /api/report.html` / `GET /api/report.json`
 
 The full report in each format, built from the store instead of a fresh
-parse — byte-equivalent in content to running the CLI's `report`
-subcommand with `--json`/`--html`/(default) over the same window,
+parse — byte-equivalent in content to running the CLI's `report
+--phases` subcommand with `--json`/`--html`/(default) over the same
+window (the service always builds the `phases` section),
 modulo the "verified against CLI JSON" test the plan's Milestone v0.2
 Tests bullet requires (`tests/test_service_api.py`, built alongside
 `api.py`). All three return the raw rendered document on success, not
@@ -1431,7 +1439,10 @@ how it was worked out (`fidelity_text` in plain words) and `basis`
 explains it in a sentence: `"ceiling"` (a `model` change -- the same
 tokens repriced at the new model's rate, same "ceiling" sense as
 `/api/model-swap`'s own saving column, not a real simulation since a
-different model may need more or fewer replies for the same work),
+different model may need more or fewer replies for the same work; for
+a subagent, only its runs started without a model of their own, and
+`"none"` when every run's model came from a workflow script or the
+spawn),
 `"simulated"` (`autoCompactWindow`, a cache-TTL change -- real sessions
 replayed with the new value), `"measured"` (`omitClaudeMd` -- the
 greater of per spawn times the spawns in the window, and the carry cost
@@ -1527,6 +1538,10 @@ service-specific session-metrics rebuild the way the CLI's own
 narrower computation. A `key` that names a config key which didn't
 change in the requested window returns `{"ok": true, "data": []}`, not
 an error.
+
+`_build_report_model` passes `phases=True`, so Spend › Usage can show
+cost by phase; on a 30-day store it adds about 1% to the build. The
+CLI keeps the section behind `--phases`.
 
 `_build_report_model` also passes `config_dir=options.config_dir` to
 `build_report()` (v4 wiring round) so that `waste.py`'s salted

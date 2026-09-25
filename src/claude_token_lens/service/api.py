@@ -957,6 +957,9 @@ def make_handler(
             usage_log_rows=usage_log_rows,
             # Your Sessions-tab ratings, for the Work habits tab.
             ratings=store.all_feedback(),
+            # Spend > Usage shows cost by phase. The CLI keeps it behind
+            # --phases; here it costs about 1% of the build.
+            phases=True,
             # v4 wiring round: without this, waste.WasteStats's salted
             # session-id hash would fall back to report.py's own
             # temp-directory default (see _default_waste_config_dir) --
@@ -1165,7 +1168,7 @@ def make_handler(
         # config_dir=: cheap (a few small hook files hashed, no subprocess,
         # no transcript read) but still catches an outdated or hand-edited
         # hook file (SEC-P7/ROB-P7), not just a missing settings.json entry.
-        hooks = hook_health.check_capture(hook_health.capture_specs(capture.active_metrics()), config_dir=options.config_dir)
+        hooks = hook_health.check_capture(hook_health.capture_specs(capture.hook_metrics()), config_dir=options.config_dir)
         block["hooks_ok"] = hooks.ok
         return block
 
@@ -1300,6 +1303,16 @@ def make_handler(
         corpus = rebuild.corpus_from_store(store, days=capture_mod.HISTORY_DAYS)
         return capture_mod.feedback_usage(corpus, _capture_rates(config))
 
+    def _capture_coaching(config):
+        """``capture.coaching_usage`` over the replayed days: the coaching
+        notes the capture hook added, whatever the capture level."""
+        from .. import capture as capture_mod
+        from . import rebuild
+
+        since = (datetime.now(timezone.utc) - timedelta(days=capture_mod.HISTORY_DAYS)).isoformat(timespec="seconds")
+        corpus = rebuild.corpus_from_store(store, days=capture_mod.HISTORY_DAYS)
+        return capture_mod.coaching_usage(corpus, _capture_rates(config), since=since)
+
     def _capture_view(config) -> dict:
         from .. import capture_view
 
@@ -1335,6 +1348,12 @@ def make_handler(
                 "feedback", (token, *soft), soft, lambda: _capture_feedback(config), _STALE_REPORT_MAX_AGE_S
             )
             skill = footprint.feedback_skill_state()
+        coaching_use = None
+        if capture.coaching_notes_on:
+            token = store.change_token()
+            coaching_use = _capture_part(
+                "coaching", (token, *soft), soft, lambda: _capture_coaching(config), _STALE_REPORT_MAX_AGE_S
+            )
         brief_skill = None
         if "brief_templates" in capture.coaching:
             from .. import footprint
@@ -1352,12 +1371,13 @@ def make_handler(
                 settings = None
             statusline = footprint.is_own_statusline(settings if isinstance(settings, dict) else None)
         hooks = hook_health.check_capture(
-            hook_health.capture_specs(capture.active_metrics()), config_dir=options.config_dir
+            hook_health.capture_specs(capture.hook_metrics()), config_dir=options.config_dir
         )
         return capture_view.view(
             capture, past=past, units=units, use=use, hooks=hooks, signal_sessions=signal_sessions,
             started_since=started, feedback_use=feedback_use, skill=skill, brief_skill=brief_skill, ratings=ratings,
             statusline=statusline, weekly_cost=weekly_cost, dependent_value=dependent_value,
+            coaching_use=coaching_use,
         )
 
     def _capture_conflict(message: str, commands: list[str]) -> tuple[int, dict]:
@@ -2261,7 +2281,7 @@ def make_handler(
         )
 
     def _current_settings() -> tuple[dict, dict, bool]:
-        """The latest snapshot's effective settings, every project's agent
+        """The latest snapshot's effective settings as in force, every project's agent
         fields, and (PROF-03) whether ``CLAUDE_CODE_EFFORT_LEVEL`` is set
         -- content_layers' own flag, never a value that could be
         anything else -- or empty/``False`` when no snapshot is recorded
@@ -2272,7 +2292,9 @@ def make_handler(
         agents = snapshot.data.get("effective_agents")
         content_layers = snapshot.data.get("content_layers")
         env_set = bool(isinstance(content_layers, dict) and content_layers.get("effort_level_env_set"))
-        return snapshots_mod.effective_config(snapshot), agents if isinstance(agents, dict) else {}, env_set
+        # In force, not as written: CLAUDE_CODE_AUTO_COMPACT_WINDOW beats
+        # autoCompactWindow while it's set.
+        return snapshots_mod.effective_config_in_force(snapshot), agents if isinstance(agents, dict) else {}, env_set
 
     def route_profile_goals(store, query, body):
         """Without ``goal``: the goals a profile can start from. With it:

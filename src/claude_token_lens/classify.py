@@ -146,8 +146,8 @@ DEFAULT_MODE_THRESHOLDS: dict = {
     #: apart from "just a very long-running session" (fix 5).
     "multi_day_span_s": 24 * 3600,
     # Raised from the plan's implied starting point of 5 to 10 against a
-    # real 30-day corpus (120 top-level sessions in
-    # C--Dev-RevIXO, scratch script corpus_classify_tune.py): at 5,
+    # real 30-day corpus (120 top-level sessions in one
+    # project, scratch script corpus_classify_tune.py): at 5,
     # sessions with a real subagent chain or a
     # long run of self-chained turns but a handful more human nudges
     # (6-10) than the cap allowed fell through into "mixed" - the

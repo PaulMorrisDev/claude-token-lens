@@ -140,6 +140,11 @@ _ALREADY_CHEAPEST_LABEL = "already on the cheapest model"
 _MAIN_SESSION_BELOW_FLOOR = frozenset({"haiku"})
 _MAIN_FLOOR_LABEL = "Sonnet is the smallest model suggested for your main session"
 
+#: Agent types no agent file sets the model for: a workflow script
+#: starts ``workflow-subagent`` runs, and Claude Code starts forks and
+#: untyped subagents itself.
+_NO_AGENT_FILE = frozenset({"unknown", "fork", "workflow-subagent"})
+
 #: Archetypes that never spawn subagents of their own -- duplicated from
 #: ``recommend.py``'s own constant of the same name (see module
 #: docstring's deviation note): per-agent-type model advice makes no
@@ -163,6 +168,9 @@ ASSUMPTIONS: list[str] = [
     "alternative columns cover every model in pricing.toml, older dated ids included. But the cheaper-model "
     "advice only ever suggests the next cheaper family's current model, never the cheapest alternative overall",
     "tier order (Fable, then Opus, then Sonnet, then Haiku) follows each model's family name, not its price",
+    "a subagent's saving counts only the runs its agent file's model line decides: runs started without a model "
+    "of their own. A model named when the run started wins over the agent file, and a workflow script's agent() "
+    "call or the workflow's default sets the model for the runs it starts",
 ]
 
 
@@ -179,6 +187,38 @@ def _agent_type_label(result: TranscriptResult) -> str:
     type (or "unknown") -- exactly ``TtlStats.add``'s own keying, so a
     corpus fed to both modules always agrees on group boundaries."""
     return agent_type_label(result)
+
+
+def model_set_by(result: TranscriptResult) -> str:
+    """What decided this run's model, in Claude Code's order (a model
+    passed for that spawn, then the agent file's ``model``, then
+    ``CLAUDE_CODE_SUBAGENT_MODEL``, then the main model):
+
+    - ``"settings"`` -- the main session: its ``model`` setting;
+    - ``"workflow"`` -- a run a workflow script started: the script's
+      ``agent()`` call, or the workflow's default model;
+    - ``"spawn"`` -- a direct run whose spawn named a model. The
+      ``.meta.json`` ``model`` (``agent_model_alias``) is the model the
+      spawn asked for, absent when it asked for none, and it wins over the
+      agent file;
+    - ``"agent file"`` -- a direct run started without a model: its agent
+      file's ``model`` line decides, or a new file for a built-in type;
+    - ``"none"`` -- a fork or untyped subagent, which no agent file sets.
+    """
+    meta = result.meta
+    if meta.kind == "top-level":
+        return "settings"
+    if meta.kind == "workflow-agent":
+        return "workflow"
+    if meta.agent_model_alias:
+        return "spawn"
+    if (meta.agent_type or "unknown") in _NO_AGENT_FILE:
+        return "none"
+    return "agent file"
+
+
+#: ``model_set_by`` values the row's lever decides.
+_LEVER_SETTERS = frozenset({"settings", "agent file"})
 
 
 def _dominant_label(counts: dict[str, int]) -> str | None:
@@ -273,9 +313,14 @@ class TierVerdict:
 
     ``state`` is one of ``"cheaper_available"`` / ``"already_cheapest"``
     / ``"main_floor"`` (the main session on Sonnet: never moved to Haiku)
-    / ``"unknown_tier"`` / ``"no_data"`` -- every state other than
-    ``"cheaper_available"`` carries ``saving_usd == saving_pct == 0.0``,
-    so the table never implies a saving where none exists.
+    / ``"unknown_tier"`` / ``"no_data"`` / ``"set_elsewhere"`` (a named
+    agent type none of whose runs followed its agent file's model: a
+    workflow script or the spawn named it) / ``"no_lever"`` (a workflow
+    script, fork or untyped subagent: no agent file sets its model) --
+    every state other than ``"cheaper_available"`` carries
+    ``saving_usd == saving_pct == 0.0``, so the table never implies a
+    saving where none exists. The verdict is worked out on the runs the
+    row's lever decides (``ModelSwapTypeStats.lever``) only.
     """
 
     state: str
@@ -285,7 +330,40 @@ class TierVerdict:
     label: str
 
 
-def _tier_verdict(stats: "ModelSwapTypeStats", pricing: Pricing) -> TierVerdict:
+def _set_elsewhere_text(stats: "ModelSwapTypeStats") -> str:
+    """How many of this row's runs something other than its lever named
+    the model for, as a clause: "62 came from workflow scripts and 3 were
+    given a model when they started". Empty when none."""
+    parts = []
+    if stats.workflow_runs:
+        parts.append(f"{stats.workflow_runs} came from workflow scripts")
+    if stats.spawn_model_runs:
+        parts.append(
+            f"{stats.spawn_model_runs} {'was' if stats.spawn_model_runs == 1 else 'were'} given a model when "
+            f"{'it' if stats.spawn_model_runs == 1 else 'they'} started"
+        )
+    return " and ".join(parts)
+
+
+def _reach_suffix(stats: "ModelSwapTypeStats") -> str:
+    """", on the 21 runs its agent file sets" when a subagent type's
+    saving covers only some of its runs; empty otherwise."""
+    lever_runs = stats.lever.spawns if stats.lever is not None else stats.spawns
+    if stats.key == "top-level" or lever_runs >= stats.spawns:
+        return ""
+    return f", on the {lever_runs} run{'s' if lever_runs != 1 else ''} its agent file sets"
+
+
+def _tier_verdict(row: "ModelSwapTypeStats", pricing: Pricing) -> TierVerdict:
+    if row.key in _NO_AGENT_FILE:
+        setter = "a workflow script" if row.key == "workflow-subagent" else "Claude Code"
+        return TierVerdict("no_lever", None, 0.0, 0.0, f"{setter} sets its model, so there is no agent file to change")
+    stats = row.lever if row.lever is not None else row
+    if stats.spawns == 0 and row.spawns > 0:
+        return TierVerdict(
+            "set_elsewhere", None, 0.0, 0.0,
+            f"no run followed {row.key}.md's model: {_set_elsewhere_text(row)}",
+        )
     if stats.priced_turns == 0 or stats.observed_cost <= 0:
         return TierVerdict("no_data", None, 0.0, 0.0, "no priced turns")
 
@@ -323,7 +401,7 @@ def _tier_verdict(stats: "ModelSwapTypeStats", pricing: Pricing) -> TierVerdict:
     saving_pct = 100.0 * saving_usd / stats.observed_cost
     return TierVerdict(
         "cheaper_available", alt_model, saving_usd, saving_pct,
-        f"{model_name(alt_model)} (saves ${saving_usd:,.2f}, {saving_pct:.1f}%, at today's volumes)",
+        f"{model_name(alt_model)} (saves ${saving_usd:,.2f}, {saving_pct:.1f}%, at today's volumes{_reach_suffix(row)})",
     )
 
 
@@ -363,6 +441,16 @@ class ModelSwapTypeStats:
     tier_verdict: TierVerdict = field(
         default_factory=lambda: TierVerdict("no_data", None, 0.0, 0.0, "no priced turns")
     )
+    #: The same totals for only the runs this row's lever decides
+    #: (:func:`model_set_by`): every run of the main session, and a
+    #: subagent type's runs started without a model of their own. The
+    #: tier verdict is worked out on these. ``None`` on the lever's own
+    #: stats.
+    lever: "ModelSwapTypeStats | None" = None
+    #: Runs a workflow script started, and direct runs whose spawn named a
+    #: model: the agent file's model line decides neither.
+    workflow_runs: int = 0
+    spawn_model_runs: int = 0
 
     @property
     def observed_model(self) -> str | None:
@@ -422,27 +510,37 @@ def compute_model_swap(
     by_key: dict[str, ModelSwapTypeStats] = {}
     for result in results:
         key = _agent_type_label(result)
-        stats = by_key.setdefault(key, ModelSwapTypeStats(key=key))
-        stats.spawns += 1
+        stats = by_key.get(key)
+        if stats is None:
+            stats = by_key[key] = ModelSwapTypeStats(key=key, lever=ModelSwapTypeStats(key=key))
+        setter = model_set_by(result)
+        if setter == "workflow":
+            stats.workflow_runs += 1
+        elif setter == "spawn":
+            stats.spawn_model_runs += 1
+        # A run the lever decides counts on both, each in the same order,
+        # so the row's own totals add up exactly as they would alone.
+        targets = (stats, stats.lever) if setter in _LEVER_SETTERS else (stats,)
 
         alias = result.meta.agent_model_alias
-        if alias:
-            stats.alias_counts[alias] = stats.alias_counts.get(alias, 0) + 1
+        for target in targets:
+            target.spawns += 1
+            if alias:
+                target.alias_counts[alias] = target.alias_counts.get(alias, 0) + 1
 
         for turn in _priced_turns(result):
-            stats.priced_turns += 1
-            if turn.model:
-                stats.model_turn_counts[turn.model] = stats.model_turn_counts.get(turn.model, 0) + 1
-
             resolved = pricing.resolve_model(turn.model)
             observed_breakdown = price_turn(turn, resolved)
-            stats.observed_cost += observed_breakdown.total
-            if not observed_breakdown.model_known:
-                stats.unpriced_turns += 1
-
-            for alt_id, alt_rates in pricing.models.items():
-                alt_cost = price_turn(turn, alt_rates).total
-                stats.cost_by_model[alt_id] = stats.cost_by_model.get(alt_id, 0.0) + alt_cost
+            alt_costs = [(alt_id, price_turn(turn, alt_rates).total) for alt_id, alt_rates in pricing.models.items()]
+            for target in targets:
+                target.priced_turns += 1
+                if turn.model:
+                    target.model_turn_counts[turn.model] = target.model_turn_counts.get(turn.model, 0) + 1
+                target.observed_cost += observed_breakdown.total
+                if not observed_breakdown.model_known:
+                    target.unpriced_turns += 1
+                for alt_id, alt_cost in alt_costs:
+                    target.cost_by_model[alt_id] = target.cost_by_model.get(alt_id, 0.0) + alt_cost
 
     for stats in by_key.values():
         stats.tier_verdict = _tier_verdict(stats, pricing)
@@ -455,13 +553,16 @@ def compute_model_swap(
 
 def _lever_label(key: str) -> str:
     """Where this row's model is set. A built-in agent has no file to
-    edit, so it takes a new same-named agent file; Claude Code picks the
-    model for workflow, fork and untyped subagents."""
+    edit, so it takes a new same-named agent file; a workflow script sets
+    the model for its unnamed agents, and Claude Code picks it for fork
+    and untyped subagents."""
     from .recommend import _BUILTIN_AGENT_TYPES
 
     if key == "top-level":
         return "model (settings.json)"
-    if key in ("unknown", "fork", "workflow-subagent"):
+    if key == "workflow-subagent":
+        return "none (the workflow script sets it)"
+    if key in _NO_AGENT_FILE:
         return "none (Claude Code picks)"
     if key in _BUILTIN_AGENT_TYPES:
         return f"model in a new {key}.md (overrides the built-in)"
@@ -506,13 +607,21 @@ def build_section(
             Column(key="saving_usd", label="Most you could save", kind="money"),
             Column(key="saving_pct", label="Ceiling saving (%, one tier down)", kind="pct"),
             Column(key="lever", label="Lever", kind="str"),
+            Column(key="lever_runs", label="Runs the lever decides", kind="int"),
+            Column(key="lever_priced_turns", label="Priced turns on those runs", kind="int"),
+            Column(key="lever_model", label="Model on those runs", kind="str"),
+            Column(key="lever_cost", label="Cost of those runs", kind="money"),
+            Column(key="workflow_runs", label="Runs a workflow script started", kind="int"),
+            Column(key="spawn_model_runs", label="Runs given a model when started", kind="int"),
         ]
     )
 
     rows: list[list] = []
+    file_rows: list[list] = []
     any_unpriced = False
     for key in sorted(stats.by_key):
         row_stats = stats.by_key[key]
+        lever_stats = row_stats.lever if row_stats.lever is not None else row_stats
         verdict = row_stats.tier_verdict
         lever = _lever_label(key)
         label = verdict.label
@@ -520,7 +629,7 @@ def build_section(
             saving_text = units.money_text(verdict.saving_usd)
             label = (
                 f"{model_name(verdict.alt_model)} (saves {saving_text}, {verdict.saving_pct:.1f}%, at today's "
-                "volumes)"
+                f"volumes{_reach_suffix(row_stats)})"
             )
         row = [
             row_stats.key,
@@ -539,11 +648,28 @@ def build_section(
                 verdict.saving_usd,
                 verdict.saving_pct,
                 lever,
+                lever_stats.spawns,
+                lever_stats.priced_turns,
+                lever_stats.observed_model_label if lever_stats.spawns else None,
+                lever_stats.observed_cost,
+                row_stats.workflow_runs,
+                row_stats.spawn_model_runs,
             ]
         )
         rows.append(row)
         if row_stats.unpriced_turns > 0:
             any_unpriced = True
+        if key != "top-level" and key not in _NO_AGENT_FILE and lever_stats.spawns:
+            file_rows.append(
+                [
+                    key,
+                    lever_stats.spawns,
+                    lever_stats.priced_turns,
+                    lever_stats.observed_model_label,
+                    lever_stats.observed_cost,
+                    *(lever_stats.cost_by_model.get(alt_id, 0.0) for alt_id in stats.alternative_models),
+                ]
+            )
 
     table = Table(
         name="model_swap_by_agent_type",
@@ -552,16 +678,43 @@ def build_section(
         rows=rows,
     )
 
+    # The runs each agent file's model line decides, repriced at every
+    # model: what a what-if for that line prices, whatever model it names.
+    file_table = Table(
+        name="model_swap_agent_file_runs",
+        title="Runs each agent file's model decides, at other models",
+        columns=[
+            Column(key="agent_type", label="Agent type", kind="str"),
+            Column(key="runs", label="Runs", kind="int"),
+            Column(key="priced_turns", label="Priced turns", kind="int"),
+            Column(key="observed_model", label="Observed model", kind="str"),
+            Column(key="observed_cost", label="Observed cost", kind="money"),
+            *(
+                Column(
+                    key=f"cost_{alt_id}",
+                    label=f"Cost at {alt_id}",
+                    kind="money",
+                    help=f"The same tokens at {alt_id}'s list price.",
+                )
+                for alt_id in stats.alternative_models
+            ),
+        ],
+        rows=file_rows,
+    )
+
     # -- corpus-wide summary: every subagent type currently on Fable/Opus,
-    # moved one tier down.
+    # moved one tier down, on the runs its agent file decides.
+    def _lever_of(s: ModelSwapTypeStats) -> ModelSwapTypeStats:
+        return s.lever if s.lever is not None else s
+
     qualifying = [
         s
         for key, s in stats.by_key.items()
         if key != "top-level"
-        and workstyle.model_tier(s.observed_model, s.observed_model_alias) in (2, 3)
+        and workstyle.model_tier(_lever_of(s).observed_model, _lever_of(s).observed_model_alias) in (2, 3)
         and s.tier_verdict.state == "cheaper_available"
     ]
-    total_observed = sum(s.observed_cost for s in qualifying)
+    total_observed = sum(_lever_of(s).observed_cost for s in qualifying)
     total_saving = sum(s.tier_verdict.saving_usd for s in qualifying)
     total_after = total_observed - total_saving
     total_saving_pct = 100.0 * total_saving / total_observed if total_observed > 0 else 0.0
@@ -591,6 +744,8 @@ def build_section(
             "This figure is for subagents only, so it leaves out the main session. It also leaves "
             "out any Fable or Opus agent type that already costs no more than the next tier down "
             "at today's volumes.",
+            "It counts only the runs each agent file's model line decides. Runs a workflow script "
+            "started, or that were given a model when they started, are left out.",
         ],
     )
 
@@ -607,7 +762,7 @@ def build_section(
     return Section(
         key="model_swap",
         title="Model-swap counterfactual",
-        tables=[table, summary_table],
+        tables=[table, summary_table, file_table],
         notes=notes,
     )
 
@@ -724,10 +879,22 @@ def _rule_model_tier(
         return []
 
     agent_idx = _col_index(table, "agent_type")
-    spawns_idx = _col_index(table, "spawns")
-    priced_turns_idx = _col_index(table, "priced_turns")
-    observed_cost_idx = _col_index(table, "observed_cost")
-    observed_model_idx = _col_index(table, "observed_model")
+    # The sample and the model are the lever's own runs' (a table built
+    # before those columns existed falls back to the whole row's).
+    spawns_idx = _col_index(table, "lever_runs")
+    if spawns_idx is None:
+        spawns_idx = _col_index(table, "spawns")
+    priced_turns_idx = _col_index(table, "lever_priced_turns")
+    if priced_turns_idx is None:
+        priced_turns_idx = _col_index(table, "priced_turns")
+    observed_cost_idx = _col_index(table, "lever_cost")
+    if observed_cost_idx is None:
+        observed_cost_idx = _col_index(table, "observed_cost")
+    observed_model_idx = _col_index(table, "lever_model")
+    if observed_model_idx is None:
+        observed_model_idx = _col_index(table, "observed_model")
+    workflow_idx = _col_index(table, "workflow_runs")
+    spawn_model_idx = _col_index(table, "spawn_model_runs")
     alt_model_idx = _col_index(table, "best_cheaper_alternative_model")
     alt_label_idx = _col_index(table, "best_cheaper_alternative")
     saving_usd_idx = _col_index(table, "saving_usd")
@@ -764,20 +931,27 @@ def _rule_model_tier(
         alt_label = row[alt_label_idx] if alt_label_idx is not None else alt_model
 
         scope = _scope_for(agent_type, snapshot)
+        workflow_runs = _count(row, workflow_idx)
+        spawn_model_runs = _count(row, spawn_model_idx)
         if agent_type == "top-level":
             frontmatter_note = f'Set "model": "{alt_model}" in settings.json'
+            reach = ""
         else:
             frontmatter_note = f"Set `model: {alt_model}` in .claude/agents/{agent_type}.md's frontmatter"
+            reach = f" on the {spawns} run{'s' if spawns != 1 else ''} started without a model" if (
+                workflow_runs or spawn_model_runs
+            ) and isinstance(spawns, int) else ""
         # UX-2: units may be unset (a caller without a billing config) --
         # money_text still gives a plain currency-suffixed number rather
         # than a bare "$" in that case.
         units = report.units
         saving_text = units.money_text(saving_usd) if units is not None else f"${saving_usd:,.2f}"
         action = _action_with_scope(
-            f"{frontmatter_note} (currently effectively {observed_model}). "
+            f"{frontmatter_note} (currently effectively {observed_model}{reach}). "
             f"Ceiling saving at today's volumes: {saving_text} ({saving_pct:.1f}%) -- token "
             "volumes and turn counts are held constant, so a smaller model may need more turns "
-            "or fail tasks outright; verify quality before committing.",
+            "or fail tasks outright; verify quality before committing."
+            + _set_elsewhere_action(agent_type, workflow_runs, spawn_model_runs),
             scope,
         )
 
@@ -797,11 +971,53 @@ def _rule_model_tier(
                     _evidence("Best cheaper alternative", alt_label, "model_swap", "model_swap_by_agent_type", agent_type),
                     _evidence("Ceiling saving (USD)", saving_usd, "model_swap", "model_swap_by_agent_type", agent_type),
                     _evidence("Ceiling saving (%)", saving_pct, "model_swap", "model_swap_by_agent_type", agent_type),
+                    *(
+                        _evidence(label, count, "model_swap", "model_swap_by_agent_type", agent_type)
+                        for label, count in (
+                            ("Runs a workflow script started (not counted)", workflow_runs),
+                            ("Runs given a model when started (not counted)", spawn_model_runs),
+                        )
+                        if count
+                    ),
                     *_reported_fit_evidence(report, agent_type),
                 ],
             )
         )
     return out
+
+
+def _count(row: list, idx: int | None) -> int:
+    value = row[idx] if idx is not None and idx < len(row) else None
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
+def set_elsewhere_sentence(workflow_runs: int, spawn_model_runs: int) -> str:
+    """Where the model of an agent type's other runs is set, as one
+    sentence with a leading space, or ``""`` when the agent file decides
+    every run: a workflow script's ``agent()`` call (or the workflow's
+    default model), and the model a run was given when it started, which
+    comes from whatever prompt, skill or command asked for it."""
+    parts = []
+    if workflow_runs:
+        parts.append(
+            f"{workflow_runs} run{'s' if workflow_runs != 1 else ''} a workflow script started "
+            "(set the model in the script's agent() call)"
+        )
+    if spawn_model_runs:
+        parts.append(
+            f"{spawn_model_runs} run{'s' if spawn_model_runs != 1 else ''} given a model when "
+            f"{'it' if spawn_model_runs == 1 else 'they'} started (set by the prompt, skill or command that asks "
+            "for that model)"
+        )
+    if not parts:
+        return ""
+    return f" The agent file doesn't decide the model for {' or '.join(parts)}, so they aren't counted."
+
+
+def _set_elsewhere_action(agent_type: str, workflow_runs: int, spawn_model_runs: int) -> str:
+    if agent_type == "top-level":
+        return ""
+    return set_elsewhere_sentence(workflow_runs, spawn_model_runs)
 
 
 def _reported_fit_evidence(report: ReportModel, agent_type: str) -> list[tuple]:
@@ -838,5 +1054,7 @@ __all__ = [
     "TierVerdict",
     "RULES",
     "compute_model_swap",
+    "model_set_by",
+    "set_elsewhere_sentence",
     "build_section",
 ]

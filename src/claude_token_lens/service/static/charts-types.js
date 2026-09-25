@@ -606,9 +606,11 @@ export function savingsLevers(tables) {
       });
     }
   }
-  // Each agent type's cheapest alternative, added up: the most any
-  // model change could save, so the model-tier action (a subset of these
-  // agent types) never shows a bigger figure than its lever.
+  // Each agent type's cheapest alternative, added up: the most a model
+  // change in settings or an agent file could save (a subagent's saving
+  // counts only the runs its agent file decides), so the model-tier
+  // action (a subset of these agent types) never shows a bigger figure
+  // than its lever.
   var movable = tableObjects(tables.model_swap_by_agent_type).filter(function (row) {
     return num(row.saving_usd) > 0;
   });

@@ -11,7 +11,7 @@ in this order: `overview`, `usage`, `elasticity` (only under
 subscription billing with usage-log readings), `sessions`, `recache`, `ttl`,
 `limits`, `carry`, `compaction_sim`, `plan_handoff`, `model_swap`, `waste`,
 `compactions`, `agent_startup`, `agents`, `run_split`, `hooks`, `quality`, `workstyle`, `habits`,
-`workflows`, `phases` (only with `--phases`), `config` (only when config
+`workflows`, `phases` (CLI only with `--phases`; the dashboard always has it), `config` (only when config
 snapshots exist), `context_budget`, `capture`, `scorecard`, and
 `baseline_comparison` (only with `--baseline`). `claude-token-lens
 report` prints it. This file groups sections by topic, so its order
@@ -64,7 +64,7 @@ and it's still useful when you want one section by itself.
 | `workstyle` | Workstyle | `workstyle.py` | one archetype per session/corpus: `overseer-fanout`, `plan-high-implement-low`, `workflow-heavy`, `effort-varied`, `chat-only`, `single-model`, `mixed` (the fallback when none of the other six match), with the evidence features |
 | `habits` | Work habits | `habits.py` | the "Weekly pace" digest, habits worth trying with a saving estimate and evidence, per-task and per-agent setup comparisons, and (once you rate sessions or use `/tl-feedback`) cost per piece of work that met its goal |
 | `workflows` | Workflows | `workflows.py` | per-run agent count, phase count, duration and cost from `<session>/workflows/wf_*.json` |
-| `phases` | Phases | `phases.py` | cost split across DISCOVERY (read/search only), IMPLEMENTATION (real edits or an ordinary shell command), VERIFICATION (a test/build tool, or a scratch-file edit), OTHER — only in the report when `--phases` is given |
+| `phases` | Phases | `phases.py` | cost split across DISCOVERY (read/search only), IMPLEMENTATION (real edits or an ordinary shell command), VERIFICATION (a test/build tool, or a scratch-file edit), OTHER — in the CLI's report only when `--phases` is given; the dashboard always builds it |
 | `config` | Config | `report.py` via `snapshots.py` | one diff table per config key that changed across the window's snapshots (capped at 20 keys) — only present when `snapshot-config` snapshots exist for the window |
 | `context_budget` | Context budget | `context_budget.py` | an estimated breakdown of what a session's context window is spent on before any real work (system prompt and tools, skills, memory files, custom agents, MCP tools), plus ground truth where the statusline logged it |
 | `capture` | Capture | `habits.py` | what metrics capture has cost since it was turned on, measured from the transcripts, and what the habits and feedback that depend on it are worth a week — see [`capture.md`](capture.md) |
@@ -529,19 +529,36 @@ changes a figure.
   observed model is already the cheapest available, its own volumes
   already beat the next tier down, or the family/tier can't be
   determined — the table never implies a saving where none exists.
-  Each row also carries the `lever` to change.
+  Each row also carries the `lever` to change. A subagent's saving and
+  alternative cover only the runs its agent file's `model:` line
+  decides (`model_swap.model_set_by`): runs a workflow script started,
+  or given a model when they started, keep that model whatever the
+  file says. Additive columns: `lever_runs`, `lever_priced_turns`,
+  `lever_model`, `lever_cost` (those runs), `workflow_runs` and
+  `spawn_model_runs` (the rest). Spawns, observed cost and every `Cost
+  at` column still cover every run. Two more states: `set_elsewhere`
+  (no run followed the file) and `no_lever` (`workflow-subagent`,
+  `fork`, `unknown`).
 - `model_swap_summary` — `scope`, `agent_types`, `observed_cost_usd`,
   `cost_after_tier_down_usd`, `saving_usd` and `saving_pct`: the
-  corpus-wide ceiling if every subagent type currently on Fable or Opus
-  moved one tier down (excludes top-level and any Fable/Opus type
-  already cheaper than its next tier).
+  corpus-wide ceiling if every subagent type whose agent-file runs are
+  on Fable or Opus moved one tier down, priced on those runs only
+  (excludes top-level and any Fable/Opus type already cheaper than its
+  next tier).
+- `model_swap_agent_file_runs` (report tier) — per named subagent type
+  with agent-file runs: `runs`, `priced_turns`, `observed_model`,
+  `observed_cost` and a `cost_<model-id>` column per model, for those
+  runs only. The what-if engine prices a subagent's model from it.
 
 `recommend.recommend()` runs the `model-tier` rule
 (`model_swap.RULES`). It fires per qualifying row (real cheaper
 alternative, sample and saving thresholds cleared) and names the exact
 lever: `settings.json`'s `"model"` key for the top-level conversation,
 or the subagent's `.claude/agents/<type>.md` frontmatter `model:` line.
-A Sonnet main session never gets Haiku: its row's state is
+When some runs were set elsewhere, it says the saving covers the runs
+started without a model and names how many a workflow script started
+or were given a model, with where each is set. A type whose runs were
+all set elsewhere gets no `.md` advice. A Sonnet main session never gets Haiku: its row's state is
 `main_floor`, with no alternative and no saving. `advice.finish` gives
 the main session's card its own id, `model-tier-main`, ranked last
 among cards of its severity.
@@ -634,7 +651,7 @@ the agents/skills/workflows it spawns" with numbers only:
 - `topology_chains_summary` — `stoppedByUser`/`maxTurns` truncation
   signals.
 - `topology_reminder_hook_pressure` — attachment/hook-output counts per
-  turn, by transcript kind.
+  turn, by transcript kind (`top-level`/`subagent`/`workflow-agent`).
 - `topology_cache_signal_histogram` — `CACHE_SIGNAL` subkind counts
   (model switches, thinking-stripped, ultra-effort enter/exit, deferred/
   prefix-loaded tool deltas, plan-mode/auto-mode transitions, output
@@ -647,7 +664,8 @@ the agents/skills/workflows it spawns" with numbers only:
   thinking share, by agent type.
 - `topology_context_composition` — context composition per turn
   (baseline / tool results by tool / assistant output / notifications
-  and attachments / compaction summaries), averaged per transcript kind.
+  and attachments / compaction summaries), averaged per transcript kind
+  (`top-level`/`subagent`/`workflow-agent`).
 - `topology_redundant_work` — repeated Bash/PowerShell command prefixes
   and post-compaction rediscovery signals ("how much am I paying to
   re-learn").
@@ -976,11 +994,16 @@ here since a turn usually does one or the other, not both.
 - `phases_summary` — turns, new tokens, cache-read tokens, output
   tokens, cost and cost share per phase.
 - `phases_by_transcript_kind` — the same, cross-tabbed by transcript
-  kind (`top-level`/`subagent`/`workflow-agent`).
+  kind (`top-level`/`subagent`/`workflow-agent`). A workflow agent is one
+  a workflow run started, found under
+  `<session>/subagents/workflows/<run_id>/`; it keeps the agent type it
+  was started as (`workflow-subagent` when it has no name), so
+  `phases_by_agent_type` still files a named one under its type.
 - `phases_by_agent_type` — the same, cross-tabbed by agent type.
 
-A DISCOVERY cost share above the module's threshold (default 35%, only
-evaluated when `--phases` was given) feeds the `discovery-share`
+A DISCOVERY cost share above the module's threshold (default 35%,
+evaluated whenever the section is present: with `--phases` on the CLI,
+always on the dashboard) feeds the `discovery-share`
 recommendation — see [Recommendations](#recommendations-recommendpy)
 below.
 
@@ -1433,7 +1456,7 @@ own `_rule_*` functions: `ttl-switch`, `long-tool-waits`,
 without `agent_startup` data; otherwise the per-part `spawn-claude-md`,
 `spawn-unused-skills`, `spawn-unused-mcp`, `spawn-read-only-tools`,
 `spawn-task-prompt` and `spawn-shared-claude-md`), `effort-mismatch`,
-`discovery-share` (only with `--phases`), `pricing-coverage`,
+`discovery-share` (when the `phases` section is present), `pricing-coverage`,
 `data-quality`, `limit-pressure`. Then each module's own rule:
 `tool-output-carry` (`carry.RULES`), `plan-handoff` (`handoff.RULES`),
 `run-split` (`run_split.RULES`), `hook-failures`, `hook-block-resent`

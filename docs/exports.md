@@ -88,7 +88,7 @@ usually wants those as separate dimensions.
 | `project` | project slug, or its hash (see above) |
 | `model` | model id as recorded on the turn, or `<unknown>` |
 | `entrypoint` | e.g. `claude-desktop`, `claude-code`, or `unknown` |
-| `agent_type` | the transcript's agent type, falling back to its `kind` (`top-level`/`subagent`/`workflow-agent`), or `unknown`. A custom agent's own name is hashed to `custom:<8 hex>` with the project names, as in a team document (below); with `--no-hash-slugs` it is printed as is |
+| `agent_type` | the transcript's agent type, falling back to its `kind` (`top-level`, `subagent`, or `workflow-agent` for one a workflow run started), or `unknown`. A custom agent's own name is hashed to `custom:<8 hex>` with the project names, as in a team document (below); with `--no-hash-slugs` it is printed as is |
 | `turns` | priced turn count in this cell |
 | `input_tokens` | summed input tokens |
 | `cache_write_5m_tokens` / `cache_write_1h_tokens` | summed `ephemeral_5m`/`ephemeral_1h` cache-creation tokens |

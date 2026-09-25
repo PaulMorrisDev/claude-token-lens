@@ -1591,9 +1591,10 @@ def build_report(
         )
         configured_window = None
         if snap is not None:
-            value = snapshots_mod.effective_config(snap).get("autoCompactWindow")
-            if isinstance(value, (int, float)) and not isinstance(value, bool):
-                configured_window = _apply_autocompact_pct_override(int(value), snap)
+            # CLAUDE_CODE_AUTO_COMPACT_WINDOW, when set, beats the setting.
+            value = snapshots_mod.auto_compact_window(snap)
+            if value is not None:
+                configured_window = _apply_autocompact_pct_override(value, snap)
         snapshot_windows[record.session_id] = configured_window
 
     compaction_sim_stats = compaction_sim.simulate_compaction_windows(

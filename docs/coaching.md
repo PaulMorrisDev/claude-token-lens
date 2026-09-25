@@ -1,0 +1,110 @@
+# Coaching notes
+
+Token Lens's tips are worked out after the fact, from sessions that have
+already ended. Coaching notes bring the ones that can be acted on in the
+moment into the session itself. When a hint applies, the capture hook
+(`capture-hook.py`) adds a short note to Claude's context, and Claude
+acts on it or tells you in one line.
+
+They are for wherever the status line doesn't show, such as the Claude
+desktop app. In the terminal, the coaching line (`coaching_line`) shows
+the same kind of hint in the status line instead, at no token cost.
+
+Coaching notes are off by default. Turn them on with:
+
+```
+claude-token-lens capture enable coaching_notes
+```
+
+or on the dashboard's Setup › Capture page. They run at any capture
+level, including off, and in every session, but not in a project that
+`[capture] projects` or `exclude_projects` leaves out. Like every
+capture change, the settings.json entries the hook needs are shown and
+added only after you say yes. `capture disable coaching_notes` turns
+them off; `capture remove` turns them off too, and takes the entries
+out.
+
+## The hints
+
+Each note starts `tl-coach v1 <hint>`, so Token Lens can find it in your
+transcripts again and measure what it cost. A note never carries a path,
+a command or your words: only token counts, an idle time and an agent
+type's name.
+
+| Hint | When | What the note asks of Claude |
+|---|---|---|
+| `plan_fresh` | You approve a plan, and building it in a fresh session would drop at least 40,000 tokens of planning context. | Tell you in one line that `/clear`, then asking Claude to carry out the saved plan, would carry that much less on every reply of the build. Then carry on. |
+| `split_run` | A subagent run passes the number of replies your own history says its type's runs are best split at (see [below](#your-own-split-points)). | If more than a step or two is left, finish the current step and end the report with what's done, what's left and the files involved, so a fresh agent can carry on. |
+| `quiet_output` | A tool result is about 8,000 tokens or more. A read already given a line limit is left alone. | Next time, ask for less: read only the lines needed, filter a command's output, narrow a search. |
+| `explore_reads` | The main session has made 8 reads and searches for one message. | If more searching is needed, hand it to an Explore agent, which searches in its own context and sends back a summary. |
+| `cache_cold` | You send a message after the prompt cache expired (5 minutes idle, or an hour when the session uses the 1-hour cache), with at least 20,000 tokens of context. | If your message starts something unrelated, say in one line that the reply wrote the whole context again, and that `/clear` before a new task after a break avoids it. Otherwise say nothing. |
+| `clear_context` | You send a message with 100,000 tokens or more of context. | If your message starts something unrelated, say in one line that `/clear` first would have saved re-reading it all. Otherwise say nothing. |
+
+One note at most per tool result or message: the first hint in the table
+that applies. The first four come after a tool result, the last two when
+you send a message. `split_run` shows only inside the subagent; the rest
+only in the main session, except `quiet_output`, which shows in both.
+
+Once a hint has shown, it rests for 30 minutes in that session, unless
+what's at stake has grown one and a half times since (a context grown
+from 100,000 to 150,000 tokens, say). `split_run` rests per run.
+
+## Your own split points
+
+Two hints depend on how you work. The dashboard's service works them out
+once a day, from a report of your last 30 days across every project, and
+writes them to `coaching.json` in Token Lens's data folder for the hook
+to read:
+
+- **Split points.** An agent type gets the `split_run` hint only when the
+  [run-split tip](run-split.md) shows its long runs would have cost less
+  split, at the interval it found best. An agent type whose tip you
+  ignored on the dashboard doesn't get it.
+- **The plan hint.** On unless you ignored the
+  [plan-handoff tip](plan-handoff.md), or most of your /tl-feedback
+  answers say your builds relied on the discussion before the plan. Its
+  threshold is the tip's own, `plan_handoff_min_dropped_tokens`.
+
+Without the service, `claude-token-lens capture refresh` works the file
+out now. Until there is one, no agent type gets the split hint and the
+plan hint is on. `capture status` says what the file holds.
+
+## Changing when they apply
+
+Every threshold above can be changed in `config.toml`'s `[thresholds]`
+table, and wins over the file:
+
+| Key | Default | What it sets |
+|---|---|---|
+| `coaching_plan_fresh_tokens` | 40000 | Planning context kept after a plan before `plan_fresh` applies. |
+| `coaching_quiet_output_tokens` | 8000 | A tool result's size before `quiet_output` applies. |
+| `coaching_explore_reads` | 8 | Reads and searches for one message before `explore_reads` applies. |
+| `coaching_cold_min_tokens` | 20000 | The smallest context `cache_cold` mentions. |
+| `coaching_clear_context_tokens` | 100000 | Context before `clear_context` applies. |
+| `coaching_cooldown_minutes` | 30 | How long a hint rests once shown. |
+| `coaching_rearm_factor` | 1.5 | How much what's at stake must grow to end the rest early. |
+
+## What it costs
+
+A note is about 50 to 120 tokens, written to the prompt cache once and read on
+every later reply of the session, like any other context. When Claude
+mentions a hint, that's one more line of output. Claude Code also waits
+for the hook after each shell, read, search, web or MCP result and each
+message you send: a few tens of milliseconds, a little more when the
+hook reads the end of the transcript.
+
+`capture status` and Setup › Capture show how many notes there were over
+the last 14 days, of which hints, and what they cost. They count towards
+`capture-hook.py`'s line in the Your hooks table, never towards capture's
+own note count or tag coverage.
+
+## What it doesn't do
+
+Coaching notes never change your settings, run `/clear` or start an
+agent: Claude can only follow a hint within the task you gave it, or
+tell you. The hook reads the end of the session's transcript (and a
+subagent's own, for `split_run`) and keeps a small state file,
+`coach-state.json`, holding when each hint last showed in each session
+(by a salted hash of its id, as the free signals keep it) and how many
+replies each subagent run has made.
+Entries older than a day are dropped.

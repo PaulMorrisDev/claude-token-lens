@@ -157,8 +157,9 @@ default. A snapshot holds:
 - **Environment variable names, never values**, for every name starting
   `ANTHROPIC_`, `CLAUDE_` or `OTEL_`, plus a short list of other
   documented Claude Code variables. A few numeric caps, such as
-  `MAX_THINKING_TOKENS` and `CLAUDE_CODE_MAX_OUTPUT_TOKENS`, also keep
-  their number, because they are limits, not secrets.
+  `MAX_THINKING_TOKENS`, `CLAUDE_CODE_MAX_OUTPUT_TOKENS` and
+  `CLAUDE_CODE_AUTO_COMPACT_WINDOW`, also keep their number, because
+  they are limits, not secrets.
 - **Settings values, but only for a small allowlist:**
   - `model`, `effortLevel` and `maxEffortLevel`;
   - `outputStyle`;

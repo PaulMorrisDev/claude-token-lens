@@ -1592,6 +1592,7 @@ def test_report_json_matches_cli_json_for_same_corpus(server):
         window="last 30 days",
         snapshots=_reconstruct_snapshots(server.store),
         session_overrides=overrides,
+        phases=True,
     )
     expected = json.loads(render_json(model))
     actual = json.loads(raw)

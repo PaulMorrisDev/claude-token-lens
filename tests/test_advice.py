@@ -77,8 +77,12 @@ def test_model_tier_cards_merge_into_one_with_a_change_per_agent_type():
     # settings change, which --launch can scope to one session), so it's
     # labelled persistent and given the plain saving figure -- no "At
     # most" session-ceiling framing, unlike the top-level change.
-    assert reviewer.note == "Persistent: affects every task this agent runs, not only one session."
+    assert reviewer.note == (
+        "Persistent: applies to every later run of this agent that isn't given a model when it starts, not only "
+        "one session."
+    )
     assert reviewer.saving and not reviewer.saving.startswith("At most")
+    assert "aren't counted" not in tier[0].why
     assert tier[0].saving_usd == 60.0
     assert tier[0].estimated_saving.startswith("At most 60.00 USD")
     fixes.attach_fixes(tier)
@@ -93,6 +97,38 @@ def test_model_tier_cards_merge_into_one_with_a_change_per_agent_type():
     assert main_card.saving_usd == 30.0
     assert main_card.title == "Your main session could run on Sonnet"
     assert "yours to make" in main_card.why
+
+
+def test_the_model_tier_card_names_runs_an_agent_file_does_not_decide():
+    """A workflow script or a model named at spawn sets some runs' model:
+    the card says how many and where that model is really set, and names
+    the model the file's own runs used."""
+    table = Table(
+        name="model_swap_by_agent_type",
+        columns=[
+            Column(key="agent_type", label="Agent type"),
+            Column(key="observed_model", label="Observed model"),
+            Column(key="best_cheaper_alternative_model", label="Alternative"),
+            Column(key="saving_usd", label="Saving", kind="money"),
+            Column(key="lever_model", label="Model on those runs"),
+            Column(key="workflow_runs", label="Workflow runs", kind="int"),
+            Column(key="spawn_model_runs", label="Spawn model runs", kind="int"),
+        ],
+        rows=[["reviewer", "claude-sonnet-5 (+1 more)", "claude-sonnet-5", 20.0, "claude-opus-5", 62, 1]],
+    )
+    report = ReportModel(
+        meta=ReportMeta(pricing=PricingMeta(coverage_pct=100.0)),
+        sections=[Section(key="model_swap", title="Model swap", tables=[table])],
+        diagnostics=Diagnostics(lines=1000),
+    )
+    snap = Snapshot(path=None, ts="2026-09-20T00:00:00Z", data={"agents": {"reviewer": {"source": "project"}}})
+    (card,) = [r for r in advice.finish([_tier("reviewer")], report, snap, Units()) if r.id == "model-tier"]
+    (change,) = card.changes
+    assert change.value == "sonnet"
+    assert change.current == "not set (used claude-opus-5)"
+    assert "62 runs a workflow script started (set the model in the script's agent() call)" in change.note
+    assert "1 run given a model when it started" in change.note
+    assert "Opus 5" in card.why and "aren't counted" in card.why
 
 
 def test_the_main_session_model_card_ranks_after_the_other_advice():
@@ -247,6 +283,38 @@ def test_compaction_window_is_dropped_when_already_at_or_below_the_floor():
     snap = Snapshot(path=None, ts="2026-09-20T00:00:00Z", data={"effective": {"autoCompactWindow": 200_000}})
     recs = [_compaction("compaction-window", title="Set autoCompactWindow to at least 250,000")]
     out = advice.finish(recs, report, snap, Units())
+    assert not any(r.id == "compaction-window" for r in out)
+
+
+def _env_window_snapshot(value: int, setting: int = 500_000) -> Snapshot:
+    """CLAUDE_CODE_AUTO_COMPACT_WINDOW set, from the user's settings env
+    block, over an autoCompactWindow setting it overrides."""
+    return Snapshot(
+        path=None,
+        ts="2026-09-20T00:00:00Z",
+        data={
+            "effective": {"autoCompactWindow": setting},
+            "env_names": ["CLAUDE_CODE_AUTO_COMPACT_WINDOW"],
+            "env_numeric_caps": {"CLAUDE_CODE_AUTO_COMPACT_WINDOW": value},
+            "effective_env_provenance": {"CLAUDE_CODE_AUTO_COMPACT_WINDOW": "user"},
+        },
+    )
+
+
+def test_compaction_window_changes_the_env_variable_while_it_overrides_the_setting():
+    report = _model_swap_report([])
+    recs = [_compaction("compaction-window", title="Set CLAUDE_CODE_AUTO_COMPACT_WINDOW to at least 250,000")]
+    out = advice.finish(recs, report, _env_window_snapshot(400_000), Units())
+    [change] = next(r for r in out if r.id == "compaction-window").changes
+    assert change.key == "env.CLAUDE_CODE_AUTO_COMPACT_WINDOW"
+    assert (change.value, change.current, change.scope) == ("250000", "400000", "user")
+
+
+def test_compaction_window_is_dropped_when_the_env_variable_is_already_below_the_floor():
+    # The setting (500,000) is above the floor, but the variable wins.
+    report = _model_swap_report([])
+    recs = [_compaction("compaction-window", title="Set CLAUDE_CODE_AUTO_COMPACT_WINDOW to at least 250,000")]
+    out = advice.finish(recs, report, _env_window_snapshot(200_000), Units())
     assert not any(r.id == "compaction-window" for r in out)
 
 

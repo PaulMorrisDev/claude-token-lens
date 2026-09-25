@@ -437,6 +437,7 @@ def test_load_meta_derives_agent_id_and_session_id_from_path(tmp_path):
     assert meta.agent_id == "agent-deadbeef"
     assert meta.session_id == "session-xyz-789"
     assert meta.workflow_run_id is None
+    assert meta.kind == "subagent"
 
 
 def test_load_meta_derives_session_id_and_run_id_for_workflow_nested_agent(tmp_path):
@@ -450,6 +451,20 @@ def test_load_meta_derives_session_id_and_run_id_for_workflow_nested_agent(tmp_p
     assert meta.agent_id == "agent-1"
     assert meta.session_id == "session-xyz-789"  # not "workflows" (the buggy shallow derivation)
     assert meta.workflow_run_id == "wf_run_a"
+
+
+@pytest.mark.parametrize("agent_type", ["workflow-subagent", "code-reviewer"])
+def test_load_meta_gives_a_workflow_nested_agent_its_own_kind_and_keeps_its_type(tmp_path, agent_type):
+    # A named agent a workflow starts keeps its type; an unnamed one is
+    # "workflow-subagent". Either way its kind says it ran under a workflow.
+    run_dir = tmp_path / "session-xyz-789" / "subagents" / "workflows" / "wf_run_a"
+    run_dir.mkdir(parents=True)
+    meta_path = run_dir / "agent-1.meta.json"
+    meta_path.write_text(json.dumps({"agentType": agent_type}))
+
+    meta = discovery.load_meta(meta_path)
+    assert meta.kind == "workflow-agent"
+    assert meta.agent_type == agent_type
 
 
 def test_load_meta_sets_path_mtime_and_size_from_sibling_transcript(tmp_path):

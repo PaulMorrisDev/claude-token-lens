@@ -547,7 +547,10 @@ day leads to its sessions and a change marker to what it did. Then cost
 by model (`overview.by_model`, placed by `TABLE_PAGE_MAP`), the
 `usage`, `elasticity`, `compactions` and `phases` sections, and
 `/api/compactions`, newest first. `elasticity` shows only under
-subscription billing with usage-limit readings.
+subscription billing with usage-limit readings. `phases` ("Where the
+work went") is always built for the dashboard (the CLI needs
+`--phases`): Cost by phase up front, and the main session, subagent and
+workflow-agent split and the per-agent-type split under More tables.
 
 ### Spend › Savings
 
@@ -564,7 +567,9 @@ sections, each from its own route rather than the full report:
 - `/api/plan-handoff`: what building in a fresh session after each big
   approved plan could have saved (no bar in chart 2: it overlaps with
   the conversation-summary saving);
-- `/api/model-swap`: the most a one-tier-cheaper model could save;
+- `/api/model-swap`: the most a one-tier-cheaper model could save,
+  counting for each subagent only the runs its agent file's model
+  decides;
 - `/api/waste`: spend on replies whose output was never used.
 
 Their recommendations show on Actions › Recommendations, not here.

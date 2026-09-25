@@ -162,11 +162,22 @@ EXPECTATIONS: tuple[tuple[str, str], ...] = (
 UNINSTALL_COMMAND = "claude-token-lens uninstall --revert-changes --delete-data --dry-run"
 
 
+#: What coaching notes cost, for :func:`expectations` and the hooks row.
+COACHING_COST = (
+    "Coaching notes are on: when a hint applies, a hook adds a short note (about 50 to 120 tokens) to Claude's "
+    "context. {{page:setup/capture}} shows what they cost. Turn them off with "
+    "'claude-token-lens capture disable coaching_notes'."
+)
+
+
 def expectations(capture: CaptureConfig | None = None) -> tuple[tuple[str, str], ...]:
     """:data:`EXPECTATIONS`, with the first item saying what metrics
-    capture costs while ``capture`` is on."""
-    if capture is None or not capture.is_on:
+    capture costs while ``capture`` is on, and what coaching notes cost
+    while they are."""
+    if capture is None or not (capture.is_on or capture.coaching_notes_on):
         return EXPECTATIONS
+    if not capture.is_on:
+        return (("It uses a few of your Claude tokens while coaching notes are on", COACHING_COST),) + EXPECTATIONS[1:]
     level = capture_catalogue.LEVEL_TITLES.get(capture.level, capture.level)
     if _uses_tokens(capture):
         text = (
@@ -179,7 +190,25 @@ def expectations(capture: CaptureConfig | None = None) -> tuple[tuple[str, str],
             f"Metrics capture is on ({level}), but at this level it only logs a few free signals to a local "
             "file, so it adds no tokens. This tool never calls Claude itself."
         )
+    if capture.coaching_notes_on:
+        text += " " + COACHING_COST
     return ((("It uses a few of your Claude tokens while capture is on"), text),) + EXPECTATIONS[1:]
+
+
+def _hooks_token_cost(capture: CaptureConfig, level: str) -> str:
+    """The capture hooks row's token cost: capture's note and tags, and
+    coaching notes while they're on."""
+    if capture.is_on and _uses_tokens(capture):
+        text = f"Some while capture is on (now: {level}): the note and the tags."
+    elif capture.is_on:
+        text = f"None at {level}: the free signals only write to a local file."
+    else:
+        text = "None from capture while it's off." if capture.coaching_notes_on else "None while capture is off."
+    if capture.coaching_notes_on:
+        text += " Coaching notes: about 50 to 120 tokens each time a hint applies."
+    if (capture.is_on and _uses_tokens(capture)) or capture.coaching_notes_on:
+        text += " {{page:setup/capture}} shows the measured amount."
+    return text
 
 
 def _uses_tokens(capture: CaptureConfig) -> bool:
@@ -332,11 +361,11 @@ def inventory(
     )
     capture = capture_setting(config_dir)
     capture_health = hook_health.check_capture(
-        hook_health.capture_specs(capture.active_metrics()), claude_root=claude_root, config_dir=config_dir
+        hook_health.capture_specs(capture.hook_metrics()), claude_root=claude_root, config_dir=config_dir
     )
     installed = capture_health.needed + capture_health.extra
     installed = tuple(spec for spec in installed if spec not in capture_health.missing)
-    if installed or capture.is_on:
+    if installed or capture.is_on or capture.coaching_notes_on:
         level = capture_catalogue.LEVEL_TITLES.get(capture.level, capture.level)
         items.append(
             FootprintItem(
@@ -349,16 +378,10 @@ def inventory(
                     "to end its replies with a one-line tag (task kind, how clear the request was, and so on), so "
                     "this tool can tell where your tokens go. The free signals (why sessions end, when Claude "
                     "waited for you, which tools asked for permission) go to a file in this tool's data folder. "
-                    "With capture off the hooks add nothing."
+                    "With coaching notes on, they also add a short hint to Claude's context when one applies, at "
+                    "any capture level. With capture and coaching notes off the hooks add nothing."
                 ),
-                token_cost=(
-                    f"Some while capture is on (now: {level}): the note and the tags. "
-                    "{{page:setup/capture}} shows the measured amount."
-                    if capture.is_on and _uses_tokens(capture)
-                    else f"None at {level}: the free signals only write to a local file."
-                    if capture.is_on
-                    else "None while capture is off."
-                ),
+                token_cost=_hooks_token_cost(capture, level),
                 undo="claude-token-lens capture off, then claude-token-lens capture remove",
             )
         )

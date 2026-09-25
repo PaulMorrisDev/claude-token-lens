@@ -409,6 +409,70 @@ def _add_notes(use: CaptureUsage, result: TranscriptResult, carry: _Carry, subag
             use.after_compact_cost += cost
 
 
+@dataclass(slots=True)
+class CoachingUsage:
+    """What coaching notes (``coaching_notes``) cost from ``since`` on:
+    each note carried in context until the next summary or the
+    transcript's end, as a capture note is priced. Claude's one-line
+    mention of a hint, when it makes one, isn't counted."""
+
+    since: str = ""
+    #: Sessions with a coaching note, in their main transcript or a subagent.
+    sessions: int = 0
+    notes: int = 0
+    note_tokens: int = 0
+    cost: float = 0.0
+    #: Hint (``capture_catalogue.COACHING_HINTS``, or "other") -> notes.
+    by_kind: dict[str, int] = field(default_factory=dict)
+    #: Everything those sessions cost from ``since`` on.
+    spend: float = 0.0
+
+    @property
+    def share(self) -> float | None:
+        return 100.0 * self.cost / self.spend if self.spend > 0 else None
+
+
+def _coaching_notes(result: TranscriptResult):
+    """``(ts, chars, kind)`` per coaching note in ``result``, alone or
+    sharing an attachment with a capture note."""
+    for event in result.events:
+        if event.subkind == "coaching_note" and event.size_chars:
+            yield event.ts, event.size_chars, event.detail.get("kind") or "other"
+        elif event.subkind == "capture_note" and event.detail.get("coach_chars"):
+            yield event.ts, event.detail["coach_chars"], event.detail.get("coach") or "other"
+
+
+def coaching_usage(corpus, pricing: Pricing | None, since: str = "") -> CoachingUsage:
+    """What coaching notes cost across ``corpus`` from ``since`` (an ISO
+    time) on, whatever the capture level."""
+    use = CoachingUsage(since=since)
+    start = _start(since)
+    for bundle in corpus.sessions:
+        found = False
+        results = ([bundle.top] if bundle.top is not None else []) + list(bundle.subs)
+        for result in results:
+            notes = [
+                (ts, chars, kind) for ts, chars, kind in _coaching_notes(result)
+                if start is None or ((moment := _parse_ts(ts)) is not None and moment >= start)
+            ]
+            if not notes:
+                continue
+            found = True
+            carry = _Carry(result, pricing)
+            ends = _segment_ends(result, carry)
+            for ts, chars, kind in notes:
+                at = carry.index_at(ts)
+                end = next((e for e in ends if e > at), len(carry.turns))
+                use.notes += 1
+                use.note_tokens += round(chars / CHARS_PER_TOKEN)
+                use.cost += carry.cost(chars, at, end)
+                use.by_kind[kind] = use.by_kind.get(kind, 0) + 1
+        if found:
+            use.sessions += 1
+            use.spend += sum(_spend(result, pricing, start) for result in results)
+    return use
+
+
 def _add_tags(use: CaptureUsage, result: TranscriptResult, carry: _Carry, pricing, subagent: bool, since) -> None:
     ends = _segment_ends(result, carry)
     for turn in _priced(result):
@@ -871,6 +935,7 @@ def weekly_cost(use: CaptureUsage, now: datetime | None = None) -> float | None:
 
 __all__ = [
     "CaptureUsage",
+    "CoachingUsage",
     "Cycle",
     "ENOUGH",
     "Estimate",
@@ -878,6 +943,7 @@ __all__ = [
     "HISTORY_DAYS",
     "History",
     "ScopeUse",
+    "coaching_usage",
     "cycle_feedback",
     "enough_data",
     "enough_target",

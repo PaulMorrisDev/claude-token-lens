@@ -544,6 +544,7 @@ has the detail.
 | answer `init`'s questions, or read a baseline | [`docs/onboarding.md`](docs/onboarding.md) |
 | try or apply a profile | [`docs/profiles.md`](docs/profiles.md) |
 | turn on metrics capture | [`docs/capture.md`](docs/capture.md) |
+| get hints during a session in the desktop app | [`docs/coaching.md`](docs/coaching.md) |
 | compare two setups, or check against an Admin API export | [`docs/compare.md`](docs/compare.md) |
 | export numbers, or compare a team | [`docs/exports.md`](docs/exports.md), [`docs/team.md`](docs/team.md) |
 | check what it reads, stores and sends | [`SECURITY.md`](SECURITY.md) |

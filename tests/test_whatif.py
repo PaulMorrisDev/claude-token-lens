@@ -94,6 +94,27 @@ def test_an_agent_model_uses_that_agent_row():
     assert (row["agent"], row["saving_usd"]) == ("Explore", 8.0)
 
 
+def test_an_agent_model_prices_only_the_runs_its_agent_file_decides():
+    """A workflow script or a model named at spawn sets the other runs'
+    model, so the agent file's what-if leaves them out."""
+    model = _model()
+    model.sections[0].tables.append(_table("model_swap_agent_file_runs", [
+        {"agent_type": "Explore", "runs": 2, "observed_cost": 4.0, "cost_claude-sonnet-4-5": 2.5,
+         "cost_claude-haiku-4-5": 1.0},
+    ]))
+    [row] = whatif.estimate({}, {"Explore": {"model": "haiku"}}, model, UNITS, period=PERIOD)["rows"]
+    assert (row["saving_usd"], row["fidelity"]) == (3.0, "ceiling")
+    assert "started without a model of their own" in row["basis"]
+    # The main session is still priced on its whole row.
+    [top] = whatif.estimate({"model": "sonnet"}, {}, model, UNITS, period=PERIOD)["rows"]
+    assert top["saving_usd"] == 40.0
+    # An agent none of whose runs followed its file has nothing to price.
+    model.sections[0].tables[-1].rows.clear()
+    [none] = whatif.estimate({}, {"Explore": {"model": "haiku"}}, model, UNITS, period=PERIOD)["rows"]
+    assert none["saving_usd"] is None and none["fidelity"] == "none"
+    assert "workflow script" in none["basis"]
+
+
 def test_subagent_ttl_sums_every_subagent_and_can_cost_more():
     [row] = _estimate({"subagentPromptCacheTtl": "1h"})["rows"]
     assert row["saving_usd"] == -1.5

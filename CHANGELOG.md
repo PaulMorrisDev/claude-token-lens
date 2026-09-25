@@ -9,6 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Coaching notes: live hints inside the session, in the desktop app
+  too.** The status line's coaching line only shows in a terminal. With
+  `capture enable coaching_notes`, the capture hook adds a short note
+  (about 50 to 120 tokens) to Claude's context when a hint applies, and
+  Claude acts on it or tells you in one line:
+  - `plan_fresh`: an approved plan kept a lot of planning context, so
+    building it after `/clear` would carry less on every reply.
+  - `split_run`: a subagent run passed the reply count your own history
+    says its type is best split at.
+  - `quiet_output`: a tool result of about 8,000 tokens or more.
+  - `explore_reads`: 8 reads and searches for one message.
+  - `cache_cold` and `clear_context`: you sent a message after the cache
+    expired, or with 100,000 tokens of context, and it starts something
+    unrelated.
+
+  Notes run at any capture level, rest 30 minutes per hint and session,
+  and never change a setting. Your split points and plan habit come from
+  `coaching.json`, which the service works out daily from your last 30
+  days (leaving out tips you ignored) and `capture refresh` works out
+  now. `capture status` and Setup › Capture show what the notes cost.
+  Every threshold is a `[thresholds] coaching_*` key. See
+  [`docs/coaching.md`](docs/coaching.md). Transcripts are read again
+  once (`PARSER_VERSION` 25).
 - **Agents & context › Hooks: whether each hook you set up works, and
   what it costs.** Per hook, by its script's file name: failed runs and
   why (script not found, timed out or an error), whether its path is
@@ -75,6 +98,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   names are each worked out once.
 
 ### Fixed
+
+- **`CLAUDE_CODE_AUTO_COMPACT_WINDOW` counts as your auto-compact
+  window.** The variable overrides the `autoCompactWindow` setting, but
+  only the setting was read. So the compaction replay started from the
+  wrong window, and the advice asked you to change a setting that had no
+  effect. The config hook now keeps the variable's value, and the window
+  comes from the variable whenever it's set. The replay, the context
+  budget table and the "Now" value on every card use it. The
+  compaction advice then changes the variable, in a settings file's
+  `env` block, whose value replaces the one from your shell. A profile
+  draft still offers the setting, unticked, and says it won't apply.
+  Refresh the hook for the value to be kept; until then the window
+  reads as unknown while the variable is set.
+
+- **Workflow agents get their own row wherever a table splits by
+  transcript kind.** Every agent a workflow run started was filed as a
+  subagent, so "Workflow agents" never appeared in "Cost by phase: main
+  session vs subagents" (`report --phases`), "Claude Code notes and hook
+  output per reply" or "What fills the context window". On a 30-day
+  corpus of 1,586 subagent transcripts, 525 move to the new row. Totals,
+  and every table not split by kind, are unchanged. A workflow agent
+  keeps the agent type it was started as, so a named reviewer still
+  counts under its own name. When a session's explanation names the
+  costliest agent type, it now adds up that type's direct and workflow
+  runs. Transcripts are read again once (`PARSER_VERSION` 24).
+
+- **Model advice for a subagent prices only the runs its agent file
+  decides.** A model named when a run starts wins over the agent file's
+  `model:` line, and a workflow script sets the model for the agents it
+  starts. The `.meta.json` `model` turned out to be the model the spawn
+  asked for: on real history it matched the spawn's own `model` on every
+  direct run, and the run's replies always used it. The saving still
+  counted those runs, so it offered to change a file that decided almost
+  none of them. On a 30-day corpus, one reviewer type had 106 runs: 60
+  from workflow scripts, 43 given a model, 3 following its file; its
+  saving falls from $82.08 to $4.39. The corpus-wide ceiling falls from
+  $333.08 to $47.36. A type none of whose runs followed its file gets no
+  `.md` advice. The advice now says how many runs a workflow script or
+  the spawn decided, and where to change those. `model_swap_by_agent_type`
+  gains additive `lever_runs`, `lever_priced_turns`, `lever_model`,
+  `lever_cost`, `workflow_runs` and `spawn_model_runs` columns, and a
+  report-tier `model_swap_agent_file_runs` table feeds the what-if
+  engine. Spawns, observed cost and every `Cost at` column are
+  unchanged. The Models quick action gains a "Model set by" column.
+
+- **Spend › Usage shows where the work went.** The dashboard never
+  built the phases section, so "Cost by phase" and its main session,
+  subagent and workflow-agent split never appeared, and the
+  `discovery-share` recommendation could never fire there. It is now
+  always built, adding about 1% to a report build (10.4 s to 10.55 s on
+  a 30-day store); its figures match `report --phases`. The CLI still
+  needs `--phases`. The section's notes and the recommendation's
+  evidence now name the phases as the tables do (Exploring, Building,
+  Checking, Other).
 
 - **The dashboard reads each project's own settings again.** It filed
   every settings snapshot under "(unknown project)", so Setup › Settings

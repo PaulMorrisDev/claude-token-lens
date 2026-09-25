@@ -1114,7 +1114,7 @@ def _annotate_hook_event(event: Event, attachment, context_queue: dict[tuple[str
         tool_use_id if isinstance(tool_use_id, str) and tool_use_id.startswith("toolu_") else "",
         events_mod.hook_event_name(attachment),
     )
-    if event.subkind in ("hook_additional_context", "capture_note"):
+    if event.subkind in ("hook_additional_context", "capture_note", "coaching_note"):
         queued = context_queue.get(key)
         label = queued.pop(0) if queued else None
         if event.subkind == "hook_additional_context":
@@ -1367,8 +1367,10 @@ def _finalize_turn(
     hook_context_chars: dict[str, int] = {}
     commands_run: list[str] = []
     for pending_event in pending_events:
-        if pending_event.kind == EventKind.HOOK_OUTPUT and pending_event.subkind == "capture_note":
-            cap_note_chars += pending_event.size_chars or 0
+        if pending_event.kind == EventKind.HOOK_OUTPUT and pending_event.subkind in ("capture_note", "coaching_note"):
+            # A coaching note is Token Lens's too: it counts to the hook's
+            # context, never to capture's note count (cap_injections).
+            cap_note_chars += (pending_event.size_chars or 0) + (pending_event.detail.get("coach_chars") or 0)
             continue
         if pending_event.kind == EventKind.HOOK_OUTPUT and pending_event.subkind == "hook_additional_context":
             label = pending_event.detail.get("script") or "built-in"

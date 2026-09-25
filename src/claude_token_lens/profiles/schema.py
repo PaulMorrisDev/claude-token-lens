@@ -251,6 +251,8 @@ ENV_ALLOWLIST: dict[str, LeverSpec] = {
         "DISABLE_PROMPT_CACHING_FABLE",
         "ENABLE_TOOL_SEARCH",
         "CLAUDE_CODE_MAX_OUTPUT_TOKENS",
+        # Overrides autoCompactWindow while set (docs/en/env-vars.md).
+        "CLAUDE_CODE_AUTO_COMPACT_WINDOW",
     )
 }
 

@@ -78,7 +78,10 @@ least once: `hooks/capture-hook.py`, `hooks/capture-catalogue.json`
 (a copy of the packaged metric catalogue the hook reads),
 `capture-log.jsonl` (one JSON line per `[capture]` change — the level,
 sample, `until` etc. you set, never anything from a transcript) and
-`signals/YYYY-MM.jsonl` (see "Metrics capture" below). The only other
+`signals/YYYY-MM.jsonl` (see "Metrics capture" below), and, once
+coaching notes have been turned on, `coaching.json` (agent-type names
+and split points) and `coach-state.json` (see "Coaching notes" under
+"Metrics capture"). The only other
 files it writes are output files you name on the command line: for
 example `--out` (`export`, `monthly-report`, `scrub-fixture`), `report
 --html PATH` or `serve --monthly-report DIR`.
@@ -304,8 +307,24 @@ final report) with one line of closed-vocabulary tags, e.g. `[tl:
 task=bugfix brief=clear]`; `init` and `capture on` print a token-cost
 estimate from your own history before you confirm it (see
 [docs/onboarding.md](docs/onboarding.md) for the exact wording). With
-capture off, none of this happens — Claude Code runs exactly as it does
-without this tool installed.
+capture and coaching notes off, none of this happens — Claude Code runs
+exactly as it does without this tool installed.
+
+**Coaching notes.** Off by default and separate from the level:
+`capture enable coaching_notes` turns them on, at any level, after the
+same settings.json diff and yes. When a hint applies, the capture hook
+adds a short note to Claude's context, `tl-coach v1 <hint>` and a
+sentence built only from token counts, an idle time and an agent
+type's name — never a path, command or anything you wrote. To decide,
+the hook reads the last 256 KB of the session's transcript (the first
+512 KB for the plan hint's starting size, and a subagent's own
+transcript for the split hint), counting sizes and tool names only;
+nothing it reads is kept. `coach-state.json` holds, per session, when
+each hint last showed, keyed by the same salted session hash as the
+signals, and per subagent run a byte offset and reply count; entries
+older than a day are dropped. `coaching.json` holds agent-type names
+and numbers. Neither ever leaves `<config-dir>`. See
+[docs/coaching.md](docs/coaching.md).
 
 **No free text is ever kept.** `capture_tags.py` reads only the last
 `TAIL_SCAN_CHARS` (480) characters of a reply, only when the tags are

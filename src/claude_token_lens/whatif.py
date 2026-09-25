@@ -3,7 +3,9 @@ on the report's own window, looked up in tables the report already
 computes -- no new simulation:
 
 - a model for the main session or an agent: ``model_swap_by_agent_type``
-  (the same tokens repriced);
+  for the main session, and ``model_swap_agent_file_runs`` for an agent,
+  since its file's ``model`` decides only the runs started without a
+  model of their own (the same tokens repriced);
 - ``autoCompactWindow``: ``compaction_sim_by_window`` (sessions replayed
   with that window; EST-P2 -- not estimated past
   ``CompactionSimThresholds().max_compactions_per_session``, the same
@@ -89,6 +91,15 @@ class _Tables:
                     return [dict(zip(keys, row)) for row in table.rows]
         return []
 
+    def has(self, section_key: str, table_name: str) -> bool:
+        """Whether the report has this table at all, rows or not."""
+        return any(
+            table.name == table_name
+            for section in getattr(self.model, "sections", ()) or ()
+            if section.key == section_key
+            for table in section.tables
+        )
+
     def row(self, section_key: str, table_name: str, agent: str) -> dict | None:
         return next((r for r in self.rows(section_key, table_name) if r.get("agent_type") == agent), None)
 
@@ -128,6 +139,19 @@ def _model(tables: _Tables, agent: str, value, key: str, label: str | None) -> d
     row = tables.row("model_swap", "model_swap_by_agent_type", agent)
     if row is None:
         return _row(key, label, value, None, "none", f"No {agent} runs in this window.")
+    runs = ""
+    if agent != TOP and tables.has("model_swap", "model_swap_agent_file_runs"):
+        # An agent file's model decides only the runs started without a
+        # model of their own; a workflow script or the spawn sets the rest.
+        # (A report from before that table priced the whole row.)
+        row = tables.row("model_swap", "model_swap_agent_file_runs", agent)
+        if row is None:
+            return _row(
+                key, label, value, None, "none",
+                f"No {agent} run in this window followed its agent file's model: a workflow script or the "
+                "spawn itself named it.",
+            )
+        runs = " started without a model of their own"
     column = _model_column(row, value)
     observed = _num(row.get("observed_cost"))
     new = _num(row.get(column)) if column else None
@@ -140,7 +164,9 @@ def _model(tables: _Tables, agent: str, value, key: str, label: str | None) -> d
         value,
         observed - new,
         "ceiling",
-        f"Worked out by repricing {who}'s replies in this window at {column[len('cost_'):]}. "
+        f"Worked out by repricing the replies of {who}'s runs in this window{runs} at {column[len('cost_'):]}. "
+        if runs
+        else f"Worked out by repricing {who}'s replies in this window at {column[len('cost_'):]}. "
         "A different model may need more or fewer replies for the same work, which this doesn't capture.",
     )
 

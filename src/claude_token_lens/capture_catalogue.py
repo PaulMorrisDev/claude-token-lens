@@ -296,6 +296,102 @@ HOOK_SCRIPT = "capture-hook.py"
 CATALOGUE_FILE = "capture-catalogue.json"
 
 
+# -- coaching notes ------------------------------------------------------------
+
+#: The marker every coaching note (``coaching_notes``) carries, then its
+#: format version and the hint's kind (``tl-coach v1 quiet_output``). The
+#: parser finds coaching notes by it. It differs from :data:`NOTE_MARKER`
+#: so a coaching note never makes a session count as captured, whose
+#: replies are then expected to carry tags.
+COACH_MARKER = "tl-coach v"
+COACH_VERSION = 1
+
+#: Your own split points and plan habit, worked out from your recent
+#: sessions by the dashboard's service (``coaching.py``) for the hook to
+#: read, in the data folder.
+COACHING_FILE = "coaching.json"
+
+#: What the hook keeps between calls, per session: which hint showed
+#: when, and how far each subagent run had got. In the data folder.
+COACH_STATE_FILE = "coach-state.json"
+
+#: Tools whose results a coaching note may follow: every tool the
+#: large-output note watches, and ``ExitPlanMode`` for an approved plan.
+COACHING_TOOLS = (*BIG_OUTPUT_TOOLS, "ExitPlanMode")
+
+#: Tools the ``explore_reads`` hint counts as reads and searches.
+COACHING_READ_TOOLS = ("Read", "Grep", "Glob")
+
+#: The live hints: after a tool result (the first four, most useful
+#: first when more than one applies) and when you send a message.
+COACHING_HINTS = ("plan_fresh", "split_run", "quiet_output", "explore_reads", "cache_cold", "clear_context")
+
+#: When each hint applies, and how often it may repeat. Each can be
+#: changed in ``config.toml``'s ``[thresholds]`` as ``coaching_<key>``.
+COACHING_THRESHOLDS = {
+    #: Context, in tokens, at which a message you send gets the /clear hint.
+    "clear_context_tokens": 100_000,
+    #: The smallest context the expired-cache hint is worth mentioning.
+    "cold_min_tokens": 20_000,
+    #: A tool result this many tokens long gets the narrower-output hint.
+    "quiet_output_tokens": 8_000,
+    #: This many reads and searches for one message get the Explore hint.
+    "explore_reads": 8,
+    #: Planning context, in tokens, kept after an approved plan before the
+    #: fresh-session hint applies (``plan_handoff_min_dropped_tokens``'s
+    #: default).
+    "plan_fresh_tokens": 40_000,
+    #: A hint that showed stays quiet this long in the same session...
+    "cooldown_minutes": 30,
+    #: ...unless what's at stake has grown this many times since.
+    "rearm_factor": 1.5,
+}
+
+#: What each hint asks of Claude. ``{placeholders}`` are filled from the
+#: session: token counts in thousands (``150k``), an idle time, a count.
+#: A note never carries a path, a command or your words.
+COACHING_TEXT = {
+    "cache_cold": (
+        "The prompt cache expired while this session sat idle for {idle}, so this reply writes the whole context "
+        "again: about {ctx} tokens at the cache-write price. If the user's message starts a task unrelated to the "
+        "work so far, end your reply, before any tag, with one line saying so, and that /clear before a new task "
+        "after a break avoids it. If it carries on the same work, don't mention it."
+    ),
+    "clear_context": (
+        "This session's context is about {ctx} tokens, and every reply reads all of it again. If the user's "
+        "message starts a task unrelated to the work so far, end your reply, before any tag, with one line saying "
+        "that /clear before a new task would have saved that. If it carries on the same work, don't mention it."
+    ),
+    "quiet_output": "That result was about {tokens} tokens, and every later reply reads it again. Next time, {how}.",
+    "explore_reads": (
+        "You've made {reads} reads and searches for this message, about {tokens} tokens that every later reply "
+        "reads again. If more searching is needed, hand it to an Explore agent: it searches in its own context "
+        "and sends back a short summary."
+    ),
+    "plan_fresh": (
+        "This plan was approved with about {kept} tokens of planning in context, which every reply of the build "
+        "reads again. Before you start building, tell the user in one line that building it in a fresh session "
+        "(/clear, then ask Claude to carry out the saved plan) would carry about {kept} fewer tokens on each "
+        "reply. Then carry on unless they stop you."
+    ),
+    "split_run": (
+        "This run has made about {replies} replies, and every reply reads all of the run again. In this user's "
+        "past sessions, {agent} runs cost less when split about every {every_n} replies. If more than a step or "
+        "two is left, finish the step you're on and end your report with a short note of what's done, what's "
+        "left and the files involved, so a fresh agent can carry on from it."
+    ),
+}
+
+#: ``quiet_output``'s ``{how}``, by tool; ``""`` for any other tool.
+COACHING_QUIET_HOW = {
+    "Read": "read only the lines you need, with an offset and a limit",
+    "Bash": "cut the command's output down first: a filter, head or tail, or a quieter flag",
+    "Grep": "narrow the pattern or the path, or ask for file names or counts only",
+    "Glob": "narrow the pattern",
+    "": "ask for less: a narrower query or a smaller page",
+}
+
+
 @dataclass(frozen=True, slots=True)
 class Metric:
     """One thing capture can measure, and everything the Capture page,
@@ -758,6 +854,22 @@ METRICS: tuple[Metric, ...] = (
         "a new task, a large last output, or many reads so far.",
         why="Advice where you work, at the moment it applies. The status line is never sent to Claude.",
         powers=("context", "tool_output", "research"),
+    ),
+    Metric(
+        id="coaching_notes",
+        group="coaching",
+        section="coaching",
+        title="Coaching notes from Claude",
+        what="Live hints for where the status line doesn't show, such as the desktop app. When one applies, a "
+        "hook adds a short note to Claude's context, and Claude acts on it or tells you in one line: a large "
+        "tool output, many reads for one message, a subagent run past the point where your own history says "
+        "splitting pays, a plan approved on top of a lot of planning context, or a large context or an expired "
+        "cache when you send a message.",
+        why="Advice at the moment it applies, and Claude can often act on it itself. Each note costs a few dozen "
+        "tokens for the rest of the session. Claude Code waits for the hook after each shell, read, search, web "
+        "or MCP result and each message you send.",
+        powers=("context", "tool_output", "research", "delegation", "planning"),
+        hooks=("UserPromptSubmit", "PostToolUse"),
     ),
     Metric(
         id="brief_templates",
@@ -1235,19 +1347,25 @@ def hook_specs(ids) -> tuple[tuple[str, str, str, bool], ...]:
     conversation turn, which would put a session/agent-start note one
     turn late and a Deep tool note a full reply behind the result it's
     about, so these stay synchronous; the tool note's matcher keeps
-    that wait to the tools whose results can be large. SessionEnd runs
-    as the session closes, when nothing waits on it; the other signals
-    run in the background."""
+    that wait to the tools whose results can be large. Coaching notes
+    (``coaching_notes``) add the message you send and approved plans to
+    that, in one PostToolUse entry shared with the tool note. SessionEnd
+    runs as the session closes, when nothing waits on it; the other
+    signals run in the background."""
     wanted = set(ids)
     main = any(m.id in wanted and (m.main_line or m.main_extra) for m in METRICS)
     sub = any(m.id in wanted and (m.sub_line or m.sub_extra) for m in METRICS)
+    coach = "coaching_notes" in wanted
     specs: list[tuple[str, str, str, bool]] = []
     if main:
         specs.append((HOOK_SCRIPT, "SessionStart", SESSION_START_MATCHER, False))
     if sub:
         specs.append((HOOK_SCRIPT, "SubagentStart", "", False))
-    if "big_output" in wanted:
-        specs.append((HOOK_SCRIPT, "PostToolUse", "|".join(BIG_OUTPUT_TOOLS), False))
+    if coach:
+        specs.append((HOOK_SCRIPT, "UserPromptSubmit", "", False))
+    tools = (*(BIG_OUTPUT_TOOLS if "big_output" in wanted else ()), *(COACHING_TOOLS if coach else ()))
+    if tools:
+        specs.append((HOOK_SCRIPT, "PostToolUse", "|".join(dict.fromkeys(tools)), False))
     for event in SIGNAL_EVENTS:
         if SIGNAL_EVENTS[event] in wanted:
             specs.append((HOOK_SCRIPT, event, "", event != "SessionEnd"))
@@ -1295,6 +1413,16 @@ def export_json() -> dict:
         "turn_states": list(TURN_STATES),
         "stop_failure_errors": list(STOP_FAILURE_ERRORS),
         "signals_dir": SIGNALS_DIR,
+        "coaching": {
+            "marker": COACH_MARKER,
+            "version": COACH_VERSION,
+            "file": COACHING_FILE,
+            "state_file": COACH_STATE_FILE,
+            "read_tools": list(COACHING_READ_TOOLS),
+            "thresholds": dict(COACHING_THRESHOLDS),
+            "text": dict(COACHING_TEXT),
+            "quiet_how": dict(COACHING_QUIET_HOW),
+        },
     }
 
 
@@ -1386,6 +1514,11 @@ def _metric_tag_line(metric: Metric) -> str:
         return f'No fixed key. The note asks for a line: "{metric.main_extra}"'
     if metric.sub_extra:
         return f'No fixed key. The note asks for a line: "{metric.sub_extra}"'
+    if metric.id == "coaching_notes":
+        return (
+            "No tag. A hook adds a note only when a hint applies, and Claude acts on it or tells you in one line. "
+            "Each hint and when it applies: [coaching.md](coaching.md)."
+        )
     if metric.hooks:
         return "No tag. A hook records it directly; Claude is never asked."
     if metric.group == "coaching":

@@ -291,17 +291,18 @@ def build_section(stats: PhaseStats) -> Section:
         "phases_by_agent_type", "Cost by phase and agent type", "Agent type", stats.by_agent_type
     )
 
+    # Named as the tables label the phases (helptext's value_labels), since
+    # the dashboard and the Markdown/HTML reports show these notes too.
     notes = [
-        "DISCOVERY: every tool used in the turn is one of "
-        "Read/Grep/Glob/WebFetch/WebSearch/ListAgents and the turn made no edit.",
-        "IMPLEMENTATION: the turn made a 'real' (non-scratch) edit, or ran a "
-        "Bash/PowerShell command that isn't a recognised test/build tool.",
-        "VERIFICATION: the turn ran a recognised test/build tool command "
-        "(pytest, dotnet test/build, npm test, npx vitest/playwright, go test, "
-        "cargo test, make, mvn, gradle) or made a scratch (temp-dir) edit.",
-        "OTHER: the turn used no tools, or doesn't match any of the above.",
-        f"A DISCOVERY cost share above {DISCOVERY_SHARE_THRESHOLD:.0%} triggers "
-        "the 'discovery-share' recommendation (plan Appendix A5).",
+        "Other: the reply called no tools. It is also where a reply lands when nothing below fits.",
+        "Exploring: every tool the reply called is one of Read, Grep, Glob, WebFetch, WebSearch or "
+        "ListAgents, and it made no edit.",
+        "Building: the reply edited a file outside a temp folder, or ran a shell command that isn't a known "
+        "test or build tool.",
+        "Checking: the reply ran a known test or build tool (pytest, dotnet test or build, npm test, npx "
+        "vitest or playwright, go test, cargo test, make, mvn, gradle), or edited a scratch file.",
+        f"When exploring is more than {DISCOVERY_SHARE_THRESHOLD:.0%} of cost, a recommendation suggests "
+        "writing down what keeps being looked up.",
     ]
 
     return Section(

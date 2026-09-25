@@ -54,7 +54,10 @@ def test_metrics_claude_writes_have_a_tag_and_a_note_and_the_rest_have_neither()
         else:
             assert not asks, m.id
             assert m.out_chars == 0, m.id
-        if m.group in ("derived", "coaching") or m.id in ("feedback_note", "dashboard_rating"):
+        if m.id == "coaching_notes":
+            # The one coaching toggle that runs through the capture hook.
+            assert m.hooks == ("UserPromptSubmit", "PostToolUse")
+        elif m.group in ("derived", "coaching") or m.id in ("feedback_note", "dashboard_rating"):
             assert not m.hooks, m.id
 
 

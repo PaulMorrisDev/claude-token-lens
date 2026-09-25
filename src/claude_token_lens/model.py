@@ -112,7 +112,8 @@ Discovery fix (workflow-nested subagents), also additive:
   the ``<session_id>/subagents/workflows/<run_id>/agent-*.jsonl``
   directory a workflow-nested subagent lives under (see
   ``workflows.py``'s module docstring on this layout), set by
-  ``discovery.load_meta``. ``None`` for every other transcript kind.
+  ``discovery.load_meta`` along with ``kind="workflow-agent"`` (from
+  ``PARSER_VERSION`` 24). ``None`` for every other transcript kind.
 
 Capture-improvements batch (all additive, all defaulted -- see
 ``parse.py``'s module docstring for how each is computed):
@@ -321,6 +322,12 @@ a flag, never text:
 - ``Turn.cap_note_chars: int = 0`` -- characters of capture notes (a
   ``hook_additional_context`` attachment carrying ``tl-cap v``) put in
   front of the model just before this turn, measured from ``rendered``.
+  From ``PARSER_VERSION`` 25 it counts coaching notes (``tl-coach v``)
+  too: an ``Event`` of subkind ``coaching_note`` whose ``detail`` holds
+  ``v``, ``kind`` (a ``capture_catalogue.COACHING_HINTS`` word or
+  "other") and ``hook``; a capture note sharing an attachment with one
+  carries ``detail["coach"]``/``["coach_chars"]`` and sizes only its own
+  part.
 - ``Turn.spawn_marker: str | None = None`` -- on the turn that follows a
   brief starting ``[spawn: parallel|isolate|cheaper|specialist|review]``:
   why the work was handed to an agent. ``retry_marker`` also takes

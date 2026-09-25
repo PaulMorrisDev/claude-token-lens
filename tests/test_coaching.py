@@ -1,0 +1,564 @@
+"""Coaching notes (``coaching_notes``): the capture hook's live hints, how
+the parser finds them again and prices them, the ``coaching.json`` split
+points worked out from a report, the service job that keeps it fresh, and
+the ``capture`` command around them.
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import io
+import json
+import subprocess
+import sys
+from datetime import datetime, timedelta, timezone
+from importlib import resources
+from pathlib import Path
+from types import SimpleNamespace as NS
+
+import pytest
+
+from claude_token_lens import capture, capture_catalogue as cat, cli, coaching, hook_health, ignores, installer, parse
+from claude_token_lens.config import load_config
+from claude_token_lens.model import Recommendation, TranscriptMeta
+from claude_token_lens.parse import parse_transcript
+from claude_token_lens.pricing import load_pricing
+from claude_token_lens.service.coaching_job import CoachingJob
+
+from helpers import attachment_line, turn_line, user_str_line, write_jsonl
+
+SCRIPT = Path(str(resources.files("claude_token_lens") / "hooks" / cat.HOOK_SCRIPT))
+FIXTURES = Path(__file__).resolve().parent / "fixtures"
+NOW = datetime(2026, 9, 25, 12, 0, tzinfo=timezone.utc)
+
+
+def _load_hook_module():
+    spec = importlib.util.spec_from_file_location("_coaching_hook_under_test", SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+HOOK = _load_hook_module()
+CATALOGUE = HOOK.load_catalogue()
+ON = {"capture": {"level": "off", "coaching": ["coaching_notes"]}}
+
+
+# -- the hook's hints --------------------------------------------------------------
+
+
+def _iso(moment: datetime) -> str:
+    return moment.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+
+def _reply(ctx: int, *, ago_s: float = 60, one_hour: bool = False, message_id: str | None = None, content=None) -> dict:
+    return {
+        "type": "assistant",
+        "timestamp": _iso(NOW - timedelta(seconds=ago_s)),
+        "message": {
+            "id": message_id or f"msg_{ctx}_{ago_s}",
+            "usage": {
+                "input_tokens": 10,
+                "cache_read_input_tokens": ctx - 10,
+                "cache_creation_input_tokens": 0,
+                "output_tokens": 0,
+                "cache_creation": {"ephemeral_1h_input_tokens": 50 if one_hour else 0},
+            },
+            "content": content or [{"type": "text", "text": "ok"}],
+        },
+    }
+
+
+def _prompt(text: str = "do it") -> dict:
+    return {"type": "user", "message": {"role": "user", "content": text}}
+
+
+def _read_call(n: int) -> dict:
+    return _reply(5_000 + n, content=[{"type": "tool_use", "id": f"toolu_{n}", "name": "Read", "input": {}}])
+
+
+def _read_result(n: int, chars: int = 400) -> dict:
+    return {
+        "type": "user",
+        "toolUseResult": {},
+        "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": f"toolu_{n}", "content": "x" * chars}]},
+    }
+
+
+def _transcript(tmp_path: Path, records: list[dict], name: str = "session.jsonl") -> str:
+    path = tmp_path / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("".join(json.dumps(r) + "\n" for r in records), encoding="utf-8")
+    return str(path)
+
+
+def _config_dir(tmp_path: Path) -> Path:
+    config_dir = tmp_path / "token-lens"
+    config_dir.mkdir(exist_ok=True)
+    return config_dir
+
+
+def _coach(tmp_path, payload, config=ON, *, now=NOW, raw_len=0) -> str:
+    base = {"session_id": "s1", "cwd": "/work/app"}
+    return HOOK.coaching_note_for({**base, **payload}, config, CATALOGUE, _config_dir(tmp_path), now=now, raw_len=raw_len)
+
+
+def _prompt_payload(path: str) -> dict:
+    return {"hook_event_name": "UserPromptSubmit", "transcript_path": path, "prompt": "next"}
+
+
+def _kind(note: str) -> str:
+    assert note.startswith(cat.COACH_MARKER + str(cat.COACH_VERSION) + " "), note
+    return note.split("\n", 1)[0].rsplit(" ", 1)[1]
+
+
+def test_nothing_is_added_while_coaching_notes_are_off(tmp_path):
+    path = _transcript(tmp_path, [_prompt(), _reply(150_000)])
+    assert _coach(tmp_path, _prompt_payload(path), {"capture": {"level": "deep"}}) == ""
+    assert _coach(tmp_path, _prompt_payload(path), {}) == ""
+
+
+def test_a_large_context_gets_the_clear_hint_when_you_send_a_message(tmp_path):
+    path = _transcript(tmp_path, [_prompt(), _reply(120_000)])
+    note = _coach(tmp_path, _prompt_payload(path))
+    assert _kind(note) == "clear_context" and "about 120k tokens" in note
+    small = _transcript(tmp_path, [_prompt(), _reply(60_000)], "small.jsonl")
+    assert _coach(tmp_path, {**_prompt_payload(small), "session_id": "s2"}) == ""
+
+
+def test_an_expired_cache_gets_the_cold_hint(tmp_path):
+    path = _transcript(tmp_path, [_prompt(), _reply(30_000, ago_s=20 * 60)])
+    note = _coach(tmp_path, _prompt_payload(path))
+    assert _kind(note) == "cache_cold" and "idle for 20 minutes" in note and "about 30k tokens" in note
+    # The 1-hour cache is still warm after 20 minutes.
+    warm = _transcript(tmp_path, [_prompt(), _reply(30_000, ago_s=20 * 60, one_hour=True)], "warm.jsonl")
+    assert _coach(tmp_path, {**_prompt_payload(warm), "session_id": "s2"}) == ""
+    # Too small a context to mention.
+    tiny = _transcript(tmp_path, [_prompt(), _reply(5_000, ago_s=20 * 60)], "tiny.jsonl")
+    assert _coach(tmp_path, {**_prompt_payload(tiny), "session_id": "s3"}) == ""
+
+
+def test_a_hint_rests_after_it_shows_unless_the_stake_grows(tmp_path):
+    # The 1-hour cache keeps the cold hint out of the way half an hour on.
+    path = _transcript(tmp_path, [_prompt(), _reply(120_000, one_hour=True)])
+    assert _kind(_coach(tmp_path, _prompt_payload(path))) == "clear_context"
+    assert _coach(tmp_path, _prompt_payload(path)) == ""
+    # Another session has its own rest.
+    assert _coach(tmp_path, {**_prompt_payload(path), "session_id": "s2"})
+    grown = _transcript(tmp_path, [_prompt(), _reply(200_000)], "grown.jsonl")
+    assert _kind(_coach(tmp_path, _prompt_payload(grown))) == "clear_context"
+    assert _coach(tmp_path, _prompt_payload(path)) == ""
+    later = NOW + timedelta(minutes=31)
+    assert _kind(_coach(tmp_path, _prompt_payload(path), now=later)) == "clear_context"
+
+
+def test_the_state_keeps_a_session_by_its_salted_hash(tmp_path):
+    config_dir = _config_dir(tmp_path)
+    salt = b"s" * 32
+    (config_dir / HOOK.SALT_FILE).write_bytes(salt)
+    _coach(tmp_path, _prompt_payload(_transcript(tmp_path, [_prompt(), _reply(120_000)])))
+    state = json.loads((config_dir / cat.COACH_STATE_FILE).read_text(encoding="utf-8"))
+    assert list(state["sessions"]) == [HOOK.session_hash(salt, "s1")]
+
+
+def test_a_large_result_gets_the_quiet_hint_for_its_tool(tmp_path):
+    bash = {"hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_input": {"command": "ls"}}
+    note = _coach(tmp_path, bash, raw_len=40_000)
+    assert _kind(note) == "quiet_output" and "about 10k tokens" in note and cat.COACHING_QUIET_HOW["Bash"] in note
+    mcp = {"hook_event_name": "PostToolUse", "tool_name": "mcp__docs__search", "session_id": "s2"}
+    assert cat.COACHING_QUIET_HOW[""] in _coach(tmp_path, mcp, raw_len=40_000)
+    assert _coach(tmp_path, {**bash, "session_id": "s3"}, raw_len=4_000) == ""
+    limited = {"hook_event_name": "PostToolUse", "tool_name": "Read", "tool_input": {"limit": 2000}, "session_id": "s4"}
+    assert _coach(tmp_path, limited, raw_len=40_000) == ""
+
+
+def test_many_reads_for_one_message_get_the_explore_hint(tmp_path):
+    earlier = [_read_call(n) for n in range(90, 95)]
+    calls = [record for n in range(1, 8) for record in (_read_call(n), _read_result(n))]
+    path = _transcript(tmp_path, [_prompt("first"), *earlier, _prompt("second"), *calls, _read_call(8)])
+    read = {"hook_event_name": "PostToolUse", "tool_name": "Read", "tool_use_id": "toolu_8", "transcript_path": path}
+    note = _coach(tmp_path, read, raw_len=400)
+    assert _kind(note) == "explore_reads" and "made 8 reads and searches" in note
+    few = _transcript(tmp_path, [_prompt(), *calls[:10], _read_call(8)], "few.jsonl")
+    assert _coach(tmp_path, {**read, "transcript_path": few, "session_id": "s2"}, raw_len=400) == ""
+    # Inside a subagent, reads are its job.
+    agent = {**read, "session_id": "s3", "agent_id": "a1", "agent_type": "Explore"}
+    assert _coach(tmp_path, agent, raw_len=400) == ""
+
+
+def test_an_approved_plan_after_a_lot_of_planning_gets_the_fresh_session_hint(tmp_path):
+    path = _transcript(tmp_path, [_prompt("x" * 4_000), _reply(16_000), _reply(90_000)])
+    plan = {"hook_event_name": "PostToolUse", "tool_name": "ExitPlanMode", "transcript_path": path,
+            "tool_input": {"plan": "p" * 4_000}}
+    note = _coach(tmp_path, plan)
+    # 90k less the 15k start (16k less the 1k message) less the 1k plan.
+    assert _kind(note) == "plan_fresh" and "about 74k tokens" in note
+    (tmp_path / "token-lens" / cat.COACHING_FILE).write_text(json.dumps({"plan_fresh": False}), encoding="utf-8")
+    assert _coach(tmp_path, {**plan, "session_id": "s2"}) == ""
+
+
+def test_a_small_plan_context_gets_no_hint(tmp_path):
+    path = _transcript(tmp_path, [_prompt(), _reply(16_000), _reply(50_000)])
+    plan = {"hook_event_name": "PostToolUse", "tool_name": "ExitPlanMode", "transcript_path": path, "tool_input": {}}
+    assert _coach(tmp_path, plan) == ""
+
+
+def _agent(tmp_path, records, agent_id="abc", *, nested: bool = False) -> tuple[str, Path]:
+    session = _transcript(tmp_path, [_prompt(), _reply(20_000)], "sess.jsonl")
+    folder = tmp_path / "sess" / "subagents"
+    if nested:
+        folder = folder / "workflows" / "run1"
+    agent_path = Path(_transcript(folder, records, f"agent-{agent_id}.jsonl"))
+    return session, agent_path
+
+
+def test_a_long_subagent_run_gets_the_split_hint_at_your_split_point(tmp_path):
+    config_dir = _config_dir(tmp_path)
+    (config_dir / cat.COACHING_FILE).write_text(json.dumps({"split_run": {"general-purpose": 3}}), encoding="utf-8")
+    # Two records of one reply count once.
+    session, agent_path = _agent(tmp_path, [_prompt(), _reply(1_000, message_id="m1"), _reply(1_000, message_id="m1"),
+                                            _reply(2_000, message_id="m2")])
+    call = {"hook_event_name": "PostToolUse", "tool_name": "Bash", "transcript_path": session, "agent_id": "abc",
+            "agent_type": "general-purpose"}
+    assert _coach(tmp_path, call) == ""
+    with open(agent_path, "a", encoding="utf-8") as handle:
+        handle.write(json.dumps(_reply(3_000, message_id="m3")) + "\n")
+    note = _coach(tmp_path, call)
+    assert _kind(note) == "split_run" and "about 3 replies" in note and "every 3 replies" in note
+    state = json.loads((config_dir / cat.COACH_STATE_FILE).read_text(encoding="utf-8"))
+    assert state["agents"]["abc"]["replies"] == 3
+    # A summary starts the count again.
+    with open(agent_path, "a", encoding="utf-8") as handle:
+        handle.write(json.dumps({"type": "system", "subtype": "compact_boundary"}) + "\n")
+        handle.write(json.dumps(_reply(1_000, message_id="m4")) + "\n")
+    assert _coach(tmp_path, call, now=NOW + timedelta(hours=1)) == ""
+    assert json.loads((config_dir / cat.COACH_STATE_FILE).read_text(encoding="utf-8"))["agents"]["abc"]["replies"] == 1
+
+
+def test_the_split_hint_needs_your_split_point_and_skips_workflow_agents(tmp_path):
+    config_dir = _config_dir(tmp_path)
+    (config_dir / cat.COACHING_FILE).write_text(json.dumps({"split_run": {"general-purpose": 1}}), encoding="utf-8")
+    session, _ = _agent(tmp_path, [_reply(1_000, message_id="m1")])
+    other = {"hook_event_name": "PostToolUse", "tool_name": "Bash", "transcript_path": session, "agent_id": "abc",
+             "agent_type": "Explore"}
+    assert _coach(tmp_path, other) == ""
+    assert not (config_dir / cat.COACH_STATE_FILE).exists()
+    nested_session, _ = _agent(tmp_path, [_reply(1_000, message_id="m1")], "wf1", nested=True)
+    workflow = {**other, "agent_type": "general-purpose", "agent_id": "wf1", "transcript_path": nested_session}
+    assert _coach(tmp_path, workflow) == ""
+
+
+def test_your_thresholds_win_over_the_file_and_the_defaults(tmp_path):
+    config_dir = _config_dir(tmp_path)
+    (config_dir / cat.COACHING_FILE).write_text(
+        json.dumps({"thresholds": {"clear_context_tokens": 70_000}}), encoding="utf-8"
+    )
+    path = _transcript(tmp_path, [_prompt(), _reply(60_000)])
+    assert _coach(tmp_path, _prompt_payload(path)) == ""
+    configured = {**ON, "thresholds": {"coaching_clear_context_tokens": 50_000}}
+    assert _kind(_coach(tmp_path, _prompt_payload(path), configured)) == "clear_context"
+
+
+def test_a_project_capture_leaves_out_gets_no_coaching(tmp_path):
+    path = _transcript(tmp_path, [_prompt(), _reply(150_000)])
+    limited = {"capture": {**ON["capture"], "projects": ["other-project"]}}
+    assert _coach(tmp_path, _prompt_payload(path), limited) == ""
+    excluded = {**ON, "exclude_projects": ["work-app"]}
+    assert _coach(tmp_path, _prompt_payload(path), excluded) == ""
+
+
+def test_every_hint_text_takes_the_fields_the_hook_fills():
+    assert set(cat.COACHING_TEXT) == set(cat.COACHING_HINTS)
+    assert CATALOGUE["coaching"]["text"] == cat.COACHING_TEXT
+
+
+def test_coaching_notes_add_the_prompt_and_plan_hooks():
+    specs = cat.hook_specs(("coaching_notes",))
+    assert (cat.HOOK_SCRIPT, "UserPromptSubmit", "", False) in specs
+    tool = next(spec for spec in specs if spec[1] == "PostToolUse")
+    assert "ExitPlanMode" in tool[2].split("|") and "Read" in tool[2].split("|")
+    deep = cat.hook_specs((*cat.level_metrics("deep"), "coaching_notes"))
+    assert sum(1 for spec in deep if spec[1] == "PostToolUse") == 1
+
+
+# -- the hook, run as Claude Code runs it ------------------------------------------
+
+
+def _undated(record: dict) -> dict:
+    """A reply without a time, so the real clock the hook runs on can't make
+    its cache look cold."""
+    return {key: value for key, value in record.items() if key != "timestamp"}
+
+
+def _run(config_dir: Path, payload: dict) -> tuple[int, str, str]:
+    done = subprocess.run(
+        [sys.executable, str(SCRIPT), "--config-dir", str(config_dir)],
+        input=json.dumps(payload).encode("utf-8"),
+        capture_output=True,
+        timeout=30,
+    )
+    return done.returncode, done.stdout.decode("utf-8"), done.stderr.decode("utf-8")
+
+
+def test_the_hook_runs_coaching_notes_with_capture_off(tmp_path):
+    config_dir = _config_dir(tmp_path)
+    (config_dir / "config.toml").write_text('[capture]\nlevel = "off"\ncoaching = ["coaching_notes"]\n', encoding="utf-8")
+    path = _transcript(tmp_path, [_prompt(), _undated(_reply(150_000))])
+    rc, out, err = _run(config_dir, {"session_id": "s1", "cwd": "/w", **_prompt_payload(path)})
+    assert rc == 0 and err == ""
+    output = json.loads(out)["hookSpecificOutput"]
+    assert output["hookEventName"] == "UserPromptSubmit"
+    assert _kind(output["additionalContext"]) == "clear_context"
+
+
+def test_a_capture_note_and_a_coaching_note_go_out_as_one(tmp_path):
+    config_dir = _config_dir(tmp_path)
+    (config_dir / "config.toml").write_text('[capture]\nlevel = "deep"\ncoaching = ["coaching_notes"]\n', encoding="utf-8")
+    big = {"session_id": "s1", "cwd": "/w", "hook_event_name": "PostToolUse", "tool_name": "Bash",
+           "tool_response": {"stdout": "x" * cat.BIG_OUTPUT_TOKENS * 4}}
+    rc, out, _ = _run(config_dir, big)
+    text = json.loads(out)["hookSpecificOutput"]["additionalContext"]
+    capture_note, coaching_note = text.split("\n" + cat.COACH_MARKER)
+    assert rc == 0 and capture_note == cat.tool_note_text("big_output")
+    assert coaching_note.startswith(f"{cat.COACH_VERSION} quiet_output\n")
+
+
+def test_a_broken_coaching_file_or_state_is_read_as_empty(tmp_path):
+    config_dir = _config_dir(tmp_path)
+    (config_dir / "config.toml").write_text('[capture]\ncoaching = ["coaching_notes"]\n', encoding="utf-8")
+    (config_dir / cat.COACHING_FILE).write_text("{not json", encoding="utf-8")
+    (config_dir / cat.COACH_STATE_FILE).write_text('{"sessions": [1, 2]}', encoding="utf-8")
+    path = _transcript(tmp_path, [_prompt(), _undated(_reply(150_000))])
+    rc, out, err = _run(config_dir, {"session_id": "s1", **_prompt_payload(path)})
+    assert rc == 0 and err == "" and _kind(json.loads(out)["hookSpecificOutput"]["additionalContext"]) == "clear_context"
+    rc, out, err = _run(config_dir, {"session_id": "s1", "hook_event_name": "UserPromptSubmit", "transcript_path": 5})
+    assert (rc, out, err) == (0, "", "")
+
+
+# -- the parser and what the notes cost -----------------------------------------------
+
+
+@pytest.fixture()
+def _salt():
+    parse.set_salt(b"c" * 32)
+
+
+def _note_line(text: str, hook: str, second: int) -> dict:
+    wrapped = f"<system-reminder>\n{hook} hook additional context: {text}\n</system-reminder>"
+    line = attachment_line("hook_additional_context", rendered=wrapped, content=[text], hookName=hook,
+                           hookEvent=hook.split(":")[0], toolUseID=hook)
+    line["timestamp"] = f"2026-09-18T12:00:{second:02d}.000Z"
+    return line
+
+
+def _coach_text(kind: str) -> str:
+    return f"{cat.COACH_MARKER}{cat.COACH_VERSION} {kind}\nSome hint text."
+
+
+def _session(tmp_path, lines, name="top.jsonl", **meta):
+    path = tmp_path / name
+    write_jsonl(path, lines)
+    return parse_transcript(path, TranscriptMeta(path=str(path), **meta))
+
+
+def _ask(second: int) -> dict:
+    return user_str_line("go", origin={"kind": "human"}, timestamp=f"2026-09-18T12:00:{second:02d}.000Z")
+
+
+def _turn(second: int) -> dict:
+    return turn_line(content=[{"type": "text", "text": "ok"}], model="claude-widget-9",
+                     timestamp=f"2026-09-18T12:00:{second:02d}.000Z", cache_read_input_tokens=5_000)
+
+
+def test_a_coaching_note_is_its_own_event_and_not_a_capture_note(tmp_path, _salt):
+    note = _note_line(_coach_text("clear_context"), "UserPromptSubmit", 1)
+    result = _session(tmp_path, [_ask(0), note, _turn(2)])
+    event = next(e for e in result.events if e.subkind == "coaching_note")
+    assert event.detail == {"v": cat.COACH_VERSION, "kind": "clear_context", "hook": "UserPromptSubmit"}
+    assert result.turns[0].cap_note_chars == len(note["rendered"][0]["content"])
+    assert result.meta.cap_injections == 0 and result.meta.cap_metrics == ()
+
+
+def test_a_shared_attachment_splits_into_its_capture_and_coaching_parts(tmp_path, _salt):
+    text = cat.tool_note_text("big_output") + "\n" + _coach_text("quiet_output")
+    note = _note_line(text, "PostToolUse:Bash", 1)
+    result = _session(tmp_path, [_ask(0), note, _turn(2)])
+    event = next(e for e in result.events if e.subkind == "capture_note")
+    coach_chars = len(_coach_text("quiet_output")) + 1
+    assert event.detail["codes"] == ["big_output"] and event.detail["coach"] == "quiet_output"
+    assert event.detail["coach_chars"] == coach_chars
+    assert event.size_chars == len(note["rendered"][0]["content"]) - coach_chars
+    assert result.turns[0].cap_note_chars == len(note["rendered"][0]["content"])
+    assert result.meta.cap_injections == 1
+
+
+def test_coaching_usage_counts_and_prices_the_notes_by_hint(tmp_path, _salt):
+    pricing = load_pricing(path=FIXTURES / "pricing_min.toml")
+    top = _session(tmp_path, [
+        _ask(0), _note_line(_coach_text("cache_cold"), "UserPromptSubmit", 1), _turn(2),
+        _ask(3), _note_line(cat.tool_note_text("big_output") + "\n" + _coach_text("quiet_output"), "PostToolUse", 4),
+        _turn(5), _turn(6),
+    ], kind="top-level")
+    use = capture.coaching_usage(NS(sessions=[NS(top=top, subs=[], session_id="s1")]), pricing)
+    assert (use.sessions, use.notes) == (1, 2)
+    assert use.by_kind == {"cache_cold": 1, "quiet_output": 1}
+    assert use.cost > 0 and use.spend > use.cost and use.note_tokens > 0
+    later = capture.coaching_usage(NS(sessions=[NS(top=top, subs=[], session_id="s1")]), pricing,
+                                   since="2026-09-18T12:00:03+00:00")
+    assert later.by_kind == {"quiet_output": 1}
+    # Capture's own usage prices only its part.
+    assert capture.usage(NS(sessions=[NS(top=top, subs=[], session_id="s1")]), pricing).notes == 1
+
+
+# -- coaching.json ------------------------------------------------------------------
+
+
+def _split_rec(agent: str, every_n: int) -> Recommendation:
+    return Recommendation(id="run-split", title=f"Give {agent} smaller tasks", agent_type=agent,
+                          key=f"run-split:{agent}", evidence=[("Split every (replies)", every_n, "run_split.x", agent)])
+
+
+def _report(*recs) -> NS:
+    return NS(recommendations=list(recs), sections=[])
+
+
+def test_the_file_holds_the_split_points_you_have_not_ignored(tmp_path):
+    ignored = _split_rec("Plan", 50)
+    ignores.set_ignored(tmp_path, [ignored], ignored=True, project=None)
+    data = coaching.from_report(_report(_split_rec("general-purpose", 150), ignored), tmp_path, now=NOW)
+    assert data["split_run"] == {"general-purpose": 150}
+    assert data["plan_fresh"] is True
+    assert data["thresholds"] == {"plan_fresh_tokens": 40_000}
+    assert data["built_at"] == NOW.isoformat(timespec="seconds")
+    configured = coaching.from_report(_report(), tmp_path, {"plan_handoff_min_dropped_tokens": 60_000})
+    assert configured["thresholds"]["plan_fresh_tokens"] == 60_000
+
+
+def test_an_ignored_plan_tip_turns_the_plan_hint_off(tmp_path):
+    rec = Recommendation(id="plan-handoff", title="Start building in a fresh session", key="plan-handoff")
+    ignores.set_ignored(tmp_path, [rec], ignored=True, project=None)
+    assert coaching.from_report(_report(rec), tmp_path)["plan_fresh"] is False
+
+
+def test_the_file_round_trips_and_says_how_old_it_is(tmp_path):
+    written = coaching.write(tmp_path, coaching.from_report(_report(_split_rec("Explore", 75)), tmp_path, now=NOW))
+    assert written == coaching.path(tmp_path)
+    assert coaching.read(tmp_path)["split_run"] == {"Explore": 75}
+    assert coaching.age_hours(tmp_path, NOW + timedelta(hours=3)) == pytest.approx(3)
+    assert "Explore (every 75 replies)" in coaching.describe(coaching.read(tmp_path))[0]
+    assert coaching.read(tmp_path / "missing") == {} and coaching.age_hours(tmp_path / "missing") is None
+
+
+def test_the_service_job_rewrites_the_file_once_a_day_while_coaching_notes_are_on(tmp_path):
+    config_dir = _config_dir(tmp_path)
+    built = []
+
+    def build(days):
+        built.append(days)
+        return _report(_split_rec("general-purpose", 100))
+
+    clock = [NOW]
+    job = CoachingJob(NS(config_dir=config_dir), build, now_fn=lambda: clock[0], log=lambda text: None)
+    assert job.run_once() is None and built == []
+    (config_dir / "config.toml").write_text('[capture]\ncoaching = ["coaching_notes"]\n', encoding="utf-8")
+    assert job.run_once() == coaching.path(config_dir) and built == [coaching.DAYS]
+    clock[0] = NOW + timedelta(hours=5)
+    assert job.run_once() is None and built == [coaching.DAYS]
+    clock[0] = NOW + timedelta(hours=coaching.MAX_AGE_HOURS + 1)
+    assert job.run_once() == coaching.path(config_dir) and len(built) == 2
+
+
+def test_a_failing_build_is_logged_and_never_raises(tmp_path):
+    config_dir = _config_dir(tmp_path)
+    (config_dir / "config.toml").write_text('[capture]\ncoaching = ["coaching_notes"]\n', encoding="utf-8")
+    logged = []
+
+    def build(days):
+        raise RuntimeError("store is busy")
+
+    job = CoachingJob(NS(config_dir=config_dir), build, now_fn=lambda: NOW, log=logged.append)
+    assert job.run_once() is None and "store is busy" in logged[0]
+
+
+# -- the capture command ---------------------------------------------------------------
+
+
+@pytest.fixture()
+def _claude_folder(tmp_path, monkeypatch):
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
+    monkeypatch.setattr(installer, "is_registered", lambda *a, **k: False)
+    config_dir = tmp_path / "claude" / "token-lens"
+    config_dir.mkdir(parents=True)
+    return config_dir
+
+
+def _capture(config_dir, *argv, stdin=""):
+    args = cli._make_parser().parse_args(["capture", *argv, "--config-dir", str(config_dir)])
+    out = io.StringIO()
+    rc = cli._cmd_capture(args, stdin=io.StringIO(stdin), stdout=out, now=NOW)
+    return rc, out.getvalue()
+
+
+def test_turning_coaching_notes_on_says_what_they_cost_and_asks(_claude_folder):
+    config_dir = _claude_folder
+    rc, out = _capture(config_dir, "enable", "coaching_notes", stdin="n\n")
+    assert rc == 1 and "Coaching notes:" in out and "Left unchanged" in out
+    assert "Metrics capture: Off -> Off" not in out
+    rc, out = _capture(config_dir, "enable", "coaching_notes", stdin="y\ny\n")
+    assert rc == 0 and load_config(config_dir).capture.coaching_notes_on
+    specs = hook_health.capture_specs(load_config(config_dir).capture.hook_metrics())
+    assert hook_health.check_capture(specs, claude_root=config_dir.parent, config_dir=config_dir).ok
+
+
+def test_off_leaves_coaching_notes_on_and_remove_turns_them_off(_claude_folder):
+    config_dir = _claude_folder
+    _capture(config_dir, "on", "--yes")
+    _capture(config_dir, "enable", "coaching_notes", "--yes")
+    rc, out = _capture(config_dir, "off")
+    assert rc == 0 and "Coaching notes stay on" in out
+    assert load_config(config_dir).capture.coaching_notes_on
+    rc, out = _capture(config_dir, "remove", "--yes")
+    assert rc == 0 and not load_config(config_dir).capture.coaching_notes_on
+
+
+# -- what the dashboard says about them -------------------------------------------------
+
+
+def test_the_footprint_says_coaching_notes_cost_tokens_with_capture_off():
+    from claude_token_lens import footprint
+    from claude_token_lens.config import CaptureConfig
+
+    coach = footprint.expectations(CaptureConfig(coaching=["coaching_notes"]))
+    assert coach[0] == ("It uses a few of your Claude tokens while coaching notes are on", footprint.COACHING_COST)
+    assert coach[1:] == footprint.EXPECTATIONS[1:]
+    both = footprint.expectations(CaptureConfig(level="free", coaching=["coaching_notes"]))
+    assert "adds no tokens" in both[0][1] and both[0][1].endswith(footprint.COACHING_COST)
+    assert footprint._hooks_token_cost(CaptureConfig(coaching=["coaching_notes"]), "Off").startswith(
+        "None from capture while it's off. Coaching notes:"
+    )
+
+
+def test_the_hook_list_says_when_the_coaching_entries_run():
+    specs = {spec.event: spec for spec in hook_health.capture_specs(("coaching_notes",))}
+    assert specs["UserPromptSubmit"].describe() == "capture-hook.py when you send a message"
+    assert specs["PostToolUse"].describe().endswith("MCP results and an approved plan")
+
+
+def test_setup_capture_shows_what_coaching_notes_cost(tmp_path):
+    from claude_token_lens import capture_view
+    from claude_token_lens.config import CaptureConfig
+
+    use = capture.CoachingUsage(since="", sessions=2, notes=3, note_tokens=240, cost=0.02, by_kind={"quiet_output": 3})
+    data = capture_view.view(CaptureConfig(coaching=["coaching_notes"]), coaching_use=use)
+    row = next(r for s in data["sections"] for r in s["metrics"] if r["id"] == "coaching_notes")
+    assert row["on"] and row["actual"]["usd"] == pytest.approx(0.02)
+    assert row["actual_label"] == f"3 notes over the last {capture.HISTORY_DAYS} days"
+
+
+def test_refresh_works_the_split_points_out_now(_claude_folder):
+    config_dir = _claude_folder
+    rc, out = _capture(config_dir, "refresh", "--dry-run")
+    assert rc == 0 and not coaching.path(config_dir).exists()
+    rc, out = _capture(config_dir, "refresh")
+    assert rc == 0 and coaching.read(config_dir)["split_run"] == {}
+    assert "coaching_notes" in out

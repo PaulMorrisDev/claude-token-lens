@@ -112,11 +112,16 @@ def explain_session(
     sub_cost = sum(float(row.get("cost") or 0.0) for row in sub_rows)
     if sub_rows and sub_cost > 0:
         runs = sum(int(row.get("runs") or 0) for row in sub_rows)
-        top = max(sub_rows, key=lambda row: float(row.get("cost") or 0.0))
-        agent = top.get("agent_type") or "subagents with no recorded type"
+        # One row per kind and type: a type a workflow also starts has two.
+        cost_by_type: dict = {}
+        for row in sub_rows:
+            agent_type = row.get("agent_type")
+            cost_by_type[agent_type] = cost_by_type.get(agent_type, 0.0) + float(row.get("cost") or 0.0)
+        top_type, top_cost = max(cost_by_type.items(), key=lambda item: item[1])
+        agent = top_type or "subagents with no recorded type"
         sentences.append(
             f"{runs:,} subagent runs made {_pct(sub_cost, total_cost):.0f}% of the cost; the costliest type was "
-            f"{agent} ({_pct(float(top.get('cost') or 0.0), total_cost):.0f}%)."
+            f"{agent} ({_pct(top_cost, total_cost):.0f}%)."
         )
     elif not sub_rows:
         sentences.append("No subagents ran in this session.")

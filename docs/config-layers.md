@@ -363,7 +363,8 @@ one `"(unknown project)"` bucket.
 - `build_env_levers_table` (COV-09) — one row per COV-09 env-var lever
   (`DISABLE_PROMPT_CACHING` and its per-model variants,
   `ENABLE_TOOL_SEARCH`, `CLAUDE_CODE_MAX_OUTPUT_TOKENS`,
-  `CLAUDE_CODE_SUBAGENT_MODEL`, `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`) plus
+  `CLAUDE_CODE_SUBAGENT_MODEL`, `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`,
+  `CLAUDE_CODE_AUTO_COMPACT_WINDOW`) plus
   `attribution`/`includeCoAuthoredBy`, each row `{name, present, value}`
   off the corpus-wide snapshot (`snapshots_mod.with_every_project_agents`)
   — a small, lever-name-keyed table built specifically so

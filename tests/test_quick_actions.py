@@ -169,6 +169,23 @@ def test_models_check_offers_a_fix_per_cheaper_model_with_a_dry_run_command(tmp_
     assert result["table"]["rows"][0][0] == "Main session"
 
 
+def test_models_check_says_where_each_agents_model_is_set(tmp_path):
+    """A workflow script or a model named at spawn sets some runs' model:
+    the table says so per agent, and one tip points those runs to where
+    their model is really set."""
+    model = _full_model()
+    swap = model.sections[0].tables[0]
+    swap.columns += [NS(key="lever_runs"), NS(key="workflow_runs"), NS(key="spawn_model_runs")]
+    swap.rows[0] += [40, 0, 0]
+    swap.rows[1] += [5, 12, 3]
+    result = qa.run("models", _ctx(tmp_path, model=model, effective_agents={"Explore": {}}))
+    keys = [c["key"] for c in result["table"]["columns"]]
+    set_by = {row[0]: row[keys.index("set_by")] for row in result["table"]["rows"]}
+    assert set_by == {"Main session": "settings", "Explore": "its agent file (5), workflow scripts (12), when started (3)"}
+    (tip,) = [t for t in result["tips"] if t["title"] == "Some runs' model isn't set by an agent file"]
+    assert "12 runs a workflow script started" in tip["text"] and "3 runs given a model" in tip["text"]
+
+
 def test_tool_output_offers_the_bash_cap_as_a_prompt_only(tmp_path):
     result = qa.run("tool-output", _ctx(tmp_path))
     [fix] = result["fixes"]

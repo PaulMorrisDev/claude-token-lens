@@ -132,8 +132,8 @@ var COPY_FAILED = "Couldn't copy. Select the text and copy it yourself.";
 // A block of text to paste somewhere, in the mono face, with a Copy
 // button that says "Copied" only when the copy worked (and a toast says
 // what went where). what: the kind of text ("Prompt", "Command");
-// about: what it is for ("revixo-reviewer"). The button shows "Copy"
-// and is named "Copy prompt for revixo-reviewer", so a page of them
+// about: what it is for ("code-reviewer"). The button shows "Copy"
+// and is named "Copy prompt for code-reviewer", so a page of them
 // reads as a list of different things.
 // onCopy, when given, runs after a successful copy.
 export function codeBlockWithCopy(text, what, about, onCopy) {

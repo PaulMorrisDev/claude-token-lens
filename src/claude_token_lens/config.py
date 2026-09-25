@@ -172,6 +172,19 @@ class CaptureConfig:
         (``capture_catalogue.active_metrics``)."""
         return capture_catalogue.active_metrics(self.level, self.metrics, self.feedback)
 
+    def hook_metrics(self) -> tuple[str, ...]:
+        """What the capture hook's settings.json entries are for: the
+        metrics on, plus the coaching toggles that run through the hook
+        (``coaching_notes``), whatever the level."""
+        hooked = tuple(
+            i for i in capture_catalogue.COACHING_IDS if i in self.coaching and capture_catalogue.METRICS_BY_ID[i].hooks
+        )
+        return self.active_metrics() + hooked
+
+    @property
+    def coaching_notes_on(self) -> bool:
+        return "coaching_notes" in self.coaching
+
     def expired(self, now: datetime | None = None) -> bool:
         """Whether ``until`` has passed (``False`` when unset)."""
         stop = _parse_iso(self.until)
