@@ -473,7 +473,7 @@ def test_habits_shows_the_top_of_the_playbook_as_tips(tmp_path):
     model.recommendations = []
     model.sections.append(_habits_tables(habits_playbook=_PLAYBOOK))
     result = qa.run("habits", _ctx(tmp_path, model=model))
-    assert result["status"] == "act" and "The Work habits tab has the rest." in result["summary"]
+    assert result["status"] == "act" and "{{page:habits}} has the rest." in result["summary"]
     tips = result["tips"][-qa.PLAYBOOK_TIPS:]
     assert [t["title"] for t in tips] == [
         "Stop retrying a failing command", "Ask agents for short reports", "Name the files you already know",

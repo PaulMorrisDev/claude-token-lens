@@ -1374,6 +1374,22 @@ A request error on one of these three routes (a bad `window_days`,
 `since` or `until`, or an unexpected exception) still falls back to the
 normal JSON error envelope; only the success path is raw.
 
+**`{{page:<page>}}`/`{{page:<page>/<segment>}}` tokens (`pages.py`) survive
+into every JSON response**, `/api/report.json` included: help text, table
+notes, recommendation `action`/`estimated_saving` and similar fields can
+carry one, and the dashboard's own `links.js` turns it into a link. They
+never appear in a recommendation's `why`/`title` or in `fixes[].prompt`/
+`fixes[].command` (those feed a prompt or a standalone command, never
+dashboard markup). `render_json`/`to_jsonable` never call `pages.plain()`.
+`render_markdown`/`render_html` do, on every field that can carry a
+token, so `/api/report.md` and `/api/report.html` -- unwrapped native
+output from the very same renderers `report --format md`/`--format
+html` calls -- show the plain label ("Spend › Usage"), not the token;
+this keeps the byte-equivalence above, since both callers still run the
+identical renderer. `report --json`/`/api/report.json` are the one pair
+that stay byte-equivalent *with* the token still in place, for the same
+reason: both call the same `render_json`.
+
 **`GET /api/session/<id>` returns a superset of the listed fields.**
 `Store.session()`'s dict includes `mode_source`/`purpose_source`
 alongside every field `/api/sessions` lists — a non-breaking addition,

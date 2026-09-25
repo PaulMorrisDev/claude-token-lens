@@ -35,6 +35,7 @@ from zoneinfo import available_timezones
 
 from . import __version__, baseline as baseline_mod, capture_catalogue, capture_view, classify, discovery, installer as installer_mod
 from . import onboarding
+from . import pages
 from . import helptext, hook_health, probe as probe_mod, recache, signals as signals_mod, snapshots
 from . import statusline as statusline_mod
 from .fixes import RESTART_NOTE
@@ -1388,7 +1389,7 @@ def _print_table(table, currency: str) -> None:
     for row in formatted_rows:
         print("  ".join(cell.ljust(width) for cell, width in zip(row, widths)))
     for note in table.notes:
-        print(f"note: {note}")
+        print(f"note: {pages.plain(note)}")
 
 
 def _resolve_generated_at(args: argparse.Namespace) -> str | None:
@@ -1647,7 +1648,7 @@ def _cmd_check(args: argparse.Namespace) -> int:
         marks = {"act": "Act", "ok": "OK", "no_data": "No data"}
         print(f"# Quick actions ({ctx.period})\n")
         for row in quick_actions.run_all(ctx):
-            print(f"- **{marks[row['status']]}** `{row['id']}`: {row['question']} {row['summary']}")
+            print(f"- **{marks[row['status']]}** `{row['id']}`: {row['question']} {pages.plain(row['summary'])}")
         print("\nRun `claude-token-lens check <id>` for the evidence and fixes.")
         return 0
 
@@ -3038,14 +3039,14 @@ def _cmd_changes(args: argparse.Namespace) -> int:
     for item in items:
         print(f"{item.title}: {item.status}")
         print(f"  Where: {item.where}")
-        print(f"  What it does: {item.what_it_does}")
-        print(f"  Tokens: {item.token_cost}")
+        print(f"  What it does: {pages.plain(item.what_it_does)}")
+        print(f"  Tokens: {pages.plain(item.token_cost)}")
         if item.status in ("installed", "in place"):
-            print(f"  To undo: {item.undo}")
+            print(f"  To undo: {pages.plain(item.undo)}")
         print()
     print("What to expect\n")
     for title, text in footprint.expectations(footprint.capture_setting(config_dir)):
-        print(f"- {title}. {text}")
+        print(f"- {title}. {pages.plain(text)}")
     print(f"\nTo remove everything: {footprint.UNINSTALL_COMMAND}")
     return 0
 
@@ -3513,7 +3514,7 @@ def _capture_status(
             stdout.write(f"{capture_view.STATUSLINE_NOTES[lines_on[-1]]}\n")
     stdout.write(
         "\nChange it: claude-token-lens capture level " + "|".join(capture_catalogue.LEVELS)
-        + ", capture enable|disable METRIC..., or the Capture tab on the dashboard.\n"
+        + ", capture enable|disable METRIC..., or " + pages.plain("{{page:setup/capture}}") + " on the dashboard.\n"
     )
     return 0
 
@@ -3674,7 +3675,7 @@ def _cmd_capture(args: argparse.Namespace, *, stdin=None, stdout=None, now: date
                 stdout.write(f"  - {line}\n")
             if preview.sample < 100:
                 stdout.write(f"  (in {preview.sample}% of sessions)\n")
-            stdout.write("The Capture tab and 'capture status' show what it really costs once it runs.\n")
+            stdout.write(pages.plain("{{page:setup/capture}} and 'capture status' show what it really costs once it runs.\n"))
         if args.dry_run:
             stdout.write("Dry run: config.toml left unchanged.\n")
         else:

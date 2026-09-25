@@ -44,7 +44,7 @@ from pathlib import Path
 from typing import IO
 
 from . import baseline as baseline_mod
-from . import capture_catalogue, discovery, hook_health, snapshots
+from . import capture_catalogue, discovery, hook_health, pages, snapshots
 from .fixes import RESTART_NOTE
 from .config import (
     Config,
@@ -501,7 +501,7 @@ def ask_capture_level(
     lines = estimates()
     if lines:
         stdout.write("\n".join(lines) + "\n")
-    stdout.write("Change it or turn it off any time: 'claude-token-lens capture', or the Capture tab.\n")
+    stdout.write(pages.plain("Change it or turn it off any time: 'claude-token-lens capture', or {{page:setup/capture}}.\n"))
     raw = _ask(
         "capture_level",
         "Metrics capture level: " + ", ".join(capture_catalogue.LEVELS),

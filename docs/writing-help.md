@@ -32,6 +32,27 @@ and is checked by `tests/test_help_coverage.py`.
 | Claude Code's notes | attachments, reminders |
 | cache lifetime (TTL) | TTL, on first use |
 | thinking | thinking tokens, on first use |
+| page (or a `{{page:...}}` token) | tab, "the Cache tab" |
+
+## Linking to another page
+
+Point at another page or segment with a token, `{{page:<page>}}` or
+`{{page:<page>/<segment>}}` (ids from
+[`src/claude_token_lens/pages.py`](../src/claude_token_lens/pages.py)),
+never with its name in prose ("the Cache tab", "Setup › Capture shows").
+The dashboard's `links.js` turns a token into a link; everywhere else --
+the CLI, the Markdown and HTML reports, `docs/capture.md` -- calls
+`pages.plain()` first, so a reader never sees raw `{{page:...}}` text.
+Write the token where the page name would read naturally, for example:
+
+> Check {{page:cache/lifetime}} for the causes.
+
+A token must never appear in a recommendation's `why` or `title`, or in
+`fixes[].prompt`/`fixes[].command`: those feed a prompt or a standalone
+command a person or Claude reads outside the dashboard, and neither
+should ever carry dashboard markup. `tests/test_pages.py` checks both
+rules: every token resolves against `pages.py`, and none of the banned
+fields carries one.
 
 ## The "how to read this" block
 
