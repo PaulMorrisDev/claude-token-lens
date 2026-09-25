@@ -317,7 +317,7 @@ beside its title. Each page, or page and segment, is a *view* with its
 own address, `#/<page>[/<segment>]?w=<window>`, and each view renders
 from its own `/api/*` route(s). A view is drawn the first time it is
 opened and kept until the window changes; views have no background
-poll. Seventeen views ship, in the sidebar's order below.
+poll. Eighteen views ship, in the sidebar's order below.
 
 **The router** (`app.js`) reads the address on load and on every
 `hashchange`. Every in-app link goes through `goTo` (`core.js`, which
@@ -757,9 +757,27 @@ Glossary has no figures and shows neither.
     each row with what it means (`helptext.diagnostics_table`) — same
     figures as the CLI report's Diagnostics section, so a user comparing
     the UI against a CLI run for the same window sees identical numbers.
-17. **Glossary** — the `GLOSSARY` constant in `page-glossary.js`: each term the
-    dashboard uses, in plain English. The README's glossary is the same
-    list, word for word.
+17. **Glossary › Terms** — the `GLOSSARY` constant, now in `links.js` (so
+    any view can link a term): each term the dashboard uses, in plain
+    English. The README's glossary is the same list, word for word.
+    Each entry is a `<div>` wrapping its `dt`/`dd` pair, so a link with
+    `?term=<slug>` (`termLink`/`termSlug`) scrolls to it and pulses it
+    the way an evidence link does (`pulseNode`). A term named in a How
+    costs work card's own `terms` (`COST_CARDS`) also carries a "Why it
+    matters" line: the same rule sentence the card states, from
+    `costs.js`'s `cardRuleText` (one source read by both segments), with
+    a link back to the card.
+18. **Glossary › How costs work** — one card per `COST_CARDS` entry
+    (`links.js`), in the order they're listed: cache reads, cache writes
+    and lifetime (TTL), cache rebuilds, model choice, startup context,
+    tool output kept, conversation summaries, and billing mode. Each
+    card states the rule with the multiplier from your own pricing
+    (`format.js`'s `fraction()`, via `costs.js`'s `priced()` — never a
+    number typed into the page), your own figures for the window from
+    `report.json`, and a link to the page or recommendation that acts on
+    it; a card whose section has no data for the window says so in a
+    line instead of a number. A link with `?card=<slug>` (`cardLink`)
+    scrolls to and pulses its card, the same way a term link does.
 
 ## Help and labels
 
@@ -823,7 +841,8 @@ stdlib-only test suite.
 | `grid.js` | the data grid (`dataGrid`, with `link` and `swatch` for linked highlight), report tables (`renderTable`, `renderPlacedTables`), `renderMappedSections`, `simpleTable`, `pulseRow` |
 | `charts.js` | the chart frame: `CHART_SPECS`, `fillSummary`, `ENTITY_COLOURS`/`entityColour`, axes, the tooltip, keyboard reading, the table view, resize, `drawChart`/`holdChart`/`chartError` |
 | `charts-types.js` | the chart forms and `renderChart`, `sessionContextChart`, `savingsLevers`, and the micro-forms `sparkline`, `meter`, `habitSparkline` |
-| `links.js` | `PAGES` (pages, segments, intros), `SECTION_PAGE_MAP`/`TABLE_PAGE_MAP`, `parseHash`/`formatHash`, `viewIntro`, `pageLink`/`captureLink` |
+| `links.js` | `PAGES` (pages, segments, intros), `SECTION_PAGE_MAP`/`TABLE_PAGE_MAP`, `parseHash`/`formatHash`, `viewIntro`, `pageLink`/`captureLink`, `GLOSSARY`/`termLink`/`termSlug`, `COST_CARDS`/`cardLink` |
+| `costs.js` | the pricing helpers Actions and Glossary both need, from `report.meta.rates`: `pricingFacts`, `priced`, `modelSentence`, and `cardRuleText` (the rule sentence for each `COST_CARDS` concept — the one source Glossary's two segments both read) |
 | `shell.js` | what is on every view: the health banner, the sidebar's status line, the capture banner; the health detail (`renderHealth`) and logon warning (`renderLogonNotice`) the Overview and Data quality show |
 | `icons.js` | the icon set: `icon(name, opts)` returns an inline 16px SVG |
 | `d3.js` | the one door to the vendored d3 (`import d3 from "./d3.js"`) |
@@ -837,14 +856,14 @@ stdlib-only test suite.
 | `page-setup.js` | Setup › Settings and Profiles (with impact and backtest) |
 | `page-capture.js` | Setup › Capture |
 | `page-data.js` | Data quality |
-| `page-glossary.js` | Glossary (`GLOSSARY`) |
+| `page-glossary.js` | Glossary › Terms and How costs work |
 
 ## Implementation notes (S1-ui)
 
 The UI shipped in `static/` (`index.html`, `app.css` and the modules above) follows
 this document's Constraints, Data flow and Testing sections, and the
 Pages section above describes the shipped structure: seven main pages,
-Data quality and the Glossary, seventeen views in all.
+Data quality and the Glossary, eighteen views in all.
 
 **Generic Section/Table rendering** is driven by two explicit maps in
 `links.js`. `SECTION_PAGE_MAP` gives each report section key its view

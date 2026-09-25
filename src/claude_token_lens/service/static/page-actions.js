@@ -7,7 +7,7 @@
  */
 
 import { clear, el, onParams, state } from "./core.js";
-import { fetchJson, findSection, loadInto, loadReport, withWindow } from "./api.js";
+import { fetchJson, loadInto, loadReport, withWindow } from "./api.js";
 import {
   AGENT_LABELS,
   basisChip,
@@ -34,10 +34,10 @@ import {
   toast,
 } from "./ui.js";
 import { dataGrid, simpleTable } from "./grid.js";
-import { fraction, modelName } from "./format.js";
+import { modelName } from "./format.js";
 import { formatHash, pageLink, replaceParams, viewIntro } from "./links.js";
 import { evidenceList } from "./evidence.js";
-import { modelTier } from "./charts.js";
+import { modelSentence, priced, pricingFacts } from "./costs.js";
 
 // ======================================================================
 // What each recommendation is about
@@ -139,92 +139,6 @@ var RULE_MECHANISM = {
   "spawn-task-prompt": "startup",
   "agent-report-size": "report",
 };
-
-// The prices behind the sentences, from your pricing (report.meta.rates,
-// read from pricing.toml), never typed in here. "main" is the model you
-// spent most on in this window.
-function pricingFacts(report) {
-  var rates = (report && report.meta && report.meta.rates) || {};
-  var overview = report ? findSection(report, "overview") : null;
-  var byModel = ((overview && overview.tables) || []).filter(function (t) {
-    return t.name === "by_model";
-  })[0];
-  var used = byModel
-    ? byModel.rows
-        .map(function (row) {
-          return String(row[0]);
-        })
-        .filter(function (id) {
-          return rates[id];
-        })
-    : [];
-  var mainId = used[0] || Object.keys(rates)[0] || null;
-  return { rates: rates, used: used, main: mainId ? rates[mainId] : null };
-}
-
-// A price as a share or multiple of the input price: "a tenth of the
-// input price", "1.25 times the input price".
-function priced(ratio) {
-  var words = fraction(ratio);
-  return words ? words + " the input price" : "";
-}
-
-// The model of a family ("opus", "sonnet", "haiku") the sentence names:
-// the one you used most, else the newest one priced.
-function familyModel(facts, family) {
-  var used = facts.used.filter(function (id) {
-    return modelTier(id) === family;
-  })[0];
-  if (used) return used;
-  var priced = Object.keys(facts.rates).filter(function (id) {
-    return modelTier(id) === family && !/fable/.test(id);
-  });
-  priced.sort(function (a, b) {
-    return versionOf(b) - versionOf(a);
-  });
-  return priced[0] || null;
-}
-
-function versionOf(id) {
-  var numbers = String(id).replace(/-\d{8}$/, "").match(/\d+/g) || [];
-  return numbers.reduce(function (sum, n, i) {
-    return sum + Number(n) / Math.pow(100, i);
-  }, 0);
-}
-
-function modelSentence(facts, group) {
-  var reference = familyModel(facts, "opus");
-  var referencePrice = reference && facts.rates[reference] ? facts.rates[reference].input : 0;
-  if (!referencePrice) return "";
-  var wanted = [];
-  group.members.forEach(function (rec) {
-    (rec.changes || []).forEach(function (change) {
-      var family = modelTier(change.value);
-      if (family !== "other" && family !== "opus" && wanted.indexOf(family) === -1) wanted.push(family);
-    });
-  });
-  if (!wanted.length) wanted = ["sonnet", "haiku"];
-  var parts = wanted
-    .map(function (family) {
-      var id = familyModel(facts, family);
-      var price = id && facts.rates[id] ? facts.rates[id].input : 0;
-      return price ? { name: modelName(id), ratio: price / referencePrice } : null;
-    })
-    .filter(function (part) {
-      return part && part.ratio < 0.995;
-    })
-    .sort(function (a, b) {
-      return b.ratio - a.ratio;
-    });
-  if (!parts.length) return "";
-  var first = fraction(parts[0].ratio);
-  var text = "Each model has its own price per token. " + parts[0].name + " costs " + first + (/ of$/.test(first) ? " " : " of ") + modelName(reference) + "'s price";
-  if (parts[1]) {
-    var second = fraction(parts[1].ratio);
-    text += ", and " + parts[1].name + " " + second + (/ of$/.test(second) ? " it" : " of it");
-  }
-  return text + ".";
-}
 
 // One or two short sentences on what the change does to the price, with
 // the multiplier from your pricing. Empty when the rates are missing.
