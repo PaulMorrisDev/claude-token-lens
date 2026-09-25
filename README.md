@@ -590,15 +590,15 @@ The dashboard's Glossary page uses the same words, term for term.
 
 - **[ccusage](https://github.com/ryoppippi/ccusage)**: daily and
   monthly cost tables across several coding tools. claude-token-lens
-  covers only Claude Code, and goes deeper there: the 5-minute and
-  1-hour cache split, cache rebuilds, costs per subagent type, and
-  recommendations that know your settings.
+  covers only Claude Code, and goes deeper there. It splits the 5-minute
+  and 1-hour cache, explains cache rebuilds, prices each subagent type
+  and makes recommendations that know your settings.
 - **[token-dashboard](https://github.com/nateherkai/token-dashboard)**:
   the closest relative, with stdlib Python, SQLite and a web page. It
   removes duplicate replies by message id, prices each prompt and gives
-  tips. claude-token-lens adds the cache lifetime (TTL) simulation, the
-  causes of each cache rebuild, costs per subagent type, and before and
-  after comparisons of your settings.
+  tips. claude-token-lens adds a cache lifetime (TTL) simulation, the
+  cause of each cache rebuild, costs per subagent type and
+  before-and-after comparisons of your settings.
 - **[cache-ttl-analyzer](https://github.com/cebert/cache-ttl-analyzer)**:
   replays the main conversation under a 5-minute and a 1-hour cache
   lifetime. claude-token-lens does the same for each subagent type, and

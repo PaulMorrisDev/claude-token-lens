@@ -1,8 +1,8 @@
 # Profiles
 
 `claude_token_lens.profiles` is the schema, shipped catalogue, diff
-renderer and apply/revert code for a **profile**: a small, allowlisted
-bundle of Claude Code settings/agent-frontmatter/environment-variable
+renderer and apply/revert code for a **profile**. A profile is a small,
+allowlisted bundle of Claude Code settings/agent-frontmatter/environment-variable
 levers that a user can apply to a project. This document is the
 contract for the package. `cli.py`'s `apply`/`init`/`baseline`
 subcommands and the `/api/profiles*`, `/api/profile-schema` and

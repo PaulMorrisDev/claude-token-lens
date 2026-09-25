@@ -160,7 +160,7 @@ python -m claude_token_lens init
 | `--install-service` | Start the dashboard at logon without asking |
 | `--no-service` | Skip the logon question entirely |
 | `--dry-run` | Show the `settings.json` change and the logon plan without making either. `config.toml` and the baseline are still written |
-| `--repair-hook` | Fix a SessionStart hook command that can't run, without asking. It fixes a path broken by a single backslash in JSON, a Python that can't be found (such as a missing `py` launcher), or a `%VARIABLE%` that Git Bash doesn't expand. It keeps your own Python when it's found, writes the folder out in full, and backs up `settings.json` first |
+| `--repair-hook` | Fix a SessionStart hook command that can't run, without asking. It fixes single backslashes in a JSON path, and a `%VARIABLE%` that Git Bash doesn't expand. It also replaces a Python that can't be found, such as a missing `py` launcher. It keeps your own Python when it's found, writes the folder out in full, and backs up `settings.json` first |
 | `--capture-level LEVEL` | Answer the metrics capture question: `off`, `free`, `essentials`, `standard` or `deep`. Capture uses tokens |
 | `--capture-for DURATION` | Switch capture off by itself after this long, such as `30d`, instead of after 14 days |
 | `--capture-no-limit` | Let capture run until you switch it off |
@@ -225,8 +225,8 @@ remove.
 
 ### `changes`
 
-Lists everything this tool has installed or changed on this machine,
-what each item costs in tokens, what to expect from it, and the command
+Lists everything this tool has installed or changed on this machine.
+For each item it shows the token cost, what to expect, and the command
 that undoes it. Takes `--claude-root PATH`, as for `init`.
 
 ### `uninstall`
@@ -293,15 +293,15 @@ python -m claude_token_lens apply --revert 20260919T100252Z
 | `--list-backups` | List earlier applies and exit |
 
 Restart Claude Code after a change. It reads some settings, such as the
-model and effort level, only when a session starts, so a restart is the
-way to be sure the change applies.
+model and effort level, only when a session starts. A restart makes sure
+the change applies.
 
 ## Metrics capture
 
 ### `capture`
 
-Metrics capture has Claude tag its replies with a few words from a fixed
-list, such as the kind of task and how clear the request was, so
+Metrics capture has Claude tag its replies with words from a fixed list,
+such as the kind of task and how clear the request was. The tags help
 suggestions fit how you work. It's off by default and uses tokens while
 it's on. [`capture.md`](capture.md) covers the levels, tags, sampling
 and privacy.
@@ -362,9 +362,9 @@ python -m claude_token_lens export --format csv-flat --out usage.csv
 
 ### `monthly-report`
 
-Writes one calendar month's summary as Markdown and HTML: total cost,
-tokens and sessions; cost by model, project and entrypoint; five-hour
-blocks used, on a plan; then the usage section. It's sized for a monthly
+Writes one calendar month's summary as Markdown and HTML. It gives total
+cost, tokens and sessions, and cost by model, project and entrypoint. On
+a plan it adds the five-hour blocks used. Then comes the usage section. It's sized for a monthly
 habit, not the full report.
 
 ```powershell
@@ -437,7 +437,7 @@ The window comes from the global `--days`, `--since` and `--until`.
 ### `backtest`
 
 Shows every "what if?" estimate the dashboard made for you, matched to
-the real change it turned into and judged on the sessions before and
+the real change it became. Each one is judged on the sessions before and
 after. It also lists estimates still waiting for a match or more data.
 It only reads the dashboard's database; a running `serve` does the
 judging. [`backtest.md`](backtest.md) has the details.
@@ -546,9 +546,10 @@ Every command uses the same three.
 
 ## Performance and the digest cache
 
-These timings come from a real 1.6 GB set of transcripts (`--all-projects`,
-a 30-day window: 120 sessions, 1,644 subagent transcripts and 29
-workflow runs), measured on 2026-09-19 on the maintainer's own machine.
+These timings come from a real 1.6 GB set of transcripts, measured on
+2026-09-19 on the maintainer's own machine. The run used `--all-projects`
+and a 30-day window: 120 sessions, 1,644 subagent transcripts and 29
+workflow runs.
 Claude Code was writing to those files at the time, so treat them as
 typical rather than lab-controlled.
 

@@ -1,10 +1,13 @@
 # Exports and monthly reports
 
 There are two ways to get your numbers into other tools without
-asking every team member to run claude-token-lens by hand: a
-one-shot, privacy-safe `export` (`src/claude_token_lens/exports.py`) for
-BI/observability pipelines, and a recurring `monthly-report`
-(`src/claude_token_lens/monthly.py`) for a habit-forming finance summary.
+asking every team member to run claude-token-lens by hand:
+
+- a one-shot, privacy-safe `export` (`src/claude_token_lens/exports.py`)
+  for BI/observability pipelines;
+- a recurring `monthly-report` (`src/claude_token_lens/monthly.py`) for
+  a habit-forming finance summary.
+
 Both are read-only over an already-loaded corpus — neither writes
 anywhere except the file(s) you point them at.
 

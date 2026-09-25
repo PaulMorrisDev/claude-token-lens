@@ -26,17 +26,23 @@ so `onboarding.py` stays free of installer side effects.
 
 ## `init`
 
-In short, `init` finds what is already set up (an existing config,
-settings snapshots, a usage log), then asks a few questions it can't
-work out itself: your billing mode, projects to always leave out,
-whether you start Claude Code with extra settings files, your time
-zone, where `apply` writes by default, and how long the first capture
-window should run (7 days by default). Then it:
+In short, `init` first finds what is already set up: an existing
+config, settings snapshots and a usage log. Then it asks the questions
+it can't work out itself:
+
+- your billing mode;
+- projects to always leave out;
+- whether you start Claude Code with extra settings files;
+- your time zone;
+- where `apply` writes by default;
+- how long the first capture window should run (7 days by default).
+
+Then it:
 
 1. writes `config.toml` into its own folder (`~/.claude/token-lens`);
-2. shows the change that connects the SessionStart hook (and a status
-   line, if you have none) to Claude Code's `settings.json`, and makes
-   it only after you say yes (`--no-install` skips this);
+2. shows the change that connects the SessionStart hook to Claude
+   Code's `settings.json`, plus a status line if you have none. It makes
+   the change only after you say yes (`--no-install` skips this);
 3. records a first baseline for the current project;
 4. offers to start the dashboard at every logon (`--no-service` skips
    this, `--install-service` says yes up front);

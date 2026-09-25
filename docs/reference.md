@@ -36,17 +36,17 @@ What it can't do:
 - **Price a plan in dollars.** On a Pro or Max plan you don't pay per
   token. What limits you is the five-hour and weekly usage window, not a
   dollar total. So on a plan, amounts are a share of your usage limits
-  once the status line has logged enough readings, and a list-price
-  equivalent until then. A list-price equivalent is good for comparing
+  once the status line has logged enough readings. Until then, they're
+  list-price equivalents. A list-price equivalent is good for comparing
   two setups. It isn't an invoice.
   - The report says which mode it uses and why. So does the dashboard's
     Overview. The usage section labels plan amounts as list-price
     equivalents. It fills the five-hour blocks table only on a plan; on
     pay-per-token billing it prints a one-line note instead.
   - `billing` in `config.toml` is `"auto"` by default. Auto means
-    subscription once the usage log holds a usage-limit reading, since
-    Claude Code reports usage limits only to Pro and Max plans, and
-    `"api"` otherwise. Set `billing = "subscription"` or `"api"` to
+    subscription once the usage log holds a usage-limit reading, and
+    `"api"` otherwise. Claude Code reports usage limits only to Pro and
+    Max plans. Set `billing = "subscription"` or `"api"` to
     choose yourself.
   - In the code, `ReportMeta.billing_mode` and `Config.billing` hold
     this ([`model.py`](../src/claude_token_lens/model.py),
@@ -222,9 +222,12 @@ Those items are `feedback = ["feedback_note"]` or
 `coaching = ["coaching_line"]` in `[capture]`, set from **Setup ›
 Capture** or `python -m claude_token_lens capture enable`. The second
 line shows a live hint when one applies, and otherwise the reminder to
-run `/tl-feedback`. A hint appears for a large context at the end of a
-turn, a large last tool output, many reads in one message, or a warm
-cache about to go cold. The first line doesn't change.
+run `/tl-feedback`. The first line doesn't change. A hint appears for:
+
+- a large context at the end of a turn;
+- a large last tool output;
+- many reads in one message;
+- a warm cache about to go cold.
 
 On every refresh, Claude Code sends the status line a JSON payload. It
 reads:
@@ -270,10 +273,11 @@ cache warmth across sessions.
   `os.path.normcase(os.path.realpath(path))`, so `C--Dev-MyApp` and
   `c--Dev-MyApp` count as one project on a case-insensitive drive.
   `--project-family REGEX` groups a project's worktrees together.
-- **Git Bash paths.** The privacy scan (`helpers.assert_privacy`, run by
-  `tests/test_privacy.py`) looks for a Git Bash drive path (`/c/Users/...`)
-  as well as a Windows drive path (`C:\...`) and a `\Users\` segment. A
-  command run from Git Bash on Windows produces that third form.
+- **Git Bash paths.** The privacy scan looks for three kinds of path: a
+  Windows drive path (`C:\...`), a `\Users\` segment and a Git Bash drive
+  path (`/c/Users/...`). A command run from Git Bash on Windows produces
+  the third. The scan is `helpers.assert_privacy`, run by
+  `tests/test_privacy.py`.
 - **Long paths.** On Windows, a path of 255 characters or more gets the
   `\\?\` prefix (`\\?\UNC\` for a network path) before it's opened
   (`jsonl._windows_long_path`).
@@ -293,8 +297,8 @@ cache warmth across sessions.
   - `--config-dir` moves only this tool's own folder, and
     `settings.json` is never looked for beside it.
   - When `--config-dir` isn't the default, the hook and status line
-    commands `init` adds end with the same `--config-dir`, so what they
-    record lands where the commands and the dashboard read.
+    commands `init` adds end with the same `--config-dir`. What they
+    record then lands where the commands and the dashboard read.
 - **`CLAUDE_CODE_PROJECT_DIR_NAME`** overrides the project name for the
   current folder only, whether or not `CLAUDE_CONFIG_DIR` is set.
 

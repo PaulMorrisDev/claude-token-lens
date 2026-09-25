@@ -5,7 +5,7 @@ collecting anyone's sessions. It takes three steps, run by different
 people on different machines:
 
 1. Each team member runs `python -m claude_token_lens export --aggregate`
-   on their own machine and hands the file to the team lead, by whatever
+   on their own machine. They hand the file to the team lead by whatever
    channel they already use: Slack, email or a shared drive. This tool
    has no upload of its own.
 2. The team lead runs `python -m claude_token_lens import FILE...` on
@@ -45,13 +45,13 @@ covers the `config.toml` settings that matter on a work machine.
   named after the project or its own conventions, e.g. a project's own
   reviewer/implementer agent) is hashed to `custom:<8 hex chars>`
   before it ever leaves the machine that built the document, the same
-  salted-HMAC construction as `machine_id` and project slugs, just its
+  salted-HMAC construction as `machine_id` and project slugs, with its
   own domain tag so the three hash namespaces never collide.
 - **Opt-in per person, per project.** Nobody's data reaches a team
   document unless they personally run `export --aggregate`. Project
   slugs specifically are opt-in a second time, on top of that, via
   `--include-projects` — the default `export --aggregate` carries no
-  project information whatsoever, just the five grouping axes below.
+  project information whatsoever, only the five grouping axes below.
 - **Schema-checked on the way in.** `import` rejects anything that
   doesn't match the expected shape — an unexpected top-level key, or
   any string value over 64 characters — before it ever touches disk,
@@ -144,7 +144,7 @@ These settings live in `config.toml`, in the config folder
   against project folder names and ignoring case. A matching project is
   never read at all, not only hidden from the output. Use it for a
   confidential repo. A pattern that isn't a valid regular expression
-  stops the config loading, with an error naming it, so a typo can't
+  stops the config loading, with an error naming it. So a typo can't
   quietly stop a project being excluded. `serve --exclude-project SLUG`
   excludes one more project for a single run.
 - **`retention_days`** is how many days of sessions the dashboard keeps
@@ -154,15 +154,15 @@ These settings live in `config.toml`, in the config folder
   dashboard's own records (capture signals, the capture log and the
   usage log) are removed after 180 days unless you set it.
 - **Managed settings.** The SessionStart hook also records your
-  organisation's managed settings file, redacted the same way as your
-  own settings, plus the names of the keys it sets. The file is
+  organisation's managed settings file, redacted like your own settings.
+  It records the names of the keys that file sets, too. The file is
   `managed-settings.json` in `C:\Program Files\ClaudeCode\` on Windows,
   `/Library/Application Support/ClaudeCode/` on macOS, or
   `/etc/claude-code/` on Linux and WSL. When a recommendation's setting
   is one of those keys, the recommendation is marked as managed. It says
   "This lever is managed by policy, raise with your administrator."
-  instead of suggesting a change you can't make, and its command is
-  marked `# managed by policy -- shown for reference only`. See
+  instead of suggesting a change you can't make. Its command is marked
+  `# managed by policy -- shown for reference only`. See
   [Recommendations](sections-reference.md#recommendations-recommendpy).
 - **Provider.** Each transcript records which provider billed it, read
   from the shape of its model id. An id starting `anthropic.` or
