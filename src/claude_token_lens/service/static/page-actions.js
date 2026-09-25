@@ -7,7 +7,7 @@
  */
 
 import { clear, el, onParams, state } from "./core.js";
-import { fetchJson, findSection, loadInto, loadRecommendations, loadReport, withWindow } from "./api.js";
+import { fetchJson, findSection, groupedTitle, loadInto, loadRecommendations, loadReport, withWindow } from "./api.js";
 import {
   AGENT_LABELS,
   basisChip,
@@ -284,41 +284,6 @@ function savingBasis(rec) {
 // Recommendations that say the same thing for several agents
 // ======================================================================
 
-// A rule that fires once per agent type sends one recommendation each;
-// the inbox shows them as one item, titled for all of them.
-var GROUP_TITLES = {
-  "model-tier": function (n) {
-    return n + " agent types could run a cheaper model";
-  },
-  "ttl-switch": function (n) {
-    return "The cache lifetime (TTL) is a poor fit for " + n + " agent types";
-  },
-  "subagent-volume": function (n) {
-    return n + " agent types take most of the subagent cost";
-  },
-  "agent-report-size": function (n) {
-    return "Reports from " + n + " agent types come back large";
-  },
-  "spawn-cost": function (n) {
-    return "Spawning " + n + " agent types is expensive before they do any work";
-  },
-  "spawn-claude-md": function (n) {
-    return n + " agent types are sent your CLAUDE.md files every time they start";
-  },
-  "spawn-unused-skills": function (n) {
-    return n + " agent types are given the skills list but never used a skill";
-  },
-  "spawn-unused-mcp": function (n) {
-    return n + " agent types are offered MCP tools but never used one";
-  },
-  "spawn-read-only-tools": function (n) {
-    return n + " agent types only ever searched and read files";
-  },
-  "spawn-task-prompt": function (n) {
-    return "The instructions written for " + n + " agent types are long";
-  },
-};
-
 function groupRecommendations(recs) {
   var groups = [];
   var shared = {};
@@ -350,10 +315,7 @@ function groupRecommendations(recs) {
 }
 
 function groupTitle(group) {
-  var n = group.members.length;
-  if (n === 1) return group.members[0].title;
-  var phrase = GROUP_TITLES[group.id];
-  return phrase ? phrase(n) : group.members[0].title + " (and " + (n - 1) + " more)";
+  return groupedTitle(group.id, group.members.length, group.members[0].title);
 }
 
 function agentName(agent) {

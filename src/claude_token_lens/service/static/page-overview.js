@@ -27,7 +27,7 @@ import { renderTable } from "./grid.js";
 import { pageLink, viewIntro } from "./links.js";
 import { renderLogonNotice } from "./shell.js";
 import { chartError, holdChart, setChartHeight } from "./charts.js";
-import { meter, renderChart, savingsLevers, sparkline } from "./charts-types.js";
+import { dailyChanges, meter, renderChart, savingsLevers, sparkline } from "./charts-types.js";
 
 // A page draw that a newer one (a new window) has replaced: its late
 // answers are dropped, so they can't take the chart back.
@@ -619,28 +619,17 @@ export function renderOverview(panel) {
       }, { slot: "overview", titleTag: "h2" });
       return;
     }
-    var impact = loaded[1].body;
-    var changes = ((impact && impact.ok === true && impact.data && impact.data.changes) || []).map(function (row) {
-      var change = row.change || {};
-      return {
-        day: String(change.ts || "").slice(0, 10),
-        label: change.label || "A settings change",
-        // What the change did: its row in "Your changes and what they did".
-        open: function () {
-          goTo("setup/profiles");
-        },
-      };
-    });
     renderChart(
       chartHost,
       "daily-spend",
-      { rows: daily.data || [], split: "agent", changes: changes },
+      { rows: daily.data || [], split: "agent", changes: dailyChanges(loaded[1].body) },
       {
         slot: "overview",
         titleTag: "h2",
         height: chartHeight,
-        open: function () {
-          goTo("spend/sessions");
+        // A day leads to the sessions active on it.
+        open: function (day) {
+          goTo("spend/sessions", { params: { day: day } });
         },
       }
     );

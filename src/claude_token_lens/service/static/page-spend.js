@@ -3,39 +3,77 @@
  * The Spend page: Usage, Savings and Sessions.
  */
 
-import { clear, el } from "./core.js";
+import { clear, el, goTo, onParams, state } from "./core.js";
 import { compactNumber, formatDuration, fullValue, moneyParts, projectName, shortTs, thousands } from "./format.js";
 import { fetchJson, loadInto, loadReport, postJson, withWindow } from "./api.js";
 import { button, drawer, errorNotice, loadingNode, prose, tile, tileRow, toast } from "./ui.js";
 import { dataGrid, renderMappedSections, renderReportBackedSection } from "./grid.js";
-import { viewIntro } from "./links.js";
-import { sessionContextChart } from "./charts-types.js";
+import { replaceParams, viewIntro } from "./links.js";
+import { chartError, dayLabel, holdChart } from "./charts.js";
+import { dailyChanges, modeColour, renderChart, savingsLevers, sessionContextChart } from "./charts-types.js";
 
 // ======================================================================
-// Spend, Sessions
+// Spend, Sessions: which sessions stand out (chart 4), over the list. A
+// stretch of time picked on the chart, or a day picked on a daily spend
+// chart (?day=YYYY-MM-DD, a UTC day), narrows the list.
 // ======================================================================
 
-export var sessionsState = { limit: 50, offset: 0 };
+// The window's sessions, newest first, up to this many.
+var SESSIONS_LIMIT = 2000;
+var DAY_MS = 86400000;
+
+// run: the draw on screen, so an older draw's late answer is dropped.
+var sessionsView = { run: 0, rows: [], range: null, day: null };
+
+function validDay(value) {
+  return /^\d{4}-\d\d-\d\d$/.test(String(value || "")) && !isNaN(Date.parse(value + "T00:00:00Z")) ? value : null;
+}
+
+// The sessions the list shows: those started in the picked stretch, or
+// active on the picked day.
+function shownSessions() {
+  var rows = sessionsView.rows;
+  if (sessionsView.range) {
+    var from = sessionsView.range[0];
+    var to = sessionsView.range[1];
+    return rows.filter(function (row) {
+      var start = Date.parse(row.first_ts);
+      return start >= from && start <= to;
+    });
+  }
+  if (sessionsView.day) {
+    var dayStart = Date.parse(sessionsView.day + "T00:00:00Z");
+    return rows.filter(function (row) {
+      var first = Date.parse(row.first_ts);
+      var last = Date.parse(row.last_ts || row.first_ts);
+      return first < dayStart + DAY_MS && last >= dayStart;
+    });
+  }
+  return rows;
+}
 
 export function renderSessions(panel) {
+  var run = ++sessionsView.run;
+  function current() {
+    return run === sessionsView.run;
+  }
   clear(panel);
   viewIntro(panel, "spend/sessions");
+  sessionsView.rows = [];
+  sessionsView.range = null;
+  sessionsView.day = validDay(state.params.day);
 
+  var chartHost = el("div", { class: "sessions-chart" });
+  var filterHost = el("div", { class: "sessions-filter", "aria-live": "polite" });
   var tableContainer = el("div", { id: "sessions-table" });
-  var pager = el("div", { class: "pager" });
-  var prevBtn = button("Previous", { icon: "chevron-left", variant: "quiet" });
-  var nextBtn = button("Next", { icon: "chevron-right", variant: "quiet", class: "button-trailing-icon" });
-  var rangeLabel = el("span", { class: "pager-range", text: "" });
-  pager.appendChild(prevBtn);
-  pager.appendChild(rangeLabel);
-  pager.appendChild(nextBtn);
-
-  panel.appendChild(pager);
-  panel.appendChild(tableContainer);
-
   var sectionContainer = el("div", { id: "sessions-sections" });
+  panel.appendChild(chartHost);
+  panel.appendChild(filterHost);
+  panel.appendChild(tableContainer);
   panel.appendChild(sectionContainer);
+
   loadReport().then(function (result) {
+    if (!current()) return;
     if (result.error) {
       sectionContainer.appendChild(errorNotice(result.error));
       return;
@@ -43,36 +81,95 @@ export function renderSessions(panel) {
     renderMappedSections(result.report, "spend/sessions", sectionContainer);
   });
 
-  function load() {
-    rangeLabel.textContent = "Sessions " + (sessionsState.offset + 1) + " to " + (sessionsState.offset + sessionsState.limit);
-    prevBtn.disabled = sessionsState.offset === 0;
-    var url = withWindow("/api/sessions?limit=" + sessionsState.limit + "&offset=" + sessionsState.offset);
-    loadInto(
-      tableContainer,
-      url,
-      function (rows, container) {
-        renderSessionsTable(rows, container);
-        nextBtn.disabled = rows.length < sessionsState.limit;
-        if (rows.length < sessionsState.limit) {
-          rangeLabel.textContent = rows.length
-            ? "Sessions " + (sessionsState.offset + 1) + " to " + (sessionsState.offset + rows.length)
-            : "No more sessions";
-        }
+  function drawScatter(fresh) {
+    renderChart(chartHost, "session-outliers", sessionsView.rows, {
+      slot: "sessions",
+      titleTag: "h2",
+      fresh: fresh,
+      open: function (row) {
+        openSessionDrawer(row.id);
       },
-      { skeleton: "rows" }
+      brushed: function (range) {
+        if (!current()) return;
+        sessionsView.range = range;
+        // A stretch picked on the chart replaces a day picked elsewhere.
+        if (range && sessionsView.day) {
+          sessionsView.day = null;
+          replaceParams(Object.assign({}, state.params, { day: null }));
+        }
+        drawList();
+      },
+    });
+  }
+
+  function drawFilter(shown) {
+    clear(filterHost);
+    var what = null;
+    if (sessionsView.range) {
+      what = "Sessions started from " + shortTs(new Date(sessionsView.range[0]).toISOString()) + " to " + shortTs(new Date(sessionsView.range[1]).toISOString());
+    } else if (sessionsView.day) {
+      what = "Sessions active on " + dayLabel(sessionsView.day, true) + " (a UTC day)";
+    }
+    if (!what) return;
+    var showAll = button("Show all sessions", { variant: "quiet" });
+    showAll.addEventListener("click", function () {
+      var hadRange = !!sessionsView.range;
+      sessionsView.range = null;
+      if (sessionsView.day) {
+        sessionsView.day = null;
+        replaceParams(Object.assign({}, state.params, { day: null }));
+      }
+      // The chart drops its picked stretch by drawing afresh.
+      if (hadRange) drawScatter(true);
+      drawList();
+      var table = tableContainer.querySelector("table");
+      if (table) table.focus({ preventScroll: true });
+    });
+    filterHost.appendChild(
+      el("div", { class: "filter-row" }, [el("p", { class: "notes", text: what + ": " + thousands(shown) + " of " + thousands(sessionsView.rows.length) + "." }), showAll])
     );
   }
 
-  prevBtn.addEventListener("click", function () {
-    sessionsState.offset = Math.max(0, sessionsState.offset - sessionsState.limit);
-    load();
-  });
-  nextBtn.addEventListener("click", function () {
-    sessionsState.offset += sessionsState.limit;
-    load();
+  function drawList() {
+    if (!current()) return;
+    var shown = shownSessions();
+    drawFilter(shown.length);
+    clear(tableContainer);
+    renderSessionsTable(shown, tableContainer, sessionsView.rows.length >= SESSIONS_LIMIT);
+  }
+
+  // A day picked on a daily spend chart while this view is open.
+  onParams("spend/sessions", function (params) {
+    var day = validDay(params.day);
+    if (day === sessionsView.day || !current()) return;
+    sessionsView.day = day;
+    if (day && sessionsView.range) {
+      sessionsView.range = null;
+      drawScatter(true);
+    }
+    drawList();
   });
 
-  load();
+  if (!holdChart(chartHost, "session-outliers", { slot: "sessions" })) chartHost.appendChild(loadingNode("Loading sessions", "chart"));
+  loadInto(
+    tableContainer,
+    withWindow("/api/sessions?limit=" + SESSIONS_LIMIT),
+    function (rows) {
+      if (!current()) return;
+      sessionsView.rows = rows || [];
+      drawList();
+      drawScatter(false);
+    },
+    { skeleton: "rows" }
+  ).then(function (rows) {
+    if (rows !== null || !current()) return;
+    // The list says what went wrong; the chart says it too.
+    if (!chartHost.querySelector(".chart.is-refreshing")) {
+      chartError(chartHost, "session-outliers", null, function () {
+        goTo("spend/sessions", { force: true });
+      }, { slot: "sessions", titleTag: "h2" });
+    }
+  });
 }
 
 function timeCell(row, value) {
@@ -103,7 +200,8 @@ var SESSION_COLUMNS = [
 // Shown only when some sessions ran somewhere else, such as WSL.
 var SOURCE_COLUMN = { key: "source", label: "Where", kind: "str" };
 
-function renderSessionsTable(rows, container) {
+// capped: the window has more sessions than the list holds.
+function renderSessionsTable(rows, container, capped) {
   var columns = SESSION_COLUMNS.slice();
   var elsewhere = rows.some(function (row) {
     return row.source && row.source !== "This computer";
@@ -127,10 +225,25 @@ function renderSessionsTable(rows, container) {
           openSessionDrawer(row.id);
         },
       },
+      // A row and its dot on the chart light up together.
+      link: {
+        scope: "session",
+        key: function (row) {
+          return row.id;
+        },
+      },
+      swatch: function (row) {
+        return modeColour(row.mode);
+      },
       empty: "No sessions in this window.",
       emptyNext: "Pick a longer window to see older ones.",
     })
   );
+  if (capped) {
+    container.appendChild(
+      el("p", { class: "notes", text: "Showing the newest " + thousands(SESSIONS_LIMIT) + " sessions in this window. Pick a shorter window to see the rest." })
+    );
+  }
 }
 
 // A session's detail slides in from the right, over the list.
@@ -418,10 +531,15 @@ var SAVINGS_SECTIONS = [
 export function renderSavings(panel) {
   clear(panel);
   viewIntro(panel, "spend/savings");
-  SAVINGS_SECTIONS.forEach(function (spec) {
+  // Chart 2: the four ways to save side by side, from the same figures
+  // as the sections under it.
+  var chartHost = el("div", { class: "savings-chart" });
+  panel.appendChild(chartHost);
+  if (!holdChart(chartHost, "savings-levers", { slot: "savings" })) chartHost.appendChild(loadingNode("Loading the ways to save", "chart"));
+  var loads = SAVINGS_SECTIONS.map(function (spec) {
     var container = el("div", { id: spec.id });
     panel.appendChild(container);
-    loadInto(
+    return loadInto(
       container,
       withWindow(spec.url),
       function (data, target) {
@@ -430,6 +548,35 @@ export function renderSavings(panel) {
       { skeleton: "rows" }
     );
   });
+  Promise.all(loads).then(function (sections) {
+    // A newer draw of this view has its own chart.
+    if (!chartHost.isConnected) return;
+    if (
+      sections.every(function (data) {
+        return data === null;
+      })
+    ) {
+      // Each section says what went wrong.
+      clear(chartHost);
+      return;
+    }
+    var tables = {};
+    sections.forEach(function (data) {
+      ((data && data.tables) || []).forEach(function (table) {
+        tables[table.name] = table;
+      });
+    });
+    renderChart(chartHost, "savings-levers", savingsLevers(tables), {
+      slot: "savings",
+      titleTag: "h2",
+      empty: "No way to save showed up in this window.",
+      emptyNext: "Pick a longer window to include more sessions.",
+      // A lever leads to the row its figure comes from, in its section below.
+      open: function (lever) {
+        goTo("spend/savings", { params: { t: lever.source, row: lever.row } });
+      },
+    });
+  });
 }
 
 // ======================================================================
@@ -437,9 +584,77 @@ export function renderSavings(panel) {
 // model + a raw /api/compactions list)
 // ======================================================================
 
+// The daily spend chart's split: who ran the turns, or which model.
+var SPLITS = [
+  { value: "agent", label: "Main session and subagents" },
+  { value: "model", label: "Model" },
+];
+
+function usageSplit(value) {
+  return value === "model" ? "model" : "agent";
+}
+
 export function renderUsage(panel) {
   clear(panel);
   viewIntro(panel, "spend/usage");
+
+  // Chart 1, the same as the Overview's, with a choice of split.
+  var split = usageSplit(state.params.split);
+  var controls = el("div", { class: "filter-row chart-controls", role: "group", "aria-label": "Split daily spend by" }, [el("span", { class: "filter-label", text: "Split by" })]);
+  var chips = SPLITS.map(function (option) {
+    var chipButton = el("button", { type: "button", class: "filter-chip", "aria-pressed": option.value === split ? "true" : "false", "data-split": option.value, text: option.label });
+    chipButton.addEventListener("click", function () {
+      if (option.value === split) return;
+      replaceParams(Object.assign({}, state.params, { split: option.value === "agent" ? null : option.value }));
+      chooseSplit(option.value);
+    });
+    controls.appendChild(chipButton);
+    return chipButton;
+  });
+  var chartHost = el("div", { class: "usage-chart" });
+  panel.appendChild(controls);
+  panel.appendChild(chartHost);
+  var loads = {};
+  var impactLoad = fetchJson("/api/impact");
+  function drawDaily() {
+    var wanted = split;
+    if (!holdChart(chartHost, "daily-spend", { slot: "usage" })) chartHost.appendChild(loadingNode("Loading daily spend", "chart"));
+    loads[wanted] = loads[wanted] || fetchJson(withWindow("/api/daily-usage") + "&split=" + wanted);
+    Promise.all([loads[wanted], impactLoad]).then(function (loaded) {
+      // A newer draw of this view, or another split since, has its own.
+      if (!chartHost.isConnected || wanted !== split) return;
+      var daily = loaded[0].body;
+      if (!daily || daily.ok !== true) {
+        delete loads[wanted];
+        chartError(chartHost, "daily-spend", daily && daily.error, drawDaily, { slot: "usage", titleTag: "h2" });
+        return;
+      }
+      renderChart(
+        chartHost,
+        "daily-spend",
+        { rows: daily.data || [], split: wanted, changes: dailyChanges(loaded[1].body) },
+        {
+          slot: "usage",
+          titleTag: "h2",
+          open: function (day) {
+            goTo("spend/sessions", { params: { day: day } });
+          },
+        }
+      );
+    });
+  }
+  function chooseSplit(value) {
+    split = usageSplit(value);
+    chips.forEach(function (chipButton) {
+      chipButton.setAttribute("aria-pressed", chipButton.getAttribute("data-split") === split ? "true" : "false");
+    });
+    drawDaily();
+  }
+  // Back or Forward to the other split while this view is open.
+  onParams("spend/usage", function (params) {
+    if (usageSplit(params.split) !== split && chartHost.isConnected) chooseSplit(params.split);
+  });
+  drawDaily();
 
   var sectionContainer = el("div", { id: "usage-sections" });
   panel.appendChild(sectionContainer);

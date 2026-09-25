@@ -352,8 +352,8 @@ def inventory(
                     "With capture off the hooks add nothing."
                 ),
                 token_cost=(
-                    f"Some while capture is on (now: {level}): the note and the tags. {{page:setup/capture}} shows the "
-                    "measured amount."
+                    f"Some while capture is on (now: {level}): the note and the tags. "
+                    "{{page:setup/capture}} shows the measured amount."
                     if capture.is_on and _uses_tokens(capture)
                     else f"None at {level}: the free signals only write to a local file."
                     if capture.is_on

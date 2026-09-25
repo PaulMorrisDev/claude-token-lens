@@ -200,6 +200,22 @@ Every table on every page is `dataGrid`:
   (`pulseRow`): a glow under the row's text fades over 1.2 seconds.
   With reduced motion the glow holds still until the next click or key.
 
+A report table of one row with `lead_columns` (a summary: "Cache
+rebuilds at a glance") reads as up to four tiles of those figures,
+amounts in the billing mode, with every figure in an **All figures (N)**
+disclosure under them; an evidence link to the row opens it. Notes
+under a table or section stay in view when there are one or two short
+ones; more, or longer, fold into **How these figures are worked out
+(N notes)**.
+
+A section whose table a catalogue chart reads (compaction summaries,
+idle gaps, lifetime by agent type, startup context) draws that chart
+between its intro and its tables. `grid.js` can't import the charts
+(they draw their Table view with it), so `app.js` hands it
+`charts-types.js`'s `sectionChart` through `setSectionChart`. A mark
+leads to the action its row feeds, or else to its row in the table
+below.
+
 ### Service unreachable
 
 When the local service stops answering, a callout under the page
@@ -548,11 +564,22 @@ Glossary has no figures and shows neither.
    recommendation it leads to** links to each recommendation whose id is
    in its `rule_ids`. The same checks run in the terminal as
    `claude-token-lens check`.
-4. **Spend › Usage** — cost by model (the overview section's `by_model`
+4. **Spend › Usage** — chart 1, daily spend, the same chart as the
+   Overview's with a **Split by** choice: main session and subagents
+   (`/api/daily-usage?split=agent`) or model (`split=model`, one colour
+   per tier). The choice is kept in the address (`?split=model`), so Back
+   and Forward switch it; a day leads to its sessions
+   (`#/spend/sessions?day=YYYY-MM-DD`) and a change marker to what the
+   change did. Then cost by model (the overview section's `by_model`
    table, placed here by `TABLE_PAGE_MAP`), the
    `usage`/`elasticity`/`compactions`/`phases` report sections plus a raw
    `/api/compactions` list (windowed, newest first, the first 50 shown).
-5. **Spend › Savings** (v4 wiring round) — the four newly-wired analytics
+5. **Spend › Savings** — chart 2, **Which change would save the most,
+   and how sure is it?**, heads the page: the four ways to save side by
+   side, built from the same four responses as the sections below, and
+   hatched unless measured. A bar leads to the row its figure comes
+   from (`?t=<section.table>&row=`). The compaction-window section draws
+   chart 3 through the section-chart hook (below). Then the four
    sections, each fetched directly from its own report-backed route the
    same way TTL fetches `/api/ttl` (rather than waiting on the full
    `/api/report.json`), and each rendered with the same generic
@@ -566,13 +593,17 @@ Glossary has no figures and shows neither.
    `compaction-window`/`model-tier`/`wasted-turns` recommendations these
    sections' rules produce are not duplicated here — they show up as
    cards on Actions › Recommendations like every other recommendation.
-6. **Spend › Sessions** — `/api/sessions`, 50 rows a page, newest first, with
-   Previous/Next buttons (windowed, like the rest of the view); the report's
-   `sessions` section follows below it. A row click (or Enter) renders
-   that session's detail inline in the same panel rather
-   than switching to a separate view (feature #5, "root-causing one
-   expensive session", folded into Sessions rather than given its own
-   view). The detail view fetches `/api/session/<id>` and renders an
+6. **Spend › Sessions** — chart 4, **Which sessions are the expensive
+   outliers?**: every session in the window (one `/api/sessions` fetch,
+   newest 2,000 at most, with a note when the window holds more) by
+   start time and cost on a log scale, coloured by how it ran. Dragging
+   across the chart lists only the sessions that started in that
+   stretch; a `?day=YYYY-MM-DD` from a daily spend chart lists the
+   sessions active on that UTC day. A line above the list says what it
+   is narrowed to, with **Show all sessions**. A row and its dot light
+   up together, and the row carries the dot's colour. The report's
+   `sessions` section follows. A row click (or Enter), or a dot, opens
+   the session in a drawer. The detail view fetches `/api/session/<id>` and renders an
    inline-SVG context-size-over-turns timeline from its `turn_series`/
    `markers` fields (`docs/api.md`) — markers for re-cache, compaction,
    spawn and human-message events; clicking a turn marker shows its
@@ -593,12 +624,23 @@ Glossary has no figures and shows neither.
    `feedback_questions`; **Save rating** and **Clear** send
    `POST /api/sessions/<id>/feedback` and redraw the detail), a
    **Transcripts** table, then the timeline.
-7. **Cache › Rebuilds** — `/api/recache`: stat cards for cache rebuilds by cause
+7. **Cache › Rebuilds** — opens with **What the cache does for you**:
+   three tiles in your own numbers for the window, each with its price
+   multiplier from `report.meta.rates` (via `fraction()`) and a link to
+   its card in Glossary › How costs work. What reading from the cache
+   saved (`ttl_cache_economy`'s overall `net_saving_usd`, an estimate),
+   what avoidable rebuilds cost (`recache_summary`'s
+   `avoidable_cost_usd` and `recache_turns`), and how many agent types a
+   1-hour lifetime would help (`ttl_break_even_share` rows with a
+   positive `margin`, linking to Cache › Lifetime). Then
+   `/api/recache`: stat cards for cache rebuilds by cause
    (expired while idle, invalidated by a change, expired during a
    usage-limit pause — `recache.SIGNATURES`), headed "all history"
    because the route takes no window, plus the `recache`/`limits`
-   report sections for the chosen window.
-8. **Cache › Lifetime (TTL)** — `/api/ttl`: per-agent-type observed/simulated cost, the
+   report sections for the chosen window; the `recache` section draws
+   chart 6, the idle-gap histogram.
+8. **Cache › Lifetime (TTL)** — `/api/ttl`, with chart 7 (net saving of
+   a 1-hour lifetime per agent type) over its tables: per-agent-type observed/simulated cost, the
    5m/1h recommendation and its fidelity — same figures as the CLI's
    `ttl` subcommand, including the fidelity-exceeds-bound suppression
    note.

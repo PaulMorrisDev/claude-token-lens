@@ -14,7 +14,8 @@
  */
 
 import d3 from "./d3.js";
-import { el, escapeHtml, highlight } from "./core.js";
+import { el, escapeHtml, goTo, highlight, state } from "./core.js";
+import { actionIndex } from "./api.js";
 import { MINUS, compactNumber, formatDuration, moneyAxis, moneyText, projectName, shortTs, thousands } from "./format.js";
 import { BASIS } from "./ui.js";
 import { CHART_SPECS, bandAxis, dayLabel, drawChart, entityColour, modelTier, roundedBar, tokenTick, valueAxis } from "./charts.js";
@@ -164,6 +165,23 @@ function dayRange(first, last) {
   var days = [];
   for (var ms = start; ms <= end && days.length < 1000; ms += DAY_MS) days.push(utcDay(ms));
   return days;
+}
+
+// The settings changes to mark on a daily spend chart, from /api/impact's
+// body. Each leads to what it did: its row in "Your changes and what
+// they did".
+export function dailyChanges(impact) {
+  var rows = (impact && impact.ok === true && impact.data && impact.data.changes) || [];
+  return rows.map(function (row) {
+    var change = row.change || {};
+    return {
+      day: String(change.ts || "").slice(0, 10),
+      label: change.label || "A settings change",
+      open: function () {
+        goTo("setup/profiles");
+      },
+    };
+  });
 }
 
 // data: {rows, split, first, last, today, changes} or the rows alone.
@@ -872,6 +890,11 @@ function modeKey(mode) {
 function modeLabel(key) {
   for (var i = 0; i < MODE_SERIES.length; i++) if (MODE_SERIES[i].key === key) return MODE_SERIES[i].label;
   return key;
+}
+
+// A session's colour on the scatter, for its row's swatch in the grid.
+export function modeColour(mode) {
+  return entityColour("mode", modeKey(mode));
 }
 
 // Tick values for a log scale: 1, 2 and 5 per decade, or only the
@@ -2076,6 +2099,47 @@ export function renderChart(container, key, data, opts) {
   var spec = CHART_SPECS[key];
   if (!spec) throw new Error("No chart " + key + " in CHART_SPECS");
   return drawChart(container, key, data, FORMS[spec.form], opts);
+}
+
+// -- a report section's own chart -------------------------------------------------------------------
+
+// The chart a report section draws above its tables: the CHART_SPECS row
+// whose source is one of the section's tables, or null. grid.js's
+// renderSectionGeneric calls it through setSectionChart (grid.js can't
+// import the charts: charts.js draws its Table view with grid.js).
+export function sectionChart(section) {
+  var tables = section.tables || [];
+  var keys = Object.keys(CHART_SPECS);
+  for (var i = 0; i < keys.length; i++) {
+    var source = CHART_SPECS[keys[i]].source;
+    if (typeof source !== "string" || source.indexOf(section.key + ".") !== 0) continue;
+    var table = tableNamed(tables, source.slice(section.key.length + 1));
+    if (!table) continue;
+    var host = el("div", { class: "section-chart" });
+    renderChart(host, keys[i], table, { slot: "section", open: markLeads(source) });
+    return host;
+  }
+  return null;
+}
+
+function tableNamed(tables, name) {
+  for (var i = 0; i < tables.length; i++) if (tables[i].name === name) return tables[i];
+  return null;
+}
+
+// Where a section chart's mark leads: the action its row is evidence for
+// (the first, when there are several), else that row in the table under
+// the chart, pulsed.
+function markLeads(source) {
+  var tableName = source.slice(source.indexOf(".") + 1);
+  return function (rowKey) {
+    var view = state.view;
+    actionIndex().then(function (index) {
+      var actions = index.byRow[tableName + "\n" + rowKey] || [];
+      if (actions.length) goTo("actions/recommendations", { params: { id: actions[0].key } });
+      else if (view) goTo(view, { params: { t: source, row: rowKey } });
+    });
+  };
 }
 
 // -- micro-forms ------------------------------------------------------------------------------------

@@ -2085,3 +2085,131 @@ def test_recommendations_and_checks_open_from_the_address() -> None:
     # An id this window doesn't have says so, instead of opening nothing.
     assert "missingNote(" in _function_source(app_js, "renderRecommendations")
     assert "missingNote(" in _function_source(app_js, "renderQuickActions")
+
+
+# -- Phase 9: the Spend and Cache pages --------------------------------------
+
+
+def test_a_section_draws_its_catalogued_chart_through_the_grid_hook() -> None:
+    """A report section whose table a catalogue chart reads (compaction
+    summaries, idle gaps, lifetime by agent, startup context) draws that
+    chart between its intro and its tables. grid.js can't import the
+    charts, so app.js hands it charts-types.js's sectionChart."""
+    app_js = _app_js()
+    assert "setSectionChart(sectionChart)" in _function_source(app_js, "init")
+    generic = _function_source(app_js, "renderSectionGeneric")
+    assert "sectionChart(section)" in generic
+    assert generic.index("section.intro") < generic.index("sectionChart(section)") < generic.index("renderPlacedTables(")
+    chart = _function_source(app_js, "sectionChart")
+    assert "CHART_SPECS" in chart and 'slot: "section"' in chart
+    specs = _chart_specs()
+    drawn = {key for key, spec in specs.items() if isinstance(spec.get("source"), str) and "." in spec["source"]}
+    assert drawn == {"summary-point", "idle-gaps", "lifetime-by-agent", "startup-context"}
+    # A mark leads to its row's action, or to its row in the table below.
+    leads = _function_source(app_js, "markLeads")
+    assert 'goTo("actions/recommendations"' in leads and "t: source, row:" in leads
+
+
+def test_a_one_row_table_reads_as_tiles_with_every_figure_one_click_away() -> None:
+    """A one-row summary table with lead columns shows at most four of
+    them as tiles, amounts in the billing mode, and the rest in an
+    "All figures" disclosure that an evidence link opens."""
+    app_js = _app_js()
+    assert "var STRIP_TILES = 4;" in app_js
+    columns = _function_source(app_js, "summaryColumns")
+    assert "table.rows.length !== 1" in columns or "rows.length === 1" in columns or "length !== 1" in columns
+    assert "lead_columns" in columns
+    tile_source = _function_source(app_js, "summaryTile")
+    assert "moneyParts(" in tile_source
+    render = _function_source(app_js, "renderTable")
+    assert '"All figures (' in render and "summary-details" in render
+    assert 'querySelector("details.summary-details")' in _function_source(app_js, "revealEvidence")
+
+
+def test_sessions_list_follows_the_scatter_brush_and_a_picked_day() -> None:
+    """Spend > Sessions: the scatter's time brush and a ?day= from a
+    daily spend chart narrow the list; "Show all sessions" clears both.
+    One fetch covers the window: there is no pager any more."""
+    app_js = _app_js()
+    sessions = _function_source(app_js, "renderSessions")
+    assert 'renderChart(chartHost, "session-outliers"' in sessions
+    assert "brushed:" in sessions and "openSessionDrawer(row.id)" in sessions
+    assert 'onParams("spend/sessions"' in sessions
+    assert '"Show all sessions"' in sessions
+    assert "replaceParams(" in sessions and "day: null" in sessions
+    assert "sessionsState" not in app_js and '"Previous"' not in sessions
+    shown = _function_source(app_js, "shownSessions")
+    assert "first_ts" in shown and "last_ts" in shown
+    assert r"/^\d{4}-\d\d-\d\d$/" in _function_source(app_js, "validDay")
+    # Rows light up with their dot and carry its colour.
+    table = _function_source(app_js, "renderSessionsTable")
+    assert 'scope: "session"' in table and "modeColour(row.mode)" in table
+    # A day on either daily spend chart leads here.
+    assert 'goTo("spend/sessions", { params: { day: day } })' in _function_source(app_js, "renderOverview")
+    assert 'goTo("spend/sessions", { params: { day: day } })' in _function_source(app_js, "renderUsage")
+
+
+def test_usage_daily_chart_splits_by_agent_or_model_from_the_address() -> None:
+    """Spend > Usage draws chart 1 with a "Split by" choice kept in the
+    address (?split=model), marked with aria-pressed, and follows Back
+    and Forward."""
+    app_js = _app_js()
+    usage = _function_source(app_js, "renderUsage")
+    assert 'renderChart(' in usage and '"daily-spend"' in usage and 'slot: "usage"' in usage
+    assert '"&split=" + wanted' in usage
+    assert '"aria-pressed"' in usage and "filter-chip" in usage
+    assert 'onParams("spend/usage"' in usage
+    assert "split: option.value" in usage
+    assert "dailyChanges(" in usage and "dailyChanges(" in _function_source(app_js, "renderOverview")
+
+
+def test_savings_levers_chart_leads_to_each_levers_row() -> None:
+    """Spend > Savings opens with chart 2, built from the same four
+    responses as its sections; a lever leads to the row its figure
+    comes from."""
+    savings = _function_source(_app_js(), "renderSavings")
+    assert "Promise.all(loads)" in savings
+    assert 'renderChart(chartHost, "savings-levers", savingsLevers(tables)' in savings
+    assert 'goTo("spend/savings", { params: { t: lever.source, row: lever.row } })' in savings
+
+
+def test_cache_page_opens_with_what_the_cache_does_for_you() -> None:
+    """Cache > Rebuilds opens with three facts in your own numbers: what
+    reading from the cache saved, what avoidable rebuilds cost, and how
+    many agent types a 1-hour lifetime would help. Multipliers come
+    from the report's rates, never typed in."""
+    app_js = _app_js()
+    explainer = _function_source(app_js, "renderCacheExplainer")
+    for table in ("ttl_cache_economy", "recache_summary", "ttl_break_even_share"):
+        assert '"' + table + '"' in explainer, table
+    for field in ("net_saving_usd", "avoidable_cost_usd", "recache_turns", "margin"):
+        assert field in explainer, field
+    for ratio in ("cache_read_ratio", "cache_write_5m_ratio", "cache_write_1h_ratio"):
+        assert "fraction(rates." + ratio + ")" in explainer, ratio
+    assert "moneyParts(" in explainer
+    assert 'pageLink("cache/lifetime"' in explainer
+    assert "renderCacheExplainer(result.report, explainer)" in _function_source(app_js, "renderCache")
+
+
+def test_long_table_notes_fold_away() -> None:
+    """Notes that say how figures were worked out fold into a disclosure
+    once there are more than two, or they run long, so a page stays
+    short; one or two short notes stay in view."""
+    notes = _function_source(_app_js(), "notesList")
+    assert "var NOTES_IN_VIEW_CHARS = 240;" in _app_js()
+    assert "notes.length <= 2 && length <= NOTES_IN_VIEW_CHARS" in notes
+    assert '"How these figures are worked out ("' in notes
+
+
+def test_links_inside_a_drawer_work_and_close_it() -> None:
+    """A drawer is a modal <dialog>, so the page behind it is inert: a
+    popover opened inside it joins the dialog, and a link to another
+    view closes the drawer without pulling focus back to its opener. A
+    help popover holding a link takes focus, so Tab can reach it."""
+    app_js = _app_js()
+    popover = _function_source(app_js, "popoverButton")
+    assert '(anchorButton.closest("dialog") || document.body).appendChild(pop)' in popover
+    assert 'opts.focusInside !== false || pop.querySelector("a[href]")' in popover
+    drawer = _function_source(app_js, "drawer")
+    assert "a[href^='#/']" in drawer and "close(true)" in drawer
+    assert "leaving !== true" in drawer

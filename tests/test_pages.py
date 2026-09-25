@@ -171,6 +171,22 @@ def test_every_page_token_under_src_resolves():
     assert offenders == [], "unknown page/segment id in a token:\n" + "\n".join(offenders)
 
 
+def test_no_page_token_is_halved_by_an_f_string():
+    # Inside an f-string, {{ is an escaped brace: a token written there
+    # comes out as "{page:...}", which neither the dashboard nor
+    # pages.plain() recognises, so the reader sees it raw.
+    offenders = []
+    for path in SRC.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.JoinedStr):
+                continue
+            for part in node.values:
+                if isinstance(part, ast.Constant) and isinstance(part.value, str) and re.search(r"(?<!\{)\{page:", part.value):
+                    offenders.append(f"{path.relative_to(SRC)}:{node.lineno}")
+    assert offenders == [], "a {{page:...}} token inside an f-string loses a brace; put it in a plain string:\n" + "\n".join(offenders)
+
+
 # -- a token never reaches why/title or a fix's prompt/command --------------
 
 

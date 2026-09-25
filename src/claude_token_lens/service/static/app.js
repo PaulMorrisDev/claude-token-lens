@@ -34,9 +34,11 @@ import { loadRecommendations, resetFiguresAsOf } from "./api.js";
 import { pollHealth } from "./shell.js";
 import { formatHash, OLD_TAB_VIEWS, PAGES, parseHash, VIEW_KEYS, viewFor } from "./links.js";
 import { revealEvidence } from "./evidence.js";
+import { setSectionChart } from "./grid.js";
+import { sectionChart } from "./charts-types.js";
 import { renderOverview } from "./page-overview.js";
 import { renderQuickActions, renderRecommendations } from "./page-actions.js";
-import { renderSavings, renderSessions, renderUsage, sessionsState } from "./page-spend.js";
+import { renderSavings, renderSessions, renderUsage } from "./page-spend.js";
 import { renderCache, renderTtl } from "./page-cache.js";
 import { renderAgentQuality, renderAgents, renderContextFiles } from "./page-agents.js";
 import { renderHabits } from "./page-habits.js";
@@ -355,7 +357,6 @@ function updateWindowControl(view) {
 function applyWindow(value) {
   state.window = value;
   storageSet("tls:window", value);
-  sessionsState.offset = 0;
   delete state.reportPromises[value];
   delete state.recommendationPromises[value];
   resetFiguresAsOf();
@@ -513,6 +514,7 @@ function initStickyHeader() {
 function init() {
   if ("scrollRestoration" in window.history) window.history.scrollRestoration = "manual";
   setRouteHandler(goTo);
+  setSectionChart(sectionChart);
   buildSidebar();
   initWindowPicker();
   initThemeToggle();

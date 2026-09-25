@@ -4,11 +4,11 @@
  */
 
 import { clear, el } from "./core.js";
-import { compactNumber, thousands } from "./format.js";
-import { loadInto, loadReport, withWindow } from "./api.js";
+import { compactNumber, fraction, moneyParts, thousands } from "./format.js";
+import { findSection, loadInto, loadReport, withWindow } from "./api.js";
 import { chip, errorNotice, loadingNode, tile, tileRow } from "./ui.js";
 import { renderMappedSections, renderReportBackedSection } from "./grid.js";
-import { viewIntro } from "./links.js";
+import { pageLink, viewIntro } from "./links.js";
 
 // ======================================================================
 // Cache, Rebuilds (recache and limits sections + a quick /api/recache
@@ -18,6 +18,9 @@ import { viewIntro } from "./links.js";
 export function renderCache(panel) {
   clear(panel);
   viewIntro(panel, "cache/rebuilds");
+
+  var explainer = el("div", { id: "cache-explainer" });
+  panel.appendChild(explainer);
 
   var quickContainer = el("div", { id: "cache-quick" });
   panel.appendChild(quickContainer);
@@ -32,8 +35,132 @@ export function renderCache(panel) {
       sectionContainer.appendChild(errorNotice(result.error));
       return;
     }
+    renderCacheExplainer(result.report, explainer);
     renderMappedSections(result.report, "cache/rebuilds", sectionContainer);
   });
+}
+
+// -- what the cache does for you ----------------------------------------------------------
+// Three facts with your numbers from this window: what reading from the
+// cache saved, what rebuilds cost, and whether a longer lifetime would
+// pay. The multipliers come from your pricing (report.meta.rates).
+
+function reportTable(report, sectionKey, name) {
+  var section = findSection(report, sectionKey);
+  var tables = (section && section.tables) || [];
+  for (var i = 0; i < tables.length; i++) if (tables[i].name === name) return tables[i];
+  return null;
+}
+
+// A table's rows as {column key: value} objects.
+function rowObjects(table) {
+  if (!table) return [];
+  return table.rows.map(function (row) {
+    var named = {};
+    table.columns.forEach(function (column, index) {
+      named[column.key] = row[index];
+    });
+    return named;
+  });
+}
+
+// The prices of the model you spent most on in this window.
+function mainRates(report) {
+  var rates = (report.meta && report.meta.rates) || {};
+  var byModel = reportTable(report, "overview", "by_model");
+  var ids = byModel
+    ? byModel.rows
+        .map(function (row) {
+          return String(row[0]);
+        })
+        .filter(function (id) {
+          return rates[id];
+        })
+    : [];
+  var id = ids[0] || Object.keys(rates)[0];
+  return id ? rates[id] : null;
+}
+
+function costCardLink(slug, text) {
+  return pageLink("glossary/how-costs-work", text, { card: slug });
+}
+
+function renderCacheExplainer(report, container) {
+  clear(container);
+  var rates = mainRates(report) || {};
+  var readWords = fraction(rates.cache_read_ratio);
+  var writeWords = fraction(rates.cache_write_5m_ratio);
+  var hourWords = fraction(rates.cache_write_1h_ratio);
+  var tiles = [];
+
+  var overall = rowObjects(reportTable(report, "ttl", "ttl_cache_economy")).filter(function (row) {
+    return row.agent_type === "overall";
+  })[0];
+  if (overall) {
+    var saved = moneyParts(overall.net_saving_usd);
+    tiles.push(
+      tile({
+        label: "Saved by the cache",
+        value: saved.value,
+        unit: saved.unit,
+        basis: "estimate",
+        hint: saved.secondary || null,
+        note:
+          (readWords ? "Reading from the cache costs " + readWords + " the normal input price. " : "") +
+          "Your sessions read " +
+          compactNumber(overall.tokens_read) +
+          " tokens from it. This is what that saved after paying for the cache writes.",
+        link: costCardLink("cache-reads", "How cache reads save you money"),
+      })
+    );
+  }
+
+  var rebuilds = rowObjects(reportTable(report, "recache", "recache_summary"))[0];
+  if (rebuilds) {
+    var lost = moneyParts(rebuilds.avoidable_cost_usd);
+    var times = Number(rebuilds.recache_turns) || 0;
+    tiles.push(
+      tile({
+        label: "Cost of avoidable rebuilds",
+        value: lost.value,
+        unit: lost.unit,
+        hint: lost.secondary || null,
+        note:
+          (times === 1 ? "Once" : thousands(times) + " times") +
+          " the cache ran out and was written again" +
+          (writeWords && readWords
+            ? " at " + writeWords + " the input price. Reading it would have cost " + readWords + " the input price."
+            : ".") +
+          " Most rebuilds follow an idle gap longer than the cache lifetime.",
+        link: costCardLink("cache-rebuilds", "What causes a rebuild"),
+      })
+    );
+  }
+
+  var agents = rowObjects(reportTable(report, "ttl", "ttl_break_even_share"));
+  if (agents.length) {
+    var gain = agents.filter(function (row) {
+      return Number(row.margin) > 0;
+    }).length;
+    tiles.push(
+      tile({
+        label: "A 1-hour cache lifetime",
+        value: thousands(gain) + " of " + thousands(agents.length),
+        unit: "agent types would gain",
+        note:
+          "A cache write lasts 5 minutes by default" +
+          (writeWords && hourWords ? " and costs " + writeWords + " the input price. A 1-hour write costs " + hourWords + " the input price." : ".") +
+          " The longer lifetime pays only when you often come back after 5 to 60 minutes.",
+        link: pageLink("cache/lifetime", "See each agent type"),
+      })
+    );
+  }
+
+  if (!tiles.length) return;
+  var block = el("section", { class: "report-section cache-explainer", "aria-labelledby": "cache-explainer-title" });
+  block.appendChild(el("div", { class: "block-head" }, [el("h2", { class: "section-title", id: "cache-explainer-title", text: "What the cache does for you" })]));
+  block.appendChild(tileRow(tiles, { class: "explainer-tiles" }));
+  container.appendChild(block);
 }
 
 // recache.SIGNATURES, in plain words. The raw signature stays in the

@@ -148,6 +148,9 @@ export function revealEvidence(panel, sourceTable, rowKey) {
     for (var node = host.parentElement; node && node !== panel; node = node.parentElement) {
       if (node.tagName === "DETAILS" && !node.open) node.open = true;
     }
+    // A summary table's row is its "All figures" list.
+    var figures = rowKey !== null && rowKey !== undefined && rowKey !== "" ? host.querySelector("details.summary-details") : null;
+    if (figures) figures.open = true;
     // After layout, so a grid that just opened has its rows.
     requestAnimationFrame(function () {
       pulseIn(host, rowKey);

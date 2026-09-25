@@ -181,6 +181,49 @@ export function loadRecommendations() {
   return state.recommendationPromises[key];
 }
 
+// A rule that fires once per agent type sends one recommendation each;
+// the inbox shows them as one item, titled for all of them, and so do
+// the "Feeds N actions" lists.
+var GROUP_TITLES = {
+  "model-tier": function (n) {
+    return n + " agent types could run a cheaper model";
+  },
+  "ttl-switch": function (n) {
+    return "The cache lifetime (TTL) is a poor fit for " + n + " agent types";
+  },
+  "subagent-volume": function (n) {
+    return n + " agent types take most of the subagent cost";
+  },
+  "agent-report-size": function (n) {
+    return "Reports from " + n + " agent types come back large";
+  },
+  "spawn-cost": function (n) {
+    return "Spawning " + n + " agent types is expensive before they do any work";
+  },
+  "spawn-claude-md": function (n) {
+    return n + " agent types are sent your CLAUDE.md files every time they start";
+  },
+  "spawn-unused-skills": function (n) {
+    return n + " agent types are given the skills list but never used a skill";
+  },
+  "spawn-unused-mcp": function (n) {
+    return n + " agent types are offered MCP tools but never used one";
+  },
+  "spawn-read-only-tools": function (n) {
+    return n + " agent types only ever searched and read files";
+  },
+  "spawn-task-prompt": function (n) {
+    return "The instructions written for " + n + " agent types are long";
+  },
+};
+
+// A group's title: its one member's own, or the shared wording for n.
+export function groupedTitle(id, n, firstTitle) {
+  if (n <= 1) return firstTitle;
+  var phrase = GROUP_TITLES[id];
+  return phrase ? phrase(n) : firstTitle + " (and " + (n - 1) + " more)";
+}
+
 // Which actions each report table is evidence for, from the
 // recommendations' evidence ([label, value, "section.table", row_key]):
 // byTable[table name] and byRow[table name + "\n" + row key] -> the
@@ -194,10 +237,20 @@ export function actionIndex() {
     var recs = body && body.ok === true && Array.isArray(body.data) ? body.data : [];
     if (indexed.data === recs) return indexed.index;
     var index = { byTable: {}, byRow: {} };
+    // One entry per inbox item: recommendations for several agent types
+    // that share an id and severity are one item there.
     function add(map, name, rec) {
       var list = map[name] || (map[name] = []);
-      for (var i = 0; i < list.length; i++) if (list[i].id === rec.id) return;
-      list.push({ id: rec.id, key: rec.key || rec.id, title: rec.title || rec.id });
+      var slot = rec.agent_type ? rec.id + "|" + rec.severity : rec.key || rec.id;
+      for (var i = 0; i < list.length; i++) {
+        if (list[i].slot === slot) {
+          list[i].members += 1;
+          list[i].title = groupedTitle(rec.id, list[i].members, list[i].first);
+          return;
+        }
+      }
+      var title = rec.title || rec.id;
+      list.push({ id: rec.id, key: rec.key || rec.id, title: title, first: title, slot: slot, members: 1 });
     }
     recs.forEach(function (rec) {
       (rec.evidence || []).forEach(function (item) {

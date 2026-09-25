@@ -13,10 +13,10 @@
  */
 
 import { clear, el, highlight, listenHighlight, state, storageGet, storageSet } from "./core.js";
-import { cellSortValue, formatCell, fullValue, moneyText, moneyUnit, NUMERIC_KINDS, PROJECT_KEYS, projectName } from "./format.js";
+import { cellSortValue, formatCell, fullValue, moneyParts, moneyText, moneyUnit, NUMERIC_KINDS, PROJECT_KEYS, projectName } from "./format.js";
 import { actionIndex, findSection } from "./api.js";
 import { COST_CARDS, pageLink, plainText, viewForSection, viewForTable } from "./links.js";
-import { button, emptyState, helpButton, motionOK, popoverButton, prose, swatch } from "./ui.js";
+import { button, emptyState, helpButton, motionOK, popoverButton, prose, swatch, tile, tileRow } from "./ui.js";
 import { icon } from "./icons.js";
 
 // Mirrors render/tables.py::resolve_evidence_column_kind /
@@ -708,15 +708,28 @@ export function headRow(heading, help, subject, card) {
   return row;
 }
 
-// Notes under a table or section, with page links and glossary terms.
+// Notes under a table or section, with page links and glossary terms. A
+// short note or two stay in view; more, or longer, fold away: they say
+// how the figures were worked out, which few readers need, and keep the
+// page short.
+var NOTES_IN_VIEW_CHARS = 240;
+
 export function notesList(notes, seen) {
-  return el(
+  var list = el(
     "ul",
     { class: "notes" },
     notes.map(function (note) {
       return el("li", null, prose(note, seen));
     })
   );
+  var length = notes.reduce(function (total, note) {
+    return total + String(note).length;
+  }, 0);
+  if (notes.length <= 2 && length <= NOTES_IN_VIEW_CHARS) return list;
+  return el("details", { class: "disclosure notes-detail" }, [
+    el("summary", { text: "How these figures are worked out (" + (notes.length === 1 ? "1 note" : notes.length + " notes") + ")" }),
+    list,
+  ]);
 }
 
 // The actions a table or row is evidence for (api.js's actionIndex), as
@@ -755,13 +768,65 @@ function markFeeds(wrap, head, gridNode, tableName) {
       wrap.insertBefore(head, wrap.firstChild);
     }
     head.appendChild(feedsButton(actions, true));
-    if (gridNode.grid) {
+    if (gridNode && gridNode.grid) {
       gridNode.grid.markRows(function (key) {
         var rowActions = index.byRow[tableName + "\n" + key];
         return rowActions && rowActions.length ? feedsButton(rowActions, false) : null;
       });
     }
   });
+}
+
+// -- a one-row table as tiles ---------------------------------------------------
+
+// A summary table (one row) with lead columns (helptext.py) reads as a
+// strip of at most this many tiles, its other figures in "All figures".
+var STRIP_TILES = 4;
+
+// The column indexes a summary table shows as tiles, or null for a table
+// that stays a grid.
+function summaryColumns(table) {
+  if (!table.rows || table.rows.length !== 1 || !table.lead_columns || !table.lead_columns.length) return null;
+  var indexes = [];
+  table.lead_columns.forEach(function (key) {
+    for (var i = 0; i < table.columns.length; i++) if (table.columns[i].key === key) indexes.push(i);
+  });
+  return indexes.length ? indexes.slice(0, STRIP_TILES) : null;
+}
+
+// A figure as a sentence would quote it: an amount in the billing mode, a
+// raw value by its label.
+function factValue(table, column, value) {
+  if (column.kind === "money" && typeof value === "number") return moneyText(value);
+  if (typeof value === "string" && table.value_labels && table.value_labels[value]) return table.value_labels[value];
+  return plainText(formatCell(value, column.kind));
+}
+
+function summaryTile(table, column, value) {
+  var opts = { label: column.label || column.key };
+  if (column.kind === "money" && typeof value === "number") {
+    var parts = moneyParts(value);
+    opts.value = parts.value;
+    opts.unit = parts.unit;
+    opts.hint = parts.secondary || null;
+  } else {
+    opts.value = el("span", { text: factValue(table, column, value), title: fullValue(value, column.kind) || null });
+  }
+  return tile(opts);
+}
+
+// Every figure of a summary table, as a list. A first column named
+// "metric" only labels the row ("all"), so it is left out. The row key
+// is on the list, for an evidence link to pulse.
+function summaryFacts(table) {
+  var row = table.rows[0];
+  var list = el("dl", { class: "fact-list summary-facts", "data-row-key": String(row[0]) });
+  table.columns.forEach(function (column, i) {
+    if (i === 0 && column.key === "metric") return;
+    list.appendChild(el("dt", { text: column.label || column.key }));
+    list.appendChild(el("dd", { text: fullValue(row[i], column.kind) || factValue(table, column, row[i]) }));
+  });
+  return list;
 }
 
 // options.heading false: the caller has already titled the table (a
@@ -777,6 +842,27 @@ export function renderTable(table, tableId, currency, options) {
   } else if (table.help) {
     var helpNode = helpButton(table.help, table.title || table.name);
     if (helpNode) head = wrap.appendChild(el("div", { class: "block-head block-head-help" }, [helpNode]));
+  }
+  var strip = summaryColumns(table);
+  if (strip) {
+    // A summary (one row): its headline figures as tiles, every figure
+    // one click away.
+    wrap.classList.add("summary-table");
+    wrap.appendChild(
+      tileRow(
+        strip.map(function (i) {
+          return summaryTile(table, table.columns[i], table.rows[0][i]);
+        }),
+        { class: "summary-tiles" }
+      )
+    );
+    var facts = summaryFacts(table);
+    wrap.appendChild(
+      el("details", { class: "disclosure summary-details" }, [el("summary", { text: "All figures (" + facts.querySelectorAll("dt").length + ")" }), facts])
+    );
+    if (table.notes && table.notes.length) wrap.appendChild(notesList(table.notes, (options && options.seen) || new Set()));
+    if (table.name) markFeeds(wrap, head, null, table.name);
+    return wrap;
   }
   var gridNode = wrap.appendChild(
     dataGrid({
@@ -835,6 +921,15 @@ export function renderPlacedTables(container, tables, currency, idPrefix, sectio
   }
 }
 
+// The chart a section draws above its tables (charts-types.js's
+// sectionChart), set once by app.js: grid.js can't import the charts,
+// which draw their Table view with this module.
+var sectionChart = null;
+
+export function setSectionChart(draw) {
+  sectionChart = draw;
+}
+
 export function renderSectionGeneric(container, section, currency, idPrefix) {
   if (!section) return;
   var block = el("section", { class: "report-section", "data-section": section.key || null });
@@ -845,6 +940,8 @@ export function renderSectionGeneric(container, section, currency, idPrefix) {
   // Each glossary term is explained once per section: its first use.
   var seen = new Set();
   if (section.intro) block.appendChild(el("p", { class: "section-intro" }, prose(section.intro, seen)));
+  var chart = sectionChart ? sectionChart(section) : null;
+  if (chart) block.appendChild(chart);
   renderPlacedTables(block, section.tables || [], currency, idPrefix || section.key, section.title || section.key, seen);
   if (section.notes && section.notes.length) block.appendChild(notesList(section.notes, seen));
   container.appendChild(block);

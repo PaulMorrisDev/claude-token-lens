@@ -787,7 +787,9 @@ export function popoverButton(anchorButton, build, opts) {
     if (!open && pop.contains(document.activeElement)) anchorButton.focus();
   });
   anchorButton.addEventListener("click", function () {
-    if (!pop.isConnected) document.body.appendChild(pop);
+    // Inside a drawer (a modal <dialog>) the rest of the page is inert:
+    // the popover joins the drawer so its links and buttons work.
+    if (!pop.isConnected) (anchorButton.closest("dialog") || document.body).appendChild(pop);
     if (!built) {
       build(pop);
       built = true;
@@ -799,9 +801,11 @@ export function popoverButton(anchorButton, build, opts) {
     pop.showPopover();
     place();
     // The first control that can take focus (the chooser's first box is
-    // disabled: that column always shows).
+    // disabled: that column always shows). A popover that only explains
+    // keeps focus on its button, unless it holds a link: the popover
+    // sits at the end of the page, where Tab from the button never goes.
     var first = pop.querySelector("button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex='-1'])");
-    if (first && opts.focusInside !== false) first.focus();
+    if (first && (opts.focusInside !== false || pop.querySelector("a[href]"))) first.focus();
   });
   return anchorButton;
 }
@@ -943,7 +947,8 @@ export function drawer(opts) {
   document.body.appendChild(dialog);
 
   var closing = false;
-  function close() {
+  // leaving: a link inside led to another view, which takes the focus.
+  function close(leaving) {
     if (closing) return;
     closing = true;
     dialog.classList.remove("is-open");
@@ -951,7 +956,7 @@ export function drawer(opts) {
       function () {
         dialog.close();
         dialog.remove();
-        if (opener && opener.isConnected && opener.focus) opener.focus();
+        if (leaving !== true && opener && opener.isConnected && opener.focus) opener.focus();
         if (opts.closed) opts.closed();
       },
       motionOK() ? 240 : 0
@@ -961,8 +966,15 @@ export function drawer(opts) {
     event.preventDefault();
     close();
   });
-  // A click on the backdrop (outside the panel) closes it too.
+  // A click on the backdrop (outside the panel) closes it too, and so
+  // does following a link inside to another view (in the text, or in a
+  // popover opened from it): the view changes under the drawer.
   dialog.addEventListener("click", function (event) {
+    var link = event.target.closest ? event.target.closest("a[href^='#/']") : null;
+    if (link && event.button === 0 && !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey) {
+      close(true);
+      return;
+    }
     if (event.target === dialog) {
       var rect = dialog.getBoundingClientRect();
       var inside = event.clientX >= rect.left && event.clientX <= rect.right && event.clientY >= rect.top && event.clientY <= rect.bottom;
